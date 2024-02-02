@@ -17,5 +17,5 @@ Then [Install JAX](https://jax.readthedocs.io/en/latest/installation.html) accor
 # Testing
 To check that the package is correctly installed:
 ```bash
-pytest
+pytest -s
 ```

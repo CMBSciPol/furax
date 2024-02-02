@@ -31,21 +31,16 @@ class HealpixLandscape:
     def ones(self, dtype=None):
         return self.full(1, dtype or float)
 
-    def get_coverage(
-        self, arg: Union[npt.NDArray[np.int64], Sampling], nside: int = None
-    ) -> npt.NDArray[np.int64]:
+    def get_coverage(self, arg: Union[npt.NDArray[np.int64], Sampling]) -> npt.NDArray[np.int64]:
         if isinstance(arg, Sampling):
             pixels = self.ang2pix(arg.theta, arg.phi)
-
         else:
             pixels = arg
-        if nside is None:
-            nside = self.nside
 
         indices, counts = jnp.unique(pixels, return_counts=True)
         coverage = jnp.zeros(self.npixel, dtype=np.int64)
         coverage = coverage.at[indices].add(counts, indices_are_sorted=True, unique_indices=True)
-        return hp.ud_grade(np.asarray(coverage), nside)
+        return hp.ud_grade(np.asarray(coverage), self.nside)
 
     @partial(jax.jit, static_argnums=0)
     def ang2pix(self, theta: Float[Array, '...'], phi: Float[Array, '...']):

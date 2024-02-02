@@ -1,4 +1,5 @@
 import healpy as hp
+import jax
 import numpy as np
 import pytest
 
@@ -21,7 +22,12 @@ def planck_iqu_256() -> np.array:
         maps = load_planck(nside)
         TEST_DATA_PLANCK.mkdir(parents=True, exist_ok=True)
         hp.write_map(path, maps)
-    return maps.astype(float)
+    i, q, u = maps.astype(float)
+    return {
+        'I': jax.device_put(i),
+        'Q': jax.device_put(q),
+        'U': jax.device_put(u),
+    }
 
 
 @pytest.fixture(scope='session')

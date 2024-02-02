@@ -1,0 +1,77 @@
+[build-system]
+build-backend = 'setuptools.build_meta'
+requires = [
+    'setuptools==64.0.3',
+    'setuptools_scm[toml]>=6.2',
+    'wheel',
+]
+
+[project]
+name = 'astrosim'
+authors = [
+    {name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr'},
+]
+maintainers = [
+    {name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr'},
+]
+description = 'Operators and solvers for high-performance computing.'
+readme = 'README.md'
+keywords = [
+    'scientific computing',
+]
+classifiers = [
+    'Programming Language :: Python',
+    'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3.8',
+    'Programming Language :: Python :: 3.9',
+    'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11',
+    'Intended Audience :: Science/Research',
+    'Operating System :: OS Independent',
+    'Topic :: Scientific/Engineering',
+]
+requires-python = '>=3.8'
+license = {file = 'LICENSE'}
+dependencies = [
+    'jax>=0.4.23',
+    'jaxtyping',
+    'healpy>=0.16.6',
+    'jax_healpy',
+    'lineax',
+    'numpy',
+    'scipy',
+    'matplotlib',
+]
+dynamic = ['version']
+
+[project.optional-dependencies]
+dev = [
+    'pytest',
+    'pytest-cov',
+    'pytest-mock',
+    'setuptools_scm',
+]
+
+[project.urls]
+homepage = 'https://scipol.in2p3.fr'
+repository = 'https://github.com/CMBSciPol/astrosim'
+
+[tool.coverage.report]
+exclude_lines = [
+    'pragma: no cover',
+    'except ImportError:',
+    'raise NotImplementedError',
+    'if typing.TYPE_CHECKING:',
+]
+show_missing = true
+skip_covered = true
+
+[tool.pytest.ini_options]
+addopts = '-ra --cov=astrosim'
+testpaths = [
+    'tests',
+]
+
+[tool.setuptools_scm]
+version_scheme = 'post-release'
+fallback_version = '0.0.0'

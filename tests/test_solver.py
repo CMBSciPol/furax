@@ -1,0 +1,67 @@
+import jax
+import lineax as lx
+import numpy as np
+from numpy.random import PCG64, Generator
+
+from astrosim.instruments.sat import (
+    DETECTOR_ARRAY_SHAPE,
+    NDIR_PER_DETECTOR,
+    create_detector_directions,
+)
+from astrosim.landscapes import HealpixLandscape
+from astrosim.operators.projections import PytreeDiagonalOperator, create_projection_operator
+from astrosim.samplings import create_random_sampling
+
+
+def get_random_generator(seed: int) -> np.random.Generator:
+    return Generator(PCG64(seed))
+
+
+NSIDE = 256
+NSIDE_COVERAGE = 64
+RANDOM_SEED = 0
+RANDOM_GENERATOR = get_random_generator(RANDOM_SEED)
+NSAMPLING = 10_000
+
+print(f'#SAMPLINGS: {NSAMPLING}')
+print(f'#DETECTORS: {np.prod(DETECTOR_ARRAY_SHAPE)}')
+print(f'#NDIRS: {NDIR_PER_DETECTOR}')
+
+
+def test_solver(planck_iqu_256, sat_nhits):
+    sky = planck_iqu_256
+
+    # sky model
+    landscape = HealpixLandscape(NSIDE, 'IQU')
+    sky = {
+        'I': jax.device_put(sky[0]),
+        'Q': jax.device_put(sky[1]),
+        'U': jax.device_put(sky[2]),
+    }
+
+    # instrument model
+    random_generator = get_random_generator(RANDOM_SEED)
+    samplings = create_random_sampling(sat_nhits, NSAMPLING, random_generator)
+    coverage = HealpixLandscape(NSIDE_COVERAGE).get_coverage(samplings)
+    # hp.mollview(coverage); mp.show()
+    detector_dirs = create_detector_directions()
+    p = create_projection_operator(landscape, samplings, detector_dirs)
+
+    # Preconditioner
+    coverage_highres = HealpixLandscape(NSIDE).get_coverage(samplings)
+    m_diagonal = landscape.ones()
+    mask = coverage_highres > 0
+    m_diagonal = {
+        'I': m_diagonal['I'].at[mask].set(1 / coverage_highres[mask]),
+        'Q': m_diagonal['Q'],
+        'U': m_diagonal['U'],
+    }
+
+    pTp = lx.TaggedLinearOperator(p.T @ p, lx.positive_semidefinite_tag)
+    m = lx.TaggedLinearOperator(PytreeDiagonalOperator(m_diagonal), lx.positive_semidefinite_tag)
+    tod = p.mv(sky)
+    solver = lx.CG(rtol=1e-4, atol=1e-4, max_steps=1000)
+    solution = lx.linear_solve(
+        pTp, p.T.mv(tod), solver=solver, throw=False, options={'preconditioner': m}
+    )
+    assert solution.stats['num_steps'] < solution.stats['max_steps']

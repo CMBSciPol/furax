@@ -33,7 +33,7 @@ class ProjectionOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         return ProjectionOperatorT(self)
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        raise RuntimeError
+        raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return jax.eval_shape(lambda: self.landscape.zeros())
@@ -60,7 +60,7 @@ class ProjectionOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
         return self.operator
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        raise RuntimeError
+        raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return jax.eval_shape(lambda: self.operator.pixels)
@@ -82,7 +82,7 @@ class PytreeDiagonalOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         return self
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        raise RuntimeError
+        raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return jax.eval_shape(lambda: self.diagonal)

@@ -1,3 +1,5 @@
+import time
+
 import lineax as lx
 import numpy as np
 from numpy.random import PCG64, Generator
@@ -54,7 +56,10 @@ def test_solver(planck_iqu_256, sat_nhits):
     m = lx.TaggedLinearOperator(m, lx.positive_semidefinite_tag)
     tod = p.mv(sky)
     solver = lx.CG(rtol=1e-4, atol=1e-4, max_steps=1000)
+
+    time0 = time.time()
     solution = lx.linear_solve(
         pTp, p.T.mv(tod), solver=solver, throw=False, options={'preconditioner': m}
     )
+    print(f'No JIT: {time.time() - time0}')
     assert solution.stats['num_steps'] < solution.stats['max_steps']

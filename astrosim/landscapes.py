@@ -1,16 +1,31 @@
 from dataclasses import dataclass
 from functools import partial
-from typing import Union
+from typing import Any, Protocol, Union, runtime_checkable
 
-import healpy as hp
 import jax
 import jax.numpy as jnp
 import jax_healpy as jhp
 import numpy as np
-import numpy.typing as npt
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Integer, PyTree, ScalarLike, Shaped
 
 from .samplings import Sampling
+
+DType = np.dtype
+
+
+@runtime_checkable
+class SupportsDType(Protocol):
+    @property
+    def dtype(self) -> DType[Any]:
+        ...
+
+
+DTypeLike = Union[
+    str,  # like 'float32', 'int32'
+    type[Any],  # like np.float32, np.int32, float, int
+    np.dtype[Any],  # like np.dtype('float32'), np.dtype('int32')
+    SupportsDType,  # like jnp.float32, jnp.int32
+]
 
 
 @dataclass(frozen=True)
@@ -22,28 +37,28 @@ class HealpixLandscape:
     def npixel(self) -> int:
         return 12 * self.nside**2
 
-    def full(self, fill_value: float, dtype=None):
+    def full(
+        self, fill_value: ScalarLike, dtype: DTypeLike | None = None
+    ) -> PyTree[Shaped[Array, ' {self.npixel}']]:
         return {_: jnp.full(self.npixel, fill_value, dtype) for _ in self.stokes}
 
-    def zeros(self, dtype=None):
+    def zeros(self, dtype: DTypeLike | None = None) -> PyTree[Shaped[Array, ' {self.npixel}']]:
         return self.full(0, dtype or float)
 
-    def ones(self, dtype=None):
+    def ones(self, dtype: DTypeLike | None = None) -> PyTree[Shaped[Array, ' {self.npixel}']]:
         return self.full(1, dtype or float)
 
-    def get_coverage(self, arg: Union[npt.NDArray[np.int64], Sampling]) -> npt.NDArray[np.int64]:
-        if isinstance(arg, Sampling):
-            pixels = self.ang2pix(arg.theta, arg.phi)
-        else:
-            pixels = arg
-
+    def get_coverage(self, arg: Sampling) -> Integer[Array, ' {self.npixel}']:
+        pixels = self.ang2pix(arg.theta, arg.phi)
         indices, counts = jnp.unique(pixels, return_counts=True)
         coverage = jnp.zeros(self.npixel, dtype=np.int64)
         coverage = coverage.at[indices].add(counts, indices_are_sorted=True, unique_indices=True)
-        return hp.ud_grade(np.asarray(coverage), self.nside)
+        return coverage
 
     @partial(jax.jit, static_argnums=0)
-    def ang2pix(self, theta: Float[Array, '...'], phi: Float[Array, '...']):
+    def ang2pix(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> Integer[Array, ' *dims']:
         r"""Convert angles to HEALPix index for HEALPix ring ordering scheme.
 
         Args:
@@ -53,4 +68,4 @@ class HealpixLandscape:
         Returns:
             int: HEALPix map index for ring ordering scheme.
         """
-        return jhp.ang2pix(self.nside, theta, phi)
+        return jhp.ang2pix(self.nside, theta, phi)  # type: ignore[no-any-return]

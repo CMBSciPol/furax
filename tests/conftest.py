@@ -2,6 +2,7 @@ import healpy as hp
 import jax
 import numpy as np
 import pytest
+from jaxtyping import Array, Float
 
 from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT
 
@@ -31,9 +32,9 @@ def planck_iqu_256() -> np.array:
 
 
 @pytest.fixture(scope='session')
-def sat_nhits():
-    nhits = hp.read_map(TEST_DATA_SAT / 'norm_nHits_SA_35FOV_G_nside512.fits')
+def sat_nhits() -> Float[Array, '...']:
+    nhits = hp.read_map(TEST_DATA_SAT / 'norm_nHits_SA_35FOV_G_nside512.fits').astype('<f8')
     npixel = nhits.size
     nhits[: npixel // 2] = 0
     nhits /= np.sum(nhits)
-    return nhits
+    return jax.device_put(nhits)

@@ -1,16 +1,18 @@
 import jax
 import jax.numpy as jnp
 import lineax as lx
-from jaxtyping import Array, Inexact, PyTree
+from jaxtyping import Array, Float, Inexact, Int, PyTree
 
+from ..detectors import DetectorArray
 from ..landscapes import HealpixLandscape
+from ..samplings import Sampling
 
 
-class ProjectionOperator(lx.AbstractLinearOperator):
+class ProjectionOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
     landscape: HealpixLandscape
-    pixels: jax.ShapeDtypeStruct
-    cos_2phi: jax.ShapeDtypeStruct
-    sin_2phi: jax.ShapeDtypeStruct
+    pixels: Int[Array, '...']
+    cos_2phi: Float[Array, '...']
+    sin_2phi: Float[Array, '...']
 
     def __init__(self, landscape: HealpixLandscape, pixels: Array, pa: Array):
         self.landscape = landscape
@@ -21,16 +23,16 @@ class ProjectionOperator(lx.AbstractLinearOperator):
     def __hash__(self) -> int:
         return id(self)
 
-    def mv(self, sky):
-        i_tod = sky['I'][self.pixels]
-        q_tod = sky['Q'][self.pixels]
-        u_tod = sky['U'][self.pixels]
+    def mv(self, sky: PyTree[Float[Array, '...']]) -> Float[Array, '...']:
+        i_tod: Float[Array, '...'] = sky['I'][self.pixels]
+        q_tod: Float[Array, '...'] = sky['Q'][self.pixels]
+        u_tod: Float[Array, '...'] = sky['U'][self.pixels]
         return i_tod + self.cos_2phi * q_tod + self.sin_2phi * u_tod
 
     def transpose(self) -> lx.AbstractLinearOperator:
         return ProjectionOperatorT(self)
 
-    def as_matrix(self) -> "Inexact[Array, 'a b']":
+    def as_matrix(self) -> Inexact[Array, 'a b']:
         raise RuntimeError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -40,13 +42,13 @@ class ProjectionOperator(lx.AbstractLinearOperator):
         return jax.eval_shape(lambda: self.pixels)
 
 
-class ProjectionOperatorT(lx.AbstractLinearOperator):
+class ProjectionOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
     operator: ProjectionOperator
 
     def __init__(self, operator: ProjectionOperator):
         self.operator = operator
 
-    def mv(self, tods):
+    def mv(self, tods: Float[Array, '...']) -> PyTree[Float[Array, '...']]:
         sky = self.operator.landscape.zeros()
         flat_pixels = self.operator.pixels.ravel()
         i = sky['I'].at[flat_pixels].add(tods.ravel())
@@ -57,7 +59,7 @@ class ProjectionOperatorT(lx.AbstractLinearOperator):
     def transpose(self) -> lx.AbstractLinearOperator:
         return self.operator
 
-    def as_matrix(self) -> "Inexact[Array, 'a b']":
+    def as_matrix(self) -> Inexact[Array, 'a b']:
         raise RuntimeError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -67,19 +69,19 @@ class ProjectionOperatorT(lx.AbstractLinearOperator):
         return jax.eval_shape(lambda: self.operator.landscape.zeros())
 
 
-class PytreeDiagonalOperator(lx.AbstractLinearOperator):
-    diagonal: PyTree[jax.ShapeDtypeStruct]
+class PytreeDiagonalOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
+    diagonal: PyTree[Float[Array, '...']]
 
-    def __init__(self, diagonal: PyTree[jax.ShapeDtypeStruct]):
+    def __init__(self, diagonal: PyTree[Float[Array, '...']]):
         self.diagonal = diagonal
 
-    def mv(self, sky: PyTree[jax.ShapeDtypeStruct]):
+    def mv(self, sky: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
         return jax.tree_map((lambda a, b: a * b), sky, self.diagonal)
 
     def transpose(self) -> lx.AbstractLinearOperator:
         return self
 
-    def as_matrix(self) -> "Inexact[Array, 'a b']":
+    def as_matrix(self) -> Inexact[Array, 'a b']:
         raise RuntimeError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -91,46 +93,45 @@ class PytreeDiagonalOperator(lx.AbstractLinearOperator):
 
 @lx.is_symmetric.register(ProjectionOperator)
 @lx.is_symmetric.register(ProjectionOperatorT)
-@lx.is_symmetric.register(PytreeDiagonalOperator)
-def _(operator):
+def _(operator):  # type: ignore[no-untyped-def]
     return False
 
 
 @lx.is_symmetric.register(PytreeDiagonalOperator)
-def _(operator):
+def _(operator):  # type: ignore[no-untyped-def]
     return True
 
 
 @lx.is_positive_semidefinite.register(ProjectionOperator)
 @lx.is_positive_semidefinite.register(ProjectionOperatorT)
 @lx.is_positive_semidefinite.register(PytreeDiagonalOperator)
-def _(operator):
+def _(operator):  # type: ignore[no-untyped-def]
     return False
 
 
 @lx.is_negative_semidefinite.register(ProjectionOperator)
 @lx.is_negative_semidefinite.register(ProjectionOperatorT)
 @lx.is_negative_semidefinite.register(PytreeDiagonalOperator)
-def _(operator):
+def _(operator):  # type: ignore[no-untyped-def]
     return False
 
 
 @lx.linearise.register(ProjectionOperator)
 @lx.linearise.register(ProjectionOperatorT)
 @lx.linearise.register(PytreeDiagonalOperator)
-def _(operator):
+def _(operator):  # type: ignore[no-untyped-def]
     return operator
 
 
 @lx.conj.register(ProjectionOperator)
 @lx.conj.register(ProjectionOperatorT)
 @lx.conj.register(PytreeDiagonalOperator)
-def _(operator):
+def _(operator):  # type: ignore[no-untyped-def]
     return operator
 
 
 def create_projection_operator(
-    landscape: HealpixLandscape, samplings: Array, detector_dirs: Array
+    landscape: HealpixLandscape, samplings: Sampling, detector_dirs: DetectorArray
 ) -> ProjectionOperator:
     rot = get_rotation_matrix(samplings)
 
@@ -153,7 +154,7 @@ def create_projection_operator(
     return p
 
 
-def get_rotation_matrix(samplings):
+def get_rotation_matrix(samplings: Sampling) -> Float[Array, '...']:
     """Returns the rotation matrices associtated to the samplings.
 
     See: https://en.wikipedia.org/wiki/Euler_angles Convention Z1-Y2-Z3.
@@ -176,7 +177,9 @@ def get_rotation_matrix(samplings):
 
 @jax.jit
 @jax.vmap
-def vec2dir(x, y, z):
+def vec2dir(
+    x: Float[Array, '*#dims'], y: Float[Array, '*#dims'], z: Float[Array, '*#dims']
+) -> tuple[Float[Array, '*#dims'], Float[Array, '*#dims']]:
     r = jnp.sqrt(x**2 + y**2 + z**2)
     theta = jnp.arccos(z / r)
     phi = jnp.arctan2(y, x)

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import jax
 import jax_healpy as jhp
 import numpy as np
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Real
 from scipy.stats.sampling import DiscreteAliasUrn
 
 
@@ -18,12 +18,12 @@ class Sampling:
 
 
 def create_random_sampling(
-    hit_map, nsampling: int, random_generator: np.random.Generator
+    hit_map: Real[Array, ' npixel'], nsampling: int, random_generator: np.random.Generator
 ) -> Sampling:
     npixel = hit_map.size
     nside = jhp.npix2nside(npixel)
-    rng = DiscreteAliasUrn(hit_map, random_state=random_generator)
-    ipixels = rng.rvs(size=nsampling)
+    rng = DiscreteAliasUrn(np.asarray(hit_map).copy(), random_state=random_generator)
+    ipixels = jax.device_put(rng.rvs(size=nsampling))
 
     theta, phi = jhp.pix2ang(nside, ipixels)
     pa = random_generator.uniform(0, 2 * np.pi, nsampling)

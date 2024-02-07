@@ -50,3 +50,20 @@ repos:
     # F722 syntax error in forward annotation
     - --extend-ignore=E203,E731,F722
     files: ^astrosim/
+
+- repo: https://github.com/pre-commit/mirrors-mypy
+  rev: 'v1.8.0'
+  hooks:
+  - id: mypy
+    additional_dependencies:
+    - healpy
+    - jax
+    - jaxtyping
+    - jax_healpy
+    - lineax
+    - scipy
+    args:
+    - --strict
+    - --show-error-codes
+    - --enable-error-code=ignore-without-code
+    files: ^astrosim/

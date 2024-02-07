@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Protocol, Union, runtime_checkable
+from typing import Any, Union
 
 import jax
 import jax.numpy as jnp
@@ -10,21 +10,13 @@ from jaxtyping import Array, Float, Integer, PyTree, ScalarLike, Shaped
 
 from .samplings import Sampling
 
-DType = np.dtype
-
-
-@runtime_checkable
-class SupportsDType(Protocol):
-    @property
-    def dtype(self) -> DType[Any]:
-        ...
-
-
+# XXX Remove after https://github.com/google/jax/pull/19669 is accepted
+NumberType = Union[jnp.float32, jnp.int32]  # to be completed with all jax scalar number types
+ScalarType = Union[jnp.bool_, NumberType]
 DTypeLike = Union[
     str,  # like 'float32', 'int32'
-    type[Any],  # like np.float32, np.int32, float, int
-    np.dtype[Any],  # like np.dtype('float32'), np.dtype('int32')
-    SupportsDType,  # like jnp.float32, jnp.int32
+    type[Union[bool, int, float, complex, np.bool_, np.number[Any], ScalarType]],
+    np.dtype[Any],
 ]
 
 

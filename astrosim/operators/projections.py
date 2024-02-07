@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import lineax as lx
-from jaxtyping import Array, Float, Inexact, Int, PyTree
+from jaxtyping import Array, Float, Inexact, Integer, PyTree
 
 from ..detectors import DetectorArray
 from ..landscapes import HealpixLandscape
@@ -10,7 +10,7 @@ from ..samplings import Sampling
 
 class ProjectionOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
     landscape: HealpixLandscape
-    pixels: Int[Array, '...']
+    pixels: Integer[Array, '...']
     cos_2phi: Float[Array, '...']
     sin_2phi: Float[Array, '...']
 

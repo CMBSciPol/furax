@@ -59,7 +59,8 @@ repos:
     - healpy
     - jax
     - jaxtyping
-    - jax_healpy
+    - jax-healpy
+    - jax-dataclasses
     - lineax
     - scipy
     args:

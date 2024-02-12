@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from jaxtyping import Array, Float
 
+from astrosim.landscapes import HealpixIQUPyTree
 from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT
 
 
@@ -24,11 +25,11 @@ def planck_iqu_256() -> np.array:
         TEST_DATA_PLANCK.mkdir(parents=True, exist_ok=True)
         hp.write_map(path, maps)
     i, q, u = maps.astype(float)
-    return {
-        'I': jax.device_put(i),
-        'Q': jax.device_put(q),
-        'U': jax.device_put(u),
-    }
+    return HealpixIQUPyTree(
+        I=jax.device_put(i),
+        Q=jax.device_put(q),
+        U=jax.device_put(u),
+    )
 
 
 @pytest.fixture(scope='session')

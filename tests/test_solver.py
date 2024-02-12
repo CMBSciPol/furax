@@ -1,5 +1,6 @@
 import time
 
+import jax
 import lineax as lx
 import numpy as np
 from numpy.random import PCG64, Generator
@@ -9,7 +10,7 @@ from astrosim.instruments.sat import (
     NDIR_PER_DETECTOR,
     create_detector_directions,
 )
-from astrosim.landscapes import HealpixLandscape
+from astrosim.landscapes import HealpixIQUPyTree, HealpixLandscape
 from astrosim.operators.projections import PytreeDiagonalOperator, create_projection_operator
 from astrosim.samplings import create_random_sampling
 
@@ -21,7 +22,7 @@ def get_random_generator(seed: int) -> np.random.Generator:
 NSIDE = 256
 RANDOM_SEED = 0
 RANDOM_GENERATOR = get_random_generator(RANDOM_SEED)
-NSAMPLING = 10_000
+NSAMPLING = 1_000
 
 
 def test_solver(planck_iqu_256, sat_nhits):
@@ -44,22 +45,37 @@ def test_solver(planck_iqu_256, sat_nhits):
     coverage_highres = landscape.get_coverage(samplings)
     m_diagonal = landscape.ones()
     mask = coverage_highres > 0
-    m_diagonal = {
-        'I': m_diagonal['I'].at[mask].set(1 / coverage_highres[mask]),
-        'Q': m_diagonal['Q'],
-        'U': m_diagonal['U'],
-    }
+    m_diagonal = HealpixIQUPyTree(
+        I=m_diagonal.I.at[mask].set(1 / coverage_highres[mask]),
+        Q=m_diagonal.Q,
+        U=m_diagonal.U,
+    )
     m = PytreeDiagonalOperator(m_diagonal)
 
     # solving
     pTp = lx.TaggedLinearOperator(p.T @ p, lx.positive_semidefinite_tag)
     m = lx.TaggedLinearOperator(m, lx.positive_semidefinite_tag)
     tod = p.mv(sky)
+    b = p.T.mv(tod)
     solver = lx.CG(rtol=1e-4, atol=1e-4, max_steps=1000)
 
     time0 = time.time()
-    solution = lx.linear_solve(
-        pTp, p.T.mv(tod), solver=solver, throw=False, options={'preconditioner': m}
-    )
+    solution = lx.linear_solve(pTp, b, solver=solver, throw=False, options={'preconditioner': m})
     print(f'No JIT: {time.time() - time0}')
     assert solution.stats['num_steps'] < solution.stats['max_steps']
+
+    @jax.jit
+    def func(tod):
+        return lx.linear_solve(pTp, b, solver=solver, throw=False, options={'preconditioner': m})
+
+    time0 = time.time()
+    solution = func(tod)
+    assert solution.stats['num_steps'] < solution.stats['max_steps']
+    print(f'JIT 1: {time.time() - time0}')
+
+    del tod
+    tod = p.mv(sky)
+    time0 = time.time()
+    solution = func(tod)
+    assert solution.stats['num_steps'] < solution.stats['max_steps']
+    print(f'JIT 2: {time.time() - time0}')

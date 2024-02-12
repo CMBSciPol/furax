@@ -4,7 +4,7 @@ import lineax as lx
 from jaxtyping import Array, Float, Inexact, Integer, PyTree
 
 from ..detectors import DetectorArray
-from ..landscapes import HealpixLandscape
+from ..landscapes import HealpixIQUPyTree, HealpixLandscape
 from ..samplings import Sampling
 
 
@@ -20,13 +20,13 @@ class ProjectionOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         self.cos_2phi = jnp.cos(2 * pa)
         self.sin_2phi = jnp.sin(2 * pa)
 
-    def __hash__(self) -> int:
-        return id(self)
+    #    def __hash__(self) -> int:
+    #        return id(self)
 
     def mv(self, sky: PyTree[Float[Array, '...']]) -> Float[Array, '...']:
-        i_tod: Float[Array, '...'] = sky['I'][self.pixels]
-        q_tod: Float[Array, '...'] = sky['Q'][self.pixels]
-        u_tod: Float[Array, '...'] = sky['U'][self.pixels]
+        i_tod: Float[Array, '...'] = sky.I[self.pixels]
+        q_tod: Float[Array, '...'] = sky.Q[self.pixels]
+        u_tod: Float[Array, '...'] = sky.U[self.pixels]
         return i_tod + self.cos_2phi * q_tod + self.sin_2phi * u_tod
 
     def transpose(self) -> lx.AbstractLinearOperator:
@@ -51,10 +51,10 @@ class ProjectionOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
     def mv(self, tods: Float[Array, '...']) -> PyTree[Float[Array, '...']]:
         sky = self.operator.landscape.zeros()
         flat_pixels = self.operator.pixels.ravel()
-        i = sky['I'].at[flat_pixels].add(tods.ravel())
-        q = sky['Q'].at[flat_pixels].add((self.operator.cos_2phi * tods).ravel())
-        u = sky['U'].at[flat_pixels].add((self.operator.sin_2phi * tods).ravel())
-        return {'I': i, 'Q': q, 'U': u}
+        i = sky.I.at[flat_pixels].add(tods.ravel())
+        q = sky.Q.at[flat_pixels].add((self.operator.cos_2phi * tods).ravel())
+        u = sky.U.at[flat_pixels].add((self.operator.sin_2phi * tods).ravel())
+        return HealpixIQUPyTree(I=i, Q=q, U=u)
 
     def transpose(self) -> lx.AbstractLinearOperator:
         return self.operator

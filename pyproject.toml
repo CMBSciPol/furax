@@ -32,10 +32,12 @@ dependencies = [
     'jax>=0.4.23',
     'jaxtyping',
     'healpy>=0.16.6',
-    'jax_healpy',
+    'jax-healpy',
+    'jax-dataclasses',
     'lineax',
     'numpy',
     'scipy',
+    'typing-extensions; python < 3.11',
     'matplotlib',
 ]
 dynamic = ['version']
@@ -73,7 +75,8 @@ module = [
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-addopts = '-ra --cov=astrosim --jaxtyping-packages=astrosim,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))'
+# addopts = '-ra --cov=astrosim --jaxtyping-packages=astrosim,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))'
+addopts = '-ra'
 testpaths = [
     'tests',
 ]

@@ -66,6 +66,7 @@ class Landscape(ABC):
     def ones(self, dtype: DTypeLike | None = None) -> PyTree[Shaped[Array, '...']]: ...
 
 
+@jax.tree_util.register_pytree_node_class
 @dataclass(unsafe_hash=True)
 class HealpixLandscape(Landscape):
     nside: int
@@ -77,12 +78,12 @@ class HealpixLandscape(Landscape):
             'IQU': HealpixIQUPyTree,
         }[self.stokes]
 
-    def _tree_flatten(self):  # type: ignore[no-untyped-def]
+    def tree_flatten(self):  # type: ignore[no-untyped-def]
         aux_data = {'nside': self.nside, 'stokes': self.stokes}  # static values
         return (), aux_data
 
     @classmethod
-    def _tree_unflatten(cls, aux_data, children) -> Self:  # type: ignore[no-untyped-def]
+    def tree_unflatten(cls, aux_data, children) -> Self:  # type: ignore[no-untyped-def]
         return cls(**aux_data)
 
     @property
@@ -121,8 +122,3 @@ class HealpixLandscape(Landscape):
             int: HEALPix map index for ring ordering scheme.
         """
         return jhp.ang2pix(self.nside, theta, phi)  # type: ignore[no-any-return]
-
-
-jax.tree_util.register_pytree_node(
-    HealpixLandscape, HealpixLandscape._tree_flatten, HealpixLandscape._tree_unflatten
-)

@@ -11,3 +11,9 @@ __pycache__
 /.idea/
 
 /tests/data/planck/
+
+# python
+*.pyc
+*.pyo
+*.pyd
+*.pytest_cache

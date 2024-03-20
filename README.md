@@ -17,7 +17,7 @@ Then [Install JAX](https://jax.readthedocs.io/en/latest/installation.html) accor
 # Testing
 To check that the package is correctly installed:
 ```bash
-pytest -s
+pytest
 ```
 
 # Running on JeanZay
@@ -62,7 +62,7 @@ source venv/bin/activate
 module load cuda/11.8.0  cudnn/8.9.7.29-cuda 
 # Then do your thing
 python my_script.py
-pytest -s
+pytest
 ```
 Don't leave the bash running !! (I would suggest running script with sbatch)
 

@@ -76,7 +76,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 # addopts = '-ra --cov=astrosim --jaxtyping-packages=astrosim,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))'
-addopts = '-ra'
+addopts = '-s -ra'
 testpaths = [
     'tests',
 ]

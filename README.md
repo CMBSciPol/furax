@@ -25,7 +25,7 @@ pytest
 ## Load cuda and and cudnn for JAX
 
 ```bash
-module load cuda/11.8.0 cudnn/8.9.7.29-cuda 
+module load cuda/11.8.0 cudnn/8.9.7.29-cuda
 ```
 
 ## Create Python env (only the first time)
@@ -59,7 +59,7 @@ srun --pty --account=nih@v100 --nodes=1 --ntasks-per-node=1 --cpus-per-task=10 -
 module purge
 module load python/3.10.4
 source venv/bin/activate
-module load cuda/11.8.0  cudnn/8.9.7.29-cuda 
+module load cuda/11.8.0  cudnn/8.9.7.29-cuda
 # Then do your thing
 python my_script.py
 pytest
@@ -70,11 +70,10 @@ Don't leave the bash running !! (I would suggest running script with sbatch)
 
 The repo is already in the commun WORK folder, the data is downloaded and the environment is ready.
 
-You only need to do this 
+You only need to do this
 
 ```bash
 cd $ALL_CCFRWORK/astrosim-main
 ```
 
 Then launch scripts as you see fit
-

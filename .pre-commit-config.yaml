@@ -68,3 +68,5 @@ repos:
     - --show-error-codes
     - --enable-error-code=ignore-without-code
     files: ^astrosim/
+
+exclude: '^slurms/'

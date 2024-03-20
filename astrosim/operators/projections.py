@@ -4,30 +4,20 @@ import lineax as lx
 from jaxtyping import Array, Float, Inexact, Integer, PyTree
 
 from ..detectors import DetectorArray
-from ..landscapes import HealpixIQUPyTree, HealpixLandscape
+from ..landscapes import HealpixLandscape, StokesPyTree, stokes_pytree_cls
 from ..samplings import Sampling
 
 
 class ProjectionOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
     landscape: HealpixLandscape
-    pixels: Integer[Array, '...']
-    cos_2phi: Float[Array, '...']
-    sin_2phi: Float[Array, '...']
+    indices: Integer[Array, '...']
 
-    def __init__(self, landscape: HealpixLandscape, pixels: Array, pa: Array):
+    def __init__(self, landscape: HealpixLandscape, indices: Array):
         self.landscape = landscape
-        self.pixels = pixels  # (ndet, nsampling)
-        self.cos_2phi = jnp.cos(2 * pa)
-        self.sin_2phi = jnp.sin(2 * pa)
+        self.indices = indices  # (ndet, nsampling)
 
-    #    def __hash__(self) -> int:
-    #        return id(self)
-
-    def mv(self, sky: PyTree[Float[Array, '...']]) -> Float[Array, '...']:
-        i_tod: Float[Array, '...'] = sky.I[self.pixels]
-        q_tod: Float[Array, '...'] = sky.Q[self.pixels]
-        u_tod: Float[Array, '...'] = sky.U[self.pixels]
-        return i_tod + self.cos_2phi * q_tod + self.sin_2phi * u_tod
+    def mv(self, sky: StokesPyTree) -> StokesPyTree:
+        return sky[self.indices]
 
     def transpose(self) -> lx.AbstractLinearOperator:
         return ProjectionOperatorT(self)
@@ -36,10 +26,12 @@ class ProjectionOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.eval_shape(lambda: self.landscape.zeros())
+        cls = stokes_pytree_cls(self.landscape.stokes)
+        return cls.shape_pytree((self.landscape.npixel,), self.landscape.dtype)
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.eval_shape(lambda: self.pixels)
+        cls = stokes_pytree_cls(self.landscape.stokes)
+        return cls.shape_pytree(self.indices.shape, self.landscape.dtype)
 
 
 class ProjectionOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
@@ -48,13 +40,13 @@ class ProjectionOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
     def __init__(self, operator: ProjectionOperator):
         self.operator = operator
 
-    def mv(self, tods: Float[Array, '...']) -> PyTree[Float[Array, '...']]:
-        sky = self.operator.landscape.zeros()
-        flat_pixels = self.operator.pixels.ravel()
-        i = sky.I.at[flat_pixels].add(tods.ravel())
-        q = sky.Q.at[flat_pixels].add((self.operator.cos_2phi * tods).ravel())
-        u = sky.U.at[flat_pixels].add((self.operator.sin_2phi * tods).ravel())
-        return HealpixIQUPyTree(I=i, Q=q, U=u)
+    def mv(self, x: StokesPyTree) -> StokesPyTree:
+        flat_pixels = self.operator.indices.ravel()
+        arrays_out = []
+        zeros = jnp.zeros(self.operator.landscape.npixel, self.operator.landscape.dtype)
+        for stoke in self.operator.landscape.stokes:
+            arrays_out.append(zeros.at[flat_pixels].add(getattr(x, stoke).ravel()))
+        return stokes_pytree_cls(self.operator.landscape.stokes)(*arrays_out)
 
     def transpose(self) -> lx.AbstractLinearOperator:
         return self.operator
@@ -63,10 +55,10 @@ class ProjectionOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.eval_shape(lambda: self.operator.pixels)
+        return self.operator.out_structure()
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.eval_shape(lambda: self.operator.landscape.zeros())
+        return self.operator.in_structure()
 
 
 class PytreeDiagonalOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
@@ -150,7 +142,7 @@ def create_projection_operator(
         # remove the number of directions per pixels if there is only one.
         pixels = pixels.reshape(pixels.shape[0], pixels.shape[2])
 
-    p = ProjectionOperator(landscape, pixels, samplings.pa)
+    p = ProjectionOperator(landscape, pixels)
     return p
 
 

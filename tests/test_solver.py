@@ -8,10 +8,11 @@ from numpy.random import PCG64, Generator
 from astrosim.instruments.sat import (
     DETECTOR_ARRAY_SHAPE,
     NDIR_PER_DETECTOR,
+    create_acquisition,
     create_detector_directions,
 )
-from astrosim.landscapes import HealpixIQUPyTree, HealpixLandscape
-from astrosim.operators.projections import PytreeDiagonalOperator, create_projection_operator
+from astrosim.landscapes import HealpixLandscape, StokesIQUPyTree
+from astrosim.operators.projections import PytreeDiagonalOperator
 from astrosim.samplings import create_random_sampling
 
 
@@ -39,13 +40,13 @@ def test_solver(planck_iqu_256, sat_nhits):
     random_generator = get_random_generator(RANDOM_SEED)
     samplings = create_random_sampling(sat_nhits, NSAMPLING, random_generator)
     detector_dirs = create_detector_directions()
-    p = create_projection_operator(landscape, samplings, detector_dirs)
+    h = create_acquisition(landscape, samplings, detector_dirs)
 
     # preconditioner
     coverage_highres = landscape.get_coverage(samplings)
     m_diagonal = landscape.ones()
     mask = coverage_highres > 0
-    m_diagonal = HealpixIQUPyTree(
+    m_diagonal = StokesIQUPyTree(
         I=m_diagonal.I.at[mask].set(1 / coverage_highres[mask]),
         Q=m_diagonal.Q,
         U=m_diagonal.U,
@@ -53,20 +54,20 @@ def test_solver(planck_iqu_256, sat_nhits):
     m = PytreeDiagonalOperator(m_diagonal)
 
     # solving
-    pTp = lx.TaggedLinearOperator(p.T @ p, lx.positive_semidefinite_tag)
+    hTh = lx.TaggedLinearOperator(h.T @ h, lx.positive_semidefinite_tag)
     m = lx.TaggedLinearOperator(m, lx.positive_semidefinite_tag)
-    tod = p.mv(sky)
-    b = p.T.mv(tod)
+    tod = h.mv(sky)
+    b = h.T.mv(tod)
     solver = lx.CG(rtol=1e-4, atol=1e-4, max_steps=1000)
 
     time0 = time.time()
-    solution = lx.linear_solve(pTp, b, solver=solver, throw=False, options={'preconditioner': m})
+    solution = lx.linear_solve(hTh, b, solver=solver, throw=False, options={'preconditioner': m})
     print(f'No JIT: {time.time() - time0}')
     assert solution.stats['num_steps'] < solution.stats['max_steps']
 
     @jax.jit
     def func(tod):
-        return lx.linear_solve(pTp, b, solver=solver, throw=False, options={'preconditioner': m})
+        return lx.linear_solve(hTh, b, solver=solver, throw=False, options={'preconditioner': m})
 
     time0 = time.time()
     solution = func(tod)
@@ -74,7 +75,7 @@ def test_solver(planck_iqu_256, sat_nhits):
     print(f'JIT 1: {time.time() - time0}')
 
     del tod
-    tod = p.mv(sky)
+    tod = h.mv(sky)
     time0 = time.time()
     solution = func(tod)
     assert solution.stats['num_steps'] < solution.stats['max_steps']

@@ -67,6 +67,7 @@ repos:
     - --strict
     - --show-error-codes
     - --enable-error-code=ignore-without-code
+    - --allow-untyped-calls
     files: ^astrosim/
 
 exclude: '^slurms/'

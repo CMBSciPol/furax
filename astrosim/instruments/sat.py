@@ -1,6 +1,12 @@
+import lineax as lx
 import numpy as np
 
 from astrosim.detectors import DetectorArray
+from astrosim.landscapes import HealpixLandscape
+from astrosim.operators.bolometers import BolometerOperator
+from astrosim.operators.hwp import HWPOperator
+from astrosim.operators.projections import create_projection_operator
+from astrosim.samplings import Sampling
 
 FOV_DEG = 35
 DIAMETER = 0.42
@@ -47,3 +53,12 @@ def create_detector_directions() -> DetectorArray:
     ydirs = ycenters[:, None] + ydeltas[None, :]
 
     return DetectorArray(xdirs, ydirs, FOCAL_LENGTH)
+
+
+def create_acquisition(
+    landscape: HealpixLandscape, samplings: Sampling, detector_dirs: DetectorArray
+) -> lx.AbstractLinearOperator:
+    proj = create_projection_operator(landscape, samplings, detector_dirs)
+    hwp = HWPOperator(proj.indices.shape, landscape.stokes, samplings.pa)
+    bolo = BolometerOperator(proj.indices.shape, landscape.stokes)
+    return bolo @ hwp @ proj

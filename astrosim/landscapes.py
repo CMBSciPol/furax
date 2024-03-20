@@ -2,7 +2,7 @@ import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import partial
-from typing import ClassVar, Union
+from typing import ClassVar, Literal, Union, cast, get_args
 
 import jax
 import jax.numpy as jnp
@@ -18,6 +18,9 @@ else:
 
 from .samplings import Sampling
 
+ValidStokesType = Literal['I', 'QU', 'IQU', 'IQUV']
+
+
 # XXX Remove after https://github.com/google/jax/pull/19669 is accepted
 NumberType = Union[
     jnp.float32, jnp.int32, jnp.int16
@@ -31,55 +34,107 @@ DTypeLike = Union[
 
 
 @jdc.pytree_dataclass
-class HealpixPyTree:
-    stokes: ClassVar[str] = 'I'
-    I: Array
+class StokesPyTree:
+    stokes: ClassVar[ValidStokesType] = 'I'
 
     @property
-    def nside(self) -> int:
-        return jhp.npix2nside(self.npixel)  # type: ignore[no-any-return]
+    def shape(self) -> tuple[int, ...]:
+        return cast(tuple[int, ...], getattr(self, self.stokes[0]).shape)
+
+    @classmethod
+    def shape_pytree(cls, shape: tuple[int, ...], dtype: DTypeLike) -> PyTree[jax.ShapeDtypeStruct]:
+        stokes_arrays = len(cls.stokes) * [jax.ShapeDtypeStruct(shape, dtype)]
+        return cls(*stokes_arrays)
 
     @property
-    def npixel(self) -> int:
-        return self.I.size
+    def dtype(self) -> DTypeLike:
+        return cast(DTypeLike, getattr(self, self.stokes[0]).dtype)
 
-    @property
-    def size(self) -> int:
-        return len(self.stokes) * self.npixel
+    def __getitem__(self, index: Integer[Array, '...']) -> Self:
+        arrays = [getattr(self, stoke)[index] for stoke in self.stokes]
+        return type(self)(*arrays)
+
+    @classmethod
+    def zeros(cls, shape: tuple[int, ...], dtype: DTypeLike | float = float) -> Self:
+        return cls.full(shape, 0, dtype)
+
+    @classmethod
+    def ones(cls, shape: tuple[int, ...], dtype: DTypeLike | float = float) -> Self:
+        return cls.full(shape, 1, dtype)
+
+    @classmethod
+    def full(
+        cls, shape: tuple[int, ...], fill_value: ScalarLike, dtype: DTypeLike | float = float
+    ) -> Self:
+        arrays = len(cls.stokes) * [jnp.full(shape, fill_value, dtype)]  # type: ignore[arg-type]
+        return cls(*arrays)
 
 
 @jdc.pytree_dataclass
-class HealpixIQUPyTree(HealpixPyTree):
-    stokes: ClassVar[str] = 'IQU'
+class StokesIPyTree(StokesPyTree):
+    stokes: ClassVar[ValidStokesType] = 'I'
+    I: Array
+
+
+@jdc.pytree_dataclass
+class StokesQUPyTree(StokesPyTree):
+    stokes: ClassVar[ValidStokesType] = 'QU'
     Q: Array
     U: Array
 
 
+@jdc.pytree_dataclass
+class StokesIQUPyTree(StokesPyTree):
+    stokes: ClassVar[ValidStokesType] = 'IQU'
+    I: Array
+    Q: Array
+    U: Array
+
+
+@jdc.pytree_dataclass
+class StokesIQUVPyTree(StokesPyTree):
+    stokes: ClassVar[ValidStokesType] = 'IQUV'
+    I: Array
+    Q: Array
+    U: Array
+    V: Array
+
+
+def stokes_pytree_cls(stokes: ValidStokesType) -> type[StokesPyTree]:
+    if stokes not in get_args(ValidStokesType):
+        raise ValueError(f'Invalid stokes parameters: {stokes!r}')
+    return {
+        'I': StokesIPyTree,
+        'QU': StokesQUPyTree,
+        'IQU': StokesIQUPyTree,
+        'IQUV': StokesIQUVPyTree,
+    }[stokes]
+
+
 class Landscape(ABC):
     @abstractmethod
-    def full(
-        self, fill_value: ScalarLike, dtype: DTypeLike | None = None
-    ) -> PyTree[Shaped[Array, '...']]: ...
-    @abstractmethod
-    def zeros(self, dtype: DTypeLike | None = None) -> PyTree[Shaped[Array, '...']]: ...
-    @abstractmethod
-    def ones(self, dtype: DTypeLike | None = None) -> PyTree[Shaped[Array, '...']]: ...
+    def full(self, fill_value: ScalarLike) -> PyTree[Shaped[Array, '...']]: ...
+
+    def zeros(self) -> PyTree[Shaped[Array, '...']]:
+        return self.full(0)
+
+    def ones(self) -> PyTree[Shaped[Array, '...']]:
+        return self.full(1)
 
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(unsafe_hash=True)
 class HealpixLandscape(Landscape):
     nside: int
-    stokes: str = 'IQU'
-
-    def __post_init__(self) -> None:
-        self.pytree_cls = {
-            'I': HealpixPyTree,
-            'IQU': HealpixIQUPyTree,
-        }[self.stokes]
+    stokes: ValidStokesType = 'IQU'
+    dtype: DTypeLike = float
 
     def tree_flatten(self):  # type: ignore[no-untyped-def]
-        aux_data = {'nside': self.nside, 'stokes': self.stokes}  # static values
+        aux_data = {
+            'nside': self.nside,
+            'stokes': self.stokes,
+            'dtype': self.dtype,
+        }  # static values
         return (), aux_data
 
     @classmethod
@@ -90,16 +145,9 @@ class HealpixLandscape(Landscape):
     def npixel(self) -> int:
         return 12 * self.nside**2
 
-    def zeros(self, dtype: DTypeLike | None = None) -> PyTree[Shaped[Array, ' 12*nside**2']]:
-        return self.full(0, dtype or float)
-
-    def ones(self, dtype: DTypeLike | None = None) -> PyTree[Shaped[Array, ' 12*nside**2']]:
-        return self.full(1, dtype or float)
-
-    def full(
-        self, fill_value: ScalarLike, dtype: DTypeLike | None = None
-    ) -> PyTree[Shaped[Array, ' {self.npixel}']]:
-        return self.pytree_cls(**{_: jnp.full(self.npixel, fill_value, dtype) for _ in self.stokes})
+    def full(self, fill_value: ScalarLike) -> PyTree[Shaped[Array, ' {self.npixel}']]:
+        cls = stokes_pytree_cls(self.stokes)
+        return cls.full((self.npixel,), fill_value, self.dtype)
 
     def get_coverage(self, arg: Sampling) -> Integer[Array, ' 12*nside**2']:
         pixels = self.ang2pix(arg.theta, arg.phi)
@@ -122,3 +170,20 @@ class HealpixLandscape(Landscape):
             int: HEALPix map index for ring ordering scheme.
         """
         return jhp.ang2pix(self.nside, theta, phi)  # type: ignore[no-any-return]
+
+
+# Here we store some information that cannot be stored as a PyTree
+# We should investigate a better solution.
+@jax.tree_util.register_pytree_node_class
+@dataclass(unsafe_hash=True)
+class Info:
+    stokes: ValidStokesType
+    dtype: DTypeLike
+
+    def tree_flatten(self):  # type: ignore[no-untyped-def]
+        aux_data = {'stokes': self.stokes, 'dtype': self.dtype}  # static values
+        return (), aux_data
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children) -> Self:  # type: ignore[no-untyped-def]
+        return cls(**aux_data)

@@ -1,7 +1,7 @@
 [build-system]
 build-backend = 'setuptools.build_meta'
 requires = [
-    'setuptools==64.0.3',
+    'setuptools==69.2.0',
     'setuptools_scm[toml]>=6.2',
     'wheel',
 ]
@@ -80,9 +80,12 @@ addopts = '-s -ra'
 testpaths = [
     'tests',
 ]
+marks = [
+    "slow",
+]
 
-[tool.setuptools]
-packages = ['astrosim']
+#[tool.setuptools]
+#packages = ['src/astrosim']
 
 [tool.setuptools_scm]
 version_scheme = 'post-release'

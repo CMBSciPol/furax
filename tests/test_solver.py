@@ -3,6 +3,7 @@ import time
 import jax
 import lineax as lx
 import numpy as np
+import pytest
 from numpy.random import PCG64, Generator
 
 from astrosim.instruments.sat import (
@@ -26,6 +27,7 @@ RANDOM_GENERATOR = get_random_generator(RANDOM_SEED)
 NSAMPLING = 1_000
 
 
+@pytest.mark.slow
 def test_solver(planck_iqu_256, sat_nhits):
     print(f'#SAMPLINGS: {NSAMPLING}')
     print(f'#DETECTORS: {np.prod(DETECTOR_ARRAY_SHAPE)}')

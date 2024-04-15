@@ -16,8 +16,8 @@ __all__ = [
 class SymmetricBandToeplitzOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
     """Class to represent Symmetric Band Toeplitz matrices.
 
-    Four methods are available, where N is the size of the Toepliz matrix and K the number
-    of bands:
+    Five methods are available, where N is the size of the Toeplitz matrix and K the number
+    of non-zero bands:
         - dense, using the dense matrix: O(N^2)
         - direct, using a direct convolution: O(NK)
         - fft, applying the DFT on the whole input: O(NlogN)

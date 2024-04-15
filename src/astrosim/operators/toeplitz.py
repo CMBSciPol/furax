@@ -1,4 +1,3 @@
-from functools import partial
 from typing import ClassVar
 
 import equinox as eqx
@@ -17,53 +16,144 @@ __all__ = [
 class SymmetricBandToeplitzOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
     """Class to represent Symmetric Band Toeplitz matrices.
 
-    Four methods are available:
-        - direct, using a direct convolution: O(N^2)
-        - fft, which applies the Discrete Fourier Transform on the whole input: O(NlogN)
-        - overlap_save: O(NlogK)
-        - overlap_add: O(NlogK)
+    Four methods are available, where N is the size of the Toepliz matrix and K the number
+    of bands:
+        - dense, using the dense matrix: O(N^2)
+        - direct, using a direct convolution: O(NK)
+        - fft, applying the DFT on the whole input: O(NlogN)
+        - overlap_save, applying the DFT on chunked input: O(NlogK)
+        - overlap_add, applying the DFT on chunked input: O(NlogK)
     """
 
-    METHODS: ClassVar[tuple[str]] = ['direct', 'fft', 'overlap_save', 'overlap_add']
-    kernel: Float[Array, '...'] = eqx.field(static=True)
+    METHODS: ClassVar[tuple[str]] = ['dense', 'direct', 'fft', 'overlap_save']
     shape: tuple[int, int]
+    band_values: Float[Array, '...'] = eqx.field(static=True)
     method: str
     fft_size: int
 
-    #    def __hash__(self) -> int:
-    #        return id(self)
-
     def __init__(
         self,
-        kernel: Float[Array, ' a'],
         shape: tuple[int, int],
+        band_values: Float[Array, ' a'],
         *,
         method: str = 'overlap_save',
         fft_size: int | None = None,
     ):
-        self.kernel = kernel
+        if method not in self.METHODS:
+            raise ValueError(f'Invalid method {method}. Choose from: {", ".join(self.METHODS)}')
+
+        band_number = 2 * band_values.size - 1
+        if fft_size is not None:
+            if not method.startswith('overlap_'):
+                raise ValueError('The FFT size is only used by the overlap methods.')
+            if fft_size < band_number:
+                raise ValueError('The FFT size should not be less than the number of bands.')
+
+        self.band_values = band_values
         self.shape = shape
-        if fft_size is None:
-            additional_power = 1
-            fft_size = int(2 ** (additional_power + np.ceil(np.log2(self.kernel.size))))
         self.fft_size = fft_size
         self.method = method
+        if fft_size is None and method.startswith('overlap_'):
+            self.fft_size = self._get_default_fft_size(band_number)
+
+    @staticmethod
+    def _get_default_fft_size(band_number: int) -> int:
+        additional_power = 1
+        return int(2 ** (additional_power + np.ceil(np.log2(band_number))))
 
     def _get_func(self):
+        if self.method == 'dense':
+            return self._apply_dense
         if self.method == 'direct':
-            convolve = partial(_convolution, self.kernel)
-        elif self.method == 'fft':
-            H = jnp.fft.fft(self.kernel, self.shape[1] + self.kernel.size - 1)
-            convolve = partial(_convolution_fft, H, self.kernel.size)
-        elif self.method == 'overlap_save':
-            H = jnp.fft.fft(self.kernel, self.fft_size)
-            convolve = lambda x: _overlap_save_jax(x, H, self.fft_size, self.kernel.size)
-        elif self.method == 'overlap_add':
-            H = jnp.fft.fft(self.kernel, self.fft_size)
-            convolve = lambda x: _overlap_add_jax(x, H, self.fft_size, self.kernel.size)
-        else:
-            raise NotImplementedError
-        return jax.vmap(convolve)
+            return self._apply_direct
+        if self.method == 'fft':
+            return self._apply_fft
+        if self.method == 'overlap_add':
+            return self._apply_overlap_add
+        if self.method == 'overlap_save':
+            return self._apply_overlap_save
+
+        raise NotImplementedError
+
+    def _apply_dense(self, x):
+        matrix = dense_symmetric_band_toeplitz(x.shape[-1], self.band_values)
+        return matrix @ x
+
+    def _apply_direct(self, x):
+        kernel = self._get_kernel()
+        half_band_width = kernel.size // 2
+        return jnp.convolve(jnp.pad(x, (half_band_width, half_band_width)), kernel, mode='valid')
+
+    def _apply_fft(self, x):
+        kernel = self._get_kernel()
+        half_band_width = kernel.size // 2
+        H = jnp.fft.fft(kernel, x.shape[-1] + 2 * half_band_width)
+        x_padded = jnp.pad(x, (0, 2 * half_band_width), mode='constant')
+        X_padded = jnp.fft.fft(x_padded)
+        Y_padded = jnp.fft.ifft(X_padded * H).real
+        if half_band_width == 0:
+            return Y_padded
+        return Y_padded[half_band_width:-half_band_width]
+
+    def _apply_overlap_add(self, x):
+        l = x.shape[-1]
+        kernel = self._get_kernel()
+        H = jnp.fft.fft(kernel, self.fft_size)
+        half_band_width = kernel.size // 2
+        m = self.fft_size - 2 * half_band_width
+
+        # pad x so that its size is a multiple of m
+        x_padding = 0 if l % m == 0 else m - (l % m)
+        x_padded = jnp.pad(x, (x_padding,), mode='constant')
+        y = jnp.zeros(l + 2 * half_band_width)
+
+        def func(j, y):
+            i = j * m
+            x_block_not_padded = lax.dynamic_slice(x_padded, (i,), (m,))
+            x_block = jnp.pad(
+                x_block_not_padded, (half_band_width, half_band_width), mode='constant'
+            )
+            X_block = jnp.fft.fft(x_block, self.fft_size)
+            Y_block = X_block * H
+            y_block = jnp.fft.ifft(Y_block).real
+            y = lax.dynamic_update_slice(
+                y, lax.dynamic_slice(y, (i,), (self.fft_size,)) + y_block, (i,)
+            )
+            return y
+
+        y = lax.fori_loop(0, len(range(0, l, m)), func, y)
+        return y[half_band_width:-half_band_width]
+
+    def _apply_overlap_save(self, x):
+        kernel = self._get_kernel()
+        half_band_width = kernel.size // 2
+        H = jnp.fft.fft(kernel, self.fft_size)
+        l = x.shape[-1]
+        overlap = 2 * half_band_width
+        step_size = self.fft_size - overlap
+        nblock = int(np.ceil((l + overlap) / step_size))
+        total_length = (nblock - 1) * step_size + self.fft_size
+        x_padding_start = overlap
+        x_padding_end = total_length - overlap - l
+        x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode='constant')
+        y = jnp.zeros(l + x_padding_end)
+
+        def func(iblock, y):
+            position = iblock * step_size
+            x_block = lax.dynamic_slice(x_padded, (position,), (self.fft_size,))
+            X = jnp.fft.fft(x_block)
+            y_block = jnp.fft.ifft(X * H).real
+            y = lax.dynamic_update_slice(
+                y, lax.dynamic_slice(y_block, (2 * half_band_width,), (step_size,)), (position,)
+            )
+            return y
+
+        y = lax.fori_loop(0, nblock, func, y)
+        return y[half_band_width : half_band_width + l]
+
+    def _get_kernel(self) -> Float[Array, ' a']:
+        """[4, 3, 2, 1] -> [1, 2, 3, 4, 3, 2, 1]"""
+        return jnp.concatenate([self.band_values[-1:0:-1], self.band_values])
 
     def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
         return self._get_func()(x)
@@ -72,7 +162,7 @@ class SymmetricBandToeplitzOperator(lx.AbstractLinearOperator):  # type: ignore[
         return self
 
     def as_matrix(self) -> Inexact[Array, 'a a']:
-        raise NotImplementedError
+        raise dense_symmetric_band_toeplitz(self.shape[0], self.band_values)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return jax.ShapeDtypeStruct(self.shape, float)
@@ -81,16 +171,20 @@ class SymmetricBandToeplitzOperator(lx.AbstractLinearOperator):  # type: ignore[
         return self.in_structure()
 
 
-def _convolution(h, x):
-    b = h.shape[0]
-    return jnp.convolve(jnp.pad(x, (b - 1, 0)), h, mode='valid')
-
-
-def _convolution_fft(H, b, x):
-    x_padded = jnp.pad(x, (b - 1, 0), mode='constant')
-    X_padded = jnp.fft.fft(x_padded)
-    Y_padded = jnp.fft.ifft(X_padded * H)
-    return Y_padded[b - 1 :].real
+def dense_symmetric_band_toeplitz(n, band_values):
+    """Returns a dense Symmetric Band Toeplitz matrix."""
+    band_values = jnp.asarray(band_values)
+    output = jnp.zeros(n**2, dtype=band_values.dtype)
+    band_width = band_values.size - 1
+    for j in range(-band_width, band_width + 1):
+        value = band_values[abs(j)]
+        m = n - j
+        if j >= 0:
+            indices = j + jnp.arange(m) * (n + 1)
+        else:
+            indices = -n * j + jnp.arange(m) * (n + 1)
+        output = output.at[indices].set(value)
+    return output.reshape(n, n)
 
 
 def _overlap_add_jax(x, H, fft_size, b):
@@ -116,31 +210,6 @@ def _overlap_add_jax(x, H, fft_size, b):
 
     y = lax.fori_loop(0, len(range(0, l, m)), func, y)
     return y[b // 2 : -b // 2 - x_padding]
-
-
-def _overlap_save_jax(x, H, fft_size, b):
-    l = x.size
-    overlap = b - 1
-    step_size = fft_size - overlap
-    nblock = int(np.ceil((l + overlap) / step_size))
-    total_length = (nblock - 1) * step_size + fft_size
-    x_padding_start = overlap
-    x_padding_end = total_length - overlap - l
-    x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode='constant')
-    y = jnp.zeros(l + x_padding_end, dtype=complex)
-
-    def func(iblock, y):
-        position = iblock * step_size
-        x_block = lax.dynamic_slice(x_padded, (position,), (fft_size,))
-        X = jnp.fft.fft(x_block)
-        y_block = jnp.fft.ifft(X * H)
-        y = lax.dynamic_update_slice(
-            y, lax.dynamic_slice(y_block, (b - 1,), (step_size,)), (position,)
-        )
-        return y
-
-    y = lax.fori_loop(0, nblock, func, y)
-    return y[:l]
 
 
 @lx.is_symmetric.register(SymmetricBandToeplitzOperator)

@@ -80,8 +80,8 @@ addopts = '-s -ra'
 testpaths = [
     'tests',
 ]
-marks = [
-    "slow",
+markers = [
+    "slow: mark test as slow.",
 ]
 
 #[tool.setuptools]

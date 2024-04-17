@@ -1,11 +1,13 @@
+import equinox as eqx
 import jax
 import lineax as lx
+import numpy as np
 from jax import Array
 from jax import numpy as jnp
+from jax.typing import DTypeLike
 from jaxtyping import Float, Inexact, PyTree
 
 from astrosim.landscapes import (
-    Info,
     StokesIPyTree,
     StokesIQUPyTree,
     StokesIQUVPyTree,
@@ -18,7 +20,8 @@ from astrosim.landscapes import (
 
 class QURotationOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
     shape: tuple[int, ...]
-    info: Info
+    dtype: DTypeLike = eqx.field(static=True)
+    stokes: str = eqx.field(static=True)
     cos_2angles: Float[Array, '...']
     sin_2angles: Float[Array, '...']
 
@@ -28,11 +31,13 @@ class QURotationOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         stokes: ValidStokesType,
         cos_angles: Float[Array, '...'],
         sin_angles: Float[Array, '...'],
+        dtype: DTypeLike = float,
     ):
         self.shape = shape
-        self.info = Info(stokes=stokes, dtype=float)
-        self.cos_2angles = jnp.asarray(cos_angles)
-        self.sin_2angles = jnp.asarray(sin_angles)
+        self.stokes = stokes
+        self.dtype = np.dtype(dtype)
+        self.cos_2angles = jnp.asarray(cos_angles, dtype=dtype)
+        self.sin_2angles = jnp.asarray(sin_angles, dtype=dtype)
 
     @classmethod
     def create(cls, shape: tuple[int, ...], stokes: ValidStokesType, angles: Float[Array, '...']):
@@ -41,7 +46,7 @@ class QURotationOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         return cls(shape, stokes, cos_2angles, sin_2angles)
 
     def mv(self, x: StokesPyTree) -> StokesPyTree:
-        if self.info.stokes != x.stokes:
+        if self.stokes != x.stokes:
             raise TypeError('Invalid input')
 
         # we should try using cls(x).from_iquv
@@ -65,8 +70,8 @@ class QURotationOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        cls = stokes_pytree_cls(self.info.stokes)
-        return cls.shape_pytree(self.shape, self.info.dtype)
+        cls = stokes_pytree_cls(self.stokes)
+        return cls.shape_pytree(self.shape, self.dtype)
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.in_structure()
@@ -79,7 +84,7 @@ class QURotationOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
         self.operator = operator
 
     def mv(self, x: StokesPyTree) -> StokesPyTree:
-        if self.operator.info.stokes != x.stokes:
+        if self.operator.stokes != x.stokes:
             raise TypeError('Invalid input')
 
         # we should try using cls(x).from_iquv

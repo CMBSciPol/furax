@@ -186,20 +186,3 @@ class HealpixLandscape(Landscape):
             int: HEALPix map index for ring ordering scheme.
         """
         return jhp.ang2pix(self.nside, theta, phi)  # type: ignore[no-any-return]
-
-
-# Here we store some information that cannot be stored as a PyTree
-# We should investigate a better solution.
-@jax.tree_util.register_pytree_node_class
-@dataclass(unsafe_hash=True)
-class Info:
-    stokes: ValidStokesType
-    dtype: DTypeLike
-
-    def tree_flatten(self):  # type: ignore[no-untyped-def]
-        aux_data = {'stokes': self.stokes, 'dtype': self.dtype}  # static values
-        return (), aux_data
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children) -> Self:  # type: ignore[no-untyped-def]
-        return cls(**aux_data)

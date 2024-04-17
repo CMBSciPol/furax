@@ -1,10 +1,12 @@
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import lineax as lx
+import numpy as np
+from jax.typing import DTypeLike
 from jaxtyping import Array, Float, Inexact, PyTree
 
 from astrosim.landscapes import (
-    Info,
     StokesIPyTree,
     StokesIQUPyTree,
     StokesIQUVPyTree,
@@ -19,21 +21,24 @@ class LinearPolarizerOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
     """Class that integrates the input Stokes parameters assuming a linear polarizer."""
 
     shape: tuple[int, ...]
-    info: Info
+    dtype: DTypeLike = eqx.field(static=True)
+    stokes: str = eqx.field(static=True)
     theta: Float[Array, '...']
 
     def __init__(
         self,
         shape: tuple[int, ...],
         stokes: ValidStokesType,
+        dtype: DTypeLike = float,
         theta: Float[Array, '...'] | float = 0.0,
     ):
         self.shape = shape
-        self.info = Info(stokes=stokes, dtype=float)
-        self.theta = jnp.asarray(theta)  # detector's polarizer angle
+        self.stokes = stokes
+        self.dtype = np.dtype(dtype)
+        self.theta = jnp.asarray(theta, dtype=dtype)  # detector's polarizer angle
 
     def mv(self, x: StokesPyTree) -> Float[Array, ' {self.shape}']:
-        if self.info.stokes != x.stokes:
+        if self.stokes != x.stokes:
             raise TypeError('Invalid input')
         if isinstance(x, StokesIPyTree):
             return 0.5 * x.I
@@ -44,7 +49,7 @@ class LinearPolarizerOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
             return 0.5 * (Q + U)
         if isinstance(x, StokesIQUPyTree) or isinstance(x, StokesIQUVPyTree):
             return 0.5 * (x.I + Q + U)
-        raise NotImplementedError(f'HWPOperator not implemented for Stokes {self.info.stokes!r}')
+        raise NotImplementedError(f'HWPOperator not implemented for Stokes {self.stokes!r}')
 
     def transpose(self) -> lx.AbstractLinearOperator:
         return LinearPolarizerOperatorT(self)
@@ -53,11 +58,11 @@ class LinearPolarizerOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        cls = stokes_pytree_cls(self.info.stokes)
-        return cls.shape_pytree(self.shape, self.info.dtype)
+        cls = stokes_pytree_cls(self.stokes)
+        return cls.shape_pytree(self.shape, self.dtype)
 
     def out_structure(self) -> jax.ShapeDtypeStruct:
-        return jax.ShapeDtypeStruct(self.shape, self.info.dtype)
+        return jax.ShapeDtypeStruct(self.shape, self.dtype)
 
 
 class LinearPolarizerOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
@@ -67,7 +72,7 @@ class LinearPolarizerOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
         self.operator = operator
 
     def mv(self, x: Float[Array, ' {self.shape}']) -> StokesPyTree:
-        stokes = self.operator.info.stokes
+        stokes = self.operator.stokes
         cls = stokes_pytree_cls(stokes)
         I = 0.5 * x
         if stokes == 'I':

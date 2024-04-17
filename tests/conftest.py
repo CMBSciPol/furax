@@ -15,7 +15,7 @@ def load_planck(nside: int) -> np.array:
 
 
 @pytest.fixture(scope='session')
-def planck_iqu_256() -> np.array:
+def planck_iqu_256() -> StokesIQUPyTree:
     nside = 256
     path = TEST_DATA_PLANCK / f'HFI_SkyMap_143_{nside}_R3.01_full_IQU.fits'
     if path.exists():

@@ -20,7 +20,7 @@ def test_direct(stokes) -> None:
     indices = jnp.array([[2, 3, 2]])
     proj = SamplingOperator(landscape, indices)
 
-    y = proj.mv(x)
+    y = proj(x)
 
     expected_y = cls(**{stoke: x_as_dict[stoke][indices] for stoke in stokes})
     assert equinox.tree_equal(y, expected_y, atol=1e-15, rtol=1e-15)
@@ -36,7 +36,7 @@ def test_transpose(stokes) -> None:
     indices = jnp.array([[2, 3, 2]])
     proj = SamplingOperator(landscape, indices)
 
-    y = proj.T.mv(x)
+    y = proj.T(x)
 
     array = jnp.array([0.0, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0])
     expected_y = cls(*[array * i for i in range(1, len(stokes) + 1)])

@@ -1,5 +1,6 @@
 from typing import TypeVar
 
+import jax
 import lineax as lx
 from jaxtyping import Array, Inexact, PyTree
 
@@ -35,12 +36,20 @@ def _monkey_patch_operator(cls: type[lx.AbstractLinearOperator]) -> None:
     lx.linearise.register(cls)(lambda _: _)
     lx.conj.register(cls)(lambda _: _)
 
+    cls.__call__ = _base_class__call__
+
 
 def _already_registered(cls: type[lx.AbstractLinearOperator], tag) -> bool:
     return any(
         registered_cls is not object and issubclass(cls, registered_cls)
         for registered_cls in tag.registry
     )
+
+
+def _base_class__call__(self, x: PyTree[jax.ShapeDtypeStruct]) -> PyTree[jax.ShapeDtypeStruct]:
+    if isinstance(x, lx.AbstractLinearOperator):
+        raise ValueError("Use '@' to compose operators")
+    return self.mv(x)
 
 
 _monkey_patch_operator(lx.ComposedLinearOperator)

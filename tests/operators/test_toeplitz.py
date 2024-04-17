@@ -37,8 +37,8 @@ def test_dense_symmetric_band_toeplitz(
 )
 def test_fft(n: int, band_values):
     x = jnp.arange(n) + 1
-    actual_y = SymmetricBandToeplitzOperator((n, n), band_values, method='fft').mv(x)
-    expected_y = SymmetricBandToeplitzOperator((n, n), band_values, method='dense').mv(x)
+    actual_y = SymmetricBandToeplitzOperator((n, n), band_values, method='fft')(x)
+    expected_y = SymmetricBandToeplitzOperator((n, n), band_values, method='dense')(x)
     assert_allclose(actual_y, expected_y)
 
 
@@ -49,7 +49,7 @@ def test(method: str, do_jit: bool) -> None:
     shape = (6, 6)
     x = jnp.array([1.0, 2, 3, 4, 5, 6])
     expected_y = jnp.array([20.0, 33, 48, 57, 58, 50])
-    func = SymmetricBandToeplitzOperator(shape, band_values, method=method).mv
+    func = SymmetricBandToeplitzOperator(shape, band_values, method=method)
     if do_jit:
         func = jit(func)
     y = func(x)

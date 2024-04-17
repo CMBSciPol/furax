@@ -58,8 +58,8 @@ def test_solver(planck_iqu_256, sat_nhits):
     # solving
     hTh = lx.TaggedLinearOperator(h.T @ h, lx.positive_semidefinite_tag)
     m = lx.TaggedLinearOperator(m, lx.positive_semidefinite_tag)
-    tod = h.mv(sky)
-    b = h.T.mv(tod)
+    tod = h(sky)
+    b = h.T(tod)
     solver = lx.CG(rtol=1e-4, atol=1e-4, max_steps=1000)
 
     time0 = time.time()
@@ -77,7 +77,7 @@ def test_solver(planck_iqu_256, sat_nhits):
     print(f'JIT 1: {time.time() - time0}')
 
     del tod
-    tod = h.mv(sky)
+    tod = h(sky)
     time0 = time.time()
     solution = func(tod)
     assert solution.stats['num_steps'] < solution.stats['max_steps']

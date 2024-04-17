@@ -13,7 +13,7 @@ def test_i() -> None:
     hwp = QURotationOperator.create(shape=(2, 5), stokes='I', angles=pa)
     x = StokesIPyTree(I=jnp.array([[1.0, 2, 3, 4, 5], [1, 1, 1, 1, 1]]))
 
-    actual_y = hwp.mv(x)
+    actual_y = hwp(x)
 
     expected_y = x
     assert equinox.tree_equal(actual_y, expected_y, atol=1e-15, rtol=1e-15)
@@ -28,7 +28,7 @@ def test_iqu() -> None:
         U=jnp.array([2.0, 2, 2, 2, 2]),
     )
 
-    actual_y = hwp.mv(x)
+    actual_y = hwp(x)
 
     expected_y = StokesIQUPyTree(
         I=x.I,
@@ -43,5 +43,5 @@ def test_orthogonal(stokes) -> None:
     hwp = QURotationOperator.create(shape=(), stokes=stokes, angles=1.1)
     cls = stokes_pytree_cls(stokes)
     x = cls.ones(())
-    y = (hwp.T @ hwp).mv(x)
+    y = (hwp.T @ hwp)(x)
     assert equinox.tree_equal(y, x, atol=1e-15, rtol=1e-15)

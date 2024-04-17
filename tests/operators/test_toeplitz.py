@@ -65,7 +65,8 @@ def test_default_size(band_number: int, expected_fft_size: int):
     assert actual_fft_size == expected_fft_size
 
 
-def test_overlap_fft_size(size):
+def test_overlap_fft_size():
     band_values = jnp.array([1.0, 0.5, 0.25])
     matrix_sizes = [3, 4, 5, 6, 7, 8, 8]
     fft_sizes = [8, 16]
+    # TBD

@@ -75,12 +75,20 @@ class StokesIPyTree(StokesPyTree):
     stokes: ClassVar[ValidStokesType] = 'I'
     I: Array
 
+    @classmethod
+    def from_iquv(cls, i, q, u, v) -> Self:
+        return cls(i)
+
 
 @jdc.pytree_dataclass
 class StokesQUPyTree(StokesPyTree):
     stokes: ClassVar[ValidStokesType] = 'QU'
     Q: Array
     U: Array
+
+    @classmethod
+    def from_iquv(cls, i, q, u, v) -> Self:
+        return cls(q, u)
 
 
 @jdc.pytree_dataclass
@@ -90,6 +98,10 @@ class StokesIQUPyTree(StokesPyTree):
     Q: Array
     U: Array
 
+    @classmethod
+    def from_iquv(cls, i, q, u, v) -> Self:
+        return cls(i, q, u)
+
 
 @jdc.pytree_dataclass
 class StokesIQUVPyTree(StokesPyTree):
@@ -98,6 +110,10 @@ class StokesIQUVPyTree(StokesPyTree):
     Q: Array
     U: Array
     V: Array
+
+    @classmethod
+    def from_iquv(cls, i, q, u, v) -> Self:
+        return cls(i, q, u, v)
 
 
 def stokes_pytree_cls(stokes: ValidStokesType) -> type[StokesPyTree]:

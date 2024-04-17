@@ -1,14 +1,16 @@
 import jax
-import jax.numpy as jnp
 import lineax as lx
+from jax import numpy as jnp
 from jaxtyping import Array, Float, Inexact, Integer, PyTree
+
+from astrosim.operators.qu_rotations import QURotationOperator
 
 from ..detectors import DetectorArray
 from ..landscapes import HealpixLandscape, StokesPyTree, stokes_pytree_cls
 from ..samplings import Sampling
 
 
-class ProjectionOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
+class SamplingOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
     landscape: HealpixLandscape
     indices: Integer[Array, '...']
 
@@ -20,7 +22,7 @@ class ProjectionOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         return sky[self.indices]
 
     def transpose(self) -> lx.AbstractLinearOperator:
-        return ProjectionOperatorT(self)
+        return SamplingOperatorT(self)
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         raise NotImplementedError
@@ -34,10 +36,10 @@ class ProjectionOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         return cls.shape_pytree(self.indices.shape, self.landscape.dtype)
 
 
-class ProjectionOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
-    operator: ProjectionOperator
+class SamplingOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
+    operator: SamplingOperator
 
-    def __init__(self, operator: ProjectionOperator):
+    def __init__(self, operator: SamplingOperator):
         self.operator = operator
 
     def mv(self, x: StokesPyTree) -> StokesPyTree:
@@ -83,8 +85,8 @@ class PytreeDiagonalOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         return jax.eval_shape(lambda: self.diagonal)
 
 
-@lx.is_symmetric.register(ProjectionOperator)
-@lx.is_symmetric.register(ProjectionOperatorT)
+@lx.is_symmetric.register(SamplingOperator)
+@lx.is_symmetric.register(SamplingOperatorT)
 def _(operator):  # type: ignore[no-untyped-def]
     return False
 
@@ -94,29 +96,29 @@ def _(operator):  # type: ignore[no-untyped-def]
     return True
 
 
-@lx.is_positive_semidefinite.register(ProjectionOperator)
-@lx.is_positive_semidefinite.register(ProjectionOperatorT)
+@lx.is_positive_semidefinite.register(SamplingOperator)
+@lx.is_positive_semidefinite.register(SamplingOperatorT)
 @lx.is_positive_semidefinite.register(PytreeDiagonalOperator)
 def _(operator):  # type: ignore[no-untyped-def]
     return False
 
 
-@lx.is_negative_semidefinite.register(ProjectionOperator)
-@lx.is_negative_semidefinite.register(ProjectionOperatorT)
+@lx.is_negative_semidefinite.register(SamplingOperator)
+@lx.is_negative_semidefinite.register(SamplingOperatorT)
 @lx.is_negative_semidefinite.register(PytreeDiagonalOperator)
 def _(operator):  # type: ignore[no-untyped-def]
     return False
 
 
-@lx.linearise.register(ProjectionOperator)
-@lx.linearise.register(ProjectionOperatorT)
+@lx.linearise.register(SamplingOperator)
+@lx.linearise.register(SamplingOperatorT)
 @lx.linearise.register(PytreeDiagonalOperator)
 def _(operator):  # type: ignore[no-untyped-def]
     return operator
 
 
-@lx.conj.register(ProjectionOperator)
-@lx.conj.register(ProjectionOperatorT)
+@lx.conj.register(SamplingOperator)
+@lx.conj.register(SamplingOperatorT)
 @lx.conj.register(PytreeDiagonalOperator)
 def _(operator):  # type: ignore[no-untyped-def]
     return operator
@@ -124,7 +126,7 @@ def _(operator):  # type: ignore[no-untyped-def]
 
 def create_projection_operator(
     landscape: HealpixLandscape, samplings: Sampling, detector_dirs: DetectorArray
-) -> ProjectionOperator:
+) -> SamplingOperator:
     rot = get_rotation_matrix(samplings)
 
     # i, j: rotation (3x3 xyz)
@@ -142,8 +144,9 @@ def create_projection_operator(
         # remove the number of directions per pixels if there is only one.
         pixels = pixels.reshape(pixels.shape[0], pixels.shape[2])
 
-    p = ProjectionOperator(landscape, pixels)
-    return p
+    rotation = QURotationOperator.create(pixels.shape, landscape.stokes, samplings.pa)
+    sampling = SamplingOperator(landscape, pixels)
+    return rotation @ sampling
 
 
 def get_rotation_matrix(samplings: Sampling) -> Float[Array, '...']:

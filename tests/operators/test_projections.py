@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import pytest
 
 from astrosim.landscapes import HealpixLandscape, ValidStokesType, stokes_pytree_cls
-from astrosim.operators.projections import ProjectionOperator
+from astrosim.operators.projections import SamplingOperator
 
 
 @pytest.mark.parametrize('stokes', get_args(ValidStokesType))
@@ -18,7 +18,7 @@ def test_direct(stokes) -> None:
     }
     x = cls(**x_as_dict)
     indices = jnp.array([[2, 3, 2]])
-    proj = ProjectionOperator(landscape, indices)
+    proj = SamplingOperator(landscape, indices)
 
     y = proj.mv(x)
 
@@ -34,7 +34,7 @@ def test_transpose(stokes) -> None:
     x_as_dict = {stoke: jnp.array([[1, 2, 3]]) * (i + 1) for i, stoke in enumerate(stokes)}
     x = cls(**x_as_dict)
     indices = jnp.array([[2, 3, 2]])
-    proj = ProjectionOperator(landscape, indices)
+    proj = SamplingOperator(landscape, indices)
 
     y = proj.T.mv(x)
 

@@ -4,6 +4,7 @@ from .base import (
     lower_triangular,
     negative_semidefinite,
     positive_semidefinite,
+    square,
     symmetric,
     upper_triangular,
 )

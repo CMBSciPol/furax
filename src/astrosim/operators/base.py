@@ -9,6 +9,10 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
     def __init_subclass__(cls, **keywords) -> None:
         _monkey_patch_operator(cls)
 
+    def __call__(self, x: PyTree[jax.ShapeDtypeStruct]) -> PyTree[jax.ShapeDtypeStruct]:
+        # just for the static type checkers, it is overriden by the monkey patch.
+        raise NotImplementedError
+
     def as_matrix(self) -> Inexact[Array, 'a b']:
         raise NotImplementedError
 
@@ -66,26 +70,36 @@ def diagonal(cls: type[T]) -> type[T]:
 
 def lower_triangular(cls: type[T]) -> type[T]:
     lx.is_lower_triangular.register(cls)(lambda _: True)
+    square(cls)
     return cls
 
 
 def upper_triangular(cls: type[T]) -> type[T]:
     lx.is_upper_triangular.register(cls)(lambda _: True)
+    square(cls)
     return cls
 
 
 def symmetric(cls: type[T]) -> type[T]:
     lx.is_symmetric.register(cls)(lambda _: True)
-    cls.out_structure = cls.in_structure
+    square(cls)
     cls.transpose = lambda self: self
     return cls
 
 
 def positive_semidefinite(cls: type[T]) -> type[T]:
     lx.is_positive_semidefinite.register(cls)(lambda _: True)
+    square(cls)
     return cls
 
 
 def negative_semidefinite(cls: type[T]) -> type[T]:
     lx.is_negative_semidefinite.register(cls)(lambda _: True)
+    square(cls)
+    return cls
+
+
+# not a lineax tag
+def square(cls: type[T]) -> type[T]:
+    cls.out_structure = cls.in_structure
     return cls

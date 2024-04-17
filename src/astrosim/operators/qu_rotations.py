@@ -71,9 +71,6 @@ class QURotationOperator(AbstractLinearOperator):
         cls = stokes_pytree_cls(self.stokes)
         return cls.shape_pytree(self.shape, self.dtype)
 
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.in_structure()
-
 
 @positive_semidefinite
 class QURotationOperatorT(AbstractLinearOperator):
@@ -105,6 +102,3 @@ class QURotationOperatorT(AbstractLinearOperator):
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.operator.out_structure()
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.in_structure()

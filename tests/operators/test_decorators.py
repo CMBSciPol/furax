@@ -8,6 +8,7 @@ from astrosim.operators import (
     lower_triangular,
     negative_semidefinite,
     positive_semidefinite,
+    square,
     symmetric,
     upper_triangular,
 )
@@ -34,6 +35,30 @@ def test_register(decorator) -> None:
 
     decorator(Op)
     assert getattr(lx, f'is_{decorator.__name__}')(Op())
+
+
+@pytest.mark.parametrize(
+    'decorator',
+    [
+        diagonal,
+        lower_triangular,
+        negative_semidefinite,
+        positive_semidefinite,
+        square,
+        symmetric,
+        upper_triangular,
+    ],
+)
+def test_square(decorator) -> None:
+    class Op(AbstractLinearOperator):
+        def mv(self, x):
+            return 2 * x
+
+        def in_structure(self):
+            return
+
+    decorator(Op)
+    assert Op.out_structure is Op.in_structure
 
 
 @pytest.mark.parametrize('decorator', [diagonal, symmetric])

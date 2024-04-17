@@ -1,10 +1,9 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import lineax as lx
 import numpy as np
 from jax.typing import DTypeLike
-from jaxtyping import Array, Float, Inexact, PyTree
+from jaxtyping import Array, Float, PyTree
 
 from astrosim.landscapes import (
     StokesIPyTree,
@@ -15,9 +14,10 @@ from astrosim.landscapes import (
     ValidStokesType,
     stokes_pytree_cls,
 )
+from astrosim.operators import AbstractLinearOperator
 
 
-class LinearPolarizerOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
+class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]
     """Class that integrates the input Stokes parameters assuming a linear polarizer."""
 
     shape: tuple[int, ...]
@@ -51,11 +51,8 @@ class LinearPolarizerOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
             return 0.5 * (x.I + Q + U)
         raise NotImplementedError(f'HWPOperator not implemented for Stokes {self.stokes!r}')
 
-    def transpose(self) -> lx.AbstractLinearOperator:
+    def transpose(self) -> AbstractLinearOperator:
         return LinearPolarizerOperatorT(self)
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = stokes_pytree_cls(self.stokes)
@@ -65,7 +62,7 @@ class LinearPolarizerOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         return jax.ShapeDtypeStruct(self.shape, self.dtype)
 
 
-class LinearPolarizerOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
+class LinearPolarizerOperatorT(AbstractLinearOperator):  # type: ignore[misc]
     operator: LinearPolarizerOperator
 
     def __init__(self, operator: LinearPolarizerOperator):
@@ -88,44 +85,11 @@ class LinearPolarizerOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
             return cls(I, Q, U, V)
         raise NotImplementedError
 
-    def transpose(self) -> lx.AbstractLinearOperator:
+    def transpose(self) -> AbstractLinearOperator:
         return self.operator
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        raise NotImplementedError
 
     def in_structure(self) -> jax.ShapeDtypeStruct:
         return self.operator.out_structure()
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.operator.in_structure()
-
-
-@lx.is_symmetric.register(LinearPolarizerOperator)
-@lx.is_symmetric.register(LinearPolarizerOperatorT)
-def _(operator):  # type: ignore[no-untyped-def]
-    return False
-
-
-@lx.is_positive_semidefinite.register(LinearPolarizerOperator)
-@lx.is_positive_semidefinite.register(LinearPolarizerOperatorT)
-def _(operator):  # type: ignore[no-untyped-def]
-    return False
-
-
-@lx.is_negative_semidefinite.register(LinearPolarizerOperator)
-@lx.is_negative_semidefinite.register(LinearPolarizerOperatorT)
-def _(operator):  # type: ignore[no-untyped-def]
-    return False
-
-
-@lx.linearise.register(LinearPolarizerOperator)
-@lx.linearise.register(LinearPolarizerOperatorT)
-def _(operator):  # type: ignore[no-untyped-def]
-    return operator
-
-
-@lx.conj.register(LinearPolarizerOperator)
-@lx.conj.register(LinearPolarizerOperatorT)
-def _(operator):  # type: ignore[no-untyped-def]
-    return operator

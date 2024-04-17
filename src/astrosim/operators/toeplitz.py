@@ -3,17 +3,19 @@ from typing import ClassVar
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import lineax as lx
 import numpy as np
 from jax import lax
 from jaxtyping import Array, Float, Inexact, PyTree
+
+from astrosim.operators import AbstractLinearOperator, symmetric
 
 __all__ = [
     'SymmetricBandToeplitzOperator',
 ]
 
 
-class SymmetricBandToeplitzOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
+@symmetric
+class SymmetricBandToeplitzOperator(AbstractLinearOperator):
     """Class to represent Symmetric Band Toeplitz matrices.
 
     Five methods are available, where N is the size of the Toeplitz matrix and K the number
@@ -158,17 +160,11 @@ class SymmetricBandToeplitzOperator(lx.AbstractLinearOperator):  # type: ignore[
     def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
         return self._get_func()(x)
 
-    def transpose(self) -> lx.AbstractLinearOperator:
-        return self
-
     def as_matrix(self) -> Inexact[Array, 'a a']:
         raise dense_symmetric_band_toeplitz(self.shape[0], self.band_values)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return jax.ShapeDtypeStruct(self.shape, float)
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.in_structure()
 
 
 def dense_symmetric_band_toeplitz(n, band_values):
@@ -210,28 +206,3 @@ def _overlap_add_jax(x, H, fft_size, b):
 
     y = lax.fori_loop(0, len(range(0, l, m)), func, y)
     return y[b // 2 : -b // 2 - x_padding]
-
-
-@lx.is_symmetric.register(SymmetricBandToeplitzOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return True
-
-
-@lx.is_positive_semidefinite.register(SymmetricBandToeplitzOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return True
-
-
-@lx.is_negative_semidefinite.register(SymmetricBandToeplitzOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return False
-
-
-@lx.linearise.register(SymmetricBandToeplitzOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return operator
-
-
-@lx.conj.register(SymmetricBandToeplitzOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return operator

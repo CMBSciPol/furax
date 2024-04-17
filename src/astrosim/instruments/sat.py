@@ -1,8 +1,8 @@
-import lineax as lx
 import numpy as np
 
 from astrosim.detectors import DetectorArray
 from astrosim.landscapes import HealpixLandscape
+from astrosim.operators import AbstractLinearOperator
 from astrosim.operators.polarizers import LinearPolarizerOperator
 from astrosim.operators.projections import create_projection_operator
 from astrosim.operators.qu_rotations import QURotationOperator
@@ -57,7 +57,7 @@ def create_detector_directions() -> DetectorArray:
 
 def create_acquisition(
     landscape: HealpixLandscape, samplings: Sampling, detector_dirs: DetectorArray
-) -> lx.AbstractLinearOperator:
+) -> AbstractLinearOperator:
     tod_shape = len(detector_dirs), len(samplings)
     proj = create_projection_operator(landscape, samplings, detector_dirs)
     hwp = QURotationOperator.create(tod_shape, landscape.stokes, 0.0)

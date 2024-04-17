@@ -1,8 +1,8 @@
 import jax
-import lineax as lx
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Inexact, Integer, PyTree
+from jaxtyping import Array, Float, Integer, PyTree
 
+from astrosim.operators import AbstractLinearOperator, diagonal
 from astrosim.operators.qu_rotations import QURotationOperator
 
 from ..detectors import DetectorArray
@@ -10,7 +10,7 @@ from ..landscapes import HealpixLandscape, StokesPyTree, stokes_pytree_cls
 from ..samplings import Sampling
 
 
-class SamplingOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
+class SamplingOperator(AbstractLinearOperator):  # type: ignore[misc]
     landscape: HealpixLandscape
     indices: Integer[Array, '...']
 
@@ -21,11 +21,8 @@ class SamplingOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
     def mv(self, sky: StokesPyTree) -> StokesPyTree:
         return sky[self.indices]
 
-    def transpose(self) -> lx.AbstractLinearOperator:
+    def transpose(self) -> AbstractLinearOperator:
         return SamplingOperatorT(self)
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = stokes_pytree_cls(self.landscape.stokes)
@@ -36,7 +33,7 @@ class SamplingOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         return cls.shape_pytree(self.indices.shape, self.landscape.dtype)
 
 
-class SamplingOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
+class SamplingOperatorT(AbstractLinearOperator):  # type: ignore[misc]
     operator: SamplingOperator
 
     def __init__(self, operator: SamplingOperator):
@@ -50,11 +47,8 @@ class SamplingOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
             arrays_out.append(zeros.at[flat_pixels].add(getattr(x, stoke).ravel()))
         return stokes_pytree_cls(self.operator.landscape.stokes)(*arrays_out)
 
-    def transpose(self) -> lx.AbstractLinearOperator:
+    def transpose(self) -> AbstractLinearOperator:
         return self.operator
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.operator.out_structure()
@@ -63,65 +57,18 @@ class SamplingOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
         return self.operator.in_structure()
 
 
-class PytreeDiagonalOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
-    diagonal: PyTree[Float[Array, '...']]
+@diagonal
+class PytreeDiagonalOperator(AbstractLinearOperator):  # type: ignore[misc]
+    diagonal_values: PyTree[Float[Array, '...']]
 
     def __init__(self, diagonal: PyTree[Float[Array, '...']]):
-        self.diagonal = diagonal
+        self.diagonal_values = diagonal
 
     def mv(self, sky: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
-        return jax.tree_map((lambda a, b: a * b), sky, self.diagonal)
-
-    def transpose(self) -> lx.AbstractLinearOperator:
-        return self
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        raise NotImplementedError
+        return jax.tree_map((lambda a, b: a * b), sky, self.diagonal_values)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.eval_shape(lambda: self.diagonal)
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.eval_shape(lambda: self.diagonal)
-
-
-@lx.is_symmetric.register(SamplingOperator)
-@lx.is_symmetric.register(SamplingOperatorT)
-def _(operator):  # type: ignore[no-untyped-def]
-    return False
-
-
-@lx.is_symmetric.register(PytreeDiagonalOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return True
-
-
-@lx.is_positive_semidefinite.register(SamplingOperator)
-@lx.is_positive_semidefinite.register(SamplingOperatorT)
-@lx.is_positive_semidefinite.register(PytreeDiagonalOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return False
-
-
-@lx.is_negative_semidefinite.register(SamplingOperator)
-@lx.is_negative_semidefinite.register(SamplingOperatorT)
-@lx.is_negative_semidefinite.register(PytreeDiagonalOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return False
-
-
-@lx.linearise.register(SamplingOperator)
-@lx.linearise.register(SamplingOperatorT)
-@lx.linearise.register(PytreeDiagonalOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return operator
-
-
-@lx.conj.register(SamplingOperator)
-@lx.conj.register(SamplingOperatorT)
-@lx.conj.register(PytreeDiagonalOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return operator
+        return jax.eval_shape(lambda: self.diagonal_values)
 
 
 def create_projection_operator(

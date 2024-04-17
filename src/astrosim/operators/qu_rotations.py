@@ -1,11 +1,10 @@
 import equinox as eqx
 import jax
-import lineax as lx
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
 from jax.typing import DTypeLike
-from jaxtyping import Float, Inexact, PyTree
+from jaxtyping import Float, PyTree
 
 from astrosim.landscapes import (
     StokesIPyTree,
@@ -16,9 +15,11 @@ from astrosim.landscapes import (
     ValidStokesType,
     stokes_pytree_cls,
 )
+from astrosim.operators import AbstractLinearOperator, positive_semidefinite
 
 
-class QURotationOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
+@positive_semidefinite
+class QURotationOperator(AbstractLinearOperator):
     shape: tuple[int, ...]
     dtype: DTypeLike = eqx.field(static=True)
     stokes: str = eqx.field(static=True)
@@ -63,11 +64,8 @@ class QURotationOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
             return StokesIQUVPyTree(x.I, Q, U, x.V)
         raise NotImplementedError
 
-    def transpose(self) -> lx.AbstractLinearOperator:
+    def transpose(self) -> AbstractLinearOperator:
         return QURotationOperatorT(self)
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = stokes_pytree_cls(self.stokes)
@@ -77,7 +75,8 @@ class QURotationOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
         return self.in_structure()
 
 
-class QURotationOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
+@positive_semidefinite
+class QURotationOperatorT(AbstractLinearOperator):
     operator: QURotationOperator
 
     def __init__(self, operator: QURotationOperator):
@@ -101,40 +100,11 @@ class QURotationOperatorT(lx.AbstractLinearOperator):  # type: ignore[misc]
             return StokesIQUVPyTree(x.I, Q, U, x.V)
         raise NotImplementedError
 
-    def transpose(self) -> lx.AbstractLinearOperator:
+    def transpose(self) -> AbstractLinearOperator:
         return self.operator
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.operator.out_structure()
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.operator.in_structure()
-
-
-@lx.is_symmetric.register(QURotationOperator)
-@lx.is_symmetric.register(QURotationOperatorT)
-def _(operator):  # type: ignore[no-untyped-def]
-    return False
-
-
-@lx.is_positive_semidefinite.register(QURotationOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return True
-
-
-@lx.is_negative_semidefinite.register(QURotationOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return False
-
-
-@lx.linearise.register(QURotationOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return operator
-
-
-@lx.conj.register(QURotationOperator)
-def _(operator):  # type: ignore[no-untyped-def]
-    return operator

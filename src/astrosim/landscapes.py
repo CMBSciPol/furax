@@ -2,7 +2,12 @@ import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import partial
-from typing import ClassVar, Literal, Union, cast, get_args
+from typing import TYPE_CHECKING, ClassVar, Literal, Union, cast, get_args
+
+if sys.version_info < (3, 11):
+    from typing_extensions import Self
+else:
+    from typing import Self
 
 import jax
 import jax.numpy as jnp
@@ -11,15 +16,9 @@ import jax_healpy as jhp
 import numpy as np
 from jaxtyping import Array, Float, Integer, PyTree, ScalarLike, Shaped
 
-if sys.version_info < (3, 11):
-    from typing_extensions import Self
-else:
-    from typing import Self
-
+if TYPE_CHECKING:
+    pass
 from .samplings import Sampling
-
-ValidStokesType = Literal['I', 'QU', 'IQU', 'IQUV']
-
 
 # XXX Remove after https://github.com/google/jax/pull/19669 is accepted
 NumberType = Union[
@@ -32,10 +31,12 @@ DTypeLike = Union[
     np.dtype,  # type: ignore[type-arg]
 ]
 
+ValidStokesType = Literal['I', 'QU', 'IQU', 'IQUV']
+
 
 @jdc.pytree_dataclass
-class StokesPyTree:
-    stokes: ClassVar[ValidStokesType] = 'I'
+class StokesPyTree(ABC):
+    stokes: ClassVar[ValidStokesType]
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -69,6 +70,21 @@ class StokesPyTree:
         arrays = len(cls.stokes) * [jnp.full(shape, fill_value, dtype)]  # type: ignore[arg-type]
         return cls(*arrays)
 
+    @classmethod
+    @abstractmethod
+    def from_iquv(
+        cls,
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
+    ) -> Self:
+        """Returns a StokesIPyTree.
+
+        The constructed StokesIPyTree has the same calling sequence for all Stokes types, which can be useful
+        in unit tests.
+        """
+
 
 @jdc.pytree_dataclass
 class StokesIPyTree(StokesPyTree):
@@ -76,7 +92,13 @@ class StokesIPyTree(StokesPyTree):
     I: Array
 
     @classmethod
-    def from_iquv(cls, i, q, u, v) -> Self:
+    def from_iquv(
+        cls,
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
+    ) -> Self:
         return cls(i)
 
 
@@ -87,7 +109,13 @@ class StokesQUPyTree(StokesPyTree):
     U: Array
 
     @classmethod
-    def from_iquv(cls, i, q, u, v) -> Self:
+    def from_iquv(
+        cls,
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
+    ) -> Self:
         return cls(q, u)
 
 
@@ -99,7 +127,13 @@ class StokesIQUPyTree(StokesPyTree):
     U: Array
 
     @classmethod
-    def from_iquv(cls, i, q, u, v) -> Self:
+    def from_iquv(
+        cls,
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
+    ) -> Self:
         return cls(i, q, u)
 
 
@@ -112,8 +146,17 @@ class StokesIQUVPyTree(StokesPyTree):
     V: Array
 
     @classmethod
-    def from_iquv(cls, i, q, u, v) -> Self:
+    def from_iquv(
+        cls,
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
+    ) -> Self:
         return cls(i, q, u, v)
+
+
+StokesPyTreeType = StokesIPyTree | StokesQUPyTree | StokesIQUPyTree | StokesIQUVPyTree
 
 
 def stokes_pytree_cls(stokes: ValidStokesType) -> type[StokesPyTree]:

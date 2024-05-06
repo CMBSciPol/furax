@@ -9,6 +9,14 @@ from scipy.stats.sampling import DiscreteAliasUrn
 
 @dataclass(frozen=True)
 class Sampling:
+    """Class representing temporal samplings.
+
+    Attributes:
+        theta: latitude or co-latitude.
+        phi: longitude.
+        pa: position angle from North.
+    """
+
     theta: Float[Array, '...']
     phi: Float[Array, '...']
     pa: Float[Array, '...']

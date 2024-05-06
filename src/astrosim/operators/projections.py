@@ -1,18 +1,18 @@
+import equinox as eqx
 import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Integer, PyTree
 
+from astrosim.detectors import DetectorArray
+from astrosim.landscapes import HealpixLandscape, StokesPyTree, stokes_pytree_cls
 from astrosim.operators import AbstractLinearOperator, diagonal
 from astrosim.operators.qu_rotations import QURotationOperator
-
-from ..detectors import DetectorArray
-from ..landscapes import HealpixLandscape, StokesPyTree, stokes_pytree_cls
-from ..samplings import Sampling
+from astrosim.samplings import Sampling
 
 
 class SamplingOperator(AbstractLinearOperator):  # type: ignore[misc]
-    landscape: HealpixLandscape
-    indices: Integer[Array, '...']
+    landscape: HealpixLandscape = eqx.field(static=True)
+    indices: Integer[Array, '...'] = eqx.field(static=True)
 
     def __init__(self, landscape: HealpixLandscape, indices: Array):
         self.landscape = landscape
@@ -26,7 +26,7 @@ class SamplingOperator(AbstractLinearOperator):  # type: ignore[misc]
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = stokes_pytree_cls(self.landscape.stokes)
-        return cls.shape_pytree((self.landscape.npixel,), self.landscape.dtype)
+        return cls.shape_pytree(self.landscape.shape, self.landscape.dtype)
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = stokes_pytree_cls(self.landscape.stokes)
@@ -42,7 +42,7 @@ class SamplingOperatorT(AbstractLinearOperator):  # type: ignore[misc]
     def mv(self, x: StokesPyTree) -> StokesPyTree:
         flat_pixels = self.operator.indices.ravel()
         arrays_out = []
-        zeros = jnp.zeros(self.operator.landscape.npixel, self.operator.landscape.dtype)
+        zeros = jnp.zeros(self.operator.landscape.shape, self.operator.landscape.dtype)
         for stoke in self.operator.landscape.stokes:
             arrays_out.append(zeros.at[flat_pixels].add(getattr(x, stoke).ravel()))
         return stokes_pytree_cls(self.operator.landscape.stokes)(*arrays_out)
@@ -86,7 +86,7 @@ def create_projection_operator(
     theta, phi = vec2dir(*rotated_coords)
 
     # (ndet, ndir, nsampling)
-    pixels = landscape.ang2pix(theta, phi)
+    pixels = landscape.world2index(theta, phi)
     if pixels.shape[1] == 1:
         # remove the number of directions per pixels if there is only one.
         pixels = pixels.reshape(pixels.shape[0], pixels.shape[2])

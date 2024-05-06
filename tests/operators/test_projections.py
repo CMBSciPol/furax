@@ -11,7 +11,7 @@ from astrosim.operators.projections import SamplingOperator
 @pytest.mark.parametrize('stokes', get_args(ValidStokesType))
 def test_direct(stokes) -> None:
     nside = 1
-    landscape = HealpixLandscape(stokes, nside)
+    landscape = HealpixLandscape(nside, stokes)
     cls = stokes_pytree_cls(stokes)
     x_as_dict = {
         stoke: jnp.arange(12, dtype=landscape.dtype) * (i + 1) for i, stoke in enumerate(stokes)

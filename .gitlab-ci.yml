@@ -1,3 +1,5 @@
+image: python:3.10
+
 stages:
   - testing
   - qa
@@ -6,8 +8,8 @@ stages:
 
 workflow:
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_TAG != null || $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH)
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_TAG != null || $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH)'
 
 variables:
   PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"
@@ -27,6 +29,8 @@ cache:
     - pip install .[dev]
   script:
     - pytest -m "not slow"
+  rules:
+    - if: '$CI_COMMIT_TAG == null'
 
 testing-unit/3.10:
   extends: .testing-unit
@@ -44,21 +48,21 @@ testing-unit/3.12:
 pre-commits:
   stage: qa
   needs: []
-  image: python:3.10
   before_script:
     - pip install pre-commit
     - pre-commit install
   script:
     - pre-commit run --all-files
+  rules:
+    - if: '$CI_COMMIT_TAG == null'
 
-ublish-release-package:
+publish-release-package:
   stage: publish
-  needs: []
   interruptible: true
   before_script:
     - pip install twine build setuptools_scm
   script:
     - python -m build
-    - twine upload --username __token__ --password $PYPI_API_TOKEN dist/*.tar.gz dist/*.whl
+    - TWINE_PASSWORD=$CI_JOB_TOKEN TWINE_USERNAME=gitlab-ci-token python -m twine upload --repository-url ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi dist/*.tar.gz dist/*.whl
   rules:
-    - if: $CI_COMMIT_TAG =~ /^v\d+.\d+.\d+/
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+/'

@@ -2,7 +2,34 @@
 
 Building blocks for astrophysical inverse problems.
 
-# Installation
+## Installation of the stable packaged distribution
+
+The GitLab repository is currently private and two pieces of information need to be specified: the URL of the repository and the credentials.
+
+- Create a Personal Access Token by following these [instructions](https://gitlab.in2p3.fr/help/user/profile/personal_access_tokens).
+For the name, choose something like `read scipol` and for the scopes, select `read_api`.
+
+- Edit the file ~/.netrc to store the credentials
+```
+machine gitlab.in2p3.fr
+login __token__
+password <your-personal-access-token>
+```
+Make sure the .netrc file are appropriately set:
+```commandline
+chmod 600 ~/.netrc
+```
+- Edit ~/.config/pip/pip.conf
+```
+[global]
+index-url = https://gitlab.in2p3.fr/api/v4/projects/26092/packages/pypi/simple
+```
+- After these steps are completed: you can install `astrosim` in the normal way:
+```commandline
+pip install astrosim
+```
+
+## Installation for development purposes
 
 ```bash
 git clone git@github.com:CMBSciPol/astrosim.git
@@ -14,21 +41,21 @@ pip install -e .[dev]
 
 Then [Install JAX](https://jax.readthedocs.io/en/latest/installation.html) according to the target architecture.
 
-# Testing
+### Testing
 To check that the package is correctly installed:
 ```bash
 pytest
 ```
 
-# Running on JeanZay
+## Running on JeanZay
 
-## Load cuda and and cudnn for JAX
+### Load cuda and and cudnn for JAX
 
 ```bash
 module load cuda/11.8.0 cudnn/8.9.7.29-cuda
 ```
 
-## Create Python env (only the first time)
+### Create Python env (only the first time)
 
 ```bash
 module load python/3.10.4 && conda deactivate
@@ -39,7 +66,7 @@ pip install --upgrade "jax[cuda11_local]" -f https://storage.googleapis.com/jax-
 # install astrosim
 pip install -e .[dev]
 ```
-## launch script
+### launch script
 
 To launch only the pytests
 
@@ -66,7 +93,7 @@ pytest
 ```
 Don't leave the bash running !! (I would suggest running script with sbatch)
 
-## Specific for nih / SciPol project
+### Specific for nih / SciPol project
 
 The repo is already in the commun WORK folder, the data is downloaded and the environment is ready.
 

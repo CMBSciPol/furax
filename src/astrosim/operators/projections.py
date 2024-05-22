@@ -5,7 +5,7 @@ from jaxtyping import Array, Float, Integer, PyTree
 
 from astrosim.detectors import DetectorArray
 from astrosim.landscapes import HealpixLandscape, StokesPyTree, stokes_pytree_cls
-from astrosim.operators import AbstractLinearOperator, diagonal
+from astrosim.operators import AbstractLinearOperator
 from astrosim.operators.qu_rotations import QURotationOperator
 from astrosim.samplings import Sampling
 
@@ -55,20 +55,6 @@ class SamplingOperatorT(AbstractLinearOperator):  # type: ignore[misc]
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.operator.in_structure()
-
-
-@diagonal
-class PytreeDiagonalOperator(AbstractLinearOperator):  # type: ignore[misc]
-    diagonal_values: PyTree[Float[Array, '...']]
-
-    def __init__(self, diagonal: PyTree[Float[Array, '...']]):
-        self.diagonal_values = diagonal
-
-    def mv(self, sky: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
-        return jax.tree_map((lambda a, b: a * b), sky, self.diagonal_values)
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.eval_shape(lambda: self.diagonal_values)
 
 
 def create_projection_operator(

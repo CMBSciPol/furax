@@ -13,7 +13,7 @@ from astrosim.instruments.sat import (
     create_detector_directions,
 )
 from astrosim.landscapes import HealpixLandscape, StokesIQUPyTree
-from astrosim.operators.projections import PytreeDiagonalOperator
+from astrosim.operators.base import DiagonalOperator
 from astrosim.samplings import create_random_sampling
 
 
@@ -53,7 +53,7 @@ def test_solver(planck_iqu_256, sat_nhits):
         Q=m_diagonal.Q,
         U=m_diagonal.U,
     )
-    m = PytreeDiagonalOperator(m_diagonal)
+    m = DiagonalOperator(m_diagonal)
 
     # solving
     hTh = lx.TaggedLinearOperator(h.T @ h, lx.positive_semidefinite_tag)

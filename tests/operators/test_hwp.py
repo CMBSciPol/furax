@@ -1,14 +1,10 @@
-from typing import get_args
-
 import equinox
 import jax.numpy as jnp
-import pytest
 
 from astrosim.landscapes import StokesIPyTree, StokesIQUVPyTree, ValidStokesType, stokes_pytree_cls
 from astrosim.operators.hwp import HWPOperator, RotatingHWPOperator
 
 
-@pytest.mark.parametrize('stokes', get_args(ValidStokesType))
 def test_hwp(stokes: ValidStokesType) -> None:
     hwp = HWPOperator.create(shape=(), stokes=stokes)
     cls = stokes_pytree_cls(stokes)
@@ -20,7 +16,6 @@ def test_hwp(stokes: ValidStokesType) -> None:
     assert equinox.tree_equal(actual_y, expected_y)
 
 
-@pytest.mark.parametrize('stokes', get_args(ValidStokesType))
 def test_hwp_orthogonal(stokes: ValidStokesType) -> None:
     hwp = HWPOperator.create(shape=(), stokes=stokes)
     x = stokes_pytree_cls(stokes).ones(())
@@ -60,8 +55,7 @@ def test_rotating_hwp_iquv() -> None:
     assert equinox.tree_equal(actual_y, expected_y, atol=1e-15, rtol=1e-15)
 
 
-@pytest.mark.parametrize('stokes', get_args(ValidStokesType))
-def test_rotating_hwp_orthogonal(stokes) -> None:
+def test_rotating_hwp_orthogonal(stokes: ValidStokesType) -> None:
     hwp = RotatingHWPOperator.create(shape=(), stokes=stokes, angles=1.1)
     cls = stokes_pytree_cls(stokes)
     x = cls.ones(())

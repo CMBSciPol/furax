@@ -1,15 +1,12 @@
-from typing import get_args
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
 
-from astrosim.landscapes import ValidStokesType, stokes_pytree_cls
+from astrosim.landscapes import stokes_pytree_cls
 
 
-@pytest.mark.parametrize('stokes', get_args(ValidStokesType))
 @pytest.mark.parametrize('shape', [(10,), (2, 10)])
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
 @pytest.mark.parametrize(
@@ -30,7 +27,6 @@ def test_zeros(stokes, shape, dtype, factory, value) -> None:
         assert_array_equal(array, value)
 
 
-@pytest.mark.parametrize('stokes', ['I', 'QU', 'IQU', 'IQUV'])
 @pytest.mark.parametrize('shape', [(10,), (2, 10)])
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
 def test_test_structure(stokes, shape, dtype) -> None:

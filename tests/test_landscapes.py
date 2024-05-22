@@ -1,5 +1,3 @@
-from typing import get_args
-
 import jax.numpy as jnp
 import pytest
 from jax import Array
@@ -14,8 +12,7 @@ from astrosim.landscapes import (
 from astrosim.samplings import Sampling
 
 
-@pytest.mark.parametrize('stokes', get_args(ValidStokesType))
-def test_healpix_landscape(stokes) -> None:
+def test_healpix_landscape(stokes: ValidStokesType) -> None:
     nside = 64
     npixel = 12 * nside**2
 

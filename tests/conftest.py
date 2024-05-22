@@ -1,10 +1,12 @@
+from typing import get_args
+
 import healpy as hp
 import jax
 import numpy as np
 import pytest
 from jaxtyping import Array, Float
 
-from astrosim.landscapes import StokesIQUPyTree
+from astrosim.landscapes import StokesIQUPyTree, ValidStokesType
 from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT
 
 
@@ -39,3 +41,9 @@ def sat_nhits() -> Float[Array, '...']:
     nhits[: npixel // 2] = 0
     nhits /= np.sum(nhits)
     return jax.device_put(nhits)
+
+
+@pytest.fixture(params=get_args(ValidStokesType))
+def stokes(request: pytest.FixtureRequest) -> ValidStokesType:
+    """Parametrized fixture for I, QU, IQU and IQUV."""
+    return request.param

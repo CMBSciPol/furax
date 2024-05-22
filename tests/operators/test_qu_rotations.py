@@ -1,10 +1,7 @@
-from typing import get_args
-
 import equinox
 import jax.numpy as jnp
-import pytest
 
-from astrosim.landscapes import StokesIPyTree, StokesIQUPyTree, ValidStokesType, stokes_pytree_cls
+from astrosim.landscapes import StokesIPyTree, StokesIQUPyTree, stokes_pytree_cls
 from astrosim.operators.qu_rotations import QURotationOperator
 
 
@@ -38,7 +35,6 @@ def test_iqu() -> None:
     assert equinox.tree_equal(actual_y, expected_y, atol=1e-15, rtol=1e-15)
 
 
-@pytest.mark.parametrize('stokes', get_args(ValidStokesType))
 def test_orthogonal(stokes) -> None:
     hwp = QURotationOperator.create(shape=(), stokes=stokes, angles=1.1)
     cls = stokes_pytree_cls(stokes)

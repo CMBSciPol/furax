@@ -1,11 +1,8 @@
-from typing import get_args
-
 import equinox
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
-from astrosim.landscapes import StokesIPyTree, StokesIQUPyTree, ValidStokesType, stokes_pytree_cls
+from astrosim.landscapes import StokesIPyTree, StokesIQUPyTree, stokes_pytree_cls
 from astrosim.operators.polarizers import LinearPolarizerOperator
 
 
@@ -34,7 +31,6 @@ def test_direct_iqu() -> None:
     assert jnp.allclose(y, expected_y, atol=1e-15, rtol=1e-15)
 
 
-@pytest.mark.parametrize('stokes', get_args(ValidStokesType))
 def test_transpose(stokes) -> None:
     theta = np.deg2rad(15)
     polarizer = LinearPolarizerOperator(shape=(2, 5), stokes=stokes, theta=theta)

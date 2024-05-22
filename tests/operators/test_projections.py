@@ -1,14 +1,10 @@
-from typing import get_args
-
 import equinox
 import jax.numpy as jnp
-import pytest
 
-from astrosim.landscapes import HealpixLandscape, ValidStokesType, stokes_pytree_cls
+from astrosim.landscapes import HealpixLandscape, stokes_pytree_cls
 from astrosim.operators.projections import SamplingOperator
 
 
-@pytest.mark.parametrize('stokes', get_args(ValidStokesType))
 def test_direct(stokes) -> None:
     nside = 1
     landscape = HealpixLandscape(nside, stokes)
@@ -26,7 +22,6 @@ def test_direct(stokes) -> None:
     assert equinox.tree_equal(y, expected_y, atol=1e-15, rtol=1e-15)
 
 
-@pytest.mark.parametrize('stokes', get_args(ValidStokesType))
 def test_transpose(stokes) -> None:
     nside = 1
     landscape = HealpixLandscape(nside, stokes)

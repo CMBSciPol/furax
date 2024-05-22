@@ -1,7 +1,7 @@
 import sys
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import TYPE_CHECKING, ClassVar, Literal, Union, cast, get_args
+from typing import TYPE_CHECKING, ClassVar, Literal, Union, cast, get_args, overload
 
 if sys.version_info < (3, 11):
     from typing_extensions import Self
@@ -55,6 +55,60 @@ class StokesPyTree(ABC):
         return type(self)(*arrays)
 
     @classmethod
+    @overload
+    def from_stokes(cls, i: Float[Array, '...']) -> 'StokesIPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(cls, *, q: Float[Array, '...'], u: Float[Array, '...']) -> 'StokesQUPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(
+        cls, i: Float[Array, '...'], q: Float[Array, '...'], u: Float[Array, '...']
+    ) -> 'StokesIQUPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(
+        cls,
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
+    ) -> 'StokesIQUVPyTree': ...
+
+    @classmethod
+    def from_stokes(
+        cls,
+        I: Float[Array, '...'] | None = None,
+        Q: Float[Array, '...'] | None = None,
+        U: Float[Array, '...'] | None = None,
+        V: Float[Array, '...'] | None = None,
+    ) -> 'StokesPyTree':
+        """Returns a StokesPyTree according to the specified Stokes vectors."""
+        if I is not None and Q is not None and U is not None:
+            if V is not None:
+                return StokesIQUVPyTree(I, Q, U, V)
+            return StokesIQUPyTree(I, Q, U)
+        if I is not None and U is None and Q is None and V is None:
+            return StokesIPyTree(I)
+        if I is None and U is not None and Q is not None and V is None:
+            return StokesQUPyTree(Q, U)
+        raise TypeError('Invalid Stokes vectors: I, QU, IQU or IQUV must be specified.')
+
+    @classmethod
+    @abstractmethod
+    def from_iquv(
+        cls,
+        I: Float[Array, '...'],
+        Q: Float[Array, '...'],
+        U: Float[Array, '...'],
+        V: Float[Array, '...'],
+    ) -> Self:
+        """Returns a StokesPyTree ignoring the Stokes components not in the type."""
+
+    @classmethod
     def zeros(cls, shape: tuple[int, ...], dtype: DTypeLike | float = float) -> Self:
         return cls.full(shape, 0, dtype)
 
@@ -69,20 +123,13 @@ class StokesPyTree(ABC):
         arrays = len(cls.stokes) * [jnp.full(shape, fill_value, dtype)]  # type: ignore[arg-type]
         return cls(*arrays)
 
-    @classmethod
-    @abstractmethod
-    def from_iquv(
-        cls,
-        i: Float[Array, '...'],
-        q: Float[Array, '...'],
-        u: Float[Array, '...'],
-        v: Float[Array, '...'],
-    ) -> Self:
-        """Returns a StokesIPyTree.
+    def ravel(self) -> Self:
+        """Ravels each Stokes component."""
+        return jax.tree_map(lambda x: x.ravel(), self)
 
-        The constructed StokesIPyTree has the same calling sequence for all Stokes types, which can be useful
-        in unit tests.
-        """
+    def reshape(self, shape: tuple[int, ...]) -> Self:
+        """Reshape each Stokes component."""
+        return jax.tree_map(lambda x: x.reshape(shape), self)
 
 
 @jdc.pytree_dataclass
@@ -93,12 +140,12 @@ class StokesIPyTree(StokesPyTree):
     @classmethod
     def from_iquv(
         cls,
-        i: Float[Array, '...'],
-        q: Float[Array, '...'],
-        u: Float[Array, '...'],
-        v: Float[Array, '...'],
+        I: Float[Array, '...'],
+        Q: Float[Array, '...'],
+        U: Float[Array, '...'],
+        V: Float[Array, '...'],
     ) -> Self:
-        return cls(i)
+        return cls(I)
 
 
 @jdc.pytree_dataclass
@@ -110,12 +157,12 @@ class StokesQUPyTree(StokesPyTree):
     @classmethod
     def from_iquv(
         cls,
-        i: Float[Array, '...'],
-        q: Float[Array, '...'],
-        u: Float[Array, '...'],
-        v: Float[Array, '...'],
+        I: Float[Array, '...'],
+        Q: Float[Array, '...'],
+        U: Float[Array, '...'],
+        V: Float[Array, '...'],
     ) -> Self:
-        return cls(q, u)
+        return cls(Q, U)
 
 
 @jdc.pytree_dataclass
@@ -128,12 +175,12 @@ class StokesIQUPyTree(StokesPyTree):
     @classmethod
     def from_iquv(
         cls,
-        i: Float[Array, '...'],
-        q: Float[Array, '...'],
-        u: Float[Array, '...'],
-        v: Float[Array, '...'],
+        I: Float[Array, '...'],
+        Q: Float[Array, '...'],
+        U: Float[Array, '...'],
+        V: Float[Array, '...'],
     ) -> Self:
-        return cls(i, q, u)
+        return cls(I, Q, U)
 
 
 @jdc.pytree_dataclass
@@ -147,18 +194,19 @@ class StokesIQUVPyTree(StokesPyTree):
     @classmethod
     def from_iquv(
         cls,
-        i: Float[Array, '...'],
-        q: Float[Array, '...'],
-        u: Float[Array, '...'],
-        v: Float[Array, '...'],
+        I: Float[Array, '...'],
+        Q: Float[Array, '...'],
+        U: Float[Array, '...'],
+        V: Float[Array, '...'],
     ) -> Self:
-        return cls(i, q, u, v)
+        return cls(I, Q, U, V)
 
 
 StokesPyTreeType = StokesIPyTree | StokesQUPyTree | StokesIQUPyTree | StokesIQUVPyTree
 
 
 def stokes_pytree_cls(stokes: ValidStokesType) -> type[StokesPyTree]:
+    """Returns the StokesPyTree subclass associated to the specified Stokes types."""
     if stokes not in get_args(ValidStokesType):
         raise ValueError(f'Invalid stokes parameters: {stokes!r}')
     return {

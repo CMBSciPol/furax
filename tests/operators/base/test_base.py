@@ -73,6 +73,15 @@ def test_homothety2() -> None:
     assert_array_equal(AbstractLinearOperator.as_matrix(op), expected)
 
 
+def test_homothety_matmul() -> None:
+    op1 = HomothetyOperator(jax.ShapeDtypeStruct((2,), np.float32), 2.0)
+    op2 = HomothetyOperator(jax.ShapeDtypeStruct((2,), np.float32), 6.0)
+    op = op1 @ op2
+    assert isinstance(op, HomothetyOperator)
+    assert op.value == 12.0
+    assert op.in_structure() == op2.in_structure()
+
+
 def test_diagonal1() -> None:
     values = jnp.array([[2], [3]], np.float32)
     op = DiagonalOperator(values)

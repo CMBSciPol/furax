@@ -16,6 +16,7 @@ from astrosim.landscapes import (
     stokes_pytree_cls,
 )
 from astrosim.operators import AbstractLinearOperator, positive_semidefinite
+from astrosim.operators.base import AbstractLazyOrthogonalOperator
 
 
 @positive_semidefinite
@@ -65,7 +66,7 @@ class QURotationOperator(AbstractLinearOperator):
         raise NotImplementedError
 
     def transpose(self) -> AbstractLinearOperator:
-        return QURotationOperatorT(self)
+        return QURotationTransposeOperator(self)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = stokes_pytree_cls(self.stokes)
@@ -73,11 +74,7 @@ class QURotationOperator(AbstractLinearOperator):
 
 
 @positive_semidefinite
-class QURotationOperatorT(AbstractLinearOperator):
-    operator: QURotationOperator
-
-    def __init__(self, operator: QURotationOperator):
-        self.operator = operator
+class QURotationTransposeOperator(AbstractLazyOrthogonalOperator):
 
     def mv(self, x: StokesPyTree) -> StokesPyTree:
         if self.operator.stokes != x.stokes:
@@ -96,9 +93,3 @@ class QURotationOperatorT(AbstractLinearOperator):
         if isinstance(x, StokesIQUVPyTree):
             return StokesIQUVPyTree(x.I, Q, U, x.V)
         raise NotImplementedError
-
-    def transpose(self) -> AbstractLinearOperator:
-        return self.operator
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.out_structure()

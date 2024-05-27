@@ -15,6 +15,7 @@ from astrosim.landscapes import (
     stokes_pytree_cls,
 )
 from astrosim.operators import AbstractLinearOperator
+from astrosim.operators.base import AbstractLazyTransposeOperator
 
 
 class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]
@@ -52,7 +53,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]
         raise NotImplementedError(f'HWPOperator not implemented for Stokes {self.stokes!r}')
 
     def transpose(self) -> AbstractLinearOperator:
-        return LinearPolarizerOperatorT(self)
+        return LinearPolarizerTransposeOperator(self)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = stokes_pytree_cls(self.stokes)
@@ -62,11 +63,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]
         return jax.ShapeDtypeStruct(self.shape, self.dtype)
 
 
-class LinearPolarizerOperatorT(AbstractLinearOperator):  # type: ignore[misc]
-    operator: LinearPolarizerOperator
-
-    def __init__(self, operator: LinearPolarizerOperator):
-        self.operator = operator
+class LinearPolarizerTransposeOperator(AbstractLazyTransposeOperator):  # type: ignore[misc]
 
     def mv(self, x: Float[Array, ' {self.shape}']) -> StokesPyTree:
         stokes = self.operator.stokes
@@ -84,12 +81,3 @@ class LinearPolarizerOperatorT(AbstractLinearOperator):  # type: ignore[misc]
         if stokes == 'IQUV':
             return cls(I, Q, U, V)
         raise NotImplementedError
-
-    def transpose(self) -> AbstractLinearOperator:
-        return self.operator
-
-    def in_structure(self) -> jax.ShapeDtypeStruct:
-        return self.operator.out_structure()
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.in_structure()

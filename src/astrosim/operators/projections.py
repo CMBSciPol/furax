@@ -5,7 +5,7 @@ from jaxtyping import Array, Float, Integer, PyTree
 
 from astrosim.detectors import DetectorArray
 from astrosim.landscapes import HealpixLandscape, StokesPyTree, stokes_pytree_cls
-from astrosim.operators import AbstractLinearOperator
+from astrosim.operators.base import AbstractLazyTransposeOperator, AbstractLinearOperator
 from astrosim.operators.qu_rotations import QURotationOperator
 from astrosim.samplings import Sampling
 
@@ -22,7 +22,7 @@ class SamplingOperator(AbstractLinearOperator):  # type: ignore[misc]
         return sky[self.indices]
 
     def transpose(self) -> AbstractLinearOperator:
-        return SamplingOperatorT(self)
+        return SamplingTransposeOperator(self)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = stokes_pytree_cls(self.landscape.stokes)
@@ -33,28 +33,16 @@ class SamplingOperator(AbstractLinearOperator):  # type: ignore[misc]
         return cls.shape_pytree(self.indices.shape, self.landscape.dtype)
 
 
-class SamplingOperatorT(AbstractLinearOperator):  # type: ignore[misc]
-    operator: SamplingOperator
-
-    def __init__(self, operator: SamplingOperator):
-        self.operator = operator
+class SamplingTransposeOperator(AbstractLazyTransposeOperator):  # type: ignore[misc]
 
     def mv(self, x: StokesPyTree) -> StokesPyTree:
+        self.operator: SamplingOperator
         flat_pixels = self.operator.indices.ravel()
         arrays_out = []
         zeros = jnp.zeros(self.operator.landscape.shape, self.operator.landscape.dtype)
         for stoke in self.operator.landscape.stokes:
             arrays_out.append(zeros.at[flat_pixels].add(getattr(x, stoke).ravel()))
         return stokes_pytree_cls(self.operator.landscape.stokes)(*arrays_out)
-
-    def transpose(self) -> AbstractLinearOperator:
-        return self.operator
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.out_structure()
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.in_structure()
 
 
 def create_projection_operator(

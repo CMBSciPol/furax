@@ -16,6 +16,19 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
         # just for the static type checkers, it is overriden by the monkey patch.
         raise NotImplementedError
 
+    def __matmul__(self, other):
+        if not isinstance(other, AbstractLinearOperator):
+            return NotImplemented
+        if self.in_structure() != other.out_structure():
+            raise ValueError('Incompatible linear operator structures')
+
+        if isinstance(other, IdentityOperator):
+            return self
+        if isinstance(other, AbstractLazyInverseOperator):
+            if other.operator is self:
+                return IdentityOperator(other.in_structure())
+        return super().__matmul__(other)
+
     def as_matrix(self) -> Inexact[Array, 'a b']:
         """Returns the operator as a dense matrix.
 
@@ -49,6 +62,13 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
 
     def transpose(self) -> lx.AbstractLinearOperator:
         raise NotImplementedError
+
+    def inverse(self) -> lx.AbstractLinearOperator:
+        raise NotImplementedError
+
+    @property
+    def I(self) -> 'AbstractLinearOperator':
+        return self.inverse()
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         raise NotImplementedError
@@ -93,6 +113,53 @@ def _base_class__call__(self, x: PyTree[jax.ShapeDtypeStruct]) -> PyTree[jax.Sha
     if isinstance(x, lx.AbstractLinearOperator):
         raise ValueError("Use '@' to compose operators")
     return self.mv(x)
+
+
+class _AbstractLazyDualOperator(AbstractLinearOperator):  # type: ignore[misc]
+    operator: AbstractLinearOperator
+
+    def __init__(self, operator: AbstractLinearOperator):
+        self.operator = operator
+
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operator.out_structure()
+
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operator.in_structure()
+
+
+class AbstractLazyTransposeOperator(_AbstractLazyDualOperator):  # type: ignore[misc]
+
+    def transpose(self) -> AbstractLinearOperator:
+        return self.operator
+
+    def as_matrix(self) -> Inexact[Array, 'a b']:
+        return self.operator.as_matrix().T
+
+
+class AbstractLazyInverseOperator(_AbstractLazyDualOperator):  # type: ignore[misc]
+
+    def __matmul__(self, other):
+        # specialization in order to use `is` instead of `==`
+        if not isinstance(other, AbstractLinearOperator):
+            return NotImplemented
+        if other is self.operator:
+            return IdentityOperator(self.operator.in_structure())
+        return super().__matmul__(other)
+
+    def __rmatmul__(self, other):
+        # specialization in order to use `is` instead of `==`
+        if not isinstance(other, AbstractLinearOperator):
+            return NotImplemented
+        if other is self.operator:
+            return IdentityOperator(self.operator.out_structure())
+        return NotImplemented
+
+    def inverse(self) -> AbstractLinearOperator:
+        return self.operator
+
+    def as_matrix(self) -> Inexact[Array, 'a b']:
+        return jnp.linalg.inv(self.operator.as_matrix())
 
 
 _monkey_patch_operator(lx.ComposedLinearOperator)
@@ -144,6 +211,19 @@ def square(cls: type[T]) -> type[T]:
     return cls
 
 
+# not a lineax tag
+def orthogonal(cls: type[T]) -> type[T]:
+    square(cls)
+    cls.inverse = cls.transpose
+    return cls
+
+
+@orthogonal
+class AbstractLazyOrthogonalOperator(AbstractLazyTransposeOperator, AbstractLazyInverseOperator):  # type: ignore[misc]
+    pass
+
+
+@orthogonal
 @diagonal
 class IdentityOperator(AbstractLinearOperator):  # type: ignore[misc]
     _in_structure: PyTree[jax.ShapeDtypeStruct]
@@ -165,11 +245,6 @@ class IdentityOperator(AbstractLinearOperator):  # type: ignore[misc]
             return NotImplemented
         return other
 
-    def __rmatmul__(self, other):
-        if not isinstance(other, AbstractLinearOperator):
-            return NotImplemented
-        return other
-
 
 @diagonal
 class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
@@ -183,6 +258,9 @@ class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return jax.tree_map(lambda leave: self.value * leave, x)
 
+    def inverse(self):
+        return HomothetyOperator(self._in_structure, 1 / self.value)
+
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
@@ -192,7 +270,12 @@ class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
     def __matmul__(self, other):
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
-        return other
+        if isinstance(other, HomothetyOperator):
+            value = self.value * other.value
+            if value == 1:
+                return IdentityOperator(self.in_structure())
+            return HomothetyOperator(self.in_structure(), value)
+        return super().__matmul__(other)
 
 
 @diagonal
@@ -205,9 +288,28 @@ class DiagonalOperator(AbstractLinearOperator):  # type: ignore[misc]
     def mv(self, sky: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
         return jax.tree_map((lambda a, b: a * b), sky, self.diagonal)
 
+    def inverse(self) -> 'AbstractLinearOperator':
+        return DiagonalInverseOperator(self)
+
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return jax.eval_shape(lambda: self.diagonal)
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         leaves = jax.tree.leaves(self.diagonal)
         return jnp.diag(jnp.concatenate(jax.tree_map(lambda _: _.ravel(), leaves)))
+
+
+class DiagonalInverseOperator(AbstractLazyInverseOperator):
+    def mv(self, x: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
+        def mul_inv(diagonal_leaf, x_leaf):
+            return jnp.where(diagonal_leaf != 0, x_leaf / diagonal_leaf, 0)
+
+        return jax.tree_map(mul_inv, self.operator.diagonal, x)
+
+    def as_matrix(self) -> Inexact[Array, 'a b']:
+        def inv(diagonal_leaf):
+            leaf = diagonal_leaf.ravel()
+            return jnp.where(leaf != 0, 1 / leaf, 0)
+
+        leaves = jax.tree.leaves(self.operator.diagonal)
+        return jnp.diag(jnp.concatenate(jax.tree_map(inv, leaves)))

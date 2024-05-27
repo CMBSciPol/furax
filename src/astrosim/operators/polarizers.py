@@ -57,7 +57,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = stokes_pytree_cls(self.stokes)
-        return cls.shape_pytree(self.shape, self.dtype)
+        return cls.structure_for(self.shape, self.dtype)
 
     def out_structure(self) -> jax.ShapeDtypeStruct:
         return jax.ShapeDtypeStruct(self.shape, self.dtype)

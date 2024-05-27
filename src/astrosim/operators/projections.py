@@ -1,48 +1,79 @@
 import equinox as eqx
 import jax
+import numpy as np
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Integer, PyTree
 
 from astrosim.detectors import DetectorArray
-from astrosim.landscapes import HealpixLandscape, StokesPyTree, stokes_pytree_cls
-from astrosim.operators.base import AbstractLazyTransposeOperator, AbstractLinearOperator
+from astrosim.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree, stokes_pytree_cls
+from astrosim.operators.base import (
+    AbstractLazyTransposeOperator,
+    AbstractLinearOperator,
+    DiagonalOperator,
+)
 from astrosim.operators.qu_rotations import QURotationOperator
 from astrosim.samplings import Sampling
 
 
 class SamplingOperator(AbstractLinearOperator):  # type: ignore[misc]
-    landscape: HealpixLandscape = eqx.field(static=True)
+    landscape: StokesLandscape = eqx.field(static=True)
     indices: Integer[Array, '...'] = eqx.field(static=True)
 
-    def __init__(self, landscape: HealpixLandscape, indices: Array):
+    def __init__(self, landscape: StokesLandscape, indices: Array):
         self.landscape = landscape
         self.indices = indices  # (ndet, nsampling)
 
     def mv(self, sky: StokesPyTree) -> StokesPyTree:
-        return sky[self.indices]
+        return sky.ravel()[self.indices]
 
     def transpose(self) -> AbstractLinearOperator:
         return SamplingTransposeOperator(self)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = stokes_pytree_cls(self.landscape.stokes)
-        return cls.shape_pytree(self.landscape.shape, self.landscape.dtype)
+        return cls.structure_for(self.landscape.shape, self.landscape.dtype)
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = stokes_pytree_cls(self.landscape.stokes)
-        return cls.shape_pytree(self.indices.shape, self.landscape.dtype)
+        return cls.structure_for(self.indices.shape, self.landscape.dtype)
 
 
 class SamplingTransposeOperator(AbstractLazyTransposeOperator):  # type: ignore[misc]
+    operator: SamplingOperator
 
     def mv(self, x: StokesPyTree) -> StokesPyTree:
-        self.operator: SamplingOperator
         flat_pixels = self.operator.indices.ravel()
         arrays_out = []
-        zeros = jnp.zeros(self.operator.landscape.shape, self.operator.landscape.dtype)
+        zeros = jnp.zeros(np.prod(self.operator.landscape.shape), self.operator.landscape.dtype)
         for stoke in self.operator.landscape.stokes:
-            arrays_out.append(zeros.at[flat_pixels].add(getattr(x, stoke).ravel()))
+            arrays_out.append(
+                zeros.at[flat_pixels]
+                .add(getattr(x, stoke).ravel())
+                .reshape(self.operator.landscape.shape)
+            )
         return stokes_pytree_cls(self.operator.landscape.stokes)(*arrays_out)
+
+    def __matmul__(self, other: AbstractLinearOperator):
+        if other is not self.operator:
+            return super().__matmul__(other)
+
+        dtype = jax.tree.leaves(other.in_structure())[0].dtype
+
+        # P.T @ P
+        size_max = np.prod(self.operator.landscape.shape)
+        unique_indices, counts = jnp.unique(
+            self.operator.indices, return_counts=True, size=size_max, fill_value=-1
+        )
+        coverage = jnp.zeros(np.prod(self.operator.landscape.shape), dtype=dtype)
+        coverage = (
+            coverage.at[unique_indices]
+            .add(counts, indices_are_sorted=True, unique_indices=True)
+            .reshape(self.operator.landscape.shape)
+        )
+        stokes = self.operator.landscape.stokes
+        cls = stokes_pytree_cls(stokes)
+        arrays_out = len(stokes) * [coverage]
+        return DiagonalOperator(cls(*arrays_out))
 
 
 def create_projection_operator(

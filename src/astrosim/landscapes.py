@@ -45,8 +45,14 @@ class StokesPyTree(ABC):
     def dtype(self) -> DTypeLike:
         return cast(DTypeLike, getattr(self, self.stokes[0]).dtype)
 
+    @property
+    def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.structure_for(self.shape, self.dtype)
+
     @classmethod
-    def shape_pytree(cls, shape: tuple[int, ...], dtype: DTypeLike) -> PyTree[jax.ShapeDtypeStruct]:
+    def structure_for(
+        cls, shape: tuple[int, ...], dtype: DTypeLike
+    ) -> PyTree[jax.ShapeDtypeStruct]:
         stokes_arrays = len(cls.stokes) * [jax.ShapeDtypeStruct(shape, dtype)]
         return cls(*stokes_arrays)
 
@@ -286,6 +292,11 @@ class StokesLandscape(Landscape):
     @property
     def size(self) -> int:
         return len(self.stokes) * len(self)
+
+    @property
+    def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        cls = stokes_pytree_cls(self.stokes)
+        return cls.structure_for(self.shape, self.dtype)
 
     def tree_flatten(self):  # type: ignore[no-untyped-def]
         aux_data = {

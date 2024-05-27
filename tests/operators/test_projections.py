@@ -1,7 +1,10 @@
 import equinox
 import jax.numpy as jnp
+import numpy as np
+from numpy.testing import assert_array_equal
 
-from astrosim.landscapes import HealpixLandscape, stokes_pytree_cls
+from astrosim.landscapes import HealpixLandscape, StokesLandscape, stokes_pytree_cls
+from astrosim.operators import DiagonalOperator
 from astrosim.operators.projections import SamplingOperator
 
 
@@ -36,3 +39,22 @@ def test_transpose(stokes) -> None:
     array = jnp.array([0.0, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0])
     expected_y = cls(*[array * i for i in range(1, len(stokes) + 1)])
     assert equinox.tree_equal(y, expected_y, atol=1e-15, rtol=1e-15)
+
+
+def test_matmul(stokes) -> None:
+    class MyStokesLandscape(StokesLandscape):
+        def world2pixel(self, theta, phi):
+            return phi.astype(np.int32)
+
+    landscape = MyStokesLandscape((4,), stokes)
+    indices = jnp.array([[0, 1, 0, 2, 3], [1, 0, 1, 1, 1]])
+    op = SamplingOperator(landscape, indices)
+
+    product = op.T @ op
+    assert isinstance(product, DiagonalOperator)
+
+    actual_dense = product.as_matrix()
+
+    dense = op.as_matrix()
+    expected_dense = dense.T @ dense
+    assert_array_equal(actual_dense, expected_dense)

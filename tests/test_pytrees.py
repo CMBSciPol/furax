@@ -73,7 +73,7 @@ def test_zeros(stokes, shape, dtype, factory, value) -> None:
 
 @pytest.mark.parametrize('shape', [(10,), (2, 10)])
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
-def test_test_structure(stokes, shape, dtype) -> None:
+def test_structure(stokes, shape, dtype) -> None:
     cls = stokes_pytree_cls(stokes)
     array = jnp.zeros(shape, dtype)
     pytree = cls(**{stoke: array for stoke in stokes})
@@ -82,4 +82,4 @@ def test_test_structure(stokes, shape, dtype) -> None:
 
     assert pytree.shape == shape
     assert pytree.dtype == dtype
-    assert pytree.shape_pytree(shape, dtype) == expected_shape_pytree
+    assert pytree.structure_for(shape, dtype) == expected_shape_pytree

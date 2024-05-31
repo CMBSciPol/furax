@@ -1,4 +1,7 @@
-from .base import (
+from astrosim._base.core import (
+    AbstractLazyInverseOperator,
+    AbstractLazyOrthogonalOperator,
+    AbstractLazyTransposeOperator,
     AbstractLinearOperator,
     DiagonalOperator,
     HomothetyOperator,

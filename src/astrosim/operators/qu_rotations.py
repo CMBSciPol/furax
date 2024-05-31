@@ -15,8 +15,11 @@ from astrosim.landscapes import (
     ValidStokesType,
     stokes_pytree_cls,
 )
-from astrosim.operators import AbstractLinearOperator, positive_semidefinite
-from astrosim.operators.base import AbstractLazyOrthogonalOperator
+from astrosim.operators import (
+    AbstractLazyOrthogonalOperator,
+    AbstractLinearOperator,
+    positive_semidefinite,
+)
 
 
 @positive_semidefinite

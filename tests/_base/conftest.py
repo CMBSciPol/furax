@@ -4,8 +4,12 @@ import pytest
 from jax import Array
 from jax import numpy as jnp
 
-from astrosim.operators import AbstractLinearOperator
-from astrosim.operators.base import DiagonalOperator, HomothetyOperator, IdentityOperator
+from astrosim._base.core import (
+    AbstractLinearOperator,
+    DiagonalOperator,
+    HomothetyOperator,
+    IdentityOperator,
+)
 
 
 @pytest.fixture(params=range(3), ids=['IdentityOperator', 'HomothetyOperator', 'DiagonalOperator'])

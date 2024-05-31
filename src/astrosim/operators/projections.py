@@ -6,7 +6,7 @@ from jaxtyping import Array, Float, Integer, PyTree
 
 from astrosim.detectors import DetectorArray
 from astrosim.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree, stokes_pytree_cls
-from astrosim.operators.base import (
+from astrosim.operators import (
     AbstractLazyTransposeOperator,
     AbstractLinearOperator,
     DiagonalOperator,
@@ -91,13 +91,13 @@ def create_projection_operator(
     theta, phi = vec2dir(*rotated_coords)
 
     # (ndet, ndir, nsampling)
-    pixels = landscape.world2index(theta, phi)
-    if pixels.shape[1] == 1:
+    indices = landscape.world2index(theta, phi)
+    if indices.shape[1] == 1:
         # remove the number of directions per pixels if there is only one.
-        pixels = pixels.reshape(pixels.shape[0], pixels.shape[2])
+        indices = indices.reshape(indices.shape[0], indices.shape[2])
 
-    rotation = QURotationOperator.create(pixels.shape, landscape.stokes, samplings.pa)
-    sampling = SamplingOperator(landscape, pixels)
+    rotation = QURotationOperator.create(indices.shape, landscape.stokes, samplings.pa)
+    sampling = SamplingOperator(landscape, indices)
     return rotation @ sampling
 
 

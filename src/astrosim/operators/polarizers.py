@@ -14,8 +14,7 @@ from astrosim.landscapes import (
     ValidStokesType,
     stokes_pytree_cls,
 )
-from astrosim.operators import AbstractLinearOperator
-from astrosim.operators.base import AbstractLazyTransposeOperator
+from astrosim.operators import AbstractLazyTransposeOperator, AbstractLinearOperator
 
 
 class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]

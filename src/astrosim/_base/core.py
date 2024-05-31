@@ -5,7 +5,9 @@ import jax
 import jax.numpy as jnp
 import lineax as lx
 from jax import Array
-from jaxtyping import Array, Float, Inexact, PyTree
+from jaxtyping import Float, Inexact, PyTree
+
+from astrosim._base.config import Config, ConfigState
 
 
 class AbstractLinearOperator(lx.AbstractLinearOperator):
@@ -13,11 +15,12 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
         _monkey_patch_operator(cls)
 
     def __call__(self, x: PyTree[jax.ShapeDtypeStruct]) -> PyTree[jax.ShapeDtypeStruct]:
-        # just for the static type checkers, it is overriden by the monkey patch.
-        raise NotImplementedError
+        if isinstance(x, lx.AbstractLinearOperator):
+            raise ValueError("Use '@' to compose operators")
+        return self.mv(x)
 
     def __matmul__(self, other):
-        if not isinstance(other, AbstractLinearOperator):
+        if not isinstance(other, lx.AbstractLinearOperator):
             return NotImplemented
         if self.in_structure() != other.out_structure():
             raise ValueError('Incompatible linear operator structures')
@@ -64,7 +67,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
         raise NotImplementedError
 
     def inverse(self) -> lx.AbstractLinearOperator:
-        raise NotImplementedError
+        return LazyInverseOperator(self)
 
     @property
     def I(self) -> 'AbstractLinearOperator':
@@ -83,6 +86,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
 
 
 def _monkey_patch_operator(cls: type[lx.AbstractLinearOperator]) -> None:
+    """Default tags for the operators"""
     for tag in [
         lx.is_diagonal,
         lx.is_lower_triangular,
@@ -99,7 +103,13 @@ def _monkey_patch_operator(cls: type[lx.AbstractLinearOperator]) -> None:
     lx.linearise.register(cls)(lambda _: _)
     lx.conj.register(cls)(lambda _: _)
 
-    cls.__call__ = _base_class__call__
+
+def _monkey_patch_lineax_operator(cls: type[lx.AbstractLinearOperator]) -> None:
+    """Patching the lineax operators so that we can call and invert them."""
+    _monkey_patch_operator(cls)
+    cls.__call__ = AbstractLinearOperator.__call__
+    cls.I = AbstractLinearOperator.I
+    cls.inverse = AbstractLinearOperator.inverse
 
 
 def _already_registered(cls: type[lx.AbstractLinearOperator], tag) -> bool:
@@ -109,10 +119,7 @@ def _already_registered(cls: type[lx.AbstractLinearOperator], tag) -> bool:
     )
 
 
-def _base_class__call__(self, x: PyTree[jax.ShapeDtypeStruct]) -> PyTree[jax.ShapeDtypeStruct]:
-    if isinstance(x, lx.AbstractLinearOperator):
-        raise ValueError("Use '@' to compose operators")
-    return self.mv(x)
+_monkey_patch_lineax_operator(lx.ComposedLinearOperator)
 
 
 class _AbstractLazyDualOperator(AbstractLinearOperator):  # type: ignore[misc]
@@ -141,19 +148,11 @@ class AbstractLazyInverseOperator(_AbstractLazyDualOperator):  # type: ignore[mi
 
     def __matmul__(self, other):
         # specialization in order to use `is` instead of `==`
-        if not isinstance(other, AbstractLinearOperator):
+        if not isinstance(other, lx.AbstractLinearOperator):
             return NotImplemented
         if other is self.operator:
             return IdentityOperator(self.operator.in_structure())
         return super().__matmul__(other)
-
-    def __rmatmul__(self, other):
-        # specialization in order to use `is` instead of `==`
-        if not isinstance(other, AbstractLinearOperator):
-            return NotImplemented
-        if other is self.operator:
-            return IdentityOperator(self.operator.out_structure())
-        return NotImplemented
 
     def inverse(self) -> AbstractLinearOperator:
         return self.operator
@@ -162,7 +161,24 @@ class AbstractLazyInverseOperator(_AbstractLazyDualOperator):  # type: ignore[mi
         return jnp.linalg.inv(self.operator.as_matrix())
 
 
-_monkey_patch_operator(lx.ComposedLinearOperator)
+class LazyInverseOperator(AbstractLazyInverseOperator):
+    config: ConfigState = eqx.field(static=True)
+
+    def __init__(self, operator: AbstractLinearOperator):
+        super().__init__(operator)
+        self.config = Config.instance()
+
+    def mv(self, x):
+        solver = self.config.solver
+        options = self.config.solver_options.copy()
+        A = lx.TaggedLinearOperator(self.operator, lx.positive_semidefinite_tag)
+        if preconditioner := options.get('preconditioner'):
+            options['preconditioner'] = lx.TaggedLinearOperator(
+                preconditioner, lx.positive_semidefinite_tag
+            )
+        solution = lx.linear_solve(A, x, solver=solver, throw=True, options=options)
+        self.config.solver_callback(solution)
+        return solution.value
 
 
 T = TypeVar('T')
@@ -241,7 +257,7 @@ class IdentityOperator(AbstractLinearOperator):  # type: ignore[misc]
         return jnp.identity(self.in_size())
 
     def __matmul__(self, other):
-        if not isinstance(other, AbstractLinearOperator):
+        if not isinstance(other, lx.AbstractLinearOperator):
             return NotImplemented
         return other
 
@@ -268,7 +284,7 @@ class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
         return self.value * jnp.identity(self.in_size())
 
     def __matmul__(self, other):
-        if not isinstance(other, AbstractLinearOperator):
+        if not isinstance(other, lx.AbstractLinearOperator):
             return NotImplemented
         if isinstance(other, HomothetyOperator):
             value = self.value * other.value
@@ -304,7 +320,8 @@ class DiagonalInverseOperator(AbstractLazyInverseOperator):
         def mul_inv(diagonal_leaf, x_leaf):
             return jnp.where(diagonal_leaf != 0, x_leaf / diagonal_leaf, 0)
 
-        return jax.tree_map(mul_inv, self.operator.diagonal, x)
+        y = jax.tree_map(mul_inv, self.operator.diagonal, x)
+        return y
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         def inv(diagonal_leaf):

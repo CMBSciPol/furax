@@ -1,8 +1,8 @@
+import equinox as eqx
 import jax.numpy as jnp
 from numpy.testing import assert_allclose
 
-from astrosim.operators import DiagonalOperator, IdentityOperator
-from astrosim.operators.base import AbstractLazyInverseOperator
+from astrosim._base.core import AbstractLazyInverseOperator, DiagonalOperator, IdentityOperator
 
 
 def test_inverse(base_op) -> None:
@@ -24,6 +24,13 @@ def test_inverse_dense(base_op_and_dense) -> None:
     assert_allclose(jnp.linalg.inv(dense), base_op.I.as_matrix())
 
 
-def test_inverse_diagonal_with_zeros() -> None:
+def test_inverse_diagonal_with_zeros1() -> None:
+    op = DiagonalOperator((jnp.arange(4), jnp.array(0.0)))
+    x = (jnp.ones(4), jnp.array(1.0))
+    expected_y = jnp.array([0, 1, 1, 1]), jnp.array(0)
+    eqx.tree_equal(op.I(op(x)), expected_y)
+
+
+def test_inverse_diagonal_with_zeros2() -> None:
     op = DiagonalOperator((jnp.arange(4), jnp.array(0.0)))
     assert_allclose(op.I.as_matrix(), jnp.diag(jnp.array([0.0, 1.0, 1 / 2, 1 / 3, 0.0])))

@@ -14,7 +14,7 @@ from astrosim.instruments.sat import (
     create_acquisition,
     create_detector_directions,
 )
-from astrosim.landscapes import HealpixLandscape
+from astrosim.landscapes import HealpixLandscape, StokesIQUPyTree
 from astrosim.operators import DiagonalOperator
 from astrosim.samplings import create_random_sampling
 
@@ -49,7 +49,13 @@ def test_solver(planck_iqu_256, sat_nhits):
     # preconditioner
     tod_structure = h.out_structure()
     coverage = h.T(jnp.ones(tod_structure.shape, tod_structure.dtype))
-    m = DiagonalOperator(coverage).I
+    m = DiagonalOperator(
+        StokesIQUPyTree(
+            I=coverage.I,
+            Q=coverage.I,
+            U=coverage.I,
+        )
+    ).I
     m = lx.TaggedLinearOperator(m, lx.positive_semidefinite_tag)
     hTh = lx.TaggedLinearOperator(h.T @ h, lx.positive_semidefinite_tag)
     tod = h(sky)

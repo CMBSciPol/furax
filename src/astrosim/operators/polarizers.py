@@ -12,7 +12,6 @@ from astrosim.landscapes import (
     StokesPyTree,
     StokesQUPyTree,
     ValidStokesType,
-    stokes_pytree_cls,
 )
 from astrosim.operators import AbstractLazyTransposeOperator, AbstractLinearOperator
 
@@ -22,7 +21,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]
 
     shape: tuple[int, ...]
     dtype: DTypeLike = eqx.field(static=True)
-    stokes: str = eqx.field(static=True)
+    stokes: ValidStokesType = eqx.field(static=True)
     theta: Float[Array, '...']
 
     def __init__(
@@ -55,8 +54,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]
         return LinearPolarizerTransposeOperator(self)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        cls = stokes_pytree_cls(self.stokes)
-        return cls.structure_for(self.shape, self.dtype)
+        return StokesPyTree.structure_for(self.stokes, self.shape, self.dtype)
 
     def out_structure(self) -> jax.ShapeDtypeStruct:
         return jax.ShapeDtypeStruct(self.shape, self.dtype)
@@ -66,7 +64,7 @@ class LinearPolarizerTransposeOperator(AbstractLazyTransposeOperator):  # type: 
 
     def mv(self, x: Float[Array, ' {self.shape}']) -> StokesPyTree:
         stokes = self.operator.stokes
-        cls = stokes_pytree_cls(stokes)
+        cls = StokesPyTree.class_for(stokes)
         I = 0.5 * x
         if stokes == 'I':
             return cls(I)

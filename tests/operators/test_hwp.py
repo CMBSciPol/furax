@@ -1,13 +1,13 @@
 import equinox
 import jax.numpy as jnp
 
-from astrosim.landscapes import StokesIPyTree, StokesIQUVPyTree, ValidStokesType, stokes_pytree_cls
+from astrosim.landscapes import StokesIPyTree, StokesIQUVPyTree, StokesPyTree, ValidStokesType
 from astrosim.operators.hwp import HWPOperator, RotatingHWPOperator
 
 
 def test_hwp(stokes: ValidStokesType) -> None:
     hwp = HWPOperator.create(shape=(), stokes=stokes)
-    cls = stokes_pytree_cls(stokes)
+    cls = StokesPyTree.class_for(stokes)
     x = cls.ones(())
     actual_y = hwp(x)
 
@@ -18,7 +18,7 @@ def test_hwp(stokes: ValidStokesType) -> None:
 
 def test_hwp_orthogonal(stokes: ValidStokesType) -> None:
     hwp = HWPOperator.create(shape=(), stokes=stokes)
-    x = stokes_pytree_cls(stokes).ones(())
+    x = StokesPyTree.class_for(stokes).ones(())
     y = (hwp.T @ hwp)(x)
     assert equinox.tree_equal(y, x)
 
@@ -57,7 +57,6 @@ def test_rotating_hwp_iquv() -> None:
 
 def test_rotating_hwp_orthogonal(stokes: ValidStokesType) -> None:
     hwp = RotatingHWPOperator.create(shape=(), stokes=stokes, angles=1.1)
-    cls = stokes_pytree_cls(stokes)
-    x = cls.ones(())
+    x = StokesPyTree.class_for(stokes).ones(())
     y = (hwp.T @ hwp)(x)
     assert equinox.tree_equal(y, x, atol=1e-15, rtol=1e-15)

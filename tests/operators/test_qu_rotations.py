@@ -1,7 +1,7 @@
 import equinox
 import jax.numpy as jnp
 
-from astrosim.landscapes import StokesIPyTree, StokesIQUPyTree, stokes_pytree_cls
+from astrosim.landscapes import StokesIPyTree, StokesIQUPyTree, StokesPyTree
 from astrosim.operators import IdentityOperator
 from astrosim.operators.qu_rotations import QURotationOperator
 
@@ -38,7 +38,7 @@ def test_iqu() -> None:
 
 def test_orthogonal(stokes) -> None:
     hwp = QURotationOperator.create(shape=(), stokes=stokes, angles=1.1)
-    cls = stokes_pytree_cls(stokes)
+    cls = StokesPyTree.class_for(stokes)
     x = cls.ones(())
     y = hwp.T(hwp(x))
     assert equinox.tree_equal(y, x, atol=1e-15, rtol=1e-15)

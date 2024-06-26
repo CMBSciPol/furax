@@ -6,33 +6,52 @@ import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
 
-from astrosim.landscapes import StokesPyTree, stokes_pytree_cls
+from astrosim.landscapes import StokesPyTree, ValidStokesType
 
 
 @pytest.mark.parametrize(
     'any_stokes',
     [''.join(_) for _ in chain.from_iterable(combinations('IQUV', n) for n in range(1, 5))],
 )
-def test_from_stokes(any_stokes: str) -> None:
-    arrays = {stoke: jnp.ones(1) for stoke in any_stokes}
+def test_class_for(any_stokes: str) -> None:
     if any_stokes not in ('I', 'QU', 'IQU', 'IQUV'):
-        with pytest.raises(TypeError, match='Invalid Stokes vectors'):
-            _ = StokesPyTree.from_stokes(**arrays)
+        with pytest.raises(ValueError, match='Invalid Stokes parameters'):
+            _ = StokesPyTree.class_for(any_stokes)
     else:
-        pytree = StokesPyTree.from_stokes(**arrays)
-        assert type(pytree) is stokes_pytree_cls(any_stokes)
+        cls = StokesPyTree.class_for(any_stokes)
+        assert cls.stokes == any_stokes
 
 
-def test_from_iquv(stokes) -> None:
+def test_from_stokes_args(stokes: ValidStokesType) -> None:
+    arrays = [jnp.ones(1) for _ in stokes]
+    pytree = StokesPyTree.from_stokes(*arrays)
+    assert type(pytree) is StokesPyTree.class_for(stokes)
+
+
+@pytest.mark.parametrize(
+    'any_stokes',
+    [''.join(_) for _ in chain.from_iterable(combinations('IQUV', n) for n in range(1, 5))],
+)
+def test_from_stokes_kwargs(any_stokes: str) -> None:
+    kwargs = {stoke: jnp.ones(1) for stoke in any_stokes}
+    if any_stokes not in ('I', 'QU', 'IQU', 'IQUV'):
+        with pytest.raises(TypeError, match=f"Invalid Stokes vectors: '{any_stokes}'"):
+            _ = StokesPyTree.from_stokes(**kwargs)
+    else:
+        pytree = StokesPyTree.from_stokes(**kwargs)
+        assert type(pytree) is StokesPyTree.class_for(any_stokes)
+
+
+def test_from_iquv(stokes: ValidStokesType) -> None:
     arrays = {stoke: jnp.array(istoke) for istoke, stoke in enumerate('IQUV', 1)}
-    cls = stokes_pytree_cls(stokes)
+    cls = StokesPyTree.class_for(stokes)
     pytree = cls.from_iquv(*arrays.values())
     assert type(pytree) is cls
     for stoke in stokes:
         assert getattr(pytree, stoke) == arrays[stoke]
 
 
-def test_ravel(stokes) -> None:
+def test_ravel(stokes: ValidStokesType) -> None:
     shape = (4, 2)
     arrays = {k: jnp.ones(shape) for k in stokes}
     pytree = StokesPyTree.from_stokes(**arrays)
@@ -41,7 +60,7 @@ def test_ravel(stokes) -> None:
         assert getattr(raveled_pytree, stoke).shape == (8,)
 
 
-def test_reshape(stokes) -> None:
+def test_reshape(stokes: ValidStokesType) -> None:
     shape = (4, 2)
     new_shape = (2, 2, 2)
     arrays = {k: jnp.ones(shape) for k in stokes}
@@ -61,8 +80,8 @@ def test_reshape(stokes) -> None:
         (lambda c, s, d: c.full(s, 2, d), 2),
     ],
 )
-def test_zeros(stokes, shape, dtype, factory, value) -> None:
-    cls = stokes_pytree_cls(stokes)
+def test_zeros(stokes: ValidStokesType, shape: tuple[int, ...], dtype, factory, value) -> None:
+    cls = StokesPyTree.class_for(stokes)
     pytree = factory(cls, shape, dtype)
     for stoke in stokes:
         array = getattr(pytree, stoke)
@@ -73,13 +92,25 @@ def test_zeros(stokes, shape, dtype, factory, value) -> None:
 
 @pytest.mark.parametrize('shape', [(10,), (2, 10)])
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
-def test_structure(stokes, shape, dtype) -> None:
-    cls = stokes_pytree_cls(stokes)
+def test_structure(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> None:
     array = jnp.zeros(shape, dtype)
-    pytree = cls(**{stoke: array for stoke in stokes})
-    shape_pytree = jax.ShapeDtypeStruct(shape, dtype)
-    expected_shape_pytree = cls(**{stoke: shape_pytree for stoke in stokes})
+    pytree = StokesPyTree.from_stokes(*[array for _ in stokes])
+    leaf_structure = jax.ShapeDtypeStruct(shape, dtype)
+    expected_pytree_structure = StokesPyTree.from_stokes(*[leaf_structure for _ in stokes])
 
     assert pytree.shape == shape
     assert pytree.dtype == dtype
-    assert pytree.structure_for(shape, dtype) == expected_shape_pytree
+    assert pytree.structure == expected_pytree_structure
+    assert pytree.structure_for(shape, dtype) == expected_pytree_structure
+
+
+@pytest.mark.parametrize('shape', [(10,), (2, 10)])
+@pytest.mark.parametrize('dtype', [np.float32, np.float64])
+def test_structure_for_base_class(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> None:
+    structure = StokesPyTree.structure_for(stokes, shape, dtype)
+
+    array = jnp.zeros(shape, dtype)
+    pytree = StokesPyTree.from_stokes(*[array for _ in stokes])
+    expected_structure = pytree.structure
+
+    assert structure == expected_structure

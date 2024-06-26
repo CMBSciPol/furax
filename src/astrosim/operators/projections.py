@@ -5,7 +5,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float, Integer, PyTree
 
 from astrosim.detectors import DetectorArray
-from astrosim.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree, stokes_pytree_cls
+from astrosim.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree
 from astrosim.operators import (
     AbstractLazyTransposeOperator,
     AbstractLinearOperator,
@@ -30,12 +30,14 @@ class SamplingOperator(AbstractLinearOperator):  # type: ignore[misc]
         return SamplingTransposeOperator(self)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        cls = stokes_pytree_cls(self.landscape.stokes)
-        return cls.structure_for(self.landscape.shape, self.landscape.dtype)
+        return StokesPyTree.structure_for(
+            self.landscape.stokes, self.landscape.shape, self.landscape.dtype
+        )
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        cls = stokes_pytree_cls(self.landscape.stokes)
-        return cls.structure_for(self.indices.shape, self.landscape.dtype)
+        return StokesPyTree.structure_for(
+            self.landscape.stokes, self.indices.shape, self.landscape.dtype
+        )
 
 
 class SamplingTransposeOperator(AbstractLazyTransposeOperator):  # type: ignore[misc]
@@ -51,7 +53,7 @@ class SamplingTransposeOperator(AbstractLazyTransposeOperator):  # type: ignore[
                 .add(getattr(x, stoke).ravel())
                 .reshape(self.operator.landscape.shape)
             )
-        return stokes_pytree_cls(self.operator.landscape.stokes)(*arrays_out)
+        return StokesPyTree.from_stokes(*arrays_out)
 
     def __matmul__(self, other: AbstractLinearOperator):
         if other is not self.operator:
@@ -70,10 +72,8 @@ class SamplingTransposeOperator(AbstractLazyTransposeOperator):  # type: ignore[
             .add(counts, indices_are_sorted=True, unique_indices=True)
             .reshape(self.operator.landscape.shape)
         )
-        stokes = self.operator.landscape.stokes
-        cls = stokes_pytree_cls(stokes)
-        arrays_out = len(stokes) * [coverage]
-        return DiagonalOperator(cls(*arrays_out))
+        arrays_out = len(self.operator.landscape.stokes) * [coverage]
+        return DiagonalOperator(StokesPyTree.from_stokes(*arrays_out))
 
 
 def create_projection_operator(

@@ -2,7 +2,7 @@ import equinox
 import jax.numpy as jnp
 import numpy as np
 
-from astrosim.landscapes import StokesIPyTree, StokesIQUPyTree, stokes_pytree_cls
+from astrosim.landscapes import StokesIPyTree, StokesIQUPyTree, StokesPyTree
 from astrosim.operators.polarizers import LinearPolarizerOperator
 
 
@@ -38,7 +38,7 @@ def test_transpose(stokes) -> None:
 
     y = polarizer.T(x)
 
-    expected_cls = stokes_pytree_cls(stokes)
+    expected_cls = StokesPyTree.class_for(stokes)
     assert isinstance(y, expected_cls)
     expected_y = expected_cls.from_iquv(
         0.5 * x, 0.5 * np.cos(2 * theta) * x, 0.5 * np.sin(2 * theta) * x, np.zeros_like(x)

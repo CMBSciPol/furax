@@ -14,7 +14,6 @@ from astrosim.landscapes import (
     StokesPyTreeType,
     StokesQUPyTree,
     ValidStokesType,
-    stokes_pytree_cls,
 )
 from astrosim.operators import AbstractLinearOperator, diagonal, symmetric
 
@@ -56,8 +55,7 @@ class HWPOperator(AbstractLinearOperator):
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        cls = stokes_pytree_cls(self.stokes)
-        return cls.structure_for(self.shape, self.dtype)
+        return StokesPyTree.structure_for(self.stokes, self.shape, self.dtype)
 
 
 @symmetric
@@ -110,5 +108,4 @@ class RotatingHWPOperator(AbstractLinearOperator):
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        cls = stokes_pytree_cls(self.stokes)
-        return cls.structure_for(self.shape, self.dtype)
+        return StokesPyTree.structure_for(self.stokes, self.shape, self.dtype)

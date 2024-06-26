@@ -50,9 +50,40 @@ class StokesPyTree(ABC):
         return self.structure_for(self.shape, self.dtype)
 
     @classmethod
+    def class_for(cls, stokes: ValidStokesType) -> type['StokesPyTree']:
+        """Returns the StokesPyTree subclass associated to the specified Stokes types."""
+        if stokes not in get_args(ValidStokesType):
+            raise ValueError(f'Invalid Stokes parameters: {stokes!r}')
+        return {
+            'I': StokesIPyTree,
+            'QU': StokesQUPyTree,
+            'IQU': StokesIQUPyTree,
+            'IQUV': StokesIQUVPyTree,
+        }[stokes]
+
+    @classmethod
+    @overload
+    def structure_for(cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64): ...
+
+    @classmethod
+    @overload
     def structure_for(
-        cls, shape: tuple[int, ...], dtype: DTypeLike
+        cls, stokes: ValidStokesType, shape: tuple[int, ...], dtype: DTypeLike = np.float64
+    ): ...
+
+    @classmethod
+    def structure_for(
+        cls,
+        stokes: ValidStokesType | tuple[int, ...] | None = None,
+        shape: tuple[int, ...] | DTypeLike | None = None,
+        dtype: DTypeLike = np.float64,
     ) -> PyTree[jax.ShapeDtypeStruct]:
+        if isinstance(stokes, str):
+            cls = StokesPyTree.class_for(stokes)
+        elif isinstance(stokes, tuple):
+            if shape is not None:
+                dtype = shape
+            shape = stokes
         stokes_arrays = len(cls.stokes) * [jax.ShapeDtypeStruct(shape, dtype)]
         return cls(*stokes_arrays)
 
@@ -66,7 +97,7 @@ class StokesPyTree(ABC):
 
     @classmethod
     @overload
-    def from_stokes(cls, *, q: Float[Array, '...'], u: Float[Array, '...']) -> 'StokesQUPyTree': ...
+    def from_stokes(cls, q: Float[Array, '...'], u: Float[Array, '...']) -> 'StokesQUPyTree': ...
 
     @classmethod
     @overload
@@ -86,22 +117,50 @@ class StokesPyTree(ABC):
 
     @classmethod
     def from_stokes(
-        cls,
-        I: Float[Array, '...'] | None = None,
-        Q: Float[Array, '...'] | None = None,
-        U: Float[Array, '...'] | None = None,
-        V: Float[Array, '...'] | None = None,
+        cls, *args: Float[Array, '...'], **keywords: Float[Array, '...']
     ) -> 'StokesPyTree':
-        """Returns a StokesPyTree according to the specified Stokes vectors."""
-        if I is not None and Q is not None and U is not None:
-            if V is not None:
-                return StokesIQUVPyTree(I, Q, U, V)
-            return StokesIQUPyTree(I, Q, U)
-        if I is not None and U is None and Q is None and V is None:
-            return StokesIPyTree(I)
-        if I is None and U is not None and Q is not None and V is None:
-            return StokesQUPyTree(Q, U)
-        raise TypeError('Invalid Stokes vectors: I, QU, IQU or IQUV must be specified.')
+        """Returns a StokesPyTree according to the specified Stokes vectors.
+
+        Examples:
+            >>> tod_i = StokesPyTree.from_stokes(I)
+            >>> tod_qu = StokesPyTree.from_stokes(Q, U)
+            >>> tod_iqu = StokesPyTree.from_stokes(I, Q, U)
+            >>> tod_iquv = StokesPyTree.from_stokes(I, Q, U, V)
+        """
+        if len(args) == 1:
+            return StokesIPyTree(*args)
+        if len(args) == 2:
+            return StokesQUPyTree(*args)
+        if len(args) == 3:
+            return StokesIQUPyTree(*args)
+        if len(args) == 4:
+            return StokesIQUVPyTree(*args)
+        if len(args) > 4:
+            raise TypeError(f'Unexpected number of Stokes parameters: {len(args)}.')
+
+        if not keywords:
+            raise TypeError(f'The Stokes vectors are not specified.')
+        i = keywords.pop('I', None)
+        q = keywords.pop('Q', None)
+        u = keywords.pop('U', None)
+        v = keywords.pop('V', None)
+        if keywords:
+            raise TypeError(f'Invalid keyword arguments: {", ".join(repr(_) for _ in keywords)}')
+        if i is not None and q is None and u is None and v is None:
+            return StokesIPyTree(i)
+        if i is None and q is not None and u is not None and v is None:
+            return StokesQUPyTree(q, u)
+        if i is not None and q is not None and u is not None:
+            if v is None:
+                return StokesIQUPyTree(i, q, u)
+            return StokesIQUVPyTree(i, q, u, v)
+
+        invalid_stokes = ''.join(
+            'IQUV'[index] if _ is not None else '' for index, _ in enumerate([i, q, u, v])
+        )
+        raise TypeError(
+            f'Invalid Stokes vectors: {invalid_stokes!r}. I, QU, IQU or IQUV must be specified.'
+        )
 
     @classmethod
     @abstractmethod
@@ -211,18 +270,6 @@ class StokesIQUVPyTree(StokesPyTree):
 StokesPyTreeType = StokesIPyTree | StokesQUPyTree | StokesIQUPyTree | StokesIQUVPyTree
 
 
-def stokes_pytree_cls(stokes: ValidStokesType) -> type[StokesPyTree]:
-    """Returns the StokesPyTree subclass associated to the specified Stokes types."""
-    if stokes not in get_args(ValidStokesType):
-        raise ValueError(f'Invalid stokes parameters: {stokes!r}')
-    return {
-        'I': StokesIPyTree,
-        'QU': StokesQUPyTree,
-        'IQU': StokesIQUPyTree,
-        'IQUV': StokesIQUVPyTree,
-    }[stokes]
-
-
 @jax.tree_util.register_pytree_node_class
 class Landscape(ABC):
 
@@ -295,8 +342,7 @@ class StokesLandscape(Landscape):
 
     @property
     def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        cls = stokes_pytree_cls(self.stokes)
-        return cls.structure_for(self.shape, self.dtype)
+        return StokesPyTree.structure_for(self.stokes, self.shape, self.dtype)
 
     def tree_flatten(self):  # type: ignore[no-untyped-def]
         aux_data = {
@@ -307,7 +353,7 @@ class StokesLandscape(Landscape):
         return (), aux_data
 
     def full(self, fill_value: ScalarLike) -> PyTree[Shaped[Array, ' {self.npixel}']]:
-        cls = stokes_pytree_cls(self.stokes)
+        cls = StokesPyTree.class_for(self.stokes)
         return cls.full(self.shape, fill_value, self.dtype)
 
     def get_coverage(self, arg: Sampling) -> Integer[Array, ' 12*nside**2']:

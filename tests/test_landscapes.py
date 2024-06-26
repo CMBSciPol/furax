@@ -3,12 +3,7 @@ import pytest
 from jax import Array
 from numpy.testing import assert_array_equal
 
-from astrosim.landscapes import (
-    HealpixLandscape,
-    StokesLandscape,
-    ValidStokesType,
-    stokes_pytree_cls,
-)
+from astrosim.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree, ValidStokesType
 from astrosim.samplings import Sampling
 
 
@@ -19,8 +14,7 @@ def test_healpix_landscape(stokes: ValidStokesType) -> None:
     landscape = HealpixLandscape(nside, stokes)
 
     sky = landscape.ones()
-    assert isinstance(sky, stokes_pytree_cls(stokes))
-
+    assert isinstance(sky, StokesPyTree.class_for(stokes))
     assert sky.shape == (npixel,)
     for stoke in stokes:
         leaf = getattr(sky, stoke)

@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.testing import assert_array_equal
 
-from astrosim.landscapes import HealpixLandscape, StokesLandscape, stokes_pytree_cls
+from astrosim.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree
 from astrosim.operators import DiagonalOperator
 from astrosim.operators.projections import SamplingOperator
 
@@ -11,7 +11,7 @@ from astrosim.operators.projections import SamplingOperator
 def test_direct(stokes) -> None:
     nside = 1
     landscape = HealpixLandscape(nside, stokes)
-    cls = stokes_pytree_cls(stokes)
+    cls = StokesPyTree.class_for(stokes)
     x_as_dict = {
         stoke: jnp.arange(12, dtype=landscape.dtype) * (i + 1) for i, stoke in enumerate(stokes)
     }
@@ -28,7 +28,7 @@ def test_direct(stokes) -> None:
 def test_transpose(stokes) -> None:
     nside = 1
     landscape = HealpixLandscape(nside, stokes)
-    cls = stokes_pytree_cls(stokes)
+    cls = StokesPyTree.class_for(stokes)
     x_as_dict = {stoke: jnp.array([[1, 2, 3]]) * (i + 1) for i, stoke in enumerate(stokes)}
     x = cls(**x_as_dict)
     indices = jnp.array([[2, 3, 2]])

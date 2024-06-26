@@ -13,7 +13,6 @@ from astrosim.landscapes import (
     StokesPyTree,
     StokesQUPyTree,
     ValidStokesType,
-    stokes_pytree_cls,
 )
 from astrosim.operators import (
     AbstractLazyInverseOrthogonalOperator,
@@ -72,8 +71,7 @@ class QURotationOperator(AbstractLinearOperator):
         return QURotationTransposeOperator(self)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        cls = stokes_pytree_cls(self.stokes)
-        return cls.structure_for(self.shape, self.dtype)
+        return StokesPyTree.structure_for(self.stokes, self.shape, self.dtype)
 
 
 @positive_semidefinite

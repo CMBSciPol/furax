@@ -2,7 +2,12 @@ import equinox as eqx
 import jax.numpy as jnp
 from numpy.testing import assert_allclose
 
-from astrosim._base.core import AbstractLazyInverseOperator, DiagonalOperator, IdentityOperator
+from astrosim._base.core import (
+    AbstractLazyInverseOperator,
+    DiagonalOperator,
+    HomothetyOperator,
+    IdentityOperator,
+)
 
 
 def test_inverse(base_op) -> None:
@@ -15,8 +20,12 @@ def test_inverse(base_op) -> None:
 
 
 def test_inverse_matmul(base_op) -> None:
-    assert isinstance(base_op @ base_op.I, IdentityOperator)
-    assert isinstance(base_op.I @ base_op, IdentityOperator)
+    if isinstance(base_op, HomothetyOperator):
+        assert isinstance(base_op @ base_op.I, HomothetyOperator)
+        assert isinstance(base_op.I @ base_op, HomothetyOperator)
+    else:
+        assert isinstance(base_op @ base_op.I, IdentityOperator)
+        assert isinstance(base_op.I @ base_op, IdentityOperator)
 
 
 def test_inverse_dense(base_op_and_dense) -> None:

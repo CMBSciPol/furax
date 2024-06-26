@@ -20,7 +20,7 @@ def base_op_and_dense(request: pytest.FixtureRequest) -> (AbstractLinearOperator
         case 0:
             return IdentityOperator(in_structure), jnp.identity(7, dtype)
         case 1:
-            return HomothetyOperator(in_structure, 2.0), 2.0 * jnp.identity(7, dtype)
+            return HomothetyOperator(2.0, in_structure), 2.0 * jnp.identity(7, dtype)
         case 2:
             return DiagonalOperator((jnp.arange(1, 7).reshape(2, 3), jnp.array(8))), jnp.diag(
                 jnp.r_[jnp.arange(1, 7), 8]

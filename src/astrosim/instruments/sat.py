@@ -3,9 +3,9 @@ import numpy as np
 from astrosim.detectors import DetectorArray
 from astrosim.landscapes import HealpixLandscape
 from astrosim.operators import AbstractLinearOperator
+from astrosim.operators.hwp import RotatingHWPOperator
 from astrosim.operators.polarizers import LinearPolarizerOperator
 from astrosim.operators.projections import create_projection_operator
-from astrosim.operators.qu_rotations import QURotationOperator
 from astrosim.samplings import Sampling
 
 FOV_DEG = 35
@@ -60,6 +60,6 @@ def create_acquisition(
 ) -> AbstractLinearOperator:
     tod_shape = len(detector_dirs), len(samplings)
     proj = create_projection_operator(landscape, samplings, detector_dirs)
-    hwp = QURotationOperator.create(tod_shape, landscape.stokes, 0.0)
+    hwp = RotatingHWPOperator.create(tod_shape, landscape.stokes, 0.0)
     polarizer = LinearPolarizerOperator(tod_shape, landscape.stokes)
     return polarizer @ hwp @ proj

@@ -71,6 +71,9 @@ def test_solver(planck_iqu_256, sat_nhits):
     print(f'No JIT: {time.time() - time0}')
     assert solution.stats['num_steps'] < solution.stats['max_steps']
 
+    # hp.mollview(solution.value.I)
+    # mp.show()
+
     @jax.jit
     def func(tod):
         return lx.linear_solve(

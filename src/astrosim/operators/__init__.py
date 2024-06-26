@@ -1,6 +1,6 @@
 from astrosim._base.core import (
     AbstractLazyInverseOperator,
-    AbstractLazyOrthogonalOperator,
+    AbstractLazyInverseOrthogonalOperator,
     AbstractLazyTransposeOperator,
     AbstractLinearOperator,
     DiagonalOperator,
@@ -15,3 +15,21 @@ from astrosim._base.core import (
     symmetric,
     upper_triangular,
 )
+
+__all__ = [
+    'AbstractLazyInverseOperator',
+    'AbstractLazyInverseOrthogonalOperator',
+    'AbstractLazyTransposeOperator',
+    'AbstractLinearOperator',
+    'DiagonalOperator',
+    'HomothetyOperator',
+    'IdentityOperator',
+    'diagonal',
+    'lower_triangular',
+    'negative_semidefinite',
+    'orthogonal',
+    'positive_semidefinite',
+    'square',
+    'symmetric',
+    'upper_triangular',
+]

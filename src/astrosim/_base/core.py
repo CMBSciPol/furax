@@ -11,6 +11,7 @@ from astrosim._base.config import Config, ConfigState
 
 
 class AbstractLinearOperator(lx.AbstractLinearOperator):
+
     def __init_subclass__(cls, **keywords) -> None:
         _monkey_patch_operator(cls)
 
@@ -19,18 +20,22 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
             raise ValueError("Use '@' to compose operators")
         return self.mv(x)
 
-    def __matmul__(self, other):
+    def __matmul__(self, other: 'AbstractLinearOperator') -> 'AbstractLinearOperator':
         if not isinstance(other, lx.AbstractLinearOperator):
             return NotImplemented
+        if isinstance(other, CompositionOperator):
+            return NotImplemented
+        if isinstance(other, AbstractLazyInverseOperator):
+            if other.operator is self:
+                return IdentityOperator(self.in_structure())
         if self.in_structure() != other.out_structure():
             raise ValueError('Incompatible linear operator structures')
 
-        if isinstance(other, IdentityOperator):
-            return self
-        if isinstance(other, AbstractLazyInverseOperator):
-            if other.operator is self:
-                return IdentityOperator(other.in_structure())
-        return super().__matmul__(other)
+        return CompositionOperator([self, other])
+
+    def reduce(self) -> 'AbstractLinearOperator':
+        """Returns a linear operator with a reduced structure."""
+        return self
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         """Returns the operator as a dense matrix.
@@ -122,65 +127,6 @@ def _already_registered(cls: type[lx.AbstractLinearOperator], tag) -> bool:
 _monkey_patch_lineax_operator(lx.ComposedLinearOperator)
 
 
-class _AbstractLazyDualOperator(AbstractLinearOperator):  # type: ignore[misc]
-    operator: AbstractLinearOperator
-
-    def __init__(self, operator: AbstractLinearOperator):
-        self.operator = operator
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.out_structure()
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.in_structure()
-
-
-class AbstractLazyTransposeOperator(_AbstractLazyDualOperator):  # type: ignore[misc]
-
-    def transpose(self) -> AbstractLinearOperator:
-        return self.operator
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        return self.operator.as_matrix().T
-
-
-class AbstractLazyInverseOperator(_AbstractLazyDualOperator):  # type: ignore[misc]
-
-    def __matmul__(self, other):
-        # specialization in order to use `is` instead of `==`
-        if not isinstance(other, lx.AbstractLinearOperator):
-            return NotImplemented
-        if other is self.operator:
-            return IdentityOperator(self.operator.in_structure())
-        return super().__matmul__(other)
-
-    def inverse(self) -> AbstractLinearOperator:
-        return self.operator
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        return jnp.linalg.inv(self.operator.as_matrix())
-
-
-class LazyInverseOperator(AbstractLazyInverseOperator):
-    config: ConfigState = eqx.field(static=True)
-
-    def __init__(self, operator: AbstractLinearOperator):
-        super().__init__(operator)
-        self.config = Config.instance()
-
-    def mv(self, x):
-        solver = self.config.solver
-        options = self.config.solver_options.copy()
-        A = lx.TaggedLinearOperator(self.operator, lx.positive_semidefinite_tag)
-        if preconditioner := options.get('preconditioner'):
-            options['preconditioner'] = lx.TaggedLinearOperator(
-                preconditioner, lx.positive_semidefinite_tag
-            )
-        solution = lx.linear_solve(A, x, solver=solver, throw=True, options=options)
-        self.config.solver_callback(solution)
-        return solution.value
-
-
 T = TypeVar('T')
 
 
@@ -234,8 +180,117 @@ def orthogonal(cls: type[T]) -> type[T]:
     return cls
 
 
+class CompositionOperator(AbstractLinearOperator):
+    operands: list[AbstractLinearOperator]
+
+    def __init__(self, operands: list[AbstractLinearOperator]) -> None:
+        self.operands = operands
+
+    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
+        reduced_operator = self.reduce()
+        if isinstance(reduced_operator, CompositionOperator):
+            for operator in reversed(reduced_operator.operands):
+                x = operator.mv(x)
+            return x
+        return reduced_operator.mv(x)
+
+    def transpose(self) -> AbstractLinearOperator:
+        return CompositionOperator([_.T for _ in reversed(self.operands)])
+
+    def __matmul__(self, other: AbstractLinearOperator) -> 'CompositionOperator':
+        if not isinstance(other, AbstractLinearOperator):
+            return NotImplemented
+        if self.in_structure() != other.out_structure():
+            raise ValueError('Incompatible linear operator structures:')
+        if isinstance(other, CompositionOperator):
+            operands = other.operands
+        else:
+            operands = [other]
+        return CompositionOperator(self.operands + operands)
+
+    def __rmatmul__(self, other: AbstractLinearOperator) -> 'CompositionOperator':
+        if not isinstance(other, AbstractLinearOperator):
+            return NotImplemented
+        if self.out_structure() != other.in_structure():
+            raise ValueError('Incompatible linear operator structures')
+        return CompositionOperator([other] + self.operands)
+
+    def reduce(self) -> AbstractLinearOperator:
+        """Returns a linear operator with a reduced structure."""
+        from .rules import AlgebraicReductionRule
+
+        operands = AlgebraicReductionRule().apply(self.operands)
+        if len(operands) == 0:
+            return IdentityOperator(self.in_structure())
+        if len(operands) == 1:
+            return operands[0]
+        return CompositionOperator(operands)
+
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operands[-1].in_structure()
+
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operands[0].out_structure()
+
+
+class _AbstractLazyDualOperator(AbstractLinearOperator):  # type: ignore[misc]
+    operator: AbstractLinearOperator
+
+    def __init__(self, operator: AbstractLinearOperator):
+        self.operator = operator
+
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operator.out_structure()
+
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operator.in_structure()
+
+
+class AbstractLazyTransposeOperator(_AbstractLazyDualOperator):  # type: ignore[misc]
+
+    def transpose(self) -> AbstractLinearOperator:
+        return self.operator
+
+    def as_matrix(self) -> Inexact[Array, 'a b']:
+        return self.operator.as_matrix().T
+
+
+class AbstractLazyInverseOperator(_AbstractLazyDualOperator):  # type: ignore[misc]
+
+    def __matmul__(self, other):
+        if self.operator is other:
+            return IdentityOperator(self.in_structure())
+        return super().__matmul__(other)
+
+    def inverse(self) -> AbstractLinearOperator:
+        return self.operator
+
+    def as_matrix(self) -> Inexact[Array, 'a b']:
+        return jnp.linalg.inv(self.operator.as_matrix())
+
+
+class LazyInverseOperator(AbstractLazyInverseOperator):
+    config: ConfigState = eqx.field(static=True)
+
+    def __init__(self, operator: AbstractLinearOperator):
+        super().__init__(operator)
+        self.config = Config.instance()
+
+    def mv(self, x):
+        solver = self.config.solver
+        options = self.config.solver_options.copy()
+        A = lx.TaggedLinearOperator(self.operator, lx.positive_semidefinite_tag)
+        if preconditioner := options.get('preconditioner'):
+            options['preconditioner'] = lx.TaggedLinearOperator(
+                preconditioner, lx.positive_semidefinite_tag
+            )
+        solution = lx.linear_solve(A, x, solver=solver, throw=True, options=options)
+        self.config.solver_callback(solution)
+        return solution.value
+
+
 @orthogonal
-class AbstractLazyOrthogonalOperator(AbstractLazyTransposeOperator, AbstractLazyInverseOperator):  # type: ignore[misc]
+class AbstractLazyInverseOrthogonalOperator(AbstractLazyTransposeOperator, AbstractLazyInverseOperator):  # type: ignore[misc]
     pass
 
 
@@ -247,6 +302,11 @@ class IdentityOperator(AbstractLinearOperator):  # type: ignore[misc]
     def __init__(self, in_structure: PyTree[jax.ShapeDtypeStruct]):
         self._in_structure = in_structure
 
+    def __matmul__(self, other):
+        if not isinstance(other, AbstractLinearOperator):
+            return NotImplemented
+        return other
+
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return x
 
@@ -256,42 +316,32 @@ class IdentityOperator(AbstractLinearOperator):  # type: ignore[misc]
     def as_matrix(self) -> Inexact[Array, 'a b']:
         return jnp.identity(self.in_size())
 
-    def __matmul__(self, other):
-        if not isinstance(other, lx.AbstractLinearOperator):
-            return NotImplemented
-        return other
-
 
 @diagonal
 class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
-    _in_structure: PyTree[jax.ShapeDtypeStruct]
     value: float
+    _in_structure: PyTree[jax.ShapeDtypeStruct]
 
-    def __init__(self, in_structure: PyTree[jax.ShapeDtypeStruct], value: float):
-        self._in_structure = in_structure
+    def __init__(self, value: float, in_structure: PyTree[jax.ShapeDtypeStruct]):
         self.value = value
+        self._in_structure = in_structure
+
+    def __matmul__(self, other):
+        if isinstance(other, HomothetyOperator):
+            return HomothetyOperator(self.value * other.value, self._in_structure)
+        return super().__matmul__(other)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return jax.tree_map(lambda leave: self.value * leave, x)
 
     def inverse(self):
-        return HomothetyOperator(self._in_structure, 1 / self.value)
+        return HomothetyOperator(1 / self.value, self._in_structure)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         return self.value * jnp.identity(self.in_size())
-
-    def __matmul__(self, other):
-        if not isinstance(other, lx.AbstractLinearOperator):
-            return NotImplemented
-        if isinstance(other, HomothetyOperator):
-            value = self.value * other.value
-            if value == 1:
-                return IdentityOperator(self.in_structure())
-            return HomothetyOperator(self.in_structure(), value)
-        return super().__matmul__(other)
 
 
 @diagonal

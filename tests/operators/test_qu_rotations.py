@@ -48,3 +48,59 @@ def test_matmul(stokes) -> None:
     hwp = QURotationOperator.create(shape=(), stokes=stokes, angles=1.1)
     assert isinstance(hwp @ hwp.T, IdentityOperator)
     assert isinstance(hwp.T @ hwp, IdentityOperator)
+
+
+def test_simple() -> None:
+    theta = jnp.arange(10)
+    theta = 1
+    phi = theta + 1
+    mat = jnp.array(
+        [
+            [1, 0, 0, 0],
+            [0, jnp.cos(4 * theta), jnp.sin(4 * theta), 0],
+            [0, jnp.sin(4 * theta), -jnp.cos(4 * theta), 0],
+            [0, 0, 0, -1],
+        ]
+    )
+
+    def R(theta):
+        return jnp.array(
+            [
+                [1, 0, 0, 0],
+                [0, jnp.cos(theta), jnp.sin(theta), 0],
+                [0, -jnp.sin(theta), jnp.cos(theta), 0],
+                [0, 0, 0, 1],
+            ]
+        )
+
+    L = jnp.array(
+        [
+            [1, 1, 0, 0],
+        ]
+    )
+    HWP = jnp.array(
+        [
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, -1, 0],
+            [0, 0, 0, -1],
+        ]
+    )
+    alpha = 0.5
+    beta = 1.0
+    gamma = 1.5
+    H = L @ R(alpha) @ R(-beta) @ HWP @ R(beta) @ R(gamma)
+    H_test = L @ HWP @ R(-alpha + 2 * beta + gamma)
+
+    HTH = H.T @ H
+
+    c = jnp.cos(-alpha + 2 * beta + gamma)
+    s = jnp.sin(-alpha + 2 * beta + gamma)
+    HTH_test = jnp.array(
+        [
+            [1, c, s, 0],
+            [c, c**2, s * c, 0],
+            [s, s * c, s**2, 0],
+            [0, 0, 0, 0],
+        ]
+    )

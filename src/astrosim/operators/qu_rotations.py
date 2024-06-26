@@ -16,7 +16,7 @@ from astrosim.landscapes import (
     stokes_pytree_cls,
 )
 from astrosim.operators import (
-    AbstractLazyOrthogonalOperator,
+    AbstractLazyInverseOrthogonalOperator,
     AbstractLinearOperator,
     positive_semidefinite,
 )
@@ -77,7 +77,7 @@ class QURotationOperator(AbstractLinearOperator):
 
 
 @positive_semidefinite
-class QURotationTransposeOperator(AbstractLazyOrthogonalOperator):
+class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
 
     def mv(self, x: StokesPyTree) -> StokesPyTree:
         if self.operator.stokes != x.stokes:

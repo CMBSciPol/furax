@@ -1,4 +1,4 @@
-import equinox as eqx
+import equinox
 import jax
 import jax.numpy as jnp
 import jax_dataclasses as jdc
@@ -111,8 +111,8 @@ def test_as_matrix() -> None:
     class MyOperator(AbstractLinearOperator):
         n1 = 100
         n2 = 2
-        matrix1: jax.Array = eqx.field(static=True)
-        matrix2: jax.Array = eqx.field(static=True)
+        matrix1: jax.Array = equinox.field(static=True)
+        matrix2: jax.Array = equinox.field(static=True)
 
         def __init__(self) -> None:
             key = jax.random.key(0)

@@ -1,6 +1,6 @@
 from typing import TypeVar
 
-import equinox as eqx
+import equinox
 import jax
 import jax.numpy as jnp
 import lineax as lx
@@ -270,7 +270,7 @@ class AbstractLazyInverseOperator(_AbstractLazyDualOperator):  # type: ignore[mi
 
 
 class LazyInverseOperator(AbstractLazyInverseOperator):
-    config: ConfigState = eqx.field(static=True)
+    config: ConfigState = equinox.field(static=True)
 
     def __init__(self, operator: AbstractLinearOperator):
         super().__init__(operator)
@@ -297,7 +297,7 @@ class AbstractLazyInverseOrthogonalOperator(AbstractLazyTransposeOperator, Abstr
 @orthogonal
 @diagonal
 class IdentityOperator(AbstractLinearOperator):  # type: ignore[misc]
-    _in_structure: PyTree[jax.ShapeDtypeStruct]
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(self, in_structure: PyTree[jax.ShapeDtypeStruct]):
         self._in_structure = in_structure
@@ -320,7 +320,7 @@ class IdentityOperator(AbstractLinearOperator):  # type: ignore[misc]
 @diagonal
 class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
     value: float
-    _in_structure: PyTree[jax.ShapeDtypeStruct]
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(self, value: float, in_structure: PyTree[jax.ShapeDtypeStruct]):
         self.value = value
@@ -346,7 +346,7 @@ class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
 
 @diagonal
 class DiagonalOperator(AbstractLinearOperator):  # type: ignore[misc]
-    diagonal: PyTree[Float[Array, '...']] = eqx.field(static=True)
+    diagonal: PyTree[Float[Array, '...']] = equinox.field(static=True)
 
     def __init__(self, diagonal: PyTree[Float[Array, '...']]):
         self.diagonal = diagonal

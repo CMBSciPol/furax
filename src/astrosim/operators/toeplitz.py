@@ -1,6 +1,6 @@
 from typing import ClassVar
 
-import equinox as eqx
+import equinox
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -29,7 +29,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
 
     METHODS: ClassVar[tuple[str]] = ['dense', 'direct', 'fft', 'overlap_save']
     shape: tuple[int, int]
-    band_values: Float[Array, '...'] = eqx.field(static=True)
+    band_values: Float[Array, '...'] = equinox.field(static=True)
     method: str
     fft_size: int
 

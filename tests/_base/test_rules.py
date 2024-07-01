@@ -1,3 +1,4 @@
+import equinox
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -16,8 +17,8 @@ from astrosim._base.core import (
 
 
 class Op(AbstractLinearOperator):
-    _in_structure: PyTree[jax.ShapeDtypeStruct]
-    _out_structure: PyTree[jax.ShapeDtypeStruct]
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
+    _out_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(self, in_shape=None, out_shape=None):
         if out_shape is None:

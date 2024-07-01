@@ -1,4 +1,4 @@
-import equinox as eqx
+import equinox
 import jax.numpy as jnp
 from numpy.testing import assert_allclose
 
@@ -37,7 +37,7 @@ def test_inverse_diagonal_with_zeros1() -> None:
     op = DiagonalOperator((jnp.arange(4), jnp.array(0.0)))
     x = (jnp.ones(4), jnp.array(1.0))
     expected_y = jnp.array([0, 1, 1, 1]), jnp.array(0)
-    eqx.tree_equal(op.I(op(x)), expected_y)
+    equinox.tree_equal(op.I(op(x)), expected_y)
 
 
 def test_inverse_diagonal_with_zeros2() -> None:

@@ -1,4 +1,4 @@
-import equinox as eqx
+import equinox
 import jax
 import numpy as np
 from jax import Array
@@ -23,8 +23,8 @@ class HWPOperator(AbstractLinearOperator):
     """Operator for an ideal static Half-wave plate."""
 
     shape: tuple[int, ...]
-    dtype: DTypeLike = eqx.field(static=True)
-    stokes: ValidStokesType = eqx.field(static=True)
+    dtype: DTypeLike = equinox.field(static=True)
+    stokes: ValidStokesType = equinox.field(static=True)
 
     def __init__(
         self,
@@ -63,8 +63,8 @@ class RotatingHWPOperator(AbstractLinearOperator):
     """Operator for an ideal Half-wave plate."""
 
     shape: tuple[int, ...]
-    dtype: DTypeLike = eqx.field(static=True)
-    stokes: ValidStokesType = eqx.field(static=True)
+    dtype: DTypeLike = equinox.field(static=True)
+    stokes: ValidStokesType = equinox.field(static=True)
     cos_4angles: Float[Array, '...']
     sin_4angles: Float[Array, '...']
 

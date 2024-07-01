@@ -1,4 +1,4 @@
-import equinox as eqx
+import equinox
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -20,8 +20,8 @@ class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]
     """Class that integrates the input Stokes parameters assuming a linear polarizer."""
 
     shape: tuple[int, ...]
-    dtype: DTypeLike = eqx.field(static=True)
-    stokes: ValidStokesType = eqx.field(static=True)
+    dtype: DTypeLike = equinox.field(static=True)
+    stokes: ValidStokesType = equinox.field(static=True)
     theta: Float[Array, '...']
 
     def __init__(

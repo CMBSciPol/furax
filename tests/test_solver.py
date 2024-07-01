@@ -71,6 +71,9 @@ def test_solver(planck_iqu_256, sat_nhits):
     print(f'No JIT: {time.time() - time0}')
     assert solution.stats['num_steps'] < solution.stats['max_steps']
 
+    # import healpy as hp
+    # import matplotlib.pyplot as mp
+    #
     # hp.mollview(solution.value.I)
     # mp.show()
 

@@ -1,4 +1,4 @@
-import equinox as eqx
+import equinox
 import jax
 import numpy as np
 from jax import numpy as jnp
@@ -16,8 +16,8 @@ from astrosim.samplings import Sampling
 
 
 class SamplingOperator(AbstractLinearOperator):  # type: ignore[misc]
-    landscape: StokesLandscape = eqx.field(static=True)
-    indices: Integer[Array, '...'] = eqx.field(static=True)
+    landscape: StokesLandscape = equinox.field(static=True)
+    indices: Integer[Array, '...'] = equinox.field(static=True)
 
     def __init__(self, landscape: StokesLandscape, indices: Array):
         self.landscape = landscape
@@ -78,7 +78,7 @@ class SamplingTransposeOperator(AbstractLazyTransposeOperator):  # type: ignore[
 
 def create_projection_operator(
     landscape: HealpixLandscape, samplings: Sampling, detector_dirs: DetectorArray
-) -> SamplingOperator:
+) -> AbstractLinearOperator:
     rot = get_rotation_matrix(samplings)
 
     # i, j: rotation (3x3 xyz)
@@ -96,7 +96,9 @@ def create_projection_operator(
         # remove the number of directions per pixels if there is only one.
         indices = indices.reshape(indices.shape[0], indices.shape[2])
 
-    rotation = QURotationOperator.create(indices.shape, landscape.stokes, samplings.pa)
+    tod_structure = StokesPyTree.structure_for(landscape.stokes, indices.shape, landscape.dtype)
+
+    rotation = QURotationOperator(samplings.pa, tod_structure)
     sampling = SamplingOperator(landscape, indices)
     return rotation @ sampling
 

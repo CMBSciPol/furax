@@ -1,11 +1,11 @@
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import equinox
 import jax
 import jax.numpy as jnp
 import lineax as lx
 from jax import Array
-from jaxtyping import Float, Inexact, PyTree
+from jaxtyping import Float, Inexact, PyTree, ScalarLike
 
 from astrosim._base.config import Config, ConfigState
 
@@ -20,7 +20,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
             raise ValueError("Use '@' to compose operators")
         return self.mv(x)
 
-    def __matmul__(self, other: 'AbstractLinearOperator') -> 'AbstractLinearOperator':
+    def __matmul__(self, other: Any) -> 'AbstractLinearOperator':
         if not isinstance(other, lx.AbstractLinearOperator):
             return NotImplemented
         if isinstance(other, CompositionOperator):
@@ -32,6 +32,27 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
             raise ValueError('Incompatible linear operator structures')
 
         return CompositionOperator([self, other])
+
+    def __mul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
+        return other * self
+
+    def __rmul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
+        other = jnp.asarray(other)
+        if other.shape != ():
+            raise ValueError('Can only multiply AbstractLinearOperators by scalars.')
+        return HomothetyOperator(other, self.out_structure()) @ self
+
+    def __truediv__(self, other: ScalarLike) -> 'AbstractLinearOperator':
+        other = jnp.asarray(other)
+        if other.shape != ():
+            raise ValueError('Can only divide AbstractLinearOperators by scalars.')
+        return HomothetyOperator(1 / other, self.out_structure()) @ self
+
+    def __pos__(self) -> 'AbstractLinearOperator':
+        return self
+
+    def __neg__(self) -> 'AbstractLinearOperator':
+        return (-1) * self
 
     def reduce(self) -> 'AbstractLinearOperator':
         """Returns a linear operator with a reduced structure."""
@@ -322,7 +343,7 @@ class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
     value: float
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
-    def __init__(self, value: float, in_structure: PyTree[jax.ShapeDtypeStruct]):
+    def __init__(self, value: ScalarLike, in_structure: PyTree[jax.ShapeDtypeStruct]):
         self.value = value
         self._in_structure = in_structure
 

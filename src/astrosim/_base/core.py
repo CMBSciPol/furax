@@ -294,13 +294,16 @@ class LazyInverseOperator(AbstractLazyInverseOperator):
     config: ConfigState = equinox.field(static=True)
 
     def __init__(self, operator: AbstractLinearOperator):
+        if operator.in_structure() != operator.out_structure():
+            raise ValueError('Only square operators can be inverted.')
         super().__init__(operator)
         self.config = Config.instance()
 
     def mv(self, x):
+        reduced_operator = self.operator.reduce()
         solver = self.config.solver
         options = self.config.solver_options.copy()
-        A = lx.TaggedLinearOperator(self.operator, lx.positive_semidefinite_tag)
+        A = lx.TaggedLinearOperator(reduced_operator, lx.positive_semidefinite_tag)
         if preconditioner := options.get('preconditioner'):
             options['preconditioner'] = lx.TaggedLinearOperator(
                 preconditioner, lx.positive_semidefinite_tag

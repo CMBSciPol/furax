@@ -15,6 +15,7 @@ from astrosim._base.core import (
     symmetric,
     upper_triangular,
 )
+from astrosim._base.linear import PackOperator
 
 __all__ = [
     'AbstractLazyInverseOperator',
@@ -24,6 +25,7 @@ __all__ = [
     'DiagonalOperator',
     'HomothetyOperator',
     'IdentityOperator',
+    'PackOperator',
     'diagonal',
     'lower_triangular',
     'negative_semidefinite',

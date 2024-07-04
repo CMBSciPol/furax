@@ -302,14 +302,17 @@ class LazyInverseOperator(AbstractLazyInverseOperator):
     def mv(self, x):
         reduced_operator = self.operator.reduce()
         solver = self.config.solver
+        throw = self.config.solver_throw
         options = self.config.solver_options.copy()
         A = lx.TaggedLinearOperator(reduced_operator, lx.positive_semidefinite_tag)
         if preconditioner := options.get('preconditioner'):
             options['preconditioner'] = lx.TaggedLinearOperator(
                 preconditioner, lx.positive_semidefinite_tag
             )
-        solution = lx.linear_solve(A, x, solver=solver, throw=True, options=options)
-        self.config.solver_callback(solution)
+        solution = lx.linear_solve(A, x, solver=solver, throw=throw, options=options)
+        _ = jax.experimental.io_callback(
+            self.config.solver_callback, jax.ShapeDtypeStruct((), jnp.int8), solution
+        )
         return solution.value
 
 

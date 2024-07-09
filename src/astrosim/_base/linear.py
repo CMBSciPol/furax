@@ -4,8 +4,8 @@ from jax import Array
 from jax import numpy as jnp
 from jaxtyping import Bool, PyTree
 
-from astrosim._base.core import AbstractLazyTransposeOperator, AbstractLinearOperator
-from astrosim._base.rules import AbstractBinaryRule, NoReduction
+from .core import AbstractLazyTransposeOperator, AbstractLinearOperator
+from .rules import AbstractBinaryRule, NoReduction
 
 
 class PackOperator(AbstractLinearOperator):

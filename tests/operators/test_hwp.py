@@ -1,8 +1,8 @@
 import equinox
 import jax.numpy as jnp
 
-from astrosim.landscapes import StokesIPyTree, StokesIQUVPyTree, StokesPyTree, ValidStokesType
-from astrosim.operators.hwp import HWPOperator, RotatingHWPOperator
+from furax.landscapes import StokesIPyTree, StokesIQUVPyTree, StokesPyTree, ValidStokesType
+from furax.operators.hwp import HWPOperator, RotatingHWPOperator
 
 
 def test_hwp(stokes: ValidStokesType) -> None:

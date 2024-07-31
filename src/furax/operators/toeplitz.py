@@ -7,7 +7,7 @@ import numpy as np
 from jax import lax
 from jaxtyping import Array, Float, Inexact, PyTree
 
-from astrosim.operators import AbstractLinearOperator, symmetric
+from furax.operators import AbstractLinearOperator, symmetric
 
 __all__ = [
     'SymmetricBandToeplitzOperator',

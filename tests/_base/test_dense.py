@@ -6,7 +6,7 @@ from jax import Array
 from jaxtyping import Float
 from numpy.testing import assert_array_equal
 
-from astrosim._base.dense import DenseBlockDiagonalOperator
+from furax._base.dense import DenseBlockDiagonalOperator
 
 
 @pytest.mark.parametrize(

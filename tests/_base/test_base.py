@@ -5,7 +5,7 @@ import jax_dataclasses as jdc
 import numpy as np
 from numpy.testing import assert_array_equal
 
-from astrosim._base.core import (
+from furax._base.core import (
     AbstractLinearOperator,
     DiagonalOperator,
     HomothetyOperator,

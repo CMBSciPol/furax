@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 import scipy
 
-from astrosim import Config
-from astrosim.operators import PackOperator
-from astrosim.toast.obs_matrix import ToastObservationMatrixOperator
+from furax import Config
+from furax.operators import PackOperator
+from furax.toast.obs_matrix import ToastObservationMatrixOperator
 
 
 @pytest.mark.xfail(reason='We need to add an observation matrix of smaller nside.')

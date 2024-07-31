@@ -2,8 +2,8 @@ import equinox
 import jax.numpy as jnp
 import numpy as np
 
-from astrosim.landscapes import StokesIPyTree, StokesIQUPyTree, StokesPyTree
-from astrosim.operators.polarizers import LinearPolarizerOperator
+from furax.landscapes import StokesIPyTree, StokesIQUPyTree, StokesPyTree
+from furax.operators.polarizers import LinearPolarizerOperator
 
 
 def test_direct_i() -> None:

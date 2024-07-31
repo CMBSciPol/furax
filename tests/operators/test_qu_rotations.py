@@ -2,9 +2,9 @@ import equinox
 import jax.numpy as jnp
 import pytest
 
-from astrosim.landscapes import StokesIPyTree, StokesIQUPyTree, StokesPyTree, ValidStokesType
-from astrosim.operators import IdentityOperator
-from astrosim.operators.qu_rotations import QURotationOperator
+from furax.landscapes import StokesIPyTree, StokesIQUPyTree, StokesPyTree, ValidStokesType
+from furax.operators import IdentityOperator
+from furax.operators.qu_rotations import QURotationOperator
 
 
 def test_i() -> None:

@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from jaxtyping import PyTree
 
-from astrosim._base.core import (
+from furax._base.core import (
     AbstractLazyInverseOrthogonalOperator,
     AbstractLinearOperator,
     CompositionOperator,

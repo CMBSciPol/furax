@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
 
-from astrosim.landscapes import StokesPyTree, ValidStokesType
+from furax.landscapes import StokesPyTree, ValidStokesType
 
 
 @pytest.mark.parametrize(

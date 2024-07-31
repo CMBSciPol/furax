@@ -4,15 +4,11 @@ import numpy as np
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Integer, PyTree
 
-from astrosim.detectors import DetectorArray
-from astrosim.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree
-from astrosim.operators import (
-    AbstractLazyTransposeOperator,
-    AbstractLinearOperator,
-    DiagonalOperator,
-)
-from astrosim.operators.qu_rotations import QURotationOperator
-from astrosim.samplings import Sampling
+from furax.detectors import DetectorArray
+from furax.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree
+from furax.operators import AbstractLazyTransposeOperator, AbstractLinearOperator, DiagonalOperator
+from furax.operators.qu_rotations import QURotationOperator
+from furax.samplings import Sampling
 
 
 class SamplingOperator(AbstractLinearOperator):  # type: ignore[misc]

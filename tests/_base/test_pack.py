@@ -7,9 +7,9 @@ from jax import Array
 from jaxtyping import Bool, Float, PyTree
 from numpy.testing import assert_array_equal
 
-from astrosim._base.linear import PackOperator
-from astrosim.landscapes import StokesIPyTree, StokesIQUPyTree, StokesPyTree
-from astrosim.operators import IdentityOperator
+from furax._base.linear import PackOperator
+from furax.landscapes import StokesIPyTree, StokesIQUPyTree, StokesPyTree
+from furax.operators import IdentityOperator
 
 
 @pytest.mark.parametrize(

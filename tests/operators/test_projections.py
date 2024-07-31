@@ -3,9 +3,9 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.testing import assert_array_equal
 
-from astrosim.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree
-from astrosim.operators import DiagonalOperator
-from astrosim.operators.projections import SamplingOperator
+from furax.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree
+from furax.operators import DiagonalOperator
+from furax.operators.projections import SamplingOperator
 
 
 def test_direct(stokes) -> None:

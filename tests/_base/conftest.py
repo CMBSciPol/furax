@@ -4,7 +4,7 @@ import pytest
 from jax import Array
 from jax import numpy as jnp
 
-from astrosim._base.core import (
+from furax._base.core import (
     AbstractLinearOperator,
     DiagonalOperator,
     HomothetyOperator,

@@ -7,7 +7,7 @@ requires = [
 ]
 
 [project]
-name = 'astrosim'
+name = 'furax'
 authors = [
     {name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr'},
 ]
@@ -53,7 +53,7 @@ dev = [
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'
-repository = 'https://github.com/CMBSciPol/astrosim'
+repository = 'https://github.com/CMBSciPol/furax'
 
 [tool.coverage.report]
 exclude_lines = [
@@ -75,7 +75,7 @@ module = [
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-# addopts = '-ra --cov=astrosim --jaxtyping-packages=astrosim,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))'
+# addopts = '-ra --cov=furax --jaxtyping-packages=furax,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))'
 addopts = '-s -ra'
 testpaths = [
     'tests',
@@ -85,7 +85,7 @@ markers = [
 ]
 
 #[tool.setuptools]
-#packages = ['src/astrosim']
+#packages = ['src/furax']
 
 [tool.setuptools_scm]
 version_scheme = 'post-release'

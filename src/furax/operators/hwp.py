@@ -6,7 +6,7 @@ from jax import numpy as jnp
 from jax.typing import DTypeLike
 from jaxtyping import Float, PyTree
 
-from astrosim.landscapes import (
+from furax.landscapes import (
     StokesIPyTree,
     StokesIQUPyTree,
     StokesIQUVPyTree,
@@ -15,7 +15,7 @@ from astrosim.landscapes import (
     StokesQUPyTree,
     ValidStokesType,
 )
-from astrosim.operators import AbstractLinearOperator, diagonal, symmetric
+from furax.operators import AbstractLinearOperator, diagonal, symmetric
 
 
 @diagonal

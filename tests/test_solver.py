@@ -7,16 +7,16 @@ import numpy as np
 import pytest
 from numpy.random import PCG64, Generator
 
-from astrosim import Config
-from astrosim.instruments.sat import (
+from furax import Config
+from furax.instruments.sat import (
     DETECTOR_ARRAY_SHAPE,
     NDIR_PER_DETECTOR,
     create_acquisition,
     create_detector_directions,
 )
-from astrosim.landscapes import HealpixLandscape, StokesIQUPyTree
-from astrosim.operators import DiagonalOperator
-from astrosim.samplings import create_random_sampling
+from furax.landscapes import HealpixLandscape, StokesIQUPyTree
+from furax.operators import DiagonalOperator
+from furax.samplings import create_random_sampling
 
 
 def get_random_generator(seed: int) -> np.random.Generator:

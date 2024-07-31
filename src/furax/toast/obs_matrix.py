@@ -6,7 +6,7 @@ from jax import Array
 from jax.experimental.sparse.csr import CSR
 from jaxtyping import Inexact, PyTree
 
-from astrosim.operators import AbstractLazyTransposeOperator, AbstractLinearOperator, square
+from furax.operators import AbstractLazyTransposeOperator, AbstractLinearOperator, square
 
 
 @square

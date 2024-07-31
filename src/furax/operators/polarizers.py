@@ -5,7 +5,7 @@ import numpy as np
 from jax.typing import DTypeLike
 from jaxtyping import Array, Float, PyTree
 
-from astrosim.landscapes import (
+from furax.landscapes import (
     StokesIPyTree,
     StokesIQUPyTree,
     StokesIQUVPyTree,
@@ -13,7 +13,7 @@ from astrosim.landscapes import (
     StokesQUPyTree,
     ValidStokesType,
 )
-from astrosim.operators import AbstractLazyTransposeOperator, AbstractLinearOperator
+from furax.operators import AbstractLazyTransposeOperator, AbstractLinearOperator
 
 
 class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]

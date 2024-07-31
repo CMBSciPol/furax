@@ -2,7 +2,7 @@ import equinox
 import jax.numpy as jnp
 from numpy.testing import assert_allclose
 
-from astrosim._base.core import (
+from furax._base.core import (
     AbstractLazyInverseOperator,
     DiagonalOperator,
     HomothetyOperator,

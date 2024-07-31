@@ -6,8 +6,8 @@ from jax import numpy as jnp
 from jax.typing import DTypeLike
 from jaxtyping import Float, PyTree
 
-from astrosim._base.rules import AbstractBinaryRule, NoReduction
-from astrosim.landscapes import (
+from furax._base.rules import AbstractBinaryRule, NoReduction
+from furax.landscapes import (
     StokesIPyTree,
     StokesIQUPyTree,
     StokesIQUVPyTree,
@@ -15,7 +15,7 @@ from astrosim.landscapes import (
     StokesQUPyTree,
     ValidStokesType,
 )
-from astrosim.operators import (
+from furax.operators import (
     AbstractLazyInverseOrthogonalOperator,
     AbstractLinearOperator,
     orthogonal,

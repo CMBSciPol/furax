@@ -1,8 +1,8 @@
 import jax
 import numpy as np
 
-from astrosim._base.core import CompositionOperator
-from astrosim.operators import AbstractLinearOperator, HomothetyOperator
+from furax._base.core import CompositionOperator
+from furax.operators import AbstractLinearOperator, HomothetyOperator
 
 
 class Op(AbstractLinearOperator):

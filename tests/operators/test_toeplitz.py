@@ -6,7 +6,7 @@ import pytest
 from jax import jit
 from numpy.testing import assert_allclose
 
-from astrosim.operators.toeplitz import SymmetricBandToeplitzOperator, dense_symmetric_band_toeplitz
+from furax.operators.toeplitz import SymmetricBandToeplitzOperator, dense_symmetric_band_toeplitz
 
 
 @pytest.mark.parametrize(

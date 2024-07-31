@@ -1,6 +1,8 @@
-# AstroSim
+# Furax
 
-Building blocks for astrophysical inverse problems.
+Furax: a Framework for Unified and Robust data Analysis with JAX.
+
+This framework provides building blocks for solving inverse problems, in particular in the astrophysical and cosmological domains.
 
 ## Installation of the stable packaged distribution
 
@@ -24,16 +26,16 @@ chmod 600 ~/.netrc
 [global]
 index-url = https://gitlab.in2p3.fr/api/v4/projects/26092/packages/pypi/simple
 ```
-- After these steps are completed: you can install `astrosim` in the normal way:
+- After these steps are completed: you can install `furax` in the normal way:
 ```commandline
-pip install astrosim
+pip install furax
 ```
 
 ## Installation for development purposes
 
 ```bash
-git clone git@github.com:CMBSciPol/astrosim.git
-cd astrosim
+git clone git@github.com:CMBSciPol/furax.git
+cd furax
 python3 -m venv venv
 source venv/bin/activate
 pip install -e .[dev]
@@ -63,7 +65,7 @@ python -m venv venv
 source venv/bin/activate
 # install jax
 pip install --upgrade "jax[cuda11_local]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-# install astrosim
+# install furax
 pip install -e .[dev]
 ```
 ### launch script
@@ -100,7 +102,7 @@ The repo is already in the commun WORK folder, the data is downloaded and the en
 You only need to do this
 
 ```bash
-cd $ALL_CCFRWORK/astrosim-main
+cd $ALL_CCFRWORK/furax-main
 ```
 
 Then launch scripts as you see fit

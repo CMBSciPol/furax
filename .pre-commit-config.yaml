@@ -49,7 +49,7 @@ repos:
     # E731 do not assign a lambda expression, use a def
     # F722 syntax error in forward annotation
     - --extend-ignore=E203,E731,F722
-    files: ^astrosim/
+    files: ^furax/
 
 - repo: https://github.com/pre-commit/mirrors-mypy
   rev: 'v1.8.0'
@@ -68,6 +68,6 @@ repos:
     - --show-error-codes
     - --enable-error-code=ignore-without-code
     - --allow-untyped-calls
-    files: ^astrosim/
+    files: ^furax/
 
 exclude: '^slurms/'

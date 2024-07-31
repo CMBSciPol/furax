@@ -1,4 +1,4 @@
-from astrosim._base.core import (
+from furax._base.core import (
     AbstractLazyInverseOperator,
     AbstractLazyInverseOrthogonalOperator,
     AbstractLazyTransposeOperator,
@@ -15,7 +15,7 @@ from astrosim._base.core import (
     symmetric,
     upper_triangular,
 )
-from astrosim._base.linear import PackOperator
+from furax._base.linear import PackOperator
 
 __all__ = [
     'AbstractLazyInverseOperator',

@@ -7,7 +7,7 @@ import lineax as lx
 from jax import Array
 from jaxtyping import Float, Inexact, PyTree, ScalarLike
 
-from astrosim._base.config import Config, ConfigState
+from furax._base.config import Config, ConfigState
 
 
 class AbstractLinearOperator(lx.AbstractLinearOperator):

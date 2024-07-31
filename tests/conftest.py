@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from jaxtyping import Array, Float
 
-from astrosim.landscapes import StokesIQUPyTree, ValidStokesType
+from furax.landscapes import StokesIQUPyTree, ValidStokesType
 from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT
 
 

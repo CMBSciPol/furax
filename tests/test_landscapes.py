@@ -3,8 +3,8 @@ import pytest
 from jax import Array
 from numpy.testing import assert_array_equal
 
-from astrosim.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree, ValidStokesType
-from astrosim.samplings import Sampling
+from furax.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree, ValidStokesType
+from furax.samplings import Sampling
 
 
 def test_healpix_landscape(stokes: ValidStokesType) -> None:

@@ -2,7 +2,7 @@ import jax
 import lineax as lx
 import pytest
 
-from astrosim.operators import (
+from furax.operators import (
     AbstractLinearOperator,
     diagonal,
     lower_triangular,

@@ -1,12 +1,12 @@
 import numpy as np
 
-from astrosim.detectors import DetectorArray
-from astrosim.landscapes import HealpixLandscape
-from astrosim.operators import AbstractLinearOperator
-from astrosim.operators.hwp import RotatingHWPOperator
-from astrosim.operators.polarizers import LinearPolarizerOperator
-from astrosim.operators.projections import create_projection_operator
-from astrosim.samplings import Sampling
+from furax.detectors import DetectorArray
+from furax.landscapes import HealpixLandscape
+from furax.operators import AbstractLinearOperator
+from furax.operators.hwp import RotatingHWPOperator
+from furax.operators.polarizers import LinearPolarizerOperator
+from furax.operators.projections import create_projection_operator
+from furax.samplings import Sampling
 
 FOV_DEG = 35
 DIAMETER = 0.42

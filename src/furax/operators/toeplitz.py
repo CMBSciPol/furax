@@ -28,15 +28,15 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
     """
 
     METHODS: ClassVar[tuple[str]] = ['dense', 'direct', 'fft', 'overlap_save']
-    shape: tuple[int, int]
     band_values: Float[Array, '...'] = equinox.field(static=True)
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     method: str
     fft_size: int
 
     def __init__(
         self,
-        shape: tuple[int, int],
         band_values: Float[Array, ' a'],
+        in_structure: PyTree[jax.ShapeDtypeStruct],
         *,
         method: str = 'overlap_save',
         fft_size: int | None = None,
@@ -52,7 +52,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
                 raise ValueError('The FFT size should not be less than the number of bands.')
 
         self.band_values = band_values
-        self.shape = shape
+        self._in_structure = in_structure
         self.fft_size = fft_size
         self.method = method
         if fft_size is None and method.startswith('overlap_'):
@@ -161,10 +161,10 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         return self._get_func()(x)
 
     def as_matrix(self) -> Inexact[Array, 'a a']:
-        raise dense_symmetric_band_toeplitz(self.shape[0], self.band_values)
+        raise dense_symmetric_band_toeplitz(self.in_structure().shape, self.band_values)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.ShapeDtypeStruct(self.shape, float)
+        return self._in_structure
 
 
 def dense_symmetric_band_toeplitz(n, band_values):

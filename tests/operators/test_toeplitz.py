@@ -1,5 +1,6 @@
 import itertools
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -37,8 +38,9 @@ def test_dense_symmetric_band_toeplitz(
 )
 def test_fft(n: int, band_values):
     x = jnp.arange(n) + 1
-    actual_y = SymmetricBandToeplitzOperator((n, n), band_values, method='fft')(x)
-    expected_y = SymmetricBandToeplitzOperator((n, n), band_values, method='dense')(x)
+    in_structure = jax.ShapeDtypeStruct((n,), jnp.float64)
+    actual_y = SymmetricBandToeplitzOperator(band_values, in_structure, method='fft')(x)
+    expected_y = SymmetricBandToeplitzOperator(band_values, in_structure, method='dense')(x)
     assert_allclose(actual_y, expected_y)
 
 
@@ -46,10 +48,10 @@ def test_fft(n: int, band_values):
 @pytest.mark.parametrize('method', SymmetricBandToeplitzOperator.METHODS)
 def test(method: str, do_jit: bool) -> None:
     band_values = jnp.array([4.0, 3, 2, 1])
-    shape = (6, 6)
+    in_structure = jax.ShapeDtypeStruct((6,), jnp.float64)
     x = jnp.array([1.0, 2, 3, 4, 5, 6])
     expected_y = jnp.array([20.0, 33, 48, 57, 58, 50])
-    func = SymmetricBandToeplitzOperator(shape, band_values, method=method)
+    func = SymmetricBandToeplitzOperator(band_values, in_structure, method=method)
     if do_jit:
         func = jit(func)
     y = func(x)

@@ -190,11 +190,11 @@ class StokesPyTree(ABC):
 
     def ravel(self) -> Self:
         """Ravels each Stokes component."""
-        return jax.tree_map(lambda x: x.ravel(), self)
+        return jax.tree.map(lambda x: x.ravel(), self)
 
     def reshape(self, shape: tuple[int, ...]) -> Self:
         """Reshape each Stokes component."""
-        return jax.tree_map(lambda x: x.reshape(shape), self)
+        return jax.tree.map(lambda x: x.reshape(shape), self)
 
 
 @jdc.pytree_dataclass

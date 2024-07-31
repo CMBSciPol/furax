@@ -64,7 +64,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
         Input and output PyTrees are flattened and concatenated.
         """
         in_struct = self.in_structure()
-        in_pytree = jax.tree_map(lambda s: jnp.zeros(s.shape, s.dtype), in_struct)
+        in_pytree = jax.tree.map(lambda s: jnp.zeros(s.shape, s.dtype), in_struct)
         in_leaves_ref, in_treedef = jax.tree.flatten(in_pytree)
 
         matrix = jnp.empty(
@@ -359,7 +359,7 @@ class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
         return super().__matmul__(other)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
-        return jax.tree_map(lambda leave: self.value * leave, x)
+        return jax.tree.map(lambda leave: self.value * leave, x)
 
     def inverse(self):
         return HomothetyOperator(1 / self.value, self._in_structure)
@@ -379,7 +379,7 @@ class DiagonalOperator(AbstractLinearOperator):  # type: ignore[misc]
         self.diagonal = diagonal
 
     def mv(self, sky: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
-        return jax.tree_map((lambda a, b: a * b), sky, self.diagonal)
+        return jax.tree.map((lambda a, b: a * b), sky, self.diagonal)
 
     def inverse(self) -> 'AbstractLinearOperator':
         return DiagonalInverseOperator(self)
@@ -389,7 +389,7 @@ class DiagonalOperator(AbstractLinearOperator):  # type: ignore[misc]
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         leaves = jax.tree.leaves(self.diagonal)
-        return jnp.diag(jnp.concatenate(jax.tree_map(lambda _: _.ravel(), leaves)))
+        return jnp.diag(jnp.concatenate(jax.tree.map(lambda _: _.ravel(), leaves)))
 
 
 class DiagonalInverseOperator(AbstractLazyInverseOperator):
@@ -397,7 +397,7 @@ class DiagonalInverseOperator(AbstractLazyInverseOperator):
         def mul_inv(diagonal_leaf, x_leaf):
             return jnp.where(diagonal_leaf != 0, x_leaf / diagonal_leaf, 0)
 
-        y = jax.tree_map(mul_inv, self.operator.diagonal, x)
+        y = jax.tree.map(mul_inv, self.operator.diagonal, x)
         return y
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
@@ -406,4 +406,4 @@ class DiagonalInverseOperator(AbstractLazyInverseOperator):
             return jnp.where(leaf != 0, 1 / leaf, 0)
 
         leaves = jax.tree.leaves(self.operator.diagonal)
-        return jnp.diag(jnp.concatenate(jax.tree_map(inv, leaves)))
+        return jnp.diag(jnp.concatenate(jax.tree.map(inv, leaves)))

@@ -1,8 +1,10 @@
+from functools import partial
 from typing import ClassVar
 
 import equinox
 import jax
 import jax.numpy as jnp
+import jax.scipy.linalg as jsl
 import numpy as np
 from jax import lax
 from jaxtyping import Array, Float, Inexact, PyTree
@@ -18,6 +20,11 @@ __all__ = [
 class SymmetricBandToeplitzOperator(AbstractLinearOperator):
     """Class to represent Symmetric Band Toeplitz matrices.
 
+    If the specified band values are multidimensional, the operator is block diagonal, each block
+    being a symmetric band Toeplitz matrix that uses the last dimension for the band values.
+
+    The band values may be broadcast to match the input shape of the operator.
+
     Five methods are available, where N is the size of the Toeplitz matrix and K the number
     of non-zero bands:
         - dense, using the dense matrix: O(N^2)
@@ -25,6 +32,26 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         - fft, applying the DFT on the whole input: O(NlogN)
         - overlap_save, applying the DFT on chunked input: O(NlogK)
         - overlap_add, applying the DFT on chunked input: O(NlogK)
+
+    Usage:
+        >>> tod = jnp.ones((2, 5))
+        >>> op = SymmetricBandToeplitzOperator(
+        ... jnp.array([[1., 0.5], [1, 0.25]]),
+        ... jax.ShapeDtypeStruct(tod.shape, tod.dtype))
+        >>> op(tod)
+        Array([[1.5 , 2.  , 2.  , 2.  , 1.5 ],
+               [1.25, 1.5 , 1.5 , 1.5 , 1.25]], dtype=float64)
+        >>> op.as_matrix()
+        Array([[1.  , 0.5 , 0.  , 0.  , 0.  , 0.  , 0.  , 0.  , 0.  , 0.  ],
+               [0.5 , 1.  , 0.5 , 0.  , 0.  , 0.  , 0.  , 0.  , 0.  , 0.  ],
+               [0.  , 0.5 , 1.  , 0.5 , 0.  , 0.  , 0.  , 0.  , 0.  , 0.  ],
+               [0.  , 0.  , 0.5 , 1.  , 0.5 , 0.  , 0.  , 0.  , 0.  , 0.  ],
+               [0.  , 0.  , 0.  , 0.5 , 1.  , 0.  , 0.  , 0.  , 0.  , 0.  ],
+               [0.  , 0.  , 0.  , 0.  , 0.  , 1.  , 0.25, 0.  , 0.  , 0.  ],
+               [0.  , 0.  , 0.  , 0.  , 0.  , 0.25, 1.  , 0.25, 0.  , 0.  ],
+               [0.  , 0.  , 0.  , 0.  , 0.  , 0.  , 0.25, 1.  , 0.25, 0.  ],
+               [0.  , 0.  , 0.  , 0.  , 0.  , 0.  , 0.  , 0.25, 1.  , 0.25],
+               [0.  , 0.  , 0.  , 0.  , 0.  , 0.  , 0.  , 0.  , 0.25, 1.  ]],      dtype=float64)
     """
 
     METHODS: ClassVar[tuple[str]] = ['dense', 'direct', 'fft', 'overlap_save']
@@ -77,17 +104,17 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
 
         raise NotImplementedError
 
-    def _apply_dense(self, x):
-        matrix = dense_symmetric_band_toeplitz(x.shape[-1], self.band_values)
+    def _apply_dense(self, x, band_values):
+        matrix = dense_symmetric_band_toeplitz(x.shape[-1], band_values)
         return matrix @ x
 
-    def _apply_direct(self, x):
-        kernel = self._get_kernel()
+    def _apply_direct(self, x, band_values):
+        kernel = self._get_kernel(band_values)
         half_band_width = kernel.size // 2
         return jnp.convolve(jnp.pad(x, (half_band_width, half_band_width)), kernel, mode='valid')
 
-    def _apply_fft(self, x):
-        kernel = self._get_kernel()
+    def _apply_fft(self, x, band_values):
+        kernel = self._get_kernel(band_values)
         half_band_width = kernel.size // 2
         H = jnp.fft.fft(kernel, x.shape[-1] + 2 * half_band_width)
         x_padded = jnp.pad(x, (0, 2 * half_band_width), mode='constant')
@@ -97,9 +124,9 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
             return Y_padded
         return Y_padded[half_band_width:-half_band_width]
 
-    def _apply_overlap_add(self, x):
+    def _apply_overlap_add(self, x, band_values):
         l = x.shape[-1]
-        kernel = self._get_kernel()
+        kernel = self._get_kernel(band_values)
         H = jnp.fft.fft(kernel, self.fft_size)
         half_band_width = kernel.size // 2
         m = self.fft_size - 2 * half_band_width
@@ -126,8 +153,8 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         y = lax.fori_loop(0, len(range(0, l, m)), func, y)
         return y[half_band_width:-half_band_width]
 
-    def _apply_overlap_save(self, x):
-        kernel = self._get_kernel()
+    def _apply_overlap_save(self, x, band_values):
+        kernel = self._get_kernel(band_values)
         half_band_width = kernel.size // 2
         H = jnp.fft.fft(kernel, self.fft_size)
         l = x.shape[-1]
@@ -153,15 +180,25 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         y = lax.fori_loop(0, nblock, func, y)
         return y[half_band_width : half_band_width + l]
 
-    def _get_kernel(self) -> Float[Array, ' a']:
+    def _get_kernel(self, band_values) -> Float[Array, ' a']:
         """[4, 3, 2, 1] -> [1, 2, 3, 4, 3, 2, 1]"""
-        return jnp.concatenate([self.band_values[-1:0:-1], self.band_values])
+        return jnp.concatenate((band_values[-1:0:-1], band_values))
 
     def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
-        return self._get_func()(x)
+        func = jnp.vectorize(self._get_func(), signature='(n),(k)->(n)')
+        return func(x, self.band_values)
 
     def as_matrix(self) -> Inexact[Array, 'a a']:
-        raise dense_symmetric_band_toeplitz(self.in_structure().shape, self.band_values)
+        @partial(jnp.vectorize, signature='(n),(k)->(n,n)')
+        def func(x, band_values):
+            return dense_symmetric_band_toeplitz(x.size, band_values)
+
+        x = jnp.zeros(self.in_structure().shape, self.in_structure().dtype)
+        blocks = func(x, self.band_values)
+        if blocks.ndim > 2:
+            blocks = blocks.reshape(-1, blocks.shape[-1], blocks.shape[-1])
+            return jsl.block_diag(*blocks)
+        return blocks
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure

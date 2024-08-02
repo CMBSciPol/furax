@@ -2,11 +2,13 @@ import itertools
 
 import jax
 import jax.numpy as jnp
+import jax.scipy.linalg as jsl
 import numpy as np
 import pytest
 from jax import jit
 from numpy.testing import assert_allclose
 
+from furax._base.core import AbstractLinearOperator
 from furax.operators.toeplitz import SymmetricBandToeplitzOperator, dense_symmetric_band_toeplitz
 
 
@@ -58,6 +60,47 @@ def test(method: str, do_jit: bool) -> None:
     assert_allclose(y, expected_y, rtol=1e-7, atol=1e-7)
 
 
+@pytest.mark.parametrize('method', SymmetricBandToeplitzOperator.METHODS)
+@pytest.mark.parametrize(
+    'in_shape, band_shape',
+    [
+        ((2, 6), (4,)),
+        ((2, 6), (1, 4)),
+        ((2, 6), (2, 4)),
+        ((1, 2, 6), (4,)),
+        ((1, 2, 6), (1, 4)),
+        ((1, 2, 6), (1, 1, 4)),
+        ((1, 2, 6), (1, 2, 4)),
+        ((2, 1, 6), (1, 1, 4)),
+        ((2, 1, 6), (2, 1, 4)),
+        ((2, 2, 6), (1, 1, 4)),
+        ((2, 2, 6), (1, 2, 4)),
+        ((2, 2, 6), (2, 1, 4)),
+        ((2, 2, 6), (2, 2, 4)),
+        ((1, 2, 2, 6), (2, 1, 4)),
+    ],
+    ids=lambda x: str(x).replace(' ', ''),
+)
+def test_multidimensional(
+    in_shape: tuple[int, ...], band_shape: tuple[int, ...], method: str
+) -> None:
+    band_values = jnp.arange(np.prod(band_shape)).reshape(band_shape)
+    in_structure = jax.ShapeDtypeStruct(in_shape, jnp.float64)
+    op = SymmetricBandToeplitzOperator(band_values, in_structure, method=method)
+    broadcast_band_values = jnp.broadcast_to(band_values, in_shape[:-1] + (4,))
+    expected_blocks = [
+        dense_symmetric_band_toeplitz(6, band_values_)
+        for band_values_ in broadcast_band_values.reshape(-1, 4)
+    ]
+    expected_matrix = jsl.block_diag(*expected_blocks)
+
+    actual_matrix = AbstractLinearOperator.as_matrix(op)
+    assert_allclose(actual_matrix, expected_matrix, rtol=1e-7, atol=1e-7)
+
+    actual_matrix = op.as_matrix()
+    assert_allclose(actual_matrix, expected_matrix, rtol=1e-7, atol=1e-7)
+
+
 @pytest.mark.parametrize(
     'band_number, expected_fft_size',
     [(1, 2), (2, 4), (3, 8), (4, 8), (5, 16), (1023, 2048), (1024, 2048), (1025, 4096)],
@@ -65,10 +108,3 @@ def test(method: str, do_jit: bool) -> None:
 def test_default_size(band_number: int, expected_fft_size: int):
     actual_fft_size = SymmetricBandToeplitzOperator._get_default_fft_size(band_number)
     assert actual_fft_size == expected_fft_size
-
-
-def test_overlap_fft_size():
-    band_values = jnp.array([1.0, 0.5, 0.25])
-    matrix_sizes = [3, 4, 5, 6, 7, 8, 8]
-    fft_sizes = [8, 16]
-    # TBD

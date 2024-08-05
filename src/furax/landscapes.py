@@ -139,7 +139,7 @@ class StokesPyTree(ABC):
             raise TypeError(f'Unexpected number of Stokes parameters: {len(args)}.')
 
         if not keywords:
-            raise TypeError(f'The Stokes vectors are not specified.')
+            raise TypeError('The Stokes vectors are not specified.')
         i = keywords.pop('I', None)
         q = keywords.pop('Q', None)
         u = keywords.pop('U', None)
@@ -309,15 +309,15 @@ class Landscape(ABC):
 class StokesLandscape(Landscape):
     """Class representing a multidimensional map of Stokes vectors.
 
-    We assume that integer pixel values fall at the center of pixels (as in the FITS WCS standard, see Section 2.1.4
-    of Greisen et al., 2002, A&A 446, 747).
+    We assume that integer pixel values fall at the center of pixels (as in the FITS WCS standard,
+    see Section 2.1.4 of Greisen et al., 2002, A&A 446, 747).
 
     Attributes:
-        shape: The shape of the array that stores the map values. The dimensions are in the reverse order of
-            the FITS NAXIS* keywords. For a 2-dimensional map, the shape corresponds to (NAXIS2, NAXIS1) or
-            (:math:`n_row`, :math:`n_col`), i.e. (:math:`n_y`, :math:`n_x`).
-        pixel_shape: The shape in reversed order. For a 2-dimensional map, the shape corresponds to (NAXIS1, NAXIS2) or
-            (:math:`n_col`, :math:`n_row`), i.e. (:math:`n_x`, :math:`n_y`).
+        shape: The shape of the array that stores the map values. The dimensions are in the reverse
+            order of the FITS NAXIS* keywords. For a 2-dimensional map, the shape corresponds to
+            (NAXIS2, NAXIS1) or (:math:`n_row`, :math:`n_col`), i.e. (:math:`n_y`, :math:`n_x`).
+        pixel_shape: The shape in reversed order. For a 2-dimensional map, the shape corresponds to
+            (NAXIS1, NAXIS2) or (:math:`n_col`, :math:`n_row`), i.e. (:math:`n_x`, :math:`n_y`).
         stokes: The identifier for the Stokes vectors (`I`, `QU`, `IQU` or `IQUV`)
         dtype: The data type for the values of the landscape.
     """
@@ -388,14 +388,16 @@ class StokesLandscape(Landscape):
     def pixel2index(self, *coords: Float[Array, ' *dims']) -> Integer[Array, ' *ndims']:
         r"""Converts multidimensional pixel coordinates into 1-dimensional indices.
 
-        The order for the indices is row-major, i.e. from the leftmost to the rightmost argument, we walk from the
-        fastest to the lowest dimensions. Example for a map of shape :math:`(n_y, n_x)`, the pixel with float
-        coordinates :math:`(p_x, p_y)` has an index :math:`i = round(p_x) + n_x round(p_y)`.
+        The order for the indices is row-major, i.e. from the leftmost to the rightmost argument,
+        we walk from the fastest to the lowest dimensions. Example for a map of shape
+        :math:`(n_y, n_x)`, the pixel with float coordinates :math:`(p_x, p_y)` has an index
+        :math:`i = round(p_x) + n_x round(p_y)`.
 
         The indices travel from bottom to top, like the Y-coordinates.
 
-        Integer values of the pixel coordinates correspond to the pixel centers. The points :math:`(p_x, p_y)` strictly
-        inside a pixel centered on the integer coordinates :math:`(i_x, i_y)` verify
+        Integer values of the pixel coordinates correspond to the pixel centers. The points
+        :math:`(p_x, p_y)` strictly inside a pixel centered on the integer coordinates
+        :math:`(i_x, i_y)` verify
             - :math:`i_x - ½ < p_x < i_x + ½`
             - :math:`i_y - ½ < p_y < i_y + ½`
 
@@ -405,8 +407,8 @@ class StokesLandscape(Landscape):
             *coords: The floating-point pixel coordinates along the X, Y, Z, ... axes.
 
         Returns:
-            The 1-dimensional integer indices associated to the pixel coordinates. The data type is int32, unless
-            the landscape largest index would overflow, in which case it is int64.
+            The 1-dimensional integer indices associated to the pixel coordinates. The data type is
+            int32, unless the landscape largest index would overflow, in which case it is int64.
         """
         if len(self) - 1 <= np.iinfo(np.iinfo(np.int32)).max:
             dtype = np.int32

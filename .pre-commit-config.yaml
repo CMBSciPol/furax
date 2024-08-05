@@ -45,11 +45,14 @@ repos:
     name: flake 8 (src)
     args:
     - --max-line-length=100
-    # E203 whitespace before ':' (black incompatibility)
-    # E731 do not assign a lambda expression, use a def
-    # F722 syntax error in forward annotation
-    - --extend-ignore=E203,E731,F722
-    files: ^furax/
+    # E203 Whitespace before ':' (black incompatibility)
+    # E731 Do not assign a lambda expression, use a def
+    # E741 Do not use variables named 'I', 'O', or 'l'
+    # E743 Do not define functions named 'I', 'O', or 'l'
+    # F722 Syntax error in forward annotation
+    - --extend-ignore=E203,E731,E741,F722
+    - --per-file-ignores=src/furax/_base/core.py:E743
+    files: ^src/furax/
 
 - repo: https://github.com/pre-commit/mirrors-mypy
   rev: 'v1.11.1'

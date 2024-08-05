@@ -80,7 +80,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
                 zeros[ileaf] = leaf.ravel().at[index].set(1).reshape(leaf.shape)
                 in_pytree = jax.tree.unflatten(in_treedef, zeros)
                 out_pytree = self.mv(in_pytree)
-                out_leaves = [l.ravel() for l in jax.tree.leaves(out_pytree)]
+                out_leaves = [leaf.ravel() for leaf in jax.tree.leaves(out_pytree)]
                 matrix = matrix.at[:, jcounter].set(jnp.concatenate(out_leaves))
                 jcounter += 1
                 return matrix, jcounter
@@ -317,7 +317,9 @@ class LazyInverseOperator(AbstractLazyInverseOperator):
 
 
 @orthogonal
-class AbstractLazyInverseOrthogonalOperator(AbstractLazyTransposeOperator, AbstractLazyInverseOperator):  # type: ignore[misc]
+class AbstractLazyInverseOrthogonalOperator(
+    AbstractLazyTransposeOperator, AbstractLazyInverseOperator
+):
     pass
 
 

@@ -1,6 +1,7 @@
 import contextvars
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
+from types import TracebackType
 from typing import Any
 
 import jax.numpy as jnp
@@ -39,20 +40,25 @@ _config_var = contextvars.ContextVar('config', default=ConfigState())
 
 
 class Config:
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any) -> None:
         config = _config_var.get()
         self._instance = replace(config, **kwargs)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return yaml.dump(self._instance, indent=4)
 
     def __enter__(self) -> ConfigState:
         self.token = _config_var.set(self._instance)
         return self._instance
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         _config_var.reset(self.token)
 
     @classmethod
-    def instance(cls):
+    def instance(cls) -> ConfigState:
         return _config_var.get()

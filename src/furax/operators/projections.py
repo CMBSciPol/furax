@@ -11,7 +11,7 @@ from furax.operators.qu_rotations import QURotationOperator
 from furax.samplings import Sampling
 
 
-class SamplingOperator(AbstractLinearOperator):  # type: ignore[misc]
+class SamplingOperator(AbstractLinearOperator):
     landscape: StokesLandscape = equinox.field(static=True)
     indices: Integer[Array, '...'] = equinox.field(static=True)
 
@@ -36,7 +36,7 @@ class SamplingOperator(AbstractLinearOperator):  # type: ignore[misc]
         )
 
 
-class SamplingTransposeOperator(AbstractLazyTransposeOperator):  # type: ignore[misc]
+class SamplingTransposeOperator(AbstractLazyTransposeOperator):
     operator: SamplingOperator
 
     def mv(self, x: StokesPyTree) -> StokesPyTree:

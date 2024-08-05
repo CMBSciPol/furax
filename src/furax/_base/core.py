@@ -12,7 +12,7 @@ from furax._base.config import Config, ConfigState
 
 class AbstractLinearOperator(lx.AbstractLinearOperator):
 
-    def __init_subclass__(cls, **keywords) -> None:
+    def __init_subclass__(cls, **keywords: Any) -> None:
         _monkey_patch_operator(cls)
 
     def __call__(self, x: PyTree[jax.ShapeDtypeStruct]) -> PyTree[jax.ShapeDtypeStruct]:
@@ -89,10 +89,10 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
 
         return matrix
 
-    def transpose(self) -> lx.AbstractLinearOperator:
+    def transpose(self) -> 'AbstractLinearOperator':
         raise NotImplementedError
 
-    def inverse(self) -> lx.AbstractLinearOperator:
+    def inverse(self) -> 'AbstractLinearOperator':
         return LazyInverseOperator(self)
 
     @property
@@ -254,7 +254,7 @@ class CompositionOperator(AbstractLinearOperator):
         return self.operands[0].out_structure()
 
 
-class _AbstractLazyDualOperator(AbstractLinearOperator):  # type: ignore[misc]
+class _AbstractLazyDualOperator(AbstractLinearOperator):
     operator: AbstractLinearOperator
 
     def __init__(self, operator: AbstractLinearOperator):
@@ -267,7 +267,7 @@ class _AbstractLazyDualOperator(AbstractLinearOperator):  # type: ignore[misc]
         return self.operator.in_structure()
 
 
-class AbstractLazyTransposeOperator(_AbstractLazyDualOperator):  # type: ignore[misc]
+class AbstractLazyTransposeOperator(_AbstractLazyDualOperator):
 
     def transpose(self) -> AbstractLinearOperator:
         return self.operator
@@ -276,7 +276,7 @@ class AbstractLazyTransposeOperator(_AbstractLazyDualOperator):  # type: ignore[
         return self.operator.as_matrix().T
 
 
-class AbstractLazyInverseOperator(_AbstractLazyDualOperator):  # type: ignore[misc]
+class AbstractLazyInverseOperator(_AbstractLazyDualOperator):
 
     def __matmul__(self, other):
         if self.operator is other:
@@ -325,7 +325,7 @@ class AbstractLazyInverseOrthogonalOperator(
 
 @orthogonal
 @diagonal
-class IdentityOperator(AbstractLinearOperator):  # type: ignore[misc]
+class IdentityOperator(AbstractLinearOperator):
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(self, in_structure: PyTree[jax.ShapeDtypeStruct]):
@@ -347,7 +347,7 @@ class IdentityOperator(AbstractLinearOperator):  # type: ignore[misc]
 
 
 @diagonal
-class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
+class HomothetyOperator(AbstractLinearOperator):
     value: float
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
@@ -355,7 +355,7 @@ class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
         self.value = value
         self._in_structure = in_structure
 
-    def __matmul__(self, other):
+    def __matmul__(self, other) -> AbstractLinearOperator:
         if isinstance(other, HomothetyOperator):
             return HomothetyOperator(self.value * other.value, self._in_structure)
         return super().__matmul__(other)
@@ -374,7 +374,7 @@ class HomothetyOperator(AbstractLinearOperator):  # type: ignore[misc]
 
 
 @diagonal
-class DiagonalOperator(AbstractLinearOperator):  # type: ignore[misc]
+class DiagonalOperator(AbstractLinearOperator):
     diagonal: PyTree[Float[Array, '...']] = equinox.field(static=True)
 
     def __init__(self, diagonal: PyTree[Float[Array, '...']]):

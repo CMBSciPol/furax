@@ -16,7 +16,7 @@ from furax.landscapes import (
 from furax.operators import AbstractLazyTransposeOperator, AbstractLinearOperator
 
 
-class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]
+class LinearPolarizerOperator(AbstractLinearOperator):
     """Class that integrates the input Stokes parameters assuming a linear polarizer."""
 
     shape: tuple[int, ...]
@@ -60,7 +60,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):  # type: ignore[misc]
         return jax.ShapeDtypeStruct(self.shape, self.dtype)
 
 
-class LinearPolarizerTransposeOperator(AbstractLazyTransposeOperator):  # type: ignore[misc]
+class LinearPolarizerTransposeOperator(AbstractLazyTransposeOperator):
 
     def mv(self, x: Float[Array, ' {self.shape}']) -> StokesPyTree:
         stokes = self.operator.stokes

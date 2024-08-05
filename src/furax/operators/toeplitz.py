@@ -186,7 +186,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
 
     def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
         func = jnp.vectorize(self._get_func(), signature='(n),(k)->(n)')
-        return func(x, self.band_values)
+        return func(x, self.band_values)  # type: ignore[no-any-return]
 
     def as_matrix(self) -> Inexact[Array, 'a a']:
         @partial(jnp.vectorize, signature='(n),(k)->(n,n)')

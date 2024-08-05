@@ -190,11 +190,11 @@ class StokesPyTree(ABC):
 
     def ravel(self) -> Self:
         """Ravels each Stokes component."""
-        return jax.tree.map(lambda x: x.ravel(), self)
+        return jax.tree.map(lambda x: x.ravel(), self)  # type: ignore[no-any-return]
 
     def reshape(self, shape: tuple[int, ...]) -> Self:
         """Reshape each Stokes component."""
-        return jax.tree.map(lambda x: x.reshape(shape), self)
+        return jax.tree.map(lambda x: x.reshape(shape), self)  # type: ignore[no-any-return]
 
 
 @jdc.pytree_dataclass
@@ -449,7 +449,7 @@ class HealpixLandscape(StokesLandscape):
     @partial(jax.jit, static_argnums=0)
     def world2pixel(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> Integer[Array, ' *dims']:
+    ) -> tuple[Integer[Array, ' *dims'], ...]:
         r"""Convert angles to HEALPix index for HEALPix ring ordering scheme.
 
         Args:
@@ -459,4 +459,4 @@ class HealpixLandscape(StokesLandscape):
         Returns:
             int: HEALPix map index for ring ordering scheme.
         """
-        return (jhp.ang2pix(self.nside, theta, phi),)  # type: ignore[no-any-return]
+        return (jhp.ang2pix(self.nside, theta, phi),)

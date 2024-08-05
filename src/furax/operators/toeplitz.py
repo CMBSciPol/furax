@@ -57,7 +57,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
     METHODS: ClassVar[tuple[str]] = ['dense', 'direct', 'fft', 'overlap_save']
     band_values: Float[Array, '...'] = equinox.field(static=True)
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    method: str
+    method: str = equinox.field(static=True)
     fft_size: int
 
     def __init__(

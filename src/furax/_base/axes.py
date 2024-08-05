@@ -17,10 +17,18 @@ __all__ = [
 
 
 class MoveAxisOperator(AbstractLinearOperator):
-    """Operator to move axes of pytree leaves to new positions
+    """Operator to move axes of pytree leaves to new positions.
 
     The operation is conceptually the same as:
         y = jnp.moveaxis(x, source, destination)
+
+    Example:
+        >>> in_structure = jax.ShapeDtypeStruct((2, 3), jnp.float32)
+        >>> op = MoveAxisOperator(0, 1, in_structure)
+        >>> op(jnp.array([[1., 1, 1], [2, 2, 2]]))
+        Array([[1., 2.],
+               [1., 2.],
+               [1., 2.]], dtype=float32)
     """
 
     source: tuple[int]
@@ -50,6 +58,8 @@ class MoveAxisOperator(AbstractLinearOperator):
 
     def transpose(self) -> AbstractLinearOperator:
         return MoveAxisOperator(self.destination, self.source, self.out_structure())
+
+    inverse = transpose
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure

@@ -53,7 +53,13 @@ def test_move_axis_transpose(
     assert_array_equal(op.T.as_matrix().T, op.as_matrix())
 
 
-def test_orthogonal() -> None:
+def test_move_axis_inverse() -> None:
+    in_structure = jax.ShapeDtypeStruct((1, 2, 3), jnp.float64)
+    op = MoveAxisOperator(0, 1, in_structure)
+    assert op.I == op.T
+
+
+def test_move_axis_orthogonal() -> None:
     in_structure = jax.ShapeDtypeStruct((1, 2, 3), jnp.float64)
     op = MoveAxisOperator(0, 1, in_structure)
     reduced_op = (op.T @ op).reduce()

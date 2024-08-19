@@ -1,3 +1,4 @@
+import functools
 from typing import Any, TypeVar
 
 import equinox
@@ -23,15 +24,37 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
     def __matmul__(self, other: Any) -> 'AbstractLinearOperator':
         if not isinstance(other, lx.AbstractLinearOperator):
             return NotImplemented
+        if self.in_structure() != other.out_structure():
+            raise ValueError('Incompatible linear operator structures')
         if isinstance(other, CompositionOperator):
             return NotImplemented
         if isinstance(other, AbstractLazyInverseOperator):
             if other.operator is self:
                 return IdentityOperator(self.in_structure())
-        if self.in_structure() != other.out_structure():
-            raise ValueError('Incompatible linear operator structures')
 
         return CompositionOperator([self, other])
+
+    def __add__(self, other: Any) -> 'AbstractLinearOperator':
+        if not isinstance(other, lx.AbstractLinearOperator):
+            return NotImplemented
+        if self.in_structure() != other.in_structure():
+            raise ValueError('Incompatible linear operator input structures')
+        if self.out_structure() != other.out_structure():
+            raise ValueError('Incompatible linear operator output structures')
+        if isinstance(other, AdditionOperator):
+            return NotImplemented
+
+        return AdditionOperator([self, other])
+
+    def __sub__(self, other: Any) -> 'AbstractLinearOperator':
+        if not isinstance(other, lx.AbstractLinearOperator):
+            return NotImplemented
+        if self.in_structure() != other.in_structure():
+            raise ValueError('Incompatible linear operator input structures')
+        if self.out_structure() != other.out_structure():
+            raise ValueError('Incompatible linear operator output structures')
+
+        return self + (-other)
 
     def __mul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
         return other * self
@@ -201,11 +224,70 @@ def orthogonal(cls: type[T]) -> type[T]:
     return cls
 
 
-class CompositionOperator(AbstractLinearOperator):
+class CompositeOperator(AbstractLinearOperator):
     operands: list[AbstractLinearOperator]
 
     def __init__(self, operands: list[AbstractLinearOperator]) -> None:
         self.operands = operands
+
+
+class AdditionOperator(CompositeOperator):
+    """An operator that adds two operators, as in C = A + B."""
+
+    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
+        def leaf_sum(leaf):
+            y = self.operands[0](leaf)
+            for operand in self.operands[1:]:
+                y += operand(leaf)
+            return y
+
+        return jax.tree.map(leaf_sum, x)
+
+    def transpose(self) -> AbstractLinearOperator:
+        return AdditionOperator([_.T for _ in self.operands])
+
+    def __add__(self, other: AbstractLinearOperator) -> 'AdditionOperator':
+        if not isinstance(other, AbstractLinearOperator):
+            return NotImplemented
+        if self.in_structure() != other.in_structure():
+            raise ValueError('Incompatible linear operator input structures')
+        if self.out_structure() != other.out_structure():
+            raise ValueError('Incompatible linear operator output structures')
+        if isinstance(other, AdditionOperator):
+            operands = other.operands
+        else:
+            operands = [other]
+        return AdditionOperator(self.operands + operands)
+
+    def __radd__(self, other: AbstractLinearOperator) -> 'AdditionOperator':
+        if not isinstance(other, AbstractLinearOperator):
+            return NotImplemented
+        if self.in_structure() != other.in_structure():
+            raise ValueError('Incompatible linear operator input structures')
+        if self.out_structure() != other.out_structure():
+            raise ValueError('Incompatible linear operator output structures')
+        return AdditionOperator([other] + self.operands)
+
+    def __neg__(self) -> 'AdditionOperator':
+        return AdditionOperator([(-1) * operand for operand in self.operands])
+
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operands[0].in_structure()
+
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operands[0].out_structure()
+
+    def as_matrix(self) -> Inexact[Array, 'a b']:
+        return functools.reduce(jnp.add, (operand.as_matrix() for operand in self.operands))
+
+    def reduce(self) -> AbstractLinearOperator:
+        if len(self.operands) == 1:
+            return self.operands[0].reduce()
+        return AdditionOperator([operand.reduce() for operand in self.operands])
+
+
+class CompositionOperator(CompositeOperator):
+    """An operator that composes two operators, as in C = B ∘ A."""
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         reduced_operator = self.reduce()

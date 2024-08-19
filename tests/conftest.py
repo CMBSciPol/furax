@@ -28,9 +28,9 @@ def planck_iqu_256() -> StokesIQUPyTree:
         hp.write_map(path, maps)
     i, q, u = maps.astype(float)
     return StokesIQUPyTree(
-        I=jax.device_put(i),
-        Q=jax.device_put(q),
-        U=jax.device_put(u),
+        i=jax.device_put(i),
+        q=jax.device_put(q),
+        u=jax.device_put(u),
     )
 
 

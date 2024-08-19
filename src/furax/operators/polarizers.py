@@ -40,14 +40,14 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         if self.stokes != x.stokes:
             raise TypeError('Invalid input')
         if isinstance(x, StokesIPyTree):
-            return 0.5 * x.I
+            return 0.5 * x.i
         # broadcast on the samples. Is it efficient in Jax ?
-        Q = (x.Q.T * jnp.cos(2 * self.theta)).T
-        U = (x.U.T * jnp.sin(2 * self.theta)).T
+        q = (x.q.T * jnp.cos(2 * self.theta)).T
+        u = (x.u.T * jnp.sin(2 * self.theta)).T
         if isinstance(x, StokesQUPyTree):
-            return 0.5 * (Q + U)
+            return 0.5 * (q + u)
         if isinstance(x, StokesIQUPyTree) or isinstance(x, StokesIQUVPyTree):
-            return 0.5 * (x.I + Q + U)
+            return 0.5 * (x.i + q + u)
         raise NotImplementedError(f'HWPOperator not implemented for Stokes {self.stokes!r}')
 
     def transpose(self) -> AbstractLinearOperator:
@@ -65,16 +65,16 @@ class LinearPolarizerTransposeOperator(AbstractLazyTransposeOperator):
     def mv(self, x: Float[Array, ' {self.shape}']) -> StokesPyTree:
         stokes = self.operator.stokes
         cls = StokesPyTree.class_for(stokes)
-        I = 0.5 * x
+        i = 0.5 * x
         if stokes == 'I':
-            return cls(I)
-        Q = (I.T * jnp.cos(2 * self.operator.theta)).T
-        U = (I.T * jnp.sin(2 * self.operator.theta)).T
+            return cls(i)
+        q = (i.T * jnp.cos(2 * self.operator.theta)).T
+        u = (i.T * jnp.sin(2 * self.operator.theta)).T
         if stokes == 'QU':
-            return cls(Q, U)
+            return cls(q, u)
         if stokes == 'IQU':
-            return cls(I, Q, U)
-        V = jnp.zeros_like(I)
+            return cls(i, q, u)
+        v = jnp.zeros_like(i)
         if stokes == 'IQUV':
-            return cls(I, Q, U, V)
+            return cls(i, q, u, v)
         raise NotImplementedError

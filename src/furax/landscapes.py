@@ -39,11 +39,11 @@ class StokesPyTree(ABC):
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return cast(tuple[int, ...], getattr(self, self.stokes[0]).shape)
+        return cast(tuple[int, ...], getattr(self, self.stokes[0].lower()).shape)
 
     @property
     def dtype(self) -> DTypeLike:
-        return cast(DTypeLike, getattr(self, self.stokes[0]).dtype)
+        return cast(DTypeLike, getattr(self, self.stokes[0].lower()).dtype)
 
     @property
     def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -88,7 +88,7 @@ class StokesPyTree(ABC):
         return cls(*stokes_arrays)
 
     def __getitem__(self, index: Integer[Array, '...']) -> Self:
-        arrays = [getattr(self, stoke)[index] for stoke in self.stokes]
+        arrays = [getattr(self, stoke.lower())[index] for stoke in self.stokes]
         return type(self)(*arrays)
 
     @classmethod
@@ -166,10 +166,10 @@ class StokesPyTree(ABC):
     @abstractmethod
     def from_iquv(
         cls,
-        I: Float[Array, '...'],
-        Q: Float[Array, '...'],
-        U: Float[Array, '...'],
-        V: Float[Array, '...'],
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
     ) -> Self:
         """Returns a StokesPyTree ignoring the Stokes components not in the type."""
 
@@ -200,71 +200,71 @@ class StokesPyTree(ABC):
 @jdc.pytree_dataclass
 class StokesIPyTree(StokesPyTree):
     stokes: ClassVar[ValidStokesType] = 'I'
-    I: Array
+    i: Array
 
     @classmethod
     def from_iquv(
         cls,
-        I: Float[Array, '...'],
-        Q: Float[Array, '...'],
-        U: Float[Array, '...'],
-        V: Float[Array, '...'],
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
     ) -> Self:
-        return cls(I)
+        return cls(i)
 
 
 @jdc.pytree_dataclass
 class StokesQUPyTree(StokesPyTree):
     stokes: ClassVar[ValidStokesType] = 'QU'
-    Q: Array
-    U: Array
+    q: Array
+    u: Array
 
     @classmethod
     def from_iquv(
         cls,
-        I: Float[Array, '...'],
-        Q: Float[Array, '...'],
-        U: Float[Array, '...'],
-        V: Float[Array, '...'],
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
     ) -> Self:
-        return cls(Q, U)
+        return cls(q, u)
 
 
 @jdc.pytree_dataclass
 class StokesIQUPyTree(StokesPyTree):
     stokes: ClassVar[ValidStokesType] = 'IQU'
-    I: Array
-    Q: Array
-    U: Array
+    i: Array
+    q: Array
+    u: Array
 
     @classmethod
     def from_iquv(
         cls,
-        I: Float[Array, '...'],
-        Q: Float[Array, '...'],
-        U: Float[Array, '...'],
-        V: Float[Array, '...'],
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
     ) -> Self:
-        return cls(I, Q, U)
+        return cls(i, q, u)
 
 
 @jdc.pytree_dataclass
 class StokesIQUVPyTree(StokesPyTree):
     stokes: ClassVar[ValidStokesType] = 'IQUV'
-    I: Array
-    Q: Array
-    U: Array
-    V: Array
+    i: Array
+    q: Array
+    u: Array
+    v: Array
 
     @classmethod
     def from_iquv(
         cls,
-        I: Float[Array, '...'],
-        Q: Float[Array, '...'],
-        U: Float[Array, '...'],
-        V: Float[Array, '...'],
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
     ) -> Self:
-        return cls(I, Q, U, V)
+        return cls(i, q, u, v)
 
 
 StokesPyTreeType = StokesIPyTree | StokesQUPyTree | StokesIQUPyTree | StokesIQUVPyTree

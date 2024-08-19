@@ -46,7 +46,7 @@ class SamplingTransposeOperator(AbstractLazyTransposeOperator):
         for stoke in self.operator.landscape.stokes:
             arrays_out.append(
                 zeros.at[flat_pixels]
-                .add(getattr(x, stoke).ravel())
+                .add(getattr(x, stoke.lower()).ravel())
                 .reshape(self.operator.landscape.shape)
             )
         return StokesPyTree.from_stokes(*arrays_out)

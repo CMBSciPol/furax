@@ -8,11 +8,11 @@ from furax.operators.polarizers import LinearPolarizerOperator
 
 def test_direct_i() -> None:
     polarizer = LinearPolarizerOperator(shape=(2, 5), stokes='I')
-    x = StokesIPyTree(I=jnp.array([[1.0, 2, 3, 4, 5], [1, 1, 1, 1, 1]]))
+    x = StokesIPyTree(i=jnp.array([[1.0, 2, 3, 4, 5], [1, 1, 1, 1, 1]]))
 
     y = polarizer(x)
 
-    expected_y = x.I / 2
+    expected_y = x.i / 2
     assert jnp.allclose(y, expected_y, atol=1e-15, rtol=1e-15)
 
 
@@ -20,14 +20,14 @@ def test_direct_iqu() -> None:
     theta = np.deg2rad(15)
     polarizer = LinearPolarizerOperator(shape=(2, 5), stokes='IQU', theta=theta)
     x = StokesIQUPyTree(
-        I=jnp.array([1.0, 2, 3, 4, 5]),
-        Q=jnp.array([1.0, 1, 1, 1, 1]),
-        U=jnp.array([2.0, 2, 2, 2, 2]),
+        i=jnp.array([1.0, 2, 3, 4, 5]),
+        q=jnp.array([1.0, 1, 1, 1, 1]),
+        u=jnp.array([2.0, 2, 2, 2, 2]),
     )
 
     y = polarizer(x)
 
-    expected_y = 0.5 * (x.I + np.cos(2 * theta) * x.Q + np.sin(2 * theta) * x.U)
+    expected_y = 0.5 * (x.i + np.cos(2 * theta) * x.q + np.sin(2 * theta) * x.u)
     assert jnp.allclose(y, expected_y, atol=1e-15, rtol=1e-15)
 
 

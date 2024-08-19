@@ -17,7 +17,7 @@ def test_healpix_landscape(stokes: ValidStokesType) -> None:
     assert isinstance(sky, StokesPyTree.class_for(stokes))
     assert sky.shape == (npixel,)
     for stoke in stokes:
-        leaf = getattr(sky, stoke)
+        leaf = getattr(sky, stoke.lower())
         assert isinstance(leaf, Array)
         assert leaf.size == npixel
         assert_array_equal(leaf, 1.0)

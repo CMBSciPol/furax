@@ -48,7 +48,7 @@ def test_from_iquv(stokes: ValidStokesType) -> None:
     pytree = cls.from_iquv(*arrays.values())
     assert type(pytree) is cls
     for stoke in stokes:
-        assert getattr(pytree, stoke) == arrays[stoke]
+        assert getattr(pytree, stoke.lower()) == arrays[stoke]
 
 
 def test_ravel(stokes: ValidStokesType) -> None:
@@ -57,7 +57,7 @@ def test_ravel(stokes: ValidStokesType) -> None:
     pytree = StokesPyTree.from_stokes(**arrays)
     raveled_pytree = pytree.ravel()
     for stoke in stokes:
-        assert getattr(raveled_pytree, stoke).shape == (8,)
+        assert getattr(raveled_pytree, stoke.lower()).shape == (8,)
 
 
 def test_reshape(stokes: ValidStokesType) -> None:
@@ -67,7 +67,7 @@ def test_reshape(stokes: ValidStokesType) -> None:
     pytree = StokesPyTree.from_stokes(**arrays)
     raveled_pytree = pytree.reshape(new_shape)
     for stoke in stokes:
-        assert getattr(raveled_pytree, stoke).shape == new_shape
+        assert getattr(raveled_pytree, stoke.lower()).shape == new_shape
 
 
 @pytest.mark.parametrize('shape', [(10,), (2, 10)])
@@ -84,7 +84,7 @@ def test_zeros(stokes: ValidStokesType, shape: tuple[int, ...], dtype, factory, 
     cls = StokesPyTree.class_for(stokes)
     pytree = factory(cls, shape, dtype)
     for stoke in stokes:
-        array = getattr(pytree, stoke)
+        array = getattr(pytree, stoke.lower())
         assert array.shape == shape
         assert array.dtype == dtype
         assert_array_equal(array, value)

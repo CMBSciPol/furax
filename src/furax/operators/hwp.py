@@ -47,11 +47,11 @@ class HWPOperator(AbstractLinearOperator):
         if isinstance(x, StokesIPyTree):
             return x
         if isinstance(x, StokesQUPyTree):
-            return StokesQUPyTree(x.Q, -x.U)
+            return StokesQUPyTree(x.q, -x.u)
         if isinstance(x, StokesIQUPyTree):
-            return StokesIQUPyTree(x.I, x.Q, -x.U)
+            return StokesIQUPyTree(x.i, x.q, -x.u)
         if isinstance(x, StokesIQUVPyTree):
-            return StokesIQUVPyTree(x.I, x.Q, -x.U, -x.V)
+            return StokesIQUVPyTree(x.i, x.q, -x.u, -x.v)
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -95,16 +95,16 @@ class RotatingHWPOperator(AbstractLinearOperator):
         # we should try using cls(x).from_iquv
         if isinstance(x, StokesIPyTree):
             return x
-        Q = x.Q * self.cos_4angles - x.U * self.sin_4angles
-        U = -(x.Q * self.sin_4angles + x.U * self.cos_4angles)
+        Q = x.q * self.cos_4angles - x.u * self.sin_4angles
+        U = -(x.q * self.sin_4angles + x.u * self.cos_4angles)
 
         if isinstance(x, StokesQUPyTree):
             return StokesQUPyTree(Q, U)
         if isinstance(x, StokesIQUPyTree):
-            return StokesIQUPyTree(x.I, Q, U)
+            return StokesIQUPyTree(x.i, Q, U)
         if isinstance(x, StokesIQUVPyTree):
-            V = -x.V
-            return StokesIQUVPyTree(x.I, Q, U, V)
+            V = -x.v
+            return StokesIQUVPyTree(x.i, Q, U, V)
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:

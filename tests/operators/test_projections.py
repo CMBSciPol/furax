@@ -11,33 +11,31 @@ from furax.operators.projections import SamplingOperator
 def test_direct(stokes) -> None:
     nside = 1
     landscape = HealpixLandscape(nside, stokes)
-    cls = StokesPyTree.class_for(stokes)
-    x_as_dict = {
-        stoke: jnp.arange(12, dtype=landscape.dtype) * (i + 1) for i, stoke in enumerate(stokes)
-    }
-    x = cls(**x_as_dict)
+    x = StokesPyTree.from_stokes(
+        *(jnp.arange(12, dtype=landscape.dtype) * (i + 1) for i, stoke in enumerate(stokes))
+    )
     indices = jnp.array([[2, 3, 2]])
     proj = SamplingOperator(landscape, indices)
 
     y = proj(x)
 
-    expected_y = cls(**{stoke: x_as_dict[stoke][indices] for stoke in stokes})
+    expected_y = StokesPyTree.from_stokes(*(getattr(x, stoke.lower())[indices] for stoke in stokes))
     assert equinox.tree_equal(y, expected_y, atol=1e-15, rtol=1e-15)
 
 
 def test_transpose(stokes) -> None:
     nside = 1
     landscape = HealpixLandscape(nside, stokes)
-    cls = StokesPyTree.class_for(stokes)
-    x_as_dict = {stoke: jnp.array([[1, 2, 3]]) * (i + 1) for i, stoke in enumerate(stokes)}
-    x = cls(**x_as_dict)
+    x = StokesPyTree.from_stokes(
+        *(jnp.array([[1, 2, 3]]) * (i + 1) for i, stoke in enumerate(stokes))
+    )
     indices = jnp.array([[2, 3, 2]])
     proj = SamplingOperator(landscape, indices)
 
     y = proj.T(x)
 
     array = jnp.array([0.0, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0])
-    expected_y = cls(*[array * i for i in range(1, len(stokes) + 1)])
+    expected_y = StokesPyTree.from_stokes(*[array * i for i in range(1, len(stokes) + 1)])
     assert equinox.tree_equal(y, expected_y, atol=1e-15, rtol=1e-15)
 
 

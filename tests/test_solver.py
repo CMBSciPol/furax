@@ -51,9 +51,9 @@ def test_solver(planck_iqu_256, sat_nhits):
     coverage = h.T(jnp.ones(tod_structure.shape, tod_structure.dtype))
     m = DiagonalOperator(
         StokesIQUPyTree(
-            I=coverage.I,
-            Q=coverage.I,
-            U=coverage.I,
+            i=coverage.i,
+            q=coverage.i,
+            u=coverage.i,
         )
     ).I
     m = lx.TaggedLinearOperator(m, lx.positive_semidefinite_tag)
@@ -85,7 +85,7 @@ def test_solver(planck_iqu_256, sat_nhits):
 
     time0 = time.time()
     solution = func(tod)
-    solution.value.I.block_until_ready()
+    solution.value.i.block_until_ready()
     assert solution.stats['num_steps'] < solution.stats['max_steps']
     print(f'JIT 1:  {time.time() - time0}')
 
@@ -101,7 +101,7 @@ def test_solver(planck_iqu_256, sat_nhits):
 
     time0 = time.time()
     reconstructed_sky = A(tod)
-    reconstructed_sky.I.block_until_ready()
+    reconstructed_sky.i.block_until_ready()
     print('.I     ', time.time() - time0)
 
     @jax.jit
@@ -110,10 +110,10 @@ def test_solver(planck_iqu_256, sat_nhits):
 
     time0 = time.time()
     reconstructed_sky = func2(tod)
-    reconstructed_sky.I.block_until_ready()
+    reconstructed_sky.i.block_until_ready()
     print('JIT1 .I', time.time() - time0)
 
     time0 = time.time()
     reconstructed_sky = func2(tod)
-    reconstructed_sky.I.block_until_ready()
+    reconstructed_sky.i.block_until_ready()
     print('JIT2 .I', time.time() - time0)

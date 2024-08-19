@@ -57,15 +57,15 @@ class QURotationOperator(AbstractLinearOperator):
 
         cos_2angles = jnp.cos(2 * self.angles)
         sin_2angles = jnp.sin(2 * self.angles)
-        Q = x.Q * cos_2angles - x.U * sin_2angles
-        U = x.Q * sin_2angles + x.U * cos_2angles
+        q = x.q * cos_2angles - x.u * sin_2angles
+        u = x.q * sin_2angles + x.u * cos_2angles
 
         if isinstance(x, StokesQUPyTree):
-            return StokesQUPyTree(Q, U)
+            return StokesQUPyTree(q, u)
         if isinstance(x, StokesIQUPyTree):
-            return StokesIQUPyTree(x.I, Q, U)
+            return StokesIQUPyTree(x.i, q, u)
         if isinstance(x, StokesIQUVPyTree):
-            return StokesIQUVPyTree(x.I, Q, U, x.V)
+            return StokesIQUVPyTree(x.i, q, u, x.v)
         raise NotImplementedError
 
     def transpose(self) -> AbstractLinearOperator:
@@ -84,15 +84,15 @@ class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
 
         cos_2angles = jnp.cos(2 * self.operator.angles)
         sin_2angles = jnp.sin(2 * self.operator.angles)
-        Q = x.Q * cos_2angles + x.U * sin_2angles
-        U = -x.Q * sin_2angles + x.U * cos_2angles
+        q = x.q * cos_2angles + x.u * sin_2angles
+        u = -x.q * sin_2angles + x.u * cos_2angles
 
         if isinstance(x, StokesQUPyTree):
-            return StokesQUPyTree(Q, U)
+            return StokesQUPyTree(q, u)
         if isinstance(x, StokesIQUPyTree):
-            return StokesIQUPyTree(x.I, Q, U)
+            return StokesIQUPyTree(x.i, q, u)
         if isinstance(x, StokesIQUVPyTree):
-            return StokesIQUVPyTree(x.I, Q, U, x.V)
+            return StokesIQUVPyTree(x.i, q, u, x.v)
         raise NotImplementedError
 
 

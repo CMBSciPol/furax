@@ -99,7 +99,8 @@ class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
 class QURotationRule(AbstractBinaryRule):
     """Adds or subtracts QU rotation angles."""
 
-    operator_class = QURotationOperator
+    left_operator_class = (QURotationOperator, QURotationTransposeOperator)
+    right_operator_class = (QURotationOperator, QURotationTransposeOperator)
 
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
@@ -111,13 +112,12 @@ class QURotationRule(AbstractBinaryRule):
                 angles = left.angles - right.operator.angles
             else:
                 raise NoReduction
-        elif isinstance(left, QURotationTransposeOperator):
+        else:
+            assert isinstance(left, QURotationTransposeOperator)  # mypy assert
             if isinstance(right, QURotationOperator):
                 angles = right.angles - left.operator.angles
             elif isinstance(right, QURotationTransposeOperator):
                 angles = -left.operator.angles - right.operator.angles
             else:
                 raise NoReduction
-        else:
-            raise NoReduction
         return [QURotationOperator(angles, right.in_structure())]

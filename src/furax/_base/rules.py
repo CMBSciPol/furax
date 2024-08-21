@@ -74,6 +74,7 @@ class AlgebraicReductionRule(AbstractNaryRule):
 
             for rule in BINARY_RULE_REGISTRY:
                 try:
+                    rule.check(left, right)
                     new_ops = rule.apply(left, right)
                 except NoReduction:
                     continue
@@ -101,7 +102,7 @@ class HomothetyRule(AbstractNaryRule):
     operator is wide (tall).
     """
 
-    operator_class: type[AbstractLinearOperator] = HomothetyOperator
+    operator_class = HomothetyOperator
 
     def apply(self, operands: list[AbstractLinearOperator]) -> list[AbstractLinearOperator]:
         if len(operands) < 2:
@@ -109,7 +110,7 @@ class HomothetyRule(AbstractNaryRule):
 
         first, *_, last = operands
         homothety_number = 0
-        value = 1
+        value: int | float = 1
         new_operands = []
         for operand in operands:
             if isinstance(operand, HomothetyOperator):
@@ -137,9 +138,7 @@ class HomothetyRule(AbstractNaryRule):
 class IdentityRule(AbstractNaryRule):
     """N-ary rule to discard IdentityOperator in compositions."""
 
-    operator_class: type[AbstractLinearOperator] | tuple[type[AbstractLinearOperator, ...]] = (
-        IdentityOperator
-    )
+    operator_class = IdentityOperator
 
     def apply(self, operands: list[AbstractLinearOperator]) -> list[AbstractLinearOperator]:
         return [_ for _ in operands if not isinstance(_, IdentityOperator)]
@@ -148,10 +147,45 @@ class IdentityRule(AbstractNaryRule):
 class AbstractBinaryRule(AbstractRule, ABC):
     """A binary algebraic rule to reduce `op1 @ op2`."""
 
-    operator_class: type[AbstractLinearOperator]
+    operator_class: (
+        type[AbstractLinearOperator] | tuple[type[AbstractLinearOperator], ...] | None
+    ) = None
+    left_operator_class: (
+        type[AbstractLinearOperator] | tuple[type[AbstractLinearOperator], ...] | None
+    ) = None
+    right_operator_class: (
+        type[AbstractLinearOperator] | tuple[type[AbstractLinearOperator], ...] | None
+    ) = None
 
-    def __init_subclass__(cls, **kwargs) -> None:
+    def __init_subclass__(cls) -> None:
         BINARY_RULE_REGISTRY.register(cls())
+        if (
+            cls.operator_class is None
+            and cls.left_operator_class is None
+            and cls.right_operator_class is None
+        ):
+            raise ValueError('The operator classes are not specified in the binary rule.')
+        if cls.operator_class is not None:
+            if cls.left_operator_class is not None or cls.right_operator_class is not None:
+                raise ValueError(
+                    'Either operator_class or left_operator_class and right_operator_class must be '
+                    'specified in the binary rule.'
+                )
+
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        if self.operator_class is not None:
+            if not isinstance(left, self.operator_class) and not isinstance(
+                right, self.operator_class
+            ):
+                raise NoReduction
+        elif self.left_operator_class is not None and not isinstance(
+            left, self.left_operator_class
+        ):
+            raise NoReduction
+        elif self.right_operator_class is not None and not isinstance(
+            right, self.right_operator_class
+        ):
+            raise NoReduction
 
     @abstractmethod
     def apply(
@@ -166,15 +200,19 @@ BINARY_RULE_REGISTRY = RuleRegistry[AbstractBinaryRule]()
 class InverseBinaryRule(AbstractBinaryRule):
     """Binary rule for `op.I @ op = I` and `op.I @ op = I`."""
 
-    operator_class: type[AbstractLinearOperator] = AbstractLazyInverseOperator
+    operator_class = AbstractLazyInverseOperator
+
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        super().check(left, right)
+        if isinstance(left, self.operator_class):
+            if left.operator is not right:
+                raise NoReduction
+        else:
+            assert isinstance(right, self.operator_class)  # mypy assert
+            if right.operator is not left:
+                raise NoReduction
 
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        if isinstance(left, self.operator_class):
-            if left.I is right:
-                return []
-        if isinstance(right, self.operator_class):
-            if left is right.I:
-                return []
-        raise NoReduction
+        return []

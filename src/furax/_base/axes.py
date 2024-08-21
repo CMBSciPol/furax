@@ -73,15 +73,21 @@ class MoveAxisOperator(AbstractLinearOperator):
 
 
 class MoveAxisInverseRule(AbstractBinaryRule):
-    """We cannot decorate MoveAxisOperator with :orthogonal: because it is not square."""
+    """Binary rule for move_axis.T @ move_axis = I`.
 
-    operator_class = MoveAxisOperator
+    Note:
+        We cannot simply decorate MoveAxisOperator with :orthogonal: because it is not square,
+        in the sense that its input and output structures are different.
+    """
+
+    left_operator_class = MoveAxisOperator
+    right_operator_class = MoveAxisOperator
 
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        if not isinstance(left, MoveAxisOperator) or not isinstance(right, MoveAxisOperator):
-            raise NoReduction
+        assert isinstance(left, MoveAxisOperator)  # mypy assert
+        assert isinstance(right, MoveAxisOperator)  # mypy assert
         if left.source != right.destination or left.destination != right.source:
             raise NoReduction
         return []

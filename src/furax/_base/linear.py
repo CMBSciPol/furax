@@ -67,15 +67,18 @@ class PackTransposeOperator(AbstractLazyTransposeOperator):
 
 
 class PackUnpackRule(AbstractBinaryRule):
-    operator_class = PackOperator
+    """Binary rule for `pack @ pack.T = I`."""
+
+    left_operator_class = PackOperator
+    right_operator_class = PackTransposeOperator
+
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        super().check(left, right)
+        assert isinstance(right, PackTransposeOperator)  # mypy assert
+        if left is not right.operator:
+            raise NoReduction
 
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        if (
-            isinstance(left, PackOperator)
-            and isinstance(right, PackTransposeOperator)
-            and left is right.operator
-        ):
-            return []
-        raise NoReduction
+        return []

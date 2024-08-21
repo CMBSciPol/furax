@@ -158,6 +158,8 @@ class AbstractBinaryRule(AbstractRule, ABC):
     ) = None
 
     def __init_subclass__(cls) -> None:
+        if cls.__name__.startswith('Abstract'):
+            return
         BINARY_RULE_REGISTRY.register(cls())
         if (
             cls.operator_class is None

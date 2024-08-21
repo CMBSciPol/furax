@@ -51,7 +51,7 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
                [ 0,  0,  0, 19,  0,  0,  0, 23]], dtype=int32)
     """
 
-    blocks: Num[Array, '...']
+    blocks: Num[Array, '...'] = equinox.field(static=True)
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     subscripts: str = equinox.field(static=True)
 

@@ -46,7 +46,7 @@ def test_orthogonal(stokes) -> None:
 
 
 def test_matmul(stokes) -> None:
-    structure = StokesPyTree.structure_for(stokes, ())
+    structure = StokesPyTree.structure_for((), stokes=stokes)
     hwp = QURotationOperator(1.1, structure)
     assert isinstance(hwp @ hwp.T, IdentityOperator)
     assert isinstance(hwp.T @ hwp, IdentityOperator)
@@ -57,7 +57,7 @@ def test_matmul(stokes) -> None:
     [(False, False, 3), (False, True, -1), (True, False, 1), (True, True, -3)],
 )
 def test_rules(stokes: ValidStokesType, transpose_left, transpose_right, expected_value) -> None:
-    structure = StokesPyTree.structure_for(stokes, ())
+    structure = StokesPyTree.structure_for((), stokes=stokes)
     left = QURotationOperator(1, structure)
     if transpose_left:
         left = left.T

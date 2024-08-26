@@ -8,7 +8,7 @@ from jaxtyping import Bool, Float, PyTree
 from numpy.testing import assert_array_equal
 
 from furax._base.linear import PackOperator
-from furax.landscapes import StokesIPyTree, StokesIQUPyTree, StokesPyTree
+from furax.landscapes import StokesIPyTree, StokesIQUPyTree
 from furax.operators import IdentityOperator
 
 
@@ -22,13 +22,13 @@ from furax.operators import IdentityOperator
         ),
         (
             jnp.array([False, True, True, False]),
-            StokesPyTree.structure_for('I', (4,), np.float32),
-            StokesPyTree.structure_for('I', (2,), np.float32),
+            StokesIPyTree.structure_for((4,), np.float32),
+            StokesIPyTree.structure_for((2,), np.float32),
         ),
         (
             jnp.array([False, True, True, False]),
-            StokesPyTree.structure_for('IQU', (4,), np.float32),
-            StokesPyTree.structure_for('IQU', (2,), np.float32),
+            StokesIQUPyTree.structure_for((4,), np.float32),
+            StokesIQUPyTree.structure_for((2,), np.float32),
         ),
         (
             jnp.array([[False, True], [True, False]]),
@@ -37,13 +37,13 @@ from furax.operators import IdentityOperator
         ),
         (
             jnp.array([[False, True], [True, False]]),
-            StokesPyTree.structure_for('I', (2, 2), np.float32),
-            StokesPyTree.structure_for('I', (2,), np.float32),
+            StokesIPyTree.structure_for((2, 2), np.float32),
+            StokesIPyTree.structure_for((2,), np.float32),
         ),
         (
             jnp.array([[False, True], [True, False]]),
-            StokesPyTree.structure_for('IQU', (2, 2), np.float32),
-            StokesPyTree.structure_for('IQU', (2,), np.float32),
+            StokesIQUPyTree.structure_for((2, 2), np.float32),
+            StokesIQUPyTree.structure_for((2,), np.float32),
         ),
     ],
 )
@@ -66,9 +66,21 @@ def test_pack_structure(
             jnp.array([1, 2], dtype=np.float32),
         ),
         (
+            jnp.array([[False, True], [True, False]]),
+            jax.ShapeDtypeStruct((2, 2), np.float32),
+            jnp.arange(4, dtype=np.float32).reshape(2, 2),
+            jnp.array([1, 2], dtype=np.float32),
+        ),
+        (
             jnp.array([False, True, True, False]),
             StokesIPyTree.structure_for((4,), np.float32),
             StokesIPyTree(jnp.array([1, 2, 3, 4], dtype=np.float32)),
+            StokesIPyTree(jnp.array([2, 3], dtype=np.float32)),
+        ),
+        (
+            jnp.array([[False, True], [True, False]]),
+            StokesIPyTree.structure_for((2, 2), np.float32),
+            StokesIPyTree(jnp.array([[1, 2], [3, 4]], dtype=np.float32)),
             StokesIPyTree(jnp.array([2, 3], dtype=np.float32)),
         ),
         (
@@ -84,18 +96,6 @@ def test_pack_structure(
                 jnp.array([6, 8], dtype=np.float32),
                 jnp.array([10, 12], dtype=np.float32),
             ),
-        ),
-        (
-            jnp.array([[False, True], [True, False]]),
-            jax.ShapeDtypeStruct((2, 2), np.float32),
-            jnp.arange(4, dtype=np.float32).reshape(2, 2),
-            jnp.array([1, 2], dtype=np.float32),
-        ),
-        (
-            jnp.array([[False, True], [True, False]]),
-            StokesIPyTree.structure_for((2, 2), np.float32),
-            StokesIPyTree(jnp.array([[1, 2], [3, 4]], dtype=np.float32)),
-            StokesIPyTree(jnp.array([2, 3], dtype=np.float32)),
         ),
         (
             jnp.array([[False, True], [False, True]]),
@@ -147,29 +147,29 @@ def test_pack_transpose() -> None:
             jax.ShapeDtypeStruct((4,), np.float16),
         ),
         (
-            jnp.array([False, True, True, False]),
-            StokesPyTree.structure_for('I', (2,), np.float32),
-            StokesPyTree.structure_for('I', (4,), np.float32),
-        ),
-        (
-            jnp.array([False, True, True, False]),
-            StokesPyTree.structure_for('IQU', (2,), np.float32),
-            StokesPyTree.structure_for('IQU', (4,), np.float32),
-        ),
-        (
             jnp.array([[False, True], [True, False]]),
             jax.ShapeDtypeStruct((2,), np.float16),
             jax.ShapeDtypeStruct((2, 2), np.float16),
         ),
         (
-            jnp.array([[False, True], [True, False]]),
-            StokesPyTree.structure_for('I', (2,), np.float32),
-            StokesPyTree.structure_for('I', (2, 2), np.float32),
+            jnp.array([False, True, True, False]),
+            StokesIPyTree.structure_for((2,), np.float32),
+            StokesIPyTree.structure_for((4,), np.float32),
         ),
         (
             jnp.array([[False, True], [True, False]]),
-            StokesPyTree.structure_for('IQU', (2,), np.float32),
-            StokesPyTree.structure_for('IQU', (2, 2), np.float32),
+            StokesIPyTree.structure_for((2,), np.float32),
+            StokesIPyTree.structure_for((2, 2), np.float32),
+        ),
+        (
+            jnp.array([False, True, True, False]),
+            StokesIQUPyTree.structure_for((2,), np.float32),
+            StokesIQUPyTree.structure_for((4,), np.float32),
+        ),
+        (
+            jnp.array([[False, True], [True, False]]),
+            StokesIQUPyTree.structure_for((2,), np.float32),
+            StokesIQUPyTree.structure_for((2, 2), np.float32),
         ),
     ],
 )

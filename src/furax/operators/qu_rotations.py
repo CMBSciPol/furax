@@ -3,15 +3,16 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-from jax.typing import DTypeLike
 from jaxtyping import Float, PyTree
 
 from furax._base.rules import AbstractBinaryRule, NoReduction
 from furax.landscapes import (
+    DTypeLike,
     StokesIPyTree,
     StokesIQUPyTree,
     StokesIQUVPyTree,
     StokesPyTree,
+    StokesPyTreeType,
     StokesQUPyTree,
     ValidStokesType,
 )
@@ -48,10 +49,10 @@ class QURotationOperator(AbstractLinearOperator):
         shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
     ) -> AbstractLinearOperator:
-        structure = StokesPyTree.structure_for(stokes, shape, dtype)
+        structure = StokesPyTree.structure_for(shape, dtype, stokes)
         return cls(angles, structure)
 
-    def mv(self, x: StokesPyTree) -> StokesPyTree:
+    def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
         if isinstance(x, StokesIPyTree):
             return x
 
@@ -78,7 +79,7 @@ class QURotationOperator(AbstractLinearOperator):
 class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
     operator: QURotationOperator
 
-    def mv(self, x: StokesPyTree) -> StokesPyTree:
+    def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
         if isinstance(x, StokesIPyTree):
             return x
 

@@ -1,3 +1,5 @@
+import math
+
 import equinox
 import jax
 import numpy as np
@@ -27,12 +29,12 @@ class SamplingOperator(AbstractLinearOperator):
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return StokesPyTree.structure_for(
-            self.landscape.stokes, self.landscape.shape, self.landscape.dtype
+            self.landscape.shape, self.landscape.dtype, self.landscape.stokes
         )
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return StokesPyTree.structure_for(
-            self.landscape.stokes, self.indices.shape, self.landscape.dtype
+            self.indices.shape, self.landscape.dtype, self.landscape.stokes
         )
 
 
@@ -51,14 +53,14 @@ class SamplingTransposeOperator(AbstractLazyTransposeOperator):
             )
         return StokesPyTree.from_stokes(*arrays_out)
 
-    def __matmul__(self, other: AbstractLinearOperator):
+    def __matmul__(self, other: AbstractLinearOperator) -> AbstractLinearOperator:
         if other is not self.operator:
             return super().__matmul__(other)
 
         dtype = jax.tree.leaves(other.in_structure())[0].dtype
 
         # P.T @ P
-        size_max = np.prod(self.operator.landscape.shape)
+        size_max = math.prod(self.operator.landscape.shape)
         unique_indices, counts = jnp.unique(
             self.operator.indices, return_counts=True, size=size_max, fill_value=-1
         )
@@ -92,7 +94,7 @@ def create_projection_operator(
         # remove the number of directions per pixels if there is only one.
         indices = indices.reshape(indices.shape[0], indices.shape[2])
 
-    tod_structure = StokesPyTree.structure_for(landscape.stokes, indices.shape, landscape.dtype)
+    tod_structure = StokesPyTree.structure_for(indices.shape, landscape.dtype, landscape.stokes)
 
     rotation = QURotationOperator(samplings.pa, tod_structure)
     sampling = SamplingOperator(landscape, indices)

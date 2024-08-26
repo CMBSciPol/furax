@@ -1,3 +1,4 @@
+import math
 import sys
 from abc import ABC, abstractmethod
 from functools import partial
@@ -50,40 +51,43 @@ class StokesPyTree(ABC):
         return self.structure_for(self.shape, self.dtype)
 
     @classmethod
-    def class_for(cls, stokes: ValidStokesType) -> type['StokesPyTree']:
+    @overload
+    def class_for(cls, stokes: Literal['I']) -> type['StokesIPyTree']: ...
+
+    @classmethod
+    @overload
+    def class_for(cls, stokes: Literal['QU']) -> type['StokesQUPyTree']: ...
+
+    @classmethod
+    @overload
+    def class_for(cls, stokes: Literal['IQU']) -> type['StokesIQUPyTree']: ...
+
+    @classmethod
+    @overload
+    def class_for(cls, stokes: Literal['IQUV']) -> type['StokesIQUVPyTree']: ...
+
+    @classmethod
+    def class_for(cls, stokes: str) -> type['StokesPyTreeType']:
         """Returns the StokesPyTree subclass associated to the specified Stokes types."""
         if stokes not in get_args(ValidStokesType):
             raise ValueError(f'Invalid Stokes parameters: {stokes!r}')
-        return {
+        requested_cls = {
             'I': StokesIPyTree,
             'QU': StokesQUPyTree,
             'IQU': StokesIQUPyTree,
             'IQUV': StokesIQUVPyTree,
         }[stokes]
-
-    @classmethod
-    @overload
-    def structure_for(cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64): ...
-
-    @classmethod
-    @overload
-    def structure_for(
-        cls, stokes: ValidStokesType, shape: tuple[int, ...], dtype: DTypeLike = np.float64
-    ): ...
+        return cast(type[StokesPyTreeType], requested_cls)
 
     @classmethod
     def structure_for(
         cls,
-        stokes: ValidStokesType | tuple[int, ...] | None = None,
-        shape: tuple[int, ...] | DTypeLike | None = None,
+        shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
+        stokes: ValidStokesType | None = None,
     ) -> PyTree[jax.ShapeDtypeStruct]:
-        if isinstance(stokes, str):
+        if stokes is not None:
             cls = StokesPyTree.class_for(stokes)
-        elif isinstance(stokes, tuple):
-            if shape is not None:
-                dtype = shape
-            shape = stokes
         stokes_arrays = len(cls.stokes) * [jax.ShapeDtypeStruct(shape, dtype)]
         return cls(*stokes_arrays)
 
@@ -278,7 +282,7 @@ class Landscape(ABC):
         self.dtype = dtype
 
     def __len__(self) -> int:
-        return np.prod(self.shape)
+        return math.prod(self.shape)
 
     @property
     def size(self) -> int:
@@ -331,7 +335,10 @@ class StokesLandscape(Landscape):
     ):
         if shape is None and pixel_shape is None:
             raise TypeError('The shape is not specified.')
-        shape = shape or pixel_shape[::-1]
+        if shape is not None and pixel_shape is not None:
+            raise TypeError('Either the shape or pixel_shape should be specified.')
+        shape = shape if pixel_shape is None else pixel_shape[::-1]
+        assert shape is not None  # mypy assert
         super().__init__(shape, dtype)
         self.stokes = stokes
         self.pixel_shape = shape[::-1]
@@ -342,7 +349,7 @@ class StokesLandscape(Landscape):
 
     @property
     def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return StokesPyTree.structure_for(self.stokes, self.shape, self.dtype)
+        return StokesPyTree.structure_for(self.shape, self.dtype, self.stokes)
 
     def tree_flatten(self):  # type: ignore[no-untyped-def]
         aux_data = {
@@ -410,6 +417,7 @@ class StokesLandscape(Landscape):
             The 1-dimensional integer indices associated to the pixel coordinates. The data type is
             int32, unless the landscape largest index would overflow, in which case it is int64.
         """
+        dtype: DTypeLike
         if len(self) - 1 <= np.iinfo(np.iinfo(np.int32)).max:
             dtype = np.int32
         else:

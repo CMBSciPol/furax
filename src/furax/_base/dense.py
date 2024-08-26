@@ -59,7 +59,7 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
         self,
         blocks: PyTree[Num[Array, '...']],
         in_structure: PyTree[jax.ShapeDtypeStruct],
-        subscripts='ij...,j...->i...',
+        subscripts: str = 'ij...,j...->i...',
     ) -> None:
         subscripts = subscripts.replace(' ', '')
         if not jax.tree.all(jax.tree.map(lambda leaf: len(leaf.shape) >= 2, blocks)):

@@ -2,14 +2,15 @@ import equinox
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.typing import DTypeLike
 from jaxtyping import Array, Float, PyTree
 
 from furax.landscapes import (
+    DTypeLike,
     StokesIPyTree,
     StokesIQUPyTree,
     StokesIQUVPyTree,
     StokesPyTree,
+    StokesPyTreeType,
     StokesQUPyTree,
     ValidStokesType,
 )
@@ -36,7 +37,8 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         self.dtype = np.dtype(dtype)
         self.theta = jnp.asarray(theta, dtype=dtype)  # detector's polarizer angle
 
-    def mv(self, x: StokesPyTree) -> Float[Array, ' {self.shape}']:
+    def mv(self, x: StokesPyTreeType) -> Float[Array, ' {self.shape}']:
+
         if self.stokes != x.stokes:
             raise TypeError('Invalid input')
         if isinstance(x, StokesIPyTree):
@@ -54,27 +56,27 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         return LinearPolarizerTransposeOperator(self)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return StokesPyTree.structure_for(self.stokes, self.shape, self.dtype)
+        return StokesPyTree.structure_for(self.shape, self.dtype, self.stokes)
 
     def out_structure(self) -> jax.ShapeDtypeStruct:
         return jax.ShapeDtypeStruct(self.shape, self.dtype)
 
 
 class LinearPolarizerTransposeOperator(AbstractLazyTransposeOperator):
+    operator: LinearPolarizerOperator
 
-    def mv(self, x: Float[Array, ' {self.shape}']) -> StokesPyTree:
+    def mv(self, x: Float[Array, ' {self.shape}']) -> StokesPyTreeType:
         stokes = self.operator.stokes
-        cls = StokesPyTree.class_for(stokes)
         i = 0.5 * x
         if stokes == 'I':
-            return cls(i)
+            return StokesIPyTree(i)
         q = (i.T * jnp.cos(2 * self.operator.theta)).T
         u = (i.T * jnp.sin(2 * self.operator.theta)).T
         if stokes == 'QU':
-            return cls(q, u)
+            return StokesQUPyTree(q, u)
         if stokes == 'IQU':
-            return cls(i, q, u)
+            return StokesIQUPyTree(i, q, u)
         v = jnp.zeros_like(i)
         if stokes == 'IQUV':
-            return cls(i, q, u, v)
+            return StokesIQUVPyTree(i, q, u, v)
         raise NotImplementedError

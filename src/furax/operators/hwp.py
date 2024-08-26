@@ -1,12 +1,20 @@
+import sys
+
+if sys.version_info < (3, 11):
+    from typing_extensions import Self
+else:
+    from typing import Self
+
 import equinox
 import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-from jax.typing import DTypeLike
+from jax.typing import ArrayLike
 from jaxtyping import Float, PyTree
 
 from furax.landscapes import (
+    DTypeLike,
     StokesIPyTree,
     StokesIQUPyTree,
     StokesIQUVPyTree,
@@ -37,7 +45,7 @@ class HWPOperator(AbstractLinearOperator):
         self.dtype = np.dtype(dtype)
 
     @classmethod
-    def create(cls, shape: tuple[int, ...], stokes: ValidStokesType):
+    def create(cls, shape: tuple[int, ...], stokes: ValidStokesType) -> Self:
         return cls(shape, stokes)
 
     def mv(self, x: StokesPyTreeType) -> StokesPyTree:
@@ -55,7 +63,7 @@ class HWPOperator(AbstractLinearOperator):
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return StokesPyTree.structure_for(self.stokes, self.shape, self.dtype)
+        return StokesPyTree.structure_for(self.shape, self.dtype, self.stokes)
 
 
 @symmetric
@@ -83,7 +91,7 @@ class RotatingHWPOperator(AbstractLinearOperator):
         self.sin_4angles = jnp.asarray(sin_angles, dtype=dtype)
 
     @classmethod
-    def create(cls, shape: tuple[int, ...], stokes: ValidStokesType, angles: Float[Array, '...']):
+    def create(cls, shape: tuple[int, ...], stokes: ValidStokesType, angles: ArrayLike) -> Self:
         cos_4angles = jnp.cos(4 * angles)
         sin_4angles = jnp.sin(4 * angles)
         return cls(shape, stokes, cos_4angles, sin_4angles)
@@ -108,4 +116,4 @@ class RotatingHWPOperator(AbstractLinearOperator):
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return StokesPyTree.structure_for(self.stokes, self.shape, self.dtype)
+        return StokesPyTree.structure_for(self.shape, self.dtype, self.stokes)

@@ -1,4 +1,7 @@
+# mypy: disable-error-code=method-assign
 import functools
+from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 import equinox
@@ -6,12 +9,12 @@ import jax
 import jax.numpy as jnp
 import lineax as lx
 from jax import Array
-from jaxtyping import Float, Inexact, PyTree, ScalarLike
+from jaxtyping import Float, Inexact, PyTree, Scalar, ScalarLike
 
 from furax._base.config import Config, ConfigState
 
 
-class AbstractLinearOperator(lx.AbstractLinearOperator):
+class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[misc]
 
     def __init_subclass__(cls, **keywords: Any) -> None:
         _monkey_patch_operator(cls)
@@ -54,12 +57,15 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
         if self.out_structure() != other.out_structure():
             raise ValueError('Incompatible linear operator output structures')
 
-        return self + (-other)
+        result: AbstractLinearOperator = self + (-other)
+        return result
 
     def __mul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
         return other * self
 
-    def __rmul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
+    # Mypy type ignore: Forward operator "__mul__" is not callable
+    # https://github.com/python/mypy/issues/11595
+    def __rmul__(self, other: ScalarLike) -> 'AbstractLinearOperator':  # type: ignore[misc]
         other = jnp.asarray(other)
         if other.shape != ():
             raise ValueError('Can only multiply AbstractLinearOperators by scalars.')
@@ -76,6 +82,9 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
 
     def __neg__(self) -> 'AbstractLinearOperator':
         return (-1) * self
+
+    @abstractmethod
+    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]: ...
 
     def reduce(self) -> 'AbstractLinearOperator':
         """Returns a linear operator with a reduced structure."""
@@ -97,7 +106,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator):
 
         for ileaf, leaf in enumerate(in_leaves_ref):
 
-            def body(index, carry):
+            def body(index, carry):  # type: ignore[no-untyped-def]
                 matrix, jcounter = carry
                 zeros = in_leaves_ref.copy()
                 zeros[ileaf] = leaf.ravel().at[index].set(1).reshape(leaf.shape)
@@ -161,17 +170,19 @@ def _monkey_patch_lineax_operator(cls: type[lx.AbstractLinearOperator]) -> None:
     cls.inverse = AbstractLinearOperator.inverse
 
 
-def _already_registered(cls: type[lx.AbstractLinearOperator], tag) -> bool:
+def _already_registered(
+    cls: type[lx.AbstractLinearOperator], tag: Callable[[AbstractLinearOperator], bool]
+) -> bool:
     return any(
         registered_cls is not object and issubclass(cls, registered_cls)
-        for registered_cls in tag.registry
+        for registered_cls in tag.registry  # type: ignore[attr-defined]
     )
 
 
 _monkey_patch_lineax_operator(lx.ComposedLinearOperator)
 
 
-T = TypeVar('T')
+T = TypeVar('T', bound=AbstractLinearOperator)
 
 
 def diagonal(cls: type[T]) -> type[T]:
@@ -227,15 +238,12 @@ def orthogonal(cls: type[T]) -> type[T]:
 class CompositeOperator(AbstractLinearOperator):
     operands: list[AbstractLinearOperator]
 
-    def __init__(self, operands: list[AbstractLinearOperator]) -> None:
-        self.operands = operands
-
 
 class AdditionOperator(CompositeOperator):
     """An operator that adds two operators, as in C = A + B."""
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
-        def leaf_sum(leaf):
+        def leaf_sum(leaf):  # type: ignore[no-untyped-def]
             y = self.operands[0](leaf)
             for operand in self.operands[1:]:
                 y += operand(leaf)
@@ -339,9 +347,6 @@ class CompositionOperator(CompositeOperator):
 class _AbstractLazyDualOperator(AbstractLinearOperator):
     operator: AbstractLinearOperator
 
-    def __init__(self, operator: AbstractLinearOperator):
-        self.operator = operator
-
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.operator.out_structure()
 
@@ -360,7 +365,7 @@ class AbstractLazyTransposeOperator(_AbstractLazyDualOperator):
 
 class AbstractLazyInverseOperator(_AbstractLazyDualOperator):
 
-    def __matmul__(self, other):
+    def __matmul__(self, other: Any) -> AbstractLinearOperator:
         if self.operator is other:
             return IdentityOperator(self.in_structure())
         return super().__matmul__(other)
@@ -369,7 +374,8 @@ class AbstractLazyInverseOperator(_AbstractLazyDualOperator):
         return self.operator
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        return jnp.linalg.inv(self.operator.as_matrix())
+        matrix: Array = jnp.linalg.inv(self.operator.as_matrix())
+        return matrix
 
 
 class LazyInverseOperator(AbstractLazyInverseOperator):
@@ -381,7 +387,7 @@ class LazyInverseOperator(AbstractLazyInverseOperator):
         super().__init__(operator)
         self.config = Config.instance()
 
-    def mv(self, x):
+    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         reduced_operator = self.operator.reduce()
         solver = self.config.solver
         throw = self.config.solver_throw
@@ -410,10 +416,7 @@ class AbstractLazyInverseOrthogonalOperator(
 class IdentityOperator(AbstractLinearOperator):
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
-    def __init__(self, in_structure: PyTree[jax.ShapeDtypeStruct]):
-        self._in_structure = in_structure
-
-    def __matmul__(self, other):
+    def __matmul__(self, other: Any) -> AbstractLinearOperator:
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
         return other
@@ -430,14 +433,10 @@ class IdentityOperator(AbstractLinearOperator):
 
 @diagonal
 class HomothetyOperator(AbstractLinearOperator):
-    value: float
+    value: Scalar
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
-    def __init__(self, value: ScalarLike, in_structure: PyTree[jax.ShapeDtypeStruct]):
-        self.value = value
-        self._in_structure = in_structure
-
-    def __matmul__(self, other) -> AbstractLinearOperator:
+    def __matmul__(self, other: Any) -> AbstractLinearOperator:
         if isinstance(other, HomothetyOperator):
             return HomothetyOperator(self.value * other.value, self._in_structure)
         return super().__matmul__(other)
@@ -445,7 +444,7 @@ class HomothetyOperator(AbstractLinearOperator):
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return jax.tree.map(lambda leave: self.value * leave, x)
 
-    def inverse(self):
+    def inverse(self) -> AbstractLinearOperator:
         return HomothetyOperator(1 / self.value, self._in_structure)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -458,9 +457,6 @@ class HomothetyOperator(AbstractLinearOperator):
 @diagonal
 class DiagonalOperator(AbstractLinearOperator):
     diagonal: PyTree[Float[Array, '...']] = equinox.field(static=True)
-
-    def __init__(self, diagonal: PyTree[Float[Array, '...']]):
-        self.diagonal = diagonal
 
     def mv(self, sky: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
         return jax.tree.map((lambda a, b: a * b), sky, self.diagonal)
@@ -478,14 +474,14 @@ class DiagonalOperator(AbstractLinearOperator):
 
 class DiagonalInverseOperator(AbstractLazyInverseOperator):
     def mv(self, x: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
-        def mul_inv(diagonal_leaf, x_leaf):
+        def mul_inv(diagonal_leaf: Array, x_leaf: Array) -> Array:
             return jnp.where(diagonal_leaf != 0, x_leaf / diagonal_leaf, 0)
 
         y = jax.tree.map(mul_inv, self.operator.diagonal, x)
         return y
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        def inv(diagonal_leaf):
+        def inv(diagonal_leaf: Array) -> Array:
             leaf = diagonal_leaf.ravel()
             return jnp.where(leaf != 0, 1 / leaf, 0)
 

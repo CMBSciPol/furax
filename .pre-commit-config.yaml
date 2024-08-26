@@ -72,6 +72,6 @@ repos:
     - --show-error-codes
     - --enable-error-code=ignore-without-code
     - --allow-untyped-calls
-    files: ^furax/
+    files: ^src/furax/
 
 exclude: '^slurms/'

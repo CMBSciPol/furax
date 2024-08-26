@@ -1,8 +1,10 @@
 import equinox
 import jax.numpy as jnp
 
+from furax._base.core import CompositionOperator
 from furax.landscapes import StokesIPyTree, StokesIQUVPyTree, StokesPyTree, ValidStokesType
-from furax.operators.hwp import HWPOperator, RotatingHWPOperator
+from furax.operators.hwp import HWPOperator
+from furax.operators.qu_rotations import QURotationOperator, QURotationTransposeOperator
 
 
 def test_hwp(stokes: ValidStokesType) -> None:
@@ -23,9 +25,25 @@ def test_hwp_orthogonal(stokes: ValidStokesType) -> None:
     assert equinox.tree_equal(y, x)
 
 
+def test_qu_rotation_hwp_rule(stokes: ValidStokesType) -> None:
+    in_structure = StokesPyTree.structure_for((), stokes=stokes)
+    hwp = HWPOperator(in_structure)
+    rot = QURotationOperator(jnp.array(1.0), in_structure)
+    reduced_op = (rot @ hwp).reduce()
+    assert isinstance(reduced_op, CompositionOperator)
+    assert reduced_op.operands[0] is hwp
+    assert isinstance(reduced_op.operands[1], QURotationTransposeOperator)
+    assert reduced_op.operands[1].operator is rot
+
+    reduced_op = (rot.T @ hwp).reduce()
+    assert isinstance(reduced_op, CompositionOperator)
+    assert reduced_op.operands[0] is hwp
+    assert reduced_op.operands[1] is rot
+
+
 def test_rotating_hwp_i() -> None:
     pa = jnp.deg2rad(jnp.array([0, 45, 90, 135, 180])) / 2
-    hwp = RotatingHWPOperator.create(shape=(2, 5), stokes='I', angles=pa)
+    hwp = HWPOperator.create(shape=(2, 5), stokes='I', angles=pa)
     x = StokesIPyTree(i=jnp.array([[1.0, 2, 3, 4, 5], [1, 1, 1, 1, 1]]))
 
     actual_y = hwp(x)
@@ -36,7 +54,7 @@ def test_rotating_hwp_i() -> None:
 
 def test_rotating_hwp_iquv() -> None:
     pa = jnp.deg2rad(jnp.array([0, 45, 90, 135, 180])) / 2
-    hwp = RotatingHWPOperator.create(shape=(5,), stokes='IQUV', angles=pa)
+    hwp = HWPOperator.create(shape=(5,), stokes='IQUV', angles=pa)
     x = StokesIQUVPyTree(
         i=jnp.array([1.0, 2, 3, 4, 5]),
         q=jnp.array([1.0, 1, 1, 1, 1]),
@@ -56,7 +74,7 @@ def test_rotating_hwp_iquv() -> None:
 
 
 def test_rotating_hwp_orthogonal(stokes: ValidStokesType) -> None:
-    hwp = RotatingHWPOperator.create(shape=(), stokes=stokes, angles=1.1)
+    hwp = HWPOperator.create(shape=(), stokes=stokes, angles=1.1)
     x = StokesPyTree.class_for(stokes).ones(())
     y = (hwp.T @ hwp)(x)
     assert equinox.tree_equal(y, x, atol=1e-15, rtol=1e-15)

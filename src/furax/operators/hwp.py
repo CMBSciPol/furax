@@ -1,16 +1,17 @@
 import sys
 
+from furax._base.rules import AbstractBinaryRule
+from furax.operators.qu_rotations import QURotationOperator, QURotationTransposeOperator
+
 if sys.version_info < (3, 11):
-    from typing_extensions import Self
+    pass
 else:
-    from typing import Self
+    pass
 
 import equinox
 import jax
 import numpy as np
 from jax import Array
-from jax import numpy as jnp
-from jax.typing import ArrayLike
 from jaxtyping import Float, PyTree
 
 from furax.landscapes import (
@@ -23,35 +24,32 @@ from furax.landscapes import (
     StokesQUPyTree,
     ValidStokesType,
 )
-from furax.operators import AbstractLinearOperator, diagonal, symmetric
+from furax.operators import AbstractLinearOperator, diagonal
 
 
 @diagonal
 class HWPOperator(AbstractLinearOperator):
     """Operator for an ideal static Half-wave plate."""
 
-    shape: tuple[int, ...]
-    dtype: DTypeLike = equinox.field(static=True)
-    stokes: ValidStokesType = equinox.field(static=True)
-
-    def __init__(
-        self,
-        shape: tuple[int, ...],
-        stokes: ValidStokesType,
-        dtype: DTypeLike = float,
-    ):
-        self.shape = shape
-        self.stokes = stokes
-        self.dtype = np.dtype(dtype)
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     @classmethod
-    def create(cls, shape: tuple[int, ...], stokes: ValidStokesType) -> Self:
-        return cls(shape, stokes)
+    def create(
+        cls,
+        shape: tuple[int, ...],
+        dtype: DTypeLike = np.float64,
+        stokes: ValidStokesType = 'IQU',
+        angles: Float[Array, '...'] | None = None,
+    ) -> AbstractLinearOperator:
+        in_structure = StokesPyTree.structure_for(shape, dtype, stokes)
+        hwp = cls(in_structure)
+        if angles is None:
+            return hwp
+        rot = QURotationOperator(angles, in_structure)
+        rotated_hwp: AbstractLinearOperator = rot.T @ hwp @ rot
+        return rotated_hwp
 
     def mv(self, x: StokesPyTreeType) -> StokesPyTree:
-        if self.stokes != x.stokes:
-            raise TypeError('Invalid input')
-
         if isinstance(x, StokesIPyTree):
             return x
         if isinstance(x, StokesQUPyTree):
@@ -63,57 +61,19 @@ class HWPOperator(AbstractLinearOperator):
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return StokesPyTree.structure_for(self.shape, self.dtype, self.stokes)
+        return self._in_structure
 
 
-@symmetric
-class RotatingHWPOperator(AbstractLinearOperator):
-    """Operator for an ideal Half-wave plate."""
+class QURotationHWPRule(AbstractBinaryRule):
+    """Binary rule for R(theta) @ HWP = HWP @ R(-theta)`."""
 
-    shape: tuple[int, ...]
-    dtype: DTypeLike = equinox.field(static=True)
-    stokes: ValidStokesType = equinox.field(static=True)
-    cos_4angles: Float[Array, '...']
-    sin_4angles: Float[Array, '...']
+    left_operator_class = (QURotationOperator, QURotationTransposeOperator)
+    right_operator_class = HWPOperator
 
-    def __init__(
-        self,
-        shape: tuple[int, ...],
-        stokes: ValidStokesType,
-        cos_angles: Float[Array, '...'],
-        sin_angles: Float[Array, '...'],
-        dtype: DTypeLike = float,
-    ):
-        self.shape = shape
-        self.stokes = stokes
-        self.dtype = np.dtype(dtype)
-        self.cos_4angles = jnp.asarray(cos_angles, dtype=dtype)
-        self.sin_4angles = jnp.asarray(sin_angles, dtype=dtype)
-
-    @classmethod
-    def create(cls, shape: tuple[int, ...], stokes: ValidStokesType, angles: ArrayLike) -> Self:
-        cos_4angles = jnp.cos(4 * angles)
-        sin_4angles = jnp.sin(4 * angles)
-        return cls(shape, stokes, cos_4angles, sin_4angles)
-
-    def mv(self, x: StokesPyTreeType) -> StokesPyTree:
-        if self.stokes != x.stokes:
-            raise TypeError('Invalid input')
-
-        # we should try using cls(x).from_iquv
-        if isinstance(x, StokesIPyTree):
-            return x
-        Q = x.q * self.cos_4angles - x.u * self.sin_4angles
-        U = -(x.q * self.sin_4angles + x.u * self.cos_4angles)
-
-        if isinstance(x, StokesQUPyTree):
-            return StokesQUPyTree(Q, U)
-        if isinstance(x, StokesIQUPyTree):
-            return StokesIQUPyTree(x.i, Q, U)
-        if isinstance(x, StokesIQUVPyTree):
-            V = -x.v
-            return StokesIQUVPyTree(x.i, Q, U, V)
-        raise NotImplementedError
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return StokesPyTree.structure_for(self.shape, self.dtype, self.stokes)
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        if isinstance(left, QURotationOperator):
+            return [right, QURotationTransposeOperator(left)]
+        assert isinstance(left, QURotationTransposeOperator)
+        return [right, left.operator]

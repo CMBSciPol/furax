@@ -33,21 +33,14 @@ class QURotationOperator(AbstractLinearOperator):
     angles: Float[Array, '...']
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
-    def __init__(
-        self,
-        angles: Float[Array, '...'],
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ):
-        self.angles = angles
-        self._in_structure = in_structure
-
     @classmethod
     def create(
         cls,
-        angles: Float[Array, '...'],
-        stokes: ValidStokesType,
         shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
+        stokes: ValidStokesType = 'IQU',
+        *,
+        angles: Float[Array, '...'],
     ) -> AbstractLinearOperator:
         structure = StokesPyTree.structure_for(shape, dtype, stokes)
         return cls(angles, structure)

@@ -3,7 +3,7 @@ import numpy as np
 from furax.detectors import DetectorArray
 from furax.landscapes import HealpixLandscape
 from furax.operators import AbstractLinearOperator
-from furax.operators.hwp import RotatingHWPOperator
+from furax.operators.hwp import HWPOperator
 from furax.operators.polarizers import LinearPolarizerOperator
 from furax.operators.projections import create_projection_operator
 from furax.samplings import Sampling
@@ -60,7 +60,7 @@ def create_acquisition(
 ) -> AbstractLinearOperator:
     tod_shape = len(detector_dirs), len(samplings)
     proj = create_projection_operator(landscape, samplings, detector_dirs)
-    hwp = RotatingHWPOperator.create(tod_shape, landscape.stokes, 0.0)
+    hwp = HWPOperator(proj.out_structure())
     polarizer = LinearPolarizerOperator(tod_shape, landscape.stokes)
     acquisition: AbstractLinearOperator = polarizer @ hwp @ proj
     return acquisition

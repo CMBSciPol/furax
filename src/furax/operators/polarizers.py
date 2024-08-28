@@ -4,79 +4,77 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float, PyTree
 
+from furax._base.rules import AbstractBinaryRule
 from furax.landscapes import (
     DTypeLike,
     StokesIPyTree,
-    StokesIQUPyTree,
-    StokesIQUVPyTree,
     StokesPyTree,
     StokesPyTreeType,
     StokesQUPyTree,
     ValidStokesType,
 )
 from furax.operators import AbstractLazyTransposeOperator, AbstractLinearOperator
+from furax.operators.hwp import HWPOperator
+from furax.operators.qu_rotations import QURotationOperator
 
 
 class LinearPolarizerOperator(AbstractLinearOperator):
     """Class that integrates the input Stokes parameters assuming a linear polarizer."""
 
-    shape: tuple[int, ...]
-    dtype: DTypeLike = equinox.field(static=True)
-    stokes: ValidStokesType = equinox.field(static=True)
-    theta: Float[Array, '...']
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
-    def __init__(
-        self,
+    @classmethod
+    def create(
+        cls,
         shape: tuple[int, ...],
-        stokes: ValidStokesType,
-        dtype: DTypeLike = float,
-        theta: Float[Array, '...'] | float = 0.0,
-    ):
-        self.shape = shape
-        self.stokes = stokes
-        self.dtype = np.dtype(dtype)
-        self.theta = jnp.asarray(theta, dtype=dtype)  # detector's polarizer angle
+        dtype: DTypeLike = np.float64,
+        stokes: ValidStokesType = 'IQU',
+        *,
+        angles: Float[Array, '...'] | None = None,
+    ) -> AbstractLinearOperator:
+        in_structure = StokesPyTree.structure_for(shape, dtype, stokes)
+        polarizer = cls(in_structure)
+        if angles is None:
+            return polarizer
+        rot = QURotationOperator(angles, in_structure)
+        rotated_polarizer: AbstractLinearOperator = polarizer @ rot
+        return rotated_polarizer
 
-    def mv(self, x: StokesPyTreeType) -> Float[Array, ' {self.shape}']:
-
-        if self.stokes != x.stokes:
-            raise TypeError('Invalid input')
+    def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:
         if isinstance(x, StokesIPyTree):
             return 0.5 * x.i
-        # broadcast on the samples. Is it efficient in Jax ?
-        q = (x.q.T * jnp.cos(2 * self.theta)).T
-        u = (x.u.T * jnp.sin(2 * self.theta)).T
         if isinstance(x, StokesQUPyTree):
-            return 0.5 * (q + u)
-        if isinstance(x, StokesIQUPyTree) or isinstance(x, StokesIQUVPyTree):
-            return 0.5 * (x.i + q + u)
-        raise NotImplementedError(f'HWPOperator not implemented for Stokes {self.stokes!r}')
+            return 0.5 * x.q
+        return 0.5 * (x.i + x.q)
 
     def transpose(self) -> AbstractLinearOperator:
         return LinearPolarizerTransposeOperator(self)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return StokesPyTree.structure_for(self.shape, self.dtype, self.stokes)
+        return self._in_structure
 
     def out_structure(self) -> jax.ShapeDtypeStruct:
-        return jax.ShapeDtypeStruct(self.shape, self.dtype)
+        leaf = jax.tree.leaves(self.in_structure())[0]
+        return jax.ShapeDtypeStruct(leaf.shape, leaf.dtype)
 
 
 class LinearPolarizerTransposeOperator(AbstractLazyTransposeOperator):
     operator: LinearPolarizerOperator
 
-    def mv(self, x: Float[Array, ' {self.shape}']) -> StokesPyTreeType:
-        stokes = self.operator.stokes
-        i = 0.5 * x
-        if stokes == 'I':
-            return StokesIPyTree(i)
-        q = (i.T * jnp.cos(2 * self.operator.theta)).T
-        u = (i.T * jnp.sin(2 * self.operator.theta)).T
-        if stokes == 'QU':
-            return StokesQUPyTree(q, u)
-        if stokes == 'IQU':
-            return StokesIQUPyTree(i, q, u)
-        v = jnp.zeros_like(i)
-        if stokes == 'IQUV':
-            return StokesIQUVPyTree(i, q, u, v)
-        raise NotImplementedError
+    def mv(self, x: Float[Array, '...']) -> StokesPyTree:
+        i = q = 0.5 * x
+        u = v = jnp.array(0)
+        cls: type[StokesPyTree] = type(self.operator.in_structure())
+        return cls.from_iquv(i, q, u, v)
+
+
+class LinearPolarizerHWPRule(AbstractBinaryRule):
+    """Binary rule for R(theta) @ HWP = HWP @ R(-theta)`."""
+
+    left_operator_class = LinearPolarizerOperator
+    right_operator_class = HWPOperator
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        return [left]

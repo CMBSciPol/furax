@@ -39,6 +39,7 @@ class HWPOperator(AbstractLinearOperator):
         shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
         stokes: ValidStokesType = 'IQU',
+        *,
         angles: Float[Array, '...'] | None = None,
     ) -> AbstractLinearOperator:
         in_structure = StokesPyTree.structure_for(shape, dtype, stokes)

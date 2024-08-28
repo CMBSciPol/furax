@@ -1,3 +1,4 @@
+import equinox
 import jax
 import jax.numpy as jnp
 import pytest
@@ -9,6 +10,8 @@ from furax._base.core import (
     AdditionOperator,
     CompositionOperator,
     HomothetyOperator,
+    IdentityOperator,
+    square,
 )
 
 
@@ -72,6 +75,39 @@ def test_sub() -> None:
     assert_array_equal(op.as_matrix(), jnp.array([[-1, 0, 0]]))
 
 
+def test_pytree1() -> None:
+    dtype = jnp.float64
+    structure = {'a': jax.ShapeDtypeStruct((3,), dtype), 'b': jax.ShapeDtypeStruct((2,), dtype)}
+    op1 = HomothetyOperator(2, structure)
+    op2 = IdentityOperator(structure)
+    op = op1 + op2
+    x = {'a': jnp.ones(3, dtype), 'b': jnp.ones(2, dtype)}
+    actual_y = op(x)
+    expected_y = {'a': jnp.full(3, 3.0, dtype), 'b': jnp.full(2, 3.0, dtype)}
+    assert equinox.tree_equal(actual_y, expected_y)
+
+
+def test_pytree2() -> None:
+    dtype = jnp.float64
+    structure = {'a': jax.ShapeDtypeStruct((3,), dtype), 'b': jax.ShapeDtypeStruct((3,), dtype)}
+
+    @square
+    class Op1(AbstractLinearOperator):
+        def mv(self, x):
+            return {'a': x['a'] + x['b'], 'b': x['b']}
+
+        def in_structure(self):
+            return structure
+
+    op1 = Op1()
+    op2 = IdentityOperator(structure)
+    op = op1 + op2
+    x = {'a': jnp.full(3, 3.0, dtype), 'b': jnp.full(3, 2.0, dtype)}
+    actual_y = op(x)
+    expected_y = {'a': jnp.full(3, 8.0, dtype), 'b': jnp.full(3, 4.0, dtype)}
+    assert equinox.tree_equal(actual_y, expected_y)
+
+
 def test_add_invalid_instructure() -> None:
     class Op_(Op):
 
@@ -103,11 +139,6 @@ def test_transpose() -> None:
     assert opT.operands[0].operator is op1
     assert isinstance(opT.operands[1], OpTranspose)
     assert opT.operands[1].operator is op2
-
-
-def test_reduce_1() -> None:
-    op = AdditionOperator([Op(1)])
-    assert op.reduce() is op.operands[0]
 
 
 def test_reduce_1() -> None:

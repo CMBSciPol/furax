@@ -243,13 +243,12 @@ class AdditionOperator(CompositeOperator):
     """An operator that adds two operators, as in C = A + B."""
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
-        def leaf_sum(leaf):  # type: ignore[no-untyped-def]
-            y = self.operands[0](leaf)
-            for operand in self.operands[1:]:
-                y += operand(leaf)
-            return y
+        y = self.operands[0](x)
 
-        return jax.tree.map(leaf_sum, x)
+        for operand in self.operands[1:]:
+            y = jax.tree_map(jnp.add, y, operand(x))
+
+        return y
 
     def transpose(self) -> AbstractLinearOperator:
         return AdditionOperator([_.T for _ in self.operands])

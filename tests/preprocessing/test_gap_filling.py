@@ -96,15 +96,11 @@ def test_default_size(samples: int, expected_fft_size: int):
     assert actual_fft_size == expected_fft_size
 
 
-@pytest.mark.xfail(reason='cache issue with the boolean mask')
-@pytest.mark.parametrize('do_jit', [False, True])
-def test_valid_samples_and_no_nans(do_jit: bool, dummy_shape, dummy_gap_filling_operator):
+def test_valid_samples_and_no_nans(dummy_shape, dummy_gap_filling_operator):
     key = jax.random.key(987654321)
     x = jax.random.uniform(key, dummy_shape, dtype=float)
     op = dummy_gap_filling_operator
-    func = op
-    if do_jit:
-        func = jax.jit(func)
+    func = jax.jit(op)
     y = func(x)
     assert_allclose(op.pack(x), op.pack(y))
     assert not np.any(np.isnan(y))

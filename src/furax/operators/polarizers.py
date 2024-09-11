@@ -63,7 +63,7 @@ class LinearPolarizerTransposeOperator(AbstractLazyTransposeOperator):
 
     def mv(self, x: Float[Array, '...']) -> StokesPyTree:
         i = q = 0.5 * x
-        u = v = jnp.array(0)
+        u = v = jnp.array(0, dtype=x.dtype)
         cls: type[StokesPyTree] = type(self.operator.in_structure())
         return cls.from_iquv(i, q, u, v)
 

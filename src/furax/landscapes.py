@@ -2,7 +2,9 @@ import math
 import sys
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import TYPE_CHECKING, ClassVar, Literal, Union, cast, get_args, overload
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Union, cast, get_args, overload
+
+from ._base.utils import promote_types_for
 
 if sys.version_info < (3, 11):
     from typing_extensions import Self
@@ -14,6 +16,7 @@ import jax.numpy as jnp
 import jax_dataclasses as jdc
 import jax_healpy as jhp
 import numpy as np
+from jax.typing import ArrayLike
 from jaxtyping import Array, Float, Integer, PyTree, ScalarLike, Shaped
 
 if TYPE_CHECKING:
@@ -97,40 +100,73 @@ class StokesPyTree(ABC):
 
     @classmethod
     @overload
-    def from_stokes(cls, i: Float[Array, '...']) -> 'StokesIPyTree': ...
+    def from_stokes(cls, i: ArrayLike) -> 'StokesIPyTree': ...
+    @classmethod
+    @overload
+    def from_stokes(cls, i: jax.ShapeDtypeStruct) -> 'StokesIPyTree': ...
 
     @classmethod
     @overload
-    def from_stokes(cls, q: Float[Array, '...'], u: Float[Array, '...']) -> 'StokesQUPyTree': ...
+    def from_stokes(cls, q: ArrayLike, u: ArrayLike) -> 'StokesQUPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(cls, q: jax.ShapeDtypeStruct, u: jax.ShapeDtypeStruct) -> 'StokesQUPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(cls, i: ArrayLike, q: ArrayLike, u: ArrayLike) -> 'StokesIQUPyTree': ...
 
     @classmethod
     @overload
     def from_stokes(
-        cls, i: Float[Array, '...'], q: Float[Array, '...'], u: Float[Array, '...']
+        cls, i: jax.ShapeDtypeStruct, q: jax.ShapeDtypeStruct, u: jax.ShapeDtypeStruct
     ) -> 'StokesIQUPyTree': ...
 
     @classmethod
     @overload
     def from_stokes(
+        cls, i: ArrayLike, q: ArrayLike, u: ArrayLike, v: ArrayLike
+    ) -> 'StokesIQUVPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(
         cls,
-        i: Float[Array, '...'],
-        q: Float[Array, '...'],
-        u: Float[Array, '...'],
-        v: Float[Array, '...'],
+        i: jax.ShapeDtypeStruct,
+        q: jax.ShapeDtypeStruct,
+        u: jax.ShapeDtypeStruct,
+        v: jax.ShapeDtypeStruct,
     ) -> 'StokesIQUVPyTree': ...
 
     @classmethod
     def from_stokes(
-        cls, *args: Float[Array, '...'], **keywords: Float[Array, '...']
+        cls,
+        *args: Any,
+        **keywords: Any,
     ) -> 'StokesPyTree':
         """Returns a StokesPyTree according to the specified Stokes vectors.
 
         Examples:
-            >>> tod_i = StokesPyTree.from_stokes(I)
-            >>> tod_qu = StokesPyTree.from_stokes(Q, U)
-            >>> tod_iqu = StokesPyTree.from_stokes(I, Q, U)
-            >>> tod_iquv = StokesPyTree.from_stokes(I, Q, U, V)
+            >>> tod_i = StokesPyTree.from_stokes(i)
+            >>> tod_qu = StokesPyTree.from_stokes(q, u)
+            >>> tod_iqu = StokesPyTree.from_stokes(i, q, u)
+            >>> tod_iquv = StokesPyTree.from_stokes(i, q, u, v)
         """
+        if args and keywords:
+            raise TypeError(
+                'The Stokes parameters should be specified either through positional or keyword '
+                'arguments.'
+            )
+        if keywords:
+            stokes = ''.join(sorted(keywords))
+            if stokes not in get_args(ValidStokesType):
+                raise TypeError(
+                    f"Invalid Stokes vectors: {stokes!r}. Use 'I', 'QU', 'IQU' or 'IQUV'."
+                )
+            args = tuple(keywords[stoke] for stoke in stokes)
+
+        args = promote_types_for(*args)
         if len(args) == 1:
             return StokesIPyTree(*args)
         if len(args) == 2:
@@ -139,32 +175,7 @@ class StokesPyTree(ABC):
             return StokesIQUPyTree(*args)
         if len(args) == 4:
             return StokesIQUVPyTree(*args)
-        if len(args) > 4:
-            raise TypeError(f'Unexpected number of Stokes parameters: {len(args)}.')
-
-        if not keywords:
-            raise TypeError('The Stokes vectors are not specified.')
-        i = keywords.pop('I', None)
-        q = keywords.pop('Q', None)
-        u = keywords.pop('U', None)
-        v = keywords.pop('V', None)
-        if keywords:
-            raise TypeError(f'Invalid keyword arguments: {", ".join(repr(_) for _ in keywords)}')
-        if i is not None and q is None and u is None and v is None:
-            return StokesIPyTree(i)
-        if i is None and q is not None and u is not None and v is None:
-            return StokesQUPyTree(q, u)
-        if i is not None and q is not None and u is not None:
-            if v is None:
-                return StokesIQUPyTree(i, q, u)
-            return StokesIQUVPyTree(i, q, u, v)
-
-        invalid_stokes = ''.join(
-            'IQUV'[index] if _ is not None else '' for index, _ in enumerate([i, q, u, v])
-        )
-        raise TypeError(
-            f'Invalid Stokes vectors: {invalid_stokes!r}. I, QU, IQU or IQUV must be specified.'
-        )
+        raise TypeError(f'Unexpected number of Stokes parameters: {len(args)}.')
 
     @classmethod
     @abstractmethod
@@ -231,6 +242,7 @@ class StokesQUPyTree(StokesPyTree):
         u: Float[Array, '...'],
         v: Float[Array, '...'],
     ) -> Self:
+        q, u = promote_types_for(q, u)
         return cls(q, u)
 
 
@@ -249,6 +261,7 @@ class StokesIQUPyTree(StokesPyTree):
         u: Float[Array, '...'],
         v: Float[Array, '...'],
     ) -> Self:
+        i, q, u = promote_types_for(i, q, u)
         return cls(i, q, u)
 
 
@@ -268,6 +281,7 @@ class StokesIQUVPyTree(StokesPyTree):
         u: Float[Array, '...'],
         v: Float[Array, '...'],
     ) -> Self:
+        i, q, u, v = promote_types_for(i, q, u, v)
         return cls(i, q, u, v)
 
 

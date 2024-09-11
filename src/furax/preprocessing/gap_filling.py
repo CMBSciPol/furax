@@ -41,7 +41,7 @@ class GapFillingOperator(AbstractLinearOperator):
         return int(2 ** (additional_power + np.ceil(np.log2(n))))
 
     @staticmethod
-    def _get_kernel(n_tt, size: int) -> Float[Array, ' {size}']:
+    def _get_kernel(n_tt: Float[Array, ' _'], size: int) -> Float[Array, ' {size}']:
         kernel = jnp.concatenate((n_tt[-1:0:-1], n_tt))
         lagmax = kernel.size // 2
         nb_zeros = size - kernel.size
@@ -49,7 +49,9 @@ class GapFillingOperator(AbstractLinearOperator):
         kernel = jnp.roll(kernel, -lagmax)
         return kernel
 
-    def _get_psd(self, n_tt, fft_size: int) -> Float[Array, ' {fft_size // 2 + 1}']:
+    def _get_psd(
+        self, n_tt: Float[Array, ' _'], fft_size: int
+    ) -> Float[Array, ' {fft_size // 2 + 1}']:
         kernel = self._get_kernel(n_tt, fft_size)
         psd = jnp.abs(jnp.fft.rfft(kernel, n=fft_size))
         # zero out DC value
@@ -58,7 +60,7 @@ class GapFillingOperator(AbstractLinearOperator):
 
     def _generate_realization_for(self, x: Float[Array, '...'], seed: int) -> Float[Array, '...']:
         @partial(jnp.vectorize, signature='(n),(k),()->(n)')
-        def func(x, n_tt, subkey):
+        def func(x, n_tt, subkey):  # type: ignore[no-untyped-def]
             x_size = x.size
             fft_size = self._get_default_fft_size(x_size)
             npsd = fft_size // 2 + 1
@@ -91,7 +93,7 @@ class GapFillingOperator(AbstractLinearOperator):
 
         key = jax.random.key(seed)
         subkeys = jax.random.split(key, x.shape[:-1])
-        real = func(x, self.cov.band_values, subkeys)
+        real: Float[Array, '...'] = func(x, self.cov.band_values, subkeys)
         return real
 
     def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
@@ -99,7 +101,7 @@ class GapFillingOperator(AbstractLinearOperator):
         p, u = self.pack, self.pack.T  # pack, unpack operators
         incomplete_cov = p @ self.cov @ u
         op = self.cov @ u @ incomplete_cov.I @ p
-        y = real + op(x - real)
+        y: Float[Array, '...'] = real + op(x - real)
         # copy valid samples from original vector
         y = y.at[p.mask].set(p(x))
         return y

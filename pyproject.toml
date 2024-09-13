@@ -47,6 +47,7 @@ docs = [
     'nbsphinx>=0.8',
     'ipykernel>=6.0',
 ]
+toast-mapmaking = ['astropy', 'jax>=0.4.38', 'optax', 'toast>=3.0.0a27']
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'
@@ -64,16 +65,15 @@ skip_covered = true
 
 [[tool.mypy.overrides]]
 module = [
-    'astropy',
-    'astropy.cosmology',
+    'astropy.*',
     'healpy',
     'jax_healpy',
     'lineax',
+    'optax',
+    'pysm3.*',
+    'scipy.signal',
     'scipy.stats.sampling',
-    'scipy',
-    'astropy.cosmology',
-    'pysm3',
-    'pysm3.units',
+    'toast.*',
 ]
 ignore_missing_imports = true
 

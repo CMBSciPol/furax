@@ -2,9 +2,7 @@ import math
 import sys
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Union, cast, get_args, overload
-
-from ._base.utils import promote_types_for
+from typing import Any, ClassVar, Literal, Union, cast, get_args, overload
 
 if sys.version_info < (3, 11):
     from typing_extensions import Self
@@ -17,11 +15,10 @@ import jax_dataclasses as jdc
 import jax_healpy as jhp
 import numpy as np
 from jax.typing import ArrayLike
-from jaxtyping import Array, Float, Integer, PyTree, ScalarLike, Shaped
+from jaxtyping import Array, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
-if TYPE_CHECKING:
-    pass
 from .samplings import Sampling
+from .tree import as_promoted_dtype, full_like, normal_like, ones_like, zeros_like
 
 # XXX Remove after https://github.com/google/jax/pull/19669 is accepted
 NumberType = Union[
@@ -83,6 +80,34 @@ class StokesPyTree(ABC):
         return cast(type[StokesPyTreeType], requested_cls)
 
     @classmethod
+    @overload
+    def structure_for(cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64) -> Self: ...
+
+    @classmethod
+    @overload
+    def structure_for(
+        cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64, *, stokes: Literal['I']
+    ) -> 'StokesIPyTree': ...
+
+    @classmethod
+    @overload
+    def structure_for(
+        cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64, *, stokes: Literal['QU']
+    ) -> 'StokesQUPyTree': ...
+
+    @classmethod
+    @overload
+    def structure_for(
+        cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64, *, stokes: Literal['IQU']
+    ) -> 'StokesIQUPyTree': ...
+
+    @classmethod
+    @overload
+    def structure_for(
+        cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64, *, stokes: Literal['IQUV']
+    ) -> 'StokesIQUVPyTree': ...
+
+    @classmethod
     def structure_for(
         cls,
         shape: tuple[int, ...],
@@ -101,6 +126,7 @@ class StokesPyTree(ABC):
     @classmethod
     @overload
     def from_stokes(cls, i: ArrayLike) -> 'StokesIPyTree': ...
+
     @classmethod
     @overload
     def from_stokes(cls, i: jax.ShapeDtypeStruct) -> 'StokesIPyTree': ...
@@ -166,7 +192,7 @@ class StokesPyTree(ABC):
                 )
             args = tuple(keywords[stoke] for stoke in stokes)
 
-        args = promote_types_for(*args)
+        args = as_promoted_dtype(args)
         if len(args) == 1:
             return StokesIPyTree(*args)
         if len(args) == 2:
@@ -189,19 +215,20 @@ class StokesPyTree(ABC):
         """Returns a StokesPyTree ignoring the Stokes components not in the type."""
 
     @classmethod
-    def zeros(cls, shape: tuple[int, ...], dtype: DTypeLike | float = float) -> Self:
-        return cls.full(shape, 0, dtype)
+    def zeros(cls, shape: tuple[int, ...], dtype: DTypeLike = float) -> Self:
+        return zeros_like(cls.structure_for(shape, dtype))
 
     @classmethod
-    def ones(cls, shape: tuple[int, ...], dtype: DTypeLike | float = float) -> Self:
-        return cls.full(shape, 1, dtype)
+    def ones(cls, shape: tuple[int, ...], dtype: DTypeLike = float) -> Self:
+        return ones_like(cls.structure_for(shape, dtype))
 
     @classmethod
-    def full(
-        cls, shape: tuple[int, ...], fill_value: ScalarLike, dtype: DTypeLike | float = float
-    ) -> Self:
-        arrays = len(cls.stokes) * [jnp.full(shape, fill_value, dtype)]  # type: ignore[arg-type]
-        return cls(*arrays)
+    def full(cls, shape: tuple[int, ...], fill_value: ScalarLike, dtype: DTypeLike = float) -> Self:
+        return full_like(cls.structure_for(shape, dtype), fill_value)
+
+    @classmethod
+    def normal(cls, shape: tuple[int, ...], key: Key[Array, ''], dtype: DTypeLike = float) -> Self:
+        return normal_like(cls.structure_for(shape, dtype), key)
 
     def ravel(self) -> Self:
         """Ravels each Stokes component."""
@@ -242,7 +269,7 @@ class StokesQUPyTree(StokesPyTree):
         u: Float[Array, '...'],
         v: Float[Array, '...'],
     ) -> Self:
-        q, u = promote_types_for(q, u)
+        q, u = as_promoted_dtype((q, u))
         return cls(q, u)
 
 
@@ -261,7 +288,7 @@ class StokesIQUPyTree(StokesPyTree):
         u: Float[Array, '...'],
         v: Float[Array, '...'],
     ) -> Self:
-        i, q, u = promote_types_for(i, q, u)
+        i, q, u = as_promoted_dtype((i, q, u))
         return cls(i, q, u)
 
 
@@ -281,7 +308,7 @@ class StokesIQUVPyTree(StokesPyTree):
         u: Float[Array, '...'],
         v: Float[Array, '...'],
     ) -> Self:
-        i, q, u, v = promote_types_for(i, q, u, v)
+        i, q, u, v = as_promoted_dtype((i, q, u, v))
         return cls(i, q, u, v)
 
 
@@ -301,6 +328,9 @@ class Landscape(ABC):
     @property
     def size(self) -> int:
         return len(self)
+
+    @abstractmethod
+    def normal(self, key: Key[Array, '']) -> PyTree[Shaped[Array, '...']]: ...
 
     @abstractmethod
     def full(self, fill_value: ScalarLike) -> PyTree[Shaped[Array, '...']]: ...
@@ -363,7 +393,7 @@ class StokesLandscape(Landscape):
 
     @property
     def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return StokesPyTree.structure_for(self.shape, self.dtype, self.stokes)
+        return StokesPyTree.structure_for(self.shape, self.dtype, stokes=self.stokes)
 
     def tree_flatten(self):  # type: ignore[no-untyped-def]
         aux_data = {
@@ -376,6 +406,10 @@ class StokesLandscape(Landscape):
     def full(self, fill_value: ScalarLike) -> PyTree[Shaped[Array, ' {self.npixel}']]:
         cls = StokesPyTree.class_for(self.stokes)
         return cls.full(self.shape, fill_value, self.dtype)
+
+    def normal(self, key: Key[Array, '']) -> PyTree[Shaped[Array, ' {self.npixel}']]:
+        cls = StokesPyTree.class_for(self.stokes)
+        return cls.normal(self.shape, key, self.dtype)
 
     def get_coverage(self, arg: Sampling) -> Integer[Array, ' 12*nside**2']:
         indices = self.world2index(arg.theta, arg.phi)

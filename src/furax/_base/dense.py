@@ -7,7 +7,7 @@ from jax import numpy as jnp
 from jaxtyping import Num, PyTree
 
 from furax._base.core import AbstractLinearOperator
-from furax._base.utils import is_leaf
+from furax.tree import is_leaf
 
 
 class DenseBlockDiagonalOperator(AbstractLinearOperator):

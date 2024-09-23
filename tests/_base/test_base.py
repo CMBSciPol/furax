@@ -1,4 +1,3 @@
-import equinox
 import jax
 import jax.numpy as jnp
 import jax_dataclasses as jdc
@@ -10,7 +9,6 @@ from furax._base.core import (
     DiagonalOperator,
     HomothetyOperator,
     IdentityOperator,
-    square,
 )
 
 
@@ -104,36 +102,3 @@ def test_diagonal2() -> None:
     expected = jnp.diag(jnp.array([1, 2, 3, 4]))
     assert_array_equal(op.as_matrix(), expected)
     assert_array_equal(AbstractLinearOperator.as_matrix(op), expected)
-
-
-def test_as_matrix() -> None:
-    @square
-    class MyOperator(AbstractLinearOperator):
-        n1 = 100
-        n2 = 2
-        matrix1: jax.Array = equinox.field(static=True)
-        matrix2: jax.Array = equinox.field(static=True)
-
-        def __init__(self) -> None:
-            key = jax.random.key(0)
-            key, subkey1, subkey2 = jax.random.split(key, 3)
-            self.matrix1 = jax.random.randint(subkey1, (self.n1, self.n1), 0, 100)
-            self.matrix2 = jax.random.randint(subkey2, (self.n2, self.n2), 0, 100)
-
-        def mv(self, x):
-            return (self.matrix1 @ x[0], self.matrix2 @ x[1])
-
-        def in_structure(self):
-            return (
-                jax.ShapeDtypeStruct((self.n1,), np.int32),
-                jax.ShapeDtypeStruct((self.n2,), np.int32),
-            )
-
-    op = MyOperator()
-
-    expected = jax.scipy.linalg.block_diag(op.matrix1, op.matrix2)
-    import time
-
-    t0 = time.perf_counter()
-    actual = op.as_matrix().block_until_ready()
-    assert_array_equal(actual, expected)

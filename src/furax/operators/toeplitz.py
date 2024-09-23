@@ -137,7 +137,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         # pad x so that its size is a multiple of m
         x_padding = 0 if l % m == 0 else m - (l % m)
         x_padded = jnp.pad(x, (x_padding,), mode='constant')
-        y = jnp.zeros(l + 2 * half_band_width)
+        y = jnp.zeros(l + 2 * half_band_width, dtype=band_values.dtype)
 
         def func(j, y):  # type: ignore[no-untyped-def]
             i = j * m

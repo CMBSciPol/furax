@@ -99,9 +99,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
         in_pytree = jax.tree.map(lambda s: jnp.zeros(s.shape, s.dtype), in_struct)
         in_leaves_ref, in_treedef = jax.tree.flatten(in_pytree)
 
-        matrix = jnp.empty(
-            (self.out_size(), self.in_size()), dtype=in_leaves_ref[0].dtype
-        )  # better dtype ?
+        matrix = jnp.empty((self.out_size(), self.in_size()), dtype=self.out_promoted_dtype)
         jcounter = 0
 
         for ileaf, leaf in enumerate(in_leaves_ref):
@@ -141,6 +139,18 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
     def out_size(self) -> int:
         """The number of elements in the output PyTree."""
         return sum(_.size for _ in jax.tree.leaves(self.out_structure()))
+
+    @property
+    def in_promoted_dtype(self) -> jnp.dtype:  # type: ignore[type-arg]
+        """Returns the promoted data type of the operator's input leaves."""
+        leaves = jax.tree.leaves(self.in_structure())
+        return jnp.result_type(*leaves)
+
+    @property
+    def out_promoted_dtype(self) -> jnp.dtype:  # type: ignore[type-arg]
+        """Returns the promoted data type of the operator's output leaves."""
+        leaves = jax.tree.leaves(self.out_structure())
+        return jnp.result_type(*leaves)
 
 
 def _monkey_patch_operator(cls: type[lx.AbstractLinearOperator]) -> None:
@@ -427,7 +437,7 @@ class IdentityOperator(AbstractLinearOperator):
         return self._in_structure
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        return jnp.identity(self.in_size())
+        return jnp.identity(self.in_size(), dtype=self.in_promoted_dtype)
 
 
 @diagonal
@@ -450,7 +460,7 @@ class HomothetyOperator(AbstractLinearOperator):
         return self._in_structure
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        return self.value * jnp.identity(self.in_size())
+        return self.value * jnp.identity(self.in_size(), dtype=self.out_promoted_dtype)
 
 
 @diagonal

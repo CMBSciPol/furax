@@ -122,6 +122,10 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
     def transpose(self) -> 'AbstractLinearOperator':
         raise NotImplementedError
 
+    @property
+    def T(self) -> 'AbstractLinearOperator':
+        return self.transpose()
+
     def inverse(self) -> 'AbstractLinearOperator':
         return LazyInverseOperator(self)
 

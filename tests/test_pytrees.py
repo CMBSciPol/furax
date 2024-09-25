@@ -1,9 +1,15 @@
+import operator
+from collections.abc import Callable
 from itertools import chain, combinations
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from equinox import tree_equal
+from jax import Array
+from jaxtyping import Float
 from numpy.testing import assert_array_equal
 
 from furax.landscapes import StokesPyTree, ValidStokesType
@@ -120,3 +126,119 @@ def test_matmul(stokes: ValidStokesType) -> None:
     x = cls.ones((2, 3))
     y = cls.full((2, 3), 2)
     assert x @ y == len(cls.stokes) * 12
+
+
+@pytest.mark.parametrize('do_jit', [False, True])
+@pytest.mark.parametrize(
+    'operation, reverse, value, expected_value',
+    [
+        (operator.add, False, 2, 5.0),
+        (operator.sub, False, 2, 1.0),
+        (operator.mul, False, 2, 6.0),
+        (operator.truediv, False, 2, 1.5),
+        (operator.pow, False, 2, 9.0),
+        (operator.add, True, 2, 5.0),
+        (operator.sub, True, 2, -1.0),
+        (operator.mul, True, 2, 6.0),
+        (operator.truediv, True, 2, 2 / 3),
+        (operator.pow, True, 2, 8.0),
+        (operator.add, False, 2.0, 5.0),
+        (operator.sub, False, 2.0, 1.0),
+        (operator.mul, False, 2.0, 6.0),
+        (operator.truediv, False, 2.0, 1.5),
+        (operator.pow, False, 2.0, 9.0),
+        (operator.add, True, 2.0, 5.0),
+        (operator.sub, True, 2.0, -1.0),
+        (operator.mul, True, 2.0, 6.0),
+        (operator.truediv, True, 2.0, 2 / 3),
+        (operator.pow, True, 2.0, 8.0),
+        (operator.add, False, jnp.array(2), 5.0),
+        (operator.sub, False, jnp.array(2), 1.0),
+        (operator.mul, False, jnp.array(2), 6.0),
+        (operator.truediv, False, jnp.array(2), 1.5),
+        (operator.pow, False, jnp.array(2), 9.0),
+        (operator.add, True, jnp.array(2), 5.0),
+        (operator.sub, True, jnp.array(2), -1.0),
+        (operator.mul, True, jnp.array(2), 6.0),
+        (operator.truediv, True, jnp.array(2), 2 / 3),
+        (operator.pow, True, jnp.array(2), 8.0),
+        (operator.add, False, jnp.array([2.0, 1]), jnp.array([5.0, 4])),
+        (operator.sub, False, jnp.array([2.0, 1]), jnp.array([1.0, 2])),
+        (operator.mul, False, jnp.array([2.0, 1]), jnp.array([6.0, 3])),
+        (operator.truediv, False, jnp.array([2.0, 1]), jnp.array([1.5, 3])),
+        (operator.pow, False, jnp.array([2.0, 1]), jnp.array([9.0, 3])),
+        (operator.add, True, jnp.array([2.0, 1]), jnp.array([5.0, 4])),
+        (operator.sub, True, jnp.array([2.0, 1]), jnp.array([-1.0, -2])),
+        (operator.mul, True, jnp.array([2.0, 1]), jnp.array([6.0, 3])),
+        (operator.truediv, True, jnp.array([2.0, 1]), jnp.array([2 / 3, 1 / 3])),
+        (operator.pow, True, jnp.array([2.0, 1]), jnp.array([8.0, 1])),
+    ],
+)
+def test_operation_scalar_or_array(
+    stokes: ValidStokesType,
+    operation: Callable[[Any, Any], Any],
+    reverse: bool,
+    value: float | Float[Array, ''],
+    expected_value: float,
+    do_jit: bool,
+) -> None:
+    shape = 3, 2
+    x = StokesPyTree.class_for(stokes).full(shape, 3.0)
+
+    def func(x):
+        if reverse:
+            return operation(value, x)
+        else:
+            return operation(x, value)
+
+    if do_jit:
+        func = jax.jit(func)
+    actual_y = func(x)
+
+    expected_leaf = jnp.broadcast_to(expected_value, shape)
+    expected_y = StokesPyTree.class_for(stokes)(*len(stokes) * (expected_leaf,))
+    assert tree_equal(actual_y, expected_y, rtol=1e-15)
+
+
+@pytest.mark.parametrize('do_jit', [False, True])
+@pytest.mark.parametrize(
+    'operation, expected_value',
+    [
+        (operator.add, 5.0),
+        (operator.sub, 1.0),
+        (operator.mul, 6.0),
+        (operator.truediv, 1.5),
+        (operator.pow, 9.0),
+    ],
+)
+def test_operation_pytree(
+    stokes: ValidStokesType,
+    operation: Callable[[Any, Any], Any],
+    expected_value: float,
+    do_jit: bool,
+) -> None:
+    cls = StokesPyTree.class_for(stokes)
+    a = cls.full((3, 2), 3)
+    b = cls.full((3, 2), 2)
+    expected_result = cls.full((3, 2), expected_value)
+    if do_jit:
+        operation = jax.jit(operation)
+    result = operation(a, b)
+    assert tree_equal(result, expected_result)
+
+
+@pytest.mark.parametrize(
+    'operation',
+    [
+        operator.add,
+        operator.sub,
+        operator.mul,
+        operator.truediv,
+        operator.pow,
+    ],
+)
+def test_operation_incompatible_pytree(operation: Callable[[Any, Any], Any]) -> None:
+    a = StokesPyTree.class_for('I').ones(())
+    b = StokesPyTree.class_for('IQU').ones(())
+    with pytest.raises(TypeError, match='unsupported operand type'):
+        operation(a, b)

@@ -1,6 +1,8 @@
 import math
+import operator
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from functools import partial
 from typing import Any, ClassVar, Literal, Union, cast, get_args, overload
 
@@ -59,6 +61,67 @@ class StokesPyTree(ABC):
         if not isinstance(other, type(self)):
             return NotImplemented
         return dot(self, other)
+
+    def __abs__(self) -> Self:
+        result: Self = jax.tree.map(operator.abs, self)
+        return result
+
+    def __pos__(self) -> Self:
+        return self
+
+    def __neg__(self) -> Self:
+        result: Self = jax.tree.map(operator.neg, self)
+        return result
+
+    def __add__(self, other: Any) -> Self:
+        return self._operation(operator.add, other)
+
+    def __sub__(self, other: Any) -> Self:
+        return self._operation(operator.sub, other)
+
+    def __mul__(self, other: Any) -> Self:
+        return self._operation(operator.mul, other)
+
+    def __truediv__(self, other: Any) -> Self:
+        return self._operation(operator.truediv, other)
+
+    def __pow__(self, other: Any) -> Self:
+        return self._operation(operator.pow, other)
+
+    def _operation(self, operation: Callable[[Any, Any], Any], right: Any) -> Self:
+        result: Self
+        if isinstance(right, type(self)):
+            result = jax.tree.map(operation, self, right)
+        elif jnp.isscalar(right) or isinstance(right, jax.Array):
+            result = jax.tree.map(lambda leaf: operation(leaf, right), self)
+        else:
+            return NotImplemented
+        return result
+
+    def __radd__(self, other: Any) -> Self:
+        return self._roperation(operator.add, other)
+
+    def __rsub__(self, other: Any) -> Self:
+        return self._roperation(operator.sub, other)
+
+    def __rmul__(self, other: Any) -> Self:
+        return self._roperation(operator.mul, other)
+
+    def __rtruediv__(self, other: Any) -> Self:
+        return self._roperation(operator.truediv, other)
+
+    def __rpow__(self, other: Any) -> Self:
+        return self._roperation(operator.pow, other)
+
+    def _roperation(self, operation: Callable[[Any, Any], Any], left: Any) -> Self:
+        result: Self
+        if isinstance(left, type(self)):
+            result = jax.tree.map(operation, left, self)
+        elif jnp.isscalar(left) or isinstance(left, jax.Array):
+            result = jax.tree.map(partial(operation, left), self)
+        else:
+            return NotImplemented
+        return result
 
     def ravel(self) -> Self:
         """Ravels each Stokes component."""

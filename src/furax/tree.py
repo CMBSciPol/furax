@@ -22,6 +22,26 @@ def is_leaf(x: Any) -> bool:
     return len(leaves) == 1 and x is leaves[0]
 
 
+def dot(x: PyTree[Num[Array, '...']], y: PyTree[Num[Array, '...']]) -> Num[Array, '']:
+    """Scalar product of two Pytrees.
+
+    If one of the leaves is complex, the hermitian scalar product is returned.
+
+    Args:
+        x: The first Pytree.
+        y: The second Pytree.
+
+    Example:
+        >>> import furax as fx
+        >>> x = {'a': jnp.array([1., 2, 3]), 'b': jnp.array([1, 0])}
+        >>> y = {'a': jnp.array([2, -1, 1]), 'b': jnp.array([2, 0])}
+        >>> fx.tree.dot(x, y)
+        Array(5., dtype=float32)
+    """
+    xy = jax.tree.map(jnp.vdot, x, y)
+    return sum(jax.tree.leaves(xy), start=jnp.array(0))
+
+
 P = TypeVar('P', bound=PyTree[Num[Array, '...']] | PyTree[jax.ShapeDtypeStruct])
 
 

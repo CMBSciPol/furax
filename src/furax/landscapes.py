@@ -18,7 +18,7 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
 from .samplings import Sampling
-from .tree import as_promoted_dtype, full_like, normal_like, ones_like, zeros_like
+from .tree import as_promoted_dtype, dot, full_like, normal_like, ones_like, zeros_like
 
 # XXX Remove after https://github.com/google/jax/pull/19669 is accepted
 NumberType = Union[
@@ -49,6 +49,24 @@ class StokesPyTree(ABC):
     @property
     def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.structure_for(self.shape, self.dtype)
+
+    def __getitem__(self, index: Integer[Array, '...']) -> Self:
+        arrays = [getattr(self, stoke.lower())[index] for stoke in self.stokes]
+        return type(self)(*arrays)
+
+    def __matmul__(self, other: Any) -> Any:
+        """Scalar product between Stokes pytrees."""
+        if not isinstance(other, type(self)):
+            return NotImplemented
+        return dot(self, other)
+
+    def ravel(self) -> Self:
+        """Ravels each Stokes component."""
+        return jax.tree.map(lambda x: x.ravel(), self)  # type: ignore[no-any-return]
+
+    def reshape(self, shape: tuple[int, ...]) -> Self:
+        """Reshape each Stokes component."""
+        return jax.tree.map(lambda x: x.reshape(shape), self)  # type: ignore[no-any-return]
 
     @classmethod
     @overload
@@ -87,10 +105,6 @@ class StokesPyTree(ABC):
     ) -> Self:
         stokes_arrays = len(cls.stokes) * [jax.ShapeDtypeStruct(shape, dtype)]
         return cls(*stokes_arrays)
-
-    def __getitem__(self, index: Integer[Array, '...']) -> Self:
-        arrays = [getattr(self, stoke.lower())[index] for stoke in self.stokes]
-        return type(self)(*arrays)
 
     @classmethod
     @overload
@@ -198,14 +212,6 @@ class StokesPyTree(ABC):
     @classmethod
     def normal(cls, shape: tuple[int, ...], key: Key[Array, ''], dtype: DTypeLike = float) -> Self:
         return normal_like(cls.structure_for(shape, dtype), key)
-
-    def ravel(self) -> Self:
-        """Ravels each Stokes component."""
-        return jax.tree.map(lambda x: x.ravel(), self)  # type: ignore[no-any-return]
-
-    def reshape(self, shape: tuple[int, ...]) -> Self:
-        """Reshape each Stokes component."""
-        return jax.tree.map(lambda x: x.reshape(shape), self)  # type: ignore[no-any-return]
 
 
 @jdc.pytree_dataclass

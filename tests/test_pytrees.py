@@ -108,9 +108,15 @@ def test_structure(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> No
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
 def test_structure_for(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> None:
     structure = StokesPyTree.class_for(stokes).structure_for(shape, dtype)
-
     array = jnp.zeros(shape, dtype)
     pytree = StokesPyTree.from_stokes(*[array for _ in stokes])
     expected_structure = pytree.structure
 
     assert structure == expected_structure
+
+
+def test_matmul(stokes: ValidStokesType) -> None:
+    cls = StokesPyTree.class_for(stokes)
+    x = cls.ones((2, 3))
+    y = cls.full((2, 3), 2)
+    assert x @ y == len(cls.stokes) * 12

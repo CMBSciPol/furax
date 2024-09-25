@@ -7,6 +7,27 @@ import furax as fx
 
 
 @pytest.mark.parametrize(
+    'x, y, expected_xy',
+    [
+        (jnp.ones((2,)), jnp.full((2,), 3), 6),
+        ({'a': -1}, {'a': 2}, -2),
+        (
+            {'a': jnp.ones((2,)), 'b': jnp.array([1, 0, 1])},
+            {'a': jnp.full((2,), 3), 'b': jnp.array([1, 0, -1])},
+            6,
+        ),
+    ],
+)
+def test_dot(x, y, expected_xy) -> None:
+    assert fx.tree.dot(x, y) == expected_xy
+
+
+def test_dot_invalid_pytrees() -> None:
+    with pytest.raises(ValueError, match='Dict key mismatch'):
+        _ = fx.tree.dot({'a': 1}, {'b': 2})
+
+
+@pytest.mark.parametrize(
     'x, expected_y',
     [
         (jnp.ones(2, dtype=jnp.float16), jnp.ones(2, dtype=jnp.float16)),

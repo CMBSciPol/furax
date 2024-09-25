@@ -80,42 +80,11 @@ class StokesPyTree(ABC):
         return cast(type[StokesPyTreeType], requested_cls)
 
     @classmethod
-    @overload
-    def structure_for(cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64) -> Self: ...
-
-    @classmethod
-    @overload
-    def structure_for(
-        cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64, *, stokes: Literal['I']
-    ) -> 'StokesIPyTree': ...
-
-    @classmethod
-    @overload
-    def structure_for(
-        cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64, *, stokes: Literal['QU']
-    ) -> 'StokesQUPyTree': ...
-
-    @classmethod
-    @overload
-    def structure_for(
-        cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64, *, stokes: Literal['IQU']
-    ) -> 'StokesIQUPyTree': ...
-
-    @classmethod
-    @overload
-    def structure_for(
-        cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64, *, stokes: Literal['IQUV']
-    ) -> 'StokesIQUVPyTree': ...
-
-    @classmethod
     def structure_for(
         cls,
         shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
-        stokes: ValidStokesType | None = None,
-    ) -> PyTree[jax.ShapeDtypeStruct]:
-        if stokes is not None:
-            cls = StokesPyTree.class_for(stokes)
+    ) -> Self:
         stokes_arrays = len(cls.stokes) * [jax.ShapeDtypeStruct(shape, dtype)]
         return cls(*stokes_arrays)
 
@@ -393,7 +362,8 @@ class StokesLandscape(Landscape):
 
     @property
     def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return StokesPyTree.structure_for(self.shape, self.dtype, stokes=self.stokes)
+        cls = StokesPyTree.class_for(self.stokes)
+        return cls.structure_for(self.shape, self.dtype)
 
     def tree_flatten(self):  # type: ignore[no-untyped-def]
         aux_data = {

@@ -106,8 +106,8 @@ def test_structure(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> No
 
 @pytest.mark.parametrize('shape', [(10,), (2, 10)])
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
-def test_structure_for_base_class(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> None:
-    structure = StokesPyTree.structure_for(shape, dtype, stokes)
+def test_structure_for(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> None:
+    structure = StokesPyTree.class_for(stokes).structure_for(shape, dtype)
 
     array = jnp.zeros(shape, dtype)
     pytree = StokesPyTree.from_stokes(*[array for _ in stokes])

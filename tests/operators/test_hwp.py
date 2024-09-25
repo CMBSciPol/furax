@@ -26,7 +26,7 @@ def test_hwp_orthogonal(stokes: ValidStokesType) -> None:
 
 
 def test_qu_rotation_hwp_rule(stokes: ValidStokesType) -> None:
-    in_structure = StokesPyTree.structure_for((), stokes=stokes)
+    in_structure = StokesPyTree.class_for(stokes).structure_for(())
     hwp = HWPOperator(in_structure)
     rot = QURotationOperator(jnp.array(1.0), in_structure)
     reduced_op = (rot @ hwp).reduce()

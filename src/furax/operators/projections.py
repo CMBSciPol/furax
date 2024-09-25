@@ -28,13 +28,13 @@ class SamplingOperator(AbstractLinearOperator):
         return SamplingTransposeOperator(self)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return StokesPyTree.structure_for(
-            self.landscape.shape, self.landscape.dtype, self.landscape.stokes
+        return StokesPyTree.class_for(self.landscape.stokes).structure_for(
+            self.landscape.shape, self.landscape.dtype
         )
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return StokesPyTree.structure_for(
-            self.indices.shape, self.landscape.dtype, self.landscape.stokes
+        return StokesPyTree.class_for(self.landscape.stokes).structure_for(
+            self.indices.shape, self.landscape.dtype
         )
 
 
@@ -94,7 +94,9 @@ def create_projection_operator(
         # remove the number of directions per pixels if there is only one.
         indices = indices.reshape(indices.shape[0], indices.shape[2])
 
-    tod_structure = StokesPyTree.structure_for(indices.shape, landscape.dtype, landscape.stokes)
+    tod_structure = StokesPyTree.class_for(landscape.stokes).structure_for(
+        indices.shape, landscape.dtype
+    )
 
     rotation = QURotationOperator(samplings.pa, tod_structure)
     sampling = SamplingOperator(landscape, indices)

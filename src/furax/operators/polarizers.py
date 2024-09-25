@@ -32,7 +32,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         *,
         angles: Float[Array, '...'] | None = None,
     ) -> AbstractLinearOperator:
-        in_structure = StokesPyTree.structure_for(shape, dtype, stokes)
+        in_structure = StokesPyTree.class_for(stokes).structure_for(shape, dtype)
         polarizer = cls(in_structure)
         if angles is None:
             return polarizer

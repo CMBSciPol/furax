@@ -42,7 +42,7 @@ class QURotationOperator(AbstractLinearOperator):
         *,
         angles: Float[Array, '...'],
     ) -> AbstractLinearOperator:
-        structure = StokesPyTree.structure_for(shape, dtype, stokes)
+        structure = StokesPyTree.class_for(stokes).structure_for(shape, dtype)
         return cls(angles, structure)
 
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:

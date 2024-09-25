@@ -29,7 +29,6 @@ classifiers = [
 requires-python = '>=3.10'
 license = {file = 'LICENSE'}
 dependencies = [
-    'jax>=0.4.25',
     'jaxtyping',
     'healpy>=0.16.6',
     'jax-healpy',

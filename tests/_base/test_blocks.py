@@ -225,7 +225,7 @@ def test_jit_block_row(
     op = BlockRowOperator(pytree_builder(op_32, op_33))
     x = pytree_builder(jnp.array([1, 2]), jnp.array([3, 4, 5]))
     expected_y = op(x)
-    jit_op = jax.jit(op.mv)
+    jit_op = jax.jit(lambda x: BlockRowOperator.mv(op, x))
     assert equinox.tree_equal(jit_op(x), expected_y)
 
 
@@ -237,7 +237,7 @@ def test_jit_block_diagonal(
     op = BlockDiagonalOperator(pytree_builder(op_32, op_23))
     x = pytree_builder(jnp.array([1, 2]), jnp.array([3, 4, 5]))
     expected_y = op(x)
-    jit_op = jax.jit(op.mv)
+    jit_op = jax.jit(lambda x: BlockDiagonalOperator.mv(op, x))
     assert equinox.tree_equal(jit_op(x), expected_y)
 
 
@@ -249,5 +249,5 @@ def test_jit_block_column(
     op = BlockColumnOperator(pytree_builder(op_33, op_23))
     x = pytree_builder(jnp.array([1, 2, 3]), jnp.array([3, 4, 5]))
     expected_y = op(x)
-    jit_op = jax.jit(op.mv)
+    jit_op = jax.jit(lambda x: BlockColumnOperator.mv(op, x))
     assert equinox.tree_equal(jit_op(x), expected_y)

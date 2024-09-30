@@ -4,7 +4,7 @@ import equinox
 import jax
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import Num, PyTree
+from jaxtyping import Inexact, PyTree
 
 from furax._base.core import AbstractLinearOperator
 from furax.tree import is_leaf
@@ -51,13 +51,13 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
                [ 0,  0,  0, 19,  0,  0,  0, 23]], dtype=int32)
     """
 
-    blocks: Num[Array, '...'] = equinox.field(static=True)
+    blocks: Inexact[Array, '...']
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     subscripts: str = equinox.field(static=True)
 
     def __init__(
         self,
-        blocks: PyTree[Num[Array, '...']],
+        blocks: PyTree[Inexact[Array, '...']],
         in_structure: PyTree[jax.ShapeDtypeStruct],
         subscripts: str = 'ij...,j...->i...',
     ) -> None:

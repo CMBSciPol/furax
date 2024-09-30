@@ -53,9 +53,13 @@ def test(method: str, do_jit: bool) -> None:
     in_structure = jax.ShapeDtypeStruct((6,), jnp.float64)
     x = jnp.array([1.0, 2, 3, 4, 5, 6])
     expected_y = jnp.array([20.0, 33, 48, 57, 58, 50])
-    func = SymmetricBandToeplitzOperator(band_values, in_structure, method=method)
+    op = SymmetricBandToeplitzOperator(band_values, in_structure, method=method)
     if do_jit:
-        func = jit(func)
+        # to avoid error: TypeError: unhashable type: 'jaxlib.xla_extension.ArrayImpl'
+        # we capture op in the lambda closure
+        func = jit(lambda x: SymmetricBandToeplitzOperator.mv(op, x))
+    else:
+        func = op
     y = func(x)
     assert_allclose(y, expected_y, rtol=1e-7, atol=1e-7)
 

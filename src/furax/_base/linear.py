@@ -14,7 +14,7 @@ class PackOperator(AbstractLinearOperator):
         y = x[mask]
     """
 
-    mask: Bool[Array, '...'] = equinox.field(static=True)
+    mask: Bool[Array, '...']
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(self, mask: Bool[Array, '...'], in_structure: PyTree[jax.ShapeDtypeStruct]):

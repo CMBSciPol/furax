@@ -468,7 +468,7 @@ class HomothetyOperator(AbstractLinearOperator):
 
 @diagonal
 class DiagonalOperator(AbstractLinearOperator):
-    diagonal: PyTree[Float[Array, '...']] = equinox.field(static=True)
+    diagonal: PyTree[Float[Array, '...']]
 
     def mv(self, sky: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
         return jax.tree.map((lambda a, b: a * b), sky, self.diagonal)

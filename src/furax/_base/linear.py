@@ -17,13 +17,10 @@ class PackOperator(AbstractLinearOperator):
 
     mask: Bool[Array, '...'] = equinox.field(static=True)
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    _out_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(self, mask: Bool[Array, '...'], in_structure: PyTree[jax.ShapeDtypeStruct]):
         self.mask = mask
         self._in_structure = in_structure
-        # out_structure is stored in the constructor, because the mask may be traced later on
-        self._out_structure = self._get_out_structure()
 
     def mv(self, x: PyTree[Array, '...']) -> PyTree[Array]:
         return x[self.mask]
@@ -33,17 +30,6 @@ class PackOperator(AbstractLinearOperator):
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._out_structure
-
-    def _get_out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        out_shape = (int(jnp.sum(self.mask)),)
-
-        def pack(leaf: jax.ShapeDtypeStruct) -> jax.ShapeDtypeStruct:
-            return jax.ShapeDtypeStruct(out_shape, leaf.dtype)
-
-        return jax.tree.map(pack, self.in_structure())
 
 
 class PackTransposeOperator(AbstractLazyTransposeOperator):

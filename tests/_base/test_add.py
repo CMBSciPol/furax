@@ -27,9 +27,6 @@ class Op(AbstractLinearOperator):
     def in_structure(self):
         return jax.ShapeDtypeStruct((3,), jnp.float32)
 
-    def out_structure(self):
-        return jax.ShapeDtypeStruct((), jnp.float32)
-
     def transpose(self):
         return OpTranspose(self)
 

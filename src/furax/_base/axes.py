@@ -1,4 +1,3 @@
-import functools as ft
 from collections.abc import Sequence
 from math import prod
 from typing import cast
@@ -68,13 +67,6 @@ class MoveAxisOperator(AbstractLinearOperator):
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        moveaxis = ft.partial(jnp.moveaxis, source=self.source, destination=self.destination)
-        return jax.tree.map(
-            lambda leaf: jax.eval_shape(moveaxis, leaf),
-            self.in_structure(),
-        )
-
 
 class MoveAxisInverseRule(AbstractBinaryRule):
     """Binary rule for move_axis.T @ move_axis = I`.
@@ -117,9 +109,6 @@ class AbstractRavelOrReshapeOperator(AbstractLinearOperator):
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.eval_shape(self.mv, self._in_structure)
 
 
 class RavelOperator(AbstractRavelOrReshapeOperator):

@@ -7,6 +7,7 @@ from jaxtyping import Float
 from numpy.testing import assert_array_equal
 
 from furax._base.dense import DenseBlockDiagonalOperator
+from furax.tree import as_structure
 
 
 @pytest.mark.parametrize(
@@ -39,6 +40,7 @@ def test_blocks2d(subscripts: str, x: Float[Array, '...']) -> None:
     op = DenseBlockDiagonalOperator(blocks, in_structure=in_structure, subscripts=subscripts)
 
     y = op(x)
+    assert as_structure(y) == op.out_structure()
     expected_y = jnp.einsum(subscripts, blocks, x)
     assert_array_equal(y, expected_y)
 
@@ -78,6 +80,7 @@ def test_blocks3d(subscripts: str, in_shape: tuple[int, ...], x: Float[Array, '.
     op = DenseBlockDiagonalOperator(blocks, in_structure=in_structure, subscripts=subscripts)
 
     y = op(x)
+    assert as_structure(y) == op.out_structure()
     expected_y = jnp.einsum(subscripts, blocks, x)
     assert_array_equal(y, expected_y)
     assert_array_equal(op.T.as_matrix().T, op.as_matrix())
@@ -99,6 +102,7 @@ def test_vector_pytree(x: Float[Array, '...']) -> None:
     )
     op = DenseBlockDiagonalOperator(blocks, in_structure)
     y = op(x)
+    assert as_structure(y) == op.out_structure()
     expected_y = jax.tree.unflatten(
         treedef, [jnp.einsum(op.subscripts, blocks, leaf) for leaf in leaves]
     )
@@ -127,6 +131,7 @@ def test_blocks_pytree(x: Float[Array, '...']) -> None:
     blocks = jax.tree.unflatten(treedef, block_leaves)
     op = DenseBlockDiagonalOperator(blocks, in_structure)
     y = op(x)
+    assert as_structure(y) == op.out_structure()
     expected_y = jax.tree.unflatten(
         treedef,
         [jnp.einsum(op.subscripts, block, leaf) for block, leaf in zip(block_leaves, leaves)],

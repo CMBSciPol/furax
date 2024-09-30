@@ -8,6 +8,7 @@ from furax._base.rules import AbstractBinaryRule
 from furax.landscapes import (
     DTypeLike,
     StokesIPyTree,
+    StokesIQUPyTree,
     StokesPyTree,
     StokesPyTreeType,
     StokesQUPyTree,
@@ -53,18 +54,19 @@ class LinearPolarizerOperator(AbstractLinearOperator):
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
-    def out_structure(self) -> jax.ShapeDtypeStruct:
-        leaf = jax.tree.leaves(self.in_structure())[0]
-        return jax.ShapeDtypeStruct(leaf.shape, leaf.dtype)
-
 
 class LinearPolarizerTransposeOperator(AbstractLazyTransposeOperator):
     operator: LinearPolarizerOperator
 
     def mv(self, x: Float[Array, '...']) -> StokesPyTree:
-        i = q = 0.5 * x
-        u = v = jnp.array(0, dtype=x.dtype)
         cls: type[StokesPyTree] = type(self.operator.in_structure())
+        i = q = 0.5 * x
+        if issubclass(cls, StokesIPyTree):
+            return cls(i)
+        u = jnp.broadcast_to(jnp.array(0, dtype=x.dtype), self.out_structure().u.shape)
+        if issubclass(cls, (StokesQUPyTree, StokesIQUPyTree)):
+            return cls.from_iquv(i, q, u, jnp.array(0))
+        v = jnp.broadcast_to(jnp.array(0, dtype=x.dtype), self.out_structure().v.shape)
         return cls.from_iquv(i, q, u, v)
 
 

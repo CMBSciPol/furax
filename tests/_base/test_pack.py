@@ -10,6 +10,7 @@ from numpy.testing import assert_array_equal
 from furax._base.linear import PackOperator
 from furax.landscapes import StokesIPyTree, StokesIQUPyTree
 from furax.operators import IdentityOperator
+from furax.tree import as_structure
 
 
 @pytest.mark.parametrize(
@@ -252,6 +253,7 @@ def test_unpack_direct(
     if do_jit:
         func = jax.jit(func)
     actual_y = func(x)
+    assert as_structure(actual_y) == operator.out_structure()
     assert equinox.tree_equal(actual_y, expected_y)
     assert_array_equal(operator.as_matrix(), operator.T.as_matrix().T)
 

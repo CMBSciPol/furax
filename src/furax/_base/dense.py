@@ -89,19 +89,6 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        einsum = ft.partial(jnp.einsum, self.subscripts)
-        if is_leaf(self.blocks):
-            return jax.tree.map(
-                lambda leaf: jax.eval_shape(einsum, self.blocks, leaf), self.in_structure()
-            )
-
-        return jax.tree.map(
-            lambda block, leaf: jax.eval_shape(einsum, block, leaf),
-            self.blocks,
-            self.in_structure(),
-        )
-
     @staticmethod
     def _parse_subscripts(subscripts: str) -> tuple[str, str, str]:
         split_subscripts = subscripts.split(',')

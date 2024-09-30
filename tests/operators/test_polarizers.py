@@ -8,6 +8,7 @@ from furax.landscapes import StokesIPyTree, StokesIQUPyTree, StokesPyTree, Valid
 from furax.operators.hwp import HWPOperator
 from furax.operators.polarizers import LinearPolarizerOperator
 from furax.operators.qu_rotations import QURotationOperator
+from furax.tree import as_structure
 
 
 def test_as_matrix(stokes: ValidStokesType) -> None:
@@ -57,13 +58,14 @@ def test_direct_i() -> None:
 
     y = polarizer(x)
 
+    assert as_structure(y) == polarizer.out_structure()
     expected_y = x.i / 2
     assert_allclose(y, expected_y, atol=1e-15, rtol=1e-15)
 
 
 def test_create_direct_iqu() -> None:
     angles = np.deg2rad(15)
-    polarizer = LinearPolarizerOperator.create(shape=(2, 5), angles=angles)
+    polarizer = LinearPolarizerOperator.create(shape=(5,), angles=angles)
     x = StokesIQUPyTree(
         i=jnp.array([1.0, 2, 3, 4, 5]),
         q=jnp.array([1.0, 1, 1, 1, 1]),
@@ -72,6 +74,7 @@ def test_create_direct_iqu() -> None:
 
     y = polarizer(x)
 
+    assert as_structure(y) == polarizer.out_structure()
     expected_y = 0.5 * (x.i + np.cos(2 * angles) * x.q - np.sin(2 * angles) * x.u)
     assert_allclose(y, expected_y, atol=1e-15, rtol=1e-15)
 
@@ -83,9 +86,10 @@ def test_create_transpose(stokes: ValidStokesType) -> None:
 
     y = polarizer.T(x)
 
+    assert as_structure(y) == polarizer.T.out_structure()
     expected_cls = StokesPyTree.class_for(stokes)
     assert isinstance(y, expected_cls)
     expected_y = expected_cls.from_iquv(
-        0.5 * x, 0.5 * np.cos(2 * angles) * x, -0.5 * np.sin(2 * angles) * x, 0.0
+        0.5 * x, 0.5 * np.cos(2 * angles) * x, -0.5 * np.sin(2 * angles) * x, 0 * x
     )
     assert equinox.tree_equal(y, expected_y, atol=1e-15, rtol=1e-15)

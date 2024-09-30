@@ -6,7 +6,7 @@ from jax import Array
 from jax.experimental.sparse.csr import CSR
 from jaxtyping import Inexact, PyTree
 
-from furax.operators import AbstractLazyTransposeOperator, AbstractLinearOperator, square
+from furax.operators import AbstractLinearOperator, TransposeOperator, square
 
 
 @square
@@ -47,7 +47,7 @@ class ToastObservationMatrixOperator(AbstractLinearOperator):
         return jax.ShapeDtypeStruct((self.matrix.shape[0],), self.matrix.dtype)
 
 
-class ToastObservationMatrixTransposeOperator(AbstractLazyTransposeOperator):
+class ToastObservationMatrixTransposeOperator(TransposeOperator):
     """Class for applying the transpose of a Toast observation matrix."""
 
     operator: ToastObservationMatrixOperator

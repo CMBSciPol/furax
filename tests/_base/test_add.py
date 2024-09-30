@@ -5,12 +5,12 @@ import pytest
 from numpy.testing import assert_array_equal
 
 from furax._base.core import (
-    AbstractLazyTransposeOperator,
     AbstractLinearOperator,
     AdditionOperator,
     CompositionOperator,
     HomothetyOperator,
     IdentityOperator,
+    TransposeOperator,
     square,
 )
 
@@ -31,7 +31,7 @@ class Op(AbstractLinearOperator):
         return OpTranspose(self)
 
 
-class OpTranspose(AbstractLazyTransposeOperator):
+class OpTranspose(TransposeOperator):
     def mv(self, x):
         return None
 

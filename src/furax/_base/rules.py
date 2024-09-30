@@ -10,6 +10,7 @@ from .core import (
     AbstractLinearOperator,
     HomothetyOperator,
     IdentityOperator,
+    TransposeOperator,
 )
 
 
@@ -190,6 +191,10 @@ class AbstractBinaryRule(AbstractRule, ABC):
         elif self.right_operator_class is not None and not isinstance(
             right, self.right_operator_class
         ):
+            raise NoReduction
+        if self.left_operator_class is TransposeOperator and left.operator is not right:
+            raise NoReduction
+        if self.right_operator_class is TransposeOperator and right.operator is not left:
             raise NoReduction
 
     @abstractmethod

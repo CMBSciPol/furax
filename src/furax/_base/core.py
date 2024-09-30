@@ -120,14 +120,14 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
         return matrix
 
     def transpose(self) -> 'AbstractLinearOperator':
-        raise NotImplementedError
+        return TransposeOperator(self)
 
     @property
     def T(self) -> 'AbstractLinearOperator':
         return self.transpose()
 
     def inverse(self) -> 'AbstractLinearOperator':
-        return LazyInverseOperator(self)
+        return InverseOperator(self)
 
     @property
     def I(self) -> 'AbstractLinearOperator':
@@ -367,13 +367,14 @@ class _AbstractLazyDualOperator(AbstractLinearOperator):
         return self.operator.in_structure()
 
 
-class AbstractLazyTransposeOperator(_AbstractLazyDualOperator):
+class TransposeOperator(_AbstractLazyDualOperator):
+
+    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
+        transpose = jax.linear_transpose(self.operator.mv, self.operator.in_structure())
+        return transpose(x)[0]
 
     def transpose(self) -> AbstractLinearOperator:
         return self.operator
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        return self.operator.as_matrix().T
 
 
 class AbstractLazyInverseOperator(_AbstractLazyDualOperator):
@@ -391,7 +392,7 @@ class AbstractLazyInverseOperator(_AbstractLazyDualOperator):
         return matrix
 
 
-class LazyInverseOperator(AbstractLazyInverseOperator):
+class InverseOperator(AbstractLazyInverseOperator):
     config: ConfigState = equinox.field(static=True)
 
     def __init__(self, operator: AbstractLinearOperator):
@@ -418,9 +419,7 @@ class LazyInverseOperator(AbstractLazyInverseOperator):
 
 
 @orthogonal
-class AbstractLazyInverseOrthogonalOperator(
-    AbstractLazyTransposeOperator, AbstractLazyInverseOperator
-):
+class AbstractLazyInverseOrthogonalOperator(TransposeOperator, AbstractLazyInverseOperator):
     pass
 
 

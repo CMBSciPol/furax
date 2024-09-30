@@ -8,7 +8,7 @@ from jaxtyping import Array, Float, Integer, PyTree
 
 from furax.detectors import DetectorArray
 from furax.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree
-from furax.operators import AbstractLazyTransposeOperator, AbstractLinearOperator, DiagonalOperator
+from furax.operators import AbstractLinearOperator, DiagonalOperator, TransposeOperator
 from furax.operators.qu_rotations import QURotationOperator
 from furax.samplings import Sampling
 
@@ -38,7 +38,7 @@ class SamplingOperator(AbstractLinearOperator):
         )
 
 
-class SamplingTransposeOperator(AbstractLazyTransposeOperator):
+class SamplingTransposeOperator(TransposeOperator):
     operator: SamplingOperator
 
     def mv(self, x: StokesPyTree) -> StokesPyTree:

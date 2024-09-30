@@ -1,6 +1,5 @@
 import equinox
 import jax
-import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float, PyTree
 
@@ -8,13 +7,12 @@ from furax._base.rules import AbstractBinaryRule
 from furax.landscapes import (
     DTypeLike,
     StokesIPyTree,
-    StokesIQUPyTree,
     StokesPyTree,
     StokesPyTreeType,
     StokesQUPyTree,
     ValidStokesType,
 )
-from furax.operators import AbstractLazyTransposeOperator, AbstractLinearOperator
+from furax.operators import AbstractLinearOperator
 from furax.operators.hwp import HWPOperator
 from furax.operators.qu_rotations import QURotationOperator
 
@@ -48,26 +46,8 @@ class LinearPolarizerOperator(AbstractLinearOperator):
             return 0.5 * x.q
         return 0.5 * (x.i + x.q)
 
-    def transpose(self) -> AbstractLinearOperator:
-        return LinearPolarizerTransposeOperator(self)
-
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
-
-
-class LinearPolarizerTransposeOperator(AbstractLazyTransposeOperator):
-    operator: LinearPolarizerOperator
-
-    def mv(self, x: Float[Array, '...']) -> StokesPyTree:
-        cls: type[StokesPyTree] = type(self.operator.in_structure())
-        i = q = 0.5 * x
-        if issubclass(cls, StokesIPyTree):
-            return cls(i)
-        u = jnp.broadcast_to(jnp.array(0, dtype=x.dtype), self.out_structure().u.shape)
-        if issubclass(cls, (StokesQUPyTree, StokesIQUPyTree)):
-            return cls.from_iquv(i, q, u, jnp.array(0))
-        v = jnp.broadcast_to(jnp.array(0, dtype=x.dtype), self.out_structure().v.shape)
-        return cls.from_iquv(i, q, u, v)
 
 
 class LinearPolarizerHWPRule(AbstractBinaryRule):

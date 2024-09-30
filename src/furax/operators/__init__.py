@@ -1,11 +1,11 @@
 from furax._base.core import (
     AbstractLazyInverseOperator,
     AbstractLazyInverseOrthogonalOperator,
-    AbstractLazyTransposeOperator,
     AbstractLinearOperator,
     DiagonalOperator,
     HomothetyOperator,
     IdentityOperator,
+    TransposeOperator,
     diagonal,
     lower_triangular,
     negative_semidefinite,
@@ -20,7 +20,7 @@ from furax._base.linear import PackOperator
 __all__ = [
     'AbstractLazyInverseOperator',
     'AbstractLazyInverseOrthogonalOperator',
-    'AbstractLazyTransposeOperator',
+    'TransposeOperator',
     'AbstractLinearOperator',
     'DiagonalOperator',
     'HomothetyOperator',

@@ -8,7 +8,7 @@ from jax import Array
 from jax import numpy as jnp
 from jaxtyping import Inexact, PyTree
 
-from .core import AbstractLazyTransposeOperator, AbstractLinearOperator
+from .core import AbstractLinearOperator, TransposeOperator
 from .rules import AbstractBinaryRule, NoReduction
 
 __all__ = [
@@ -247,7 +247,7 @@ class ReshapeOperator(AbstractRavelOrReshapeOperator):
         return jax.tree.map(lambda leaf: leaf.reshape(self.shape), x)
 
 
-class ReshapeTransposeOperator(AbstractLazyTransposeOperator):
+class ReshapeTransposeOperator(TransposeOperator):
     operator: ReshapeOperator | RavelOperator
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:

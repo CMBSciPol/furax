@@ -8,15 +8,16 @@ import pytest
 from numpy.random import PCG64, Generator
 
 from furax import Config
+from furax._base.diagonal import DiagonalOperator
 from furax.instruments.sat import (
     DETECTOR_ARRAY_SHAPE,
     NDIR_PER_DETECTOR,
     create_acquisition,
     create_detector_directions,
 )
-from furax.landscapes import HealpixLandscape, StokesIQUPyTree
-from furax.operators import DiagonalOperator
+from furax.landscapes import HealpixLandscape
 from furax.samplings import create_random_sampling
+from furax.tree import as_structure
 
 
 def get_random_generator(seed: int) -> np.random.Generator:
@@ -49,13 +50,7 @@ def test_solver(planck_iqu_256, sat_nhits):
     # preconditioner
     tod_structure = h.out_structure()
     coverage = h.T(jnp.ones(tod_structure.shape, tod_structure.dtype))
-    m = DiagonalOperator(
-        StokesIQUPyTree(
-            i=coverage.i,
-            q=coverage.i,
-            u=coverage.i,
-        )
-    ).I
+    m = DiagonalOperator(coverage.i, in_structure=as_structure(coverage)).I
     m = lx.TaggedLinearOperator(m, lx.positive_semidefinite_tag)
     hTh = lx.TaggedLinearOperator(h.T @ h, lx.positive_semidefinite_tag)
     tod = h(sky)

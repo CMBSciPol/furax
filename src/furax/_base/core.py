@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import lineax as lx
 from jax import Array
-from jaxtyping import Float, Inexact, PyTree, Scalar, ScalarLike
+from jaxtyping import Inexact, PyTree, Scalar, ScalarLike
 
 from furax._base.config import Config, ConfigState
 from furax.tree import zeros_like
@@ -331,8 +331,8 @@ class CompositionOperator(AbstractLinearOperator):
     operands: list[AbstractLinearOperator]
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
-        for operator in reversed(self.operands):
-            x = operator.mv(x)
+        for operand in reversed(self.operands):
+            x = operand.mv(x)
         return x
 
     def transpose(self) -> AbstractLinearOperator:
@@ -376,6 +376,9 @@ class CompositionOperator(AbstractLinearOperator):
 
 class _AbstractLazyDualOperator(AbstractLinearOperator):
     operator: AbstractLinearOperator
+
+    def __init__(self, operator: AbstractLinearOperator):
+        self.operator = operator
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.operator.out_structure()
@@ -469,7 +472,7 @@ class HomothetyOperator(AbstractLinearOperator):
         return super().__matmul__(other)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
-        return jax.tree.map(lambda leave: self.value * leave, x)
+        return jax.tree.map(lambda leaf: self.value * leaf, x)
 
     def inverse(self) -> AbstractLinearOperator:
         return HomothetyOperator(1 / self.value, self._in_structure)
@@ -479,38 +482,3 @@ class HomothetyOperator(AbstractLinearOperator):
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         return self.value * jnp.identity(self.in_size(), dtype=self.out_promoted_dtype)
-
-
-@diagonal
-class DiagonalOperator(AbstractLinearOperator):
-    diagonal: PyTree[Float[Array, '...']]
-
-    def mv(self, sky: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
-        return jax.tree.map((lambda a, b: a * b), sky, self.diagonal)
-
-    def inverse(self) -> 'AbstractLinearOperator':
-        return DiagonalInverseOperator(self)
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.eval_shape(lambda: self.diagonal)
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        leaves = jax.tree.leaves(self.diagonal)
-        return jnp.diag(jnp.concatenate(jax.tree.map(lambda _: _.ravel(), leaves)))
-
-
-class DiagonalInverseOperator(AbstractLazyInverseOperator):
-    def mv(self, x: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
-        def mul_inv(diagonal_leaf: Array, x_leaf: Array) -> Array:
-            return jnp.where(diagonal_leaf != 0, x_leaf / diagonal_leaf, 0)
-
-        y = jax.tree.map(mul_inv, self.operator.diagonal, x)
-        return y
-
-    def as_matrix(self) -> Inexact[Array, 'a b']:
-        def inv(diagonal_leaf: Array) -> Array:
-            leaf = diagonal_leaf.ravel()
-            return jnp.where(leaf != 0, 1 / leaf, 0)
-
-        leaves = jax.tree.leaves(self.operator.diagonal)
-        return jnp.diag(jnp.concatenate(jax.tree.map(inv, leaves)))

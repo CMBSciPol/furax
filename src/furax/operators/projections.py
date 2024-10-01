@@ -6,9 +6,10 @@ import numpy as np
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Integer, PyTree
 
+from furax._base.diagonal import DiagonalOperator
 from furax.detectors import DetectorArray
 from furax.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree
-from furax.operators import AbstractLinearOperator, DiagonalOperator, TransposeOperator
+from furax.operators import AbstractLinearOperator, TransposeOperator
 from furax.operators.qu_rotations import QURotationOperator
 from furax.samplings import Sampling
 
@@ -70,8 +71,7 @@ class SamplingTransposeOperator(TransposeOperator):
             .add(counts, indices_are_sorted=True, unique_indices=True)
             .reshape(self.operator.landscape.shape)
         )
-        arrays_out = len(self.operator.landscape.stokes) * [coverage]
-        return DiagonalOperator(StokesPyTree.from_stokes(*arrays_out))
+        return DiagonalOperator(coverage, in_structure=other.in_structure())
 
 
 def create_projection_operator(

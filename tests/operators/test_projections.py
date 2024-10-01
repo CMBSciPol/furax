@@ -3,8 +3,8 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.testing import assert_array_equal
 
+from furax._base.diagonal import DiagonalOperator
 from furax.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree
-from furax.operators import DiagonalOperator
 from furax.operators.projections import SamplingOperator
 
 

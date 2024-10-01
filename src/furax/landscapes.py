@@ -556,7 +556,9 @@ class StokesLandscape(Landscape):
 class HealpixLandscape(StokesLandscape):
     """Class representing a Healpix-projected map of Stokes vectors."""
 
-    def __init__(self, nside: int, stokes: ValidStokesType = 'IQU', dtype: DTypeLike = np.float64):
+    def __init__(
+        self, nside: int, stokes: ValidStokesType = 'IQU', dtype: DTypeLike = np.float64
+    ) -> None:
         shape = (12 * nside**2,)
         super().__init__(shape, stokes, dtype)
         self.nside = nside

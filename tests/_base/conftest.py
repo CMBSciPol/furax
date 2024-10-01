@@ -23,26 +23,30 @@ from jax import Array
 from jax import numpy as jnp
 from jaxtyping import PyTree
 
-from furax._base.core import (
-    AbstractLinearOperator,
-    DiagonalOperator,
-    HomothetyOperator,
-    IdentityOperator,
-)
+from furax._base.blocks import BlockDiagonalOperator
+from furax._base.core import AbstractLinearOperator, HomothetyOperator, IdentityOperator
+from furax._base.diagonal import DiagonalOperator
+from tests.helpers import arange
 
 
 @pytest.fixture(params=range(3), ids=['IdentityOperator', 'HomothetyOperator', 'DiagonalOperator'])
 def base_op_and_dense(request: pytest.FixtureRequest) -> (AbstractLinearOperator, Array):
     dtype = np.float32
-    in_structure = (jax.ShapeDtypeStruct((2, 3), dtype), jax.ShapeDtypeStruct((), dtype))
+    in_structure = (jax.ShapeDtypeStruct((2, 3), dtype), jax.ShapeDtypeStruct((1,), dtype))
     match request.param:
         case 0:
             return IdentityOperator(in_structure), jnp.identity(7, dtype)
         case 1:
             return HomothetyOperator(2.0, in_structure), 2.0 * jnp.identity(7, dtype)
         case 2:
-            return DiagonalOperator((jnp.arange(1, 7).reshape(2, 3), jnp.array(8))), jnp.diag(
-                jnp.r_[jnp.arange(1, 7), 8]
+            return (
+                BlockDiagonalOperator(
+                    (
+                        DiagonalOperator(arange(2, 3, dtype=dtype), in_structure=in_structure[0]),
+                        DiagonalOperator(jnp.array([8]), in_structure=in_structure[1]),
+                    )
+                ),
+                jnp.diag(jnp.r_[jnp.arange(1, 7), 8]),
             )
     raise Exception
 

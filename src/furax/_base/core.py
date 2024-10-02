@@ -428,6 +428,9 @@ class AbstractLazyInverseOrthogonalOperator(TransposeOperator, AbstractLazyInver
 class IdentityOperator(AbstractLinearOperator):
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
+    def __init__(self, in_structure: PyTree[jax.ShapeDtypeStruct]):
+        self._in_structure = in_structure
+
     def __matmul__(self, other: Any) -> AbstractLinearOperator:
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented

@@ -12,6 +12,7 @@ from jax import Array
 from jaxtyping import Float, Inexact, PyTree, Scalar, ScalarLike
 
 from furax._base.config import Config, ConfigState
+from furax.tree import zeros_like
 
 
 class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[misc]
@@ -95,8 +96,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
 
         Input and output PyTrees are flattened and concatenated.
         """
-        in_struct = self.in_structure()
-        in_pytree = jax.tree.map(lambda s: jnp.zeros(s.shape, s.dtype), in_struct)
+        in_pytree = zeros_like(self.in_structure())
         in_leaves_ref, in_treedef = jax.tree.flatten(in_pytree)
 
         matrix = jnp.empty((self.out_size(), self.in_size()), dtype=self.out_promoted_dtype)

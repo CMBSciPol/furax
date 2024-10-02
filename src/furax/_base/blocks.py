@@ -75,21 +75,42 @@ class BlockRowOperator(AbstractBlockOperator):
 
     def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:
         super().__init__(blocks)
-        structures = {block.out_structure(): None for block in self.operators}
-        if len(structures) > 1:
-            structures_as_str = '\n - '.join(str(structure) for structure in structures)
+        operators = self.operators
+        ref_structure = operators[0].out_structure()
+        invalid_structures = [
+            structure
+            for operator in operators[1:]
+            if (structure := operator.out_structure()) != ref_structure
+        ]
+        if len(invalid_structures) > 0:
+            structures_as_str = '\n - '.join(str(structure) for structure in invalid_structures)
             raise ValueError(
                 f'The operators in a BlockRowOperator must have the same output structure:\n'
+                f' - {ref_structure}\n'
                 f' - {structures_as_str}'
             )
 
-    def mv(self, vector: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
-        operators = self.operators
-        vects = jax.tree.leaves(vector)
-        output = operators[0].mv(vects[0])
-        for operator, vect in zip(operators[1:], vects[1:]):
-            output = jax.tree.map(jnp.add, output, operator.mv(vect))
-        return output
+    def mv(self, x: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
+        tree = self._tree_map(lambda op, leaf: (op, leaf), x)
+
+        def func(value, op_leaf):  # type: ignore[no-untyped-def]
+            # get the first block evaluation
+            if (
+                isinstance(value, tuple)
+                and len(value) > 0
+                and isinstance(value[0], AbstractLinearOperator)
+            ):
+                value = value[0](value[1])
+            op, leaf = op_leaf
+            return jax.tree.map(jnp.add, value, op(leaf))
+
+        return jax.tree.reduce(
+            func,
+            tree,
+            is_leaf=lambda op_leaf: isinstance(op_leaf, tuple)
+            and len(op_leaf) > 0
+            and isinstance(op_leaf[0], AbstractLinearOperator),
+        )
 
     def transpose(self) -> AbstractLinearOperator:
         return BlockColumnOperator(self._tree_map(lambda op: op.T))
@@ -179,11 +200,18 @@ class BlockColumnOperator(AbstractBlockOperator):
 
     def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:
         super().__init__(blocks)
-        structures = {op.in_structure(): None for op in self.operators}
-        if len(structures) > 1:
-            structures_as_str = '\n - '.join(str(structure) for structure in structures)
+        operators = self.operators
+        ref_structure = operators[0].in_structure()
+        invalid_structures = [
+            structure
+            for operator in operators[1:]
+            if (structure := operator.in_structure()) != ref_structure
+        ]
+        if len(invalid_structures) > 0:
+            structures_as_str = '\n - '.join(str(structure) for structure in invalid_structures)
             raise ValueError(
                 f'The operators in a BlockColumnOperator must have the same input structure:\n'
+                f' - {ref_structure}\n'
                 f' - {structures_as_str}'
             )
 

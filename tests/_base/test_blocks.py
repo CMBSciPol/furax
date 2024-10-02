@@ -25,13 +25,19 @@ import jax.scipy.linalg as jsl
 import pytest
 from jaxtyping import PyTree
 
+import furax as fx
 from furax._base.blocks import (
     AbstractBlockOperator,
     BlockColumnOperator,
     BlockDiagonalOperator,
     BlockRowOperator,
 )
-from furax._base.core import AbstractLinearOperator, AdditionOperator
+from furax._base.core import (
+    AbstractLinearOperator,
+    AdditionOperator,
+    HomothetyOperator,
+    IdentityOperator,
+)
 from furax._base.dense import DenseBlockDiagonalOperator
 
 
@@ -251,3 +257,43 @@ def test_jit_block_column(
     expected_y = op(x)
     jit_op = jax.jit(lambda x: BlockColumnOperator.mv(op, x))
     assert equinox.tree_equal(jit_op(x), expected_y)
+
+
+def test_block_column_nested() -> None:
+    structure = {
+        'x': jax.ShapeDtypeStruct((2,), jnp.float16),
+        'y': jax.ShapeDtypeStruct((3,), jnp.float32),
+    }
+    op = BlockColumnOperator(
+        {'a': IdentityOperator(structure), 'b': HomothetyOperator(2, structure)}
+    )
+    x = fx.tree.ones_like(structure)
+    y = op(x)
+    expected_y = {'a': x, 'b': fx.tree.full_like(structure, 2)}
+    assert equinox.tree_equal(y, expected_y)
+
+
+def test_block_diagonal_nested() -> None:
+    structure = {
+        'x': jax.ShapeDtypeStruct((2,), jnp.float16),
+        'y': jax.ShapeDtypeStruct((3,), jnp.float32),
+    }
+    op = BlockDiagonalOperator(
+        {'a': IdentityOperator(structure), 'b': HomothetyOperator(2, structure)}
+    )
+    x = {'a': fx.tree.ones_like(structure), 'b': fx.tree.full_like(structure, 2)}
+    y = op(x)
+    expected_y = {'a': fx.tree.ones_like(structure), 'b': fx.tree.full_like(structure, 4)}
+    assert equinox.tree_equal(y, expected_y)
+
+
+def test_block_row_nested() -> None:
+    structure = {
+        'x': jax.ShapeDtypeStruct((2,), jnp.float16),
+        'y': jax.ShapeDtypeStruct((3,), jnp.float32),
+    }
+    op = BlockRowOperator({'a': IdentityOperator(structure), 'b': IdentityOperator(structure)})
+    x = {'a': fx.tree.ones_like(structure), 'b': fx.tree.full_like(structure, 2)}
+    y = op(x)
+    expected_y = fx.tree.full_like(structure, 3)
+    assert equinox.tree_equal(y, expected_y)

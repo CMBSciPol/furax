@@ -77,7 +77,7 @@ class BlockRowOperator(AbstractBlockOperator):
         super().__init__(blocks)
         structures = {block.out_structure(): None for block in self.operators}
         if len(structures) > 1:
-            structures_as_str = '\n - '.join(structures)
+            structures_as_str = '\n - '.join(str(structure) for structure in structures)
             raise ValueError(
                 f'The operators in a BlockRowOperator must have the same output structure:\n'
                 f' - {structures_as_str}'
@@ -181,7 +181,7 @@ class BlockColumnOperator(AbstractBlockOperator):
         super().__init__(blocks)
         structures = {op.in_structure(): None for op in self.operators}
         if len(structures) > 1:
-            structures_as_str = '\n - '.join(str(_) for _ in structures)
+            structures_as_str = '\n - '.join(str(structure) for structure in structures)
             raise ValueError(
                 f'The operators in a BlockColumnOperator must have the same input structure:\n'
                 f' - {structures_as_str}'

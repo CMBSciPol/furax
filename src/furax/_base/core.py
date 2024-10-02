@@ -311,12 +311,9 @@ class CompositionOperator(CompositeOperator):
     """An operator that composes two operators, as in C = B ∘ A."""
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
-        reduced_operator = self.reduce()
-        if isinstance(reduced_operator, CompositionOperator):
-            for operator in reversed(reduced_operator.operands):
-                x = operator.mv(x)
-            return x
-        return reduced_operator.mv(x)
+        for operator in reversed(self.operands):
+            x = operator.mv(x)
+        return x
 
     def transpose(self) -> AbstractLinearOperator:
         return CompositionOperator([_.T for _ in reversed(self.operands)])

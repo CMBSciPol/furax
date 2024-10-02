@@ -273,7 +273,7 @@ class StokesPyTree(ABC):
         return full_like(cls.structure_for(shape, dtype), fill_value)
 
     @classmethod
-    def normal(cls, shape: tuple[int, ...], key: Key[Array, ''], dtype: DTypeLike = float) -> Self:
+    def normal(cls, key: Key[Array, ''], shape: tuple[int, ...], dtype: DTypeLike = float) -> Self:
         return normal_like(cls.structure_for(shape, dtype), key)
 
 
@@ -448,7 +448,7 @@ class StokesLandscape(Landscape):
 
     def normal(self, key: Key[Array, '']) -> PyTree[Shaped[Array, ' {self.npixel}']]:
         cls = StokesPyTree.class_for(self.stokes)
-        return cls.normal(self.shape, key, self.dtype)
+        return cls.normal(key, self.shape, self.dtype)
 
     def get_coverage(self, arg: Sampling) -> Integer[Array, ' 12*nside**2']:
         indices = self.world2index(arg.theta, arg.phi)

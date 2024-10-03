@@ -340,7 +340,7 @@ class CompositionOperator(CompositeOperator):
         """Returns a linear operator with a reduced structure."""
         from .rules import AlgebraicReductionRule
 
-        operands = AlgebraicReductionRule().apply(self.operands)
+        operands = AlgebraicReductionRule().apply([operand.reduce() for operand in self.operands])
         if len(operands) == 0:
             return IdentityOperator(self.in_structure())
         if len(operands) == 1:

@@ -11,6 +11,10 @@ from furax.operators.toeplitz import SymmetricBandToeplitzOperator
 
 default_fft_size = SymmetricBandToeplitzOperator._get_default_fft_size
 
+__all__ = [
+    'GapFillingOperator',
+]
+
 
 class GapFillingOperator(equinox.Module):
     """Class for filling masked time samples with a constrained noise realization.
@@ -20,22 +24,6 @@ class GapFillingOperator(equinox.Module):
         pack: A PackOperator for masking the gaps.
         detectors: A DetectorArray representing the detectors.
         rate: The sampling rate of the data.
-
-    Usage:
-        >>> tod = jnp.ones((2, 5))  # example: 2 detectors x 5 samples
-        >>> from furax.detectors import FakeDetectorArray
-        >>> dets = FakeDetectorArray(tod.shape, names=['DET_A', 'DET_B'])
-        >>> cov = SymmetricBandToeplitzOperator(
-        ... jnp.array([[1., 0.5], [1, 0.25]]),
-        ... jax.ShapeDtypeStruct(tod.shape, tod.dtype))
-        >>> pack = PackOperator(
-        ... jnp.array([[1, 1, 1, 0, 0], [1, 1, 0, 0, 1]], dtype=bool),
-        ... jax.ShapeDtypeStruct(tod.shape, tod.dtype))
-        >>> gap_fill = GapFillingOperator(cov, pack, dets)
-        >>> key = jax.random.PRNGKey(2468)
-        >>> filled_tod = gap_fill(key, tod)
-        >>> jnp.allclose(pack(tod), pack(filled_tod))
-        Array(True, dtype=bool)
     """
 
     cov: SymmetricBandToeplitzOperator
@@ -122,8 +110,5 @@ class GapFillingOperator(equinox.Module):
             return xi
 
         subkeys = self.detectors.split_key(key)
-        # hack for single-detector timestream
-        if subkeys.size == 1:
-            subkeys = jnp.squeeze(subkeys)
         real: Float[Array, '...'] = func(x, self.cov.band_values, subkeys)
         return real

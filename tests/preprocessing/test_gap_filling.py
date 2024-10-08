@@ -43,7 +43,7 @@ def test_generate_realization_shape(x_shape: tuple[int, ...], do_jit: bool):
     structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
     pack = PackOperator(jnp.ones_like(x, dtype=bool), structure)
-    dets = FakeDetectorArray(x_shape)
+    dets = FakeDetectorArray(x_shape[:-1])
     op = GapFillingOperator(cov, pack, dets)
     func = op._generate_realization_for
     if do_jit:

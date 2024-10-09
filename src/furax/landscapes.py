@@ -20,7 +20,15 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
 from .samplings import Sampling
-from .tree import as_promoted_dtype, dot, full_like, normal_like, ones_like, zeros_like
+from .tree import (
+    as_promoted_dtype,
+    dot,
+    full_like,
+    normal_like,
+    ones_like,
+    uniform_like,
+    zeros_like,
+)
 
 # XXX Remove after https://github.com/google/jax/pull/19669 is accepted
 NumberType = Union[
@@ -276,6 +284,17 @@ class StokesPyTree(ABC):
     def normal(cls, key: Key[Array, ''], shape: tuple[int, ...], dtype: DTypeLike = float) -> Self:
         return normal_like(cls.structure_for(shape, dtype), key)
 
+    @classmethod
+    def uniform(
+        cls,
+        shape: tuple[int, ...],
+        key: Key[Array, ''],
+        dtype: DTypeLike = float,
+        low: float = 0.0,
+        high: float = 1.0,
+    ) -> Self:
+        return uniform_like(cls.structure_for(shape, dtype), key, low, high)
+
 
 @jdc.pytree_dataclass
 class StokesIPyTree(StokesPyTree):
@@ -371,6 +390,11 @@ class Landscape(ABC):
     def normal(self, key: Key[Array, '']) -> PyTree[Shaped[Array, '...']]: ...
 
     @abstractmethod
+    def uniform(
+        self, key: Key[Array, ''], low: float = 0.0, high: float = 1.0
+    ) -> PyTree[Shaped[Array, '...']]: ...
+
+    @abstractmethod
     def full(self, fill_value: ScalarLike) -> PyTree[Shaped[Array, '...']]: ...
 
     def zeros(self) -> PyTree[Shaped[Array, '...']]:
@@ -449,6 +473,12 @@ class StokesLandscape(Landscape):
     def normal(self, key: Key[Array, '']) -> PyTree[Shaped[Array, ' {self.npixel}']]:
         cls = StokesPyTree.class_for(self.stokes)
         return cls.normal(key, self.shape, self.dtype)
+
+    def uniform(
+        self, key: Key[Array, ''], low: float = 0.0, high: float = 1.0
+    ) -> PyTree[Shaped[Array, ' {self.npixel}']]:
+        cls = StokesPyTree.class_for(self.stokes)
+        return cls.uniform(self.shape, key, self.dtype, low, high)
 
     def get_coverage(self, arg: Sampling) -> Integer[Array, ' 12*nside**2']:
         indices = self.world2index(arg.theta, arg.phi)

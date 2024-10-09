@@ -163,3 +163,30 @@ def normal_like(x: P, key: Key[Array, '']) -> P:
         lambda leaf, key: jax.random.normal(key, leaf.shape, leaf.dtype), x, keys
     )
     return result
+
+
+def uniform_like(x: P, key: Key[Array, ''], low: float = 0.0, high: float = 1.0) -> P:
+    """Returns a pytrees of a uniform values with the same structure as x.
+
+    Args:
+        x: The pytree of array-like leaves with ``shape`` and ``dtype`` attributes, whose structure
+            will be used to construct the output pytree of pseudo-random values.
+        key: The PRNGKey to use.
+        min_val: The minimum value of the uniform distribution.
+        max_val: The maximum value of the uniform distribution.
+
+    Example:
+        >>> uniform_like({'a': jnp.array(1, jnp.float16),
+        ...            'b': jnp.array(2, jnp.float32)}, jax.random.PRNGKey(0))
+        {'a': Array(0.08984, dtype=float16), 'b': Array(0.10536897, dtype=float32)}
+
+        >>> uniform_like({'a': jax.ShapeDtypeStruct((2,), jnp.float16),
+        ...            'b': jax.ShapeDtypeStruct((), jnp.float32)}, jax.random.PRNGKey(0))
+        {'a': Array([0.08984, 0.5566 ], dtype=float16),'b': Array(0.10536897, dtype=float32)}
+    """
+    key_leaves = jax.random.split(key, len(jax.tree.leaves(x)))
+    keys = jax.tree.unflatten(jax.tree.structure(x), key_leaves)
+    result: P = jax.tree.map(
+        lambda leaf, key: jax.random.uniform(key, leaf.shape, leaf.dtype, low, high), x, keys
+    )
+    return result

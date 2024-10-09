@@ -45,9 +45,11 @@ def test_generate_realization_shape(x_shape: tuple[int, ...], do_jit: bool):
     pack = PackOperator(jnp.ones_like(x, dtype=bool), structure)
     dets = FakeDetectorArray(x_shape[:-1])
     op = GapFillingOperator(cov, pack, dets)
-    func = op._generate_realization_for
     if do_jit:
-        func = jax.jit(func)
+        # avoid error: TypeError: unhashable type: 'jaxlib.xla_extension.ArrayImpl'
+        func = jax.jit(lambda x, k: op._generate_realization_for(x, k))
+    else:
+        func = op._generate_realization_for
     real = func(x, key)
     assert real.shape == x_shape
 
@@ -112,10 +114,13 @@ def test_get_psd_non_negative(n_tt, fft_size):
     assert np.all(psd >= 0)
 
 
-def test_valid_samples_and_no_nans(dummy_shape, dummy_x, dummy_gap_filling_operator):
+@pytest.mark.parametrize('do_jit', [False, True])
+def test_valid_samples_and_no_nans(do_jit: bool, dummy_shape, dummy_x, dummy_gap_filling_operator):
     op = dummy_gap_filling_operator
-    func = jax.jit(op)
-    key = jax.random.key(1234)
-    y = func(key, dummy_x)
+    if do_jit:
+        func = jax.jit(lambda k, x: op(k, x))
+    else:
+        func = op
+    y = func(jax.random.key(1234), dummy_x)
     assert_allclose(op.pack(dummy_x), op.pack(y))
     assert not np.any(np.isnan(y))

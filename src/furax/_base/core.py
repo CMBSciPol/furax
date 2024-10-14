@@ -409,9 +409,7 @@ class InverseOperator(AbstractLazyInverseOperator):
                 preconditioner, lx.positive_semidefinite_tag
             )
         solution = lx.linear_solve(A, x, solver=solver, throw=throw, options=options)
-        _ = jax.experimental.io_callback(
-            self.config.solver_callback, jax.ShapeDtypeStruct((), jnp.int8), solution
-        )
+        jax.debug.callback(self.config.solver_callback, solution)
         return solution.value
 
 

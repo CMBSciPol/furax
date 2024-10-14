@@ -4,21 +4,17 @@ from dataclasses import asdict, dataclass, field, replace
 from types import TracebackType
 from typing import Any
 
-import jax.numpy as jnp
 import lineax as lx
 import yaml
-from jax import Array
-from jaxtyping import Int8
 
 
-def default_solver_callback(solution: lx.Solution) -> Int8[Array, '']:
+def default_solver_callback(solution: lx.Solution) -> None:
     num_steps = solution.stats['num_steps']
     ok = num_steps < solution.stats['max_steps']
     if ok:
         print(f'Converged in {num_steps} iterations')
     else:
         print(f'Did not converge in {num_steps} iterations')
-    return jnp.array(0, dtype=jnp.int8)
 
 
 @dataclass(frozen=True)
@@ -26,7 +22,7 @@ class ConfigState:
     solver: lx.AbstractLinearSolver = lx.CG(rtol=1e-6, atol=1e-6, max_steps=500)
     solver_throw: bool = False
     solver_options: dict[str, Any] = field(default_factory=dict)
-    solver_callback: Callable[[lx.Solution], Int8[Array, '']] = default_solver_callback
+    solver_callback: Callable[[lx.Solution], None] = default_solver_callback
 
     def tree_flatten(self):  # type: ignore[no-untyped-def]
         return (), asdict(self)

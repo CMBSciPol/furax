@@ -8,7 +8,7 @@ import jax.scipy.linalg as jsl
 from jax import Array
 from jaxtyping import Inexact, PyTree
 
-from .core import AbstractLinearOperator, AdditionOperator
+from .core import AbstractLinearOperator, AdditionOperator, IdentityOperator
 from .rules import AbstractBinaryRule
 
 
@@ -174,6 +174,14 @@ class BlockDiagonalOperator(AbstractBlockOperator):
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         return jsl.block_diag(*[op.as_matrix() for op in self.operators])  # type: ignore[no-any-return]  # noqa: E501
+
+    def reduce(self) -> AbstractLinearOperator:
+        """BlockDiagonalOperator([I, I, ...]) -> I."""
+        op = super().reduce()
+        assert isinstance(op, BlockDiagonalOperator)
+        if all(isinstance(block, IdentityOperator) for block in op.operators):
+            return IdentityOperator(self.in_structure())
+        return op
 
 
 class BlockColumnOperator(AbstractBlockOperator):

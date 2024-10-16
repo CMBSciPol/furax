@@ -297,3 +297,15 @@ def test_block_row_nested() -> None:
     y = op(x)
     expected_y = fx.tree.full_like(structure, 3)
     assert equinox.tree_equal(y, expected_y)
+
+
+def test_reduce_block_diagonal() -> None:
+    op = BlockDiagonalOperator(
+        {
+            'a': IdentityOperator(jax.ShapeDtypeStruct((3,), dtype=jnp.float64)),
+            'b': IdentityOperator(jax.ShapeDtypeStruct((), jnp.float32)),
+        }
+    )
+    reduced_op = op.reduce()
+    assert isinstance(reduced_op, IdentityOperator)
+    assert reduced_op.in_structure() == op.in_structure()

@@ -104,7 +104,7 @@ def test_operators(
 ) -> None:
     ops = [op_23, op2_23, op_23]
     op = cls(pytree_builder(*ops))
-    assert op.operators == ops
+    assert op.block_leaves == ops
 
 
 def test_block_row(

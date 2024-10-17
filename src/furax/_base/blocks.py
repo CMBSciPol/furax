@@ -244,7 +244,7 @@ class AbstractBlockDiagonalRule(AbstractBinaryRule):
     ) -> list[AbstractLinearOperator]:
         assert isinstance(left, AbstractBlockOperator)  # mypy assert
         assert isinstance(right, AbstractBlockOperator)  # mypy assert
-        return [self.reduced_class(left._tree_map(lambda l, r: (l @ r).reduce(), right.blocks))]
+        return [self.reduced_class(left._tree_map(lambda l, r: l @ r, right.blocks)).reduce()]
 
 
 class BlockRowBlockDiagonalRule(AbstractBlockDiagonalRule):

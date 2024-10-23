@@ -8,7 +8,7 @@ from jax import Array
 from jax import numpy as jnp
 from jaxtyping import Inexact, PyTree
 
-from .core import AbstractLinearOperator, TransposeOperator
+from .core import AbstractLinearOperator, IdentityOperator, TransposeOperator
 from .rules import AbstractBinaryRule, NoReduction
 
 __all__ = [
@@ -109,6 +109,11 @@ class AbstractRavelOrReshapeOperator(AbstractLinearOperator):
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
+
+    def reduce(self) -> AbstractLinearOperator:
+        if self.out_structure() == self.in_structure():
+            return IdentityOperator(self.in_structure())
+        return self
 
 
 class RavelOperator(AbstractRavelOrReshapeOperator):

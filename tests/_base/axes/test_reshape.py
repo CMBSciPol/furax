@@ -49,6 +49,25 @@ def test_reshape(
     assert tree_equal(op_t(y), x)
 
 
+@pytest.mark.parametrize(
+    'shape, in_structure',
+    [
+        ((-1,), jax.ShapeDtypeStruct((2,), jnp.float32)),
+        ((2, 3), jax.ShapeDtypeStruct((2, 3), jnp.float32)),
+        (
+            (2, -1),
+            {
+                'a': jax.ShapeDtypeStruct((2, 3), jnp.float32),
+                'b': jax.ShapeDtypeStruct((2, 5), jnp.float32),
+            },
+        ),
+    ],
+)
+def test_reduction(shape: tuple[int, ...], in_structure: PyTree[jax.ShapeDtypeStruct]) -> None:
+    op = ReshapeOperator(shape, in_structure=in_structure)
+    assert isinstance(op.reduce(), IdentityOperator)
+
+
 @pytest.mark.parametrize('shape', [(), (7,)])
 def test_invalid_shape1(shape: tuple[int, ...]) -> None:
     structure = jax.ShapeDtypeStruct((1, 2, 3), jnp.float32)

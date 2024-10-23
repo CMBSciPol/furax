@@ -102,6 +102,27 @@ def test_as_matrix(
     assert_array_equal(transposed_operator_matrix.T, matrix)
 
 
+@pytest.mark.parametrize(
+    'first_axis, last_axis, in_structure',
+    [
+        (0, -1, jax.ShapeDtypeStruct((2,), jnp.float32)),
+        (
+            1,
+            1,
+            {
+                'a': jax.ShapeDtypeStruct((2, 3, 4), jnp.float32),
+                'b': jax.ShapeDtypeStruct((4, 3, 2), jnp.float32),
+            },
+        ),
+    ],
+)
+def test_reduction(
+    first_axis: int, last_axis: int, in_structure: PyTree[jax.ShapeDtypeStruct]
+) -> None:
+    op = RavelOperator(first_axis, last_axis, in_structure=in_structure)
+    assert isinstance(op.reduce(), IdentityOperator)
+
+
 @pytest.mark.parametrize('first_axis, last_axis', [(1, 0), (-1, -2)])
 def test_invalid_axes1(first_axis: int, last_axis: int) -> None:
     structure = jax.ShapeDtypeStruct((1, 2, 3), jnp.float32)

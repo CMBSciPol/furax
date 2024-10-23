@@ -416,15 +416,14 @@ class InverseOperator(AbstractLazyInverseOperator):
     def __init__(self, operator: AbstractLinearOperator):
         if operator.in_structure() != operator.out_structure():
             raise ValueError('Only square operators can be inverted.')
-        super().__init__(operator)
+        super().__init__(operator.reduce())
         self.config = Config.instance()
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
-        reduced_operator = self.operator.reduce()
         solver = self.config.solver
         throw = self.config.solver_throw
         options = self.config.solver_options.copy()
-        A = lx.TaggedLinearOperator(reduced_operator, lx.positive_semidefinite_tag)
+        A = lx.TaggedLinearOperator(self.operator, lx.positive_semidefinite_tag)
         if preconditioner := options.get('preconditioner'):
             options['preconditioner'] = lx.TaggedLinearOperator(
                 preconditioner, lx.positive_semidefinite_tag

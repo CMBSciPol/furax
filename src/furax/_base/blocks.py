@@ -42,9 +42,9 @@ class AbstractBlockOperator(AbstractLinearOperator, ABC):
 
 
 class BlockRowOperator(AbstractBlockOperator):
-    """A block row operator, in which each block is an operator.
+    """A block row operator, where each block is an operator.
 
-    The blocks are stored in a pytree and each leave is an AbstractLinearOperator.
+    The blocks are stored in a pytree structure, with each leaf being an AbstractLinearOperator.
 
     Examples:
         >>> x = jnp.array([1, 2], jnp.float32)
@@ -61,11 +61,7 @@ class BlockRowOperator(AbstractBlockOperator):
         [Array([1., 2.], dtype=float32),
          Array([1., 2.], dtype=float32),
          Array([1., 2.], dtype=float32)]
-        >>> op_tuple = BlockColumnOperator((I, I, I))
-        >>> op_tuple(x)
-        (Array([1., 2.], dtype=float32),
-         Array([1., 2.], dtype=float32),
-         Array([1., 2.], dtype=float32))
+
         >>> op_dict = BlockColumnOperator({'a': I, 'b': I, 'c': I})
         >>> op_dict(x)
         {'a': Array([1., 2.], dtype=float32),
@@ -123,9 +119,9 @@ class BlockRowOperator(AbstractBlockOperator):
 
 
 class BlockDiagonalOperator(AbstractBlockOperator):
-    """A block diagonal operator, in which each block is an operator.
+    """A block diagonal operator, where each block is an operator.
 
-    The blocks are stored in a pytree and each leave is an AbstractLinearOperator.
+    The blocks are stored in a pytree structure, with each leaf being an AbstractLinearOperator.
 
     Example:
         >>> x = jnp.array([1, 2], jnp.float32)
@@ -136,28 +132,24 @@ class BlockDiagonalOperator(AbstractBlockOperator):
         >>> H.as_matrix()
         Array([[0., 1.],
                [1., 0.]], dtype=float32)
-        >>> op_list = BlockDiagonalOperator([H, H, H])
+        >>> op_list = BlockDiagonalOperator([H, 2*H, 3*H])
         >>> op_list.as_matrix()
         Array([[0., 1., 0., 0., 0., 0.],
                [1., 0., 0., 0., 0., 0.],
-               [0., 0., 0., 1., 0., 0.],
-               [0., 0., 1., 0., 0., 0.],
-               [0., 0., 0., 0., 0., 1.],
-               [0., 0., 0., 0., 1., 0.]], dtype=float32)
+               [0., 0., 0., 2., 0., 0.],
+               [0., 0., 2., 0., 0., 0.],
+               [0., 0., 0., 0., 0., 3.],
+               [0., 0., 0., 0., 3., 0.]], dtype=float32)
         >>> op_list([x, x, x])
         [Array([2., 1.], dtype=float32),
-         Array([2., 1.], dtype=float32),
-         Array([2., 1.], dtype=float32)]
-        >>> op_tuple = BlockDiagonalOperator((H, H, H))
-        >>> op_tuple((x, x, x))
-        (Array([2., 1.], dtype=float32),
-         Array([2., 1.], dtype=float32),
-         Array([2., 1.], dtype=float32))
-        >>> op_dict = BlockDiagonalOperator({'a': H, 'b': H, 'c': H})
+         Array([4., 2.], dtype=float32),
+         Array([6., 3.], dtype=float32)]
+
+        >>> op_dict = BlockDiagonalOperator({'a': H, 'b': 2*H, 'c': 3*H})
         >>> op_dict({'a': x, 'b': x, 'c': x})
         {'a': Array([2., 1.], dtype=float32),
-         'b': Array([2., 1.], dtype=float32),
-         'c': Array([2., 1.], dtype=float32)}
+         'b': Array([4., 2.], dtype=float32),
+         'c': Array([6., 3.], dtype=float32)}
     """
 
     def mv(self, vector: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
@@ -185,25 +177,23 @@ class BlockDiagonalOperator(AbstractBlockOperator):
 
 
 class BlockColumnOperator(AbstractBlockOperator):
-    """A block column operator, in which each block is an operator.
+    """A block column operator, where each block is an operator.
 
-    The blocks are stored in a pytree and each leave is an AbstractLinearOperator.
+    The blocks are stored in a pytree structure, with each leaf being an AbstractLinearOperator.
 
     Examples:
         >>> x = jnp.array([1, 2], jnp.float32)
         >>> I = IdentityOperator(jax.ShapeDtypeStruct((2,), jnp.float32))
-        >>> op_list = BlockRowOperator([I, I, I])
+        >>> op_list = BlockRowOperator([I, 2*I, 3*I])
         >>> op_list.as_matrix()
-        Array([[1., 0., 1., 0., 1., 0.],
-               [0., 1., 0., 1., 0., 1.]], dtype=float32)
+        Array([[1., 0., 2., 0., 3., 0.],
+               [0., 1., 0., 2., 0., 3.]], dtype=float32)
         >>> op_list([x, x, x])
-        Array([3., 6.], dtype=float32)
-        >>> op_tuple = BlockRowOperator((I, I, I))
-        >>> op_tuple((x, x, x))
-        Array([3., 6.], dtype=float32)
-        >>> op_dict = BlockRowOperator({'a': I, 'b': I, 'c': I})
+        Array([ 6., 12.], dtype=float32)
+
+        >>> op_dict = BlockRowOperator({'a': I, 'b': 2*I, 'c': 3*I})
         >>> op_dict({'a': x, 'b': x, 'c': x})
-        Array([3., 6.], dtype=float32)
+        Array([ 6., 12.], dtype=float32)
     """
 
     def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:

@@ -249,23 +249,22 @@ def orthogonal(cls: type[T]) -> type[T]:
     return cls
 
 
-class CompositeOperator(AbstractLinearOperator):
-    operands: list[AbstractLinearOperator]
-
-
-class AdditionOperator(CompositeOperator):
+class AdditionOperator(AbstractLinearOperator):
     """An operator that adds two operators, as in C = A + B."""
 
-    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
-        y = self.operands[0](x)
+    operands: PyTree[AbstractLinearOperator]
 
-        for operand in self.operands[1:]:
-            y = jax.tree_map(jnp.add, y, operand(x))
+    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
+        operands = self.operand_leaves
+        y = operands[0](x)
+
+        for operand in operands[1:]:
+            y = jax.tree.map(jnp.add, y, operand(x))
 
         return y
 
     def transpose(self) -> AbstractLinearOperator:
-        return AdditionOperator([_.T for _ in self.operands])
+        return AdditionOperator(self._tree_map(lambda operand: operand.T))
 
     def __add__(self, other: AbstractLinearOperator) -> 'AdditionOperator':
         if not isinstance(other, AbstractLinearOperator):
@@ -275,10 +274,10 @@ class AdditionOperator(CompositeOperator):
         if self.out_structure() != other.out_structure():
             raise ValueError('Incompatible linear operator output structures')
         if isinstance(other, AdditionOperator):
-            operands = other.operands
+            operands = other.operand_leaves
         else:
             operands = [other]
-        return AdditionOperator(self.operands + operands)
+        return AdditionOperator(self.operand_leaves + operands)
 
     def __radd__(self, other: AbstractLinearOperator) -> 'AdditionOperator':
         if not isinstance(other, AbstractLinearOperator):
@@ -287,28 +286,50 @@ class AdditionOperator(CompositeOperator):
             raise ValueError('Incompatible linear operator input structures')
         if self.out_structure() != other.out_structure():
             raise ValueError('Incompatible linear operator output structures')
-        return AdditionOperator([other] + self.operands)
+        return AdditionOperator([other] + self.operand_leaves)
 
     def __neg__(self) -> 'AdditionOperator':
-        return AdditionOperator([(-1) * operand for operand in self.operands])
+        return AdditionOperator(self._tree_map(lambda operand: (-1) * operand))
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operands[0].in_structure()
+        return self.operand_leaves[0].in_structure()
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operands[0].out_structure()
+        return self.operand_leaves[0].out_structure()
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        return functools.reduce(jnp.add, (operand.as_matrix() for operand in self.operands))
+        return functools.reduce(jnp.add, (operand.as_matrix() for operand in self.operand_leaves))
 
     def reduce(self) -> AbstractLinearOperator:
-        if len(self.operands) == 1:
-            return self.operands[0].reduce()
-        return AdditionOperator([operand.reduce() for operand in self.operands])
+        operands = self._tree_map(lambda operand: operand.reduce())
+        operand_leaves = jax.tree.leaves(
+            operands, is_leaf=lambda leaf: isinstance(leaf, AbstractLinearOperator)
+        )
+        if len(operand_leaves) == 1:
+            leaf: AbstractLinearOperator = operand_leaves[0]
+            return leaf
+        return AdditionOperator(operands)
+
+    @property
+    def operand_leaves(self) -> list[AbstractLinearOperator]:
+        """Returns the flat list of operators."""
+        return jax.tree.leaves(
+            self.operands, is_leaf=lambda x: isinstance(x, AbstractLinearOperator)
+        )
+
+    def _tree_map(self, f: Callable[..., Any], *args: Any) -> Any:
+        return jax.tree.map(
+            f,
+            self.operands,
+            *args,
+            is_leaf=lambda x: isinstance(x, AbstractLinearOperator),
+        )
 
 
-class CompositionOperator(CompositeOperator):
+class CompositionOperator(AbstractLinearOperator):
     """An operator that composes two operators, as in C = B ∘ A."""
+
+    operands: list[AbstractLinearOperator]
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         for operator in reversed(self.operands):

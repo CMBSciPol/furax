@@ -1,29 +1,12 @@
-import string
-import sys
 from collections.abc import Callable
-from typing import Any
 
 import equinox
-from numpy.testing import assert_array_equal
-
-if sys.version_info < (3, 12):
-    from itertools import islice
-
-    def batched(iterable, n):
-        if n < 1:
-            raise ValueError('n must be at least one')
-        iterator = iter(iterable)
-        while batch := tuple(islice(iterator, n)):
-            yield batch
-
-else:
-    from itertools import batched
-
 import jax
 import jax.numpy as jnp
 import jax.scipy.linalg as jsl
 import pytest
 from jaxtyping import PyTree
+from numpy.testing import assert_array_equal
 
 import furax as fx
 from furax._base.blocks import (
@@ -39,32 +22,6 @@ from furax._base.core import (
     IdentityOperator,
 )
 from furax._base.dense import DenseBlockDiagonalOperator
-
-
-def pytree_dict_builder(*args: Any) -> dict[str, Any]:
-    return {k: v for k, v in zip(string.ascii_lowercase, args)}
-
-
-def pytree_list_builder(*args: Any) -> list[Any]:
-    return list(args)
-
-
-def pytree_tuple_builder(*args: Any) -> tuple[Any, ...]:
-    return args
-
-
-def pytree_nested_builder(*args: Any) -> dict[str, tuple[Any]]:
-    return {k: v for k, v in zip(string.ascii_lowercase, batched(args, 2))}
-
-
-@pytest.fixture(
-    params=[pytree_dict_builder, pytree_list_builder, pytree_tuple_builder, pytree_nested_builder]
-)
-def pytree_builder(
-    request: pytest.FixtureRequest,
-) -> Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]]:
-    """Parametrized fixture for I, QU, IQU and IQUV."""
-    return request.param
 
 
 @pytest.fixture(scope='module')

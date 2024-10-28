@@ -63,13 +63,14 @@ def test_solver(planck_iqu_256, sat_nhits):
     solution = lx.linear_solve(
         hTh, b, solver=Config.instance().solver, throw=False, options=options
     )
+    solution.value.i.block_until_ready()
     print(f'No JIT: {time.time() - time0}')
     assert solution.stats['num_steps'] < solution.stats['max_steps']
 
     # import healpy as hp
     # import matplotlib.pyplot as mp
     #
-    # hp.mollview(solution.value.I)
+    # hp.mollview(solution.value.i)
     # mp.show()
 
     @jax.jit

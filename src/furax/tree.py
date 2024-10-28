@@ -18,8 +18,8 @@ __all__ = [
 
 def is_leaf(x: Any) -> bool:
     """Returns true if the input is a Pytree leaf."""
-    leaves = jax.tree.leaves(x)
-    return len(leaves) == 1 and x is leaves[0]
+    treedef = jax.tree.structure(x)
+    return jax.tree_util.treedef_is_leaf(treedef)
 
 
 def dot(x: PyTree[Num[Array, '...']], y: PyTree[Num[Array, '...']]) -> Num[Array, '']:

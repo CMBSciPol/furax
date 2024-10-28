@@ -47,7 +47,6 @@ def test_healpix_landscape(stokes: ValidStokesType) -> None:
     ],
 )
 def test_pixel2index(pixel: tuple[float, float], expected_index: int) -> None:
-
     class CARStokesLandscape(StokesLandscape):
         def world2pixel(self, theta, phi):
             return theta, phi
@@ -58,7 +57,6 @@ def test_pixel2index(pixel: tuple[float, float], expected_index: int) -> None:
 
 
 def test_get_coverage() -> None:
-
     class CARStokesLandscape(StokesLandscape):
         def world2pixel(self, theta, phi):
             return theta, phi

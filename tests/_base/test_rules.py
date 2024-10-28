@@ -66,7 +66,6 @@ class Op2T(AbstractLazyInverseOrthogonalOperator):
 
 
 def test_composition() -> None:
-
     op = Op1() @ Op2() @ Op1()
     assert len(op.operands) == 3
     x = jnp.array(1)
@@ -84,7 +83,7 @@ def test_composition() -> None:
         (op := Op2(), op.T @ op),
     ],
 )
-def test_inverse(op: AbstractLinearOperator, composed_op: CompositionOperator) -> None:
+def test_inverse_1(op: AbstractLinearOperator, composed_op: CompositionOperator) -> None:
     assert isinstance(composed_op, IdentityOperator)
     assert composed_op.in_structure() == op.in_structure()
     assert composed_op.out_structure() == op.out_structure()
@@ -101,7 +100,7 @@ def test_inverse(op: AbstractLinearOperator, composed_op: CompositionOperator) -
         (op := Op2(), CompositionOperator([op.T, op])),
     ],
 )
-def test_inverse(op: AbstractLinearOperator, composed_op: CompositionOperator) -> None:
+def test_inverse_2(op: AbstractLinearOperator, composed_op: CompositionOperator) -> None:
     reduced_op = composed_op.reduce()
     assert isinstance(reduced_op, IdentityOperator)
     assert reduced_op.in_structure() == op.in_structure()

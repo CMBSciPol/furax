@@ -16,7 +16,6 @@ from furax.tree import zeros_like
 
 
 class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[misc]
-
     def __init_subclass__(cls, **keywords: Any) -> None:
         _monkey_patch_operator(cls)
 
@@ -386,7 +385,6 @@ class _AbstractLazyDualOperator(AbstractLinearOperator):
 
 
 class TransposeOperator(_AbstractLazyDualOperator):
-
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         transpose = jax.linear_transpose(self.operator.mv, self.operator.in_structure())
         return transpose(x)[0]
@@ -396,7 +394,6 @@ class TransposeOperator(_AbstractLazyDualOperator):
 
 
 class AbstractLazyInverseOperator(_AbstractLazyDualOperator):
-
     def __matmul__(self, other: Any) -> AbstractLinearOperator:
         if self.operator is other:
             return IdentityOperator(self.in_structure())

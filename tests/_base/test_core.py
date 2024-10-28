@@ -70,8 +70,5 @@ def test_as_matrix() -> None:
     op = MyOperator()
 
     expected = jax.scipy.linalg.block_diag(op.matrix1, op.matrix2)
-    import time
-
-    t0 = time.perf_counter()
     actual = op.as_matrix().block_until_ready()
     assert_array_equal(actual, expected)

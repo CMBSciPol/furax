@@ -374,7 +374,6 @@ StokesPyTreeType = StokesIPyTree | StokesQUPyTree | StokesIQUPyTree | StokesIQUV
 
 @jax.tree_util.register_pytree_node_class
 class Landscape(ABC):
-
     def __init__(self, shape: tuple[int, ...], dtype: DTypeLike = np.float64):
         self.shape = shape
         self.dtype = dtype

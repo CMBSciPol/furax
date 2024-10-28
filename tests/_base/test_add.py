@@ -29,9 +29,8 @@ class Op(AbstractLinearOperator):
 
 
 def test_add(
-    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]]
+    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-
     operand_leaves = Op(1), Op(2)
     extra_operand = Op(3)
     operands = pytree_builder(*operand_leaves)
@@ -48,7 +47,6 @@ def test_add(
 def test_radd(
     pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-
     operand_leaves = Op(1), Op(2)
     extra_operand = Op(3)
     operands = pytree_builder(*operand_leaves)
@@ -63,9 +61,8 @@ def test_radd(
 
 
 def test_sub(
-    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]]
+    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-
     operand_leaves = Op(1), Op(2)
     extra_operand = Op(3)
     operands = pytree_builder(*operand_leaves)
@@ -80,9 +77,8 @@ def test_sub(
 
 
 def test_transpose(
-    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]]
+    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-
     operand_leaves = Op(1), Op(2)
     operands = pytree_builder(*operand_leaves)
     op = AdditionOperator(operands)
@@ -103,9 +99,8 @@ def test_transpose(
 
 
 def test_neg(
-    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]]
+    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-
     operand_leaves = Op(1), Op(2)
     operands = pytree_builder(*operand_leaves)
     op = AdditionOperator(operands)
@@ -122,7 +117,7 @@ def test_neg(
 
 
 def test_reduce_1(
-    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]]
+    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
     operand = Op(1)
     op = AdditionOperator(pytree_builder(operand))
@@ -130,7 +125,7 @@ def test_reduce_1(
 
 
 def test_reduce_2(
-    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]]
+    pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
     h = HomothetyOperator(3.0, jax.ShapeDtypeStruct((3,), jnp.float32))
     op = AdditionOperator(pytree_builder(CompositionOperator([h, h]), Op(2)))
@@ -178,7 +173,6 @@ def test_input_pytree2() -> None:
 
 def test_add_invalid_in_structure() -> None:
     class Op_(Op):
-
         def in_structure(self):
             return jax.ShapeDtypeStruct((3,), jnp.float32)
 
@@ -188,7 +182,6 @@ def test_add_invalid_in_structure() -> None:
 
 def test_add_invalid_out_structure() -> None:
     class Op_(Op):
-
         def out_structure(self):
             return jax.ShapeDtypeStruct((3,), jnp.float32)
 

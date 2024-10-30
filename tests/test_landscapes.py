@@ -3,7 +3,13 @@ import pytest
 from jax import Array
 from numpy.testing import assert_array_equal
 
-from furax.landscapes import HealpixLandscape, StokesLandscape, StokesPyTree, ValidStokesType
+from furax.landscapes import (
+    FrequencyLandscape,
+    HealpixLandscape,
+    StokesLandscape,
+    StokesPyTree,
+    ValidStokesType,
+)
 from furax.samplings import Sampling
 
 
@@ -20,6 +26,22 @@ def test_healpix_landscape(stokes: ValidStokesType) -> None:
         leaf = getattr(sky, stoke.lower())
         assert isinstance(leaf, Array)
         assert leaf.size == npixel
+        assert_array_equal(leaf, 1.0)
+
+
+def test_frequency_landscape(stokes: ValidStokesType) -> None:
+    nside = 64
+    npixel = 12 * nside**2
+    frequencies = jnp.array([10, 20, 30])
+    landscape = FrequencyLandscape(nside, frequencies, stokes)
+
+    sky = landscape.ones()
+    assert isinstance(sky, StokesPyTree.class_for(stokes))
+    assert sky.shape == (3, npixel)
+    for stoke in stokes:
+        leaf = getattr(sky, stoke.lower())
+        assert isinstance(leaf, Array)
+        assert leaf.size == 3 * npixel
         assert_array_equal(leaf, 1.0)
 
 

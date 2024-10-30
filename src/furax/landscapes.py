@@ -586,3 +586,27 @@ class HealpixLandscape(StokesLandscape):
             int: HEALPix map index for ring ordering scheme.
         """
         return (jhp.ang2pix(self.nside, theta, phi),)
+
+
+@jax.tree_util.register_pytree_node_class
+class FrequencyLandscape(HealpixLandscape):
+    def __init__(
+        self,
+        nside: int,
+        frequencies: Array,
+        stokes: ValidStokesType = 'IQU',
+        dtype: DTypeLike = np.float64,
+    ):
+        super().__init__(nside, stokes, dtype)
+        self.frequencies = frequencies
+        self.shape = (len(frequencies), 12 * nside**2)
+
+    def tree_flatten(self):  # type: ignore[no-untyped-def]
+        aux_data = {
+            'shape': self.shape,
+            'dtype': self.dtype,
+            'stokes': self.stokes,
+            'nside': self.nside,
+            'frequencies': self.frequencies,
+        }  # static values
+        return (), aux_data

@@ -49,6 +49,10 @@ dev = [
     'setuptools_scm',
     'beartype',
 ]
+comp_sep = [
+    'astropy',
+    'pysm3',
+]
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'
@@ -66,10 +70,14 @@ skip_covered = true
 
 [[tool.mypy.overrides]]
 module = [
+    'astropy',
+    'astropy.cosmology',
     'healpy',
     'jax_healpy',
     'lineax',
-    'scipy.stats.sampling'
+    'pysm3',
+    'scipy',
+    'scipy.stats.sampling',
 ]
 ignore_missing_imports = true
 

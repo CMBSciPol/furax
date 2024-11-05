@@ -2,13 +2,39 @@ from abc import abstractmethod
 
 import equinox
 import jax
+from jax._src.api import F
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int, PyTree
 from scipy import constants
+from astropy.cosmology import Planck15, units
 
 from furax._base.diagonal import BroadcastDiagonalOperator
 
-H_OVER_K = constants.h / constants.k
+H_OVER_K = constants.h * 1e9 / constants.k
+TCMB = Planck15.Tcmb(0).value  # type: ignore
+
+
+def K_RK_2_K_CMB(nu: Array | Float) -> Array:
+    """Convert Rayleigh-Jeans brightness temperature to CMB temperature.
+
+    .. math::
+        T_{CMB} = \frac{(e^{\frac{h \nu}{k T_{CMB}}} - 1)^2}{(e^{\frac{h \nu}{k T_{CMB}}})
+        \\left( \frac{h \nu}{k T_{CMB}} \right)^2}
+
+    Args:
+        nu (ArrayLike): Frequency in GHz.
+
+    Returns:
+        ArrayLike: Conversion factor from Rayleigh-Jeans to CMB temperature.
+
+    Example:
+        >>> nu = jnp.array([30, 40, 100])
+        >>> conversion = K_RK_2_K_CMB(nu)
+        >>> print(conversion)
+    """
+    return jnp.expm1(
+        H_OVER_K * nu / TCMB)**2 / (jnp.exp(H_OVER_K * nu / TCMB) *
+                                    (H_OVER_K * nu / TCMB)**2)
 
 
 class AbstractSEDOperator(BroadcastDiagonalOperator):
@@ -56,13 +82,25 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
 
 
 class CMBOperator(AbstractSEDOperator):
+    factor: Float[Array, '...'] | float
+    units: str = equinox.field(static=True)
 
-    def __init__(self, frequencies: Float[Array, '...'],
-                 in_structure: PyTree[jax.ShapeDtypeStruct]) -> None:
+    def __init__(self,
+                 frequencies: Float[Array, '...'],
+                 in_structure: PyTree[jax.ShapeDtypeStruct],
+                 units: str = 'K_CMB') -> None:
+
+        self.units = units
+        if units == 'K_CMB':
+            self.factor = 1.0
+        elif units == 'K_RJ':
+            self.factor = K_RK_2_K_CMB(frequencies)
+
         super().__init__(frequencies, in_structure=in_structure)
 
     def sed(self) -> Float[Array, '...']:
-        return jnp.ones_like(self.frequencies)
+        return jnp.ones_like(self.frequencies) / jnp.expand_dims(self.factor,
+                                                                 axis=-1)
 
 
 class DustOperator(AbstractSEDOperator):
@@ -70,6 +108,8 @@ class DustOperator(AbstractSEDOperator):
     temperature_patch_indices: Int[Array, '...'] | None
     beta: Float[Array, '...']
     beta_patch_indices: Int[Array, '...'] | None
+    factor: Float[Array, '...'] | float
+    units: str = equinox.field(static=True)
 
     def __init__(
         self,
@@ -77,30 +117,24 @@ class DustOperator(AbstractSEDOperator):
         *,
         frequency0: float = 100e9,
         temperature: float | Float[Array, '...'],
+        units: str = 'K_CMB',
         temperature_patch_indices: Int[Array, '...'] | None = None,
         beta: float | Float[Array, '...'],
         beta_patch_indices: Int[Array, '...'] | None = None,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
 
-        # if temperature_patch_indices is None:
-        #     assert jnp.asarray(temperature).shape == (
-        #     ) or jnp.asarray(temperature).shape == (1, )
-        # else:
-        #     assert jnp.asarray(temperature).shape == jnp.unique(
-        #         temperature_patch_indices).shape
-
-        # if beta_patch_indices is None:
-        #     assert jnp.asarray(beta).shape == (
-        #     ) or jnp.asarray(beta).shape == (1, )
-        # else:
-        #     assert jnp.asarray(beta).shape == jnp.unique(
-        #         beta_patch_indices).shape
-
         self.temperature = jnp.asarray(temperature)
         self.temperature_patch_indices = temperature_patch_indices
         self.beta = jnp.asarray(beta)
         self.beta_patch_indices = beta_patch_indices
+        self.units = units
+
+        if units == 'K_CMB':
+            self.factor = K_RK_2_K_CMB(frequencies) / K_RK_2_K_CMB(frequency0)
+        elif units == 'K_RJ':
+            self.factor = 1.0
+
         super().__init__(
             frequencies,
             frequency0=frequency0,
@@ -110,13 +144,12 @@ class DustOperator(AbstractSEDOperator):
     def sed(self) -> Float[Array, '...']:
         t = self._get_at(
             jnp.expm1(self.frequency0 / self.temperature * H_OVER_K) /
-            jnp.expm1(self.frequencies / self.temperature * H_OVER_K) *
-            (self.frequencies / self.frequency0),
+            jnp.expm1(self.frequencies / self.temperature * H_OVER_K),
             self.temperature_patch_indices,
         )
-        b = self._get_at(1 + self.beta, self.beta_patch_indices)
-
-        sed = t**b
+        b = self._get_at((self.frequencies / self.frequency0)**(1 + self.beta),
+                         self.beta_patch_indices)
+        sed = (t*b)  * jnp.expand_dims(self.factor , axis=-1)
         return sed
 
 
@@ -125,6 +158,8 @@ class SynchrotronOperator(AbstractSEDOperator):
     beta_pl_patch_indices: Int[Array, '...'] | None
     nu_pivot: float = equinox.field(static=True)
     running: float = equinox.field(static=True)
+    units: str = equinox.field(static=True)
+    factor: Float[Array, '...'] | float
     units: str = equinox.field(static=True)
 
     def __init__(
@@ -139,18 +174,18 @@ class SynchrotronOperator(AbstractSEDOperator):
         beta_pl_patch_indices: Int[Array, '...'] | None = None,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
-        # if beta_pl_patch_indices is None:
-        #     assert jnp.asarray(beta_pl).shape == (
-        #     ) or jnp.asarray(beta_pl).shape == (1, )
-        # else:
-        #     assert jnp.asarray(beta_pl).shape == jnp.unique(
-        #         beta_pl_patch_indices).shape
 
         self.beta_pl = jnp.asarray(beta_pl)
         self.beta_pl_patch_indices = beta_pl_patch_indices
         self.nu_pivot = nu_pivot
         self.running = running
         self.units = units
+
+        if units == 'K_CMB':
+            self.factor = K_RK_2_K_CMB(frequencies) / K_RK_2_K_CMB(frequency0)
+        elif units == 'K_RJ':
+            self.factor = 1
+
         super().__init__(
             frequencies,
             frequency0=frequency0,
@@ -159,25 +194,12 @@ class SynchrotronOperator(AbstractSEDOperator):
 
     def sed(self) -> Float[Array, '...']:
         sed = self._get_at(
-            ((self.frequencies / self.frequency0)**self.beta_pl +
-             self.running + jnp.log(self.frequencies / self.frequency0)),
+            ((self.frequencies / self.frequency0)**(self.beta_pl +
+             self.running * jnp.log(self.frequencies / self.nu_pivot))),
             self.beta_pl_patch_indices,
         )
+
+        sed = self._get_at((self.frequencies / self.frequency0)**self.beta_pl, self.beta_pl_patch_indices)
+        sed *= jnp.expand_dims(self.factor, axis=-1)    
+
         return sed
-
-
-# class Synchrotron(Component):
-
-#     def __init__(self, nu0, nu_pivot=1, running=0, units='K_CMB'):
-#         self.nu0 = nu0
-#         self.nu_pivot = nu_pivot
-#         self.running = running
-#         self.units = units
-#         super().__init__()
-
-#     def evaluate(self, nu: Array, params: SynchParams) -> Array:
-#         sed = (nu / self.nu0)**(params.beta_pl +
-#                                 self.running * jnp.log(nu / self.nu_pivot))
-#         if self.units == 'K_CMB':
-#             sed *= K_RK_2_K_CMB(nu) / K_RK_2_K_CMB(self.nu0)
-#         return sed

@@ -37,6 +37,7 @@ def K_RK_2_K_CMB(nu: Array | Float) -> Array:
                                     (H_OVER_K * nu / TCMB)**2)
 
 
+
 class AbstractSEDOperator(BroadcastDiagonalOperator):
     frequencies: Float[Array, ' a']
     frequency0: float = equinox.field(static=True)
@@ -115,7 +116,7 @@ class DustOperator(AbstractSEDOperator):
         self,
         frequencies: Float[Array, '...'],
         *,
-        frequency0: float = 100e9,
+        frequency0: float = 100,
         temperature: float | Float[Array, '...'],
         units: str = 'K_CMB',
         temperature_patch_indices: Int[Array, '...'] | None = None,
@@ -166,7 +167,7 @@ class SynchrotronOperator(AbstractSEDOperator):
         self,
         frequencies: Float[Array, '...'],
         *,
-        frequency0: float = 100e9,
+        frequency0: float = 100,
         nu_pivot: float = 1.0,
         running: float = 0.0,
         units: str = 'K_CMB',

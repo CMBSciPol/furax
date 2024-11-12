@@ -52,6 +52,10 @@ dev = [
 comp_sep = [
     'astropy',
     'pysm3',
+    'numpyro',
+    'jaxopt',
+    'arviz',
+    'corner',
 ]
 
 [project.urls]

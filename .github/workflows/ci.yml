@@ -55,7 +55,7 @@ jobs:
           pip install .[dev]
 
       - name: Run tests
-        run: pytest
+        run: pytest -vv
 
   build:
     name: Build sdist and wheel

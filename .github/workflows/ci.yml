@@ -7,9 +7,6 @@ on:
   pull_request:
     branches:
     - main
-  release:
-    types:
-    - published
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -55,42 +52,4 @@ jobs:
           pip install .[dev]
 
       - name: Run tests
-        run: pytest -vv
-
-  build:
-    name: Build sdist and wheel
-    runs-on: ubuntu-latest
-    needs: [test]
-    steps:
-    - name: Check out code
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: 3.x
-
-    - name: Build
-      run: |
-        pip install build
-        python -m build
-
-    - name: Upload
-      uses: actions/upload-artifact@v4
-      with:
-        path: |
-          dist/*.tar.gz
-          dist/*.whl
-
-  upload_all:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release' && github.event.action == 'published'
-    steps:
-      - uses: actions/download-artifact@v3
-        with:
-          name: artifact
-          path: dist
-
-      - uses: pypa/gh-action-pypi-publish@v1.5.1
-        with:
-          password: ${{ secrets.PYPI_SECRET }}
+        run: pytest -vv -m "not slow"

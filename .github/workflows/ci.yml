@@ -1,4 +1,4 @@
-name: Build
+name: CI
 
 on:
   push:
@@ -31,7 +31,7 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install pre-commit
     - name: Run pre-commit
-      run: pre-commit run --all-files
+      run: pre-commit run --all-files --show-diff-on-failure --color=always
 
   test:
     name: Run tests on Python ${{ matrix.python-version }}

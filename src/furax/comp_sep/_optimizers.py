@@ -18,8 +18,9 @@ import optax.tree_utils as otu
 import lineax as lx  # For conjugate gradient solver
 from functools import partial
 
+
 @partial(jax.jit, static_argnums=(1, 2, 3))
-def optimise(init_params, fun, opt, max_iter, tol, **kwargs):
+def optimize(init_params, fun, opt, max_iter, tol, **kwargs):
 
     # Define a function that computes both value and gradient of the objective.
     value_and_grad_fun = jax.value_and_grad(fun)
@@ -30,7 +31,6 @@ def optimise(init_params, fun, opt, max_iter, tol, **kwargs):
         updates, state = opt.update(
             grad, state, params, value=value, grad=grad, value_fn=fun, **kwargs
         )  # Perform update
-        jax.debug.print("updates {a}", a=updates)
         params = optax.apply_updates(params, updates)  # Update params
         return (params, state, updates)
 
@@ -116,7 +116,7 @@ def scale_by_bfgs(init_inv_hessian=None) -> GradientTransformation:
             inv_hessian=inv_hessian,
         )
 
-    def update_fn(updates, state, params=None, value=None, grad=None):
+    def update_fn(updates, state, params=None, value=None, grad=None , value_fn = None , **kwargs):
         """
         Update the parameters using the BFGS algorithm.
 
@@ -183,8 +183,7 @@ def scale_by_newton_cg(f , **kwargs) -> GradientTransformation:
 
     objective_f = lambda params , args : f(params,**kwargs)
     df = jax.grad(objective_f)
-    print("hey")
-    solver = lx.CG(rtol=1e-6, atol=1e-6)
+    solver = lx.NormalCG(rtol=1e-6, atol=1e-6)
     def init_fn(params):
         return ScaleByNewtonCGState(
             count=jnp.asarray(0, jnp.int32),
@@ -193,11 +192,11 @@ def scale_by_newton_cg(f , **kwargs) -> GradientTransformation:
             value=0.0,
         )
 
-    def update_fn(updates, state, params):
+    def update_fn(updates, state, params, value=None, grad=None , value_fn = None , **kwargs):
 
         # Compute gradients and Hessian-vector products
         grads = updates
-        operator = lx.JacobianLinearOperator(df, params, args=None ,tags=lx.positive_semidefinite_tag)
+        operator = lx.JacobianLinearOperator(df, params, args=None)
         
         solution = lx.linear_solve(operator, grads, solver)
         direction = jax.tree.map(lambda x: -x, solution.value)

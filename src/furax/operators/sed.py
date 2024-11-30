@@ -6,9 +6,12 @@ from jax._src.api import F
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int, PyTree
 from scipy import constants
-from astropy.cosmology import Planck15, units
+from astropy.cosmology import Planck15
 
 from furax._base.diagonal import BroadcastDiagonalOperator
+from furax._base.blocks import BlockDiagonalOperator
+from furax._base.blocks import BlockDiagonalOperator, BlockRowOperator
+from furax._base.core import  IdentityOperator
 
 H_OVER_K = constants.h * 1e9 / constants.k
 TCMB = Planck15.Tcmb(0).value  # type: ignore
@@ -204,3 +207,14 @@ class SynchrotronOperator(AbstractSEDOperator):
         sed *= jnp.expand_dims(self.factor, axis=-1)    
 
         return sed
+
+
+def MixingMatrixOperator(**blocks):
+
+    sed = BlockDiagonalOperator(blocks)
+    integ = BlockRowOperator({
+        component:
+        IdentityOperator(sed.blocks[component].out_structure())
+        for component in sed.blocks
+    })
+    return (integ @ sed).reduce()

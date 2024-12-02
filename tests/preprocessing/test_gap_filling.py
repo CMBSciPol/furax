@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
+from furax._base.indices import IndexOperator
 from furax.detectors import FakeDetectorArray
-from furax.operators import PackOperator
 from furax.operators.toeplitz import SymmetricBandToeplitzOperator
 from furax.preprocessing.gap_filling import GapFillingOperator
 
@@ -42,7 +42,8 @@ def test_generate_realization_shape(x_shape: tuple[int, ...], do_jit: bool):
     key = jax.random.key(31415926539)
     structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
-    pack = PackOperator(jnp.ones_like(x, dtype=bool), structure)
+    indices = jnp.where(jnp.ones_like(x, dtype=bool))[0]
+    pack = IndexOperator(indices, in_structure=structure)
     dets = FakeDetectorArray(x_shape[:-1])
     op = GapFillingOperator(cov, pack, dets)
     if do_jit:
@@ -85,7 +86,8 @@ def dummy_mask(dummy_shape):
 @pytest.fixture
 def dummy_pack(dummy_x, dummy_mask):
     structure = jax.ShapeDtypeStruct(dummy_x.shape, dummy_x.dtype)
-    pack = PackOperator(dummy_mask, structure)
+    indices = jnp.where(dummy_mask)[0]
+    pack = IndexOperator(indices, in_structure=structure)
     return pack
 
 
@@ -101,7 +103,8 @@ def dummy_gap_filling_operator(dummy_shape, dummy_mask, dummy_detectors):
     x = jnp.ones(dummy_shape, dtype=float)
     structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
-    pack = PackOperator(dummy_mask, structure)
+    indices = jnp.where(dummy_mask)[0]
+    pack = IndexOperator(indices, in_structure=structure)
     return GapFillingOperator(cov, pack, dummy_detectors)
 
 
@@ -114,13 +117,13 @@ def test_get_psd_non_negative(n_tt, fft_size):
     assert np.all(psd >= 0)
 
 
-@pytest.mark.xfail
-def test_valid_samples_and_no_nans(dummy_shape, dummy_x, dummy_gap_filling_operator):
+@pytest.mark.parametrize('do_jit', [False, True])
+def test_valid_samples_and_no_nans(do_jit, dummy_shape, dummy_x, dummy_gap_filling_operator):
     op = dummy_gap_filling_operator
-    # FIXME: this trick does not solve the problem
-    # func = jax.jit(lambda k, x: op(k, x))
-    # declaring the noise covariance, pack operator etc. in the body of the test doesn't solve it either
-    func = jax.jit(op.__call__)
+    if do_jit:
+        func = jax.jit(lambda k, x: op(k, x))
+    else:
+        func = op
     y = func(jax.random.key(1234), dummy_x)
     assert_allclose(op.pack(dummy_x), op.pack(y))
     assert not np.any(np.isnan(y))

@@ -5,8 +5,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
+from furax._base.indices import IndexOperator
 from furax.detectors import DetectorArray
-from furax.operators import PackOperator
 from furax.operators.toeplitz import SymmetricBandToeplitzOperator
 
 default_fft_size = SymmetricBandToeplitzOperator._get_default_fft_size
@@ -21,13 +21,13 @@ class GapFillingOperator(equinox.Module):
 
     Attributes:
         cov: A SymmetricBandToeplitzOperator representing the noise covariance matrix.
-        pack: A PackOperator for masking the gaps.
+        mask_op: An IndexOperator for masking the gaps.
         detectors: A DetectorArray representing the detectors.
         rate: The sampling rate of the data.
     """
 
     cov: SymmetricBandToeplitzOperator
-    pack: PackOperator
+    mask_op: IndexOperator
     detectors: DetectorArray
     rate: float = 1.0
 
@@ -39,12 +39,12 @@ class GapFillingOperator(equinox.Module):
             x: The vector to be filled.
         """
         real: Float[Array, '...'] = self._generate_realization_for(x, key)
-        p, u = self.pack, self.pack.T  # pack, unpack operators
+        p, u = self.mask_op, self.mask_op.T  # pack, unpack operators
         incomplete_cov = p @ self.cov @ u
         op = self.cov @ u @ incomplete_cov.I @ p
         y: Float[Array, '...'] = real + op(x - real)
         # copy valid samples from original vector
-        y = y.at[p.mask].set(p(x))
+        y = y.at[p.indices].set(p(x))
         return y
 
     @staticmethod

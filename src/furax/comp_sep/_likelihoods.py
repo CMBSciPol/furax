@@ -2,13 +2,12 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from furax.landscapes import HealpixLandscape
+from furax.landscapes import StokesPyTree
 from furax.operators.sed import CMBOperator, DustOperator, SynchrotronOperator, MixingMatrixOperator
 import operator
 from math import sqrt
 
 from furax.tree import dot
-from functools import partial
 
 single_cluster_indices = patch_indices = {
     'temp_dust_patches': None,
@@ -19,9 +18,8 @@ single_cluster_indices = patch_indices = {
 
 @partial(jax.jit, static_argnums=(5, 6))
 def _base_spectral_log_likelihood(params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0):
-    stokes_type = d.stokes
-    nside = int(sqrt(d.shape[-1] // 12))
-    in_structure = HealpixLandscape(nside, stokes_type).structure
+
+    in_structure = StokesPyTree.class_for('QU').structure_for((d.shape[1],))
 
     cmb = CMBOperator(nu, in_structure=in_structure)
     dust = DustOperator(

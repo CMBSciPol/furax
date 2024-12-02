@@ -5,16 +5,8 @@ import jax.tree_util as jtu
 import optax.tree_utils as otu
 from functools import partial
 from typing import NamedTuple
-import jax
-import jax.numpy as jnp
 from optax import GradientTransformation
-import optax.tree_utils as otu
 
-from typing import NamedTuple
-import jax
-import jax.numpy as jnp
-from optax import GradientTransformation
-import optax.tree_utils as otu
 import lineax as lx  # For conjugate gradient solver
 
 

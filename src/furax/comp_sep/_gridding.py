@@ -24,10 +24,13 @@ class DistributedGridSearch:
 
         Args:
             objective_fn: The objective function to be evaluated.
-            search_space: A dictionary where keys are parameter names and values are lists of possible values.
-            batch_size: The number of combinations to evaluate in each batch. If None, it is determined automatically.
+            search_space: A dictionary where keys are parameter names and values are lists
+                of possible values.
+            batch_size: The number of combinations to evaluate in each batch.
+                If None, it is determined automatically.
             memory_limit: Fraction of device memory to use for determining batch size.
-            verbose: Percentage (0.0 to 1.0) to control logging frequency. Logs every 'verbose' fraction of progress.
+            verbose: Percentage (0.0 to 1.0) to control logging frequency.
+                Logs every 'verbose' fraction of progress.
             use_tqdm: Whether to use tqdm for a progress bar.
         """
         keys, values = zip(*search_space.items())
@@ -53,7 +56,8 @@ class DistributedGridSearch:
         if self.batch_size is None:
             if jax.devices()[0].platform == 'cpu':
                 logger.warning("""
-                Batch size not specified and automatic batch size determination is not supported on CPU.
+                Batch size not specified and automatic batch size
+                determination is not supported on CPU.
                 Falling back to default batch size of 64.
                 """)
                 self.batch_size = 64
@@ -194,7 +198,7 @@ class DistributedGridSearch:
         if progress_bar:
             progress_bar.close()
 
-        print(f'Done .. Stacking the results')
+        print('Done .. Stacking the results')
 
         # Stack the results into arrays along the new axis
         stacked_results = {key: jnp.stack(value, axis=0) for key, value in batch_results.items()}

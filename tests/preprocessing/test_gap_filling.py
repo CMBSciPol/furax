@@ -43,9 +43,9 @@ def test_generate_realization_shape(x_shape: tuple[int, ...], do_jit: bool):
     structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
     indices = jnp.where(jnp.ones_like(x, dtype=bool))[0]
-    pack = IndexOperator(indices, in_structure=structure)
+    mask_op = IndexOperator(indices, in_structure=structure)
     dets = FakeDetectorArray(x_shape[:-1])
-    op = GapFillingOperator(cov, pack, dets)
+    op = GapFillingOperator(cov, mask_op, dets)
     if do_jit:
         # avoid error: TypeError: unhashable type: 'jaxlib.xla_extension.ArrayImpl'
         func = jax.jit(lambda x, k: op._generate_realization_for(x, k))
@@ -84,11 +84,11 @@ def dummy_mask(dummy_shape):
 
 
 @pytest.fixture
-def dummy_pack(dummy_x, dummy_mask):
+def dummy_mask_op(dummy_x, dummy_mask):
     structure = jax.ShapeDtypeStruct(dummy_x.shape, dummy_x.dtype)
     indices = jnp.where(dummy_mask)[0]
-    pack = IndexOperator(indices, in_structure=structure)
-    return pack
+    mask_op = IndexOperator(indices, in_structure=structure)
+    return mask_op
 
 
 @pytest.fixture
@@ -104,8 +104,8 @@ def dummy_gap_filling_operator(dummy_shape, dummy_mask, dummy_detectors):
     structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
     indices = jnp.where(dummy_mask)[0]
-    pack = IndexOperator(indices, in_structure=structure)
-    return GapFillingOperator(cov, pack, dummy_detectors)
+    mask_op = IndexOperator(indices, in_structure=structure)
+    return GapFillingOperator(cov, mask_op, dummy_detectors)
 
 
 @pytest.mark.parametrize(
@@ -125,5 +125,5 @@ def test_valid_samples_and_no_nans(do_jit, dummy_shape, dummy_x, dummy_gap_filli
     else:
         func = op
     y = func(jax.random.key(1234), dummy_x)
-    assert_allclose(op.pack(dummy_x), op.pack(y))
+    assert_allclose(op.mask_op(dummy_x), op.mask_op(y))
     assert not np.any(np.isnan(y))

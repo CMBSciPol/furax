@@ -1,11 +1,9 @@
-
 # JAXIFIED Version of kmeans_radec that can be found  at https://github.com/esheldon/kmeans_radec
 
 
 from functools import partial
-from jax import numpy as jnp, random as jr, lax , jit
-from jax.numpy import (deg2rad, rad2deg, pi, sin, cos, arccos, arctan2, sqrt,
-                       newaxis)
+from jax import numpy as jnp, random as jr, lax, jit
+from jax.numpy import deg2rad, rad2deg, pi, sin, cos, arccos, arctan2, sqrt, newaxis
 from typing import NamedTuple
 import numpy as np
 
@@ -13,6 +11,7 @@ import numpy as np
 _TOL_DEF = 1.0e-5
 _MAXITER_DEF = 100
 _PIOVER2 = pi * 0.5
+
 
 class KMeansState(NamedTuple):
     ra_dec: jnp.ndarray
@@ -23,16 +22,13 @@ class KMeansState(NamedTuple):
     count: int
 
 
-class KMeans():
-
+class KMeans:
     def __init__(self, ncenters, tol=_TOL_DEF, maxiter=_MAXITER_DEF):
-
         self.ncenters = ncenters
         self.tol = tol
         self.maxiter = maxiter
 
     def sample_initial(self, ra_dec, key):
-
         nsamples = int(2 * np.sqrt(ra_dec.shape[0]))
         sample_key, center_key = jr.split(key, 2)
         ra_dec_samples = random_sample(sample_key, ra_dec, nsamples)
@@ -41,35 +37,33 @@ class KMeans():
         return ra_dec_samples, centroids_samples
 
     def kmeans_init(self, ra_dec, centroids):
-
-        return KMeansState(ra_dec=ra_dec,
-                           centroids=centroids,
-                           labels=jnp.zeros(ra_dec.shape[0], dtype=jnp.int32),
-                           mean_distance=jnp.inf,
-                           previous_mean_distance=0.,
-                           count=0)
+        return KMeansState(
+            ra_dec=ra_dec,
+            centroids=centroids,
+            labels=jnp.zeros(ra_dec.shape[0], dtype=jnp.int32),
+            mean_distance=jnp.inf,
+            previous_mean_distance=0.0,
+            count=0,
+        )
 
     def fit(self, ra_dec, centroids):
-
         def kmeans_step(carry):
-
             ra_dec, indices, XYZ, state = carry
-            Xs , Ys, Zs = XYZ
+            Xs, Ys, Zs = XYZ
 
             # Set the previous mean distance
             state = state._replace(previous_mean_distance=state.mean_distance)
-            
-            distances = cdist_radec(ra_dec,
-                                    state.centroids)  # npoints x ncenters
 
-            labels = distances.argmin(axis=1).astype(jnp.int32) # nearest centroid
+            distances = cdist_radec(ra_dec, state.centroids)  # npoints x ncenters
+
+            labels = distances.argmin(axis=1).astype(jnp.int32)  # nearest centroid
 
             distances = distances[indices, labels]
 
             mean_distance = distances.mean()
 
             # Update the centroids
-            def for_loop_body(center_indx , centroids):
+            def for_loop_body(center_indx, centroids):
                 mask = jnp.where(labels == center_indx, 1, 0)
                 # Get the 3D coordinates of the points in the cluster
                 masked_X = mask * Xs
@@ -83,16 +77,15 @@ class KMeans():
                 return centroids.at[center_indx].set(xyz2radec(mean_X, mean_Y, mean_Z))
 
             new_centroids = lax.fori_loop(0, self.ncenters, for_loop_body, state.centroids)
-            
-            
-      
 
-            new_state = KMeansState(ra_dec=ra_dec,
-                                    centroids=new_centroids,
-                                    labels=labels,
-                                    mean_distance=mean_distance,
-                                    previous_mean_distance=state.previous_mean_distance,
-                                    count=state.count + 1)
+            new_state = KMeansState(
+                ra_dec=ra_dec,
+                centroids=new_centroids,
+                labels=labels,
+                mean_distance=mean_distance,
+                previous_mean_distance=state.previous_mean_distance,
+                count=state.count + 1,
+            )
 
             return ra_dec, indices, XYZ, new_state
 
@@ -100,22 +93,21 @@ class KMeans():
             _, _, _, state = carry
 
             # Condition for convergence
-            converged = ((1 - self.tol) * state.previous_mean_distance <= state.mean_distance) & \
-                                         (state.previous_mean_distance >= state.mean_distance)
-#
+            converged = ((1 - self.tol) * state.previous_mean_distance <= state.mean_distance) & (
+                state.previous_mean_distance >= state.mean_distance
+            )
+            #
             # Continue if not converged and within max iterations
-            return ( state.count < self.maxiter) &  (~(converged))
-
+            return (state.count < self.maxiter) & (~(converged))
 
         XYZ = radec2xyz(ra_dec[:, 0], ra_dec[:, 1])
         indices = jnp.arange(ra_dec.shape[0])
 
         init_state = self.kmeans_init(ra_dec, centroids)
 
-        _, _, _, final_state = lax.while_loop(kmeans_continue_criteria,
-                                              kmeans_step,
-                                              (ra_dec, indices, XYZ, init_state))
-
+        _, _, _, final_state = lax.while_loop(
+            kmeans_continue_criteria, kmeans_step, (ra_dec, indices, XYZ, init_state)
+        )
 
         return final_state
 
@@ -143,7 +135,7 @@ def cdist_radec(a1, a2):
 
 def random_sample(key, ra_dec, nsamples):
     nra_dec = ra_dec.shape[0]
-    indices = jr.choice(key, nra_dec, shape=(nsamples, ), replace=False)
+    indices = jr.choice(key, nra_dec, shape=(nsamples,), replace=False)
     return ra_dec[indices]
 
 
@@ -166,7 +158,8 @@ def xyz2radec(x, y, z):
     ra = rad2deg(phi)
     dec = rad2deg(_PIOVER2 - theta)
     ra = atbound1(ra, 0.0, 360.0)
-    return jnp.array( [ra, dec] )
+    return jnp.array([ra, dec])
+
 
 def radec2xyz(ra, dec):
     """
@@ -177,24 +170,21 @@ def radec2xyz(ra, dec):
     return sintheta * cos(phi), sintheta * sin(phi), cos(theta)
 
 
-
 def atbound1(longitude_in, minval, maxval):
     range_size = maxval - minval
     longitude = (longitude_in - minval) % range_size + minval
     return longitude
 
-@partial(jit, static_argnums=(2 , 3 , 4))
-def kmeans_sample(key, ra_dec, ncenters, tol=_TOL_DEF, maxiter=_MAXITER_DEF):
 
+@partial(jit, static_argnums=(2, 3, 4))
+def kmeans_sample(key, ra_dec, ncenters, tol=_TOL_DEF, maxiter=_MAXITER_DEF):
     km = KMeans(ncenters, tol, maxiter)
     ra_dec_samples, centroids_samples = km.sample_initial(ra_dec, key)
 
     # First run on the samples
     state = km.fit(ra_dec_samples, centroids_samples)
 
-    
     # Second run on the full data
-    state= km.fit(ra_dec, state.centroids)
-    
-    return state
+    state = km.fit(ra_dec, state.centroids)
 
+    return state

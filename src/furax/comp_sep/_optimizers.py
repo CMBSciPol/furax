@@ -10,20 +10,19 @@ import jax.numpy as jnp
 from optax import GradientTransformation
 import optax.tree_utils as otu
 
-from typing import NamedTuple, Callable
+from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from optax import GradientTransformation
 import optax.tree_utils as otu
 import lineax as lx  # For conjugate gradient solver
-from functools import partial
 
 
 @partial(jax.jit, static_argnums=(1, 2, 3))
 def optimize(init_params, fun, opt, max_iter, tol, **kwargs):
-
     # Define a function that computes both value and gradient of the objective.
     value_and_grad_fun = jax.value_and_grad(fun)
+
     # Single optimization step.
     def step(carry):
         params, state, _ = carry
@@ -37,9 +36,7 @@ def optimize(init_params, fun, opt, max_iter, tol, **kwargs):
     # Stopping condition.
     def continuing_criterion(carry):
         _, state, updates = carry
-        iter_num = otu.tree_get(
-            state, "count"
-        )  # Get iteration count from optimizer state
+        iter_num = otu.tree_get(state, 'count')  # Get iteration count from optimizer state
         iter_num = 0 if iter_num is None else iter_num
         update_norm = otu.tree_l2_norm(updates)  # Compute update norm
         return (iter_num == 0) | ((iter_num < max_iter) & (update_norm >= tol))
@@ -48,9 +45,7 @@ def optimize(init_params, fun, opt, max_iter, tol, **kwargs):
     init_carry = (init_params, opt.init(init_params), init_params)
 
     # Run the while loop.
-    final_params, final_state, _ = jax.lax.while_loop(
-        continuing_criterion, step, init_carry
-    )
+    final_params, final_state, _ = jax.lax.while_loop(continuing_criterion, step, init_carry)
 
     return final_params, final_state
 
@@ -62,7 +57,7 @@ def _get_size_of_params(params):
         elif isinstance(y, jnp.ndarray):
             return x + y.size
         else:
-            raise ValueError("Unkown type")
+            raise ValueError('Unkown type')
 
     if isinstance(params, jnp.ndarray):
         return params.size
@@ -105,7 +100,7 @@ def scale_by_bfgs(init_inv_hessian=None) -> GradientTransformation:
             assert init_inv_hessian.shape == (
                 n,
                 n,
-            ), "Hessian shape must by n_param X n_param"
+            ), 'Hessian shape must by n_param X n_param'
             inv_hessian = init_inv_hessian
 
         return ScaleByBFGSState(
@@ -116,7 +111,7 @@ def scale_by_bfgs(init_inv_hessian=None) -> GradientTransformation:
             inv_hessian=inv_hessian,
         )
 
-    def update_fn(updates, state, params=None, value=None, grad=None , value_fn = None , **kwargs):
+    def update_fn(updates, state, params=None, value=None, grad=None, value_fn=None, **kwargs):
         """
         Update the parameters using the BFGS algorithm.
 
@@ -179,11 +174,11 @@ class ScaleByNewtonCGState(NamedTuple):
     value: float  # Current objective value
 
 
-def scale_by_newton_cg(f , **kwargs) -> GradientTransformation:
-
-    objective_f = lambda params , args : f(params,**kwargs)
+def scale_by_newton_cg(f, **kwargs) -> GradientTransformation:
+    objective_f = lambda params, args: f(params, **kwargs)
     df = jax.grad(objective_f)
     solver = lx.NormalCG(rtol=1e-6, atol=1e-6)
+
     def init_fn(params):
         return ScaleByNewtonCGState(
             count=jnp.asarray(0, jnp.int32),
@@ -192,12 +187,11 @@ def scale_by_newton_cg(f , **kwargs) -> GradientTransformation:
             value=0.0,
         )
 
-    def update_fn(updates, state, params, value=None, grad=None , value_fn = None , **kwargs):
-
+    def update_fn(updates, state, params, value=None, grad=None, value_fn=None, **kwargs):
         # Compute gradients and Hessian-vector products
         grads = updates
         operator = lx.JacobianLinearOperator(df, params, args=None)
-        
+
         solution = lx.linear_solve(operator, grads, solver)
         direction = jax.tree.map(lambda x: -x, solution.value)
         # Update state
@@ -210,7 +204,7 @@ def scale_by_newton_cg(f , **kwargs) -> GradientTransformation:
     return GradientTransformation(init_fn, update_fn)
 
 
-def newton_cg(f , **kwargs) -> GradientTransformation:
+def newton_cg(f, **kwargs) -> GradientTransformation:
     """
     Newton-CG optimizer for unconstrained optimization.
 
@@ -222,7 +216,5 @@ def newton_cg(f , **kwargs) -> GradientTransformation:
     """
     return optax.chain(
         scale_by_newton_cg(f, **kwargs),
-        optax.scale_by_zoom_linesearch(
-            max_linesearch_steps=20, initial_guess_strategy="one"
-        ),
+        optax.scale_by_zoom_linesearch(max_linesearch_steps=20, initial_guess_strategy='one'),
     )

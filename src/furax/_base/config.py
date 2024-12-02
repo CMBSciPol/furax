@@ -7,6 +7,7 @@ from typing import Any
 import lineax as lx
 import yaml
 
+
 def verbose_solver_callback(solution: lx.Solution) -> None:
     num_steps = solution.stats['num_steps']
     ok = num_steps < solution.stats['max_steps']
@@ -16,9 +17,9 @@ def verbose_solver_callback(solution: lx.Solution) -> None:
         print(f'Did not converge in {num_steps} iterations')
 
 
-
 def default_solver_callback(solution: lx.Solution) -> None:
     pass
+
 
 @dataclass(frozen=True)
 class ConfigState:

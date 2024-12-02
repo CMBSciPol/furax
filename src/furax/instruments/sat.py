@@ -5,7 +5,7 @@ from furax.landscapes import HealpixLandscape
 from furax.operators import AbstractLinearOperator
 from furax.operators.hwp import HWPOperator
 from furax.operators.polarizers import LinearPolarizerOperator
-from furax.operators.projections import create_projection_operator
+from furax.projections import create_projection_operator
 from furax.samplings import Sampling
 
 FOV_DEG = 35
@@ -63,4 +63,4 @@ def create_acquisition(
     hwp = HWPOperator(proj.out_structure())
     polarizer = LinearPolarizerOperator.create(tod_shape, stokes=landscape.stokes)
     acquisition: AbstractLinearOperator = polarizer @ hwp @ proj
-    return acquisition
+    return acquisition.reduce()

@@ -46,6 +46,7 @@ def test_solver(planck_iqu_256, sat_nhits):
     samplings = create_random_sampling(sat_nhits, NSAMPLING, random_generator)
     detector_dirs = create_detector_directions()
     h = create_acquisition(landscape, samplings, detector_dirs)
+    h = h.reduce()
 
     # preconditioner
     tod_structure = h.out_structure()
@@ -63,7 +64,7 @@ def test_solver(planck_iqu_256, sat_nhits):
     solution = lx.linear_solve(
         hTh, b, solver=Config.instance().solver, throw=False, options=options
     )
-    solution.value.i.block_until_ready()
+    jax.block_until_ready(solution.value)
     print(f'No JIT: {time.time() - time0}')
     assert solution.stats['num_steps'] < solution.stats['max_steps']
 
@@ -75,13 +76,14 @@ def test_solver(planck_iqu_256, sat_nhits):
 
     @jax.jit
     def func(tod):
+        b = h.T(tod)
         return lx.linear_solve(
             hTh, b, solver=Config.instance().solver, throw=False, options=options
         )
 
     time0 = time.time()
     solution = func(tod)
-    solution.value.i.block_until_ready()
+    jax.block_until_ready(solution.value)
     assert solution.stats['num_steps'] < solution.stats['max_steps']
     print(f'JIT 1:  {time.time() - time0}')
 
@@ -89,6 +91,7 @@ def test_solver(planck_iqu_256, sat_nhits):
     tod = h(sky)
     time0 = time.time()
     solution = func(tod)
+    jax.block_until_ready(solution.value)
     assert solution.stats['num_steps'] < solution.stats['max_steps']
     print(f'JIT 2:  {time.time() - time0}')
 
@@ -97,7 +100,7 @@ def test_solver(planck_iqu_256, sat_nhits):
 
     time0 = time.time()
     reconstructed_sky = A(tod)
-    reconstructed_sky.i.block_until_ready()
+    jax.block_until_ready(reconstructed_sky)
     print('.I     ', time.time() - time0)
 
     @jax.jit
@@ -106,10 +109,10 @@ def test_solver(planck_iqu_256, sat_nhits):
 
     time0 = time.time()
     reconstructed_sky = func2(tod)
-    reconstructed_sky.i.block_until_ready()
-    print('JIT1 .I', time.time() - time0)
+    jax.block_until_ready(reconstructed_sky)
+    print('JIT 1 .I', time.time() - time0)
 
     time0 = time.time()
     reconstructed_sky = func2(tod)
-    reconstructed_sky.i.block_until_ready()
-    print('JIT2 .I', time.time() - time0)
+    jax.block_until_ready(reconstructed_sky)
+    print('JIT 2 .I', time.time() - time0)

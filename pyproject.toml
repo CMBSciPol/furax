@@ -78,7 +78,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 # addopts = '-ra --cov=furax --jaxtyping-packages=furax,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))'
-addopts = '-s -ra'
+addopts = '-s -ra --color=yes'
 testpaths = [
     'tests',
 ]

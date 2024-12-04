@@ -38,6 +38,7 @@ dependencies = [
     'scipy',
     'typing-extensions; python_version < "3.11"',
     'matplotlib',
+    'astropy',
 ]
 dynamic = ['version']
 
@@ -69,7 +70,9 @@ module = [
     'healpy',
     'jax_healpy',
     'lineax',
-    'scipy.stats.sampling'
+    'scipy.stats.sampling',
+    'scipy',
+    'astropy.cosmology',
 ]
 ignore_missing_imports = true
 

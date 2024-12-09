@@ -11,12 +11,10 @@ name = 'furax'
 authors = [
     {name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr'},
     {name = 'Simon Biquard'},
-    {name = 'Wassim  Kabalan'},
+    {name = 'Wassim Kabalan'},
 ]
 maintainers = [
     {name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr'},
-    {name = 'Simon Biquard'},
-    {name = 'Wassim  Kabalan'},
 ]
 description = 'Operators and solvers for high-performance computing.'
 readme = 'README.md'

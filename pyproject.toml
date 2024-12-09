@@ -7,6 +7,7 @@ name = 'furax'
 authors = [
     { name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' },
     { name = 'Simon Biquard', email = 'biquard@apc.in2p3.fr' },
+    { name = 'Wassim Kabalan' },
 ]
 maintainers = [{ name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' }]
 description = 'Operators and solvers for high-performance computing.'

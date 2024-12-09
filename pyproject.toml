@@ -10,6 +10,8 @@ requires = [
 name = 'furax'
 authors = [
     {name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr'},
+    {name = 'Simon Biquard'},
+    {name = 'Wassim Kabalan'},
 ]
 maintainers = [
     {name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr'},

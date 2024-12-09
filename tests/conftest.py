@@ -1,14 +1,13 @@
 from typing import get_args
 
-import os
 import healpy as hp
 import jax
 import numpy as np
 import pytest
 from jaxtyping import Array, Float
 
-from furax.landscapes import StokesPyTree, StokesIQUPyTree, ValidStokesType, HealpixLandscape
-from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT, TEST_DATA_FGBUSTER
+from furax.landscapes import StokesIQUPyTree, ValidStokesType
+from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT
 
 
 def load_planck(nside: int) -> np.array:

@@ -59,7 +59,7 @@ class IndexOperator(AbstractLinearOperator):
         self._check_indices(indices)
         self.indices = indices
         if all(
-            isinstance(_, (int, slice, EllipsisType)) or isinstance(_, Array) and _.dtype == bool
+            isinstance(_, int | slice | EllipsisType) or isinstance(_, Array) and _.dtype == bool
             for _ in indices
         ):
             unique_indices = True
@@ -90,7 +90,9 @@ class IndexOperator(AbstractLinearOperator):
 
     @staticmethod
     def _check_indices(
-        indices: tuple[int | slice | Bool[Array, '...'] | Integer[Array, '...'] | EllipsisType, ...]
+        indices: tuple[
+            int | slice | Bool[Array, '...'] | Integer[Array, '...'] | EllipsisType, ...
+        ],
     ) -> None:
         ellipsis_count = sum(index is Ellipsis for index in indices)
         if ellipsis_count > 1:

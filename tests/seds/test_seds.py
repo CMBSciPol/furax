@@ -4,24 +4,26 @@ import numpy as np
 from furax.operators.seds import CMBOperator, DustOperator, SynchrotronOperator
 from furax.landscapes import StokesPyTree, HealpixLandscape
 import os
-from tests.helpers import TEST_DATA_SEDS
-
-fg_filename = TEST_DATA_SEDS / 'fgbuster_data.npz'
-# make sure file exists
-assert os.path.exists(
-    fg_filename
-), f'File {fg_filename} does not exist, please run the data generation script `generate-data.py`'
-
-fg_data = np.load(fg_filename)
-freq_maps = fg_data['freq_maps']
-d = StokesPyTree.from_stokes(I=freq_maps[:, 0, :], Q=freq_maps[:, 1, :], U=freq_maps[:, 2, :])
-
-nside = 32
-stokes_type = 'IQU'
-in_structure = HealpixLandscape(nside, stokes_type).structure
+import pytest
 
 
-def test_cmb_k_cmb():
+@pytest.fixture(scope='module')
+def fg_d_data():
+    fg_filename = f'{os.path.dirname(__file__)}{os.sep}data{os.sep}fgbuster_data.npz'
+
+    fg_data = np.load(fg_filename)
+    freq_maps = fg_data['freq_maps']
+    d = StokesPyTree.from_stokes(I=freq_maps[:, 0, :], Q=freq_maps[:, 1, :], U=freq_maps[:, 2, :])
+
+    nside = 32
+    stokes_type = 'IQU'
+    in_structure = HealpixLandscape(nside, stokes_type).structure
+
+    return fg_data, d, in_structure
+
+
+def test_cmb_k_cmb(fg_d_data):
+    fg_data, d, in_structure = fg_d_data
     nu = fg_data['frequencies']
 
     # Calculate CMB with K_CMB unit in furax
@@ -36,7 +38,8 @@ def test_cmb_k_cmb():
     assert jax.tree.all(jax.tree.map(jnp.allclose, cmb_furax, cmb_fgbuster_tree))
 
 
-def test_cmb_k_rj():
+def test_cmb_k_rj(fg_d_data):
+    fg_data, d, in_structure = fg_d_data
     nu = fg_data['frequencies']
 
     # Calculate CMB with K_RJ unit in furax
@@ -51,7 +54,8 @@ def test_cmb_k_rj():
     assert jax.tree.all(jax.tree.map(jnp.allclose, cmb_furax, cmb_fgbuster_tree))
 
 
-def test_dust_k_cmb():
+def test_dust_k_cmb(fg_d_data):
+    fg_data, d, in_structure = fg_d_data
     nu = fg_data['frequencies']
 
     # Calculate Dust with K_CMB unit in furax
@@ -68,7 +72,8 @@ def test_dust_k_cmb():
     assert jax.tree.all(jax.tree.map(jnp.allclose, dust_furax, dust_fgbuster_tree))
 
 
-def test_dust_k_rj():
+def test_dust_k_rj(fg_d_data):
+    fg_data, d, in_structure = fg_d_data
     nu = fg_data['frequencies']
 
     # Calculate Dust with K_RJ unit in furax
@@ -85,7 +90,8 @@ def test_dust_k_rj():
     assert jax.tree.all(jax.tree.map(jnp.allclose, dust_furax, dust_fgbuster_tree))
 
 
-def test_synchrotron_k_cmb():
+def test_synchrotron_k_cmb(fg_d_data):
+    fg_data, d, in_structure = fg_d_data
     nu = fg_data['frequencies']
 
     # Calculate Synchrotron with K_CMB unit in furax
@@ -102,7 +108,8 @@ def test_synchrotron_k_cmb():
     assert jax.tree.all(jax.tree.map(jnp.allclose, synch_furax, synch_fgbuster_tree))
 
 
-def test_synchrotron_k_rj():
+def test_synchrotron_k_rj(fg_d_data):
+    fg_data, d, in_structure = fg_d_data
     nu = fg_data['frequencies']
 
     # Calculate Synchrotron with K_RJ unit in furax

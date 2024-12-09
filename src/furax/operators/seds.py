@@ -10,7 +10,7 @@ from furax._base.diagonal import BroadcastDiagonalOperator
 from furax._base.blocks import BlockRowOperator
 from furax._base.core import AbstractLinearOperator
 
-_H_OVER_K = constants.h * 1e9 / constants.k
+_H_OVER_K_GHZ = constants.h * 1e9 / constants.k
 _T_CMB = Planck15.Tcmb(0).value
 
 
@@ -33,8 +33,8 @@ def K_RK_2_K_CMB(nu: Array | float) -> Array:
         >>> conversion = K_RK_2_K_CMB(nu)
         >>> print(conversion)
     """
-    res = jnp.expm1(_H_OVER_K * nu / _T_CMB) ** 2 / (
-        jnp.exp(_H_OVER_K * nu / _T_CMB) * (_H_OVER_K * nu / _T_CMB) ** 2
+    res = jnp.expm1(_H_OVER_K_GHZ * nu / _T_CMB) ** 2 / (
+        jnp.exp(_H_OVER_K_GHZ * nu / _T_CMB) * (_H_OVER_K_GHZ * nu / _T_CMB) ** 2
     )
     return res  # type: ignore [no-any-return]
 
@@ -196,6 +196,7 @@ class DustOperator(AbstractSEDOperator):
         temperature (Array): Dust temperature.
         beta (Array): Spectral index beta.
         factor (Array | float): Conversion factor based on the unit type.
+
     Example:
         >>> from furax.operators.seds import SynchrotronOperator
         >>> import jax.numpy as jnp
@@ -254,8 +255,8 @@ class DustOperator(AbstractSEDOperator):
 
     def sed(self) -> Float[Array, '...']:
         t = self._get_at(
-            jnp.expm1(self.frequency0 / self.temperature * _H_OVER_K)
-            / jnp.expm1(self.frequencies / self.temperature * _H_OVER_K),
+            jnp.expm1(self.frequency0 / self.temperature * _H_OVER_K_GHZ)
+            / jnp.expm1(self.frequencies / self.temperature * _H_OVER_K_GHZ),
             self.temperature_patch_indices,
         )
         b = self._get_at(

@@ -4,7 +4,7 @@ import numpy as np
 from furax.operators.seds import CMBOperator, DustOperator, SynchrotronOperator
 from furax.landscapes import StokesPyTree, HealpixLandscape
 import os
-from tests.conftest import TEST_DATA_SEDS
+from tests.helpers import TEST_DATA_SEDS
 
 fg_filename = TEST_DATA_SEDS / 'fgbuster_data.npz'
 # make sure file exists

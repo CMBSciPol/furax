@@ -1,7 +1,7 @@
-import os
 import numpy as np
 
 from furax.landscapes import StokesPyTree, HealpixLandscape
+from pathlib import Path
 
 try:
     from fgbuster import CMB, Dust, Synchrotron, get_observation, get_instrument
@@ -12,7 +12,7 @@ except ImportError:
 
 
 def write_fgbuster_data():
-    data_filename = f'{os.path.dirname(__file__)}{os.sep}fgbuster_data.npz'
+    data_filename = Path(__file__).parent / 'fgbuster_data.npz'
     nside = 32
     stokes_type = 'IQU'
     in_structure = HealpixLandscape(nside, stokes_type).structure

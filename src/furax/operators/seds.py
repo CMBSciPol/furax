@@ -8,6 +8,7 @@ from astropy.cosmology import Planck15
 
 from furax._base.diagonal import BroadcastDiagonalOperator
 from furax._base.blocks import BlockRowOperator
+from furax._base.core import AbstractLinearOperator
 
 _H_OVER_K = constants.h * 1e9 / constants.k
 _TCMB = Planck15.Tcmb(0).value
@@ -362,7 +363,7 @@ class SynchrotronOperator(AbstractSEDOperator):
         return sed
 
 
-def MixingMatrixOperator(**blocks: AbstractSEDOperator) -> BlockRowOperator:
+def MixingMatrixOperator(**blocks: AbstractSEDOperator) -> AbstractLinearOperator:
     """Constructs a mixing matrix operator from a set of SED operators.
 
     This function combines multiple spectral energy distribution (SED) operators

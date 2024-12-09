@@ -1,13 +1,13 @@
 import os
 import numpy as np
-from jaxtyping import Array
 
 from furax.landscapes import StokesPyTree, HealpixLandscape
+
 try:
     from fgbuster import CMB, Dust, Synchrotron, get_observation, get_instrument
 except ImportError:
     raise ImportError(
-        'fgbuster is not installed. Please install it using `pip install fgbuster`'
+        'fgbuster is not installed. Please install it using `pip install git+https://github.com/fgbuster/fgbuster`'
     )
 
 
@@ -44,9 +44,7 @@ def write_fgbuster_data():
     np.savez(data_filename, **fg_data)
     print(f"Data saved to '{data_filename}'")
 
-    d = StokesPyTree.from_stokes(
-        I=freq_maps[:, 0, :], Q=freq_maps[:, 1, :], U=freq_maps[:, 2, :]
-    )
+    d = StokesPyTree.from_stokes(I=freq_maps[:, 0, :], Q=freq_maps[:, 1, :], U=freq_maps[:, 2, :])
     return fg_data, d, in_structure
 
 

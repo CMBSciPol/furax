@@ -52,7 +52,7 @@ def stokes(request: pytest.FixtureRequest) -> ValidStokesType:
 
 @pytest.fixture(scope='session')
 def get_fgbuster_data():
-    os.makedirs(TEST_DATA_FGBUSTER, exist_ok=True)
+    TEST_DATA_FGBUSTER.mkdir(exist_ok=True)
     # Check if file already exists
     data_filename = f'{TEST_DATA_FGBUSTER}/fgbuster_data.npz'
     nside = 32

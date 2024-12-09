@@ -11,7 +11,7 @@ from furax._base.blocks import BlockRowOperator
 from furax._base.core import AbstractLinearOperator
 
 _H_OVER_K = constants.h * 1e9 / constants.k
-_TCMB = Planck15.Tcmb(0).value
+_T_CMB = Planck15.Tcmb(0).value
 
 
 def K_RK_2_K_CMB(nu: Array | float) -> Array:
@@ -33,8 +33,8 @@ def K_RK_2_K_CMB(nu: Array | float) -> Array:
         >>> conversion = K_RK_2_K_CMB(nu)
         >>> print(conversion)
     """
-    res = jnp.expm1(_H_OVER_K * nu / _TCMB) ** 2 / (
-        jnp.exp(_H_OVER_K * nu / _TCMB) * (_H_OVER_K * nu / _TCMB) ** 2
+    res = jnp.expm1(_H_OVER_K * nu / _T_CMB) ** 2 / (
+        jnp.exp(_H_OVER_K * nu / _T_CMB) * (_H_OVER_K * nu / _T_CMB) ** 2
     )
     return res  # type: ignore [no-any-return]
 

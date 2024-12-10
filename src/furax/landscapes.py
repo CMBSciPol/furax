@@ -37,7 +37,7 @@ NumberType = Union[
 ScalarType = Union[jnp.bool_, NumberType]
 DTypeLike = Union[
     str,  # like 'float32', 'int32'
-    type[Union[bool, int, float, complex, ScalarType, np.bool_, np.number]],  # type: ignore[type-arg]  # noqa: E501
+    type[Union[bool, int, float, complex, ScalarType, np.bool_, np.number]],  # noqa: E501
     np.dtype,  # type: ignore[type-arg]
 ]
 

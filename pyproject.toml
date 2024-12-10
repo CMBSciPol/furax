@@ -4,7 +4,10 @@ requires = ['setuptools==69.2.0', 'setuptools_scm[toml]>=6.2', 'wheel']
 
 [project]
 name = 'furax'
-authors = [{ name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' }]
+authors = [
+    { name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' },
+    { name = 'Simon Biquard', email = 'biquard@apc.in2p3.fr' },
+]
 maintainers = [{ name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' }]
 description = 'Operators and solvers for high-performance computing.'
 readme = 'README.md'

@@ -5,9 +5,14 @@ import pytest
 from numpy.testing import assert_allclose
 
 from furax._base.indices import IndexOperator
-from furax.detectors import FakeDetectorArray
+from furax.detectors import DetectorArray
 from furax.operators.toeplitz import SymmetricBandToeplitzOperator
 from furax.preprocessing.gap_filling import GapFillingOperator
+
+
+class FakeDetectorArray(DetectorArray):
+    def __init__(self, num: int | tuple[int, ...]) -> None:
+        super().__init__(np.zeros(num), np.zeros(num), 1.0)
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,5 @@
-from functools import reduce
 from hashlib import sha1
+from itertools import product
 
 import jax
 import jax.numpy as jnp
@@ -28,12 +28,19 @@ class DetectorArray:
 
         # generate fake names for the detectors
         # TODO(simon): accept user-defined names
-        det_indices = (_.astype(np.str_) for _ in np.indices(self.shape, sparse=True))
-        names = reduce(lambda a, b: a + '_' + b, det_indices, 'FAKE_DET')
-        self.names = names
+        widths = [len(str(s - 1)) for s in self.shape]
+        indices = [[f'{i:0{width}}' for i in range(dim)] for dim, width in zip(self.shape, widths)]
+        flat_names = ['DET_' + ''.join(combination) for combination in product(*indices)]
+        self.names = np.array(flat_names).reshape(self.shape)
 
     def __len__(self) -> int:
         return int(np.prod(self.shape))
+
+    def split_key(self, key: PRNGKeyArray) -> Shaped[PRNGKeyArray, ' _']:
+        """Produces a new pseudo-random key for each detector."""
+        fold = jax.numpy.vectorize(jax.random.fold_in, signature='(),()->()')
+        subkeys: Shaped[PRNGKeyArray, '...'] = fold(key, self._ids())
+        return subkeys
 
     def _ids(self) -> UInt32[Array, '...']:
         # vectorized hashing + converting to int + keeping only 7 bytes
@@ -41,14 +48,3 @@ class DetectorArray:
         # return detectors IDs as unsigned 32-bit integers
         ids: UInt32[Array, '...'] = jnp.uint32(name_to_int(self.names))
         return ids
-
-    def split_key(self, key: PRNGKeyArray) -> Shaped[PRNGKeyArray, ' _']:
-        """Folds the detector names in a random key to generate a key array."""
-        fold = jax.numpy.vectorize(jax.random.fold_in, signature='(),()->()')
-        subkeys: Shaped[PRNGKeyArray, '...'] = fold(key, self._ids())
-        return subkeys
-
-
-class FakeDetectorArray(DetectorArray):
-    def __init__(self, num: int | tuple[int, ...]) -> None:
-        super().__init__(np.zeros(num), np.zeros(num), 1.0)

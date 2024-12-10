@@ -33,6 +33,7 @@ repos:
     - lineax
     - types-PyYAML
     - scipy
+    - numpy==2.0.2
     args:
     - --strict
     - --show-error-codes

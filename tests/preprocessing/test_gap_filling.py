@@ -47,7 +47,7 @@ def test_generate_realization_shape(x_shape: tuple[int, ...], do_jit: bool):
     key = jax.random.key(31415926539)
     structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
-    indices = jnp.where(jnp.ones_like(x, dtype=bool))[0]
+    indices = jnp.where(jnp.ones_like(x, dtype=bool))
     mask_op = IndexOperator(indices, in_structure=structure)
     dets = FakeDetectorArray(x_shape[:-1])
     op = GapFillingOperator(cov, mask_op, dets)
@@ -91,7 +91,7 @@ def dummy_mask(dummy_shape):
 @pytest.fixture
 def dummy_mask_op(dummy_x, dummy_mask):
     structure = jax.ShapeDtypeStruct(dummy_x.shape, dummy_x.dtype)
-    indices = jnp.where(dummy_mask)[0]
+    indices = jnp.where(dummy_mask)
     mask_op = IndexOperator(indices, in_structure=structure)
     return mask_op
 
@@ -108,7 +108,7 @@ def dummy_gap_filling_operator(dummy_shape, dummy_mask, dummy_detectors):
     x = jnp.ones(dummy_shape, dtype=float)
     structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
-    indices = jnp.where(dummy_mask)[0]
+    indices = jnp.where(dummy_mask)
     mask_op = IndexOperator(indices, in_structure=structure)
     return GapFillingOperator(cov, mask_op, dummy_detectors)
 

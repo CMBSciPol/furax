@@ -19,6 +19,27 @@ __all__ = [
 class GapFillingOperator(equinox.Module):
     """Class for filling masked time samples with a constrained noise realization.
 
+    We follow the gap-filling algorithm described in https://doi.org/10.1103/PhysRevD.65.022003,
+    section II.C, page 6. It assumes that the noise is piece wise stationary and has Gaussian
+    statistics, described by the covariance matrix ``cov``.
+
+    Example:
+    Gap-filling a single-detector timestream
+
+        >>> detectors = DetectorArray(jnp.array(0), jnp.array(0), jnp.array(1))
+        >>> key = jax.random.key(0)
+        >>> key, subkey = jax.random.split(key)
+        >>> nsamples = 10
+        >>> x = jax.random.normal(subkey, detectors.shape + (nsamples,))
+        >>> in_structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
+        >>> mask = jnp.array([1, 1, 1, 0, 0, 1, 1, 1, 1, 1], dtype=bool)
+        >>> mask_op = IndexOperator(jnp.where(mask), in_structure=in_structure)
+        >>> cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure)
+        >>> gf = GapFillingOperator(cov, mask_op, detectors)
+        >>> gap_filled_x = gf(key, x)
+        >>> assert gap_filled_x.shape == x.shape
+        >>> assert jnp.all(gap_filled_x[mask] == x[mask])
+
     Attributes:
         cov: A SymmetricBandToeplitzOperator representing the noise covariance matrix.
         mask_op: An IndexOperator for masking the gaps.

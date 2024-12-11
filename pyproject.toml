@@ -31,6 +31,7 @@ dependencies = [
     'scipy',
     'typing-extensions; python_version < "3.11"',
     'matplotlib',
+    'astropy',
 ]
 dynamic = ['version']
 
@@ -52,7 +53,14 @@ show_missing = true
 skip_covered = true
 
 [[tool.mypy.overrides]]
-module = ['healpy', 'jax_healpy', 'lineax', 'scipy.stats.sampling']
+module = [
+    'healpy',
+    'jax_healpy',
+    'lineax',
+    'scipy.stats.sampling',
+    'scipy',
+    'astropy.cosmology',
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

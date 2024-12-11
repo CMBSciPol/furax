@@ -1,24 +1,17 @@
 [build-system]
 build-backend = 'setuptools.build_meta'
-requires = [
-    'setuptools==69.2.0',
-    'setuptools_scm[toml]>=6.2',
-    'wheel',
-]
+requires = ['setuptools==69.2.0', 'setuptools_scm[toml]>=6.2', 'wheel']
 
 [project]
 name = 'furax'
 authors = [
-    {name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr'},
+    { name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' },
+    { name = 'Simon Biquard', email = 'biquard@apc.in2p3.fr' },
 ]
-maintainers = [
-    {name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr'},
-]
+maintainers = [{ name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' }]
 description = 'Operators and solvers for high-performance computing.'
 readme = 'README.md'
-keywords = [
-    'scientific computing',
-]
+keywords = ['scientific computing']
 classifiers = [
     'Programming Language :: Python',
     'Programming Language :: Python :: 3',
@@ -27,7 +20,7 @@ classifiers = [
     'Topic :: Scientific/Engineering',
 ]
 requires-python = '>=3.10'
-license = {file = 'LICENSE'}
+license = { file = 'LICENSE' }
 dependencies = [
     'jaxtyping',
     'healpy>=0.16.6',
@@ -42,13 +35,7 @@ dependencies = [
 dynamic = ['version']
 
 [project.optional-dependencies]
-dev = [
-    'pytest',
-    'pytest-cov',
-    'pytest-mock',
-    'setuptools_scm',
-    'beartype',
-]
+dev = ['pytest', 'pytest-cov', 'pytest-mock', 'setuptools_scm', 'beartype']
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'
@@ -65,23 +52,14 @@ show_missing = true
 skip_covered = true
 
 [[tool.mypy.overrides]]
-module = [
-    'healpy',
-    'jax_healpy',
-    'lineax',
-    'scipy.stats.sampling'
-]
+module = ['healpy', 'jax_healpy', 'lineax', 'scipy.stats.sampling']
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 # addopts = '-ra --cov=furax --jaxtyping-packages=furax,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))'
 addopts = '-s -ra --color=yes'
-testpaths = [
-    'tests',
-]
-markers = [
-    "slow: mark test as slow.",
-]
+testpaths = ['tests']
+markers = ["slow: mark test as slow."]
 
 #[tool.setuptools]
 #packages = ['src/furax']
@@ -104,7 +82,13 @@ select = [
     # flake8-debugger
     'T10',
 ]
-ignore = ['E203', 'E731', 'E741', 'F722']
+ignore = [
+    'E203',
+    'E731',
+    'E741',
+    'F722',
+    'UP037', # conflicts with jaxtyping Array annotations
+]
 
 [tool.ruff.lint.per-file-ignores]
 "src/furax/_base/core.py" = ['E743']

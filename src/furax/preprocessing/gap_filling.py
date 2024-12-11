@@ -48,16 +48,6 @@ class GapFillingOperator(equinox.Module):
         return y
 
     @staticmethod
-    def get_kernel(n_tt: Float[Array, ' _'], size: int) -> Float[Array, ' {size}']:
-        lagmax = n_tt.size - 1
-        padding_size = size - (2 * lagmax + 1)
-        if padding_size < 0:
-            msg = f'The maximum lag ({lagmax}) is too large for the required kernel size ({size}).'
-            raise ValueError(msg)
-        kernel = jnp.concatenate((n_tt, jnp.zeros(padding_size), n_tt[-1:0:-1]))
-        return kernel
-
-    @staticmethod
     def folded_psd(
         n_tt: Float[ArrayLike, ' _'], fft_size: int
     ) -> Float[Array, ' {fft_size // 2 + 1}']:
@@ -68,11 +58,21 @@ class GapFillingOperator(equinox.Module):
             fft_size: The size of the FFT to use (at least twice the size of ``n_tt``).
         """
         n_tt = jnp.asarray(n_tt)
-        kernel = GapFillingOperator.get_kernel(n_tt, fft_size)
+        kernel = GapFillingOperator._get_kernel(n_tt, fft_size)
         psd = jnp.abs(jnp.fft.rfft(kernel, n=fft_size))
         # zero out DC value
         psd = psd.at[0].set(0)
         return psd
+
+    @staticmethod
+    def _get_kernel(n_tt: Float[Array, ' _'], size: int) -> Float[Array, ' {size}']:
+        lagmax = n_tt.size - 1
+        padding_size = size - (2 * lagmax + 1)
+        if padding_size < 0:
+            msg = f'The maximum lag ({lagmax}) is too large for the required kernel size ({size}).'
+            raise ValueError(msg)
+        kernel = jnp.concatenate((n_tt, jnp.zeros(padding_size), n_tt[-1:0:-1]))
+        return kernel
 
     def _generate_realization_for(
         self, x: Float[Array, ' *shape'], key: PRNGKeyArray

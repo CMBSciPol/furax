@@ -28,7 +28,7 @@ class FakeDetectorArray(DetectorArray):
 def test_get_kernel(n_tt: list[int], fft_size: int, expected_kernel: list[int]):
     n_tt = jnp.array(n_tt)
     expected_kernel = np.array(expected_kernel)
-    actual_kernel = GapFillingOperator.get_kernel(n_tt, fft_size)
+    actual_kernel = GapFillingOperator._get_kernel(n_tt, fft_size)
     assert_allclose(actual_kernel, expected_kernel)
 
 
@@ -37,7 +37,7 @@ def test_get_kernel_fail_lagmax(n_tt: list[int], fft_size: int):
     # This test should fail because the maximum lag is too large for the required fft_size
     n_tt = jnp.array(n_tt)
     with pytest.raises(ValueError):
-        _ = GapFillingOperator.get_kernel(n_tt, fft_size)
+        _ = GapFillingOperator._get_kernel(n_tt, fft_size)
 
 
 @pytest.mark.parametrize('do_jit', [False, True])

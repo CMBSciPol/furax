@@ -112,7 +112,7 @@ class GapFillingOperator(equinox.Module):
             # Gaussian Re/Im random numbers
             rngdata = jax.random.normal(subkey, shape=(fft_size,))
 
-            fdata = jnp.empty(npsd, dtype=jnp.complex128)
+            fdata = jnp.empty(npsd, dtype=complex)
 
             # Set DC and Nyquist frequency imaginary parts to zero
             fdata = fdata.at[0].set(rngdata[0] + 0.0j)

@@ -16,11 +16,14 @@ from toast.traits import Bool, Float, Int, Unicode, trait_docs
 from toast.utils import Logger
 
 from furax import Config
+from furax._base.axes import RavelOperator
+from furax._base.blocks import BlockDiagonalOperator
+from furax._base.core import AbstractLinearOperator, IdentityOperator
+from furax._base.diagonal import DiagonalOperator
+from furax._base.indices import IndexOperator
 from furax.landscapes import HealpixLandscape, StokesIQUPyTree
-from furax.operators import AbstractLinearOperator, DiagonalOperator, IdentityOperator
 from furax.operators.hwp import HWPOperator
 from furax.operators.polarizers import LinearPolarizerOperator
-from furax.operators.projections import SamplingOperator
 from furax.operators.qu_rotations import QURotationOperator
 from furax.operators.toeplitz import SymmetricBandToeplitzOperator
 
@@ -149,11 +152,13 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
         # preconditioner
         # TODO replace by block Jacobi when available
         coverage = h.T(jnp.ones(tod_structure.shape, tod_structure.dtype))
-        m = DiagonalOperator(
+        m = BlockDiagonalOperator(
             StokesIQUPyTree(
-                i=coverage.i,
-                q=coverage.i,
-                u=coverage.i,
+                d := DiagonalOperator(
+                    coverage.i, in_structure=jax.eval_shape(lambda _: _, coverage.i)
+                ),
+                d,
+                d,
             )
         ).inverse()
 
@@ -223,7 +228,8 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
 
     def _get_acquisition(self, has_hwp: bool) -> AbstractLinearOperator:
         self._landscape = HealpixLandscape(self.nside, self.stokes)
-        sampling = SamplingOperator(landscape=self._landscape, indices=self._pixels)
+        reshape = RavelOperator(in_structure=self._landscape.structure)
+        sampling = IndexOperator(self._pixels, in_structure=reshape.out_structure())
         meta = {'shape': self._tods.shape, 'stokes': self.stokes}
         if has_hwp:
             polarizer = LinearPolarizerOperator.create(**meta, angles=self._gamma[:, None])

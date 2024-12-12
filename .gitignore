@@ -9,6 +9,7 @@ __pycache__
 /venv*/
 /.vscode/
 /.idea/
+/.zed/
 
 /tests/data/planck/
 

@@ -37,7 +37,7 @@ dynamic = ['version']
 
 [project.optional-dependencies]
 dev = ['pytest', 'pytest-cov', 'pytest-mock', 'setuptools_scm', 'beartype']
-toast-mapmaking = ['astropy', 'optax', 'toast>=3.0.0a27']
+toast-mapmaking = ['astropy', 'jax>=0.4.38', 'optax', 'toast>=3.0.0a27']
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'
@@ -55,7 +55,7 @@ skip_covered = true
 
 [[tool.mypy.overrides]]
 module = [
-    'astropy',
+    'astropy.cosmology',
     'healpy',
     'jax_healpy',
     'lineax',
@@ -63,7 +63,7 @@ module = [
     'scipy.stats.sampling',
     'scipy',
     'optax',
-    'toast.*'
+    'toast.*',
 ]
 ignore_missing_imports = true
 

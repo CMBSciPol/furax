@@ -1,36 +1,43 @@
+import equinox
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Inexact, PyTree
 
-from furax._base.dense import DenseBlockDiagonalOperator
 from furax.landscapes import StokesPyTree
 from furax.operators import AbstractLinearOperator, symmetric
 from furax.tree import is_leaf, zeros_like
 
 
 @symmetric
-class BJPreconditioner(DenseBlockDiagonalOperator):
+class BJPreconditioner(AbstractLinearOperator):
     """Class representing a block-diagonal Jacobi preconditioner.
 
     Each block is a small (n,n) matrix where n is the number of Stokes parameters of the map.
     Any other axes must be diagonal and must be placed "on the left".
     """
 
-    def __init__(self, blocks: Inexact[Array, '...'], in_structure: jax.ShapeDtypeStruct) -> None:
-        # initialize with non-diagonal axes on the right
-        super().__init__(blocks, in_structure, '...ij,...j->...i')
+    blocks: Inexact[Array, '...']
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
-        # do not accept a pytree for the blocks
-        if not is_leaf(self.blocks):
+    def __init__(self, blocks: Inexact[Array, '...'], in_structure: jax.ShapeDtypeStruct) -> None:
+        # Impose some restrictions on the input
+        # 1. the blocks must be an Array of shape (..., n, n)
+        # 2. the input structure must be a StokesPyTree
+
+        if not is_leaf(blocks):
             raise NotImplementedError('This operator does not support having Pytrees as blocks.')
 
-        # at least check that the blocks are square
-        if not (shape := self.blocks.shape)[-1] == shape[-2]:
-            raise ValueError('The blocks must be square in the last two dimensions.')
+        match blocks.shape:
+            case (*_, m, n) if m == n:
+                pass
+            case _:
+                raise ValueError('The blocks must be an Array of shape (..., n, n).')
 
-        # enforce that the operator acts on StokesPyTrees
-        if not isinstance(self._in_structure, StokesPyTree):
+        if not isinstance(in_structure, StokesPyTree):
             raise ValueError('The operator should act on StokesPyTrees (sky maps).')
+
+        self.blocks = blocks
+        self._in_structure = in_structure
 
     @classmethod
     def create(cls, op: AbstractLinearOperator) -> 'AbstractLinearOperator':
@@ -61,10 +68,13 @@ class BJPreconditioner(DenseBlockDiagonalOperator):
 
         return cls(blocks, in_struct)
 
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self._in_structure
+
     def mv(self, x: PyTree[Array, '...']) -> PyTree[Array, '...']:
         in_leaves, treedef = jax.tree.flatten(x)
         # the "stokes" dimension must be on the right
-        y = jnp.einsum(self.subscripts, self.blocks, jnp.stack(in_leaves, axis=-1))
+        y = jnp.matvec(self.blocks, jnp.stack(in_leaves, axis=-1))
         out_leaves = jnp.split(y, treedef.num_leaves, axis=-1)  # type: ignore[attr-defined]
         # squeeze the last dimension to match input shape
         return jax.tree.unflatten(treedef, [jnp.squeeze(leaf, axis=-1) for leaf in out_leaves])
@@ -77,16 +87,7 @@ class BJPreconditioner(DenseBlockDiagonalOperator):
     #     return jnp.linalg.solve(self.blocks, b)  # type: ignore[no-any-return]
 
     def inverse(self) -> 'AbstractLinearOperator':
-        # compute the inverse blocks
-        inv_blocks = jnp.linalg.inv(self.blocks)
-
-        # set preconditioner to zero for pixels that are not observed at all
-        hits = self.blocks[..., 0, 0]
-        inv_blocks = inv_blocks.at[hits == 0].set(0)
-
-        # check the condition number and set bad pixels to zero
-        # they must be handled appropriately in the acquisition model
-        cond = jnp.linalg.cond(self.blocks)
-        inv_blocks = inv_blocks.at[cond > 1e1].set(0)
-
-        return BJPreconditioner(inv_blocks, self._in_structure)
+        # compute a pseudo-inverse of the blocks
+        # TODO: what cutoff should we use?
+        pinv_blocks = jnp.linalg.pinv(self.blocks, rtol=1e-4)
+        return BJPreconditioner(pinv_blocks, self._in_structure)

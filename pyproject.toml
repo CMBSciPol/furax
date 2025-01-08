@@ -78,6 +78,7 @@ fallback_version = '0.0.0'
 
 [tool.ruff]
 line-length = 100
+src = ["src"]
 
 [tool.ruff.lint]
 select = [
@@ -99,8 +100,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"src/furax/_base/core.py" = ['E743']
-"src/furax/landscapes.py" = ['UP007']
+"src/furax/core/_base.py" = ['E743']
 
 [tool.ruff.format]
 quote-style = 'single'

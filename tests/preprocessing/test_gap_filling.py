@@ -4,9 +4,8 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from furax._base.indices import IndexOperator
-from furax.detectors import DetectorArray
-from furax.operators.toeplitz import SymmetricBandToeplitzOperator
+from furax import IndexOperator, SymmetricBandToeplitzOperator
+from furax.obs._detectors import DetectorArray
 from furax.preprocessing.gap_filling import GapFillingOperator
 
 

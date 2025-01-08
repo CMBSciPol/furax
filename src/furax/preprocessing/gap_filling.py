@@ -5,9 +5,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
-from furax._base.indices import IndexOperator
-from furax.detectors import DetectorArray
-from furax.operators.toeplitz import SymmetricBandToeplitzOperator
+from furax import IndexOperator, SymmetricBandToeplitzOperator
+from furax.obs._detectors import DetectorArray
 
 default_fft_size = SymmetricBandToeplitzOperator._get_default_fft_size
 

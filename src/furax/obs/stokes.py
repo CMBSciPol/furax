@@ -1,0 +1,354 @@
+import operator
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from functools import partial
+from typing import Any, ClassVar, Literal, cast, get_args, overload
+
+import jax
+import jax_dataclasses as jdc
+import numpy as np
+from jax import Array
+from jax import numpy as jnp
+from jax.typing import ArrayLike
+from jaxtyping import DTypeLike, Float, Integer, Key, PyTree, ScalarLike
+from typing_extensions import Self
+
+from furax.tree import (
+    as_promoted_dtype,
+    dot,
+    full_like,
+    normal_like,
+    ones_like,
+    uniform_like,
+    zeros_like,
+)
+
+ValidStokesType = Literal['I', 'QU', 'IQU', 'IQUV']
+
+
+@jdc.pytree_dataclass
+class StokesPyTree(ABC):
+    stokes: ClassVar[ValidStokesType]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return cast(tuple[int, ...], getattr(self, self.stokes[0].lower()).shape)
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return cast(DTypeLike, getattr(self, self.stokes[0].lower()).dtype)
+
+    @property
+    def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.structure_for(self.shape, self.dtype)
+
+    def __getitem__(self, index: Integer[Array, '...']) -> Self:
+        arrays = [getattr(self, stoke.lower())[index] for stoke in self.stokes]
+        return type(self)(*arrays)
+
+    def __matmul__(self, other: Any) -> Any:
+        """Scalar product between Stokes pytrees."""
+        if not isinstance(other, type(self)):
+            return NotImplemented
+        return dot(self, other)
+
+    def __abs__(self) -> Self:
+        result: Self = jax.tree.map(operator.abs, self)
+        return result
+
+    def __pos__(self) -> Self:
+        return self
+
+    def __neg__(self) -> Self:
+        result: Self = jax.tree.map(operator.neg, self)
+        return result
+
+    def __add__(self, other: Any) -> Self:
+        return self._operation(operator.add, other)
+
+    def __sub__(self, other: Any) -> Self:
+        return self._operation(operator.sub, other)
+
+    def __mul__(self, other: Any) -> Self:
+        return self._operation(operator.mul, other)
+
+    def __truediv__(self, other: Any) -> Self:
+        return self._operation(operator.truediv, other)
+
+    def __pow__(self, other: Any) -> Self:
+        return self._operation(operator.pow, other)
+
+    def _operation(self, operation: Callable[[Any, Any], Any], right: Any) -> Self:
+        result: Self
+        if isinstance(right, type(self)):
+            result = jax.tree.map(operation, self, right)
+        elif jnp.isscalar(right) or isinstance(right, jax.Array):
+            result = jax.tree.map(lambda leaf: operation(leaf, right), self)
+        else:
+            return NotImplemented  # type: ignore[no-any-return]
+        return result
+
+    def __radd__(self, other: Any) -> Self:
+        return self._roperation(operator.add, other)
+
+    def __rsub__(self, other: Any) -> Self:
+        return self._roperation(operator.sub, other)
+
+    def __rmul__(self, other: Any) -> Self:
+        return self._roperation(operator.mul, other)
+
+    def __rtruediv__(self, other: Any) -> Self:
+        return self._roperation(operator.truediv, other)
+
+    def __rpow__(self, other: Any) -> Self:
+        return self._roperation(operator.pow, other)
+
+    def _roperation(self, operation: Callable[[Any, Any], Any], left: Any) -> Self:
+        result: Self
+        if isinstance(left, type(self)):
+            result = jax.tree.map(operation, left, self)
+        elif jnp.isscalar(left) or isinstance(left, jax.Array):
+            result = jax.tree.map(partial(operation, left), self)
+        else:
+            return NotImplemented  # type: ignore[no-any-return]
+        return result
+
+    def ravel(self) -> Self:
+        """Ravels each Stokes component."""
+        return jax.tree.map(lambda x: x.ravel(), self)  # type: ignore[no-any-return]
+
+    def reshape(self, shape: tuple[int, ...]) -> Self:
+        """Reshape each Stokes component."""
+        return jax.tree.map(lambda x: x.reshape(shape), self)  # type: ignore[no-any-return]
+
+    @classmethod
+    @overload
+    def class_for(cls, stokes: Literal['I']) -> type['StokesIPyTree']: ...
+
+    @classmethod
+    @overload
+    def class_for(cls, stokes: Literal['QU']) -> type['StokesQUPyTree']: ...
+
+    @classmethod
+    @overload
+    def class_for(cls, stokes: Literal['IQU']) -> type['StokesIQUPyTree']: ...
+
+    @classmethod
+    @overload
+    def class_for(cls, stokes: Literal['IQUV']) -> type['StokesIQUVPyTree']: ...
+
+    @classmethod
+    def class_for(cls, stokes: str) -> type['StokesPyTreeType']:
+        """Returns the StokesPyTree subclass associated to the specified Stokes types."""
+        if stokes not in get_args(ValidStokesType):
+            raise ValueError(f'Invalid Stokes parameters: {stokes!r}')
+        requested_cls = {
+            'I': StokesIPyTree,
+            'QU': StokesQUPyTree,
+            'IQU': StokesIQUPyTree,
+            'IQUV': StokesIQUVPyTree,
+        }[stokes]
+        return cast(type[StokesPyTreeType], requested_cls)
+
+    @classmethod
+    def structure_for(
+        cls,
+        shape: tuple[int, ...],
+        dtype: DTypeLike = np.float64,
+    ) -> Self:
+        stokes_arrays = len(cls.stokes) * [jax.ShapeDtypeStruct(shape, dtype)]
+        return cls(*stokes_arrays)
+
+    @classmethod
+    @overload
+    def from_stokes(cls, i: ArrayLike) -> 'StokesIPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(cls, i: jax.ShapeDtypeStruct) -> 'StokesIPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(cls, q: ArrayLike, u: ArrayLike) -> 'StokesQUPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(cls, q: jax.ShapeDtypeStruct, u: jax.ShapeDtypeStruct) -> 'StokesQUPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(cls, i: ArrayLike, q: ArrayLike, u: ArrayLike) -> 'StokesIQUPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(
+        cls, i: jax.ShapeDtypeStruct, q: jax.ShapeDtypeStruct, u: jax.ShapeDtypeStruct
+    ) -> 'StokesIQUPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(
+        cls, i: ArrayLike, q: ArrayLike, u: ArrayLike, v: ArrayLike
+    ) -> 'StokesIQUVPyTree': ...
+
+    @classmethod
+    @overload
+    def from_stokes(
+        cls,
+        i: jax.ShapeDtypeStruct,
+        q: jax.ShapeDtypeStruct,
+        u: jax.ShapeDtypeStruct,
+        v: jax.ShapeDtypeStruct,
+    ) -> 'StokesIQUVPyTree': ...
+
+    @classmethod
+    def from_stokes(
+        cls,
+        *args: Any,
+        **keywords: Any,
+    ) -> 'StokesPyTree':
+        """Returns a StokesPyTree according to the specified Stokes vectors.
+
+        Examples:
+            >>> tod_i = StokesPyTree.from_stokes(i)
+            >>> tod_qu = StokesPyTree.from_stokes(q, u)
+            >>> tod_iqu = StokesPyTree.from_stokes(i, q, u)
+            >>> tod_iquv = StokesPyTree.from_stokes(i, q, u, v)
+        """
+        if args and keywords:
+            raise TypeError(
+                'The Stokes parameters should be specified either through positional or keyword '
+                'arguments.'
+            )
+        if keywords:
+            stokes = ''.join(sorted(keywords))
+            if stokes not in get_args(ValidStokesType):
+                raise TypeError(
+                    f"Invalid Stokes vectors: {stokes!r}. Use 'I', 'QU', 'IQU' or 'IQUV'."
+                )
+            args = tuple(keywords[stoke] for stoke in stokes)
+
+        args = as_promoted_dtype(args)
+        if len(args) == 1:
+            return StokesIPyTree(*args)
+        if len(args) == 2:
+            return StokesQUPyTree(*args)
+        if len(args) == 3:
+            return StokesIQUPyTree(*args)
+        if len(args) == 4:
+            return StokesIQUVPyTree(*args)
+        raise TypeError(f'Unexpected number of Stokes parameters: {len(args)}.')
+
+    @classmethod
+    @abstractmethod
+    def from_iquv(
+        cls,
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
+    ) -> Self:
+        """Returns a StokesPyTree ignoring the Stokes components not in the type."""
+
+    @classmethod
+    def zeros(cls, shape: tuple[int, ...], dtype: DTypeLike = float) -> Self:
+        return zeros_like(cls.structure_for(shape, dtype))
+
+    @classmethod
+    def ones(cls, shape: tuple[int, ...], dtype: DTypeLike = float) -> Self:
+        return ones_like(cls.structure_for(shape, dtype))
+
+    @classmethod
+    def full(cls, shape: tuple[int, ...], fill_value: ScalarLike, dtype: DTypeLike = float) -> Self:
+        return full_like(cls.structure_for(shape, dtype), fill_value)
+
+    @classmethod
+    def normal(cls, key: Key[Array, ''], shape: tuple[int, ...], dtype: DTypeLike = float) -> Self:
+        return normal_like(cls.structure_for(shape, dtype), key)
+
+    @classmethod
+    def uniform(
+        cls,
+        shape: tuple[int, ...],
+        key: Key[Array, ''],
+        dtype: DTypeLike = float,
+        low: float = 0.0,
+        high: float = 1.0,
+    ) -> Self:
+        return uniform_like(cls.structure_for(shape, dtype), key, low, high)
+
+
+@jdc.pytree_dataclass
+class StokesIPyTree(StokesPyTree):
+    stokes: ClassVar[ValidStokesType] = 'I'
+    i: Array
+
+    @classmethod
+    def from_iquv(
+        cls,
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
+    ) -> Self:
+        return cls(i)
+
+
+@jdc.pytree_dataclass
+class StokesQUPyTree(StokesPyTree):
+    stokes: ClassVar[ValidStokesType] = 'QU'
+    q: Array
+    u: Array
+
+    @classmethod
+    def from_iquv(
+        cls,
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
+    ) -> Self:
+        q, u = as_promoted_dtype((q, u))
+        return cls(q, u)
+
+
+@jdc.pytree_dataclass
+class StokesIQUPyTree(StokesPyTree):
+    stokes: ClassVar[ValidStokesType] = 'IQU'
+    i: Array
+    q: Array
+    u: Array
+
+    @classmethod
+    def from_iquv(
+        cls,
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
+    ) -> Self:
+        i, q, u = as_promoted_dtype((i, q, u))
+        return cls(i, q, u)
+
+
+@jdc.pytree_dataclass
+class StokesIQUVPyTree(StokesPyTree):
+    stokes: ClassVar[ValidStokesType] = 'IQUV'
+    i: Array
+    q: Array
+    u: Array
+    v: Array
+
+    @classmethod
+    def from_iquv(
+        cls,
+        i: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
+    ) -> Self:
+        i, q, u, v = as_promoted_dtype((i, q, u, v))
+        return cls(i, q, u, v)
+
+
+StokesPyTreeType = StokesIPyTree | StokesQUPyTree | StokesIQUPyTree | StokesIQUVPyTree

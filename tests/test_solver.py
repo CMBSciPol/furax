@@ -7,16 +7,15 @@ import numpy as np
 import pytest
 from numpy.random import PCG64, Generator
 
-from furax import Config
-from furax._base.diagonal import DiagonalOperator
-from furax.instruments.sat import (
+from furax import Config, DiagonalOperator
+from furax._instruments.sat import (
     DETECTOR_ARRAY_SHAPE,
     NDIR_PER_DETECTOR,
     create_acquisition,
     create_detector_directions,
 )
-from furax.landscapes import HealpixLandscape
-from furax.samplings import create_random_sampling
+from furax.obs._samplings import create_random_sampling
+from furax.obs.landscapes import HealpixLandscape
 from furax.tree import as_structure
 
 

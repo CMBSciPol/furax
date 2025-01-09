@@ -170,7 +170,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         x_padding_start = overlap
         x_padding_end = total_length - overlap - l
         x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode='constant')
-        y = jnp.zeros(l + x_padding_end)
+        y = jnp.zeros(l + x_padding_end, dtype=x.dtype)
 
         def func(iblock, y):  # type: ignore[no-untyped-def]
             position = iblock * step_size
@@ -235,7 +235,7 @@ def _overlap_add_jax(x, H, fft_size, b):  # type: ignore[no-untyped-def]
     # pad x so that its size is a multiple of m
     x_padding = 0 if l % m == 0 else m - (l % m)
     x_padded = jnp.pad(x, (x_padding,), mode='constant')
-    y = jnp.zeros(l + b)
+    y = jnp.zeros(l + b, dtype=x.dtype)
 
     def func(j, y):  # type: ignore[no-untyped-def]
         i = j * m

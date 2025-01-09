@@ -74,7 +74,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         if method not in self.METHODS:
             raise ValueError(f'Invalid method {method}. Choose from: {", ".join(self.METHODS)}')
 
-        band_number = 2 * band_values.size - 1
+        band_number = 2 * band_values.shape[-1] - 1
         if fft_size is not None:
             if not method.startswith('overlap_'):
                 raise ValueError('The FFT size is only used by the overlap methods.')

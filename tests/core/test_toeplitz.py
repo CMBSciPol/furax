@@ -1,4 +1,5 @@
 import itertools
+from math import prod
 
 import jax
 import jax.numpy as jnp
@@ -88,7 +89,7 @@ def test(method: str, do_jit: bool) -> None:
 def test_multidimensional(
     in_shape: tuple[int, ...], band_shape: tuple[int, ...], method: str
 ) -> None:
-    band_values = jnp.arange(np.prod(band_shape)).reshape(band_shape)
+    band_values = jnp.arange(prod(band_shape), dtype=jnp.float64).reshape(band_shape)
     in_structure = jax.ShapeDtypeStruct(in_shape, jnp.float64)
     op = SymmetricBandToeplitzOperator(band_values, in_structure, method=method)
     broadcast_band_values = jnp.broadcast_to(band_values, in_shape[:-1] + (4,))

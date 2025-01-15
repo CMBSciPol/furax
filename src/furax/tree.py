@@ -190,3 +190,12 @@ def uniform_like(x: P, key: Key[Array, ''], low: float = 0.0, high: float = 1.0)
         lambda leaf, key: jax.random.uniform(key, leaf.shape, leaf.dtype, low, high), x, keys
     )
     return result
+
+
+def allclose(x: P, y: P, rtol=1e-05, atol=1e-08, equal_nan=False) -> bool:
+    return jax.tree.all(
+        jax.tree.map(
+            lambda x, y: jnp.allclose(x, y, rtol=rtol, atol=atol, equal_nan=equal_nan), x, y
+        ),
+        True,
+    )

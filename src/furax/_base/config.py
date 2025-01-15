@@ -8,7 +8,7 @@ import lineax as lx
 import yaml
 
 
-def default_solver_callback(solution: lx.Solution) -> None:
+def verbose_solver_callback(solution: lx.Solution) -> None:
     num_steps = solution.stats['num_steps']
     ok = num_steps < solution.stats['max_steps']
     if ok:
@@ -17,9 +17,13 @@ def default_solver_callback(solution: lx.Solution) -> None:
         print(f'Did not converge in {num_steps} iterations')
 
 
+def default_solver_callback(solution: lx.Solution) -> None:
+    pass
+
+
 @dataclass(frozen=True)
 class ConfigState:
-    solver: lx.AbstractLinearSolver = lx.CG(rtol=1e-6, atol=1e-6, max_steps=500)
+    solver: lx.AbstractLinearSolver = lx.CG(rtol=1e-6, atol=1e-6, max_steps=50000)
     solver_throw: bool = False
     solver_options: dict[str, Any] = field(default_factory=dict)
     solver_callback: Callable[[lx.Solution], None] = default_solver_callback

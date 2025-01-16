@@ -16,6 +16,15 @@ def call_back_check(n_regions, max_centroids):
               to be static and can no longer be a tracer
             """)
 
+@jax.jit
+def get_cutout_from_mask(ful_map, indices):
+    return jnp.take(ful_map, indices).astype(jnp.int64)
+
+@jax.jit
+def from_cutout_to_fullmap(goodpix, indices, ful_map):
+    return ful_map.at[indices].set(goodpix)
+
+
 @partial(jax.jit, static_argnums=(4 , 5))
 def get_clusters(mask, indices, n_regions, key, max_centroids=None, unassigned=jhp.UNSEEN):
     jax.debug.callback(call_back_check, n_regions, max_centroids)

@@ -37,11 +37,15 @@ class KMeans:
 
         if self.max_centroids is None:
             nsamples = int(
-                max(2 * np.sqrt(ra_dec.shape[0]), 10 * self.ncenters))
+                max(2 * np.sqrt(ra_dec.shape[0]), 5 * self.ncenters))
         else:
             nsamples = int(
-                max(2 * np.sqrt(ra_dec.shape[0]), 10 * self.max_centroids))
+                max(2 * np.sqrt(ra_dec.shape[0]), 5 * self.max_centroids))
         sample_key, center_key = jr.split(key, 2)
+        if nsamples > ra_dec.shape[0]:
+            raise ValueError("Requested centers are too large for the number of samples"
+            "Consider increasing the nside or decreasing the number of centers (or max_centroids)")
+            
         ra_dec_samples = random_sample(sample_key, ra_dec, nsamples)
         if self.max_centroids is None:
             centroids_samples = random_sample(center_key, ra_dec,

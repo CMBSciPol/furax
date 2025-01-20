@@ -37,10 +37,11 @@ class KMeans:
 
         if self.max_centroids is None:
             nsamples = int(
-                max(2 * np.sqrt(ra_dec.shape[0]), 5 * self.ncenters))
+                max(2 * np.sqrt(ra_dec.shape[0]), 10 * self.ncenters))
         else:
             nsamples = int(
-                max(2 * np.sqrt(ra_dec.shape[0]), 5 * self.max_centroids))
+                max(2 * np.sqrt(ra_dec.shape[0]), 10 * self.max_centroids))
+
         sample_key, center_key = jr.split(key, 2)
         if nsamples > ra_dec.shape[0]:
             raise ValueError("Requested centers are too large for the number of samples"
@@ -82,11 +83,9 @@ class KMeans:
             if self.max_centroids is not None:
                 distances = jnp.where(centroid_mask[None, :], distances,
                                       jnp.inf)
-
             labels = distances.argmin(axis=1).astype(
                 jnp.int32)  # nearest centroid
 
-            #jax.debug.print("labels {a}", a=labels)
 
             distances = distances[indices, labels]
 
@@ -105,18 +104,14 @@ class KMeans:
                 mean_Y = masked_Y.sum() / mask.sum()
                 mean_Z = masked_Z.sum() / mask.sum()
 
-                #jax.debug.print(
-                #    "At iteration {a} mask is {b} means are {c}",
-                #    a=center_indx,
-                #    b=mask,
-                #    c=xyz2radec(mean_X, mean_Y, mean_Z))
-                #
-                return centroids.at[center_indx].set(
-                    xyz2radec(mean_X, mean_Y, mean_Z)), labels
+                current_centroid = centroids[center_indx]
+                cdistance = xyz2radec(mean_X, mean_Y, mean_Z)
+                new_centroid = jnp.where(jnp.isfinite(cdistance), cdistance, current_centroid)
+            
+                return centroids.at[center_indx].set(new_centroid), labels
 
             new_centroids, _ = lax.fori_loop(0, self.ncenters, for_loop_body,
                                              (state.centroids, labels))
-
             new_state = KMeansState(
                 ra_dec=ra_dec,
                 centroids=new_centroids,

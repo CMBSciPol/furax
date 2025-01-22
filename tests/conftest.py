@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from jaxtyping import Array, Float
 
-from furax.obs.stokes import StokesIQUPyTree, ValidStokesType
+from furax.obs.stokes import StokesIQU, ValidStokesType
 from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT
 
 
@@ -17,7 +17,7 @@ def load_planck(nside: int) -> np.array:
 
 
 @pytest.fixture(scope='session')
-def planck_iqu_256() -> StokesIQUPyTree:
+def planck_iqu_256() -> StokesIQU:
     nside = 256
     path = TEST_DATA_PLANCK / f'HFI_SkyMap_143_{nside}_R3.01_full_IQU.fits'
     if path.exists():
@@ -27,7 +27,7 @@ def planck_iqu_256() -> StokesIQUPyTree:
         TEST_DATA_PLANCK.mkdir(parents=True, exist_ok=True)
         hp.write_map(path, maps)
     i, q, u = maps.astype(float)
-    return StokesIQUPyTree(
+    return StokesIQU(
         i=jax.device_put(i),
         q=jax.device_put(q),
         u=jax.device_put(u),

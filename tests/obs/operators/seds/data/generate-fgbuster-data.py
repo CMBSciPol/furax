@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 
 from furax.obs.landscapes import HealpixLandscape
-from furax.obs.stokes import StokesPyTree
+from furax.obs.stokes import Stokes
 
 try:
     from fgbuster import CMB, Dust, Synchrotron, get_instrument, get_observation
@@ -46,7 +46,7 @@ def write_fgbuster_data():
     np.savez(data_filename, **fg_data)
     print(f"Data saved to '{data_filename}'")
 
-    d = StokesPyTree.from_stokes(I=freq_maps[:, 0, :], Q=freq_maps[:, 1, :], U=freq_maps[:, 2, :])
+    d = Stokes.from_stokes(I=freq_maps[:, 0, :], Q=freq_maps[:, 1, :], U=freq_maps[:, 2, :])
     return fg_data, d, in_structure
 
 

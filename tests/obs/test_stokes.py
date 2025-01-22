@@ -12,7 +12,7 @@ from jax import Array
 from jaxtyping import Float
 from numpy.testing import assert_array_equal
 
-from furax.obs.stokes import StokesPyTree, ValidStokesType
+from furax.obs.stokes import Stokes, ValidStokesType
 
 
 @pytest.mark.parametrize(
@@ -22,16 +22,16 @@ from furax.obs.stokes import StokesPyTree, ValidStokesType
 def test_class_for(any_stokes: str) -> None:
     if any_stokes not in ('I', 'QU', 'IQU', 'IQUV'):
         with pytest.raises(ValueError, match='Invalid Stokes parameters'):
-            _ = StokesPyTree.class_for(any_stokes)
+            _ = Stokes.class_for(any_stokes)
     else:
-        cls = StokesPyTree.class_for(any_stokes)
+        cls = Stokes.class_for(any_stokes)
         assert cls.stokes == any_stokes
 
 
 def test_from_stokes_args(stokes: ValidStokesType) -> None:
     arrays = [jnp.ones(1) for _ in stokes]
-    pytree = StokesPyTree.from_stokes(*arrays)
-    assert type(pytree) is StokesPyTree.class_for(stokes)
+    pytree = Stokes.from_stokes(*arrays)
+    assert type(pytree) is Stokes.class_for(stokes)
 
 
 @pytest.mark.parametrize(
@@ -42,15 +42,15 @@ def test_from_stokes_kwargs(any_stokes: str) -> None:
     kwargs = {stoke: jnp.ones(1) for stoke in any_stokes}
     if any_stokes not in ('I', 'QU', 'IQU', 'IQUV'):
         with pytest.raises(TypeError, match=f"Invalid Stokes vectors: '{any_stokes}'"):
-            _ = StokesPyTree.from_stokes(**kwargs)
+            _ = Stokes.from_stokes(**kwargs)
     else:
-        pytree = StokesPyTree.from_stokes(**kwargs)
-        assert type(pytree) is StokesPyTree.class_for(any_stokes)
+        pytree = Stokes.from_stokes(**kwargs)
+        assert type(pytree) is Stokes.class_for(any_stokes)
 
 
 def test_from_iquv(stokes: ValidStokesType) -> None:
     arrays = {stoke: jnp.array(istoke) for istoke, stoke in enumerate('IQUV', 1)}
-    cls = StokesPyTree.class_for(stokes)
+    cls = Stokes.class_for(stokes)
     pytree = cls.from_iquv(*arrays.values())
     assert type(pytree) is cls
     for stoke in stokes:
@@ -60,7 +60,7 @@ def test_from_iquv(stokes: ValidStokesType) -> None:
 def test_ravel(stokes: ValidStokesType) -> None:
     shape = (4, 2)
     arrays = {k: jnp.ones(shape) for k in stokes}
-    pytree = StokesPyTree.from_stokes(**arrays)
+    pytree = Stokes.from_stokes(**arrays)
     raveled_pytree = pytree.ravel()
     for stoke in stokes:
         assert getattr(raveled_pytree, stoke.lower()).shape == (8,)
@@ -70,7 +70,7 @@ def test_reshape(stokes: ValidStokesType) -> None:
     shape = (4, 2)
     new_shape = (2, 2, 2)
     arrays = {k: jnp.ones(shape) for k in stokes}
-    pytree = StokesPyTree.from_stokes(**arrays)
+    pytree = Stokes.from_stokes(**arrays)
     raveled_pytree = pytree.reshape(new_shape)
     for stoke in stokes:
         assert getattr(raveled_pytree, stoke.lower()).shape == new_shape
@@ -87,7 +87,7 @@ def test_reshape(stokes: ValidStokesType) -> None:
     ],
 )
 def test_zeros(stokes: ValidStokesType, shape: tuple[int, ...], dtype, factory, value) -> None:
-    cls = StokesPyTree.class_for(stokes)
+    cls = Stokes.class_for(stokes)
     pytree = factory(cls, shape, dtype)
     for stoke in stokes:
         array = getattr(pytree, stoke.lower())
@@ -100,9 +100,9 @@ def test_zeros(stokes: ValidStokesType, shape: tuple[int, ...], dtype, factory, 
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
 def test_structure(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> None:
     array = jnp.zeros(shape, dtype)
-    pytree = StokesPyTree.from_stokes(*[array for _ in stokes])
+    pytree = Stokes.from_stokes(*[array for _ in stokes])
     leaf_structure = jax.ShapeDtypeStruct(shape, dtype)
-    expected_pytree_structure = StokesPyTree.from_stokes(*[leaf_structure for _ in stokes])
+    expected_pytree_structure = Stokes.from_stokes(*[leaf_structure for _ in stokes])
 
     assert pytree.shape == shape
     assert pytree.dtype == dtype
@@ -113,16 +113,16 @@ def test_structure(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> No
 @pytest.mark.parametrize('shape', [(10,), (2, 10)])
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
 def test_structure_for(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> None:
-    structure = StokesPyTree.class_for(stokes).structure_for(shape, dtype)
+    structure = Stokes.class_for(stokes).structure_for(shape, dtype)
     array = jnp.zeros(shape, dtype)
-    pytree = StokesPyTree.from_stokes(*[array for _ in stokes])
+    pytree = Stokes.from_stokes(*[array for _ in stokes])
     expected_structure = pytree.structure
 
     assert structure == expected_structure
 
 
 def test_matmul(stokes: ValidStokesType) -> None:
-    cls = StokesPyTree.class_for(stokes)
+    cls = Stokes.class_for(stokes)
     x = cls.ones((2, 3))
     y = cls.full((2, 3), 2)
     assert x @ y == len(cls.stokes) * 12
@@ -183,7 +183,7 @@ def test_operation_scalar_or_array(
     do_jit: bool,
 ) -> None:
     shape = 3, 2
-    x = StokesPyTree.class_for(stokes).full(shape, 3.0)
+    x = Stokes.class_for(stokes).full(shape, 3.0)
 
     def func(x):
         if reverse:
@@ -196,7 +196,7 @@ def test_operation_scalar_or_array(
     actual_y = func(x)
 
     expected_leaf = jnp.broadcast_to(expected_value, shape)
-    expected_y = StokesPyTree.class_for(stokes)(*len(stokes) * (expected_leaf,))
+    expected_y = Stokes.class_for(stokes)(*len(stokes) * (expected_leaf,))
     assert tree_equal(actual_y, expected_y, rtol=1e-15)
 
 
@@ -217,7 +217,7 @@ def test_operation_pytree(
     expected_value: float,
     do_jit: bool,
 ) -> None:
-    cls = StokesPyTree.class_for(stokes)
+    cls = Stokes.class_for(stokes)
     a = cls.full((3, 2), 3)
     b = cls.full((3, 2), 2)
     expected_result = cls.full((3, 2), expected_value)
@@ -238,7 +238,7 @@ def test_operation_pytree(
     ],
 )
 def test_operation_incompatible_pytree(operation: Callable[[Any, Any], Any]) -> None:
-    a = StokesPyTree.class_for('I').ones(())
-    b = StokesPyTree.class_for('IQU').ones(())
+    a = Stokes.class_for('I').ones(())
+    b = Stokes.class_for('IQU').ones(())
     with pytest.raises(TypeError, match='unsupported operand type'):
         operation(a, b)

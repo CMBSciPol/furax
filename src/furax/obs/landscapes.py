@@ -3,7 +3,7 @@ import sys
 from abc import ABC, abstractmethod
 from functools import partial
 
-from furax.obs.stokes import StokesPyTree, ValidStokesType
+from furax.obs.stokes import Stokes, ValidStokesType
 
 if sys.version_info < (3, 11):
     from typing_extensions import Self
@@ -101,7 +101,7 @@ class StokesLandscape(Landscape):
 
     @property
     def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        cls = StokesPyTree.class_for(self.stokes)
+        cls = Stokes.class_for(self.stokes)
         return cls.structure_for(self.shape, self.dtype)
 
     def tree_flatten(self):  # type: ignore[no-untyped-def]
@@ -113,17 +113,17 @@ class StokesLandscape(Landscape):
         return (), aux_data
 
     def full(self, fill_value: ScalarLike) -> PyTree[Shaped[Array, ' {self.npixel}']]:
-        cls = StokesPyTree.class_for(self.stokes)
+        cls = Stokes.class_for(self.stokes)
         return cls.full(self.shape, fill_value, self.dtype)
 
     def normal(self, key: Key[Array, '']) -> PyTree[Shaped[Array, ' {self.npixel}']]:
-        cls = StokesPyTree.class_for(self.stokes)
+        cls = Stokes.class_for(self.stokes)
         return cls.normal(key, self.shape, self.dtype)
 
     def uniform(
         self, key: Key[Array, ''], low: float = 0.0, high: float = 1.0
     ) -> PyTree[Shaped[Array, ' {self.npixel}']]:
-        cls = StokesPyTree.class_for(self.stokes)
+        cls = Stokes.class_for(self.stokes)
         return cls.uniform(self.shape, key, self.dtype, low, high)
 
     def get_coverage(self, arg: Sampling) -> Integer[Array, ' 12*nside**2']:

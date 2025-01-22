@@ -5,7 +5,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.core import CompositionOperator
 from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
-from furax.obs.stokes import StokesIPyTree, StokesIQUPyTree, StokesPyTree, ValidStokesType
+from furax.obs.stokes import Stokes, StokesI, StokesIQU, ValidStokesType
 from furax.tree import as_structure
 
 
@@ -52,7 +52,7 @@ def test_hwp_rule_with_angles(stokes: ValidStokesType) -> None:
 
 def test_direct_i() -> None:
     polarizer = LinearPolarizerOperator.create(shape=(2, 5), stokes='I')
-    x = StokesIPyTree(i=jnp.array([[1.0, 2, 3, 4, 5], [1, 1, 1, 1, 1]]))
+    x = StokesI(i=jnp.array([[1.0, 2, 3, 4, 5], [1, 1, 1, 1, 1]]))
 
     y = polarizer(x)
 
@@ -64,7 +64,7 @@ def test_direct_i() -> None:
 def test_create_direct_iqu() -> None:
     angles = np.deg2rad(15)
     polarizer = LinearPolarizerOperator.create(shape=(5,), angles=angles)
-    x = StokesIQUPyTree(
+    x = StokesIQU(
         i=jnp.array([1.0, 2, 3, 4, 5]),
         q=jnp.array([1.0, 1, 1, 1, 1]),
         u=jnp.array([2.0, 2, 2, 2, 2]),
@@ -85,7 +85,7 @@ def test_create_transpose(stokes: ValidStokesType) -> None:
     y = polarizer.T(x)
 
     assert as_structure(y) == polarizer.T.out_structure()
-    expected_cls = StokesPyTree.class_for(stokes)
+    expected_cls = Stokes.class_for(stokes)
     assert isinstance(y, expected_cls)
     expected_y = expected_cls.from_iquv(
         0.5 * x, 0.5 * np.cos(2 * angles) * x, -0.5 * np.sin(2 * angles) * x, 0 * x

@@ -9,7 +9,7 @@ from numpy.testing import assert_array_equal
 
 from furax import IdentityOperator
 from furax.core._linear import PackOperator
-from furax.obs.stokes import StokesIPyTree, StokesIQUPyTree
+from furax.obs.stokes import StokesI, StokesIQU
 from furax.tree import as_structure
 
 
@@ -23,13 +23,13 @@ from furax.tree import as_structure
         ),
         (
             jnp.array([False, True, True, False]),
-            StokesIPyTree.structure_for((4,), np.float32),
-            StokesIPyTree.structure_for((2,), np.float32),
+            StokesI.structure_for((4,), np.float32),
+            StokesI.structure_for((2,), np.float32),
         ),
         (
             jnp.array([False, True, True, False]),
-            StokesIQUPyTree.structure_for((4,), np.float32),
-            StokesIQUPyTree.structure_for((2,), np.float32),
+            StokesIQU.structure_for((4,), np.float32),
+            StokesIQU.structure_for((2,), np.float32),
         ),
         (
             jnp.array([[False, True], [True, False]]),
@@ -38,13 +38,13 @@ from furax.tree import as_structure
         ),
         (
             jnp.array([[False, True], [True, False]]),
-            StokesIPyTree.structure_for((2, 2), np.float32),
-            StokesIPyTree.structure_for((2,), np.float32),
+            StokesI.structure_for((2, 2), np.float32),
+            StokesI.structure_for((2,), np.float32),
         ),
         (
             jnp.array([[False, True], [True, False]]),
-            StokesIQUPyTree.structure_for((2, 2), np.float32),
-            StokesIQUPyTree.structure_for((2,), np.float32),
+            StokesIQU.structure_for((2, 2), np.float32),
+            StokesIQU.structure_for((2,), np.float32),
         ),
     ],
 )
@@ -74,25 +74,25 @@ def test_pack_structure(
         ),
         (
             jnp.array([False, True, True, False]),
-            StokesIPyTree.structure_for((4,), np.float32),
-            StokesIPyTree(jnp.array([1, 2, 3, 4], dtype=np.float32)),
-            StokesIPyTree(jnp.array([2, 3], dtype=np.float32)),
+            StokesI.structure_for((4,), np.float32),
+            StokesI(jnp.array([1, 2, 3, 4], dtype=np.float32)),
+            StokesI(jnp.array([2, 3], dtype=np.float32)),
         ),
         (
             jnp.array([[False, True], [True, False]]),
-            StokesIPyTree.structure_for((2, 2), np.float32),
-            StokesIPyTree(jnp.array([[1, 2], [3, 4]], dtype=np.float32)),
-            StokesIPyTree(jnp.array([2, 3], dtype=np.float32)),
+            StokesI.structure_for((2, 2), np.float32),
+            StokesI(jnp.array([[1, 2], [3, 4]], dtype=np.float32)),
+            StokesI(jnp.array([2, 3], dtype=np.float32)),
         ),
         (
             jnp.array([False, True, False, True]),
-            StokesIQUPyTree.structure_for((4,), np.float32),
-            StokesIQUPyTree(
+            StokesIQU.structure_for((4,), np.float32),
+            StokesIQU(
                 jnp.array([1, 2, 3, 4], dtype=np.float32),
                 jnp.array([5, 6, 7, 8], dtype=np.float32),
                 jnp.array([9, 10, 11, 12], dtype=np.float32),
             ),
-            StokesIQUPyTree(
+            StokesIQU(
                 jnp.array([2, 4], dtype=np.float32),
                 jnp.array([6, 8], dtype=np.float32),
                 jnp.array([10, 12], dtype=np.float32),
@@ -100,13 +100,13 @@ def test_pack_structure(
         ),
         (
             jnp.array([[False, True], [False, True]]),
-            StokesIQUPyTree.structure_for((2, 2), np.float32),
-            StokesIQUPyTree(
+            StokesIQU.structure_for((2, 2), np.float32),
+            StokesIQU(
                 jnp.array([[1, 2], [3, 4]], dtype=np.float32),
                 jnp.array([[5, 6], [7, 8]], dtype=np.float32),
                 jnp.array([[9, 10], [11, 12]], dtype=np.float32),
             ),
-            StokesIQUPyTree(
+            StokesIQU(
                 jnp.array([2, 4], dtype=np.float32),
                 jnp.array([6, 8], dtype=np.float32),
                 jnp.array([10, 12], dtype=np.float32),
@@ -154,23 +154,23 @@ def test_pack_transpose() -> None:
         ),
         (
             jnp.array([False, True, True, False]),
-            StokesIPyTree.structure_for((2,), np.float32),
-            StokesIPyTree.structure_for((4,), np.float32),
+            StokesI.structure_for((2,), np.float32),
+            StokesI.structure_for((4,), np.float32),
         ),
         (
             jnp.array([[False, True], [True, False]]),
-            StokesIPyTree.structure_for((2,), np.float32),
-            StokesIPyTree.structure_for((2, 2), np.float32),
+            StokesI.structure_for((2,), np.float32),
+            StokesI.structure_for((2, 2), np.float32),
         ),
         (
             jnp.array([False, True, True, False]),
-            StokesIQUPyTree.structure_for((2,), np.float32),
-            StokesIQUPyTree.structure_for((4,), np.float32),
+            StokesIQU.structure_for((2,), np.float32),
+            StokesIQU.structure_for((4,), np.float32),
         ),
         (
             jnp.array([[False, True], [True, False]]),
-            StokesIQUPyTree.structure_for((2,), np.float32),
-            StokesIQUPyTree.structure_for((2, 2), np.float32),
+            StokesIQU.structure_for((2,), np.float32),
+            StokesIQU.structure_for((2, 2), np.float32),
         ),
     ],
 )
@@ -194,19 +194,19 @@ def test_unpack_structure(
         ),
         (
             jnp.array([False, True, True, False]),
-            StokesIPyTree.structure_for((4,), np.float32),
-            StokesIPyTree(jnp.array([2, 3], dtype=np.float32)),
-            StokesIPyTree(jnp.array([0, 2, 3, 0], dtype=np.float32)),
+            StokesI.structure_for((4,), np.float32),
+            StokesI(jnp.array([2, 3], dtype=np.float32)),
+            StokesI(jnp.array([0, 2, 3, 0], dtype=np.float32)),
         ),
         (
             jnp.array([False, True, False, True]),
-            StokesIQUPyTree.structure_for((4,), np.float32),
-            StokesIQUPyTree(
+            StokesIQU.structure_for((4,), np.float32),
+            StokesIQU(
                 jnp.array([2, 4], dtype=np.float32),
                 jnp.array([6, 8], dtype=np.float32),
                 jnp.array([10, 12], dtype=np.float32),
             ),
-            StokesIQUPyTree(
+            StokesIQU(
                 jnp.array([0, 2, 0, 4], dtype=np.float32),
                 jnp.array([0, 6, 0, 8], dtype=np.float32),
                 jnp.array([0, 10, 0, 12], dtype=np.float32),
@@ -220,19 +220,19 @@ def test_unpack_structure(
         ),
         (
             jnp.array([[False, True], [True, False]]),
-            StokesIPyTree.structure_for((2, 2), np.float32),
-            StokesIPyTree(jnp.array([2, 3], dtype=np.float32)),
-            StokesIPyTree(jnp.array([[0, 2], [3, 0]], dtype=np.float32)),
+            StokesI.structure_for((2, 2), np.float32),
+            StokesI(jnp.array([2, 3], dtype=np.float32)),
+            StokesI(jnp.array([[0, 2], [3, 0]], dtype=np.float32)),
         ),
         (
             jnp.array([[False, True], [False, True]]),
-            StokesIQUPyTree.structure_for((2, 2), np.float32),
-            StokesIQUPyTree(
+            StokesIQU.structure_for((2, 2), np.float32),
+            StokesIQU(
                 jnp.array([2, 4], dtype=np.float32),
                 jnp.array([6, 8], dtype=np.float32),
                 jnp.array([10, 12], dtype=np.float32),
             ),
-            StokesIQUPyTree(
+            StokesIQU(
                 jnp.array([[0, 2], [0, 4]], dtype=np.float32),
                 jnp.array([[0, 6], [0, 8]], dtype=np.float32),
                 jnp.array([[0, 10], [0, 12]], dtype=np.float32),

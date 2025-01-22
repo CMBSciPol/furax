@@ -8,10 +8,10 @@ from furax import AbstractLinearOperator
 from furax.core.rules import AbstractBinaryRule
 
 from ..stokes import (
-    StokesIPyTree,
-    StokesPyTree,
+    Stokes,
+    StokesI,
     StokesPyTreeType,
-    StokesQUPyTree,
+    StokesQU,
     ValidStokesType,
 )
 from ._hwp import HWPOperator
@@ -32,7 +32,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         *,
         angles: Float[Array, '...'] | None = None,
     ) -> AbstractLinearOperator:
-        in_structure = StokesPyTree.class_for(stokes).structure_for(shape, dtype)
+        in_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
         polarizer = cls(in_structure)
         if angles is None:
             return polarizer
@@ -41,9 +41,9 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         return rotated_polarizer
 
     def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:
-        if isinstance(x, StokesIPyTree):
+        if isinstance(x, StokesI):
             return 0.5 * x.i
-        if isinstance(x, StokesQUPyTree):
+        if isinstance(x, StokesQU):
             return 0.5 * x.q
         return 0.5 * (x.i + x.q)
 

@@ -9,12 +9,12 @@ from furax import AbstractLinearOperator, diagonal
 from furax.core.rules import AbstractBinaryRule
 
 from ..stokes import (
-    StokesIPyTree,
-    StokesIQUPyTree,
-    StokesIQUVPyTree,
-    StokesPyTree,
+    Stokes,
+    StokesI,
+    StokesIQU,
+    StokesIQUV,
     StokesPyTreeType,
-    StokesQUPyTree,
+    StokesQU,
     ValidStokesType,
 )
 from ._qu_rotations import QURotationOperator, QURotationTransposeOperator
@@ -35,7 +35,7 @@ class HWPOperator(AbstractLinearOperator):
         *,
         angles: Float[Array, '...'] | None = None,
     ) -> AbstractLinearOperator:
-        in_structure = StokesPyTree.class_for(stokes).structure_for(shape, dtype)
+        in_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
         hwp = cls(in_structure)
         if angles is None:
             return hwp
@@ -43,15 +43,15 @@ class HWPOperator(AbstractLinearOperator):
         rotated_hwp: AbstractLinearOperator = rot.T @ hwp @ rot
         return rotated_hwp
 
-    def mv(self, x: StokesPyTreeType) -> StokesPyTree:
-        if isinstance(x, StokesIPyTree):
+    def mv(self, x: StokesPyTreeType) -> Stokes:
+        if isinstance(x, StokesI):
             return x
-        if isinstance(x, StokesQUPyTree):
-            return StokesQUPyTree(x.q, -x.u)
-        if isinstance(x, StokesIQUPyTree):
-            return StokesIQUPyTree(x.i, x.q, -x.u)
-        if isinstance(x, StokesIQUVPyTree):
-            return StokesIQUVPyTree(x.i, x.q, -x.u, -x.v)
+        if isinstance(x, StokesQU):
+            return StokesQU(x.q, -x.u)
+        if isinstance(x, StokesIQU):
+            return StokesIQU(x.i, x.q, -x.u)
+        if isinstance(x, StokesIQUV):
+            return StokesIQUV(x.i, x.q, -x.u, -x.v)
         raise NotImplementedError
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:

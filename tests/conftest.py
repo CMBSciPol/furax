@@ -10,6 +10,11 @@ from furax.obs.stokes import StokesIQU, ValidStokesType
 from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT
 
 
+@pytest.fixture(scope='session', autouse=True)
+def enable_x64() -> None:
+    jax.config.update('jax_enable_x64', True)
+
+
 def load_planck(nside: int) -> np.array:
     PLANCK_URL = 'https://irsa.ipac.caltech.edu/data/Planck/release_3/all-sky-maps/maps/HFI_SkyMap_143_2048_R3.01_full.fits'
     map_2048 = hp.read_map(PLANCK_URL, field=['I_STOKES', 'Q_STOKES', 'U_STOKES'])

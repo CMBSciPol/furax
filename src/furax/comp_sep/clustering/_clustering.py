@@ -16,13 +16,16 @@ def call_back_check(n_regions, max_centroids):
               to be static and can no longer be a tracer
             """)
 
-@jax.jit
-def get_cutout_from_mask(ful_map, indices):
-    return jnp.take(ful_map, indices).astype(jnp.int64)
+@partial(jax.jit, static_argnums=(2))
+def get_cutout_from_mask(ful_map, indices , axis=0):
+    return jax.tree.map(lambda x: jnp.take(x, indices,axis=axis), ful_map)
 
-@jax.jit
-def from_cutout_to_fullmap(goodpix, indices, ful_map):
-    return ful_map.at[indices].set(goodpix)
+@partial(jax.jit, static_argnums=(2))
+def from_cutout_to_fullmap(labels, indices, nside):
+    npix = 12 * nside ** 2
+    ipix = jnp.arange(npix)
+    map_ids = jax.tree.map(lambda x :  jnp.full(npix, jhp.UNSEEN) , labels)
+    return jax.tree.map(lambda maps, lbl : maps.at[indices].set(lbl), map_ids, labels)
 
 
 @partial(jax.jit, static_argnums=(4 , 5))

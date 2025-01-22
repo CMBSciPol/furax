@@ -9,6 +9,16 @@ from optax import GradientTransformation
 
 import lineax as lx  # For conjugate gradient solver
 
+from jaxtyping import PyTree , ScalarLike
+
+class OptimizerState(NamedTuple):
+    """State for Newton-CG optimizer."""
+    params : PyTree
+    state : PyTree
+    updates : PyTree
+    value : ScalarLike
+    best_val : ScalarLike
+    best_params : PyTree
 
 @partial(jax.jit, static_argnums=(1, 2, 3, 5))
 def optimize(init_params, fun, opt, max_iter, tol, verbose=False, **kwargs):
@@ -17,33 +27,36 @@ def optimize(init_params, fun, opt, max_iter, tol, verbose=False, **kwargs):
 
     # Single optimization step.
     def step(carry):
-        params, state, _, _ = carry
-        value, grad = value_and_grad_fun(params, **kwargs)  # Compute value and gradient
+        value, grad = value_and_grad_fun(carry.params, **kwargs)  # Compute value and gradient
         updates, state = opt.update(
-            grad, state, params, value=value, grad=grad, value_fn=fun, **kwargs
+            grad, carry.state, carry.params, value=carry.value, grad=grad, value_fn=fun, **kwargs
         )  # Perform update
-        params = optax.apply_updates(params, updates)  # Update params
-        return (params, state, updates, value)
+        params = optax.apply_updates(carry.params, updates)  # Update params
+
+        best_params = jax.tree.map(lambda x, y: jnp.where(carry.best_val < value, x, y), carry.best_params, params)
+        best_val = jnp.where(carry.best_val < value, carry.best_val, value)
+ 
+        return carry._replace(params=params, state=state, updates=updates, value=value, best_val=best_val, best_params=best_params)
 
     # Stopping condition.
     def continuing_criterion(carry):
-        _, state, updates, value = carry
-        iter_num = otu.tree_get(state, 'count')  # Get iteration count from optimizer state
+        iter_num = otu.tree_get(carry.state, 'count')  # Get iteration count from optimizer state
         iter_num = 0 if iter_num is None else iter_num
-        update_norm = otu.tree_l2_norm(updates)  # Compute update norm
+        update_norm = otu.tree_l2_norm(carry.updates)  # Compute update norm
         if verbose:
             jax.debug.print(
-                'update norm {a} at iter {b} value {c}', a=update_norm, b=iter_num, c=value
+                'update norm {a} at iter {b} value {c}', a=update_norm, b=iter_num, c=carry.value
             )
         return (iter_num == 0) | ((iter_num < max_iter) & (update_norm >= tol))
 
     # Initialize optimizer state.
-    init_carry = (init_params, opt.init(init_params), init_params, jnp.inf)
+    init_state = OptimizerState(init_params , opt.init(init_params) ,
+                                init_params , jnp.inf , jnp.inf , init_params)
 
     # Run the while loop.
-    final_params, final_state, _, _ = jax.lax.while_loop(continuing_criterion, step, init_carry)
+    final_opt_state = jax.lax.while_loop(continuing_criterion, step, init_state)
 
-    return final_params, final_state
+    return final_opt_state.best_params , final_opt_state
 
 
 def _get_size_of_params(params):

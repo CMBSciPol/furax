@@ -20,8 +20,13 @@ class OptimizerState(NamedTuple):
     best_val : ScalarLike
     best_params : PyTree
 
-@partial(jax.jit, static_argnums=(1, 2, 3, 5))
-def optimize(init_params, fun, opt, max_iter, tol, verbose=False, **kwargs):
+def _debug_callback(update_norm , iter_num , value , max_iters , log_interval):
+    if iter_num == 0 or iter_num % int(max_iters * log_interval) == 0 :
+        print(f"update norm {update_norm} at iter {iter_num} value {value}")
+
+
+@partial(jax.jit, static_argnums=(1, 2, 3, 5 , 6))
+def optimize(init_params, fun, opt, max_iter, tol, verbose=False,log_interval=0.1, **kwargs):
     # Define a function that computes both value and gradient of the objective.
     value_and_grad_fun = jax.value_and_grad(fun)
 
@@ -33,9 +38,8 @@ def optimize(init_params, fun, opt, max_iter, tol, verbose=False, **kwargs):
         )  # Perform update
         params = optax.apply_updates(carry.params, updates)  # Update params
 
-        best_params = jax.tree.map(lambda x, y: jnp.where(carry.best_val < value, x, y), carry.best_params, params)
+        best_params = jax.tree.map(lambda x, y: jnp.where(carry.best_val < value, x, y), carry.best_params, carry.params)
         best_val = jnp.where(carry.best_val < value, carry.best_val, value)
- 
         return carry._replace(params=params, state=state, updates=updates, value=value, best_val=best_val, best_params=best_params)
 
     # Stopping condition.
@@ -44,9 +48,7 @@ def optimize(init_params, fun, opt, max_iter, tol, verbose=False, **kwargs):
         iter_num = 0 if iter_num is None else iter_num
         update_norm = otu.tree_l2_norm(carry.updates)  # Compute update norm
         if verbose:
-            jax.debug.print(
-                'update norm {a} at iter {b} value {c}', a=update_norm, b=iter_num, c=carry.value
-            )
+            jax.debug.callback(_debug_callback, update_norm , iter_num , carry.value , max_iter , log_interval)
         return (iter_num == 0) | ((iter_num < max_iter) & (update_norm >= tol))
 
     # Initialize optimizer state.
@@ -55,6 +57,11 @@ def optimize(init_params, fun, opt, max_iter, tol, verbose=False, **kwargs):
 
     # Run the while loop.
     final_opt_state = jax.lax.while_loop(continuing_criterion, step, init_state)
+
+    # was last evaluation better than the best
+    best_params = jax.tree.map(lambda x, y: jnp.where(final_opt_state.best_val < final_opt_state.value, x, y), final_opt_state.best_params, final_opt_state.params)
+    best_value = jnp.where(final_opt_state.best_val < final_opt_state.value, final_opt_state.best_val, final_opt_state.value)
+    final_opt_state = final_opt_state._replace(best_params=best_params, best_val=best_value)
 
     return final_opt_state.best_params , final_opt_state
 

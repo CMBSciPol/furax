@@ -23,11 +23,13 @@ from furax.tree import (
     zeros_like,
 )
 
+__all__ = ['Stokes', 'StokesI', 'StokesQU', 'StokesIQU', 'StokesIQUV', 'ValidStokesType']
+
 ValidStokesType = Literal['I', 'QU', 'IQU', 'IQUV']
 
 
 @jdc.pytree_dataclass
-class StokesPyTree(ABC):
+class Stokes(ABC):
     stokes: ClassVar[ValidStokesType]
 
     @property
@@ -123,19 +125,19 @@ class StokesPyTree(ABC):
 
     @classmethod
     @overload
-    def class_for(cls, stokes: Literal['I']) -> type['StokesIPyTree']: ...
+    def class_for(cls, stokes: Literal['I']) -> type['StokesI']: ...
 
     @classmethod
     @overload
-    def class_for(cls, stokes: Literal['QU']) -> type['StokesQUPyTree']: ...
+    def class_for(cls, stokes: Literal['QU']) -> type['StokesQU']: ...
 
     @classmethod
     @overload
-    def class_for(cls, stokes: Literal['IQU']) -> type['StokesIQUPyTree']: ...
+    def class_for(cls, stokes: Literal['IQU']) -> type['StokesIQU']: ...
 
     @classmethod
     @overload
-    def class_for(cls, stokes: Literal['IQUV']) -> type['StokesIQUVPyTree']: ...
+    def class_for(cls, stokes: Literal['IQUV']) -> type['StokesIQUV']: ...
 
     @classmethod
     def class_for(cls, stokes: str) -> type['StokesPyTreeType']:
@@ -143,10 +145,10 @@ class StokesPyTree(ABC):
         if stokes not in get_args(ValidStokesType):
             raise ValueError(f'Invalid Stokes parameters: {stokes!r}')
         requested_cls = {
-            'I': StokesIPyTree,
-            'QU': StokesQUPyTree,
-            'IQU': StokesIQUPyTree,
-            'IQUV': StokesIQUVPyTree,
+            'I': StokesI,
+            'QU': StokesQU,
+            'IQU': StokesIQU,
+            'IQUV': StokesIQUV,
         }[stokes]
         return cast(type[StokesPyTreeType], requested_cls)
 
@@ -161,35 +163,35 @@ class StokesPyTree(ABC):
 
     @classmethod
     @overload
-    def from_stokes(cls, i: ArrayLike) -> 'StokesIPyTree': ...
+    def from_stokes(cls, i: ArrayLike) -> 'StokesI': ...
 
     @classmethod
     @overload
-    def from_stokes(cls, i: jax.ShapeDtypeStruct) -> 'StokesIPyTree': ...
+    def from_stokes(cls, i: jax.ShapeDtypeStruct) -> 'StokesI': ...
 
     @classmethod
     @overload
-    def from_stokes(cls, q: ArrayLike, u: ArrayLike) -> 'StokesQUPyTree': ...
+    def from_stokes(cls, q: ArrayLike, u: ArrayLike) -> 'StokesQU': ...
 
     @classmethod
     @overload
-    def from_stokes(cls, q: jax.ShapeDtypeStruct, u: jax.ShapeDtypeStruct) -> 'StokesQUPyTree': ...
+    def from_stokes(cls, q: jax.ShapeDtypeStruct, u: jax.ShapeDtypeStruct) -> 'StokesQU': ...
 
     @classmethod
     @overload
-    def from_stokes(cls, i: ArrayLike, q: ArrayLike, u: ArrayLike) -> 'StokesIQUPyTree': ...
+    def from_stokes(cls, i: ArrayLike, q: ArrayLike, u: ArrayLike) -> 'StokesIQU': ...
 
     @classmethod
     @overload
     def from_stokes(
         cls, i: jax.ShapeDtypeStruct, q: jax.ShapeDtypeStruct, u: jax.ShapeDtypeStruct
-    ) -> 'StokesIQUPyTree': ...
+    ) -> 'StokesIQU': ...
 
     @classmethod
     @overload
     def from_stokes(
         cls, i: ArrayLike, q: ArrayLike, u: ArrayLike, v: ArrayLike
-    ) -> 'StokesIQUVPyTree': ...
+    ) -> 'StokesIQUV': ...
 
     @classmethod
     @overload
@@ -199,21 +201,21 @@ class StokesPyTree(ABC):
         q: jax.ShapeDtypeStruct,
         u: jax.ShapeDtypeStruct,
         v: jax.ShapeDtypeStruct,
-    ) -> 'StokesIQUVPyTree': ...
+    ) -> 'StokesIQUV': ...
 
     @classmethod
     def from_stokes(
         cls,
         *args: Any,
         **keywords: Any,
-    ) -> 'StokesPyTree':
+    ) -> 'Stokes':
         """Returns a StokesPyTree according to the specified Stokes vectors.
 
         Examples:
-            >>> tod_i = StokesPyTree.from_stokes(i)
-            >>> tod_qu = StokesPyTree.from_stokes(q, u)
-            >>> tod_iqu = StokesPyTree.from_stokes(i, q, u)
-            >>> tod_iquv = StokesPyTree.from_stokes(i, q, u, v)
+            >>> tod_i = Stokes.from_stokes(i)
+            >>> tod_qu = Stokes.from_stokes(q, u)
+            >>> tod_iqu = Stokes.from_stokes(i, q, u)
+            >>> tod_iquv = Stokes.from_stokes(i, q, u, v)
         """
         if args and keywords:
             raise TypeError(
@@ -230,13 +232,13 @@ class StokesPyTree(ABC):
 
         args = as_promoted_dtype(args)
         if len(args) == 1:
-            return StokesIPyTree(*args)
+            return StokesI(*args)
         if len(args) == 2:
-            return StokesQUPyTree(*args)
+            return StokesQU(*args)
         if len(args) == 3:
-            return StokesIQUPyTree(*args)
+            return StokesIQU(*args)
         if len(args) == 4:
-            return StokesIQUVPyTree(*args)
+            return StokesIQUV(*args)
         raise TypeError(f'Unexpected number of Stokes parameters: {len(args)}.')
 
     @classmethod
@@ -279,7 +281,7 @@ class StokesPyTree(ABC):
 
 
 @jdc.pytree_dataclass
-class StokesIPyTree(StokesPyTree):
+class StokesI(Stokes):
     stokes: ClassVar[ValidStokesType] = 'I'
     i: Array
 
@@ -295,7 +297,7 @@ class StokesIPyTree(StokesPyTree):
 
 
 @jdc.pytree_dataclass
-class StokesQUPyTree(StokesPyTree):
+class StokesQU(Stokes):
     stokes: ClassVar[ValidStokesType] = 'QU'
     q: Array
     u: Array
@@ -313,7 +315,7 @@ class StokesQUPyTree(StokesPyTree):
 
 
 @jdc.pytree_dataclass
-class StokesIQUPyTree(StokesPyTree):
+class StokesIQU(Stokes):
     stokes: ClassVar[ValidStokesType] = 'IQU'
     i: Array
     q: Array
@@ -332,7 +334,7 @@ class StokesIQUPyTree(StokesPyTree):
 
 
 @jdc.pytree_dataclass
-class StokesIQUVPyTree(StokesPyTree):
+class StokesIQUV(Stokes):
     stokes: ClassVar[ValidStokesType] = 'IQUV'
     i: Array
     q: Array
@@ -351,4 +353,4 @@ class StokesIQUVPyTree(StokesPyTree):
         return cls(i, q, u, v)
 
 
-StokesPyTreeType = StokesIPyTree | StokesQUPyTree | StokesIQUPyTree | StokesIQUVPyTree
+StokesPyTreeType = StokesI | StokesQU | StokesIQU | StokesIQUV

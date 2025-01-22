@@ -7,16 +7,16 @@ import pytest
 
 from furax.obs import CMBOperator, DustOperator, SynchrotronOperator
 from furax.obs.landscapes import HealpixLandscape
-from furax.obs.stokes import StokesPyTree
+from furax.obs.stokes import Stokes
 
 
 @pytest.fixture(scope='module')
-def fg_data() -> tuple[dict[str, np.ndarray], StokesPyTree, jax.ShapeDtypeStruct]:
+def fg_data() -> tuple[dict[str, np.ndarray], Stokes, jax.ShapeDtypeStruct]:
     fg_filename = Path(__file__).parent / 'data/fgbuster_data.npz'
 
     data = np.load(fg_filename)
     freq_maps = data['freq_maps']
-    d = StokesPyTree.from_stokes(I=freq_maps[:, 0, :], Q=freq_maps[:, 1, :], U=freq_maps[:, 2, :])
+    d = Stokes.from_stokes(I=freq_maps[:, 0, :], Q=freq_maps[:, 1, :], U=freq_maps[:, 2, :])
 
     nside = 32
     stokes_type = 'IQU'
@@ -31,7 +31,7 @@ def test_cmb_k_cmb(fg_data):
 
     # Calculate CMB with K_CMB unit in furax
     cmb_fgbuster = data['CMB_K_CMB'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    cmb_fgbuster_tree = StokesPyTree.from_stokes(
+    cmb_fgbuster_tree = Stokes.from_stokes(
         I=cmb_fgbuster[:, 0, :], Q=cmb_fgbuster[:, 1, :], U=cmb_fgbuster[:, 2, :]
     )
 
@@ -47,7 +47,7 @@ def test_cmb_k_rj(fg_data):
 
     # Calculate CMB with K_RJ unit in furax
     cmb_fgbuster = data['CMB_K_RJ'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    cmb_fgbuster_tree = StokesPyTree.from_stokes(
+    cmb_fgbuster_tree = Stokes.from_stokes(
         I=cmb_fgbuster[:, 0, :], Q=cmb_fgbuster[:, 1, :], U=cmb_fgbuster[:, 2, :]
     )
 
@@ -63,7 +63,7 @@ def test_dust_k_cmb(fg_data):
 
     # Calculate Dust with K_CMB unit in furax
     dust_fgbuster = data['DUST_K_CMB'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    dust_fgbuster_tree = StokesPyTree.from_stokes(
+    dust_fgbuster_tree = Stokes.from_stokes(
         I=dust_fgbuster[:, 0, :], Q=dust_fgbuster[:, 1, :], U=dust_fgbuster[:, 2, :]
     )
 
@@ -81,7 +81,7 @@ def test_dust_k_rj(fg_data):
 
     # Calculate Dust with K_RJ unit in furax
     dust_fgbuster = data['DUST_K_RJ'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    dust_fgbuster_tree = StokesPyTree.from_stokes(
+    dust_fgbuster_tree = Stokes.from_stokes(
         I=dust_fgbuster[:, 0, :], Q=dust_fgbuster[:, 1, :], U=dust_fgbuster[:, 2, :]
     )
 
@@ -99,7 +99,7 @@ def test_synchrotron_k_cmb(fg_data):
 
     # Calculate Synchrotron with K_CMB unit in furax
     synch_fgbuster = data['SYNC_K_CMB'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    synch_fgbuster_tree = StokesPyTree.from_stokes(
+    synch_fgbuster_tree = Stokes.from_stokes(
         I=synch_fgbuster[:, 0, :], Q=synch_fgbuster[:, 1, :], U=synch_fgbuster[:, 2, :]
     )
 
@@ -117,7 +117,7 @@ def test_synchrotron_k_rj(fg_data):
 
     # Calculate Synchrotron with K_RJ unit in furax
     synch_fgbuster = data['SYNC_K_RJ'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    synch_fgbuster_tree = StokesPyTree.from_stokes(
+    synch_fgbuster_tree = Stokes.from_stokes(
         I=synch_fgbuster[:, 0, :], Q=synch_fgbuster[:, 1, :], U=synch_fgbuster[:, 2, :]
     )
 

@@ -13,12 +13,12 @@ from furax.core import (
 from furax.core.rules import AbstractBinaryRule, NoReduction
 
 from ..stokes import (
-    StokesIPyTree,
-    StokesIQUPyTree,
-    StokesIQUVPyTree,
-    StokesPyTree,
+    Stokes,
+    StokesI,
+    StokesIQU,
+    StokesIQUV,
     StokesPyTreeType,
-    StokesQUPyTree,
+    StokesQU,
     ValidStokesType,
 )
 
@@ -42,11 +42,11 @@ class QURotationOperator(AbstractLinearOperator):
         *,
         angles: Float[Array, '...'],
     ) -> AbstractLinearOperator:
-        structure = StokesPyTree.class_for(stokes).structure_for(shape, dtype)
+        structure = Stokes.class_for(stokes).structure_for(shape, dtype)
         return cls(angles, structure)
 
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
-        if isinstance(x, StokesIPyTree):
+        if isinstance(x, StokesI):
             return x
 
         cos_2angles = jnp.cos(2 * self.angles)
@@ -54,12 +54,12 @@ class QURotationOperator(AbstractLinearOperator):
         q = x.q * cos_2angles - x.u * sin_2angles
         u = x.q * sin_2angles + x.u * cos_2angles
 
-        if isinstance(x, StokesQUPyTree):
-            return StokesQUPyTree(q, u)
-        if isinstance(x, StokesIQUPyTree):
-            return StokesIQUPyTree(x.i, q, u)
-        if isinstance(x, StokesIQUVPyTree):
-            return StokesIQUVPyTree(x.i, q, u, x.v)
+        if isinstance(x, StokesQU):
+            return StokesQU(q, u)
+        if isinstance(x, StokesIQU):
+            return StokesIQU(x.i, q, u)
+        if isinstance(x, StokesIQUV):
+            return StokesIQUV(x.i, q, u, x.v)
         raise NotImplementedError
 
     def transpose(self) -> AbstractLinearOperator:
@@ -73,7 +73,7 @@ class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
     operator: QURotationOperator
 
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
-        if isinstance(x, StokesIPyTree):
+        if isinstance(x, StokesI):
             return x
 
         cos_2angles = jnp.cos(2 * self.operator.angles)
@@ -81,12 +81,12 @@ class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
         q = x.q * cos_2angles + x.u * sin_2angles
         u = -x.q * sin_2angles + x.u * cos_2angles
 
-        if isinstance(x, StokesQUPyTree):
-            return StokesQUPyTree(q, u)
-        if isinstance(x, StokesIQUPyTree):
-            return StokesIQUPyTree(x.i, q, u)
-        if isinstance(x, StokesIQUVPyTree):
-            return StokesIQUVPyTree(x.i, q, u, x.v)
+        if isinstance(x, StokesQU):
+            return StokesQU(q, u)
+        if isinstance(x, StokesIQU):
+            return StokesIQU(x.i, q, u)
+        if isinstance(x, StokesIQUV):
+            return StokesIQUV(x.i, q, u, x.v)
         raise NotImplementedError
 
 

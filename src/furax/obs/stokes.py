@@ -1,24 +1,27 @@
 import operator
 from abc import ABC, abstractmethod
-from collections.abc import Callable
-from functools import partial
 from typing import Any, ClassVar, Literal, cast, get_args, overload
 
 import jax
 import jax_dataclasses as jdc
 import numpy as np
 from jax import Array
-from jax import numpy as jnp
 from jax.typing import ArrayLike
 from jaxtyping import DTypeLike, Float, Integer, Key, PyTree, ScalarLike
 from typing_extensions import Self
 
+from furax.exceptions import StructureError
 from furax.tree import (
+    add,
     as_promoted_dtype,
     dot,
     full_like,
+    mul,
     normal_like,
     ones_like,
+    power,
+    sub,
+    truediv,
     uniform_like,
     zeros_like,
 )
@@ -66,53 +69,73 @@ class Stokes(ABC):
         return result
 
     def __add__(self, other: Any) -> Self:
-        return self._operation(operator.add, other)
+        try:
+            result: Self = add(self, other)
+        except StructureError:
+            return NotImplemented
+        return result
 
     def __sub__(self, other: Any) -> Self:
-        return self._operation(operator.sub, other)
+        try:
+            result: Self = sub(self, other)
+        except StructureError:
+            return NotImplemented
+        return result
 
     def __mul__(self, other: Any) -> Self:
-        return self._operation(operator.mul, other)
+        try:
+            result: Self = mul(self, other)
+        except StructureError:
+            return NotImplemented
+        return result
 
     def __truediv__(self, other: Any) -> Self:
-        return self._operation(operator.truediv, other)
+        try:
+            result: Self = truediv(self, other)
+        except StructureError:
+            return NotImplemented
+        return result
 
     def __pow__(self, other: Any) -> Self:
-        return self._operation(operator.pow, other)
-
-    def _operation(self, operation: Callable[[Any, Any], Any], right: Any) -> Self:
-        result: Self
-        if isinstance(right, type(self)):
-            result = jax.tree.map(operation, self, right)
-        elif jnp.isscalar(right) or isinstance(right, jax.Array):
-            result = jax.tree.map(lambda leaf: operation(leaf, right), self)
-        else:
-            return NotImplemented  # type: ignore[no-any-return]
+        try:
+            result: Self = power(self, other)
+        except StructureError:
+            return NotImplemented
         return result
 
     def __radd__(self, other: Any) -> Self:
-        return self._roperation(operator.add, other)
+        try:
+            result: Self = add(self, other)
+        except StructureError:
+            return NotImplemented
+        return result
 
     def __rsub__(self, other: Any) -> Self:
-        return self._roperation(operator.sub, other)
+        try:
+            result: Self = sub(other, self)
+        except StructureError:
+            return NotImplemented
+        return result
 
     def __rmul__(self, other: Any) -> Self:
-        return self._roperation(operator.mul, other)
+        try:
+            result: Self = mul(self, other)
+        except StructureError:
+            return NotImplemented
+        return result
 
     def __rtruediv__(self, other: Any) -> Self:
-        return self._roperation(operator.truediv, other)
+        try:
+            result: Self = truediv(other, self)
+        except StructureError:
+            return NotImplemented
+        return result
 
     def __rpow__(self, other: Any) -> Self:
-        return self._roperation(operator.pow, other)
-
-    def _roperation(self, operation: Callable[[Any, Any], Any], left: Any) -> Self:
-        result: Self
-        if isinstance(left, type(self)):
-            result = jax.tree.map(operation, left, self)
-        elif jnp.isscalar(left) or isinstance(left, jax.Array):
-            result = jax.tree.map(partial(operation, left), self)
-        else:
-            return NotImplemented  # type: ignore[no-any-return]
+        try:
+            result: Self = power(other, self)
+        except StructureError:
+            return NotImplemented
         return result
 
     def ravel(self) -> Self:

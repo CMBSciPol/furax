@@ -1,46 +1,30 @@
+import operator
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 import jax
 from jax import Array
 from jax import numpy as jnp
+from jax.tree_util import PyTreeDef
 from jaxtyping import Key, Num, PyTree, ScalarLike
 
 __all__ = [
     'as_promoted_dtype',
     'as_structure',
     'full_like',
-    'is_leaf',
     'normal_like',
     'ones_like',
     'zeros_like',
+    'is_leaf',
+    'add',
+    'sub',
+    'mul',
+    'truediv',
+    'power',
+    'dot',
 ]
 
-
-def is_leaf(x: Any) -> bool:
-    """Returns true if the input is a Pytree leaf."""
-    treedef = jax.tree.structure(x)
-    return jax.tree_util.treedef_is_leaf(treedef)
-
-
-def dot(x: PyTree[Num[Array, '...']], y: PyTree[Num[Array, '...']]) -> Num[Array, '']:
-    """Scalar product of two Pytrees.
-
-    If one of the leaves is complex, the hermitian scalar product is returned.
-
-    Args:
-        x: The first Pytree.
-        y: The second Pytree.
-
-    Example:
-        >>> import furax as fx
-        >>> x = {'a': jnp.array([1., 2, 3]), 'b': jnp.array([1, 0])}
-        >>> y = {'a': jnp.array([2, -1, 1]), 'b': jnp.array([2, 0])}
-        >>> fx.tree.dot(x, y)
-        Array(5., dtype=float32)
-    """
-    xy = jax.tree.map(jnp.vdot, x, y)
-    return sum(jax.tree.leaves(xy), start=jnp.array(0))
-
+from furax.exceptions import StructureError
 
 P = TypeVar('P', bound=PyTree[Num[Array, '...']] | PyTree[jax.ShapeDtypeStruct])
 
@@ -190,3 +174,216 @@ def uniform_like(x: P, key: Key[Array, ''], low: float = 0.0, high: float = 1.0)
         lambda leaf, key: jax.random.uniform(key, leaf.shape, leaf.dtype, low, high), x, keys
     )
     return result
+
+
+def is_leaf(x: Any) -> bool:
+    """Returns true if the input is a Pytree leaf."""
+    treedef = jax.tree.structure(x)
+    return jax.tree_util.treedef_is_leaf(treedef)
+
+
+def apply(
+    operation: Callable[[Any, Any], Any], a: PyTree[Array], b: PyTree[Array]
+) -> PyTree[Array]:
+    def func_a_treedef(a_leaf, b_leaf):  # type: ignore[no-untyped-def]
+        if a_leaf is None or b_leaf is None:
+            return None
+        if is_leaf(b_leaf):
+            return operation(a_leaf, b_leaf)
+        return jax.tree.map(lambda b_inner_leaf: operation(a_leaf, b_inner_leaf), b_leaf)
+
+    def func_b_treedef(a_leaf, b_leaf):  # type: ignore[no-untyped-def]
+        if a_leaf is None or b_leaf is None:
+            return None
+        if is_leaf(a_leaf):
+            return operation(a_leaf, b_leaf)
+        return jax.tree.map(lambda a_inner_leaf: operation(a_inner_leaf, b_leaf), a_leaf)
+
+    a_leaves, treedef = jax.tree.flatten(a)
+    try:
+        b_leaves = treedef.flatten_up_to(b)  # type: ignore[attr-defined]
+        func = func_a_treedef
+    except ValueError:
+        b_leaves, treedef = jax.tree.flatten(b)
+        try:
+            a_leaves = treedef.flatten_up_to(a)  # type: ignore[attr-defined]
+        except ValueError as exc:
+            raise StructureError(str(exc))
+        func = func_b_treedef
+    return treedef.unflatten(func(*xs) for xs in zip(a_leaves, b_leaves))  # type: ignore[attr-defined]  # noqa: E501
+
+
+def add(a: PyTree[Array], b: PyTree[Array]) -> PyTree[Array]:
+    return apply(operator.add, a, b)
+
+
+def sub(a: PyTree[Array], b: PyTree[Array]) -> PyTree[Array]:
+    return apply(operator.sub, a, b)
+
+
+def mul(a: PyTree[Array], b: PyTree[Array]) -> PyTree[Array]:
+    return apply(operator.mul, a, b)
+
+
+def truediv(a: PyTree[Array], b: PyTree[Array]) -> PyTree[Array]:
+    return apply(operator.truediv, a, b)
+
+
+def power(a: PyTree[Array], b: PyTree[Array]) -> PyTree[Array]:
+    return apply(operator.pow, a, b)
+
+
+def dot(x: PyTree[Num[Array, '...']], y: PyTree[Num[Array, '...']]) -> Num[Array, '']:
+    """Scalar product of two Pytrees.
+
+    If one of the leaves is complex, the hermitian scalar product is returned.
+
+    Args:
+        x: The first Pytree.
+        y: The second Pytree.
+
+    Example:
+        >>> import furax as fx
+        >>> x = {'a': jnp.array([1., 2, 3]), 'b': jnp.array([1, 0])}
+        >>> y = {'a': jnp.array([2, -1, 1]), 'b': jnp.array([2, 0])}
+        >>> fx.tree.dot(x, y)
+        Array(5., dtype=float32)
+    """
+    xy = jax.tree.map(jnp.vdot, x, y)
+    return sum(jax.tree.leaves(xy), start=jnp.array(0))
+
+
+def matvec(
+    outer_treedef: PyTreeDef | PyTree[Any], a: PyTree[Array], x: PyTree[Array]
+) -> PyTree[Array]:
+    """Generalized matrix-vector operation, where the matrix and the vector are pytrees.
+
+    The structure of the generalized matrix is the tree product of an outer tree structure
+    representing the rows and an inner tree structure that represents the columns. A tree product
+    of two tree structures is formed by replacing each leaf of the first tree with a copy of
+    the second. The leaves of the generalized matrix must be broadcastable when they belong to
+    same inner tree (elements of the same row). There is no such requirement for leaves of different
+    inner trees (elements of different rows).
+
+    Args:
+        outer_treedef: The outer structure of the generalized matrix.
+        a: The generalized matrix, i.e. a pytree whose structure follows the tree product of
+            an outer and inner tree structures, with leaves given by the elements of the
+            generalized matrix.
+        x: The generalized vector, with a structure matching the inner tree structure of `a`.
+
+    Returns:
+        A pytree with the same structure as the generalized matrix outer tree structure.
+
+    Example:
+        To represent with pytrees the sparse tensor
+            [ a11 a12 ]
+            [ a21 a22 ] of shape (2, 2, 100) where a11, a12 and a21 are arrays of 100 elements and
+        a22 is zero:
+
+        >>> from numpy.testing import assert_array_equal
+        >>> a11, a12, a21 = jax.random.normal(jax.random.key(0), (3, 100))
+        >>> a22 = 0
+        >>> a = {
+        ...     'row1': {'col1': a11, 'col2': a12},
+        ...     'row2': {'col1': a21, 'col2': a22},
+        ... }
+        >>> x = {'col1': 1., 'col2': 2.}
+        >>> y = matvec({'row1': 0, 'row2': 0}, a, x)
+        >>> assert_array_equal(y['row1'], a11 * x['col1'] + a12 * x['col2'])
+        >>> assert_array_equal(y['row2'], a21 * x['col1'] + a22 * x['col2'])
+    """
+    if not isinstance(outer_treedef, PyTreeDef):
+        outer_treedef = jax.tree.structure(outer_treedef)
+    outer_leaves = outer_treedef.flatten_up_to(a)
+    leaves = []
+    for outer_leaf in outer_leaves:
+        leaf = sum(jax.tree.leaves(mul(outer_leaf, x)))
+        leaves.append(leaf)
+    return outer_treedef.unflatten(leaves)
+
+
+def vecmat(
+    x: PyTree[Array], outer_treedef: PyTreeDef | PyTree[Any], a: PyTree[Array]
+) -> PyTree[Array]:
+    """Generalized vector-matrix operation, where the matrix and the vector are pytrees.
+
+    The structure of the generalized matrix is the tree product of an outer tree structure
+    representing the rows and an inner tree structure that represents the columns. A tree product
+    of two tree structures is formed by replacing each leaf of the first tree with a copy of
+    the second. The leaves of the generalized matrix must be broadcastable when they belong to
+    same inner tree (elements of the same row). There is no such requirement for leaves of different
+    inner trees (elements of different rows).
+
+    Args:
+        outer_treedef: The outer structure of the generalized matrix.
+        a: The generalized matrix, i.e. a pytree whose structure follows the tree product of
+            an outer and inner tree structures, with leaves given by the elements of the
+            generalized matrix.
+        x: The generalized vector, with a structure matching the outer tree structure of `a`.
+
+    Returns:
+        A pytree with the same structure as the generalized matrix inner tree structure.
+
+    Example:
+        To represent with pytrees the sparse tensor
+            [ a11 a12 ]
+            [ a21 a22 ] of shape (2, 2, 100) where a11, a12 and a21 are arrays of 100 elements and
+        a22 is zero:
+
+        >>> from numpy.testing import assert_array_equal
+        >>> a11, a12, a21 = jax.random.normal(jax.random.key(0), (3, 100))
+        >>> a22 = 0
+        >>> a = {
+        ...     'row1': {'col1': a11, 'col2': a12},
+        ...     'row2': {'col1': a21, 'col2': a22},
+        ... }
+        >>> x = {'row1': 1., 'row2': 2.}
+        >>> y = vecmat(x, {'row1': 0, 'row2': 0}, a)
+        >>> assert_array_equal(y['col1'], a11 * x['row1'] + a21 * x['row2'])
+        >>> assert_array_equal(y['col2'], a12 * x['row1'] + a22 * x['row2'])
+    """
+    if not isinstance(outer_treedef, PyTreeDef):
+        outer_treedef = jax.tree.structure(outer_treedef)
+    inner_treedef = jax.tree.structure(outer_treedef.flatten_up_to(a)[0])
+    transposed_a = jax.tree.transpose(outer_treedef, inner_treedef, a)
+    return matvec(inner_treedef, transposed_a, x)
+
+
+def matmat(
+    a_outer_treedef: PyTreeDef | PyTree[Any],
+    a: PyTree[Array],
+    b_outer_treedef: PyTreeDef | PyTree[Any],
+    b: PyTree[Array],
+) -> PyTree[Array]:
+    """Generalized matrix-matrix operation, where the matrices are pytrees.
+
+    The structure of the generalized matrices is the tree product of an outer tree structure
+    representing the rows and an inner tree structure that represents the columns. A tree product
+    of two tree structures is formed by replacing each leaf of the first tree with a copy of
+    the second. The leaves of the generalized matrix must be broadcastable when they belong to
+    same inner tree (elements of the same row). There is no such requirement for leaves of different
+    inner trees (elements of different rows).
+
+    Args:
+        a_outer_treedef: The outer structure of the first generalized matrix.
+        a: The first generalized matrix, i.e. a pytree whose structure follows the tree product of
+            an outer and inner tree structures, with leaves given by the elements of the
+            generalized matrix.
+        b_outer_treedef: The outer structure of the second generalized matrix.
+        a: The second generalized matrix.
+
+    Returns:
+        A pytree whose structure is the tree product of the outer structure of `a` and the inner
+        structure of `b`.
+    """
+    if not isinstance(a_outer_treedef, PyTreeDef):
+        a_outer_treedef = jax.tree.structure(a_outer_treedef)
+    if not isinstance(b_outer_treedef, PyTreeDef):
+        b_outer_treedef = jax.tree.structure(b_outer_treedef)
+    a_outer_leaves = a_outer_treedef.flatten_up_to(a)
+    leaves = []
+    for a_outer_leaf in a_outer_leaves:
+        leaf = vecmat(a_outer_leaf, b_outer_treedef, b)
+        leaves.append(leaf)
+    return a_outer_treedef.unflatten(leaves)

@@ -1,3 +1,4 @@
+from . import tree
 from ._config import Config
 from .core import (
     AbstractLinearOperator,
@@ -50,4 +51,6 @@ __all__ = [
     'orthogonal',
     # config
     'Config',
+    # tree
+    'tree',
 ]

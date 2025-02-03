@@ -5,6 +5,7 @@ from typing import Any, ClassVar, Literal, cast, get_args, overload
 import jax
 import jax_dataclasses as jdc
 import numpy as np
+from equinox.internal._omega import _Metaω
 from jax import Array
 from jax.typing import ArrayLike
 from jaxtyping import DTypeLike, Float, Integer, Key, PyTree, ScalarLike
@@ -97,6 +98,8 @@ class Stokes(ABC):
         return result
 
     def __pow__(self, other: Any) -> Self:
+        if isinstance(other, _Metaω):
+            return NotImplemented
         try:
             result: Self = power(self, other)
         except StructureError:

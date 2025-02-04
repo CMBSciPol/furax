@@ -6,8 +6,9 @@ This framework provides building blocks for solving inverse problems, in particu
 
 ## Installation
 
+You should always use a virtual environment to install packages (e.g. `venv`, `conda` environment, etc.).
+
 Start by installing [`JAX`](https://jax.readthedocs.io/en/latest/installation.html) for the target architecture.
-We recommend using a virtual environment of your choice (e.g. `venv`, `conda`).
 
 Furax is available as [`furax`](https://pypi.org/project/furax/) on PyPI, and can be installed with:
 

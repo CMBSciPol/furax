@@ -39,12 +39,12 @@ class DetectorArray:
     def split_key(self, key: PRNGKeyArray) -> Shaped[PRNGKeyArray, ' _']:
         """Produces a new pseudo-random key for each detector."""
         fold = jax.numpy.vectorize(jax.random.fold_in, signature='(),()->()')
-        subkeys: Shaped[PRNGKeyArray, '...'] = fold(key, self._ids())
+        subkeys: Shaped[PRNGKeyArray, ' ...'] = fold(key, self._ids())
         return subkeys
 
     def _ids(self) -> UInt32[Array, '...']:
         # vectorized hashing + converting to int + keeping only 7 bytes
         name_to_int = np.vectorize(lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0xEFFFFFFF)
         # return detectors IDs as unsigned 32-bit integers
-        ids: UInt32[Array, '...'] = jnp.uint32(name_to_int(self.names))
+        ids: UInt32[Array, ' ...'] = jnp.uint32(name_to_int(self.names))
         return ids

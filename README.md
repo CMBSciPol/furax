@@ -4,50 +4,58 @@ Furax: a Framework for Unified and Robust data Analysis with JAX.
 
 This framework provides building blocks for solving inverse problems, in particular in the astrophysical and cosmological domains.
 
-## Installation of the stable packaged distribution
+## Installation
 
-The GitLab repository is currently private and two pieces of information need to be specified: the URL of the repository and the credentials.
+Start by installing [`JAX`](https://jax.readthedocs.io/en/latest/installation.html) for the target architecture.
+We recommend using a virtual environment of your choice (e.g. `venv`, `conda`).
 
-- Create a Personal Access Token by following these [instructions](https://gitlab.in2p3.fr/help/user/profile/personal_access_tokens).
-For the name, choose something like `read scipol` and for the scopes, select `read_api`.
+Furax is available as [`furax`](https://pypi.org/project/furax/) on PyPI, and can be installed with:
 
-- Edit the file ~/.netrc to store the credentials
-```
-machine gitlab.in2p3.fr
-login __token__
-password <your-personal-access-token>
-```
-Make sure the .netrc file are appropriately set:
-```commandline
-chmod 600 ~/.netrc
-```
-- Edit ~/.config/pip/pip.conf
-```
-[global]
-index-url = https://gitlab.in2p3.fr/api/v4/projects/26092/packages/pypi/simple
-```
-- After these steps are completed: you can install `furax` in the normal way:
-```commandline
+```bash
 pip install furax
 ```
 
-## Installation for development purposes
+### Development version
+
+Clone the repository, and navigate to the root directory of the project.
+For example:
 
 ```bash
 git clone git@github.com:CMBSciPol/furax.git
 cd furax
-python3 -m venv venv
-source venv/bin/activate
+```
+
+Then, install the package with:
+
+```bash
+pip install .
+```
+
+## Developing Furax
+
+After cloning, install in editable mode and with development dependencies:
+
+```bash
 pip install -e .[dev]
 ```
 
-Then [Install JAX](https://jax.readthedocs.io/en/latest/installation.html) according to the target architecture.
+We use [pytest](https://docs.pytest.org/en/stable/) for testing.
+You can run the tests with:
 
-### Testing
-To check that the package is correctly installed:
 ```bash
 pytest
 ```
+
+To ensure that your code passes the quality checks,
+you can use our [pre-commit](https://pre-commit.com/) configuration:
+
+1. Install the pre-commit hooks with
+
+```bash
+pre-commit install
+```
+
+2. That's it! Every commit will trigger the code quality checks.
 
 ## Running on JeanZay
 
@@ -68,6 +76,7 @@ pip install --upgrade "jax[cuda11_local]" -f https://storage.googleapis.com/jax-
 # install furax
 pip install -e .[dev]
 ```
+
 ### launch script
 
 To launch only the pytests
@@ -75,6 +84,7 @@ To launch only the pytests
 ```bash
 sbatch slurms/astro-sim-v100-testing.slurm
 ```
+
 To launch your own script
 
 ```bash
@@ -93,6 +103,7 @@ module load cuda/11.8.0  cudnn/8.9.7.29-cuda
 python my_script.py
 pytest
 ```
+
 Don't leave the bash running !! (I would suggest running script with sbatch)
 
 ### Specific for nih / SciPol project

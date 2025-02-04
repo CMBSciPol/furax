@@ -19,7 +19,7 @@ class Op(AbstractLinearOperator):
         self._in_structure = jax.ShapeDtypeStruct(in_shape, np.float32)
         self._out_structure = jax.ShapeDtypeStruct(out_shape, np.float32)
 
-    def mv(self, x):
+    def mv(self, _x):
         return None
 
     def in_structure(self):

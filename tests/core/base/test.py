@@ -33,7 +33,7 @@ def test_in_promoted_dtype(structure, expected_dtype):
         def __init__(self, in_structure):
             self._in_structure = in_structure
 
-        def mv(self, x):
+        def mv(self, _x):
             return None
 
         def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:

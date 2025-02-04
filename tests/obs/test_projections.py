@@ -41,7 +41,7 @@ def test_transpose(stokes) -> None:
 
 def test_ptp(stokes) -> None:
     class MyStokesLandscape(StokesLandscape):
-        def world2pixel(self, theta, phi):
+        def world2pixel(self, _theta, phi):
             return phi.astype(np.int32)
 
     landscape = MyStokesLandscape((4,), stokes)

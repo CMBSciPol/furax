@@ -57,7 +57,7 @@ class Landscape(ABC):
         return (), aux_data
 
     @classmethod
-    def tree_unflatten(cls, aux_data, children) -> Self:  # type: ignore[no-untyped-def]
+    def tree_unflatten(cls, aux_data, _children) -> Self:  # type: ignore[no-untyped-def]
         return cls(**aux_data)
 
 

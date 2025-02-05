@@ -1,10 +1,11 @@
+from typing import Any
+
 import equinox
 import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
 from jaxtyping import Float, Int, PyTree
-from typing import Any
 from numpy.typing import NDArray
 
 from furax import AbstractLinearOperator
@@ -29,7 +30,7 @@ class TemplateOperator(AbstractLinearOperator):
         n_params: int,
         n_dets: int,  # Number of detectors
         n_samps: int,  # Number of samples
-        dtype: jnp.dtype | str = np.dtype(float),    # type: ignore[type-arg]
+        dtype: jnp.dtype | str = np.dtype(float),  # type: ignore[type-arg]
     ) -> None:
         self.n_params = n_params
         self.n_dets = n_dets
@@ -64,7 +65,7 @@ class TemplateOperator(AbstractLinearOperator):
 
         elif name == 'scan_synchronous':
             min_poly_order: int = config.get('min_poly_order', 0)
-            max_poly_order: int = config.get('max_poly_order', 0)   # type: ignore[no-redef]
+            max_poly_order: int = config.get('max_poly_order', 0)  # type: ignore[no-redef]
             return ScanSynchronousTemplateOperator.create(
                 min_poly_order=min_poly_order,
                 max_poly_order=max_poly_order,
@@ -83,7 +84,7 @@ class TemplateOperator(AbstractLinearOperator):
             # and stored as '_cross_psd'
             assert observation_data._cross_psd is not None
             freq, csd = observation_data._cross_psd
-            freq_threshold: float = config.get('freq_threshold', 0.)
+            freq_threshold: float = config.get('freq_threshold', 0.0)
             n_modes: int = config.get('n_modes', 0)
 
             return CommonModeTemplateOperator.create(
@@ -147,7 +148,7 @@ class PolynomialTemplateOperator(TemplateOperator):
         # This has to be a static list of integers
         block_slice_indices = [ind for ind in intervals[1:, 0]]
 
-        def eval_legs_block(block_start, block_end, scan_start, scan_end) -> Float[Array, '...']: # type: ignore[no-untyped-def]
+        def eval_legs_block(block_start, block_end, scan_start, scan_end) -> Float[Array, '...']:  # type: ignore[no-untyped-def]
             # Evaluates the Legendre polynomials of given orders on a block,
             # setting all values outside the scan range to zero.
             t = times[scan_start:scan_end]

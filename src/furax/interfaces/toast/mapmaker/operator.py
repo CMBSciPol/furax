@@ -1,6 +1,6 @@
 import time
 from pathlib import Path
-from typing import TypeAlias, Any
+from typing import Any, TypeAlias
 
 import healpy as hp
 import jax

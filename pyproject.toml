@@ -53,6 +53,9 @@ toast-mapmaking = ['astropy', 'jax>=0.4.38', 'optax', 'toast>=3.0.0a27']
 homepage = 'https://scipol.in2p3.fr'
 repository = 'https://github.com/CMBSciPol/furax'
 
+[project.scripts]
+furax-mapmaker = 'furax.interfaces.toast.mapmaker.sotodlib_mapmaker:main_cli'
+
 [tool.coverage.report]
 exclude_lines = [
     'pragma: no cover',

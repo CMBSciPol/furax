@@ -78,6 +78,7 @@ fallback_version = '0.0.0'
 
 [tool.ruff]
 line-length = 100
+fix = true
 src = ["src"]
 
 [tool.ruff.lint]
@@ -85,6 +86,7 @@ select = [
     'ARG', # flake8-unused-arguments
     'E',   # pycodestyle-indentation
     'F',   # pyflakes
+    'I',   # isort
     'UP',  # pyupgrade
     'T10', # flake8-debugger
 ]

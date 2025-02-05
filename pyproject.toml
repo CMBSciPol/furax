@@ -78,7 +78,8 @@ fallback_version = '0.0.0'
 
 [tool.ruff]
 line-length = 100
-fix = true
+fix = true           # autofix issues
+force-exclude = true # useful with ruff-pre-commit plugin
 src = ["src"]
 
 [tool.ruff.lint]

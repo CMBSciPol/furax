@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 from functools import cached_property
+from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
 import toast
 from astropy import units as u
 from jaxtyping import Array, Float, Int
+from numpy.typing import NDArray
 from toast.observation import default_values as defaults
 
 from .utils import get_local_meridian_angle
@@ -23,6 +25,8 @@ class ObservationData:
     quats: str = defaults.quats
     hwp_angle: str | None = defaults.hwp_angle
     noise_model: str | None = defaults.noise_model
+
+    _cross_psd: tuple[Float[Array, ' freq'], Float[Array, 'det det freq']] | None = None
 
     @property
     def samples(self) -> int:
@@ -83,7 +87,7 @@ class ObservationData:
         psd = jnp.array([model.psd(det) for det in self.dets])
         return freq, psd
 
-    def get_scanning_intervals(self) -> Int[Array, 'a 2']:
+    def get_scanning_intervals(self) -> Int[Array, 'a 2'] | NDArray[Any]:
         """Returns scanning intervals.
         The output is a list of the starting and ending sample indices
         """

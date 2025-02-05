@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+from typing import Any
 
 import jax
 import numpy as np
@@ -16,15 +17,15 @@ logger = init_logger('preprocess')
 
 
 def main(
-    preprocess_config: str | dict | None,
-    mapmaking_config: str | dict | None,
+    preprocess_config: str | dict[str, Any] | None,
+    mapmaking_config: str | dict[str, Any] | None,
     obs_id: str | None = None,
     det_select: dict[str, str] | None = None,
     verbosity: int = 3,
     binary_filepath: str | None = None,
     obs: AxisManager | None = None,
     output_path: str | None = None,
-):
+) -> dict[str, Any]:
     """
     Mapmaking script for SO observation data.
     Args
@@ -81,7 +82,7 @@ def main(
             logger.info('Observationa data loaded')
 
     # Make maps
-    map_results = make_maps(obs, mapmaking_config, logger)
+    map_results = make_maps(obs, mapmaking_config, logger)  # type: ignore[arg-type]
     logger.info('Mapmaking finished')
 
     # Save results
@@ -110,9 +111,9 @@ def main(
 
 def make_maps(
     obs: AxisManager,
-    config: dict,
+    config: dict[str, Any],
     logger: logging.Logger,
-):
+) -> dict[str, Any]:
     demodulated = config.get('demodulated', True)
     binned = config.get('binned', True)
     has_templates = 'template' in config.keys()
@@ -132,7 +133,7 @@ def make_maps(
     raise NotImplementedError('Specified mapmaker is currently not implemented')
 
 
-def get_parser(parser=None):
+def get_parser(parser: argparse.ArgumentParser | None = None) -> argparse.ArgumentParser:
     if parser is None:
         parser = argparse.ArgumentParser()
 

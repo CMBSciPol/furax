@@ -1,4 +1,3 @@
-import time
 from pathlib import Path
 from typing import Any, TypeAlias
 
@@ -12,7 +11,6 @@ import yaml
 from jaxtyping import PyTree
 from toast.observation import default_values as defaults
 from toast.ops.operator import Operator as ToastOperator
-from toast.timing import Timer, function_timer
 from toast.traits import Bool, Float, Int, Unicode, trait_docs
 from toast.utils import Logger
 
@@ -118,18 +116,9 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
     def __del__(self) -> None:
         self.clear()
 
-    @function_timer
-    def _exec(self, data, detectors=None, **kwargs):  # type: ignore[no-untyped-def]
-        log = Logger.get()
-        timer = Timer()
-        timer.start()
-
-        def log_info(msg: str) -> None:
-            log.info_rank(
-                f'{self._logprefix} {msg} in',
-                comm=data.comm.comm_world,
-                timer=timer,
-            )
+    def _exec(self, data, detectors=None, logger=None, **kwargs):  # type: ignore[no-untyped-def]
+        if logger is None:
+            logger = Logger.get()
 
         if len(data.obs) == 0:
             raise RuntimeError('Every supplied data object must contain at least one observation.')
@@ -160,16 +149,16 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
         # Stage data
         has_hwp = self.hwp_angle is not None
         self._stage(has_hwp)
-        log_info('Staged data')
+        logger.info('Staged data')
 
         # Build the acquisition operator
         h = self._get_acquisition(has_hwp)
         tod_structure = h.out_structure()
-        log_info('Built acquisition')
+        logger.info('Built acquisition')
 
         # Build the inverse noise covariance matrix
         invntt = self._get_invntt(tod_structure)
-        log_info('Built invntt')
+        logger.info('Built invntt')
 
         # preconditioner
         # TODO replace by block Jacobi when available
@@ -196,17 +185,16 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
         def process(tod):  # type: ignore[no-untyped-def]
             return A.reduce()(tod)
 
-        time0 = time.perf_counter()
+        logger.info('Setup complete')
         estimate = process(self._tods)
         estimate.i.block_until_ready()
-        print(f'JIT 1 .i: {time.perf_counter() - time0}')
+        logger.info('JIT 1 complete')
 
-        time0 = time.perf_counter()
         estimate = process(self._tods)
         estimate.i.block_until_ready()
-        print(f'JIT 2 .i: {time.perf_counter() - time0}')
+        logger.info('JIT 2 complete')
 
-        log_info('Mapped the data')
+        logger.info('Mapped the data')
 
         # save the result
         out_dir = Path(self.output_dir)
@@ -214,7 +202,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
         fname = out_dir / 'map.fits'
         map_estimate = np.array([estimate.i, estimate.q, estimate.u])
         hp.write_map(str(fname), map_estimate, nest=True, overwrite=True)
-        log_info('Saved outputs')
+        logger.info('Saved outputs')
 
         return
 
@@ -315,21 +303,12 @@ class TemplateMapMaker(MapMaker):
         self._cached = False
         self._logprefix = 'Furax TemplateMapMaker:'
 
-    @function_timer
-    def _exec(self, data, detectors=None, **kwargs):  # type: ignore[no-untyped-def]
+    def _exec(self, data, detectors=None, logger=None, **kwargs):  # type: ignore[no-untyped-def]
         # Currently a lot of these are duplicates of the mapmaker above
         # TODO refactor to reduce duplicates and improve readability
 
-        log = Logger.get()
-        timer = Timer()
-        timer.start()
-
-        def log_info(msg: str) -> None:
-            log.info_rank(
-                f'{self._logprefix} {msg} in',
-                comm=data.comm.comm_world,
-                timer=timer,
-            )
+        if logger is None:
+            logger = Logger.get()
 
         if len(data.obs) == 0:
             raise RuntimeError('Every supplied data object must contain at least one observation.')
@@ -360,12 +339,12 @@ class TemplateMapMaker(MapMaker):
         # Stage data
         has_hwp = self.hwp_angle is not None
         self._stage(has_hwp)
-        log_info('Staged data')
+        logger.info('Staged data')
 
         # Build the acquisition operator
         acquisition = self._get_acquisition(has_hwp)
         tod_structure = acquisition.out_structure()
-        log_info('Built acquisition')
+        logger.info('Built acquisition')
 
         # Compute cross psd data for PCA related work, if needed
         # TODO move this to a better location
@@ -381,14 +360,14 @@ class TemplateMapMaker(MapMaker):
             TemplateOperator.from_dict(name, self.template_config[name], self._data)
             for name in template_names
         ]
-        log_info('Built template operators')
+        logger.info('Built template operators')
 
         # Combine the aquisition and template operators
         h = BlockRowOperator([acquisition, self.template_operators])
 
         # Build the inverse noise covariance matrix
         invntt = self._get_invntt(tod_structure)
-        log_info('Built invntt')
+        logger.info('Built invntt')
 
         # preconditioner
         # TODO replace by block Jacobi when available
@@ -427,17 +406,16 @@ class TemplateMapMaker(MapMaker):
         def process(tod):  # type: ignore[no-untyped-def]
             return A.reduce()(tod)
 
-        time0 = time.perf_counter()
+        logger.info('Setup complete')
         estimate, t_estimates = process(self._tods)
         estimate.i.block_until_ready()
-        print(f'JIT 1 .i: {time.perf_counter() - time0}')
+        logger.info('JIT 1 complete')
 
-        time0 = time.perf_counter()
         estimate, t_estimates = process(self._tods)
         estimate.i.block_until_ready()
-        print(f'JIT 2 .i: {time.perf_counter() - time0}')
+        logger.info('JIT 2 complete')
 
-        log_info('Mapped the data')
+        logger.info('Mapped the data')
 
         # save the result
         out_dir = Path(self.output_dir)
@@ -463,7 +441,7 @@ class TemplateMapMaker(MapMaker):
         with open(str(fname), 'w') as outfile:
             yaml.dump(self.template_config, outfile, default_flow_style=False)
 
-        log_info('Saved outputs')
+        logger.info('Saved outputs')
 
         return
 

@@ -69,10 +69,13 @@ module = [
     'healpy',
     'jax_healpy',
     'lineax',
+    'matplotlib.*',
     'optax',
+    'pixell.*',
     'pysm3.*',
     'scipy.signal',
     'scipy.stats.sampling',
+    'sotodlib.*',
     'toast.*',
 ]
 ignore_missing_imports = true

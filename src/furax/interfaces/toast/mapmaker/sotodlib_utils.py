@@ -1,5 +1,6 @@
 import logging
 from math import prod
+from typing import Any
 
 import equinox
 import jax
@@ -11,12 +12,10 @@ import numpy as np
 import pixell
 from astropy.wcs import WCS
 from jax import Array, ShapeDtypeStruct
-from jaxtyping import Bool, Float, Inexact, Integer, PyTree, DTypeLike
+from jaxtyping import Bool, DTypeLike, Float, Inexact, Integer, PyTree
+from numpy.typing import NDArray
 from sotodlib import coords
 from sotodlib.core import AxisManager
-from typing import Any
-from numpy.typing import NDArray
-from furax.obs.stokes import ValidStokesType
 
 from furax import (
     AbstractLinearOperator,
@@ -31,7 +30,7 @@ from furax import (
 )
 from furax.obs import QURotationOperator
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape
-from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType
+from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
 
 from . import templates
 from .preconditioner import BJPreconditioner
@@ -190,7 +189,7 @@ def get_pointing_and_parallactic_angles(
     return pixel_inds, para_ang
 
 
-def get_noise_fits(obs: AxisManager, fmin: float) -> NDArray[np.float_]:
+def get_noise_fits(obs: AxisManager, fmin: float) -> NDArray[np.float64]:
     if 'psdT' in obs.preprocess.keys():
         f = obs.preprocess.psdT.freqs
         fit = obs.preprocess.noiseT_fit.fit  # columns: (fknee, w, alpha)
@@ -210,7 +209,7 @@ def get_noise_fits(obs: AxisManager, fmin: float) -> NDArray[np.float_]:
 
 def get_white_noise_fit(
     obs: AxisManager,
-) -> NDArray[np.float_]:
+) -> NDArray[np.float64]:
     if 'psdT' in obs.preprocess.keys():
         fit = obs.preprocess.noiseT_fit.fit  # columns: (fknee, w, alpha)
     elif 'Pxx_raw' in obs.preprocess.keys():
@@ -229,15 +228,15 @@ def get_scanning_mask(obs: AxisManager) -> NDArray[np.bool_]:
     return obs.preprocess.turnaround_flags.turnarounds.ranges[0].complement().mask()  # type: ignore[no-any-return]
 
 
-def get_timestamps(obs: AxisManager) -> NDArray[np.float_]:
+def get_timestamps(obs: AxisManager) -> NDArray[np.float64]:
     return obs.timestamps  # type: ignore[no-any-return]
 
 
-def get_azimuth(obs: AxisManager) -> NDArray[np.float_]:
+def get_azimuth(obs: AxisManager) -> NDArray[np.float64]:
     return obs.boresight.az  # type: ignore[no-any-return]
 
 
-def get_hwp_angles(obs: AxisManager) -> NDArray[np.float_]:
+def get_hwp_angles(obs: AxisManager) -> NDArray[np.float64]:
     return obs.hwp_angle  # type: ignore[no-any-return]
 
 
@@ -795,7 +794,9 @@ def two_step_mapmaker(
 
     # Noise
     white_noise = get_white_noise_fit(obs)
-    diag_invntt_op = DiagonalOperator((jnp.array(1.0 / white_noise)[:, None]), in_structure=data_struct)
+    diag_invntt_op = DiagonalOperator(
+        (jnp.array(1.0 / white_noise)[:, None]), in_structure=data_struct
+    )
     logger_info('Created inverse noise covariance operator')
 
     # System matrix

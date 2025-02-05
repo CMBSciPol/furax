@@ -56,13 +56,16 @@ skip_covered = true
 
 [[tool.mypy.overrides]]
 module = [
-    'astropy.cosmology',
+    'astropy.*',
     'healpy',
     'jax_healpy',
     'lineax',
+    'matplotlib.*',
+    'pixell.*',
     'scipy.signal',
     'scipy.stats.sampling',
     'scipy',
+    'sotodlib.*',
     'optax',
     'toast.*',
 ]

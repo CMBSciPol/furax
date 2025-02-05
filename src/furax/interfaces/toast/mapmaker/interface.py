@@ -1,14 +1,14 @@
 from dataclasses import dataclass
 from functools import cached_property
+from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
 import toast
 from astropy import units as u
 from jaxtyping import Array, Float, Int
-from typing import Any
-from toast.observation import default_values as defaults
 from numpy.typing import NDArray
+from toast.observation import default_values as defaults
 
 from .utils import get_local_meridian_angle
 

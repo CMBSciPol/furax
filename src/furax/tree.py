@@ -1,5 +1,6 @@
 import operator
 from collections.abc import Callable
+from math import prod
 from typing import Any, TypeVar
 
 import jax
@@ -22,6 +23,9 @@ __all__ = [
     'truediv',
     'power',
     'dot',
+    'matvec',
+    'vecmat',
+    'matmat',
 ]
 
 from furax.exceptions import StructureError
@@ -387,3 +391,57 @@ def matmat(
         leaf = vecmat(a_outer_leaf, b_outer_treedef, b)
         leaves.append(leaf)
     return a_outer_treedef.unflatten(leaves)
+
+
+def _get_outer_treedef(inner_treedef: PyTreeDef | PyTree[Any], tree: PyTree[Array]) -> PyTreeDef:
+    """Given a pytree whose structure is the tree product of an outer and inner structures,
+    returns the outer structure, knowing the inner structure.
+    """
+    if not isinstance(inner_treedef, PyTreeDef):
+        inner_treedef = jax.tree.structure(inner_treedef)
+
+    def is_inner(node: Any) -> bool:
+        return jax.tree.structure(node) == inner_treedef  # type: ignore[no-any-return]
+
+    outer_tree = jax.tree.map(lambda x: 0, tree, is_leaf=is_inner)
+    return jax.tree.structure(outer_tree)
+
+
+def _tree_to_dense(
+    outer_treedef: PyTreeDef | PyTree[Any],
+    inner_treedef: PyTreeDef | PyTree[Any],
+    tree: PyTree[Array],
+) -> Array:
+    """Dense representation of a pytree matrix."""
+    if not isinstance(outer_treedef, PyTreeDef):
+        outer_treedef = jax.tree.structure(outer_treedef)
+    if not isinstance(inner_treedef, PyTreeDef):
+        inner_treedef = jax.tree.structure(inner_treedef)
+    leaves = jax.tree.leaves(tree)
+    promoted_dtype = jnp.result_type(*leaves)
+    broadcast_shape = jnp.broadcast_shapes(*(jnp.shape(leaf) for leaf in leaves))
+    tree_shape = (outer_treedef.num_leaves, inner_treedef.num_leaves)
+    dense = jnp.empty(broadcast_shape + (prod(tree_shape),), dtype=promoted_dtype)
+    for i, leaf in enumerate(leaves):
+        dense = dense.at[..., i].set(leaf)
+    dense_shape = broadcast_shape + tree_shape
+    return dense.reshape(dense_shape)
+
+
+def _dense_to_tree(
+    outer_treedef: PyTreeDef | PyTree[Any], inner_treedef: PyTreeDef | PyTree[Any], dense: Array
+) -> PyTree[Array]:
+    """Pytree representation of a dense tensor."""
+    if not isinstance(outer_treedef, PyTreeDef):
+        outer_treedef = jax.tree.structure(outer_treedef)
+    if not isinstance(inner_treedef, PyTreeDef):
+        inner_treedef = jax.tree.structure(inner_treedef)
+    outer_num_leaves = outer_treedef.num_leaves
+    inner_num_leaves = inner_treedef.num_leaves
+    return jax.tree.unflatten(
+        outer_treedef,
+        [
+            jax.tree.unflatten(inner_treedef, [dense[..., i, j] for j in range(inner_num_leaves)])
+            for i in range(outer_num_leaves)
+        ],
+    )

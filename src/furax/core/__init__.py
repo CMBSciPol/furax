@@ -23,6 +23,7 @@ from ._dense import DenseBlockDiagonalOperator
 from ._diagonal import BroadcastDiagonalOperator, DiagonalOperator
 from ._indices import IndexOperator
 from ._toeplitz import SymmetricBandToeplitzOperator, dense_symmetric_band_toeplitz
+from ._trees import TreeOperator
 
 __all__ = [
     'AbstractLinearOperator',
@@ -53,5 +54,6 @@ __all__ = [
     'DiagonalOperator',
     'IndexOperator',
     'SymmetricBandToeplitzOperator',
+    'TreeOperator',
     'dense_symmetric_band_toeplitz',
 ]

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import toast
@@ -13,6 +14,7 @@ from toast.observation import default_values as defaults
 from .utils import get_local_meridian_angle
 
 
+@jax.tree_util.register_dataclass
 @dataclass
 class ObservationData:
     observation: toast.Observation

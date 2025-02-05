@@ -158,5 +158,9 @@ def get_parser(parser: argparse.ArgumentParser | None = None) -> argparse.Argume
     return parser
 
 
-if __name__ == '__main__':
+def main_cli() -> None:
     main_launcher(main, get_parser)
+
+
+if __name__ == '__main__':
+    main_cli()

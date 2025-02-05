@@ -11,9 +11,12 @@ import numpy as np
 import pixell
 from astropy.wcs import WCS
 from jax import Array, ShapeDtypeStruct
-from jaxtyping import Bool, Float, Inexact, Integer, PyTree
+from jaxtyping import Bool, Float, Inexact, Integer, PyTree, DTypeLike
 from sotodlib import coords
 from sotodlib.core import AxisManager
+from typing import Any
+from numpy.typing import NDArray
+from furax.obs.stokes import ValidStokesType
 
 from furax import (
     AbstractLinearOperator,
@@ -42,7 +45,13 @@ class WCSLandscape(StokesLandscape):
     Not fully implemented yet, potentially should be added to FURAX
     """
 
-    def __init__(self, shape: tuple, wcs: WCS, stokes: str = 'IQU', dtype=np.float32) -> None:
+    def __init__(
+        self,
+        shape: tuple[int, ...],
+        wcs: WCS,
+        stokes: ValidStokesType,
+        dtype: DTypeLike = np.float32,
+    ) -> None:
         super().__init__(shape, stokes, dtype)
         self.wcs = wcs
 
@@ -55,7 +64,9 @@ class WCSLandscape(StokesLandscape):
         }  # static values
         return (), aux_data
 
-    def world2pixel(self, theta, phi) -> None:
+    def world2pixel(
+        self, theta: Float[Array, '...'], phi: Float[Array, '...']
+    ) -> tuple[Float[Array, '...'], ...]:
         raise NotImplementedError()
 
 
@@ -64,13 +75,13 @@ class StokesIndexOperator(AbstractLinearOperator):
     The indices are assumed to be identical for I, Q and U
     """
 
-    indices: tuple[Integer[Array, '...']]
+    indices: Integer[Array, '...'] | tuple[Integer[Array, '...'] | NDArray[Any], ...]
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     _out_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(
         self,
-        indices: tuple[Integer[Array, '...']] | Integer[Array, '...'],
+        indices: Integer[Array, '...'] | tuple[Integer[Array, '...'] | NDArray[Any], ...],
         in_structure: PyTree[jax.ShapeDtypeStruct],
         out_structure: PyTree[jax.ShapeDtypeStruct] | None = None,
     ) -> None:
@@ -102,14 +113,14 @@ class IQUModulationOperator(AbstractLinearOperator):
         self,
         shape: tuple[int, ...],
         hwp_angle: Float[Array, '...'],
-        dtype=jnp.float32,
-    ) -> AbstractLinearOperator:
+        dtype: DTypeLike = jnp.float32,
+    ) -> None:
         self._in_structure = Stokes.class_for('IQU').structure_for(shape, dtype)
-        self.cos_hwp_angle = np.cos(4 * hwp_angle.astype(dtype))
-        self.sin_hwp_angle = np.sin(4 * hwp_angle.astype(dtype))
+        self.cos_hwp_angle = jnp.cos(4 * hwp_angle.astype(dtype))
+        self.sin_hwp_angle = jnp.sin(4 * hwp_angle.astype(dtype))
 
-    def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
-        return x.i + self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u
+    def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:
+        return x.i + self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u  # type: ignore[union-attr]
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
@@ -119,7 +130,10 @@ class IQUModulationOperator(AbstractLinearOperator):
 
 
 def get_landscape(
-    obs: AxisManager, dtype=np.float32, stokes: str = 'IQU', landscape_configs: dict = {}
+    obs: AxisManager,
+    dtype: DTypeLike = np.float32,
+    stokes: ValidStokesType = 'IQU',
+    landscape_configs: dict[str, Any] = {},
 ) -> WCSLandscape | HealpixLandscape:
     """Create and return a WCSLandscape instance from the observation"""
     landscape_type = landscape_configs.get('type', 'WCS')
@@ -176,7 +190,7 @@ def get_pointing_and_parallactic_angles(
     return pixel_inds, para_ang
 
 
-def get_noise_fits(obs: AxisManager, fmin: float) -> Float[Array, 'dets freqs']:
+def get_noise_fits(obs: AxisManager, fmin: float) -> NDArray[np.float_]:
     if 'psdT' in obs.preprocess.keys():
         f = obs.preprocess.psdT.freqs
         fit = obs.preprocess.noiseT_fit.fit  # columns: (fknee, w, alpha)
@@ -187,44 +201,44 @@ def get_noise_fits(obs: AxisManager, fmin: float) -> Float[Array, 'dets freqs']:
         # Estimate psd
         raise NotImplementedError('Self-psd evaluation not implemented')
     imin = np.argmin(np.abs(f - fmin))
-    noiseT_fit_eval = np.zeros((fit.shape[0], f.size), dtype=float)
+    noiseT_fit_eval = np.zeros((fit.shape[0], f.size), dtype=float)  # (dets, freqs)
     noiseT_fit_eval[:, imin:] = fit[:, [1]] * (1 + (fit[:, [0]] / f[None, imin:]) ** fit[:, [2]])
     noiseT_fit_eval[:, :imin] = noiseT_fit_eval[:, [imin]]
 
-    return noiseT_fit_eval
+    return np.array(noiseT_fit_eval)
 
 
 def get_white_noise_fit(
     obs: AxisManager,
-) -> Float[Array, ' dets']:
+) -> NDArray[np.float_]:
     if 'psdT' in obs.preprocess.keys():
         fit = obs.preprocess.noiseT_fit.fit  # columns: (fknee, w, alpha)
     elif 'Pxx_raw' in obs.preprocess.keys():
         fit = obs.preprocess.noise_signal_fit.fit  # columns: (fknee, w, alpha)
-    return fit[:, 1]
+    return fit[:, 1]  # type: ignore[no-any-return]
 
 
-def get_scanning_intervals(obs: AxisManager) -> Integer[Array, 'scans 2']:
+def get_scanning_intervals(obs: AxisManager) -> NDArray[np.int_]:
     # Assumes that the detectors have identical scanning intervals,
     # and that the scanning intervals are the complement of turnaround intervals
-    return obs.preprocess.turnaround_flags.turnarounds.ranges[0].complement().ranges()
+    return obs.preprocess.turnaround_flags.turnarounds.ranges[0].complement().ranges()  # type: ignore[no-any-return]
 
 
-def get_scanning_mask(obs: AxisManager) -> Bool[Array, ' samps']:
+def get_scanning_mask(obs: AxisManager) -> NDArray[np.bool_]:
     # Assumes that the detectors have identical scanning intervals,
-    return obs.preprocess.turnaround_flags.turnarounds.ranges[0].complement().mask()
+    return obs.preprocess.turnaround_flags.turnarounds.ranges[0].complement().mask()  # type: ignore[no-any-return]
 
 
-def get_timestamps(obs: AxisManager) -> Float[Array, ' samps']:
-    return obs.timestamps
+def get_timestamps(obs: AxisManager) -> NDArray[np.float_]:
+    return obs.timestamps  # type: ignore[no-any-return]
 
 
-def get_azimuth(obs: AxisManager) -> Float[Array, ' samps']:
-    return obs.boresight.az
+def get_azimuth(obs: AxisManager) -> NDArray[np.float_]:
+    return obs.boresight.az  # type: ignore[no-any-return]
 
 
-def get_hwp_angles(obs: AxisManager) -> Float[Array, ' samps']:
-    return obs.hwp_angle
+def get_hwp_angles(obs: AxisManager) -> NDArray[np.float_]:
+    return obs.hwp_angle  # type: ignore[no-any-return]
 
 
 def get_invntt(
@@ -238,7 +252,7 @@ def get_invntt(
         # Normalise to 1 at x=0
         invntt = invntt / invntt[:, [0]]
 
-    return invntt
+    return invntt  # type: ignore[no-any-return]
 
 
 def select_pixel_indices(
@@ -255,9 +269,9 @@ def select_pixel_indices(
 def ndmap_from_wcs_landscape(map: StokesPyTreeType, landscape: WCSLandscape) -> pixell.enmap.ndmap:
     """Convert a given Stokes pytree to pixell's ndmap"""
     if landscape.stokes == 'I':
-        return pixell.enmap.ndmap(map.i, landscape.wcs)
+        return pixell.enmap.ndmap(map.i, landscape.wcs)  # type: ignore[union-attr]
     if landscape.stokes == 'IQU':
-        return pixell.enmap.ndmap([map.i, map.q, map.u], landscape.wcs)
+        return pixell.enmap.ndmap([map.i, map.q, map.u], landscape.wcs)  # type: ignore[union-attr]
     else:
         raise NotImplementedError(f'Stokes {landscape.stokes} not supported')
 
@@ -301,9 +315,7 @@ def get_pointing_operators(
 
 
 def get_acquisition(
-    obs: AxisManager,
-    demodulated: bool,
-    landscape,
+    obs: AxisManager, demodulated: bool, landscape: WCSLandscape | HealpixLandscape
 ) -> AbstractLinearOperator:
     indexer, rotator = get_pointing_operators(obs, landscape)
     if demodulated:
@@ -330,36 +342,37 @@ def get_scanning_masker(
     return masker
 
 
-def get_template_operator(obs: AxisManager, name: str, configs: dict) -> templates.TemplateOperator:
+def get_template_operator(
+    obs: AxisManager, name: str, configs: dict[str, Any]
+) -> templates.TemplateOperator:
     """Create and return a template operator corresponding to the
     name and configuration provided.
     """
     n_dets = obs.dets.count
-    n_samps = obs.samps.count
 
     if name == 'polynomial':
-        max_poly_order: int = configs.get('max_poly_order')
+        max_poly_order: int = configs.get('max_poly_order', 0)
         return templates.PolynomialTemplateOperator.create(
             max_poly_order=max_poly_order,
             intervals=get_scanning_intervals(obs),
-            times=get_timestamps(obs),
+            times=jnp.array(get_timestamps(obs)),
             n_dets=n_dets,
         )
 
     if name == 'scan_synchronous':
-        min_poly_order: int = configs.get('min_poly_order')
-        max_poly_order: int = configs.get('max_poly_order')
+        min_poly_order: int = configs.get('min_poly_order', 0)
+        max_poly_order: int = configs.get('max_poly_order', 0)  # type: ignore[no-redef]
         return templates.ScanSynchronousTemplateOperator.create(
             min_poly_order=min_poly_order,
             max_poly_order=max_poly_order,
-            azimuth=get_azimuth(obs),
+            azimuth=jnp.array(get_azimuth(obs)),
             n_dets=n_dets,
         )
 
     if name == 'hwp_synchronous':
-        n_harmonics: int = configs.get('n_harmonics')
+        n_harmonics: int = configs.get('n_harmonics', 0)
         return templates.HWPSynchronousTemplateOperator.create(
-            n_harmonics=n_harmonics, hwp_angles=get_hwp_angles(obs), n_dets=n_dets
+            n_harmonics=n_harmonics, hwp_angles=jnp.array(get_hwp_angles(obs)), n_dets=n_dets
         )
 
     """
@@ -382,7 +395,9 @@ def get_template_operator(obs: AxisManager, name: str, configs: dict) -> templat
     raise NotImplementedError(f'Template {name} is not implemented')
 
 
-def template_operator_from_dict(obs: AxisManager, template_configs: dict) -> BlockRowOperator:
+def template_operator_from_dict(
+    obs: AxisManager, template_configs: dict[str, Any]
+) -> BlockRowOperator:
     return BlockRowOperator(
         [
             get_template_operator(obs, name, template_configs[name])
@@ -447,10 +462,14 @@ def plot_ndmap(
 """ Mapmaking functions """
 
 
-def binned_demod_mapmaker(obs: AxisManager, configs: dict | None, logger: logging.Logger) -> dict:
+def binned_demod_mapmaker(
+    obs: AxisManager, configs: dict[str, Any] | None, logger: logging.Logger
+) -> dict[str, Any]:
     logger_info = lambda msg: logger.info(f'Binned Demod Mapmaker: {msg}') if logger else None
 
     # Set mapmaking config variables
+    if configs is None:
+        configs = dict()
     dtype = jnp.dtype(configs.get('dtype', 'float32'))
     landscape_configs = configs.get('landscape', {})
     scanning_mask = configs.get('scanning_mask', False)
@@ -526,11 +545,13 @@ def binned_demod_mapmaker(obs: AxisManager, configs: dict | None, logger: loggin
 
 
 def binned_mapmaker(
-    obs: AxisManager, configs: dict | None, logger: logging.Logger | None = None
-) -> dict:
+    obs: AxisManager, configs: dict[str, Any] | None, logger: logging.Logger | None = None
+) -> dict[str, Any]:
     logger_info = lambda msg: logger.info(f'Binned Mapmaker: {msg}') if logger else None
 
     # Set mapmaking config variables
+    if configs is None:
+        configs = dict()
     dtype = jnp.dtype(configs.get('dtype', 'float32'))
     landscape_configs = configs.get('landscape', {})
     scanning_mask = configs.get('scanning_mask', False)
@@ -570,7 +591,7 @@ def binned_mapmaker(
     mapmaking_operator = system.inverse() @ binner
 
     @jax.jit
-    def process(d):
+    def process(d):  # type: ignore[no-untyped-def]
         return mapmaking_operator.reduce()(d)
 
     logger_info('Set up mapmaking operator')
@@ -602,11 +623,13 @@ def binned_mapmaker(
 
 
 def ml_mapmaker(
-    obs: AxisManager, configs: dict | None, logger: logging.Logger | None = None
-) -> dict:
+    obs: AxisManager, configs: dict[str, Any] | None, logger: logging.Logger | None = None
+) -> dict[str, Any]:
     logger_info = lambda msg: logger.info(f'ML Mapmaker: {msg}') if logger else None
 
     # Set mapmaking config variables
+    if configs is None:
+        configs = dict()
     dtype = jnp.dtype(configs.get('dtype', 'float64'))
     correlation_length = configs.get('correlation_length', 1000)
     psd_fmin = configs.get('psd_fmin', 1e-2)
@@ -620,7 +643,7 @@ def ml_mapmaker(
     max_steps = solver.get('max_steps', 1000)
     has_templates = 'template' in configs.keys()
     if has_templates:
-        template_configs = configs.get('template')
+        template_configs = configs.get('template', {})
         template_names = list(template_configs.keys())
 
     # Data and landscape
@@ -698,7 +721,7 @@ def ml_mapmaker(
         mapmaking_operator = (h.T @ mp @ invntt_op @ mp @ h).I @ h.T @ mp @ invntt_op @ mp
 
     @jax.jit
-    def process(d):
+    def process(d):  # type: ignore[no-untyped-def]
         return mapmaking_operator.reduce()(d)
 
     logger_info('Completed setting up the solver')
@@ -733,11 +756,13 @@ def ml_mapmaker(
 
 
 def two_step_mapmaker(
-    obs: AxisManager, configs: dict | None, logger: logging.Logger | None = None
-) -> dict:
+    obs: AxisManager, configs: dict[str, Any] | None, logger: logging.Logger | None = None
+) -> dict[str, Any]:
     logger_info = lambda msg: logger.info(f'Two-Step Mapmaker: {msg}') if logger else None
 
     # Set mapmaking config variables
+    if configs is None:
+        configs = dict()
     dtype = jnp.dtype(configs.get('dtype', 'float64'))
     landscape_configs = configs.get('landscape', {})
     scanning_mask = configs.get('scanning_mask', False)
@@ -747,7 +772,7 @@ def two_step_mapmaker(
     rtol = solver.get('rtol', 1e-6)
     atol = solver.get('atol', 0)
     max_steps = solver.get('max_steps', 1000)
-    template_configs = configs.get('template')
+    template_configs = configs.get('template', {})
     template_names = list(template_configs.keys())
 
     # Data and landscape
@@ -770,7 +795,7 @@ def two_step_mapmaker(
 
     # Noise
     white_noise = get_white_noise_fit(obs)
-    diag_invntt_op = DiagonalOperator((1.0 / white_noise)[:, None], in_structure=data_struct)
+    diag_invntt_op = DiagonalOperator((jnp.array(1.0 / white_noise)[:, None]), in_structure=data_struct)
     logger_info('Created inverse noise covariance operator')
 
     # System matrix
@@ -816,7 +841,7 @@ def two_step_mapmaker(
     map_estimator = system_inv @ A.T @ mp @ M @ mp
 
     @jax.jit
-    def process(d):
+    def process(d):  # type: ignore[no-untyped-def]
         x = template_estimator(d)  # Template amplitude estimates
         s = map_estimator(d - template_op(x))  # Map estimates
         return s, x

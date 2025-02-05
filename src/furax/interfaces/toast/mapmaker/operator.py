@@ -1,6 +1,6 @@
 import time
 from pathlib import Path
-from typing import TypeAlias
+from typing import TypeAlias, Any
 
 import healpy as hp
 import jax
@@ -290,7 +290,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
         return dict()
 
     @classmethod
-    def from_dict(cls, dict):
+    def from_dict(cls, dict: dict[str, Any]) -> ToastOperator:
         """Create and return a MapMaker instance from a dictionary.
         TODO: Add checks on attributes
         """
@@ -299,10 +299,10 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
 
 
 @trait_docs
-class TemplateMapMaker(MapMaker):  # type: ignore[misc]
+class TemplateMapMaker(MapMaker):
     """Operator for template mapmaking with the furax tools."""
 
-    template_config: dict
+    template_config: dict[str, Any]
 
     ## Template settings
     # max_poly_order = Int(4, help='Maximum order for polynomial templates')
@@ -372,7 +372,7 @@ class TemplateMapMaker(MapMaker):  # type: ignore[misc]
         if 'common_mode' in self.template_config.keys():
             nperseg = self.nperseg
             rate = self._data.sample_rate
-            if not hasattr(self._data, '_cross_psd'):
+            if self._data._cross_psd is None:
                 self._data._cross_psd = compute_cross_psd(self._tods, nperseg=nperseg, rate=rate)
 
         # Build the template operators
@@ -393,7 +393,7 @@ class TemplateMapMaker(MapMaker):  # type: ignore[misc]
         # preconditioner
         # TODO replace by block Jacobi when available
         coverage, tmpls = h.T(jnp.ones_like(tod_structure))
-        m = DiagonalOperator(
+        m = BlockDiagonalOperator(
             [
                 StokesIQU(
                     i=coverage.i,
@@ -401,7 +401,7 @@ class TemplateMapMaker(MapMaker):  # type: ignore[misc]
                     u=coverage.i,
                 ),
                 [jnp.abs(tmpl) for tmpl in tmpls],
-            ]
+            ],
         ).inverse()
 
         # initial values
@@ -478,7 +478,7 @@ class TemplateMapMaker(MapMaker):  # type: ignore[misc]
             nperseg = self.nperseg
             rate = self._data.sample_rate
 
-            if not hasattr(self._data, '_cross_psd'):
+            if self._data._cross_psd is None:
                 self._data._cross_psd = compute_cross_psd(self._tods, nperseg=nperseg, rate=rate)
             freq, csd = self._data._cross_psd
 
@@ -497,7 +497,7 @@ class TemplateMapMaker(MapMaker):  # type: ignore[misc]
         return super()._get_invntt(structure)
 
     @classmethod
-    def from_dict(cls, dict):
+    def from_dict(cls, dict: dict[str, Any]) -> ToastOperator:
         """Create and return a MapMaker instance from a dictionary.
         TODO: Add checks on attributes
         """

@@ -10,13 +10,14 @@ from astropy import units as u
 from jaxtyping import Array, Float, Int
 from numpy.typing import NDArray
 from toast.observation import default_values as defaults
+from toast.utils import get_local_meridian_angle
 
-from .utils import get_local_meridian_angle
+from ..observation import ObservationData
 
 
 @jax.tree_util.register_dataclass
 @dataclass
-class ObservationData:
+class ToastObservationData(ObservationData):
     observation: toast.Observation
     det_selection: list[str] | None = None
     det_mask: int = defaults.det_mask_nonscience
@@ -31,7 +32,7 @@ class ObservationData:
     _cross_psd: tuple[Float[Array, ' freq'], Float[Array, 'det det freq']] | None = None
 
     @property
-    def samples(self) -> int:
+    def n_samples(self) -> int:
         return self.observation.n_local_samples  # type: ignore[no-any-return]
 
     @cached_property
@@ -56,20 +57,12 @@ class ObservationData:
         # furax's LinearPolarizerOperator assumes power, TOAST assumes temperature
         return 0.5 * jnp.array(self.observation.detdata[self.det_data][self.dets, :])
 
-    def get_pixels(self) -> Array:
-        """Returns the pixel indices."""
-        return jnp.array(self.observation.detdata[self.pixels][self.dets, :])
-
-    def get_expanded_quats(self):  # type: ignore[no-untyped-def]
-        """Returns expanded pointing quaternions."""
-        return self.observation.detdata[self.quats][self.dets, :]
-
     def get_det_angles(self) -> Array:
         """Returns the detector angles on the sky."""
         func = np.vectorize(get_local_meridian_angle, signature='(n,k)->(n)')
         return jnp.array(func(self.get_expanded_quats()))
 
-    def get_offsets(self) -> Array:
+    def get_det_offset_angles(self) -> Array:
         """Returns the detector offset angles."""
         fp = self.focal_plane
         return jnp.array([fp[det]['gamma'].to_value(u.rad) for det in self.dets])
@@ -112,3 +105,11 @@ class ObservationData:
         """Returns time (sec) of the samples since the observation began"""
         timestamps = self.observation.shared['times'].data
         return jnp.array(timestamps - timestamps[0])
+
+    def get_pixels(self) -> Array:
+        """Returns the pixel indices."""
+        return jnp.array(self.observation.detdata[self.pixels][self.dets, :])
+
+    def get_expanded_quats(self):  # type: ignore[no-untyped-def]
+        """Returns expanded pointing quaternions."""
+        return self.observation.detdata[self.quats][self.dets, :]

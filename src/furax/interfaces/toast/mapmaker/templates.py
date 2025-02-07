@@ -10,7 +10,7 @@ from numpy.typing import NDArray
 
 from furax import AbstractLinearOperator
 
-from .interface import ObservationData
+from ..observation import ToastObservationData
 
 
 class TemplateOperator(AbstractLinearOperator):
@@ -47,7 +47,7 @@ class TemplateOperator(AbstractLinearOperator):
 
     @classmethod
     def from_dict(
-        cls, name: str, config: dict[str, Any], observation_data: ObservationData
+        cls, name: str, config: dict[str, Any], observation_data: ToastObservationData
     ) -> AbstractLinearOperator:
         """Create and return a template operator corresponding to the
         name and configuration provided.

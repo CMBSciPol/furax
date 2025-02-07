@@ -29,7 +29,7 @@ from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.stokes import StokesIQU
 
-from .interface import ObservationData
+from ..observation import ToastObservationData
 from .templates import TemplateOperator
 from .utils import (
     compute_cross_psd,
@@ -129,7 +129,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
             )
 
         # Initialize the internal data interface
-        self._data = ObservationData(
+        self._data = ToastObservationData(
             observation=data.obs[0],
             det_selection=detectors,
             det_mask=self.det_mask,
@@ -213,14 +213,14 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
         if not hwp:
             return
         self._hwp_angles = self._data.get_hwp_angles()
-        self._gamma = self._data.get_offsets()
+        self._gamma = self._data.get_det_offset_angles()
 
     def _get_invntt(self, structure: PyTree[jax.ShapeDtypeStruct]) -> AbstractLinearOperator:
         if self.binned:
             # we are making a binned map
             return IdentityOperator(structure)
 
-        if self.lagmax > self._data.samples:
+        if self.lagmax > self._data.n_samples:
             raise RuntimeError(
                 'Maximum correlation length should be less than the number of samples'
             )
@@ -319,7 +319,7 @@ class TemplateMapMaker(MapMaker):
             )
 
         # Initialize the internal data interface
-        self._data = ObservationData(
+        self._data = ToastObservationData(
             observation=data.obs[0],
             det_selection=detectors,
             det_mask=self.det_mask,

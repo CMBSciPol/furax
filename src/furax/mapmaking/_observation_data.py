@@ -10,7 +10,14 @@ from numpy.typing import NDArray
 
 @jax.tree_util.register_dataclass
 @dataclass
-class ObservationData:
+class GroundObservationData:
+    """Dataclass for ground-based observation data.
+
+    This class defines what data is needed for making maps with ground-based data.
+    It is meant to be used as a base class for interfacing with different containers
+    (e.g. toast's ``Observation``, sotodlib's ``AxisManager``, ...)
+    """
+
     @property
     @abstractmethod
     def n_samples(self) -> int: ...

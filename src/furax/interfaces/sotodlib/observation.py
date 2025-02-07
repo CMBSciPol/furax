@@ -1,5 +1,4 @@
 from abc import abstractmethod
-from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
 
@@ -8,14 +7,13 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float, Int
 from numpy.typing import NDArray
-from sotodlib.core import AxisManager
 
-from ..observation import ObservationData
+from furax.mapmaking import GroundObservationData
+from sotodlib.core import AxisManager
 
 
 @jax.tree_util.register_dataclass
-@dataclass
-class SotodlibObservationData(ObservationData):
+class SotodlibObservationData(GroundObservationData):
     observation: AxisManager
 
     @property

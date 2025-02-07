@@ -28,13 +28,13 @@ from furax import (
     IndexOperator,
     SymmetricBandToeplitzOperator,
 )
+from furax.mapmaking.preconditioner import BJPreconditioner
+from furax.mapmaking.utils import psd_to_invntt
 from furax.obs import QURotationOperator
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
 
 from . import templates
-from .preconditioner import BJPreconditioner
-from .utils import psd_to_invntt
 
 """ Custom FURAX classes and operators """
 

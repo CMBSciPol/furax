@@ -25,13 +25,7 @@ from furax import (
     RavelOperator,
     SymmetricBandToeplitzOperator,
 )
-from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
-from furax.obs.landscapes import HealpixLandscape
-from furax.obs.stokes import StokesIQU
-
-from ..observation import ToastObservationData
-from .templates import TemplateOperator
-from .utils import (
+from furax.mapmaking.utils import (
     compute_cross_psd,
     estimate_filtered_psd,
     estimate_psd,
@@ -39,6 +33,12 @@ from .utils import (
     next_fast_fft_size,
     psd_to_invntt,
 )
+from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
+from furax.obs.landscapes import HealpixLandscape
+from furax.obs.stokes import StokesIQU
+
+from ..observation import ToastObservationData
+from .templates import TemplateOperator
 
 ObservationKeysDict: TypeAlias = dict[str, list[str]]
 

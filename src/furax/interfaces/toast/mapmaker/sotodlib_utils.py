@@ -674,14 +674,13 @@ def ml_mapmaker(
 
     # System matrix with diagonal noise covariance and full map pixels
     diag_system = BJPreconditioner.create(
-        (acquisition.T @ mask_projector @ diag_invntt_op @ mask_projector @ acquisition).reduce()
+        acquisition.T @ mask_projector @ diag_invntt_op @ mask_projector @ acquisition
     )
     logger_info('Created diagonal system matrix')
 
     # Map pixel selection
-    valid_inds = np.argwhere(
-        select_pixel_indices(diag_system.blocks, hits_cut=hits_cut, cond_cut=cond_cut)
-    )
+    blocks = diag_system.get_blocks()
+    valid_inds = np.argwhere(select_pixel_indices(blocks, hits_cut=hits_cut, cond_cut=cond_cut))
 
     logger_info(f'Proceeding with {valid_inds.shape[0]}/{prod(landscape.shape)} pixels')
 
@@ -690,14 +689,12 @@ def ml_mapmaker(
         selector = StokesIndexOperator(
             (valid_inds[:, 0], valid_inds[:, 1]), in_structure=landscape.structure
         )
-        preconditioner = BJPreconditioner(
-            diag_system.blocks[valid_inds[:, 0], valid_inds[:, 1], :, :], selector.out_structure()
-        ).inverse()
     elif isinstance(landscape, HealpixLandscape):
         selector = StokesIndexOperator((valid_inds,), in_structure=landscape.structure)
-        preconditioner = BJPreconditioner(
-            diag_system.blocks[valid_inds, :, :], selector.out_structure()
-        ).inverse()
+    else:
+        raise NotImplementedError
+    # TODO: more efficient solution?
+    preconditioner = selector @ diag_system.inverse() @ selector.T
 
     logger_info('Created Block Jacobi preconditioner')
 
@@ -739,7 +736,6 @@ def ml_mapmaker(
         final_map = ndmap_from_wcs_landscape(result_map, landscape)
     else:
         final_map = np.array([result_map.i, result_map.q, result_map.u])
-    weights = diag_system.blocks
     if has_templates:
         projs = {
             'proj_map': (mask_projector @ acquisition)(result_map),
@@ -751,7 +747,7 @@ def ml_mapmaker(
     else:
         projs = {'proj_map': (mask_projector @ acquisition)(result_map)}
 
-    return {'map': final_map, 'weights': weights, **projs}
+    return {'map': final_map, 'weights': blocks, **projs}
 
 
 def two_step_mapmaker(
@@ -801,28 +797,25 @@ def two_step_mapmaker(
 
     # System matrix
     system = BJPreconditioner.create(
-        (acquisition.T @ mask_projector @ diag_invntt_op @ mask_projector @ acquisition).reduce()
+        acquisition.T @ mask_projector @ diag_invntt_op @ mask_projector @ acquisition
     )
     logger_info('Created system operator')
 
     # Map pixel selection
-    valid_inds = np.argwhere(
-        select_pixel_indices(system.blocks, hits_cut=hits_cut, cond_cut=cond_cut)
-    )
+    blocks = system.get_blocks()
+    valid_inds = np.argwhere(select_pixel_indices(blocks, hits_cut=hits_cut, cond_cut=cond_cut))
     logger_info(f'Proceeding with {valid_inds.shape[0]}/{prod(landscape.shape)} pixels')
 
     if isinstance(landscape, WCSLandscape):
         selector = StokesIndexOperator(
             (valid_inds[:, 0], valid_inds[:, 1]), in_structure=landscape.structure
         )
-        system_inv = BJPreconditioner(
-            system.blocks[valid_inds[:, 0], valid_inds[:, 1], :, :], selector.out_structure()
-        ).inverse()
     elif isinstance(landscape, HealpixLandscape):
         selector = StokesIndexOperator((valid_inds,), in_structure=landscape.structure)
-        system_inv = BJPreconditioner(
-            system.blocks[valid_inds, :, :], selector.out_structure()
-        ).inverse()
+    else:
+        raise NotImplementedError
+    # TODO: more efficient solution?
+    system_inv = selector @ system.inverse() @ selector.T
 
     # Templates
     template_op = template_operator_from_dict(obs, template_configs)
@@ -860,7 +853,6 @@ def two_step_mapmaker(
         final_map = ndmap_from_wcs_landscape(result_map, landscape)
     else:
         final_map = np.array([result_map.i, result_map.q, result_map.u])
-    weights = system.blocks
     projs = {
         'proj_map': (mask_projector @ acquisition)(result_map),
         **{
@@ -869,4 +861,4 @@ def two_step_mapmaker(
         },
     }
 
-    return {'map': final_map, 'weights': weights, **projs}
+    return {'map': final_map, 'weights': blocks, **projs}

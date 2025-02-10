@@ -3,8 +3,6 @@ import sys
 from abc import ABC, abstractmethod
 from functools import partial
 
-from furax.obs.stokes import Stokes, ValidStokesType
-
 if sys.version_info < (3, 11):
     from typing_extensions import Self
 else:
@@ -17,6 +15,7 @@ import numpy as np
 from jaxtyping import Array, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
 from furax.obs._samplings import Sampling
+from furax.obs.stokes import Stokes, ValidStokesType
 
 
 @jax.tree_util.register_pytree_node_class

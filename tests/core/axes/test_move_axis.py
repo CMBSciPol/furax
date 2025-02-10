@@ -38,15 +38,13 @@ def test_move_axis_pytree() -> None:
 
 
 @pytest.mark.parametrize(
-    'source, destination, expected_shape',
+    'source, destination',
     [
-        ((1,), (2,), (1, 3, 2, 4)),
-        ((1, 0), (2, 3), (3, 4, 2, 1)),
+        ((1,), (2,)),
+        ((1, 0), (2, 3)),
     ],
 )
-def test_move_axis_transpose(
-    source: tuple[int, ...], destination: tuple[int, ...], expected_shape: tuple[int, ...]
-) -> None:
+def test_move_axis_transpose(source: tuple[int, ...], destination: tuple[int, ...]) -> None:
     in_structure = jax.ShapeDtypeStruct((1, 2, 3, 4), jnp.float64)
     op = MoveAxisOperator(source, destination, in_structure=in_structure)
     assert_array_equal(op.T.as_matrix().T, op.as_matrix())

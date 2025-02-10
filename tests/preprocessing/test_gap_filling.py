@@ -122,7 +122,7 @@ def test_get_psd_non_negative(n_tt, fft_size):
 
 
 @pytest.mark.parametrize('do_jit', [False, True])
-def test_valid_samples_and_no_nans(do_jit, dummy_shape, dummy_x, dummy_gap_filling_operator):
+def test_valid_samples_and_no_nans(do_jit, dummy_x, dummy_gap_filling_operator):
     op = dummy_gap_filling_operator
     if do_jit:
         func = jax.jit(lambda k, x: op(k, x))

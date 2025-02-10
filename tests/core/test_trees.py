@@ -97,22 +97,22 @@ def test_jit1() -> None:
         op = TreeOperator([1, array, 0], in_structure=[sd, sd, sd])
         return op(x)
 
-    array_ = jax.random.normal(jax.random.key(0), 100)
-    x_ = jax.random.normal(jax.random.key(1), 100)
+    array_ = jnp.arange(100, dtype=jnp.int32)
+    x_ = jnp.arange(50, 150, dtype=jnp.int32)
 
     jitted_func = jax.jit(func)
     assert tree_equal(func(array_, x_), jitted_func(array_, x_))
 
 
 def test_jit2() -> None:
-    sd = jax.ShapeDtypeStruct((100,), jnp.float32)
+    sd = jax.ShapeDtypeStruct((100,), jnp.int32)
 
     def func(x):
         op = TreeOperator([1, array, 0], in_structure=[sd, sd, sd])
         return op(x)
 
-    array = jax.random.normal(jax.random.key(0), 100)
-    x_ = jax.random.normal(jax.random.key(1), 100)
+    array = jnp.arange(100, dtype=jnp.int32)
+    x_ = jnp.arange(50, 150, dtype=jnp.int32)
 
     jitted_func = jax.jit(func)
     assert tree_equal(func(x_), jitted_func(x_))

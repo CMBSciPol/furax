@@ -1,3 +1,4 @@
+import functools
 from abc import ABC
 from collections.abc import Callable
 from typing import Any
@@ -6,8 +7,10 @@ import jax
 import jax.numpy as jnp
 import jax.scipy.linalg as jsl
 from jax import Array
+from jax.tree_util import PyTreeDef
 from jaxtyping import Inexact, PyTree
 
+from ..tree import add
 from ._base import AbstractLinearOperator, AdditionOperator, IdentityOperator
 from .rules import AbstractBinaryRule
 
@@ -87,26 +90,13 @@ class BlockRowOperator(AbstractBlockOperator):
             )
 
     def mv(self, x: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
-        tree = self._tree_map(lambda op, leaf: (op, leaf), x)
-
-        def func(value, op_leaf):  # type: ignore[no-untyped-def]
-            # get the first block evaluation
-            if (
-                isinstance(value, tuple)
-                and len(value) > 0
-                and isinstance(value[0], AbstractLinearOperator)
-            ):
-                value = value[0](value[1])
-            op, leaf = op_leaf
-            return jax.tree.map(jnp.add, value, op(leaf))
-
-        return jax.tree.reduce(
-            func,
-            tree,
-            is_leaf=lambda op_leaf: isinstance(op_leaf, tuple)
-            and len(op_leaf) > 0
-            and isinstance(op_leaf[0], AbstractLinearOperator),
+        treedef: PyTreeDef = jax.tree.structure(
+            self.blocks, is_leaf=lambda op: isinstance(op, AbstractLinearOperator)
         )
+        output_leaves = (
+            block(leaf) for block, leaf in zip(self.block_leaves, treedef.flatten_up_to(x))
+        )
+        return functools.reduce(lambda a, b: add(a, b), output_leaves)
 
     def transpose(self) -> AbstractLinearOperator:
         return BlockColumnOperator(self._tree_map(lambda op: op.T))

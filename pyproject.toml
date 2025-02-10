@@ -68,7 +68,9 @@ skip_covered = true
 
 [[tool.mypy.overrides]]
 module = [
+    'attrs',
     'astropy.*',
+    'cattrs.*',
     'healpy',
     'jax_healpy',
     'lineax',

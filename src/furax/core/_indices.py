@@ -133,7 +133,7 @@ class IndexTransposeRule(AbstractBinaryRule):
     right_operator_class = TransposeOperator
 
     def apply(
-        self, left: AbstractLinearOperator, _right: AbstractLinearOperator
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         assert isinstance(left, IndexOperator)
         if not left.unique_indices:
@@ -148,7 +148,7 @@ class TransposeIndexRule(AbstractBinaryRule):
     right_operator_class = IndexOperator
 
     def apply(
-        self, _left: AbstractLinearOperator, right: AbstractLinearOperator
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         assert isinstance(right, IndexOperator)
         indexed_axes = right.indexed_axes

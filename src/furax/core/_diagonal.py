@@ -172,7 +172,7 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
         self,
         diagonal_shape: tuple[int, ...],
         leaf_shape: tuple[int, ...],
-        _input_shape: tuple[int, ...],
+        input_shape: tuple[int, ...],
     ) -> None:
         _ = jnp.broadcast_shapes(diagonal_shape, leaf_shape)
 

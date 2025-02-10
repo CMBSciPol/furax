@@ -223,6 +223,6 @@ class InverseBinaryRule(AbstractBinaryRule):
                 raise NoReduction
 
     def apply(
-        self, _left: AbstractLinearOperator, _right: AbstractLinearOperator
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         return []

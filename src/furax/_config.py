@@ -30,7 +30,7 @@ class ConfigState:
         return (), asdict(self)
 
     @classmethod
-    def tree_unflatten(cls, aux_data, _children):  # type: ignore[no-untyped-def]
+    def tree_unflatten(cls, aux_data, children):  # type: ignore[no-untyped-def]
         return cls(**aux_data)
 
 

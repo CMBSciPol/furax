@@ -315,9 +315,9 @@ class StokesI(Stokes):
     def from_iquv(
         cls,
         i: Float[Array, '...'],
-        _q: Float[Array, '...'],
-        _u: Float[Array, '...'],
-        _v: Float[Array, '...'],
+        q: Float[Array, '...'],
+        u: Float[Array, '...'],
+        v: Float[Array, '...'],
     ) -> Self:
         return cls(i)
 
@@ -331,10 +331,10 @@ class StokesQU(Stokes):
     @classmethod
     def from_iquv(
         cls,
-        _i: Float[Array, '...'],
+        i: Float[Array, '...'],
         q: Float[Array, '...'],
         u: Float[Array, '...'],
-        _v: Float[Array, '...'],
+        v: Float[Array, '...'],
     ) -> Self:
         q, u = as_promoted_dtype((q, u))
         return cls(q, u)
@@ -353,7 +353,7 @@ class StokesIQU(Stokes):
         i: Float[Array, '...'],
         q: Float[Array, '...'],
         u: Float[Array, '...'],
-        _v: Float[Array, '...'],
+        v: Float[Array, '...'],
     ) -> Self:
         i, q, u = as_promoted_dtype((i, q, u))
         return cls(i, q, u)

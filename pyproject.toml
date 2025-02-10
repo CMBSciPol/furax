@@ -84,12 +84,12 @@ src = ["src"]
 
 [tool.ruff.lint]
 select = [
-    'ARG', # flake8-unused-arguments
-    'E',   # pycodestyle-error
-    'F',   # pyflakes
-    'I',   # isort
-    'UP',  # pyupgrade
-    'T10', # flake8-debugger
+    'ARG001', # flake8-unused-function-arguments
+    'E',      # pycodestyle-errors
+    'F',      # pyflakes
+    'I',      # isort
+    'UP',     # pyupgrade
+    'T10',    # flake8-debugger
 ]
 ignore = [
     'E203',

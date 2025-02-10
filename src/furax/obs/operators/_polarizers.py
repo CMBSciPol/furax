@@ -58,6 +58,6 @@ class LinearPolarizerHWPRule(AbstractBinaryRule):
     right_operator_class = HWPOperator
 
     def apply(
-        self, left: AbstractLinearOperator, _right: AbstractLinearOperator
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         return [left]

@@ -35,6 +35,6 @@ class PackUnpackRule(AbstractBinaryRule):
     right_operator_class = TransposeOperator
 
     def apply(
-        self, _left: AbstractLinearOperator, _right: AbstractLinearOperator
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         return []

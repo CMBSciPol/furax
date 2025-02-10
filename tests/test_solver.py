@@ -94,8 +94,7 @@ def test_solver(planck_iqu_256, sat_nhits):
     assert solution.stats['num_steps'] < solution.stats['max_steps']
     print(f'JIT 2:  {time.time() - time0}')
 
-    with Config(solver_options=options):
-        A = (h.T @ h).I @ h.T
+    A = (h.T @ h).I(preconditioner=m) @ h.T
 
     time0 = time.time()
     reconstructed_sky = A(tod)

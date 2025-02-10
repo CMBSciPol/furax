@@ -216,17 +216,15 @@ def test_jit_block_column(
     assert equinox.tree_equal(jit_op(x), expected_y)
 
 
-def test_block_column_nested() -> None:
+def test_block_row_nested() -> None:
     structure = {
         'x': jax.ShapeDtypeStruct((2,), jnp.float16),
         'y': jax.ShapeDtypeStruct((3,), jnp.float32),
     }
-    op = BlockColumnOperator(
-        {'a': IdentityOperator(structure), 'b': HomothetyOperator(2, structure)}
-    )
-    x = fx.tree.ones_like(structure)
+    op = BlockRowOperator({'a': IdentityOperator(structure), 'b': IdentityOperator(structure)})
+    x = {'a': fx.tree.ones_like(structure), 'b': fx.tree.full_like(structure, 2)}
     y = op(x)
-    expected_y = {'a': x, 'b': fx.tree.full_like(structure, 2)}
+    expected_y = fx.tree.full_like(structure, 3)
     assert equinox.tree_equal(y, expected_y)
 
 
@@ -244,16 +242,49 @@ def test_block_diagonal_nested() -> None:
     assert equinox.tree_equal(y, expected_y)
 
 
-def test_block_row_nested() -> None:
+def test_block_column_nested() -> None:
     structure = {
         'x': jax.ShapeDtypeStruct((2,), jnp.float16),
         'y': jax.ShapeDtypeStruct((3,), jnp.float32),
     }
-    op = BlockRowOperator({'a': IdentityOperator(structure), 'b': IdentityOperator(structure)})
-    x = {'a': fx.tree.ones_like(structure), 'b': fx.tree.full_like(structure, 2)}
+    op = BlockColumnOperator(
+        {'a': IdentityOperator(structure), 'b': HomothetyOperator(2, structure)}
+    )
+    x = fx.tree.ones_like(structure)
     y = op(x)
-    expected_y = fx.tree.full_like(structure, 3)
+    expected_y = {'a': x, 'b': fx.tree.full_like(structure, 2)}
     assert equinox.tree_equal(y, expected_y)
+
+
+def test_block_row_single_leaf() -> None:
+    id = IdentityOperator(jax.ShapeDtypeStruct((2,), jnp.float32))
+    op = BlockRowOperator([id])
+    x = jnp.array([1.0, 2.0], jnp.float32)
+    y = op([x])
+    assert isinstance(y, jax.Array)
+    assert_array_equal(y, x)
+
+
+def test_block_diagonal_single_leaf() -> None:
+    id = IdentityOperator(jax.ShapeDtypeStruct((2,), jnp.float32))
+    op = BlockDiagonalOperator([id])
+    x = jnp.array([1.0, 2.0], jnp.float32)
+    y = op([x])
+    assert isinstance(y, list)
+    assert len(y) == 1
+    assert isinstance(y[0], jax.Array)
+    assert_array_equal(y[0], x)
+
+
+def test_block_column_single_leaf() -> None:
+    id = IdentityOperator(jax.ShapeDtypeStruct((2,), jnp.float32))
+    op = BlockColumnOperator([id])
+    x = jnp.array([1.0, 2.0], jnp.float32)
+    y = op(x)
+    assert isinstance(y, list)
+    assert len(y) == 1
+    assert isinstance(y[0], jax.Array)
+    assert_array_equal(y[0], x)
 
 
 def test_reduce_block_diagonal() -> None:

@@ -6,9 +6,9 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float, Int
 from numpy.typing import NDArray
+from sotodlib.core import AxisManager
 
 from furax.mapmaking import GroundObservationData
-from sotodlib.core import AxisManager
 
 
 @jax.tree_util.register_dataclass

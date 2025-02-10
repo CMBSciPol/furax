@@ -15,7 +15,6 @@ from jax import Array, ShapeDtypeStruct
 from jaxtyping import Bool, DTypeLike, Float, Inexact, Integer, PyTree
 from numpy.typing import NDArray
 from sotodlib import coords
-from sotodlib.core import AxisManager
 
 from furax import (
     AbstractLinearOperator,
@@ -28,6 +27,7 @@ from furax import (
     IndexOperator,
     SymmetricBandToeplitzOperator,
 )
+from furax.interfaces.sotodlib.observation import SotodlibObservationData
 from furax.mapmaking.preconditioner import BJPreconditioner
 from furax.mapmaking.utils import psd_to_invntt
 from furax.obs import QURotationOperator
@@ -129,7 +129,7 @@ class IQUModulationOperator(AbstractLinearOperator):
 
 
 def get_landscape(
-    obs: AxisManager,
+    obs: SotodlibObservationData,
     dtype: DTypeLike = np.float32,
     stokes: ValidStokesType = 'IQU',
     landscape_configs: dict[str, Any] = {},
@@ -145,7 +145,7 @@ def get_landscape(
         wcs_kernel_init = coords.get_wcs_kernel('car', 0, 0, res=res)
 
         # Adjust map boundaries to match the footprint of the observation
-        wcs_shape, wcs_kernel = coords.get_footprint(obs, wcs_kernel_init)
+        wcs_shape, wcs_kernel = coords.get_footprint(obs.observation, wcs_kernel_init)
 
         return WCSLandscape(wcs_shape, wcs_kernel, stokes=stokes, dtype=dtype)
 
@@ -159,16 +159,16 @@ def get_landscape(
 
 
 def get_pointing_and_parallactic_angles(
-    obs: AxisManager, landscape: WCSLandscape | HealpixLandscape
+    obs: SotodlibObservationData, landscape: WCSLandscape | HealpixLandscape
 ) -> tuple[Integer[Array, 'dets samps 2'], Float[Array, 'dets samps']]:
     """Obtain pointing information and parallactic angles from the observation"""
     # Projection Matrix class instance for the observation
     if isinstance(landscape, WCSLandscape):
         # TODO: pass 'cuts' keyword here for time slices (glitches etc)?
-        P = coords.P.for_tod(obs, wcs_kernel=landscape.wcs, comps='TQU', hwp=True)
+        P = coords.P.for_tod(obs.observation, wcs_kernel=landscape.wcs, comps='TQU', hwp=True)
     elif isinstance(landscape, HealpixLandscape):
         hp_geom = coords.healpix_utils.get_geometry(nside=landscape.nside)
-        P = coords.P.for_tod(obs, geom=hp_geom)
+        P = coords.P.for_tod(obs.observation, geom=hp_geom)
     else:
         raise NotImplementedError(f'Landscape {landscape} not supported')
 
@@ -189,63 +189,12 @@ def get_pointing_and_parallactic_angles(
     return pixel_inds, para_ang
 
 
-def get_noise_fits(obs: AxisManager, fmin: float) -> NDArray[np.float64]:
-    if 'psdT' in obs.preprocess.keys():
-        f = obs.preprocess.psdT.freqs
-        fit = obs.preprocess.noiseT_fit.fit  # columns: (fknee, w, alpha)
-    elif 'Pxx_raw' in obs.preprocess.keys():
-        f = obs.preprocess.Pxx_raw.freqs
-        fit = obs.preprocess.noise_signal_fit.fit  # columns: (fknee, w, alpha)
-    else:
-        # Estimate psd
-        raise NotImplementedError('Self-psd evaluation not implemented')
-    imin = np.argmin(np.abs(f - fmin))
-    noiseT_fit_eval = np.zeros((fit.shape[0], f.size), dtype=float)  # (dets, freqs)
-    noiseT_fit_eval[:, imin:] = fit[:, [1]] * (1 + (fit[:, [0]] / f[None, imin:]) ** fit[:, [2]])
-    noiseT_fit_eval[:, :imin] = noiseT_fit_eval[:, [imin]]
-
-    return np.array(noiseT_fit_eval)
-
-
-def get_white_noise_fit(
-    obs: AxisManager,
-) -> NDArray[np.float64]:
-    if 'psdT' in obs.preprocess.keys():
-        fit = obs.preprocess.noiseT_fit.fit  # columns: (fknee, w, alpha)
-    elif 'Pxx_raw' in obs.preprocess.keys():
-        fit = obs.preprocess.noise_signal_fit.fit  # columns: (fknee, w, alpha)
-    return fit[:, 1]  # type: ignore[no-any-return]
-
-
-def get_scanning_intervals(obs: AxisManager) -> NDArray[np.int_]:
-    # Assumes that the detectors have identical scanning intervals,
-    # and that the scanning intervals are the complement of turnaround intervals
-    return obs.preprocess.turnaround_flags.turnarounds.ranges[0].complement().ranges()  # type: ignore[no-any-return]
-
-
-def get_scanning_mask(obs: AxisManager) -> NDArray[np.bool_]:
-    # Assumes that the detectors have identical scanning intervals,
-    return obs.preprocess.turnaround_flags.turnarounds.ranges[0].complement().mask()  # type: ignore[no-any-return]
-
-
-def get_timestamps(obs: AxisManager) -> NDArray[np.float64]:
-    return obs.timestamps  # type: ignore[no-any-return]
-
-
-def get_azimuth(obs: AxisManager) -> NDArray[np.float64]:
-    return obs.boresight.az  # type: ignore[no-any-return]
-
-
-def get_hwp_angles(obs: AxisManager) -> NDArray[np.float64]:
-    return obs.hwp_angle  # type: ignore[no-any-return]
-
-
 def get_invntt(
-    obs: AxisManager, fmin: float, correlation_length: int, normalize: bool = True
+    obs: SotodlibObservationData, fmin: float, correlation_length: int, normalize: bool = True
 ) -> Float[Array, 'dets {correlation_length}']:
     """Compute the inverse covariance matrix from the noise psd fit"""
 
-    noise_fits = get_noise_fits(obs, fmin=fmin)
+    noise_fits = obs.get_noise_fits(fmin=fmin)
     invntt = psd_to_invntt(noise_fits, correlation_length=correlation_length)
     if normalize:
         # Normalise to 1 at x=0
@@ -289,7 +238,7 @@ def safe_divide(
 
 
 def get_pointing_operators(
-    obs: AxisManager, landscape: WCSLandscape | HealpixLandscape
+    obs: SotodlibObservationData, landscape: WCSLandscape | HealpixLandscape
 ) -> tuple[StokesIndexOperator, QURotationOperator]:
     pixel_inds, para_ang = get_pointing_and_parallactic_angles(obs, landscape)
 
@@ -314,24 +263,26 @@ def get_pointing_operators(
 
 
 def get_acquisition(
-    obs: AxisManager, demodulated: bool, landscape: WCSLandscape | HealpixLandscape
+    obs: SotodlibObservationData, demodulated: bool, landscape: WCSLandscape | HealpixLandscape
 ) -> AbstractLinearOperator:
     indexer, rotator = get_pointing_operators(obs, landscape)
     if demodulated:
         return (rotator @ indexer).reduce()
     else:
-        hwp_angle = jnp.array(obs.hwp_angle, dtype=landscape.dtype)
-        modulator = IQUModulationOperator(obs.signal.shape, hwp_angle, dtype=landscape.dtype)
+        hwp_angle = obs.get_hwp_angles().astype(landscape.dtype)
+        modulator = IQUModulationOperator(
+            (obs.n_dets, obs.n_samples), hwp_angle, dtype=landscape.dtype
+        )
         return (modulator @ rotator @ indexer).reduce()
 
 
 def get_scanning_masker(
-    obs: AxisManager, in_structure: PyTree[jax.ShapeDtypeStruct]
+    obs: SotodlibObservationData, in_structure: PyTree[jax.ShapeDtypeStruct]
 ) -> IndexOperator:
     """Create and return a flag operator which selects only the scanning intervals
     of the given TOD of shape (ndets, nsamps).
     """
-    mask = jnp.array(get_scanning_mask(obs))
+    mask = jnp.array(obs.get_scanning_mask())
     out_structure = ShapeDtypeStruct(
         shape=(in_structure.shape[0], np.sum(mask)), dtype=in_structure.dtype
     )
@@ -342,19 +293,19 @@ def get_scanning_masker(
 
 
 def get_template_operator(
-    obs: AxisManager, name: str, configs: dict[str, Any]
+    obs: SotodlibObservationData, name: str, configs: dict[str, Any]
 ) -> templates.TemplateOperator:
     """Create and return a template operator corresponding to the
     name and configuration provided.
     """
-    n_dets = obs.dets.count
+    n_dets = obs.n_dets
 
     if name == 'polynomial':
         max_poly_order: int = configs.get('max_poly_order', 0)
         return templates.PolynomialTemplateOperator.create(
             max_poly_order=max_poly_order,
-            intervals=get_scanning_intervals(obs),
-            times=jnp.array(get_timestamps(obs)),
+            intervals=obs.get_scanning_intervals(),
+            times=obs.get_timestamps(),
             n_dets=n_dets,
         )
 
@@ -364,14 +315,14 @@ def get_template_operator(
         return templates.ScanSynchronousTemplateOperator.create(
             min_poly_order=min_poly_order,
             max_poly_order=max_poly_order,
-            azimuth=jnp.array(get_azimuth(obs)),
+            azimuth=jnp.array(obs.get_azimuth()),
             n_dets=n_dets,
         )
 
     if name == 'hwp_synchronous':
         n_harmonics: int = configs.get('n_harmonics', 0)
         return templates.HWPSynchronousTemplateOperator.create(
-            n_harmonics=n_harmonics, hwp_angles=jnp.array(get_hwp_angles(obs)), n_dets=n_dets
+            n_harmonics=n_harmonics, hwp_angles=obs.get_hwp_angles(), n_dets=n_dets
         )
 
     """
@@ -395,7 +346,7 @@ def get_template_operator(
 
 
 def template_operator_from_dict(
-    obs: AxisManager, template_configs: dict[str, Any]
+    obs: SotodlibObservationData, template_configs: dict[str, Any]
 ) -> BlockRowOperator:
     return BlockRowOperator(
         [
@@ -462,11 +413,12 @@ def plot_ndmap(
 
 
 def binned_demod_mapmaker(
-    obs: AxisManager, configs: dict[str, Any] | None, logger: logging.Logger
+    observation: SotodlibObservationData, configs: dict[str, Any] | None, logger: logging.Logger
 ) -> dict[str, Any]:
     logger_info = lambda msg: logger.info(f'Binned Demod Mapmaker: {msg}') if logger else None
 
     # Set mapmaking config variables
+    obs = observation.observation
     if configs is None:
         configs = dict()
     dtype = jnp.dtype(configs.get('dtype', 'float32'))
@@ -544,10 +496,13 @@ def binned_demod_mapmaker(
 
 
 def binned_mapmaker(
-    obs: AxisManager, configs: dict[str, Any] | None, logger: logging.Logger | None = None
+    observation: SotodlibObservationData,
+    configs: dict[str, Any] | None,
+    logger: logging.Logger | None = None,
 ) -> dict[str, Any]:
     logger_info = lambda msg: logger.info(f'Binned Mapmaker: {msg}') if logger else None
 
+    obs = observation.observation
     # Set mapmaking config variables
     if configs is None:
         configs = dict()
@@ -622,10 +577,13 @@ def binned_mapmaker(
 
 
 def ml_mapmaker(
-    obs: AxisManager, configs: dict[str, Any] | None, logger: logging.Logger | None = None
+    observation: SotodlibObservationData,
+    configs: dict[str, Any] | None,
+    logger: logging.Logger | None = None,
 ) -> dict[str, Any]:
     logger_info = lambda msg: logger.info(f'ML Mapmaker: {msg}') if logger else None
 
+    obs = observation.observation
     # Set mapmaking config variables
     if configs is None:
         configs = dict()
@@ -656,7 +614,7 @@ def ml_mapmaker(
 
     # Optional mask for scanning
     if scanning_mask:
-        mask = jnp.array(get_scanning_mask(obs), dtype=dtype)
+        mask = jnp.array(observation.get_scanning_mask(), dtype=dtype)
         mask_projector = BroadcastDiagonalOperator(mask, in_structure=data_struct)
         logger_info('Created scan intervals masking operator')
         logger_info(f'{round(np.sum(mask))}/{mask.shape[0]} samples used')
@@ -751,10 +709,13 @@ def ml_mapmaker(
 
 
 def two_step_mapmaker(
-    obs: AxisManager, configs: dict[str, Any] | None, logger: logging.Logger | None = None
+    observation: SotodlibObservationData,
+    configs: dict[str, Any] | None,
+    logger: logging.Logger | None = None,
 ) -> dict[str, Any]:
     logger_info = lambda msg: logger.info(f'Two-Step Mapmaker: {msg}') if logger else None
 
+    obs = observation.observation
     # Set mapmaking config variables
     if configs is None:
         configs = dict()
@@ -781,7 +742,7 @@ def two_step_mapmaker(
 
     # Optional mask for scanning
     if scanning_mask:
-        mask = jnp.array(get_scanning_mask(obs), dtype=dtype)
+        mask = jnp.array(observation.get_scanning_mask(), dtype=dtype)
         mask_projector = BroadcastDiagonalOperator(mask, in_structure=data_struct)
         logger_info('Created scan intervals masking operator')
         logger_info(f'{round(np.sum(mask))}/{mask.shape[0]} samples used')
@@ -789,7 +750,7 @@ def two_step_mapmaker(
         mask_projector = IdentityOperator(data_struct)
 
     # Noise
-    white_noise = get_white_noise_fit(obs)
+    white_noise = observation.get_white_noise_fit()
     diag_invntt_op = DiagonalOperator(
         (jnp.array(1.0 / white_noise)[:, None]), in_structure=data_struct
     )

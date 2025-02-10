@@ -29,6 +29,10 @@ class GroundObservationData:
         ...
 
     @property
+    def n_dets(self) -> int:
+        return len(self.dets)
+
+    @property
     @abstractmethod
     def sample_rate(self) -> float:
         """Returns the sampling rate (in Hz) of the data."""

@@ -63,12 +63,12 @@ class MapMakingConfig:
     @classmethod
     def from_yaml(cls, path: str | Path) -> 'MapMakingConfig':
         """Create a Config from a yaml file."""
-        return _yaml_converter.loads(Path(path).read_text(), cls)
+        return _yaml_converter.loads(Path(path).read_text(), cls)  # type: ignore[no-any-return]
 
     @classmethod
     def get_defaults(cls) -> 'MapMakingConfig':
         """Create a Config with default values for all fields including optional ones."""
-        return cls(templates=TemplatesConfig())
+        return cls(templates=TemplatesConfig())  # type: ignore[call-arg]
 
     def to_yaml(self, path: str | Path) -> None:
         """Serialize the Config to a yaml file."""

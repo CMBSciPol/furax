@@ -5,14 +5,14 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
+import toast
 from astropy import units as u
 from jaxtyping import Array, Float, Int
 from numpy.typing import NDArray
+from toast.observation import default_values as defaults
 
-import toast
 from furax.mapmaking import GroundObservationData
 from furax.mapmaking.utils import get_local_meridian_angle
-from toast.observation import default_values as defaults
 
 
 @jax.tree_util.register_dataclass

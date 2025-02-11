@@ -10,7 +10,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pixell
-from astropy.wcs import WCS
 from jax import Array, ShapeDtypeStruct
 from jaxtyping import Bool, DTypeLike, Float, Inexact, Integer, PyTree
 from numpy.typing import NDArray
@@ -31,42 +30,12 @@ from furax.interfaces.sotodlib.observation import SotodlibObservationData
 from furax.mapmaking.preconditioner import BJPreconditioner
 from furax.mapmaking.utils import psd_to_invntt
 from furax.obs import QURotationOperator
-from furax.obs.landscapes import HealpixLandscape, StokesLandscape
+from furax.obs.landscapes import HealpixLandscape, WCSLandscape
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
 
 from . import templates
 
 """ Custom FURAX classes and operators """
-
-
-class WCSLandscape(StokesLandscape):
-    """Stokes PyTree for WCS maps
-    Not fully implemented yet, potentially should be added to FURAX
-    """
-
-    def __init__(
-        self,
-        shape: tuple[int, ...],
-        wcs: WCS,
-        stokes: ValidStokesType,
-        dtype: DTypeLike = np.float32,
-    ) -> None:
-        super().__init__(shape, stokes, dtype)
-        self.wcs = wcs
-
-    def tree_flatten(self):  # type: ignore[no-untyped-def]
-        aux_data = {
-            'shape': self.shape,
-            'dtype': self.dtype,
-            'stokes': self.stokes,
-            'wcs': self.wcs,
-        }  # static values
-        return (), aux_data
-
-    def world2pixel(
-        self, theta: Float[Array, '...'], phi: Float[Array, '...']
-    ) -> tuple[Float[Array, '...'], ...]:
-        raise NotImplementedError()
 
 
 class StokesIndexOperator(AbstractLinearOperator):

@@ -12,6 +12,9 @@ import jax
 import jax.numpy as jnp
 import jax_healpy as jhp
 import numpy as np
+from astropy.coordinates import SkyCoord
+from astropy.units import u
+from astropy.wcs import WCS
 from jaxtyping import Array, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
 from furax.obs._samplings import Sampling
@@ -256,3 +259,50 @@ class FrequencyLandscape(HealpixLandscape):
             'frequencies': self.frequencies,
         }  # static values
         return (), aux_data
+
+
+@jax.tree_util.register_pytree_node_class
+class WCSLandscape(StokesLandscape):
+    """Class representing an astropy WCS map of Stokes vectors."""
+
+    def __init__(
+        self,
+        shape: tuple[int, ...],
+        wcs: WCS,
+        stokes: ValidStokesType = 'IQU',
+        dtype: DTypeLike = np.float64,
+    ) -> None:
+        super().__init__(shape, stokes, dtype)
+        self.wcs = wcs
+
+    def tree_flatten(self):  # type: ignore[no-untyped-def]
+        aux_data = {
+            'shape': self.shape,
+            'dtype': self.dtype,
+            'stokes': self.stokes,
+            'wcs': self.wcs,
+        }  # static values
+        return (), aux_data
+
+    def world2pixel(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, ' *dims'], ...]:
+        r"""Convert angles to WCS map indices.
+
+        Args:
+            theta (float): Spherical :math:`\theta` angle.
+            phi (float): Spherical :math:`\phi` angle.
+
+        Returns:
+            WCS map index pairs
+        """
+
+        def f(theta, phi):  # type: ignore[no-untyped-def]
+            # SkyCoord takes (lon,lat)
+            pix_i, pix_j = self.wcs.world_to_pixel(SkyCoord(phi, (np.pi / 2 - theta), unit=u.rad))
+            return tuple(np.array(np.round([pix_i, pix_j]), dtype=np.int64))
+
+        struct = jax.ShapeDtypeStruct(theta.shape, jnp.int64)
+        result_shape = (struct, struct)
+
+        return jax.pure_callback(f, result_shape, theta, phi)  # type: ignore[no-any-return]

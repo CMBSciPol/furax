@@ -116,7 +116,7 @@ class IndexOperator(AbstractLinearOperator):
         for axis, index in enumerate(self.indices):
             if axis >= ellipsis_index:
                 break
-            if index == slice(None):
+            if isinstance(index, slice) and index == slice(None):
                 continue
             axes.append(axis)
         for axis, index in enumerate(self.indices[ellipsis_index + 1 :], ellipsis_index + 1):

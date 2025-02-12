@@ -5,6 +5,7 @@ import equinox
 import jax_healpy as jhp
 from jaxtyping import Array, Float
 from functools import partial
+import numpy as np
 
 @symmetric
 class BeamOperator(AbstractLinearOperator):
@@ -34,17 +35,17 @@ class BeamOperator(AbstractLinearOperator):
     def _gauss_beam(self, fwhm, lmax=512, pol=False):
         # just copying code from "https://github.com/healpy/healpy/blob/dd0506a4b51c2961bea50cd9e0361db0c634dfdb/lib/healpy/sphtfunc.py#L1235"
         
-        sigma = fwhm / jnp.sqrt(8.0 * jnp.log(2.0))
-        ell = jnp.arange(lmax + 1)
+        sigma = fwhm / np.sqrt(8.0 * np.log(2.0))
+        ell = np.arange(lmax + 1)
         sigma2 = sigma ** 2
-        g = jnp.exp(-0.5 * ell * (ell + 1) * sigma2)
+        g = np.exp(-0.5 * ell * (ell + 1) * sigma2)
         
         if not pol:  # temperature-only beam
             return g
         else:  # polarization beam
             # polarization factors [1, 2 sigma^2, 2 sigma^2, sigma^2]
-            pol_factor = jnp.exp([0.0, 2 * sigma2, 2 * sigma2, sigma2])
-            return g[:, jnp.newaxis] * pol_factor
+            pol_factor = np.exp([0.0, 2 * sigma2, 2 * sigma2, sigma2])
+            return g[:, np.newaxis] * pol_factor
 
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:

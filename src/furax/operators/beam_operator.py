@@ -3,12 +3,22 @@ import jax.numpy as jnp
 from furax._base.core import *
 import equinox
 import jax_healpy as jhp
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, PyTree, Inexact
 from functools import partial
 import numpy as np
 
 @symmetric
 class BeamOperator(AbstractLinearOperator):
+    """
+    BeamOperator applies a Gaussian beam to a map in spherical harmonic space.
+
+    Attributes:
+        fwhm (float): Full width at half maximum of the beam in radians.
+        lmax (int): Maximum multipole moment.
+        _in_structure (PyTree[jax.ShapeDtypeStruct]): Input structure of the operator.
+        _beam_fl (Float[Array, 'a']): Beam transfer function.
+        _inv_flag (bool): Flag to indicate if the inverse beam should be used.
+    """
     fwhm: float = equinox.field(static=True)
     lmax: int = equinox.field(static=True)
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
@@ -19,8 +29,8 @@ class BeamOperator(AbstractLinearOperator):
         self, 
         fwhm: float, # [rad]
         in_structure: PyTree[jax.ShapeDtypeStruct],
-        lmax = 2000,
-        inv_flag = False,
+        lmax: int = 512,
+        inv_flag: bool = False,
     ) -> None:
         self.fwhm = fwhm
         self.lmax = lmax    
@@ -32,7 +42,7 @@ class BeamOperator(AbstractLinearOperator):
             self._beam_fl = 1/self._beam_fl
 
 
-    def _gauss_beam(self, fwhm, lmax=512, pol=False):
+    def _gauss_beam(self, fwhm: float, lmax: int = 512, pol: bool = False):
         # just copying code from "https://github.com/healpy/healpy/blob/dd0506a4b51c2961bea50cd9e0361db0c634dfdb/lib/healpy/sphtfunc.py#L1235"
         
         sigma = fwhm / np.sqrt(8.0 * np.log(2.0))
@@ -70,4 +80,4 @@ class BeamOperator(AbstractLinearOperator):
 
 
     def inverse(self) -> AbstractLinearOperator:
-        return BeamOperator(fwhm=self.fwhm, in_structure=self._in_structure, lmax = self.lmax, inv_flag=True)
+        return BeamOperator(fwhm=self.fwhm, in_structure=self._in_structure, lmax=self.lmax, inv_flag=True)

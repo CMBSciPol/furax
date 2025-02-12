@@ -4,11 +4,15 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Array, Float, Int
+import pixell
+from astropy.wcs import WCS
+from jaxtyping import Array, Float, Integer
 from numpy.typing import NDArray
+from sotodlib import coords
 from sotodlib.core import AxisManager
 
 from furax.mapmaking import GroundObservationData
+from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 
 
 @jax.tree_util.register_dataclass
@@ -38,7 +42,7 @@ class SotodlibObservationData(GroundObservationData):
         """Returns the HWP angles."""
         return jnp.array(self.observation.hwp_angle)
 
-    def get_scanning_intervals(self, det_ind: int = 0) -> Int[Array, 'a 2'] | NDArray[Any]:
+    def get_scanning_intervals(self, det_ind: int = 0) -> NDArray[Any]:
         """Returns scanning intervals of the chosen detector.
         The output is a list of the starting and ending sample indices
         """
@@ -56,6 +60,50 @@ class SotodlibObservationData(GroundObservationData):
         """Returns time (sec) of the samples since the observation began"""
         timestamps = self.get_timestamps()
         return jnp.array(timestamps - timestamps[0])
+
+    def get_wcs_shape_and_kernel(
+        self,
+        resolution: float = 8.0,  # units: arcmins
+        projection: str = 'car',
+    ) -> tuple[tuple[int, ...], WCS]:
+        """Returns astropy WCS kernel object corresponding to the observed sky"""
+
+        res = resolution * pixell.utils.arcmin
+        wcs_kernel_init = coords.get_wcs_kernel('car', 0, 0, res=res)
+        wcs_shape, wcs_kernel = coords.get_footprint(self.observation, wcs_kernel_init)
+
+        return wcs_shape, wcs_kernel
+
+    def get_pointing_and_parallactic_angles(
+        self, landscape: StokesLandscape
+    ) -> tuple[Integer[Array, 'dets samps 2'], Float[Array, 'dets samps']]:
+        """Obtain pointing information and parallactic angles from the observation"""
+
+        # Projection Matrix class instance for the observation
+        if isinstance(landscape, WCSLandscape):
+            # TODO: pass 'cuts' keyword here for time slices (glitches etc)?
+            P = coords.P.for_tod(self.observation, wcs_kernel=landscape.wcs, comps='TQU', hwp=True)
+        elif isinstance(landscape, HealpixLandscape):
+            hp_geom = coords.healpix_utils.get_geometry(nside=landscape.nside)
+            P = coords.P.for_tod(self.observation, geom=hp_geom)
+        else:
+            raise NotImplementedError(f'Landscape {landscape} not supported')
+
+        # Projectionist object from P
+        proj = P._get_proj()
+
+        # Assembly containing the focal plane and boresight information
+        assembly = P._get_asm()
+
+        # Get the pixel indicies as before, but also obtain
+        # the spin projection factors of size (n_samps,n_comps) for each detector,
+        # which have 1, cos(2*p), sin(2*p) where p is the parallactic angle
+        pixel_inds, spin_proj = proj.get_pointing_matrix(assembly)
+        pixel_inds = np.array(pixel_inds)
+        spin_proj = jnp.array(spin_proj, dtype=landscape.dtype)
+        para_ang = jnp.arctan2(spin_proj[..., 2], spin_proj[..., 1]) / 2.0
+
+        return pixel_inds, para_ang
 
     def get_timestamps(self) -> Float[Array, ' a']:
         """Returns time (sec) of the samples since the observation began"""

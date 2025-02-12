@@ -4,8 +4,12 @@ from functools import cached_property
 from typing import Any
 
 import jax
-from jaxtyping import Array, Float, Int
+import numpy as np
+from astropy.wcs import WCS
+from jaxtyping import Array, Float
 from numpy.typing import NDArray
+
+from furax.obs.landscapes import StokesLandscape
 
 
 @jax.tree_util.register_dataclass
@@ -49,7 +53,7 @@ class GroundObservationData:
         ...
 
     @abstractmethod
-    def get_scanning_intervals(self) -> Int[Array, 'a 2'] | NDArray[Any]:
+    def get_scanning_intervals(self) -> NDArray[Any]:
         """Returns scanning intervals.
         The output is a list of the starting and ending sample indices
         """
@@ -64,3 +68,28 @@ class GroundObservationData:
     def get_elapsed_time(self) -> Float[Array, ' a']:
         """Returns time (sec) of the samples since the observation began"""
         ...
+
+    @abstractmethod
+    def get_wcs_shape_and_kernel(
+        self,
+        resolution: float = 8.0,  # units: arcmins
+        projection: str = 'car',
+    ) -> tuple[tuple[int, ...], WCS]:
+        """Returns the shape and object corresponding to a WCS projection"""
+        ...
+
+    @abstractmethod
+    def get_pointing_and_parallactic_angles(
+        self, landscape: StokesLandscape
+    ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
+        """Obtain pointing information and parallactic angles from the observation"""
+        ...
+
+    def get_scanning_mask(self) -> NDArray[Any]:
+        """Returns a boolean mask constructed with scanning intervals"""
+        intervals = self.get_scanning_intervals()
+        mask = np.zeros(self.n_samples, dtype=bool)
+        for l, u in intervals:
+            mask[l:u] = True
+
+        return mask

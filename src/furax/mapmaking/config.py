@@ -1,8 +1,10 @@
 from pathlib import Path
 from typing import Literal
 
+import jax.numpy as jnp
 from attrs import frozen
 from cattrs.preconf.pyyaml import make_converter
+from jax.typing import DTypeLike
 
 ValidLandscapeType = Literal['WCS', 'Healpix']
 
@@ -18,6 +20,7 @@ class SolverConfig:
 class LandscapeConfig:
     type: ValidLandscapeType = 'WCS'
     resolution: float = 8.0
+    nside: int = 512
 
 
 @frozen
@@ -56,6 +59,8 @@ class MapMakingConfig:
     psd_fmin: float = 1e-2
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2
+    dtype: DTypeLike = jnp.float64
+    debug: bool = True
     solver: SolverConfig = SolverConfig()
     landscape: LandscapeConfig = LandscapeConfig()
     templates: TemplatesConfig | None = None

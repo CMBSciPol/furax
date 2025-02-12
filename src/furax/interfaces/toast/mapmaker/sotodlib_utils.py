@@ -1,8 +1,8 @@
 import logging
+import typing
 from math import prod
 from typing import Any
 
-import equinox
 import jax
 import jax.numpy as jnp
 import lineax as lx
@@ -12,7 +12,6 @@ import numpy as np
 import pixell
 from jax import Array, ShapeDtypeStruct
 from jaxtyping import Bool, DTypeLike, Float, Integer, PyTree
-from sotodlib import coords
 
 from furax import (
     AbstractLinearOperator,
@@ -34,39 +33,10 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 
 from . import templates
 
-""" Custom FURAX classes and operators """
-
-
-class IQUModulationOperator(AbstractLinearOperator):
-    """Class that adds the input Stokes signals to a single HWP-modulated signal
-    Similar to LinearPolarizerOperator @ QURotationOperator(hwp_angle), except that
-    only half of the QU rotation needs to be computed
-    """
-
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    cos_hwp_angle: Float[Array, ' samps']
-    sin_hwp_angle: Float[Array, ' samps']
-
-    def __init__(
-        self,
-        shape: tuple[int, ...],
-        hwp_angle: Float[Array, '...'],
-        dtype: DTypeLike = jnp.float32,
-    ) -> None:
-        self._in_structure = Stokes.class_for('IQU').structure_for(shape, dtype)
-        self.cos_hwp_angle = jnp.cos(4 * hwp_angle.astype(dtype))
-        self.sin_hwp_angle = jnp.sin(4 * hwp_angle.astype(dtype))
-
-    def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:
-        return x.i + self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u  # type: ignore[union-attr]
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
-
-
 """ sotodlib data interface """
 
 
+@typing.no_type_check
 def get_landscape(
     obs: SotodlibObservationData,
     dtype: DTypeLike = np.float32,
@@ -74,58 +44,15 @@ def get_landscape(
     landscape_configs: dict[str, Any] = {},
 ) -> WCSLandscape | HealpixLandscape:
     """Create and return a WCSLandscape instance from the observation"""
-    landscape_type = landscape_configs.get('type', 'WCS')
-
-    if landscape_type.upper() == 'WCS':
-        resolution = landscape_configs.get('resolution', 8.0)
-        res = resolution * pixell.utils.arcmin
-
-        # Base wcs object with CAR projection
-        wcs_kernel_init = coords.get_wcs_kernel('car', 0, 0, res=res)
-
-        # Adjust map boundaries to match the footprint of the observation
-        wcs_shape, wcs_kernel = coords.get_footprint(obs.observation, wcs_kernel_init)
-
-        return WCSLandscape(wcs_shape, wcs_kernel, stokes=stokes, dtype=dtype)
-
-    elif landscape_type.upper() == 'HEALPIX':
-        nside = landscape_configs.get('nside', 512)
-
-        return HealpixLandscape(nside=nside, stokes=stokes, dtype=dtype)
-
-    else:
-        raise NotImplementedError(f'Landscape type {landscape_type} not supported')
+    pass
 
 
+@typing.no_type_check
 def get_pointing_and_parallactic_angles(
     obs: SotodlibObservationData, landscape: WCSLandscape | HealpixLandscape
 ) -> tuple[Integer[Array, 'dets samps 2'], Float[Array, 'dets samps']]:
     """Obtain pointing information and parallactic angles from the observation"""
-    # Projection Matrix class instance for the observation
-    if isinstance(landscape, WCSLandscape):
-        # TODO: pass 'cuts' keyword here for time slices (glitches etc)?
-        P = coords.P.for_tod(obs.observation, wcs_kernel=landscape.wcs, comps='TQU', hwp=True)
-    elif isinstance(landscape, HealpixLandscape):
-        hp_geom = coords.healpix_utils.get_geometry(nside=landscape.nside)
-        P = coords.P.for_tod(obs.observation, geom=hp_geom)
-    else:
-        raise NotImplementedError(f'Landscape {landscape} not supported')
-
-    # Projectionist object from P
-    proj = P._get_proj()
-
-    # Assembly containing the focal plane and boresight information
-    assembly = P._get_asm()
-
-    # Get the pixel indicies as before, but also obtain
-    # the spin projection factors of size (n_samps,n_comps) for each detector,
-    # which have 1, cos(2*p), sin(2*p) where p is the parallactic angle
-    pixel_inds, spin_proj = proj.get_pointing_matrix(assembly)
-    pixel_inds = np.array(pixel_inds)
-    spin_proj = jnp.array(spin_proj, dtype=landscape.dtype)
-    para_ang = jnp.arctan2(spin_proj[..., 2], spin_proj[..., 1]) / 2.0
-
-    return pixel_inds, para_ang
+    pass
 
 
 def get_invntt(
@@ -176,59 +103,25 @@ def safe_divide(
 """ Operators """
 
 
+@typing.no_type_check
 def get_pointing_operators(
     obs: SotodlibObservationData, landscape: WCSLandscape | HealpixLandscape
 ) -> tuple[IndexOperator, QURotationOperator]:
-    pixel_inds, para_ang = get_pointing_and_parallactic_angles(obs, landscape)
-
-    # Pointing, StokesPyTree-compatable
-    if isinstance(landscape, WCSLandscape):
-        indexer = IndexOperator(
-            (pixel_inds[..., 0], pixel_inds[..., 1]), in_structure=landscape.structure
-        )
-    elif isinstance(landscape, HealpixLandscape):
-        indexer = IndexOperator(pixel_inds[..., 0], in_structure=landscape.structure)
-    else:
-        raise NotImplementedError(f'Landscape {landscape} not supported')
-
-    # Rotation due to coordinate transform
-    # Note the minus sign on the rotation angle!
-    tod_shape = pixel_inds.shape[:2]
-    rotator = QURotationOperator.create(
-        tod_shape, dtype=landscape.dtype, stokes='IQU', angles=-para_ang
-    )
-
-    return indexer, rotator
+    pass
 
 
+@typing.no_type_check
 def get_acquisition(
     obs: SotodlibObservationData, demodulated: bool, landscape: WCSLandscape | HealpixLandscape
 ) -> AbstractLinearOperator:
-    indexer, rotator = get_pointing_operators(obs, landscape)
-    if demodulated:
-        return (rotator @ indexer).reduce()
-    else:
-        hwp_angle = obs.get_hwp_angles().astype(landscape.dtype)
-        modulator = IQUModulationOperator(
-            (obs.n_dets, obs.n_samples), hwp_angle, dtype=landscape.dtype
-        )
-        return (modulator @ rotator @ indexer).reduce()
+    pass
 
 
+@typing.no_type_check
 def get_scanning_masker(
     obs: SotodlibObservationData, in_structure: PyTree[jax.ShapeDtypeStruct]
 ) -> IndexOperator:
-    """Create and return a flag operator which selects only the scanning intervals
-    of the given TOD of shape (ndets, nsamps).
-    """
-    mask = jnp.array(obs.get_scanning_mask())
-    out_structure = ShapeDtypeStruct(
-        shape=(in_structure.shape[0], np.sum(mask)), dtype=in_structure.dtype
-    )
-    masker = IndexOperator(
-        (slice(None), mask), in_structure=in_structure, out_structure=out_structure
-    )
-    return masker
+    pass
 
 
 def get_template_operator(

@@ -11,8 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pixell
 from jax import Array, ShapeDtypeStruct
-from jaxtyping import Bool, DTypeLike, Float, Inexact, Integer, PyTree
-from numpy.typing import NDArray
+from jaxtyping import Bool, DTypeLike, Float, Integer, PyTree
 from sotodlib import coords
 
 from furax import (
@@ -36,35 +35,6 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 from . import templates
 
 """ Custom FURAX classes and operators """
-
-
-class StokesIndexOperator(AbstractLinearOperator):
-    """Operator for integer index operation on Stokes PyTrees
-    The indices are assumed to be identical for I, Q and U
-    """
-
-    indices: Integer[Array, '...'] | tuple[Integer[Array, '...'] | NDArray[Any], ...]
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    _out_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-
-    def __init__(
-        self,
-        indices: Integer[Array, '...'] | tuple[Integer[Array, '...'] | NDArray[Any], ...],
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-        out_structure: PyTree[jax.ShapeDtypeStruct] | None = None,
-    ) -> None:
-        self.indices = indices
-        self._in_structure = in_structure
-        self._out_structure = out_structure or AbstractLinearOperator.out_structure(self)
-
-    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
-        return jax.tree.map(lambda leaf: leaf[self.indices], x)
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._out_structure
 
 
 class IQUModulationOperator(AbstractLinearOperator):
@@ -208,16 +178,16 @@ def safe_divide(
 
 def get_pointing_operators(
     obs: SotodlibObservationData, landscape: WCSLandscape | HealpixLandscape
-) -> tuple[StokesIndexOperator, QURotationOperator]:
+) -> tuple[IndexOperator, QURotationOperator]:
     pixel_inds, para_ang = get_pointing_and_parallactic_angles(obs, landscape)
 
     # Pointing, StokesPyTree-compatable
     if isinstance(landscape, WCSLandscape):
-        indexer = StokesIndexOperator(
+        indexer = IndexOperator(
             (pixel_inds[..., 0], pixel_inds[..., 1]), in_structure=landscape.structure
         )
     elif isinstance(landscape, HealpixLandscape):
-        indexer = StokesIndexOperator(pixel_inds[..., 0], in_structure=landscape.structure)
+        indexer = IndexOperator(pixel_inds[..., 0], in_structure=landscape.structure)
     else:
         raise NotImplementedError(f'Landscape {landscape} not supported')
 
@@ -607,17 +577,17 @@ def ml_mapmaker(
 
     # Map pixel selection
     blocks = diag_system.get_blocks()
-    valid_inds = np.argwhere(select_pixel_indices(blocks, hits_cut=hits_cut, cond_cut=cond_cut))
+    valid_inds = jnp.argwhere(select_pixel_indices(blocks, hits_cut=hits_cut, cond_cut=cond_cut))
 
     logger_info(f'Proceeding with {valid_inds.shape[0]}/{prod(landscape.shape)} pixels')
 
     # Preconditioner
     if isinstance(landscape, WCSLandscape):
-        selector = StokesIndexOperator(
+        selector = IndexOperator(
             (valid_inds[:, 0], valid_inds[:, 1]), in_structure=landscape.structure
         )
     elif isinstance(landscape, HealpixLandscape):
-        selector = StokesIndexOperator((valid_inds,), in_structure=landscape.structure)
+        selector = IndexOperator((valid_inds,), in_structure=landscape.structure)
     else:
         raise NotImplementedError
     # TODO: more efficient solution?
@@ -733,15 +703,15 @@ def two_step_mapmaker(
 
     # Map pixel selection
     blocks = system.get_blocks()
-    valid_inds = np.argwhere(select_pixel_indices(blocks, hits_cut=hits_cut, cond_cut=cond_cut))
+    valid_inds = jnp.argwhere(select_pixel_indices(blocks, hits_cut=hits_cut, cond_cut=cond_cut))
     logger_info(f'Proceeding with {valid_inds.shape[0]}/{prod(landscape.shape)} pixels')
 
     if isinstance(landscape, WCSLandscape):
-        selector = StokesIndexOperator(
+        selector = IndexOperator(
             (valid_inds[:, 0], valid_inds[:, 1]), in_structure=landscape.structure
         )
     elif isinstance(landscape, HealpixLandscape):
-        selector = StokesIndexOperator((valid_inds,), in_structure=landscape.structure)
+        selector = IndexOperator((valid_inds,), in_structure=landscape.structure)
     else:
         raise NotImplementedError
     # TODO: more efficient solution?

@@ -52,24 +52,16 @@ class BlockRowOperator(AbstractBlockOperator):
     Examples:
         >>> x = jnp.array([1, 2], jnp.float32)
         >>> I = IdentityOperator(jax.ShapeDtypeStruct((2,), jnp.float32))
-        >>> op_list = BlockColumnOperator([I, I, I])
+        >>> op_list = BlockRowOperator([I, 2*I, 3*I])
         >>> op_list.as_matrix()
-        Array([[1., 0.],
-               [0., 1.],
-               [1., 0.],
-               [0., 1.],
-               [1., 0.],
-               [0., 1.]], dtype=float32)
-        >>> op_list(x)
-        [Array([1., 2.], dtype=float32),
-         Array([1., 2.], dtype=float32),
-         Array([1., 2.], dtype=float32)]
+        Array([[1., 0., 2., 0., 3., 0.],
+               [0., 1., 0., 2., 0., 3.]], dtype=float32)
+        >>> op_list([x, x, x])
+        Array([ 6., 12.], dtype=float32)
 
-        >>> op_dict = BlockColumnOperator({'a': I, 'b': I, 'c': I})
-        >>> op_dict(x)
-        {'a': Array([1., 2.], dtype=float32),
-         'b': Array([1., 2.], dtype=float32),
-         'c': Array([1., 2.], dtype=float32)}
+        >>> op_dict = BlockRowOperator({'a': I, 'b': 2*I, 'c': 3*I})
+        >>> op_dict({'a': x, 'b': x, 'c': x})
+        Array([ 6., 12.], dtype=float32)
     """
 
     def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:
@@ -174,16 +166,24 @@ class BlockColumnOperator(AbstractBlockOperator):
     Examples:
         >>> x = jnp.array([1, 2], jnp.float32)
         >>> I = IdentityOperator(jax.ShapeDtypeStruct((2,), jnp.float32))
-        >>> op_list = BlockRowOperator([I, 2*I, 3*I])
+        >>> op_list = BlockColumnOperator([I, I, I])
         >>> op_list.as_matrix()
-        Array([[1., 0., 2., 0., 3., 0.],
-               [0., 1., 0., 2., 0., 3.]], dtype=float32)
-        >>> op_list([x, x, x])
-        Array([ 6., 12.], dtype=float32)
+        Array([[1., 0.],
+               [0., 1.],
+               [1., 0.],
+               [0., 1.],
+               [1., 0.],
+               [0., 1.]], dtype=float32)
+        >>> op_list(x)
+        [Array([1., 2.], dtype=float32),
+         Array([1., 2.], dtype=float32),
+         Array([1., 2.], dtype=float32)]
 
-        >>> op_dict = BlockRowOperator({'a': I, 'b': 2*I, 'c': 3*I})
-        >>> op_dict({'a': x, 'b': x, 'c': x})
-        Array([ 6., 12.], dtype=float32)
+        >>> op_dict = BlockColumnOperator({'a': I, 'b': I, 'c': I})
+        >>> op_dict(x)
+        {'a': Array([1., 2.], dtype=float32),
+         'b': Array([1., 2.], dtype=float32),
+         'c': Array([1., 2.], dtype=float32)}
     """
 
     def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:

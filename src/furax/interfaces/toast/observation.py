@@ -7,12 +7,14 @@ import jax.numpy as jnp
 import numpy as np
 import toast
 from astropy import units as u
-from jaxtyping import Array, Float, Int
+from astropy.wcs import WCS
+from jaxtyping import Array, Float
 from numpy.typing import NDArray
 from toast.observation import default_values as defaults
 
 from furax.mapmaking import GroundObservationData
 from furax.mapmaking.utils import get_local_meridian_angle
+from furax.obs.landscapes import StokesLandscape
 
 
 @jax.tree_util.register_dataclass
@@ -82,7 +84,7 @@ class ToastObservationData(GroundObservationData):
         psd = jnp.array([model.psd(det) for det in self.dets])
         return freq, psd
 
-    def get_scanning_intervals(self) -> Int[Array, 'a 2'] | NDArray[Any]:
+    def get_scanning_intervals(self) -> NDArray[Any]:
         """Returns scanning intervals.
         The output is a list of the starting and ending sample indices
         """
@@ -105,6 +107,21 @@ class ToastObservationData(GroundObservationData):
         """Returns time (sec) of the samples since the observation began"""
         timestamps = self.observation.shared['times'].data
         return jnp.array(timestamps - timestamps[0])
+
+    def get_wcs_shape_and_kernel(
+        self,
+        resolution: float = 8.0,  # units: arcmins
+        projection: str = 'car',
+    ) -> tuple[tuple[int, ...], WCS]:
+        """Returns the shape and object corresponding to a WCS projection"""
+        raise NotImplementedError()
+
+    def get_pointing_and_parallactic_angles(
+        self, landscape: StokesLandscape
+    ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
+        """Obtain pointing information and parallactic angles from the observation"""
+        # TODO: call get_pixels() and get_local_meridian_angle() here
+        raise NotImplementedError()
 
     def get_pixels(self) -> Array:
         """Returns the pixel indices."""

@@ -1,53 +1,50 @@
+import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from attrs import frozen
-from cattrs.preconf.pyyaml import make_converter
+from apischema import deserialize, serialize
 
 ValidLandscapeType = Literal['WCS', 'Healpix']
 
 
-@frozen
+@dataclass(frozen=True)
 class SolverConfig:
     rtol: float = 1e-6
     atol: float = 0
     max_steps: int = 1_000
 
 
-@frozen
+@dataclass(frozen=True)
 class LandscapeConfig:
     type: ValidLandscapeType = 'WCS'
     resolution: float = 8.0
 
 
-@frozen
+@dataclass(frozen=True)
 class _PolyTemplateConfig:
     max_poly_order: int = 3
 
 
-@frozen
+@dataclass(frozen=True)
 class _ScanSynchronousTemplateConfig:
     min_poly_order: int = 3
     max_poly_order: int = 7
 
 
-@frozen
+@dataclass(frozen=True)
 class _HWPSynchronousTemplateConfig:
     n_harmonics: int = 3
 
 
-@frozen
+@dataclass(frozen=True)
 class TemplatesConfig:
     polynomial: _PolyTemplateConfig = _PolyTemplateConfig()
     scan_synchronous: _ScanSynchronousTemplateConfig = _ScanSynchronousTemplateConfig()
     hwp_synchronous: _HWPSynchronousTemplateConfig = _HWPSynchronousTemplateConfig()
 
 
-# forbid extra keys in the yaml file to catch possible typos
-_yaml_converter = make_converter(forbid_extra_keys=True)
-
-
-@frozen
+@dataclass(frozen=True)
 class MapMakingConfig:
     binned: bool = False
     demodulated: bool = False
@@ -61,26 +58,30 @@ class MapMakingConfig:
     templates: TemplatesConfig | None = None
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> 'MapMakingConfig':
-        """Create a Config from a yaml file."""
-        return _yaml_converter.loads(Path(path).read_text(), cls)  # type: ignore[no-any-return]
+    def get_defaults(cls) -> 'MapMakingConfig':
+        """Create a config with default values for all fields including optional ones."""
+        return cls(templates=TemplatesConfig())
 
     @classmethod
-    def get_defaults(cls) -> 'MapMakingConfig':
-        """Create a Config with default values for all fields including optional ones."""
-        return cls(templates=TemplatesConfig())  # type: ignore[call-arg]
+    def load_json(cls, path: str | Path) -> 'MapMakingConfig':
+        """Load and instantiate a ``MapMakingConfig`` from a JSON file."""
+        data = json.loads(Path(path).read_text())
+        return deserialize(MapMakingConfig, data)  # type: ignore[no-any-return]
 
-    def to_yaml(self, path: str | Path) -> None:
-        """Serialize the Config to a yaml file."""
-        filename = Path(path).with_suffix('.yaml')
+    def dump_json(self, path: str | Path) -> None:
+        """Dump the config to a JSON file.
+
+        The '.json' suffix is automatically added if not already present.
+        """
+        filename = Path(path).with_suffix('.json')
         filename.parent.mkdir(parents=True, exist_ok=True)
-        filename.write_text(_yaml_converter.dumps(self))
+        filename.write_text(self.to_json())
+
+    def to_json(self) -> str:
+        """Serialize the config to a JSON string."""
+        data = serialize(MapMakingConfig, self)
+        return json.dumps(data, indent=2)
 
     @property
     def use_templates(self) -> bool:
         return self.templates is not None
-
-
-if __name__ == '__main__':
-    config = MapMakingConfig.get_defaults()
-    config.to_yaml('defaults.yaml')

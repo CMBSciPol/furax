@@ -48,9 +48,8 @@ docs = [
     'ipykernel>=6.0',
 ]
 mapmaking = [
+    'apischema',
     'astropy',
-    'attrs',
-    'cattrs',
     'jax>=0.4.38',
     'optax',
     'pixell',
@@ -77,9 +76,8 @@ skip_covered = true
 
 [[tool.mypy.overrides]]
 module = [
-    'attrs',
+    'apischema',
     'astropy.*',
-    'cattrs.*',
     'healpy',
     'jax_healpy',
     'lineax',

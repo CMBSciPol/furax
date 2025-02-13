@@ -1,9 +1,9 @@
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import jax.numpy as jnp
+import yaml
 from apischema import deserialize, serialize
 from jax.typing import DTypeLike
 
@@ -68,24 +68,24 @@ class MapMakingConfig:
         return cls(templates=TemplatesConfig())
 
     @classmethod
-    def load_json(cls, path: str | Path) -> 'MapMakingConfig':
-        """Load and instantiate a ``MapMakingConfig`` from a JSON file."""
-        data = json.loads(Path(path).read_text())
+    def load_yaml(cls, path: str | Path) -> 'MapMakingConfig':
+        """Load and instantiate a ``MapMakingConfig`` from a YAML file."""
+        data = yaml.safe_load(Path(path).read_text())
         return deserialize(MapMakingConfig, data)  # type: ignore[no-any-return]
 
-    def dump_json(self, path: str | Path) -> None:
-        """Dump the config to a JSON file.
+    def dump_yaml(self, path: str | Path) -> None:
+        """Dump the config to a YAML file.
 
-        The '.json' suffix is automatically added if not already present.
+        The '.yaml' suffix is automatically added if not already present.
         """
-        filename = Path(path).with_suffix('.json')
+        filename = Path(path).with_suffix('.yaml')
         filename.parent.mkdir(parents=True, exist_ok=True)
-        filename.write_text(self.to_json())
+        filename.write_text(self._to_yaml())
 
-    def to_json(self) -> str:
-        """Serialize the config to a JSON string."""
+    def _to_yaml(self) -> str:
+        """Serialize the config to a YAML string."""
         data = serialize(MapMakingConfig, self)
-        return json.dumps(data, indent=2)
+        return yaml.dump(data, indent=2)
 
     @property
     def use_templates(self) -> bool:

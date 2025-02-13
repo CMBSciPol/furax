@@ -34,7 +34,7 @@ class MapMaker:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> 'MapMaker':
-        return cls(config=MapMakingConfig.from_yaml(path), logger=logging.getLogger())
+        return cls(config=MapMakingConfig.load_yaml(path), logger=logging.getLogger())
 
     def get_landscape(
         self, observation: GroundObservationData, stokes: ValidStokesType = 'IQU'

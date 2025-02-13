@@ -56,7 +56,7 @@ class MapMakingConfig:
     psd_fmin: float = 1e-2
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2
-    dtype: DTypeLike = jnp.float64
+    precision: Literal[32, 64] = 64
     debug: bool = True
     solver: SolverConfig = SolverConfig()
     landscape: LandscapeConfig = LandscapeConfig()
@@ -90,3 +90,7 @@ class MapMakingConfig:
     @property
     def use_templates(self) -> bool:
         return self.templates is not None
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return jnp.float32 if self.precision == 32 else jnp.float64  # type: ignore[no-any-return]

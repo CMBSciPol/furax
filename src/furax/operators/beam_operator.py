@@ -59,7 +59,7 @@ class BeamOperator(AbstractLinearOperator):
 
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
-        map2alm = partial(jhp.map2alm, iter=0, lmax=self.lmax, pol=False)
+        map2alm = partial(jhp.map2alm, iter=3, lmax=self.lmax, pol=False)
         almxfl = partial(jhp.almxfl, fl=self._beam_fl, lmax=self.lmax)
 
         def func(value):

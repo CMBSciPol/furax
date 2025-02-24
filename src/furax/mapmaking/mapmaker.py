@@ -30,7 +30,7 @@ class MapMaker:
     logger: logging.Logger
 
     @abstractmethod
-    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]: ...
+    def make_maps(self, observation: GroundObservationData) -> dict[str, Any]: ...
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> 'MapMaker':
@@ -120,7 +120,7 @@ class MapMaker:
 class BinnedMapMaker(MapMaker):
     """Class for mapmaking with diagonal noise covariance."""
 
-    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]:
+    def make_maps(self, observation: GroundObservationData) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'Binned Mapmaker: {msg}')
 
@@ -163,7 +163,7 @@ class BinnedMapMaker(MapMaker):
         res.i.block_until_ready()
         logger_info('Finished mapmaking')
 
-        if self.config.debug:
+        if config.debug:
             res = process(data)
             res.i.block_until_ready()
             logger_info('Test - second time - Finished mapmaking')
@@ -172,6 +172,10 @@ class BinnedMapMaker(MapMaker):
         weights = np.array(system.blocks)
 
         return {'map': final_map, 'weights': weights}
+
+
+class MLMapmaker(MapMaker):
+    """Class for mapmaking with maximum likelihood (ML) estimator"""
 
 
 class IQUModulationOperator(AbstractLinearOperator):

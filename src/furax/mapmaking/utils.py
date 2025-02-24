@@ -138,9 +138,7 @@ def _unpack(params: Float[Array, '4']) -> tuple[Array, Array, Array, Array]:
     return net, alpha, f_knee, f_min
 
 
-def run_lbfgs(
-    init_params: Array, fun: Any, opt: Any, max_iter: int, tol: float
-) -> tuple[Array, Any]:
+def run_lbfgs(init_params: Any, fun: Any, opt: Any, max_iter: int, tol: float) -> tuple[Array, Any]:
     """Minimizes a function using the L-BFGS solver.
 
     From https://optax.readthedocs.io/en/latest/_collections/examples/lbfgs.html#l-bfgs-solver

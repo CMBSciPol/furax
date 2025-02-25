@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import typing
 from typing import Any
 
 import jax
@@ -10,8 +11,6 @@ import yaml
 from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import init_logger, load_and_preprocess
 from sotodlib.site_pipeline.util import main_launcher
-
-from .sotodlib_utils import binned_demod_mapmaker, binned_mapmaker, ml_mapmaker, two_step_mapmaker
 
 logger = init_logger('preprocess')
 
@@ -82,7 +81,7 @@ def main(
             logger.info('Observationa data loaded')
 
     # Make maps
-    map_results = make_maps(obs, mapmaking_config, logger)  # type: ignore[arg-type]
+    map_results = make_maps(obs, mapmaking_config, logger)
     logger.info('Mapmaking finished')
 
     # Save results
@@ -106,31 +105,16 @@ def main(
             yaml.dump(mapmaking_config, f, default_flow_style=False)
             logger.info('Mapmaking config saved to file')
 
-    return map_results
+    return map_results  # type: ignore[no-any-return]
 
 
+@typing.no_type_check
 def make_maps(
     obs: AxisManager,
     config: dict[str, Any],
     logger: logging.Logger,
 ) -> dict[str, Any]:
-    demodulated = config.get('demodulated', True)
-    binned = config.get('binned', True)
-    has_templates = 'template' in config.keys()
-
-    if binned and demodulated:
-        return binned_demod_mapmaker(obs, config, logger=logger)
-
-    if binned and not demodulated:
-        if has_templates:
-            return two_step_mapmaker(obs, config, logger=logger)
-        else:
-            return binned_mapmaker(obs, config, logger=logger)
-
-    if not binned and not demodulated:
-        return ml_mapmaker(obs, config, logger=logger)
-
-    raise NotImplementedError('Specified mapmaker is currently not implemented')
+    pass
 
 
 def get_parser(parser: argparse.ArgumentParser | None = None) -> argparse.ArgumentParser:

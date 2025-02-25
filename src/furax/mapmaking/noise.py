@@ -158,3 +158,6 @@ class AtmosphericNoiseModel(NoiseModel):
         window = apodization_window(correlation_length)
 
         return SymmetricBandToeplitzOperator(invntt * window, in_structure)
+
+    def to_white_noise_model(self) -> WhiteNoiseModel:
+        return WhiteNoiseModel(sigma=self.sigma)

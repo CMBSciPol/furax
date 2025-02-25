@@ -1,3 +1,4 @@
+import typing
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
@@ -13,6 +14,7 @@ from numpy.typing import NDArray
 from toast.observation import default_values as defaults
 
 from furax.mapmaking import GroundObservationData
+from furax.mapmaking.noise import NoiseModel
 from furax.mapmaking.utils import get_local_meridian_angle
 from furax.obs.landscapes import StokesLandscape
 
@@ -122,6 +124,12 @@ class ToastObservationData(GroundObservationData):
         """Obtain pointing information and parallactic angles from the observation"""
         # TODO: call get_pixels() and get_local_meridian_angle() here
         raise NotImplementedError()
+
+    @typing.no_type_check
+    def get_noise_model(self) -> None | NoiseModel:
+        """Load precomputed noise model from the data, if present. Otherwise, return None"""
+        # TODO: implement loading of toast noise models
+        pass
 
     def get_pixels(self) -> Array:
         """Returns the pixel indices."""

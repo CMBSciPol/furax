@@ -11,6 +11,8 @@ from numpy.typing import NDArray
 
 from furax.obs.landscapes import StokesLandscape
 
+from .noise import NoiseModel
+
 
 @jax.tree_util.register_dataclass
 @dataclass
@@ -83,6 +85,11 @@ class GroundObservationData:
         self, landscape: StokesLandscape
     ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
         """Obtain pointing information and parallactic angles from the observation"""
+        ...
+
+    @abstractmethod
+    def get_noise_model(self) -> None | NoiseModel:
+        """Load precomputed noise model from the data, if present. Otherwise, return None"""
         ...
 
     def get_scanning_mask(self) -> NDArray[Any]:

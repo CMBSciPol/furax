@@ -22,7 +22,6 @@ from furax import (
     DiagonalOperator,
     IdentityOperator,
     IndexOperator,
-    SymmetricBandToeplitzOperator,
 )
 from furax.interfaces.sotodlib.observation import SotodlibObservationData
 from furax.mapmaking.preconditioner import BJPreconditioner
@@ -124,57 +123,14 @@ def get_scanning_masker(
     pass
 
 
+@typing.no_type_check
 def get_template_operator(
     obs: SotodlibObservationData, name: str, configs: dict[str, Any]
 ) -> templates.TemplateOperator:
     """Create and return a template operator corresponding to the
     name and configuration provided.
     """
-    n_dets = obs.n_dets
-
-    if name == 'polynomial':
-        max_poly_order: int = configs.get('max_poly_order', 0)
-        return templates.PolynomialTemplateOperator.create(
-            max_poly_order=max_poly_order,
-            intervals=obs.get_scanning_intervals(),
-            times=obs.get_timestamps(),
-            n_dets=n_dets,
-        )
-
-    if name == 'scan_synchronous':
-        min_poly_order: int = configs.get('min_poly_order', 0)
-        max_poly_order: int = configs.get('max_poly_order', 0)  # type: ignore[no-redef]
-        return templates.ScanSynchronousTemplateOperator.create(
-            min_poly_order=min_poly_order,
-            max_poly_order=max_poly_order,
-            azimuth=jnp.array(obs.get_azimuth()),
-            n_dets=n_dets,
-        )
-
-    if name == 'hwp_synchronous':
-        n_harmonics: int = configs.get('n_harmonics', 0)
-        return templates.HWPSynchronousTemplateOperator.create(
-            n_harmonics=n_harmonics, hwp_angles=obs.get_hwp_angles(), n_dets=n_dets
-        )
-
-    """
-    if name == 'common_mode':
-        # Assumes that the cross power spectral density is precomputed
-        # and stored as '_cross_psd'
-        freq, csd = observation_data._cross_psd
-        freq_threshold: float = config.get('freq_threshold')
-        n_modes: int = config.get('n_modes')
-
-        return templates.CommonModeTemplateOperator.create(
-            freq_threshold=freq_threshold,
-            n_modes=n_modes,
-            freq=freq,
-            csd=csd,
-            tods=observation_data.get_tods()
-        )
-    """
-
-    raise NotImplementedError(f'Template {name} is not implemented')
+    pass
 
 
 def template_operator_from_dict(
@@ -327,217 +283,22 @@ def binned_demod_mapmaker(
     return {'map': final_map, 'weighted_map': weighted_map, 'weight': weights}
 
 
+@typing.no_type_check
 def binned_mapmaker(
     observation: SotodlibObservationData,
     configs: dict[str, Any] | None,
     logger: logging.Logger | None = None,
 ) -> dict[str, Any]:
-    logger_info = lambda msg: logger.info(f'Binned Mapmaker: {msg}') if logger else None
-
-    obs = observation.observation
-    # Set mapmaking config variables
-    if configs is None:
-        configs = dict()
-    dtype = jnp.dtype(configs.get('dtype', 'float32'))
-    landscape_configs = configs.get('landscape', {})
-    scanning_mask = configs.get('scanning_mask', False)
-    hits_cut = configs.get('hits_cut', 1e-5)
-    cond_cut = configs.get('cond_cut', 1e-4)
-    debug = configs.get('debug', True)
-
-    # Data and landscape
-    data = jnp.array(obs.signal, dtype=dtype)
-    data_struct = ShapeDtypeStruct(data.shape, data.dtype)
-    landscape = get_landscape(obs, dtype=dtype, stokes='IQU', landscape_configs=landscape_configs)
-
-    # Acquisition (I, Q, U Maps -> TOD)
-    acquisition = get_acquisition(obs, demodulated=False, landscape=landscape)
-    logger_info('Created acquisition operator')
-
-    # Optional mask for scanning
-    if scanning_mask:
-        masker = get_scanning_masker(obs, in_structure=data_struct)
-        logger_info('Created scan intervals masking operator')
-        data_struct = masker.out_structure()  # Now with a subset of samples
-        acquisition = masker @ acquisition
-    else:
-        masker = IdentityOperator(data_struct)
-
-    # Noise
-    det_inv_var = 1.0 / np.var(data, axis=1)
-    det_weighter = DiagonalOperator(det_inv_var[:, None], in_structure=data_struct)
-    logger_info('Created inverse noise covariance operator')
-
-    # System matrix
-    system = BJPreconditioner.create((acquisition.T @ det_weighter @ acquisition).reduce())
-    logger_info('Created system operator')
-
-    # Mapmaking operator
-    binner = acquisition.T @ det_weighter @ masker
-    mapmaking_operator = system.inverse() @ binner
-
-    @jax.jit
-    def process(d):  # type: ignore[no-untyped-def]
-        return mapmaking_operator.reduce()(d)
-
-    logger_info('Set up mapmaking operator')
-
-    # Run mapmaking
-    res = process(data)
-    res.i.block_until_ready()
-    logger_info('Finished mapmaking')
-
-    if debug:
-        res = process(data)
-        res.i.block_until_ready()
-        logger_info('Test - second time - Finished mapmaking')
-
-    # Convert to ndmaps
-    if isinstance(landscape, WCSLandscape):
-        final_map = ndmap_from_wcs_landscape(Stokes.from_stokes(res.i, res.q, res.u), landscape)
-    else:
-        final_map = np.array([res.i, res.q, res.u])
-    weights = np.array(system.blocks)
-
-    # Map pixel selection
-    valid = select_pixel_indices(system.blocks, hits_cut=hits_cut, cond_cut=cond_cut)
-    logger_info(f'Selecting {jnp.sum(valid)}/{valid.size} pixels')
-    final_map[:, np.logical_not(valid)] = 0.0
-    weights[np.logical_not(valid), :, :] = 0.0
-
-    return {'map': final_map, 'weights': weights}
+    pass
 
 
+@typing.no_type_check
 def ml_mapmaker(
     observation: SotodlibObservationData,
     configs: dict[str, Any] | None,
     logger: logging.Logger | None = None,
 ) -> dict[str, Any]:
-    logger_info = lambda msg: logger.info(f'ML Mapmaker: {msg}') if logger else None
-
-    obs = observation.observation
-    # Set mapmaking config variables
-    if configs is None:
-        configs = dict()
-    dtype = jnp.dtype(configs.get('dtype', 'float64'))
-    correlation_length = configs.get('correlation_length', 1000)
-    psd_fmin = configs.get('psd_fmin', 1e-2)
-    landscape_configs = configs.get('landscape', {})
-    scanning_mask = configs.get('scanning_mask', False)
-    hits_cut = configs.get('hits_cut', 1e-2)
-    cond_cut = configs.get('cond_cut', 1e-2)
-    solver = configs.get('solver', dict())
-    rtol = solver.get('rtol', 1e-6)
-    atol = solver.get('atol', 0)
-    max_steps = solver.get('max_steps', 1000)
-    has_templates = 'template' in configs.keys()
-    if has_templates:
-        template_configs = configs.get('template', {})
-        template_names = list(template_configs.keys())
-
-    # Data and landscape
-    data = jnp.array(obs.signal, dtype=dtype)
-    data_struct = ShapeDtypeStruct(data.shape, dtype)
-    landscape = get_landscape(obs, dtype=dtype, stokes='IQU', landscape_configs=landscape_configs)
-
-    # Acquisition (pointing operator): I, Q, U Maps -> TOD
-    acquisition = get_acquisition(obs, demodulated=False, landscape=landscape)
-    logger_info('Created acquisition operator')
-
-    # Optional mask for scanning
-    if scanning_mask:
-        mask = jnp.array(observation.get_scanning_mask(), dtype=dtype)
-        mask_projector = BroadcastDiagonalOperator(mask, in_structure=data_struct)
-        logger_info('Created scan intervals masking operator')
-        logger_info(f'{round(np.sum(mask))}/{mask.shape[0]} samples used')
-    else:
-        mask_projector = IdentityOperator(data_struct)
-
-    # Noise
-    invntt = jnp.array(
-        get_invntt(obs, fmin=psd_fmin, correlation_length=correlation_length, normalize=True),
-        dtype=dtype,
-    )
-    invntt_op = SymmetricBandToeplitzOperator(invntt, in_structure=data_struct)
-    diag_invntt_op = DiagonalOperator(invntt[:, [0]], in_structure=data_struct)
-    logger_info('Created inverse noise covariance operator')
-
-    # System matrix with diagonal noise covariance and full map pixels
-    diag_system = BJPreconditioner.create(
-        acquisition.T @ mask_projector @ diag_invntt_op @ mask_projector @ acquisition
-    )
-    logger_info('Created diagonal system matrix')
-
-    # Map pixel selection
-    blocks = diag_system.get_blocks()
-    valid_inds = jnp.argwhere(select_pixel_indices(blocks, hits_cut=hits_cut, cond_cut=cond_cut))
-
-    logger_info(f'Proceeding with {valid_inds.shape[0]}/{prod(landscape.shape)} pixels')
-
-    # Preconditioner
-    if isinstance(landscape, WCSLandscape):
-        selector = IndexOperator(
-            (valid_inds[:, 0], valid_inds[:, 1]), in_structure=landscape.structure
-        )
-    elif isinstance(landscape, HealpixLandscape):
-        selector = IndexOperator((valid_inds,), in_structure=landscape.structure)
-    else:
-        raise NotImplementedError
-    # TODO: more efficient solution?
-    preconditioner = selector @ diag_system.inverse() @ selector.T
-
-    logger_info('Created Block Jacobi preconditioner')
-
-    # Templates (optional)
-    if has_templates:
-        template_op = template_operator_from_dict(obs, template_configs)
-        logger_info('Built template operators')
-
-    # Mapmaking operator
-    if has_templates:
-        p = BlockDiagonalOperator([preconditioner, IdentityOperator(template_op.in_structure())])
-        h = BlockRowOperator([acquisition @ selector.T, template_op])
-    else:
-        p = preconditioner
-        h = acquisition @ selector.T
-    mp = mask_projector
-    solver = lx.CG(rtol=rtol, atol=atol, max_steps=max_steps)
-    solver_options = {'preconditioner': lx.TaggedLinearOperator(p, lx.positive_semidefinite_tag)}
-    with Config(solver=solver, solver_options=solver_options):
-        mapmaking_operator = (h.T @ mp @ invntt_op @ mp @ h).I @ h.T @ mp @ invntt_op @ mp
-
-    @jax.jit
-    def process(d):  # type: ignore[no-untyped-def]
-        return mapmaking_operator.reduce()(d)
-
-    logger_info('Completed setting up the solver')
-
-    # Run mapmaking
-    if has_templates:
-        rec_map, tmpl_ampl = process(data)
-    else:
-        rec_map = process(data)
-    result_map = selector.T(rec_map)
-    result_map.i.block_until_ready()
-    logger_info('Finished mapmaking computation')
-
-    # Format output and compute auxilary data
-    if isinstance(landscape, WCSLandscape):
-        final_map = ndmap_from_wcs_landscape(result_map, landscape)
-    else:
-        final_map = np.array([result_map.i, result_map.q, result_map.u])
-    if has_templates:
-        projs = {
-            'proj_map': (mask_projector @ acquisition)(result_map),
-            **{
-                f'proj_{template_names[i]}': (mask_projector @ template_op.blocks[i])(tmpl_ampl[i])
-                for i in range(len(template_names))
-            },
-        }
-    else:
-        projs = {'proj_map': (mask_projector @ acquisition)(result_map)}
-
-    return {'map': final_map, 'weights': blocks, **projs}
+    pass
 
 
 def two_step_mapmaker(

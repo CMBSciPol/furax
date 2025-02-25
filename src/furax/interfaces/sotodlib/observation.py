@@ -12,6 +12,7 @@ from sotodlib import coords
 from sotodlib.core import AxisManager
 
 from furax.mapmaking import GroundObservationData
+from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 
 
@@ -119,6 +120,26 @@ class SotodlibObservationData(GroundObservationData):
             .complement()
             .mask()
         )
+
+    def get_noise_model(self) -> None | NoiseModel:
+        """Load precomputed noise model from the data, if present. Otherwise, return None"""
+
+        if 'preprocess' in self.observation.keys():
+            preproc = self.observation.preprocess
+            if 'psdT' in preproc.keys():
+                fit = preproc.noiseT_fit.fit  # columns: (fknee, w, alpha)
+            elif 'Pxx_raw' in preproc.keys():
+                fit = preproc.noise_signal_fit.fit  # columns: (fknee, w, alpha)
+            else:
+                return None
+
+            return AtmosphericNoiseModel(
+                sigma=jnp.sqrt(fit[:, 1]),
+                alpha=jnp.array(fit[:, 2]),
+                fk=jnp.array(fit[:, 0]),
+                f0=jnp.zeros_like(fit[:, 0]),
+            )
+        return None
 
     def get_noise_fits(self, fmin: float) -> NDArray[np.float64]:
         """Returns fitted values of the noise psd with 1/f and white noise,

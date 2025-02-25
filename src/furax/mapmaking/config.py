@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Literal
 
@@ -42,9 +42,22 @@ class _HWPSynchronousTemplateConfig:
 
 @dataclass(frozen=True)
 class TemplatesConfig:
-    polynomial: _PolyTemplateConfig = _PolyTemplateConfig()
-    scan_synchronous: _ScanSynchronousTemplateConfig = _ScanSynchronousTemplateConfig()
-    hwp_synchronous: _HWPSynchronousTemplateConfig = _HWPSynchronousTemplateConfig()
+    polynomial: _PolyTemplateConfig | None = None
+    scan_synchronous: _ScanSynchronousTemplateConfig | None = None
+    hwp_synchronous: _HWPSynchronousTemplateConfig | None = None
+
+    @classmethod
+    def get_defaults(cls) -> 'TemplatesConfig':
+        """Create a template config with default values for all templates."""
+        return cls(
+            polynomial=_PolyTemplateConfig(),
+            scan_synchronous=_ScanSynchronousTemplateConfig(),
+            hwp_synchronous=_HWPSynchronousTemplateConfig(),
+        )
+
+    @property
+    def is_empty(self) -> bool:
+        return all(getattr(self, f.name) is None for f in fields(self))
 
 
 @dataclass(frozen=True)
@@ -53,6 +66,7 @@ class MapMakingConfig:
     demodulated: bool = False
     scanning_mask: bool = False
     correlation_length: int = 1_000
+    nperseg: int = 1_024
     psd_fmin: float = 1e-2
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2
@@ -65,7 +79,7 @@ class MapMakingConfig:
     @classmethod
     def get_defaults(cls) -> 'MapMakingConfig':
         """Create a config with default values for all fields including optional ones."""
-        return cls(templates=TemplatesConfig())
+        return cls(templates=TemplatesConfig.get_defaults())
 
     @classmethod
     def load_yaml(cls, path: str | Path) -> 'MapMakingConfig':
@@ -89,7 +103,7 @@ class MapMakingConfig:
 
     @property
     def use_templates(self) -> bool:
-        return self.templates is not None
+        return (self.templates is not None) and (not self.templates.is_empty)
 
     @property
     def dtype(self) -> DTypeLike:

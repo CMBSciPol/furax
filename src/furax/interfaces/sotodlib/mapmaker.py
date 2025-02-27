@@ -1,23 +1,28 @@
 import argparse
-import logging
 import os
-import typing
 from typing import Any
 
 import jax
 import numpy as np
 import pixell.enmap
 import yaml
+from astropy.io import fits
+from astropy.wcs import WCS
 from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import init_logger, load_and_preprocess
 from sotodlib.site_pipeline.util import main_launcher
+
+from furax.mapmaking.config import MapMakingConfig
+from furax.mapmaking.mapmaker import MapMaker
+
+from .observation import SotodlibObservationData
 
 logger = init_logger('preprocess')
 
 
 def main(
     preprocess_config: str | dict[str, Any] | None,
-    mapmaking_config: str | dict[str, Any] | None,
+    mapmaking_config: str | MapMakingConfig,
     obs_id: str | None = None,
     det_select: dict[str, str] | None = None,
     verbosity: int = 3,
@@ -63,8 +68,11 @@ def main(
     logger.info('Initialised logger')
 
     if isinstance(mapmaking_config, str):
-        mapmaking_config = yaml.safe_load(open(mapmaking_config))
+        mapmaking_config = MapMakingConfig.load_yaml(path=mapmaking_config)
         logger.info('Mapmaking config loaded from file')
+    assert isinstance(mapmaking_config, MapMakingConfig), 'Bad mapmaking config file'
+
+    maker = MapMaker.from_config(config=mapmaking_config, logger=logger)
 
     if obs is None:
         if binary_filepath is not None:
@@ -79,20 +87,25 @@ def main(
 
             obs = load_and_preprocess(obs_id, preprocess_config, dets=det_select)
             logger.info('Observationa data loaded')
+    observation = SotodlibObservationData(observation=obs)
 
     # Make maps
-    map_results = make_maps(obs, mapmaking_config, logger)
+    results = maker.make_maps(observation=observation)
     logger.info('Mapmaking finished')
 
     # Save results
     if output_path is not None:
         os.makedirs(output_path, exist_ok=True)
 
-        for key, m in map_results.items():
-            if isinstance(m, pixell.enmap.ndmap):
-                pixell.enmap.write_map(f'{output_path}/{key}.hdf', m, allow_modify=True)
-            elif isinstance(m, jax.Array) or isinstance(m, np.ndarray):
+        for key, m in results.items():
+            if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
                 np.save(f'{output_path}/{key}.npy', np.array(m))
+            elif isinstance(m, pixell.enmap.ndmap):
+                pixell.enmap.write_map(f'{output_path}/{key}.hdf', m, allow_modify=True)
+            elif isinstance(m, WCS):
+                header = m.to_header()
+                hdu = fits.PrimaryHDU(header=header)
+                hdu.writeto(f'{output_path}/{key}.fits', overwrite=True)
             else:
                 continue
             logger.info(f'Mapmaking result [{key}] saved to file')
@@ -101,20 +114,10 @@ def main(
             yaml.dump(preprocess_config, f, default_flow_style=False)
             logger.info('Preproces config saved to file')
 
-        with open(f'{output_path}/mapmaking_config.yaml', 'w') as f:
-            yaml.dump(mapmaking_config, f, default_flow_style=False)
-            logger.info('Mapmaking config saved to file')
+        mapmaking_config.dump_yaml(f'{output_path}/mapmaking_config.yaml')
+        logger.info('Mapmaking config saved to file')
 
-    return map_results  # type: ignore[no-any-return]
-
-
-@typing.no_type_check
-def make_maps(
-    obs: AxisManager,
-    config: dict[str, Any],
-    logger: logging.Logger,
-) -> dict[str, Any]:
-    pass
+    return results
 
 
 def get_parser(parser: argparse.ArgumentParser | None = None) -> argparse.ArgumentParser:

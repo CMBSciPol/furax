@@ -8,6 +8,7 @@ from apischema import deserialize, serialize
 from jax.typing import DTypeLike
 
 ValidLandscapeType = Literal['WCS', 'Healpix']
+ValidMapMakingMethod = Literal['Binned', 'ML', 'TwoStep']
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,8 @@ class TemplatesConfig:
 
 @dataclass(frozen=True)
 class MapMakingConfig:
-    binned: bool = False
+    method: ValidMapMakingMethod = 'Binned'
+    binned: bool = True
     demodulated: bool = False
     scanning_mask: bool = False
     correlation_length: int = 1_000

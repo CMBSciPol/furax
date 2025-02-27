@@ -40,8 +40,24 @@ class MapMaker:
     def make_maps(self, observation: GroundObservationData) -> dict[str, Any]: ...
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> 'MapMaker':
-        return cls(config=MapMakingConfig.load_yaml(path), logger=logging.getLogger())
+    def from_config(
+        cls, config: MapMakingConfig, logger: logging.Logger | None = None
+    ) -> 'MapMaker':
+        if logger is None:
+            logger = logging.getLogger()
+
+        if config.method == 'Binned':
+            return BinnedMapMaker(config=config, logger=logger)
+        if config.method == 'ML':
+            return MLMapmaker(config=config, logger=logger)
+        if config.method == 'TwoStep':
+            return TwoStepMapmaker(config=config, logger=logger)
+
+        return ValueError('Invalid mapmaking method: {config.method}')
+
+    @classmethod
+    def from_yaml(cls, path: str | Path, logger: logging.Logger | None = None) -> 'MapMaker':
+        return cls.from_config(config=MapMakingConfig.load_yaml(path), logger=logger)
 
     def get_landscape(
         self, observation: GroundObservationData, stokes: ValidStokesType = 'IQU'
@@ -402,6 +418,108 @@ class MLMapmaker(MapMaker):
                 }
             else:
                 projs = {'proj_map': proj_map}
+            output['projs'] = projs
+
+        return output
+
+
+class TwoStepMapmaker(MapMaker):
+    """Class for binned mapmaking with templates, using the two-step estimation method"""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+
+        # Validation on config
+        if not self.config.binned:
+            raise ValueError('Two-Step Mapmaker is incompatible with binned=False')
+        if self.config.demodulated:
+            raise ValueError('Two-Step Mapmaker is incompatible with demodulated=True')
+        if not self.config.use_templates:
+            raise ValueError('Two-Step Mapmaker is incompatible with no templates')
+
+    def make_maps(self, observation: GroundObservationData) -> dict[str, Any]:
+        config = self.config
+        logger_info = lambda msg: self.logger.info(f'Two-Step Mapmaker: {msg}')
+
+        # Data and landscape
+        data = observation.get_tods().astype(config.dtype)
+        data_struct = ShapeDtypeStruct(data.shape, data.dtype)
+        landscape = self.get_landscape(observation, stokes='IQU')
+
+        # Acquisition (I, Q, U Maps -> TOD)
+        acquisition = self.get_acquisition(observation, landscape=landscape)
+        logger_info('Created acquisition operator')
+
+        # Optional mask for scanning
+        masker = self.get_scanning_masker(observation)
+        acquisition = masker @ acquisition
+        data_struct = masker.out_structure()  # Now with a subset of samples
+        logger_info('Created scanning mask operator')
+
+        # Noise
+        noise_model = self.get_or_fit_noise_model(observation)
+        inv_noise = noise_model.inverse_operator(data_struct)
+        logger_info('Created inverse noise covariance operator')
+
+        # System matrix
+        system = BJPreconditioner.create(acquisition.T @ masker @ inv_noise @ masker @ acquisition)
+        logger_info('Created system matrix')
+
+        # Map pixel selection
+        blocks = system.get_blocks()
+        selector = self.get_pixel_selector(blocks, landscape)
+        logger_info(
+            f'Selected {prod(selector.out_structure().shape)}\
+                            /{prod(landscape.shape)} pixels'
+        )
+
+        # Templates
+        template_op = self.get_template_operator(observation)
+        logger_info('Built template operators')
+
+        # Define operators
+        system_inv = selector @ system.inverse() @ selector
+        A = acquisition @ selector.T
+        M = inv_noise
+        mp = (masker.T @ masker).reduce()
+        FA = M - M @ mp @ A @ system_inv @ A.T @ mp @ M
+
+        solver = lineax.CG(**asdict(config.solver))
+        with Config(solver=solver):
+            template_estimator = (
+                (template_op.T @ mp @ FA @ mp @ template_op).I @ template_op.T @ mp @ FA @ mp
+            )
+        map_estimator = system_inv @ A.T @ mp @ M @ mp
+
+        @jax.jit
+        def process(d):  # type: ignore[no-untyped-def]
+            x = template_estimator(d)  # Template amplitude estimates
+            s = map_estimator(d - template_op(x))  # Map estimates
+            return s, x
+
+        logger_info('Completed setting up the solver')
+
+        # Run mapmaking
+        rec_map, tmpl_ampl = process(data)
+        result_map = selector.T(rec_map)
+        result_map.i.block_until_ready()
+        logger_info('Finished mapmaking computation')
+
+        # Format output and compute auxilary data
+        final_map = np.array([result_map.i, result_map.q, result_map.u])
+
+        output = {'map': final_map, 'weights': blocks, 'template': tmpl_ampl}
+        if isinstance(landscape, WCSLandscape):
+            output['wcs'] = landscape.wcs
+        if config.debug:
+            proj_map = (mp @ acquisition)(result_map)
+            projs = {
+                'proj_map': proj_map
+                ** {
+                    f'proj_{tmpl}': (mp @ template_op.blocks[tmpl])(tmpl_ampl[tmpl])
+                    for tmpl in tmpl_ampl.keys()
+                },
+            }
             output['projs'] = projs
 
         return output

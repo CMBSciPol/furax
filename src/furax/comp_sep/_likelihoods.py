@@ -2,7 +2,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from furax.operators.seds import CMBOperator, DustOperator, SynchrotronOperator, MixingMatrixOperator
+from furax.obs.operators._seds import CMBOperator, DustOperator, SynchrotronOperator, MixingMatrixOperator
 import operator
 
 from furax.tree import dot

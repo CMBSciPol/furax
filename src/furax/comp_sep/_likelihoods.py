@@ -1,10 +1,15 @@
+import operator
 from functools import partial
+
 import jax
 import jax.numpy as jnp
 
-from furax.obs.operators._seds import CMBOperator, DustOperator, SynchrotronOperator, MixingMatrixOperator
-import operator
-
+from furax.obs.operators._seds import (
+    CMBOperator,
+    DustOperator,
+    MixingMatrixOperator,
+    SynchrotronOperator,
+)
 from furax.tree import dot
 
 single_cluster_indices = patch_indices = {
@@ -52,7 +57,7 @@ def spectral_log_likelihood(
     AND, s = _base_spectral_log_likelihood(
         params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0
     )
-    return dot(AND, s) 
+    return dot(AND, s)
 
 
 @partial(jax.jit, static_argnums=(4, 5))

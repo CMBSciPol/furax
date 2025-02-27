@@ -57,7 +57,7 @@ class SotodlibObservationData(GroundObservationData):
 
     def get_azimuth(self) -> Float[Array, ' a']:
         """Returns the azimuth of the boresight for each sample"""
-        return jnp.array(self.observation)
+        return jnp.array(self.observation.boresight.az)
 
     def get_elapsed_time(self) -> Float[Array, ' a']:
         """Returns time (sec) of the samples since the observation began"""

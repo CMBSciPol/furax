@@ -139,6 +139,25 @@ class MapMaker:
         else:
             return IdentityOperator(in_structure)
 
+    def get_scanning_mask_projector(
+        self, observation: GroundObservationData
+    ) -> AbstractLinearOperator:
+        """Flag operator which sets the values outside the scanning intervals
+        of the given TOD (of shape (ndets, nsamps)) to zero.
+        """
+        in_structure = ShapeDtypeStruct(
+            shape=(observation.n_dets, observation.n_samples), dtype=self.config.dtype
+        )
+        if self.config.scanning_mask:
+            mask = observation.get_scanning_mask()
+            masking_projector = DiagonalOperator(
+                jnp.array(mask, dtype=self.config.dtype), in_structure=in_structure
+            )
+            return masking_projector
+
+        else:
+            return IdentityOperator(in_structure)
+
     def get_or_fit_noise_model(self, observation: GroundObservationData) -> NoiseModel:
         """Return a noise model for the observation, corresponding to
         the type (diagonal, toeplitz, ...) specified by the mapmaker.
@@ -301,7 +320,11 @@ class BinnedMapMaker(MapMaker):
         final_map = np.array([res.i, res.q, res.u])
         weights = np.array(system.get_blocks())
 
-        return {'map': final_map, 'weights': weights}
+        output = {'map': final_map, 'weights': weights}
+        if isinstance(landscape, WCSLandscape):
+            output['wcs'] = landscape.wcs
+
+        return output
 
 
 class MLMapmaker(MapMaker):
@@ -330,14 +353,17 @@ class MLMapmaker(MapMaker):
         logger_info('Created acquisition operator')
 
         # Optional mask for scanning
-        masker = self.get_scanning_masker(observation)
-        acquisition = masker @ acquisition
-        data_struct = masker.out_structure()  # Now with a subset of samples
+        masker = self.get_scanning_mask_projector(observation)
         logger_info('Created scanning mask operator')
 
         # Noise
         noise_model = self.get_or_fit_noise_model(observation)
-        inv_noise = noise_model.inverse_operator(data_struct)
+        inv_noise = noise_model.inverse_operator(
+            data_struct,
+            nperseg=config.nperseg,
+            sample_rate=observation.sample_rate,
+            correlation_length=config.correlation_length,
+        )
         logger_info('Created inverse noise covariance operator')
 
         # Approximate system matrix with diagonal noise covariance and full map pixels
@@ -374,7 +400,7 @@ class MLMapmaker(MapMaker):
         else:
             p = preconditioner
             h = acquisition @ selector.T
-        mp = (masker.T @ masker).reduce()  # This should reduce to a DiagonalOperator
+        mp = masker
 
         solver = lineax.CG(**asdict(config.solver))
         solver_options = {
@@ -451,9 +477,7 @@ class TwoStepMapmaker(MapMaker):
         logger_info('Created acquisition operator')
 
         # Optional mask for scanning
-        masker = self.get_scanning_masker(observation)
-        acquisition = masker @ acquisition
-        data_struct = masker.out_structure()  # Now with a subset of samples
+        masker = self.get_scanning_mask_projector(observation)
         logger_info('Created scanning mask operator')
 
         # Noise
@@ -478,10 +502,10 @@ class TwoStepMapmaker(MapMaker):
         logger_info('Built template operators')
 
         # Define operators
-        system_inv = selector @ system.inverse() @ selector
+        system_inv = selector @ system.inverse() @ selector.T
         A = acquisition @ selector.T
         M = inv_noise
-        mp = (masker.T @ masker).reduce()
+        mp = masker
         FA = M - M @ mp @ A @ system_inv @ A.T @ mp @ M
 
         solver = lineax.CG(**asdict(config.solver))
@@ -514,8 +538,8 @@ class TwoStepMapmaker(MapMaker):
         if config.debug:
             proj_map = (mp @ acquisition)(result_map)
             projs = {
-                'proj_map': proj_map
-                ** {
+                'proj_map': proj_map,
+                **{
                     f'proj_{tmpl}': (mp @ template_op.blocks[tmpl])(tmpl_ampl[tmpl])
                     for tmpl in tmpl_ampl.keys()
                 },

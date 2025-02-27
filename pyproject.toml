@@ -62,7 +62,7 @@ homepage = 'https://scipol.in2p3.fr'
 repository = 'https://github.com/CMBSciPol/furax'
 
 [project.scripts]
-furax-mapmaker = 'furax.interfaces.toast.mapmaker.sotodlib_mapmaker:main_cli'
+furax-mapmaker = 'furax.interfaces.sotodlib.mapmaker:main_cli'
 
 [tool.coverage.report]
 exclude_lines = [

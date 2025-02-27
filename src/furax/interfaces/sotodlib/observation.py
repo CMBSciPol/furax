@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
 
@@ -17,6 +18,7 @@ from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 
 
 @jax.tree_util.register_dataclass
+@dataclass
 class SotodlibObservationData(GroundObservationData):
     observation: AxisManager
 

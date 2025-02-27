@@ -131,10 +131,10 @@ class AtmosphericNoiseModel(NoiseModel):
         """
 
         nperseg: int = cast(int, kwargs.get('nperseg'))
-        sampling_rate: float = cast(float, kwargs.get('sampling_rate'))
+        sample_rate: float = cast(float, kwargs.get('sample_rate'))
         correlation_length: int = cast(int, kwargs.get('correlation_length'))
 
-        freq = jnp.fft.rfftfreq(nperseg, 1 / sampling_rate)
+        freq = jnp.fft.rfftfreq(nperseg, 1 / sample_rate)
         eval_psd = self.psd(freq)
         ntt = jnp.fft.irfft(eval_psd)[..., :correlation_length]
         window = apodization_window(correlation_length)
@@ -149,10 +149,10 @@ class AtmosphericNoiseModel(NoiseModel):
         """
 
         nperseg: int = cast(int, kwargs.get('nperseg'))
-        sampling_rate: float = cast(float, kwargs.get('sampling_rate'))
+        sample_rate: float = cast(float, kwargs.get('sample_rate'))
         correlation_length: int = cast(int, kwargs.get('correlation_length'))
 
-        freq = jnp.fft.rfftfreq(nperseg, 1 / sampling_rate)
+        freq = jnp.fft.rfftfreq(nperseg, 1 / sample_rate)
         eval_psd = self.psd(freq)
         invntt = jnp.fft.irfft(1.0 / eval_psd)[..., :correlation_length]
         window = apodization_window(correlation_length)

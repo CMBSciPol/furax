@@ -8,7 +8,8 @@ import pysm3
 import pysm3.units as u
 from jaxtyping import ArrayLike, DTypeLike, PyTree
 
-from furax.landscapes import FrequencyLandscape, StokesPyTree, ValidStokesType
+from furax.obs.landscapes import FrequencyLandscape
+from furax.obs.stokes import Stokes, ValidStokesType
 
 if sys.version_info < (3, 11):
     from typing_extensions import Self
@@ -17,7 +18,7 @@ else:
 
 
 @jax.tree_util.register_pytree_node_class
-class FGBusterInstrumentPytree:
+class FGBusterInstrument:
     """
     A PyTree-compatible class for representing an instrument as implemented in FGBuster framework.
 
@@ -49,12 +50,12 @@ class FGBusterInstrumentPytree:
 
     Examples:
         >>> # Create a default instrument
-        >>> instrument = FGBusterInstrumentPytree.default_instrument()
+        >>> instrument = FGBusterInstrument.default_instrument()
 
         >>> # Create an instrument from intensity depth
         >>> frequency = np.arange(10.0, 300, 30.0)
         >>> depth_i = (np.linspace(20, 40, 10) - 30) ** 2
-        >>> instrument = FGBusterInstrumentPytree.from_depth_i(frequency, depth_i)
+        >>> instrument = FGBusterInstrument.from_depth_i(frequency, depth_i)
 
         >>> # Convert depth to micro-Kelvin CMB units
         >>> instrument.depth_conversion(unit='uK_CMB')
@@ -72,7 +73,7 @@ class FGBusterInstrumentPytree:
         return (self.frequency, self.depth_i, self.depth_p), None
 
     @classmethod
-    def tree_unflatten(cls, _: Any, children: PyTree) -> 'FGBusterInstrumentPytree':
+    def tree_unflatten(cls, _: Any, children: PyTree) -> 'FGBusterInstrument':
         """
         Reconstructs the PyTree structure of the instrument.
         """
@@ -90,7 +91,7 @@ class FGBusterInstrumentPytree:
         return cls(frequency, depth_i, depth_p)
 
     @classmethod
-    def from_depth_i(cls, frequency: ArrayLike, depth_i: ArrayLike) -> 'FGBusterInstrumentPytree':
+    def from_depth_i(cls, frequency: ArrayLike, depth_i: ArrayLike) -> 'FGBusterInstrument':
         """
         Creates an instrument using intensity depth and derives polarization depth.
         """
@@ -98,7 +99,7 @@ class FGBusterInstrumentPytree:
         return cls(frequency, depth_i, depth_p)
 
     @classmethod
-    def from_depth_p(cls, frequency: ArrayLike, depth_p: ArrayLike) -> 'FGBusterInstrumentPytree':
+    def from_depth_p(cls, frequency: ArrayLike, depth_p: ArrayLike) -> 'FGBusterInstrument':
         """
         Creates an instrument using polarization depth and derives intensity depth.
         """
@@ -108,7 +109,7 @@ class FGBusterInstrumentPytree:
     @classmethod
     def from_params(
         cls, frequency: ArrayLike, depth_i: ArrayLike, depth_p: ArrayLike
-    ) -> 'FGBusterInstrumentPytree':
+    ) -> 'FGBusterInstrument':
         """
         Directly creates an instrument from given
         frequency, intensity depth, and polarization depth.
@@ -170,14 +171,14 @@ def get_sky(nside: int, tag: str = 'c1d0s0') -> pysm3.Sky:
 
 
 def get_observation(
-    instrument: FGBusterInstrumentPytree,
+    instrument: FGBusterInstrument,
     nside: int,
     tag='c1d0s0',
     add_noise: bool = False,
     stokes_type: ValidStokesType = 'IQU',
     dtype: DTypeLike = np.float32,
     unit: str = 'uK_CMB',
-) -> StokesPyTree:
+) -> Stokes:
     """
     Generates a simulated sky observation using a given instrument and Sky model.
 
@@ -192,7 +193,7 @@ def get_observation(
         sqrt(4 pi / (12 * nside^2)) * 180 / pi * 60.
 
     Args:
-        instrument (FGBusterInstrumentPytree): The instrument to use for the observation,
+        instrument (FGBusterInstrument): The instrument to use for the observation,
                    including frequency and depth information.
         nside (int): The nside parameter for the HEALPix resolution.
         tag (str, optional): A preset string defining
@@ -207,10 +208,10 @@ def get_observation(
             Defaults to 'uK_CMB'.
 
     Returns:
-        StokesPyTree: The simulated sky observation, including Gaussian and emission components.
+        Stokes: The simulated sky observation, including Gaussian and emission components.
 
     Examples:
-        >>> instrument = FGBusterInstrumentPytree.default_instrument()
+        >>> instrument = FGBusterInstrument.default_instrument()
         >>> nside = 128
         >>> stokes_type = 'IQU'
         >>> observation = get_observation(instrument,
@@ -245,7 +246,7 @@ def get_observation(
             case _:
                 raise ValueError(f'Invalid Stokes type {stokes_type}')
 
-        gauss_sky = StokesPyTree.from_stokes(*stoke_list)
+        gauss_sky = Stokes.from_stokes(*stoke_list)
 
     stoke_arrays: ArrayLike = np.array([np.zeros(gauss_sky.shape) for _ in stokes_type]).transpose(
         1, 0, 2
@@ -272,7 +273,7 @@ def get_observation(
     # From numpy array to Py²Tree
     stokes_array = stoke_arrays.transpose(1, 0, 2)
     stokes_array = jnp.array(stokes_array, dtype=dtype)
-    stokes_pytree = StokesPyTree.from_stokes(*stokes_array)
+    stokes_pytree = Stokes.from_stokes(*stokes_array)
     # Add emission to gaussian Sky
     emission_sky_pytree = jax.tree.map(lambda x, y: x + y, gauss_sky, stokes_pytree)
 

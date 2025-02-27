@@ -25,6 +25,7 @@ from .core import (
     symmetric,
     upper_triangular,
 )
+from ._instruments.sky import FGBusterInstrument , get_observation
 
 __all__ = [
     # core
@@ -55,4 +56,7 @@ __all__ = [
     'Config',
     # tree
     'tree',
+    # instrument
+    'FGBusterInstrument',
+    'get_observation',
 ]

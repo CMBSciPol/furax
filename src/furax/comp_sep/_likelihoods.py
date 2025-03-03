@@ -3,16 +3,21 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+from jaxtyping import Array, PyTree, Scalar
 
+from furax import AbstractLinearOperator
 from furax.obs.operators._seds import (
     CMBOperator,
     DustOperator,
     MixingMatrixOperator,
     SynchrotronOperator,
 )
+from furax.obs.stokes import Stokes
 from furax.tree import dot
 
-single_cluster_indices = patch_indices = {
+SpecParamType = dict[str, Stokes]
+
+single_cluster_indices = {
     'temp_dust_patches': None,
     'beta_dust_patches': None,
     'beta_pl_patches': None,
@@ -20,7 +25,15 @@ single_cluster_indices = patch_indices = {
 
 
 @partial(jax.jit, static_argnums=(5, 6))
-def _base_spectral_log_likelihood(params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0):
+def _base_spectral_log_likelihood(
+    params: PyTree[Array],
+    patch_indices: PyTree[Array],
+    nu: Array,
+    N: AbstractLinearOperator,
+    d: Stokes,
+    dust_nu0: float,
+    synchrotron_nu0: float,
+) -> tuple[SpecParamType, SpecParamType]:
     in_structure = d.structure_for((d.shape[1],))
 
     cmb = CMBOperator(nu, in_structure=in_structure)
@@ -52,24 +65,47 @@ def _base_spectral_log_likelihood(params, patch_indices, nu, N, d, dust_nu0, syn
 
 @partial(jax.jit, static_argnums=(4, 5))
 def spectral_log_likelihood(
-    params, nu, N, d, dust_nu0, synchrotron_nu0, patch_indices=single_cluster_indices
-):
+    params: PyTree[Array],
+    nu: Array,
+    N: AbstractLinearOperator,
+    d: Stokes,
+    dust_nu0: float,
+    synchrotron_nu0: float,
+    patch_indices: PyTree[Array] = single_cluster_indices,
+) -> Scalar:
     AND, s = _base_spectral_log_likelihood(
         params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0
     )
-    return dot(AND, s)
+    ll: Scalar = dot(AND, s)
+    return ll
 
 
 @partial(jax.jit, static_argnums=(4, 5))
 def negative_log_likelihood(
-    params, nu, N, d, dust_nu0, synchrotron_nu0, patch_indices=single_cluster_indices
-):
-    return -spectral_log_likelihood(params, nu, N, d, dust_nu0, synchrotron_nu0, patch_indices)
+    params: PyTree[Array],
+    nu: Array,
+    N: AbstractLinearOperator,
+    d: Stokes,
+    dust_nu0: float,
+    synchrotron_nu0: float,
+    patch_indices: PyTree[Array] = single_cluster_indices,
+) -> Scalar:
+    nll: Scalar = -spectral_log_likelihood(
+        params, nu, N, d, dust_nu0, synchrotron_nu0, patch_indices
+    )
+    return nll
 
 
 @partial(jax.jit, static_argnums=(4, 5))
 def spectral_cmb_variance(
-    params, nu, N, d, dust_nu0, synchrotron_nu0, patch_indices=single_cluster_indices
-):
+    params: PyTree[Array],
+    nu: Array,
+    N: AbstractLinearOperator,
+    d: Stokes,
+    dust_nu0: float,
+    synchrotron_nu0: float,
+    patch_indices: PyTree[Array] = single_cluster_indices,
+) -> Scalar:
     _, s = _base_spectral_log_likelihood(params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0)
-    return jax.tree.reduce(operator.add, jax.tree.map(jnp.var, s['cmb']))
+    cmb_var: Scalar = jax.tree.reduce(operator.add, jax.tree.map(jnp.var, s['cmb']))
+    return cmb_var

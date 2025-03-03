@@ -133,7 +133,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
         return self.inverse()
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return equinox.filter_eval_shape(self.mv, self.in_structure())
+        return jax.eval_shape(self.mv, self.in_structure())
 
     def in_size(self) -> int:
         """The number of elements in the input PyTree."""

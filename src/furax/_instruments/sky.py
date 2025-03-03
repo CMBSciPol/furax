@@ -6,10 +6,10 @@ import jax.numpy as jnp
 import numpy as np
 import pysm3
 import pysm3.units as u
-from jaxtyping import ArrayLike, DTypeLike, PyTree
+from jaxtyping import Array, DTypeLike, PyTree
 
-from furax.obs.landscapes import FrequencyLandscape
-from furax.obs.stokes import Stokes, ValidStokesType
+from ..obs.landscapes import FrequencyLandscape
+from ..obs.stokes import Stokes, ValidStokesType
 
 if sys.version_info < (3, 11):
     from typing_extensions import Self
@@ -29,9 +29,9 @@ class FGBusterInstrument:
     to desired units, and supporting JAX's PyTree structure.
 
     Attributes:
-        frequency (ArrayLike): Array of frequency values.
-        depth_i (ArrayLike): Depth values for intensity.
-        depth_p (ArrayLike): Depth values for polarization.
+        frequency (Array): Array of frequency values.
+        depth_i (Array): Depth values for intensity.
+        depth_p (Array): Depth values for polarization.
 
     Methods:
       default_instrument(): Returns a default instrument with predefined parameters.
@@ -61,12 +61,12 @@ class FGBusterInstrument:
         >>> instrument.depth_conversion(unit='uK_CMB')
     """
 
-    def __init__(self, frequency: ArrayLike, depth_i: ArrayLike, depth_p: ArrayLike):
-        self.frequency: ArrayLike = frequency
-        self.depth_i: ArrayLike = depth_i
-        self.depth_p: ArrayLike = depth_p
+    def __init__(self: Self, frequency: Array, depth_i: Array, depth_p: Array) -> None:
+        self.frequency: Array = frequency
+        self.depth_i: Array = depth_i
+        self.depth_p: Array = depth_p
 
-    def tree_flatten(self) -> tuple:
+    def tree_flatten(self: Self) -> tuple[PyTree, None]:
         """
         Flattens the PyTree structure of the instrument.
         """
@@ -80,7 +80,7 @@ class FGBusterInstrument:
         return cls(*children)
 
     @classmethod
-    def default_instrument(cls) -> Self:
+    def default_instrument(cls: type[Self]) -> Self:
         """
         Returns a default instrument with predefined parameters.
         """
@@ -88,10 +88,10 @@ class FGBusterInstrument:
         frequency = np.arange(10.0, 300, 30.0)
         depth_p = (np.linspace(20, 40, 10) - 30) ** 2
         depth_i = (np.linspace(20, 40, 10) - 30) ** 2
-        return cls(frequency, depth_i, depth_p)
+        return cls(frequency, depth_i, depth_p)  # type: ignore[arg-type]
 
     @classmethod
-    def from_depth_i(cls, frequency: ArrayLike, depth_i: ArrayLike) -> 'FGBusterInstrument':
+    def from_depth_i(cls, frequency: Array, depth_i: Array) -> 'FGBusterInstrument':
         """
         Creates an instrument using intensity depth and derives polarization depth.
         """
@@ -99,7 +99,7 @@ class FGBusterInstrument:
         return cls(frequency, depth_i, depth_p)
 
     @classmethod
-    def from_depth_p(cls, frequency: ArrayLike, depth_p: ArrayLike) -> 'FGBusterInstrument':
+    def from_depth_p(cls, frequency: Array, depth_p: Array) -> 'FGBusterInstrument':
         """
         Creates an instrument using polarization depth and derives intensity depth.
         """
@@ -107,9 +107,7 @@ class FGBusterInstrument:
         return cls(frequency, depth_i, depth_p)
 
     @classmethod
-    def from_params(
-        cls, frequency: ArrayLike, depth_i: ArrayLike, depth_p: ArrayLike
-    ) -> 'FGBusterInstrument':
+    def from_params(cls, frequency: Array, depth_i: Array, depth_p: Array) -> 'FGBusterInstrument':
         """
         Directly creates an instrument from given
         frequency, intensity depth, and polarization depth.
@@ -123,11 +121,11 @@ class FGBusterInstrument:
         self.depth_i *= u.arcmin * u.uK_CMB
         self.depth_p *= u.arcmin * u.uK_CMB
 
-        self.depth_i = self.depth_i.to(
+        self.depth_i = self.depth_i.to(  # type: ignore[attr-defined]
             getattr(u, unit) * u.arcmin,
             equivalencies=u.cmb_equivalencies(self.frequency * u.GHz),
         )
-        self.depth_p = self.depth_p.to(
+        self.depth_p = self.depth_p.to(  # type: ignore[attr-defined]
             getattr(u, unit) * u.arcmin,
             equivalencies=u.cmb_equivalencies(self.frequency * u.GHz),
         )
@@ -173,10 +171,10 @@ def get_sky(nside: int, tag: str = 'c1d0s0') -> pysm3.Sky:
 def get_observation(
     instrument: FGBusterInstrument,
     nside: int,
-    tag='c1d0s0',
+    tag: str = 'c1d0s0',
     add_noise: bool = False,
     stokes_type: ValidStokesType = 'IQU',
-    dtype: DTypeLike = np.float32,
+    dtype: DTypeLike = np.float64,
     unit: str = 'uK_CMB',
 ) -> Stokes:
     """
@@ -203,7 +201,7 @@ def get_observation(
         stokes_type (ValidStokesType, optional): The Stokes components
             to include ('I', 'QU', 'IQU'). Defaults to 'IQU'.
         dtype (DTypeLike, optional): The data type for the output.
-            Defaults to np.float32.
+            Defaults to np.float64.
         unit (str, optional): The unit for the depth conversion.
             Defaults to 'uK_CMB'.
 
@@ -248,7 +246,7 @@ def get_observation(
 
         gauss_sky = Stokes.from_stokes(*stoke_list)
 
-    stoke_arrays: ArrayLike = np.array([np.zeros(gauss_sky.shape) for _ in stokes_type]).transpose(
+    stoke_arrays: Array = np.array([np.zeros(gauss_sky.shape) for _ in stokes_type]).transpose(  # type: ignore[assignment]
         1, 0, 2
     )
     match stokes_type:
@@ -275,6 +273,6 @@ def get_observation(
     stokes_array = jnp.array(stokes_array, dtype=dtype)
     stokes_pytree = Stokes.from_stokes(*stokes_array)
     # Add emission to gaussian Sky
-    emission_sky_pytree = jax.tree.map(lambda x, y: x + y, gauss_sky, stokes_pytree)
+    emission_sky_pytree: Stokes = jax.tree.map(lambda x, y: x + y, gauss_sky, stokes_pytree)
 
     return emission_sky_pytree

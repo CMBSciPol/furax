@@ -122,14 +122,15 @@ class ToastObservationData(GroundObservationData):
         self, landscape: StokesLandscape
     ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
         """Obtain pointing information and parallactic angles from the observation"""
-        # TODO: call get_pixels() and get_local_meridian_angle() here
-        raise NotImplementedError()
+        indices = self.get_pixels()
+        para_ang = self.get_det_angles()
+        return indices, para_ang
 
     @typing.no_type_check
     def get_noise_model(self) -> None | NoiseModel:
         """Load precomputed noise model from the data, if present. Otherwise, return None"""
         # TODO: implement loading of toast noise models
-        pass
+        return None
 
     def get_pixels(self) -> Array:
         """Returns the pixel indices."""

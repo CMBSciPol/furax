@@ -8,6 +8,11 @@ from jaxtyping import Array, Float, Int, PyTree
 from scipy import constants
 
 from furax import AbstractLinearOperator, BlockRowOperator, BroadcastDiagonalOperator
+from furax import AbstractLinearOperator , diagonal
+from jaxtyping import Inexact , Array , PyTree , Scalar 
+from furax.obs.stokes import Stokes
+from typing import Any
+import equinox
 
 _H_OVER_K_GHZ = constants.h * 1e9 / constants.k
 _T_CMB = Planck15.Tcmb(0).value
@@ -407,3 +412,21 @@ def MixingMatrixOperator(**blocks: AbstractSEDOperator) -> AbstractLinearOperato
         >>> d = A(sky_map)
     """
     return BlockRowOperator(blocks).reduce()
+
+
+@diagonal
+class NoiseDiagonalOperator(AbstractLinearOperator):
+    vector: PyTree[Inexact[Array, '...']]
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
+                
+    def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
+        return jax.tree.map(lambda v , leaf : v * leaf , self.vector , x)
+
+    def inverse(self) -> AbstractLinearOperator:
+        return NoiseDiagonalOperator(1 / self.vector, self._in_structure)
+
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self._in_structure
+
+    def as_matrix(self) -> Inexact[Array, 'a b']:
+        return jax.tree.map(lambda x : jnp.diag(x.flatten()) , self.vector)

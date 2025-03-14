@@ -11,6 +11,9 @@ __all__ = ['Config']
 
 
 def default_solver_callback(solution: lx.Solution) -> None:
+    pass
+
+def verbose_solver_callback(solution: lx.Solution) -> None:
     num_steps = solution.stats['num_steps']
     ok = num_steps < solution.stats['max_steps']
     if ok:

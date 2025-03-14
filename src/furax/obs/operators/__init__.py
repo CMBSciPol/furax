@@ -7,6 +7,7 @@ from ._seds import (
     DustOperator,
     MixingMatrixOperator,
     SynchrotronOperator,
+    NoiseDiagonalOperator,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     'DustOperator',
     'SynchrotronOperator',
     'MixingMatrixOperator',
+    "NoiseDiagonalOperator",
 ]

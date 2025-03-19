@@ -8,7 +8,7 @@ from apischema import deserialize, serialize
 from jax.typing import DTypeLike
 
 ValidLandscapeType = Literal['WCS', 'Healpix']
-ValidMapMakingMethod = Literal['Binned', 'ML', 'TwoStep']
+ValidMapMakingMethod = Literal['Binned', 'ML', 'TwoStep', 'ATOP']
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,7 @@ class MapMakingConfig:
     solver: SolverConfig = SolverConfig()
     landscape: LandscapeConfig = LandscapeConfig()
     templates: TemplatesConfig | None = None
+    atop_tau: int = 0
 
     @classmethod
     def get_defaults(cls) -> 'MapMakingConfig':

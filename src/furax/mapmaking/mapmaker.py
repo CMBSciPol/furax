@@ -52,6 +52,8 @@ class MapMaker:
             return MLMapmaker(config=config, logger=logger)
         if config.method == 'TwoStep':
             return TwoStepMapmaker(config=config, logger=logger)
+        if config.method == 'ATOP':
+            return ATOPMapMaker(config=config, logger=logger)
 
         return ValueError('Invalid mapmaking method: {config.method}')
 
@@ -95,7 +97,7 @@ class MapMaker:
         # Note the minus sign on the rotation angle!
         tod_shape = pixel_inds.shape[:2]
         rotator = QURotationOperator.create(
-            tod_shape, dtype=landscape.dtype, stokes='IQU', angles=-para_ang
+            tod_shape, dtype=landscape.dtype, stokes=landscape.stokes, angles=-para_ang
         )
 
         return indexer, rotator
@@ -112,9 +114,14 @@ class MapMaker:
             return (rotator @ indexer).reduce()
         else:
             hwp_angle = observation.get_hwp_angles().astype(self.config.dtype)
-            modulator = IQUModulationOperator(
-                (observation.n_dets, observation.n_samples), hwp_angle, dtype=self.config.dtype
-            )
+            if landscape.stokes == 'IQU':
+                modulator = IQUModulationOperator(
+                    (observation.n_dets, observation.n_samples), hwp_angle, dtype=self.config.dtype
+                )
+            elif landscape.stokes == 'QU':
+                modulator = QUModulationOperator(
+                    (observation.n_dets, observation.n_samples), hwp_angle, dtype=self.config.dtype
+                )
             return (modulator @ rotator @ indexer).reduce()
 
     def get_scanning_masker(self, observation: GroundObservationData) -> AbstractLinearOperator:
@@ -549,6 +556,122 @@ class TwoStepMapmaker(MapMaker):
         return output
 
 
+class ATOPProjectionOperator(AbstractLinearOperator):
+    tau: int = equinox.field(static=True)
+    n_det: int = equinox.field(static=True)
+    n_samp: int = equinox.field(static=True)
+    _in_structure: jax.ShapeDtypeStruct = equinox.field(static=True)
+
+    def __init__(self, tau: int, *, in_structure: PyTree[jax.ShapeDtypeStruct]):
+        self.tau = tau
+        self._in_structure = in_structure
+        self.n_det, self.n_samp = in_structure.shape
+
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self._in_structure
+
+    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
+        if self.n_samp % self.tau == 0:
+            y = x.reshape(self.n_det, self.n_samp // self.tau, self.tau)
+            y = y - jnp.mean(y, axis=-1)[:, :, None]
+            return y.reshape(self.n_det, self.n_samp)
+        else:
+            n_int = self.n_samp // self.tau
+            y = x[:, : n_int * self.tau].reshape(self.n_det, n_int, self.tau)
+            y = y - jnp.mean(y, axis=-1)[:, :, None]
+            return jnp.concatenate(
+                [y.reshape(self.n_det, n_int * self.tau), x[:, -(self.n_samp % self.tau) :]], axis=1
+            )
+
+
+class ATOPMapMaker(MapMaker):
+    """Class for ATOP mapmaking with diagonal noise covariance."""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+
+        # Validation on config
+        if not self.config.binned:
+            raise ValueError('ATOP Mapmaker is currently incompatible with binned=False')
+        if self.config.atop_tau < 2:
+            raise ValueError('ATOP tau should be at least 2')
+
+    def make_maps(self, observation: GroundObservationData) -> dict[str, Any]:
+        config = self.config
+        logger_info = lambda msg: self.logger.info(f'ATOP Mapmaker: {msg}')
+
+        # Data and landscape
+        data = observation.get_tods().astype(config.dtype)
+        data_struct = ShapeDtypeStruct(data.shape, data.dtype)
+        landscape = self.get_landscape(observation, stokes='QU')
+
+        # Acquisition (I, Q, U Maps -> TOD)
+        acquisition = self.get_acquisition(observation, landscape=landscape)
+        logger_info('Created acquisition operator')
+
+        # Optional mask for scanning
+        masker = self.get_scanning_mask_projector(observation)
+        logger_info('Created scanning mask operator')
+
+        # Noise
+        logger_info('Noise assumed to be identity')
+
+        # ATOP projector
+        atop_projector = ATOPProjectionOperator(self.config.atop_tau, in_structure=data_struct)
+
+        # Approximate system matrix with diagonal noise covariance and full map pixels
+        diag_system = BJPreconditioner.create((acquisition.T @ masker @ acquisition).reduce())
+        logger_info('Created approximate system matrix')
+
+        # Map pixel selection
+        blocks = diag_system.get_blocks()
+        selector = self.get_pixel_selector(blocks, landscape)
+        logger_info(
+            f'Selected {prod(selector.out_structure().shape)}\
+                            /{prod(landscape.shape)} pixels'
+        )
+
+        # Preconditioner
+        preconditioner = selector @ diag_system.inverse() @ selector.T
+
+        # Mapmaking operator
+        p = preconditioner
+        h = acquisition @ selector.T
+        mp = masker
+        ap = atop_projector
+
+        solver = lineax.CG(**asdict(config.solver))
+        solver_options = {
+            'preconditioner': lineax.TaggedLinearOperator(p, lineax.positive_semidefinite_tag)
+        }
+        with Config(solver=solver, solver_options=solver_options):
+            mapmaking_operator = (h.T @ mp @ ap @ mp @ h).I @ h.T @ mp @ ap @ mp
+
+        @jax.jit
+        def process(d):  # type: ignore[no-untyped-def]
+            return mapmaking_operator.reduce()(d)
+
+        logger_info('Completed setting up the solver')
+
+        # Run mapmaking
+        rec_map = process(data)
+        result_map = selector.T(rec_map)
+        result_map.q.block_until_ready()
+        logger_info('Finished mapmaking computation')
+
+        # Format output and compute auxilary data
+        final_map = np.array([result_map.q, result_map.u])
+
+        output = {'map': final_map, 'weights': blocks}
+        if isinstance(landscape, WCSLandscape):
+            output['wcs'] = landscape.wcs
+        if config.debug:
+            proj_map = (mp @ acquisition)(result_map)
+            output['proj_map'] = proj_map
+
+        return output
+
+
 class IQUModulationOperator(AbstractLinearOperator):
     """Class that adds the input Stokes signals to a single HWP-modulated signal
     Similar to LinearPolarizerOperator @ QURotationOperator(hwp_angle), except that
@@ -571,6 +694,33 @@ class IQUModulationOperator(AbstractLinearOperator):
 
     def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:
         return x.i + self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u  # type: ignore[union-attr]
+
+    def in_structure(self) -> PyTree[ShapeDtypeStruct]:
+        return self._in_structure
+
+
+class QUModulationOperator(AbstractLinearOperator):
+    """Class that adds the input Stokes signals to a single HWP-modulated signal
+    Similar to LinearPolarizerOperator @ QURotationOperator(hwp_angle), except that
+    only half of the QU rotation needs to be computed
+    """
+
+    _in_structure: PyTree[ShapeDtypeStruct] = equinox.field(static=True)
+    cos_hwp_angle: Float[Array, ' samps']
+    sin_hwp_angle: Float[Array, ' samps']
+
+    def __init__(
+        self,
+        shape: tuple[int, ...],
+        hwp_angle: Float[Array, '...'],
+        dtype: DTypeLike = jnp.float32,
+    ) -> None:
+        self._in_structure = Stokes.class_for('QU').structure_for(shape, dtype)
+        self.cos_hwp_angle = jnp.cos(4 * hwp_angle.astype(dtype))
+        self.sin_hwp_angle = jnp.sin(4 * hwp_angle.astype(dtype))
+
+    def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:
+        return self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u  # type: ignore[union-attr]
 
     def in_structure(self) -> PyTree[ShapeDtypeStruct]:
         return self._in_structure

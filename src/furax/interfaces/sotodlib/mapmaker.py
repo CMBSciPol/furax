@@ -120,6 +120,29 @@ def main(
     return results
 
 
+def load_result(result_path: str) -> dict[str, Any]:
+    # Load results from a directory into a dictionary
+
+    if not os.path.isdir(result_path):
+        raise ValueError(f"Provided path '{result_path}' is not a directory.")
+
+    results = {}
+    for filename in os.listdir(result_path):
+        file_path = os.path.join(result_path, filename)
+
+        if os.path.isfile(file_path):
+            fn, extension = os.path.splitext(filename)
+            if extension == '.yaml':
+                results[fn] = yaml.safe_load(open(file_path))
+            elif extension == '.npy':
+                results[fn] = np.load(file_path)
+            elif filename == 'wcs.fits':
+                with fits.open(file_path) as hdul:
+                    results['wcs'] = WCS(hdul[0].header)
+
+    return results
+
+
 def get_parser(parser: argparse.ArgumentParser | None = None) -> argparse.ArgumentParser:
     if parser is None:
         parser = argparse.ArgumentParser()

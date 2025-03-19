@@ -87,11 +87,14 @@ class MapMaker:
         pixel_inds, para_ang = observation.get_pointing_and_parallactic_angles(landscape)
 
         if isinstance(landscape, WCSLandscape):
+            assert pixel_inds.shape[-1] == 2, 'Wrong WCS landscape format'
             indexer = IndexOperator(
                 (pixel_inds[..., 0], pixel_inds[..., 1]), in_structure=landscape.structure
             )
         elif isinstance(landscape, HealpixLandscape):
-            indexer = IndexOperator(pixel_inds[..., 0], in_structure=landscape.structure)
+            if pixel_inds.shape[-1] == 1:
+                pixel_inds = pixel_inds[..., 0]
+            indexer = IndexOperator(pixel_inds, in_structure=landscape.structure)
 
         # Rotation due to coordinate transform
         # Note the minus sign on the rotation angle!
@@ -122,6 +125,7 @@ class MapMaker:
                 modulator = QUModulationOperator(
                     (observation.n_dets, observation.n_samples), hwp_angle, dtype=self.config.dtype
                 )
+
             return (modulator @ rotator @ indexer).reduce()
 
     def get_scanning_masker(self, observation: GroundObservationData) -> AbstractLinearOperator:

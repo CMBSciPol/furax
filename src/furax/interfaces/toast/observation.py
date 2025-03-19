@@ -16,13 +16,13 @@ from toast.observation import default_values as defaults
 from furax.mapmaking import GroundObservationData
 from furax.mapmaking.noise import NoiseModel
 from furax.mapmaking.utils import get_local_meridian_angle
-from furax.obs.landscapes import StokesLandscape
+from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 
 
 @jax.tree_util.register_dataclass
 @dataclass
 class ToastObservationData(GroundObservationData):
-    observation: toast.Observation
+    data: toast.Data  # Currently intended to have only 1 observation
     det_selection: list[str] | None = None
     det_mask: int = defaults.det_mask_nonscience
 
@@ -34,6 +34,10 @@ class ToastObservationData(GroundObservationData):
     noise_model: str | None = defaults.noise_model
 
     _cross_psd: tuple[Float[Array, ' freq'], Float[Array, 'det det freq']] | None = None
+
+    @property
+    def observation(self) -> toast.Observation:
+        return self.data.obs[0]
 
     @property
     def n_samples(self) -> int:
@@ -73,7 +77,7 @@ class ToastObservationData(GroundObservationData):
 
     def get_hwp_angles(self) -> Array:
         """Returns the HWP angles."""
-        if self.hwp_angle is None:
+        if self.hwp_angle is None or self.hwp_angle not in self.observation.shared.keys():
             raise ValueError('HWP angle field not provided.')
         return jnp.array(self.observation.shared[self.hwp_angle].data)
 
@@ -95,7 +99,7 @@ class ToastObservationData(GroundObservationData):
             or 'scanning' not in self.observation.intervals
         ):
             # Scanning information missing, first compute the intervals
-            toast.ops.AzimuthIntervals().apply(self.observation)
+            toast.ops.AzimuthIntervals().apply(self.data)
         intervals = self.observation.intervals['scanning']
         return np.array(intervals[['first', 'last']].tolist())
 
@@ -115,27 +119,73 @@ class ToastObservationData(GroundObservationData):
         resolution: float = 8.0,  # units: arcmins
         projection: str = 'car',
     ) -> tuple[tuple[int, ...], WCS]:
-        """Returns the shape and object corresponding to a WCS projection"""
-        raise NotImplementedError()
+        """Returns the shape and object corresponding to a WCS projection.
+        Here, this is obtained while we compute the pointing and pixelisation."""
+
+        det_pointing = toast.ops.PointingDetectorSimple(
+            boresight=defaults.boresight_radec, quats=self.quats
+        )
+        det_pixels = toast.ops.PixelsWCS(
+            detector_pointing=det_pointing,
+            pixels=self.pixels,
+            resolution=[resolution * u.arcmin, resolution * u.arcmin],
+            dimensions=tuple(),
+        )
+        det_pixels.apply(self.data)
+
+        # Un-flatten the pixel indices
+        pix = self.get_pixels() % det_pixels._n_pix
+        pix_dec = pix // det_pixels.pix_lat
+        pix_ra = pix % det_pixels.pix_lat
+        tot_pix = np.stack([pix_dec, pix_ra], axis=-1)
+        del self.observation.detdata[self.pixels]
+        self.observation.detdata[self.pixels] = tot_pix
+
+        return det_pixels.wcs_shape, det_pixels.wcs
 
     def get_pointing_and_parallactic_angles(
         self, landscape: StokesLandscape
     ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
         """Obtain pointing information and parallactic angles from the observation"""
-        indices = self.get_pixels()
-        para_ang = self.get_det_angles()
-        return indices, para_ang
+
+        det_keys = self.observation.detdata.keys()
+        if self.quats in det_keys and self.pixels in det_keys:
+            indices = self.get_pixels()
+            para_ang = self.get_det_angles()
+            return indices, para_ang
+
+        elif isinstance(landscape, WCSLandscape):
+            raise ValueError(
+                'Pointing information is missing from the data. \
+                        This is supposed to be obtained when computing \
+                        the WCS kernel.'
+            )
+
+        det_pointing = toast.ops.PointingDetectorSimple(
+            boresight=defaults.boresight_radec, quats=self.quats
+        )
+
+        if isinstance(landscape, HealpixLandscape):
+            det_pixels = toast.ops.PixelsHealpix(
+                detector_pointing=det_pointing, pixels=self.pixels, nside=landscape.nside
+            )
+            det_pixels.apply(self.data)
+            indices = self.get_pixels()
+            para_ang = self.get_det_angles()
+            return indices, para_ang
+        else:
+            raise ValueError('Invalid landscape type')
+
+    def get_pixels(self) -> Array:
+        """Returns the pixel indices."""
+        return jnp.array(self.observation.detdata[self.pixels][self.dets, :].data)
+
+    def get_expanded_quats(self):  # type: ignore[no-untyped-def]
+        """Returns expanded pointing quaternions."""
+        return self.observation.detdata[self.quats][self.dets, :].data
 
     @typing.no_type_check
     def get_noise_model(self) -> None | NoiseModel:
         """Load precomputed noise model from the data, if present. Otherwise, return None"""
         # TODO: implement loading of toast noise models
         return None
-
-    def get_pixels(self) -> Array:
-        """Returns the pixel indices."""
-        return jnp.array(self.observation.detdata[self.pixels][self.dets, :])
-
-    def get_expanded_quats(self):  # type: ignore[no-untyped-def]
-        """Returns expanded pointing quaternions."""
-        return self.observation.detdata[self.quats][self.dets, :]

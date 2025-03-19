@@ -130,7 +130,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
 
         # Initialize the internal data interface
         self._data = ToastObservationData(
-            observation=data.obs[0],
+            data=data,
             det_selection=detectors,
             det_mask=self.det_mask,
             det_data=self.det_data,
@@ -320,7 +320,7 @@ class TemplateMapMaker(MapMaker):
 
         # Initialize the internal data interface
         self._data = ToastObservationData(
-            observation=data.obs[0],
+            data=data,
             det_selection=detectors,
             det_mask=self.det_mask,
             det_data=self.det_data,

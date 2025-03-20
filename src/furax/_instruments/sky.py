@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pysm3
 import pysm3.units as u
-from jaxtyping import Array, DTypeLike, PyTree , PRNGKeyArray
+from jaxtyping import Array, DTypeLike, PRNGKeyArray, PyTree
 
 from ..obs.landscapes import FrequencyLandscape
 from ..obs.stokes import Stokes, ValidStokesType
@@ -131,8 +131,8 @@ class FGBusterInstrument:
         )
 
         # add axis for broadcasting
-        self.depth_i = jnp.array(self.depth_i, dtype=dtype).reshape(-1, 1)  # type: ignore[attr-defined]
-        self.depth_p = jnp.array(self.depth_p, dtype=dtype).reshape(-1, 1)  # type: ignore[attr-defined]
+        self.depth_i = jnp.array(self.depth_i, dtype=dtype).reshape(-1, 1)
+        self.depth_p = jnp.array(self.depth_p, dtype=dtype).reshape(-1, 1)
         self.frequency = jnp.array(self.frequency, dtype=dtype)
 
 
@@ -170,13 +170,12 @@ def get_noise_sigma_from_instrument(
     nside: int,
     stokes_type: ValidStokesType = 'IQU',
     unit: str = 'uK_CMB',
-):
+) -> Stokes:
     instrument.depth_conversion(unit)
     resolution = jnp.sqrt(4 * jnp.pi / (12 * nside**2)) * 180 / jnp.pi * 60
-    stoke_list = []
     match stokes_type:
         case 'I':
-            return Stokes.from_stokes((instrument.depth_i / resolution))
+            return Stokes.from_stokes(instrument.depth_i / resolution)
         case 'QU':
             return Stokes.from_stokes(
                 (instrument.depth_p / resolution),
@@ -190,6 +189,7 @@ def get_noise_sigma_from_instrument(
             )
         case _:
             raise ValueError(f'Invalid Stokes type {stokes_type}')
+
 
 def get_observation(
     instrument: FGBusterInstrument,
@@ -249,7 +249,7 @@ def get_observation(
     if noise_ratio > 0:
         gauss_sky = landscapes.normal(key) * noise_ratio
         sigma = get_noise_sigma_from_instrument(instrument, nside, stokes_type, unit=unit)
-        noise_sky = gauss_sky * sigma 
+        noise_sky = gauss_sky * sigma
     else:
         noise_sky = landscapes.zeros()
 
@@ -280,7 +280,6 @@ def get_observation(
     stokes_array = jnp.array(stokes_array, dtype=dtype)
     stokes_pytree = Stokes.from_stokes(*stokes_array)
     # Add emission to gaussian Sky
-    ratio = noise_sky / stokes_pytree
     emission_sky_pytree: Stokes = jax.tree.map(lambda x, y: x + y, noise_sky, stokes_pytree)
 
     return emission_sky_pytree

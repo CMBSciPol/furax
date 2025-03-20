@@ -1,5 +1,6 @@
 import operator
 from functools import partial
+from typing import cast
 
 import jax
 import jax.numpy as jnp
@@ -62,6 +63,7 @@ def _base_spectral_log_likelihood(
 
     return AND, s
 
+
 @partial(jax.jit, static_argnums=(4, 5))
 def sky_signal(
     params: PyTree[Array],
@@ -71,11 +73,10 @@ def sky_signal(
     dust_nu0: float,
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
-) -> Scalar:
-    _, s = _base_spectral_log_likelihood(
-        params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0
-    )
-    return s
+) -> SpecParamType:
+    _, s = _base_spectral_log_likelihood(params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0)
+    return cast(SpecParamType, s)
+
 
 @partial(jax.jit, static_argnums=(4, 5))
 def spectral_log_likelihood(

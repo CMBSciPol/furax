@@ -195,7 +195,7 @@ def get_observation(
     instrument: FGBusterInstrument,
     nside: int,
     tag: str = 'c1d0s0',
-    add_noise: bool = False,
+    noise_ratio: float = 0.0,
     key: PRNGKeyArray = jax.random.PRNGKey(0),
     stokes_type: ValidStokesType = 'IQU',
     dtype: DTypeLike = np.float64,
@@ -220,8 +220,8 @@ def get_observation(
         nside (int): The nside parameter for the HEALPix resolution.
         tag (str, optional): A preset string defining
             the components of the sky model. Defaults to 'c1d0s0'.
-        add_noise (bool, optional): Whether to add noise to
-            the observation. Defaults to False.
+        noise_ratio (float, optional): The ratio of noise to add to the observation.
+            Defaults to 0.0.
         stokes_type (ValidStokesType, optional): The Stokes components
             to include ('I', 'QU', 'IQU'). Defaults to 'IQU'.
         dtype (DTypeLike, optional): The data type for the output.
@@ -246,9 +246,9 @@ def get_observation(
     pysm_sky = get_sky(nside, tag)
 
     landscapes = FrequencyLandscape(nside, instrument.frequency, stokes_type, dtype=dtype)
-    if add_noise:
-        gauss_sky = landscapes.normal(key)
-        sigma = get_noise_from_instrument(instrument, nside, stokes_type, unit=unit)
+    if noise_ratio > 0:
+        gauss_sky = landscapes.normal(key) * noise_ratio
+        sigma = get_noise_sigma_from_instrument(instrument, nside, stokes_type, unit=unit)
         noise_sky = gauss_sky * sigma 
     else:
         noise_sky = landscapes.zeros()
@@ -280,6 +280,7 @@ def get_observation(
     stokes_array = jnp.array(stokes_array, dtype=dtype)
     stokes_pytree = Stokes.from_stokes(*stokes_array)
     # Add emission to gaussian Sky
+    ratio = noise_sky / stokes_pytree
     emission_sky_pytree: Stokes = jax.tree.map(lambda x, y: x + y, noise_sky, stokes_pytree)
 
     return emission_sky_pytree

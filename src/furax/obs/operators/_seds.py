@@ -436,6 +436,7 @@ class NoiseDiagonalOperator(AbstractLinearOperator):
                   q=ShapeDtypeStruct(shape=(10, 49152), dtype=float64),
                   u=ShapeDtypeStruct(shape=(10, 49152), dtype=float64))
     """
+
     vector: PyTree[Inexact[Array, '...']]
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 

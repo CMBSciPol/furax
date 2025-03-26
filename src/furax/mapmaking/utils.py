@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from jax_grid_search import optimize
 from jaxtyping import Array, Float
 from optax import tree_utils as otu
 from scipy.signal import get_window
@@ -105,29 +106,43 @@ def fit_psd_model(f: Float[Array, ' a'], Pxx: Float[Array, ' a']) -> Float[Array
     """Fit a 1/f PSD model to the periodogram in log space."""
     loss = partial(_compute_loss, x=f[1:], y=jnp.log10(Pxx[1:]))
     opt = optax.lbfgs()
-    init_params = jnp.array([1.0, -1.0, 0.1, 1e-5])
-    final_params, _ = run_lbfgs(init_params, loss, opt, max_iter=100, tol=1e-3)
-    return final_params
+
+    # initial guess
+    maxf = f[-1]
+    init_params = jnp.array([1.0, -1.0, 0.1 * maxf, 0.01 * maxf])
+
+    # bounds
+    up = jnp.array([jnp.inf, -0.1, maxf, maxf])
+    lo = jnp.array([0, -10, e := jnp.finfo(f.dtype).eps, e])
+
+    # perform minimization
+    params, _ = optimize(
+        init_params,
+        loss,
+        opt,
+        max_iter=100,
+        tol=1e-6,
+        upper_bound=up,
+        lower_bound=lo,
+    )
+    return params  # type: ignore[no-any-return]
 
 
 def _compute_loss(
     params: Float[Array, '4'], x: Float[Array, ' a'], y: Float[Array, ' a']
 ) -> Float[Array, '1']:
     y_pred = _log_model(params, x)
-    loss = jnp.mean(optax.l2_loss(y_pred, y))
-    return loss
+    return jnp.mean(optax.l2_loss(y_pred, y))
 
 
 def _log_model(params: Float[Array, '4'], x: Float[Array, ' a']) -> Float[Array, ' a']:
     sigma, alpha, fk, f0 = _unpack(params)
-    log_psd = 2 * jnp.log10(sigma) + jnp.log10(1 + ((x + f0) / fk) ** alpha)
-    return log_psd
+    return 2 * jnp.log10(sigma) + jnp.log10(1 + ((x + f0) / fk) ** alpha)
 
 
 def _model(params: Float[Array, '4'], x: Float[Array, ' a']) -> Float[Array, ' a']:
     sigma, alpha, fk, f0 = _unpack(params)
-    psd = sigma**2 * (1 + ((x + f0) / fk) ** alpha)
-    return psd
+    return sigma**2 * (1 + ((x + f0) / fk) ** alpha)
 
 
 def _unpack(params: Float[Array, '4']) -> tuple[Array, Array, Array, Array]:

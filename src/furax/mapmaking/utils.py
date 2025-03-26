@@ -83,8 +83,7 @@ def interpolate_psd(
     interp_psd: Array = vf(log_x, log_xp, log_fp)
     interp_psd = jnp.power(10.0, interp_psd) - psd_shift
     # zero out DC value
-    interp_psd.at[..., 0].set(0)
-    return interp_psd
+    return interp_psd.at[..., 0].set(0)
 
 
 @partial(jax.jit, static_argnames=['nperseg', 'rate'])

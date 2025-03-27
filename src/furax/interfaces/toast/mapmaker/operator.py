@@ -160,6 +160,9 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
         invntt = self._get_invntt(tod_structure)
         logger.info('Built invntt')
 
+        logger.info(f'invntt band shape: {invntt.band_values.shape}')
+        logger.info(f'invntt band values: {invntt.band_values[:10, :10]}')
+
         # preconditioner
         # TODO replace by block Jacobi when available
         coverage = h.T(jnp.ones(tod_structure.shape, tod_structure.dtype))
@@ -172,6 +175,8 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
                 d,
             )
         ).inverse()
+
+        logger.info(f'coverage sum: {jnp.sum(coverage.i)}')
 
         # solving
         solver = lx.CG(rtol=self.rtol, atol=self.atol, max_steps=self.max_steps)
@@ -208,8 +213,9 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
 
     def _stage(self, hwp: bool) -> None:
         self._tods = self._data.get_tods()
-        self._pixels = self._data.get_pixels()
-        self._det_angles = self._data.get_det_angles()
+        self._pixels, self._det_angles = self._data.get_pointing_and_parallactic_angles(
+            landscape=HealpixLandscape(nside=self.nside, stokes=self.stokes)
+        )
         if not hwp:
             return
         self._hwp_angles = self._data.get_hwp_angles()
@@ -230,6 +236,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
         if self.noise_model is None:
             # estimate the noise covariance from the data
             psd = estimate_psd(self._tods, nperseg=nperseg, rate=sample_rate)
+            print(f'psd: {psd[:10, :10]}')
         else:
             # use an existing noise model
             freq, psd = self._data.get_psd_model()

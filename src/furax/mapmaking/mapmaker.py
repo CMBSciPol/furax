@@ -1,4 +1,5 @@
 import logging
+import os
 from abc import abstractmethod
 from dataclasses import asdict, dataclass
 from math import prod
@@ -10,6 +11,9 @@ import jax
 import jax.numpy as jnp
 import lineax
 import numpy as np
+import pixell.enmap
+from astropy.io import fits
+from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float, PyTree
 
@@ -37,7 +41,33 @@ class MapMaker:
         return
 
     @abstractmethod
-    def make_maps(self, observation: GroundObservationData) -> dict[str, Any]: ...
+    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]: ...
+
+    def make_maps(self, observation: GroundObservationData, out_dir: str | None) -> dict[str, Any]:
+        results = self.mapmake(observation)
+
+        # Save output
+        try:
+            if out_dir is not None:
+                os.makedirs(out_dir, exist_ok=True)
+                for key, m in results.items():
+                    if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
+                        np.save(f'{out_dir}/{key}.npy', np.array(m))
+                    elif isinstance(m, pixell.enmap.ndmap):
+                        pixell.enmap.write_map(f'{out_dir}/{key}.hdf', m, allow_modify=True)
+                    elif isinstance(m, WCS):
+                        header = m.to_header()
+                        hdu = fits.PrimaryHDU(header=header)
+                        hdu.writeto(f'{out_dir}/{key}.fits', overwrite=True)
+                    else:
+                        continue
+                    self.logger.info(f'Mapmaking result [{key}] saved to file')
+                self.config.dump_yaml(f'{out_dir}/mapmaking_config.yaml')
+                self.logger.info('Mapmaking config saved to file')
+        except Exception as err:
+            self.logger.info(f'Error while saving output: {err}')
+
+        return results
 
     @classmethod
     def from_config(
@@ -222,7 +252,8 @@ class MapMaker:
         the minimum fractional hits (hits_cut) and condition number (cond_cut) criteria"""
         config = self.config
 
-        eigs = jnp.linalg.eigvalsh(blocks)
+        # eigs = jnp.linalg.eigvalsh(blocks)
+        eigs = np.linalg.eigvalsh(blocks)
         valid = jnp.logical_and(
             eigs[..., -1] > config.hits_cut * eigs[..., -1].max(),
             eigs[..., 0] > config.cond_cut * eigs[..., -1],
@@ -279,7 +310,7 @@ class BinnedMapMaker(MapMaker):
         if not self.config.binned:
             raise ValueError('Binned Mapmaker is incompatible with binned=False')
 
-    def make_maps(self, observation: GroundObservationData) -> dict[str, Any]:
+    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'Binned Mapmaker: {msg}')
 
@@ -350,7 +381,7 @@ class MLMapmaker(MapMaker):
         if self.config.demodulated:
             raise ValueError('ML Mapmaker is incompatible with demodulated=True')
 
-    def make_maps(self, observation: GroundObservationData) -> dict[str, Any]:
+    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'ML Mapmaker: {msg}')
 
@@ -474,7 +505,7 @@ class TwoStepMapmaker(MapMaker):
         if not self.config.use_templates:
             raise ValueError('Two-Step Mapmaker is incompatible with no templates')
 
-    def make_maps(self, observation: GroundObservationData) -> dict[str, Any]:
+    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'Two-Step Mapmaker: {msg}')
 
@@ -600,7 +631,7 @@ class ATOPMapMaker(MapMaker):
         if self.config.atop_tau < 2:
             raise ValueError('ATOP tau should be at least 2')
 
-    def make_maps(self, observation: GroundObservationData) -> dict[str, Any]:
+    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'ATOP Mapmaker: {msg}')
 

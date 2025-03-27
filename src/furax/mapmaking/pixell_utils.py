@@ -1,7 +1,7 @@
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import pixell
+import pixell.enmap
 
 from furax.obs.landscapes import WCSLandscape
 from furax.obs.stokes import StokesPyTreeType

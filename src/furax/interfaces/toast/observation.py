@@ -83,7 +83,7 @@ class ToastObservationData(GroundObservationData):
 
     def get_psd_model(self) -> tuple[Array, Array]:
         """Returns frequencies and PSD values of the noise model."""
-        if self.noise_model is None:
+        if self.noise_model is None or self.noise_model not in self.observation.keys():
             raise ValueError('Noise model not provided.')
         model = self.observation[self.noise_model]
         freq = jnp.array([model.freq(det) for det in self.dets])
@@ -187,5 +187,22 @@ class ToastObservationData(GroundObservationData):
     @typing.no_type_check
     def get_noise_model(self) -> None | NoiseModel:
         """Load precomputed noise model from the data, if present. Otherwise, return None"""
-        # TODO: implement loading of toast noise models
+
+        noise_keys = ['psd_fmin', 'psd_fknee', 'psd_alpha', 'psd_net']
+        fp_data = self.observation.telescope.focalplane.detector_data
+        for key in noise_keys:
+            if key not in fp_data.colnames:
+                # Noise model cannot be loaded from the observation
+                return None
+
         return None
+
+        """
+        noise_model = AtmosphericNoiseModel(
+            sigma=jnp.array(fp_data['psd_net'].value),
+            alpha=jnp.array(fp_data['psd_alpha'].value),
+            fk=jnp.array(fp_data['psd_fknee'].value),
+            f0=jnp.array(fp_data['psd_fmin'].value)
+        )
+        return noise_model
+        """

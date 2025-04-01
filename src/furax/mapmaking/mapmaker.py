@@ -21,7 +21,7 @@ from furax import AbstractLinearOperator, Config, DiagonalOperator, IdentityOper
 from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
 from furax.interfaces.toast.mapmaker import templates
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
-from furax.obs.operators import QURotationOperator
+from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
 
 from ._observation_data import GroundObservationData
@@ -114,7 +114,7 @@ class MapMaker:
     ) -> tuple[IndexOperator, QURotationOperator]:
         """Operators containing pointing information with given observation"""
 
-        pixel_inds, para_ang = observation.get_pointing_and_parallactic_angles(landscape)
+        pixel_inds, spin_ang = observation.get_pointing_and_spin_angles(landscape)
 
         if isinstance(landscape, WCSLandscape):
             assert pixel_inds.shape[-1] == 2, 'Wrong WCS landscape format'
@@ -127,10 +127,9 @@ class MapMaker:
             indexer = IndexOperator(pixel_inds, in_structure=landscape.structure)
 
         # Rotation due to coordinate transform
-        # Note the minus sign on the rotation angle!
         tod_shape = pixel_inds.shape[:2]
         rotator = QURotationOperator.create(
-            tod_shape, dtype=landscape.dtype, stokes=landscape.stokes, angles=-para_ang
+            tod_shape, dtype=landscape.dtype, stokes=landscape.stokes, angles=spin_ang
         )
 
         return indexer, rotator
@@ -146,17 +145,18 @@ class MapMaker:
         if self.config.demodulated:
             return (rotator @ indexer).reduce()
         else:
-            hwp_angle = observation.get_hwp_angles().astype(self.config.dtype)
-            if landscape.stokes == 'IQU':
-                modulator = IQUModulationOperator(
-                    (observation.n_dets, observation.n_samples), hwp_angle, dtype=self.config.dtype
-                )
-            elif landscape.stokes == 'QU':
-                modulator = QUModulationOperator(
-                    (observation.n_dets, observation.n_samples), hwp_angle, dtype=self.config.dtype
-                )
+            meta = {
+                'shape': (observation.n_dets, observation.n_samples),
+                'stokes': landscape.stokes,
+                'dtype': self.config.dtype,
+            }
+            polarizer = LinearPolarizerOperator.create(**meta)  # type: ignore[arg-type]
+            hwp = HWPOperator.create(
+                **meta,  # type: ignore[arg-type]
+                angles=observation.get_hwp_angles().astype(self.config.dtype),
+            )
 
-            return (modulator @ rotator @ indexer).reduce()
+            return (polarizer @ hwp @ rotator @ indexer).reduce()
 
     def get_scanning_masker(self, observation: GroundObservationData) -> AbstractLinearOperator:
         """Flag operator which selects only the scanning intervals

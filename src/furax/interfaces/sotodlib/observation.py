@@ -77,10 +77,10 @@ class SotodlibObservationData(GroundObservationData):
 
         return wcs_shape, wcs_kernel
 
-    def get_pointing_and_parallactic_angles(
+    def get_pointing_and_spin_angles(
         self, landscape: StokesLandscape
     ) -> tuple[Integer[Array, 'dets samps 2'], Float[Array, 'dets samps']]:
-        """Obtain pointing information and parallactic angles from the observation"""
+        """Obtain pointing information and spin angles from the observation"""
 
         # Projection Matrix class instance for the observation
         if isinstance(landscape, WCSLandscape):
@@ -104,9 +104,9 @@ class SotodlibObservationData(GroundObservationData):
         pixel_inds, spin_proj = proj.get_pointing_matrix(assembly)
         pixel_inds = np.array(pixel_inds)
         spin_proj = jnp.array(spin_proj, dtype=landscape.dtype)
-        para_ang = jnp.arctan2(spin_proj[..., 2], spin_proj[..., 1]) / 2.0
+        spin_ang = jnp.arctan2(spin_proj[..., 2], spin_proj[..., 1]) / 2.0
 
-        return pixel_inds, para_ang
+        return pixel_inds, spin_ang
 
     def get_timestamps(self) -> Float[Array, ' a']:
         """Returns time (sec) of the samples since the observation began"""

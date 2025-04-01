@@ -234,7 +234,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
         else:
             # use an existing noise model
             freq, psd = self._data.get_psd_model()
-            psd = interpolate_psd(freq, psd, fft_size=nperseg, rate=self.sample_rate)
+            psd = interpolate_psd(freq, psd, fft_size=nperseg, rate=sample_rate)
 
         invntt = psd_to_invntt(psd, self.lagmax)
         return SymmetricBandToeplitzOperator(invntt, structure)
@@ -251,8 +251,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
                 **meta, angles=self._det_angles - self._gamma[:, None]
             )
             acquisition = polarizer @ hwp @ rotation @ sampling
-            reduced_acquisition = acquisition.reduce()
-            return reduced_acquisition
+            return acquisition.reduce()
         else:
             polarizer = LinearPolarizerOperator.create(**meta, angles=self._det_angles)
             # no need for reduction here

@@ -178,11 +178,11 @@ class ToastObservationData(GroundObservationData):
 
     def get_pixels(self) -> Array:
         """Returns the pixel indices."""
-        return jnp.array(self.observation.detdata[self.pixels][self.dets, :].data)
+        return jnp.array(self.observation.detdata[self.pixels][self.dets, :])
 
-    def get_expanded_quats(self):  # type: ignore[no-untyped-def]
+    def get_expanded_quats(self) -> Array:
         """Returns expanded pointing quaternions."""
-        return self.observation.detdata[self.quats][self.dets, :].data
+        return jnp.array(self.observation.detdata[self.quats][self.dets, :])
 
     @typing.no_type_check
     def get_noise_model(self) -> None | NoiseModel:

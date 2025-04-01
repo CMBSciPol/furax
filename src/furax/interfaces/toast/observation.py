@@ -143,16 +143,16 @@ class ToastObservationData(GroundObservationData):
 
         return det_pixels.wcs_shape, det_pixels.wcs
 
-    def get_pointing_and_parallactic_angles(
+    def get_pointing_and_spin_angles(
         self, landscape: StokesLandscape
     ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
-        """Obtain pointing information and parallactic angles from the observation"""
+        """Obtain pointing information and spin angles from the observation"""
 
         det_keys = self.observation.detdata.keys()
         if self.quats in det_keys and self.pixels in det_keys:
             indices = self.get_pixels()
-            para_ang = self.get_det_angles()
-            return indices, para_ang
+            spin_ang = self.get_det_angles() - 2 * self.get_det_offset_angles()[:, None]
+            return indices, spin_ang
 
         elif isinstance(landscape, WCSLandscape):
             raise ValueError(
@@ -171,8 +171,8 @@ class ToastObservationData(GroundObservationData):
             )
             det_pixels.apply(self.data)
             indices = self.get_pixels()
-            para_ang = self.get_det_angles()
-            return indices, para_ang
+            spin_ang = self.get_det_angles() - 2 * self.get_det_offset_angles()[:, None]
+            return indices, spin_ang
         else:
             raise ValueError('Invalid landscape type')
 

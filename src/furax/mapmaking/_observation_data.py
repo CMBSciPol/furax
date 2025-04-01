@@ -81,10 +81,10 @@ class GroundObservationData:
         ...
 
     @abstractmethod
-    def get_pointing_and_parallactic_angles(
+    def get_pointing_and_spin_angles(
         self, landscape: StokesLandscape
     ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
-        """Obtain pointing information and parallactic angles from the observation"""
+        """Obtain pointing information and spin angles from the observation"""
         ...
 
     @abstractmethod

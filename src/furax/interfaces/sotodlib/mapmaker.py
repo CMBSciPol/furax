@@ -2,9 +2,7 @@ import argparse
 import os
 from typing import Any
 
-import jax
 import numpy as np
-import pixell.enmap
 import yaml
 from astropy.io import fits
 from astropy.wcs import WCS
@@ -90,32 +88,15 @@ def main(
     observation = SotodlibObservationData(observation=obs)
 
     # Make maps
-    results = maker.make_maps(observation=observation)
+    results = maker.make_maps(observation=observation, out_dir=output_path)
     logger.info('Mapmaking finished')
 
     # Save results
     if output_path is not None:
         os.makedirs(output_path, exist_ok=True)
-
-        for key, m in results.items():
-            if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
-                np.save(f'{output_path}/{key}.npy', np.array(m))
-            elif isinstance(m, pixell.enmap.ndmap):
-                pixell.enmap.write_map(f'{output_path}/{key}.hdf', m, allow_modify=True)
-            elif isinstance(m, WCS):
-                header = m.to_header()
-                hdu = fits.PrimaryHDU(header=header)
-                hdu.writeto(f'{output_path}/{key}.fits', overwrite=True)
-            else:
-                continue
-            logger.info(f'Mapmaking result [{key}] saved to file')
-
         with open(f'{output_path}/preprocess_config.yaml', 'w') as f:
             yaml.dump(preprocess_config, f, default_flow_style=False)
             logger.info('Preproces config saved to file')
-
-        mapmaking_config.dump_yaml(f'{output_path}/mapmaking_config.yaml')
-        logger.info('Mapmaking config saved to file')
 
     return results
 

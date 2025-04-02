@@ -85,7 +85,7 @@ class MapMaker:
         if config.method == 'ATOP':
             return ATOPMapMaker(config=config, logger=logger)
 
-        return ValueError('Invalid mapmaking method: {config.method}')
+        raise ValueError(f'Invalid mapmaking method: {config.method}')
 
     @classmethod
     def from_yaml(cls, path: str | Path, logger: logging.Logger | None = None) -> 'MapMaker':

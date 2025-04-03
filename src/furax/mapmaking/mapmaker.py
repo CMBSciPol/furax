@@ -1,7 +1,7 @@
-import logging
 import os
 from abc import abstractmethod
 from dataclasses import asdict, dataclass
+from logging import Logger
 from math import prod
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,7 @@ from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
 
+from ._logger import logger as furax_logger
 from ._observation_data import GroundObservationData
 from .config import MapMakingConfig
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
@@ -35,7 +36,7 @@ class MapMaker:
     """Class for generic mapmakers which consume GroundObservationData."""
 
     config: MapMakingConfig
-    logger: logging.Logger
+    logger: Logger = furax_logger
 
     def __post_init__(self) -> None:
         return
@@ -70,26 +71,23 @@ class MapMaker:
         return results
 
     @classmethod
-    def from_config(
-        cls, config: MapMakingConfig, logger: logging.Logger | None = None
-    ) -> 'MapMaker':
+    def from_config(cls, config: MapMakingConfig, logger: Logger | None = None) -> 'MapMaker':
+        """Return the appropriate mapmaker based on the config's mapmaking method."""
+        maker = {
+            'Binned': BinnedMapMaker,
+            'ML': MLMapmaker,
+            'TwoStep': TwoStepMapmaker,
+            'ATOP': ATOPMapMaker,
+        }[config.method]
+
         if logger is None:
-            logger = logging.getLogger()
-
-        if config.method == 'Binned':
-            return BinnedMapMaker(config=config, logger=logger)
-        if config.method == 'ML':
-            return MLMapmaker(config=config, logger=logger)
-        if config.method == 'TwoStep':
-            return TwoStepMapmaker(config=config, logger=logger)
-        if config.method == 'ATOP':
-            return ATOPMapMaker(config=config, logger=logger)
-
-        raise ValueError(f'Invalid mapmaking method: {config.method}')
+            return maker(config)
+        else:
+            return maker(config, logger=logger)
 
     @classmethod
-    def from_yaml(cls, path: str | Path, logger: logging.Logger | None = None) -> 'MapMaker':
-        return cls.from_config(config=MapMakingConfig.load_yaml(path), logger=logger)
+    def from_yaml(cls, path: str | Path, logger: Logger | None = None) -> 'MapMaker':
+        return cls.from_config(MapMakingConfig.load_yaml(path), logger=logger)
 
     def get_landscape(
         self, observation: GroundObservationData, stokes: ValidStokesType = 'IQU'

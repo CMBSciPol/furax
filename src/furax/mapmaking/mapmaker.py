@@ -81,9 +81,9 @@ class MapMaker:
         }[config.method]
 
         if logger is None:
-            return maker(config)
+            return maker(config)  # type: ignore[abstract]
         else:
-            return maker(config, logger=logger)
+            return maker(config, logger=logger)  # type: ignore[abstract]
 
     @classmethod
     def from_yaml(cls, path: str | Path, logger: Logger | None = None) -> 'MapMaker':

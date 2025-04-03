@@ -57,7 +57,7 @@ class TemplatesConfig:
         )
 
     @property
-    def is_empty(self) -> bool:
+    def empty(self) -> bool:
         return all(getattr(self, f.name) is None for f in fields(self))
 
 
@@ -106,7 +106,7 @@ class MapMakingConfig:
 
     @property
     def use_templates(self) -> bool:
-        return (self.templates is not None) and (not self.templates.is_empty)
+        return (self.templates is not None) and (not self.templates.empty)
 
     @property
     def dtype(self) -> DTypeLike:

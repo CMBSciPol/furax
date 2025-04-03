@@ -99,13 +99,12 @@ class MapMaker:
             )
             return WCSLandscape(wcs_shape, wcs_kernel, stokes=stokes, dtype=self.config.dtype)
 
-        elif self.config.landscape.type == 'Healpix':
+        if self.config.landscape.type == 'Healpix':
             return HealpixLandscape(
                 nside=self.config.landscape.nside, stokes=stokes, dtype=self.config.dtype
             )
 
-        else:
-            raise TypeError('Landscape type not supported')
+        raise TypeError('Landscape type not supported')
 
     def get_pointing_operators(
         self, observation: GroundObservationData, landscape: StokesLandscape
@@ -163,20 +162,19 @@ class MapMaker:
         in_structure = ShapeDtypeStruct(
             shape=(observation.n_dets, observation.n_samples), dtype=self.config.dtype
         )
-        if self.config.scanning_mask:
-            mask = observation.get_scanning_mask()
-            out_structure = ShapeDtypeStruct(
-                shape=(observation.n_dets, np.sum(mask)), dtype=self.config.dtype
-            )
-            masker = IndexOperator(
-                (slice(None), jnp.array(mask)),
-                in_structure=in_structure,
-                out_structure=out_structure,
-            )
-            return masker
-
-        else:
+        if not self.config.scanning_mask:
             return IdentityOperator(in_structure)
+
+        mask = observation.get_scanning_mask()
+        out_structure = ShapeDtypeStruct(
+            shape=(observation.n_dets, np.sum(mask)), dtype=self.config.dtype
+        )
+        masker = IndexOperator(
+            (slice(None), jnp.array(mask)),
+            in_structure=in_structure,
+            out_structure=out_structure,
+        )
+        return masker
 
     def get_scanning_mask_projector(
         self, observation: GroundObservationData
@@ -187,15 +185,14 @@ class MapMaker:
         in_structure = ShapeDtypeStruct(
             shape=(observation.n_dets, observation.n_samples), dtype=self.config.dtype
         )
-        if self.config.scanning_mask:
-            mask = observation.get_scanning_mask()
-            masking_projector = DiagonalOperator(
-                jnp.array(mask, dtype=self.config.dtype), in_structure=in_structure
-            )
-            return masking_projector
-
-        else:
+        if not self.config.scanning_mask:
             return IdentityOperator(in_structure)
+
+        mask = observation.get_scanning_mask()
+        masking_projector = DiagonalOperator(
+            jnp.array(mask, dtype=self.config.dtype), in_structure=in_structure
+        )
+        return masking_projector
 
     def get_or_fit_noise_model(self, observation: GroundObservationData) -> NoiseModel:
         """Return a noise model for the observation, corresponding to
@@ -211,11 +208,11 @@ class MapMaker:
             if noise_model:
                 if isinstance(noise_model, WhiteNoiseModel):
                     return noise_model
-                elif isinstance(noise_model, AtmosphericNoiseModel):
+                if isinstance(noise_model, AtmosphericNoiseModel):
                     return noise_model.to_white_noise_model()
-        else:
-            if isinstance(noise_model, AtmosphericNoiseModel):
-                return noise_model
+
+        if isinstance(noise_model, AtmosphericNoiseModel):
+            return noise_model
 
         # Compute the noise model from data
         f, Pxx = jax.scipy.signal.welch(
@@ -225,23 +222,23 @@ class MapMaker:
         if config.binned:
             # Diagonal noise
             return WhiteNoiseModel(sigma=jnp.mean(Pxx[..., (f > 0)], axis=-1))
-        else:
-            # Non-diagonal noise
-            n_dets = observation.n_dets
-            dtype = config.dtype
-            init_model = AtmosphericNoiseModel(
-                sigma=jnp.mean(Pxx[..., (f >= f[-1] / 2)], axis=-1),
-                alpha=(-3.0) * jnp.ones(n_dets, dtype=dtype),
-                fk=(f[-1] / 2) * jnp.ones(n_dets, dtype=dtype),
-                f0=(f[1]) * jnp.ones(n_dets, dtype=dtype),
-            )
-            return NoiseModel.fit_psd_model(
-                f=f,
-                Pxx=Pxx,
-                init_model=init_model,
-                max_iter=config.solver.max_steps,
-                tol=config.solver.rtol,
-            )
+
+        # Non-diagonal noise
+        n_dets = observation.n_dets
+        dtype = config.dtype
+        init_model = AtmosphericNoiseModel(
+            sigma=jnp.mean(Pxx[..., (f >= f[-1] / 2)], axis=-1),
+            alpha=(-3.0) * jnp.ones(n_dets, dtype=dtype),
+            fk=(f[-1] / 2) * jnp.ones(n_dets, dtype=dtype),
+            f0=(f[1]) * jnp.ones(n_dets, dtype=dtype),
+        )
+        return NoiseModel.fit_psd_model(
+            f=f,
+            Pxx=Pxx,
+            init_model=init_model,
+            max_iter=config.solver.max_steps,
+            tol=config.solver.rtol,
+        )
 
     def get_pixel_selector(
         self, blocks: Float[Array, '... nstokes nstokes'], landscape: StokesLandscape
@@ -274,23 +271,23 @@ class MapMaker:
         assert config.templates is not None
         blocks = {}
 
-        if _ := config.templates.polynomial:
+        if poly := config.templates.polynomial:
             blocks['polynomial'] = templates.PolynomialTemplateOperator.create(
-                max_poly_order=_.max_poly_order,
+                max_poly_order=poly.max_poly_order,
                 intervals=observation.get_scanning_intervals(),
                 times=observation.get_elapsed_time(),
                 n_dets=observation.n_dets,
             )
-        if _ := config.templates.scan_synchronous:
+        if sss := config.templates.scan_synchronous:
             blocks['scan_synchronous'] = templates.ScanSynchronousTemplateOperator.create(
-                min_poly_order=_.min_poly_order,
-                max_poly_order=_.max_poly_order,
+                min_poly_order=sss.min_poly_order,
+                max_poly_order=sss.max_poly_order,
                 azimuth=jnp.array(observation.get_azimuth()),
                 n_dets=observation.n_dets,
             )
-        if _ := config.templates.hwp_synchronous:
+        if hwpss := config.templates.hwp_synchronous:
             blocks['hwp_synchronous'] = templates.HWPSynchronousTemplateOperator.create(
-                n_harmonics=_.n_harmonics,
+                n_harmonics=hwpss.n_harmonics,
                 hwp_angles=observation.get_hwp_angles(),
                 n_dets=observation.n_dets,
             )

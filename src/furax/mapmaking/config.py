@@ -1,14 +1,23 @@
 from dataclasses import dataclass, fields
+from enum import Enum
 from pathlib import Path
-from typing import Literal
 
 import jax.numpy as jnp
 import yaml
 from apischema import deserialize, serialize
 from jax.typing import DTypeLike
 
-ValidLandscapeType = Literal['WCS', 'Healpix']
-ValidMapMakingMethod = Literal['Binned', 'ML', 'TwoStep', 'ATOP']
+
+class Landscapes(Enum):
+    WCS = 'WCS'
+    HPIX = 'Healpix'
+
+
+class Methods(Enum):
+    BINNED = 'Binned'
+    MAXL = 'ML'
+    TWOSTEP = 'TwoStep'
+    ATOP = 'ATOP'
 
 
 @dataclass(frozen=True)
@@ -20,7 +29,7 @@ class SolverConfig:
 
 @dataclass(frozen=True)
 class LandscapeConfig:
-    type: ValidLandscapeType = 'WCS'
+    type: Landscapes = Landscapes.WCS
     resolution: float = 8.0
     nside: int = 512
 
@@ -63,7 +72,7 @@ class TemplatesConfig:
 
 @dataclass(frozen=True)
 class MapMakingConfig:
-    method: ValidMapMakingMethod = 'Binned'
+    method: Methods = Methods.BINNED
     binned: bool = True
     demodulated: bool = False
     scanning_mask: bool = False
@@ -72,7 +81,7 @@ class MapMakingConfig:
     psd_fmin: float = 1e-2
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2
-    precision: Literal[32, 64] = 64
+    double_precision: bool = True
     debug: bool = True
     solver: SolverConfig = SolverConfig()
     landscape: LandscapeConfig = LandscapeConfig()
@@ -110,4 +119,4 @@ class MapMakingConfig:
 
     @property
     def dtype(self) -> DTypeLike:
-        return jnp.float32 if self.precision == 32 else jnp.float64  # type: ignore[no-any-return]
+        return jnp.float64 if self.double_precision else jnp.float32  # type: ignore[no-any-return]

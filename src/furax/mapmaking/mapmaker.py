@@ -26,7 +26,7 @@ from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
 
 from ._logger import logger as furax_logger
 from ._observation_data import GroundObservationData
-from .config import MapMakingConfig
+from .config import Landscapes, MapMakingConfig, Methods
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 
@@ -74,10 +74,10 @@ class MapMaker:
     def from_config(cls, config: MapMakingConfig, logger: Logger | None = None) -> 'MapMaker':
         """Return the appropriate mapmaker based on the config's mapmaking method."""
         maker = {
-            'Binned': BinnedMapMaker,
-            'ML': MLMapmaker,
-            'TwoStep': TwoStepMapmaker,
-            'ATOP': ATOPMapMaker,
+            Methods.BINNED: BinnedMapMaker,
+            Methods.MAXL: MLMapmaker,
+            Methods.TWOSTEP: TwoStepMapmaker,
+            Methods.ATOP: ATOPMapMaker,
         }[config.method]
 
         if logger is None:
@@ -93,13 +93,13 @@ class MapMaker:
         self, observation: GroundObservationData, stokes: ValidStokesType = 'IQU'
     ) -> StokesLandscape:
         """Landscape used for mapmaking with given observation"""
-        if self.config.landscape.type == 'WCS':
+        if self.config.landscape.type == Landscapes.WCS:
             wcs_shape, wcs_kernel = observation.get_wcs_shape_and_kernel(
                 resolution=self.config.landscape.resolution, projection='car'
             )
             return WCSLandscape(wcs_shape, wcs_kernel, stokes=stokes, dtype=self.config.dtype)
 
-        if self.config.landscape.type == 'Healpix':
+        if self.config.landscape.type == Landscapes.HPIX:
             return HealpixLandscape(
                 nside=self.config.landscape.nside, stokes=stokes, dtype=self.config.dtype
             )
@@ -255,7 +255,7 @@ class MapMaker:
         )
         valid_indices = jnp.argwhere(valid)
 
-        if config.landscape.type == 'WCS':
+        if config.landscape.type == Landscapes.WCS:
             return IndexOperator(
                 (valid_indices[:, 0], valid_indices[:, 1]), in_structure=landscape.structure
             )

@@ -56,6 +56,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
     output_dir = Unicode('.', help='Write output data products to this directory')
     config = Instance(
         klass=MapMakingConfig,
+        allow_none=True,
         help='Configuration instance for the mapmaker (has precedence over config_path)',
     )
     config_path = Unicode(

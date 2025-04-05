@@ -9,9 +9,11 @@ import numpy as np
 import traitlets
 import yaml
 from jaxtyping import PyTree
+from toast import Data
 from toast.observation import default_values as defaults
 from toast.ops.operator import Operator as ToastOperator
-from toast.traits import Bool, Float, Int, Unicode, trait_docs
+from toast.timing import Timer
+from toast.traits import Bool, Float, Instance, Int, Unicode, trait_docs
 from toast.utils import Logger
 
 from furax import (
@@ -25,6 +27,8 @@ from furax import (
     RavelOperator,
     SymmetricBandToeplitzOperator,
 )
+from furax.mapmaking import MapMakingConfig
+from furax.mapmaking.mapmaker import MapMaker as FuraxMapMaker
 from furax.mapmaking.utils import (
     compute_cross_psd,
     estimate_filtered_psd,
@@ -45,6 +49,88 @@ ObservationKeysDict: TypeAlias = dict[str, list[str]]
 
 @trait_docs
 class MapMaker(ToastOperator):  # type: ignore[misc]
+    """Operator that makes maps using the Furax tools."""
+
+    API = Int(0, help='Internal interface version for this operator')
+
+    output_dir = Unicode('.', help='Write output data products to this directory')
+    config = Instance(
+        klass=MapMakingConfig,
+        help='Configuration instance for the mapmaker (has precedence over config_path)',
+    )
+    config_path = Unicode(
+        None, allow_none=True, help='Path to the config file if not using a Config instance'
+    )
+
+    # TOAST names
+    det_data = Unicode(defaults.det_data, help='Observation detdata key for the timestream data')
+    hwp_angle = Unicode(None, allow_none=True, help='Observation shared key for HWP angle')
+    noise_model = Unicode(None, allow_none=True, help='Observation key for the noise model')
+    pixels = Unicode(defaults.pixels, help='Observation detdata key for pixel indices')
+    quats = Unicode(defaults.quats, help='Observation detdata key for detector quaternions')
+    det_mask = Int(defaults.det_mask_nonscience, help='Bit mask value for per-detector flagging')
+
+    # TODO: support this?
+    # view = Unicode(None, allow_none=True, help='Use this view of the data in all observations')
+
+    def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+        super().__init__(**kwargs)
+
+        self._logger = Logger.get()
+
+        if self.config is not None:
+            conf = self.config
+        elif self.config_path is not None:
+            conf = MapMakingConfig.load_yaml(self.config_path)
+        else:
+            # use defaults
+            conf = MapMakingConfig()
+        self._mapmaker = FuraxMapMaker.from_config(conf, logger=self._logger)
+
+    def _exec(self, data: Data, detectors: list[str] | None = None, **kwargs):  # type: ignore[no-untyped-def]
+        # Data interface
+        observation = ToastObservationData(
+            data=data,
+            det_selection=detectors,
+            det_mask=self.det_mask,
+            det_data=self.det_data,
+            pixels=self.pixels,
+            quats=self.quats,
+            hwp_angle=self.hwp_angle,
+            noise_model=self.noise_model,
+        )
+
+        msg = f'FuraxMapMaker begin mapmaking using {self._mapmaker.__class__.__name__}'
+        self._logger.info_rank(msg)
+        timer = Timer()
+        timer.start()
+        self._mapmaker.make_maps(observation, self.output_dir)
+        self._logger.info_rank('FuraxMapMaker finished mapmaking in', timer=timer)
+
+    def _finalize(self, data, **kwargs):  # type: ignore[no-untyped-def]
+        pass
+
+    def _requires(self) -> ObservationKeysDict:
+        req = {
+            'meta': [],
+            'shared': [],
+            'detdata': [self.det_data, self.pixels, self.quats],
+            'intervals': [],
+        }
+        if self.noise_model is not None:
+            req['meta'].append(self.noise_model)
+        if self.hwp_angle is not None:
+            req['shared'].append(self.hwp_angle)
+        # if self.view is not None:
+        #     req['intervals'].append(self.view)
+        return req
+
+    def _provides(self) -> ObservationKeysDict:
+        return {}
+
+
+@trait_docs
+class LegacyMapMaker(ToastOperator):  # type: ignore[misc]
     """Operator which makes maps with the furax tools."""
 
     # Class traits
@@ -289,7 +375,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
 
 
 @trait_docs
-class TemplateMapMaker(MapMaker):
+class TemplateMapMaker(LegacyMapMaker):
     """Operator for template mapmaking with the furax tools."""
 
     template_config: dict[str, Any]

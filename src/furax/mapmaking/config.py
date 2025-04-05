@@ -57,7 +57,7 @@ class TemplatesConfig:
     hwp_synchronous: _HWPSynchronousTemplateConfig | None = None
 
     @classmethod
-    def get_defaults(cls) -> 'TemplatesConfig':
+    def full_defaults(cls) -> 'TemplatesConfig':
         """Create a template config with default values for all templates."""
         return cls(
             polynomial=_PolyTemplateConfig(),
@@ -89,9 +89,9 @@ class MapMakingConfig:
     atop_tau: int = 0
 
     @classmethod
-    def get_defaults(cls) -> 'MapMakingConfig':
+    def full_defaults(cls) -> 'MapMakingConfig':
         """Create a config with default values for all fields including optional ones."""
-        return cls(templates=TemplatesConfig.get_defaults())
+        return cls(templates=TemplatesConfig.full_defaults())
 
     @classmethod
     def load_yaml(cls, path: str | Path) -> 'MapMakingConfig':

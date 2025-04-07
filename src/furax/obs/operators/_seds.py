@@ -419,7 +419,8 @@ class NoiseDiagonalOperator(AbstractLinearOperator):
 
     Args:
         vector: PyTree of arrays representing the noise values.
-        _in_structure: Input structure (PyTree[jax.ShapeDtypeStruct]) specifying the shape and dtype.
+        _in_structure: Input structure (PyTree[jax.ShapeDtypeStruct])
+        specifying the shape and dtype.
 
     Example:
         >>> import jax

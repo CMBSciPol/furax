@@ -225,6 +225,8 @@ def sky_signal(
     dust_nu0: float,
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
+    op: AbstractLinearOperator | None = None,
+    N_2: AbstractLinearOperator | None = None,
 ) -> SpecParamType:
     """
     Compute the estimated sky signal based on the provided spectral parameters.
@@ -254,7 +256,9 @@ def sky_signal(
     SpecParamType
         Estimated sky signal for each component.
     """
-    _, s = _base_spectral_log_likelihood(params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0)
+    _, s = _base_spectral_log_likelihood(
+        params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0, op, N_2
+    )
     return cast(SpecParamType, s)
 
 
@@ -267,6 +271,8 @@ def spectral_log_likelihood(
     dust_nu0: float,
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
+    op: AbstractLinearOperator | None = None,
+    N_2: AbstractLinearOperator | None = None,
 ) -> Scalar:
     """
     Compute the spectral log likelihood for the observed data.
@@ -297,7 +303,7 @@ def spectral_log_likelihood(
         The spectral log likelihood value.
     """
     AND, s = _base_spectral_log_likelihood(
-        params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0
+        params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0, op, N_2
     )
     ll: Scalar = dot(AND, s)
     return ll
@@ -312,6 +318,8 @@ def negative_log_likelihood(
     dust_nu0: float,
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
+    op: AbstractLinearOperator | None = None,
+    N_2: AbstractLinearOperator | None = None,
 ) -> Scalar:
     """
     Compute the negative spectral log likelihood.
@@ -343,7 +351,7 @@ def negative_log_likelihood(
         The negative spectral log likelihood.
     """
     nll: Scalar = -spectral_log_likelihood(
-        params, nu, N, d, dust_nu0, synchrotron_nu0, patch_indices
+        params, nu, N, d, dust_nu0, synchrotron_nu0, patch_indices, op, N_2
     )
     return nll
 
@@ -357,6 +365,8 @@ def spectral_cmb_variance(
     dust_nu0: float,
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
+    op: AbstractLinearOperator | None = None,
+    N_2: AbstractLinearOperator | None = None,
 ) -> Scalar:
     """
     Compute the variance of the CMB component from the spectral estimation.
@@ -386,6 +396,8 @@ def spectral_cmb_variance(
     Scalar
         The variance of the CMB component.
     """
-    _, s = _base_spectral_log_likelihood(params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0)
+    _, s = _base_spectral_log_likelihood(
+        params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0, op, N_2
+    )
     cmb_var: Scalar = jax.tree.reduce(operator.add, jax.tree.map(jnp.var, s['cmb']))
     return cmb_var

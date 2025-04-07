@@ -35,6 +35,34 @@ def _create_component(
     patch_indices: PyTree[Array],
     in_structure: Stokes,
 ) -> AbstractLinearOperator:
+    """
+    Create a linear operator component corresponding to the given astrophysical signal.
+
+    Parameters
+    ----------
+    name : str
+        Name of the component ('cmb', 'dust', or 'synchrotron').
+    nu : Array
+        Array of frequencies at which the operator is evaluated.
+    frequency0 : float
+        Reference frequency. For dust, this is dust_nu0; for synchrotron, synchrotron_nu0.
+    params : PyTree[Array]
+        Dictionary containing the spectral parameters, e.g., 'temp_dust', 'beta_dust', or 'beta_pl'.
+    patch_indices : PyTree[Array]
+        Dictionary containing the patch indices for spatially varying parameters.
+    in_structure : Stokes
+        The input structure (e.g., a Stokes object) defining the shape and configuration.
+
+    Returns
+    -------
+    AbstractLinearOperator
+        The corresponding linear operator for the specified component.
+
+    Raises
+    ------
+    ValueError
+        If the component name is not one of 'cmb', 'dust', or 'synchrotron'.
+    """
     if name == 'cmb':
         return CMBOperator(nu, in_structure=in_structure)
     elif name == 'dust':
@@ -60,6 +88,26 @@ def _create_component(
 
 
 def _get_available_components(params: PyTree[Array]) -> list[str]:
+    """
+    Determine the list of available astrophysical components based on the provided parameters.
+
+    Parameters
+    ----------
+    params : PyTree[Array]
+        Dictionary containing spectral parameters. Expected keys include 'temp_dust', 'beta_dust',
+        and/or 'beta_pl'.
+
+    Returns
+    -------
+    list[str]
+        List of available components. 'cmb' is always included; 'dust' is added if both
+        'temp_dust' and 'beta_dust' are provided; 'synchrotron' is added if 'beta_pl' is provided.
+
+    Raises
+    ------
+    AssertionError
+        If only one of 'temp_dust' or 'beta_dust' is provided without the other.
+    """
     available_components = ['cmb']
     if 'temp_dust' in params or 'beta_dust' in params:
         assert 'temp_dust' in params and 'beta_dust' in params, (
@@ -83,6 +131,57 @@ def _base_spectral_log_likelihood(
     op: AbstractLinearOperator | None,
     N_2: AbstractLinearOperator | None,
 ) -> tuple[SpecParamType, SpecParamType]:
+    """
+    Compute the base spectral log likelihood components used in spectral estimation.
+
+    This function computes two key quantities:
+    - AND: The product A^T N^{-1} d
+    - s: Sky vector by (A^T N^{-1} A)^{-1} (A^T N^{-1} d)
+
+    Mathematically, this corresponds to:
+
+    $$
+    \\left(A^T N^{-1} d\\right)^T \\left(A^T N^{-1} A\\right)^{-1} \\left(A^T N^{-1} d\\right)
+    $$
+
+    where:
+      - $A$ is the mixing matrix operator constructed from the available components.
+      - $N$ is the noise operator.
+      - $d$ is the observed data in Stokes parameters.
+
+    Parameters
+    ----------
+    params : PyTree[Array]
+        Dictionary of spectral parameters.
+    patch_indices : PyTree[Array]
+        Dictionary of patch indices for spatially varying parameters.
+    nu : Array
+        Array of frequencies.
+    N : AbstractLinearOperator
+        Noise covariance operator.
+    d : Stokes
+        Data in Stokes parameter format.
+    dust_nu0 : float
+        Reference frequency for dust.
+    synchrotron_nu0 : float
+        Reference frequency for synchrotron.
+    op : AbstractLinearOperator or None
+        Optional operator to be applied; if None, the IdentityOperator is used.
+    N_2 : AbstractLinearOperator or None
+        Optional secondary noise operator; if None, it defaults to N.
+
+    Returns
+    -------
+    tuple[SpecParamType, SpecParamType]
+        A tuple containing:
+          - AND: The weighted data vector A^T N^{-1} d.
+          - s: The solution vector (A^T N^{-1} A)^{-1} (A^T N^{-1} d).
+
+    Raises
+    ------
+    AssertionError
+        If provided keys in params or patch_indices are not within the valid sets.
+    """
     in_structure = d.structure_for((d.shape[1],))
 
     if N_2 is None:
@@ -127,6 +226,34 @@ def sky_signal(
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
 ) -> SpecParamType:
+    """
+    Compute the estimated sky signal based on the provided spectral parameters.
+
+    This function extracts the sky vector 's' from the base spectral log likelihood
+    computation, which represents the reconstructed sky signal.
+
+    Parameters
+    ----------
+    params : PyTree[Array]
+        Dictionary of spectral parameters.
+    nu : Array
+        Array of frequencies.
+    N : AbstractLinearOperator
+        Noise covariance operator.
+    d : Stokes
+        Data in Stokes parameters.
+    dust_nu0 : float
+        Reference frequency for dust.
+    synchrotron_nu0 : float
+        Reference frequency for synchrotron.
+    patch_indices : PyTree[Array], optional
+        Patch indices for spatially varying parameters (default is single_cluster_indices).
+
+    Returns
+    -------
+    SpecParamType
+        Estimated sky signal for each component.
+    """
     _, s = _base_spectral_log_likelihood(params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0)
     return cast(SpecParamType, s)
 
@@ -141,6 +268,34 @@ def spectral_log_likelihood(
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
 ) -> Scalar:
+    """
+    Compute the spectral log likelihood for the observed data.
+
+    The likelihood is calculated based on the weighted data vector and its associated solution,
+    as derived in the base spectral log likelihood.
+
+    Parameters
+    ----------
+    params : PyTree[Array]
+        Dictionary of spectral parameters.
+    nu : Array
+        Array of frequencies.
+    N : AbstractLinearOperator
+        Noise covariance operator.
+    d : Stokes
+        Data in Stokes parameters.
+    dust_nu0 : float
+        Reference frequency for dust.
+    synchrotron_nu0 : float
+        Reference frequency for synchrotron.
+    patch_indices : PyTree[Array], optional
+        Patch indices for spatially varying parameters (default is single_cluster_indices).
+
+    Returns
+    -------
+    Scalar
+        The spectral log likelihood value.
+    """
     AND, s = _base_spectral_log_likelihood(
         params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0
     )
@@ -158,6 +313,35 @@ def negative_log_likelihood(
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
 ) -> Scalar:
+    """
+    Compute the negative spectral log likelihood.
+
+    This function returns the negative of the spectral log likelihood, which is useful for
+    optimization procedures where minimizing the negative log likelihood is equivalent to
+    maximizing the likelihood.
+
+    Parameters
+    ----------
+    params : PyTree[Array]
+        Dictionary of spectral parameters.
+    nu : Array
+        Array of frequencies.
+    N : AbstractLinearOperator
+        Noise covariance operator.
+    d : Stokes
+        Data in Stokes parameters.
+    dust_nu0 : float
+        Reference frequency for dust.
+    synchrotron_nu0 : float
+        Reference frequency for synchrotron.
+    patch_indices : PyTree[Array], optional
+        Patch indices for spatially varying parameters (default is single_cluster_indices).
+
+    Returns
+    -------
+    Scalar
+        The negative spectral log likelihood.
+    """
     nll: Scalar = -spectral_log_likelihood(
         params, nu, N, d, dust_nu0, synchrotron_nu0, patch_indices
     )
@@ -174,6 +358,34 @@ def spectral_cmb_variance(
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
 ) -> Scalar:
+    """
+    Compute the variance of the CMB component from the spectral estimation.
+
+    This function calculates the variance of the CMB component by applying the base spectral log
+    likelihood and then computing the variance over the resulting CMB signal.
+
+    Parameters
+    ----------
+    params : PyTree[Array]
+        Dictionary of spectral parameters.
+    nu : Array
+        Array of frequencies.
+    N : AbstractLinearOperator
+        Noise covariance operator.
+    d : Stokes
+        Data in Stokes parameters.
+    dust_nu0 : float
+        Reference frequency for dust.
+    synchrotron_nu0 : float
+        Reference frequency for synchrotron.
+    patch_indices : PyTree[Array], optional
+        Patch indices for spatially varying parameters (default is single_cluster_indices).
+
+    Returns
+    -------
+    Scalar
+        The variance of the CMB component.
+    """
     _, s = _base_spectral_log_likelihood(params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0)
     cmb_var: Scalar = jax.tree.reduce(operator.add, jax.tree.map(jnp.var, s['cmb']))
     return cmb_var

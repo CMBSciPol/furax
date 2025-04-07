@@ -385,7 +385,7 @@ class TemplateMapMaker(LegacyMapMaker):
     # max_poly_order = Int(4, help='Maximum order for polynomial templates')
 
     def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
-        if 'template' not in kwargs.keys():
+        if 'template' not in kwargs:
             RuntimeError('No templates provided for the template mapmaker')
         self.template_config = kwargs.pop('template')
         super().__init__(**kwargs)
@@ -437,7 +437,7 @@ class TemplateMapMaker(LegacyMapMaker):
 
         # Compute cross psd data for PCA related work, if needed
         # TODO move this to a better location
-        if 'common_mode' in self.template_config.keys():
+        if 'common_mode' in self.template_config:
             nperseg = self.nperseg
             rate = self._data.sample_rate
             if self._data._cross_psd is None:
@@ -537,7 +537,7 @@ class TemplateMapMaker(LegacyMapMaker):
     def _get_invntt(self, structure: PyTree[jax.ShapeDtypeStruct]) -> AbstractLinearOperator:
         if self.noise_model == 'pca':
             # PCA mode filtered covariance
-            if 'common_mode' not in self.template_config.keys():
+            if 'common_mode' not in self.template_config:
                 msg = 'PCA mode-filtered noise covariance requires common mode template to be used'
                 raise RuntimeError(msg)
             freq_threshold = self.template_config['common_mode'].get('freq_threshold')

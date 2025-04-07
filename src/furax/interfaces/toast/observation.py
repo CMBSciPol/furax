@@ -77,13 +77,13 @@ class ToastObservationData(GroundObservationData):
 
     def get_hwp_angles(self) -> Array:
         """Returns the HWP angles."""
-        if self.hwp_angle is None or self.hwp_angle not in self.observation.shared.keys():
+        if self.hwp_angle is None or self.hwp_angle not in self.observation.shared:
             raise ValueError('HWP angle field not provided.')
         return jnp.array(self.observation.shared[self.hwp_angle].data)
 
     def get_psd_model(self) -> tuple[Array, Array]:
         """Returns frequencies and PSD values of the noise model."""
-        if self.noise_model is None or self.noise_model not in self.observation.keys():
+        if self.noise_model is None or self.noise_model not in self.observation:
             raise ValueError('Noise model not provided.')
         model = self.observation[self.noise_model]
         freq = jnp.array([model.freq(det) for det in self.dets])

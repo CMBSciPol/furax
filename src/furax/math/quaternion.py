@@ -8,6 +8,8 @@ from jaxtyping import Array, Float
 __all__ = [
     'qmul',
     'qrot',
+    'qrot_xaxis',
+    'qrot_zaxis',
     'get_local_meridian_angle',
 ]
 
@@ -69,8 +71,8 @@ def get_local_meridian_angle(q: Quat) -> Float[Array, '...']:
     partially taken from
     https://github.com/hpc4cmb/toast/blob/toast3/src/toast/ops/stokes_weights/kernels_jax.py#L19
     """
-    vd = _qrot_zaxis(q)
-    vo = _qrot_xaxis(q)
+    vd = qrot_zaxis(q)
+    vo = qrot_xaxis(q)
 
     # The vector orthogonal to the line of sight that is parallel
     # to the local meridian.
@@ -98,7 +100,7 @@ def get_local_meridian_angle(q: Quat) -> Float[Array, '...']:
 
 @jit
 @vmap
-def _qrot_zaxis(q: Quat) -> Vec3:
+def qrot_zaxis(q: Quat) -> Vec3:
     """Rotate the Z axis [0,0,1] by a given quaternion."""
     # normalize quaternion
     q_unit = q / jnp.linalg.norm(q)
@@ -110,7 +112,7 @@ def _qrot_zaxis(q: Quat) -> Vec3:
 
 @jit
 @vmap
-def _qrot_xaxis(q: Quat) -> Vec3:
+def qrot_xaxis(q: Quat) -> Vec3:
     """Rotate the X axis [1,0,0] by a given quaternion."""
     # normalize quaternion
     q_unit = q / jnp.linalg.norm(q)

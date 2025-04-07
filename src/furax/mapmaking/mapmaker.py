@@ -476,7 +476,7 @@ class MLMapmaker(MapMaker):
                     'proj_map': proj_map
                     ** {
                         f'proj_{tmpl}': (mp @ template_op.blocks[tmpl])(tmpl_ampl[tmpl])
-                        for tmpl in tmpl_ampl.keys()
+                        for tmpl in tmpl_ampl
                     },
                 }
             else:
@@ -578,7 +578,7 @@ class TwoStepMapmaker(MapMaker):
                 'proj_map': proj_map,
                 **{
                     f'proj_{tmpl}': (mp @ template_op.blocks[tmpl])(tmpl_ampl[tmpl])
-                    for tmpl in tmpl_ampl.keys()
+                    for tmpl in tmpl_ampl
                 },
             }
             output['projs'] = projs

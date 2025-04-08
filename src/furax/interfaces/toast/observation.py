@@ -32,6 +32,7 @@ class ToastObservationData(GroundObservationData):
     quats: str = defaults.quats
     hwp_angle: str | None = defaults.hwp_angle
     noise_model: str | None = defaults.noise_model
+    boresight: str = defaults.boresight_radec
 
     _cross_psd: tuple[Float[Array, ' freq'], Float[Array, 'det det freq']] | None = None
 
@@ -206,3 +207,11 @@ class ToastObservationData(GroundObservationData):
         )
         return noise_model
         """
+
+    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+        if self.boresight not in self.observation.shared:
+            raise ValueError('Boresight field not provided.')
+        return jnp.array(self.observation.shared[self.boresight].data)
+
+    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
+        return jnp.array([self.focal_plane[d]['quat'] for d in self.dets])

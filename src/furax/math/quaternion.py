@@ -2,7 +2,7 @@ from functools import partial
 from typing import TypeAlias
 
 import jax.numpy as jnp
-from jax import jit, vmap
+from jax import jit
 from jaxtyping import Array, Float
 
 __all__ = [
@@ -13,8 +13,8 @@ __all__ = [
     'get_local_meridian_angle',
 ]
 
-Quat: TypeAlias = Float[Array, '4']
-Vec3: TypeAlias = Float[Array, '3']
+Quat: TypeAlias = Float[Array, '... 4']
+Vec3: TypeAlias = Float[Array, '... 3']
 
 
 @jit
@@ -29,7 +29,7 @@ def qmul(q1: Quat, q2: Quat) -> Quat:
 
 
 @jit
-@partial(vmap, in_axes=(0, None), out_axes=0)
+@partial(jnp.vectorize, signature='(4),(3)->(3)')
 def qrot(q: Quat, vec: Vec3) -> Vec3:
     """Rotate vector by quaternion."""
     # normalize quaternion
@@ -56,8 +56,8 @@ def qrot(q: Quat, vec: Vec3) -> Vec3:
 
 
 @jit
-@vmap
-def get_local_meridian_angle(q: Quat) -> Float[Array, '...']:
+@partial(jnp.vectorize, signature='(4)->()')
+def get_local_meridian_angle(q: Float[Array, '*dims 4']) -> Float[Array, ' *dims']:
     """
     Compute angle between local meridian and orientation vector from quaternions.
 
@@ -99,7 +99,7 @@ def get_local_meridian_angle(q: Quat) -> Float[Array, '...']:
 
 
 @jit
-@vmap
+@partial(jnp.vectorize, signature='(4)->(3)')
 def qrot_zaxis(q: Quat) -> Vec3:
     """Rotate the Z axis [0,0,1] by a given quaternion."""
     # normalize quaternion
@@ -111,7 +111,7 @@ def qrot_zaxis(q: Quat) -> Vec3:
 
 
 @jit
-@vmap
+@partial(jnp.vectorize, signature='(4)->(3)')
 def qrot_xaxis(q: Quat) -> Vec3:
     """Rotate the X axis [1,0,0] by a given quaternion."""
     # normalize quaternion

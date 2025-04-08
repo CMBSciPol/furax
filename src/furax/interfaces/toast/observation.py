@@ -172,7 +172,10 @@ class ToastObservationData(GroundObservationData):
 
         if isinstance(landscape, HealpixLandscape):
             det_pixels = toast.ops.PixelsHealpix(
-                detector_pointing=det_pointing, pixels=self.pixels, nside=landscape.nside
+                detector_pointing=det_pointing,
+                pixels=self.pixels,
+                nside=landscape.nside,
+                nest=False,
             )
             det_pixels.apply(self.data)
             indices = self.get_pixels()

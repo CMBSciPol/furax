@@ -29,6 +29,7 @@ from furax import (
 )
 from furax.mapmaking import MapMakingConfig
 from furax.mapmaking.mapmaker import MapMaker as FuraxMapMaker
+from furax.mapmaking.pointing import PointingOperator
 from furax.mapmaking.utils import (
     compute_cross_psd,
     estimate_filtered_psd,
@@ -39,7 +40,7 @@ from furax.mapmaking.utils import (
 )
 from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.landscapes import HealpixLandscape
-from furax.obs.stokes import StokesIQU
+from furax.obs.stokes import Stokes, StokesIQU
 
 from ..observation import ToastObservationData
 from .templates import TemplateOperator
@@ -144,6 +145,7 @@ class LegacyMapMaker(ToastOperator):  # type: ignore[misc]
     nside = Int(64, help='HEALPix nside parameter for the output maps')
     output_dir = Unicode('.', help='Write output data products to this directory')
     stokes = Unicode('IQU', help='Stokes parameters to reconstruct')
+    on_the_fly = Bool(False, help='Use on-the-fly pointing operator')
 
     # Solver configuration
     atol = Float(1e-6, help='Absolute tolerance for terminating solve')
@@ -294,15 +296,20 @@ class LegacyMapMaker(ToastOperator):  # type: ignore[misc]
         return
 
     def _stage(self, hwp: bool) -> None:
+        self._landscape = HealpixLandscape(self.nside, self.stokes)
         self._tods = self._data.get_tods()
-        self._pixels, spin_angles = self._data.get_pointing_and_spin_angles(
-            landscape=HealpixLandscape(nside=self.nside, stokes=self.stokes)
-        )
+        self._gamma = self._data.get_det_offset_angles()
+        if self.on_the_fly:
+            # only get stuff needed for the pointing operator
+            self._qbore = self._data.get_boresight_quaternions()
+            self._qdet = self._data.get_detector_quaternions()
+        else:
+            # precompute pixels and angles
+            self._pixels, spin_angles = self._data.get_pointing_and_spin_angles(self._landscape)
+            self._det_angles = spin_angles + 2 * self._gamma[:, None]
         if not hwp:
             return
         self._hwp_angles = self._data.get_hwp_angles()
-        self._gamma = self._data.get_det_offset_angles()
-        self._det_angles = spin_angles + 2 * self._gamma[:, None]
 
     def _get_invntt(self, structure: PyTree[jax.ShapeDtypeStruct]) -> AbstractLinearOperator:
         if self.binned:
@@ -328,23 +335,31 @@ class LegacyMapMaker(ToastOperator):  # type: ignore[misc]
         return SymmetricBandToeplitzOperator(invntt, structure)
 
     def _get_acquisition(self, has_hwp: bool) -> AbstractLinearOperator:
-        self._landscape = HealpixLandscape(self.nside, self.stokes)
         reshape = RavelOperator(in_structure=self._landscape.structure)
-        sampling = IndexOperator(self._pixels, in_structure=reshape.out_structure())
+        in_struct = reshape.out_structure()
         meta = {'shape': self._tods.shape, 'stokes': self.stokes}
-        if has_hwp:
-            polarizer = LinearPolarizerOperator.create(**meta, angles=self._gamma[:, None])
-            hwp = HWPOperator.create(**meta, angles=self._hwp_angles[None, :])
+        if self.on_the_fly:
+            pointing = PointingOperator(
+                self._landscape,
+                self._qbore,
+                self._qdet,
+                self._gamma,
+                _in_structure=in_struct,
+                _out_structure=Stokes.class_for(self.stokes).structure_for(self._tods.shape),
+            )
+        else:
+            sampling = IndexOperator(self._pixels, in_structure=in_struct)
             rotation = QURotationOperator.create(
                 **meta, angles=self._det_angles - self._gamma[:, None]
             )
-            acquisition = polarizer @ hwp @ rotation @ sampling
-            reduced_acquisition = acquisition.reduce()
-            return reduced_acquisition
+            pointing = rotation @ sampling
+        polarizer = LinearPolarizerOperator.create(**meta, angles=self._gamma[:, None])
+        if has_hwp:
+            hwp = HWPOperator.create(**meta, angles=self._hwp_angles[None, :])
+            acquisition = polarizer @ hwp @ pointing
         else:
-            polarizer = LinearPolarizerOperator.create(**meta, angles=self._det_angles)
-            # no need for reduction here
-            return polarizer @ sampling
+            acquisition = polarizer @ pointing
+        return acquisition.reduce()
 
     def _finalize(self, data, **kwargs):  # type: ignore[no-untyped-def]
         self.clear()

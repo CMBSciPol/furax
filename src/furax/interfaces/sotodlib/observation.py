@@ -185,3 +185,11 @@ class SotodlibObservationData(GroundObservationData):
             # Estimate psd
             raise NotImplementedError('Self-psd evaluation not implemented')
         return fit[:, 1]  # type: ignore[no-any-return]
+
+    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+        """Returns the boresight quaternions at each time sample"""
+        raise NotImplementedError
+
+    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
+        """Returns the quaternion offsets of the detectors"""
+        raise NotImplementedError

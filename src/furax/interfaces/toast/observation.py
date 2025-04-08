@@ -70,7 +70,9 @@ class ToastObservationData(GroundObservationData):
 
     def get_det_angles(self) -> Array:
         """Returns the detector angles on the sky."""
-        angles = jnp.array(get_local_meridian_angle(self.get_expanded_quats()))
+        # stick to the TOAST storage convention because get_local_meridian_angle expects it
+        quats = self._get_expanded_quats()
+        angles = jnp.array(get_local_meridian_angle(quats))
         return jnp.atleast_2d(angles)
 
     def get_det_offset_angles(self) -> Array:
@@ -184,15 +186,6 @@ class ToastObservationData(GroundObservationData):
         pixels = jnp.array(self.observation.detdata[self.pixels][self.dets, :])
         return jnp.atleast_2d(pixels)
 
-    def get_expanded_quats(self) -> Array:
-        """Returns expanded pointing quaternions."""
-        quats = jnp.array(self.observation.detdata[self.quats][self.dets, :])
-        quats = jnp.roll(quats, shift=1, axis=-1)
-        if quats.ndim >= 3:
-            return quats
-        # np.atleast_3d appends one new axis for 1d/2d inputs, we want to prepend it instead
-        return jnp.moveaxis(np.atleast_3d(quats), -1, 0)
-
     @typing.no_type_check
     def get_noise_model(self) -> None | NoiseModel:
         """Load precomputed noise model from the data, if present. Otherwise, return None"""
@@ -226,3 +219,14 @@ class ToastObservationData(GroundObservationData):
         quats = jnp.array([self.focal_plane[d]['quat'] for d in self.dets])
         quats = jnp.roll(quats, 1, axis=-1)
         return jnp.atleast_2d(quats)
+
+    def _get_expanded_quats(self) -> Array:
+        """Returns expanded pointing quaternions.
+
+        These will be in the TOAST storage convention, i.e. vector-scalar!
+        """
+        quats = jnp.array(self.observation.detdata[self.quats][self.dets, :])
+        if quats.ndim >= 3:
+            return quats
+        # np.atleast_3d appends one new axis for 1d/2d inputs, we want to prepend it instead
+        return jnp.moveaxis(jnp.atleast_3d(quats), -1, 0)

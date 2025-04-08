@@ -65,12 +65,13 @@ class ToastObservationData(GroundObservationData):
     def get_tods(self) -> Array:
         """Returns the timestream data."""
         # furax's LinearPolarizerOperator assumes power, TOAST assumes temperature
-        return 0.5 * jnp.array(self.observation.detdata[self.det_data][self.dets, :])
+        tods = 0.5 * jnp.array(self.observation.detdata[self.det_data][self.dets, :])
+        return jnp.atleast_2d(tods)
 
     def get_det_angles(self) -> Array:
         """Returns the detector angles on the sky."""
-        func = np.vectorize(get_local_meridian_angle, signature='(n,k)->(n)')
-        return jnp.array(func(self.get_expanded_quats()))
+        angles = jnp.array(get_local_meridian_angle(self.get_expanded_quats()))
+        return jnp.atleast_2d(angles)
 
     def get_det_offset_angles(self) -> Array:
         """Returns the detector offset angles."""
@@ -180,11 +181,18 @@ class ToastObservationData(GroundObservationData):
 
     def get_pixels(self) -> Array:
         """Returns the pixel indices."""
-        return jnp.array(self.observation.detdata[self.pixels][self.dets, :])
+        pixels = jnp.array(self.observation.detdata[self.pixels][self.dets, :])
+        return jnp.atleast_2d(pixels)
 
     def get_expanded_quats(self) -> Array:
         """Returns expanded pointing quaternions."""
-        return jnp.array(self.observation.detdata[self.quats][self.dets, :])
+        quats = jnp.array(self.observation.detdata[self.quats][self.dets, :])
+        if quats.ndim >= 3:
+            return quats
+        if quats.ndim == 2:
+            # jnp.atleast_3d appends a new axis for 2d inputs, we want to prepend it
+            return quats[None, ...]
+        raise ValueError(f'expected at least 2 dimensions, got shape {quats.shape}')
 
     @typing.no_type_check
     def get_noise_model(self) -> None | NoiseModel:
@@ -215,4 +223,5 @@ class ToastObservationData(GroundObservationData):
         return jnp.array(self.observation.shared[self.boresight].data)
 
     def get_detector_quaternions(self) -> Float[Array, 'det 4']:
-        return jnp.array([self.focal_plane[d]['quat'] for d in self.dets])
+        quats = jnp.array([self.focal_plane[d]['quat'] for d in self.dets])
+        return jnp.atleast_2d(quats)

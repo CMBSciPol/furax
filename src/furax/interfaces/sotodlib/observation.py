@@ -39,7 +39,8 @@ class SotodlibObservationData(GroundObservationData):
 
     def get_tods(self) -> Array:
         """Returns the timestream data."""
-        return jnp.array(self.observation.signal)
+        tods = jnp.array(self.observation.signal)
+        return jnp.atleast_2d(tods)
 
     def get_hwp_angles(self) -> Array:
         """Returns the HWP angles."""

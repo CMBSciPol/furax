@@ -187,12 +187,11 @@ class ToastObservationData(GroundObservationData):
     def get_expanded_quats(self) -> Array:
         """Returns expanded pointing quaternions."""
         quats = jnp.array(self.observation.detdata[self.quats][self.dets, :])
+        quats = jnp.roll(quats, shift=1, axis=-1)
         if quats.ndim >= 3:
             return quats
-        if quats.ndim == 2:
-            # jnp.atleast_3d appends a new axis for 2d inputs, we want to prepend it
-            return quats[None, ...]
-        raise ValueError(f'expected at least 2 dimensions, got shape {quats.shape}')
+        # np.atleast_3d appends one new axis for 1d/2d inputs, we want to prepend it instead
+        return jnp.moveaxis(np.atleast_3d(quats), -1, 0)
 
     @typing.no_type_check
     def get_noise_model(self) -> None | NoiseModel:
@@ -220,8 +219,10 @@ class ToastObservationData(GroundObservationData):
     def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
         if self.boresight not in self.observation.shared:
             raise ValueError('Boresight field not provided.')
-        return jnp.array(self.observation.shared[self.boresight].data)
+        quats = jnp.array(self.observation.shared[self.boresight].data)
+        return jnp.roll(quats, 1, axis=-1)
 
     def get_detector_quaternions(self) -> Float[Array, 'det 4']:
         quats = jnp.array([self.focal_plane[d]['quat'] for d in self.dets])
+        quats = jnp.roll(quats, 1, axis=-1)
         return jnp.atleast_2d(quats)

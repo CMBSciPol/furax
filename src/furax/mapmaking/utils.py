@@ -12,7 +12,7 @@ from scipy.signal import get_window
 from toast import qarray as qa
 
 
-# TODO jax version
+@partial(np.vectorize, signature='(4)->()')
 def get_local_meridian_angle(quat):  # type: ignore[no-untyped-def]
     """
     Compute angle between local meridian and orientation vector from quaternions.
@@ -35,11 +35,11 @@ def get_local_meridian_angle(quat):  # type: ignore[no-untyped-def]
 
     # The vector orthogonal to the line of sight that is parallel
     # to the local meridian.
-    dir_ang = np.arctan2(vd[:, 1], vd[:, 0])
-    dir_r = np.sqrt(1.0 - vd[:, 2] * vd[:, 2])
+    dir_ang = np.arctan2(vd[1], vd[0])
+    dir_r = np.sqrt(1.0 - vd[2] * vd[2])
     vm_z = -dir_r
-    vm_x = vd[:, 2] * np.cos(dir_ang)
-    vm_y = vd[:, 2] * np.sin(dir_ang)
+    vm_x = vd[2] * np.cos(dir_ang)
+    vm_y = vd[2] * np.sin(dir_ang)
 
     # Compute the rotation angle from the meridian vector to the
     # orientation vector.  The direction vector is normal to the plane
@@ -48,11 +48,11 @@ def get_local_meridian_angle(quat):  # type: ignore[no-untyped-def]
     # angle = atan2((v_m x v_o) . v_d, v_m . v_o)
     #
     alpha_y = (
-        vd[:, 0] * (vm_y * vo[:, 2] - vm_z * vo[:, 1])
-        - vd[:, 1] * (vm_x * vo[:, 2] - vm_z * vo[:, 0])
-        + vd[:, 2] * (vm_x * vo[:, 1] - vm_y * vo[:, 0])
+        vd[0] * (vm_y * vo[2] - vm_z * vo[1])
+        - vd[1] * (vm_x * vo[2] - vm_z * vo[0])
+        + vd[2] * (vm_x * vo[1] - vm_y * vo[0])
     )
-    alpha_x = vm_x * vo[:, 0] + vm_y * vo[:, 1] + vm_z * vo[:, 2]
+    alpha_x = vm_x * vo[0] + vm_y * vo[1] + vm_z * vo[2]
 
     alpha = np.arctan2(alpha_y, alpha_x)
     return alpha

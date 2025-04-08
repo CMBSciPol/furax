@@ -100,3 +100,13 @@ class GroundObservationData:
             mask[l:u] = True
 
         return mask
+
+    @abstractmethod
+    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+        """Returns the boresight quaternions at each time sample"""
+        ...
+
+    @abstractmethod
+    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
+        """Returns the quaternion offsets of the detectors"""
+        ...

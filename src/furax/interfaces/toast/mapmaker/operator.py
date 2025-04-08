@@ -288,7 +288,7 @@ class LegacyMapMaker(ToastOperator):  # type: ignore[misc]
         out_dir.mkdir(exist_ok=True)
         fname = out_dir / 'map.fits'
         map_estimate = np.array([estimate.i, estimate.q, estimate.u])
-        hp.write_map(str(fname), map_estimate, nest=True, overwrite=True)
+        hp.write_map(str(fname), map_estimate, overwrite=True)
         logger.info('Saved outputs')
 
         return
@@ -512,7 +512,7 @@ class TemplateMapMaker(LegacyMapMaker):
 
         fname = out_dir / 'map.fits'
         map_estimate = np.array([estimate.i, estimate.q, estimate.u])
-        hp.write_map(str(fname), map_estimate, nest=True, overwrite=True)
+        hp.write_map(str(fname), map_estimate, overwrite=True)
 
         # Optional info
         fname = out_dir / 'tod_fit.npy'

@@ -88,7 +88,7 @@ class SotodlibObservationData(GroundObservationData):
             # TODO: pass 'cuts' keyword here for time slices (glitches etc)?
             P = coords.P.for_tod(self.observation, wcs_kernel=landscape.wcs, comps='TQU', hwp=True)
         elif isinstance(landscape, HealpixLandscape):
-            hp_geom = coords.healpix_utils.get_geometry(nside=landscape.nside)
+            hp_geom = coords.healpix_utils.get_geometry(nside=landscape.nside, ordering='RING')
             P = coords.P.for_tod(self.observation, geom=hp_geom)
         else:
             raise NotImplementedError(f'Landscape {landscape} not supported')

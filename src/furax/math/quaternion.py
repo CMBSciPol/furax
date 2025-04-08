@@ -1,3 +1,11 @@
+"""Functions for quaternion operations using JAX.
+
+This module provides vectorized functions for multiplying quaternions, and rotating
+3D vectors by quaternions.
+
+We use scalar-vector storage, i.e. (1,i,j,k) with the scalar part first.
+"""
+
 from functools import partial
 from typing import TypeAlias
 
@@ -21,38 +29,49 @@ Vec3: TypeAlias = Float[Array, '... 3']
 @partial(jnp.vectorize, signature='(4),(4)->(4)')
 def qmul(q1: Quat, q2: Quat) -> Quat:
     """Compute quaternion multiplication."""
-    r0 = q1[0] * q2[0] - q1[1] * q2[1] - q1[2] * q2[2] - q1[3] * q2[3]
-    r1 = q1[0] * q2[1] + q1[1] * q2[0] + q1[2] * q2[3] - q1[3] * q2[2]
-    r2 = q1[0] * q2[2] - q1[1] * q2[3] + q1[2] * q2[1] + q1[3] * q2[1]
-    r3 = q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[2] + q1[3] * q2[0]
-    return jnp.array([r0, r1, r2, r3])
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    # https://en.wikipedia.org/wiki/Quaternion#Hamilton_product
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    return jnp.array([w, x, y, z])
 
 
 @jit
 @partial(jnp.vectorize, signature='(4),(3)->(3)')
 def qrot(q: Quat, vec: Vec3) -> Vec3:
     """Rotate vector by quaternion."""
-    # normalize quaternion
-    q /= jnp.linalg.norm(q, axis=0)
+    rot = to_rotation_matrix(q)
+    return rot @ vec  # type: ignore[no-any-return]
 
-    # https://fr.wikipedia.org/wiki/Quaternions_et_rotation_dans_l%27espace#M%C3%A9thodes_utilis%C3%A9es
-    t2 = q[0] * q[1]
-    t3 = q[0] * q[2]
-    t4 = q[0] * q[3]
-    t5 = -q[1] * q[1]
-    t6 = q[1] * q[2]
-    t7 = q[1] * q[3]
-    t8 = -q[2] * q[2]
-    t9 = q[2] * q[3]
-    t10 = -q[3] * q[3]
-    mat = 2 * jnp.array(
+
+@jit
+@partial(jnp.vectorize, signature='(4)->(3,3)')
+def to_rotation_matrix(q: Float[Array, '*dims 4']) -> Float[Array, '*dims 3 3']:
+    """Return 3x3 rotation matrix associated with quaternion q."""
+    w, x, y, z = q
+    # ref: https://en.wikipedia.org/wiki/Rotation_matrix#Quaternion
+    wx = w * x
+    wy = w * y
+    wz = w * z
+    xx = x * x
+    xy = x * y
+    xz = x * z
+    yy = y * y
+    yz = y * z
+    zz = z * z
+    mat = jnp.array(
         [
-            [t8 + t10, t6 - t4, t3 + t7],
-            [t4 + t6, t5 + t10, t9 - t2],
-            [t7 - t3, t2 + t9, t5 + t8],
+            [-yy - zz, xy - wz, xz + wy],
+            [xy + wz, -xx - zz, yz - wx],
+            [xz - wy, yz + wx, -xx - yy],
         ]
     )
-    return vec + mat @ vec
+    n = jnp.linalg.norm(q)
+    s = jnp.where(n > 1e-8, 2 / n, 0)
+    return jnp.eye(3, 3) + s * mat  # type: ignore[no-any-return]
 
 
 @jit
@@ -102,21 +121,17 @@ def get_local_meridian_angle(q: Float[Array, '*dims 4']) -> Float[Array, ' *dims
 @partial(jnp.vectorize, signature='(4)->(3)')
 def qrot_zaxis(q: Quat) -> Vec3:
     """Rotate the Z axis [0,0,1] by a given quaternion."""
-    # normalize quaternion
-    q_unit = q / jnp.linalg.norm(q)
-
-    # perform the matrix multiplication
-    x, y, z, w = q_unit
-    return 2 * jnp.array([y * w + x * z, y * z - x * w, 0.5 - x * x - y * y])
+    w, x, y, z = q
+    n = jnp.linalg.norm(q)
+    s = jnp.where(n > 1e-8, 2 / n, 0)
+    return jnp.array([0, 0, 1]) + s * jnp.array([x * z + w * y, y * z - w * x, -x * x - y * y])  # type: ignore[no-any-return]
 
 
 @jit
 @partial(jnp.vectorize, signature='(4)->(3)')
 def qrot_xaxis(q: Quat) -> Vec3:
     """Rotate the X axis [1,0,0] by a given quaternion."""
-    # normalize quaternion
-    q_unit = q / jnp.linalg.norm(q)
-
-    # performs the matrix multiplication
-    x, y, z, w = q_unit
-    return 2 * jnp.array([0.5 - y * y - z * z, z * w + x * y, x * z - y * w])
+    w, x, y, z = q
+    n = jnp.linalg.norm(q)
+    s = jnp.where(n > 1e-8, 2 / n, 0)
+    return jnp.array([1, 0, 0]) + s * jnp.array([-y * y - z * z, x * y + w * z, x * z - w * y])  # type: ignore[no-any-return]

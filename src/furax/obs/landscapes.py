@@ -17,6 +17,7 @@ from astropy.units import u
 from astropy.wcs import WCS
 from jaxtyping import Array, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
+from furax.math.quaternion import qrot_zaxis
 from furax.obs._samplings import Sampling
 from furax.obs.stokes import Stokes, ValidStokesType
 
@@ -220,6 +221,21 @@ class HealpixLandscape(StokesLandscape):
             'nside': self.nside,
         }  # static values
         return (), aux_data
+
+    @partial(jax.jit, static_argnums=0)
+    def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
+        r"""Convert quaternion to HEALPix index in ring ordering.
+
+        Args:
+            quat (float): Quaternion.
+
+        Returns:
+            int: HEALPix map index for ring ordering scheme.
+        """
+        # we want the 3 dimensions on the left
+        vec = jnp.moveaxis(qrot_zaxis(quat), -1, 0)
+        pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec)
+        return pix
 
     @partial(jax.jit, static_argnums=0)
     def world2pixel(

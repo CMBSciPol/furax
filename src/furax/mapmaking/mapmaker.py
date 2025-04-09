@@ -201,44 +201,20 @@ class MapMaker:
         but otherwise fits a model to the data.
         """
         config = self.config
+        Model = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
 
         # Load the noise model from data if available
         noise_model = observation.get_noise_model()
-        if config.binned:
-            if noise_model:
-                if isinstance(noise_model, WhiteNoiseModel):
-                    return noise_model
-                if isinstance(noise_model, AtmosphericNoiseModel):
-                    return noise_model.to_white_noise_model()
-
-        if isinstance(noise_model, AtmosphericNoiseModel):
+        if noise_model and isinstance(noise_model, Model):
+            self.logger.info('Loading noise model from data')
             return noise_model
 
-        # Compute the noise model from data
+        # Otherwise, fit the noise model from data
+        self.logger.info('Fitting noise model from data')
         f, Pxx = jax.scipy.signal.welch(
             observation.get_tods(), fs=observation.sample_rate, nperseg=config.nperseg
         )
-
-        if config.binned:
-            # Diagonal noise
-            return WhiteNoiseModel(sigma=jnp.mean(Pxx[..., (f > 0)], axis=-1))
-
-        # Non-diagonal noise
-        n_dets = observation.n_dets
-        dtype = config.dtype
-        init_model = AtmosphericNoiseModel(
-            sigma=jnp.mean(Pxx[..., (f >= f[-1] / 2)], axis=-1),
-            alpha=(-3.0) * jnp.ones(n_dets, dtype=dtype),
-            fk=(f[-1] / 2) * jnp.ones(n_dets, dtype=dtype),
-            f0=(f[1]) * jnp.ones(n_dets, dtype=dtype),
-        )
-        return NoiseModel.fit_psd_model(
-            f=f,
-            Pxx=Pxx,
-            init_model=init_model,
-            max_iter=config.solver.max_steps,
-            tol=config.solver.rtol,
-        )
+        return Model.fit_psd_model(f, Pxx)
 
     def get_pixel_selector(
         self, blocks: Float[Array, '... nstokes nstokes'], landscape: StokesLandscape

@@ -11,6 +11,7 @@ from jaxtyping import Array, Float, PyTree
 from furax.core import AbstractLinearOperator, DiagonalOperator, SymmetricBandToeplitzOperator
 
 from .utils import apodization_window, run_lbfgs
+from .utils import fit_psd_model as fit_atmospheric_psd_model
 
 
 @jax.tree_util.register_dataclass
@@ -43,14 +44,14 @@ class NoiseModel:
         f[0] is assume to be 0
         """
         pred = self.log_psd(f[1:])
-        loss = jnp.trapezoid((pred - jnp.log(Pxx[:, 1:])) ** 2, jnp.log(f[1:]))
+        loss = jnp.trapezoid((pred - jnp.log10(Pxx[:, 1:])) ** 2, jnp.log10(f[1:]))
         return jnp.mean(loss)
 
     @classmethod
     def fit_psd_model(
         cls,
-        f: Float[Array, ' a'],
-        Pxx: Float[Array, ' a'],
+        f: Float[Array, ' freq'],
+        Pxx: Float[Array, 'dets freq'],
         init_model: 'NoiseModel',
         max_iter: int,
         tol: float,
@@ -58,6 +59,8 @@ class NoiseModel:
         """Fit a noise model to the given psd using l2 loss in log-log space.
         Must provide an instance of a NoiseModel subclass as init_model,
         and the output is the fitted noise model of the same class.
+        It is recommended to use the given noise model class's fit_psd_model
+        function instead if available.
         """
         loss = jax.jit(lambda m: m.l2_loss(f, Pxx))
         opt = optax.lbfgs()
@@ -84,7 +87,7 @@ class WhiteNoiseModel(NoiseModel):
     @jax.jit
     @partial(jax.vmap, in_axes=(None, 0), out_axes=1)
     def log_psd(self, f: Float[Array, '']) -> Float[Array, ' dets']:
-        return 2 * jnp.log(self.sigma)
+        return 2 * jnp.log10(self.sigma)
 
     def operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
@@ -97,6 +100,16 @@ class WhiteNoiseModel(NoiseModel):
     ) -> AbstractLinearOperator:
         assert in_structure.ndim == 2, 'Dimensions assumed to be (ndets, nsamps)'
         return DiagonalOperator(1.0 / self.sigma[:, None] ** 2, in_structure=in_structure)
+
+    @classmethod
+    def fit_psd_model(  # type: ignore[override]
+        cls,
+        f: Float[Array, ' freq'],
+        Pxx: Float[Array, 'dets freq'],
+    ) -> 'WhiteNoiseModel':
+        """Fit a white noise model to data"""
+        sigma = jnp.power(10, 0.5 * jnp.median(jnp.log10(Pxx[:, (f > 0)]), axis=-1))
+        return cls(sigma)
 
 
 @jax.tree_util.register_dataclass
@@ -121,7 +134,7 @@ class AtmosphericNoiseModel(NoiseModel):
     @jax.jit
     @partial(jax.vmap, in_axes=(None, 0), out_axes=1)
     def log_psd(self, f: Float[Array, '']) -> Float[Array, '']:
-        return 2 * jnp.log(self.sigma) + jnp.log10(1 + ((f + self.f0) / self.fk) ** self.alpha)
+        return 2 * jnp.log10(self.sigma) + jnp.log10(1 + ((f + self.f0) / self.fk) ** self.alpha)
 
     def operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
@@ -161,3 +174,13 @@ class AtmosphericNoiseModel(NoiseModel):
 
     def to_white_noise_model(self) -> WhiteNoiseModel:
         return WhiteNoiseModel(sigma=self.sigma)
+
+    @classmethod
+    def fit_psd_model(  # type: ignore[override]
+        cls,
+        f: Float[Array, ' freq'],
+        Pxx: Float[Array, 'dets freq'],
+    ) -> 'AtmosphericNoiseModel':
+        """Fit a atmospheric (1/f) noise model to data"""
+        params = fit_atmospheric_psd_model(f, Pxx)
+        return cls(*params.T)

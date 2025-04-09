@@ -1,3 +1,5 @@
+from functools import partial
+
 import equinox
 import jax
 import jax.numpy as jnp
@@ -7,7 +9,7 @@ from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
-from furax.math.quaternion import get_local_meridian_angle, qmul
+from furax.math.quaternion import qmul, qrot_xaxis, qrot_zaxis
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.stokes import StokesI, StokesIQU, StokesIQUV, StokesPyTreeType, StokesQU
 
@@ -196,3 +198,46 @@ class PointingTransposeOperator(TransposeOperator):
             tod,
         )
         return sky
+
+
+@jit
+@partial(jnp.vectorize, signature='(4)->()')
+def get_local_meridian_angle(q: Float[Array, '*dims 4']) -> Float[Array, ' *dims']:
+    """
+    Compute angle between local meridian and orientation vector from quaternions.
+
+    Assumes that the quaternions encode the rotation between the celestial frame
+    and some other frame (e.g. detector or boresight frame). The "orientation vector"
+    is the unit vector of the latter frame obtained by rotating the X axis of the
+    celestial frame. For a detector this will be the polarization sensitive direction.
+    The local meridian vector is obtained by projecting the -Z axis of the celestial
+    frame onto the plane orthogonal to the pointing direction.
+
+    partially taken from
+    https://github.com/hpc4cmb/toast/blob/toast3/src/toast/ops/stokes_weights/kernels_jax.py#L19
+    """
+    vd = qrot_zaxis(q)
+    vo = qrot_xaxis(q)
+
+    # The vector orthogonal to the line of sight that is parallel
+    # to the local meridian.
+    dir_ang = jnp.arctan2(vd[1], vd[0])
+    dir_r = jnp.sqrt(1.0 - vd[2] * vd[2])
+    vm_z = -dir_r
+    vm_x = vd[2] * jnp.cos(dir_ang)
+    vm_y = vd[2] * jnp.sin(dir_ang)
+
+    # Compute the rotation angle from the meridian vector to the
+    # orientation vector.  The direction vector is normal to the plane
+    # containing these two vectors, so the rotation angle is:
+    #
+    # angle = atan2((v_m x v_o) . v_d, v_m . v_o)
+    #
+    alpha_y = (
+        vd[0] * (vm_y * vo[2] - vm_z * vo[1])
+        - vd[1] * (vm_x * vo[2] - vm_z * vo[0])
+        + vd[2] * (vm_x * vo[1] - vm_y * vo[0])
+    )
+    alpha_x = vm_x * vo[0] + vm_y * vo[1] + vm_z * vo[2]
+
+    return jnp.arctan2(alpha_y, alpha_x)

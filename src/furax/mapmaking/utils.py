@@ -102,35 +102,46 @@ def estimate_psd(
 @partial(jnp.vectorize, signature='(n),(n)->(p)')
 def fit_psd_model(f: Float[Array, ' a'], Pxx: Float[Array, ' a']) -> Float[Array, '4']:
     """Fit a 1/f PSD model to the periodogram in log space."""
-    loss = partial(_compute_loss, x=f[1:], y=jnp.log10(Pxx[1:]))
+    # minimise loss for params: (sigma, alpha, fknee, fmin/fknee)
+    loss = lambda params: _compute_loss(
+        params.at[3].multiply(params[2]), x=f[1:], y=jnp.log10(Pxx[1:])
+    )
     opt = optax.lbfgs()
+
+    # estimate white noise level from the top 10% high-freq PSD
+    # the formula is slightly more accurate than a simple sum
+    hi_Pxx = Pxx[-(Pxx.size // 10 + 1) :]
+    sigma_init = jnp.sqrt(jnp.sum(hi_Pxx**2) / jnp.sum(hi_Pxx))
 
     # initial guess
     maxf = f[-1]
-    init_params = jnp.array([1.0, -1.0, 0.1 * maxf, 0.01 * maxf])
+    init_params = jnp.array([sigma_init, -1.0, 0.1 * maxf, 1e-5])
 
     # bounds
-    up = jnp.array([jnp.inf, -0.1, maxf, maxf])
+    up = jnp.array([jnp.inf, -0.1, maxf, 1e-3])
     lo = jnp.array([0, -10, e := jnp.finfo(f.dtype).eps, e])
 
     # perform minimization
+    tol = jnp.median(Pxx**2) * 1e-12
     params, _ = optimize(
         init_params,
         loss,
         opt,
-        max_iter=100,
-        tol=1e-6,
+        max_iter=300,
+        tol=tol,
         upper_bound=up,
         lower_bound=lo,
     )
-    return params  # type: ignore[no-any-return]
+
+    return params.at[3].multiply(params[2])  # type: ignore[no-any-return]
 
 
 def _compute_loss(
     params: Float[Array, '4'], x: Float[Array, ' a'], y: Float[Array, ' a']
 ) -> Float[Array, '1']:
     y_pred = _log_model(params, x)
-    return jnp.mean(optax.l2_loss(y_pred, y))
+    w = jnp.where(x > 0, 1.0, 0.0)
+    return jnp.mean(optax.l2_loss(w * y_pred, w * y))
 
 
 def _log_model(params: Float[Array, '4'], x: Float[Array, ' a']) -> Float[Array, ' a']:

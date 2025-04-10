@@ -82,6 +82,8 @@ class MapMakingConfig:
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2
     double_precision: bool = True
+    pointing_on_the_fly: bool = False
+    pointing_chunk_size: int = 4
     debug: bool = True
     solver: SolverConfig = SolverConfig()
     landscape: LandscapeConfig = LandscapeConfig()

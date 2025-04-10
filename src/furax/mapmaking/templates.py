@@ -10,7 +10,7 @@ from numpy.typing import NDArray
 
 from furax import AbstractLinearOperator
 
-from ..observation import ToastObservationData
+from . import GroundObservationData
 
 
 class TemplateOperator(AbstractLinearOperator):
@@ -47,7 +47,7 @@ class TemplateOperator(AbstractLinearOperator):
 
     @classmethod
     def from_dict(
-        cls, name: str, config: dict[str, Any], observation_data: ToastObservationData
+        cls, name: str, config: dict[str, Any], observation_data: GroundObservationData
     ) -> AbstractLinearOperator:
         """Create and return a template operator corresponding to the
         name and configuration provided.
@@ -79,6 +79,7 @@ class TemplateOperator(AbstractLinearOperator):
                 n_harmonics=n_harmonics, hwp_angles=observation_data.get_hwp_angles(), n_dets=n_dets
             )
 
+        """
         elif name == 'common_mode':
             # Assumes that the cross power spectral density is precomputed
             # and stored as '_cross_psd'
@@ -94,6 +95,7 @@ class TemplateOperator(AbstractLinearOperator):
                 csd=csd,
                 tods=observation_data.get_tods(),
             )
+        """
 
         raise NotImplementedError(f'Template {name} is not implemented')
 

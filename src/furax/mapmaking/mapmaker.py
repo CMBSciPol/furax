@@ -19,11 +19,11 @@ from jaxtyping import Array, DTypeLike, Float, PyTree
 
 from furax import AbstractLinearOperator, Config, DiagonalOperator, IdentityOperator
 from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
-from furax.interfaces.toast.mapmaker import templates
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
 
+from . import templates
 from ._logger import logger as furax_logger
 from ._observation_data import GroundObservationData
 from .config import Landscapes, MapMakingConfig, Methods

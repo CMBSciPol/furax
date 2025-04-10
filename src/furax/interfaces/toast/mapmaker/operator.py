@@ -30,6 +30,7 @@ from furax import (
 from furax.mapmaking import MapMakingConfig
 from furax.mapmaking.mapmaker import MapMaker as FuraxMapMaker
 from furax.mapmaking.pointing import PointingOperator
+from furax.mapmaking.templates import TemplateOperator
 from furax.mapmaking.utils import (
     compute_cross_psd,
     estimate_filtered_psd,
@@ -43,7 +44,6 @@ from furax.obs.landscapes import HealpixLandscape
 from furax.obs.stokes import Stokes, StokesIQU
 
 from ..observation import ToastObservationData
-from .templates import TemplateOperator
 
 ObservationKeysDict: TypeAlias = dict[str, list[str]]
 

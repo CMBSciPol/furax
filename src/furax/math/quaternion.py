@@ -68,9 +68,9 @@ def to_rotation_matrix(q: Float[Array, '*dims 4']) -> Float[Array, '*dims 3 3']:
             [xz - wy, yz + wx, -xx - yy],
         ]
     )
-    n = jnp.linalg.norm(q)
+    n = jnp.sum(q**2)
     s = jnp.where(n > 1e-8, 2 / n, 0)
-    return jnp.eye(3, 3) + s * mat  # type: ignore[no-any-return]
+    return jnp.eye(3, 3) + s * mat
 
 
 @jit
@@ -78,9 +78,9 @@ def to_rotation_matrix(q: Float[Array, '*dims 4']) -> Float[Array, '*dims 3 3']:
 def qrot_zaxis(q: Quat) -> Vec3:
     """Rotate the Z axis [0,0,1] by a given quaternion."""
     w, x, y, z = q
-    n = jnp.linalg.norm(q)
+    n = jnp.sum(q**2)
     s = jnp.where(n > 1e-8, 2 / n, 0)
-    return jnp.array([0, 0, 1]) + s * jnp.array([x * z + w * y, y * z - w * x, -x * x - y * y])  # type: ignore[no-any-return]
+    return jnp.array([0, 0, 1]) + s * jnp.array([x * z + w * y, y * z - w * x, -x * x - y * y])
 
 
 @jit
@@ -88,6 +88,6 @@ def qrot_zaxis(q: Quat) -> Vec3:
 def qrot_xaxis(q: Quat) -> Vec3:
     """Rotate the X axis [1,0,0] by a given quaternion."""
     w, x, y, z = q
-    n = jnp.linalg.norm(q)
+    n = jnp.sum(q**2)
     s = jnp.where(n > 1e-8, 2 / n, 0)
-    return jnp.array([1, 0, 0]) + s * jnp.array([-y * y - z * z, x * y + w * z, x * z - w * y])  # type: ignore[no-any-return]
+    return jnp.array([1, 0, 0]) + s * jnp.array([-y * y - z * z, x * y + w * z, x * z - w * y])

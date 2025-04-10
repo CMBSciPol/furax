@@ -42,6 +42,10 @@ class SotodlibObservationData(GroundObservationData):
         tods = jnp.array(self.observation.signal)
         return jnp.atleast_2d(tods)
 
+    def get_det_offset_angles(self) -> Array:
+        """Returns the detector offset angles."""
+        return jnp.array(self.observation.focal_plane['gamma'])
+
     def get_hwp_angles(self) -> Array:
         """Returns the HWP angles."""
         return jnp.array(self.observation.hwp_angle)

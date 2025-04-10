@@ -50,6 +50,11 @@ class GroundObservationData:
         ...
 
     @abstractmethod
+    def get_det_offset_angles(self) -> Array:
+        """Returns the detector offset angles ('gamma')."""
+        ...
+
+    @abstractmethod
     def get_hwp_angles(self) -> Array:
         """Returns the HWP angles."""
         ...

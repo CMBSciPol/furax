@@ -28,6 +28,7 @@ from ._logger import logger as furax_logger
 from ._observation_data import GroundObservationData
 from .config import Landscapes, MapMakingConfig, Methods
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
+from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
 
 
@@ -106,30 +107,48 @@ class MapMaker:
 
         raise TypeError('Landscape type not supported')
 
-    def get_pointing_operators(
+    def get_pointing(
         self, observation: GroundObservationData, landscape: StokesLandscape
-    ) -> tuple[IndexOperator, QURotationOperator]:
-        """Operators containing pointing information with given observation"""
+    ) -> AbstractLinearOperator:
+        """Operator containing pointing information for given observation"""
 
-        pixel_inds, spin_ang = observation.get_pointing_and_spin_angles(landscape)
+        det_off_ang = observation.get_det_offset_angles().astype(landscape.dtype)
 
-        if isinstance(landscape, WCSLandscape):
-            assert pixel_inds.shape[-1] == 2, 'Wrong WCS landscape format'
-            indexer = IndexOperator(
-                (pixel_inds[..., 0], pixel_inds[..., 1]), in_structure=landscape.structure
+        if self.config.pointing_on_the_fly:
+            pointing = PointingOperator(
+                landscape=landscape,
+                qbore=observation.get_boresight_quaternions(),
+                qdet=observation.get_detector_quaternions(),
+                det_gamma=det_off_ang,
+                _in_structure=landscape.structure,
+                _out_structure=Stokes.class_for(landscape.stokes).structure_for(
+                    (observation.n_dets, observation.n_samples), dtype=landscape.dtype
+                ),
+                chunk_size=self.config.pointing_chunk_size,
             )
-        elif isinstance(landscape, HealpixLandscape):
-            if pixel_inds.shape[-1] == 1:
-                pixel_inds = pixel_inds[..., 0]
-            indexer = IndexOperator(pixel_inds, in_structure=landscape.structure)
+            return pointing
 
-        # Rotation due to coordinate transform
-        tod_shape = pixel_inds.shape[:2]
-        rotator = QURotationOperator.create(
-            tod_shape, dtype=landscape.dtype, stokes=landscape.stokes, angles=spin_ang
-        )
+        else:
+            pixel_inds, spin_ang = observation.get_pointing_and_spin_angles(landscape)
+            point_ang = spin_ang + det_off_ang[:, None]
 
-        return indexer, rotator
+            if isinstance(landscape, WCSLandscape):
+                assert pixel_inds.shape[-1] == 2, 'Wrong WCS landscape format'
+                indexer = IndexOperator(
+                    (pixel_inds[..., 0], pixel_inds[..., 1]), in_structure=landscape.structure
+                )
+            elif isinstance(landscape, HealpixLandscape):
+                if pixel_inds.shape[-1] == 1:
+                    pixel_inds = pixel_inds[..., 0]
+                indexer = IndexOperator(pixel_inds, in_structure=landscape.structure)
+
+            # Rotation due to coordinate transform
+            tod_shape = pixel_inds.shape[:2]
+            rotator = QURotationOperator.create(
+                tod_shape, dtype=landscape.dtype, stokes=landscape.stokes, angles=point_ang
+            )
+
+            return (rotator @ indexer).reduce()
 
     def get_acquisition(
         self,
@@ -137,23 +156,26 @@ class MapMaker:
         landscape: StokesLandscape,
     ) -> AbstractLinearOperator:
         """Acquisition operator mapping sky maps to time-ordered data"""
-        indexer, rotator = self.get_pointing_operators(observation, landscape)
+        pointing = self.get_pointing(observation, landscape)
 
         if self.config.demodulated:
-            return (rotator @ indexer).reduce()
+            return pointing
         else:
             meta = {
                 'shape': (observation.n_dets, observation.n_samples),
                 'stokes': landscape.stokes,
                 'dtype': self.config.dtype,
             }
-            polarizer = LinearPolarizerOperator.create(**meta)  # type: ignore[arg-type]
+            polarizer = LinearPolarizerOperator.create(
+                **meta,  # type: ignore[arg-type]
+                angles=observation.get_det_offset_angles().astype(self.config.dtype)[:, None],
+            )
             hwp = HWPOperator.create(
                 **meta,  # type: ignore[arg-type]
                 angles=observation.get_hwp_angles().astype(self.config.dtype),
             )
 
-            return (polarizer @ hwp @ rotator @ indexer).reduce()
+            return (polarizer @ hwp @ pointing).reduce()
 
     def get_scanning_masker(self, observation: GroundObservationData) -> AbstractLinearOperator:
         """Flag operator which selects only the scanning intervals

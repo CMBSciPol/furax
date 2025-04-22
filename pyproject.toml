@@ -8,6 +8,7 @@ authors = [
     { name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' },
     { name = 'Simon Biquard', email = 'biquard@apc.in2p3.fr' },
     { name = 'Wassim Kabalan' },
+    { name = 'Wuhyun Sohn', email = 'sohn@apc.in2p3.fr' },
 ]
 maintainers = [{ name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' }]
 description = 'Operators and solvers for high-performance computing.'
@@ -55,6 +56,7 @@ mapmaking = [
     'optax',
     'pixell',
     'sotodlib @ git+https://github.com/simonsobs/sotodlib.git',
+    'so3g',
     'toast>=3.0.0a27',
 ]
 
@@ -89,6 +91,7 @@ module = [
     'pysm3.*',
     'scipy.signal',
     'scipy.stats.sampling',
+    'so3g.*',
     'sotodlib.*',
     'toast.*',
 ]

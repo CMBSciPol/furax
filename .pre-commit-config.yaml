@@ -27,6 +27,7 @@ repos:
   hooks:
   - id: mypy
     additional_dependencies:
+    - astropy
     - healpy
     - jax
     - jaxtyping
@@ -35,6 +36,8 @@ repos:
     - lineax
     - types-PyYAML
     - scipy
+    - optax
+    - traitlets
     args:
     - --strict
     - --show-error-codes

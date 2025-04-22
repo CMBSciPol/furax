@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pixell
+import so3g.proj
 from astropy.wcs import WCS
 from jaxtyping import Array, Float, Integer
 from numpy.typing import NDArray
@@ -193,8 +194,20 @@ class SotodlibObservationData(GroundObservationData):
 
     def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
         """Returns the boresight quaternions at each time sample"""
-        raise NotImplementedError
+        csl = so3g.proj.CelestialSightLine.az_el(
+            self.observation.timestamps,
+            self.observation.boresight.az,
+            self.observation.boresight.el,
+            site='so',
+            weather='typical',
+        )
+        return jnp.array(csl.Q, dtype=jnp.float64)
 
     def get_detector_quaternions(self) -> Float[Array, 'det 4']:
         """Returns the quaternion offsets of the detectors"""
-        raise NotImplementedError
+        fp = so3g.proj.FocalPlane.from_xieta(
+            self.observation.focal_plane.xi,
+            self.observation.focal_plane.eta,
+            self.observation.focal_plane.gamma,
+        )
+        return jnp.atleast_2d(jnp.array(fp.quats, dtype=jnp.float64))

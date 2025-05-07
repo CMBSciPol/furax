@@ -28,7 +28,7 @@ repos:
   - id: mypy
     additional_dependencies:
     - healpy
-    - jax
+    - jax==0.6.0
     - jaxtyping
     - jax-healpy
     - jax-dataclasses

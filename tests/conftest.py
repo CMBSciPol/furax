@@ -1,9 +1,13 @@
+import os
+import subprocess
+import sys
 from typing import get_args
 
 import healpy as hp
 import jax
 import numpy as np
 import pytest
+from _pytest import runner
 from jaxtyping import Array, Float
 
 from furax.obs.stokes import StokesIQU, ValidStokesType
@@ -52,3 +56,55 @@ def sat_nhits() -> Float[Array, '...']:
 def stokes(request: pytest.FixtureRequest) -> ValidStokesType:
     """Parametrized fixture for I, QU, IQU and IQUV."""
     return request.param
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_protocol(item):
+    if not item.get_closest_marker('insubprocess'):
+        return  # normal test: standard execution
+    if os.environ.get('PYTEST_IN_SUBPROCESS') == '1':
+        return
+    ihook = item.ihook
+    ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
+    reports = in_subprocess_run_report(item)
+    for rep in reports:
+        ihook.pytest_runtest_logreport(report=rep)
+    ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
+    return True
+
+
+def in_subprocess_run_report(item):
+    EXITSTATUS_TESTEXIT = 4
+
+    # Execution in subprocess
+    env = os.environ.copy()
+    env['PYTEST_IN_SUBPROCESS'] = '1'
+    try:
+        result = subprocess.run(
+            [sys.executable, '-m', 'pytest', item.nodeid],
+            env=env,
+            capture_output=True,
+            encoding='utf-8',
+        )
+    except KeyboardInterrupt:
+        os._exit(EXITSTATUS_TESTEXIT)
+
+    keywords = {keyword: 1 for keyword in item.keywords}
+    outcome = 'passed' if result.returncode == 0 else 'failed'
+    sections = []
+    if result.stdout:
+        sections.append(('captured stdout', result.stdout))
+    if result.stderr:
+        sections.append(('captured stderr', result.stderr))
+    reports = [
+        runner.TestReport(
+            item.nodeid,
+            item.location,
+            keywords,
+            outcome,
+            longrepr=None,
+            when='call',
+            sections=sections,
+        )
+    ]
+    return reports

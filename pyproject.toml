@@ -68,7 +68,7 @@ ignore_missing_imports = true
 # addopts = '-ra --cov=furax --jaxtyping-packages=furax,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))'
 addopts = '-s -ra --color=yes'
 testpaths = ['tests']
-markers = ["slow: mark test as slow."]
+markers = ["slow: mark test as slow.", "insubprocess: run test in subprocess"]
 
 #[tool.setuptools]
 #packages = ['src/furax']

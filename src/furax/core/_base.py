@@ -125,11 +125,11 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
     def T(self) -> 'AbstractLinearOperator':
         return self.transpose()
 
-    def inverse(self) -> 'AbstractLinearOperator':
+    def inverse(self) -> 'AbstractLazyInverseOperator':
         return InverseOperator(self)
 
     @property
-    def I(self) -> 'AbstractLinearOperator':
+    def I(self) -> 'AbstractLazyInverseOperator':
         return self.inverse()
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -397,6 +397,18 @@ class TransposeOperator(_AbstractLazyDualOperator):
 
 
 class AbstractLazyInverseOperator(_AbstractLazyDualOperator):
+    def __call__(
+        self, x: PyTree[jax.ShapeDtypeStruct] | None = None, /, **keywords: Any
+    ) -> AbstractLinearOperator | PyTree[jax.ShapeDtypeStruct]:
+        if x is not None:
+            if keywords:
+                raise ValueError(
+                    'The application of a vector to inverse operator cannot be parametrized. '
+                    'For example, instead of A.I(x, throw=True), use A.I(throw=True)(x).'
+                )
+            return self.mv(x)
+        return self
+
     def __matmul__(self, other: Any) -> AbstractLinearOperator:
         if self.operator is other:
             return IdentityOperator(self.in_structure())
@@ -410,6 +422,9 @@ class AbstractLazyInverseOperator(_AbstractLazyDualOperator):
         return matrix
 
 
+MISSING = object()
+
+
 class InverseOperator(AbstractLazyInverseOperator):
     config: ConfigState = equinox.field(static=True)
 
@@ -418,6 +433,30 @@ class InverseOperator(AbstractLazyInverseOperator):
             raise ValueError('Only square operators can be inverted.')
         super().__init__(operator.reduce())
         self.config = Config.instance()
+
+    def __call__(
+        self,
+        x: PyTree[jax.ShapeDtypeStruct] | None = None,
+        /,
+        *,
+        solver: lx.AbstractLinearSolver | None = None,
+        throw: bool | None = None,
+        callback: Callable[[lx.Solution], None] | object = MISSING,
+        **options: Any,
+    ) -> AbstractLinearOperator | PyTree[jax.ShapeDtypeStruct]:
+        config_options = {}
+        if solver is not None:
+            config_options['solver'] = solver
+        if throw is not None:
+            config_options['solver_throw'] = throw
+        if callback is not MISSING:
+            config_options['solver_callback'] = callback
+        if options:
+            config_options['solver_options'] = options
+        if x is None and config_options:
+            with Config(**config_options):
+                return InverseOperator(self.operator)
+        return super().__call__(x, **config_options)
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         solver = self.config.solver

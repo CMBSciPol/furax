@@ -38,6 +38,7 @@ dynamic = ['version']
 
 [project.optional-dependencies]
 dev = ['pytest', 'pytest-cov', 'pytest-mock', 'setuptools_scm', 'beartype']
+comp_sep = ['pysm3']
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'
@@ -55,12 +56,16 @@ skip_covered = true
 
 [[tool.mypy.overrides]]
 module = [
+    'astropy',
+    'astropy.cosmology',
     'healpy',
     'jax_healpy',
     'lineax',
     'scipy.stats.sampling',
     'scipy',
     'astropy.cosmology',
+    'pysm3',
+    'pysm3.units',
 ]
 ignore_missing_imports = true
 

@@ -48,6 +48,9 @@ def test_parametrized_inverse_empty() -> None:
         inv_op(x, option=True)
 
 
+# we run this test in another process to silence an error message for an expected behavior:
+# _EquinoxRuntimeError: The maximum number of solver steps was reached. Try increasing `max_steps`.
+@pytest.mark.insubprocess
 def test_parametrized_inverse() -> None:
     class Op(AbstractLinearOperator):
         def mv(self, x):

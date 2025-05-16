@@ -30,6 +30,9 @@ class NoiseModel:
     def log_psd(self, f: Float[Array, ' a']) -> Float[Array, 'dets a']: ...
 
     @abstractmethod
+    def to_array(self) -> Float[Array, 'dets n']: ...
+
+    @abstractmethod
     def operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
     ) -> AbstractLinearOperator: ...
@@ -89,6 +92,9 @@ class WhiteNoiseModel(NoiseModel):
     def log_psd(self, f: Float[Array, '']) -> Float[Array, ' dets']:
         return 2 * jnp.log10(self.sigma)
 
+    def to_array(self) -> Float[Array, 'dets n']:
+        return self.sigma[:, None]
+
     def operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
     ) -> AbstractLinearOperator:
@@ -135,6 +141,9 @@ class AtmosphericNoiseModel(NoiseModel):
     @partial(jax.vmap, in_axes=(None, 0), out_axes=1)
     def log_psd(self, f: Float[Array, '']) -> Float[Array, '']:
         return 2 * jnp.log10(self.sigma) + jnp.log10(1 + ((f + self.f0) / self.fk) ** self.alpha)
+
+    def to_array(self) -> Float[Array, 'dets n']:
+        return jnp.stack([self.sigma, self.alpha, self.fk, self.f0], axis=-1)
 
     def operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any

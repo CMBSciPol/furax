@@ -14,7 +14,7 @@ from numpy.typing import NDArray
 from toast.observation import default_values as defaults
 
 from furax.mapmaking import GroundObservationData
-from furax.mapmaking.noise import NoiseModel
+from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.mapmaking.utils import get_local_meridian_angle
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 
@@ -191,7 +191,7 @@ class ToastObservationData(GroundObservationData):
 
     @typing.no_type_check
     def get_noise_model(self) -> None | NoiseModel:
-        """Load precomputed noise model from the data, if present. Otherwise, return None"""
+        """Load noise model from the focalplane data, if present. Otherwise, return None"""
 
         noise_keys = ['psd_fmin', 'psd_fknee', 'psd_alpha', 'psd_net']
         fp_data = self.observation.telescope.focalplane.detector_data
@@ -200,17 +200,14 @@ class ToastObservationData(GroundObservationData):
                 # Noise model cannot be loaded from the observation
                 return None
 
-        return None
-
-        """
+        idets = np.argwhere(np.array(self.dets)[:, None] == fp_data['name'][None, :])[:, 1]
         noise_model = AtmosphericNoiseModel(
-            sigma=jnp.array(fp_data['psd_net'].value),
-            alpha=jnp.array(fp_data['psd_alpha'].value),
-            fk=jnp.array(fp_data['psd_fknee'].value),
-            f0=jnp.array(fp_data['psd_fmin'].value)
+            sigma=jnp.array(fp_data['psd_net'][idets].value),
+            alpha=jnp.array(fp_data['psd_alpha'][idets].value),
+            fk=jnp.array(fp_data['psd_fknee'][idets].value),
+            f0=jnp.array(fp_data['psd_fmin'][idets].value),
         )
         return noise_model
-        """
 
     def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
         if self.boresight not in self.observation.shared:

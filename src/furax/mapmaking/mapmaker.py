@@ -225,11 +225,15 @@ class MapMaker:
         config = self.config
         Model = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
 
-        # Load the noise model from data if available
-        noise_model = observation.get_noise_model()
-        if noise_model and isinstance(noise_model, Model):
-            self.logger.info('Loading noise model from data')
-            return noise_model
+        if not config.fit_noise_model:
+            # Load the noise model from data if available
+            noise_model = observation.get_noise_model()
+            if noise_model:
+                self.logger.info('Loading noise model from data')
+                if isinstance(noise_model, Model):
+                    return noise_model
+                if config.binned and isinstance(noise_model, AtmosphericNoiseModel):
+                    return noise_model.to_white_noise_model()
 
         # Otherwise, fit the noise model from data
         self.logger.info('Fitting noise model from data')
@@ -358,6 +362,8 @@ class BinnedMapMaker(MapMaker):
         output = {'map': final_map, 'weights': weights}
         if isinstance(landscape, WCSLandscape):
             output['wcs'] = landscape.wcs
+        if config.fit_noise_model:
+            output['noise_fit'] = noise_model.to_array()  # type: ignore[assignment]
 
         return output
 
@@ -465,6 +471,8 @@ class MLMapmaker(MapMaker):
         output = {'map': final_map, 'weights': blocks}
         if isinstance(landscape, WCSLandscape):
             output['wcs'] = landscape.wcs
+        if config.fit_noise_model:
+            output['noise_fit'] = noise_model.to_array()
         if config.use_templates:
             output['template'] = tmpl_ampl
         if config.debug:
@@ -570,6 +578,8 @@ class TwoStepMapmaker(MapMaker):
         output = {'map': final_map, 'weights': blocks, 'template': tmpl_ampl}
         if isinstance(landscape, WCSLandscape):
             output['wcs'] = landscape.wcs
+        if config.fit_noise_model:
+            output['noise_fit'] = noise_model.to_array()
         if config.debug:
             proj_map = (mp @ acquisition)(result_map)
             projs = {
@@ -642,13 +652,17 @@ class ATOPMapMaker(MapMaker):
         logger_info('Created scanning mask operator')
 
         # Noise
-        logger_info('Noise assumed to be identity')
+        noise_model = self.get_or_fit_noise_model(observation)
+        inv_noise = noise_model.inverse_operator(data_struct)
+        logger_info('Created inverse noise covariance operator')
 
         # ATOP projector
         atop_projector = ATOPProjectionOperator(self.config.atop_tau, in_structure=data_struct)
 
         # Approximate system matrix with diagonal noise covariance and full map pixels
-        diag_system = BJPreconditioner.create((acquisition.T @ masker @ acquisition).reduce())
+        diag_system = BJPreconditioner.create(
+            (acquisition.T @ inv_noise @ masker @ acquisition).reduce()
+        )
         logger_info('Created approximate system matrix')
 
         # Map pixel selection
@@ -666,7 +680,7 @@ class ATOPMapMaker(MapMaker):
         p = preconditioner
         h = acquisition @ selector.T
         mp = masker
-        ap = atop_projector
+        ap = inv_noise @ atop_projector
 
         solver = lineax.CG(**asdict(config.solver))
         solver_options = {
@@ -693,6 +707,8 @@ class ATOPMapMaker(MapMaker):
         output = {'map': final_map, 'weights': blocks}
         if isinstance(landscape, WCSLandscape):
             output['wcs'] = landscape.wcs
+        if config.fit_noise_model:
+            output['noise_fit'] = noise_model.to_array()
         if config.debug:
             proj_map = (mp @ acquisition)(result_map)
             output['proj_map'] = proj_map

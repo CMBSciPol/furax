@@ -84,6 +84,7 @@ class MapMakingConfig:
     double_precision: bool = True
     pointing_on_the_fly: bool = False
     pointing_chunk_size: int = 4
+    fit_noise_model: bool = True
     debug: bool = True
     solver: SolverConfig = SolverConfig()
     landscape: LandscapeConfig = LandscapeConfig()

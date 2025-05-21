@@ -17,6 +17,7 @@ from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float, PyTree
 
+import furax.tree
 from furax import AbstractLinearOperator, Config, DiagonalOperator, IdentityOperator
 from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
@@ -279,6 +280,7 @@ class MapMaker:
                 intervals=observation.get_scanning_intervals(),
                 times=observation.get_elapsed_time(),
                 n_dets=observation.n_dets,
+                dtype=config.dtype,
             )
         if sss := config.templates.scan_synchronous:
             blocks['scan_synchronous'] = templates.ScanSynchronousTemplateOperator.create(
@@ -286,12 +288,23 @@ class MapMaker:
                 max_poly_order=sss.max_poly_order,
                 azimuth=jnp.array(observation.get_azimuth()),
                 n_dets=observation.n_dets,
+                dtype=config.dtype,
             )
         if hwpss := config.templates.hwp_synchronous:
             blocks['hwp_synchronous'] = templates.HWPSynchronousTemplateOperator.create(
                 n_harmonics=hwpss.n_harmonics,
                 hwp_angles=observation.get_hwp_angles(),
                 n_dets=observation.n_dets,
+                dtype=config.dtype,
+            )
+        if azhwpss := config.templates.azhwp_synchronous:
+            blocks['azhwp_synchronous'] = templates.AzHWPSynchronousTemplateOperator.create(
+                n_polynomials=azhwpss.n_polynomials,
+                n_harmonics=azhwpss.n_harmonics,
+                azimuth=observation.get_azimuth(),
+                hwp_angles=observation.get_hwp_angles(),
+                n_dets=observation.n_dets,
+                dtype=config.dtype,
             )
 
         return BlockRowOperator(blocks=blocks)
@@ -431,13 +444,40 @@ class MLMapmaker(MapMaker):
         if config.use_templates:
             template_op = self.get_template_operator(observation)
             logger_info('Built template operators')
+            REGVAL = config.templates.regularization  # type: ignore[union-attr]
+            tmpl_inv_sys = {}
+            regs = {}
+            for tmpl, tmpl_op in template_op.blocks.items():
+                tmpl_sys = (tmpl_op.T @ diag_inv_noise @ tmpl_op).reduce()
+                norm_sys = jnp.abs(
+                    jax.jit(lambda x: tmpl_sys(x))(furax.tree.ones_like(tmpl_op.in_structure()))
+                )
+                regs[tmpl] = REGVAL * jnp.min(norm_sys[norm_sys > 0])
+                tmpl_inv_sys[tmpl] = DiagonalOperator(
+                    diagonal=(norm_sys + regs[tmpl]),
+                    in_structure=tmpl_op.in_structure(),
+                ).inverse()
+            template_preconditioner = BlockDiagonalOperator(tmpl_inv_sys)
+            logger_info('Built template preconditioner')
+            template_reg_op = BlockDiagonalOperator(
+                [
+                    DiagonalOperator(
+                        diagonal=jnp.array([0.0]), in_structure=selector.out_structure()
+                    ),
+                    {
+                        tmpl: regs[tmpl]
+                        * IdentityOperator(in_structure=template_op.blocks[tmpl].in_structure())
+                        for tmpl in template_op.blocks.keys()
+                    },
+                ]
+            )
+            logger_info('Built template regularizer')
 
         # Mapmaking operator
         if config.use_templates:
-            p = BlockDiagonalOperator(
-                [preconditioner, IdentityOperator(template_op.in_structure())]
-            )
+            p = BlockDiagonalOperator([preconditioner, template_preconditioner])
             h = BlockRowOperator([acquisition @ selector.T, template_op])
+            reg = template_reg_op
         else:
             p = preconditioner
             h = acquisition @ selector.T
@@ -448,7 +488,12 @@ class MLMapmaker(MapMaker):
             'preconditioner': lineax.TaggedLinearOperator(p, lineax.positive_semidefinite_tag)
         }
         with Config(solver=solver, solver_options=solver_options):
-            mapmaking_operator = (h.T @ mp @ inv_noise @ mp @ h).I @ h.T @ mp @ inv_noise @ mp
+            if config.use_templates:
+                mapmaking_operator = (
+                    (h.T @ mp @ inv_noise @ mp @ h + reg).I @ h.T @ mp @ inv_noise @ mp
+                )
+            else:
+                mapmaking_operator = (h.T @ mp @ inv_noise @ mp @ h).I @ h.T @ mp @ inv_noise @ mp
 
         @jax.jit
         def process(d):  # type: ignore[no-untyped-def]
@@ -474,7 +519,8 @@ class MLMapmaker(MapMaker):
         if config.fit_noise_model:
             output['noise_fit'] = noise_model.to_array()
         if config.use_templates:
-            output['template'] = tmpl_ampl
+            for key in tmpl_ampl.keys():
+                output[f'template_{key}'] = tmpl_ampl[key]
         if config.debug:
             proj_map = (mp @ acquisition)(result_map)
             if config.use_templates:
@@ -575,7 +621,9 @@ class TwoStepMapmaker(MapMaker):
         # Format output and compute auxilary data
         final_map = np.array([result_map.i, result_map.q, result_map.u])
 
-        output = {'map': final_map, 'weights': blocks, 'template': tmpl_ampl}
+        output = {'map': final_map, 'weights': blocks}
+        for key in tmpl_ampl.keys():
+            output[f'template_{key}'] = tmpl_ampl[key]
         if isinstance(landscape, WCSLandscape):
             output['wcs'] = landscape.wcs
         if config.fit_noise_model:

@@ -5,7 +5,7 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import Float, Int, PyTree
+from jaxtyping import DTypeLike, Float, Int, PyTree
 from numpy.typing import NDArray
 
 from furax import AbstractLinearOperator
@@ -30,12 +30,11 @@ class TemplateOperator(AbstractLinearOperator):
         n_params: int,
         n_dets: int,  # Number of detectors
         n_samps: int,  # Number of samples
-        dtype: jnp.dtype | str = np.dtype(float),  # type: ignore[type-arg]
+        dtype: DTypeLike,
     ) -> None:
         self.n_params = n_params
         self.n_dets = n_dets
         self.n_samps = n_samps
-        dtype = jnp.dtype(dtype)
         self._in_structure = jax.ShapeDtypeStruct((n_params,), dtype)
         self._out_structure = jax.ShapeDtypeStruct((n_dets, n_samps), dtype)
 
@@ -61,6 +60,7 @@ class TemplateOperator(AbstractLinearOperator):
                 intervals=observation_data.get_scanning_intervals(),
                 times=observation_data.get_elapsed_time(),
                 n_dets=n_dets,
+                dtype=config.get('dtype', jnp.float64),
             )
 
         elif name == 'scan_synchronous':
@@ -71,12 +71,16 @@ class TemplateOperator(AbstractLinearOperator):
                 max_poly_order=max_poly_order,
                 azimuth=observation_data.get_azimuth(),
                 n_dets=n_dets,
+                dtype=config.get('dtype', jnp.float64),
             )
 
         elif name == 'hwp_synchronous':
             n_harmonics: int = config.get('n_harmonics', 0)
             return HWPSynchronousTemplateOperator.create(
-                n_harmonics=n_harmonics, hwp_angles=observation_data.get_hwp_angles(), n_dets=n_dets
+                n_harmonics=n_harmonics,
+                hwp_angles=observation_data.get_hwp_angles(),
+                n_dets=n_dets,
+                dtype=config.get('dtype', jnp.float64),
             )
 
         """
@@ -119,12 +123,13 @@ class PolynomialTemplateOperator(TemplateOperator):
         n_params: int,
         n_dets: int,
         n_samps: int,
+        dtype: DTypeLike,
         max_poly_order: int,
         blocks: PyTree[Float[Array, '...']],
         block_slice_indices: PyTree[int],
     ) -> None:
         # TODO: add checks
-        super().__init__(n_params, n_dets, n_samps)
+        super().__init__(n_params, n_dets, n_samps, dtype)
         self.max_poly_order = max_poly_order
         self.n_intervals = len(blocks)
         self.blocks = blocks
@@ -137,6 +142,7 @@ class PolynomialTemplateOperator(TemplateOperator):
         intervals: Int[Array, 'a 2'] | NDArray[np.int_],
         times: Float[Array, ' samps'],
         n_dets: int,
+        dtype: DTypeLike,
     ) -> TemplateOperator:
         n_intervals = intervals.shape[0]
         n_params = n_intervals * n_dets * (max_poly_order + 1)
@@ -160,13 +166,13 @@ class PolynomialTemplateOperator(TemplateOperator):
             # but shouldn't be too expensive for low polynomial orders
             evals = jax.scipy.special.lpmn_values(
                 max_poly_order, max_poly_order, x, is_normalized=False
-            )[0, :, :]
+            )[0, :, :].astype(dtype)
 
             res = jnp.concatenate(
                 [
-                    jnp.zeros((evals.shape[0], scan_start - block_start), dtype=evals.dtype),
+                    jnp.zeros((evals.shape[0], scan_start - block_start), dtype=dtype),
                     evals,
-                    jnp.zeros((evals.shape[0], block_end - scan_end), dtype=evals.dtype),
+                    jnp.zeros((evals.shape[0], block_end - scan_end), dtype=dtype),
                 ],
                 axis=1,
             )
@@ -182,6 +188,7 @@ class PolynomialTemplateOperator(TemplateOperator):
             n_params=n_params,
             n_dets=n_dets,
             n_samps=n_samps,
+            dtype=dtype,
             max_poly_order=max_poly_order,
             blocks=blocks,
             block_slice_indices=block_slice_indices,
@@ -243,12 +250,13 @@ class ScanSynchronousTemplateOperator(TemplateOperator):
         n_params: int,
         n_dets: int,
         n_samps: int,
+        dtype: DTypeLike,
         min_poly_order: int,
         max_poly_order: int,
         templates: Float[Array, 'ord samp'],
     ):
         # TODO: add checks
-        super().__init__(n_params, n_dets, n_samps)
+        super().__init__(n_params, n_dets, n_samps, dtype)
         self.min_poly_order = min_poly_order
         self.max_poly_order = max_poly_order
         self.templates = templates
@@ -260,6 +268,7 @@ class ScanSynchronousTemplateOperator(TemplateOperator):
         max_poly_order: int,
         azimuth: Float[Array, ' n_samps'],
         n_dets: int,
+        dtype: DTypeLike,
     ) -> TemplateOperator:
         n_samps = len(azimuth)
         n_params: int = n_dets * (max_poly_order - min_poly_order + 1)
@@ -272,12 +281,13 @@ class ScanSynchronousTemplateOperator(TemplateOperator):
         # but shouldn't be too expensive for low polynomial orders
         templates = jax.scipy.special.lpmn_values(
             max_poly_order, max_poly_order, x, is_normalized=False
-        )[0, min_poly_order:, :]
+        )[0, min_poly_order:, :].astype(dtype)
 
         return cls(
             n_params=n_params,
             n_dets=n_dets,
             n_samps=n_samps,
+            dtype=dtype,
             min_poly_order=min_poly_order,
             max_poly_order=max_poly_order,
             templates=templates,
@@ -326,11 +336,12 @@ class HWPSynchronousTemplateOperator(TemplateOperator):
         n_params: int,
         n_dets: int,
         n_samps: int,
+        dtype: DTypeLike,
         n_harmonics: int,
         templates: Float[Array, 'harm samp'],
     ):
         # TODO: add checks
-        super().__init__(n_params, n_dets, n_samps)
+        super().__init__(n_params, n_dets, n_samps, dtype)
         self.n_harmonics = n_harmonics
         self.templates = templates
 
@@ -340,6 +351,7 @@ class HWPSynchronousTemplateOperator(TemplateOperator):
         n_harmonics: int,
         hwp_angles: Float[Array, ' samps'],
         n_dets: int,
+        dtype: DTypeLike,
     ) -> TemplateOperator:
         # 2 real components per harmonics
         n_samps = len(hwp_angles)
@@ -349,12 +361,13 @@ class HWPSynchronousTemplateOperator(TemplateOperator):
         sines = jnp.sin(harmonics[:, None] * hwp_angles[None, :])
         cosines = jnp.cos(harmonics[:, None] * hwp_angles[None, :])
 
-        templates = jnp.concatenate([sines, cosines], axis=0)
+        templates = jnp.concatenate([sines, cosines], axis=0).astype(dtype)
 
         return cls(
             n_params=n_params,
             n_dets=n_dets,
             n_samps=n_samps,
+            dtype=dtype,
             n_harmonics=n_harmonics,
             templates=templates,
         )
@@ -401,11 +414,12 @@ class CommonModeTemplateOperator(TemplateOperator):
         n_params: int,
         n_dets: int,
         n_samps: int,
+        dtype: DTypeLike,
         n_modes: int,
         templates: Float[Array, 'mode samp'],
     ):
         # TODO: add checks
-        super().__init__(n_params, n_dets, n_samps)
+        super().__init__(n_params, n_dets, n_samps, dtype)
         self.n_modes = n_modes
         self.templates = templates
 
@@ -417,6 +431,7 @@ class CommonModeTemplateOperator(TemplateOperator):
         freq: Float[Array, ' freq'],
         csd: Float[Array, 'det det freq'],
         tods: Float[Array, 'det samps'],
+        dtype: DTypeLike,
     ) -> TemplateOperator:
         n_dets, n_samps = tods.shape
         n_params: int = n_dets * n_modes
@@ -432,12 +447,13 @@ class CommonModeTemplateOperator(TemplateOperator):
         W = evecs[:, -n_modes:]
 
         # Compute the template
-        templates = W.T @ tods
+        templates = (W.T @ tods).astype(dtype)
 
         return cls(
             n_params=n_params,
             n_dets=n_dets,
             n_samps=n_samps,
+            dtype=dtype,
             n_modes=n_modes,
             templates=templates,
         )
@@ -460,6 +476,124 @@ class CommonModeTemplateTransposeOperator(AbstractLinearOperator):
 
         params = jnp.einsum('ij,kj->ik', x, self.operator.templates)
         return params.ravel()
+
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operator.out_structure()
+
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operator.in_structure()
+
+
+class AzHWPSynchronousTemplateOperator(TemplateOperator):
+    """Operator for azimuth and HWP-synchronous signal templates.
+    The template includes both azimuth and HWP-synchronous signals,
+    as well as some azimuth-dependent HWP harmonics.
+    Tx = sum_n P_n(az)(x_n + sum_m (y_nm cos(m phi) + z_nm sin(m phi))),
+    where n = 0, ..., max_poly_order, m = 1,..,n_harmonics,
+    az is the azimuth angle, and phi is the HWP angle.
+    The coefficients are unique per detector.
+    """
+
+    n_polynomials: int = equinox.field(static=True)
+    n_harmonics: int = equinox.field(static=True)
+    poly_templates: Float[Array, 'poly samp']
+    harm_templates: Float[Array, 'harm samp']
+
+    def __init__(
+        self,
+        n_params: int,
+        n_dets: int,
+        n_samps: int,
+        dtype: DTypeLike,
+        n_polynomials: int,
+        n_harmonics: int,
+        poly_templates: Float[Array, 'poly samp'],
+        harm_templates: Float[Array, 'harm samp'],
+    ):
+        # TODO: add checks
+        super().__init__(n_params, n_dets, n_samps, dtype)
+        self.n_polynomials = n_polynomials
+        self.n_harmonics = n_harmonics
+        self.poly_templates = poly_templates
+        self.harm_templates = harm_templates
+
+    @classmethod
+    def create(
+        cls,
+        n_polynomials: int,
+        n_harmonics: int,
+        azimuth: Float[Array, ' samps'],
+        hwp_angles: Float[Array, ' samps'],
+        n_dets: int,
+        dtype: DTypeLike,
+    ) -> TemplateOperator:
+        n_samps: int = azimuth.size
+        n_params: int = n_dets * n_polynomials * (1 + 2 * n_harmonics)
+
+        # Create azimuth templates
+        max_az = jnp.max(azimuth)
+        min_az = jnp.min(azimuth)
+        x = -1.0 + 2.0 * (azimuth - min_az) / (max_az - min_az)
+
+        # This funtion computes (n_polynomials)-times more than what we need,
+        # but this shouldn't be too expensive for low polynomial orders
+        poly_templates = jax.scipy.special.lpmn_values(
+            n_polynomials - 1, n_polynomials - 1, x, is_normalized=False
+        )[0, :, :].astype(dtype)
+
+        # Create harmonic templates
+        harmonics = jnp.arange(1, n_harmonics + 1)
+        ones = jnp.ones((1, n_samps), dtype=dtype)
+        sines = jnp.sin(harmonics[:, None] * hwp_angles[None, :])
+        cosines = jnp.cos(harmonics[:, None] * hwp_angles[None, :])
+        harm_templates = jnp.concatenate([ones, sines, cosines], axis=0)
+
+        return cls(
+            n_params=n_params,
+            n_dets=n_dets,
+            n_samps=n_samps,
+            dtype=dtype,
+            n_polynomials=n_polynomials,
+            n_harmonics=n_harmonics,
+            poly_templates=poly_templates,
+            harm_templates=harm_templates,
+        )
+
+    def mv(self, x: Float[Array, ' a']) -> Float[Array, '...']:
+        # Params are ordered as [det,poly,[x, y/z[harm]]]
+        # So for a single detector, the ordering goes
+        # x_0, y_01, ... y_0M, z_01, ... z_0M, x_1, y_11, ..., z_(N-1)M
+        x = x.reshape(self.n_dets, self.n_polynomials, 1 + 2 * self.n_harmonics)
+
+        # data[det_samp] = poly_tmpl[poly,samp] * param[det,poly,harm] * harm_tmpl[harm,samp]
+        return jnp.sum((x @ self.harm_templates) * self.poly_templates[None, :, :], axis=1)
+
+    def transpose(self) -> AbstractLinearOperator:
+        return AzHWPSynchronousTemplateTransposeOperator(self)
+
+
+class AzHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
+    operator: AzHWPSynchronousTemplateOperator
+
+    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, ' param']:
+        # param[det,poly,harm] = poly_tmpl[poly,samp] * harm_tmpl[harm,samp] * data[det,samp]
+        """
+        # Slower but more memory efficient
+        return jnp.array([
+                jnp.sum((self.operator.poly_templates[:,None,:]
+                        * self.operator.harm_templates[None,:,:]
+                        * x[idet,None,None,:]), axis=-1).ravel()
+                        for idet in range(self.operator.n_dets)])
+        """
+        # Faster but less memory efficient
+        return jnp.sum(
+            (
+                self.operator.poly_templates[None, :, None, :]
+                * self.operator.harm_templates[None, None, :, :]
+                * x[:, None, None, :]
+            ),
+            axis=-1,
+        ).ravel()
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.operator.out_structure()

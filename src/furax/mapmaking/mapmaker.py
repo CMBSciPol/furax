@@ -50,21 +50,29 @@ class MapMaker:
         results = self.mapmake(observation)
 
         # Save output
+
         try:
             if out_dir is not None:
-                os.makedirs(out_dir, exist_ok=True)
-                for key, m in results.items():
-                    if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
-                        np.save(f'{out_dir}/{key}.npy', np.array(m))
-                    elif isinstance(m, pixell.enmap.ndmap):
-                        pixell.enmap.write_map(f'{out_dir}/{key}.hdf', m, allow_modify=True)
-                    elif isinstance(m, WCS):
-                        header = m.to_header()
-                        hdu = fits.PrimaryHDU(header=header)
-                        hdu.writeto(f'{out_dir}/{key}.fits', overwrite=True)
-                    else:
-                        continue
-                    self.logger.info(f'Mapmaking result [{key}] saved to file')
+
+                def save_from_dict(results: dict[str, Any], out_dir: str) -> None:
+                    os.makedirs(out_dir, exist_ok=True)
+                    for key, m in results.items():
+                        if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
+                            np.save(f'{out_dir}/{key}.npy', np.array(m))
+                        elif isinstance(m, pixell.enmap.ndmap):
+                            pixell.enmap.write_map(f'{out_dir}/{key}.hdf', m, allow_modify=True)
+                        elif isinstance(m, WCS):
+                            header = m.to_header()
+                            hdu = fits.PrimaryHDU(header=header)
+                            hdu.writeto(f'{out_dir}/{key}.fits', overwrite=True)
+                        elif isinstance(m, dict):
+                            save_from_dict(m, out_dir)
+                            continue
+                        else:
+                            continue
+                        self.logger.info(f'Mapmaking result [{key}] saved to file')
+
+                save_from_dict(results, out_dir)
                 self.config.dump_yaml(f'{out_dir}/mapmaking_config.yaml')
                 self.logger.info('Mapmaking config saved to file')
         except Exception as err:
@@ -298,13 +306,24 @@ class MapMaker:
                 dtype=config.dtype,
             )
         if azhwpss := config.templates.azhwp_synchronous:
-            blocks['azhwp_synchronous'] = templates.AzHWPSynchronousTemplateOperator.create(
+            blocks['azhwp_synchronous'] = templates.AzimuthHWPSynchronousTemplateOperator.create(
                 n_polynomials=azhwpss.n_polynomials,
                 n_harmonics=azhwpss.n_harmonics,
                 azimuth=observation.get_azimuth(),
                 hwp_angles=observation.get_hwp_angles(),
                 n_dets=observation.n_dets,
                 dtype=config.dtype,
+            )
+        if binazhwpss := config.templates.binazhwp_synchronous:
+            blocks['binazhwp_synchronous'] = (
+                templates.BinAzimuthHWPSynchronousTemplateOperator.create(
+                    n_az_bins=binazhwpss.n_az_bins,
+                    n_harmonics=binazhwpss.n_harmonics,
+                    azimuth=observation.get_azimuth(),
+                    hwp_angles=observation.get_hwp_angles(),
+                    n_dets=observation.n_dets,
+                    dtype=config.dtype,
+                )
             )
 
         return BlockRowOperator(blocks=blocks)
@@ -510,10 +529,16 @@ class MLMapmaker(MapMaker):
         result_map.i.block_until_ready()
         logger_info('Finished mapmaking computation')
 
+        # Get weights after pixel selection
+        weights = jnp.zeros_like(blocks)
+        weights = weights.at[selector.indices + (slice(None), slice(None))].add(
+            blocks[selector.indices + (slice(None), slice(None))]
+        )
+
         # Format output and compute auxilary data
         final_map = np.array([result_map.i, result_map.q, result_map.u])
 
-        output = {'map': final_map, 'weights': blocks}
+        output = {'map': final_map, 'weights': weights, 'weights_uncut': blocks}
         if isinstance(landscape, WCSLandscape):
             output['wcs'] = landscape.wcs
         if config.fit_noise_model:
@@ -525,8 +550,8 @@ class MLMapmaker(MapMaker):
             proj_map = (mp @ acquisition)(result_map)
             if config.use_templates:
                 projs = {
-                    'proj_map': proj_map
-                    ** {
+                    'proj_map': proj_map,
+                    **{
                         f'proj_{tmpl}': (mp @ template_op.blocks[tmpl])(tmpl_ampl[tmpl])
                         for tmpl in tmpl_ampl
                     },

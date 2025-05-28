@@ -1,17 +1,15 @@
 ---
-title: 'Gala: A Python package for galactic dynamics'
+title: 'FURAX: A Modular JAX Toolbox for Solving Inverse Problems in Cosmology'
 tags:
   - Python
   - astronomy
-  - dynamics
-  - galactic dynamics
-  - milky way
+  - cosmology
 authors:
-  - name: Adrian M. Price-Whelan
-    orcid: 0000-0000-0000-0000
+  - name: Pierre Chanial
+    orcid: 0000-0003-1753-524X
     equal-contrib: true
     affiliation: "1, 2" # (Multiple affiliations must be quoted)
-  - name: Author Without ORCID
+  - name: SciPol ERC team
     equal-contrib: true # (This is how you can denote equal contributions between multiple authors)
     affiliation: 2
   - name: Author with no affiliation
@@ -22,35 +20,35 @@ authors:
     surname: Beethoven
     affiliation: 3
 affiliations:
- - name: Lyman Spitzer, Jr. Fellow, Princeton University, United States
+ - name: Université Paris Cité, CNRS, Astroparticule et Cosmologie, F-75013 Paris, France
    index: 1
-   ror: 00hx57361
- - name: Institution Name, Country
-   index: 2
- - name: Independent Researcher, Country
-   index: 3
-date: 13 August 2017
+   ror: 03tnjrr49
+date: 25 May 2025
 bibliography: paper.bib
 
 # Optional fields if submitting to a AAS journal too, see this blog post:
 # https://blog.joss.theoj.org/2018/12/a-new-collaboration-with-aas-publishing
-aas-doi: 10.3847/xxxxx <- update this with the DOI from AAS once you know it.
-aas-journal: Astrophysical Journal <- The name of the AAS journal.
+# aas-doi: 10.3847/xxxxx <- update this with the DOI from AAS once you know it.
+# aas-journal: Astrophysical Journal <- The name of the AAS journal.
 ---
 
 # Summary
 
-The forces on stars, galaxies, and dark matter under external gravitational
-fields lead to the dynamical evolution of structures in the universe. The orbits
-of these bodies are therefore key to understanding the formation, history, and
-future state of galaxies. The field of "galactic dynamics," which aims to model
-the gravitating components of galaxies to study their structure and evolution,
-is now well-established, commonly taught, and frequently used in astronomy.
-Aside from toy problems and demonstrations, the majority of problems require
-efficient numerical tools, many of which require the same base code (e.g., for
-performing numerical orbit integration).
+FURAX (Framework for Unified and Robust data Analysis with JAX) is an open-source Python library designed to address
+inverse problems in astrophysics and cosmology. Built upon `JAX`, FURAX provides modular building blocks for
+constructing instrument and noise models, benefiting from JAX's capabilities in automatic differentiation,
+just-in-time compilation, and hardware acceleration. The framework is particularly suited for applications such as
+cosmic microwave background (CMB) data analysis, including map-making and component separation tasks.
 
 # Statement of need
+Modern cosmological data analyses involve complex models and large datasets, necessitating tools that are:
+
+    * Modular and extensible to facilitate experimentation and rapid prototyping.
+    * Compatible with automatic differentiation to enable gradient-based optimization and inference.
+    * Efficient and scalable, leveraging hardware acceleration for large-scale computations.
+
+FURAX addresses these needs by providing a flexible and high-performance framework tailored for inverse problems in cosmology.
+Josquin: should we add here details, specific examples of needs in the CMB data analysis context?}
 
 `Gala` is an Astropy-affiliated Python package for galactic dynamics. Python
 enables wrapping low-level languages (e.g., C) for speed without losing
@@ -114,7 +112,8 @@ Figure sizes can be customized by adding an optional second parameter:
 
 # Acknowledgements
 
-We acknowledge contributions from Brigitta Sipocz, Syrtis Major, and Semyeong
-Oh, and support from Kathryn Johnston during the genesis of this project.
+
+We acknowledge the developers of JAX and related libraries for providing the foundational tools upon which FURAX is
+built. This work is supported by the European Research Council under the SciPol project. josquin{acknowledge Jean Zay}
 
 # References

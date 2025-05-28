@@ -484,12 +484,12 @@ class CommonModeTemplateTransposeOperator(AbstractLinearOperator):
         return self.operator.in_structure()
 
 
-class AzHWPSynchronousTemplateOperator(TemplateOperator):
+class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
     """Operator for azimuth and HWP-synchronous signal templates.
     The template includes both azimuth and HWP-synchronous signals,
     as well as some azimuth-dependent HWP harmonics.
     Tx = sum_n P_n(az)(x_n + sum_m (y_nm cos(m phi) + z_nm sin(m phi))),
-    where n = 0, ..., max_poly_order, m = 1,..,n_harmonics,
+    where n = 0, ..., n_polynomials-1, m = 1,..,n_harmonics,
     az is the azimuth angle, and phi is the HWP angle.
     The coefficients are unique per detector.
     """
@@ -569,11 +569,11 @@ class AzHWPSynchronousTemplateOperator(TemplateOperator):
         return jnp.sum((x @ self.harm_templates) * self.poly_templates[None, :, :], axis=1)
 
     def transpose(self) -> AbstractLinearOperator:
-        return AzHWPSynchronousTemplateTransposeOperator(self)
+        return AzimuthHWPSynchronousTemplateTransposeOperator(self)
 
 
-class AzHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
-    operator: AzHWPSynchronousTemplateOperator
+class AzimuthHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
+    operator: AzimuthHWPSynchronousTemplateOperator
 
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, ' param']:
         # param[det,poly,harm] = poly_tmpl[poly,samp] * harm_tmpl[harm,samp] * data[det,samp]
@@ -589,6 +589,125 @@ class AzHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
         return jnp.sum(
             (
                 self.operator.poly_templates[None, :, None, :]
+                * self.operator.harm_templates[None, None, :, :]
+                * x[:, None, None, :]
+            ),
+            axis=-1,
+        ).ravel()
+
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operator.out_structure()
+
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.operator.in_structure()
+
+
+class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
+    """Operator for azimuth and HWP-synchronous signal templates.
+    The template includes both azimuth and HWP-synchronous signals,
+    as well as some azimuth-dependent HWP harmonics.
+    Tx = sum_n B_n(az)(x_n + sum_m (y_nm cos(m phi) + z_nm sin(m phi))),
+    where n = 0, ..., n_az_bins-1, m = 1,..,n_harmonics,
+    az is the azimuth angle, and phi is the HWP angle.
+    Unlike AzimuthHWPSynchronousTemplateOperator, azimuth are binned.
+    The coefficients are unique per detector.
+    """
+
+    n_az_bins: int = equinox.field(static=True)
+    n_harmonics: int = equinox.field(static=True)
+    bin_templates: Float[Array, 'bin samp']
+    harm_templates: Float[Array, 'harm samp']
+
+    def __init__(
+        self,
+        n_params: int,
+        n_dets: int,
+        n_samps: int,
+        dtype: DTypeLike,
+        n_az_bins: int,
+        n_harmonics: int,
+        bin_templates: Float[Array, 'poly samp'],
+        harm_templates: Float[Array, 'harm samp'],
+    ):
+        # TODO: add checks
+        super().__init__(n_params, n_dets, n_samps, dtype)
+        self.n_az_bins = n_az_bins
+        self.n_harmonics = n_harmonics
+        self.bin_templates = bin_templates
+        self.harm_templates = harm_templates
+
+    @classmethod
+    def create(
+        cls,
+        n_az_bins: int,
+        n_harmonics: int,
+        azimuth: Float[Array, ' samps'],
+        hwp_angles: Float[Array, ' samps'],
+        n_dets: int,
+        dtype: DTypeLike,
+    ) -> TemplateOperator:
+        n_samps: int = azimuth.size
+        n_params: int = n_dets * n_az_bins * (1 + 2 * n_harmonics)
+
+        # Create azimuth templates
+        max_az = jnp.max(azimuth)
+        min_az = jnp.min(azimuth)
+        max_az += 1e-8  # Allow max_az to be included in the last bin
+
+        az_bin_edges = jnp.linspace(min_az, max_az, n_az_bins + 1)
+        bin_inds = jnp.digitize(azimuth, az_bin_edges[1:])
+        bin_templates = (
+            jnp.zeros((n_az_bins, n_samps), dtype=dtype).at[bin_inds, jnp.arange(n_samps)].set(1.0)
+        )
+
+        # Create harmonic templates
+        harmonics = jnp.arange(1, n_harmonics + 1)
+        ones = jnp.ones((1, n_samps), dtype=dtype)
+        sines = jnp.sin(harmonics[:, None] * hwp_angles[None, :])
+        cosines = jnp.cos(harmonics[:, None] * hwp_angles[None, :])
+        harm_templates = jnp.concatenate([ones, sines, cosines], axis=0)
+
+        return cls(
+            n_params=n_params,
+            n_dets=n_dets,
+            n_samps=n_samps,
+            dtype=dtype,
+            n_az_bins=n_az_bins,
+            n_harmonics=n_harmonics,
+            bin_templates=bin_templates,
+            harm_templates=harm_templates,
+        )
+
+    def mv(self, x: Float[Array, ' a']) -> Float[Array, '...']:
+        # Params are ordered as [det,poly,[x, y/z[harm]]]
+        # So for a single detector, the ordering goes
+        # x_0, y_01, ... y_0M, z_01, ... z_0M, x_1, y_11, ..., z_(N-1)M
+        x = x.reshape(self.n_dets, self.n_az_bins, 1 + 2 * self.n_harmonics)
+
+        # data[det_samp] = bin_tmpl[bin,samp] * param[det,bin,harm] * harm_tmpl[harm,samp]
+        return jnp.sum((x @ self.harm_templates) * self.bin_templates[None, :, :], axis=1)
+
+    def transpose(self) -> AbstractLinearOperator:
+        return BinAzimuthHWPSynchronousTemplateTransposeOperator(self)
+
+
+class BinAzimuthHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
+    operator: BinAzimuthHWPSynchronousTemplateOperator
+
+    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, ' param']:
+        # param[det,bin,harm] = bin_tmpl[bin,samp] * harm_tmpl[harm,samp] * data[det,samp]
+        """
+        # Slower but more memory efficient
+        return jnp.array([
+                jnp.sum((self.operator.bin_templates[:,None,:]
+                        * self.operator.harm_templates[None,:,:]
+                        * x[idet,None,None,:]), axis=-1).ravel()
+                        for idet in range(self.operator.n_dets)])
+        """
+        # Faster but less memory efficient
+        return jnp.sum(
+            (
+                self.operator.bin_templates[None, :, None, :]
                 * self.operator.harm_templates[None, None, :, :]
                 * x[:, None, None, :]
             ),

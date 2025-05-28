@@ -1,6 +1,7 @@
 from dataclasses import dataclass, fields
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import jax.numpy as jnp
 import yaml
@@ -51,9 +52,15 @@ class _HWPSynchronousTemplateConfig:
 
 
 @dataclass(frozen=True)
-class _AzHWPSynchronousTemplateConfig:
+class _AzimuthHWPSynchronousTemplateConfig:
     n_polynomials: int = 4
-    n_harmonics: int = 3
+    n_harmonics: int = 4
+
+
+@dataclass(frozen=True)
+class _BinAzimuthHWPSynchronousTemplateConfig:
+    n_az_bins: int = 4
+    n_harmonics: int = 4
 
 
 @dataclass(frozen=True)
@@ -61,7 +68,8 @@ class TemplatesConfig:
     polynomial: _PolyTemplateConfig | None = None
     scan_synchronous: _ScanSynchronousTemplateConfig | None = None
     hwp_synchronous: _HWPSynchronousTemplateConfig | None = None
-    azhwp_synchronous: _AzHWPSynchronousTemplateConfig | None = None
+    azhwp_synchronous: _AzimuthHWPSynchronousTemplateConfig | None = None
+    binazhwp_synchronous: _BinAzimuthHWPSynchronousTemplateConfig | None = None
     regularization: float = 0.0
 
     @classmethod
@@ -71,7 +79,8 @@ class TemplatesConfig:
             polynomial=_PolyTemplateConfig(),
             scan_synchronous=_ScanSynchronousTemplateConfig(),
             hwp_synchronous=_HWPSynchronousTemplateConfig(),
-            azhwp_synchronous=_AzHWPSynchronousTemplateConfig(),
+            azhwp_synchronous=_AzimuthHWPSynchronousTemplateConfig(),
+            binazhwp_synchronous=_BinAzimuthHWPSynchronousTemplateConfig(),
         )
 
     @property
@@ -109,6 +118,11 @@ class MapMakingConfig:
     def load_yaml(cls, path: str | Path) -> 'MapMakingConfig':
         """Load and instantiate a ``MapMakingConfig`` from a YAML file."""
         data = yaml.safe_load(Path(path).read_text())
+        return cls.load_dict(data)
+
+    @classmethod
+    def load_dict(cls, data: dict[str, Any]) -> 'MapMakingConfig':
+        """Load and instantiate a ``MapMakingConfig`` from a dictionary."""
         return deserialize(MapMakingConfig, data)  # type: ignore[no-any-return]
 
     def dump_yaml(self, path: str | Path) -> None:

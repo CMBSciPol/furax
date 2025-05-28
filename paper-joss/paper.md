@@ -113,7 +113,7 @@ Figure sizes can be customized by adding an optional second parameter:
 # Acknowledgements
 
 
-We acknowledge the developers of JAX and related libraries for providing the foundational tools upon which FURAX is
+We acknowledge the developers of `JAX` and related libraries for providing the foundational tools upon which FURAX is
 built. This work is supported by the European Research Council under the SciPol project. josquin{acknowledge Jean Zay}
 
 # References

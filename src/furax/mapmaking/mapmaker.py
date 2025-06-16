@@ -1,4 +1,5 @@
 import os
+import pickle
 from abc import abstractmethod
 from dataclasses import asdict, dataclass
 from logging import Logger
@@ -18,11 +19,16 @@ from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float, PyTree
 
 import furax.tree
-from furax import AbstractLinearOperator, Config, DiagonalOperator, IdentityOperator
+from furax import (
+    AbstractLinearOperator,
+    Config,
+    DiagonalOperator,
+    IdentityOperator,
+)
 from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
-from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
+from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
 
 from . import templates
 from ._logger import logger as furax_logger
@@ -59,12 +65,17 @@ class MapMaker:
                     for key, m in results.items():
                         if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
                             np.save(f'{out_dir}/{key}.npy', np.array(m))
+                        elif isinstance(m, StokesIQU):
+                            np.save(f'{out_dir}/{key}.npy', np.stack([m.i, m.q, m.u], axis=0))
                         elif isinstance(m, pixell.enmap.ndmap):
                             pixell.enmap.write_map(f'{out_dir}/{key}.hdf', m, allow_modify=True)
                         elif isinstance(m, WCS):
                             header = m.to_header()
                             hdu = fits.PrimaryHDU(header=header)
                             hdu.writeto(f'{out_dir}/{key}.fits', overwrite=True)
+                        elif isinstance(m, StokesLandscape):
+                            with open(f'{out_dir}/{key}.pkl', 'wb') as f:
+                                pickle.dump(m, f)
                         elif isinstance(m, dict):
                             save_from_dict(m, out_dir)
                             continue
@@ -325,6 +336,40 @@ class MapMaker:
                     dtype=config.dtype,
                 )
             )
+        if ground := config.templates.ground:
+            self._ground_landscape = templates.GroundTemplateOperator.get_landscape(
+                azimuth_resolution=ground.azimuth_resolution,
+                elevation_resolution=ground.elevation_resolution,
+                boresight_azimuth=observation.get_azimuth(),
+                boresight_elevation=observation.get_elevation(),
+                detector_quaternions=observation.get_detector_quaternions(),
+                stokes='IQU',
+                dtype=config.dtype,
+            )
+            ground_op = templates.GroundTemplateOperator.create(
+                azimuth_resolution=ground.azimuth_resolution,
+                elevation_resolution=ground.elevation_resolution,
+                boresight_azimuth=observation.get_azimuth(),
+                boresight_elevation=observation.get_elevation(),
+                boresight_rotation=jnp.zeros_like(observation.get_azimuth()),
+                detector_quaternions=observation.get_detector_quaternions(),
+                hwp_angles=observation.get_hwp_angles(),
+                stokes='IQU',
+                dtype=config.dtype,
+                landscape=self._ground_landscape,
+                chunk_size=config.pointing_chunk_size,
+            )
+            ones_tod = jnp.ones((observation.n_dets, observation.n_samples), dtype=jnp.float64)
+            self._ground_coverage = ground_op.T(ones_tod)
+            nonzero_hits = jnp.argwhere(self._ground_coverage.i > 0)
+            indexer = IndexOperator(
+                (nonzero_hits[:, 0], nonzero_hits[:, 1]),
+                in_structure=furax.tree.as_structure(self._ground_coverage),
+            )
+            flattener = templates.StokesIQUFlattenOperator(in_structure=indexer.out_structure())
+            self._ground_selector = flattener @ indexer
+
+            blocks['ground'] = ground_op @ self._ground_selector.T
 
         return BlockRowOperator(blocks=blocks)
 
@@ -491,6 +536,10 @@ class MLMapmaker(MapMaker):
                 ]
             )
             logger_info('Built template regularizer')
+            print(f'Template preconditioner in: {template_preconditioner.in_structure()}')
+            print(f'Template preconditioner out: {template_preconditioner.out_structure()}')
+            print(f'Template op in: {template_op.in_structure()}')
+            print(f'Template op out: {template_op.out_structure()}')
 
         # Mapmaking operator
         if config.use_templates:
@@ -546,6 +595,10 @@ class MLMapmaker(MapMaker):
         if config.use_templates:
             for key in tmpl_ampl.keys():
                 output[f'template_{key}'] = tmpl_ampl[key]
+            if 'ground' in tmpl_ampl.keys():
+                output['ground_landscape'] = self._ground_landscape
+                output['ground_coverage'] = self._ground_coverage
+                output['ground_map'] = self._ground_selector.T(tmpl_ampl['ground'])
         if config.debug:
             proj_map = (mp @ acquisition)(result_map)
             if config.use_templates:

@@ -64,12 +64,19 @@ class _BinAzimuthHWPSynchronousTemplateConfig:
 
 
 @dataclass(frozen=True)
+class _GroundTemplateConfig:
+    azimuth_resolution: float = 0.05  # ~3 deg
+    elevation_resolution: float = 0.05  # ~3 deg
+
+
+@dataclass(frozen=True)
 class TemplatesConfig:
     polynomial: _PolyTemplateConfig | None = None
     scan_synchronous: _ScanSynchronousTemplateConfig | None = None
     hwp_synchronous: _HWPSynchronousTemplateConfig | None = None
     azhwp_synchronous: _AzimuthHWPSynchronousTemplateConfig | None = None
     binazhwp_synchronous: _BinAzimuthHWPSynchronousTemplateConfig | None = None
+    ground: _GroundTemplateConfig | None = None
     regularization: float = 0.0
 
     @classmethod
@@ -81,6 +88,7 @@ class TemplatesConfig:
             hwp_synchronous=_HWPSynchronousTemplateConfig(),
             azhwp_synchronous=_AzimuthHWPSynchronousTemplateConfig(),
             binazhwp_synchronous=_BinAzimuthHWPSynchronousTemplateConfig(),
+            ground=_GroundTemplateConfig(),
         )
 
     @property

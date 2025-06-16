@@ -72,6 +72,11 @@ class GroundObservationData:
         ...
 
     @abstractmethod
+    def get_elevation(self) -> Float[Array, ' a']:
+        """Returns the elevation of the boresight for each sample"""
+        ...
+
+    @abstractmethod
     def get_elapsed_time(self) -> Float[Array, ' a']:
         """Returns time (sec) of the samples since the observation began"""
         ...

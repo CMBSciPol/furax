@@ -15,6 +15,7 @@ from sotodlib.core import AxisManager
 
 from furax.mapmaking import GroundObservationData
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
+from furax.math import quaternion
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 
 
@@ -64,6 +65,10 @@ class SotodlibObservationData(GroundObservationData):
     def get_azimuth(self) -> Float[Array, ' a']:
         """Returns the azimuth of the boresight for each sample"""
         return jnp.array(self.observation.boresight.az)
+
+    def get_elevation(self) -> Float[Array, ' a']:
+        """Returns the elevation of the boresight for each sample"""
+        return jnp.array(self.observation.boresight.el)
 
     def get_elapsed_time(self) -> Float[Array, ' a']:
         """Returns time (sec) of the samples since the observation began"""
@@ -205,9 +210,10 @@ class SotodlibObservationData(GroundObservationData):
 
     def get_detector_quaternions(self) -> Float[Array, 'det 4']:
         """Returns the quaternion offsets of the detectors"""
-        fp = so3g.proj.FocalPlane.from_xieta(
-            self.observation.focal_plane.xi,
-            self.observation.focal_plane.eta,
-            self.observation.focal_plane.gamma,
+        quats = quaternion.from_xieta_angles(
+            jnp.array(self.observation.focal_plane.xi, dtype=jnp.float64),
+            jnp.array(self.observation.focal_plane.eta, dtype=jnp.float64),
+            jnp.array(self.observation.focal_plane.gamma, dtype=jnp.float64),
         )
-        return jnp.atleast_2d(jnp.array(fp.quats, dtype=jnp.float64))
+
+        return jnp.atleast_2d(quats)

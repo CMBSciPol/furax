@@ -5,12 +5,17 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import DTypeLike, Float, Int, PyTree
+from jaxtyping import DTypeLike, Float, Inexact, Int, PyTree
 from numpy.typing import NDArray
 
 from furax import AbstractLinearOperator
+from furax.math import quaternion
+from furax.obs import HWPOperator, LinearPolarizerOperator
+from furax.obs.landscapes import HorizonLandscape
+from furax.obs.stokes import Stokes, ValidStokesType
 
 from . import GroundObservationData
+from .pointing import PointingOperator
 
 
 class TemplateOperator(AbstractLinearOperator):
@@ -719,3 +724,143 @@ class BinAzimuthHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.operator.in_structure()
+
+
+class GroundTemplateOperator(TemplateOperator):
+    """Operator for ground signal templates. The template amplitudes
+    form a two-dimensional (elevation, azimuth) IQU map of the ground
+    observed that is shared across detectors for the observation range.
+    This class only contains a factory method.
+    All argument angles should be provided in radians.
+    """
+
+    @classmethod
+    def create(
+        cls,
+        azimuth_resolution: float,
+        elevation_resolution: float,
+        boresight_azimuth: Float[Array, ' samps'],
+        boresight_elevation: Float[Array, ' samps'],
+        boresight_rotation: Float[Array, ' samps'],
+        detector_quaternions: Float[Array, 'dets 4'],
+        hwp_angles: Float[Array, ' samps'],
+        stokes: ValidStokesType,
+        dtype: DTypeLike,
+        landscape: HorizonLandscape | None = None,
+        chunk_size: int = 0,
+    ) -> AbstractLinearOperator:
+        # Compute landscape if not provided
+        if landscape is None:
+            horizon_landscape: HorizonLandscape = cls.get_landscape(
+                azimuth_resolution=azimuth_resolution,
+                elevation_resolution=elevation_resolution,
+                boresight_azimuth=boresight_azimuth,
+                boresight_elevation=boresight_elevation,
+                detector_quaternions=detector_quaternions,
+                stokes=stokes,
+                dtype=dtype,
+            )
+        else:
+            horizon_landscape = landscape
+
+        # Azimuth increases in an opposite way to longitude
+        boresight_quaternions = quaternion.from_lonlat_angles(
+            -boresight_azimuth, boresight_elevation, boresight_rotation
+        )
+        _, _, det_gamma = quaternion.to_xieta_angles(detector_quaternions)
+
+        n_dets = detector_quaternions.shape[0]
+        n_samps = boresight_azimuth.size
+
+        pointing = PointingOperator(
+            landscape=horizon_landscape,
+            qbore=boresight_quaternions,
+            qdet=detector_quaternions,
+            det_gamma=det_gamma,
+            _in_structure=horizon_landscape.structure,
+            _out_structure=Stokes.class_for(stokes).structure_for((n_dets, n_samps)),
+            chunk_size=chunk_size,
+        )
+
+        polarizer = LinearPolarizerOperator.create(
+            shape=(n_dets, n_samps),
+            dtype=dtype,
+            stokes=stokes,
+            angles=det_gamma[:, None].astype(dtype),
+        )
+
+        if stokes == 'I':
+            return polarizer @ pointing
+
+        hwp = HWPOperator.create(
+            shape=(n_dets, n_samps), dtype=dtype, stokes=stokes, angles=hwp_angles.astype(dtype)
+        )
+
+        return polarizer @ hwp @ pointing
+
+    @classmethod
+    def get_landscape(
+        cls,
+        azimuth_resolution: float,
+        elevation_resolution: float,
+        boresight_azimuth: Float[Array, ' samps'],
+        boresight_elevation: Float[Array, ' samps'],
+        detector_quaternions: Float[Array, 'dets 4'],
+        stokes: ValidStokesType,
+        dtype: DTypeLike,
+    ) -> HorizonLandscape:
+        # First, set up a grid of (az, el) pairs
+        n_grid = 10
+        az_grid = jnp.linspace(jnp.min(boresight_azimuth), jnp.max(boresight_azimuth), n_grid)
+        el_grid = jnp.linspace(jnp.min(boresight_elevation), jnp.max(boresight_elevation), n_grid)
+        az_mesh, el_mesh = jnp.meshgrid(az_grid, el_grid, indexing='ij')
+        qbore_mesh = quaternion.from_lonlat_angles(
+            -az_mesh, el_mesh, jnp.zeros_like(az_mesh)
+        )  # (ndet,N_GRID,N_GRID,4)
+        qfull_mesh = quaternion.qmul(
+            qbore_mesh[None, :, :, :], detector_quaternions[:, None, None, :]
+        )
+        det_az_mesh, det_el_mesh, _ = quaternion.to_lonlat_angles(qfull_mesh)
+        det_az_mesh = -det_az_mesh
+
+        # Azimuth angle is first restricted to to [0,2pi),
+        # and unwrapped along the elevation grid, azimuth grid, and detector axes in order
+        det_az_mesh = jnp.unwrap(
+            jnp.unwrap(jnp.unwrap(det_az_mesh % (2 * jnp.pi), axis=2), axis=1), axis=0
+        )
+
+        # Allow small margins
+        az_min = jnp.min(det_az_mesh) - 1e-4
+        az_max = jnp.max(det_az_mesh) + 1e-4
+        el_min = jnp.min(det_el_mesh) - 1e-4
+        el_max = jnp.max(det_el_mesh) + 1e-4
+
+        n_alt = int(np.ceil((el_max - el_min) / elevation_resolution))
+        n_az = int(np.ceil((az_max - az_min) / azimuth_resolution))
+
+        landscape = HorizonLandscape(
+            shape=(n_az, n_alt),
+            altitude_limits=(el_min, el_max),
+            azimuth_limits=(az_min, az_max),
+            stokes=stokes,
+            dtype=dtype,
+        )
+
+        return landscape
+
+
+class StokesIQUFlattenOperator(AbstractLinearOperator):
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
+
+    def __init__(
+        self,
+        *,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
+    ):
+        self._in_structure = in_structure
+
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self._in_structure
+
+    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> Inexact[Array, ' _b']:
+        return jnp.concatenate([x.i, x.q, x.u])

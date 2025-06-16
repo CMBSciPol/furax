@@ -33,6 +33,7 @@ class ToastObservationData(GroundObservationData):
     hwp_angle: str | None = defaults.hwp_angle
     noise_model: str | None = defaults.noise_model
     azimuth: str = defaults.azimuth
+    elevation: str = defaults.elevation
     boresight: str = defaults.boresight_radec
 
     _cross_psd: tuple[Float[Array, ' freq'], Float[Array, 'det det freq']] | None = None
@@ -113,6 +114,12 @@ class ToastObservationData(GroundObservationData):
         if self.azimuth not in self.observation.shared:
             raise ValueError('Azimuth field not provided.')
         return jnp.array(self.observation.shared[self.azimuth].data)
+
+    def get_elevation(self) -> Float[Array, ' a']:
+        """Returns the elevation of the boresight for each sample"""
+        if self.elevation not in self.observation.shared:
+            raise ValueError('Elevation field not provided.')
+        return jnp.array(self.observation.shared[self.elevation].data)
 
     def get_elapsed_time(self) -> Float[Array, ' a']:
         """Returns time (sec) of the samples since the observation began"""

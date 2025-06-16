@@ -1,5 +1,6 @@
 import argparse
 import os
+import pickle
 from typing import Any
 
 import numpy as np
@@ -117,6 +118,9 @@ def load_result(result_path: str) -> dict[str, Any]:
                 results[fn] = yaml.safe_load(open(file_path))
             elif extension == '.npy':
                 results[fn] = np.load(file_path)
+            elif extension == '.pkl':
+                with open(file_path, 'rb') as f:
+                    results[fn] = pickle.load(f)
             elif filename == 'wcs.fits':
                 with fits.open(file_path) as hdul:
                     results['wcs'] = WCS(hdul[0].header)

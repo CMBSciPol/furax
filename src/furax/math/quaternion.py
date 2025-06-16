@@ -23,6 +23,7 @@ __all__ = [
 Quat: TypeAlias = Float[Array, '... 4']
 Vec3: TypeAlias = Float[Array, '... 3']
 Ang3: TypeAlias = Float[Array, '... 3']
+Ang: TypeAlias = Float[Array, '...']
 
 
 @jit
@@ -102,22 +103,29 @@ def qrot_xaxis(q: Quat) -> Vec3:
     return jnp.array([1, 0, 0]) + s * jnp.array([-y * y - z * z, x * y + w * z, x * z - w * y])
 
 
+def unstack_angles(angles: Ang3) -> tuple[Ang, Ang, Ang]:
+    return angles[..., 0], angles[..., 1], angles[..., 2]
+
+
+def stack_angles(angle1: Ang, angle2: Ang, angle3: Ang) -> Ang3:
+    return jnp.stack([angle1, angle2, angle3], axis=-1)
+
+
 @jit
-@partial(jnp.vectorize, signature='(4)->(3)')
-def to_iso_angles(q: Quat) -> Ang3:
+@partial(jnp.vectorize, signature='(4)->(),(),()')
+def to_iso_angles(q: Quat) -> tuple[Ang, Ang, Ang]:
     """Convert quaternions to the ISO polar coordinate system angles (theta, phi, psi)."""
     a, b, c, d = q
     theta = 2 * jnp.atan2((b**2 + c**2) ** 0.5, (a**2 + d**2) ** 0.5)
     phi = jnp.atan2(c * d - a * b, a * c + b * d)
     psi = jnp.atan2(c * d + a * b, a * c - b * d)
-    return jnp.array([theta, phi, psi])
+    return theta, phi, psi
 
 
 @jit
-@partial(jnp.vectorize, signature='(3)->(4)')
-def from_iso_angles(ang: Ang3) -> Quat:
+@partial(jnp.vectorize, signature='(),(),()->(4)')
+def from_iso_angles(theta: Ang, phi: Ang, psi: Ang) -> Quat:
     """Compute quaternions from the ISO polar coordinate system angles (theta, phi, psi)."""
-    theta, phi, psi = ang
     cos_th = jnp.cos(theta * 0.5)
     sin_th = jnp.sin(theta * 0.5)
     cos_pp = jnp.cos((psi + phi) * 0.5)
@@ -128,39 +136,36 @@ def from_iso_angles(ang: Ang3) -> Quat:
 
 
 @jit
-def to_lonlat_angles(q: Quat) -> Ang3:
+def to_lonlat_angles(q: Quat) -> tuple[Ang, Ang, Ang]:
     """Convert quaternions to the lonlat coordinate system angles (alpha, delta, psi).
     alpha (lon), delta (lat), psi = phi, pi/2-theta, psi
     """
-    ang = to_iso_angles(q)
-    theta, phi, psi = ang[..., 0], ang[..., 1], ang[..., 2]
-    return jnp.stack([phi, jnp.pi / 2 - theta, psi], axis=-1)
+    theta, phi, psi = to_iso_angles(q)
+    return phi, jnp.pi / 2 - theta, psi
 
 
 @jit
-def from_lonlat_angles(ang: Ang3) -> Quat:
+def from_lonlat_angles(alpha: Ang, delta: Ang, psi: Ang) -> Quat:
     """Compute quaternions from the lonlat coordinate system angles (alpha, delta, psi).
     theta, phi, psi = pi/2-delta, alpha, psi
     """
-    alpha, delta, psi = ang[..., 0], ang[..., 1], ang[..., 2]
-    return from_iso_angles(jnp.stack([jnp.pi / 2 - delta, alpha, psi], axis=-1))  # type: ignore[no-any-return]
+    return from_iso_angles(jnp.pi / 2 - delta, alpha, psi)  # type: ignore[no-any-return]
 
 
 @jit
-@partial(jnp.vectorize, signature='(4)->(3)')
-def to_xieta_angles(q: Quat) -> Ang3:
+@partial(jnp.vectorize, signature='(4)->(),(),()')
+def to_xieta_angles(q: Quat) -> tuple[Ang, Ang, Ang]:
     """Convert quaternions to the xieta coordinate system angles (xi, eta, gamma)."""
     a, b, c, d = q
     xi = 2 * (a * b - c * d)
     eta = 2 * (-c * a - d * b)
     gamma = jnp.atan2(2 * a * d, a**2 - d**2)
-    return jnp.array([xi, eta, gamma])
+    return xi, eta, gamma
 
 
 @jit
-def from_xieta_angles(ang: Ang3) -> Quat:
+def from_xieta_angles(xi: Ang, eta: Ang, gamma: Ang) -> Quat:
     """Compute quaternions from the xieta coordinate system angles (xi, eta, gamma)."""
-    xi, eta, gamma = ang[..., 0], ang[..., 1], ang[..., 2]
     theta = jnp.asin((xi**2 + eta**2) ** 0.5)
     phi = jnp.atan2(-xi, -eta)
-    return from_iso_angles(jnp.array([theta, phi, gamma - phi]))  # type: ignore[no-any-return]
+    return from_iso_angles(theta, phi, gamma)  # type: ignore[no-any-return]

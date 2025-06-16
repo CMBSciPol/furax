@@ -13,7 +13,6 @@ import jax.numpy as jnp
 import jax_healpy as jhp
 import numpy as np
 from astropy.coordinates import SkyCoord
-from astropy.units import u
 from astropy.wcs import WCS
 from jaxtyping import Array, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
@@ -302,7 +301,7 @@ class WCSLandscape(StokesLandscape):
 
     def world2pixel(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, ' *dims'], ...]:
+    ) -> tuple[Integer[Array, ' *dims'], Integer[Array, ' *dims']]:
         r"""Convert angles to WCS map indices.
 
         Args:
@@ -315,10 +314,143 @@ class WCSLandscape(StokesLandscape):
 
         def f(theta, phi):  # type: ignore[no-untyped-def]
             # SkyCoord takes (lon,lat)
-            pix_i, pix_j = self.wcs.world_to_pixel(SkyCoord(phi, (np.pi / 2 - theta), unit=u.rad))
+            pix_i, pix_j = self.wcs.world_to_pixel(SkyCoord(phi, (np.pi / 2 - theta), unit='rad'))
             return tuple(np.array(np.round([pix_i, pix_j]), dtype=np.int64))
 
         struct = jax.ShapeDtypeStruct(theta.shape, jnp.int64)
         result_shape = (struct, struct)
 
         return jax.pure_callback(f, result_shape, theta, phi)  # type: ignore[no-any-return]
+
+    @partial(jax.jit, static_argnums=0)
+    def quat2index(
+        self, quat: Float[Array, '*dims 4']
+    ) -> tuple[Integer[Array, ' *dims'], Integer[Array, ' *dims']]:
+        r"""Convert quaternion to WCS map pixel indices.
+
+        Args:
+            quat (float): Quaternion.
+
+        Returns:
+            ind_i: WCS map pixel i index,
+            ind_j: WCS map pixel j index,
+        """
+        a, b, c, d = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
+        iso_theta = jnp.acos(a**2 + d**2 - b**2 - c**2)
+        iso_phi = jnp.atan2(c * d - a * b, c * a + d * b)
+
+        return self.world2pixel(iso_theta, iso_phi)
+
+
+@jax.tree_util.register_pytree_node_class
+class HorizonLandscape(StokesLandscape):
+    """Class representing a map of Stokes vectors in horizon (ground) coordinates.
+    Contains two axes:
+        AXIS1: altitude (elevation) in radians
+        AXIS2: azimuth in radians
+    """
+
+    def __init__(
+        self,
+        shape: tuple[int, ...],
+        altitude_limits: tuple[Array, Array],
+        azimuth_limits: tuple[Array, Array],
+        stokes: ValidStokesType = 'IQU',
+        dtype: DTypeLike = np.float64,
+    ) -> None:
+        super().__init__(shape, stokes, dtype)
+        self.altitude_limits = altitude_limits
+        self.azimuth_limits = azimuth_limits
+
+    def tree_flatten(self):  # type: ignore[no-untyped-def]
+        aux_data = {
+            'shape': self.shape,
+            'dtype': self.dtype,
+            'stokes': self.stokes,
+            'altitude_limits': self.altitude_limits,
+            'azimuth_limits': self.azimuth_limits,
+        }  # static values
+        return (), aux_data
+
+    @partial(jax.jit, static_argnums=0)
+    def combined_indices(
+        self,
+        altitude_indices: Integer[Array, '...'],
+        azimuth_indices: Integer[Array, '...'],
+    ) -> Integer[Array, '...']:
+        """Combine (altitude,azimuth) indices to a single set of indices given by
+        combined_indices = azimuth_indices * n_altitude + altitude_indices
+        Note that the data is shaped [azimuth, altitude] as speicified in
+        StokesLandscape."""
+        return azimuth_indices * self.shape[1] + altitude_indices
+
+    @partial(jax.jit, static_argnums=0)
+    def individual_indices(
+        self,
+        combined_indices: Integer[Array, '...'],
+    ) -> tuple[Integer[Array, '...'], Integer[Array, '...']]:
+        """Separate the combined indices to (altitude,azimuth) indices.
+        combined_indices = azimuth_indices * n_altitude + altitude_indices
+        Note that the data is shaped [azimuth, altitude] as speicified in
+        StokesLandscape."""
+        return combined_indices % self.shape[1], combined_indices // self.shape[1]
+
+    def bin_edges(self) -> tuple[Float[Array, ' bins+1'], Float[Array, ' bins+1']]:
+        """Return the bin edges of the map."""
+        alt_min, alt_max = self.altitude_limits
+        az_min, az_max = self.azimuth_limits
+        n_az, n_alt = self.shape
+        return jnp.linspace(alt_min, alt_max, n_alt + 1), jnp.linspace(az_min, az_max, n_az + 1)
+
+    def bin_centers(self) -> tuple[Float[Array, ' bins'], Float[Array, ' bins']]:
+        """Return the bin centers of the map."""
+        alt_edges, az_edges = self.bin_edges()
+        alt_centers = 0.5 * (alt_edges[:-1] + alt_edges[1:])
+        az_centers = 0.5 * (az_edges[:-1] + az_edges[1:])
+        return alt_centers, az_centers
+
+    @partial(jax.jit, static_argnums=0)
+    def world2pixel(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, ' *dims'], Integer[Array, ' *dims']]:
+        r"""Convert angles in radians to Horizon map indices.
+
+        Args:
+            theta (float): Spherical :math:`\theta` angle = pi/2 - altitude.
+            phi (float): Spherical :math:`\phi` angle = -azimuth.
+
+        Returns:
+            Ground map index pairs
+        """
+        alt_min, alt_max = self.altitude_limits
+        az_min, az_max = self.azimuth_limits
+        n_az, n_alt = self.shape  # Note self.shape has reverse order: [AXIS2, AXIS1]
+        dalt = (alt_max - alt_min) / n_alt
+        daz = (az_max - az_min) / n_az
+
+        altitude = jnp.pi / 2 - theta
+        azimuth = -phi
+
+        pix_i = jnp.round((altitude - alt_min) / dalt - 0.5).astype(jnp.int64)
+        pix_j = jnp.round(((azimuth - az_min) % (2 * jnp.pi)) / daz - 0.5).astype(jnp.int64)
+
+        return pix_i, pix_j
+
+    @partial(jax.jit, static_argnums=0)
+    def quat2index(
+        self, quat: Float[Array, '*dims 4']
+    ) -> tuple[Integer[Array, ' *dims'], Integer[Array, ' *dims']]:
+        r"""Convert quaternion to horizon map pixel indices.
+
+        Args:
+            quat (float): Quaternion.
+
+        Returns:
+            ind_i: horizon map pixel i index,
+            ind_j: horizon map pixel j index,
+        """
+        a, b, c, d = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
+        iso_theta = jnp.acos(a**2 + d**2 - b**2 - c**2)
+        iso_phi = jnp.atan2(c * d - a * b, c * a + d * b)
+
+        return self.world2pixel(iso_theta, iso_phi)  # type: ignore[no-any-return]

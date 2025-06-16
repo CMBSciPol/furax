@@ -10,7 +10,7 @@ from jaxtyping import Array, Float, PyTree
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
 from furax.math.quaternion import qmul, qrot_xaxis, qrot_zaxis
-from furax.obs.landscapes import HealpixLandscape
+from furax.obs.landscapes import HealpixLandscape, HorizonLandscape
 from furax.obs.stokes import StokesI, StokesIQU, StokesIQUV, StokesPyTreeType, StokesQU
 
 __all__ = [
@@ -31,7 +31,7 @@ class PointingOperator(AbstractLinearOperator):
     For now, only HEALPix landscapes are supported.
     """
 
-    landscape: HealpixLandscape = equinox.field(static=True)
+    landscape: HealpixLandscape | HorizonLandscape = equinox.field(static=True)
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
     det_gamma: Float[Array, ' det']
@@ -50,7 +50,10 @@ class PointingOperator(AbstractLinearOperator):
 
             # Get pixel indices and sample the pixels
             indices = self.landscape.quat2index(qdet_full)
+            if isinstance(self.landscape, HorizonLandscape):
+                indices = self.landscape.combined_indices(indices[0], indices[1])
             tod = x.ravel()[indices]
+
             if isinstance(tod, StokesI):
                 # no rotation needed
                 return tod
@@ -131,6 +134,9 @@ class PointingTransposeOperator(TransposeOperator):
 
             # Get pixel indices
             indices = self.operator.landscape.quat2index(qdet_full)
+            if isinstance(self.operator.landscape, HorizonLandscape):
+                indices = self.operator.landscape.combined_indices(indices[0], indices[1])
+
             if isinstance(xchunk, StokesI):
                 # no rotation needed
                 return self._point(xchunk, indices)
@@ -212,6 +218,7 @@ def get_local_meridian_angle(q: Float[Array, '*dims 4']) -> Float[Array, ' *dims
     celestial frame. For a detector this will be the polarization sensitive direction.
     The local meridian vector is obtained by projecting the -Z axis of the celestial
     frame onto the plane orthogonal to the pointing direction.
+    The angle is then measured clockwise from the orientation vector.
 
     partially taken from
     https://github.com/hpc4cmb/toast/blob/toast3/src/toast/ops/stokes_weights/kernels_jax.py#L19

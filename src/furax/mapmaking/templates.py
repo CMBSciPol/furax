@@ -618,7 +618,7 @@ class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
     The coefficients are unique per detector.
     """
 
-    n_az_bins: int = equinox.field(static=True)
+    n_azimuth_bins: int = equinox.field(static=True)
     n_harmonics: int = equinox.field(static=True)
     bin_templates: Float[Array, 'bin samp']
     harm_templates: Float[Array, 'harm samp']
@@ -629,14 +629,14 @@ class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
         n_dets: int,
         n_samps: int,
         dtype: DTypeLike,
-        n_az_bins: int,
+        n_azimuth_bins: int,
         n_harmonics: int,
         bin_templates: Float[Array, 'poly samp'],
         harm_templates: Float[Array, 'harm samp'],
     ):
         # TODO: add checks
         super().__init__(n_params, n_dets, n_samps, dtype)
-        self.n_az_bins = n_az_bins
+        self.n_azimuth_bins = n_azimuth_bins
         self.n_harmonics = n_harmonics
         self.bin_templates = bin_templates
         self.harm_templates = harm_templates
@@ -644,26 +644,63 @@ class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
     @classmethod
     def create(
         cls,
-        n_az_bins: int,
+        n_azimuth_bins: int,
         n_harmonics: int,
+        interpolate_azimuth: bool,
+        smooth_interpolation: bool,
         azimuth: Float[Array, ' samps'],
         hwp_angles: Float[Array, ' samps'],
         n_dets: int,
         dtype: DTypeLike,
     ) -> TemplateOperator:
         n_samps: int = azimuth.size
-        n_params: int = n_dets * n_az_bins * (1 + 2 * n_harmonics)
+        n_params: int = n_dets * n_azimuth_bins * (1 + 2 * n_harmonics)
 
         # Create azimuth templates
         max_az = jnp.max(azimuth)
         min_az = jnp.min(azimuth)
         max_az += 1e-8  # Allow max_az to be included in the last bin
 
-        az_bin_edges = jnp.linspace(min_az, max_az, n_az_bins + 1)
+        az_bin_edges = jnp.linspace(min_az, max_az, n_azimuth_bins + 1)
         bin_inds = jnp.digitize(azimuth, az_bin_edges[1:])
-        bin_templates = (
-            jnp.zeros((n_az_bins, n_samps), dtype=dtype).at[bin_inds, jnp.arange(n_samps)].set(1.0)
-        )
+
+        if interpolate_azimuth:
+            az_bin_centres = 0.5 * (az_bin_edges[:-1] + az_bin_edges[1:])
+            delta_bin = (max_az - min_az) / n_azimuth_bins
+
+            if smooth_interpolation:
+                # Sin^2 interpolation
+                bin_templates = (
+                    jnp.sin(
+                        (jnp.pi / 2)
+                        * (
+                            jnp.clip(
+                                1 - jnp.abs(azimuth[None, :] - az_bin_centres[:, None]) / delta_bin,
+                                min=0,
+                            )
+                        )
+                    )
+                    ** 2
+                )
+                bin_templates /= jnp.sum(bin_templates, axis=0)[None, :]
+            else:
+                # Linear interpolation
+                bin_templates = (
+                    jnp.clip(
+                        1 - jnp.abs(azimuth[None, :] - az_bin_centres[:, None]) / delta_bin, min=0
+                    )
+                    .at[0, azimuth < az_bin_centres[0]]
+                    .set(1.0)
+                    .at[-1, azimuth > az_bin_centres[-1]]
+                    .set(1.0)
+                )
+        else:
+            # Binned weights (0 or 1)
+            bin_templates = (
+                jnp.zeros((n_azimuth_bins, n_samps), dtype=dtype)
+                .at[bin_inds, jnp.arange(n_samps)]
+                .set(1.0)
+            )
 
         # Create harmonic templates
         harmonics = jnp.arange(1, n_harmonics + 1)
@@ -677,7 +714,7 @@ class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
             n_dets=n_dets,
             n_samps=n_samps,
             dtype=dtype,
-            n_az_bins=n_az_bins,
+            n_azimuth_bins=n_azimuth_bins,
             n_harmonics=n_harmonics,
             bin_templates=bin_templates,
             harm_templates=harm_templates,
@@ -687,7 +724,7 @@ class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
         # Params are ordered as [det,poly,[x, y/z[harm]]]
         # So for a single detector, the ordering goes
         # x_0, y_01, ... y_0M, z_01, ... z_0M, x_1, y_11, ..., z_(N-1)M
-        x = x.reshape(self.n_dets, self.n_az_bins, 1 + 2 * self.n_harmonics)
+        x = x.reshape(self.n_dets, self.n_azimuth_bins, 1 + 2 * self.n_harmonics)
 
         # data[det_samp] = bin_tmpl[bin,samp] * param[det,bin,harm] * harm_tmpl[harm,samp]
         return jnp.sum((x @ self.harm_templates) * self.bin_templates[None, :, :], axis=1)

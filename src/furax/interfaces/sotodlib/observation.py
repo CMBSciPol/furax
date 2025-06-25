@@ -203,6 +203,7 @@ class SotodlibObservationData(GroundObservationData):
             self.observation.timestamps,
             self.observation.boresight.az,
             self.observation.boresight.el,
+            roll=self.observation.boresight.roll,
             site='so',
             weather='typical',
         )

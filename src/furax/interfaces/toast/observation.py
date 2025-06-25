@@ -209,10 +209,10 @@ class ToastObservationData(GroundObservationData):
 
         idets = np.argwhere(np.array(self.dets)[:, None] == fp_data['name'][None, :])[:, 1]
         noise_model = AtmosphericNoiseModel(
-            sigma=jnp.array(fp_data['psd_net'][idets].value),
-            alpha=jnp.array(fp_data['psd_alpha'][idets].value),
-            fk=jnp.array(fp_data['psd_fknee'][idets].value),
-            f0=jnp.array(fp_data['psd_fmin'][idets].value),
+            sigma=jnp.array(fp_data['psd_net'][idets].to(u.K * u.s**0.5).value),
+            alpha=jnp.array(-fp_data['psd_alpha'][idets].value),  # Note toast's sign convention
+            fk=jnp.array(fp_data['psd_fknee'][idets].to(u.Hz).value),
+            f0=jnp.array(fp_data['psd_fmin'][idets].to(u.Hz).value),
         )
         return noise_model
 

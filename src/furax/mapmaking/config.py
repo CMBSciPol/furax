@@ -59,8 +59,10 @@ class _AzimuthHWPSynchronousTemplateConfig:
 
 @dataclass(frozen=True)
 class _BinAzimuthHWPSynchronousTemplateConfig:
-    n_az_bins: int = 4
+    n_azimuth_bins: int = 4
     n_harmonics: int = 4
+    interpolate_azimuth: bool = False
+    smooth_interpolation: bool = False
 
 
 @dataclass(frozen=True)

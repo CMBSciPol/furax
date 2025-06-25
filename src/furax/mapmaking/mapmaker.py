@@ -328,8 +328,10 @@ class MapMaker:
         if binazhwpss := config.templates.binazhwp_synchronous:
             blocks['binazhwp_synchronous'] = (
                 templates.BinAzimuthHWPSynchronousTemplateOperator.create(
-                    n_az_bins=binazhwpss.n_az_bins,
+                    n_azimuth_bins=binazhwpss.n_azimuth_bins,
                     n_harmonics=binazhwpss.n_harmonics,
+                    interpolate_azimuth=binazhwpss.interpolate_azimuth,
+                    smooth_interpolation=binazhwpss.smooth_interpolation,
                     azimuth=observation.get_azimuth(),
                     hwp_angles=observation.get_hwp_angles(),
                     n_dets=observation.n_dets,

@@ -144,7 +144,10 @@ class SotodlibObservationData(GroundObservationData):
         if 'psdT' in preproc:
             fit = preproc.noiseT_fit.fit  # columns: (fknee, w, alpha)
         elif 'Pxx_raw' in preproc:
-            fit = preproc.noise_signal_fit.fit  # columns: (fknee, w, alpha)
+            if 'noise_signal_fit' in preproc:
+                fit = preproc.noise_signal_fit.fit  # columns: (fknee, w, alpha)
+            elif 'noiseT' in preproc:
+                fit = preproc.noiseT.fit  # columns: (fknee, w, alpha)
         else:
             return None
 

@@ -11,10 +11,9 @@ from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import init_logger, load_and_preprocess
 from sotodlib.site_pipeline.util import main_launcher
 
+from furax.interfaces.sotodlib.observation import SotodlibObservationData
 from furax.mapmaking.config import MapMakingConfig
 from furax.mapmaking.mapmaker import MapMaker
-
-from .observation import SotodlibObservationData
 
 logger = init_logger('preprocess')
 

@@ -26,6 +26,7 @@ single_cluster_indices = {
 valid_keys = {'temp_dust', 'beta_dust', 'beta_pl'}
 valid_patch_keys = {'temp_dust_patches', 'beta_dust_patches', 'beta_pl_patches'}
 
+
 def _create_component(
     name: str,
     nu: Array,

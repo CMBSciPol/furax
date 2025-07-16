@@ -144,13 +144,13 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
         return sum(_.size for _ in jax.tree.leaves(self.out_structure()))
 
     @property
-    def in_promoted_dtype(self) -> jnp.dtype:  # type: ignore[type-arg]
+    def in_promoted_dtype(self) -> jnp.dtype:
         """Returns the promoted data type of the operator's input leaves."""
         leaves = jax.tree.leaves(self.in_structure())
         return jnp.result_type(*leaves)
 
     @property
-    def out_promoted_dtype(self) -> jnp.dtype:  # type: ignore[type-arg]
+    def out_promoted_dtype(self) -> jnp.dtype:
         """Returns the promoted data type of the operator's output leaves."""
         leaves = jax.tree.leaves(self.out_structure())
         return jnp.result_type(*leaves)

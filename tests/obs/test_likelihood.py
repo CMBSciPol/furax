@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import pytest
 
 from furax import HomothetyOperator
-from furax.comp_sep._likelihoods import _base_spectral_log_likelihood
+from furax.obs._likelihoods import _spectral_likelihood_core
 from furax.obs.landscapes import FrequencyLandscape
 from furax.obs.operators import (
     CMBOperator,
@@ -115,7 +115,7 @@ def test_base_case(likelihood_setup):
 
     # Case: all components, op=None, N_2=None
     with jax.disable_jit():
-        AND, s = _base_spectral_log_likelihood(
+        AND, s = _spectral_likelihood_core(
             base_params, patch_indices, nu, N1, d, dust_nu0, synchrotron_nu0, op=None, N_2=None
         )
         expected_AND = (A_cds.T @ N1.I)(d)
@@ -135,7 +135,7 @@ def test_dust_only(likelihood_setup):
     N1 = setup['N1']
     A_cd = setup['A_cd']
     with jax.disable_jit():
-        AND, s = _base_spectral_log_likelihood(
+        AND, s = _spectral_likelihood_core(
             dust_params, patch_indices, nu, N1, d, dust_nu0, synchrotron_nu0, op=None, N_2=None
         )
         expected_AND = (A_cd.T @ N1.I)(d)
@@ -155,7 +155,7 @@ def test_synchrotron_only(likelihood_setup):
     N1 = setup['N1']
     A_cs = setup['A_cs']
     with jax.disable_jit():
-        AND, s = _base_spectral_log_likelihood(
+        AND, s = _spectral_likelihood_core(
             synchrotron_params,
             patch_indices,
             nu,
@@ -184,7 +184,7 @@ def test_different_noise_operator(likelihood_setup):
     N2 = setup['N2']
     A_cds = setup['A_cds']
     with jax.disable_jit():
-        AND, s = _base_spectral_log_likelihood(
+        AND, s = _spectral_likelihood_core(
             base_params, patch_indices, nu, N1, d, dust_nu0, synchrotron_nu0, op=None, N_2=N2
         )
         expected_AND = (A_cds.T @ N1.I)(d)
@@ -205,7 +205,7 @@ def test_with_operator(likelihood_setup):
     op = setup['op']
     A_cds = setup['A_cds']
     with jax.disable_jit():
-        AND, s = _base_spectral_log_likelihood(
+        AND, s = _spectral_likelihood_core(
             base_params, patch_indices, nu, N1, d, dust_nu0, synchrotron_nu0, op=op, N_2=None
         )
         expected_AND = (A_cds.T @ op.T @ N1.I)(d)
@@ -227,7 +227,7 @@ def test_operator_and_different_noise(likelihood_setup: dict[str, float]) -> Non
     op = setup['op']
     A_cds = setup['A_cds']
     with jax.disable_jit():
-        AND, s = _base_spectral_log_likelihood(
+        AND, s = _spectral_likelihood_core(
             base_params, patch_indices, nu, N1, d, dust_nu0, synchrotron_nu0, op=op, N_2=N2
         )
         expected_AND = (A_cds.T @ op.T @ N1.I)(d)

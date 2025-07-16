@@ -16,7 +16,7 @@ from furax.obs.operators._seds import (
 from furax.obs.stokes import Stokes
 from furax.tree import dot
 
-SpecParamType = dict[str, Stokes]
+ComponentParametersDict = dict[str, Stokes]
 
 single_cluster_indices = {
     'temp_dust_patches': None,
@@ -25,7 +25,6 @@ single_cluster_indices = {
 }
 valid_keys = {'temp_dust', 'beta_dust', 'beta_pl'}
 valid_patch_keys = {'temp_dust_patches', 'beta_dust_patches', 'beta_pl_patches'}
-
 
 def _create_component(
     name: str,
@@ -120,7 +119,7 @@ def _get_available_components(params: PyTree[Array]) -> list[str]:
 
 
 @partial(jax.jit, static_argnums=(5, 6))
-def _base_spectral_log_likelihood(
+def _spectral_likelihood_core(
     params: PyTree[Array],
     patch_indices: PyTree[Array],
     nu: Array,
@@ -130,7 +129,7 @@ def _base_spectral_log_likelihood(
     synchrotron_nu0: float,
     op: AbstractLinearOperator | None,
     N_2: AbstractLinearOperator | None,
-) -> tuple[SpecParamType, SpecParamType]:
+) -> tuple[ComponentParametersDict, ComponentParametersDict]:
     """
     Compute the base spectral log likelihood components used in spectral estimation.
 
@@ -227,7 +226,7 @@ def sky_signal(
     patch_indices: PyTree[Array] = single_cluster_indices,
     op: AbstractLinearOperator | None = None,
     N_2: AbstractLinearOperator | None = None,
-) -> SpecParamType:
+) -> ComponentParametersDict:
     """
     Compute the estimated sky signal based on the provided spectral parameters.
 
@@ -253,13 +252,13 @@ def sky_signal(
 
     Returns
     -------
-    SpecParamType
+    ComponentParametersDict
         Estimated sky signal for each component.
     """
-    _, s = _base_spectral_log_likelihood(
+    _, s = _spectral_likelihood_core(
         params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0, op, N_2
     )
-    return cast(SpecParamType, s)
+    return cast(ComponentParametersDict, s)
 
 
 @partial(jax.jit, static_argnums=(4, 5))
@@ -302,7 +301,7 @@ def spectral_log_likelihood(
     Scalar
         The spectral log likelihood value.
     """
-    AND, s = _base_spectral_log_likelihood(
+    AND, s = _spectral_likelihood_core(
         params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0, op, N_2
     )
     ll: Scalar = dot(AND, s)
@@ -396,7 +395,7 @@ def spectral_cmb_variance(
     Scalar
         The variance of the CMB component.
     """
-    _, s = _base_spectral_log_likelihood(
+    _, s = _spectral_likelihood_core(
         params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0, op, N_2
     )
     cmb_var: Scalar = jax.tree.reduce(operator.add, jax.tree.map(jnp.var, s['cmb']))

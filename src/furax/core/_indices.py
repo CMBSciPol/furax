@@ -59,11 +59,11 @@ class IndexOperator(AbstractLinearOperator):
         if not isinstance(indices, tuple):
             indices = (indices,)
         self._check_indices(indices)
-        
+
         # Set these attributes first before computing _out_structure
         self.indices = indices
         self._in_structure = in_structure
-        
+
         if all(
             isinstance(_, int | slice | EllipsisType) or isinstance(_, Array) and _.dtype == bool
             for _ in indices
@@ -80,8 +80,9 @@ class IndexOperator(AbstractLinearOperator):
         if out_structure is None:
             # Compute output structure manually to avoid circular dependency
             # during initialization
-            def temp_mv(x):
+            def temp_mv(x):  # type: ignore[no-untyped-def]
                 return jax.tree.map(lambda leaf: leaf[self.indices], x)
+
             self._out_structure = jax.eval_shape(temp_mv, self._in_structure)
         else:
             self._out_structure = out_structure

@@ -66,13 +66,15 @@ def test_ravel(
 ) -> None:
     op = RavelOperator(first_axis, last_axis, in_structure=as_structure(x))
     if do_jit:
-        op_t = jax.jit(op.T)
-        op = jax.jit(op)
+        jitted_op_t = jax.jit(lambda x: op.T.mv(x))
+        jitted_op = jax.jit(lambda x: op.mv(x))
+        y = jitted_op(x)
+        x_reconstructed = jitted_op_t(y)
     else:
-        op_t = op.T
-    y = op(x)
+        y = op.mv(x)
+        x_reconstructed = op.T.mv(y)
     assert tree_equal(y, expected_y)
-    assert tree_equal(op_t(y), x)
+    assert tree_equal(x_reconstructed, x)
 
 
 @pytest.mark.parametrize('first_axis, last_axis', [(0, 0), (0, 1), (0, 2), (1, 2), (2, 2)])

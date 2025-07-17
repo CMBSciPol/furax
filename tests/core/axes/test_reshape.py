@@ -39,8 +39,8 @@ def test_reshape(
 ) -> None:
     op = ReshapeOperator(shape, in_structure=as_structure(x))
     if do_jit:
-        jitted_op_t = jax.jit(lambda x : op.T.mv(x))
-        jitted_op = jax.jit(lambda x : op.mv(x))
+        jitted_op_t = jax.jit(lambda x: op.T.mv(x))
+        jitted_op = jax.jit(lambda x: op.mv(x))
         y = jitted_op(x)
         y_t = jitted_op_t(x)
     else:

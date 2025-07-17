@@ -39,13 +39,15 @@ def test_reshape(
 ) -> None:
     op = ReshapeOperator(shape, in_structure=as_structure(x))
     if do_jit:
-        op_t = jax.jit(op.T)
-        op = jax.jit(op)
+        jitted_op_t = jax.jit(lambda x : op.T.mv(x))
+        jitted_op = jax.jit(lambda x : op.mv(x))
+        y = jitted_op(x)
+        y_t = jitted_op_t(x)
     else:
-        op_t = op.T
-    y = op(x)
+        y = op.mv(x)
+        y_t = op.T.mv(x)
     assert tree_equal(y, expected_y)
-    assert tree_equal(op_t(y), x)
+    assert tree_equal(y_t, x)
 
 
 @pytest.mark.parametrize(

@@ -37,7 +37,7 @@ dependencies = [
 dynamic = ['version']
 
 [project.optional-dependencies]
-dev = ['pytest', 'pytest-cov', 'pytest-mock', 'setuptools_scm', 'beartype']
+dev = ['pytest', 'pytest-cov', 'pytest-mock', 'pytest-insubprocess>=1.1', 'setuptools_scm', 'beartype']
 comp_sep = ['pysm3']
 
 [project.urls]

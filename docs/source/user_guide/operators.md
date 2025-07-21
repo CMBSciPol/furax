@@ -70,7 +70,7 @@ diag_values = jnp.array([1., 2., 3.])  # Shape: (3,)
 
 # Create operator that broadcasts to (3, 4) arrays
 broadcast_op = BroadcastDiagonalOperator(
-    diagonal=diag_values, 
+    diagonal=diag_values,
     axis=0  # Broadcast along first axis
 )
 
@@ -230,7 +230,7 @@ tree_op = TreeOperator(tree_structure)
 # Apply to PyTree data
 data = {
     'I': jnp.array([1., 1.]),
-    'Q': jnp.array([1., 1.]), 
+    'Q': jnp.array([1., 1.]),
     'U': jnp.array([1., 1.])
 }
 
@@ -246,7 +246,7 @@ Operators can be composed to create sophisticated analysis pipelines:
 
 ```python
 from furax.core import (
-    DiagonalOperator, BlockDiagonalOperator, 
+    DiagonalOperator, BlockDiagonalOperator,
     IndexOperator, ReshapeOperator
 )
 from furax.obs import HealpixLandscape
@@ -300,7 +300,7 @@ b = jnp.array([1., 2., 3., 4.])
 # Solve with conjugate gradient
 with Config(solver=lx.CG(rtol=1e-8, max_steps=100)):
     solution = lx.linear_solve(A, b)
-    
+
 print(f"Solution: {solution.value}")
 print(f"Converged: {solution.result}")
 ```
@@ -312,15 +312,15 @@ Operators support matrix-free computations for memory efficiency:
 ```python
 def large_scale_analysis(operator, data):
     """Perform analysis without forming explicit matrices."""
-    
+
     # Matrix-vector product (never forms the full matrix)
     result = operator @ data
-    
+
     # Operator norms and properties
     print(f"Operator properties:")
     print(f"  Symmetric: {operator.symmetric}")
     print(f"  Positive semidefinite: {operator.positive_semidefinite}")
-    
+
     return result
 
 # Even for very large operators, memory usage stays manageable
@@ -361,23 +361,23 @@ from jaxtyping import Array, Float
 
 class CustomScalingOperator(AbstractLinearOperator):
     """Custom operator that scales by a factor."""
-    
+
     def __init__(self, scale_factor: float, size: int):
         self.scale_factor = scale_factor
         self._size = size
-        
+
     def __call__(self, x: Float[Array, "n"]) -> Float[Array, "n"]:
         return self.scale_factor * x
-        
+
     @property
     def size(self) -> int:
         return self._size
-        
+
     @property
     def symmetric(self) -> bool:
         return True  # Scaling is symmetric
-        
-    @property 
+
+    @property
     def positive_semidefinite(self) -> bool:
         return self.scale_factor >= 0
 
@@ -439,7 +439,7 @@ with jax.config.context(x64_enable=False):
 
 1. **Compose operators logically**: Build complex operations from simple, well-understood components
 
-2. **Leverage mathematical properties**: Use symmetric, positive definite operators when possible for better solver performance  
+2. **Leverage mathematical properties**: Use symmetric, positive definite operators when possible for better solver performance
 
 3. **Test with small examples**: Verify operator behavior with `as_matrix()` on small problems
 

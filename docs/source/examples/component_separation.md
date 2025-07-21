@@ -7,7 +7,7 @@ This example demonstrates how to use Furax for Cosmic Microwave Background (CMB)
 CMB component separation aims to disentangle the cosmological CMB signal from astrophysical foregrounds such as:
 
 - **Thermal dust emission**: Dominant at high frequencies
-- **Synchrotron radiation**: Dominant at low frequencies  
+- **Synchrotron radiation**: Dominant at low frequencies
 - **Free-free emission**: Relatively flat spectrum
 - **Spinning dust**: Peaks around 20-30 GHz
 
@@ -44,7 +44,7 @@ dust_sed = DustOperator(frequencies, beta=1.54, T_dust=20.0)  # Typical values
 sync_sed = SynchrotronOperator(frequencies, beta=-3.1)        # Typical spectral index
 
 print(f"CMB SED shape: {cmb_sed.shape}")
-print(f"Dust SED shape: {dust_sed.shape}")  
+print(f"Dust SED shape: {dust_sed.shape}")
 print(f"Synchrotron SED shape: {sync_sed.shape}")
 ```
 
@@ -61,7 +61,7 @@ print(f"Mixing matrix shape: {mixing_matrix.shape}")
 print(f"Components: CMB, Dust, Synchrotron")
 ```
 
-### Simulate Multi-frequency Data  
+### Simulate Multi-frequency Data
 
 ```python
 # Generate true sky components
@@ -76,7 +76,7 @@ sync_true = 0.05 * landscape.uniform(keys[2], minval=0, maxval=1) # Synchrotron 
 # Stack components: shape (n_components, n_stokes * n_pix)
 true_components = jnp.stack([
     cmb_true.flatten(),
-    dust_true.flatten(), 
+    dust_true.flatten(),
     sync_true.flatten()
 ])
 
@@ -148,7 +148,7 @@ print(f"Right-hand side shape: {At_Ninv_d.shape}")
 # Solve the system
 with Config(solver=lx.CG(rtol=1e-8, max_steps=1000)):
     solution = lx.linear_solve(At_Ninv_A, At_Ninv_d)
-    
+
 recovered_components = solution.value
 print(f"Solver converged: {solution.result}")
 print(f"Recovered components shape: {recovered_components.shape}")
@@ -160,7 +160,7 @@ print(f"Recovered components shape: {recovered_components.shape}")
 # Reshape recovered components
 n_components = 3
 recovered_cmb = recovered_components[:landscape.size]
-recovered_dust = recovered_components[landscape.size:2*landscape.size]  
+recovered_dust = recovered_components[landscape.size:2*landscape.size]
 recovered_sync = recovered_components[2*landscape.size:]
 
 # Convert back to Stokes format
@@ -188,9 +188,9 @@ from furax.core import SymmetricBandToeplitzOperator
 # Add spatial priors (e.g., smoothness prior for CMB)
 def create_smoothing_prior(landscape, correlation_length_arcmin=60):
     """Create a smoothness prior operator."""
-    # This is a simplified example - real implementation would use 
+    # This is a simplified example - real implementation would use
     # spherical harmonics or proper correlation functions
-    
+
     # Create a band-limited Toeplitz approximation
     n_bands = min(10, landscape.npix // 10)
     bands = []
@@ -203,7 +203,7 @@ def create_smoothing_prior(landscape, correlation_length_arcmin=60):
             decay = jnp.exp(-i / 5.0)
             band = decay * jnp.ones(landscape.npix - i)
         bands.append(band)
-    
+
     return SymmetricBandToeplitzOperator(bands)
 
 # Create priors for each component
@@ -313,7 +313,7 @@ def summarize_component(component_name, true_map, recovered_map):
     """Print summary statistics for a recovered component."""
     correlation = jnp.corrcoef(true_map.flatten(), recovered_map.flatten())[0,1]
     rms_error = jnp.sqrt(jnp.mean((true_map.flatten() - recovered_map.flatten())**2))
-    
+
     print(f"{component_name}:")
     print(f"  Correlation: {correlation:.4f}")
     print(f"  RMS Error: {rms_error:.4f}")
@@ -323,7 +323,7 @@ def summarize_component(component_name, true_map, recovered_map):
 
 # Summarize all components
 summarize_component("CMB", cmb_true.flatten(), recovered_cmb)
-summarize_component("Dust", dust_true.flatten(), recovered_dust)  
+summarize_component("Dust", dust_true.flatten(), recovered_dust)
 summarize_component("Synchrotron", sync_true.flatten(), recovered_sync)
 ```
 

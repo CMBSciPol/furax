@@ -34,8 +34,8 @@ For development or component separation features:
 
    # Development installation
    pip install -e .[dev]
-   
-   # With component separation features  
+
+   # With component separation features
    pip install -e .[comp_sep]
 
 Quick Example
@@ -50,15 +50,15 @@ Quick Example
 
    # Create a HEALPix landscape for polarization data
    landscape = HealpixLandscape(nside=32, stokes='QU')
-   
+
    # Generate random Stokes parameters
    key = jax.random.PRNGKey(42)
    stokes_data = landscape.normal(key)
-   
+
    # Create a diagonal operator for weighting
    weights = jnp.ones(landscape.size)
    weight_op = DiagonalOperator(weights)
-   
+
    # Apply the operator
    weighted_data = weight_op @ stokes_data
 

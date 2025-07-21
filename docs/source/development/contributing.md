@@ -127,11 +127,11 @@ from furax.obs import Stokes
 @pytest.mark.parametrize("stokes_fixture", ["I", "QU", "IQU"], indirect=True)
 def test_stokes_arithmetic(stokes_fixture):
     stokes_data = stokes_fixture
-    
+
     # Test addition
     result = stokes_data + stokes_data
     assert isinstance(result, type(stokes_data))
-    
+
     # Test scalar multiplication
     scaled = 2.0 * stokes_data
     assert isinstance(scaled, type(stokes_data))
@@ -151,7 +151,7 @@ sbatch slurms/astro-sim-v100-testing.slurm
 ### Core Principles
 
 1. **Composability**: Linear operators should compose naturally with `@` and `+`
-2. **JAX Integration**: All data structures are PyTrees compatible with JAX transformations  
+2. **JAX Integration**: All data structures are PyTrees compatible with JAX transformations
 3. **Type Safety**: Extensive use of type hints and jaxtyping
 4. **Mathematical Clarity**: Code should reflect mathematical operations clearly
 
@@ -166,21 +166,21 @@ from jaxtyping import Array, Float
 class MyCustomOperator(AbstractLinearOperator):
     def __init__(self, parameter: float):
         self.parameter = parameter
-        
+
     def __call__(self, x: Float[Array, "n"]) -> Float[Array, "n"]:
         # Implement the linear operation
         return self.parameter * x
-        
+
     @property
     def size(self) -> int:
         # Return the operator size
         return self._input_size
-        
+
     @property
     def symmetric(self) -> bool:
         # Return True if operator is symmetric
         return True
-        
+
     @property
     def positive_semidefinite(self) -> bool:
         # Return True if operator is PSD
@@ -205,15 +205,15 @@ from jaxtyping import Array, Float
 @jdc.pytree_dataclass
 class StokesXY(Stokes):
     """Custom Stokes parameters for X and Y polarization."""
-    
+
     X: Float[Array, "n_pix"]
     Y: Float[Array, "n_pix"]
-    
+
     @classmethod
     def from_stokes(cls, x: Array, y: Array) -> "StokesXY":
         return cls(X=jnp.asarray(x), Y=jnp.asarray(y))
-        
-    @property  
+
+    @property
     def stokes(self) -> str:
         return "XY"
 ```
@@ -226,18 +226,18 @@ Use Google-style docstrings with type information:
 
 ```python
 def my_function(
-    data: Float[Array, "n_pix"], 
+    data: Float[Array, "n_pix"],
     scale: float = 1.0
 ) -> Float[Array, "n_pix"]:
     """Process CMB data with scaling.
-    
+
     Args:
         data: Input CMB map with shape (n_pix,)
         scale: Scaling factor to apply
-        
+
     Returns:
         Scaled CMB map with same shape as input
-        
+
     Example:
         >>> import jax.numpy as jnp
         >>> data = jnp.array([1., 2., 3.])
@@ -267,9 +267,9 @@ Use proper LaTeX for mathematical expressions:
 The maximum likelihood estimator is:
 
 .. math::
-   
+
    \\hat{m} = (P^T N^{-1} P)^{-1} P^T N^{-1} d
-   
+
 where :math:`P` is the pointing matrix.
 ```
 

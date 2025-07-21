@@ -37,7 +37,7 @@ This includes additional dependencies like PySM3 for foreground modeling.
 Furax relies on the JAX ecosystem and scientific Python packages:
 
 - **Core**: JAX, Lineax, NumPy
-- **Astronomy**: HealPy, AstroPy, jax-healpy  
+- **Astronomy**: HealPy, AstroPy, jax-healpy
 - **Development**: pytest, ruff, mypy
 
 ## First Steps
@@ -255,7 +255,7 @@ print(f"Matrix-free operation completed for {large_landscape.size} parameters")
 Now that you've learned the basics:
 
 1. **Data Structures**: Explore [data_structures.md](data_structures.md) for advanced Stokes parameter usage
-2. **Linear Operators**: Learn about operator composition in [operators.md](operators.md)  
+2. **Linear Operators**: Learn about operator composition in [operators.md](operators.md)
 3. **Examples**: Try the [component_separation.md](../examples/component_separation.md) and [mapmaking.md](../examples/mapmaking.md) tutorials
 4. **API Reference**: Browse the complete API reference for all available functions
 

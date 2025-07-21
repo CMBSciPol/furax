@@ -11,7 +11,7 @@ Stokes parameters describe the polarization state of electromagnetic radiation. 
 Furax provides several Stokes parameter classes:
 
 * **StokesI**: Intensity-only measurements
-* **StokesQU**: Linear polarization (Q and U parameters)  
+* **StokesQU**: Linear polarization (Q and U parameters)
 * **StokesIQU**: Full linear polarization (Intensity + Q + U)
 * **StokesIQUV**: Complete Stokes parameters including circular polarization
 
@@ -26,13 +26,13 @@ from furax.obs import Stokes
 
 # Create Stokes parameters from arrays
 i_data = jnp.ones(100)
-q_data = jnp.zeros(100)  
+q_data = jnp.zeros(100)
 u_data = jnp.zeros(100)
 
 # Intensity only
 stokes_i = Stokes.from_stokes(i_data)
 
-# Linear polarization  
+# Linear polarization
 stokes_qu = Stokes.from_stokes(q_data, u_data)
 
 # Full linear polarization
@@ -92,7 +92,7 @@ stokes = StokesIQU.normal(jax.random.PRNGKey(0), (100,))
 
 # Access individual components
 intensity = stokes.I      # Intensity component
-q_param = stokes.Q        # Q polarization parameter  
+q_param = stokes.Q        # Q polarization parameter
 u_param = stokes.U        # U polarization parameter
 
 # Check available components
@@ -143,7 +143,7 @@ key = jax.random.PRNGKey(123)
 # Gaussian random field
 gaussian_map = landscape.normal(key)
 
-# Uniform random field  
+# Uniform random field
 uniform_map = landscape.uniform(key, minval=-1, maxval=1)
 
 # Constant map
@@ -218,7 +218,7 @@ process_map_jit = jax.jit(process_map)
 
 # Vectorize over different noise levels
 process_map_vmap = jax.vmap(
-    partial(process_map, stokes_map), 
+    partial(process_map, stokes_map),
     in_axes=(0,)
 )
 

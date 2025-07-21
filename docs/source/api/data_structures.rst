@@ -24,7 +24,7 @@ Stokes Implementations
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: stokes.StokesQU  
+.. autoclass:: stokes.StokesQU
    :members:
    :undoc-members:
    :show-inheritance:
@@ -52,7 +52,7 @@ Abstract Base Classes
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: landscapes.StokesLandscape  
+.. autoclass:: landscapes.StokesLandscape
    :members:
    :undoc-members:
    :show-inheritance:

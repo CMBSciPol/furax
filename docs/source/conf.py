@@ -5,7 +5,6 @@
 
 import os
 import sys
-from pathlib import Path
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
@@ -83,7 +82,7 @@ autodoc_default_options = {
     'member-order': 'bysource',
     'special-members': '__init__',
     'undoc-members': True,
-    'exclude-members': '__weakref__'
+    'exclude-members': '__weakref__',
 }
 
 # Automatically extract typehints when specified and place them in
@@ -141,10 +140,12 @@ myst_enable_extensions = [
 
 # -- Setup function ---------------------------------------------------------
 
+
 def setup(app):
     """Setup hook for Sphinx."""
     # Add custom CSS
     app.add_css_file('custom.css')
+
 
 # Add the project root to the Python path so we can import furax
 sys.path.insert(0, os.path.abspath('../../src'))

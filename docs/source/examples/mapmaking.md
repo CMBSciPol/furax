@@ -7,7 +7,7 @@ This example demonstrates how to use Furax for CMB mapmaking, the process of con
 CMB mapmaking involves:
 
 1. **Pointing Model**: Converting detector measurements to sky coordinates
-2. **Projection Operator**: Mapping between time-ordered data and sky pixels  
+2. **Projection Operator**: Mapping between time-ordered data and sky pixels
 3. **Noise Model**: Accounting for detector noise correlations
 4. **Linear System**: Solving for maximum likelihood sky maps
 
@@ -70,7 +70,7 @@ true_sky = true_sky + large_scale_component
 
 print(f"True sky shape: {true_sky.shape}")
 print(f"Sky RMS (I): {jnp.std(true_sky.I):.3f} μK")
-print(f"Sky RMS (Q): {jnp.std(true_sky.Q):.3f} μK") 
+print(f"Sky RMS (Q): {jnp.std(true_sky.Q):.3f} μK")
 print(f"Sky RMS (U): {jnp.std(true_sky.U):.3f} μK")
 ```
 
@@ -81,34 +81,34 @@ from furax.obs import ProjectionOperator
 
 def create_pointing_matrix(pixel_indices, psi_angles, landscape):
     """Create the pointing matrix that maps sky to TOD."""
-    
+
     n_samples = len(pixel_indices)
     n_sky_params = landscape.size
-    
+
     # For each time sample, create the pointing vector
     pointing_vectors = []
-    
+
     for i in range(n_samples):
         pix_idx = pixel_indices[i]
         psi = psi_angles[i]
-        
+
         # Create pointing vector for this sample
         # For IQU: [I_weight, Q_weight, U_weight] for each pixel
         pointing_vector = jnp.zeros(n_sky_params)
-        
+
         # Intensity always couples with weight 1
         pointing_vector = pointing_vector.at[pix_idx].set(1.0)
-        
+
         # Q couples with cos(2*psi), U couples with sin(2*psi)
         if landscape.stokes in ['QU', 'IQU']:
             q_idx = pix_idx + n_pix  # Q parameters start after I
             u_idx = pix_idx + 2*n_pix  # U parameters start after Q
-            
+
             pointing_vector = pointing_vector.at[q_idx].set(jnp.cos(2*psi))
             pointing_vector = pointing_vector.at[u_idx].set(jnp.sin(2*psi))
-        
+
         pointing_vectors.append(pointing_vector)
-    
+
     # Stack into pointing matrix: (n_samples, n_sky_params)
     return jnp.stack(pointing_vectors)
 
@@ -132,7 +132,7 @@ noise_tod = noise_level * jax.random.normal(noise_key, (n_samples,))
 observed_tod = true_tod + noise_tod
 
 print(f"TOD RMS (signal): {jnp.std(true_tod):.3f} μK")
-print(f"TOD RMS (noise): {jnp.std(noise_tod):.3f} μK") 
+print(f"TOD RMS (noise): {jnp.std(noise_tod):.3f} μK")
 print(f"TOD RMS (total): {jnp.std(observed_tod):.3f} μK")
 print(f"Signal-to-noise ratio: {jnp.std(true_tod)/jnp.std(noise_tod):.2f}")
 ```
@@ -204,7 +204,7 @@ uncertainty_sky = StokesIQU.from_array(
 
 # Compute residuals
 residual_I = recovered_sky.I - true_sky.I
-residual_Q = recovered_sky.Q - true_sky.Q  
+residual_Q = recovered_sky.Q - true_sky.Q
 residual_U = recovered_sky.U - true_sky.U
 
 print(f"Residual RMS (I): {jnp.std(residual_I):.3f} μK")
@@ -212,7 +212,7 @@ print(f"Residual RMS (Q): {jnp.std(residual_Q):.3f} μK")
 print(f"Residual RMS (U): {jnp.std(residual_U):.3f} μK")
 
 print(f"Average uncertainty (I): {jnp.mean(uncertainty_sky.I):.3f} μK")
-print(f"Average uncertainty (Q): {jnp.mean(uncertainty_sky.Q):.3f} μK") 
+print(f"Average uncertainty (Q): {jnp.mean(uncertainty_sky.Q):.3f} μK")
 print(f"Average uncertainty (U): {jnp.mean(uncertainty_sky.U):.3f} μK")
 ```
 
@@ -246,11 +246,11 @@ from furax.core import SymmetricBandToeplitzOperator
 
 def create_correlated_noise_operator(n_samples, correlation_time=10):
     """Create operator for temporally correlated noise."""
-    
+
     # Create banded Toeplitz matrix for 1/f noise correlation
     max_bands = min(correlation_time, 20)  # Limit for computational efficiency
     bands = []
-    
+
     for i in range(max_bands):
         if i == 0:
             # Main diagonal
@@ -260,7 +260,7 @@ def create_correlated_noise_operator(n_samples, correlation_time=10):
             decay = jnp.exp(-i / correlation_time)
             band = decay * jnp.ones(n_samples - i)
         bands.append(band)
-    
+
     return SymmetricBandToeplitzOperator(bands)
 
 # Create correlated noise model
@@ -277,10 +277,10 @@ print(f"Correlated noise covariance shape: {corr_noise_cov.shape}")
 # Create a simple preconditioner based on hit counts
 def create_hit_count_preconditioner(hit_counts, landscape):
     """Create preconditioner from hit counts."""
-    
+
     # Preconditioner diagonal: higher hits = easier to solve
     precond_diag = jnp.zeros(landscape.size)
-    
+
     # I, Q, U components get the same hit count weighting
     for i in range(3):  # IQU
         start_idx = i * n_pix
@@ -288,7 +288,7 @@ def create_hit_count_preconditioner(hit_counts, landscape):
         precond_diag = precond_diag.at[start_idx:end_idx].set(
             jnp.sqrt(hit_counts + 1e-10)  # Avoid division by zero
         )
-    
+
     return DiagonalOperator(precond_diag)
 
 preconditioner = create_hit_count_preconditioner(hit_counts, landscape)
@@ -298,11 +298,11 @@ with Config(solver=lx.CG(rtol=1e-6, max_steps=3000)):
     # Apply preconditioning: solve P^-1 (AtNA) P^-1 (P x) = P^-1 (AtN d)
     preconditioned_matrix = preconditioner @ normal_matrix @ preconditioner
     preconditioned_rhs = preconditioner @ rhs
-    
+
     preconditioned_solution = lx.linear_solve(
         preconditioned_matrix, preconditioned_rhs
     )
-    
+
     # Transform back
     final_solution = preconditioner @ preconditioned_solution.value
 
@@ -329,20 +329,20 @@ for i, det_name in enumerate(detector_names):
     # Each detector has slightly different pointing due to focal plane layout
     det_key = jax.random.PRNGKey(1000 + i)
     det_keys = jax.random.split(det_key, 3)
-    
+
     # Add small random offset to pixel indices (focal plane effects)
     det_pixel_indices = pixel_indices  # Simplified - same pointing
     det_psi_angles = psi_angles + 0.1 * jax.random.normal(det_keys[0], (n_samples,))
-    
+
     # Create pointing matrix for this detector
     det_pointing = create_pointing_matrix(det_pixel_indices, det_psi_angles, landscape)
     multi_detector_pointing[det_name] = det_pointing
-    
+
     # Generate TOD
     det_signal = det_pointing @ true_sky.flatten()
     det_noise = detector_noise_levels[i] * jax.random.normal(det_keys[1], (n_samples,))
     multi_detector_tod[det_name] = det_signal + det_noise
-    
+
     print(f"{det_name}: noise level = {detector_noise_levels[i]:.1f} μK")
 ```
 
@@ -396,7 +396,7 @@ n_half = n_samples // 2
 pointing_1 = pointing_matrix[:n_half]
 tod_1 = observed_tod[:n_half]
 
-# Second half  
+# Second half
 pointing_2 = pointing_matrix[n_half:2*n_half]
 tod_2 = observed_tod[n_half:2*n_half]
 
@@ -406,19 +406,19 @@ def solve_split_map(pointing_split, tod_split, noise_level):
     inv_noise = DiagonalOperator(
         (1.0 / noise_level**2) * jnp.ones(len(tod_split))
     )
-    
+
     PtNinv = pointing_op.T @ inv_noise
     normal = PtNinv @ pointing_op
     rhs = PtNinv @ tod_split
-    
+
     with Config(solver=lx.CG(rtol=1e-6, max_steps=2000)):
         solution = lx.linear_solve(normal, rhs)
-    
+
     return StokesIQU.from_array(solution.value.reshape(3, n_pix))
 
 # Solve for both halves
 sky_split_1 = solve_split_map(pointing_1, tod_1, noise_level)
-sky_split_2 = solve_split_map(pointing_2, tod_2, noise_level) 
+sky_split_2 = solve_split_map(pointing_2, tod_2, noise_level)
 
 # Compare splits (should be consistent within noise)
 diff_I = sky_split_1.I - sky_split_2.I
@@ -461,40 +461,40 @@ For very large problems:
 ```python
 def memory_efficient_mapmaking(pixel_indices, psi_angles, tod, noise_level):
     """Memory-efficient mapmaking without storing full pointing matrix."""
-    
+
     # Build normal matrix and RHS without storing pointing matrix
     n_sky_params = landscape.size
     normal_matrix_data = jnp.zeros((n_sky_params, n_sky_params))
     rhs_data = jnp.zeros(n_sky_params)
-    
+
     # Accumulate contributions sample by sample
     inv_noise_var = 1.0 / noise_level**2
-    
+
     for i in range(len(tod)):
         pix_idx = pixel_indices[i]
         psi = psi_angles[i]
         data_val = tod[i]
-        
+
         # Create pointing vector for this sample
         pointing_vec = jnp.zeros(n_sky_params)
         pointing_vec = pointing_vec.at[pix_idx].set(1.0)  # I
-        
+
         if landscape.stokes in ['QU', 'IQU']:
             q_idx = pix_idx + n_pix
             u_idx = pix_idx + 2*n_pix
             pointing_vec = pointing_vec.at[q_idx].set(jnp.cos(2*psi))  # Q
             pointing_vec = pointing_vec.at[u_idx].set(jnp.sin(2*psi))  # U
-        
+
         # Accumulate: P^T N^-1 P and P^T N^-1 d
         normal_matrix_data += inv_noise_var * jnp.outer(pointing_vec, pointing_vec)
         rhs_data += inv_noise_var * data_val * pointing_vec
-    
+
     return DenseOperator(normal_matrix_data), rhs_data
 
 # For demonstration with small subset
 subset_size = 1000
 small_indices = pixel_indices[:subset_size]
-small_psi = psi_angles[:subset_size] 
+small_psi = psi_angles[:subset_size]
 small_tod = observed_tod[:subset_size]
 
 efficient_normal, efficient_rhs = memory_efficient_mapmaking(

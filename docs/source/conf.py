@@ -44,7 +44,7 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store', '**.ipynb_checkpoints']
 # The suffix(es) of source filenames.
 source_suffix = {
     '.rst': None,
-    '.md': 'myst_parser',
+    '.md': None,
 }
 
 # -- Options for HTML output -------------------------------------------------
@@ -132,7 +132,6 @@ myst_enable_extensions = [
     'dollarmath',
     'html_admonition',
     'html_image',
-    'linkify',
     'replacements',
     'smartquotes',
     'substitution',

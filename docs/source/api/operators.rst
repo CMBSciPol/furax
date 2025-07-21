@@ -1,30 +1,32 @@
 Linear Operators API
-===================
+====================
 
 This section provides detailed API documentation for Furax linear operators.
 
 Core Operators
 --------------
 
-.. currentmodule:: furax.core
+.. currentmodule:: furax.core._base
 
 Abstract Base Class
 ~~~~~~~~~~~~~~~~~~~
 
-.. autoclass:: _base.AbstractLinearOperator
+.. autoclass:: AbstractLinearOperator
    :members:
    :undoc-members:
    :show-inheritance:
 
 Diagonal Operators
------------------
+------------------
 
-.. autoclass:: _diagonal.DiagonalOperator
+.. currentmodule:: furax.core._diagonal
+
+.. autoclass:: DiagonalOperator
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: _diagonal.BroadcastDiagonalOperator
+.. autoclass:: BroadcastDiagonalOperator
    :members:
    :undoc-members:
    :show-inheritance:
@@ -32,38 +34,39 @@ Diagonal Operators
 Block Operators
 ---------------
 
-.. autoclass:: _blocks.BlockDiagonalOperator
+.. currentmodule:: furax.core._blocks
+
+.. autoclass:: BlockDiagonalOperator
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: _blocks.BlockRowOperator
+.. autoclass:: BlockRowOperator
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: _blocks.BlockColumnOperator
+.. autoclass:: BlockColumnOperator
    :members:
    :undoc-members:
    :show-inheritance:
 
 Dense Operators
---------------
+---------------
 
-.. autoclass:: _dense.DenseOperator
-   :members:
-   :undoc-members:
-   :show-inheritance:
+.. currentmodule:: furax.core._dense
 
-.. autoclass:: _dense.DenseBlockDiagonalOperator
+.. autoclass:: DenseBlockDiagonalOperator
    :members:
    :undoc-members:
    :show-inheritance:
 
 Toeplitz Operators
------------------
+------------------
 
-.. autoclass:: _toeplitz.SymmetricBandToeplitzOperator
+.. currentmodule:: furax.core._toeplitz
+
+.. autoclass:: SymmetricBandToeplitzOperator
    :members:
    :undoc-members:
    :show-inheritance:
@@ -71,22 +74,26 @@ Toeplitz Operators
 Index and Reshape Operators
 ---------------------------
 
-.. autoclass:: _indices.IndexOperator
+.. currentmodule:: furax.core._indices
+
+.. autoclass:: IndexOperator
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: _axes.ReshapeOperator
+.. currentmodule:: furax.core._axes
+
+.. autoclass:: ReshapeOperator
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: _axes.MoveAxisOperator
+.. autoclass:: MoveAxisOperator
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: _axes.RavelOperator
+.. autoclass:: RavelOperator
    :members:
    :undoc-members:
    :show-inheritance:
@@ -94,49 +101,19 @@ Index and Reshape Operators
 Tree Operators
 --------------
 
-.. autoclass:: _trees.TreeOperator
+.. currentmodule:: furax.core._trees
+
+.. autoclass:: TreeOperator
    :members:
    :undoc-members:
    :show-inheritance:
 
-Utility Functions and Decorators
---------------------------------
-
-Property Decorators
-~~~~~~~~~~~~~~~~~~
-
-.. currentmodule:: furax.core._base
-
-.. autofunction:: symmetric
-
-.. autofunction:: positive_semidefinite
-
-.. autofunction:: diagonal
-
-Composition Functions
-~~~~~~~~~~~~~~~~~~~~
-
-.. currentmodule:: furax.core.rules
-
-.. autofunction:: composition_rule
-
-.. autofunction:: addition_rule
-
-Utilities
-~~~~~~~~
-
-.. currentmodule:: furax.core.utils
-
-.. autofunction:: validate_operator_compatibility
-
-.. autofunction:: infer_operator_properties
-
 Configuration
 -------------
 
-.. currentmodule:: furax
+.. currentmodule:: furax._config
 
-.. autoclass:: _config.Config
+.. autoclass:: Config
    :members:
    :undoc-members:
    :show-inheritance:

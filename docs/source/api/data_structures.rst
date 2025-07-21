@@ -1,40 +1,40 @@
 Data Structures API
-==================
+===================
 
 This section provides detailed API documentation for Furax data structures.
 
 Stokes Parameters
 -----------------
 
-.. currentmodule:: furax.obs
+.. currentmodule:: furax.obs.stokes
 
 Abstract Base Class
 ~~~~~~~~~~~~~~~~~~~
 
-.. autoclass:: stokes.Stokes
+.. autoclass:: Stokes
    :members:
    :undoc-members:
    :show-inheritance:
 
 Stokes Implementations
-~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
 
-.. autoclass:: stokes.StokesI
+.. autoclass:: StokesI
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: stokes.StokesQU
+.. autoclass:: StokesQU  
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: stokes.StokesIQU
+.. autoclass:: StokesIQU
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: stokes.StokesIQUV
+.. autoclass:: StokesIQUV
    :members:
    :undoc-members:
    :show-inheritance:
@@ -42,41 +42,31 @@ Stokes Implementations
 Landscapes
 ----------
 
-.. currentmodule:: furax.obs
+.. currentmodule:: furax.obs.landscapes
 
 Abstract Base Classes
-~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
 
-.. autoclass:: landscapes.Landscape
+.. autoclass:: Landscape
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: landscapes.StokesLandscape
+.. autoclass:: StokesLandscape  
    :members:
    :undoc-members:
    :show-inheritance:
 
 Implementations
-~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
 
-.. autoclass:: landscapes.HealpixLandscape
+.. autoclass:: HealpixLandscape
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: landscapes.FrequencyLandscape
+.. autoclass:: FrequencyLandscape
    :members:
    :undoc-members:
    :show-inheritance:
 
-Utility Functions
------------------
-
-.. currentmodule:: furax.obs.stokes
-
-.. autofunction:: _validate_stokes_arrays
-
-.. currentmodule:: furax.obs.landscapes
-
-.. autofunction:: _validate_nside

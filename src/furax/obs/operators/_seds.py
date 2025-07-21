@@ -1,13 +1,14 @@
 from abc import abstractmethod
+from typing import Any
 
 import equinox
 import jax
 import jax.numpy as jnp
 from astropy.cosmology import Planck15
-from jaxtyping import Array, Float, Int, PyTree
+from jaxtyping import Array, Float, Inexact, Int, PyTree
 from scipy import constants
 
-from furax import AbstractLinearOperator, BlockRowOperator, BroadcastDiagonalOperator
+from furax import AbstractLinearOperator, BlockRowOperator, BroadcastDiagonalOperator, diagonal
 
 _H_OVER_K_GHZ = constants.h * 1e9 / constants.k
 _T_CMB = Planck15.Tcmb(0).value
@@ -407,3 +408,47 @@ def MixingMatrixOperator(**blocks: AbstractSEDOperator) -> AbstractLinearOperato
         >>> d = A(sky_map)
     """
     return BlockRowOperator(blocks).reduce()
+
+
+@diagonal
+class NoiseDiagonalOperator(AbstractLinearOperator):
+    """Constructs a diagonal noise operator.
+
+    This operator applies a noise vector (in a PyTree structure) in an element‐wise
+    multiplication to an input data PyTree.
+
+    Args:
+        vector: PyTree of arrays representing the noise values.
+        _in_structure: Input structure (PyTree[jax.ShapeDtypeStruct])
+        specifying the shape and dtype.
+
+    Example:
+        >>> import jax
+        >>> import jax.numpy as jnp
+        >>> from furax.obs.landscapes import FrequencyLandscape
+        >>> from furax.obs.operators import NoiseDiagonalOperator
+        >>>
+        >>> landscape = FrequencyLandscape(nside=64, frequencies=jnp.linspace(30, 300, 10))
+        >>> noise_sample = landscape.normal(jax.random.key(0))  # small n
+        >>> d = landscape.normal(jax.random.key(0))  # d
+        >>> N = NoiseDiagonalOperator(noise_sample, _in_structure=d.structure)
+        >>> N.I(d).structure
+        StokesIQU(i=ShapeDtypeStruct(shape=(10, 49152), dtype=float64),
+                  q=ShapeDtypeStruct(shape=(10, 49152), dtype=float64),
+                  u=ShapeDtypeStruct(shape=(10, 49152), dtype=float64))
+    """
+
+    vector: PyTree[Inexact[Array, '...']]
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
+
+    def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
+        return jax.tree.map(lambda v, leaf: v * leaf, self.vector, x)
+
+    def inverse(self) -> AbstractLinearOperator:
+        return NoiseDiagonalOperator(1 / self.vector, self._in_structure)
+
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self._in_structure
+
+    def as_matrix(self) -> Any:
+        return jax.tree.map(lambda x: jnp.diag(x.flatten()), self.vector)

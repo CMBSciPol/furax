@@ -5,6 +5,8 @@ from ._seds import (
     AbstractSEDOperator,
     CMBOperator,
     DustOperator,
+    MixingMatrixOperator,
+    NoiseDiagonalOperator,
     SynchrotronOperator,
 )
 
@@ -20,4 +22,6 @@ __all__ = [
     'CMBOperator',
     'DustOperator',
     'SynchrotronOperator',
+    'MixingMatrixOperator',
+    'NoiseDiagonalOperator',
 ]

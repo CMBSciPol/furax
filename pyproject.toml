@@ -39,6 +39,14 @@ dynamic = ['version']
 [project.optional-dependencies]
 dev = ['pytest', 'pytest-cov', 'pytest-mock', 'pytest-insubprocess>=1.1', 'setuptools_scm', 'beartype']
 comp_sep = ['pysm3']
+docs = [
+    'sphinx>=5.0',
+    'sphinx-book-theme>=1.0',
+    'sphinx-copybutton>=0.5',
+    'myst-parser>=1.0',
+    'nbsphinx>=0.8',
+    'ipykernel>=6.0',
+]
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'

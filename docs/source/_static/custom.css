@@ -1,0 +1,50 @@
+/* Custom CSS for Furax documentation */
+
+/* Improve code block styling */
+.highlight {
+    background-color: #f8f9fa;
+    border-radius: 4px;
+    padding: 1em;
+    margin: 1em 0;
+}
+
+/* Style for math expressions */
+.math {
+    text-align: center;
+    margin: 1em 0;
+}
+
+/* Custom styling for API reference */
+.py.class, .py.function, .py.method {
+    border-left: 3px solid #007acc;
+    padding-left: 1em;
+    margin: 1em 0;
+}
+
+/* Improve table styling */
+table.docutils {
+    border-collapse: collapse;
+    margin: 1em 0;
+}
+
+table.docutils th,
+table.docutils td {
+    border: 1px solid #ddd;
+    padding: 8px 12px;
+}
+
+table.docutils th {
+    background-color: #f2f2f2;
+    font-weight: bold;
+}
+
+/* Style for warning and note admonitions */
+.admonition.warning {
+    background-color: #fff3cd;
+    border-left: 4px solid #ffc107;
+}
+
+.admonition.note {
+    background-color: #d1ecf1;
+    border-left: 4px solid #17a2b8;
+}

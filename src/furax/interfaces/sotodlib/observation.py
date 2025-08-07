@@ -62,6 +62,34 @@ class SotodlibObservationData(GroundObservationData):
             .ranges()
         )
 
+    def get_sample_mask(self) -> Float[Array, 'dets samps']:
+        """Returns sample mask of the TOD,
+        which is 1 at valid samples and 0 at invalid ones.
+        """
+        try:
+            return jnp.array((~self.observation.flags.glitch_flags).mask(), dtype=jnp.float64)
+        except KeyError:
+            raise KeyError('Glitch flags unavailable in the observation')
+
+    def get_left_scan_mask(self) -> Float[Array, ' samps']:
+        """Returns sample mask of the TOD for left-going scans,
+        which is 1 at valid samples and 0 at invalid ones.
+        """
+        try:
+            return jnp.array(self.observation.flags.left_scan.mask(), dtype=jnp.float64)
+        except KeyError:
+            raise KeyError('Scan mask unavailable in the observation')
+        ...
+
+    def get_right_scan_mask(self) -> Float[Array, ' samps']:
+        """Returns sample mask of the TOD for right-going scans,
+        which is 1 at valid samples and 0 at invalid ones.
+        """
+        try:
+            return jnp.array(self.observation.flags.right_scan.mask(), dtype=jnp.float64)
+        except KeyError:
+            raise KeyError('Scan mask unavailable in the observation')
+
     def get_azimuth(self) -> Float[Array, ' a']:
         """Returns the azimuth of the boresight for each sample"""
         return jnp.array(self.observation.boresight.az)
@@ -141,27 +169,29 @@ class SotodlibObservationData(GroundObservationData):
         if preproc is None:
             return None
 
-        if 'psdT' in preproc:
-            fit = preproc.noiseT_fit.fit  # columns: (fknee, w, alpha)
-        elif 'Pxx_raw' in preproc:
-            if 'noise_signal_fit' in preproc:
-                fit = preproc.noise_signal_fit.fit  # columns: (fknee, w, alpha)
-            elif 'noiseT' in preproc:
-                fit = preproc.noiseT.fit  # columns: (fknee, w, alpha)
+        if 'noiseT' in preproc:
+            fit = preproc.noiseT
         else:
             return None
 
+        # sotodlib fit's columns: (w, fknee, alpha), with
+        # psd = wn**2 * (1 + (fknee / f) ** alpha)
+        # Note the difference in the sign of alpha
+        assert np.all(fit.noise_model_coeffs.vals == np.array(['white_noise', 'fknee', 'alpha']))
+
         return AtmosphericNoiseModel(
-            sigma=jnp.sqrt(fit[:, 1]),
-            alpha=jnp.array(fit[:, 2]),
-            fk=jnp.array(fit[:, 0]),
-            f0=jnp.zeros_like(fit[:, 0]),
+            sigma=fit.fit[:, 0],
+            alpha=jnp.array(-fit.fit[:, 2]),
+            fk=jnp.array(fit.fit[:, 1]),
+            f0=1e-5 * jnp.ones_like(fit.fit[:, 1]),
         )
 
+    '''
     def get_noise_fits(self, fmin: float) -> NDArray[np.float64]:
         """Returns fitted values of the noise psd with 1/f and white noise,
         either using the fitted parameters from the preprocessing,
         or fitting the model directly.
+        #TODO: reimplement below by calling get_noise_model() instead
         """
         preproc = self.observation.preprocess
 
@@ -199,6 +229,7 @@ class SotodlibObservationData(GroundObservationData):
             # Estimate psd
             raise NotImplementedError('Self-psd evaluation not implemented')
         return fit[:, 1]  # type: ignore[no-any-return]
+    '''
 
     def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
         """Returns the boresight quaternions at each time sample"""

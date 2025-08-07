@@ -236,6 +236,39 @@ class MapMaker:
         )
         return masking_projector
 
+    def get_sample_mask_projector(
+        self, observation: GroundObservationData
+    ) -> AbstractLinearOperator:
+        """Flag operator which sets the values of the given TOD (of shape (ndets, nsamps)) to
+        zero at masked (flagged) samples.
+        """
+        in_structure = ShapeDtypeStruct(
+            shape=(observation.n_dets, observation.n_samples), dtype=self.config.dtype
+        )
+        if not self.config.sample_mask:
+            return IdentityOperator(in_structure)
+
+        # Note the mask value is 1 at valid (unmasked) samples
+        mask = observation.get_sample_mask()
+        masking_projector = DiagonalOperator(
+            mask.astype(self.config.dtype), in_structure=in_structure
+        )
+        return masking_projector
+
+    def get_mask_projector(self, observation: GroundObservationData) -> AbstractLinearOperator:
+        """Flag operator which incorporates both the scanning and sample mask projectors,
+        based on the mapmaking configuration attributes: 'scanning_mask' and 'sample_mask'
+        """
+        in_structure = ShapeDtypeStruct(
+            shape=(observation.n_dets, observation.n_samples), dtype=self.config.dtype
+        )
+        op = IdentityOperator(in_structure)
+        if self.config.scanning_mask:
+            op = op @ self.get_scanning_mask_projector(observation)
+        if self.config.sample_mask:
+            op = op @ self.get_sample_mask_projector(observation)
+        return op.reduce()
+
     def get_or_fit_noise_model(self, observation: GroundObservationData) -> NoiseModel:
         """Return a noise model for the observation, corresponding to
         the type (diagonal, toeplitz, ...) specified by the mapmaker.
@@ -271,8 +304,9 @@ class MapMaker:
 
         # eigs = jnp.linalg.eigvalsh(blocks)
         eigs = np.linalg.eigvalsh(blocks)
+        hits_quantile = np.quantile(eigs[(eigs[..., -1] > 0),], q=0.95)
         valid = jnp.logical_and(
-            eigs[..., -1] > config.hits_cut * eigs[..., -1].max(),
+            eigs[..., -1] > config.hits_cut * hits_quantile,
             eigs[..., 0] > config.cond_cut * eigs[..., -1],
         )
         valid_indices = jnp.argwhere(valid)
@@ -317,14 +351,40 @@ class MapMaker:
                 dtype=config.dtype,
             )
         if azhwpss := config.templates.azhwp_synchronous:
-            blocks['azhwp_synchronous'] = templates.AzimuthHWPSynchronousTemplateOperator.create(
-                n_polynomials=azhwpss.n_polynomials,
-                n_harmonics=azhwpss.n_harmonics,
-                azimuth=observation.get_azimuth(),
-                hwp_angles=observation.get_hwp_angles(),
-                n_dets=observation.n_dets,
-                dtype=config.dtype,
-            )
+            if azhwpss.split_scans:
+                blocks['azhwp_synchronous_left'] = (
+                    templates.AzimuthHWPSynchronousTemplateOperator.create(
+                        n_polynomials=azhwpss.n_polynomials,
+                        n_harmonics=azhwpss.n_harmonics,
+                        azimuth=observation.get_azimuth(),
+                        hwp_angles=observation.get_hwp_angles(),
+                        n_dets=observation.n_dets,
+                        dtype=config.dtype,
+                        scan_mask=observation.get_left_scan_mask(),
+                    )
+                )
+                blocks['azhwp_synchronous_right'] = (
+                    templates.AzimuthHWPSynchronousTemplateOperator.create(
+                        n_polynomials=azhwpss.n_polynomials,
+                        n_harmonics=azhwpss.n_harmonics,
+                        azimuth=observation.get_azimuth(),
+                        hwp_angles=observation.get_hwp_angles(),
+                        n_dets=observation.n_dets,
+                        dtype=config.dtype,
+                        scan_mask=observation.get_right_scan_mask(),
+                    )
+                )
+            else:
+                blocks['azhwp_synchronous'] = (
+                    templates.AzimuthHWPSynchronousTemplateOperator.create(
+                        n_polynomials=azhwpss.n_polynomials,
+                        n_harmonics=azhwpss.n_harmonics,
+                        azimuth=observation.get_azimuth(),
+                        hwp_angles=observation.get_hwp_angles(),
+                        n_dets=observation.n_dets,
+                        dtype=config.dtype,
+                    )
+                )
         if binazhwpss := config.templates.binazhwp_synchronous:
             blocks['binazhwp_synchronous'] = (
                 templates.BinAzimuthHWPSynchronousTemplateOperator.create(
@@ -410,7 +470,6 @@ class BinnedMapMaker(MapMaker):
         inv_noise = noise_model.inverse_operator(data_struct)
         logger_info('Created inverse noise covariance operator')
 
-        # TODO: JIT system matrix creation
         # System matrix
         system = BJPreconditioner.create((acquisition.T @ inv_noise @ acquisition).reduce())
         logger_info('Created system operator')
@@ -443,6 +502,9 @@ class BinnedMapMaker(MapMaker):
             output['wcs'] = landscape.wcs
         if config.fit_noise_model:
             output['noise_fit'] = noise_model.to_array()  # type: ignore[assignment]
+        if config.debug:
+            proj_map = (masker.T @ acquisition)(res)
+            output['proj_map'] = proj_map
 
         return output
 
@@ -473,8 +535,15 @@ class MLMapmaker(MapMaker):
         logger_info('Created acquisition operator')
 
         # Optional mask for scanning
-        masker = self.get_scanning_mask_projector(observation)
-        logger_info('Created scanning mask operator')
+        masker = self.get_mask_projector(observation)
+        if isinstance(masker, IdentityOperator):
+            valid_sample_fraction = jnp.array(1.0)
+        elif isinstance(masker, DiagonalOperator):
+            valid_sample_fraction = jnp.mean(masker._diagonal)
+        else:
+            valid_sample_fraction = jnp.mean(masker(jnp.ones(data.shape, data.dtype)))
+        logger_info('Created mask operator')
+        logger_info(f'Valid sample fraction: {valid_sample_fraction:.4f}')
 
         # Noise
         noise_model = self.get_or_fit_noise_model(observation)
@@ -484,15 +553,19 @@ class MLMapmaker(MapMaker):
             sample_rate=observation.sample_rate,
             correlation_length=config.correlation_length,
         )
-        logger_info('Created inverse noise covariance operator')
+        noise = noise_model.operator(
+            data_struct,
+            nperseg=config.nperseg,
+            sample_rate=observation.sample_rate,
+            correlation_length=config.correlation_length,
+        )
+        logger_info('Created noise and inverse noise covariance operators')
 
         # Approximate system matrix with diagonal noise covariance and full map pixels
         diag_inv_noise = DiagonalOperator(
             diagonal=inv_noise.band_values[..., [0]], in_structure=data_struct
         )
-        diag_system = BJPreconditioner.create(
-            acquisition.T @ masker @ diag_inv_noise @ masker @ acquisition
-        )
+        diag_system = BJPreconditioner.create(acquisition.T @ diag_inv_noise @ masker @ acquisition)
         logger_info('Created approximate system matrix')
 
         # Map pixel selection
@@ -503,7 +576,23 @@ class MLMapmaker(MapMaker):
                             /{prod(landscape.shape)} pixels'
         )
 
+        # Adjust the sample mask according to the new pixel selection
+        positive_sample_hits = (
+            (masker @ acquisition @ selector.T)(
+                StokesIQU.from_iquv(
+                    i=jnp.ones(selector.out_structure().shape, dtype=data.dtype),
+                    q=jnp.zeros(selector.out_structure().shape, dtype=data.dtype),
+                    u=jnp.zeros(selector.out_structure().shape, dtype=data.dtype),
+                    v=None,  # type: ignore[arg-type]
+                )
+            )
+            > 0
+        ).astype(data.dtype)
+        masker = DiagonalOperator(diagonal=positive_sample_hits, in_structure=data_struct)
+        logger_info(f'Updated valid sample fraction: {jnp.mean(masker._diagonal):.4f}')
+
         # Preconditioner
+        # We use the approximate diagonal system matrix before the mask update
         preconditioner = selector @ diag_system.inverse() @ selector.T
 
         # Templates (optional)
@@ -514,10 +603,12 @@ class MLMapmaker(MapMaker):
             tmpl_inv_sys = {}
             regs = {}
             for tmpl, tmpl_op in template_op.blocks.items():
-                tmpl_sys = (tmpl_op.T @ diag_inv_noise @ tmpl_op).reduce()
+                tmpl_sys = (tmpl_op.T @ diag_inv_noise @ masker @ tmpl_op).reduce()
+                # Approximation to the diagonal of the matrix
                 norm_sys = jnp.abs(
                     jax.jit(lambda x: tmpl_sys(x))(furax.tree.ones_like(tmpl_op.in_structure()))
                 )
+                # Regualrisation value is REGVAL times the smallest non-zero eigenvalue
                 regs[tmpl] = REGVAL * jnp.min(norm_sys[norm_sys > 0])
                 tmpl_inv_sys[tmpl] = DiagonalOperator(
                     diagonal=(norm_sys + regs[tmpl]),
@@ -538,10 +629,7 @@ class MLMapmaker(MapMaker):
                 ]
             )
             logger_info('Built template regularizer')
-            print(f'Template preconditioner in: {template_preconditioner.in_structure()}')
-            print(f'Template preconditioner out: {template_preconditioner.out_structure()}')
-            print(f'Template op in: {template_op.in_structure()}')
-            print(f'Template op out: {template_op.out_structure()}')
+            print(f'Template operator input structure: {template_op.in_structure()}')
 
         # Mapmaking operator
         if config.use_templates:
@@ -551,19 +639,39 @@ class MLMapmaker(MapMaker):
         else:
             p = preconditioner
             h = acquisition @ selector.T
-        mp = masker
+
+        if not config.nested_pcg:
+            M = masker @ inv_noise @ masker
+        else:
+            nested_solver = lineax.CG(
+                rtol=config.solver.rtol,
+                atol=config.solver.atol,
+                max_steps=30,
+            )
+            nested_solver_options = {
+                'preconditioner': lineax.TaggedLinearOperator(
+                    masker @ inv_noise @ masker, lineax.positive_semidefinite_tag
+                )
+            }
+            M = (
+                masker
+                @ (masker @ noise @ masker).I(
+                    solver=nested_solver,
+                    solver_options=nested_solver_options,
+                )
+                @ masker
+            )
+            logger_info('Set up nested PCG for the noise inverse')
 
         solver = lineax.CG(**asdict(config.solver))
         solver_options = {
             'preconditioner': lineax.TaggedLinearOperator(p, lineax.positive_semidefinite_tag)
         }
-        with Config(solver=solver, solver_options=solver_options):
-            if config.use_templates:
-                mapmaking_operator = (
-                    (h.T @ mp @ inv_noise @ mp @ h + reg).I @ h.T @ mp @ inv_noise @ mp
-                )
-            else:
-                mapmaking_operator = (h.T @ mp @ inv_noise @ mp @ h).I @ h.T @ mp @ inv_noise @ mp
+        options = {'solver': solver, 'solver_options': solver_options}
+        if config.use_templates:
+            mapmaking_operator = (h.T @ M @ h + reg).I(**options) @ h.T @ M
+        else:
+            mapmaking_operator = (h.T @ M @ h).I(**options) @ h.T @ M
 
         @jax.jit
         def process(d):  # type: ignore[no-untyped-def]
@@ -597,17 +705,21 @@ class MLMapmaker(MapMaker):
         if config.use_templates:
             for key in tmpl_ampl.keys():
                 output[f'template_{key}'] = tmpl_ampl[key]
+                output[f'template_reg_{key}'] = np.array(regs[key])
+                aux_data = template_op.blocks[key].compute_auxiliary_data(tmpl_ampl[key])
+                for aux_key in aux_data.keys():
+                    output[f'template_{key}_{aux_key}'] = aux_data[aux_key]
             if 'ground' in tmpl_ampl.keys():
                 output['ground_landscape'] = self._ground_landscape
                 output['ground_coverage'] = self._ground_coverage
                 output['ground_map'] = self._ground_selector.T(tmpl_ampl['ground'])
         if config.debug:
-            proj_map = (mp @ acquisition)(result_map)
+            proj_map = (masker @ acquisition)(result_map)
             if config.use_templates:
                 projs = {
                     'proj_map': proj_map,
                     **{
-                        f'proj_{tmpl}': (mp @ template_op.blocks[tmpl])(tmpl_ampl[tmpl])
+                        f'proj_{tmpl}': (masker @ template_op.blocks[tmpl])(tmpl_ampl[tmpl])
                         for tmpl in tmpl_ampl
                     },
                 }
@@ -775,17 +887,33 @@ class ATOPMapMaker(MapMaker):
         acquisition = self.get_acquisition(observation, landscape=landscape)
         logger_info('Created acquisition operator')
 
+        # ATOP projector
+        atop_projector = ATOPProjectionOperator(self.config.atop_tau, in_structure=data_struct)
+
         # Optional mask for scanning
-        masker = self.get_scanning_mask_projector(observation)
-        logger_info('Created scanning mask operator')
+        masker = self.get_mask_projector(observation)
+        if isinstance(masker, IdentityOperator):
+            valid_sample_fraction = 1.0
+        elif isinstance(masker, DiagonalOperator):
+            valid_sample_fraction = jnp.mean(masker._diagonal)  # type: ignore[assignment]
+        else:
+            valid_sample_fraction = jnp.mean(masker(jnp.ones(data.shape, data.dtype)))  # type: ignore[assignment]
+        logger_info('Created mask operator')
+        logger_info(f'Valid sample fraction: {valid_sample_fraction:.4f}')
+
+        # Additionally, mask all tau-intervals with any masked samples
+        masked_samples = masker(jnp.ones_like(data))
+        extended_mask = (jnp.abs(atop_projector(masked_samples)) < 0.5 / config.atop_tau).astype(
+            data.dtype
+        ) * masked_samples
+        masker = DiagonalOperator(diagonal=extended_mask, in_structure=data_struct)
+        del masked_samples
+        logger_info(f'Updated valid sample fraction: {jnp.mean(masker._diagonal):.4f}')
 
         # Noise
         noise_model = self.get_or_fit_noise_model(observation)
         inv_noise = noise_model.inverse_operator(data_struct)
         logger_info('Created inverse noise covariance operator')
-
-        # ATOP projector
-        atop_projector = ATOPProjectionOperator(self.config.atop_tau, in_structure=data_struct)
 
         # Approximate system matrix with diagonal noise covariance and full map pixels
         diag_system = BJPreconditioner.create(

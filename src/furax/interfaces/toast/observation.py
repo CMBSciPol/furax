@@ -109,6 +109,12 @@ class ToastObservationData(GroundObservationData):
         intervals = self.observation.intervals['scanning']
         return np.array(intervals[['first', 'last']].tolist())
 
+    def get_sample_mask(self) -> Float[Array, 'dets samps']:
+        """Returns sample mask of the TOD,
+        which is 1 at valid samples and 0 at invalid ones.
+        """
+        raise NotImplementedError()
+
     def get_azimuth(self) -> Float[Array, ' a']:
         """Returns the azimuth of the boresight for each sample"""
         if self.azimuth not in self.observation.shared:

@@ -161,7 +161,8 @@ class AtmosphericNoiseModel(NoiseModel):
         eval_psd = self.psd(freq)
         invntt = jnp.fft.irfft(1.0 / eval_psd, n=nperseg)[..., :correlation_length]
         inv_band = invntt * window
-        padded_band = jnp.pad(inv_band, [(0, 0), (0, nperseg // 2 + 1 - inv_band.shape[-1])])
+        # padded_band = jnp.pad(inv_band, [(0, 0), (0, nperseg // 2 + 1 - inv_band.shape[-1])])
+        padded_band = jnp.pad(inv_band, [(0, 0), (0, nperseg + 1 - inv_band.shape[-1])])
         symmetrised_band = jnp.concatenate([padded_band, padded_band[..., -2:0:-1]], axis=-1)
         eff_inv_psd = jnp.fft.rfft(symmetrised_band, n=nperseg).real
         new_band = jnp.fft.irfft(1.0 / eff_inv_psd, n=nperseg)[:, :correlation_length] * window

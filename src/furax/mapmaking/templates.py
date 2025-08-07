@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from typing import Any
 
 import equinox
@@ -108,6 +109,11 @@ class TemplateOperator(AbstractLinearOperator):
 
         raise NotImplementedError(f'Template {name} is not implemented')
 
+    @abstractmethod
+    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
+        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
+        ...
+
 
 class PolynomialTemplateOperator(TemplateOperator):
     """Operator for polynomial trends up to a certain order.
@@ -217,6 +223,10 @@ class PolynomialTemplateOperator(TemplateOperator):
     def transpose(self) -> AbstractLinearOperator:
         return PolynomialTemplateTransposeOperator(self)
 
+    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
+        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
+        return {}
+
 
 class PolynomialTemplateTransposeOperator(AbstractLinearOperator):
     operator: PolynomialTemplateOperator
@@ -308,6 +318,10 @@ class ScanSynchronousTemplateOperator(TemplateOperator):
     def transpose(self) -> AbstractLinearOperator:
         return ScanSynchronousTemplateTransposeOperator(self)
 
+    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
+        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
+        return {}
+
 
 class ScanSynchronousTemplateTransposeOperator(AbstractLinearOperator):
     operator: ScanSynchronousTemplateOperator
@@ -385,6 +399,10 @@ class HWPSynchronousTemplateOperator(TemplateOperator):
 
     def transpose(self) -> AbstractLinearOperator:
         return HWPSynchronousTemplateTransposeOperator(self)
+
+    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
+        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
+        return {}
 
 
 class HWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
@@ -472,6 +490,10 @@ class CommonModeTemplateOperator(TemplateOperator):
     def transpose(self) -> AbstractLinearOperator:
         return CommonModeTemplateTransposeOperator(self)
 
+    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
+        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
+        return {}
+
 
 class CommonModeTemplateTransposeOperator(AbstractLinearOperator):
     operator: CommonModeTemplateOperator
@@ -503,6 +525,8 @@ class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
     n_harmonics: int = equinox.field(static=True)
     poly_templates: Float[Array, 'poly samp']
     harm_templates: Float[Array, 'harm samp']
+    min_azimuth: Float[Array, '']
+    max_azimuth: Float[Array, '']
 
     def __init__(
         self,
@@ -514,6 +538,8 @@ class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
         n_harmonics: int,
         poly_templates: Float[Array, 'poly samp'],
         harm_templates: Float[Array, 'harm samp'],
+        min_azimuth: Float[Array, ''],
+        max_azimuth: Float[Array, ''],
     ):
         # TODO: add checks
         super().__init__(n_params, n_dets, n_samps, dtype)
@@ -521,6 +547,8 @@ class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
         self.n_harmonics = n_harmonics
         self.poly_templates = poly_templates
         self.harm_templates = harm_templates
+        self.min_azimuth = min_azimuth
+        self.max_azimuth = max_azimuth
 
     @classmethod
     def create(
@@ -531,13 +559,14 @@ class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
         hwp_angles: Float[Array, ' samps'],
         n_dets: int,
         dtype: DTypeLike,
+        scan_mask: Float[Array, ' samps'] | None = None,
     ) -> TemplateOperator:
         n_samps: int = azimuth.size
         n_params: int = n_dets * n_polynomials * (1 + 2 * n_harmonics)
 
         # Create azimuth templates
-        max_az = jnp.max(azimuth)
         min_az = jnp.min(azimuth)
+        max_az = jnp.max(azimuth)
         x = -1.0 + 2.0 * (azimuth - min_az) / (max_az - min_az)
 
         # This funtion computes (n_polynomials)-times more than what we need,
@@ -545,6 +574,9 @@ class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
         poly_templates = jax.scipy.special.lpmn_values(
             n_polynomials - 1, n_polynomials - 1, x, is_normalized=False
         )[0, :, :].astype(dtype)
+
+        if scan_mask is not None:
+            poly_templates = scan_mask[None, :] * poly_templates
 
         # Create harmonic templates
         harmonics = jnp.arange(1, n_harmonics + 1)
@@ -562,6 +594,8 @@ class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
             n_harmonics=n_harmonics,
             poly_templates=poly_templates,
             harm_templates=harm_templates,
+            min_azimuth=min_az,
+            max_azimuth=max_az,
         )
 
     def mv(self, x: Float[Array, ' a']) -> Float[Array, '...']:
@@ -575,6 +609,29 @@ class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
 
     def transpose(self) -> AbstractLinearOperator:
         return AzimuthHWPSynchronousTemplateTransposeOperator(self)
+
+    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
+        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
+        # Create azimuth grid to sample from
+        max_az = self.max_azimuth
+        min_az = self.min_azimuth
+        N = 1000
+        azimuth = jnp.linspace(min_az, max_az, N)
+        x = -1.0 + 2.0 * (azimuth - min_az) / (max_az - min_az)
+
+        # Compute polynomials for the grid
+        poly_tmpl = jax.scipy.special.lpmn_values(
+            self.n_polynomials - 1, self.n_polynomials - 1, x, is_normalized=False
+        )[0, :, :].astype(template_amplitude.dtype)
+
+        # Compute
+        # data[det,harm,samp] = ampl[det,poly,harm] * poly_tmpl[poly,samp] (sum over poly)
+        az_fit = jnp.einsum(
+            'dph,ps->dhs',
+            template_amplitude.reshape(self.n_dets, self.n_polynomials, 1 + 2 * self.n_harmonics),
+            poly_tmpl,
+        )
+        return {'azimuth_grid': azimuth, 'fit_at_azimuth_grid': az_fit}
 
 
 class AzimuthHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
@@ -732,6 +789,10 @@ class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
     def transpose(self) -> AbstractLinearOperator:
         return BinAzimuthHWPSynchronousTemplateTransposeOperator(self)
 
+    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
+        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
+        return {}
+
 
 class BinAzimuthHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
     operator: BinAzimuthHWPSynchronousTemplateOperator
@@ -884,6 +945,10 @@ class GroundTemplateOperator(TemplateOperator):
         )
 
         return landscape
+
+    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
+        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
+        return {}
 
 
 class StokesIQUFlattenOperator(AbstractLinearOperator):

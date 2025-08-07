@@ -1,7 +1,9 @@
+import healpy as hp
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pixell.enmap
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from furax.obs.landscapes import WCSLandscape
 from furax.obs.stokes import StokesPyTreeType
@@ -69,3 +71,70 @@ def plot_ndmap(
     ax.set_aspect('equal')
 
     return fig, ax
+
+
+def plot_cartview(  # type: ignore[no-untyped-def]
+    input_maps,
+    titles=None,
+    lonra=[-180, 180],
+    latra=[-90, 90],
+    xsize=800,
+    cmap='RdBu',
+    vmaxs=None,
+    vmins=None,
+    vmax_quantile=0.999,
+    nside=512,
+) -> tuple[matplotlib.figure.Figure, matplotlib.axes._axes.Axes]:
+    """Visualisation function for CAR projection of healpix maps.
+    Unlike healpy.cartview, this function returns matplotlib Axes object, and one can have
+    more control of the plot elements such as grids and axes labels.
+    # TODO: write type definition and documentation
+    """
+    if not isinstance(input_maps, list) and input_maps.ndim == 1:
+        input_maps = input_maps[None, :]
+    if titles is not None and not isinstance(titles, list):
+        titles = [titles]
+    if vmaxs is None:
+        vmaxs = [None] * len(input_maps)
+    if vmins is None:
+        vmins = [None] * len(input_maps)
+
+    ysize = int(np.round((latra[1] - latra[0]) * xsize / (lonra[1] - lonra[0])))
+    lon_grid = np.linspace(lonra[0], lonra[1], xsize)
+    lat_grid = np.linspace(latra[0], latra[1], ysize)
+
+    pix_inds = hp.pixelfunc.ang2pix(nside, lon_grid[None, :], lat_grid[:, None], lonlat=True)
+
+    n_maps = len(input_maps)
+    fig, axs = plt.subplots(n_maps, 1, figsize=(10, 10 * (ysize / xsize) * n_maps))
+    axs = np.atleast_1d(axs)
+
+    for map_no in range(n_maps):
+        ax = axs[map_no]
+
+        proj_map = input_maps[map_no][pix_inds]
+
+        vmax = vmaxs[map_no]
+        vmin = vmins[map_no]
+        if not vmax:
+            vmax = np.quantile(np.abs(proj_map[np.abs(proj_map) > 0]), vmax_quantile)
+        if not vmin:
+            vmin = -vmax
+
+        im = ax.pcolor(
+            lon_grid, lat_grid, proj_map, cmap=cmap, vmax=vmax, vmin=vmin, shading='nearest'
+        )
+        ax.xaxis.set_inverted(True)
+        ax.set_xlabel('lon [deg]')
+        ax.set_ylabel('lat [deg]')
+        ax.grid(alpha=0.5)
+        ax.set_aspect('equal')
+        if titles is not None:
+            ax.set_title(titles[map_no])
+
+        the_divider = make_axes_locatable(ax)
+        color_axis = the_divider.append_axes('right', size='5%', pad=0.1)
+        _ = fig.colorbar(im, cax=color_axis, format='%.0e')
+    fig.tight_layout()
+
+    return fig, axs

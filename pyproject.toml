@@ -77,6 +77,7 @@ module = [
     'jax_healpy',
     'lineax',
     'matplotlib.*',
+    'mpl_toolkits.*',
     'pixell.*',
     'scipy.signal',
     'scipy.stats.sampling',

@@ -86,6 +86,7 @@ module = [
     'jax_healpy',
     'lineax',
     'matplotlib.*',
+    'mpl_toolkits.*',
     'optax',
     'pixell.*',
     'pysm3.*',

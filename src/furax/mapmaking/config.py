@@ -55,6 +55,7 @@ class _HWPSynchronousTemplateConfig:
 class _AzimuthHWPSynchronousTemplateConfig:
     n_polynomials: int = 4
     n_harmonics: int = 4
+    split_scans: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,7 @@ class MapMakingConfig:
     binned: bool = True
     demodulated: bool = False
     scanning_mask: bool = False
+    sample_mask: bool = False
     correlation_length: int = 1_000
     nperseg: int = 1_024
     psd_fmin: float = 1e-2
@@ -115,6 +117,7 @@ class MapMakingConfig:
     fit_noise_model: bool = True
     debug: bool = True
     solver: SolverConfig = SolverConfig()
+    nested_pcg: bool = False
     landscape: LandscapeConfig = LandscapeConfig()
     templates: TemplatesConfig | None = None
     atop_tau: int = 0

@@ -102,6 +102,7 @@ def likelihood_setup(stokes: ValidStokesType):
 
 
 # Now we define multiple tests using the common fixture.
+@pytest.mark.slow
 def test_base_case(likelihood_setup):
     setup = likelihood_setup
     d = setup['d']
@@ -124,6 +125,7 @@ def test_base_case(likelihood_setup):
         assert check_tree(s, expected_s)
 
 
+@pytest.mark.slow
 def test_dust_only(likelihood_setup):
     setup = likelihood_setup
     d = setup['d']
@@ -144,6 +146,7 @@ def test_dust_only(likelihood_setup):
         assert check_tree(s, expected_s)
 
 
+@pytest.mark.slow
 def test_synchrotron_only(likelihood_setup):
     setup = likelihood_setup
     d = setup['d']
@@ -172,6 +175,7 @@ def test_synchrotron_only(likelihood_setup):
         assert check_tree(s, expected_s)
 
 
+@pytest.mark.slow
 def test_different_noise_operator(likelihood_setup):
     setup = likelihood_setup
     d = setup['d']
@@ -193,6 +197,7 @@ def test_different_noise_operator(likelihood_setup):
         assert check_tree(s, expected_s)
 
 
+@pytest.mark.slow
 def test_with_operator(likelihood_setup):
     setup = likelihood_setup
     d = setup['d']
@@ -214,6 +219,7 @@ def test_with_operator(likelihood_setup):
         assert check_tree(s, expected_s)
 
 
+@pytest.mark.slow
 def test_operator_and_different_noise(likelihood_setup: dict[str, float]) -> None:
     setup = likelihood_setup
     d = setup['d']

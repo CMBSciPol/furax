@@ -7,9 +7,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Float, PyTree
 
 from furax import AbstractLinearOperator, orthogonal
-from furax.core import (
-    AbstractLazyInverseOrthogonalOperator,
-)
+from furax.core import AbstractLazyInverseOrthogonalOperator
 from furax.core.rules import AbstractBinaryRule, NoReduction
 
 from ..stokes import (

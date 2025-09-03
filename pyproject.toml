@@ -8,6 +8,7 @@ authors = [
     { name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' },
     { name = 'Simon Biquard', email = 'biquard@apc.in2p3.fr' },
     { name = 'Wassim Kabalan' },
+    { name = 'Wuhyun Sohn', email = 'sohn@apc.in2p3.fr' },
 ]
 maintainers = [{ name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' }]
 description = 'Operators and solvers for high-performance computing.'
@@ -47,10 +48,24 @@ docs = [
     'nbsphinx>=0.8',
     'ipykernel>=6.0',
 ]
+mapmaking = [
+    'apischema',
+    'astropy',
+    'jax>=0.4.38',
+    'jax-grid-search',
+    'optax',
+    'pixell',
+    'sotodlib>=0.6.9.1',
+    'so3g',
+    'toast>=3.0.0a27',
+]
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'
 repository = 'https://github.com/CMBSciPol/furax'
+
+[project.scripts]
+furax-mapmaker = 'furax.interfaces.sotodlib.mapmaker:main_cli'
 
 [tool.coverage.report]
 exclude_lines = [
@@ -64,16 +79,21 @@ skip_covered = true
 
 [[tool.mypy.overrides]]
 module = [
-    'astropy',
-    'astropy.cosmology',
+    'apischema',
+    'astropy.*',
     'healpy',
+    'jax_grid_search',
     'jax_healpy',
     'lineax',
-    'scipy.stats.sampling',
-    'scipy',
-    'astropy.cosmology',
-    'pysm3',
-    'pysm3.units',
+    'matplotlib.*',
+    'mpl_toolkits.*',
+    'optax',
+    'pixell.*',
+    'pysm3.*',
+    'scipy.*',
+    'so3g.*',
+    'sotodlib.*',
+    'toast.*',
 ]
 ignore_missing_imports = true
 

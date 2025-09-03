@@ -155,7 +155,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
             return y
 
         y = lax.fori_loop(0, len(range(0, l, m)), func, y)
-        return y[half_band_width:-half_band_width]
+        return y[half_band_width:-half_band_width]  # type: ignore[no-any-return]
 
     def _apply_overlap_save(self, x: Array, band_values: Array) -> Array:
         assert self.fft_size is not None
@@ -183,7 +183,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
             return y
 
         y = lax.fori_loop(0, nblock, func, y)
-        return y[half_band_width : half_band_width + l]
+        return y[half_band_width : half_band_width + l]  # type: ignore[no-any-return]
 
     def _get_kernel(self, band_values: Array) -> Array:
         """[4, 3, 2, 1] -> [1, 2, 3, 4, 3, 2, 1]"""

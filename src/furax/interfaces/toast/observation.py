@@ -115,6 +115,18 @@ class ToastObservationData(GroundObservationData):
         """
         raise NotImplementedError()
 
+    def get_left_scan_mask(self) -> Float[Array, ' samps']:
+        """Returns sample mask of the TOD for left-going scans,
+        which is 1 at valid samples and 0 at invalid ones.
+        """
+        raise NotImplementedError()
+
+    def get_right_scan_mask(self) -> Float[Array, ' samps']:
+        """Returns sample mask of the TOD for right-going scans,
+        which is 1 at valid samples and 0 at invalid ones.
+        """
+        raise NotImplementedError()
+
     def get_azimuth(self) -> Float[Array, ' a']:
         """Returns the azimuth of the boresight for each sample"""
         if self.azimuth not in self.observation.shared:

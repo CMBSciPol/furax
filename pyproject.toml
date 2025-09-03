@@ -55,7 +55,7 @@ mapmaking = [
     'jax-grid-search',
     'optax',
     'pixell',
-    'sotodlib @ git+https://github.com/simonsobs/sotodlib.git',
+    'sotodlib>=0.6.9.1',
     'so3g',
     'toast>=3.0.0a27',
 ]

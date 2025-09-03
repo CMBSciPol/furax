@@ -79,7 +79,6 @@ class SotodlibObservationData(GroundObservationData):
             return jnp.array(self.observation.flags.left_scan.mask(), dtype=jnp.float64)
         except KeyError:
             raise KeyError('Scan mask unavailable in the observation')
-        ...
 
     def get_right_scan_mask(self) -> Float[Array, ' samps']:
         """Returns sample mask of the TOD for right-going scans,

@@ -401,7 +401,7 @@ def _get_outer_treedef(inner_treedef: PyTreeDef | PyTree[Any], tree: PyTree[Arra
         inner_treedef = jax.tree.structure(inner_treedef)
 
     def is_inner(node: Any) -> bool:
-        return jax.tree.structure(node) == inner_treedef  # type: ignore[no-any-return]
+        return jax.tree.structure(node) == inner_treedef
 
     outer_tree = jax.tree.map(lambda x: 0, tree, is_leaf=is_inner)
     return jax.tree.structure(outer_tree)

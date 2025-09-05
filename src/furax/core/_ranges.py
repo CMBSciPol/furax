@@ -180,7 +180,7 @@ if __name__ == '__main__':
 
     # Create multiple Ranges objects, one for each column
     ranges1 = Ranges.from_list([(2, 4), (7, 8)])
-    ranges2 = Ranges.from_list([(1, 3), (6, 9)])
+    ranges2 = Ranges.from_list([(1, 3), (6, 7), (9, 10)])
     print('Ranges to mask:')
     print(ranges1)
     print(ranges2)
@@ -195,8 +195,22 @@ if __name__ == '__main__':
     # Test with JIT
     # Have to use a lambda to avoid "TypeError: unhashable type: 'jaxlib.xla_extension.ArrayImpl'"
     mv = lambda x: mask_op.mv(x)
-    jit_result = jax.jit(mv)(x)
+    jmv = jax.jit(mv)
+    jit_result = jmv(x)
 
     print('After JIT masking:')
     print(jit_result)
     print('Are results identical?', jnp.allclose(result, jit_result))
+
+    mem = jmv.trace(x).lower().compile().memory_analysis()
+    print(mem.temp_size_in_bytes)  # zero ?!
+    # breakpoint()
+
+    @jax.jit
+    def mask(x, ranges):  # type: ignore[no-untyped-def]
+        print('compiling...')
+        mask = jnp.stack([range.to_mask(x.shape[-1]) for range in ranges])
+        return jnp.where(mask, 0, x)
+
+    print(mask(x, [ranges1, ranges2]))
+    print(mask(x, [Ranges.from_list([(0, 1)]), ranges2]))  # recompilation...

@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jax_dataclasses as jdc
 from jaxtyping import Array, Bool, Int32, PyTree
 
-from ._base import AbstractLinearOperator
+from ._base import AbstractLinearOperator, symmetric
 
 
 @jdc.pytree_dataclass
@@ -138,6 +138,7 @@ class Ranges:
         return Ranges(closed_data)
 
 
+@symmetric
 class MaskOperator(AbstractLinearOperator):
     """Operator that sets to zero specified ranges of values in 2-d vectors."""
 

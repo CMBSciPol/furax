@@ -96,14 +96,9 @@ class Ranges:
         if len(self) == 0:
             return jnp.zeros(length, dtype=bool)
 
-        # Create indices array [0, 1, 2, ..., length-1]
-        indices = jnp.arange(length)
-
-        # Reshape for broadcasting:
-        # indices: (length, 1)
-        # data[:, 0]: (n,)
-        # data[:, 1]: (n,)
-        indices = indices[:, jnp.newaxis]
+        # Create indices array [0, 1, 2, ..., length-1] with shape (length, 1)
+        # This will allow broadcasting below
+        indices = jnp.arange(length).reshape(-1, 1)
 
         # Check which indices fall within each range
         # This broadcasts to shape (length, n)
@@ -121,14 +116,7 @@ class Ranges:
         return len(self) == 0
 
     def buffer(self, amount: int) -> 'Ranges':
-        """Expand each range by a specified amount on both sides.
-
-        Args:
-            amount: Number of units to expand each range by.
-
-        Returns:
-            A new Ranges object with expanded ranges.
-        """
+        """Expand each range by a specified amount on both sides."""
         if amount < 0:
             raise ValueError('Buffer amount must be non-negative.')
 
@@ -151,23 +139,31 @@ class Ranges:
 
 
 class MaskOperator(AbstractLinearOperator):
-    """Operator that masks (sets to zero) specified ranges of values in vectors."""
+    """Operator that sets to zero specified ranges of values in 2-d vectors."""
 
-    ranges: Ranges
-    """The ranges to mask in the input vector"""
+    ranges: list[Ranges]
+    """List of Ranges objects, one for each detector to mask in the input vector"""
 
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     """The static input structure of the operator"""
 
-    def __init__(self, ranges: Ranges, *, in_structure: PyTree[jax.ShapeDtypeStruct]) -> None:
+    def __init__(
+        self,
+        ranges: list[Ranges] | Ranges,
+        *,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
+    ) -> None:
+        if isinstance(ranges, Ranges):
+            ranges = [ranges]
         self.ranges = ranges
         self._in_structure = in_structure
 
-    def mv(self, x: Array) -> Array:
-        if len(self.ranges) == 0:
-            return x
+        # Check consistency
+        if not len(ranges) == in_structure.shape[0]:
+            raise ValueError
 
-        mask = self.ranges.to_mask(x.shape[0])
+    def mv(self, x: Array) -> Array:
+        mask = jnp.stack([range.to_mask(x.shape[-1]) for range in self.ranges])
         return jnp.where(mask, 0, x)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -175,25 +171,31 @@ class MaskOperator(AbstractLinearOperator):
 
 
 if __name__ == '__main__':
-    # Create a test vector
-    x = jnp.arange(10).astype(jnp.float32)
+    # Create a test 2D array
+    x = jnp.arange(20).astype(jnp.float32).reshape(2, 10)
     struct = jax.ShapeDtypeStruct(x.shape, x.dtype)
-    print('Original vector:', x)
+    print('Original 2D array:')
+    print(x)
 
-    # Create a Ranges object to mask indices 2-4 and 7-8
-    ranges = Ranges.from_list([(2, 4), (7, 8)])
-    print('Ranges to mask:', ranges)
+    # Create multiple Ranges objects, one for each column
+    ranges1 = Ranges.from_list([(2, 4), (7, 8)])
+    ranges2 = Ranges.from_list([(1, 3), (6, 9)])
+    print('Ranges to mask:')
+    print(ranges1)
+    print(ranges2)
 
     # Create and apply the mask operator
-    mask_op = MaskOperator(ranges, in_structure=struct)
+    mask_op = MaskOperator([ranges1, ranges2], in_structure=struct)
     result = mask_op.mv(x)
 
-    print('After masking:', result)
+    print('After masking:')
+    print(result)
 
     # Test with JIT
     # Have to use a lambda to avoid "TypeError: unhashable type: 'jaxlib.xla_extension.ArrayImpl'"
     mv = lambda x: mask_op.mv(x)
     jit_result = jax.jit(mv)(x)
 
-    print('After JIT masking:', jit_result)
+    print('After JIT masking:')
+    print(jit_result)
     print('Are results identical?', jnp.allclose(result, jit_result))

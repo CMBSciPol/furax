@@ -122,7 +122,9 @@ class Ranges:
 
         # Compute the expanded ranges
         buffered_data = self.data.at[:].add([-amount, amount])
-        buffered_data = jnp.clip(buffered_data, a_min=0)  # Ensure no negative starts
+
+        # Ensure no negative starts and normalize
+        buffered_data = self._normalize_ranges(jnp.clip(buffered_data, a_min=0))
         return Ranges(buffered_data)
 
     def close_gaps(self, gap: int) -> 'Ranges':

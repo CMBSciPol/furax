@@ -32,7 +32,7 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 
 from . import templates
 from ._logger import logger as furax_logger
-from ._observation_data import GroundObservationData
+from ._observation import AbstractGroundObservation
 from .config import Landscapes, MapMakingConfig, Methods
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
@@ -50,46 +50,41 @@ class MapMaker:
         return
 
     @abstractmethod
-    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]: ...
+    def make_map(self, observation: AbstractGroundObservation) -> dict[str, Any]: ...
 
-    def make_maps(self, observation: GroundObservationData, out_dir: str | None) -> dict[str, Any]:
-        results = self.mapmake(observation)
+    def run(self, observation: AbstractGroundObservation, out_dir: str | None) -> dict[str, Any]:
+        results = self.make_map(observation)
 
         # Save output
-
-        try:
-            if out_dir is not None:
-
-                def save_from_dict(results: dict[str, Any], out_dir: str) -> None:
-                    os.makedirs(out_dir, exist_ok=True)
-                    for key, m in results.items():
-                        if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
-                            np.save(f'{out_dir}/{key}.npy', np.array(m))
-                        elif isinstance(m, StokesIQU):
-                            np.save(f'{out_dir}/{key}.npy', np.stack([m.i, m.q, m.u], axis=0))
-                        elif isinstance(m, pixell.enmap.ndmap):
-                            pixell.enmap.write_map(f'{out_dir}/{key}.hdf', m, allow_modify=True)
-                        elif isinstance(m, WCS):
-                            header = m.to_header()
-                            hdu = fits.PrimaryHDU(header=header)
-                            hdu.writeto(f'{out_dir}/{key}.fits', overwrite=True)
-                        elif isinstance(m, StokesLandscape):
-                            with open(f'{out_dir}/{key}.pkl', 'wb') as f:
-                                pickle.dump(m, f)
-                        elif isinstance(m, dict):
-                            save_from_dict(m, out_dir)
-                            continue
-                        else:
-                            continue
-                        self.logger.info(f'Mapmaking result [{key}] saved to file')
-
-                save_from_dict(results, out_dir)
-                self.config.dump_yaml(f'{out_dir}/mapmaking_config.yaml')
-                self.logger.info('Mapmaking config saved to file')
-        except Exception as err:
-            self.logger.info(f'Error while saving output: {err}')
+        if out_dir is not None:
+            self._save(results, out_dir)
+            self.config.dump_yaml(f'{out_dir}/mapmaking_config.yaml')
+            self.logger.info('Mapmaking config saved to file')
 
         return results
+
+    def _save(self, results: dict[str, Any], out_dir: str) -> None:
+        os.makedirs(out_dir, exist_ok=True)
+        for key, m in results.items():
+            if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
+                np.save(f'{out_dir}/{key}.npy', np.array(m))
+            elif isinstance(m, StokesIQU):
+                np.save(f'{out_dir}/{key}.npy', np.stack([m.i, m.q, m.u], axis=0))
+            elif isinstance(m, pixell.enmap.ndmap):
+                pixell.enmap.write_map(f'{out_dir}/{key}.hdf', m, allow_modify=True)
+            elif isinstance(m, WCS):
+                header = m.to_header()
+                hdu = fits.PrimaryHDU(header=header)
+                hdu.writeto(f'{out_dir}/{key}.fits', overwrite=True)
+            elif isinstance(m, StokesLandscape):
+                with open(f'{out_dir}/{key}.pkl', 'wb') as f:
+                    pickle.dump(m, f)
+            elif isinstance(m, dict):
+                self._save(m, out_dir)
+                continue
+            else:
+                continue
+            self.logger.info(f'Mapmaking result [{key}] saved to file')
 
     @classmethod
     def from_config(cls, config: MapMakingConfig, logger: Logger | None = None) -> 'MapMaker':
@@ -111,7 +106,7 @@ class MapMaker:
         return cls.from_config(MapMakingConfig.load_yaml(path), logger=logger)
 
     def get_landscape(
-        self, observation: GroundObservationData, stokes: ValidStokesType = 'IQU'
+        self, observation: AbstractGroundObservation, stokes: ValidStokesType = 'IQU'
     ) -> StokesLandscape:
         """Landscape used for mapmaking with given observation"""
         if self.config.landscape.type == Landscapes.WCS:
@@ -128,11 +123,11 @@ class MapMaker:
         raise TypeError('Landscape type not supported')
 
     def get_pointing(
-        self, observation: GroundObservationData, landscape: StokesLandscape
+        self, observation: AbstractGroundObservation, landscape: StokesLandscape
     ) -> AbstractLinearOperator:
         """Operator containing pointing information for given observation"""
 
-        det_off_ang = observation.get_det_offset_angles().astype(landscape.dtype)
+        det_off_ang = observation.get_detector_offset_angles().astype(landscape.dtype)
 
         if self.config.pointing_on_the_fly:
             pointing = PointingOperator(
@@ -142,7 +137,7 @@ class MapMaker:
                 det_gamma=det_off_ang,
                 _in_structure=landscape.structure,
                 _out_structure=Stokes.class_for(landscape.stokes).structure_for(
-                    (observation.n_dets, observation.n_samples), dtype=landscape.dtype
+                    (observation.n_detectors, observation.n_samples), dtype=landscape.dtype
                 ),
                 chunk_size=self.config.pointing_chunk_size,
             )
@@ -172,7 +167,7 @@ class MapMaker:
 
     def get_acquisition(
         self,
-        observation: GroundObservationData,
+        observation: AbstractGroundObservation,
         landscape: StokesLandscape,
     ) -> AbstractLinearOperator:
         """Acquisition operator mapping sky maps to time-ordered data"""
@@ -182,13 +177,13 @@ class MapMaker:
             return pointing
         else:
             meta = {
-                'shape': (observation.n_dets, observation.n_samples),
+                'shape': (observation.n_detectors, observation.n_samples),
                 'stokes': landscape.stokes,
                 'dtype': self.config.dtype,
             }
             polarizer = LinearPolarizerOperator.create(
                 **meta,  # type: ignore[arg-type]
-                angles=observation.get_det_offset_angles().astype(self.config.dtype)[:, None],
+                angles=observation.get_detector_offset_angles().astype(self.config.dtype)[:, None],
             )
             hwp = HWPOperator.create(
                 **meta,  # type: ignore[arg-type]
@@ -197,19 +192,19 @@ class MapMaker:
 
             return (polarizer @ hwp @ pointing).reduce()
 
-    def get_scanning_masker(self, observation: GroundObservationData) -> AbstractLinearOperator:
+    def get_scanning_masker(self, observation: AbstractGroundObservation) -> AbstractLinearOperator:
         """Flag operator which selects only the scanning intervals
         of the given TOD of shape (ndets, nsamps).
         """
         in_structure = ShapeDtypeStruct(
-            shape=(observation.n_dets, observation.n_samples), dtype=self.config.dtype
+            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
         )
         if not self.config.scanning_mask:
             return IdentityOperator(in_structure)
 
         mask = observation.get_scanning_mask()
         out_structure = ShapeDtypeStruct(
-            shape=(observation.n_dets, np.sum(mask)), dtype=self.config.dtype
+            shape=(observation.n_detectors, np.sum(mask)), dtype=self.config.dtype
         )
         masker = IndexOperator(
             (slice(None), jnp.array(mask)),
@@ -219,13 +214,13 @@ class MapMaker:
         return masker
 
     def get_scanning_mask_projector(
-        self, observation: GroundObservationData
+        self, observation: AbstractGroundObservation
     ) -> AbstractLinearOperator:
         """Flag operator which sets the values outside the scanning intervals
         of the given TOD (of shape (ndets, nsamps)) to zero.
         """
         in_structure = ShapeDtypeStruct(
-            shape=(observation.n_dets, observation.n_samples), dtype=self.config.dtype
+            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
         )
         if not self.config.scanning_mask:
             return IdentityOperator(in_structure)
@@ -237,13 +232,13 @@ class MapMaker:
         return masking_projector
 
     def get_sample_mask_projector(
-        self, observation: GroundObservationData
+        self, observation: AbstractGroundObservation
     ) -> AbstractLinearOperator:
         """Flag operator which sets the values of the given TOD (of shape (ndets, nsamps)) to
         zero at masked (flagged) samples.
         """
         in_structure = ShapeDtypeStruct(
-            shape=(observation.n_dets, observation.n_samples), dtype=self.config.dtype
+            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
         )
         if not self.config.sample_mask:
             return IdentityOperator(in_structure)
@@ -255,12 +250,12 @@ class MapMaker:
         )
         return masking_projector
 
-    def get_mask_projector(self, observation: GroundObservationData) -> AbstractLinearOperator:
+    def get_mask_projector(self, observation: AbstractGroundObservation) -> AbstractLinearOperator:
         """Flag operator which incorporates both the scanning and sample mask projectors,
         based on the mapmaking configuration attributes: 'scanning_mask' and 'sample_mask'
         """
         in_structure = ShapeDtypeStruct(
-            shape=(observation.n_dets, observation.n_samples), dtype=self.config.dtype
+            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
         )
         op = IdentityOperator(in_structure)
         if self.config.scanning_mask:
@@ -269,7 +264,7 @@ class MapMaker:
             op = op @ self.get_sample_mask_projector(observation)
         return op.reduce()
 
-    def get_or_fit_noise_model(self, observation: GroundObservationData) -> NoiseModel:
+    def get_or_fit_noise_model(self, observation: AbstractGroundObservation) -> NoiseModel:
         """Return a noise model for the observation, corresponding to
         the type (diagonal, toeplitz, ...) specified by the mapmaker.
         Attempts to load the noise model from the data if available,
@@ -319,7 +314,9 @@ class MapMaker:
             # Healpix
             return IndexOperator((valid_indices,), in_structure=landscape.structure)
 
-    def get_template_operator(self, observation: GroundObservationData) -> AbstractLinearOperator:
+    def get_template_operator(
+        self, observation: AbstractGroundObservation
+    ) -> AbstractLinearOperator:
         """Create and return a template operator corresponding to the
         name and configuration provided.
         """
@@ -331,8 +328,8 @@ class MapMaker:
             blocks['polynomial'] = templates.PolynomialTemplateOperator.create(
                 max_poly_order=poly.max_poly_order,
                 intervals=observation.get_scanning_intervals(),
-                times=observation.get_elapsed_time(),
-                n_dets=observation.n_dets,
+                times=observation.get_elapsed_times(),
+                n_dets=observation.n_detectors,
                 dtype=config.dtype,
             )
         if sss := config.templates.scan_synchronous:
@@ -340,14 +337,14 @@ class MapMaker:
                 min_poly_order=sss.min_poly_order,
                 max_poly_order=sss.max_poly_order,
                 azimuth=jnp.array(observation.get_azimuth()),
-                n_dets=observation.n_dets,
+                n_dets=observation.n_detectors,
                 dtype=config.dtype,
             )
         if hwpss := config.templates.hwp_synchronous:
             blocks['hwp_synchronous'] = templates.HWPSynchronousTemplateOperator.create(
                 n_harmonics=hwpss.n_harmonics,
                 hwp_angles=observation.get_hwp_angles(),
-                n_dets=observation.n_dets,
+                n_dets=observation.n_detectors,
                 dtype=config.dtype,
             )
         if azhwpss := config.templates.azhwp_synchronous:
@@ -358,7 +355,7 @@ class MapMaker:
                         n_harmonics=azhwpss.n_harmonics,
                         azimuth=observation.get_azimuth(),
                         hwp_angles=observation.get_hwp_angles(),
-                        n_dets=observation.n_dets,
+                        n_dets=observation.n_detectors,
                         dtype=config.dtype,
                         scan_mask=observation.get_left_scan_mask(),
                     )
@@ -369,7 +366,7 @@ class MapMaker:
                         n_harmonics=azhwpss.n_harmonics,
                         azimuth=observation.get_azimuth(),
                         hwp_angles=observation.get_hwp_angles(),
-                        n_dets=observation.n_dets,
+                        n_dets=observation.n_detectors,
                         dtype=config.dtype,
                         scan_mask=observation.get_right_scan_mask(),
                     )
@@ -381,7 +378,7 @@ class MapMaker:
                         n_harmonics=azhwpss.n_harmonics,
                         azimuth=observation.get_azimuth(),
                         hwp_angles=observation.get_hwp_angles(),
-                        n_dets=observation.n_dets,
+                        n_dets=observation.n_detectors,
                         dtype=config.dtype,
                     )
                 )
@@ -394,7 +391,7 @@ class MapMaker:
                     smooth_interpolation=binazhwpss.smooth_interpolation,
                     azimuth=observation.get_azimuth(),
                     hwp_angles=observation.get_hwp_angles(),
-                    n_dets=observation.n_dets,
+                    n_dets=observation.n_detectors,
                     dtype=config.dtype,
                 )
             )
@@ -421,7 +418,7 @@ class MapMaker:
                 landscape=self._ground_landscape,
                 chunk_size=config.pointing_chunk_size,
             )
-            ones_tod = jnp.ones((observation.n_dets, observation.n_samples), dtype=jnp.float64)
+            ones_tod = jnp.ones((observation.n_detectors, observation.n_samples), dtype=jnp.float64)
             self._ground_coverage = ground_op.T(ones_tod)
             nonzero_hits = jnp.argwhere(self._ground_coverage.i > 0)
             indexer = IndexOperator(
@@ -446,7 +443,7 @@ class BinnedMapMaker(MapMaker):
         if not self.config.binned:
             raise ValueError('Binned Mapmaker is incompatible with binned=False')
 
-    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]:
+    def make_map(self, observation: AbstractGroundObservation) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'Binned Mapmaker: {msg}')
 
@@ -521,7 +518,7 @@ class MLMapmaker(MapMaker):
         if self.config.demodulated:
             raise ValueError('ML Mapmaker is incompatible with demodulated=True')
 
-    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]:
+    def make_map(self, observation: AbstractGroundObservation) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'ML Mapmaker: {msg}')
 
@@ -744,7 +741,7 @@ class TwoStepMapmaker(MapMaker):
         if not self.config.use_templates:
             raise ValueError('Two-Step Mapmaker is incompatible with no templates')
 
-    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]:
+    def make_map(self, observation: AbstractGroundObservation) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'Two-Step Mapmaker: {msg}')
 
@@ -874,7 +871,7 @@ class ATOPMapMaker(MapMaker):
         if self.config.atop_tau < 2:
             raise ValueError('ATOP tau should be at least 2')
 
-    def mapmake(self, observation: GroundObservationData) -> dict[str, Any]:
+    def make_map(self, observation: AbstractGroundObservation) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'ATOP Mapmaker: {msg}')
 

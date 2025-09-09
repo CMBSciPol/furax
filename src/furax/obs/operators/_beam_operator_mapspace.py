@@ -20,6 +20,7 @@ class BeamOperatorMapspace(AbstractLinearOperator):
     Returns:
         PyTree[Inexact[Array, ' _b']]: Output map after applying the beam.
     """
+    
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     sparse_Beam_matrix: Float[Array, 'a b'] = equinox.field(static=True)
     _N_neighbours: int = equinox.field(static=True)

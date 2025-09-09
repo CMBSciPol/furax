@@ -37,12 +37,14 @@ class BeamOperatorMapspace(AbstractLinearOperator):
             def dot_product(mp):
                 # Calculate the dot product of the sparse matrix with one map mp
 
-                # I could take it out of here if it's the same beam for all frequency channels and all Stokes parameters
+                # I could take it out of here if it's the same beam for all frequency channels 
+                # and all Stokes parameters
                 indices = jnp.array(self.sparse_Beam_matrix.indices)
                 data = jnp.array(self.sparse_Beam_matrix.data)
                 n_rows = self.sparse_Beam_matrix.shape[0]
 
-                # self._N_neighbours could be calculated here if we have different number of neighbours per frequency channel 
+                # self._N_neighbours could be calculated here if we have different 
+                # number of neighbours per frequency channel 
                 all_indices = indices.reshape(n_rows, self._N_neighbours)
                 all_data = data.reshape(n_rows, self._N_neighbours)
 

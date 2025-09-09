@@ -13,7 +13,6 @@ from .operators import (
     LinearPolarizerOperator,
     QURotationOperator,
     SynchrotronOperator,
-    
 )
 
 __all__ = [

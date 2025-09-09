@@ -12,6 +12,7 @@ from .operators import (
     LinearPolarizerOperator,
     QURotationOperator,
     SynchrotronOperator,
+    BeamOperatorMapspace,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     'negative_log_likelihood',
     'spectral_cmb_variance',
     'sky_signal',
+    'BeamOperatorMapspace',
 ]

@@ -1,3 +1,4 @@
+from ._beam_operator_mapspace import BeamOperatorMapspace
 from ._hwp import HWPOperator
 from ._polarizers import LinearPolarizerOperator
 from ._qu_rotations import QURotationOperator
@@ -9,7 +10,7 @@ from ._seds import (
     NoiseDiagonalOperator,
     SynchrotronOperator,
 )
-from ._beam_operator_mapspace import BeamOperatorMapspace
+
 
 __all__ = [
     # _hwp

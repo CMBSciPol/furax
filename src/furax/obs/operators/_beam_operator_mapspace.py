@@ -1,22 +1,24 @@
+import equinox
 import jax
 import jax.numpy as jnp
-import equinox
-from furax import AbstractLinearOperator, symmetric
 from jaxtyping import Array, Float, PyTree, Inexact
-
 from scipy.sparse import load_npz
+
+from furax import AbstractLinearOperator, symmetric
+
 
 @symmetric
 class BeamOperatorMapspace(AbstractLinearOperator):
     """
-    BeamOperator_mapspace applies a Gaussian beam to a map in real map space.
+    BeamOperatorMapspace applies a beam to a map in map space.
 
-    Attributes:
+    Args:
         _in_structure (PyTree[jax.ShapeDtypeStruct]): Input structure of the operator.
-        _nside (int): Nside parameter for Healpy maps.
-        _FWHM (float): Full width at half maximum of the beam in radians.
+        path_to_file (str): Path to the file containing the sparse beam matrix in .npz format.
         sparse_Beam_matrix (Float[Array, 'a b']): Sparse matrix representing the beam.
-        _N_neighbours (int): Number of neighbours considered for each pixel in the beam.
+        _N_neighbours (int): Number of non-zero entries per row in the sparse matrix.
+    Returns:
+        PyTree[Inexact[Array, ' _b']]: Output map after applying the beam.
     """
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     sparse_Beam_matrix: Float[Array, 'a b'] = equinox.field(static=True)
@@ -24,11 +26,8 @@ class BeamOperatorMapspace(AbstractLinearOperator):
 
     def __init__(self, in_structure: PyTree[jax.ShapeDtypeStruct], path_to_file: str) -> None:
         self._in_structure = in_structure
-        
-        print("Loading beam matrix from", path_to_file)
         self.sparse_Beam_matrix = load_npz(path_to_file)
         self._N_neighbours = int(jnp.diff(self.sparse_Beam_matrix.indptr)[0])
-
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]: 
         def apply_sparse_matrix(stokes_comp):
@@ -58,6 +57,5 @@ class BeamOperatorMapspace(AbstractLinearOperator):
     
         return jax.tree.map(apply_sparse_matrix, x)
     
-
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure

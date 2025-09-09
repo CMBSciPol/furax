@@ -1,8 +1,6 @@
-from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pixell
@@ -13,53 +11,47 @@ from numpy.typing import NDArray
 from sotodlib import coords
 from sotodlib.core import AxisManager
 
-from furax.mapmaking import GroundObservationData
+from furax.mapmaking import AbstractGroundObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math import quaternion
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 
 
-@jax.tree_util.register_dataclass
-@dataclass
-class SotodlibObservationData(GroundObservationData):
-    observation: AxisManager
-
+class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     @property
     def n_samples(self) -> int:
-        return self.observation.signal.shape[-1]  # type: ignore[no-any-return]
+        return self.data.signal.shape[-1]  # type: ignore[no-any-return]
 
     @cached_property
-    def dets(self) -> list[str]:
+    def detectors(self) -> list[str]:
         """Returns a list of the detector names."""
-        return self.observation.dets.vals  # type: ignore[no-any-return]
+        return self.data.dets.vals  # type: ignore[no-any-return]
 
     @property
     def sample_rate(self) -> float:
         """Returns the sampling rate (in Hz) of the data."""
-        duration: float = self.observation.timestamps[-1] - self.observation.timestamps[0]
-        return self.n_samples / duration
+        duration: float = self.data.timestamps[-1] - self.data.timestamps[0]
+        return (self.n_samples - 1) / duration
 
     def get_tods(self) -> Array:
         """Returns the timestream data."""
-        tods = jnp.array(self.observation.signal)
+        tods = jnp.array(self.data.signal)
         return jnp.atleast_2d(tods)
 
-    def get_det_offset_angles(self) -> Array:
+    def get_detector_offset_angles(self) -> Array:
         """Returns the detector offset angles."""
-        return jnp.array(self.observation.focal_plane['gamma'])
+        return jnp.array(self.data.focal_plane['gamma'])
 
     def get_hwp_angles(self) -> Array:
         """Returns the HWP angles."""
-        return jnp.array(self.observation.hwp_angle)
+        return jnp.array(self.data.hwp_angle)
 
     def get_scanning_intervals(self, det_ind: int = 0) -> NDArray[Any]:
         """Returns scanning intervals of the chosen detector.
         The output is a list of the starting and ending sample indices
         """
         return np.array(
-            self.observation.preprocess.turnaround_flags.turnarounds.ranges[det_ind]
-            .complement()
-            .ranges()
+            self.data.preprocess.turnaround_flags.turnarounds.ranges[det_ind].complement().ranges()
         )
 
     def get_sample_mask(self) -> Float[Array, 'dets samps']:
@@ -67,7 +59,7 @@ class SotodlibObservationData(GroundObservationData):
         which is 1 at valid samples and 0 at invalid ones.
         """
         try:
-            return jnp.array((~self.observation.flags.glitch_flags).mask(), dtype=jnp.float64)
+            return jnp.array((~self.data.flags.glitch_flags).mask(), dtype=jnp.float64)
         except KeyError:
             raise KeyError('Glitch flags unavailable in the observation')
 
@@ -76,7 +68,7 @@ class SotodlibObservationData(GroundObservationData):
         which is 1 at valid samples and 0 at invalid ones.
         """
         try:
-            return jnp.array(self.observation.flags.left_scan.mask(), dtype=jnp.float64)
+            return jnp.array(self.data.flags.left_scan.mask(), dtype=jnp.float64)
         except KeyError:
             raise KeyError('Scan mask unavailable in the observation')
 
@@ -85,22 +77,22 @@ class SotodlibObservationData(GroundObservationData):
         which is 1 at valid samples and 0 at invalid ones.
         """
         try:
-            return jnp.array(self.observation.flags.right_scan.mask(), dtype=jnp.float64)
+            return jnp.array(self.data.flags.right_scan.mask(), dtype=jnp.float64)
         except KeyError:
             raise KeyError('Scan mask unavailable in the observation')
 
     def get_azimuth(self) -> Float[Array, ' a']:
         """Returns the azimuth of the boresight for each sample"""
-        return jnp.array(self.observation.boresight.az)
+        return jnp.array(self.data.boresight.az)
 
     def get_elevation(self) -> Float[Array, ' a']:
         """Returns the elevation of the boresight for each sample"""
-        return jnp.array(self.observation.boresight.el)
+        return jnp.array(self.data.boresight.el)
 
-    def get_elapsed_time(self) -> Float[Array, ' a']:
+    def get_elapsed_times(self) -> Float[Array, ' a']:
         """Returns time (sec) of the samples since the observation began"""
         timestamps = self.get_timestamps()
-        return jnp.array(timestamps - timestamps[0])
+        return jnp.array(timestamps) - timestamps[0]
 
     def get_wcs_shape_and_kernel(
         self,
@@ -111,7 +103,7 @@ class SotodlibObservationData(GroundObservationData):
 
         res = resolution * pixell.utils.arcmin
         wcs_kernel_init = coords.get_wcs_kernel('car', 0, 0, res=res)
-        wcs_shape, wcs_kernel = coords.get_footprint(self.observation, wcs_kernel_init)
+        wcs_shape, wcs_kernel = coords.get_footprint(self.data, wcs_kernel_init)
 
         return wcs_shape, wcs_kernel
 
@@ -123,10 +115,10 @@ class SotodlibObservationData(GroundObservationData):
         # Projection Matrix class instance for the observation
         if isinstance(landscape, WCSLandscape):
             # TODO: pass 'cuts' keyword here for time slices (glitches etc)?
-            P = coords.P.for_tod(self.observation, wcs_kernel=landscape.wcs, comps='TQU', hwp=True)
+            P = coords.P.for_tod(self.data, wcs_kernel=landscape.wcs, comps='TQU', hwp=True)
         elif isinstance(landscape, HealpixLandscape):
             hp_geom = coords.healpix_utils.get_geometry(nside=landscape.nside, ordering='RING')
-            P = coords.P.for_tod(self.observation, geom=hp_geom)
+            P = coords.P.for_tod(self.data, geom=hp_geom)
         else:
             raise NotImplementedError(f'Landscape {landscape} not supported')
 
@@ -151,7 +143,7 @@ class SotodlibObservationData(GroundObservationData):
 
     def get_timestamps(self) -> Float[Array, ' a']:
         """Returns time (sec) of the samples since the observation began"""
-        return jnp.array(self.observation.timestamps)
+        return jnp.array(self.data.timestamps)
 
     def get_scanning_mask(self, det_ind: int = 0) -> NDArray[np.bool_]:
         """Returns scanning intervals of the chosen detector.
@@ -159,15 +151,13 @@ class SotodlibObservationData(GroundObservationData):
         """
         # Assumes that the detectors have identical scanning intervals,
         return (  # type: ignore[no-any-return]
-            self.observation.preprocess.turnaround_flags.turnarounds.ranges[det_ind]
-            .complement()
-            .mask()
+            self.data.preprocess.turnaround_flags.turnarounds.ranges[det_ind].complement().mask()
         )
 
     def get_noise_model(self) -> None | NoiseModel:
         """Load precomputed noise model from the data, if present. Otherwise, return None"""
 
-        preproc = self.observation.get('preprocess')
+        preproc = self.data.get('preprocess')
         if preproc is None:
             return None
 
@@ -236,10 +226,10 @@ class SotodlibObservationData(GroundObservationData):
     def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
         """Returns the boresight quaternions at each time sample"""
         csl = so3g.proj.CelestialSightLine.az_el(
-            self.observation.timestamps,
-            self.observation.boresight.az,
-            self.observation.boresight.el,
-            roll=self.observation.boresight.roll,
+            self.data.timestamps,
+            self.data.boresight.az,
+            self.data.boresight.el,
+            roll=self.data.boresight.roll,
             site='so',
             weather='typical',
         )
@@ -248,9 +238,9 @@ class SotodlibObservationData(GroundObservationData):
     def get_detector_quaternions(self) -> Float[Array, 'det 4']:
         """Returns the quaternion offsets of the detectors"""
         quats = quaternion.from_xieta_angles(
-            jnp.array(self.observation.focal_plane.xi, dtype=jnp.float64),
-            jnp.array(self.observation.focal_plane.eta, dtype=jnp.float64),
-            jnp.array(self.observation.focal_plane.gamma, dtype=jnp.float64),
+            jnp.array(self.data.focal_plane.xi, dtype=jnp.float64),
+            jnp.array(self.data.focal_plane.eta, dtype=jnp.float64),
+            jnp.array(self.data.focal_plane.gamma, dtype=jnp.float64),
         )
 
         return jnp.atleast_2d(quats)

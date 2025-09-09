@@ -21,7 +21,7 @@ class NoiseModel:
 
     @property
     @abstractmethod
-    def n_dets(self) -> int: ...
+    def n_detectors(self) -> int: ...
 
     @abstractmethod
     def psd(self, f: Float[Array, ' a']) -> Float[Array, 'dets a']: ...
@@ -79,7 +79,7 @@ class WhiteNoiseModel(NoiseModel):
     sigma: Float[Array, ' dets']
 
     @property
-    def n_dets(self) -> int:
+    def n_detectors(self) -> int:
         return len(self.sigma)
 
     @jax.jit
@@ -129,7 +129,7 @@ class AtmosphericNoiseModel(NoiseModel):
     f0: Float[Array, ' dets']
 
     @property
-    def n_dets(self) -> int:
+    def n_detectors(self) -> int:
         return len(self.sigma)
 
     @jax.jit

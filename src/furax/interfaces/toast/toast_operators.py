@@ -27,6 +27,7 @@ from furax import (
     RavelOperator,
     SymmetricBandToeplitzOperator,
 )
+from furax.interfaces.toast.observation import ToastObservation
 from furax.mapmaking import MapMakingConfig
 from furax.mapmaking.mapmaker import MapMaker as FuraxMapMaker
 from furax.mapmaking.pointing import PointingOperator
@@ -43,13 +44,11 @@ from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.stokes import Stokes, StokesIQU
 
-from ..observation import ToastObservationData
-
 ObservationKeysDict: TypeAlias = dict[str, list[str]]
 
 
 @trait_docs
-class MapMaker(ToastOperator):  # type: ignore[misc]
+class MapMakerToastOperator(ToastOperator):  # type: ignore[misc]
     """Operator that makes maps using the Furax tools."""
 
     API = Int(0, help='Internal interface version for this operator')
@@ -91,7 +90,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
 
     def _exec(self, data: Data, detectors: list[str] | None = None, **kwargs):  # type: ignore[no-untyped-def]
         # Data interface
-        observation = ToastObservationData(
+        observation = ToastObservation(
             data=data,
             det_selection=detectors,
             det_mask=self.det_mask,
@@ -106,7 +105,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
         self._logger.info_rank(msg)
         timer = Timer()
         timer.start()
-        self._mapmaker.make_maps(observation, self.output_dir)
+        self._mapmaker.run(observation, self.output_dir)
         self._logger.info_rank('FuraxMapMaker finished mapmaking in', timer=timer)
 
     def _finalize(self, data, **kwargs):  # type: ignore[no-untyped-def]
@@ -132,7 +131,7 @@ class MapMaker(ToastOperator):  # type: ignore[misc]
 
 
 @trait_docs
-class LegacyMapMaker(ToastOperator):  # type: ignore[misc]
+class LegacyMapMakerToastOperator(ToastOperator):  # type: ignore[misc]
     """Operator which makes maps with the furax tools."""
 
     # Class traits
@@ -218,7 +217,7 @@ class LegacyMapMaker(ToastOperator):  # type: ignore[misc]
             )
 
         # Initialize the internal data interface
-        self._data = ToastObservationData(
+        self._data = ToastObservation(
             data=data,
             det_selection=detectors,
             det_mask=self.det_mask,
@@ -230,7 +229,7 @@ class LegacyMapMaker(ToastOperator):  # type: ignore[misc]
         )
 
         # Check that we have at least one valid detector
-        dets = self._data.dets
+        dets = self._data.detectors
         ndet = len(dets)
         if ndet == 0:
             return
@@ -298,7 +297,7 @@ class LegacyMapMaker(ToastOperator):  # type: ignore[misc]
     def _stage(self, hwp: bool) -> None:
         self._landscape = HealpixLandscape(self.nside, self.stokes)
         self._tods = self._data.get_tods()
-        self._gamma = self._data.get_det_offset_angles()
+        self._gamma = self._data.get_detector_offset_angles()
         if self.on_the_fly:
             # only get stuff needed for the pointing operator
             self._qbore = self._data.get_boresight_quaternions()
@@ -328,7 +327,7 @@ class LegacyMapMaker(ToastOperator):  # type: ignore[misc]
             psd = estimate_psd(self._tods, nperseg=nperseg, rate=sample_rate)
         else:
             # use an existing noise model
-            freq, psd = self._data.get_psd_model()
+            freq, psd = self._data._get_psd_model()
             psd = interpolate_psd(freq, psd, fft_size=nperseg, rate=sample_rate)
 
         invntt = psd_to_invntt(psd, self.lagmax)
@@ -391,7 +390,7 @@ class LegacyMapMaker(ToastOperator):  # type: ignore[misc]
 
 
 @trait_docs
-class TemplateMapMaker(LegacyMapMaker):
+class TemplateMapMakerToastOperator(LegacyMapMakerToastOperator):
     """Operator for template mapmaking with the furax tools."""
 
     template_config: dict[str, Any]
@@ -423,7 +422,7 @@ class TemplateMapMaker(LegacyMapMaker):
             )
 
         # Initialize the internal data interface
-        self._data = ToastObservationData(
+        self._data = ToastObservation(
             data=data,
             det_selection=detectors,
             det_mask=self.det_mask,
@@ -435,7 +434,7 @@ class TemplateMapMaker(LegacyMapMaker):
         )
 
         # Check that we have at least one valid detector
-        dets = self._data.dets
+        dets = self._data.detectors
         ndet = len(dets)
         if ndet == 0:
             return

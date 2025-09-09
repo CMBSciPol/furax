@@ -8,7 +8,7 @@ import yaml
 from sotodlib.preprocess.preprocess_util import init_logger, load_and_preprocess
 from sotodlib.site_pipeline.util import main_launcher
 
-from furax.interfaces.sotodlib.observation import SotodlibObservationData
+from furax.interfaces.sotodlib.observation import SOTODLibObservation
 from furax.mapmaking.config import MapMakingConfig
 from furax.mapmaking.mapmaker import MapMaker
 
@@ -27,6 +27,7 @@ def main(
 ) -> None:
     """
     Mapmaking script for SO observation data.
+
     Args
     ----
     preprocess_config : str or dict
@@ -105,7 +106,7 @@ def main(
         try:
             obs = load_and_preprocess(obs_id, preprocess_config, dets=det_select)
             logger.info('Observationa data loaded')
-            observation = SotodlibObservationData(observation=obs)
+            observation = SOTODLibObservation(data=obs)
         except Exception as exception:
             logger.info(f'Loading failed for {obs_id}')
             logger.info(exception)
@@ -134,7 +135,7 @@ def main(
 
             # Make maps
             try:
-                maker.make_maps(observation=observation, out_dir=output_dir)
+                maker.run(observation=observation, out_dir=output_dir)
                 logger.info('Mapmaking finished')
                 logger.info(f'Output directory: {output_dir}')
             except Exception as exception:
@@ -144,8 +145,6 @@ def main(
 
         logger.info(f'Finished mapmaking for {obs_id}')
     logger.info('Finished mapmaking for all observations provided.')
-
-    return
 
 
 def get_output_dir(

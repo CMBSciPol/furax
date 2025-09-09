@@ -11,7 +11,7 @@ from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import init_logger, load_and_preprocess
 from sotodlib.site_pipeline.util import main_launcher
 
-from furax.interfaces.sotodlib.observation import SotodlibObservationData
+from furax.interfaces.sotodlib.observation import SOTODLibObservation
 from furax.mapmaking.config import MapMakingConfig
 from furax.mapmaking.mapmaker import MapMaker
 
@@ -85,10 +85,10 @@ def main(
 
             obs = load_and_preprocess(obs_id, preprocess_config, dets=det_select)
             logger.info('Observationa data loaded')
-    observation = SotodlibObservationData(observation=obs)
+    observation = SOTODLibObservation(data=obs)
 
     # Make maps
-    results = maker.make_maps(observation=observation, out_dir=output_path)
+    results = maker.run(observation=observation, out_dir=output_path)
     logger.info('Mapmaking finished')
 
     # Save results

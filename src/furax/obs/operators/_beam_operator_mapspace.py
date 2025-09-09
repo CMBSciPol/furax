@@ -1,7 +1,7 @@
 import equinox
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PyTree, Inexact
+from jaxtyping import Array, Float, Inexact, PyTree
 from scipy.sparse import load_npz
 
 from furax import AbstractLinearOperator, symmetric
@@ -59,3 +59,4 @@ class BeamOperatorMapspace(AbstractLinearOperator):
     
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
+    

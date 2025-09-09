@@ -6,13 +6,14 @@ from ._likelihoods import (
 )
 from .operators import (
     AbstractSEDOperator,
+    BeamOperatorMapspace,
     CMBOperator,
     DustOperator,
     HWPOperator,
     LinearPolarizerOperator,
     QURotationOperator,
     SynchrotronOperator,
-    BeamOperatorMapspace,
+    
 )
 
 __all__ = [

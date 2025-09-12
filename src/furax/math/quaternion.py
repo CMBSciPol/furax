@@ -168,4 +168,5 @@ def from_xieta_angles(xi: Ang, eta: Ang, gamma: Ang) -> Quat:
     """Compute quaternions from the xieta coordinate system angles (xi, eta, gamma)."""
     theta = jnp.asin((xi**2 + eta**2) ** 0.5)
     phi = jnp.atan2(-xi, -eta)
-    return from_iso_angles(theta, phi, gamma)  # type: ignore[no-any-return]
+    psi = gamma - phi
+    return from_iso_angles(theta, phi, psi)  # type: ignore[no-any-return]

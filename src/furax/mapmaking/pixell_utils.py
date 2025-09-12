@@ -1,11 +1,12 @@
+from typing import Any
+
 import healpy as hp
 import matplotlib.axes
 import matplotlib.pyplot as plt
 import numpy as np
-from numpy.typing import NDArray
 import pixell.enmap
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from typing import Any
+from numpy.typing import NDArray
 
 from furax.obs.landscapes import WCSLandscape
 from furax.obs.stokes import StokesPyTreeType
@@ -90,7 +91,7 @@ def plot_cartview(
     """Visualisation function for CAR projection of healpix maps.
     Unlike healpy.cartview, this function returns matplotlib Axes object, and one can have
     more control of the plot elements such as grids and axes labels.
-    
+
     Args:
         input_maps: HEALPix map(s) to plot. Can be 1D (single map) or 2D (multiple maps)
         titles: Title(s) for the plot(s)
@@ -102,7 +103,7 @@ def plot_cartview(
         vmins: Minimum values for color scale (one per map)
         vmax_quantile: Quantile to use for automatic vmax determination
         nside: HEALPix nside parameter. If None, inferred from input_maps
-    
+
     Returns:
         tuple: (figure, axes) matplotlib objects
     """
@@ -114,7 +115,7 @@ def plot_cartview(
         vmaxs = [None] * len(input_maps)
     if vmins is None:
         vmins = [None] * len(input_maps)
-    
+
     # Infer nside if not provided
     if nside is None:
         npix = input_maps[0].shape[-1]  # Last dimension should be the number of pixels
@@ -145,7 +146,7 @@ def plot_cartview(
         im = ax.pcolor(
             lon_grid, lat_grid, proj_map, cmap=cmap, vmax=vmax, vmin=vmin, shading='nearest'
         )
-        ax.xaxis.set_inverted(True) # Follow astronomical convention for inverted RA
+        ax.xaxis.set_inverted(True)  # Follow astronomical convention for inverted RA
         ax.set_xlabel('lon [deg]')
         ax.set_ylabel('lat [deg]')
         ax.grid(alpha=0.5)
@@ -162,26 +163,26 @@ def plot_cartview(
 
 
 def get_healpix_lonlat_ranges(
-    healpix_map: NDArray[Any], 
+    healpix_map: NDArray[Any],
     nside: int | None = None,
     padding_deg: float = 5.0,
-    hit_threshold: float = 1e-18
+    hit_threshold: float = 1e-18,
 ) -> tuple[list[float], list[float]]:
     """Find appropriate longitude and latitude ranges for a HEALPix map.
-    
+
     This function identifies the sky region covered by non-zero pixels in a HEALPix map
     and returns appropriate longitude and latitude ranges for visualization.
-    
+
     Args:
         healpix_map: HEALPix map array
         nside: HEALPix nside parameter. If None, inferred from map length
         padding_deg: Padding in degrees to add around the data region
         hit_threshold: Minimum value to consider a pixel as having data
-    
+
     Returns:
         tuple: (lonra, latra) where lonra=[lon_min, lon_max] and latra=[lat_min, lat_max]
                Ranges are in degrees, suitable for use with plot_cartview()
-    
+
     Example:
         >>> import healpy as hp
         >>> import numpy as np
@@ -200,18 +201,18 @@ def get_healpix_lonlat_ranges(
     if nside is None:
         npix = len(healpix_map)
         nside = hp.npix2nside(npix)
-    
+
     # Find pixels with data above threshold
     data_mask = np.abs(healpix_map) > hit_threshold
     data_pixels = np.where(data_mask)[0]
-    
+
     if len(data_pixels) == 0:
         # No data found, return full sky
         return [-180.0, 180.0], [-90.0, 90.0]
-    
+
     # Convert pixel indices to longitude and latitude in degrees
     lon, lat = hp.pix2ang(nside, data_pixels, lonlat=True)
-    
+
     # Convert longitude to [-180, 180] range
     lon_wrapped = ((lon + 180.0) % 360.0) - 180.0
     lon_min = np.min(lon_wrapped) - padding_deg
@@ -220,13 +221,13 @@ def get_healpix_lonlat_ranges(
     # Clamp longitude to valid range [-180, 180]
     lon_min = max(lon_min, -180.0)
     lon_max = min(lon_max, 180.0)
-    
+
     # Handle latitude range
     lat_min = np.min(lat) - padding_deg
     lat_max = np.max(lat) + padding_deg
-    
+
     # Clamp latitude to valid range [-90, 90]
     lat_min = max(lat_min, -90.0)
     lat_max = min(lat_max, 90.0)
-    
+
     return [lon_min, lon_max], [lat_min, lat_max]

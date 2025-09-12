@@ -113,19 +113,37 @@ class ToastObservationData(GroundObservationData):
         """Returns sample mask of the TOD,
         which is 1 at valid samples and 0 at invalid ones.
         """
-        raise NotImplementedError()
+        return jnp.array(self.observation.detdata['flags'].data == 0, dtype=jnp.float64)
 
     def get_left_scan_mask(self) -> Float[Array, ' samps']:
         """Returns sample mask of the TOD for left-going scans,
         which is 1 at valid samples and 0 at invalid ones.
         """
-        raise NotImplementedError()
+        if not hasattr(self.observation, 'intervals'):
+            # Scanning information missing, first compute the intervals
+            toast.ops.AzimuthIntervals().apply(self.data)
+
+        # Left scan means scanning FROM right TO left
+        intervals_list = self.observation.intervals['scan_rightleft'][['first', 'last']].tolist()
+        mask = jnp.zeros(self.n_samples, dtype=jnp.float64)
+        for start, stop in intervals_list:
+            mask[start:stop] = 1.
+        return mask
 
     def get_right_scan_mask(self) -> Float[Array, ' samps']:
         """Returns sample mask of the TOD for right-going scans,
         which is 1 at valid samples and 0 at invalid ones.
         """
-        raise NotImplementedError()
+        if not hasattr(self.observation, 'intervals'):
+            # Scanning information missing, first compute the intervals
+            toast.ops.AzimuthIntervals().apply(self.data)
+
+        # Right scan means scanning FROM left TO right
+        intervals_list = self.observation.intervals['scan_leftright'][['first', 'last']].tolist()
+        mask = jnp.zeros(self.n_samples, dtype=jnp.float64)
+        for start, stop in intervals_list:
+            mask[start:stop] = 1.
+        return mask
 
     def get_azimuth(self) -> Float[Array, ' a']:
         """Returns the azimuth of the boresight for each sample"""

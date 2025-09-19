@@ -13,6 +13,8 @@ from .operators import (
     LinearPolarizerOperator,
     QURotationOperator,
     SynchrotronOperator,
+    ReadBeamMatrix,
+    StackedBeamOperator,
 )
 
 __all__ = [
@@ -28,4 +30,6 @@ __all__ = [
     'spectral_cmb_variance',
     'sky_signal',
     'BeamOperatorMapspace',
+    'ReadBeamMatrix',
+    'StackedBeamOperator',
 ]

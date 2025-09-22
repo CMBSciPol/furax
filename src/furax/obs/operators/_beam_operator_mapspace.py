@@ -9,7 +9,9 @@ from furax import AbstractLinearOperator, BlockDiagonalOperator, symmetric
 from furax.obs.stokes import StokesIQU
 
 
-def ReadBeamMatrix(path_to_file: str, in_structure: PyTree[jax.ShapeDtypeStruct]):
+def ReadBeamMatrix(
+        path_to_file: str, in_structure: PyTree[jax.ShapeDtypeStruct]
+    ) -> AbstractLinearOperator:
     """
     Reads a sparse beam matrix from a .npz file and returns a BeamOperatorMapspace class
     Args:
@@ -50,13 +52,13 @@ class BeamOperatorMapspace(AbstractLinearOperator):
     _data: Array = equinox.field(static=False)
 
     def __init__(
-            self, in_structure: PyTree[jax.ShapeDtypeStruct], indices: Array, data: Array
+        self, in_structure: PyTree[jax.ShapeDtypeStruct], indices: Array, data: Array
     ) -> None:
         self._in_structure = in_structure
         self._indices = indices
         self._data = data
 
-    def mv(self, x: Inexact[Array, ' _a']) -> Inexact[Array, ' _b']: 
+    def mv(self, x: Inexact[Array, '...']) -> Inexact[Array, '...']: 
         return jnp.sum(self._data * x[self._indices], axis=1)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -86,7 +88,7 @@ class BeamOperatorMapspaceInverse(AbstractLinearOperator):
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
-    def mv(self, x: Inexact[Array, ' _a']) -> Inexact[Array, ' _b']:
+    def mv(self, x: Inexact[Array, '...']) -> Inexact[Array, '...']:
         # Solve Ax = b using jax.scipy.sparse.linalg.cg
         A = self.beam_operator
 
@@ -98,7 +100,8 @@ class BeamOperatorMapspaceInverse(AbstractLinearOperator):
 
 
 class StokesToListOperator(AbstractLinearOperator):
-    """Operator that converts StokesIQU[Array[n,m]] to [StokesIQU[Array[m]], ...].
+    """
+    Operator that converts StokesIQU[Array[n,m]] to [StokesIQU[Array[m]], ...].
     Index notation: x[stokes,(freq,pix)] -> x[freq,stokes,(pix)]
 
     Attributes:
@@ -135,7 +138,8 @@ class StokesToListOperator(AbstractLinearOperator):
 
 
 class ListToStokesOperator(AbstractLinearOperator):
-    """Operator that converts [StokesIQU[Array[m]], ...] to StokesIQU[Array[n,m]].
+    """
+    Operator that converts [StokesIQU[Array[m]], ...] to StokesIQU[Array[n,m]].
     Index notation: x[freq,stokes,(pix)] -> x[stokes,(freq,pix)]
 
     Attributes:
@@ -160,7 +164,7 @@ class ListToStokesOperator(AbstractLinearOperator):
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
-    def mv(self, x: PyTree[Inexact[Array, '...']]) -> Inexact[Array, '...']:
+    def mv(self, x: Inexact[Array, '...']) -> PyTree[Inexact[Array, '...']]:
         return StokesIQU(
             i=jnp.stack([s.i for s in x], axis=self.axis),
             q=jnp.stack([s.q for s in x], axis=self.axis),
@@ -170,7 +174,8 @@ class ListToStokesOperator(AbstractLinearOperator):
 
 @symmetric
 class StackedBeamOperator(AbstractLinearOperator):
-    """Operator that applies a list of beam operators to a stacked StokesIQU map.
+    """
+    Operator that applies a list of beam operators to a stacked StokesIQU map.
     Index notation: x[stokes,(freq,pix)] -> x[stokes,(freq,pix)]
 
     Attributes:
@@ -233,7 +238,7 @@ class StackedBeamOperatorInverse(AbstractLinearOperator):
         stacked_beam_operator (StackedBeamOperator): The stacked beam operator to be inverted.
     Returns:
         PyTree[Inexact[Array, '...']]: The result of applying the inverse stacked beam operator.
-    """  
+    """
 
     stacked_beam_operator: StackedBeamOperator
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)

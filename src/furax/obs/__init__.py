@@ -12,9 +12,9 @@ from .operators import (
     HWPOperator,
     LinearPolarizerOperator,
     QURotationOperator,
-    SynchrotronOperator,
     ReadBeamMatrix,
     StackedBeamOperator,
+    SynchrotronOperator,
 )
 
 __all__ = [

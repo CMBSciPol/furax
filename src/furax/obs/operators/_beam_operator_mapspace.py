@@ -1,3 +1,5 @@
+from typing import cast
+
 import equinox
 import jax
 import jax.numpy as jnp
@@ -10,8 +12,8 @@ from furax.obs.stokes import StokesIQU
 
 
 def ReadBeamMatrix(
-        path_to_file: str, in_structure: PyTree[jax.ShapeDtypeStruct]
-    ) -> AbstractLinearOperator:
+    path_to_file: str, in_structure: PyTree[jax.ShapeDtypeStruct]
+) -> AbstractLinearOperator:
     """
     Reads a sparse beam matrix from a .npz file and returns a BeamOperatorMapspace class
     Args:
@@ -58,7 +60,7 @@ class BeamOperatorMapspace(AbstractLinearOperator):
         self._indices = indices
         self._data = data
 
-    def mv(self, x: Inexact[Array, '...']) -> Inexact[Array, '...']: 
+    def mv(self, x: Inexact[Array, '...']) -> Inexact[Array, '...']:
         return jnp.sum(self._data * x[self._indices], axis=1)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -92,11 +94,11 @@ class BeamOperatorMapspaceInverse(AbstractLinearOperator):
         # Solve Ax = b using jax.scipy.sparse.linalg.cg
         A = self.beam_operator
 
-        def matvec(v):
+        def matvec(v: Inexact[Array, '...']) -> Inexact[Array, '...']:
             return A.mv(v)
 
         x_sol, info = cg(matvec, x)
-        return x_sol
+        return cast(Inexact[Array, '...'], x_sol)
 
 
 class StokesToListOperator(AbstractLinearOperator):
@@ -126,7 +128,7 @@ class StokesToListOperator(AbstractLinearOperator):
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
-    def mv(self, x: Inexact[Array, '...']) -> PyTree[Inexact[Array, '...']]:
+    def mv(self, x: PyTree[Inexact[Array, '...']]) -> Inexact[PyTree[Array, '...']]:
         return [
             StokesIQU(
                 i=jnp.take(x.i, f, axis=self.axis),
@@ -164,7 +166,7 @@ class ListToStokesOperator(AbstractLinearOperator):
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
-    def mv(self, x: Inexact[Array, '...']) -> PyTree[Inexact[Array, '...']]:
+    def mv(self, x: Inexact[PyTree[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return StokesIQU(
             i=jnp.stack([s.i for s in x], axis=self.axis),
             q=jnp.stack([s.q for s in x], axis=self.axis),
@@ -205,12 +207,12 @@ class StackedBeamOperator(AbstractLinearOperator):
         d_beamed = B(d)
     """
 
-    beam_operators: list
+    beam_operators: PyTree
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(
         self,
-        beam_operators: list,
+        beam_operators: PyTree,
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ):

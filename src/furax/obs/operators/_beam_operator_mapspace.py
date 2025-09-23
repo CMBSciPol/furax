@@ -128,7 +128,7 @@ class StokesToListOperator(AbstractLinearOperator):
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
-    def mv(self, x: PyTree[Inexact[Array, '...']]) -> Inexact[PyTree[Array, '...']]:
+    def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return [
             StokesIQU(
                 i=jnp.take(x.i, f, axis=self.axis),
@@ -166,7 +166,7 @@ class ListToStokesOperator(AbstractLinearOperator):
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
-    def mv(self, x: Inexact[PyTree[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
+    def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return StokesIQU(
             i=jnp.stack([s.i for s in x], axis=self.axis),
             q=jnp.stack([s.q for s in x], axis=self.axis),

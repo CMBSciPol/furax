@@ -11,9 +11,11 @@ from .operators import (
     DustOperator,
     HWPOperator,
     LinearPolarizerOperator,
+    ListToStokesOperator,
     QURotationOperator,
     ReadBeamMatrix,
     StackedBeamOperator,
+    StokesToListOperator,
     SynchrotronOperator,
 )
 
@@ -32,4 +34,6 @@ __all__ = [
     'BeamOperatorMapspace',
     'ReadBeamMatrix',
     'StackedBeamOperator',
+    'StokesToListOperator',
+    'ListToStokesOperator',
 ]

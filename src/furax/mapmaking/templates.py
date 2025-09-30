@@ -52,19 +52,19 @@ class TemplateOperator(AbstractLinearOperator):
 
     @classmethod
     def from_dict(
-        cls, name: str, config: dict[str, Any], observation_data: AbstractGroundObservation
+        cls, name: str, config: dict[str, Any], observation: AbstractGroundObservation[Any]
     ) -> AbstractLinearOperator:
         """Create and return a template operator corresponding to the
         name and configuration provided.
         """
-        n_dets = len(observation_data.detectors)
+        n_dets = len(observation.detectors)
 
         if name == 'polynomial':
             max_poly_order: int = config.get('max_poly_order', 0)
             return PolynomialTemplateOperator.create(
                 max_poly_order=max_poly_order,
-                intervals=observation_data.get_scanning_intervals(),
-                times=observation_data.get_elapsed_times(),
+                intervals=observation.get_scanning_intervals(),
+                times=observation.get_elapsed_times(),
                 n_dets=n_dets,
                 dtype=config.get('dtype', jnp.float64),
             )
@@ -75,7 +75,7 @@ class TemplateOperator(AbstractLinearOperator):
             return ScanSynchronousTemplateOperator.create(
                 min_poly_order=min_poly_order,
                 max_poly_order=max_poly_order,
-                azimuth=observation_data.get_azimuth(),
+                azimuth=observation.get_azimuth(),
                 n_dets=n_dets,
                 dtype=config.get('dtype', jnp.float64),
             )
@@ -84,7 +84,7 @@ class TemplateOperator(AbstractLinearOperator):
             n_harmonics: int = config.get('n_harmonics', 0)
             return HWPSynchronousTemplateOperator.create(
                 n_harmonics=n_harmonics,
-                hwp_angles=observation_data.get_hwp_angles(),
+                hwp_angles=observation.get_hwp_angles(),
                 n_dets=n_dets,
                 dtype=config.get('dtype', jnp.float64),
             )

@@ -1,6 +1,7 @@
 import argparse
 import os
 import pickle
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -101,29 +102,29 @@ def main(
     return results
 
 
-def load_result(result_path: str) -> dict[str, Any]:
-    # Load results from a directory into a dictionary
+def load_result(result_path: str | Path) -> dict[str, Any]:
+    """Load results from a directory into a dictionary."""
 
-    if not os.path.isdir(result_path):
-        raise ValueError(f"Provided path '{result_path}' is not a directory.")
+    if not isinstance(result_path, Path):
+        result_path = Path(result_path)
+
+    if not result_path.is_dir():
+        raise ValueError(f"Provided path '{result_path.as_posix()}' is not a directory.")
 
     results = {}
-    for filename in os.listdir(result_path):
-        file_path = os.path.join(result_path, filename)
-
-        if os.path.isfile(file_path):
-            fn, extension = os.path.splitext(filename)
+    for path in result_path.iterdir():
+        if path.is_file():
+            filename, extension = path.stem, path.suffix
             if extension == '.yaml':
-                results[fn] = yaml.safe_load(open(file_path))
+                results[filename] = yaml.safe_load(path.read_text())
             elif extension == '.npy':
-                results[fn] = np.load(file_path)
+                results[filename] = np.load(path)
             elif extension == '.pkl':
-                with open(file_path, 'rb') as f:
-                    results[fn] = pickle.load(f)
-            elif filename == 'wcs.fits':
-                with fits.open(file_path) as hdul:
-                    results['wcs'] = WCS(hdul[0].header)
-
+                with path.open('rb') as f:
+                    results[filename] = pickle.load(f)
+            elif path.name == 'wcs.fits':
+                with fits.open(path) as hdul:
+                    results[filename] = WCS(hdul[0].header)
     return results
 
 

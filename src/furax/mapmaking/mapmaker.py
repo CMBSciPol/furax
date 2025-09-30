@@ -50,9 +50,11 @@ class MapMaker:
         return
 
     @abstractmethod
-    def make_map(self, observation: AbstractGroundObservation) -> dict[str, Any]: ...
+    def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]: ...
 
-    def run(self, observation: AbstractGroundObservation, out_dir: str | None) -> dict[str, Any]:
+    def run(
+        self, observation: AbstractGroundObservation[Any], out_dir: str | None
+    ) -> dict[str, Any]:
         results = self.make_map(observation)
 
         # Save output
@@ -106,7 +108,7 @@ class MapMaker:
         return cls.from_config(MapMakingConfig.load_yaml(path), logger=logger)
 
     def get_landscape(
-        self, observation: AbstractGroundObservation, stokes: ValidStokesType = 'IQU'
+        self, observation: AbstractGroundObservation[Any], stokes: ValidStokesType = 'IQU'
     ) -> StokesLandscape:
         """Landscape used for mapmaking with given observation"""
         if self.config.landscape.type == Landscapes.WCS:
@@ -123,7 +125,7 @@ class MapMaker:
         raise TypeError('Landscape type not supported')
 
     def get_pointing(
-        self, observation: AbstractGroundObservation, landscape: StokesLandscape
+        self, observation: AbstractGroundObservation[Any], landscape: StokesLandscape
     ) -> AbstractLinearOperator:
         """Operator containing pointing information for given observation"""
 
@@ -167,7 +169,7 @@ class MapMaker:
 
     def get_acquisition(
         self,
-        observation: AbstractGroundObservation,
+        observation: AbstractGroundObservation[Any],
         landscape: StokesLandscape,
     ) -> AbstractLinearOperator:
         """Acquisition operator mapping sky maps to time-ordered data"""
@@ -192,7 +194,9 @@ class MapMaker:
 
             return (polarizer @ hwp @ pointing).reduce()
 
-    def get_scanning_masker(self, observation: AbstractGroundObservation) -> AbstractLinearOperator:
+    def get_scanning_masker(
+        self, observation: AbstractGroundObservation[Any]
+    ) -> AbstractLinearOperator:
         """Flag operator which selects only the scanning intervals
         of the given TOD of shape (ndets, nsamps).
         """
@@ -214,7 +218,7 @@ class MapMaker:
         return masker
 
     def get_scanning_mask_projector(
-        self, observation: AbstractGroundObservation
+        self, observation: AbstractGroundObservation[Any]
     ) -> AbstractLinearOperator:
         """Flag operator which sets the values outside the scanning intervals
         of the given TOD (of shape (ndets, nsamps)) to zero.
@@ -232,7 +236,7 @@ class MapMaker:
         return masking_projector
 
     def get_sample_mask_projector(
-        self, observation: AbstractGroundObservation
+        self, observation: AbstractGroundObservation[Any]
     ) -> AbstractLinearOperator:
         """Flag operator which sets the values of the given TOD (of shape (ndets, nsamps)) to
         zero at masked (flagged) samples.
@@ -250,7 +254,9 @@ class MapMaker:
         )
         return masking_projector
 
-    def get_mask_projector(self, observation: AbstractGroundObservation) -> AbstractLinearOperator:
+    def get_mask_projector(
+        self, observation: AbstractGroundObservation[Any]
+    ) -> AbstractLinearOperator:
         """Flag operator which incorporates both the scanning and sample mask projectors,
         based on the mapmaking configuration attributes: 'scanning_mask' and 'sample_mask'
         """
@@ -264,7 +270,7 @@ class MapMaker:
             op = op @ self.get_sample_mask_projector(observation)
         return op.reduce()
 
-    def get_or_fit_noise_model(self, observation: AbstractGroundObservation) -> NoiseModel:
+    def get_or_fit_noise_model(self, observation: AbstractGroundObservation[Any]) -> NoiseModel:
         """Return a noise model for the observation, corresponding to
         the type (diagonal, toeplitz, ...) specified by the mapmaker.
         Attempts to load the noise model from the data if available,
@@ -315,7 +321,7 @@ class MapMaker:
             return IndexOperator((valid_indices,), in_structure=landscape.structure)
 
     def get_template_operator(
-        self, observation: AbstractGroundObservation
+        self, observation: AbstractGroundObservation[Any]
     ) -> AbstractLinearOperator:
         """Create and return a template operator corresponding to the
         name and configuration provided.
@@ -443,7 +449,7 @@ class BinnedMapMaker(MapMaker):
         if not self.config.binned:
             raise ValueError('Binned Mapmaker is incompatible with binned=False')
 
-    def make_map(self, observation: AbstractGroundObservation) -> dict[str, Any]:
+    def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'Binned Mapmaker: {msg}')
 
@@ -518,7 +524,7 @@ class MLMapmaker(MapMaker):
         if self.config.demodulated:
             raise ValueError('ML Mapmaker is incompatible with demodulated=True')
 
-    def make_map(self, observation: AbstractGroundObservation) -> dict[str, Any]:
+    def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'ML Mapmaker: {msg}')
 
@@ -741,7 +747,7 @@ class TwoStepMapmaker(MapMaker):
         if not self.config.use_templates:
             raise ValueError('Two-Step Mapmaker is incompatible with no templates')
 
-    def make_map(self, observation: AbstractGroundObservation) -> dict[str, Any]:
+    def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'Two-Step Mapmaker: {msg}')
 
@@ -871,7 +877,7 @@ class ATOPMapMaker(MapMaker):
         if self.config.atop_tau < 2:
             raise ValueError('ATOP tau should be at least 2')
 
-    def make_map(self, observation: AbstractGroundObservation) -> dict[str, Any]:
+    def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]:
         config = self.config
         logger_info = lambda msg: self.logger.info(f'ATOP Mapmaker: {msg}')
 

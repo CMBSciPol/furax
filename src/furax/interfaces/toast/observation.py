@@ -7,7 +7,7 @@ import numpy as np
 import toast
 from astropy import units as u
 from astropy.wcs import WCS
-from jaxtyping import Array, Float
+from jaxtyping import Array, Bool, Float
 from numpy.typing import NDArray
 from toast.observation import default_values as defaults
 
@@ -118,13 +118,13 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         intervals = self._observation.intervals['scanning']
         return np.array(intervals[['first', 'last']].tolist())
 
-    def get_sample_mask(self) -> Float[Array, 'dets samps']:
+    def get_sample_mask(self) -> Bool[Array, 'dets samps']:
         """Returns sample mask of the TOD,
         which is 1 at valid samples and 0 at invalid ones.
         """
-        return jnp.array(self._observation.detdata['flags'].data == 0, dtype=jnp.float64)
+        return jnp.array(self._observation.detdata['flags'].data == 0, dtype=bool)
 
-    def get_left_scan_mask(self) -> Float[Array, ' samps']:
+    def get_left_scan_mask(self) -> Bool[Array, ' samps']:
         """Returns sample mask of the TOD for left-going scans,
         which is 1 at valid samples and 0 at invalid ones.
         """
@@ -134,12 +134,12 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
         # Left scan means scanning FROM right TO left
         intervals_list = self._observation.intervals['scan_rightleft'][['first', 'last']].tolist()
-        mask = jnp.zeros(self.n_samples, dtype=jnp.float64)
+        mask = jnp.zeros(self.n_samples, dtype=bool)
         for start, stop in intervals_list:
-            mask[start:stop] = 1.0
+            mask[start:stop] = True
         return mask
 
-    def get_right_scan_mask(self) -> Float[Array, ' samps']:
+    def get_right_scan_mask(self) -> Bool[Array, ' samps']:
         """Returns sample mask of the TOD for right-going scans,
         which is 1 at valid samples and 0 at invalid ones.
         """
@@ -149,9 +149,9 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
         # Right scan means scanning FROM left TO right
         intervals_list = self._observation.intervals['scan_leftright'][['first', 'last']].tolist()
-        mask = jnp.zeros(self.n_samples, dtype=jnp.float64)
+        mask = jnp.zeros(self.n_samples, dtype=bool)
         for start, stop in intervals_list:
-            mask[start:stop] = 1.0
+            mask[start:stop] = True
         return mask
 
     def get_azimuth(self) -> Float[Array, ' a']:

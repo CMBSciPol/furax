@@ -1,9 +1,9 @@
 from ._beam_operator_mapspace import (
     BeamOperatorMapspace,
     ListToStokesOperator,
-    ReadBeamMatrix,
     StackedBeamOperator,
     StokesToListOperator,
+    read_beam_matrix,
 )
 from ._hwp import HWPOperator
 from ._polarizers import LinearPolarizerOperator
@@ -33,7 +33,7 @@ __all__ = [
     'NoiseDiagonalOperator',
     # _beam_operator_mapspace
     'BeamOperatorMapspace',
-    'ReadBeamMatrix',
+    'read_beam_matrix',
     'StackedBeamOperator',
     'StokesToListOperator',
     'ListToStokesOperator',

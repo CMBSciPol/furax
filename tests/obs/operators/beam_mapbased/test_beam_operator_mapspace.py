@@ -9,9 +9,9 @@ from scipy.sparse import load_npz
 from furax.obs import (
     BeamOperatorMapspace,
     ListToStokesOperator,
-    ReadBeamMatrix,
     StackedBeamOperator,
     StokesToListOperator,
+    read_beam_matrix,
 )
 from furax.obs.stokes import Stokes, StokesIQU
 
@@ -27,7 +27,7 @@ def setup_beam_operator_test():
         maps.append(np.random.rand(n_freq, n_pix))
     d = Stokes.from_stokes(I = maps[0], Q = maps[1], U = maps[2])
 
-    test_beam_operator = ReadBeamMatrix(
+    test_beam_operator = read_beam_matrix(
         in_structure=d.structure, 
         path_to_file= Path(__file__).parent / "data/beam_sparse_16_FWHM40.0_cutoff.npz"
     )

@@ -18,13 +18,13 @@ from furax.obs.stokes import Stokes, StokesIQU
 
 def setup_beam_operator_test():
     """Set up data for testing the BeamOperatorMapspace."""
-    nfreq = 2
-    nside = 16
-    npix = 12 * nside**2
+    n_freq = 2
+    n_side = 16
+    n_pix = 12 * n_side**2
 
     maps = []
     for i in range(3):
-        maps.append(np.random.rand(nfreq, npix))
+        maps.append(np.random.rand(n_freq, n_pix))
     d = Stokes.from_stokes(I = maps[0], Q = maps[1], U = maps[2])
 
     test_beam_operator = ReadBeamMatrix(
@@ -39,27 +39,27 @@ def setup_beam_operator_test():
 
 def test_BeamOperatorMapspace():
     """Test matrix-vector multiplication."""
-    d, B_op, A = setup_beam_operator_test()
+    d, B, A = setup_beam_operator_test()
 
-    map_out = B_op.mv(d.i[0])
+    map_out = B.mv(d.i[0])
     map_out_mat = A.dot(np.array(d.i[0]))
 
     assert jnp.allclose(map_out, map_out_mat)
 
 def test_BeamOperatorMapspace_transpose():
     """Test transpose matrix-vector multiplication."""
-    d, B_op, A = setup_beam_operator_test()
+    d, B, A = setup_beam_operator_test()
 
-    map_out = B_op.T.mv(d.i[0])
+    map_out = B.T.mv(d.i[0])
     map_out_mat = A.T.dot(np.array(d.i[0]))
 
     assert jnp.allclose(map_out, map_out_mat, rtol=1e-2)
 
 def test_BeamOperatorMapspace_inverse():
     """Test inverse matrix-vector multiplication."""
-    d, B_op, A = setup_beam_operator_test()
+    d, B, A = setup_beam_operator_test()
 
-    map_out = B_op.I.mv(d.i[0])
+    map_out = B.I.mv(d.i[0])
     map_out_mat = jnp.linalg.solve(A.toarray(), np.array(d.i[0]))
 
     assert jnp.allclose(map_out, map_out_mat, atol=1e-4)
@@ -151,17 +151,18 @@ def test_list_to_stokes_operator_mv():
         np.testing.assert_array_equal(result.u[i], jnp.ones(setup_data['n_pix']) * (i + 3))
 
 def test_stacked_beam_operator():
-    d, B_op, A = setup_beam_operator_test()
+    """Test StackedBeamOperator with multiple BeamOperatorMapspace instances."""
+    d, B, A = setup_beam_operator_test()
 
     beam_operators = [
-        StokesIQU(i = B_op, q = B_op, u = B_op),
-        StokesIQU(i = B_op, q = B_op, u = B_op),
+        StokesIQU(i = B, q = B, u = B),
+        StokesIQU(i = B, q = B, u = B),
     ]
 
-    test_StackedOperator = StackedBeamOperator(
+    StackedOperator = StackedBeamOperator(
             beam_operators=beam_operators, in_structure=d.structure)
     
-    d_out = test_StackedOperator.mv(d)
+    d_out = StackedOperator.mv(d)
     d_out_mat = StokesIQU(
         i = jnp.array([A.dot(np.array(d.i[0])), A.dot(np.array(d.i[1]))]),
         q = jnp.array([A.dot(np.array(d.q[0])), A.dot(np.array(d.q[1]))]),
@@ -171,17 +172,18 @@ def test_stacked_beam_operator():
     assert jax.tree.all(jax.tree.map(jnp.allclose, d_out, d_out_mat))
 
 def test_stacked_beam_operator_transpose():
-    d, B_op, A = setup_beam_operator_test()
+    """Test transpose of StackedBeamOperator with multiple BeamOperatorMapspace instances."""
+    d, B, A = setup_beam_operator_test()
 
     beam_operators = [
-        StokesIQU(i = B_op, q = B_op, u = B_op),
-        StokesIQU(i = B_op, q = B_op, u = B_op),
+        StokesIQU(i = B, q = B, u = B),
+        StokesIQU(i = B, q = B, u = B),
     ]
 
-    test_StackedOperator = StackedBeamOperator(
+    StackedOperator = StackedBeamOperator(
             beam_operators=beam_operators, in_structure=d.structure)
     
-    d_out = test_StackedOperator.T.mv(d)
+    d_out = StackedOperator.T.mv(d)
     d_out_mat = StokesIQU(
         i = jnp.array([A.T.dot(np.array(d.i[0])), A.T.dot(np.array(d.i[1]))]),
         q = jnp.array([A.T.dot(np.array(d.q[0])), A.T.dot(np.array(d.q[1]))]),
@@ -192,17 +194,18 @@ def test_stacked_beam_operator_transpose():
     assert jax.tree.all(jax.tree.map(allclose_with_tol, d_out, d_out_mat))
 
 def test_stacked_beam_operator_inverse():
-    d, B_op, A = setup_beam_operator_test()
+    """Test inverse of StackedBeamOperator with multiple BeamOperatorMapspace instances."""
+    d, B, A = setup_beam_operator_test()
 
     beam_operators = [
-        StokesIQU(i = B_op, q = B_op, u = B_op),
-        StokesIQU(i = B_op, q = B_op, u = B_op),
+        StokesIQU(i = B, q = B, u = B),
+        StokesIQU(i = B, q = B, u = B),
     ]
 
-    test_StackedOperator = StackedBeamOperator(
+    StackedOperator = StackedBeamOperator(
             beam_operators=beam_operators, in_structure=d.structure)
     
-    d_out = test_StackedOperator.I.mv(d)
+    d_out = StackedOperator.I.mv(d)
     A_inv = np.linalg.inv(A.toarray())
     d_out_mat = StokesIQU(
         i = jnp.array([A_inv.dot(np.array(d.i[0])), A_inv.dot(np.array(d.i[1]))]),

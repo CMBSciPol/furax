@@ -11,14 +11,15 @@ from furax import AbstractLinearOperator, BlockDiagonalOperator, symmetric
 from furax.obs.stokes import StokesIQU
 
 
-def ReadBeamMatrix(
+def read_beam_matrix(
     path_to_file: str, in_structure: PyTree[jax.ShapeDtypeStruct]
 ) -> AbstractLinearOperator:
-    """
-    Reads a sparse beam matrix from a .npz file and returns a BeamOperatorMapspace class
+    """Reads a sparse beam matrix from a .npz file and returns a BeamOperatorMapspace class
+
     Args:
         path_to_file (str): Path to the .npz file containing the sparse beam matrix.
         in_structure (PyTree[jax.ShapeDtypeStruct]): Input structure of the operator.
+
     Returns:
         BeamOperatorMapspace: Beam operator in map space.
     """
@@ -38,15 +39,17 @@ def ReadBeamMatrix(
 
 @symmetric
 class BeamOperatorMapspace(AbstractLinearOperator):
-    """
-    BeamOperatorMapspace applies a beam to a map in map space.
+    """BeamOperatorMapspace applies a beam to a map in map space.
+
+    Attributes:
+        _in_structure (PyTree[jax.ShapeDtypeStruct]): Input structure of the operator.
+        _indices (Array): Indices of the CSR format sparse matrix.
+        _data (Array): Data of the CSR format sparse matrix.
 
     Args:
-        _in_structure (PyTree[jax.ShapeDtypeStruct]): Input structure of the operator.
-        _indices (Array): Indices of the sparse matrix in CSR format.
-        _data (Array): Data of the sparse matrix in CSR format.
-    Returns:
-        Array: The result of applying the beam operator to the input map.
+        in_structure (PyTree[jax.ShapeDtypeStruct]): Input structure of the operator.
+        indices (Array): Indices of the CSR format sparse matrix.
+        data (Array): Data of the CSR format sparse matrix.
     """
 
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
@@ -71,49 +74,50 @@ class BeamOperatorMapspace(AbstractLinearOperator):
 
 
 class BeamOperatorMapspaceInverse(AbstractLinearOperator):
-    """
-    Inverse of the BeamOperatorMapspace using conjugate gradient method.
+    """Inverse of the BeamOperatorMapspace using conjugate gradient method.
+
+    Attributes:
+        _beam_operator (BeamOperatorMapspace): The beam operator to be inverted.
+        _in_structure (PyTree[jax.ShapeDtypeStruct]): Input structure of the operator.
 
     Args:
         beam_operator (BeamOperatorMapspace): The beam operator to be inverted.
-    Returns:
-        Array: The result of applying the inverse beam operator to the input map.
     """
 
-    beam_operator: BeamOperatorMapspace
+    _beam_operator: BeamOperatorMapspace
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(self, beam_operator: BeamOperatorMapspace) -> None:
-        self.beam_operator = beam_operator
+        self._beam_operator = beam_operator
         self._in_structure = beam_operator.in_structure()
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
     def mv(self, x: Inexact[Array, '...']) -> Inexact[Array, '...']:
-        # Solve Ax = b using jax.scipy.sparse.linalg.cg
-        A = self.beam_operator
-
         def matvec(v: Inexact[Array, '...']) -> Inexact[Array, '...']:
-            return A.mv(v)
+            return self._beam_operator.mv(v)
 
-        x_sol, info = cg(matvec, x)
+        x_sol, _ = cg(matvec, x)
         return cast(Inexact[Array, '...'], x_sol)
 
 
 class StokesToListOperator(AbstractLinearOperator):
-    """
-    Operator that converts StokesIQU[Array[n,m]] to [StokesIQU[Array[m]], ...].
-    Index notation: x[stokes,(freq,pix)] -> x[freq,stokes,(pix)]
+    """Operator that converts StokesIQU[Array[n,m]] to [StokesIQU[Array[m]], ...].
+
+    Note:
+        Index notation: x[stokes,(freq,pix)] -> x[freq,stokes,(pix)]
 
     Attributes:
-        axis: The axis along which the leaves were originally stacked.
-        in_structure: The in_structure of the pytree to be unstacked.
-    Returns:
-        List[StokesIQU[Array[m]]]: List of StokesIQU objects for each frequency.
+        _axis: The axis along which the leaves were originally stacked.
+        _in_structure: The in_structure of the pytree to be unstacked.
+
+    Args:
+        axis (int): The axis along which the leaves were originally stacked.
+        in_structure (PyTree[jax.ShapeDtypeStruct]): The in_structure of the pytree to be unstacked.
     """
 
-    axis: int
+    _axis: int
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(
@@ -122,7 +126,7 @@ class StokesToListOperator(AbstractLinearOperator):
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ):
-        self.axis = axis
+        self._axis = axis
         self._in_structure = in_structure
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -131,27 +135,30 @@ class StokesToListOperator(AbstractLinearOperator):
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return [
             StokesIQU(
-                i=jnp.take(x.i, f, axis=self.axis),
-                q=jnp.take(x.q, f, axis=self.axis),
-                u=jnp.take(x.u, f, axis=self.axis),
+                i=jnp.take(x.i, f, axis=self._axis),
+                q=jnp.take(x.q, f, axis=self._axis),
+                u=jnp.take(x.u, f, axis=self._axis),
             )
-            for f in range(x.i.shape[self.axis])
+            for f in range(x.i.shape[self._axis])
         ]
 
 
 class ListToStokesOperator(AbstractLinearOperator):
-    """
-    Operator that converts [StokesIQU[Array[m]], ...] to StokesIQU[Array[n,m]].
-    Index notation: x[freq,stokes,(pix)] -> x[stokes,(freq,pix)]
+    """Operator that converts [StokesIQU[Array[m]], ...] to StokesIQU[Array[n,m]].
+
+    Note:
+        Index notation: x[freq,stokes,(pix)] -> x[stokes,(freq,pix)]
 
     Attributes:
-        axis: The axis along which the leaves will be stacked.
-        in_structure: The in_structure of the pytree to be stacked.
-    Returns:
-        StokesIQU[Array[n,m]]: StokesIQU object with stacked frequencies.
+        _axis: The axis along which the leaves will be stacked.
+        _in_structure: The in_structure of the pytree to be stacked.
+
+    Args:
+        axis (int): The axis along which the leaves will be stacked.
+        in_structure (PyTree[jax.ShapeDtypeStruct]): The in_structure of the pytree to be stacked.
     """
 
-    axis: int
+    _axis: int
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(
@@ -160,7 +167,7 @@ class ListToStokesOperator(AbstractLinearOperator):
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ):
-        self.axis = axis
+        self._axis = axis
         self._in_structure = in_structure
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -168,35 +175,39 @@ class ListToStokesOperator(AbstractLinearOperator):
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return StokesIQU(
-            i=jnp.stack([s.i for s in x], axis=self.axis),
-            q=jnp.stack([s.q for s in x], axis=self.axis),
-            u=jnp.stack([s.u for s in x], axis=self.axis),
+            i=jnp.stack([s.i for s in x], axis=self._axis),
+            q=jnp.stack([s.q for s in x], axis=self._axis),
+            u=jnp.stack([s.u for s in x], axis=self._axis),
         )
 
 
 @symmetric
 class StackedBeamOperator(AbstractLinearOperator):
-    """
-    Operator that applies a list of beam operators to a stacked StokesIQU map.
-    Index notation: x[stokes,(freq,pix)] -> x[stokes,(freq,pix)]
+    """Operator that applies a list of beam operators to a stacked StokesIQU map.
+
+    Note:
+        Index notation: x[stokes,(freq,pix)] -> x[stokes,(freq,pix)]
 
     Attributes:
-        beam_operators: List of StokesIQU beam operators to be applied to each frequency.
-        in_structure: The in_structure of the input pytree.
-    Returns:
-        StokesIQU[Array[n,m]]: The result of applying the beam operators to the input map.
+        _beam_operators: List of StokesIQU beam operators to be applied to each frequency.
+        _in_structure: The in_structure of the input pytree.
+
+    Args:
+        beam_operators (List[StokesIQU]): List of StokesIQU beam operators to be applied 
+            to each frequency.
+        in_structure (PyTree[jax.ShapeDtypeStruct]): The in_structure of the input pytree.
 
     Example:
         d = ... some StokeIQU object with shape (3, N_freq, N_pix)
 
         # load files
-        B_f090_i = ReadBeamMatrix(in_structure=d.structure, path_to_file='beam_sparse_f090_I.npz')
-        B_f090_q = ReadBeamMatrix(in_structure=d.structure, path_to_file='beam_sparse_f090_Q.npz')
-        B_f090_u = ReadBeamMatrix(in_structure=d.structure, path_to_file='beam_sparse_f090_U.npz')
+        B_f090_i = read_beam_matrix(in_structure=d.structure, path_to_file='beam_sparse_f090_I.npz')
+        B_f090_q = read_beam_matrix(in_structure=d.structure, path_to_file='beam_sparse_f090_Q.npz')
+        B_f090_u = read_beam_matrix(in_structure=d.structure, path_to_file='beam_sparse_f090_U.npz')
 
-        B_f150_i = ReadBeamMatrix(in_structure=d.structure, path_to_file='beam_sparse_f150_I.npz')
-        B_f150_q = ReadBeamMatrix(in_structure=d.structure, path_to_file='beam_sparse_f150_Q.npz')
-        B_f150_u = ReadBeamMatrix(in_structure=d.structure, path_to_file='beam_sparse_f150_U.npz')
+        B_f150_i = read_beam_matrix(in_structure=d.structure, path_to_file='beam_sparse_f150_I.npz')
+        B_f150_q = read_beam_matrix(in_structure=d.structure, path_to_file='beam_sparse_f150_Q.npz')
+        B_f150_u = read_beam_matrix(in_structure=d.structure, path_to_file='beam_sparse_f150_U.npz')
 
         beam_operators = [
             StokesIQU(i = B_f090_i, q = B_f090_q, u = B_f090_u),
@@ -204,10 +215,10 @@ class StackedBeamOperator(AbstractLinearOperator):
         ]
 
         B = StackedBeamOperator(beam_operators=beam_operators, in_structure=d.structure)
-        d_beamed = B(d)
+        d_beam_applied = B(d)
     """
 
-    beam_operators: PyTree
+    _beam_operators: PyTree
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(
@@ -216,7 +227,7 @@ class StackedBeamOperator(AbstractLinearOperator):
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ):
-        self.beam_operators = beam_operators
+        self._beam_operators = beam_operators
         self._in_structure = in_structure
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -224,9 +235,9 @@ class StackedBeamOperator(AbstractLinearOperator):
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         d_list = StokesToListOperator(axis=0, in_structure=self.in_structure()).mv(x)
-        N_freq = len(d_list)
-        B_freq = [BlockDiagonalOperator(self.beam_operators[f]) for f in range(N_freq)]
-        r_list = [B_freq[f].mv(d_list[f]) for f in range(N_freq)]
+        n_freq = len(d_list)
+        B = [BlockDiagonalOperator(self._beam_operators[f]) for f in range(n_freq)]
+        r_list = [B[f].mv(d_list[f]) for f in range(n_freq)]
         return ListToStokesOperator(axis=0, in_structure=self.in_structure()).mv(r_list)
 
     def inverse(self) -> AbstractLinearOperator:
@@ -234,39 +245,38 @@ class StackedBeamOperator(AbstractLinearOperator):
 
 
 class StackedBeamOperatorInverse(AbstractLinearOperator):
-    """
-    Inverse of the StackedBeamOperator using conjugate gradient method for each frequency.
+    """Inverse of the StackedBeamOperator using conjugate gradient method for each frequency.
+
+    Attributes:
+        _stacked_beam_operator (StackedBeamOperator): The stacked beam operator to be inverted.
+        _in_structure (PyTree[jax.ShapeDtypeStruct]): Input structure of the operator.
+
     Args:
         stacked_beam_operator (StackedBeamOperator): The stacked beam operator to be inverted.
-    Returns:
-        PyTree[Inexact[Array, '...']]: The result of applying the inverse stacked beam operator.
     """
 
-    stacked_beam_operator: StackedBeamOperator
+    _stacked_beam_operator: StackedBeamOperator
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(self, stacked_beam_operator: StackedBeamOperator) -> None:
-        self.stacked_beam_operator = stacked_beam_operator
+        self._stacked_beam_operator = stacked_beam_operator
         self._in_structure = stacked_beam_operator.in_structure()
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
-        # Split into per-frequency components
         d_list = StokesToListOperator(axis=0, in_structure=self.in_structure()).mv(x)
-        N_freq = len(d_list)
+        n_freq = len(d_list)
 
-        # Create inverse beam operators for each frequency
         inverse_beam_operators = []
-        for f in range(N_freq):
-            beam_op_freq = self.stacked_beam_operator.beam_operators[f]
+        for f in range(n_freq):
+            beam_op_freq = self._stacked_beam_operator._beam_operators[f]
             inverse_beam_operators.append(
                 StokesIQU(i=beam_op_freq.i.I, q=beam_op_freq.q.I, u=beam_op_freq.u.I)
             )
 
-        # Apply the inverse operators using the same pattern as StackedBeamOperator
-        B_inv_freq = [BlockDiagonalOperator(inverse_beam_operators[f]) for f in range(N_freq)]
-        r_list = [B_inv_freq[f].mv(d_list[f]) for f in range(N_freq)]
+        B = [BlockDiagonalOperator(inverse_beam_operators[f]) for f in range(n_freq)]
+        r_list = [B[f].mv(d_list[f]) for f in range(n_freq)]
 
         return ListToStokesOperator(axis=0, in_structure=self.in_structure()).mv(r_list)

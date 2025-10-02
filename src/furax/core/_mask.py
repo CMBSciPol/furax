@@ -1,9 +1,10 @@
 import equinox
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, PyTree, Shaped, UInt8
+from jaxtyping import Array, Bool, DTypeLike, PyTree, Shaped, UInt8
 
 from ._base import AbstractLinearOperator, symmetric
+from .rules import AbstractBinaryRule
 
 
 @symmetric
@@ -15,7 +16,7 @@ class MaskOperator(AbstractLinearOperator):
     A True value in the boolean mask means that the data point is valid.
     """
 
-    _mask: UInt8[Array, '...']
+    mask: UInt8[Array, '...']
     """Sample mask, bit-packed along the last axis to save memory"""
 
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
@@ -23,22 +24,48 @@ class MaskOperator(AbstractLinearOperator):
 
     def __init__(
         self,
-        boolean_mask: Bool[Array, '...'],
+        packed_mask: UInt8[Array, '...'],
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
-        # Check consistency
         self._in_structure = in_structure
-        if not boolean_mask.shape == in_structure.shape:
-            raise ValueError('Shape mismatch')
+        self.mask = packed_mask
+
+    @classmethod
+    def from_boolean_mask(
+        cls, boolean_mask: Bool[Array, '...'], dtype: DTypeLike = 'float'
+    ) -> 'MaskOperator':
+        # Assume same shape as boolean mask
+        structure = jax.ShapeDtypeStruct(boolean_mask.shape, dtype)
 
         # Pack boolean mask along samples axis
-        self._mask = jnp.packbits(boolean_mask, axis=-1)
+        packed_mask = jnp.packbits(boolean_mask, axis=-1)
+
+        return cls(packed_mask, in_structure=structure)
 
     def mv(self, x: Shaped[Array, '*dims']) -> Shaped[Array, '*dims']:
-        boolean_mask = jnp.unpackbits(self._mask, axis=-1, count=x.shape[-1])
-        # True = good, False = bad
+        # This will be a uint8 array but would be the same size with booleans
+        boolean_mask = jnp.unpackbits(self.mask, axis=-1, count=x.shape[-1])
+        # 1 = good, 0 = bad
         return jnp.where(boolean_mask, x, 0)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
+
+
+class InverseBinaryRule(AbstractBinaryRule):
+    """Binary rule for composition of MaskOperator's."""
+
+    operator_class = MaskOperator
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        # type checking assert
+        assert isinstance(left, MaskOperator) and isinstance(right, MaskOperator)
+
+        # Apply bit-wise AND to combine masks
+        mask = left.mask & right.mask
+
+        # Left and right operators have the same structure, just take one
+        return [MaskOperator(mask, in_structure=left.in_structure())]

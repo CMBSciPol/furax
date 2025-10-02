@@ -22,6 +22,7 @@ from ._blocks import BlockColumnOperator, BlockDiagonalOperator, BlockRowOperato
 from ._dense import DenseBlockDiagonalOperator
 from ._diagonal import BroadcastDiagonalOperator, DiagonalOperator
 from ._indices import IndexOperator
+from ._mask import MaskOperator
 from ._sum import SumOperator
 from ._toeplitz import SymmetricBandToeplitzOperator, dense_symmetric_band_toeplitz
 from ._trees import TreeOperator
@@ -54,6 +55,7 @@ __all__ = [
     'BroadcastDiagonalOperator',
     'DiagonalOperator',
     'IndexOperator',
+    'MaskOperator',
     'SumOperator',
     'SymmetricBandToeplitzOperator',
     'TreeOperator',

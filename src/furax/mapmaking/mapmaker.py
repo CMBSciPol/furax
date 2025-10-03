@@ -230,9 +230,9 @@ class MapMaker:
         if not self.config.scanning_mask:
             return IdentityOperator(structure)
 
+        # mask is broadcasted along detector axis
         mask = observation.get_scanning_mask()
-        # broadcast along detector axis
-        return MaskOperator.from_boolean_mask(mask[None, :], in_structure=structure)
+        return MaskOperator.from_boolean_mask(mask, in_structure=structure)
 
     def get_sample_mask_projector(
         self, observation: AbstractGroundObservation[Any]

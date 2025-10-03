@@ -24,6 +24,7 @@ from furax import (
     Config,
     DiagonalOperator,
     IdentityOperator,
+    MaskOperator,
 )
 from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
@@ -223,17 +224,15 @@ class MapMaker:
         """Flag operator which sets the values outside the scanning intervals
         of the given TOD (of shape (ndets, nsamps)) to zero.
         """
-        in_structure = ShapeDtypeStruct(
+        structure = ShapeDtypeStruct(
             shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
         )
         if not self.config.scanning_mask:
-            return IdentityOperator(in_structure)
+            return IdentityOperator(structure)
 
+        # mask is broadcasted along detector axis
         mask = observation.get_scanning_mask()
-        masking_projector = DiagonalOperator(
-            jnp.array(mask, dtype=self.config.dtype), in_structure=in_structure
-        )
-        return masking_projector
+        return MaskOperator.from_boolean_mask(mask, in_structure=structure)
 
     def get_sample_mask_projector(
         self, observation: AbstractGroundObservation[Any]
@@ -241,34 +240,24 @@ class MapMaker:
         """Flag operator which sets the values of the given TOD (of shape (ndets, nsamps)) to
         zero at masked (flagged) samples.
         """
-        in_structure = ShapeDtypeStruct(
+        structure = ShapeDtypeStruct(
             shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
         )
         if not self.config.sample_mask:
-            return IdentityOperator(in_structure)
+            return IdentityOperator(structure)
 
         # Note the mask value is 1 at valid (unmasked) samples
         mask = observation.get_sample_mask()
-        masking_projector = DiagonalOperator(
-            mask.astype(self.config.dtype), in_structure=in_structure
-        )
-        return masking_projector
+        return MaskOperator.from_boolean_mask(mask, in_structure=structure)
 
     def get_mask_projector(
         self, observation: AbstractGroundObservation[Any]
     ) -> AbstractLinearOperator:
-        """Flag operator which incorporates both the scanning and sample mask projectors,
-        based on the mapmaking configuration attributes: 'scanning_mask' and 'sample_mask'
-        """
-        in_structure = ShapeDtypeStruct(
-            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
-        )
-        op = IdentityOperator(in_structure)
-        if self.config.scanning_mask:
-            op = op @ self.get_scanning_mask_projector(observation)
-        if self.config.sample_mask:
-            op = op @ self.get_sample_mask_projector(observation)
-        return op.reduce()
+        """Mask operator which incorporates both the scanning and sample mask projectors."""
+        return (
+            self.get_scanning_mask_projector(observation)
+            @ self.get_sample_mask_projector(observation)
+        ).reduce()
 
     def get_or_fit_noise_model(self, observation: AbstractGroundObservation[Any]) -> NoiseModel:
         """Return a noise model for the observation, corresponding to
@@ -539,12 +528,11 @@ class MLMapmaker(MapMaker):
 
         # Optional mask for scanning
         masker = self.get_mask_projector(observation)
-        if isinstance(masker, IdentityOperator):
-            valid_sample_fraction = jnp.array(1.0)
-        elif isinstance(masker, DiagonalOperator):
-            valid_sample_fraction = jnp.mean(masker._diagonal)
-        else:
-            valid_sample_fraction = jnp.mean(masker(jnp.ones(data.shape, data.dtype)))
+        valid_sample_fraction = (
+            1.0
+            if isinstance(masker, IdentityOperator)
+            else float(jnp.mean(masker(jnp.ones(data.shape, data.dtype))))
+        )
         logger_info('Created mask operator')
         logger_info(f'Valid sample fraction: {valid_sample_fraction:.4f}')
 
@@ -895,23 +883,19 @@ class ATOPMapMaker(MapMaker):
 
         # Optional mask for scanning
         masker = self.get_mask_projector(observation)
-        if isinstance(masker, IdentityOperator):
-            valid_sample_fraction = 1.0
-        elif isinstance(masker, DiagonalOperator):
-            valid_sample_fraction = jnp.mean(masker._diagonal)  # type: ignore[assignment]
-        else:
-            valid_sample_fraction = jnp.mean(masker(jnp.ones(data.shape, data.dtype)))  # type: ignore[assignment]
+        valid_sample_fraction = (
+            1.0
+            if isinstance(masker, IdentityOperator)
+            else float(jnp.mean(masker(jnp.ones(data.shape, data.dtype))))
+        )
         logger_info('Created mask operator')
         logger_info(f'Valid sample fraction: {valid_sample_fraction:.4f}')
 
         # Additionally, mask all tau-intervals with any masked samples
-        masked_samples = masker(jnp.ones_like(data))
-        extended_mask = (jnp.abs(atop_projector(masked_samples)) < 0.5 / config.atop_tau).astype(
-            data.dtype
-        ) * masked_samples
-        masker = DiagonalOperator(diagonal=extended_mask, in_structure=data_struct)
-        del masked_samples
-        logger_info(f'Updated valid sample fraction: {jnp.mean(masker._diagonal):.4f}')
+        tau_mask = jnp.abs(atop_projector(masker(jnp.ones_like(data)))) < 0.5 / config.atop_tau
+        masker @= MaskOperator.from_boolean_mask(tau_mask, in_structure=data_struct)
+        valid_sample_fraction = float(jnp.mean(masker(jnp.ones(data.shape, data.dtype))))
+        logger_info(f'Updated valid sample fraction: {valid_sample_fraction:.4f}')
 
         # Noise
         noise_model = self.get_or_fit_noise_model(observation)

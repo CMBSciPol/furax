@@ -224,14 +224,15 @@ class MapMaker:
         """Flag operator which sets the values outside the scanning intervals
         of the given TOD (of shape (ndets, nsamps)) to zero.
         """
+        structure = ShapeDtypeStruct(
+            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
+        )
         if not self.config.scanning_mask:
-            in_structure = ShapeDtypeStruct(
-                shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
-            )
-            return IdentityOperator(in_structure)
+            return IdentityOperator(structure)
 
         mask = observation.get_scanning_mask()
-        return MaskOperator.from_boolean_mask(mask, dtype=self.config.dtype)
+        # broadcast along detector axis
+        return MaskOperator.from_boolean_mask(mask[None, :], in_structure=structure)
 
     def get_sample_mask_projector(
         self, observation: AbstractGroundObservation[Any]
@@ -239,15 +240,15 @@ class MapMaker:
         """Flag operator which sets the values of the given TOD (of shape (ndets, nsamps)) to
         zero at masked (flagged) samples.
         """
+        structure = ShapeDtypeStruct(
+            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
+        )
         if not self.config.sample_mask:
-            in_structure = ShapeDtypeStruct(
-                shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
-            )
-            return IdentityOperator(in_structure)
+            return IdentityOperator(structure)
 
         # Note the mask value is 1 at valid (unmasked) samples
         mask = observation.get_sample_mask()
-        return MaskOperator.from_boolean_mask(mask, dtype=self.config.dtype)
+        return MaskOperator.from_boolean_mask(mask, in_structure=structure)
 
     def get_mask_projector(
         self, observation: AbstractGroundObservation[Any]
@@ -892,7 +893,7 @@ class ATOPMapMaker(MapMaker):
 
         # Additionally, mask all tau-intervals with any masked samples
         tau_mask = jnp.abs(atop_projector(masker(jnp.ones_like(data)))) < 0.5 / config.atop_tau
-        masker @= MaskOperator.from_boolean_mask(tau_mask, dtype=data.dtype)
+        masker @= MaskOperator.from_boolean_mask(tau_mask, in_structure=data_struct)
         valid_sample_fraction = float(jnp.mean(masker(jnp.ones(data.shape, data.dtype))))
         logger_info(f'Updated valid sample fraction: {valid_sample_fraction:.4f}')
 

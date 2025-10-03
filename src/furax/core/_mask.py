@@ -1,7 +1,7 @@
 import equinox
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, DTypeLike, PyTree, Shaped, UInt8
+from jaxtyping import Array, Bool, PyTree, Shaped, UInt8
 
 from ._base import AbstractLinearOperator, symmetric
 from .rules import AbstractBinaryRule
@@ -33,15 +33,21 @@ class MaskOperator(AbstractLinearOperator):
 
     @classmethod
     def from_boolean_mask(
-        cls, boolean_mask: Bool[Array, '...'], dtype: DTypeLike = 'float'
+        cls,
+        boolean_mask: Bool[Array, '...'],
+        *,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> 'MaskOperator':
-        # Assume same shape as boolean mask
-        structure = jax.ShapeDtypeStruct(boolean_mask.shape, dtype)
+        # Check shape compatibility
+        try:
+            _ = jnp.broadcast_shapes(boolean_mask.shape, in_structure.shape)
+        except ValueError:
+            msg = 'Boolean mask shape must be broadcastable to operator shape'
+            raise ValueError(msg)
 
         # Pack boolean mask along samples axis
         packed_mask = jnp.packbits(boolean_mask, axis=-1)
-
-        return cls(packed_mask, in_structure=structure)
+        return cls(packed_mask, in_structure=in_structure)
 
     def mv(self, x: Shaped[Array, '*dims']) -> Shaped[Array, '*dims']:
         # This will be a uint8 array but would be the same size with booleans
@@ -65,6 +71,7 @@ class InverseBinaryRule(AbstractBinaryRule):
         assert isinstance(left, MaskOperator) and isinstance(right, MaskOperator)
 
         # Apply bit-wise AND to combine masks
+        # Since both are broadcastable to the same operator structure shape, they are broadcastable
         mask = left.mask & right.mask
 
         # Left and right operators have the same structure, just take one

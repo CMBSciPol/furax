@@ -43,7 +43,7 @@ def test_mask_operator_non_broadcastable():
 
 
 def test_mask_operator_composition():
-    """Test composition of mask operators via the InverseBinaryRule."""
+    """Test composition of mask operators."""
     x = jnp.array([1.0, 2.0, 3.0, 4.0])
     mask1 = jnp.array([True, True, False, True])
     mask2 = jnp.array([True, False, True, True])

@@ -62,7 +62,8 @@ class MaskOperator(AbstractLinearOperator):
 class InverseBinaryRule(AbstractBinaryRule):
     """Binary rule for composition of MaskOperator's."""
 
-    operator_class = MaskOperator
+    left_operator_class = MaskOperator
+    right_operator_class = MaskOperator
 
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator

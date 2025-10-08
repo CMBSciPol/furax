@@ -119,15 +119,9 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         return np.array(intervals[['first', 'last']].tolist())
 
     def get_sample_mask(self) -> Bool[Array, 'dets samps']:
-        """Returns sample mask of the TOD,
-        which is 1 at valid samples and 0 at invalid ones.
-        """
         return jnp.array(self._observation.detdata['flags'].data == 0, dtype=bool)
 
     def get_left_scan_mask(self) -> Bool[Array, ' samps']:
-        """Returns sample mask of the TOD for left-going scans,
-        which is 1 at valid samples and 0 at invalid ones.
-        """
         if not hasattr(self._observation, 'intervals'):
             # Scanning information missing, first compute the intervals
             toast.ops.AzimuthIntervals().apply(self.data)
@@ -140,9 +134,6 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         return mask
 
     def get_right_scan_mask(self) -> Bool[Array, ' samps']:
-        """Returns sample mask of the TOD for right-going scans,
-        which is 1 at valid samples and 0 at invalid ones.
-        """
         if not hasattr(self._observation, 'intervals'):
             # Scanning information missing, first compute the intervals
             toast.ops.AzimuthIntervals().apply(self.data)

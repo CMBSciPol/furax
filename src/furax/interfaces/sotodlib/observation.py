@@ -55,27 +55,18 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         )
 
     def get_sample_mask(self) -> Bool[Array, 'dets samps']:
-        """Returns sample mask of the TOD,
-        which is 1 at valid samples and 0 at invalid ones.
-        """
         try:
             return jnp.array((~self.data.flags.glitch_flags).mask(), dtype=bool)
         except KeyError:
             raise KeyError('Glitch flags unavailable in the observation')
 
     def get_left_scan_mask(self) -> Bool[Array, ' samps']:
-        """Returns sample mask of the TOD for left-going scans,
-        which is 1 at valid samples and 0 at invalid ones.
-        """
         try:
             return jnp.array(self.data.flags.left_scan.mask(), dtype=bool)
         except KeyError:
             raise KeyError('Scan mask unavailable in the observation')
 
     def get_right_scan_mask(self) -> Bool[Array, ' samps']:
-        """Returns sample mask of the TOD for right-going scans,
-        which is 1 at valid samples and 0 at invalid ones.
-        """
         try:
             return jnp.array(self.data.flags.right_scan.mask(), dtype=bool)
         except KeyError:
@@ -145,13 +136,10 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         """Returns time (sec) of the samples since the observation began"""
         return jnp.array(self.data.timestamps)
 
-    def get_scanning_mask(self, det_ind: int = 0) -> Bool[Array, '...']:
-        """Returns scanning intervals of the chosen detector.
-        The output is a boolean mask
-        """
-        # Assumes that the detectors have identical scanning intervals,
+    def get_scanning_mask(self) -> Bool[Array, ' samp']:
+        # Assume that all detectors have the same scanning intervals
         return jnp.array(
-            self.data.preprocess.turnaround_flags.turnarounds.ranges[det_ind].complement().mask(),
+            self.data.preprocess.turnaround_flags.turnarounds.ranges[0].complement().mask(),
             dtype=bool,
         )
 

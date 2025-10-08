@@ -3,9 +3,8 @@ from functools import cached_property
 from typing import Any, Generic, TypeVar
 
 import jax.numpy as jnp
-import numpy as np
 from astropy.wcs import WCS
-from jaxtyping import Array, Float
+from jaxtyping import Array, Bool, Float
 from numpy.typing import NDArray
 
 from furax.math.quaternion import qmul, to_lonlat_angles
@@ -65,23 +64,16 @@ class AbstractGroundObservation(Generic[T]):
         """
 
     @abstractmethod
-    def get_sample_mask(self) -> Float[Array, 'dets samps']:
-        """Returns sample mask of the TOD,
-        which is 1 at valid samples and 0 at invalid ones.
-        """
-        ...
+    def get_sample_mask(self) -> Bool[Array, 'dets samps']:
+        """Returns boolean sample mask (True=valid) of the TOD."""
 
     @abstractmethod
-    def get_left_scan_mask(self) -> Float[Array, ' samps']:
-        """Returns sample mask of the TOD for left-going scans,
-        which is 1 at valid samples and 0 at invalid ones.
-        """
+    def get_left_scan_mask(self) -> Bool[Array, ' samps']:
+        """Returns boolean mask (True=valid) for selection of left-going scans"""
 
     @abstractmethod
-    def get_right_scan_mask(self) -> Float[Array, ' samps']:
-        """Returns sample mask of the TOD for right-going scans,
-        which is 1 at valid samples and 0 at invalid ones.
-        """
+    def get_right_scan_mask(self) -> Bool[Array, ' samps']:
+        """Returns boolean mask (True=valid) for selection of right-going scans"""
 
     @abstractmethod
     def get_azimuth(self) -> Float[Array, ' a']:
@@ -113,10 +105,10 @@ class AbstractGroundObservation(Generic[T]):
     def get_noise_model(self) -> None | NoiseModel:
         """Load a pre-computed noise model from the data, if present. Otherwise, return None"""
 
-    def get_scanning_mask(self) -> NDArray[Any]:
-        """Returns a boolean mask constructed with scanning intervals"""
+    def get_scanning_mask(self) -> Bool[Array, ' samp']:
+        """Returns a boolean sample mask from scanning intervals (True=scanning)."""
         intervals = self.get_scanning_intervals()
-        mask = np.zeros(self.n_samples, dtype=bool)
+        mask = jnp.zeros(self.n_samples, dtype=bool)
         for l, u in intervals:
             mask[l:u] = True
 

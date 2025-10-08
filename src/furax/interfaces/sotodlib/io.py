@@ -58,7 +58,7 @@ class SOTODLibReader(AbstractReader):
 
             The data is a dictionary with the following keys:
                 - signal: the detector read-outs.
-                - mask: the mask indicating which samples are valid.
+                - mask: the (boolean) mask indicating which samples are valid (=True).
                 - timestamps: the timestamps of the samples.
                 - detector_quaternions: the detector quaternions.
                 - boresight_quaternions: the boresight quaternions.
@@ -77,7 +77,7 @@ class SOTODLibReader(AbstractReader):
         obs = SOTODLibObservation(manager)
         return {
             'signal': jax.ShapeDtypeStruct((obs.n_detectors, obs.n_samples), jnp.float32),
-            'mask': jax.ShapeDtypeStruct((obs.n_detectors, obs.n_samples), jnp.float64),
+            'mask': jax.ShapeDtypeStruct((obs.n_detectors, obs.n_samples), jnp.bool),
             'timestamps': jax.ShapeDtypeStruct((obs.n_samples,), jnp.float64),
             'detector_quaternions': jax.ShapeDtypeStruct((obs.n_detectors, 4), jnp.float64),
             'boresight_quaternions': jax.ShapeDtypeStruct((obs.n_samples, 4), jnp.float64),

@@ -23,7 +23,7 @@ def test_reader() -> None:
 
     assert reader.out_structure == {
         'signal': jax.ShapeDtypeStruct((ndet2, nsample2), dtype=jnp.float32),
-        'mask': jax.ShapeDtypeStruct((ndet2, nsample2), dtype=jnp.float64),
+        'mask': jax.ShapeDtypeStruct((ndet2, nsample2), dtype=jnp.bool),
         'timestamps': jax.ShapeDtypeStruct((nsample2,), dtype=jnp.float64),
         'detector_quaternions': jax.ShapeDtypeStruct((ndet2, 4), dtype=jnp.float64),
         'boresight_quaternions': jax.ShapeDtypeStruct((nsample2, 4), dtype=jnp.float64),

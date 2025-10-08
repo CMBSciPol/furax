@@ -154,12 +154,17 @@ class AbstractBinaryRule(AbstractRule, ABC):
     operator_class: (
         type[AbstractLinearOperator] | tuple[type[AbstractLinearOperator], ...] | None
     ) = None
+    """Operator class of either left or right operator for the rule to apply"""
+
     left_operator_class: (
         type[AbstractLinearOperator] | tuple[type[AbstractLinearOperator], ...] | None
     ) = None
+    """Operator class that left operator must be for the rule to apply"""
+
     right_operator_class: (
         type[AbstractLinearOperator] | tuple[type[AbstractLinearOperator], ...] | None
     ) = None
+    """Operator class that right operator must be for the rule to apply"""
 
     def __init_subclass__(cls) -> None:
         if cls.__name__.startswith('Abstract'):

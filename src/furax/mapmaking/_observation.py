@@ -16,7 +16,7 @@ T = TypeVar('T')
 
 
 class AbstractGroundObservation(Generic[T]):
-    """Dataclass for ground-based observation data.
+    """Abstract class for interfacing with ground-based observation data.
 
     This class defines what data is needed for making maps with ground-based data.
     It is meant to be used as a base class for interfacing with different containers

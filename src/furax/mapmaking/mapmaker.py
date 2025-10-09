@@ -1,4 +1,3 @@
-import os
 import pickle
 from abc import abstractmethod
 from dataclasses import asdict, dataclass
@@ -54,38 +53,40 @@ class MapMaker:
     def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]: ...
 
     def run(
-        self, observation: AbstractGroundObservation[Any], out_dir: str | None
+        self, observation: AbstractGroundObservation[Any], out_dir: str | Path | None
     ) -> dict[str, Any]:
         results = self.make_map(observation)
 
         # Save output
         if out_dir is not None:
+            out_dir = Path(out_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
             self._save(results, out_dir)
-            self.config.dump_yaml(f'{out_dir}/mapmaking_config.yaml')
+            self.config.dump_yaml(out_dir / 'mapmaking_config.yaml')
             self.logger.info('Mapmaking config saved to file')
 
         return results
 
-    def _save(self, results: dict[str, Any], out_dir: str) -> None:
-        os.makedirs(out_dir, exist_ok=True)
+    def _save(self, results: dict[str, Any], out_dir: Path) -> None:
         for key, m in results.items():
             if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
-                np.save(f'{out_dir}/{key}.npy', np.array(m))
+                np.save(out_dir / key, np.array(m))
             elif isinstance(m, StokesIQU):
-                np.save(f'{out_dir}/{key}.npy', np.stack([m.i, m.q, m.u], axis=0))
+                np.save(out_dir / key, np.stack([m.i, m.q, m.u], axis=0))
             elif isinstance(m, pixell.enmap.ndmap):
-                pixell.enmap.write_map(f'{out_dir}/{key}.hdf', m, allow_modify=True)
+                pixell.enmap.write_map((out_dir / f'{key}.hdf').as_posix(), m, allow_modify=True)
             elif isinstance(m, WCS):
                 header = m.to_header()
                 hdu = fits.PrimaryHDU(header=header)
-                hdu.writeto(f'{out_dir}/{key}.fits', overwrite=True)
+                hdu.writeto(out_dir / f'{key}.fits', overwrite=True)
             elif isinstance(m, StokesLandscape):
-                with open(f'{out_dir}/{key}.pkl', 'wb') as f:
+                with open(out_dir / f'{key}.pkl', 'wb') as f:
                     pickle.dump(m, f)
             elif isinstance(m, dict):
                 self._save(m, out_dir)
                 continue
             else:
+                # TODO: warning?
                 continue
             self.logger.info(f'Mapmaking result [{key}] saved to file')
 

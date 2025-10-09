@@ -6,12 +6,17 @@ from ._likelihoods import (
 )
 from .operators import (
     AbstractSEDOperator,
+    BeamOperatorMapspace,
     CMBOperator,
     DustOperator,
     HWPOperator,
     LinearPolarizerOperator,
+    ListToStokesOperator,
     QURotationOperator,
+    StackedBeamOperator,
+    StokesToListOperator,
     SynchrotronOperator,
+    read_beam_matrix,
 )
 
 __all__ = [
@@ -26,4 +31,9 @@ __all__ = [
     'negative_log_likelihood',
     'spectral_cmb_variance',
     'sky_signal',
+    'BeamOperatorMapspace',
+    'read_beam_matrix',
+    'StackedBeamOperator',
+    'StokesToListOperator',
+    'ListToStokesOperator',
 ]

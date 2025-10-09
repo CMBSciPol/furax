@@ -24,15 +24,17 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     """Class for interfacing with sotodlib's AxisManager."""
 
     @classmethod
-    def from_file(cls, filename: str) -> 'SOTODLibObservation':
+    def from_file(cls, filename: str | Path) -> 'SOTODLibObservation':
         """Loads the observation directly from a binary file."""
+        if isinstance(filename, Path):
+            filename = filename.as_posix()
         data = AxisManager.load(filename)
         return cls(data)
 
     @classmethod
     def from_preprocess(
         cls,
-        preprocess_config: Path | dict[str, Any],
+        preprocess_config: str | Path | dict[str, Any],
         observation_id: str,
         detector_selection: dict[str, str] | None = None,
     ) -> 'SOTODLibObservation':
@@ -47,12 +49,12 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         Returns:
             An instance of SOTODLibObservation.
         """
-        if isinstance(preprocess_config, Path):
+        if isinstance(preprocess_config, dict):
+            config = preprocess_config
+        else:
             # load the preprocessing config from a yaml file
             with open(preprocess_config) as file:
                 config = yaml.safe_load(file)
-        else:
-            config = preprocess_config
 
         data = load_and_preprocess(observation_id, config, dets=detector_selection)
         return cls(data)

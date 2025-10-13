@@ -110,7 +110,7 @@ class AbstractGroundObservation(Generic[T]):
         intervals = self.get_scanning_intervals()
         mask = jnp.zeros(self.n_samples, dtype=bool)
         for l, u in intervals:
-            mask[l:u] = True
+            mask = mask.at[l:u].set(True)
 
         return mask
 

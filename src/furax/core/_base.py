@@ -1,5 +1,6 @@
 # mypy: disable-error-code=method-assign
 import functools
+import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -9,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import lineax as lx
 from jax import Array
+from jax.tree_util import Partial
 from jaxtyping import Inexact, PyTree, Scalar, ScalarLike
 
 from furax._config import Config, ConfigState
@@ -521,3 +523,83 @@ class HomothetyOperator(AbstractLinearOperator):
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         return self.value * jnp.identity(self.in_size(), dtype=self.out_promoted_dtype)
+
+
+def asoperator(
+    func: Callable[..., Any],
+    *,
+    in_structure: PyTree[jax.ShapeDtypeStruct],
+    **keywords: Any,
+) -> AbstractLinearOperator:
+    """Wraps a function into an operator.
+
+    Args:
+        func: The function to wrap.
+        **keywords: Keyword arguments to pass to the function.
+
+    Usage:
+        >>> op = asoperator(lambda x: 2*x, in_structure=jax.ShapeDtypeStruct((), jnp.float32))
+        >>> op.I(1.)
+        Array(0.5, dtype=float32)
+
+    Returns:
+        An operator wrapping the function.
+    """
+
+    class Operator(AbstractLinearOperator):
+        def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
+            return partial_func(x)
+
+        def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+            return in_structure
+
+    if not hasattr(func, 'lower'):
+        func = jax.jit(func)
+    partial_func = Partial(func, **keywords)
+    _check_params(partial_func)
+    return Operator()
+
+
+def _check_params(func: Callable[..., Any]) -> None:
+    """Returns the number of non-default parameters a function has.
+
+    Raises:
+        TypeError: If the function has no positional arguments or has keyword-only arguments
+            without default values.
+    """
+    sig = inspect.signature(func)
+    params = sig.parameters.values()
+    count = sum(
+        1
+        for p in params
+        if p.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    )
+    if count == 0:
+        raise TypeError('The function must have at least one positional argument.')
+    names = [
+        p.name
+        for p in params
+        if p.default == inspect.Parameter.empty and p.kind == inspect.Parameter.KEYWORD_ONLY
+    ]
+    if len(names) != 0:
+        raise TypeError(
+            f'The function cannot have keyword-only arguments without default values: {names}.'
+        )
+    names = [
+        p.name
+        for p in params
+        if p.default == inspect.Parameter.empty
+        and p.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    if len(names) > 1:
+        raise TypeError(
+            f'The function can only have one positional argument without default value: {names}.'
+        )

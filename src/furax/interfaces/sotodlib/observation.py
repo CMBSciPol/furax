@@ -1,15 +1,18 @@
 from functools import cached_property
+from pathlib import Path
 from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
 import pixell
 import so3g.proj
+import yaml
 from astropy.wcs import WCS
 from jaxtyping import Array, Bool, Float, Integer
 from numpy.typing import NDArray
 from sotodlib import coords
 from sotodlib.core import AxisManager
+from sotodlib.preprocess.preprocess_util import load_and_preprocess
 
 from furax.mapmaking import AbstractGroundObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
@@ -18,6 +21,46 @@ from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 
 
 class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
+    """Class for interfacing with sotodlib's AxisManager."""
+
+    @classmethod
+    def from_file(cls, filename: str | Path) -> 'SOTODLibObservation':
+        """Loads the observation directly from a binary file."""
+        if not Path(filename).exists():
+            raise FileNotFoundError(f'File {filename} does not exist')
+        if isinstance(filename, Path):
+            filename = filename.as_posix()
+        data = AxisManager.load(filename)
+        return cls(data)
+
+    @classmethod
+    def from_preprocess(
+        cls,
+        preprocess_config: str | Path | dict[str, Any],
+        observation_id: str,
+        detector_selection: dict[str, str] | None = None,
+    ) -> 'SOTODLibObservation':
+        """Loads and preprocesses an observation.
+
+        Args:
+            preprocess_config: Preprocessing configuration as a path to a yaml file or dictionary.
+            observation_id: Observation id.
+                (e.g. 'obs_1714550584_satp3_1111111').
+            detector_selection: Optional dictionary to select a subset of detectors
+                (e.g. {'wafer_slot': 'ws0', 'wafer.bandpass': 'f150'}).
+        Returns:
+            An instance of SOTODLibObservation.
+        """
+        if isinstance(preprocess_config, dict):
+            config = preprocess_config
+        else:
+            # load the preprocessing config from a yaml file
+            with open(preprocess_config) as file:
+                config = yaml.safe_load(file)
+
+        data = load_and_preprocess(observation_id, config, dets=detector_selection)
+        return cls(data)
+
     @property
     def n_samples(self) -> int:
         return self.data.signal.shape[-1]  # type: ignore[no-any-return]

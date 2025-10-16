@@ -26,6 +26,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     @classmethod
     def from_file(cls, filename: str | Path) -> 'SOTODLibObservation':
         """Loads the observation directly from a binary file."""
+        if not Path(filename).exists():
+            raise FileNotFoundError(f'File {filename} does not exist')
         if isinstance(filename, Path):
             filename = filename.as_posix()
         data = AxisManager.load(filename)

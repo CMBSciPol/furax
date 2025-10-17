@@ -26,6 +26,7 @@ from furax import (
     MaskOperator,
 )
 from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
+from furax.io.readers import AbstractReader
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
@@ -37,6 +38,69 @@ from .config import Landscapes, MapMakingConfig, Methods
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
+
+
+def prepend_dimensions(
+    dims: int | tuple[int, ...], structure: jax.ShapeDtypeStruct
+) -> jax.ShapeDtypeStruct:
+    """Prepends dimensions to a ShapeDtypeStruct."""
+    if isinstance(dims, int):
+        dims = (dims,)
+    original_shape = structure.shape
+    new_shape = (*dims, *original_shape)
+    return structure.update(shape=new_shape)  # type: ignore[attr-defined, no-any-return]
+
+
+class MultiObservationMapMaker:
+    """Class for mapping multiple observations together."""
+
+    def __init__(self, reader: AbstractReader) -> None:
+        self.reader = reader
+        self.landscape = HealpixLandscape(nside=16, stokes='IQU', dtype=jnp.float32)
+
+    def accumulate_rhs_and_data(self) -> tuple[StokesPyTreeType, dict[str, Any]]:
+        def accumulate_body(i, vals):  # type: ignore[no-untyped-def]
+            # read the data for this observation
+            data, padding = self.reader.read(i)
+            acquisition = self.build_acquisition(data, padding)
+            # update the carried values
+            rhs, rest = vals
+            new_rhs = rhs + acquisition.T(data['signal'])
+            new_rest = {k: v.at[i].set(data[k]) for k, v in rest.items()}
+            return new_rhs, new_rest
+
+        init_rhs = self.landscape.full(0)
+        init_rest = {
+            k: furax.tree.zeros_like(
+                prepend_dimensions(self.reader.count, self.reader.out_structure[k])
+            )
+            for k in self._stacked_field_keys()
+        }
+        return jax.lax.fori_loop(0, self.reader.count, accumulate_body, (init_rhs, init_rest))  # type: ignore[no-any-return]
+
+    def build_acquisition(self, data, padding):  # type: ignore[no-untyped-def]
+        # TODO: handle padding
+        ndet, nsamp = self.reader.out_structure['signal'].shape
+        data_shape = (ndet, nsamp)
+        pointing = PointingOperator(
+            landscape=self.landscape,
+            qbore=data['boresight_quaternions'],
+            qdet=data['detector_quaternions'],
+            det_gamma=jnp.zeros(ndet),
+            _in_structure=self.landscape.structure,
+            _out_structure=Stokes.class_for(self.landscape.stokes).structure_for(
+                data_shape, dtype=jnp.float32
+            ),
+            chunk_size=4,
+        )
+        polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=jnp.float32)
+        hwp = HWPOperator.create(shape=data_shape, dtype=jnp.float32)
+        return (polarizer @ hwp @ pointing).reduce()
+
+    def _stacked_field_keys(self) -> list[str]:
+        """Names of the data fields to be stacked over observations."""
+        # TODO: should this be a method of AbstractReader?
+        return ['boresight_quaternions', 'detector_quaternions']
 
 
 @dataclass

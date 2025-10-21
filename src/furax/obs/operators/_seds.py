@@ -58,7 +58,7 @@ def K_RK_2_K_CMB(nu: Array | float) -> Array:
     safe_x = jnp.clip(x, min=_PLANCK_X_MIN)
     log_res = 2.0 * _log_expm1_stable(safe_x) - safe_x - 2.0 * jnp.log(safe_x)
     res = jnp.exp(log_res)
-    return jnp.nan_to_num(res)  # type: ignore [no-any-return]
+    return jnp.nan_to_num(res)
 
 
 class AbstractSEDOperator(BroadcastDiagonalOperator):

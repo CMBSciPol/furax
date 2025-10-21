@@ -7,8 +7,8 @@ import pytest
 
 from furax.obs import CMBOperator, DustOperator, SynchrotronOperator
 from furax.obs.landscapes import HealpixLandscape
-from furax.obs.stokes import Stokes
 from furax.obs.operators._seds import K_RK_2_K_CMB
+from furax.obs.stokes import Stokes
 
 
 @pytest.fixture(scope='module')
@@ -132,9 +132,7 @@ def test_synchrotron_k_rj(fg_data):
 
 def test_sed_no_nan_edge_cases():
     frequencies = jnp.array([0.0, 0.1, 23.0, 857.0, 2000.0])
-    structure = Stokes.from_stokes(
-        jax.ShapeDtypeStruct((frequencies.size,), jnp.float64)
-    )
+    structure = Stokes.from_stokes(jax.ShapeDtypeStruct((frequencies.size,), jnp.float64))
     ones_map = Stokes.from_stokes(jnp.ones_like(frequencies))
 
     assert jnp.all(jnp.isfinite(K_RK_2_K_CMB(frequencies)))

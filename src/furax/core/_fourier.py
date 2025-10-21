@@ -34,6 +34,9 @@ class FourierOperator(AbstractLinearOperator):
         in_structure: Input structure specification.
         method: Computation method ('fft' or 'overlap_save'). Default: 'overlap_save'.
         fft_size: FFT size for overlap_save method. If None, uses default.
+        apodize: Apply Hamming window in overlap regions to reduce edge artifacts.
+            Only used with overlap_save method. If None, defaults to True for
+            overlap_save and False for fft.
 
     Usage:
         >>> import jax.numpy as jnp
@@ -56,6 +59,7 @@ class FourierOperator(AbstractLinearOperator):
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     method: str = equinox.field(static=True)
     fft_size: int | None
+    apodize: bool = equinox.field(static=True)
 
     def __init__(
         self,
@@ -64,6 +68,7 @@ class FourierOperator(AbstractLinearOperator):
         *,
         method: str = 'overlap_save',
         fft_size: int | None = None,
+        apodize: bool | None = None,
     ):
         if method not in self.METHODS:
             raise ValueError(f'Invalid method {method}. Choose from: {", ".join(self.METHODS)}')
@@ -72,8 +77,16 @@ class FourierOperator(AbstractLinearOperator):
         self._in_structure = in_structure
         self.method = method
 
+        # Default apodize to True for overlap_save, False for fft
+        if apodize is None:
+            apodize = (method == 'overlap_save')
+        self.apodize = apodize
+
         if fft_size is not None and method != 'overlap_save':
             raise ValueError('The FFT size is only used by the overlap_save method.')
+
+        if apodize and method != 'overlap_save':
+            raise ValueError('Apodization is only used by the overlap_save method.')
 
         if fft_size is None and method == 'overlap_save':
             # Get the kernel size to determine appropriate FFT size
@@ -93,6 +106,37 @@ class FourierOperator(AbstractLinearOperator):
         # Use a power of 2 that's larger than kernel size
         additional_power = 1
         return int(2 ** (additional_power + np.ceil(np.log2(max(kernel_size, 32)))))
+
+    @staticmethod
+    def _create_apodization_window(fft_size: int, overlap: int) -> Array:
+        """Create a Hamming window for apodization in overlap regions.
+
+        The window is constructed such that:
+        - It is 1.0 in the middle (valid output region)
+        - It smoothly tapers to 0 in the overlap regions on both sides
+
+        Args:
+            fft_size: Size of the FFT block
+            overlap: Size of the overlap region on each side
+
+        Returns:
+            Window array of shape (fft_size,)
+        """
+        # Create full Hamming window
+        window = jnp.ones(fft_size)
+
+        if overlap > 0:
+            # Create Hamming window for the overlap region
+            # The Hamming window goes from 0 to 1 over the overlap region
+            hamming = 0.54 - 0.46 * jnp.cos(jnp.pi * jnp.arange(overlap) / overlap)
+
+            # Apply taper at the beginning (left overlap)
+            window = window.at[:overlap].set(hamming)
+
+            # Apply taper at the end (right overlap)
+            window = window.at[-overlap:].set(hamming[::-1])
+
+        return window
 
     def _get_func(self) -> Callable[[Array], Array]:
         """Get the appropriate computation function based on method."""
@@ -137,22 +181,31 @@ class FourierOperator(AbstractLinearOperator):
         kernel = jnp.asarray(self.fourier_kernel)
 
         # Determine overlap based on kernel characteristics
-        # For Fourier filtering, we need some overlap to handle edge effects
-        # Use similar logic to Toeplitz operator
-        overlap = self.fft_size // 4  # 25% overlap
-        step_size = self.fft_size - overlap
+        # For Fourier filtering, we need overlap on both sides to handle edge effects
+        # At each block, discard 25% from each end
+        half_overlap = self.fft_size // 4  # 25% on each side
+        overlap = 2 * half_overlap  # Total overlap
+        step_size = self.fft_size - overlap  # 50% valid output per block
 
         # Number of blocks needed
-        nblock = int(np.ceil((l + overlap) / step_size))
+        #nblock = int(np.ceil((l + overlap) / step_size))
+        nblock = int(np.ceil((l + 3*half_overlap) / step_size))
 
         # Total padded length
         total_length = (nblock - 1) * step_size + self.fft_size
 
         # Padding
-        x_padding_start = overlap
-        x_padding_end = total_length - overlap - l
+        #x_padding_start = half_overlap
+        x_padding_start = 2*half_overlap
+        x_padding_end = total_length - half_overlap - l
 
-        x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode='constant')
+        # Use edge padding when apodizing to avoid discontinuities
+        #pad_mode = 'edge' if self.apodize else 'constant'
+        #x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode=pad_mode)
+        if self.apodize:
+            x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode='reflect', reflect_type='odd')
+        else:
+            x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode='constant')
 
         # Output array
         y = jnp.zeros(l + x_padding_end, dtype=x.dtype)
@@ -199,10 +252,21 @@ class FourierOperator(AbstractLinearOperator):
             # Convert back to frequency domain
             H = jnp.fft.fft(kernel_time_resized)
 
+        # Create apodization window if requested
+        # The window tapers only the regions that will be discarded from each end
+        if self.apodize:
+            window = self._create_apodization_window(self.fft_size, half_overlap)
+        else:
+            window = None
+
         def func(iblock, y):  # type: ignore[no-untyped-def]
             """Process one block."""
             position = iblock * step_size
             x_block = lax.dynamic_slice(x_padded, (position,), (self.fft_size,))
+
+            # Apply apodization window if enabled
+            if window is not None:
+                x_block = x_block * window
 
             # Forward FFT
             X = jnp.fft.fft(x_block)
@@ -213,9 +277,10 @@ class FourierOperator(AbstractLinearOperator):
             # Inverse FFT
             y_block = jnp.fft.ifft(X_filtered).real
 
-            # Save the valid portion (discard overlap region)
+            # Save the valid portion (discard overlap region from beginning)
+            # This follows the Toeplitz pattern: discard 2*half_overlap samples from start
             y = lax.dynamic_update_slice(
-                y, lax.dynamic_slice(y_block, (overlap,), (step_size,)), (position,)
+                y, lax.dynamic_slice(y_block, (half_overlap,), (step_size,)), (position,)
             )
             return y
 
@@ -223,7 +288,8 @@ class FourierOperator(AbstractLinearOperator):
         y = lax.fori_loop(0, nblock, func, y)
 
         # Extract the original signal length
-        return y[: l]  # type: ignore[no-any-return]
+        #return y[:l]  # type: ignore[no-any-return]
+        return y[half_overlap:half_overlap+l]  # type: ignore[no-any-return]
 
     def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
         """Apply Fourier kernel to input array.
@@ -299,6 +365,7 @@ class BandpassOperator:
         *,
         method: str = 'overlap_save',
         fft_size: int | None = None,
+        apodize: bool | None = None,
     ) -> FourierOperator:
         """Create a FourierOperator configured for bandpass filtering.
 
@@ -309,6 +376,9 @@ class BandpassOperator:
             in_structure: Input structure specification.
             method: Computation method ('fft' or 'overlap_save'). Default: 'overlap_save'.
             fft_size: FFT size for overlap_save method. If None, uses default.
+            apodize: Apply Hamming window in overlap regions to reduce edge artifacts.
+                Only used with overlap_save method. If None, defaults to True for
+                overlap_save and False for fft.
 
         Returns:
             FourierOperator configured with bandpass kernel.
@@ -359,4 +429,5 @@ class BandpassOperator:
             in_structure=in_structure,
             method=method,
             fft_size=fft_size,
+            apodize=apodize,
         )

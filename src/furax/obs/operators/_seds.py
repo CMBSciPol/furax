@@ -28,8 +28,7 @@ __all__ = [
 
 def _log_expm1_stable(x: Float[Array, '...']) -> Float[Array, '...']:
     """Return log(expm1(x)) with guards against overflow/underflow."""
-    x = jnp.clip(x, min=_PLANCK_X_MIN)
-    clipped = jnp.minimum(x, _PLANCK_X_CLIP)
+    clipped = jnp.clip(x, _PLANCK_X_MIN, _PLANCK_X_CLIP)
     log_small = jnp.log(jnp.expm1(clipped))
     log_large = x + jnp.log1p(-jnp.exp(-x))
     return jnp.where(x <= _PLANCK_X_CLIP, log_small, log_large)

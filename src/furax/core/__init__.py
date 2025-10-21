@@ -1,4 +1,5 @@
 from ._axes import MoveAxisOperator, RavelOperator, ReshapeOperator
+from ._fourier import BandpassOperator, FourierOperator
 from ._base import (
     AbstractLazyInverseOperator,
     AbstractLazyInverseOrthogonalOperator,
@@ -48,6 +49,8 @@ __all__ = [
     'MoveAxisOperator',
     'RavelOperator',
     'ReshapeOperator',
+    'FourierOperator',
+    'BandpassOperator',
     'BlockRowOperator',
     'BlockDiagonalOperator',
     'BlockColumnOperator',

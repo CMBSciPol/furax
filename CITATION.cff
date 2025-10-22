@@ -18,9 +18,9 @@ authors:
     affiliation: "Laboratoire AstroParticule et Cosmologie"
     orcid: "https://orcid.org/0009-0001-6501-4564"
   - family-names: "Sohn"
-    given-names: "Wuhyun"  
+    given-names: "Wuhyun"
     affiliation: "Laboratoire AstroParticule et Cosmologie"
     orcid: "https://orcid.org/0000-0002-6039-8247"
-  
+
 repository-code: 'https://github.com/CMBSciPol/furax'
 license: GPL-3.0

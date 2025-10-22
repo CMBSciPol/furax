@@ -79,7 +79,7 @@ class FourierOperator(AbstractLinearOperator):
 
         # Default apodize to True for overlap_save, False for fft
         if apodize is None:
-            apodize = (method == 'overlap_save')
+            apodize = method == 'overlap_save'
         self.apodize = apodize
 
         if fft_size is not None and method != 'overlap_save':
@@ -188,22 +188,22 @@ class FourierOperator(AbstractLinearOperator):
         step_size = self.fft_size - overlap  # 50% valid output per block
 
         # Number of blocks needed
-        #nblock = int(np.ceil((l + overlap) / step_size))
-        nblock = int(np.ceil((l + 3*half_overlap) / step_size))
+        # nblock = int(np.ceil((l + overlap) / step_size))
+        nblock = int(np.ceil((l + 3 * half_overlap) / step_size))
 
         # Total padded length
         total_length = (nblock - 1) * step_size + self.fft_size
 
         # Padding
-        #x_padding_start = half_overlap
-        x_padding_start = 2*half_overlap
+        # x_padding_start = half_overlap
+        x_padding_start = 2 * half_overlap
         x_padding_end = total_length - half_overlap - l
 
         # Use edge padding when apodizing to avoid discontinuities
-        #pad_mode = 'edge' if self.apodize else 'constant'
-        #x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode=pad_mode)
         if self.apodize:
-            x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode='reflect', reflect_type='odd')
+            x_padded = jnp.pad(
+                x, (x_padding_start, x_padding_end), mode='reflect', reflect_type='odd'
+            )
         else:
             x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode='constant')
 
@@ -278,7 +278,7 @@ class FourierOperator(AbstractLinearOperator):
             y_block = jnp.fft.ifft(X_filtered).real
 
             # Save the valid portion (discard overlap region from beginning)
-            # This follows the Toeplitz pattern: discard 2*half_overlap samples from start
+            # Discard half_overlap samples each from the start and the end
             y = lax.dynamic_update_slice(
                 y, lax.dynamic_slice(y_block, (half_overlap,), (step_size,)), (position,)
             )
@@ -288,8 +288,7 @@ class FourierOperator(AbstractLinearOperator):
         y = lax.fori_loop(0, nblock, func, y)
 
         # Extract the original signal length
-        #return y[:l]  # type: ignore[no-any-return]
-        return y[half_overlap:half_overlap+l]  # type: ignore[no-any-return]
+        return y[half_overlap : half_overlap + l]  # type: ignore[no-any-return]
 
     def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
         """Apply Fourier kernel to input array.
@@ -363,6 +362,7 @@ class BandpassOperator:
         sample_rate: float,
         in_structure: PyTree[jax.ShapeDtypeStruct],
         *,
+        filter_type: str = 'square',
         method: str = 'overlap_save',
         fft_size: int | None = None,
         apodize: bool | None = None,
@@ -374,6 +374,11 @@ class BandpassOperator:
             f_high: Upper frequency cutoff (inclusive) [Hz].
             sample_rate: Sampling rate of the input signal [Hz].
             in_structure: Input structure specification.
+            filter_type: Filter shape type. Options: 'square', 'butter4', 'cos2'.
+                Default: 'square'.
+                - 'square': Sharp cutoff (ideal brick-wall filter)
+                - 'butter4': 4th-order Butterworth filter (smooth rolloff)
+                - 'cos2': Cosine-squared transition (smooth rolloff)
             method: Computation method ('fft' or 'overlap_save'). Default: 'overlap_save'.
             fft_size: FFT size for overlap_save method. If None, uses default.
             apodize: Apply Hamming window in overlap regions to reduce edge artifacts.
@@ -384,17 +389,24 @@ class BandpassOperator:
             FourierOperator configured with bandpass kernel.
 
         Raises:
-            ValueError: If frequency parameters are invalid.
+            ValueError: If frequency parameters or filter_type are invalid.
 
         Note:
             For overlap_save method, the kernel is created based on fft_size rather than
             the full signal length to ensure proper chunked processing.
         """
+        # Validate filter_type
+        valid_filter_types = ('square', 'butter4', 'cos2')
+        if filter_type not in valid_filter_types:
+            raise ValueError(
+                f'Invalid filter_type {filter_type}. Choose from: {", ".join(valid_filter_types)}'
+            )
+
         if f_low < 0:
             raise ValueError(f'f_low must be non-negative, got {f_low}')
         if f_high > sample_rate / 2:
             raise ValueError(
-                f'f_high must be less than Nyquist frequency {sample_rate/2}, got {f_high}'
+                f'f_high must be less than Nyquist frequency {sample_rate / 2}, got {f_high}'
             )
         if f_low >= f_high:
             raise ValueError(f'f_low must be less than f_high, got f_low={f_low}, f_high={f_high}')
@@ -418,11 +430,94 @@ class BandpassOperator:
         # Use rfft frequencies since we're filtering real signals
         freqs = jnp.fft.rfftfreq(kernel_size, 1.0 / sample_rate)
 
-        # Create mask: pass frequencies in [f_low, f_high]
-        mask = (freqs >= f_low) & (freqs <= f_high)
+        # Create filter kernel based on filter_type
+        if filter_type == 'square':
+            # Sharp cutoff (ideal brick-wall filter)
+            mask = (freqs >= f_low) & (freqs <= f_high)
+            fourier_kernel = mask.astype(jnp.complex128)
 
-        # Convert to complex kernel (multiplication in Fourier domain)
-        fourier_kernel = mask.astype(jnp.complex128)
+        elif filter_type == 'butter4':
+            # 4th-order Butterworth bandpass filter using scipy
+            import scipy.signal
+
+            # Design Butterworth bandpass filter
+            # butter returns (b, a) coefficients for digital filter
+            # Use 4th order bandpass (becomes 8th order total - 4th for each band edge)
+            sos = scipy.signal.butter(
+                4, [f_low, f_high], btype='bandpass', fs=sample_rate, output='sos'
+            )
+
+            # Convert to frequency response
+            # Use freqs for the actual frequency points we need
+            w = 2 * jnp.pi * freqs
+
+            # Compute frequency response from second-order sections
+            # H(w) = product of all second-order section responses
+            H = jnp.ones(len(freqs), dtype=jnp.complex128)
+            for section in sos:
+                b0, b1, b2, a0, a1, a2 = section
+                # H(z) = (b0 + b1*z^-1 + b2*z^-2) / (a0 + a1*z^-1 + a2*z^-2)
+                # For frequency response, substitute z = exp(j*w*T) where T = 1/fs
+                z = jnp.exp(1j * w / sample_rate)
+                z_inv = 1.0 / z
+                z_inv2 = z_inv * z_inv
+
+                numerator = b0 + b1 * z_inv + b2 * z_inv2
+                denominator = a0 + a1 * z_inv + a2 * z_inv2
+                H = H * (numerator / denominator)
+
+            # Take magnitude for real-valued filter
+            fourier_kernel = jnp.abs(H).astype(jnp.complex128)
+
+        elif filter_type == 'cos2':
+            # Cosine-squared transition outside the passband
+            # Define transition width (10% of bandwidth on each side, outside the band)
+            bandwidth = f_high - f_low
+            transition_width = 0.1 * bandwidth
+
+            # Transition regions are OUTSIDE the passband [f_low, f_high]
+            # Lower transition: [max(0, f_low - transition_width), f_low]
+            # Upper transition: [f_high, f_high + transition_width]
+            f_low_transition_start = max(0.0, f_low - transition_width)
+
+            # Initialize kernel
+            kernel = jnp.zeros_like(freqs)
+
+            # Passband (full transmission) - entire [f_low, f_high] range
+            passband = (freqs >= f_low) & (freqs <= f_high)
+            kernel = jnp.where(passband, 1.0, kernel)
+
+            # Lower transition region (outside passband, below f_low)
+            lower_transition = (freqs >= f_low_transition_start) & (freqs < f_low)
+            # Cosine-squared from 0 to 1 as frequency increases toward f_low
+            phase_low = (
+                (freqs - f_low_transition_start) / (f_low - f_low_transition_start) * (jnp.pi / 2)
+            )
+            kernel = jnp.where(lower_transition, jnp.sin(phase_low) ** 2, kernel)
+
+            # Upper transition region (outside passband, above f_high)
+            f_high_transition_end = f_high + transition_width
+            upper_transition = (freqs > f_high) & (freqs <= f_high_transition_end)
+            # Cosine-squared from 1 to 0 as frequency increases away from f_high
+            phase_high = (f_high_transition_end - freqs) / transition_width * (jnp.pi / 2)
+            kernel = jnp.where(upper_transition, jnp.sin(phase_high) ** 2, kernel)
+
+            fourier_kernel = kernel.astype(jnp.complex128)
+
+        else:
+            raise NotImplementedError(f'Filter type {filter_type} not implemented')
+
+        # Validate that the filter has at least one unity gain point in the passband
+        # This ensures the passband is actually represented in the frequency grid
+        max_gain = jnp.max(jnp.abs(fourier_kernel))
+        if max_gain < 0.99:  # Use 0.99 to account for numerical precision
+            raise ValueError(
+                f'Filter passband not represented in frequency grid. '
+                f'Maximum filter gain is {max_gain:.4f}, expected ~1.0. '
+                f'The bandwidth [{f_low}, {f_high}] Hz may be too narrow for the given '
+                f'FFT size ({kernel_size}) and sample rate ({sample_rate} Hz). '
+                f'Try using a larger FFT size or increasing the bandwidth.'
+            )
 
         return FourierOperator(
             fourier_kernel=fourier_kernel,

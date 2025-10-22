@@ -28,23 +28,20 @@ class FourierOperator(AbstractLinearOperator):
         - overlap_save: Apply FFT on chunked input for memory efficiency
 
     Args:
-        fourier_kernel: Complex-valued kernel in Fourier domain. Should match the expected
-            FFT output size based on method and padding_width. For fft method with apodization,
-            size should be ((n + 2 * padding_width) // 2 + 1) for rfft. For overlap_save,
-            size should be (fft_size // 2 + 1).
+        fourier_kernel: Complex-valued kernel in Fourier domain. Size must be fft_size // 2 + 1
+            (the output size of rfft for time-domain signal of length fft_size).
         in_structure: Input structure specification.
         method: Computation method ('fft' or 'overlap_save'). Default: 'overlap_save'.
-        fft_size: FFT size for overlap_save method. If None, uses default.
+        fft_size: Time-domain signal length for FFT. If None, inferred from kernel.
+            For fft method with apodize=True: must equal n + 2 * padding_width
+            For fft method with apodize=False: must equal n
+            For overlap_save method: specifies the block size for chunked processing
         apodize: Apply Hamming window to reduce edge artifacts. Defaults to True.
             For fft method: pads signal and applies window to padded regions.
             For overlap_save method: applies window in overlap regions.
-        padding_width: Padding width in samples on each end.
-            For fft method: defaults to 5% of data length (rounded up). Used only when apodize=True,
-            and pads the data on each end before apodization. The output is then truncated.
-            For overlap_save method: defaults to 25% of data length (rounded up). This specifies
-            the number of overlapping samples between blocks where FFT is applied. Each block has
-            fft_size samples, and only the middle (fft_size - 2 * padding_width) samples are saved
-            after FFT to avoid edge effects. If apodize=True, apodize the overlapping samples.
+        padding_width: Padding width in samples on each end. If None, defaults are:
+            For fft method: 5% of data length (rounded up)
+            For overlap_save method: 25% of fft_size, specifies overlap between blocks
 
     Usage:
         >>> import jax.numpy as jnp
@@ -66,9 +63,9 @@ class FourierOperator(AbstractLinearOperator):
     fourier_kernel: Float[Array, '...'] | complex
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     method: str = equinox.field(static=True)
-    fft_size: int | None
+    fft_size: int = equinox.field(static=True)
     apodize: bool = equinox.field(static=True)
-    padding_width: int | None = equinox.field(static=True)
+    padding_width: int = equinox.field(static=True)
 
     def __init__(
         self,
@@ -86,52 +83,84 @@ class FourierOperator(AbstractLinearOperator):
         self.fourier_kernel = fourier_kernel
         self._in_structure = in_structure
         self.method = method
-
-        # Default apodize to True for overlap_save, False for fft
-        if apodize is None:
-            apodize = method == 'overlap_save'
         self.apodize = apodize
 
         # Get data length
         n = in_structure.shape[-1]
 
-        # Set up method-specific parameters
-        if method == 'fft':
-            if fft_size is not None and fft_size != n:
-                raise ValueError(
-                    f'The FFT size for fft method should match the data length: '
-                    f'need {n}, got {fft_size}'
-                )
-            self.fft_size = None
+        # Get kernel size to validate
+        kernel_array = jnp.asarray(fourier_kernel)
+        actual_kernel_size = kernel_array.shape[-1]
 
-            # Set default padding_width for fft method
+        # Set up method-specific parameters and compute fft_size
+        if method == 'fft':
+            # For fft method, fft_size represents the time-domain signal length for FFT
+            # which equals 2 * (kernel_size - 1) for rfft
+            if fft_size is not None:
+                # User provided fft_size, validate it matches kernel
+                expected_kernel_size = fft_size // 2 + 1
+                if actual_kernel_size != expected_kernel_size:
+                    raise ValueError(
+                        f'For fft method, kernel size must be fft_size // 2 + 1. '
+                        f'Expected {expected_kernel_size} for fft_size={fft_size}, '
+                        f'got {actual_kernel_size}.'
+                    )
+
+            # Set default padding_width for fft method or infer from fft_size
             if padding_width is None:
-                padding_width = int(np.ceil(0.05 * n))  # 5% of data length, rounded up
+                if fft_size is not None and apodize:
+                    # fft_size was provided, infer padding_width from it
+                    padding_width = (fft_size - n) // 2
+                else:
+                    # Compute default
+                    padding_width = int(np.ceil(0.05 * n))  # 5% of data length, rounded up
+
+            # If fft_size is unspecified, set it
+            if fft_size is None:
+                if apodize:
+                    fft_size = n + 2 * padding_width
+                else:
+                    fft_size = n
+
+            # Validate that fft_size matches expected size based on apodization
+            if apodize:
+                expected_fft_size = n + 2 * padding_width
+            else:
+                expected_fft_size = n
+
+            # Allow off-by-one due to odd/even ambiguity
+            if abs(fft_size - expected_fft_size) > 1:
+                raise ValueError(
+                    f'For fft method with apodize={apodize}, kernel must correspond to '
+                    f'fft_size={expected_fft_size}. Got fft_size={fft_size} '
+                    f'(kernel_size={actual_kernel_size}). '
+                    f'Expected kernel_size={(expected_fft_size // 2 + 1)}.'
+                )
+
+            self.fft_size = fft_size
 
         elif method == 'overlap_save':
-            # Determine fft_size first
+            # For overlap_save, fft_size is the block size for chunked processing
             if fft_size is None:
-                kernel_size = self._get_kernel_size()
-                fft_size = self._get_default_fft_size(kernel_size)
+                # Use default FFT size based on kernel
+                fft_size = self._get_default_fft_size(actual_kernel_size)
+
+            # Validate kernel size matches fft_size
+            expected_kernel_size = fft_size // 2 + 1
+            if actual_kernel_size != expected_kernel_size:
+                raise ValueError(
+                    f'For overlap_save method, kernel size must be fft_size // 2 + 1. '
+                    f'Expected {expected_kernel_size} for fft_size={fft_size}, '
+                    f'got {actual_kernel_size}.'
+                )
+
             self.fft_size = fft_size
 
             # Set default padding_width for overlap_save method
             if padding_width is None:
                 padding_width = fft_size // 4  # 25% of fft_size
 
-        self.padding_width = padding_width
-
-        # Validate kernel dimensions
-        expected_kernel_size = self.get_expected_kernel_size()
-        kernel_array = jnp.asarray(fourier_kernel)
-        actual_kernel_size = kernel_array.shape[-1]
-
-        if actual_kernel_size != expected_kernel_size:
-            raise ValueError(
-                f'Fourier kernel size mismatch for method={method}. '
-                f'Expected {expected_kernel_size}, got {actual_kernel_size}. '
-                f'Use FourierOperator.resample_kernel() to resample the kernel to the correct size.'
-            )
+        self.padding_width = padding_width  # type: ignore[assignment]
 
     def _get_kernel_size(self) -> int:
         """Get the size of the Fourier kernel."""
@@ -148,34 +177,11 @@ class FourierOperator(AbstractLinearOperator):
     def get_expected_kernel_size(self) -> int:
         """Get the expected kernel size for the current configuration.
 
-        Returns:
-            Expected size of the Fourier kernel (rfft output size).
-        """
-        if self.method == 'fft':
-            return self.get_kernel_size_fft()
-        elif self.method == 'overlap_save':
-            return self.get_kernel_size_overlap_save()
-        raise NotImplementedError(f'Unknown method: {self.method}')
-
-    def get_kernel_size_fft(self) -> int:
-        """Get expected kernel size for FFT method.
+        Since fft_size always represents the time-domain signal length,
+        the kernel size is simply fft_size // 2 + 1 for both methods.
 
         Returns:
-            For fft method with apodization: (n + 2 * padding_width) // 2 + 1
-            For fft method without apodization: n // 2 + 1
-        """
-        n = self._in_structure.shape[-1]
-        if self.apodize:
-            assert self.padding_width is not None
-            return (n + 2 * self.padding_width) // 2 + 1  # type: ignore[no-any-return]
-        else:
-            return n // 2 + 1  # type: ignore[no-any-return]
-
-    def get_kernel_size_overlap_save(self) -> int:
-        """Get expected kernel size for overlap-save method.
-
-        Returns:
-            fft_size // 2 + 1
+            Expected size of the Fourier kernel (rfft output size): fft_size // 2 + 1
         """
         assert self.fft_size is not None
         return self.fft_size // 2 + 1
@@ -220,7 +226,7 @@ class FourierOperator(AbstractLinearOperator):
             )
 
         # Convert back to frequency domain
-        return jnp.fft.rfft(kernel_time_resized)  # type: ignore[no-any-return]
+        return jnp.fft.rfft(kernel_time_resized)
 
     @staticmethod
     def _create_apodization_window(fft_size: int, overlap: int) -> Array:
@@ -275,16 +281,19 @@ class FourierOperator(AbstractLinearOperator):
         kernel = jnp.asarray(self.fourier_kernel)
 
         if self.apodize:
-            assert self.padding_width is not None
+            # Compute actual padding needed to match fft_size
+            # This may differ from self.padding_width by 1 due to odd/even rounding
+            total_padding = self.fft_size - n
+            pad_left = total_padding // 2
+            pad_right = total_padding - pad_left
 
             # Pad the signal using edge reflection
-            x_padded = jnp.pad(
-                x, (self.padding_width, self.padding_width), mode='reflect', reflect_type='odd'
-            )
+            x_padded = jnp.pad(x, (pad_left, pad_right), mode='reflect', reflect_type='odd')
 
             # Create apodization window
             # The window tapers from 0 to 1 in the padded regions
-            window = self._create_apodization_window(n + 2 * self.padding_width, self.padding_width)
+            # Use the actual padding amounts
+            window = self._create_apodization_window(self.fft_size, pad_left)
 
             # Apply window to padded signal
             x_windowed = x_padded * window
@@ -296,10 +305,10 @@ class FourierOperator(AbstractLinearOperator):
             X_filtered = X * kernel
 
             # Inverse FFT
-            y_padded = jnp.fft.irfft(X_filtered, n=n + 2 * self.padding_width)
+            y_padded = jnp.fft.irfft(X_filtered, n=self.fft_size)
 
             # Extract the original signal region (remove padding)
-            y = y_padded[self.padding_width : self.padding_width + n]
+            y = y_padded[pad_left : pad_left + n]
         else:
             # No apodization
             # Forward FFT (use rfft for real signals)
@@ -309,7 +318,7 @@ class FourierOperator(AbstractLinearOperator):
             X_filtered = X * kernel
 
             # Inverse FFT
-            y = jnp.fft.irfft(X_filtered, n=n)
+            y = jnp.fft.irfft(X_filtered, n=self.fft_size)
 
         return y
 
@@ -477,7 +486,7 @@ class BandpassOperator:
         filter_type: str = 'square',
         method: str = 'overlap_save',
         fft_size: int | None = None,
-        apodize: bool | None = None,
+        apodize: bool = True,
         padding_width: int | None = None,
     ) -> FourierOperator:
         """Create a FourierOperator configured for bandpass filtering.
@@ -497,7 +506,7 @@ class BandpassOperator:
             apodize: Apply Hamming window to reduce edge artifacts.
                 For overlap_save: applies window in overlap regions.
                 For fft: pads signal and applies window to padded regions.
-                If None, defaults to True for overlap_save and False for fft.
+                Default: True.
             padding_width: Padding width in samples on each end. If None, defaults to 5% of
                 data length (rounded up) for fft method, and 25% of fft_size for overlap_save.
 
@@ -532,9 +541,8 @@ class BandpassOperator:
         shape = in_structure.shape if hasattr(in_structure, 'shape') else in_structure().shape
         n = shape[-1]
 
-        # Determine apodize default if not specified
-        if apodize is None:
-            apodize = method == 'overlap_save'
+        # Track if padding_width was auto-computed
+        padding_width_was_auto = padding_width is None
 
         # Compute padding_width defaults
         if padding_width is None:
@@ -555,7 +563,7 @@ class BandpassOperator:
             # For 'fft' method
             if apodize:
                 # With apodization, kernel is for padded signal
-                kernel_size = n + 2 * padding_width
+                kernel_size = n + 2 * padding_width  # type: ignore[operator]
             else:
                 # Without apodization, kernel is for original signal
                 kernel_size = n
@@ -652,6 +660,16 @@ class BandpassOperator:
                 f'FFT size ({kernel_size}) and sample rate ({sample_rate} Hz). '
                 f'Try using a larger FFT size or increasing the bandwidth.'
             )
+
+        # For fft method, infer fft_size from the kernel we just created
+        # This handles odd/even ambiguity by using the actual kernel size
+        if method == 'fft' and fft_size is None:
+            actual_kernel_size = fourier_kernel.shape[-1]
+            fft_size = 2 * (actual_kernel_size - 1)
+            # Don't pass padding_width if it was auto-computed, let __init__ re-infer it
+            # to avoid odd/even mismatch issues
+            if padding_width_was_auto and apodize:
+                padding_width = None
 
         return FourierOperator(
             fourier_kernel=fourier_kernel,

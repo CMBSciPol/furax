@@ -31,12 +31,13 @@ class FourierOperator(AbstractLinearOperator):
         fourier_kernel: Complex-valued kernel in Fourier domain. Size must be fft_size // 2 + 1
             (the output size of rfft for time-domain signal of length fft_size).
         in_structure: Input structure specification.
-        method: Computation method ('fft' or 'overlap_save'). Default: 'overlap_save'.
+        method: Computation method ('fft' or 'overlap_save'). Default: 'fft'.
         fft_size: Time-domain signal length for FFT. If None, inferred from kernel.
             For fft method with apodize=True: must equal n + 2 * padding_width
             For fft method with apodize=False: must equal n
             For overlap_save method: specifies the block size for chunked processing
-        apodize: Apply Hamming window to reduce edge artifacts. Defaults to True.
+        apodize: Apply Hamming window to reduce edge artifacts.
+            Default: False for fft, True for overlap_save.
             For fft method: pads signal and applies window to padded regions.
             For overlap_save method: applies window in overlap regions.
         padding_width: Padding width in samples on each end. If None, defaults are:
@@ -72,9 +73,9 @@ class FourierOperator(AbstractLinearOperator):
         fourier_kernel: Float[Array, '...'] | complex,
         in_structure: PyTree[jax.ShapeDtypeStruct],
         *,
-        method: str = 'overlap_save',
+        method: str = 'fft',
         fft_size: int | None = None,
-        apodize: bool = True,
+        apodize: bool | None = None,
         padding_width: int | None = None,
     ):
         if method not in self.METHODS:
@@ -83,6 +84,10 @@ class FourierOperator(AbstractLinearOperator):
         self.fourier_kernel = fourier_kernel
         self._in_structure = in_structure
         self.method = method
+
+        # Default apodize based on method: False for fft, True for overlap_save
+        if apodize is None:
+            apodize = method == 'overlap_save'
         self.apodize = apodize
 
         # Get data length
@@ -287,8 +292,8 @@ class FourierOperator(AbstractLinearOperator):
             pad_left = total_padding // 2
             pad_right = total_padding - pad_left
 
-            # Pad the signal using edge reflection
-            x_padded = jnp.pad(x, (pad_left, pad_right), mode='reflect', reflect_type='odd')
+            # Pad the signal
+            x_padded = jnp.pad(x, (pad_left, pad_right), mode='edge')
 
             # Create apodization window
             # The window tapers from 0 to 1 in the padded regions
@@ -352,9 +357,7 @@ class FourierOperator(AbstractLinearOperator):
 
         # Use edge padding when apodizing to avoid discontinuities
         if self.apodize:
-            x_padded = jnp.pad(
-                x, (x_padding_start, x_padding_end), mode='reflect', reflect_type='odd'
-            )
+            x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode='edge')
         else:
             x_padded = jnp.pad(x, (x_padding_start, x_padding_end), mode='constant')
 
@@ -484,9 +487,9 @@ class BandpassOperator:
         in_structure: PyTree[jax.ShapeDtypeStruct],
         *,
         filter_type: str = 'square',
-        method: str = 'overlap_save',
+        method: str = 'fft',
         fft_size: int | None = None,
-        apodize: bool = True,
+        apodize: bool | None = None,
         padding_width: int | None = None,
     ) -> FourierOperator:
         """Create a FourierOperator configured for bandpass filtering.
@@ -501,12 +504,12 @@ class BandpassOperator:
                 - 'square': Sharp cutoff (ideal brick-wall filter)
                 - 'butter4': 4th-order Butterworth filter (smooth rolloff)
                 - 'cos2': Cosine-squared transition (smooth rolloff)
-            method: Computation method ('fft' or 'overlap_save'). Default: 'overlap_save'.
+            method: Computation method ('fft' or 'overlap_save'). Default: 'fft'.
             fft_size: FFT size for overlap_save method. If None, uses default.
             apodize: Apply Hamming window to reduce edge artifacts.
                 For overlap_save: applies window in overlap regions.
                 For fft: pads signal and applies window to padded regions.
-                Default: True.
+                Default: False for fft, True for overlap_save.
             padding_width: Padding width in samples on each end. If None, defaults to 5% of
                 data length (rounded up) for fft method, and 25% of fft_size for overlap_save.
 
@@ -540,6 +543,10 @@ class BandpassOperator:
         # Get signal length from in_structure
         shape = in_structure.shape if hasattr(in_structure, 'shape') else in_structure().shape
         n = shape[-1]
+
+        # Default apodize based on method: False for fft, True for overlap_save
+        if apodize is None:
+            apodize = method == 'overlap_save'
 
         # Track if padding_width was auto-computed
         padding_width_was_auto = padding_width is None

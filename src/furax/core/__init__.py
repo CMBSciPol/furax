@@ -21,6 +21,7 @@ from ._base import (
 from ._blocks import BlockColumnOperator, BlockDiagonalOperator, BlockRowOperator
 from ._dense import DenseBlockDiagonalOperator
 from ._diagonal import BroadcastDiagonalOperator, DiagonalOperator
+from ._fourier import BandpassOperator, FourierOperator
 from ._indices import IndexOperator
 from ._mask import MaskOperator
 from ._sum import SumOperator
@@ -48,6 +49,8 @@ __all__ = [
     'MoveAxisOperator',
     'RavelOperator',
     'ReshapeOperator',
+    'FourierOperator',
+    'BandpassOperator',
     'BlockRowOperator',
     'BlockDiagonalOperator',
     'BlockColumnOperator',

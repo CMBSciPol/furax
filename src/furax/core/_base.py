@@ -65,7 +65,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
 
     # Mypy type ignore: Forward operator "__mul__" is not callable
     # https://github.com/python/mypy/issues/11595
-    def __rmul__(self, other: ScalarLike) -> 'AbstractLinearOperator':  # type: ignore[misc]
+    def __rmul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
         other = jnp.asarray(other)
         if other.shape != ():
             raise ValueError('Can only multiply AbstractLinearOperators by scalars.')

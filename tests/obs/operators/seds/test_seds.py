@@ -7,6 +7,7 @@ import pytest
 
 from furax.obs import CMBOperator, DustOperator, SynchrotronOperator
 from furax.obs.landscapes import HealpixLandscape
+from furax.obs.operators._seds import K_RK_2_K_CMB
 from furax.obs.stokes import Stokes
 
 
@@ -127,3 +128,46 @@ def test_synchrotron_k_rj(fg_data):
     synch_furax = synch_operator(d)
 
     assert jax.tree.all(jax.tree.map(jnp.allclose, synch_furax, synch_fgbuster_tree))
+
+
+def test_sed_no_nan_edge_cases():
+    frequencies = jnp.array([0.0, 0.1, 23.0, 857.0, 2000.0])
+    structure = Stokes.from_stokes(jax.ShapeDtypeStruct((frequencies.size,), jnp.float64))
+    ones_map = Stokes.from_stokes(jnp.ones_like(frequencies))
+
+    assert jnp.all(jnp.isfinite(K_RK_2_K_CMB(frequencies)))
+
+    dust_operator = DustOperator(
+        frequencies,
+        frequency0=150.0,
+        temperature=0.0,
+        beta=1.7,
+        in_structure=structure,
+        units='K_CMB',
+    )
+    cmb_operator = CMBOperator(frequencies, in_structure=structure, units='K_RJ')
+    synch_operator = SynchrotronOperator(
+        frequencies,
+        frequency0=0.0,
+        beta_pl=-3.0,
+        running=0.1,
+        nu_pivot=0.0,
+        in_structure=structure,
+        units='K_CMB',
+    )
+
+    dust_sed = dust_operator.sed()
+    cmb_sed = cmb_operator.sed()
+    synch_sed = synch_operator.sed()
+
+    assert jnp.all(jnp.isfinite(dust_sed))
+    assert jnp.all(jnp.isfinite(cmb_sed))
+    assert jnp.all(jnp.isfinite(synch_sed))
+
+    dust_eval = dust_operator(ones_map)
+    cmb_eval = cmb_operator(ones_map)
+    synch_eval = synch_operator(ones_map)
+
+    assert jnp.all(jnp.isfinite(dust_eval.i))
+    assert jnp.all(jnp.isfinite(cmb_eval.i))
+    assert jnp.all(jnp.isfinite(synch_eval.i))

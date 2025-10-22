@@ -212,9 +212,7 @@ class TestFourierOperator:
         t = jnp.linspace(0, n_samples / sample_rate, n_samples)
 
         # Multiple detector signals
-        signals = jnp.array(
-            [jnp.sin(2 * jnp.pi * (5 + i * 5) * t) for i in range(n_detectors)]
-        )
+        signals = jnp.array([jnp.sin(2 * jnp.pi * (5 + i * 5) * t) for i in range(n_detectors)])
 
         # Bandpass filter
         freqs = jnp.fft.rfftfreq(n_samples, 1.0 / sample_rate)
@@ -395,7 +393,153 @@ class TestBandpassOperator:
         # Should produce very similar results in middle 80% with proper implementation
         mid_start = n // 10
         mid_end = 9 * n // 10
-        assert jnp.allclose(filtered_fft[mid_start:mid_end], filtered_overlap[mid_start:mid_end], atol=0.01)
+        assert jnp.allclose(
+            filtered_fft[mid_start:mid_end], filtered_overlap[mid_start:mid_end], atol=0.01
+        )
+
+    def test_filter_types(self):
+        """Test different filter types (square, butter4, cos2)."""
+        n = 2000
+        sample_rate = 200.0
+        t = jnp.linspace(0, n / sample_rate, n)
+
+        # Signal with frequencies: 5, 15, 25 Hz
+        signal = (
+            jnp.sin(2 * jnp.pi * 5 * t)
+            + jnp.sin(2 * jnp.pi * 15 * t)
+            + jnp.sin(2 * jnp.pi * 25 * t)
+        )
+
+        f_low, f_high = 10.0, 20.0
+
+        # Test each filter type
+        for filter_type in ['square', 'butter4', 'cos2']:
+            op = BandpassOperator.create(
+                f_low=f_low,
+                f_high=f_high,
+                sample_rate=sample_rate,
+                in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
+                filter_type=filter_type,
+                method='fft',
+            )
+
+            filtered = op(signal)
+            assert filtered.shape == signal.shape
+
+            # Check frequency content
+            fft_orig = jnp.fft.rfft(signal)
+            fft_filt = jnp.fft.rfft(filtered)
+
+            # 15 Hz (in passband) should be preserved
+            freq_15hz_idx = int(15.0 * n / sample_rate)
+            passband_ratio = jnp.abs(fft_filt[freq_15hz_idx]) / jnp.abs(fft_orig[freq_15hz_idx])
+
+            if filter_type == 'square':
+                # Square filter should have perfect passband
+                assert passband_ratio > 0.999
+            elif filter_type == 'butter4':
+                # Butterworth has some rolloff even in passband
+                assert passband_ratio > 0.98
+            elif filter_type == 'cos2':
+                # Cosine-squared should have good passband preservation
+                assert passband_ratio > 0.999
+
+            # 5 Hz and 25 Hz (outside passband) should be attenuated
+            freq_5hz_idx = int(5.0 * n / sample_rate)
+            freq_25hz_idx = int(25.0 * n / sample_rate)
+            stopband_ratio_low = jnp.abs(fft_filt[freq_5hz_idx]) / jnp.abs(fft_orig[freq_5hz_idx])
+            stopband_ratio_high = jnp.abs(fft_filt[freq_25hz_idx]) / jnp.abs(
+                fft_orig[freq_25hz_idx]
+            )
+
+            if filter_type == 'square':
+                # Square filter should have sharp cutoff
+                assert stopband_ratio_low < 0.01
+                assert stopband_ratio_high < 0.01
+            elif filter_type == 'butter4':
+                # Butterworth has gradual rolloff
+                assert stopband_ratio_low < 0.1
+                assert stopband_ratio_high < 0.2  # More gradual rolloff on high side
+            elif filter_type == 'cos2':
+                # Cosine-squared has smooth transition
+                assert stopband_ratio_low < 0.01
+                assert stopband_ratio_high < 0.01
+
+    def test_invalid_filter_type(self):
+        """Test that invalid filter_type raises error."""
+        n = 1000
+        signal = jnp.zeros(n)
+        sample_rate = 100.0
+
+        with pytest.raises(ValueError, match='Invalid filter_type'):
+            BandpassOperator.create(
+                f_low=10.0,
+                f_high=20.0,
+                sample_rate=sample_rate,
+                in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
+                filter_type='invalid_filter',
+            )
+
+    def test_narrow_bandwidth_validation(self):
+        """Test that too-narrow bandwidth raises helpful error."""
+        n = 100  # Very small FFT
+        sample_rate = 100.0
+
+        # Extremely narrow bandwidth that falls between frequency bins
+        # With n=100, sample_rate=100, freq resolution = 1 Hz
+        # Bins at 0, 1, 2, ..., 15, 16, ...
+        # So [15.3, 15.4] falls between bins and won't reach gain=1
+        with pytest.raises(ValueError, match='Filter passband not represented'):
+            BandpassOperator.create(
+                f_low=15.3,
+                f_high=15.4,
+                sample_rate=sample_rate,
+                in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
+                filter_type='square',
+                method='fft',
+            )
+
+    def test_cos2_passband_unity_gain(self):
+        """Test that cos2 filter has unity gain throughout entire passband."""
+        n = 2000
+        sample_rate = 200.0
+        f_low, f_high = 10.0, 20.0
+
+        op = BandpassOperator.create(
+            f_low=f_low,
+            f_high=f_high,
+            sample_rate=sample_rate,
+            in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
+            filter_type='cos2',
+            method='fft',
+        )
+
+        # Check that entire passband has unity gain
+        freqs = jnp.fft.rfftfreq(n, 1.0 / sample_rate)
+        kernel = op.fourier_kernel
+
+        # Test frequencies within passband
+        for freq in [f_low, (f_low + f_high) / 2, f_high]:
+            idx = jnp.argmin(jnp.abs(freqs - freq))
+            gain = jnp.abs(kernel[idx])
+            assert gain > 0.999, f'Gain at {freq} Hz should be ~1.0, got {gain}'
+
+        # Test that transitions are outside passband
+        bandwidth = f_high - f_low
+        transition_width = 0.1 * bandwidth
+
+        # Just outside lower edge (in transition)
+        freq_low_trans = f_low - 0.5 * transition_width
+        if freq_low_trans > 0:
+            idx = jnp.argmin(jnp.abs(freqs - freq_low_trans))
+            gain = jnp.abs(kernel[idx])
+            assert 0.2 < gain < 0.8, f'Transition gain should be between 0.2-0.8, got {gain}'
+
+        # Just outside upper edge (in transition)
+        freq_high_trans = f_high + 0.5 * transition_width
+        idx = jnp.argmin(jnp.abs(freqs - freq_high_trans))
+        gain = jnp.abs(kernel[idx])
+        assert 0.2 < gain < 0.8, f'Transition gain should be between 0.2-0.8, got {gain}'
 
 
 class TestApodizationDetails:

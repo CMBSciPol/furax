@@ -32,10 +32,11 @@ class SOTODLibReader(GroundObservationReader):
         self, path: Path, data_field_names: list[str]
     ) -> PyTree[jax.ShapeDtypeStruct]:
         filename = path.as_posix()
-        manager = AxisManager.load(filename)
-        obs = SOTODLibObservation(manager)
-        n_detectors = obs.n_detectors
-        n_samples = obs.n_samples
+
+        # Load minimal amount to find data shape
+        sotodlib_obs = AxisManager.load(filename, fields=['dets', 'samps'])
+        n_detectors = sotodlib_obs.dets.count
+        n_samples = sotodlib_obs.samps.count
 
         field_structure = GroundObservationReader.data_field_structures(
             n_detectors=n_detectors, n_samples=n_samples
@@ -44,8 +45,25 @@ class SOTODLibReader(GroundObservationReader):
 
     def _read_data_impure(self, path: Path, data_field_names: list[str]) -> PyTree[Array]:
         filename = path.as_posix()
-        manager = AxisManager.load(filename)
-        obs = SOTODLibObservation(manager)
+
+        sub_fields = []
+        if 'sample_data' in data_field_names:
+            sub_fields.append('signal')
+        if 'valid_sample_masks' in data_field_names:
+            sub_fields.append('flags.glitch_flags')
+        if 'valid_scanning_masks' in data_field_names:
+            sub_fields.append('preprocess.turnaround_flags')
+        if 'timestamps' in data_field_names:
+            sub_fields.append('timestamps')
+        if 'boresight_quaternions' in data_field_names:
+            sub_fields.append('boresight')
+            if 'timestamps' not in sub_fields:
+                sub_fields.append('timestamps')
+        if 'detector_quaternions' in data_field_names:  # the detector quaternions.
+            sub_fields.append('focal_plane')
+
+        sotodlib_obs = AxisManager.load(filename, fields=sub_fields)
+        obs = SOTODLibObservation(sotodlib_obs)
 
         field_reader = GroundObservationReader.data_field_readers()
         return {field: field_reader[field](obs) for field in data_field_names}

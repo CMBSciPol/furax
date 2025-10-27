@@ -10,13 +10,12 @@ from furax.io.readers import AbstractReader
 
 from .observation import SOTODLibObservation
 
-
 SOTODLIB_DATA_FIELD_NAMES = [
-    'sample_data',   # the detector read-outs.
-    'valid_sample_masks', # the (boolean) mask indicating which samples are valid (=True).
-    'timestamps',    # the timestamps of the samples.
+    'sample_data',  # the detector read-outs.
+    'valid_sample_masks',  # the (boolean) mask indicating which samples are valid (=True).
+    'timestamps',  # the timestamps of the samples.
     'detector_quaternions',  # the detector quaternions.
-    'boresight_quaternions', # the boresight quaternions.
+    'boresight_quaternions',  # the boresight quaternions.
 ]
 
 
@@ -47,9 +46,7 @@ class SOTODLibReader(AbstractReader):
     """
 
     def __init__(
-        self,
-        filenames: list[Path | str],
-        data_field_names: list[str] | None = None
+        self, filenames: list[Path | str], data_field_names: list[str] | None = None
     ) -> None:
         """Initializes the SOTODLib reader with a list of filenames.
 
@@ -62,15 +59,16 @@ class SOTODLibReader(AbstractReader):
         if data_field_names is None:
             data_field_names = SOTODLIB_DATA_FIELD_NAMES
         else:
-            data_field_names = list(set(data_field_names))    # Remove duplicates if any
+            data_field_names = list(set(data_field_names))  # Remove duplicates if any
             for name in data_field_names:
                 # Validate field names
                 if name not in SOTODLIB_DATA_FIELD_NAMES:
-                    raise ValueError(f'Data field "{name}" NOT supported for SOTODLib data format. '
-                                     f'Supported fields: {SOTODLIB_DATA_FIELD_NAMES}')
-        
-        super().__init__(filenames, common_keywords={'data_field_names': data_field_names})
+                    raise ValueError(
+                        f'Data field "{name}" NOT supported for SOTODLib data format. '
+                        f'Supported fields: {SOTODLIB_DATA_FIELD_NAMES}'
+                    )
 
+        super().__init__(filenames, common_keywords={'data_field_names': data_field_names})
 
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
         """Reads one SOTODLib observation from the list of filenames specified in the reader.
@@ -99,7 +97,9 @@ class SOTODLibReader(AbstractReader):
         """
         return super().read(data_index)  # type: ignore[no-any-return]
 
-    def _read_structure_impure(self, path: Path, data_field_names: list[str]) -> PyTree[jax.ShapeDtypeStruct]:
+    def _read_structure_impure(
+        self, path: Path, data_field_names: list[str]
+    ) -> PyTree[jax.ShapeDtypeStruct]:
         filename = path.as_posix()
         manager = AxisManager.load(filename)
         obs = SOTODLibObservation(manager)

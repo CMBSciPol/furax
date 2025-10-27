@@ -94,7 +94,6 @@ class MultiObservationBinnedMapMaker:
         logger_info('Accumulated RHS vector')
 
         # System matrix (invert explicitly in the binned case)
-        # FIXME: currently fails with 'TypeError: cotangent type does not match function output'
         system = BJPreconditioner.create((h.T @ h).reduce())
         sysinv = system.inverse()
         logger_info('Set up inverse system matrix')

@@ -19,7 +19,8 @@ def test_accumulate():
 
     reader = SOTODLibReader(files)
     maker = MultiObservationMapMaker(reader)
-    rhs, rest = maker.accumulate_rhs_and_data()
+    operators = maker.build_acquisitions()
+    assert len(operators) == 2
+
+    rhs = maker.accumulate_rhs(operators)
     assert rhs.shape == maker.landscape.shape
-    assert rest['boresight_quaternions'].shape == (2, 10000, 4)
-    assert rest['detector_quaternions'].shape == (2, 14, 4)

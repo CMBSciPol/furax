@@ -1,3 +1,4 @@
+import operator
 import pickle
 from abc import abstractmethod
 from dataclasses import asdict, dataclass
@@ -56,29 +57,34 @@ class MultiObservationMapMaker:
 
     def __init__(self, reader: AbstractReader) -> None:
         self.reader = reader
-        self.landscape = HealpixLandscape(nside=16, stokes='IQU', dtype=jnp.float32)
+        self.landscape = HealpixLandscape(nside=16, stokes='IQU')
 
-    def accumulate_rhs_and_data(self) -> tuple[StokesPyTreeType, dict[str, Any]]:
-        def accumulate_body(i, vals):  # type: ignore[no-untyped-def]
-            # read the data for this observation
+    def build_acquisitions(self) -> tuple[AbstractLinearOperator]:
+        @jax.jit
+        def get_acquisition(i: int) -> AbstractLinearOperator:
+            # TODO: read only what's needed to build an acquisition operator
             data, padding = self.reader.read(i)
-            acquisition = self.build_acquisition(data, padding)
-            # update the carried values
-            rhs, rest = vals
-            new_rhs = rhs + acquisition.T(data['signal'])
-            new_rest = {k: v.at[i].set(data[k]) for k, v in rest.items()}
-            return new_rhs, new_rest
+            return self.build_acquisition(data, padding)
 
-        init_rhs = self.landscape.full(0)
-        init_rest = {
-            k: furax.tree.zeros_like(
-                prepend_dimensions(self.reader.count, self.reader.out_structure[k])
-            )
-            for k in self._stacked_field_keys()
-        }
-        return jax.lax.fori_loop(0, self.reader.count, accumulate_body, (init_rhs, init_rest))  # type: ignore[no-any-return]
+        return jax.tree.map(get_acquisition, tuple(range(self.reader.count)))  # type: ignore[no-any-return]
 
-    def build_acquisition(self, data, padding):  # type: ignore[no-untyped-def]
+    def accumulate_rhs(self, acquisitions: tuple[AbstractLinearOperator]) -> StokesPyTreeType:
+        @jax.jit
+        def get_rhs(i: int, acquisition: AbstractLinearOperator) -> StokesPyTreeType:
+            # TODO: only read sample_data
+            data, padding = self.reader.read(i)
+            return acquisition.T(data['signal'])  # type: ignore[no-any-return]
+
+        # sum RHS across observations
+        return jax.tree.reduce(  # type: ignore[no-any-return]
+            operator.add,
+            jax.tree.map(get_rhs, tuple(range(self.reader.count)), acquisitions),
+            is_leaf=lambda x: isinstance(x, Stokes),
+        )
+
+    def build_acquisition(
+        self, data: PyTree[Array], padding: PyTree[Array]
+    ) -> AbstractLinearOperator:
         # TODO: handle padding
         ndet, nsamp = self.reader.out_structure['signal'].shape
         data_shape = (ndet, nsamp)

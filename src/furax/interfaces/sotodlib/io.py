@@ -11,6 +11,15 @@ from furax.io.readers import AbstractReader
 from .observation import SOTODLibObservation
 
 
+SOTODLIB_DATA_FIELD_NAMES = [
+    'sample_data',   # the detector read-outs.
+    'valid_sample_masks', # the (boolean) mask indicating which samples are valid (=True).
+    'timestamps',    # the timestamps of the samples.
+    'detector_quaternions',  # the detector quaternions.
+    'boresight_quaternions', # the boresight quaternions.
+]
+
+
 @jax.tree_util.register_static
 class SOTODLibReader(AbstractReader):
     """Jittable reader for SOTODlib observations.
@@ -23,6 +32,8 @@ class SOTODLibReader(AbstractReader):
         count (int): The number of data to read.
         args (list[tuple[Any, ...]]): For each data, the filename to be read.
         keywords (list[dict[str, Any]]): Not used.
+        data_field_names (list[str]): For all data, load the listed data fields only. If None,
+            read all available data fields for SOTODLIB
         common_keywords (dict[str, Any]): Not used.
         out_structure (dict[str, jax.ShapeDtypeStruct]): The structure of the data that is returned
             by the read function. The structure is the same for all data.
@@ -35,14 +46,31 @@ class SOTODLibReader(AbstractReader):
         >>> data2, padding2 = reader.read(1)
     """
 
-    def __init__(self, filenames: list[Path | str]) -> None:
+    def __init__(
+        self,
+        filenames: list[Path | str],
+        data_field_names: list[str] | None = None
+    ) -> None:
         """Initializes the SOTODLib reader with a list of filenames.
 
         Args:
             filenames: A list of filenames. Each filename can be a string or a Path object.
+            data_field_names: A list of data fields to load. If None, read all available data fields
+                available for SOTODLib observations.
         """
         filenames = [Path(name) if isinstance(name, str) else name for name in filenames]
-        super().__init__(filenames)
+        if data_field_names is None:
+            data_field_names = SOTODLIB_DATA_FIELD_NAMES
+        else:
+            data_field_names = list(set(data_field_names))    # Remove duplicates if any
+            for name in data_field_names:
+                # Validate field names
+                if name not in SOTODLIB_DATA_FIELD_NAMES:
+                    raise ValueError(f'Data field "{name}" NOT supported for SOTODLib data format. '
+                                     f'Supported fields: {SOTODLIB_DATA_FIELD_NAMES}')
+        
+        super().__init__(filenames, common_keywords={'data_field_names': data_field_names})
+
 
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
         """Reads one SOTODLib observation from the list of filenames specified in the reader.
@@ -57,40 +85,46 @@ class SOTODLibReader(AbstractReader):
             padding. The structure of the data is the same as the structure of the padding.
 
             The data is a dictionary with the following keys:
-                - signal: the detector read-outs.
-                - mask: the (boolean) mask indicating which samples are valid (=True).
+                - sample_data: the detector read-outs.
+                - valid_sample_masks: the (boolean) mask indicating which samples are valid (=True).
                 - timestamps: the timestamps of the samples.
                 - detector_quaternions: the detector quaternions.
                 - boresight_quaternions: the boresight quaternions.
             The padding is a dictionary with the following keys:
-                - signal: the padding for the signal.
-                - mask: the padding for the mask.
+                - sample_data: the padding for the detector read-outs.
+                - valid_sample_masks: the padding for the mask.
                 - timestamps: the padding for the timestamps.
                 - detector_quaternions: the padding for the detector quaternions.
                 - boresight_quaternions: the padding for the boresight quaternions.
         """
         return super().read(data_index)  # type: ignore[no-any-return]
 
-    def _read_structure_impure(self, path: Path) -> PyTree[jax.ShapeDtypeStruct]:
+    def _read_structure_impure(self, path: Path, data_field_names: list[str]) -> PyTree[jax.ShapeDtypeStruct]:
         filename = path.as_posix()
         manager = AxisManager.load(filename)
         obs = SOTODLibObservation(manager)
-        return {
-            'signal': jax.ShapeDtypeStruct((obs.n_detectors, obs.n_samples), jnp.float32),
-            'mask': jax.ShapeDtypeStruct((obs.n_detectors, obs.n_samples), jnp.bool),
-            'timestamps': jax.ShapeDtypeStruct((obs.n_samples,), jnp.float64),
-            'detector_quaternions': jax.ShapeDtypeStruct((obs.n_detectors, 4), jnp.float64),
-            'boresight_quaternions': jax.ShapeDtypeStruct((obs.n_samples, 4), jnp.float64),
-        }
+        n_detectors = obs.n_detectors
+        n_samples = obs.n_samples
 
-    def _read_data_impure(self, path: Path) -> PyTree[Array]:
+        structure = {
+            'sample_data': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.float32),
+            'valid_sample_masks': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.bool),
+            'timestamps': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
+            'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
+            'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), jnp.float64),
+        }
+        return {field_name: structure[field_name] for field_name in data_field_names}
+
+    def _read_data_impure(self, path: Path, data_field_names: list[str]) -> PyTree[Array]:
         filename = path.as_posix()
         manager = AxisManager.load(filename)
         obs = SOTODLibObservation(manager)
-        return {
-            'signal': obs.get_tods(),
-            'mask': obs.get_sample_mask(),
-            'timestamps': obs.get_timestamps(),
-            'detector_quaternions': obs.get_detector_quaternions(),
-            'boresight_quaternions': obs.get_boresight_quaternions(),
+
+        read_field = {
+            'sample_data': lambda obs: obs.get_tods(),
+            'valid_sample_masks': lambda obs: obs.get_sample_mask(),
+            'timestamps': lambda obs: obs.get_timestamps(),
+            'detector_quaternions': lambda obs: obs.get_detector_quaternions(),
+            'boresight_quaternions': lambda obs: obs.get_boresight_quaternions(),
         }
+        return {field_name: read_field[field_name](obs) for field_name in data_field_names}

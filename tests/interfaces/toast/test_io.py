@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import pytest
 
 pytest.importorskip('toast', reason='toast is not installed. Skipping tests.')
+pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
 
 from furax.interfaces.toast import ToastReader
 

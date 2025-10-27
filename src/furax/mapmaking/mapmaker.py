@@ -26,7 +26,7 @@ from furax import (
     IdentityOperator,
     MaskOperator,
 )
-from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
+from furax.core import BlockColumnOperator, BlockDiagonalOperator, BlockRowOperator, IndexOperator
 from furax.io.readers import AbstractReader
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
@@ -52,61 +52,185 @@ def prepend_dimensions(
     return structure.update(shape=new_shape)  # type: ignore[attr-defined, no-any-return]
 
 
-class MultiObservationMapMaker:
-    """Class for mapping multiple observations together."""
+class MultiObservationBinnedMapMaker:
+    """Class for mapping multiple observations together.
 
-    def __init__(self, reader: AbstractReader) -> None:
-        self.reader = reader
-        self.landscape = HealpixLandscape(nside=16, stokes='IQU')
+    For now, only performs binned map-making.
+    """
 
-    def build_acquisitions(self) -> tuple[AbstractLinearOperator]:
+    def __init__(self, config: MapMakingConfig | None = None, logger: Logger | None = None) -> None:
+        self.config = config or MapMakingConfig()  # use defaults if not provided
+        self.logger = logger or furax_logger
+
+    def run(self, reader: AbstractReader, out_dir: str | Path | None = None) -> dict[str, Any]:
+        """Runs the mapmaker and return results after saving them to the given directory."""
+        results = self.make_maps(reader)
+
+        # Save outputs
+        if out_dir is not None:
+            out_dir = Path(out_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            self._save(results, out_dir)
+            self.config.dump_yaml(out_dir / 'mapmaking_config.yaml')
+            self.logger.info('Mapmaking config saved to file')
+
+        return results
+
+    def make_maps(self, reader: AbstractReader) -> dict[str, Any]:
+        """Computes the mapmaker results (maps and other products)."""
+        conf = self.config
+        logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
+
+        # TODO: shoudn't `stokes` be in the config?
+        landscape = _build_landscape(conf, stokes='IQU')
+
+        # Acquisition (I, Q, U Maps -> TOD)
+        acquisitions = self.build_acquisitions(reader, landscape)
+        h = BlockColumnOperator(acquisitions)
+        logger_info('Created acquisition operators')
+
+        # RHS
+        rhs = self.accumulate_rhs(reader, landscape, acquisitions)
+        logger_info('Accumulated RHS vector')
+
+        # System matrix (invert explicitly in the binned case)
+        # FIXME: currently fails with 'TypeError: cotangent type does not match function output'
+        system = BJPreconditioner.create((h.T @ h).reduce())
+        sysinv = system.inverse()
+        logger_info('Set up inverse system matrix')
+
+        @jax.jit
+        def process():  # type: ignore[no-untyped-def]
+            return sysinv(rhs)
+
+        # Run mapmaking
+        res = process()
+        res.i.block_until_ready()
+        logger_info('Finished mapmaking')
+
+        final_map = np.array([res.i, res.q, res.u])
+        weights = np.array(system.get_blocks())
+        return {'map': final_map, 'weights': weights}
+
+    def build_acquisitions(
+        self, reader: AbstractReader, landscape: StokesLandscape
+    ) -> tuple[AbstractLinearOperator]:
         @jax.jit
         def get_acquisition(i: int) -> AbstractLinearOperator:
             # TODO: read only what's needed to build an acquisition operator
-            data, padding = self.reader.read(i)
-            return self.build_acquisition(data, padding)
+            # TODO: handle padding
+            data, _padding = reader.read(i)
+            return _build_acquisition_operator(
+                landscape,
+                **data,
+                pointing_chunk_size=self.config.pointing_chunk_size,
+                pointing_on_the_fly=self.config.pointing_on_the_fly,
+            )
 
-        return jax.tree.map(get_acquisition, tuple(range(self.reader.count)))  # type: ignore[no-any-return]
+        return jax.tree.map(get_acquisition, tuple(range(reader.count)))  # type: ignore[no-any-return]
 
-    def accumulate_rhs(self, acquisitions: tuple[AbstractLinearOperator]) -> StokesPyTreeType:
+    def accumulate_rhs(
+        self,
+        reader: AbstractReader,
+        landscape: StokesLandscape,
+        acquisitions: tuple[AbstractLinearOperator],
+    ) -> StokesPyTreeType:
         @jax.jit
         def get_rhs(i: int, acquisition: AbstractLinearOperator) -> StokesPyTreeType:
             # TODO: only read sample_data
-            data, padding = self.reader.read(i)
+            data, _padding = reader.read(i)
             return acquisition.T(data['signal'])  # type: ignore[no-any-return]
 
         # sum RHS across observations
         return jax.tree.reduce(  # type: ignore[no-any-return]
             operator.add,
-            jax.tree.map(get_rhs, tuple(range(self.reader.count)), acquisitions),
+            jax.tree.map(get_rhs, tuple(range(reader.count)), acquisitions),
             is_leaf=lambda x: isinstance(x, Stokes),
         )
 
-    def build_acquisition(
-        self, data: PyTree[Array], padding: PyTree[Array]
-    ) -> AbstractLinearOperator:
-        # TODO: handle padding
-        ndet, nsamp = self.reader.out_structure['signal'].shape
-        data_shape = (ndet, nsamp)
-        pointing = PointingOperator(
-            landscape=self.landscape,
-            qbore=data['boresight_quaternions'],
-            qdet=data['detector_quaternions'],
-            det_gamma=jnp.zeros(ndet),
-            _in_structure=self.landscape.structure,
-            _out_structure=Stokes.class_for(self.landscape.stokes).structure_for(
-                data_shape, dtype=jnp.float32
-            ),
-            chunk_size=4,
-        )
-        polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=jnp.float32)
-        hwp = HWPOperator.create(shape=data_shape, dtype=jnp.float32)
-        return (polarizer @ hwp @ pointing).reduce()
+    def _save(self, results: dict[str, Any], out_dir: Path) -> None:
+        for key, m in results.items():
+            if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
+                np.save(out_dir / key, np.array(m))
+            elif isinstance(m, StokesIQU):
+                np.save(out_dir / key, np.stack([m.i, m.q, m.u], axis=0))
+            elif isinstance(m, pixell.enmap.ndmap):
+                pixell.enmap.write_map((out_dir / f'{key}.hdf').as_posix(), m, allow_modify=True)
+            elif isinstance(m, WCS):
+                header = m.to_header()
+                hdu = fits.PrimaryHDU(header=header)
+                hdu.writeto(out_dir / f'{key}.fits', overwrite=True)
+            elif isinstance(m, StokesLandscape):
+                with open(out_dir / f'{key}.pkl', 'wb') as f:
+                    pickle.dump(m, f)
+            elif isinstance(m, dict):
+                self._save(m, out_dir)
+                continue
+            else:
+                # TODO: warning?
+                continue
+            self.logger.info(f'Mapmaking result [{key}] saved to file')
 
-    def _stacked_field_keys(self) -> list[str]:
-        """Names of the data fields to be stacked over observations."""
-        # TODO: should this be a method of AbstractReader?
-        return ['boresight_quaternions', 'detector_quaternions']
+
+def _build_landscape(config: MapMakingConfig, stokes: ValidStokesType = 'IQU') -> StokesLandscape:
+    if config.landscape.type == Landscapes.HPIX:
+        return HealpixLandscape(nside=config.landscape.nside, stokes=stokes, dtype=config.dtype)
+    if config.landscape.type == Landscapes.WCS:
+        raise NotImplementedError
+    raise NotImplementedError
+
+
+def _build_acquisition_operator(  # type: ignore[no-untyped-def]
+    landscape: StokesLandscape,
+    boresight_quaternions: Array,
+    detector_quaternions: Array,
+    *,
+    pointing_chunk_size: int,
+    pointing_on_the_fly: bool,
+    **_kwargs,  # temporary catch-all
+) -> AbstractLinearOperator:
+    """Build an acquisition operator for a single observation."""
+    pointing = _build_pointing_operator(
+        landscape,
+        boresight_quaternions,
+        detector_quaternions,
+        on_the_fly=pointing_on_the_fly,
+        chunk_size=pointing_chunk_size,
+    )
+    ndet = detector_quaternions.shape[0]
+    nsamp = boresight_quaternions.shape[0]
+    data_shape = (ndet, nsamp)
+    polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=jnp.float64)
+    hwp = HWPOperator.create(shape=data_shape, dtype=jnp.float64)
+    return (polarizer @ hwp @ pointing).reduce()
+
+
+def _build_pointing_operator(
+    landscape: StokesLandscape,
+    boresight_quaternions: Array,
+    detector_quaternions: Array,
+    *,
+    chunk_size: int,
+    on_the_fly: bool = True,
+) -> AbstractLinearOperator:
+    if not on_the_fly:
+        # get full pixels and weights from TOAST/SOTODLib
+        raise NotImplementedError
+
+    ndet = detector_quaternions.shape[0]
+    nsamp = boresight_quaternions.shape[0]
+
+    return PointingOperator(
+        landscape=landscape,
+        qbore=boresight_quaternions,
+        qdet=detector_quaternions,
+        det_gamma=jnp.zeros(ndet),  # FIXME: use real detector angles once available through reader
+        _in_structure=landscape.structure,
+        _out_structure=Stokes.class_for(landscape.stokes).structure_for(
+            (ndet, nsamp), dtype=jnp.float64
+        ),
+        chunk_size=chunk_size,
+    )
 
 
 @dataclass

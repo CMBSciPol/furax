@@ -7,13 +7,13 @@ from jaxtyping import PyTree
 from toast import Data
 from toast.observation import default_values as toast_defaults
 
-from furax.mapmaking import GroundObservationReader
+from furax.mapmaking import AbstractGroundObservationReader
 
 from .observation import ToastObservation
 
 
 @jax.tree_util.register_static
-class ToastReader(GroundObservationReader):
+class ToastReader(AbstractGroundObservationReader):
     """Jittable reader for toast observations.
     See GroundObservationReader for details.
     """
@@ -48,7 +48,7 @@ class ToastReader(GroundObservationReader):
         n_detectors = obs.n_detectors
         n_samples = obs.n_samples
 
-        field_structure = GroundObservationReader.data_field_structures(
+        field_structure = AbstractGroundObservationReader._get_data_field_structures_for(
             n_detectors=n_detectors, n_samples=n_samples
         )
         return {field: field_structure[field] for field in data_field_names}
@@ -82,5 +82,5 @@ class ToastReader(GroundObservationReader):
         toast_loader.apply(toast_data)
         obs = ToastObservation(toast_data)
 
-        field_reader = GroundObservationReader.data_field_readers()
+        field_reader = AbstractGroundObservationReader._get_data_field_readers()
         return {field: field_reader[field](obs) for field in data_field_names}

@@ -12,19 +12,9 @@ from furax.io.readers import AbstractReader
 
 from ._observation import AbstractGroundObservation
 
-_ALL_DATA_FIELD_NAMES = [
-    'sample_data',  # the detector read-outs.
-    'valid_sample_masks',  # the (boolean) mask indicating which samples are valid (=True).
-    'valid_scanning_masks',  # the (boolean) mask indicating which samples are taken during scans.
-    'timestamps',  # the timestamps of the samples.
-    'hwp_angles',  # the half-wave-plate angles in radians.
-    'detector_quaternions',  # the detector quaternions.
-    'boresight_quaternions',  # the boresight quaternions.
-]
-
 
 @jax.tree_util.register_static
-class GroundObservationReader(AbstractReader):
+class AbstractGroundObservationReader(AbstractReader):
     """Jittable reader for ground observations.
 
     The reader is set up with a list of filenames and data field names. Individual files can be
@@ -49,6 +39,17 @@ class GroundObservationReader(AbstractReader):
         >>> data2, padding2 = reader.read(1)
     """
 
+    DATA_FIELD_NAMES = [
+        'sample_data',  # the detector read-outs.
+        'valid_sample_masks',  # the (boolean) mask indicating which samples are valid (=True).
+        'valid_scanning_masks',  # the (boolean) mask indicating which samples are taken during
+        # scans and not turnarounds.
+        'timestamps',  # the timestamps of the samples.
+        'hwp_angles',  # the half-wave-plate angles in radians.
+        'detector_quaternions',  # the detector quaternions.
+        'boresight_quaternions',  # the boresight quaternions.
+    ]
+
     def __init__(
         self, filenames: list[Path | str], data_field_names: list[str] | None = None
     ) -> None:
@@ -61,15 +62,15 @@ class GroundObservationReader(AbstractReader):
         """
         filenames = [Path(name) if isinstance(name, str) else name for name in filenames]
         if data_field_names is None:
-            data_field_names = _ALL_DATA_FIELD_NAMES
+            data_field_names = self.DATA_FIELD_NAMES
         else:
             data_field_names = list(set(data_field_names))  # Remove duplicates if any
             for name in data_field_names:
                 # Validate field names
-                if name not in _ALL_DATA_FIELD_NAMES:
+                if name not in self.DATA_FIELD_NAMES:
                     raise ValueError(
                         f'Data field "{name}" NOT supported for ground observation data format. '
-                        f'Supported fields: {_ALL_DATA_FIELD_NAMES}'
+                        f'Supported fields: {self.DATA_FIELD_NAMES}'
                     )
 
         super().__init__(filenames, common_keywords={'data_field_names': data_field_names})
@@ -92,6 +93,7 @@ class GroundObservationReader(AbstractReader):
                 - valid_scanning_masks: the (boolean) mask indicating which samples are taken
                     during scans (and not turnarounds).
                 - timestamps: the timestamps of the samples.
+                - hwp_angles: the half-wave plate angle measured at each sample
                 - detector_quaternions: the detector quaternions.
                 - boresight_quaternions: the boresight quaternions.
             The padding is a dictionary with the following keys:
@@ -99,17 +101,14 @@ class GroundObservationReader(AbstractReader):
                 - valid_sample_masks: the padding for the sample mask.
                 - valid_scanning_masks: the padding for the scanning mask.
                 - timestamps: the padding for the timestamps.
+                - hwp_angles: the padding for the half-wave plate angles
                 - detector_quaternions: the padding for the detector quaternions.
                 - boresight_quaternions: the padding for the boresight quaternions.
         """
         return super().read(data_index)  # type: ignore[no-any-return]
 
     @classmethod
-    def all_data_field_names(cls) -> list[str]:
-        return _ALL_DATA_FIELD_NAMES
-
-    @classmethod
-    def data_field_structures(
+    def _get_data_field_structures_for(
         cls, n_detectors: int, n_samples: int
     ) -> dict[str, jax.ShapeDtypeStruct]:
         return {
@@ -123,7 +122,7 @@ class GroundObservationReader(AbstractReader):
         }
 
     @classmethod
-    def data_field_readers(cls) -> dict[str, Callable[[AbstractGroundObservation[Any]], Any]]:
+    def _get_data_field_readers(cls) -> dict[str, Callable[[AbstractGroundObservation[Any]], Any]]:
         return {
             'sample_data': lambda obs: obs.get_tods().astype(jnp.float64),
             'valid_sample_masks': lambda obs: obs.get_sample_mask(),

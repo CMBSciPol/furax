@@ -5,13 +5,13 @@ from jax import Array
 from jaxtyping import PyTree
 from sotodlib.core import AxisManager
 
-from furax.mapmaking import GroundObservationReader
+from furax.mapmaking import AbstractGroundObservationReader
 
 from .observation import SOTODLibObservation
 
 
 @jax.tree_util.register_static
-class SOTODLibReader(GroundObservationReader):
+class SOTODLibReader(AbstractGroundObservationReader):
     """Jittable reader for SOTODlib observations.
     See GroundObservationReader for details.
     """
@@ -38,7 +38,7 @@ class SOTODLibReader(GroundObservationReader):
         n_detectors = sotodlib_obs.dets.count
         n_samples = sotodlib_obs.samps.count
 
-        field_structure = GroundObservationReader.data_field_structures(
+        field_structure = AbstractGroundObservationReader._get_data_field_structures_for(
             n_detectors=n_detectors, n_samples=n_samples
         )
         return {field: field_structure[field] for field in data_field_names}
@@ -67,5 +67,5 @@ class SOTODLibReader(GroundObservationReader):
         sotodlib_obs = AxisManager.load(filename, fields=sub_fields)
         obs = SOTODLibObservation(sotodlib_obs)
 
-        field_reader = GroundObservationReader.data_field_readers()
+        field_reader = AbstractGroundObservationReader._get_data_field_readers()
         return {field: field_reader[field](obs) for field in data_field_names}

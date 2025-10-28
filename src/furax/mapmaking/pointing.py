@@ -10,7 +10,7 @@ from jaxtyping import Array, Float, PyTree
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
 from furax.math.quaternion import qmul, qrot_xaxis, qrot_zaxis
-from furax.obs.landscapes import HealpixLandscape, HorizonLandscape
+from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import StokesI, StokesIQU, StokesIQUV, StokesPyTreeType, StokesQU
 
 __all__ = [
@@ -27,11 +27,9 @@ class PointingOperator(AbstractLinearOperator):
     The performance/memory tradeoff is controlled by the ``chunk_size`` parameter.
     A chunk size of 0 means no chunking, i.e. the entire operation is done in one go.
     Changing this parameter will trigger recompilation of the operator.
-
-    For now, only HEALPix landscapes are supported.
     """
 
-    landscape: HealpixLandscape | HorizonLandscape = equinox.field(static=True)
+    landscape: StokesLandscape = equinox.field(static=True)
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
     det_gamma: Float[Array, ' det']
@@ -50,8 +48,6 @@ class PointingOperator(AbstractLinearOperator):
 
             # Get pixel indices and sample the pixels
             indices = self.landscape.quat2index(qdet_full)
-            if isinstance(self.landscape, HorizonLandscape):
-                indices = self.landscape.combined_indices(indices[0], indices[1])
             tod = x.ravel()[indices]
 
             if isinstance(tod, StokesI):
@@ -134,8 +130,6 @@ class PointingTransposeOperator(TransposeOperator):
 
             # Get pixel indices
             indices = self.operator.landscape.quat2index(qdet_full)
-            if isinstance(self.operator.landscape, HorizonLandscape):
-                indices = self.operator.landscape.combined_indices(indices[0], indices[1])
 
             if isinstance(xchunk, StokesI):
                 # no rotation needed

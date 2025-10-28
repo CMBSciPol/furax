@@ -1,6 +1,6 @@
 from ._beam_operator_mapspace import (
-    BeamOperatorMapspace,
     ListToStokesOperator,
+    MapSpaceBeamOperator,
     StackedBeamOperator,
     StokesToListOperator,
     read_beam_matrix,
@@ -32,7 +32,7 @@ __all__ = [
     'MixingMatrixOperator',
     'NoiseDiagonalOperator',
     # _beam_operator_mapspace
-    'BeamOperatorMapspace',
+    'MapSpaceBeamOperator',
     'read_beam_matrix',
     'StackedBeamOperator',
     'StokesToListOperator',

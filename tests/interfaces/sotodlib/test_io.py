@@ -21,12 +21,13 @@ def test_reader() -> None:
 
     reader = SOTODLibReader(files)
 
-    # Verify out_structure includes all fields
+    # Verify out_structure includes all fields including hwp_angles
     assert reader.out_structure == {
         'sample_data': jax.ShapeDtypeStruct((ndet2, nsample2), dtype=jnp.float64),
         'valid_sample_masks': jax.ShapeDtypeStruct((ndet2, nsample2), dtype=jnp.bool),
         'valid_scanning_masks': jax.ShapeDtypeStruct((nsample2,), dtype=jnp.bool),
         'timestamps': jax.ShapeDtypeStruct((nsample2,), dtype=jnp.float64),
+        'hwp_angles': jax.ShapeDtypeStruct((nsample2,), dtype=jnp.float64),
         'detector_quaternions': jax.ShapeDtypeStruct((ndet2, 4), dtype=jnp.float64),
         'boresight_quaternions': jax.ShapeDtypeStruct((nsample2, 4), dtype=jnp.float64),
     }
@@ -37,6 +38,7 @@ def test_reader() -> None:
         assert datum['valid_sample_masks'].shape == (ndet2, nsample2)
         assert datum['valid_scanning_masks'].shape == (nsample2,)
         assert datum['timestamps'].shape == (nsample2,)
+        assert datum['hwp_angles'].shape == (nsample2,)
         assert datum['detector_quaternions'].shape == (ndet2, 4)
         assert datum['boresight_quaternions'].shape == (nsample2, 4)
 
@@ -45,6 +47,7 @@ def test_reader() -> None:
     assert padding1['valid_sample_masks'] == (ndet2 - ndet1, nsample2 - nsample1)
     assert padding1['valid_scanning_masks'] == (nsample2 - nsample1,)
     assert padding1['timestamps'] == (nsample2 - nsample1,)
+    assert padding1['hwp_angles'] == (nsample2 - nsample1,)
     assert padding1['detector_quaternions'] == (ndet2 - ndet1, 0)
     assert padding1['boresight_quaternions'] == (nsample2 - nsample1, 0)
 
@@ -53,6 +56,7 @@ def test_reader() -> None:
     assert padding2['valid_sample_masks'] == (0, 0)
     assert padding2['valid_scanning_masks'] == (0,)
     assert padding2['timestamps'] == (0,)
+    assert padding2['hwp_angles'] == (0,)
     assert padding2['detector_quaternions'] == (0, 0)
     assert padding2['boresight_quaternions'] == (0, 0)
 
@@ -80,6 +84,7 @@ def test_reader_subset_of_data_fields() -> None:
     - valid_sample_masks → loads 'flags.glitch_flags'
     - valid_scanning_masks → loads 'preprocess.turnaround_flags'
     - timestamps → loads 'timestamps'
+    - hwp_angles → loads 'hwp_angle'
     - boresight_quaternions → loads 'boresight' (and 'timestamps' if not already loaded)
     - detector_quaternions → loads 'focal_plane'
     """
@@ -184,14 +189,21 @@ def test_reader_subset_of_data_fields() -> None:
     assert set(data.keys()) == {'boresight_quaternions'}
     assert data['boresight_quaternions'].shape == (nsample2, 4)
 
-    # Test 9: Only detector_quaternions (tests loading 'focal_plane' alone)
+    # Test 9: Only hwp_angles (tests loading 'hwp_angle' alone)
+    reader = SOTODLibReader(files, data_field_names=['hwp_angles'])
+    assert set(reader.out_structure.keys()) == {'hwp_angles'}
+    data, _ = reader.read(0)
+    assert set(data.keys()) == {'hwp_angles'}
+    assert data['hwp_angles'].shape == (nsample2,)
+
+    # Test 10: Only detector_quaternions (tests loading 'focal_plane' alone)
     reader = SOTODLibReader(files, data_field_names=['detector_quaternions'])
     assert set(reader.out_structure.keys()) == {'detector_quaternions'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'detector_quaternions'}
     assert data['detector_quaternions'].shape == (ndet2, 4)
 
-    # Test 10: Combination that triggers conditional timestamps loading
+    # Test 11: Combination that triggers conditional timestamps loading
     # (boresight_quaternions without explicit timestamps)
     # This tests the special case where timestamps is loaded automatically for boresight
     combo_fields = ['sample_data', 'boresight_quaternions']

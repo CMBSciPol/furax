@@ -21,7 +21,7 @@ class ToastReader(GroundObservationReader):
     def __init__(
         self, filenames: list[Path | str], data_field_names: list[str] | None = None
     ) -> None:
-        """Initializes the taost reader with a list of filenames.
+        """Initializes the toast reader with a list of filenames.
 
         Args:
             filenames: A list of filenames. Each filename can be a string or a Path object.
@@ -63,6 +63,8 @@ class ToastReader(GroundObservationReader):
             detdata.append(toast_defaults.det_flags)
 
         shared = [toast_defaults.times]  # Always need to load timestamps
+        if 'hwp_angles' in data_field_names:
+            shared.append(toast_defaults.hwp_angle)
         if 'boresight_quaternions' in data_field_names:
             shared.append(toast_defaults.boresight_radec)
 

@@ -55,6 +55,8 @@ class SOTODLibReader(GroundObservationReader):
             sub_fields.append('preprocess.turnaround_flags')
         if 'timestamps' in data_field_names:
             sub_fields.append('timestamps')
+        if 'hwp_angles' in data_field_names:
+            sub_fields.append('hwp_angle')
         if 'boresight_quaternions' in data_field_names:
             sub_fields.append('boresight')
             if 'timestamps' not in sub_fields:

@@ -17,6 +17,7 @@ _ALL_DATA_FIELD_NAMES = [
     'valid_sample_masks',  # the (boolean) mask indicating which samples are valid (=True).
     'valid_scanning_masks',  # the (boolean) mask indicating which samples are taken during scans.
     'timestamps',  # the timestamps of the samples.
+    'hwp_angles',  # the half-wave-plate angles in radians.
     'detector_quaternions',  # the detector quaternions.
     'boresight_quaternions',  # the boresight quaternions.
 ]
@@ -116,6 +117,7 @@ class GroundObservationReader(AbstractReader):
             'valid_sample_masks': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.bool),
             'valid_scanning_masks': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
             'timestamps': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
+            'hwp_angles': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
             'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
             'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), jnp.float64),
         }
@@ -127,6 +129,7 @@ class GroundObservationReader(AbstractReader):
             'valid_sample_masks': lambda obs: obs.get_sample_mask(),
             'valid_scanning_masks': lambda obs: obs.get_scanning_mask(),
             'timestamps': lambda obs: obs.get_timestamps(),
+            'hwp_angles': lambda obs: obs.get_hwp_angles(),
             'detector_quaternions': lambda obs: obs.get_detector_quaternions(),
             'boresight_quaternions': lambda obs: obs.get_boresight_quaternions(),
         }

@@ -27,7 +27,7 @@ def read_beam_matrix(
     indices = jnp.array(sparse_matrix['indices'], dtype=jnp.int32)
     data = jnp.array(sparse_matrix['data'], dtype=jnp.float32)
     n_neighbours = int(jnp.diff(sparse_matrix['indptr'])[0])
-    n_rows = sparse_matrix.shape[0]
+    n_rows = sparse_matrix['indptr'].shape[0] - 1
 
     all_indices = indices.reshape(n_rows, n_neighbours)
     all_data = data.reshape(n_rows, n_neighbours)

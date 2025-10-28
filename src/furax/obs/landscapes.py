@@ -160,9 +160,9 @@ class StokesLandscape(Landscape):
     def pixel2index(self, *coords: Float[Array, ' *dims']) -> Integer[Array, ' *ndims']:
         r"""Converts multidimensional pixel coordinates into 1-dimensional indices.
 
-        The order for the indices is row-major, i.e. from the leftmost to the rightmost argument,
-        we walk from the fastest to the lowest dimensions. Example for a map of shape
-        :math:`(n_y, n_x)`, the pixel with float coordinates :math:`(p_x, p_y)` has an index
+        For a map of shape :math:`(n_y, n_x)`, the indices of the pixels are walked from the
+        rightmost dimension :math:`n_x` to the leftmost dimension :math:`n_y` (row-major layout).
+        In such a map, the pixel with float coordinates :math:`(p_x, p_y)` has an index
         :math:`i = round(p_x) + n_x round(p_y)`.
 
         The indices travel from bottom to top, like the Y-coordinates.

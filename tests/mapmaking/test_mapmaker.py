@@ -7,8 +7,7 @@ pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
 
 from furax.core import BlockColumnOperator
 from furax.interfaces.sotodlib import SOTODLibReader
-from furax.io.readers import AbstractReader
-from furax.mapmaking import MapMakingConfig
+from furax.mapmaking import AbstractGroundObservationReader, MapMakingConfig
 from furax.mapmaking.config import LandscapeConfig, Landscapes
 from furax.mapmaking.mapmaker import MultiObservationBinnedMapMaker
 from furax.mapmaking.preconditioner import BJPreconditioner
@@ -31,7 +30,9 @@ def reader():
     return SOTODLibReader(files)
 
 
-def test_acquisitions(reader: AbstractReader, maker: MultiObservationBinnedMapMaker) -> None:
+def test_acquisitions(
+    reader: AbstractGroundObservationReader, maker: MultiObservationBinnedMapMaker
+) -> None:
     landscape = HealpixLandscape(stokes='IQU', nside=16)
     operators = maker.build_acquisitions(reader, landscape)
     assert len(operators) == 2
@@ -40,14 +41,18 @@ def test_acquisitions(reader: AbstractReader, maker: MultiObservationBinnedMapMa
         assert op.out_structure() == reader.out_structure['sample_data']
 
 
-def test_accumulate_rhs(reader: AbstractReader, maker: MultiObservationBinnedMapMaker) -> None:
+def test_accumulate_rhs(
+    reader: AbstractGroundObservationReader, maker: MultiObservationBinnedMapMaker
+) -> None:
     landscape = HealpixLandscape(stokes='IQU', nside=16)
     operators = maker.build_acquisitions(reader, landscape)
     rhs = maker.accumulate_rhs(reader, landscape, operators)
     assert rhs.shape == landscape.shape
 
 
-def test_full_acquisition(reader: AbstractReader, maker: MultiObservationBinnedMapMaker) -> None:
+def test_full_acquisition(
+    reader: AbstractGroundObservationReader, maker: MultiObservationBinnedMapMaker
+) -> None:
     landscape = HealpixLandscape(stokes='IQU', nside=16)
     ops = maker.build_acquisitions(reader, landscape)
     h = BlockColumnOperator(ops)
@@ -57,7 +62,9 @@ def test_full_acquisition(reader: AbstractReader, maker: MultiObservationBinnedM
     assert zeros.shape == landscape.shape
 
 
-def test_full_mapmaker(reader: AbstractReader, maker: MultiObservationBinnedMapMaker) -> None:
+def test_full_mapmaker(
+    reader: AbstractGroundObservationReader, maker: MultiObservationBinnedMapMaker
+) -> None:
     results = maker.run(reader)
     assert 'map' in results
     assert 'weights' in results

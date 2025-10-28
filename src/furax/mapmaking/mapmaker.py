@@ -27,7 +27,6 @@ from furax import (
     MaskOperator,
 )
 from furax.core import BlockColumnOperator, BlockDiagonalOperator, BlockRowOperator, IndexOperator
-from furax.io.readers import AbstractReader
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
@@ -35,6 +34,7 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 from . import templates
 from ._logger import logger as furax_logger
 from ._observation import AbstractGroundObservation
+from ._reader import AbstractGroundObservationReader
 from .config import Landscapes, MapMakingConfig, Methods
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
@@ -51,7 +51,9 @@ class MultiObservationBinnedMapMaker:
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
 
-    def run(self, reader: AbstractReader, out_dir: str | Path | None = None) -> dict[str, Any]:
+    def run(
+        self, reader: AbstractGroundObservationReader, out_dir: str | Path | None = None
+    ) -> dict[str, Any]:
         """Runs the mapmaker and return results after saving them to the given directory."""
         results = self.make_maps(reader)
 
@@ -65,7 +67,7 @@ class MultiObservationBinnedMapMaker:
 
         return results
 
-    def make_maps(self, reader: AbstractReader) -> dict[str, Any]:
+    def make_maps(self, reader: AbstractGroundObservationReader) -> dict[str, Any]:
         """Computes the mapmaker results (maps and other products)."""
         conf = self.config
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
@@ -101,7 +103,7 @@ class MultiObservationBinnedMapMaker:
         return {'map': final_map, 'weights': weights}
 
     def build_acquisitions(
-        self, reader: AbstractReader, landscape: StokesLandscape
+        self, reader: AbstractGroundObservationReader, landscape: StokesLandscape
     ) -> tuple[AbstractLinearOperator]:
         @jax.jit
         def get_acquisition(i: int) -> AbstractLinearOperator:
@@ -119,7 +121,7 @@ class MultiObservationBinnedMapMaker:
 
     def accumulate_rhs(
         self,
-        reader: AbstractReader,
+        reader: AbstractGroundObservationReader,
         landscape: StokesLandscape,
         acquisitions: tuple[AbstractLinearOperator],
     ) -> StokesPyTreeType:

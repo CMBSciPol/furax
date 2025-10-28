@@ -13,21 +13,15 @@ from .observation import SOTODLibObservation
 
 @register_static
 class SOTODLibReader(AbstractGroundObservationReader):
-    """Jittable reader for SOTODlib observations.
-    See GroundObservationReader for details.
+    """Class for handling a set of sotodlib ground observations.
+
+    See AbstractGroundObservationReader for details.
+
+    Usage:
+        >>> reader = SOTODLibReader(['obs1.h5', 'obs2.h5'])
+        >>> data1, padding1 = reader.read(0)
+        >>> data2, padding2 = reader.read(1)
     """
-
-    def __init__(
-        self, filenames: list[Path | str], data_field_names: list[str] | None = None
-    ) -> None:
-        """Initializes the SOTODLib reader with a list of filenames.
-
-        Args:
-            filenames: A list of filenames. Each filename can be a string or a Path object.
-            data_field_names: A list of data fields to load. If None, read all available data fields
-                available for SOTODLib observations.
-        """
-        super().__init__(filenames=filenames, data_field_names=data_field_names)
 
     def _read_structure_impure(
         self, path: Path, data_field_names: list[str]

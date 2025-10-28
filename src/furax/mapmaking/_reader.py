@@ -70,38 +70,6 @@ class AbstractGroundObservationReader(AbstractReader):
 
         super().__init__(filenames, common_keywords={'data_field_names': data_field_names})
 
-    def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
-        """Reads one ground observation from the list of filenames specified in the reader.
-
-        This method is jittable.
-
-        Args:
-            data_index: The index of the data to read.
-
-        Returns:
-            A pair of PyTrees, the first one containing the data and the second one containing the
-            padding. The structure of the data is the same as the structure of the padding.
-
-            The data is a dictionary with the following keys:
-                - sample_data: the detector read-outs.
-                - valid_sample_masks: the (boolean) mask indicating which samples are valid (=True).
-                - valid_scanning_masks: the (boolean) mask indicating which samples are taken
-                    during scans (and not turnarounds).
-                - timestamps: the timestamps of the samples.
-                - hwp_angles: the half-wave plate angle measured at each sample
-                - detector_quaternions: the detector quaternions.
-                - boresight_quaternions: the boresight quaternions.
-            The padding is a dictionary with the following keys:
-                - sample_data: the padding for the detector read-outs.
-                - valid_sample_masks: the padding for the sample mask.
-                - valid_scanning_masks: the padding for the scanning mask.
-                - timestamps: the padding for the timestamps.
-                - hwp_angles: the padding for the half-wave plate angles
-                - detector_quaternions: the padding for the detector quaternions.
-                - boresight_quaternions: the padding for the boresight quaternions.
-        """
-        return super().read(data_index)  # type: ignore[no-any-return]
-
     @classmethod
     def _get_data_field_structures_for(
         cls, n_detectors: int, n_samples: int

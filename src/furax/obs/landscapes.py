@@ -1,12 +1,11 @@
 import math
 import sys
 from abc import ABC, abstractmethod
-from functools import partial
 
 if sys.version_info < (3, 11):
-    from typing_extensions import Self
+    pass
 else:
-    from typing import Self
+    pass
 
 import jax
 import jax.numpy as jnp
@@ -14,6 +13,7 @@ import jax_healpy as jhp
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
+from jax.tree_util import register_static
 from jaxtyping import Array, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
 from furax.math.quaternion import qrot_zaxis, to_iso_angles
@@ -21,7 +21,7 @@ from furax.obs._samplings import Sampling
 from furax.obs.stokes import Stokes, ValidStokesType
 
 
-@jax.tree_util.register_pytree_node_class
+@register_static
 class Landscape(ABC):
     def __init__(self, shape: tuple[int, ...], dtype: DTypeLike = np.float64):
         self.shape = shape
@@ -51,19 +51,8 @@ class Landscape(ABC):
     def ones(self) -> PyTree[Shaped[Array, '...']]:
         return self.full(1)
 
-    def tree_flatten(self):  # type: ignore[no-untyped-def]
-        aux_data = {
-            'shape': self.shape,
-            'dtype': self.dtype,
-        }  # static values
-        return (), aux_data
 
-    @classmethod
-    def tree_unflatten(cls, aux_data, children) -> Self:  # type: ignore[no-untyped-def]
-        return cls(**aux_data)
-
-
-@jax.tree_util.register_pytree_node_class
+@register_static
 class StokesLandscape(Landscape):
     """Class representing a multidimensional map of Stokes vectors.
 
@@ -105,14 +94,6 @@ class StokesLandscape(Landscape):
     def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         cls = Stokes.class_for(self.stokes)
         return cls.structure_for(self.shape, self.dtype)
-
-    def tree_flatten(self):  # type: ignore[no-untyped-def]
-        aux_data = {
-            'shape': self.shape,
-            'dtype': self.dtype,
-            'stokes': self.stokes,
-        }  # static values
-        return (), aux_data
 
     def full(self, fill_value: ScalarLike) -> PyTree[Shaped[Array, ' {self.npixel}']]:
         cls = Stokes.class_for(self.stokes)
@@ -213,7 +194,7 @@ class StokesLandscape(Landscape):
         return self.world2index(*world)
 
 
-@jax.tree_util.register_pytree_node_class
+@register_static
 class HealpixLandscape(StokesLandscape):
     """Class representing a Healpix-projected map of Stokes vectors."""
 
@@ -224,16 +205,7 @@ class HealpixLandscape(StokesLandscape):
         super().__init__(shape, stokes, dtype)
         self.nside = nside
 
-    def tree_flatten(self):  # type: ignore[no-untyped-def]
-        aux_data = {
-            'shape': self.shape,
-            'dtype': self.dtype,
-            'stokes': self.stokes,
-            'nside': self.nside,
-        }  # static values
-        return (), aux_data
-
-    @partial(jax.jit, static_argnums=0)
+    @jax.jit
     def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
         r"""Convert quaternion to HEALPix index in ring ordering.
 
@@ -248,7 +220,7 @@ class HealpixLandscape(StokesLandscape):
         pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec)
         return pix
 
-    @partial(jax.jit, static_argnums=0)
+    @jax.jit
     def world2pixel(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Integer[Array, ' *dims'], ...]:
@@ -264,7 +236,7 @@ class HealpixLandscape(StokesLandscape):
         return (jhp.ang2pix(self.nside, theta, phi),)
 
 
-@jax.tree_util.register_pytree_node_class
+@register_static
 class FrequencyLandscape(HealpixLandscape):
     def __init__(
         self,
@@ -277,18 +249,8 @@ class FrequencyLandscape(HealpixLandscape):
         self.frequencies = frequencies
         self.shape = (len(frequencies), 12 * nside**2)
 
-    def tree_flatten(self):  # type: ignore[no-untyped-def]
-        aux_data = {
-            'shape': self.shape,
-            'dtype': self.dtype,
-            'stokes': self.stokes,
-            'nside': self.nside,
-            'frequencies': self.frequencies,
-        }  # static values
-        return (), aux_data
 
-
-@jax.tree_util.register_pytree_node_class
+@register_static
 class WCSLandscape(StokesLandscape):
     """Class representing an astropy WCS map of Stokes vectors."""
 
@@ -301,15 +263,6 @@ class WCSLandscape(StokesLandscape):
     ) -> None:
         super().__init__(shape, stokes, dtype)
         self.wcs = wcs
-
-    def tree_flatten(self):  # type: ignore[no-untyped-def]
-        aux_data = {
-            'shape': self.shape,
-            'dtype': self.dtype,
-            'stokes': self.stokes,
-            'wcs': self.wcs,
-        }  # static values
-        return (), aux_data
 
     def world2pixel(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
@@ -335,7 +288,7 @@ class WCSLandscape(StokesLandscape):
         return jax.pure_callback(f, result_shape, theta, phi)  # type: ignore[no-any-return]
 
 
-@jax.tree_util.register_pytree_node_class
+@register_static
 class HorizonLandscape(StokesLandscape):
     """Class representing a map of Stokes vectors in horizon (ground) coordinates.
     Contains two axes:
@@ -355,16 +308,6 @@ class HorizonLandscape(StokesLandscape):
         self.altitude_limits = altitude_limits
         self.azimuth_limits = azimuth_limits
 
-    def tree_flatten(self):  # type: ignore[no-untyped-def]
-        aux_data = {
-            'shape': self.shape,
-            'dtype': self.dtype,
-            'stokes': self.stokes,
-            'altitude_limits': self.altitude_limits,
-            'azimuth_limits': self.azimuth_limits,
-        }  # static values
-        return (), aux_data
-
     def bin_edges(self) -> tuple[Float[Array, ' bins+1'], Float[Array, ' bins+1']]:
         """Return the bin edges of the map."""
         alt_min, alt_max = self.altitude_limits
@@ -379,7 +322,7 @@ class HorizonLandscape(StokesLandscape):
         az_centers = 0.5 * (az_edges[:-1] + az_edges[1:])
         return alt_centers, az_centers
 
-    @partial(jax.jit, static_argnums=0)
+    @jax.jit
     def world2pixel(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Integer[Array, ' *dims'], Integer[Array, ' *dims']]:

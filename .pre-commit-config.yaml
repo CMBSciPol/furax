@@ -41,7 +41,6 @@ repos:
     - jax==0.6.0
     - jaxtyping
     - jax-healpy
-    - jax-dataclasses
     - lineax
     - types-PyYAML
     - scipy

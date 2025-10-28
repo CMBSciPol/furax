@@ -6,10 +6,11 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 from jax.experimental import io_callback
+from jax.tree_util import register_static
 from jaxtyping import PyTree
 
 
-@jax.tree_util.register_static
+@register_static
 class AbstractReader(ABC):
     """Abstract class for reading data from disk, avoiding recompilation and large static datasets.
 

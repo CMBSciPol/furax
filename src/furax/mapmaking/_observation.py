@@ -84,8 +84,13 @@ class AbstractGroundObservation(Generic[T]):
         """Returns the elevation of the boresight for each sample"""
 
     @abstractmethod
+    def get_timestamps(self) -> Float[Array, ' a']:
+        """Returns timestamps (sec) of the samples"""
+
     def get_elapsed_times(self) -> Float[Array, ' a']:
         """Returns time (sec) of the samples since the observation began"""
+        timestamps = self.get_timestamps()
+        return timestamps - timestamps[0]
 
     @abstractmethod
     def get_wcs_shape_and_kernel(

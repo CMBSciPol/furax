@@ -1,30 +1,32 @@
 from pathlib import Path
 
 import jax
+import toast.ops.load_hdf5
 from jax import Array
 from jaxtyping import PyTree
-from sotodlib.core import AxisManager
+from toast import Data
+from toast.observation import default_values as toast_defaults
 
 from furax.mapmaking import AbstractGroundObservationReader
 
-from .observation import SOTODLibObservation
+from .observation import ToastObservation
 
 
 @jax.tree_util.register_static
-class SOTODLibReader(AbstractGroundObservationReader):
-    """Jittable reader for SOTODlib observations.
+class ToastReader(AbstractGroundObservationReader):
+    """Jittable reader for toast observations.
     See GroundObservationReader for details.
     """
 
     def __init__(
         self, filenames: list[Path | str], data_field_names: list[str] | None = None
     ) -> None:
-        """Initializes the SOTODLib reader with a list of filenames.
+        """Initializes the toast reader with a list of filenames.
 
         Args:
             filenames: A list of filenames. Each filename can be a string or a Path object.
             data_field_names: A list of data fields to load. If None, read all available data fields
-                available for SOTODLib observations.
+                available for toast observations.
         """
         super().__init__(filenames=filenames, data_field_names=data_field_names)
 
@@ -34,9 +36,17 @@ class SOTODLibReader(AbstractGroundObservationReader):
         filename = path.as_posix()
 
         # Load minimal amount to find data shape
-        sotodlib_obs = AxisManager.load(filename, fields=['dets', 'samps'])
-        n_detectors = sotodlib_obs.dets.count
-        n_samples = sotodlib_obs.samps.count
+        toast_data = Data()
+        toast_loader = toast.ops.load_hdf5.LoadHDF5(
+            files=filename,
+            detdata=[],
+            shared=[toast_defaults.times],
+            intervals=[''],
+        )
+        toast_loader.apply(toast_data)
+        obs = ToastObservation(toast_data)
+        n_detectors = obs.n_detectors
+        n_samples = obs.n_samples
 
         field_structure = AbstractGroundObservationReader._get_data_field_structures_for(
             n_detectors=n_detectors, n_samples=n_samples
@@ -46,26 +56,31 @@ class SOTODLibReader(AbstractGroundObservationReader):
     def _read_data_impure(self, path: Path, data_field_names: list[str]) -> PyTree[Array]:
         filename = path.as_posix()
 
-        sub_fields = []
+        detdata = []
         if 'sample_data' in data_field_names:
-            sub_fields.append('signal')
+            detdata.append(toast_defaults.det_data)
         if 'valid_sample_masks' in data_field_names:
-            sub_fields.append('flags.glitch_flags')
-        if 'valid_scanning_masks' in data_field_names:
-            sub_fields.append('preprocess.turnaround_flags')
-        if 'timestamps' in data_field_names:
-            sub_fields.append('timestamps')
-        if 'hwp_angles' in data_field_names:
-            sub_fields.append('hwp_angle')
-        if 'boresight_quaternions' in data_field_names:
-            sub_fields.append('boresight')
-            if 'timestamps' not in sub_fields:
-                sub_fields.append('timestamps')
-        if 'detector_quaternions' in data_field_names:  # the detector quaternions.
-            sub_fields.append('focal_plane')
+            detdata.append(toast_defaults.det_flags)
 
-        sotodlib_obs = AxisManager.load(filename, fields=sub_fields)
-        obs = SOTODLibObservation(sotodlib_obs)
+        shared = [toast_defaults.times]  # Always need to load timestamps
+        if 'hwp_angles' in data_field_names:
+            shared.append(toast_defaults.hwp_angle)
+        if 'boresight_quaternions' in data_field_names:
+            shared.append(toast_defaults.boresight_radec)
+
+        intervals = ['']  # Toast loads all intervals if the list is empty
+        if 'valid_scanning_masks' in data_field_names:
+            intervals.append(toast_defaults.scanning_interval)
+
+        toast_data = Data()
+        toast_loader = toast.ops.load_hdf5.LoadHDF5(
+            files=filename,
+            detdata=detdata,
+            shared=shared,
+            intervals=intervals,
+        )
+        toast_loader.apply(toast_data)
+        obs = ToastObservation(toast_data)
 
         field_reader = AbstractGroundObservationReader._get_data_field_readers()
         return {field: field_reader[field](obs) for field in data_field_names}

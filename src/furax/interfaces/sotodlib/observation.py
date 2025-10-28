@@ -123,11 +123,6 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         """Returns the elevation of the boresight for each sample"""
         return jnp.array(self.data.boresight.el)
 
-    def get_elapsed_times(self) -> Float[Array, ' a']:
-        """Returns time (sec) of the samples since the observation began"""
-        timestamps = self.get_timestamps()
-        return jnp.array(timestamps) - timestamps[0]
-
     def get_wcs_shape_and_kernel(
         self,
         resolution: float = 8.0,  # units: arcmins
@@ -176,7 +171,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return pixel_inds, spin_ang  # type: ignore[return-value]
 
     def get_timestamps(self) -> Float[Array, ' a']:
-        """Returns time (sec) of the samples since the observation began"""
+        """Returns timestamps (sec) of the samples"""
         return jnp.array(self.data.timestamps)
 
     def get_scanning_mask(self) -> Bool[Array, ' samp']:

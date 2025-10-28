@@ -157,11 +157,9 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
             raise ValueError('Elevation field not provided.')
         return jnp.array(self._observation.shared[self._elevation].data)
 
-    def get_elapsed_times(self) -> Float[Array, ' a']:
-        """Returns time (sec) of the samples since the observation began"""
-        timestamps = self._observation.shared['times'].data
-        t0: float = timestamps[0]
-        return jnp.array(timestamps) - t0
+    def get_timestamps(self) -> Float[Array, ' a']:
+        """Returns timestamps (sec) of the samples"""
+        return jnp.array(self._observation.shared['times'].data)
 
     def get_wcs_shape_and_kernel(
         self,

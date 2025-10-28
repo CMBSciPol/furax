@@ -4,22 +4,22 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+pytest.importorskip('toast', reason='toast is not installed. Skipping tests.')
 pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
-pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
 
-from furax.interfaces.sotodlib import SOTODLibReader
+from furax.interfaces.toast import ToastReader
 
 
 def test_reader() -> None:
-    folder = Path(__file__).parents[2] / 'data/sotodlib'
-    files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
+    folder = Path(__file__).parents[2] / 'data/toast'
+    files = [folder / 'test_obs.h5', folder / 'test_obs.h5']
 
     ndet1 = 2
     nsample1 = 1000
-    ndet2 = 14
-    nsample2 = 10000
+    ndet2 = 2
+    nsample2 = 1000
 
-    reader = SOTODLibReader(files)
+    reader = ToastReader(files)
 
     # Verify out_structure includes all fields including hwp_angles
     assert reader.out_structure == {
@@ -68,35 +68,35 @@ def test_reader_invalid_data_field_name() -> None:
 
     # Test with single invalid field name
     with pytest.raises(ValueError, match='Data field "invalid_field" NOT supported'):
-        SOTODLibReader(files, data_field_names=['invalid_field'])
+        ToastReader(files, data_field_names=['invalid_field'])
 
     # Test with mix of valid and invalid field names
     with pytest.raises(ValueError, match='Data field "bad_field" NOT supported'):
-        SOTODLibReader(files, data_field_names=['sample_data', 'bad_field'])
+        ToastReader(files, data_field_names=['sample_data', 'bad_field'])
 
 
 def test_reader_subset_of_data_fields() -> None:
     """Test that passing a subset of data fields loads only those fields.
 
-    This test is thorough because SOTODLibReader._read_data_impure() conditionally loads
-    different sotodlib fields based on requested data fields:
-    - sample_data → loads 'signal'
-    - valid_sample_masks → loads 'flags.glitch_flags'
-    - valid_scanning_masks → loads 'preprocess.turnaround_flags'
-    - timestamps → loads 'timestamps'
-    - hwp_angles → loads 'hwp_angle'
-    - boresight_quaternions → loads 'boresight' (and 'timestamps' if not already loaded)
-    - detector_quaternions → loads 'focal_plane'
+    This test is thorough because ToastReader._read_data_impure() conditionally loads
+    different TOAST data based on requested fields:
+    - sample_data → loads det_data
+    - valid_sample_masks → loads det_flags
+    - hwp_angles → loads hwp_angle
+    - boresight_quaternions → loads boresight_radec
+    - valid_scanning_masks → loads scanning_interval
+    - timestamps → always loaded
+    - detector_quaternions → computed from detector info (always available)
     """
-    folder = Path(__file__).parents[2] / 'data/sotodlib'
-    files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
+    folder = Path(__file__).parents[2] / 'data/toast'
+    files = [folder / 'test_obs.h5', folder / 'test_obs.h5']
 
-    ndet2 = 14
-    nsample2 = 10000
+    ndet2 = 2
+    nsample2 = 1000
 
     # Test 1: All detector-related fields (sample_data, valid_sample_masks, detector_quaternions)
     detector_fields = ['sample_data', 'valid_sample_masks', 'detector_quaternions']
-    reader = SOTODLibReader(files, data_field_names=detector_fields)
+    reader = ToastReader(files, data_field_names=detector_fields)
 
     assert set(reader.out_structure.keys()) == set(detector_fields)
     assert reader.out_structure['sample_data'] == jax.ShapeDtypeStruct(
@@ -118,7 +118,7 @@ def test_reader_subset_of_data_fields() -> None:
     # Test 2: All time/boresight-related fields
     # (timestamps, boresight_quaternions, valid_scanning_masks)
     time_fields = ['timestamps', 'boresight_quaternions', 'valid_scanning_masks']
-    reader = SOTODLibReader(files, data_field_names=time_fields)
+    reader = ToastReader(files, data_field_names=time_fields)
 
     assert set(reader.out_structure.keys()) == set(time_fields)
     assert reader.out_structure['timestamps'] == jax.ShapeDtypeStruct(
@@ -139,9 +139,9 @@ def test_reader_subset_of_data_fields() -> None:
 
     # Test 3: Mixed combination
     # (sample_data + timestamps + valid_scanning_masks + boresight_quaternions)
-    # This tests loading signal, timestamps, turnaround_flags, and boresight
+    # This tests loading both det_data and boresight_radec
     mixed_fields = ['sample_data', 'timestamps', 'valid_scanning_masks', 'boresight_quaternions']
-    reader = SOTODLibReader(files, data_field_names=mixed_fields)
+    reader = ToastReader(files, data_field_names=mixed_fields)
 
     assert set(reader.out_structure.keys()) == set(mixed_fields)
     assert 'valid_sample_masks' not in reader.out_structure
@@ -154,62 +154,51 @@ def test_reader_subset_of_data_fields() -> None:
     assert data['valid_scanning_masks'].shape == (nsample2,)
     assert data['boresight_quaternions'].shape == (nsample2, 4)
 
-    # Test 4: Only sample_data (tests loading 'signal' alone)
-    reader = SOTODLibReader(files, data_field_names=['sample_data'])
+    # Test 4: Only sample_data (tests loading det_data alone)
+    reader = ToastReader(files, data_field_names=['sample_data'])
     assert set(reader.out_structure.keys()) == {'sample_data'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'sample_data'}
     assert data['sample_data'].shape == (ndet2, nsample2)
 
-    # Test 5: Only valid_sample_masks (tests loading 'flags.glitch_flags' alone)
-    reader = SOTODLibReader(files, data_field_names=['valid_sample_masks'])
+    # Test 5: Only valid_sample_masks (tests loading det_flags alone)
+    reader = ToastReader(files, data_field_names=['valid_sample_masks'])
     assert set(reader.out_structure.keys()) == {'valid_sample_masks'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'valid_sample_masks'}
     assert data['valid_sample_masks'].shape == (ndet2, nsample2)
 
-    # Test 6: Only valid_scanning_masks (tests loading 'preprocess.turnaround_flags' alone)
-    reader = SOTODLibReader(files, data_field_names=['valid_scanning_masks'])
-    assert set(reader.out_structure.keys()) == {'valid_scanning_masks'}
-    data, _ = reader.read(0)
-    assert set(data.keys()) == {'valid_scanning_masks'}
-    assert data['valid_scanning_masks'].shape == (nsample2,)
-
-    # Test 7: Only timestamps (tests loading 'timestamps' alone)
-    reader = SOTODLibReader(files, data_field_names=['timestamps'])
-    assert set(reader.out_structure.keys()) == {'timestamps'}
-    data, _ = reader.read(0)
-    assert set(data.keys()) == {'timestamps'}
-    assert data['timestamps'].shape == (nsample2,)
-
-    # Test 8: Only boresight_quaternions (tests loading 'boresight' + 'timestamps')
-    reader = SOTODLibReader(files, data_field_names=['boresight_quaternions'])
+    # Test 6: Only boresight_quaternions (tests loading boresight_radec alone)
+    reader = ToastReader(files, data_field_names=['boresight_quaternions'])
     assert set(reader.out_structure.keys()) == {'boresight_quaternions'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'boresight_quaternions'}
     assert data['boresight_quaternions'].shape == (nsample2, 4)
 
-    # Test 9: Only hwp_angles (tests loading 'hwp_angle' alone)
-    reader = SOTODLibReader(files, data_field_names=['hwp_angles'])
+    # Test 7: Only valid_scanning_masks (tests loading scanning_interval alone)
+    reader = ToastReader(files, data_field_names=['valid_scanning_masks'])
+    assert set(reader.out_structure.keys()) == {'valid_scanning_masks'}
+    data, _ = reader.read(0)
+    assert set(data.keys()) == {'valid_scanning_masks'}
+    assert data['valid_scanning_masks'].shape == (nsample2,)
+
+    # Test 8: Only timestamps (minimal loading)
+    reader = ToastReader(files, data_field_names=['timestamps'])
+    assert set(reader.out_structure.keys()) == {'timestamps'}
+    data, _ = reader.read(0)
+    assert set(data.keys()) == {'timestamps'}
+    assert data['timestamps'].shape == (nsample2,)
+
+    # Test 9: Only hwp_angles (tests loading hwp_angle alone)
+    reader = ToastReader(files, data_field_names=['hwp_angles'])
     assert set(reader.out_structure.keys()) == {'hwp_angles'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'hwp_angles'}
     assert data['hwp_angles'].shape == (nsample2,)
 
-    # Test 10: Only detector_quaternions (tests loading 'focal_plane' alone)
-    reader = SOTODLibReader(files, data_field_names=['detector_quaternions'])
+    # Test 10: Only detector_quaternions (computed field, no special loading)
+    reader = ToastReader(files, data_field_names=['detector_quaternions'])
     assert set(reader.out_structure.keys()) == {'detector_quaternions'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'detector_quaternions'}
     assert data['detector_quaternions'].shape == (ndet2, 4)
-
-    # Test 11: Combination that triggers conditional timestamps loading
-    # (boresight_quaternions without explicit timestamps)
-    # This tests the special case where timestamps is loaded automatically for boresight
-    combo_fields = ['sample_data', 'boresight_quaternions']
-    reader = SOTODLibReader(files, data_field_names=combo_fields)
-    assert set(reader.out_structure.keys()) == set(combo_fields)
-    data, _ = reader.read(0)
-    assert set(data.keys()) == set(combo_fields)
-    assert data['sample_data'].shape == (ndet2, nsample2)
-    assert data['boresight_quaternions'].shape == (nsample2, 4)

@@ -41,17 +41,6 @@ from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
 
 
-def prepend_dimensions(
-    dims: int | tuple[int, ...], structure: jax.ShapeDtypeStruct
-) -> jax.ShapeDtypeStruct:
-    """Prepends dimensions to a ShapeDtypeStruct."""
-    if isinstance(dims, int):
-        dims = (dims,)
-    original_shape = structure.shape
-    new_shape = (*dims, *original_shape)
-    return structure.update(shape=new_shape)  # type: ignore[attr-defined, no-any-return]
-
-
 class MultiObservationBinnedMapMaker:
     """Class for mapping multiple observations together.
 

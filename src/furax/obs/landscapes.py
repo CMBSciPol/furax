@@ -1,11 +1,5 @@
 import math
-import sys
 from abc import ABC, abstractmethod
-
-if sys.version_info < (3, 11):
-    pass
-else:
-    pass
 
 import jax
 import jax.numpy as jnp

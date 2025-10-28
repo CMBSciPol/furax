@@ -105,7 +105,8 @@ class WhiteNoiseModel(NoiseModel):
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
     ) -> AbstractLinearOperator:
         assert in_structure.ndim == 2, 'Dimensions assumed to be (ndets, nsamps)'
-        return DiagonalOperator(1.0 / self.sigma[:, None] ** 2, in_structure=in_structure)
+        inv_var = jnp.where(self.sigma > 0, 1.0 / (self.sigma ** 2), 0.)
+        return DiagonalOperator(inv_var[:, None], in_structure=in_structure)
 
     @classmethod
     def fit_psd_model(  # type: ignore[override]
@@ -181,7 +182,8 @@ class AtmosphericNoiseModel(NoiseModel):
 
         freq = jnp.fft.rfftfreq(nperseg, 1 / sample_rate)
         eval_psd = self.psd(freq)
-        invntt = jnp.fft.irfft(1.0 / eval_psd, n=nperseg)[..., :correlation_length]
+        inv_psd = jnp.where(eval_psd > 0, 1 / eval_psd, 0.)
+        invntt = jnp.fft.irfft(inv_psd, n=nperseg)[..., :correlation_length]
         window = apodization_window(correlation_length)
 
         return SymmetricBandToeplitzOperator(invntt * window, in_structure)

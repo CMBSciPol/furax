@@ -37,7 +37,7 @@ def test_acquisitions(reader: AbstractReader, maker: MultiObservationBinnedMapMa
     assert len(operators) == 2
     for op in operators:
         assert op.in_structure() == landscape.structure
-        assert op.out_structure() == reader.out_structure['signal']
+        assert op.out_structure() == reader.out_structure['sample_data']
 
 
 def test_accumulate_rhs(reader: AbstractReader, maker: MultiObservationBinnedMapMaker) -> None:

@@ -127,7 +127,7 @@ class MultiObservationBinnedMapMaker:
         def get_rhs(i: int, acquisition: AbstractLinearOperator) -> StokesPyTreeType:
             # TODO: only read sample_data
             data, _padding = reader.read(i)
-            return acquisition.T(data['signal'])  # type: ignore[no-any-return]
+            return acquisition.T(data['sample_data'])  # type: ignore[no-any-return]
 
         # sum RHS across observations
         return jax.tree.reduce(  # type: ignore[no-any-return]

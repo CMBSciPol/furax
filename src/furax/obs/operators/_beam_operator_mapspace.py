@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import cast
 
 import equinox
@@ -5,8 +6,9 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.sparse.linalg import cg
 from jaxtyping import Array, Inexact, PyTree
+from typing_extensions import Self
 
-from furax import AbstractLinearOperator, BlockDiagonalOperator, symmetric
+from furax import AbstractLinearOperator, BlockDiagonalOperator, square, symmetric
 from furax.obs.stokes import StokesIQU
 
 
@@ -31,12 +33,12 @@ def read_beam_matrix(
 
     all_indices = indices.reshape(n_rows, n_neighbours)
     all_data = data.reshape(n_rows, n_neighbours)
-    map_structure = in_structure.shape[-1]
 
-    return MapSpaceBeamOperator(map_structure, all_indices, all_data)
+    return MapSpaceBeamOperator(all_indices, all_data, in_structure=in_structure)
 
 
 # @symmetric
+@square
 class MapSpaceBeamOperator(AbstractLinearOperator):
     """MapSpaceBeamOperator applies a beam to a map in map space.
 
@@ -47,30 +49,44 @@ class MapSpaceBeamOperator(AbstractLinearOperator):
     """
 
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    _indices: Array = equinox.field(static=False)
-    _data: Array = equinox.field(static=False)
+    indices: Array
+    data: Array
 
     def __init__(
-        self, in_structure: PyTree[jax.ShapeDtypeStruct], indices: Array, data: Array
+        self, indices: Array, data: Array, *, in_structure: PyTree[jax.ShapeDtypeStruct]
     ) -> None:
         """
         Args:
-            in_structure: Input structure of the operator.
             indices: Indices of the CSR format sparse matrix.
             data: Data of the CSR format sparse matrix.
+            in_structure: Input structure of the operator.
         """
         self._in_structure = in_structure
-        self._indices = indices
-        self._data = data
+        self.indices = indices
+        self.data = data
 
     def mv(self, x: Inexact[Array, '...']) -> Inexact[Array, '...']:
-        return jnp.sum(self._data * x[self._indices], axis=1)
+        return jnp.sum(self.data * x[self.indices], axis=1)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
 
     def inverse(self) -> AbstractLinearOperator:
         return MapSpaceBeamOperatorInverse(self)
+
+    @classmethod
+    def from_file(cls, filename: str | Path) -> Self:
+        sparse_matrix = jnp.load(filename)
+        indices = jnp.array(sparse_matrix['indices'], dtype=jnp.int32)
+        data = jnp.array(sparse_matrix['data'], dtype=jnp.float32)
+        n_neighbours = int(jnp.diff(sparse_matrix['indptr'])[0])
+        n_rows = sparse_matrix['indptr'].shape[0] - 1
+
+        all_indices = indices.reshape(n_rows, n_neighbours)
+        all_data = data.reshape(n_rows, n_neighbours)
+        in_structure = jax.ShapeDtypeStruct(n_rows, data.dtype)
+
+        return cls(all_indices, all_data, in_structure=in_structure)
 
 
 class MapSpaceBeamOperatorInverse(AbstractLinearOperator):

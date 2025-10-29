@@ -155,7 +155,7 @@ class MultiObservationMapMaker:
 
         # Build the inverse noise weighting operators
         return tuple(
-            model.inverse_operator(
+            model.inverse_operator(  # type: ignore[attr-defined]
                 structure,
                 nperseg=self.config.nperseg,
                 sample_rate=fs,
@@ -165,7 +165,20 @@ class MultiObservationMapMaker:
         )
 
     def _read_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
-        raise NotImplementedError
+        reader = self.reader.update_data_field_names(['noise_model_fits', 'timestamps'])
+
+        @jax.jit
+        def read_model(i):  # type: ignore[no-untyped-def]
+            data, _padding = reader.read(i)
+            fs = 1.0 / jnp.median(jnp.diff(data['timestamps']))
+            model = AtmosphericNoiseModel(*data['noise_model_fits'].T)
+            if self.config.binned:
+                return model.to_white_noise_model(), fs
+            else:
+                return model, fs
+
+        models_and_fs = jax.tree.map(read_model, tuple(range(reader.count)))
+        return tuple(zip(*models_and_fs, strict=True))
 
     def _fit_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
         # Only read sample data and timestamps (to compute sampling rate)

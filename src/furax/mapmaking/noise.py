@@ -168,7 +168,7 @@ class AtmosphericNoiseModel(NoiseModel):
         symmetrised_band = jnp.concatenate([padded_band, padded_band[..., -2:0:-1]], axis=-1)
         eff_inv_psd = jnp.fft.rfft(symmetrised_band, n=nperseg).real
         new_band = jnp.fft.irfft(1.0 / eff_inv_psd, n=nperseg)[:, :correlation_length] * window
-        return SymmetricBandToeplitzOperator(new_band, in_structure=in_structure)
+        return SymmetricBandToeplitzOperator(new_band, in_structure=in_structure, fft_size=nperseg)
 
     def inverse_operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
@@ -187,7 +187,7 @@ class AtmosphericNoiseModel(NoiseModel):
         invntt = jnp.fft.irfft(inv_psd, n=nperseg)[..., :correlation_length]
         window = apodization_window(correlation_length)
 
-        return SymmetricBandToeplitzOperator(invntt * window, in_structure)
+        return SymmetricBandToeplitzOperator(invntt * window, in_structure, fft_size=nperseg)
 
     def to_white_noise_model(self) -> WhiteNoiseModel:
         return WhiteNoiseModel(sigma=self.sigma)

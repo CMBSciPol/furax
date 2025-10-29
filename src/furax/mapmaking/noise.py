@@ -105,7 +105,7 @@ class WhiteNoiseModel(NoiseModel):
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
     ) -> AbstractLinearOperator:
         assert in_structure.ndim == 2, 'Dimensions assumed to be (ndets, nsamps)'
-        inv_var = jnp.where(self.sigma > 0, 1.0 / (self.sigma ** 2), 0.0)
+        inv_var = jnp.where(self.sigma > 0, 1.0 / (self.sigma**2), 0.0)
         return DiagonalOperator(inv_var[:, None], in_structure=in_structure)
 
     @classmethod

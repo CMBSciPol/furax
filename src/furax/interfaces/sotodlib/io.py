@@ -64,3 +64,6 @@ class SOTODLibReader(AbstractGroundObservationReader):
 
         field_reader = AbstractGroundObservationReader._get_data_field_readers()
         return {field: field_reader[field](obs) for field in data_field_names}
+
+    def update_data_field_names(self, data_field_names: list[str]) -> 'SOTODLibReader':
+        return SOTODLibReader(*self.args, data_field_names=data_field_names)

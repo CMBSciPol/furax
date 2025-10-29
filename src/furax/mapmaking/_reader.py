@@ -46,7 +46,7 @@ class AbstractGroundObservationReader(AbstractReader):
     """Supported data field names for ground observations"""
 
     def __init__(
-        self, filenames: list[Path | str], data_field_names: list[str] | None = None
+        self, filenames: list[Path | str], *, data_field_names: list[str] | None = None
     ) -> None:
         """Initializes the reader with a list of filenames and optional list of field names.
 
@@ -103,3 +103,9 @@ class AbstractGroundObservationReader(AbstractReader):
 
     @abstractmethod
     def _read_data_impure(self, path: Path, data_field_names: list[str]) -> PyTree[Array]: ...
+
+    @abstractmethod
+    def update_data_field_names(
+        self, data_field_names: list[str]
+    ) -> 'AbstractGroundObservationReader':
+        """Returns a new reader with a new list of data fields to read."""

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import jax
 from jax import Array
+from jax.tree_util import register_static
 from jaxtyping import PyTree
 from sotodlib.core import AxisManager
 
@@ -10,7 +11,7 @@ from furax.mapmaking import AbstractGroundObservationReader
 from .observation import SOTODLibObservation
 
 
-@jax.tree_util.register_static
+@register_static
 class SOTODLibReader(AbstractGroundObservationReader):
     """Jittable reader for SOTODlib observations.
     See GroundObservationReader for details.

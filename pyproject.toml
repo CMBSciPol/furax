@@ -27,7 +27,6 @@ dependencies = [
     'jaxtyping',
     'healpy>=0.16.6',
     'jax-healpy',
-    'jax-dataclasses',
     'lineax',
     'numpy',
     'scipy',

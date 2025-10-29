@@ -1,13 +1,16 @@
+from dataclasses import dataclass
+
 import jax
 import jax.numpy as jnp
-import jax_dataclasses as jdc
 import numpy as np
+from jax.tree_util import register_dataclass
 from numpy.testing import assert_array_equal
 
 from furax import AbstractLinearOperator, IdentityOperator
 
 
-@jdc.pytree_dataclass
+@register_dataclass
+@dataclass
 class PyTreeTest:
     a: jax.Array
     b: int

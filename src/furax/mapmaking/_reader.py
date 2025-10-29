@@ -6,6 +6,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jax.tree_util import register_static
 from jaxtyping import PyTree
 
 from furax.io.readers import AbstractReader
@@ -13,7 +14,7 @@ from furax.io.readers import AbstractReader
 from ._observation import AbstractGroundObservation
 
 
-@jax.tree_util.register_static
+@register_static
 class AbstractGroundObservationReader(AbstractReader):
     """Jittable reader for ground observations.
 

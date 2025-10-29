@@ -1,13 +1,14 @@
 import operator
 import sys
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, ClassVar, Literal, cast, get_args, overload
 
 import jax
-import jax_dataclasses as jdc
 import numpy as np
 from equinox.internal._omega import _Metaω
 from jax import Array
+from jax.tree_util import register_dataclass
 from jax.typing import ArrayLike
 from jaxtyping import DTypeLike, Float, Integer, Key, PyTree, ScalarLike
 
@@ -37,7 +38,8 @@ __all__ = ['Stokes', 'StokesI', 'StokesQU', 'StokesIQU', 'StokesIQUV', 'ValidSto
 ValidStokesType = Literal['I', 'QU', 'IQU', 'IQUV']
 
 
-@jdc.pytree_dataclass
+@register_dataclass
+@dataclass
 class Stokes(ABC):
     stokes: ClassVar[ValidStokesType]
 
@@ -311,7 +313,8 @@ class Stokes(ABC):
         return uniform_like(cls.structure_for(shape, dtype), key, low, high)
 
 
-@jdc.pytree_dataclass
+@register_dataclass
+@dataclass
 class StokesI(Stokes):
     stokes: ClassVar[ValidStokesType] = 'I'
     i: Array
@@ -327,7 +330,8 @@ class StokesI(Stokes):
         return cls(i)
 
 
-@jdc.pytree_dataclass
+@register_dataclass
+@dataclass
 class StokesQU(Stokes):
     stokes: ClassVar[ValidStokesType] = 'QU'
     q: Array
@@ -345,7 +349,8 @@ class StokesQU(Stokes):
         return cls(q, u)
 
 
-@jdc.pytree_dataclass
+@register_dataclass
+@dataclass
 class StokesIQU(Stokes):
     stokes: ClassVar[ValidStokesType] = 'IQU'
     i: Array
@@ -364,7 +369,8 @@ class StokesIQU(Stokes):
         return cls(i, q, u)
 
 
-@jdc.pytree_dataclass
+@register_dataclass
+@dataclass
 class StokesIQUV(Stokes):
     stokes: ClassVar[ValidStokesType] = 'IQUV'
     i: Array

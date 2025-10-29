@@ -3,6 +3,7 @@ from pathlib import Path
 import jax
 import toast.ops.load_hdf5
 from jax import Array
+from jax.tree_util import register_static
 from jaxtyping import PyTree
 from toast import Data
 from toast.observation import default_values as toast_defaults
@@ -12,7 +13,7 @@ from furax.mapmaking import AbstractGroundObservationReader
 from .observation import ToastObservation
 
 
-@jax.tree_util.register_static
+@register_static
 class ToastReader(AbstractGroundObservationReader):
     """Jittable reader for toast observations.
     See GroundObservationReader for details.

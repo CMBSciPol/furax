@@ -47,15 +47,21 @@ class MultiObservationBinnedMapMaker:
     For now, only performs binned map-making.
     """
 
-    def __init__(self, config: MapMakingConfig | None = None, logger: Logger | None = None) -> None:
+    def __init__(
+        self,
+        reader: AbstractGroundObservationReader,
+        config: MapMakingConfig | None = None,
+        logger: Logger | None = None,
+        stokes: ValidStokesType = 'IQU',  # TODO: shoudn't this be in the config?
+    ) -> None:
+        self.reader = reader
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
+        self.landscape = _build_landscape(self.config, stokes=stokes)
 
-    def run(
-        self, reader: AbstractGroundObservationReader, out_dir: str | Path | None = None
-    ) -> dict[str, Any]:
+    def run(self, out_dir: str | Path | None = None) -> dict[str, Any]:
         """Runs the mapmaker and return results after saving them to the given directory."""
-        results = self.make_maps(reader)
+        results = self.make_maps()
 
         # Save outputs
         if out_dir is not None:
@@ -67,21 +73,17 @@ class MultiObservationBinnedMapMaker:
 
         return results
 
-    def make_maps(self, reader: AbstractGroundObservationReader) -> dict[str, Any]:
+    def make_maps(self) -> dict[str, Any]:
         """Computes the mapmaker results (maps and other products)."""
-        conf = self.config
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
 
-        # TODO: shoudn't `stokes` be in the config?
-        landscape = _build_landscape(conf, stokes='IQU')
-
         # Acquisition (I, Q, U Maps -> TOD)
-        acquisitions = self.build_acquisitions(reader, landscape)
+        acquisitions = self.build_acquisitions()
         h = BlockColumnOperator(acquisitions)
         logger_info('Created acquisition operators')
 
         # RHS
-        rhs = self.accumulate_rhs(reader, landscape, acquisitions)
+        rhs = self.accumulate_rhs(acquisitions)
         logger_info('Accumulated RHS vector')
 
         # System matrix (invert explicitly in the binned case)
@@ -102,16 +104,17 @@ class MultiObservationBinnedMapMaker:
         weights = np.array(system.get_blocks())
         return {'map': final_map, 'weights': weights}
 
-    def build_acquisitions(
-        self, reader: AbstractGroundObservationReader, landscape: StokesLandscape
-    ) -> tuple[AbstractLinearOperator]:
+    def build_acquisitions(self) -> tuple[AbstractLinearOperator]:
+        # Only read necessary fields
+        required_fields = ['boresight_quaternions', 'detector_quaternions', 'hwp_angles']
+        reader = self.reader.update_data_field_names(required_fields)
+
         @jax.jit
         def get_acquisition(i: int) -> AbstractLinearOperator:
-            # TODO: read only what's needed to build an acquisition operator
             # TODO: handle padding
             data, _padding = reader.read(i)
             return _build_acquisition_operator(
-                landscape,
+                self.landscape,
                 **data,
                 pointing_chunk_size=self.config.pointing_chunk_size,
                 pointing_on_the_fly=self.config.pointing_on_the_fly,
@@ -119,15 +122,12 @@ class MultiObservationBinnedMapMaker:
 
         return jax.tree.map(get_acquisition, tuple(range(reader.count)))  # type: ignore[no-any-return]
 
-    def accumulate_rhs(
-        self,
-        reader: AbstractGroundObservationReader,
-        landscape: StokesLandscape,
-        acquisitions: tuple[AbstractLinearOperator],
-    ) -> StokesPyTreeType:
+    def accumulate_rhs(self, acquisitions: tuple[AbstractLinearOperator]) -> StokesPyTreeType:
+        # Only read sample data
+        reader = self.reader.update_data_field_names(['sample_data'])
+
         @jax.jit
         def get_rhs(i: int, acquisition: AbstractLinearOperator) -> StokesPyTreeType:
-            # TODO: only read sample_data
             data, _padding = reader.read(i)
             return acquisition.T(data['sample_data'])  # type: ignore[no-any-return]
 
@@ -170,14 +170,13 @@ def _build_landscape(config: MapMakingConfig, stokes: ValidStokesType = 'IQU') -
     raise NotImplementedError
 
 
-def _build_acquisition_operator(  # type: ignore[no-untyped-def]
+def _build_acquisition_operator(
     landscape: StokesLandscape,
     boresight_quaternions: Array,
     detector_quaternions: Array,
-    *,
+    hwp_angles: Array,
     pointing_chunk_size: int,
     pointing_on_the_fly: bool,
-    **_kwargs,  # temporary catch-all
 ) -> AbstractLinearOperator:
     """Build an acquisition operator for a single observation."""
     pointing = _build_pointing_operator(
@@ -191,7 +190,7 @@ def _build_acquisition_operator(  # type: ignore[no-untyped-def]
     nsamp = boresight_quaternions.shape[0]
     data_shape = (ndet, nsamp)
     polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=jnp.float64)
-    hwp = HWPOperator.create(shape=data_shape, dtype=jnp.float64)
+    hwp = HWPOperator.create(shape=data_shape, dtype=jnp.float64, angles=hwp_angles)
     return (polarizer @ hwp @ pointing).reduce()
 
 
@@ -199,7 +198,6 @@ def _build_pointing_operator(
     landscape: StokesLandscape,
     boresight_quaternions: Array,
     detector_quaternions: Array,
-    *,
     chunk_size: int,
     on_the_fly: bool = True,
 ) -> AbstractLinearOperator:

@@ -63,7 +63,7 @@ def test_reader() -> None:
 
 def test_reader_invalid_data_field_name() -> None:
     """Test that passing an invalid data field name raises a ValueError."""
-    folder = Path(__file__).parents[2] / 'data/sotodlib'
+    folder = Path(__file__).parents[2] / 'data/toast'
     files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
 
     # Test with single invalid field name
@@ -73,6 +73,21 @@ def test_reader_invalid_data_field_name() -> None:
     # Test with mix of valid and invalid field names
     with pytest.raises(ValueError, match='Data field "bad_field" NOT supported'):
         ToastReader(files, data_field_names=['sample_data', 'bad_field'])
+
+
+@pytest.mark.parametrize(
+    'new_field_names',
+    [
+        ['sample_data'],
+        ['boresight_quaternions', 'detector_quaternions', 'hwp_angles'],
+    ],
+)
+def test_reader_update_data_fields(new_field_names):
+    folder = Path(__file__).parents[2] / 'data/toast'
+    reader = ToastReader([folder / 'test_obs.h5'])
+    new_reader = reader.update_data_field_names(new_field_names)
+    data, _ = new_reader.read(0)
+    assert set(data.keys()) == set(new_field_names)
 
 
 def test_reader_subset_of_data_fields() -> None:

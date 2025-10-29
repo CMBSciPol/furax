@@ -15,21 +15,15 @@ from .observation import ToastObservation
 
 @register_static
 class ToastReader(AbstractGroundObservationReader):
-    """Jittable reader for toast observations.
-    See GroundObservationReader for details.
+    """Class for handling a set of TOAST ground observations.
+
+    See AbstractGroundObservationReader for details.
+
+    Usage:
+        >>> reader = ToastReader(['obs1.h5', 'obs2.h5'])
+        >>> data1, padding1 = reader.read(0)
+        >>> data2, padding2 = reader.read(1)
     """
-
-    def __init__(
-        self, filenames: list[Path | str], data_field_names: list[str] | None = None
-    ) -> None:
-        """Initializes the toast reader with a list of filenames.
-
-        Args:
-            filenames: A list of filenames. Each filename can be a string or a Path object.
-            data_field_names: A list of data fields to load. If None, read all available data fields
-                available for toast observations.
-        """
-        super().__init__(filenames=filenames, data_field_names=data_field_names)
 
     def _read_structure_impure(
         self, path: Path, data_field_names: list[str]
@@ -85,3 +79,6 @@ class ToastReader(AbstractGroundObservationReader):
 
         field_reader = AbstractGroundObservationReader._get_data_field_readers()
         return {field: field_reader[field](obs) for field in data_field_names}
+
+    def update_data_field_names(self, data_field_names: list[str]) -> 'ToastReader':
+        return ToastReader(*self.args, data_field_names=data_field_names)

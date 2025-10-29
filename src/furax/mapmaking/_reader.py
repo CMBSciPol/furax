@@ -1,7 +1,7 @@
 from abc import abstractmethod
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import jax
 import jax.numpy as jnp
@@ -22,25 +22,18 @@ class AbstractGroundObservationReader(AbstractReader):
     loaded by passing an index in this list to the `read` method. The observation data is padded
     so that all observations have the same structure.
 
-    Attributes:
-        count (int): The number of data to read.
-        args (list[tuple[Any, ...]]): For each data, the filename to be read.
-        keywords (list[dict[str, Any]]): Not used.
-        data_field_names (list[str]): For all data, load the listed data fields only. If None,
-            read all possible data fields
-        common_keywords (dict[str, Any]): Not used.
-        out_structure (dict[str, jax.ShapeDtypeStruct]): The structure of the data that is returned
-            by the read function. The structure is the same for all data.
-        paddings (list[PyTree[tuple[int, ...]]): For each data, the padding that is applied to
-            the data that is returned by the read function.
-
-    Usage:
-        >>> reader = SOTODLibReader(['obs1.h5', 'obs2.h5'])
-        >>> data1, padding1 = reader.read(0)
-        >>> data2, padding2 = reader.read(1)
+    The available data fields for ground observations are:
+        - sample_data: the detector read-outs.
+        - valid_sample_masks: the (boolean) mask indicating which samples are valid (=True).
+        - valid_scanning_masks: the (boolean) mask indicating which samples are taken
+            during scans (and not turnarounds).
+        - timestamps: the timestamps of the samples.
+        - hwp_angles: the half-wave plate angle measured at each sample
+        - detector_quaternions: the detector quaternions.
+        - boresight_quaternions: the boresight quaternions.
     """
 
-    DATA_FIELD_NAMES = [
+    DATA_FIELD_NAMES: ClassVar[list[str]] = [
         'sample_data',  # the detector read-outs.
         'valid_sample_masks',  # the (boolean) mask indicating which samples are valid (=True).
         'valid_scanning_masks',  # the (boolean) mask indicating which samples are taken during
@@ -50,63 +43,32 @@ class AbstractGroundObservationReader(AbstractReader):
         'detector_quaternions',  # the detector quaternions.
         'boresight_quaternions',  # the boresight quaternions.
     ]
+    """Supported data field names for ground observations"""
 
     def __init__(
-        self, filenames: list[Path | str], data_field_names: list[str] | None = None
+        self, filenames: list[Path | str], *, data_field_names: list[str] | None = None
     ) -> None:
-        """Initializes the SOTODLib reader with a list of filenames.
+        """Initializes the reader with a list of filenames and optional list of field names.
 
         Args:
             filenames: A list of filenames. Each filename can be a string or a Path object.
-            data_field_names: A list of data fields to load. If None, read all available data fields
-                available for SOTODLib observations.
+            data_field_names: Optional list of fields to load. If None, read all available fields.
         """
         filenames = [Path(name) if isinstance(name, str) else name for name in filenames]
         if data_field_names is None:
             data_field_names = self.DATA_FIELD_NAMES
         else:
             data_field_names = list(set(data_field_names))  # Remove duplicates if any
+            # Validate field names
             for name in data_field_names:
-                # Validate field names
                 if name not in self.DATA_FIELD_NAMES:
-                    raise ValueError(
+                    msg = (
                         f'Data field "{name}" NOT supported for ground observation data format. '
                         f'Supported fields: {self.DATA_FIELD_NAMES}'
                     )
+                    raise ValueError(msg)
 
         super().__init__(filenames, common_keywords={'data_field_names': data_field_names})
-
-    def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
-        """Reads one ground observation from the list of filenames specified in the reader.
-
-        This method is jittable.
-
-        Args:
-            data_index: The index of the data to read.
-
-        Returns:
-            A pair of PyTrees, the first one containing the data and the second one containing the
-            padding. The structure of the data is the same as the structure of the padding.
-
-            The data is a dictionary with the following keys:
-                - sample_data: the detector read-outs.
-                - valid_sample_masks: the (boolean) mask indicating which samples are valid (=True).
-                - valid_scanning_masks: the (boolean) mask indicating which samples are taken
-                    during scans (and not turnarounds).
-                - timestamps: the timestamps of the samples.
-                - hwp_angles: the half-wave plate angle measured at each sample
-                - detector_quaternions: the detector quaternions.
-                - boresight_quaternions: the boresight quaternions.
-            The padding is a dictionary with the following keys:
-                - sample_data: the padding for the detector read-outs.
-                - valid_sample_masks: the padding for the sample mask.
-                - valid_scanning_masks: the padding for the scanning mask.
-                - timestamps: the padding for the timestamps.
-                - hwp_angles: the padding for the half-wave plate angles
-                - detector_quaternions: the padding for the detector quaternions.
-                - boresight_quaternions: the padding for the boresight quaternions.
-        """
-        return super().read(data_index)  # type: ignore[no-any-return]
 
     @classmethod
     def _get_data_field_structures_for(
@@ -141,3 +103,9 @@ class AbstractGroundObservationReader(AbstractReader):
 
     @abstractmethod
     def _read_data_impure(self, path: Path, data_field_names: list[str]) -> PyTree[Array]: ...
+
+    @abstractmethod
+    def update_data_field_names(
+        self, data_field_names: list[str]
+    ) -> 'AbstractGroundObservationReader':
+        """Returns a new reader with a new list of data fields to read."""

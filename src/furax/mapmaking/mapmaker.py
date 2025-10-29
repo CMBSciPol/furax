@@ -47,11 +47,8 @@ from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
 
 
-class MultiObservationBinnedMapMaker:
-    """Class for mapping multiple observations together.
-
-    For now, only performs binned map-making.
-    """
+class MultiObservationMapMaker:
+    """Class for mapping multiple observations together."""
 
     def __init__(
         self,
@@ -85,21 +82,37 @@ class MultiObservationBinnedMapMaker:
 
         # Acquisition (I, Q, U Maps -> TOD)
         acquisitions = self.build_acquisitions()
-        h = BlockColumnOperator(acquisitions)
         logger_info('Created acquisition operators')
 
+        # Noise
+        weight_operators = self.build_weight_operators(structure=acquisitions[0].out_structure())
+        logger_info('Created weighting operators')
+
         # RHS
-        rhs = self.accumulate_rhs(acquisitions)
+        rhs = self.accumulate_rhs(acquisitions, weight_operators)
         logger_info('Accumulated RHS vector')
 
-        # System matrix (invert explicitly in the binned case)
-        system = BJPreconditioner.create((h.T @ h).reduce())
-        sysinv = system.inverse()
-        logger_info('Set up inverse system matrix')
+        # System matrix
+        h = BlockColumnOperator(acquisitions)
+        w = BlockDiagonalOperator(weight_operators)
+        system = (h.T @ w @ h).reduce()
+        logger_info('Set up system matrix')
+
+        # Preconditioner
+        sysdiag = BJPreconditioner.create(system)
+        precond = sysdiag.inverse()
+        logger_info('Set up diagonal system and preconditioner')
+
+        solver = lineax.CG(**asdict(self.config.solver))
+        solver_options = {
+            'preconditioner': lineax.TaggedLinearOperator(precond, lineax.positive_semidefinite_tag)
+        }
+        options = {'solver': solver, 'solver_options': solver_options}
+        mapmaking_operator = system.I(**options) @ h.T @ w
 
         @jax.jit
         def process():  # type: ignore[no-untyped-def]
-            return sysinv(rhs)
+            return mapmaking_operator(rhs)
 
         # Run mapmaking
         res = process()
@@ -110,7 +123,7 @@ class MultiObservationBinnedMapMaker:
         weights = np.array(system.get_blocks())
         return {'map': final_map, 'weights': weights}
 
-    def build_acquisitions(self) -> tuple[AbstractLinearOperator]:
+    def build_acquisitions(self) -> tuple[AbstractLinearOperator, ...]:
         # Only read necessary fields
         required_fields = ['boresight_quaternions', 'detector_quaternions', 'hwp_angles']
         if self.config.sample_mask:
@@ -132,19 +145,64 @@ class MultiObservationBinnedMapMaker:
 
         return jax.tree.map(get_acquisition, tuple(range(reader.count)))  # type: ignore[no-any-return]
 
-    def accumulate_rhs(self, acquisitions: tuple[AbstractLinearOperator]) -> StokesPyTreeType:
+    def build_weight_operators(
+        self, structure: jax.ShapeDtypeStruct
+    ) -> tuple[AbstractLinearOperator, ...]:
+        # Get the noise model for each observation
+        models, sample_rates = (
+            self._fit_noise_models() if self.config.fit_noise_model else self._read_noise_models()
+        )
+
+        # Build the inverse noise weighting operators
+        return tuple(
+            model.inverse_operator(
+                structure,
+                nperseg=self.config.nperseg,
+                sample_rate=fs,
+                correlation_length=self.config.correlation_length,
+            )
+            for model, fs in zip(models, sample_rates, strict=True)
+        )
+
+    def _read_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
+        raise NotImplementedError
+
+    def _fit_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
+        # Only read sample data and timestamps (to compute sampling rate)
+        reader = self.reader.update_data_field_names(['sample_data', 'timestamps'])
+
+        # Choose noise model based on mapmaker configuration
+        cls = WhiteNoiseModel if self.config.binned else AtmosphericNoiseModel
+
+        @jax.jit
+        def fit_model(i):  # type: ignore[no-untyped-def]
+            data, _padding = reader.read(i)
+            fs = 1.0 / jnp.median(jnp.diff(data['timestamps']))
+            f, Pxx = jax.scipy.signal.welch(data['sample_data'], fs=fs, nperseg=self.config.nperseg)
+            model = cls.fit_psd_model(f, Pxx)
+            return model, fs
+
+        models_and_fs = jax.tree.map(fit_model, tuple(range(reader.count)))
+        return tuple(zip(*models_and_fs, strict=True))
+
+    def accumulate_rhs(
+        self,
+        acquisitions: tuple[AbstractLinearOperator, ...],
+        weightings: tuple[AbstractLinearOperator, ...],
+    ) -> StokesPyTreeType:
         # Only read sample data
         reader = self.reader.update_data_field_names(['sample_data'])
 
         @jax.jit
-        def get_rhs(i: int, acquisition: AbstractLinearOperator) -> StokesPyTreeType:
+        def get_rhs(i, acquisition, weighting):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
-            return acquisition.T(data['sample_data'])  # type: ignore[no-any-return]
+            rhs_op = acquisition.T @ weighting
+            return rhs_op(data['sample_data'])
 
         # sum RHS across observations
         return jax.tree.reduce(  # type: ignore[no-any-return]
             operator.add,
-            jax.tree.map(get_rhs, tuple(range(reader.count)), acquisitions),
+            jax.tree.map(get_rhs, tuple(range(reader.count)), acquisitions, weightings),
             is_leaf=lambda x: isinstance(x, Stokes),
         )
 

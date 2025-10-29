@@ -115,7 +115,8 @@ class WhiteNoiseModel(NoiseModel):
         Pxx: Float[Array, 'dets freq'],
     ) -> 'WhiteNoiseModel':
         """Fit a white noise model to data"""
-        sigma = jnp.power(10, 0.5 * jnp.median(jnp.log10(Pxx[:, (f > 0)]), axis=-1))
+        # avoid f=0
+        sigma = jnp.power(10, 0.5 * jnp.median(jnp.log10(Pxx[:, 1:]), axis=-1))
         return cls(sigma)
 
 

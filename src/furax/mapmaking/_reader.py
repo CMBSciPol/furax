@@ -132,15 +132,15 @@ class AbstractGroundObservationReader(AbstractReader):
             'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
             'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), jnp.float64),
             'noise_model_fits': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
+            'noise_model_fits': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
         }
 
     @classmethod
     def _get_data_field_readers(cls) -> dict[str, Callable[[AbstractGroundObservation[Any]], Any]]:
-        def value_not_none(x: Any) -> Any:
+        def if_none_raise_error(x: Any) -> Any:
             if x is None:
-                return ValueError('Data field unavailalble')
-            else:
-                return x
+                raise ValueError('Data field not available')
+            return x
 
         return {
             'sample_data': lambda obs: obs.get_tods().astype(jnp.float64),
@@ -150,7 +150,7 @@ class AbstractGroundObservationReader(AbstractReader):
             'hwp_angles': lambda obs: obs.get_hwp_angles(),
             'detector_quaternions': lambda obs: obs.get_detector_quaternions(),
             'boresight_quaternions': lambda obs: obs.get_boresight_quaternions(),
-            'noise_model_fits': lambda obs: value_not_none(obs.get_noise_model()).to_array(),
+            'noise_model_fits': lambda obs: if_none_raise_error(obs.get_noise_model()).to_array()
         }
 
     @abstractmethod

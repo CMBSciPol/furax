@@ -4,12 +4,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.tree_util import register_static
 from numpy.testing import assert_array_equal
 
 from furax.io.readers import AbstractReader
 
 
-@jax.tree_util.register_static
+@register_static
 class FakeFileReader(AbstractReader):
     def _read_structure_impure(
         self, filename: str, option1: str = '', option2: float = 0.0

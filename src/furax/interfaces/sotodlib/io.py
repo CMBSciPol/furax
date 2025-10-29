@@ -58,6 +58,8 @@ class SOTODLibReader(AbstractGroundObservationReader):
                 sub_fields.append('timestamps')
         if 'detector_quaternions' in data_field_names:  # the detector quaternions.
             sub_fields.append('focal_plane')
+        if 'noise_model_fits' in data_field_names:
+            sub_fields.append('preprocess.noiseT')
 
         sotodlib_obs = AxisManager.load(filename, fields=sub_fields)
         obs = SOTODLibObservation(sotodlib_obs)

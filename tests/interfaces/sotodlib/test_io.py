@@ -21,7 +21,7 @@ def test_reader() -> None:
 
     reader = SOTODLibReader(files)
 
-    # Verify out_structure includes all fields including hwp_angles
+    # Verify out_structure includes all non-optional fields (noise_model_fits is optional)
     assert reader.out_structure == {
         'sample_data': jax.ShapeDtypeStruct((ndet2, nsample2), dtype=jnp.float64),
         'valid_sample_masks': jax.ShapeDtypeStruct((ndet2, nsample2), dtype=jnp.bool),
@@ -31,6 +31,8 @@ def test_reader() -> None:
         'detector_quaternions': jax.ShapeDtypeStruct((ndet2, 4), dtype=jnp.float64),
         'boresight_quaternions': jax.ShapeDtypeStruct((nsample2, 4), dtype=jnp.float64),
     }
+    # Verify noise_model_fits is NOT included by default (it's optional)
+    assert 'noise_model_fits' not in reader.out_structure
 
     data = [reader.read(0), reader.read(1)]
     for datum, _ in data:
@@ -102,6 +104,7 @@ def test_reader_subset_of_data_fields() -> None:
     - hwp_angles → loads 'hwp_angle'
     - boresight_quaternions → loads 'boresight' (and 'timestamps' if not already loaded)
     - detector_quaternions → loads 'focal_plane'
+    - noise_model_fits → computed from noise model (optional, not loaded by default)
     """
     folder = Path(__file__).parents[2] / 'data/sotodlib'
     files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
@@ -218,7 +221,20 @@ def test_reader_subset_of_data_fields() -> None:
     assert set(data.keys()) == {'detector_quaternions'}
     assert data['detector_quaternions'].shape == (ndet2, 4)
 
-    # Test 11: Combination that triggers conditional timestamps loading
+    # Test 11: Only noise_model_fits (optional field, computed from noise model)
+    # Note: This test is skipped if the test data doesn't have noise model
+    reader = SOTODLibReader(files, data_field_names=['noise_model_fits'])
+    assert set(reader.out_structure.keys()) == {'noise_model_fits'}
+    try:
+        data, _ = reader.read(0)
+        assert set(data.keys()) == {'noise_model_fits'}
+        assert data['noise_model_fits'].shape == (ndet2, 4)  # (sigma, alpha, fknee, f0)
+    except ValueError as e:
+        if 'Data field not available' in str(e):
+            pytest.skip('Test data does not contain noise model')
+        raise
+
+    # Test 12: Combination that triggers conditional timestamps loading
     # (boresight_quaternions without explicit timestamps)
     # This tests the special case where timestamps is loaded automatically for boresight
     combo_fields = ['sample_data', 'boresight_quaternions']

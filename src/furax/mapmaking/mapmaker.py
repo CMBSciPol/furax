@@ -26,7 +26,13 @@ from furax import (
     IdentityOperator,
     MaskOperator,
 )
-from furax.core import BlockColumnOperator, BlockDiagonalOperator, BlockRowOperator, IndexOperator
+from furax.core import (
+    BlockColumnOperator,
+    BlockDiagonalOperator,
+    BlockRowOperator,
+    CompositionOperator,
+    IndexOperator,
+)
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
@@ -107,6 +113,10 @@ class MultiObservationBinnedMapMaker:
     def build_acquisitions(self) -> tuple[AbstractLinearOperator]:
         # Only read necessary fields
         required_fields = ['boresight_quaternions', 'detector_quaternions', 'hwp_angles']
+        if self.config.sample_mask:
+            required_fields.append('valid_sample_masks')
+        if self.config.scanning_mask:
+            required_fields.append('valid_scanning_masks')
         reader = self.reader.update_data_field_names(required_fields)
 
         @jax.jit
@@ -177,6 +187,8 @@ def _build_acquisition_operator(
     hwp_angles: Array,
     pointing_chunk_size: int,
     pointing_on_the_fly: bool,
+    valid_sample_masks: Array | None = None,
+    valid_scanning_masks: Array | None = None,
 ) -> AbstractLinearOperator:
     """Build an acquisition operator for a single observation."""
     pointing = _build_pointing_operator(
@@ -191,7 +203,13 @@ def _build_acquisition_operator(
     data_shape = (ndet, nsamp)
     polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=jnp.float64)
     hwp = HWPOperator.create(shape=data_shape, dtype=jnp.float64, angles=hwp_angles)
-    return (polarizer @ hwp @ pointing).reduce()
+    acquisition = (polarizer @ hwp @ pointing).reduce()
+    masker = _build_mask_projector(
+        valid_sample_masks,
+        valid_scanning_masks,
+        structure=jax.ShapeDtypeStruct(data_shape, landscape.dtype),
+    )
+    return masker @ acquisition
 
 
 def _build_pointing_operator(
@@ -219,6 +237,20 @@ def _build_pointing_operator(
         ),
         chunk_size=chunk_size,
     )
+
+
+def _build_mask_projector(
+    *valid_masks: Array | None, structure: jax.ShapeDtypeStruct
+) -> AbstractLinearOperator:
+    """Mask operator built from a series of boolean masks."""
+
+    def _masker(valid_mask: Array | None) -> AbstractLinearOperator:
+        if valid_mask is None:
+            return IdentityOperator(structure)
+        return MaskOperator.from_boolean_mask(valid_mask, in_structure=structure)
+
+    combined_masker = CompositionOperator(_masker(valid_mask) for valid_mask in valid_masks)
+    return combined_masker.reduce()
 
 
 @dataclass

@@ -138,7 +138,6 @@ class MapMaker:
                 landscape=landscape,
                 qbore=observation.get_boresight_quaternions(),
                 qdet=observation.get_detector_quaternions(),
-                det_gamma=det_off_ang,
                 _in_structure=landscape.structure,
                 _out_structure=Stokes.class_for(landscape.stokes).structure_for(
                     (observation.n_detectors, observation.n_samples), dtype=landscape.dtype

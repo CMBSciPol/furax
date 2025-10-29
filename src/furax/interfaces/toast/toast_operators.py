@@ -342,7 +342,6 @@ class LegacyMapMakerToastOperator(ToastOperator):  # type: ignore[misc]
                 self._landscape,
                 self._qbore,
                 self._qdet,
-                self._gamma,
                 _in_structure=in_struct,
                 _out_structure=Stokes.class_for(self.stokes).structure_for(self._tods.shape),
             )

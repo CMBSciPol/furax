@@ -874,7 +874,6 @@ class GroundTemplateOperator(TemplateOperator):
             landscape=horizon_landscape,
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
-            det_gamma=det_gamma,
             _in_structure=horizon_landscape.structure,
             _out_structure=Stokes.class_for(stokes).structure_for((n_dets, n_samps)),
             chunk_size=chunk_size,

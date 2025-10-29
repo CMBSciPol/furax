@@ -9,7 +9,7 @@ from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
-from furax.math.quaternion import qmul, qrot_xaxis, qrot_zaxis
+from furax.math.quaternion import qmul, qrot_xaxis, qrot_zaxis, to_xieta_angles
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import StokesI, StokesIQU, StokesIQUV, StokesPyTreeType, StokesQU
 
@@ -32,7 +32,6 @@ class PointingOperator(AbstractLinearOperator):
     landscape: StokesLandscape = equinox.field(static=True)
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
-    det_gamma: Float[Array, ' det']
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     _out_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     chunk_size: int = equinox.field(static=True, default=16)
@@ -41,7 +40,7 @@ class PointingOperator(AbstractLinearOperator):
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
         """Performs the 'un-pointing' operation, i.e. map->tod."""
 
-        def mv_inner(qdet: Float[Array, 'det 4'], gamma: Float[Array, ' det']) -> StokesPyTreeType:
+        def mv_inner(qdet: Float[Array, 'det 4']) -> StokesPyTreeType:
             # Expand detector quaternions from boresight and offsets
             # (samples, 4) x (det, 1, 4) -> (det, samples, 4)
             qdet_full = qmul(self.qbore, qdet[:, None, :])
@@ -55,8 +54,8 @@ class PointingOperator(AbstractLinearOperator):
                 return tod
 
             # Get the angles to rotate into the telescope frame
-            angles = get_local_meridian_angle(qdet_full)
-            angles -= gamma[:, None]
+            _xi, _eta, gamma = to_xieta_angles(qdet)
+            angles = get_local_meridian_angle(qdet_full) - gamma[:, None]
 
             cos_2angles = jnp.cos(2 * angles)
             sin_2angles = jnp.sin(2 * angles)
@@ -91,7 +90,7 @@ class PointingOperator(AbstractLinearOperator):
             idet = jnp.clip(idet, max=ndet - 1)
 
             # process chunk
-            tod_chunk = mv_inner(self.qdet[idet], self.det_gamma[idet])
+            tod_chunk = mv_inner(self.qdet[idet])
 
             # update the output pytree
             return jax.tree.map(
@@ -122,9 +121,7 @@ class PointingTransposeOperator(TransposeOperator):
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
         """Performs the 'pointing' operation, i.e. tod->map."""
 
-        def mv_inner(
-            xchunk: StokesPyTreeType, qdet: Float[Array, 'det 4'], gamma: Float[Array, ' det']
-        ) -> StokesPyTreeType:
+        def mv_inner(xchunk: StokesPyTreeType, qdet: Float[Array, 'det 4']) -> StokesPyTreeType:
             # Expand detector quaternions from boresight and offsets
             qdet_full = qmul(self.operator.qbore, qdet[:, None, :])
 
@@ -136,8 +133,8 @@ class PointingTransposeOperator(TransposeOperator):
                 return self._point(xchunk, indices)
 
             # Get the angles to rotate back to the celestial frame
-            angles = get_local_meridian_angle(qdet_full)
-            angles -= gamma[:, None]
+            _xi, _eta, gamma = to_xieta_angles(qdet)
+            angles = get_local_meridian_angle(qdet_full) - gamma[:, None]
 
             cos_2angles = jnp.cos(2 * angles)
             sin_2angles = jnp.sin(2 * angles)
@@ -174,9 +171,7 @@ class PointingTransposeOperator(TransposeOperator):
             idet = jnp.clip(idet, max=ndet - 1)
 
             # process chunk
-            sky_chunk = mv_inner(
-                unique[:, None] * x[idet], self.operator.qdet[idet], self.operator.det_gamma[idet]
-            )
+            sky_chunk = mv_inner(unique[:, None] * x[idet], self.operator.qdet[idet])
 
             # combine the results of the chunks into one sky map
             return jax.tree.map(

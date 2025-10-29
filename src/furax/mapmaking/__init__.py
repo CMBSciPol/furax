@@ -3,6 +3,7 @@ from ._logger import logger
 from ._observation import AbstractGroundObservation
 from ._reader import AbstractGroundObservationReader
 from .config import MapMakingConfig
+from .mapmaker import MultiObservationBinnedMapMaker
 from .preconditioner import BJPreconditioner
 
 __all__ = [
@@ -10,6 +11,7 @@ __all__ = [
     'AbstractGroundObservation',
     'AbstractGroundObservationReader',
     'MapMakingConfig',
+    'MultiObservationBinnedMapMaker',
     'logger',
     'utils',
 ]

@@ -302,7 +302,7 @@ class SynchrotronOperator(AbstractSEDOperator):
         in_structure (PyTree[jax.ShapeDtypeStruct]): Input structure defining the shape of the data.
 
     Example:
-        >>> from furax.operators.seds import SynchrotronOperator
+        >>> from furax.obs import SynchrotronOperator
         >>> import jax.numpy as jnp
         >>> nu = jnp.array([30, 40, 100])  # Frequencies in GHz
         >>> in_structure = ...  # Define input structure (e.g., using HealpixLandscape)

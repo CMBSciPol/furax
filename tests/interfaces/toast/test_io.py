@@ -84,7 +84,7 @@ def test_reader_invalid_data_field_name() -> None:
 )
 def test_reader_update_data_fields(new_field_names):
     folder = Path(__file__).parents[2] / 'data/toast'
-    reader = ToastReader([folder / 'test_obs.h5'])
+    reader = ToastReader([folder / 'test_obs.h5'] * 2)
     new_reader = reader.update_data_field_names(new_field_names)
     data, _ = new_reader.read(0)
     assert set(data.keys()) == set(new_field_names)

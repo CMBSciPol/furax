@@ -78,7 +78,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_tods(self) -> Array:
         """Returns the timestream data."""
-        tods = jnp.array(self.data.signal)
+        tods = jnp.array(self.data.signal, dtype=jnp.float64)
         return jnp.atleast_2d(tods)
 
     def get_detector_offset_angles(self) -> Array:

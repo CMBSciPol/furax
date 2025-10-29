@@ -1,3 +1,4 @@
+import operator
 import pickle
 from abc import abstractmethod
 from dataclasses import asdict, dataclass
@@ -25,7 +26,13 @@ from furax import (
     IdentityOperator,
     MaskOperator,
 )
-from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
+from furax.core import (
+    BlockColumnOperator,
+    BlockDiagonalOperator,
+    BlockRowOperator,
+    CompositionOperator,
+    IndexOperator,
+)
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
@@ -33,10 +40,287 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 from . import templates
 from ._logger import logger as furax_logger
 from ._observation import AbstractGroundObservation
+from ._reader import AbstractGroundObservationReader
 from .config import Landscapes, MapMakingConfig, Methods
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
+
+
+class MultiObservationMapMaker:
+    """Class for mapping multiple observations together."""
+
+    def __init__(
+        self,
+        reader: AbstractGroundObservationReader,
+        config: MapMakingConfig | None = None,
+        logger: Logger | None = None,
+        stokes: ValidStokesType = 'IQU',  # TODO: shoudn't this be in the config?
+    ) -> None:
+        self.reader = reader
+        self.config = config or MapMakingConfig()  # use defaults if not provided
+        self.logger = logger or furax_logger
+        self.landscape = _build_landscape(self.config, stokes=stokes)
+
+    def run(self, out_dir: str | Path | None = None) -> dict[str, Any]:
+        """Runs the mapmaker and return results after saving them to the given directory."""
+        results = self.make_maps()
+
+        # Save outputs
+        if out_dir is not None:
+            out_dir = Path(out_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            self._save(results, out_dir)
+            self.config.dump_yaml(out_dir / 'mapmaking_config.yaml')
+            self.logger.info('Mapmaking config saved to file')
+
+        return results
+
+    def make_maps(self) -> dict[str, Any]:
+        """Computes the mapmaker results (maps and other products)."""
+        logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
+
+        # Acquisition (I, Q, U Maps -> TOD)
+        acquisitions = self.build_acquisitions()
+        logger_info('Created acquisition operators')
+
+        # Noise
+        weight_operators = self.build_weight_operators(structure=acquisitions[0].out_structure())
+        logger_info('Created weighting operators')
+
+        # RHS
+        rhs = self.accumulate_rhs(acquisitions, weight_operators)
+        logger_info('Accumulated RHS vector')
+
+        # System matrix
+        h = BlockColumnOperator(acquisitions)
+        w = BlockDiagonalOperator(weight_operators)
+        system = (h.T @ w @ h).reduce()
+        logger_info('Set up system matrix')
+
+        # Preconditioner
+        sysdiag = BJPreconditioner.create(system)
+        precond = sysdiag.inverse()
+        logger_info('Set up diagonal system and preconditioner')
+
+        solver = lineax.CG(**asdict(self.config.solver))
+        solver_options = {
+            'preconditioner': lineax.TaggedLinearOperator(precond, lineax.positive_semidefinite_tag)
+        }
+        options = {'solver': solver, 'solver_options': solver_options}
+        mapmaking_operator = system.I(**options)
+
+        @jax.jit
+        def process():  # type: ignore[no-untyped-def]
+            return mapmaking_operator(rhs)
+
+        # Run mapmaking
+        res = process()
+        res.i.block_until_ready()
+        logger_info('Finished mapmaking')
+
+        final_map = np.array([res.i, res.q, res.u])
+        weights = np.array(sysdiag.get_blocks())
+        return {'map': final_map, 'weights': weights}
+
+    def build_acquisitions(self) -> tuple[AbstractLinearOperator, ...]:
+        # Only read necessary fields
+        required_fields = ['boresight_quaternions', 'detector_quaternions', 'hwp_angles']
+        if self.config.sample_mask:
+            required_fields.append('valid_sample_masks')
+        if self.config.scanning_mask:
+            required_fields.append('valid_scanning_masks')
+        reader = self.reader.update_data_field_names(required_fields)
+
+        @jax.jit
+        def get_acquisition(i: int) -> AbstractLinearOperator:
+            # TODO: handle padding
+            data, _padding = reader.read(i)
+            return _build_acquisition_operator(
+                self.landscape,
+                **data,
+                pointing_chunk_size=self.config.pointing_chunk_size,
+                pointing_on_the_fly=self.config.pointing_on_the_fly,
+            )
+
+        return jax.tree.map(get_acquisition, tuple(range(reader.count)))  # type: ignore[no-any-return]
+
+    def build_weight_operators(
+        self, structure: jax.ShapeDtypeStruct
+    ) -> tuple[AbstractLinearOperator, ...]:
+        # Get the noise model for each observation
+        models, sample_rates = (
+            self._fit_noise_models() if self.config.fit_noise_model else self._read_noise_models()
+        )
+
+        # Build the inverse noise weighting operators
+        return tuple(
+            model.inverse_operator(  # type: ignore[attr-defined]
+                structure,
+                nperseg=self.config.nperseg,
+                sample_rate=fs,
+                correlation_length=self.config.correlation_length,
+            )
+            for model, fs in zip(models, sample_rates, strict=True)
+        )
+
+    def _read_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
+        reader = self.reader.update_data_field_names(['noise_model_fits', 'timestamps'])
+
+        @jax.jit
+        def read_model(i):  # type: ignore[no-untyped-def]
+            data, _padding = reader.read(i)
+            fs = 1.0 / jnp.median(jnp.diff(data['timestamps']))
+            model = AtmosphericNoiseModel(*data['noise_model_fits'].T)
+            if self.config.binned:
+                return model.to_white_noise_model(), fs
+            else:
+                return model, fs
+
+        models_and_fs = jax.tree.map(read_model, tuple(range(reader.count)))
+        return tuple(zip(*models_and_fs, strict=True))
+
+    def _fit_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
+        # Only read sample data and timestamps (to compute sampling rate)
+        reader = self.reader.update_data_field_names(['sample_data', 'timestamps'])
+
+        # Choose noise model based on mapmaker configuration
+        cls = WhiteNoiseModel if self.config.binned else AtmosphericNoiseModel
+
+        @jax.jit
+        def fit_model(i):  # type: ignore[no-untyped-def]
+            data, _padding = reader.read(i)
+            fs = 1.0 / jnp.median(jnp.diff(data['timestamps']))
+            f, Pxx = jax.scipy.signal.welch(data['sample_data'], fs=fs, nperseg=self.config.nperseg)
+            model = cls.fit_psd_model(f, Pxx)
+            return model, fs
+
+        models_and_fs = jax.tree.map(fit_model, tuple(range(reader.count)))
+        return tuple(zip(*models_and_fs, strict=True))
+
+    def accumulate_rhs(
+        self,
+        acquisitions: tuple[AbstractLinearOperator, ...],
+        weightings: tuple[AbstractLinearOperator, ...],
+    ) -> StokesPyTreeType:
+        # Only read sample data
+        reader = self.reader.update_data_field_names(['sample_data'])
+
+        @jax.jit
+        def get_rhs(i, acquisition, weighting):  # type: ignore[no-untyped-def]
+            data, _padding = reader.read(i)
+            rhs_op = acquisition.T @ weighting
+            return rhs_op(data['sample_data'])
+
+        # sum RHS across observations
+        return jax.tree.reduce(  # type: ignore[no-any-return]
+            operator.add,
+            jax.tree.map(get_rhs, tuple(range(reader.count)), acquisitions, weightings),
+            is_leaf=lambda x: isinstance(x, Stokes),
+        )
+
+    def _save(self, results: dict[str, Any], out_dir: Path) -> None:
+        for key, m in results.items():
+            if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
+                np.save(out_dir / key, np.array(m))
+            elif isinstance(m, StokesIQU):
+                np.save(out_dir / key, np.stack([m.i, m.q, m.u], axis=0))
+            elif isinstance(m, pixell.enmap.ndmap):
+                pixell.enmap.write_map((out_dir / f'{key}.hdf').as_posix(), m, allow_modify=True)
+            elif isinstance(m, WCS):
+                header = m.to_header()
+                hdu = fits.PrimaryHDU(header=header)
+                hdu.writeto(out_dir / f'{key}.fits', overwrite=True)
+            elif isinstance(m, StokesLandscape):
+                with open(out_dir / f'{key}.pkl', 'wb') as f:
+                    pickle.dump(m, f)
+            elif isinstance(m, dict):
+                self._save(m, out_dir)
+                continue
+            else:
+                # TODO: warning?
+                continue
+            self.logger.info(f'Mapmaking result [{key}] saved to file')
+
+
+def _build_landscape(config: MapMakingConfig, stokes: ValidStokesType = 'IQU') -> StokesLandscape:
+    if config.landscape.type == Landscapes.HPIX:
+        return HealpixLandscape(nside=config.landscape.nside, stokes=stokes, dtype=config.dtype)
+    if config.landscape.type == Landscapes.WCS:
+        raise NotImplementedError
+    raise NotImplementedError
+
+
+def _build_acquisition_operator(
+    landscape: StokesLandscape,
+    boresight_quaternions: Array,
+    detector_quaternions: Array,
+    hwp_angles: Array,
+    pointing_chunk_size: int,
+    pointing_on_the_fly: bool,
+    valid_sample_masks: Array | None = None,
+    valid_scanning_masks: Array | None = None,
+) -> AbstractLinearOperator:
+    """Build an acquisition operator for a single observation."""
+    pointing = _build_pointing_operator(
+        landscape,
+        boresight_quaternions,
+        detector_quaternions,
+        on_the_fly=pointing_on_the_fly,
+        chunk_size=pointing_chunk_size,
+    )
+    ndet = detector_quaternions.shape[0]
+    nsamp = boresight_quaternions.shape[0]
+    data_shape = (ndet, nsamp)
+    polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=jnp.float64)
+    hwp = HWPOperator.create(shape=data_shape, dtype=jnp.float64, angles=hwp_angles)
+    acquisition = (polarizer @ hwp @ pointing).reduce()
+    masker = _build_mask_projector(
+        valid_sample_masks,
+        valid_scanning_masks,
+        structure=jax.ShapeDtypeStruct(data_shape, landscape.dtype),
+    )
+    return masker @ acquisition
+
+
+def _build_pointing_operator(
+    landscape: StokesLandscape,
+    boresight_quaternions: Array,
+    detector_quaternions: Array,
+    chunk_size: int,
+    on_the_fly: bool = True,
+) -> AbstractLinearOperator:
+    if not on_the_fly:
+        # get full pixels and weights from TOAST/SOTODLib
+        raise NotImplementedError
+
+    ndet = detector_quaternions.shape[0]
+    nsamp = boresight_quaternions.shape[0]
+
+    return PointingOperator(
+        landscape=landscape,
+        qbore=boresight_quaternions,
+        qdet=detector_quaternions,
+        _in_structure=landscape.structure,
+        _out_structure=Stokes.class_for(landscape.stokes).structure_for(
+            (ndet, nsamp), dtype=jnp.float64
+        ),
+        chunk_size=chunk_size,
+    )
+
+
+def _build_mask_projector(
+    *valid_masks: Array | None, structure: jax.ShapeDtypeStruct
+) -> AbstractLinearOperator:
+    """Mask operator built from a series of boolean masks."""
+
+    def _masker(valid_mask: Array | None) -> AbstractLinearOperator:
+        if valid_mask is None:
+            return IdentityOperator(structure)
+        return MaskOperator.from_boolean_mask(valid_mask, in_structure=structure)
+
+    combined_masker = CompositionOperator(_masker(valid_mask) for valid_mask in valid_masks)
+    return combined_masker.reduce()
 
 
 @dataclass

@@ -301,7 +301,6 @@ def _build_pointing_operator(
         landscape=landscape,
         qbore=boresight_quaternions,
         qdet=detector_quaternions,
-        det_gamma=jnp.zeros(ndet),  # FIXME: use real detector angles once available through reader
         _in_structure=landscape.structure,
         _out_structure=Stokes.class_for(landscape.stokes).structure_for(
             (ndet, nsamp), dtype=jnp.float64

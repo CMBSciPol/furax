@@ -63,7 +63,7 @@ def test_reader() -> None:
 
 def test_reader_invalid_data_field_name() -> None:
     """Test that passing an invalid data field name raises a ValueError."""
-    folder = Path(__file__).parents[2] / 'data/sotodlib'
+    folder = Path(__file__).parents[2] / 'data/toast'
     files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
 
     # Test with single invalid field name

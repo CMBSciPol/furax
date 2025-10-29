@@ -43,12 +43,13 @@ class AbstractGroundObservationReader(AbstractReader):
         'hwp_angles',  # the half-wave-plate angles in radians.
         'detector_quaternions',  # the detector quaternions.
         'boresight_quaternions',  # the boresight quaternions.
-        'noise_model_fits', # the fitted parameters for the noise model
+        'noise_model_fits',  # the fitted parameters for the noise model
     ]
+    """Supported data field names for ground observations"""
+
     OPTIONAL_DATA_FIELD_NAMES: ClassVar[list[str]] = [
         'noise_model_fits',
     ]
-    """Supported data field names for ground observations"""
 
     def __init__(
         self, filenames: list[Path | str], *, data_field_names: list[str] | None = None
@@ -61,8 +62,11 @@ class AbstractGroundObservationReader(AbstractReader):
         """
         filenames = [Path(name) if isinstance(name, str) else name for name in filenames]
         if data_field_names is None:
-            data_field_names = [field for field in self.DATA_FIELD_NAMES
-                if field not in self.OPTIONAL_DATA_FIELD_NAMES]
+            data_field_names = [
+                field
+                for field in self.DATA_FIELD_NAMES
+                if field not in self.OPTIONAL_DATA_FIELD_NAMES
+            ]
         else:
             data_field_names = list(set(data_field_names))  # Remove duplicates if any
             # Validate field names
@@ -110,7 +114,7 @@ class AbstractGroundObservationReader(AbstractReader):
                 zero_padded[:, None], last_quaternion[None, :], data['boresight_quaternions']
             )
         if 'noise_model_fits' in data_field_names:
-            zero_padded = data['noise_model_fits'][:,0] == 0.0
+            zero_padded = data['noise_model_fits'][:, 0] == 0.0
             data['noise_model_fits'] = jnp.where(
                 zero_padded[:, None],
                 jnp.array([[0.0, 0.0, 1.0, 0.1]]),
@@ -132,7 +136,6 @@ class AbstractGroundObservationReader(AbstractReader):
             'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
             'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), jnp.float64),
             'noise_model_fits': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
-            'noise_model_fits': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
         }
 
     @classmethod
@@ -150,7 +153,7 @@ class AbstractGroundObservationReader(AbstractReader):
             'hwp_angles': lambda obs: obs.get_hwp_angles(),
             'detector_quaternions': lambda obs: obs.get_detector_quaternions(),
             'boresight_quaternions': lambda obs: obs.get_boresight_quaternions(),
-            'noise_model_fits': lambda obs: if_none_raise_error(obs.get_noise_model()).to_array()
+            'noise_model_fits': lambda obs: if_none_raise_error(obs.get_noise_model()).to_array(),
         }
 
     @abstractmethod

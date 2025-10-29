@@ -108,7 +108,7 @@ class MultiObservationMapMaker:
             'preconditioner': lineax.TaggedLinearOperator(precond, lineax.positive_semidefinite_tag)
         }
         options = {'solver': solver, 'solver_options': solver_options}
-        mapmaking_operator = system.I(**options) @ h.T @ w
+        mapmaking_operator = system.I(**options)
 
         @jax.jit
         def process():  # type: ignore[no-untyped-def]
@@ -120,7 +120,7 @@ class MultiObservationMapMaker:
         logger_info('Finished mapmaking')
 
         final_map = np.array([res.i, res.q, res.u])
-        weights = np.array(system.get_blocks())
+        weights = np.array(sysdiag.get_blocks())
         return {'map': final_map, 'weights': weights}
 
     def build_acquisitions(self) -> tuple[AbstractLinearOperator, ...]:

@@ -199,7 +199,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         assert np.all(fit.noise_model_coeffs.vals == np.array(['white_noise', 'fknee', 'alpha']))
 
         return AtmosphericNoiseModel(
-            sigma=fit.fit[:, 0],
+            sigma=jnp.array(fit.fit[:, 0]),
             alpha=jnp.array(-fit.fit[:, 2]),
             fk=jnp.array(fit.fit[:, 1]),
             f0=1e-5 * jnp.ones_like(fit.fit[:, 1]),

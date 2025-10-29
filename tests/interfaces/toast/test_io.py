@@ -21,7 +21,7 @@ def test_reader() -> None:
 
     reader = ToastReader(files)
 
-    # Verify out_structure includes all fields including hwp_angles
+    # Verify out_structure includes all non-optional fields (noise_model_fits is optional)
     assert reader.out_structure == {
         'sample_data': jax.ShapeDtypeStruct((ndet2, nsample2), dtype=jnp.float64),
         'valid_sample_masks': jax.ShapeDtypeStruct((ndet2, nsample2), dtype=jnp.bool),
@@ -31,6 +31,8 @@ def test_reader() -> None:
         'detector_quaternions': jax.ShapeDtypeStruct((ndet2, 4), dtype=jnp.float64),
         'boresight_quaternions': jax.ShapeDtypeStruct((nsample2, 4), dtype=jnp.float64),
     }
+    # Verify noise_model_fits is NOT included by default (it's optional)
+    assert 'noise_model_fits' not in reader.out_structure
 
     data = [reader.read(0), reader.read(1)]
     for datum, _ in data:
@@ -102,6 +104,7 @@ def test_reader_subset_of_data_fields() -> None:
     - valid_scanning_masks → loads scanning_interval
     - timestamps → always loaded
     - detector_quaternions → computed from detector info (always available)
+    - noise_model_fits → computed from noise model (optional, not loaded by default)
     """
     folder = Path(__file__).parents[2] / 'data/toast'
     files = [folder / 'test_obs.h5', folder / 'test_obs.h5']
@@ -217,3 +220,10 @@ def test_reader_subset_of_data_fields() -> None:
     data, _ = reader.read(0)
     assert set(data.keys()) == {'detector_quaternions'}
     assert data['detector_quaternions'].shape == (ndet2, 4)
+
+    # Test 11: Only noise_model_fits (optional field, computed from noise model)
+    reader = ToastReader(files, data_field_names=['noise_model_fits'])
+    assert set(reader.out_structure.keys()) == {'noise_model_fits'}
+    data, _ = reader.read(0)
+    assert set(data.keys()) == {'noise_model_fits'}
+    assert data['noise_model_fits'].shape == (ndet2, 4)  # (sigma, alpha, fknee, f0)

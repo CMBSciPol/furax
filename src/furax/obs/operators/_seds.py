@@ -1,4 +1,5 @@
 from abc import abstractmethod
+import os
 from typing import Any
 
 import equinox
@@ -12,6 +13,12 @@ from furax import AbstractLinearOperator, BlockRowOperator, BroadcastDiagonalOpe
 
 _H_OVER_K_GHZ = constants.h * 1e9 / constants.k
 _T_CMB = Planck15.Tcmb(0).value
+_PLANCK_X_MIN = 1e-8
+_PLANCK_X_CLIP = 60.0
+_TEMPERATURE_MIN = 1e-3
+_FREQUENCY_MIN = 1e-6
+
+_SAFE_MODE = os.environ.get('FURAX_SAFE_SEDS', '0').lower() in ('1', 'true', 'yes', 'on')
 
 __all__ = [
     'AbstractSEDOperator',
@@ -20,6 +27,14 @@ __all__ = [
     'SynchrotronOperator',
     'MixingMatrixOperator',
 ]
+
+
+def _log_expm1_stable(x: Float[Array, '...']) -> Float[Array, '...']:
+    """Return log(expm1(x)) with guards against overflow/underflow."""
+    clipped = jnp.clip(x, min=_PLANCK_X_MIN, max=_PLANCK_X_CLIP)
+    log_small = jnp.log(jnp.expm1(clipped))
+    log_large = x + jnp.log1p(-jnp.exp(-x))
+    return jnp.where(x <= _PLANCK_X_CLIP, log_small, log_large)
 
 
 def K_RK_2_K_CMB(nu: Array | float) -> Array:
@@ -41,10 +56,17 @@ def K_RK_2_K_CMB(nu: Array | float) -> Array:
         >>> conversion = K_RK_2_K_CMB(nu)
         >>> print(conversion)
     """
-    res = jnp.expm1(_H_OVER_K_GHZ * nu / _T_CMB) ** 2 / (
-        jnp.exp(_H_OVER_K_GHZ * nu / _T_CMB) * (_H_OVER_K_GHZ * nu / _T_CMB) ** 2
-    )
-    return res  # type: ignore [no-any-return]
+    if _SAFE_MODE:
+        x = _H_OVER_K_GHZ * jnp.asarray(nu) / _T_CMB
+        safe_x = jnp.clip(x, min=_PLANCK_X_MIN)
+        log_res = 2.0 * _log_expm1_stable(safe_x) - safe_x - 2.0 * jnp.log(safe_x)
+        res = jnp.exp(log_res)
+        return jnp.nan_to_num(res)
+    else:
+        res = jnp.expm1(_H_OVER_K_GHZ * nu / _T_CMB) ** 2 / (
+            jnp.exp(_H_OVER_K_GHZ * nu / _T_CMB) * (_H_OVER_K_GHZ * nu / _T_CMB) ** 2
+        )
+        return res
 
 
 class AbstractSEDOperator(BroadcastDiagonalOperator):
@@ -262,16 +284,28 @@ class DustOperator(AbstractSEDOperator):
         )
 
     def sed(self) -> Float[Array, '...']:
-        t = self._get_at(
-            jnp.expm1(self.frequency0 / self.temperature * _H_OVER_K_GHZ)
-            / jnp.expm1(self.frequencies / self.temperature * _H_OVER_K_GHZ),
-            self.temperature_patch_indices,
-        )
-        b = self._get_at(
-            (self.frequencies / self.frequency0) ** (1 + self.beta), self.beta_patch_indices
-        )
-        sed = (t * b) * jnp.expand_dims(self.factor, axis=-1)
-        return sed
+        if _SAFE_MODE:
+            temperature = jnp.clip(self.temperature, min=_TEMPERATURE_MIN)
+            x_ref = _H_OVER_K_GHZ * self.frequency0 / temperature
+            x = _H_OVER_K_GHZ * self.frequencies / temperature
+            planck_ratio = jnp.exp(_log_expm1_stable(x_ref) - _log_expm1_stable(x))
+            t = self._get_at(planck_ratio, self.temperature_patch_indices)
+            b = self._get_at(
+                (self.frequencies / self.frequency0) ** (1 + self.beta), self.beta_patch_indices
+            )
+            sed = (t * b) * jnp.expand_dims(self.factor, axis=-1)
+            return jnp.nan_to_num(sed)
+        else:
+            t = self._get_at(
+                jnp.expm1(self.frequency0 / self.temperature * _H_OVER_K_GHZ)
+                / jnp.expm1(self.frequencies / self.temperature * _H_OVER_K_GHZ),
+                self.temperature_patch_indices,
+            )
+            b = self._get_at(
+                (self.frequencies / self.frequency0) ** (1 + self.beta), self.beta_patch_indices
+            )
+            sed = (t * b) * jnp.expand_dims(self.factor, axis=-1)
+            return sed
 
 
 class SynchrotronOperator(AbstractSEDOperator):
@@ -356,20 +390,31 @@ class SynchrotronOperator(AbstractSEDOperator):
         )
 
     def sed(self) -> Float[Array, '...']:
-        sed = self._get_at(
-            (
-                (self.frequencies / self.frequency0)
-                ** (self.beta_pl + self.running * jnp.log(self.frequencies / self.nu_pivot))
-            ),
-            self.beta_pl_patch_indices,
-        )
+        if _SAFE_MODE:
+            safe_frequency0 = jnp.clip(self.frequency0, min=_FREQUENCY_MIN)
+            safe_nu_pivot = jnp.clip(self.nu_pivot, min=_FREQUENCY_MIN)
+            safe_frequencies = jnp.clip(self.frequencies, min=_FREQUENCY_MIN)
 
-        sed = self._get_at(
-            (self.frequencies / self.frequency0) ** self.beta_pl, self.beta_pl_patch_indices
-        )
-        sed *= jnp.expand_dims(self.factor, axis=-1)
+            log_running = jnp.log(safe_frequencies / safe_nu_pivot)
+            exponent = self.beta_pl + self.running * log_running
+            sed = self._get_at(
+                (safe_frequencies / safe_frequency0) ** exponent,
+                self.beta_pl_patch_indices,
+            )
+            sed *= jnp.expand_dims(self.factor, axis=-1)
 
-        return sed
+            return jnp.nan_to_num(sed)
+        else:
+            sed = self._get_at(
+                (
+                    (self.frequencies / self.frequency0)
+                    ** (self.beta_pl + self.running * jnp.log(self.frequencies / self.nu_pivot))
+                ),
+                self.beta_pl_patch_indices,
+            )
+            sed *= jnp.expand_dims(self.factor, axis=-1)
+
+            return sed
 
 
 def MixingMatrixOperator(**blocks: AbstractSEDOperator) -> AbstractLinearOperator:

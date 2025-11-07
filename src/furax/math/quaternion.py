@@ -164,6 +164,16 @@ def to_xieta_angles(q: Quat) -> tuple[Ang, Ang, Ang]:
 
 
 @jit
+@partial(jnp.vectorize, signature='(4)->()')
+def to_gamma_angles(q: Quat) -> Ang:
+    """Convert quaternions to the xieta coordinate system angles (xi, eta, gamma),
+    but only computes and returns the gamma angle."""
+    a, b, c, d = q
+    gamma = jnp.atan2(2 * a * d, a**2 - d**2)
+    return gamma
+
+
+@jit
 def from_xieta_angles(xi: Ang, eta: Ang, gamma: Ang) -> Quat:
     """Compute quaternions from the xieta coordinate system angles (xi, eta, gamma)."""
     theta = jnp.asin((xi**2 + eta**2) ** 0.5)

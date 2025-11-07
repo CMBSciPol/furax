@@ -33,6 +33,7 @@ from furax.core import (
     CompositionOperator,
     IndexOperator,
 )
+from furax.math.quaternion import to_gamma_angles
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
@@ -125,12 +126,16 @@ class MultiObservationMapMaker:
 
     def build_acquisitions(self) -> tuple[AbstractLinearOperator, ...]:
         # Only read necessary fields
-        required_fields = ['boresight_quaternions', 'detector_quaternions', 'hwp_angles']
-        if self.config.sample_mask:
-            required_fields.append('valid_sample_masks')
+        required_fields = [
+            'boresight_quaternions',
+            'detector_quaternions',
+            'hwp_angles',
+            'valid_sample_masks',
+        ]
         if self.config.scanning_mask:
             required_fields.append('valid_scanning_masks')
         reader = self.reader.update_data_field_names(required_fields)
+        dtype = self.config.dtype
 
         @jax.jit
         def get_acquisition(i: int) -> AbstractLinearOperator:
@@ -141,6 +146,7 @@ class MultiObservationMapMaker:
                 **data,
                 pointing_chunk_size=self.config.pointing_chunk_size,
                 pointing_on_the_fly=self.config.pointing_on_the_fly,
+                dtype=dtype,
             )
 
         return jax.tree.map(get_acquisition, tuple(range(reader.count)))  # type: ignore[no-any-return]
@@ -170,7 +176,7 @@ class MultiObservationMapMaker:
         @jax.jit
         def read_model(i):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
-            fs = 1.0 / jnp.median(jnp.diff(data['timestamps']))
+            fs = (data['timestamps'].size - 1) / jnp.ptp(data['timestamps'])
             model = AtmosphericNoiseModel(*data['noise_model_fits'].T)
             if self.config.binned:
                 return model.to_white_noise_model(), fs
@@ -190,7 +196,7 @@ class MultiObservationMapMaker:
         @jax.jit
         def fit_model(i):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
-            fs = 1.0 / jnp.median(jnp.diff(data['timestamps']))
+            fs = (data['timestamps'].size - 1) / jnp.ptp(data['timestamps'])
             f, Pxx = jax.scipy.signal.welch(data['sample_data'], fs=fs, nperseg=self.config.nperseg)
             model = cls.fit_psd_model(f, Pxx)
             return model, fs
@@ -260,6 +266,7 @@ def _build_acquisition_operator(
     pointing_on_the_fly: bool,
     valid_sample_masks: Array | None = None,
     valid_scanning_masks: Array | None = None,
+    dtype: DTypeLike = jnp.float64,
 ) -> AbstractLinearOperator:
     """Build an acquisition operator for a single observation."""
     pointing = _build_pointing_operator(
@@ -272,8 +279,9 @@ def _build_acquisition_operator(
     ndet = detector_quaternions.shape[0]
     nsamp = boresight_quaternions.shape[0]
     data_shape = (ndet, nsamp)
-    polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=jnp.float64)
-    hwp = HWPOperator.create(shape=data_shape, dtype=jnp.float64, angles=hwp_angles)
+    gamma = to_gamma_angles(detector_quaternions)
+    polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=dtype, angles=gamma[:, None])
+    hwp = HWPOperator.create(shape=data_shape, dtype=dtype, angles=hwp_angles)
     acquisition = (polarizer @ hwp @ pointing).reduce()
     masker = _build_mask_projector(
         valid_sample_masks,
@@ -289,6 +297,7 @@ def _build_pointing_operator(
     detector_quaternions: Array,
     chunk_size: int,
     on_the_fly: bool = True,
+    dtype: DTypeLike = jnp.float64,
 ) -> AbstractLinearOperator:
     if not on_the_fly:
         # get full pixels and weights from TOAST/SOTODLib
@@ -302,9 +311,7 @@ def _build_pointing_operator(
         qbore=boresight_quaternions,
         qdet=detector_quaternions,
         _in_structure=landscape.structure,
-        _out_structure=Stokes.class_for(landscape.stokes).structure_for(
-            (ndet, nsamp), dtype=jnp.float64
-        ),
+        _out_structure=Stokes.class_for(landscape.stokes).structure_for((ndet, nsamp), dtype=dtype),
         chunk_size=chunk_size,
     )
 

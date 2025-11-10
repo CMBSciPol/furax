@@ -2,6 +2,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
+import h5py
 import jax.numpy as jnp
 import numpy as np
 import pixell
@@ -14,7 +15,7 @@ from sotodlib import coords
 from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import load_and_preprocess
 
-from furax.mapmaking import AbstractGroundObservation
+from furax.mapmaking import AbstractGroundObservation, AbstractGroundObservationResource
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math import quaternion
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
@@ -63,12 +64,15 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     @property
     def n_samples(self) -> int:
-        return self.data.signal.shape[-1]  # type: ignore[no-any-return]
+        return self.data.samps.count  # type: ignore[no-any-return]
 
     @cached_property
     def detectors(self) -> list[str]:
-        """Returns a list of the detector names."""
         return self.data.dets.vals  # type: ignore[no-any-return]
+
+    @property
+    def n_detectors(self) -> int:
+        return self.data.dets.count  # type: ignore[no-any-return]
 
     @property
     def sample_rate(self) -> float:
@@ -271,3 +275,36 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         )
 
         return jnp.atleast_2d(quats)
+
+
+class SOTODLibObservationResource(AbstractGroundObservationResource[SOTODLibObservation]):
+    def request(self, field_names: list[str] | None = None) -> SOTODLibObservation:
+        if field_names is None:
+            # load just the info needed to determine the data shape
+            fields = ['dets', 'samps']
+        else:
+            # translate request to sotodlib subfield names
+            fields = []
+            if 'sample_data' in field_names:
+                fields.append('signal')
+            if 'valid_sample_masks' in field_names:
+                fields.append('flags.glitch_flags')
+            if 'valid_scanning_masks' in field_names:
+                fields.append('preprocess.turnaround_flags')
+            if 'timestamps' in field_names:
+                fields.append('timestamps')
+            if 'hwp_angles' in field_names:
+                fields.append('hwp_angle')
+            if 'boresight_quaternions' in field_names:
+                fields.append('boresight')
+                if 'timestamps' not in fields:
+                    fields.append('timestamps')
+            if 'detector_quaternions' in field_names:
+                fields.append('focal_plane')
+            if 'noise_model_fits' in field_names:
+                fields.append('preprocess.noiseT')
+
+        with h5py.File(self.file.as_posix(), 'r') as h:
+            aman = AxisManager.load(h, fields=fields)
+
+        return SOTODLibObservation(aman)

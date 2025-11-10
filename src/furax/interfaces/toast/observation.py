@@ -64,10 +64,6 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         return local_selection
 
     @property
-    def n_detectors(self) -> int:
-        return self._observation.n_detectors  # type: ignore[no-any-return]
-
-    @property
     def _focal_plane(self) -> toast.Focalplane:
         return self._observation.telescope.focalplane
 

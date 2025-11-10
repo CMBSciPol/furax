@@ -25,6 +25,7 @@ from furax import (
     DiagonalOperator,
     IdentityOperator,
     MaskOperator,
+    TreeOperator,
 )
 from furax.core import (
     BlockColumnOperator,
@@ -99,17 +100,41 @@ class MultiObservationMapMaker:
         system = (h.T @ w @ h).reduce()
         logger_info('Set up system matrix')
 
-        # Preconditioner
-        sysdiag = BJPreconditioner.create(system)
-        precond = sysdiag.inverse()
-        logger_info('Set up diagonal system and preconditioner')
+        # System matrix for preconditioning
+        if self.config.binned:
+            sysdiag = BJPreconditioner.create(system)
+        else:
+            # If ML, use approximate system matrix
+            # TODO: this currently results in an additional IO pass - should be improved.
+            white_w = BlockDiagonalOperator(
+                self.build_weight_operators(
+                    structure=acquisitions[0].out_structure(),
+                    force_white_noise_model=True,
+                )
+            )
+            sysdiag = BJPreconditioner.create((h.T @ white_w @ h).reduce())
+        
+        # Weights matrix and pixel selection
+        weights = sysdiag.get_blocks()
+        selector = self.build_pixel_selection_operator(
+            weights=weights,
+            in_structure=acquisitions[0].in_structure()
+        )
+        selector = IdentityOperator(in_structure=acquisitions[0].in_structure())
+        logger_info(f'Selected {prod(selector.out_structure().shape)}\
+                        /{prod(selector.in_structure().shape)} pixels')
 
+        # Preconditioner
+        precond = (selector @ sysdiag.inverse() @ selector.T).reduce()
+        logger_info('Set up preconditioner')
+
+        # Set up the mapmaking operator
         solver = lineax.CG(**asdict(self.config.solver))
         solver_options = {
             'preconditioner': lineax.TaggedLinearOperator(precond, lineax.positive_semidefinite_tag)
         }
         options = {'solver': solver, 'solver_options': solver_options}
-        mapmaking_operator = system.I(**options)
+        mapmaking_operator = selector.T @ (selector @ system @ selector.T).I(**options) @ selector
 
         @jax.jit
         def process():  # type: ignore[no-untyped-def]
@@ -121,8 +146,7 @@ class MultiObservationMapMaker:
         logger_info('Finished mapmaking')
 
         final_map = np.array([res.i, res.q, res.u])
-        weights = np.array(sysdiag.get_blocks())
-        return {'map': final_map, 'weights': weights}
+        return {'map': final_map, 'weights': np.array(weights)}
 
     def build_acquisitions(self) -> tuple[AbstractLinearOperator, ...]:
         # Only read necessary fields
@@ -152,12 +176,16 @@ class MultiObservationMapMaker:
         return jax.tree.map(get_acquisition, tuple(range(reader.count)))  # type: ignore[no-any-return]
 
     def build_weight_operators(
-        self, structure: jax.ShapeDtypeStruct
+        self, structure: jax.ShapeDtypeStruct, force_white_noise_model: bool = False
     ) -> tuple[AbstractLinearOperator, ...]:
         # Get the noise model for each observation
         models, sample_rates = (
             self._fit_noise_models() if self.config.fit_noise_model else self._read_noise_models()
         )
+
+        if not self.config.binned and force_white_noise_model:
+            # Convert each AtmosphericNoiseModel to WhiteNoiseModel
+            models = tuple(model.to_white_noise_model() for model in models) # type: ignore[union-attr]
 
         # Build the inverse noise weighting operators
         return tuple(
@@ -169,6 +197,38 @@ class MultiObservationMapMaker:
             )
             for model, fs in zip(models, sample_rates, strict=True)
         )
+    
+    def build_pixel_selection_operator(
+        self,
+        weights: Float[Array, 'pixels stokes stokes'],
+        in_structure: PyTree[jax.ShapeDtypeStruct],
+    ) -> IndexOperator:
+        """Operator that selects the map pixels satisfying the minimum fractional hits (hits_cut)
+        and the minimum condition number (cond_cut) criteria"""
+
+        # Cut pixels with low number of samples
+        hits_quantile = jnp.quantile(weights[(weights[..., 0, 0] > 0),], q=0.95)
+        valid = weights[..., 0, 0] > self.config.hits_cut * hits_quantile
+
+        if self.config.cond_cut > 0:
+            # FIXME: Eigendecomposition is done in CPU currently to avoid JAX errors
+            # eigs = jnp.linalg.eigvalsh(weights)
+            eigs = np.linalg.eigvalsh(weights)
+            valid = jnp.logical_and(
+                valid,
+                eigs[..., 0] > self.config.cond_cut * eigs[..., -1],
+            )
+
+        valid_indices = jnp.argwhere(valid)
+
+        if self.config.landscape.type == Landscapes.WCS:
+            # TODO: test this gain when WCS landscape is supported
+            return IndexOperator(
+                (valid_indices[:, 0], valid_indices[:, 1]), in_structure=in_structure
+            )
+        else:
+            # Healpix
+            return IndexOperator((valid_indices,), in_structure=in_structure)
 
     def _read_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
         reader = self.reader.update_data_field_names(['noise_model_fits', 'timestamps'])

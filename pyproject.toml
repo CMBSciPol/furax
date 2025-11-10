@@ -80,6 +80,7 @@ skip_covered = true
 module = [
     'apischema',
     'astropy.*',
+    'h5py',
     'healpy',
     'jax_grid_search',
     'jax_healpy',

@@ -1,6 +1,5 @@
 from collections.abc import Callable
-from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Generic, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -12,9 +11,11 @@ from furax.io.readers import AbstractReader
 
 from ._observation import AbstractGroundObservation, AbstractGroundObservationResource
 
+T = TypeVar('T')
+
 
 @register_static
-class GroundObservationReader(AbstractReader):
+class GroundObservationReader(AbstractReader, Generic[T]):
     """Jittable reader for ground observations.
 
     The reader is set up with a list of filenames and data field names. Individual files can be
@@ -51,7 +52,10 @@ class GroundObservationReader(AbstractReader):
     ]
 
     def __init__(
-        self, filenames: list[Path | str], *, data_field_names: list[str] | None = None
+        self,
+        observations: list[AbstractGroundObservationResource[T]],
+        *,
+        data_field_names: list[str] | None = None,
     ) -> None:
         """Initializes the reader with a list of filenames and optional list of field names.
 
@@ -59,7 +63,6 @@ class GroundObservationReader(AbstractReader):
             filenames: A list of filenames. Each filename can be a string or a Path object.
             data_field_names: Optional list of fields to load. If None, read all non-optional fields
         """
-        filenames = [Path(name) if isinstance(name, str) else name for name in filenames]
         if data_field_names is None:
             data_field_names = [
                 field
@@ -77,7 +80,7 @@ class GroundObservationReader(AbstractReader):
                     )
                     raise ValueError(msg)
 
-        super().__init__(filenames, common_keywords={'data_field_names': data_field_names})
+        super().__init__(observations, common_keywords={'data_field_names': data_field_names})
 
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
         """Reads one ground observation from the list of filenames specified in the reader.
@@ -156,7 +159,7 @@ class GroundObservationReader(AbstractReader):
         }
 
     def _read_structure_impure(
-        self, resource: AbstractGroundObservationResource, data_field_names: list[str]
+        self, resource: AbstractGroundObservationResource[T], data_field_names: list[str]
     ) -> PyTree[jax.ShapeDtypeStruct]:
         # don't request anything
         # this still loads minimal info about the observation data
@@ -172,15 +175,8 @@ class GroundObservationReader(AbstractReader):
         return {field: field_structure[field] for field in data_field_names}
 
     def _read_data_impure(
-        self, resource: AbstractGroundObservationResource, data_field_names: list[str]
+        self, resource: AbstractGroundObservationResource[T], data_field_names: list[str]
     ) -> PyTree[Array]:
         observation = resource.request(data_field_names)
         field_reader = GroundObservationReader._get_data_field_readers()
         return {field: field_reader[field](observation) for field in data_field_names}
-
-    def update_data_field_names(self, data_field_names: list[str]) -> 'GroundObservationReader':
-        """Returns a new reader with a new list of data fields to read."""
-        # re-create original args
-        # this turns [(a1, b1), (a2, b2), (a3, b3)] -> ([a1, a2, a3], [b1, b2, b3])
-        args = tuple(map(list, zip(*self.args)))
-        return GroundObservationReader(*args, data_field_names=data_field_names)

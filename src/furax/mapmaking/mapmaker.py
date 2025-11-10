@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 import equinox
 import jax
@@ -40,25 +40,27 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 
 from . import templates
 from ._logger import logger as furax_logger
-from ._observation import AbstractGroundObservation
-from ._reader import AbstractGroundObservationReader
+from ._observation import AbstractGroundObservation, AbstractGroundObservationResource
+from ._reader import GroundObservationReader
 from .config import Landscapes, MapMakingConfig, Methods
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
 
+T = TypeVar('T')
 
-class MultiObservationMapMaker:
+
+class MultiObservationMapMaker(Generic[T]):
     """Class for mapping multiple observations together."""
 
     def __init__(
         self,
-        reader: AbstractGroundObservationReader,
+        resources: list[AbstractGroundObservationResource[T]],
         config: MapMakingConfig | None = None,
         logger: Logger | None = None,
         stokes: ValidStokesType = 'IQU',  # TODO: shoudn't this be in the config?
     ) -> None:
-        self.reader = reader
+        self.resources = resources
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
         self.landscape = _build_landscape(self.config, stokes=stokes)
@@ -76,6 +78,10 @@ class MultiObservationMapMaker:
             self.logger.info('Mapmaking config saved to file')
 
         return results
+
+    def get_reader(self, data_field_names: list[str]) -> GroundObservationReader[T]:
+        """Returns a reader for a list of requested fields."""
+        return GroundObservationReader(self.resources, data_field_names=data_field_names)
 
     def make_maps(self) -> dict[str, Any]:
         """Computes the mapmaker results (maps and other products)."""
@@ -158,7 +164,7 @@ class MultiObservationMapMaker:
         ]
         if self.config.scanning_mask:
             required_fields.append('valid_scanning_masks')
-        reader = self.reader.update_data_field_names(required_fields)
+        reader = self.get_reader(required_fields)
         dtype = self.config.dtype
 
         @jax.jit
@@ -231,7 +237,7 @@ class MultiObservationMapMaker:
             return IndexOperator((valid_indices,), in_structure=in_structure)
 
     def _read_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
-        reader = self.reader.update_data_field_names(['noise_model_fits', 'timestamps'])
+        reader = self.get_reader(['noise_model_fits', 'timestamps'])
 
         @jax.jit
         def read_model(i):  # type: ignore[no-untyped-def]
@@ -248,7 +254,7 @@ class MultiObservationMapMaker:
 
     def _fit_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
         # Only read sample data and timestamps (to compute sampling rate)
-        reader = self.reader.update_data_field_names(['sample_data', 'timestamps'])
+        reader = self.get_reader(['sample_data', 'timestamps'])
 
         # Choose noise model based on mapmaker configuration
         cls = WhiteNoiseModel if self.config.binned else AtmosphericNoiseModel
@@ -270,7 +276,7 @@ class MultiObservationMapMaker:
         weightings: tuple[AbstractLinearOperator, ...],
     ) -> StokesPyTreeType:
         # Only read sample data
-        reader = self.reader.update_data_field_names(['sample_data'])
+        reader = self.get_reader(['sample_data'])
 
         @jax.jit
         def get_rhs(i, acquisition, weighting):  # type: ignore[no-untyped-def]

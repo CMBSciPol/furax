@@ -64,7 +64,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     @property
     def n_samples(self) -> int:
-        return self.data.signal.shape[-1]  # type: ignore[no-any-return]
+        return self.data.samps.count  # type: ignore[no-any-return]
 
     @cached_property
     def detectors(self) -> list[str]:
@@ -72,7 +72,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     @property
     def n_detectors(self) -> int:
-        return self.data.dets.count
+        return self.data.dets.count  # type: ignore[no-any-return]
 
     @property
     def sample_rate(self) -> float:

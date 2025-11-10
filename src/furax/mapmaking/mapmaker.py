@@ -25,7 +25,6 @@ from furax import (
     DiagonalOperator,
     IdentityOperator,
     MaskOperator,
-    TreeOperator,
 )
 from furax.core import (
     BlockColumnOperator,
@@ -113,16 +112,17 @@ class MultiObservationMapMaker:
                 )
             )
             sysdiag = BJPreconditioner.create((h.T @ white_w @ h).reduce())
-        
+            logger_info('Set up approximate system matrix')
+
         # Weights matrix and pixel selection
         weights = sysdiag.get_blocks()
         selector = self.build_pixel_selection_operator(
-            weights=weights,
-            in_structure=acquisitions[0].in_structure()
+            weights=weights, in_structure=acquisitions[0].in_structure()
         )
-        selector = IdentityOperator(in_structure=acquisitions[0].in_structure())
-        logger_info(f'Selected {prod(selector.out_structure().shape)}\
-                        /{prod(selector.in_structure().shape)} pixels')
+        logger_info(
+            f'Selected {prod(selector.out_structure().shape)}'
+            + f' / {prod(selector.in_structure().shape)} pixels'
+        )
 
         # Preconditioner
         precond = (selector @ sysdiag.inverse() @ selector.T).reduce()
@@ -185,7 +185,7 @@ class MultiObservationMapMaker:
 
         if not self.config.binned and force_white_noise_model:
             # Convert each AtmosphericNoiseModel to WhiteNoiseModel
-            models = tuple(model.to_white_noise_model() for model in models) # type: ignore[union-attr]
+            models = tuple(model.to_white_noise_model() for model in models)  # type: ignore[union-attr]
 
         # Build the inverse noise weighting operators
         return tuple(
@@ -197,7 +197,7 @@ class MultiObservationMapMaker:
             )
             for model, fs in zip(models, sample_rates, strict=True)
         )
-    
+
     def build_pixel_selection_operator(
         self,
         weights: Float[Array, 'pixels stokes stokes'],

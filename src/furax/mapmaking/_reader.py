@@ -1,4 +1,3 @@
-from abc import abstractmethod
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
@@ -11,11 +10,11 @@ from jaxtyping import PyTree
 
 from furax.io.readers import AbstractReader
 
-from ._observation import AbstractGroundObservation
+from ._observation import AbstractGroundObservation, AbstractGroundObservationResource
 
 
 @register_static
-class AbstractGroundObservationReader(AbstractReader):
+class GroundObservationReader(AbstractReader):
     """Jittable reader for ground observations.
 
     The reader is set up with a list of filenames and data field names. Individual files can be
@@ -156,16 +155,32 @@ class AbstractGroundObservationReader(AbstractReader):
             'noise_model_fits': lambda obs: if_none_raise_error(obs.get_noise_model()).to_array(),
         }
 
-    @abstractmethod
     def _read_structure_impure(
-        self, path: Path, data_field_names: list[str]
-    ) -> PyTree[jax.ShapeDtypeStruct]: ...
+        self, resource: AbstractGroundObservationResource, data_field_names: list[str]
+    ) -> PyTree[jax.ShapeDtypeStruct]:
+        # don't request anything
+        # this still loads minimal info about the observation data
+        observation = resource.request()
 
-    @abstractmethod
-    def _read_data_impure(self, path: Path, data_field_names: list[str]) -> PyTree[Array]: ...
+        # find the data shape
+        n_detectors = observation.n_detectors
+        n_samples = observation.n_samples
 
-    @abstractmethod
-    def update_data_field_names(
-        self, data_field_names: list[str]
-    ) -> 'AbstractGroundObservationReader':
+        field_structure = GroundObservationReader._get_data_field_structures_for(
+            n_detectors=n_detectors, n_samples=n_samples
+        )
+        return {field: field_structure[field] for field in data_field_names}
+
+    def _read_data_impure(
+        self, resource: AbstractGroundObservationResource, data_field_names: list[str]
+    ) -> PyTree[Array]:
+        observation = resource.request(data_field_names)
+        field_reader = GroundObservationReader._get_data_field_readers()
+        return {field: field_reader[field](observation) for field in data_field_names}
+
+    def update_data_field_names(self, data_field_names: list[str]) -> 'GroundObservationReader':
         """Returns a new reader with a new list of data fields to read."""
+        # re-create original args
+        # this turns [(a1, b1), (a2, b2), (a3, b3)] -> ([a1, a2, a3], [b1, b2, b3])
+        args = tuple(map(list, zip(*self.args)))
+        return GroundObservationReader(*args, data_field_names=data_field_names)

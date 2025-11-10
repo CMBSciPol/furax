@@ -10,8 +10,9 @@ from astropy.wcs import WCS
 from jaxtyping import Array, Bool, Float
 from numpy.typing import NDArray
 from toast.observation import default_values as defaults
+from toast.ops.load_hdf5 import LoadHDF5
 
-from furax.mapmaking import AbstractGroundObservation
+from furax.mapmaking import AbstractGroundObservation, AbstractGroundObservationResource
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.mapmaking.utils import get_local_meridian_angle
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
@@ -57,11 +58,14 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
     @cached_property
     def detectors(self) -> list[str]:
-        """Returns a list of the detector names."""
         local_selection: list[str] = self._observation.select_local_detectors(
             selection=self._det_selection, flagmask=self._det_mask
         )
         return local_selection
+
+    @property
+    def n_detectors(self) -> int:
+        return self._observation.n_detectors  # type: ignore[no-any-return]
 
     @property
     def _focal_plane(self) -> toast.Focalplane:
@@ -272,3 +276,33 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
             return quats
         # np.atleast_3d appends one new axis for 1d/2d inputs, we want to prepend it instead
         return jnp.moveaxis(jnp.atleast_3d(quats), -1, 0)
+
+
+class ToastObservationResource(AbstractGroundObservationResource[ToastObservation]):
+    def request(self, field_names: list[str] | None = None) -> ToastObservation:
+        field_names = field_names or []
+        detdata = []
+        if 'sample_data' in field_names:
+            detdata.append(defaults.det_data)
+        if 'valid_sample_masks' in field_names:
+            detdata.append(defaults.det_flags)
+
+        shared = [defaults.times]  # Always need to load timestamps
+        if 'hwp_angles' in field_names:
+            shared.append(defaults.hwp_angle)
+        if 'boresight_quaternions' in field_names:
+            shared.append(defaults.boresight_radec)
+
+        intervals = ['']  # Toast loads all intervals if the list is empty
+        if 'valid_scanning_masks' in field_names:
+            intervals.append(defaults.scanning_interval)
+
+        data = toast.Data()
+        toast_loader = LoadHDF5(
+            files=self.file.as_posix(),
+            detdata=detdata,
+            shared=shared,
+            intervals=intervals,
+        )
+        toast_loader.apply(data)
+        return ToastObservation(data)

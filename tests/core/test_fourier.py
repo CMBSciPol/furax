@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from furax.core import BandpassOperator, FourierOperator
+from furax.core import FourierOperator
 
 # Enable float64 for better numerical precision in tests
 jax.config.update('jax_enable_x64', True)
@@ -30,7 +30,6 @@ class TestFourierOperator:
         op = FourierOperator(
             fourier_kernel=kernel,
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-            method='fft',
             apodize=False,
         )
 
@@ -48,136 +47,6 @@ class TestFourierOperator:
         # Check that high frequency (30 Hz) is removed
         freq_30hz_idx = int(30.0 * n / sample_rate)
         assert jnp.abs(fft_filt[freq_30hz_idx]) < 0.01 * jnp.abs(fft_orig[freq_30hz_idx])
-
-    def test_overlap_save_method_basic(self):
-        """Test basic overlap-save method functionality."""
-        n = 2000
-        sample_rate = 200.0
-        t = jnp.linspace(0, n / sample_rate, n)
-
-        # Signal with 5 Hz and 30 Hz components
-        signal = jnp.sin(2 * jnp.pi * 5 * t) + 0.5 * jnp.sin(2 * jnp.pi * 30 * t)
-
-        # Low-pass filter kernel for the fft_size
-        fft_size = 512
-        freqs = jnp.fft.rfftfreq(fft_size, 1.0 / sample_rate)
-        kernel = (freqs < 10.0).astype(jnp.complex128)
-
-        # Create operator with overlap-save (apodize is True by default)
-        op = FourierOperator(
-            fourier_kernel=kernel,
-            in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-            method='overlap_save',
-            fft_size=fft_size,
-        )
-
-        # Apply filter
-        filtered = op(signal)
-
-        assert filtered.shape == signal.shape
-
-        # Check frequency content
-        fft_orig = jnp.fft.rfft(signal)
-        fft_filt = jnp.fft.rfft(filtered)
-        freq_5hz_idx = int(5.0 * n / sample_rate)
-        freq_30hz_idx = int(30.0 * n / sample_rate)
-
-        # 5 Hz should be well preserved (>99% with proper overlap-save)
-        assert jnp.abs(fft_filt[freq_5hz_idx]) > 0.99 * jnp.abs(fft_orig[freq_5hz_idx])
-        # 30 Hz should be removed
-        assert jnp.abs(fft_filt[freq_30hz_idx]) < 0.1 * jnp.abs(fft_orig[freq_30hz_idx])
-
-    def test_fft_vs_overlap_save(self):
-        """Test that FFT and overlap-save methods produce similar results."""
-        n = 5000
-        sample_rate = 200.0
-        t = jnp.linspace(0, n / sample_rate, n)
-        signal = jnp.sin(2 * jnp.pi * 10 * t) + 0.5 * jnp.sin(2 * jnp.pi * 50 * t)
-
-        # Create kernels - use fft_size for overlap-save kernel
-        fft_size = 1024
-        freqs_overlap = jnp.fft.rfftfreq(fft_size, 1.0 / sample_rate)
-        kernel_overlap = ((freqs_overlap >= 5.0) & (freqs_overlap <= 20.0)).astype(jnp.complex128)
-
-        freqs_fft = jnp.fft.rfftfreq(n, 1.0 / sample_rate)
-        kernel_fft = ((freqs_fft >= 5.0) & (freqs_fft <= 20.0)).astype(jnp.complex128)
-
-        # FFT method without apodization
-        op_fft = FourierOperator(
-            fourier_kernel=kernel_fft,
-            in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='fft',
-            apodize=False,
-        )
-
-        # Overlap-save method with apodization
-        op_overlap = FourierOperator(
-            fourier_kernel=kernel_overlap,
-            in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='overlap_save',
-            fft_size=fft_size,
-            apodize=True,  # Enable for smoother results
-        )
-
-        filtered_fft = op_fft(signal)
-        filtered_overlap = op_overlap(signal)
-
-        # Should produce similar results (not identical due to different frequency resolution
-        # and apodization in overlap-save)
-        # Check in middle 80% to avoid edge effects
-        mid_start = n // 10
-        mid_end = 9 * n // 10
-        mid_fft = filtered_fft[mid_start:mid_end]
-        mid_overlap = filtered_overlap[mid_start:mid_end]
-        relative_error = jnp.linalg.norm(mid_fft - mid_overlap) / jnp.linalg.norm(mid_fft)
-        # Should have very low error (<0.1%) with proper overlap-save implementation
-        assert relative_error < 0.001
-
-    def test_apodization_reduces_edge_artifacts(self):
-        """Test that apodization reduces edge artifacts in overlap-save method."""
-        # Create a smooth signal for testing
-        n = 2000
-        sample_rate = 100.0
-        t = jnp.linspace(0, n / sample_rate, n)
-        signal = jnp.sin(2 * jnp.pi * 3 * t)
-
-        fft_size = 512
-
-        # Create low-pass filter
-        freqs = jnp.fft.rfftfreq(fft_size, 1.0 / sample_rate)
-        kernel = (freqs < 5.0).astype(jnp.complex128)
-
-        # Without apodization
-        op_no_apod = FourierOperator(
-            fourier_kernel=kernel,
-            in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='overlap_save',
-            fft_size=fft_size,
-            apodize=False,
-        )
-
-        # With apodization
-        op_with_apod = FourierOperator(
-            fourier_kernel=kernel,
-            in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='overlap_save',
-            fft_size=fft_size,
-            apodize=True,
-        )
-
-        filtered_no_apod = op_no_apod(signal)
-        filtered_with_apod = op_with_apod(signal)
-
-        # Both should produce valid results
-        assert filtered_no_apod.shape == signal.shape
-        assert filtered_with_apod.shape == signal.shape
-
-        # Results should be similar but not identical
-        assert not jnp.allclose(filtered_no_apod, filtered_with_apod, atol=1e-10)
-
-        # Both should preserve the signal very well since 3 Hz is in passband
-        assert jnp.linalg.norm(filtered_no_apod) > 0.999 * jnp.linalg.norm(signal)
-        assert jnp.linalg.norm(filtered_with_apod) > 0.999 * jnp.linalg.norm(signal)
 
     def test_apodization_window_shape(self):
         """Test that apodization window has correct shape."""
@@ -210,7 +79,6 @@ class TestFourierOperator:
         op = FourierOperator(
             fourier_kernel=kernel,
             in_structure=jax.ShapeDtypeStruct(signals.shape, signals.dtype),
-            method='fft',
             apodize=False,
         )
 
@@ -222,19 +90,6 @@ class TestFourierOperator:
         # Third detector (15 Hz) should be attenuated (just outside passband)
         assert jnp.linalg.norm(filtered[2]) < 0.02 * jnp.linalg.norm(signals[2])
 
-    def test_invalid_method(self):
-        """Test that invalid method raises error."""
-        n = 1000
-        freqs = jnp.fft.rfftfreq(n, 1.0 / 100.0)
-        kernel = (freqs < 10.0).astype(jnp.complex128)
-
-        with pytest.raises(ValueError, match='Invalid method'):
-            FourierOperator(
-                fourier_kernel=kernel,
-                in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-                method='invalid_method',
-            )
-
     def test_fft_method_with_apodization(self):
         """Test FFT method with apodization enabled."""
         n = 1000
@@ -244,13 +99,12 @@ class TestFourierOperator:
         # Signal with 5 Hz and 30 Hz components
         signal = jnp.sin(2 * jnp.pi * 5 * t) + 0.5 * jnp.sin(2 * jnp.pi * 30 * t)
 
-        # Create bandpass filter using BandpassOperator to ensure correct kernel size
-        op = BandpassOperator.create(
+        # Use create_bandpass_operator to ensure correct kernel size
+        op = FourierOperator.create_bandpass_operator(
             f_low=1.0,
             f_high=10.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-            method='fft',
             apodize=True,
         )
 
@@ -279,22 +133,20 @@ class TestFourierOperator:
         signal = jnp.sin(2 * jnp.pi * 10 * t)
 
         # Without apodization
-        op_no_apod = BandpassOperator.create(
+        op_no_apod = FourierOperator.create_bandpass_operator(
             f_low=5.0,
             f_high=15.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='fft',
             apodize=False,
         )
 
         # With apodization
-        op_with_apod = BandpassOperator.create(
+        op_with_apod = FourierOperator.create_bandpass_operator(
             f_low=5.0,
             f_high=15.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='fft',
             apodize=True,
         )
 
@@ -324,12 +176,11 @@ class TestFourierOperator:
 
         # Test with different padding widths
         for padding_width in [50, 100, 150]:
-            op = BandpassOperator.create(
+            op = FourierOperator.create_bandpass_operator(
                 f_low=1.0,
                 f_high=10.0,
                 sample_rate=sample_rate,
                 in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-                method='fft',
                 apodize=True,
                 padding_width=padding_width,
             )
@@ -357,7 +208,6 @@ class TestFourierOperator:
             FourierOperator(
                 fourier_kernel=kernel,
                 in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-                method='fft',
                 apodize=True,  # This changes expected kernel size
                 fft_size=1100,  # Explicitly specify fft_size that doesn't match kernel
             )
@@ -385,7 +235,6 @@ class TestPaddingFunctionality:
         op = FourierOperator(
             fourier_kernel=kernel_correct,
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-            method='fft',
             apodize=True,
             padding_width=padding_width,
         )
@@ -401,7 +250,6 @@ class TestPaddingFunctionality:
             FourierOperator(
                 fourier_kernel=kernel_wrong,
                 in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-                method='fft',
                 apodize=True,
                 fft_size=fft_size_apodized,  # Explicitly specify to trigger validation
             )
@@ -412,12 +260,11 @@ class TestPaddingFunctionality:
         sample_rate = 200.0
 
         # Test using BandpassOperator which handles kernel creation correctly
-        op = BandpassOperator.create(
+        op = FourierOperator.create_bandpass_operator(
             f_low=3.0,
             f_high=12.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-            method='fft',
             apodize=True,
             # padding_width not specified, will be auto-computed
         )
@@ -455,7 +302,6 @@ class TestPaddingFunctionality:
         op = FourierOperator(
             fourier_kernel=kernel_correct,
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-            method='fft',
             apodize=False,
         )
         assert op.fft_size == n
@@ -470,7 +316,6 @@ class TestPaddingFunctionality:
             FourierOperator(
                 fourier_kernel=kernel_apodized,
                 in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-                method='fft',
                 apodize=False,
                 fft_size=n,  # Explicitly specify to trigger validation
             )
@@ -485,21 +330,19 @@ class TestPaddingFunctionality:
         signal = jnp.sin(2 * jnp.pi * 5 * t) + 0.3 * jnp.sin(2 * jnp.pi * 8 * t)
 
         # Create operators with and without apodization using BandpassOperator
-        op_no_apod = BandpassOperator.create(
+        op_no_apod = FourierOperator.create_bandpass_operator(
             f_low=3.0,
             f_high=12.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-            method='fft',
             apodize=False,
         )
 
-        op_with_apod = BandpassOperator.create(
+        op_with_apod = FourierOperator.create_bandpass_operator(
             f_low=3.0,
             f_high=12.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-            method='fft',
             apodize=True,
             padding_width=50,
         )
@@ -544,21 +387,19 @@ class TestPaddingFunctionality:
         signal = jnp.sin(2 * jnp.pi * 10 * t + jnp.pi / 4)
 
         # Create operators with and without apodization
-        op_no_apod = BandpassOperator.create(
+        op_no_apod = FourierOperator.create_bandpass_operator(
             f_low=5.0,
             f_high=15.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-            method='fft',
             apodize=False,
         )
 
-        op_with_apod = BandpassOperator.create(
+        op_with_apod = FourierOperator.create_bandpass_operator(
             f_low=5.0,
             f_high=15.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-            method='fft',
             apodize=True,
             padding_width=100,
         )
@@ -591,12 +432,11 @@ class TestPaddingFunctionality:
         results = []
 
         for padding_width in padding_widths:
-            op = BandpassOperator.create(
+            op = FourierOperator.create_bandpass_operator(
                 f_low=5.0,
                 f_high=15.0,
                 sample_rate=sample_rate,
                 in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
-                method='fft',
                 apodize=True,
                 padding_width=padding_width,
             )
@@ -624,12 +464,11 @@ class TestPaddingFunctionality:
         """Test that default padding width is computed correctly."""
         # Test even length
         n_even = 1000
-        op_even = BandpassOperator.create(
+        op_even = FourierOperator.create_bandpass_operator(
             f_low=5.0,
             f_high=15.0,
             sample_rate=200.0,
             in_structure=jax.ShapeDtypeStruct((n_even,), jnp.float64),
-            method='fft',
             apodize=True,
             # padding_width not specified, should default to 5% rounded up
         )
@@ -638,12 +477,11 @@ class TestPaddingFunctionality:
 
         # Test odd length
         n_odd = 999
-        op_odd = BandpassOperator.create(
+        op_odd = FourierOperator.create_bandpass_operator(
             f_low=5.0,
             f_high=15.0,
             sample_rate=200.0,
             in_structure=jax.ShapeDtypeStruct((n_odd,), jnp.float64),
-            method='fft',
             apodize=True,
         )
         # Due to odd/even ambiguity, padding_width might be 49 or 50
@@ -652,12 +490,11 @@ class TestPaddingFunctionality:
 
         # Test small length
         n_small = 50
-        op_small = BandpassOperator.create(
+        op_small = FourierOperator.create_bandpass_operator(
             f_low=5.0,
             f_high=15.0,
             sample_rate=200.0,
             in_structure=jax.ShapeDtypeStruct((n_small,), jnp.float64),
-            method='fft',
             apodize=True,
         )
         expected_padding_small = int(jnp.ceil(0.05 * n_small))  # = 3
@@ -682,12 +519,11 @@ class TestBandpassOperator:
         )
 
         # Bandpass filter (10-30 Hz)
-        op = BandpassOperator.create(
+        op = FourierOperator.create_bandpass_operator(
             f_low=10.0,
             f_high=30.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='fft',
         )
 
         filtered = op(signal)
@@ -715,13 +551,11 @@ class TestBandpassOperator:
         t = jnp.linspace(0, n / sample_rate, n)
         signal = jnp.sin(2 * jnp.pi * 15 * t)
 
-        op = BandpassOperator.create(
+        op = FourierOperator.create_bandpass_operator(
             f_low=10.0,
             f_high=20.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='overlap_save',
-            fft_size=1024,
             apodize=True,
         )
 
@@ -743,7 +577,7 @@ class TestBandpassOperator:
 
         # Negative f_low
         with pytest.raises(ValueError, match='f_low must be non-negative'):
-            BandpassOperator.create(
+            FourierOperator.create_bandpass_operator(
                 f_low=-5.0,
                 f_high=10.0,
                 sample_rate=sample_rate,
@@ -752,7 +586,7 @@ class TestBandpassOperator:
 
         # f_high > Nyquist
         with pytest.raises(ValueError, match='f_high must be less than Nyquist frequency'):
-            BandpassOperator.create(
+            FourierOperator.create_bandpass_operator(
                 f_low=5.0,
                 f_high=60.0,  # Nyquist is 50 Hz
                 sample_rate=sample_rate,
@@ -761,45 +595,12 @@ class TestBandpassOperator:
 
         # f_low >= f_high
         with pytest.raises(ValueError, match='f_low must be less than f_high'):
-            BandpassOperator.create(
+            FourierOperator.create_bandpass_operator(
                 f_low=20.0,
                 f_high=10.0,
                 sample_rate=sample_rate,
                 in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
             )
-
-    def test_bandpass_fft_vs_overlap_save(self):
-        """Test that both methods produce similar results for bandpass."""
-        n = 5000
-        sample_rate = 200.0
-        t = jnp.linspace(0, n / sample_rate, n)
-        signal = jnp.sin(2 * jnp.pi * 15 * t) + 0.5 * jnp.sin(2 * jnp.pi * 50 * t)
-
-        op_fft = BandpassOperator.create(
-            f_low=10.0,
-            f_high=20.0,
-            sample_rate=sample_rate,
-            in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='fft',
-        )
-
-        op_overlap = BandpassOperator.create(
-            f_low=10.0,
-            f_high=20.0,
-            sample_rate=sample_rate,
-            in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='overlap_save',
-        )
-
-        filtered_fft = op_fft(signal)
-        filtered_overlap = op_overlap(signal)
-
-        # Should produce very similar results in middle 80% with proper implementation
-        mid_start = n // 10
-        mid_end = 9 * n // 10
-        assert jnp.allclose(
-            filtered_fft[mid_start:mid_end], filtered_overlap[mid_start:mid_end], atol=0.01
-        )
 
     def test_filter_types(self):
         """Test different filter types (square, butter4, cos2)."""
@@ -818,13 +619,12 @@ class TestBandpassOperator:
 
         # Test each filter type
         for filter_type in ['square', 'butter4', 'cos2']:
-            op = BandpassOperator.create(
+            op = FourierOperator.create_bandpass_operator(
                 f_low=f_low,
                 f_high=f_high,
                 sample_rate=sample_rate,
                 in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
                 filter_type=filter_type,
-                method='fft',
             )
 
             filtered = op(signal)
@@ -876,7 +676,7 @@ class TestBandpassOperator:
         sample_rate = 100.0
 
         with pytest.raises(ValueError, match='Invalid filter_type'):
-            BandpassOperator.create(
+            FourierOperator.create_bandpass_operator(
                 f_low=10.0,
                 f_high=20.0,
                 sample_rate=sample_rate,
@@ -894,13 +694,12 @@ class TestBandpassOperator:
         # Bins at 0, 1, 2, ..., 15, 16, ...
         # So [15.3, 15.4] falls between bins and won't reach gain=1
         with pytest.raises(ValueError, match='Filter passband not represented'):
-            BandpassOperator.create(
+            FourierOperator.create_bandpass_operator(
                 f_low=15.3,
                 f_high=15.4,
                 sample_rate=sample_rate,
                 in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
                 filter_type='square',
-                method='fft',
             )
 
     def test_cos2_passband_unity_gain(self):
@@ -909,13 +708,12 @@ class TestBandpassOperator:
         sample_rate = 200.0
         f_low, f_high = 10.0, 20.0
 
-        op = BandpassOperator.create(
+        op = FourierOperator.create_bandpass_operator(
             f_low=f_low,
             f_high=f_high,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
             filter_type='cos2',
-            method='fft',
         )
 
         # Check that entire passband has unity gain
@@ -949,49 +747,6 @@ class TestBandpassOperator:
 
 class TestApodizationDetails:
     """Detailed tests for apodization functionality."""
-
-    def test_apodization_preserves_signal_in_middle(self):
-        """Test that apodization preserves signal in the middle region."""
-        n = 5000
-        sample_rate = 200.0
-        t = jnp.linspace(0, n / sample_rate, n)
-
-        # Smooth signal
-        signal = jnp.sin(2 * jnp.pi * 10 * t)
-
-        op_no_apod = BandpassOperator.create(
-            f_low=5.0,
-            f_high=15.0,
-            sample_rate=sample_rate,
-            in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='overlap_save',
-            fft_size=1024,
-            apodize=False,
-        )
-
-        op_with_apod = BandpassOperator.create(
-            f_low=5.0,
-            f_high=15.0,
-            sample_rate=sample_rate,
-            in_structure=jax.ShapeDtypeStruct(signal.shape, signal.dtype),
-            method='overlap_save',
-            fft_size=1024,
-            apodize=True,
-        )
-
-        filtered_no_apod = op_no_apod(signal)
-        filtered_with_apod = op_with_apod(signal)
-
-        # Apodization can change the signal shape, but both should preserve frequency content
-        # Check that both preserve the 10 Hz component
-        fft_orig = jnp.fft.rfft(signal)
-        fft_no_apod = jnp.fft.rfft(filtered_no_apod)
-        fft_with_apod = jnp.fft.rfft(filtered_with_apod)
-        freq_10hz_idx = int(10.0 * n / sample_rate)
-
-        # Both should preserve 10 Hz very well with proper overlap-save
-        assert jnp.abs(fft_no_apod[freq_10hz_idx]) > 0.999 * jnp.abs(fft_orig[freq_10hz_idx])
-        assert jnp.abs(fft_with_apod[freq_10hz_idx]) > 0.999 * jnp.abs(fft_orig[freq_10hz_idx])
 
     def test_apodization_window_symmetry(self):
         """Test that apodization window is symmetric."""
@@ -1045,7 +800,6 @@ class TestMultidimensionalArrays:
         op = FourierOperator(
             fourier_kernel=kernel,
             in_structure=jax.ShapeDtypeStruct(signals.shape, signals.dtype),
-            method='fft',
             apodize=False,
         )
 
@@ -1060,37 +814,6 @@ class TestMultidimensionalArrays:
         assert jnp.linalg.norm(filtered[0]) < 0.02 * jnp.linalg.norm(signals[0])
         # Detector 4 (13 Hz) should be attenuated
         assert jnp.linalg.norm(filtered[4]) < 0.02 * jnp.linalg.norm(signals[4])
-
-    def test_fourier_operator_2d_array_overlap_save(self):
-        """Test FourierOperator with 2D array using overlap-save method."""
-        n_detectors = 4
-        n_samples = 2000
-        sample_rate = 200.0
-        t = jnp.linspace(0, n_samples / sample_rate, n_samples)
-
-        # Create signals with different frequencies
-        signals = jnp.array([jnp.sin(2 * jnp.pi * (10 + i * 5) * t) for i in range(n_detectors)])
-
-        # Create operator using overlap-save
-        op = BandpassOperator.create(
-            f_low=8.0,
-            f_high=18.0,
-            sample_rate=sample_rate,
-            in_structure=jax.ShapeDtypeStruct(signals.shape, signals.dtype),
-            method='overlap_save',
-        )
-
-        filtered = op(signals)
-
-        # Check output shape
-        assert filtered.shape == signals.shape
-
-        # Detector 0 (10 Hz) should pass
-        assert jnp.linalg.norm(filtered[0]) > 0.99 * jnp.linalg.norm(signals[0])
-        # Detector 1 (15 Hz) should pass
-        assert jnp.linalg.norm(filtered[1]) > 0.99 * jnp.linalg.norm(signals[1])
-        # Detector 3 (25 Hz) should be heavily attenuated
-        assert jnp.linalg.norm(filtered[3]) < 0.02 * jnp.linalg.norm(signals[3])
 
     def test_fourier_operator_3d_array(self):
         """Test FourierOperator with 3D array."""
@@ -1111,12 +834,11 @@ class TestMultidimensionalArrays:
         assert signals.shape == (n_wafers, n_detectors, n_samples)
 
         # Create bandpass operator
-        op = BandpassOperator.create(
+        op = FourierOperator.create_bandpass_operator(
             f_low=4.0,
             f_high=8.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct(signals.shape, signals.dtype),
-            method='fft',
         )
 
         filtered = op(signals)
@@ -1132,7 +854,7 @@ class TestMultidimensionalArrays:
 
     def test_bandpass_operator_2d_with_apodization(self):
         """Test BandpassOperator with 2D array and apodization enabled."""
-        n_detectors = 6
+        # n_detectors = 6
         n_samples = 1500
         sample_rate = 150.0
         t = jnp.linspace(0, n_samples / sample_rate, n_samples)
@@ -1150,12 +872,11 @@ class TestMultidimensionalArrays:
         )
 
         # Bandpass filter 10-20 Hz
-        op = BandpassOperator.create(
+        op = FourierOperator.create_bandpass_operator(
             f_low=10.0,
             f_high=20.0,
             sample_rate=sample_rate,
             in_structure=jax.ShapeDtypeStruct(signals.shape, signals.dtype),
-            method='fft',
             apodize=True,
         )
 
@@ -1193,12 +914,11 @@ class TestMultidimensionalArrays:
         filter_types = ['square', 'butter4', 'cos2']
 
         for filter_type in filter_types:
-            op = BandpassOperator.create(
+            op = FourierOperator.create_bandpass_operator(
                 f_low=8.0,
                 f_high=12.0,
                 sample_rate=sample_rate,
                 in_structure=jax.ShapeDtypeStruct(signals.shape, signals.dtype),
-                method='fft',
                 filter_type=filter_type,
             )
 

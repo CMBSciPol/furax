@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import equinox
 import jax
 import jax.numpy as jnp
@@ -16,33 +18,17 @@ class FourierOperator(AbstractLinearOperator):
     """Apply a kernel in the Fourier domain.
 
     This operator applies element-wise multiplication with a kernel in the Fourier domain.
-    Similar to SymmetricBandToeplitzOperator but allows for general kernels.
-
-    Args:
-        fourier_kernel: Complex-valued kernel in Fourier domain. Size must be fft_size // 2 + 1
-            (the output size of rfft for time-domain signal of length fft_size).
-        in_structure: Input structure specification.
-        fft_size: Time-domain signal length for FFT. If None, inferred from kernel.
-            For fft method with apodize=True: must equal n + 2 * padding_width
-            For fft method with apodize=False: must equal n
-            For overlap_save method: specifies the block size for chunked processing
-        apodize: Apply Hamming window to reduce edge artifacts.
-            Default: False for fft, True for overlap_save.
-            For fft method: pads signal and applies window to padded regions.
-            For overlap_save method: applies window in overlap regions.
-        padding_width: Padding width in samples on each end. If None, defaults are:
-            For fft method: 5% of data length (rounded up)
-            For overlap_save method: 25% of fft_size, specifies overlap between blocks
+    The kernel can be complex-valued.
 
     Usage:
         >>> import jax.numpy as jnp
-        >>> # Create a low-pass filter kernel
         >>> n = 1000
-        >>> freqs = jnp.fft.rfftfreq(n, 1.0/200.0)
-        >>> kernel = (freqs < 10.0).astype(jnp.complex128)
+        >>> fs = 200.0  # sampling frequency
+        >>> cutoff = 10.0  # cutoff frequency
         >>> op = FourierOperator(
-        ...     fourier_kernel=kernel,
-        ...     in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
+        ...     fourier_kernel=lambda f: f < cutoff,  # low-pass filter
+        ...     in_structure=jax.ShapeDtypeStruct((n,), float),
+        ...     sample_spacing=1. / fs,
         ... )
         >>> signal = jnp.ones(n)
         >>> filtered = op(signal)
@@ -56,70 +42,46 @@ class FourierOperator(AbstractLinearOperator):
 
     def __init__(
         self,
-        fourier_kernel: Inexact[Array, '...'],
+        kernel_func: Callable[[Float[Array, '...']], Inexact[Array, '...']],
         in_structure: PyTree[jax.ShapeDtypeStruct],
         *,
-        fft_size: int | None = None,
-        apodize: bool = False,
+        sample_spacing: float = 1.0,
+        apodize: bool = True,
         padding_width: int | None = None,
     ):
-        self.fourier_kernel = fourier_kernel
-        self._in_structure = in_structure
-        self.apodize = apodize
+        """Create a FourierOperator.
 
-        # Get data length
+        Args:
+            kernel_func: Function that generates the Fourier kernel as a function of frequency.
+            in_structure: Input structure of the operator.
+            sample_spacing: Spacing between samples in the time domain.
+                Important if the kernel function depends on physical frequency units.
+            apodize: Pad and apply Hamming window to both ends to reduce edge artifacts.
+            padding_width: Padding width in samples on each end.
+                Defaults is 5% of data length (rounded up).
+        """
+        # Data length
         n = in_structure.shape[-1]
 
-        # Get kernel size to validate
-        kernel_array = jnp.asarray(fourier_kernel)
-        actual_kernel_size = kernel_array.shape[-1]
-
-        # Check fft_size
-        if fft_size is not None:
-            # User provided fft_size, validate it matches kernel
-            expected_kernel_size = fft_size // 2 + 1
-            if actual_kernel_size != expected_kernel_size:
-                msg = (
-                    f'For fft method, kernel size must be fft_size // 2 + 1. '
-                    f'Expected {expected_kernel_size} for fft_size={fft_size}, '
-                    f'got {actual_kernel_size}.'
-                )
-                raise ValueError(msg)
-
-        # Set default padding_width for fft method or infer from fft_size
-        if padding_width is None:
-            if fft_size is not None and apodize:
-                # fft_size was provided, infer padding_width from it
-                padding_width = (fft_size - n) // 2
-            else:
-                # Compute default
-                padding_width = int(np.ceil(0.05 * n))  # 5% of data length, rounded up
-        self.padding_width = padding_width
-
-        # If fft_size is unspecified, set it
-        if fft_size is None:
-            if apodize:
-                fft_size = n + 2 * padding_width
-            else:
-                fft_size = n
-
-        # Validate that fft_size matches expected size based on apodization
+        # Set padding_width if unspecified
         if apodize:
-            expected_fft_size = n + 2 * padding_width
+            if padding_width is None:
+                padding_width = int(np.ceil(0.05 * n))  # 5% of data length
         else:
-            expected_fft_size = n
+            padding_width = 0
 
-        # Allow off-by-one due to odd/even ambiguity
-        if abs(fft_size - expected_fft_size) > 1:
-            msg = (
-                f'For fft method with apodize={apodize}, kernel must correspond to '
-                f'fft_size={expected_fft_size}. Got fft_size={fft_size} '
-                f'(kernel_size={actual_kernel_size}). '
-                f'Expected kernel_size={(expected_fft_size // 2 + 1)}.'
-            )
-            raise ValueError(msg)
+        # Use a power-of-2 FFT size for efficiency
+        fft_size = _next_power_of_2(n + 2 * padding_width)
+        freqs = jnp.fft.rfftfreq(fft_size, d=sample_spacing)
+        kernel = kernel_func(freqs)
+        if kernel.shape[-1] != freqs.size:
+            raise ValueError('Bad kernel shape')
 
+        self.fourier_kernel = jnp.asarray(kernel)
+        self._in_structure = in_structure
         self.fft_size = fft_size
+        self.apodize = apodize
+        self.padding_width = padding_width
 
     @classmethod
     def create_bandpass_operator(
@@ -130,9 +92,7 @@ class FourierOperator(AbstractLinearOperator):
         in_structure: PyTree[jax.ShapeDtypeStruct],
         *,
         filter_type: str = 'square',
-        fft_size: int | None = None,
-        apodize: bool = False,
-        padding_width: int | None = None,
+        apodize: bool = True,
     ) -> 'FourierOperator':
         """Creates a bandpass filtering operator.
 
@@ -157,24 +117,13 @@ class FourierOperator(AbstractLinearOperator):
                 - 'square': Sharp cutoff (ideal brick-wall filter)
                 - 'butter4': 4th-order Butterworth filter (smooth rolloff)
                 - 'cos2': Cosine-squared transition (smooth rolloff)
-            fft_size: FFT size for overlap_save method. If None, uses default.
             apodize: Apply Hamming window to reduce edge artifacts.
-                For overlap_save: applies window in overlap regions.
-                For fft: pads signal and applies window to padded regions.
-                Default: False for fft, True for overlap_save.
-            padding_width: Padding width in samples on each end. If None, defaults to 5% of
-                data length (rounded up) for fft method, and 25% of fft_size for overlap_save.
 
         Returns:
             FourierOperator configured with bandpass kernel.
 
         Raises:
             ValueError: If frequency parameters or filter_type are invalid.
-
-        Note:
-            The kernel size must match the expected size based on method and padding_width.
-            For fft with apodize=True: kernel_size = (n + 2 * padding_width) // 2 + 1
-            For overlap_save: kernel_size = fft_size // 2 + 1
         """
         # Validate filter_type
         valid_filter_types = ('square', 'butter4', 'cos2')
@@ -192,202 +141,111 @@ class FourierOperator(AbstractLinearOperator):
         if f_low >= f_high:
             raise ValueError(f'f_low must be less than f_high, got f_low={f_low}, f_high={f_high}')
 
-        # Get signal length from in_structure
-        shape = in_structure.shape if hasattr(in_structure, 'shape') else in_structure().shape
-        n = shape[-1]
-
-        # Track if padding_width was auto-computed
-        padding_width_was_auto = padding_width is None
-
-        # Compute padding_width defaults
-        if padding_width is None:
-            padding_width = int(np.ceil(0.05 * n))
-
-        # Determine kernel size based on method and apodization
-        if apodize:
-            # With apodization, kernel is for padded signal
-            kernel_size = n + 2 * padding_width
-        else:
-            # Without apodization, kernel is for original signal
-            kernel_size = n
-
-        # Create bandpass kernel in Fourier domain
-        # Use rfft frequencies since we're filtering real signals
-        freqs = jnp.fft.rfftfreq(kernel_size, 1.0 / sample_rate)
-
         # Create filter kernel based on filter_type
         if filter_type == 'square':
-            # Sharp cutoff (ideal brick-wall filter)
-            mask = (freqs >= f_low) & (freqs <= f_high)
-            fourier_kernel = mask.astype(jnp.complex128)
+
+            def kernel_func(freqs):  # type: ignore[no-untyped-def]
+                # Sharp cutoff (ideal brick-wall filter)
+                mask = (freqs >= f_low) & (freqs <= f_high)
+                return mask.astype(jnp.complex128)
 
         elif filter_type == 'butter4':
-            # 4th-order Butterworth bandpass filter using scipy
             import scipy.signal
 
-            # Design Butterworth bandpass filter
-            # butter returns (b, a) coefficients for digital filter
-            # Use 4th order bandpass (becomes 8th order total - 4th for each band edge)
-            sos = scipy.signal.butter(
-                4, [f_low, f_high], btype='bandpass', fs=sample_rate, output='sos'
-            )
+            def kernel_func(freqs):  # type: ignore[no-untyped-def]
+                # 4th-order Butterworth bandpass filter using scipy
 
-            # Convert to frequency response
-            # Use freqs for the actual frequency points we need
-            w = 2 * jnp.pi * freqs
+                # Design Butterworth bandpass filter
+                # butter returns (b, a) coefficients for digital filter
+                # Use 4th order bandpass (becomes 8th order total - 4th for each band edge)
+                sos = scipy.signal.butter(
+                    4, [f_low, f_high], btype='bandpass', fs=sample_rate, output='sos'
+                )
 
-            # Compute frequency response from second-order sections
-            # H(w) = product of all second-order section responses
-            H = jnp.ones(len(freqs), dtype=jnp.complex128)
-            for section in sos:
-                b0, b1, b2, a0, a1, a2 = section
-                # H(z) = (b0 + b1*z^-1 + b2*z^-2) / (a0 + a1*z^-1 + a2*z^-2)
-                # For frequency response, substitute z = exp(j*w*T) where T = 1/fs
-                z = jnp.exp(1j * w / sample_rate)
-                z_inv = 1.0 / z
-                z_inv2 = z_inv * z_inv
+                # Convert to frequency response
+                # Use freqs for the actual frequency points we need
+                w = 2 * jnp.pi * freqs
 
-                numerator = b0 + b1 * z_inv + b2 * z_inv2
-                denominator = a0 + a1 * z_inv + a2 * z_inv2
-                H = H * (numerator / denominator)
+                # Compute frequency response from second-order sections
+                # H(w) = product of all second-order section responses
+                H = jnp.ones_like(freqs, dtype=jnp.complex128)
+                for section in sos:
+                    b0, b1, b2, a0, a1, a2 = section
+                    # H(z) = (b0 + b1*z^-1 + b2*z^-2) / (a0 + a1*z^-1 + a2*z^-2)
+                    # For frequency response, substitute z = exp(j*w*T) where T = 1/fs
+                    z = jnp.exp(1j * w / sample_rate)
+                    z_inv = 1.0 / z
+                    z_inv2 = z_inv * z_inv
 
-            # Take magnitude for real-valued filter
-            fourier_kernel = jnp.abs(H).astype(jnp.complex128)
+                    numerator = b0 + b1 * z_inv + b2 * z_inv2
+                    denominator = a0 + a1 * z_inv + a2 * z_inv2
+                    H = H * (numerator / denominator)
+
+                # Take magnitude for real-valued filter
+                return jnp.abs(H).astype(jnp.complex128)
 
         elif filter_type == 'cos2':
-            # Cosine-squared transition outside the passband
-            # Define transition width (10% of bandwidth on each side, outside the band)
-            bandwidth = f_high - f_low
-            transition_width = 0.1 * bandwidth
 
-            # Transition regions are OUTSIDE the passband [f_low, f_high]
-            # Lower transition: [max(0, f_low - transition_width), f_low]
-            # Upper transition: [f_high, f_high + transition_width]
-            f_low_transition_start = max(0.0, f_low - transition_width)
+            def kernel_func(freqs):  # type: ignore[no-untyped-def]
+                # Cosine-squared transition outside the passband
+                # Define transition width (10% of bandwidth on each side, outside the band)
+                bandwidth = f_high - f_low
+                transition_width = 0.1 * bandwidth
 
-            # Initialize kernel
-            kernel = jnp.zeros_like(freqs)
+                # Transition regions are OUTSIDE the passband [f_low, f_high]
+                # Lower transition: [max(0, f_low - transition_width), f_low]
+                # Upper transition: [f_high, f_high + transition_width]
+                f_low_transition_start = max(0.0, f_low - transition_width)
 
-            # Passband (full transmission) - entire [f_low, f_high] range
-            passband = (freqs >= f_low) & (freqs <= f_high)
-            kernel = jnp.where(passband, 1.0, kernel)
+                # Initialize kernel
+                kernel = jnp.zeros_like(freqs)
 
-            # Lower transition region (outside passband, below f_low)
-            lower_transition = (freqs >= f_low_transition_start) & (freqs < f_low)
-            # Cosine-squared from 0 to 1 as frequency increases toward f_low
-            phase_low = (
-                (freqs - f_low_transition_start) / (f_low - f_low_transition_start) * (jnp.pi / 2)
-            )
-            kernel = jnp.where(lower_transition, jnp.sin(phase_low) ** 2, kernel)
+                # Passband (full transmission) - entire [f_low, f_high] range
+                passband = (freqs >= f_low) & (freqs <= f_high)
+                kernel = jnp.where(passband, 1.0, kernel)
 
-            # Upper transition region (outside passband, above f_high)
-            f_high_transition_end = f_high + transition_width
-            upper_transition = (freqs > f_high) & (freqs <= f_high_transition_end)
-            # Cosine-squared from 1 to 0 as frequency increases away from f_high
-            phase_high = (f_high_transition_end - freqs) / transition_width * (jnp.pi / 2)
-            kernel = jnp.where(upper_transition, jnp.sin(phase_high) ** 2, kernel)
+                # Lower transition region (outside passband, below f_low)
+                lower_transition = (freqs >= f_low_transition_start) & (freqs < f_low)
+                # Cosine-squared from 0 to 1 as frequency increases toward f_low
+                phase_low = (
+                    (freqs - f_low_transition_start)
+                    / (f_low - f_low_transition_start)
+                    * (jnp.pi / 2)
+                )
+                kernel = jnp.where(lower_transition, jnp.sin(phase_low) ** 2, kernel)
 
-            fourier_kernel = kernel.astype(jnp.complex128)
+                # Upper transition region (outside passband, above f_high)
+                f_high_transition_end = f_high + transition_width
+                upper_transition = (freqs > f_high) & (freqs <= f_high_transition_end)
+                # Cosine-squared from 1 to 0 as frequency increases away from f_high
+                phase_high = (f_high_transition_end - freqs) / transition_width * (jnp.pi / 2)
+                kernel = jnp.where(upper_transition, jnp.sin(phase_high) ** 2, kernel)
+
+                return kernel.astype(jnp.complex128)
 
         else:
             raise NotImplementedError(f'Filter type {filter_type} not implemented')
 
         # Validate that the filter has at least one unity gain point in the passband
         # This ensures the passband is actually represented in the frequency grid
-        max_gain = jnp.max(jnp.abs(fourier_kernel))
+        n = in_structure.shape[-1]
+        kernel = kernel_func(jnp.fft.rfftfreq(n, d=1.0 / sample_rate))
+        max_gain = jnp.max(jnp.abs(kernel))
         if max_gain < 0.99:  # Use 0.99 to account for numerical precision
             msg = (
                 f'Filter passband not represented in frequency grid. '
                 f'Maximum filter gain is {max_gain:.4f}, expected ~1.0. '
-                f'The bandwidth [{f_low}, {f_high}] Hz may be too narrow for the given '
-                f'FFT size ({kernel_size}) and sample rate ({sample_rate} Hz). '
-                f'Try using a larger FFT size or increasing the bandwidth.'
+                f'The bandwidth [{f_low}, {f_high}] Hz may be too narrow for the given sample '
+                'rate and input size.'
             )
             raise ValueError(msg)
 
-        # For fft method, infer fft_size from the kernel we just created
-        # This handles odd/even ambiguity by using the actual kernel size
-        if fft_size is None:
-            actual_kernel_size = fourier_kernel.shape[-1]
-            fft_size = 2 * (actual_kernel_size - 1)
-            # Don't pass padding_width if it was auto-computed, let __init__ re-infer it
-            # to avoid odd/even mismatch issues
-            if padding_width_was_auto and apodize:
-                padding_width = None
-
         return cls(
-            fourier_kernel=fourier_kernel,
-            in_structure=in_structure,
-            fft_size=fft_size,
+            kernel_func,
+            in_structure,
+            sample_spacing=1.0 / sample_rate,
             apodize=apodize,
-            padding_width=padding_width,
         )
-
-    def _get_kernel_size(self) -> int:
-        """Get the size of the Fourier kernel."""
-        kernel = jnp.asarray(self.fourier_kernel)
-        return kernel.shape[-1]
-
-    @staticmethod
-    def _get_default_fft_size(kernel_size: int) -> int:
-        """Get default FFT size based on kernel size."""
-        # Use a power of 2 that's larger than kernel size
-        additional_power = 1
-        return int(2 ** (additional_power + np.ceil(np.log2(max(kernel_size, 32)))))
-
-    def get_expected_kernel_size(self) -> int:
-        """Get the expected kernel size for the current configuration.
-
-        Since fft_size always represents the time-domain signal length,
-        the kernel size is simply fft_size // 2 + 1 for both methods.
-
-        Returns:
-            Expected size of the Fourier kernel (rfft output size): fft_size // 2 + 1
-        """
-        assert self.fft_size is not None
-        return self.fft_size // 2 + 1
-
-    @staticmethod
-    def resample_kernel(kernel: Array, target_size: int, source_is_rfft: bool = True) -> Array:
-        """Resample a Fourier kernel to a different size.
-
-        This method converts the kernel to time domain, resizes it, and converts back
-        to frequency domain.
-
-        Args:
-            kernel: Input Fourier kernel to resample.
-            target_size: Target size for the resampled kernel (rfft output size).
-            source_is_rfft: If True, assumes kernel is from rfft (default). If False,
-                assumes it's from a full fft.
-
-        Returns:
-            Resampled kernel of size target_size.
-        """
-        kernel = jnp.asarray(kernel)
-
-        # Convert to time domain
-        if source_is_rfft or jnp.iscomplexobj(kernel):
-            n_orig = 2 * (kernel.size - 1) if source_is_rfft else kernel.size
-            if source_is_rfft:
-                kernel_time = jnp.fft.irfft(kernel, n=n_orig)
-            else:
-                kernel_time = jnp.fft.ifft(kernel).real
-        else:
-            kernel_time = kernel
-
-        # Compute target time-domain size
-        n_target = 2 * (target_size - 1)
-
-        # Resize
-        if kernel_time.size > n_target:
-            kernel_time_resized = kernel_time[:n_target]
-        else:
-            kernel_time_resized = jnp.pad(
-                kernel_time, (0, n_target - kernel_time.size), mode='constant'
-            )
-
-        # Convert back to frequency domain
-        return jnp.fft.rfft(kernel_time_resized)
 
     @staticmethod
     def _create_apodization_window(fft_size: int, overlap: int) -> Array:
@@ -518,3 +376,7 @@ class FourierOperator(AbstractLinearOperator):
             return matrix
 
         return blocks
+
+
+def _next_power_of_2(n: int) -> int:
+    return int(2 ** np.ceil(np.log2(n)))

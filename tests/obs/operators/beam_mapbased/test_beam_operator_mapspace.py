@@ -11,7 +11,6 @@ from furax.obs import (
     MapSpaceBeamOperator,
     StackedBeamOperator,
     StokesToListOperator,
-    read_beam_matrix,
 )
 from furax.obs.stokes import Stokes, StokesIQU
 
@@ -24,16 +23,15 @@ def setup_beam_operator_test():
 
     maps = []
     for i in range(3):
-        maps.append(np.random.rand(n_freq, n_pix))
-    d = Stokes.from_stokes(I=maps[0], Q=maps[1], U=maps[2])
+        maps.append(np.random.rand(n_freq, n_pix).astype(np.float32))
+    d = StokesIQU.from_stokes(I=maps[0], Q=maps[1], U=maps[2])
 
-    test_beam_operator = read_beam_matrix(
-        in_structure=d.structure,
-        path_to_file=Path(__file__).parent / 'data/beam_sparse_16_FWHM40.0_cutoff.npz',
+    test_beam_operator = MapSpaceBeamOperator.from_file(
+        filename=Path(__file__).parent / 'data/beam_sparse_16_FWHM40.0_cutoff.npz',
     )
     assert isinstance(test_beam_operator, MapSpaceBeamOperator)
 
-    test_matrix = load_npz(Path(__file__).parent / 'data/beam_sparse_16_FWHM40.0_cutoff.npz')
+    test_matrix = load_npz(Path(__file__).parent / 'data/beam_sparse_16_FWHM40.0_scipy_format.npz')
 
     return d, test_beam_operator, test_matrix
 

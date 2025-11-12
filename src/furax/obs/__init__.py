@@ -16,7 +16,6 @@ from .operators import (
     StackedBeamOperator,
     StokesToListOperator,
     SynchrotronOperator,
-    read_beam_matrix,
 )
 
 __all__ = [
@@ -32,7 +31,6 @@ __all__ = [
     'spectral_cmb_variance',
     'sky_signal',
     'MapSpaceBeamOperator',
-    'read_beam_matrix',
     'StackedBeamOperator',
     'StokesToListOperator',
     'ListToStokesOperator',

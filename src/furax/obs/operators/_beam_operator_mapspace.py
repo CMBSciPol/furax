@@ -8,36 +8,14 @@ from jax.scipy.sparse.linalg import cg
 from jaxtyping import Array, Inexact, PyTree
 from typing_extensions import Self
 
-from furax import AbstractLinearOperator, BlockDiagonalOperator, square, symmetric
+from furax import (
+    AbstractLinearOperator,
+    BlockDiagonalOperator,
+    square,
+)
 from furax.obs.stokes import StokesIQU
 
 
-def read_beam_matrix(
-    path_to_file: str, in_structure: PyTree[jax.ShapeDtypeStruct]
-) -> AbstractLinearOperator:
-    """Reads a sparse beam matrix from a .npz file and returns a MapSpaceBeamOperator class
-
-    Args:
-        path_to_file: Path to the .npz file containing the sparse beam matrix.
-        in_structure: Input structure of the operator.
-
-    Returns:
-        MapSpaceBeamOperator: Beam operator in map space.
-    """
-
-    sparse_matrix = jnp.load(path_to_file)
-    indices = jnp.array(sparse_matrix['indices'], dtype=jnp.int32)
-    data = jnp.array(sparse_matrix['data'], dtype=jnp.float32)
-    n_neighbours = int(jnp.diff(sparse_matrix['indptr'])[0])
-    n_rows = sparse_matrix['indptr'].shape[0] - 1
-
-    all_indices = indices.reshape(n_rows, n_neighbours)
-    all_data = data.reshape(n_rows, n_neighbours)
-
-    return MapSpaceBeamOperator(all_indices, all_data, in_structure=in_structure)
-
-
-# @symmetric
 @square
 class MapSpaceBeamOperator(AbstractLinearOperator):
     """MapSpaceBeamOperator applies a beam to a map in map space.
@@ -51,9 +29,15 @@ class MapSpaceBeamOperator(AbstractLinearOperator):
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     indices: Array
     data: Array
+    observed_pixels: Array
 
     def __init__(
-        self, indices: Array, data: Array, *, in_structure: PyTree[jax.ShapeDtypeStruct]
+        self,
+        indices: Array,
+        data: Array,
+        observed_pixels: Array,
+        *,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
         """
         Args:
@@ -64,9 +48,12 @@ class MapSpaceBeamOperator(AbstractLinearOperator):
         self._in_structure = in_structure
         self.indices = indices
         self.data = data
+        self.observed_pixels = observed_pixels
 
     def mv(self, x: Inexact[Array, '...']) -> Inexact[Array, '...']:
-        return jnp.sum(self.data * x[self.indices], axis=1)
+        result = jnp.zeros_like(x)
+        observed_values = jnp.sum(self.data * x[self.indices], axis=1)
+        return result.at[self.observed_pixels].set(observed_values, unique_indices=True)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
@@ -79,16 +66,21 @@ class MapSpaceBeamOperator(AbstractLinearOperator):
         sparse_matrix = jnp.load(filename)
         indices = jnp.array(sparse_matrix['indices'], dtype=jnp.int32)
         data = jnp.array(sparse_matrix['data'], dtype=jnp.float32)
-        n_neighbours = int(jnp.diff(sparse_matrix['indptr'])[0])
-        n_rows = sparse_matrix['indptr'].shape[0] - 1
+        observed_pixels = jnp.array(sparse_matrix['observed_pixels'], dtype=jnp.int32)
+
+        n_neighbours = sparse_matrix['max_nnz']
+        n_rows = len(observed_pixels)
+        nside = sparse_matrix['nside']
+        npix = 12 * nside**2
 
         all_indices = indices.reshape(n_rows, n_neighbours)
         all_data = data.reshape(n_rows, n_neighbours)
-        in_structure = jax.ShapeDtypeStruct(n_rows, data.dtype)
+        in_structure = jax.ShapeDtypeStruct((npix,), data.dtype)
 
-        return cls(all_indices, all_data, in_structure=in_structure)
+        return cls(all_indices, all_data, observed_pixels, in_structure=in_structure)
 
 
+@square
 class MapSpaceBeamOperatorInverse(AbstractLinearOperator):
     """Inverse of the MapSpaceBeamOperator using conjugate gradient method.
 
@@ -153,11 +145,11 @@ class StokesToListOperator(AbstractLinearOperator):
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return [
             StokesIQU(
-                i=jnp.take(x.i, f, axis=self._axis),
-                q=jnp.take(x.q, f, axis=self._axis),
-                u=jnp.take(x.u, f, axis=self._axis),
+                i=jnp.take(jnp.atleast_2d(x.i), f, axis=self._axis),
+                q=jnp.take(jnp.atleast_2d(x.q), f, axis=self._axis),
+                u=jnp.take(jnp.atleast_2d(x.u), f, axis=self._axis),
             )
-            for f in range(x.i.shape[self._axis])
+            for f in range(jnp.atleast_2d(x.i).shape[self._axis])
         ]
 
 
@@ -200,7 +192,7 @@ class ListToStokesOperator(AbstractLinearOperator):
         )
 
 
-@symmetric
+@square
 class StackedBeamOperator(AbstractLinearOperator):
     """Operator that applies a list of beam operators to a stacked StokesIQU map.
 
@@ -263,6 +255,7 @@ class StackedBeamOperator(AbstractLinearOperator):
         return StackedBeamOperatorInverse(self)
 
 
+@square
 class StackedBeamOperatorInverse(AbstractLinearOperator):
     """Inverse of the StackedBeamOperator using conjugate gradient method for each frequency.
 

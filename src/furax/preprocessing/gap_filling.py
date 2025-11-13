@@ -103,7 +103,9 @@ class GapFillingOperator(equinox.Module):
         elif isinstance(self.cov, SymmetricBandToeplitzOperator):
             n = x.shape[-1]
             fft_size = default_fft_size(n)
-            psd = self.folded_psd(self.cov.band_values, fft_size)
+            # vectorize folded_psd excluding fft_size
+            f = jnp.vectorize(self.folded_psd, signature='(b)->(k)', excluded={1})
+            psd = f(self.cov.band_values, fft_size)
         else:
             raise NotImplementedError
 

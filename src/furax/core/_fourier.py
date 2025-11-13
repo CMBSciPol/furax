@@ -97,13 +97,21 @@ class FourierOperator(AbstractLinearOperator):
 
     @classmethod
     def create_noise_filter(
-        cls, model: NoiseModel, sample_rate: float, in_structure: PyTree[jax.ShapeDtypeStruct]
+        cls,
+        model: NoiseModel,
+        sample_rate: float,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
+        *,
+        inverse: bool = True,
     ) -> 'FourierOperator':
         """Creates a FourierOperator that acts as a noise filter.
 
         The effect of the operator is to downweight frequencies according to the noise PSD,
-        i.e., it applies a filter with kernel 1 / PSD(f).
+        i.e., it applies a filter with kernel 1 / PSD(f). Pass `inverse=False` to have the
+        opposite behaviour.
         """
+        if not inverse:
+            return cls(model.psd, in_structure, sample_rate=sample_rate)
         return cls(lambda f: 1.0 / model.psd(f), in_structure, sample_rate=sample_rate)
 
     @classmethod

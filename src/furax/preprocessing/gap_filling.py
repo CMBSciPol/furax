@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
-from furax import IndexOperator, SymmetricBandToeplitzOperator
+from furax import FourierOperator, IndexOperator, SymmetricBandToeplitzOperator
 from furax.obs._detectors import DetectorArray
 
 default_fft_size = SymmetricBandToeplitzOperator._get_default_fft_size
@@ -40,13 +40,13 @@ class GapFillingOperator(equinox.Module):
         >>> assert jnp.all(gap_filled_x[mask] == x[mask])
 
     Attributes:
-        cov: A SymmetricBandToeplitzOperator representing the noise covariance matrix.
+        cov: A SymmetricBandToeplitzOperator or FourierOperator representing the noise covariance.
         mask_op: An IndexOperator for masking the gaps.
         detectors: A DetectorArray representing the detectors.
         rate: The sampling rate of the data.
     """
 
-    cov: SymmetricBandToeplitzOperator
+    cov: SymmetricBandToeplitzOperator | FourierOperator
     mask_op: IndexOperator
     detectors: DetectorArray
     rate: float = 1.0
@@ -97,23 +97,31 @@ class GapFillingOperator(equinox.Module):
     def _generate_realization_for(
         self, x: Float[Array, ' *shape'], key: PRNGKeyArray
     ) -> Float[Array, ' *shape']:
-        @partial(jnp.vectorize, signature='(n),(k),()->(n)')
-        def func(x, n_tt, subkey):  # type: ignore[no-untyped-def]
-            x_size = x.size
-            fft_size = default_fft_size(x_size)
-            npsd = fft_size // 2 + 1
-            norm = self.rate * float(npsd - 1)
+        if isinstance(self.cov, FourierOperator):
+            fft_size = self.cov.fft_size
+            psd = self.cov.fourier_kernel
+        elif isinstance(self.cov, SymmetricBandToeplitzOperator):
+            n = x.shape[-1]
+            fft_size = default_fft_size(n)
+            psd = self.folded_psd(self.cov.band_values, fft_size)
+        else:
+            raise NotImplementedError
 
-            # Get PSD values (size = fft_size // 2 + 1)
-            psd = self.folded_psd(n_tt, fft_size)
-            scale = jnp.sqrt(norm * psd)
+        npsd = fft_size // 2 + 1
+        if npsd != psd.shape[-1]:
+            msg = f'PSD size {psd.shape[-1]} does not match expected size {npsd} for {fft_size=}.'
+            raise ValueError(msg)
 
+        # Normalization factor
+        norm = self.rate * float(npsd - 1)
+
+        @partial(jnp.vectorize, signature='(k),()->(n)')
+        def func(psd, subkey):  # type: ignore[no-untyped-def]
             # Gaussian Re/Im random numbers
             rngdata = jax.random.normal(subkey, shape=(fft_size,))
 
-            fdata = jnp.empty(npsd, dtype=complex)
-
             # Set DC and Nyquist frequency imaginary parts to zero
+            fdata = jnp.empty(npsd, dtype=complex)
             fdata = fdata.at[0].set(rngdata[0] + 0.0j)
             fdata = fdata.at[-1].set(rngdata[npsd - 1] + 0.0j)
 
@@ -121,14 +129,14 @@ class GapFillingOperator(equinox.Module):
             fdata = fdata.at[1:-1].set(rngdata[1 : npsd - 1] + 1j * rngdata[-1 : npsd - 1 : -1])
 
             # scale by PSD and inverse FFT
+            scale = jnp.sqrt(norm * psd)
             tdata = jnp.fft.irfft(fdata * scale)
 
             # subtract the DC level for the samples we want
-            offset = (fft_size - x_size) // 2
-            xi = tdata[offset : offset + x_size]
-            xi -= jnp.mean(xi)
-            return xi
+            offset = (fft_size - n) // 2
+            xi = tdata[offset : offset + n]
+            return xi - jnp.mean(xi)
 
         subkeys = self.detectors.split_key(key)
-        real: Float[Array, ' ...'] = func(x, self.cov.band_values, subkeys)
+        real: Float[Array, ' ...'] = func(psd, subkeys)
         return real

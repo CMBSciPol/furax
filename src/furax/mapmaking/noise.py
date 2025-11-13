@@ -47,6 +47,17 @@ class NoiseModel:
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
     ) -> AbstractLinearOperator: ...
 
+    def to_operator_fourier(
+        self,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
+        *,
+        sample_rate: float,
+        inverse: bool = True,
+    ) -> FourierOperator:
+        """Fourier operator representation of the noise model"""
+        func = lambda f: 1.0 / self.psd(f) if inverse else self.psd(f)
+        return FourierOperator(func, in_structure, sample_rate=sample_rate)
+
     def l2_loss(self, f: Float[Array, ' a'], Pxx: Float[Array, 'dets a']) -> Float[Array, '']:
         """l2 loss in log-log space
         f[0] is assume to be 0
@@ -205,23 +216,3 @@ class AtmosphericNoiseModel(NoiseModel):
         """Fit a atmospheric (1/f) noise model to data"""
         params = fit_atmospheric_psd_model(f, Pxx)
         return cls(*params.T)
-
-
-class NoiseWeightingOperator(FourierOperator):
-    def __init__(
-        self,
-        model: NoiseModel,
-        sample_rate: float,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-        *,
-        inverse: bool = True,
-    ):
-        """Creates a FourierOperator that acts as a noise filter.
-
-        The effect of the operator is to downweight frequencies according to the noise PSD,
-        i.e., it applies a filter with kernel 1 / PSD(f). Pass `inverse=False` to have the
-        opposite behaviour.
-        """
-        if not inverse:
-            return super().__init__(model.psd, in_structure, sample_rate=sample_rate)
-        return super().__init__(lambda f: 1.0 / model.psd(f), in_structure, sample_rate=sample_rate)

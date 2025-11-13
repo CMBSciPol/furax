@@ -1,3 +1,9 @@
+from ._beam_operator_mapspace import (
+    ListToStokesOperator,
+    MapSpaceBeamOperator,
+    StackedBeamOperator,
+    StokesToListOperator,
+)
 from ._hwp import HWPOperator
 from ._polarizers import LinearPolarizerOperator
 from ._qu_rotations import QURotationOperator
@@ -24,4 +30,9 @@ __all__ = [
     'SynchrotronOperator',
     'MixingMatrixOperator',
     'NoiseDiagonalOperator',
+    # _beam_operator_mapspace
+    'MapSpaceBeamOperator',
+    'StackedBeamOperator',
+    'StokesToListOperator',
+    'ListToStokesOperator',
 ]

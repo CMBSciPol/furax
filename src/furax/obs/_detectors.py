@@ -11,9 +11,9 @@ class DetectorArray:
     # Z-axis is assumed to be the boresight of the telescope
     def __init__(
         self,
-        x: Float[np.ndarray, '*#dims'],
-        y: Float[np.ndarray, '*#dims'],
-        z: Float[np.ndarray | float, '*#dims'],
+        x: Float[Array, '*#dims'],
+        y: Float[Array, '*#dims'],
+        z: Float[Array | float, '*#dims'],
     ) -> None:
         self.shape = np.broadcast(
             x, y, z

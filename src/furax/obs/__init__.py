@@ -10,7 +10,11 @@ from .operators import (
     DustOperator,
     HWPOperator,
     LinearPolarizerOperator,
+    ListToStokesOperator,
+    MapSpaceBeamOperator,
     QURotationOperator,
+    StackedBeamOperator,
+    StokesToListOperator,
     SynchrotronOperator,
 )
 
@@ -26,4 +30,8 @@ __all__ = [
     'negative_log_likelihood',
     'spectral_cmb_variance',
     'sky_signal',
+    'MapSpaceBeamOperator',
+    'StackedBeamOperator',
+    'StokesToListOperator',
+    'ListToStokesOperator',
 ]

@@ -28,7 +28,7 @@ class FourierOperator(AbstractLinearOperator):
         >>> op = FourierOperator(
         ...     fourier_kernel=lambda f: f < cutoff,  # low-pass filter
         ...     in_structure=jax.ShapeDtypeStruct((n,), float),
-        ...     sample_spacing=1. / fs,
+        ...     sample_rate=fs,
         ... )
         >>> signal = jnp.ones(n)
         >>> filtered = op(signal)
@@ -45,7 +45,7 @@ class FourierOperator(AbstractLinearOperator):
         kernel_func: Callable[[Float[Array, '...']], Inexact[Array, '...']],
         in_structure: PyTree[jax.ShapeDtypeStruct],
         *,
-        sample_spacing: float = 1.0,
+        sample_rate: float = 1.0,
         apodize: bool = True,
         padding_width: int | None = None,
     ):
@@ -54,7 +54,7 @@ class FourierOperator(AbstractLinearOperator):
         Args:
             kernel_func: Function that generates the Fourier kernel as a function of frequency.
             in_structure: Input structure of the operator.
-            sample_spacing: Spacing between samples in the time domain.
+            sample_rate: Sample rate of the input signal [Hz].
                 Important if the kernel function depends on physical frequency units.
             apodize: Pad and apply Hamming window to both ends to reduce edge artifacts.
             padding_width: Padding width in samples on each end.
@@ -72,7 +72,7 @@ class FourierOperator(AbstractLinearOperator):
 
         # Use a power-of-2 FFT size for efficiency
         fft_size = _next_power_of_2(n + 2 * padding_width)
-        freqs = jnp.fft.rfftfreq(fft_size, d=sample_spacing)
+        freqs = jnp.fft.rfftfreq(fft_size, d=1 / sample_rate)
         kernel = kernel_func(freqs)
         if kernel.shape[-1] != freqs.size:
             raise ValueError('Bad kernel shape')
@@ -243,7 +243,7 @@ class FourierOperator(AbstractLinearOperator):
         return cls(
             kernel_func,
             in_structure,
-            sample_spacing=1.0 / sample_rate,
+            sample_rate=sample_rate,
             apodize=apodize,
         )
 

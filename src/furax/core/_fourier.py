@@ -6,6 +6,8 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float, Inexact, PyTree
 
+from furax.mapmaking.noise import NoiseModel
+
 from ._base import AbstractLinearOperator, square
 
 __all__ = [
@@ -92,6 +94,17 @@ class FourierOperator(AbstractLinearOperator):
     def get_kernel(self) -> Inexact[Array, '...']:
         freqs = jnp.fft.rfftfreq(self.fft_size, d=1 / self.sample_rate)
         return self.kernel_func(freqs)
+
+    @classmethod
+    def create_noise_filter(
+        cls, model: NoiseModel, sample_rate: float, in_structure: PyTree[jax.ShapeDtypeStruct]
+    ) -> 'FourierOperator':
+        """Creates a FourierOperator that acts as a noise filter.
+
+        The effect of the operator is to downweight frequencies according to the noise PSD,
+        i.e., it applies a filter with kernel 1 / PSD(f).
+        """
+        return cls(lambda f: 1.0 / model.psd(f), in_structure, sample_rate=sample_rate)
 
     @classmethod
     def create_bandpass_operator(

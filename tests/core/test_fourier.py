@@ -412,7 +412,7 @@ class TestBandpassOperator:
 
         # Check that entire passband has unity gain
         freqs = jnp.fft.rfftfreq(op.fft_size, 1.0 / sample_rate)
-        kernel = op.fourier_kernel
+        kernel = op.get_kernel()
 
         # Test frequencies within passband
         for freq in [f_low, (f_low + f_high) / 2, f_high]:
@@ -439,7 +439,7 @@ class TestBandpassOperator:
 
     def test_multidimensional_arrays(self):
         """Test bandpass operator with multidimensional arrays."""
-        n_detectors = 6
+        # n_detectors = 6
         n_samples = 1500
         sample_rate = 150.0
         t = jnp.linspace(0, n_samples / sample_rate, n_samples)

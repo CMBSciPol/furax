@@ -34,11 +34,12 @@ class FourierOperator(AbstractLinearOperator):
         >>> filtered = op(signal)
     """
 
-    fourier_kernel: Inexact[Array, '...']
+    kernel_func: Callable[[Array], Array] = equinox.field(static=True)
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     fft_size: int = equinox.field(static=True)
     apodize: bool = equinox.field(static=True)
     padding_width: int = equinox.field(static=True)
+    sample_rate: float
 
     def __init__(
         self,
@@ -72,16 +73,24 @@ class FourierOperator(AbstractLinearOperator):
 
         # Use a power-of-2 FFT size for efficiency
         fft_size = _next_power_of_2(n + 2 * padding_width)
+
+        # Compile the kernel function and check its output shape is correct
+        jitted_kernel = jax.jit(kernel_func)
         freqs = jnp.fft.rfftfreq(fft_size, d=1 / sample_rate)
-        kernel = kernel_func(freqs)
+        kernel = jitted_kernel(freqs)
         if kernel.shape[-1] != freqs.size:
             raise ValueError('Bad kernel shape')
 
-        self.fourier_kernel = jnp.asarray(kernel)
+        self.kernel_func = jitted_kernel
         self._in_structure = in_structure
         self.fft_size = fft_size
         self.apodize = apodize
         self.padding_width = padding_width
+        self.sample_rate = sample_rate
+
+    def get_kernel(self) -> Inexact[Array, '...']:
+        freqs = jnp.fft.rfftfreq(self.fft_size, d=1 / self.sample_rate)
+        return self.kernel_func(freqs)
 
     @classmethod
     def create_bandpass_operator(
@@ -278,7 +287,7 @@ class FourierOperator(AbstractLinearOperator):
 
         return window
 
-    def _apply_func(self, x: Array) -> Array:
+    def _apply(self, x: Array, kernel: Array) -> Array:
         """Apply Fourier kernel using FFT on the entire signal.
 
         This method transforms the entire signal to Fourier domain, applies
@@ -288,7 +297,6 @@ class FourierOperator(AbstractLinearOperator):
         Hamming window is applied to the padded regions to reduce edge artifacts.
         """
         n = x.shape[-1]
-        kernel = jnp.asarray(self.fourier_kernel)
 
         if self.apodize:
             # Compute actual padding needed to match fft_size
@@ -337,8 +345,9 @@ class FourierOperator(AbstractLinearOperator):
 
         For multidimensional inputs, the filter is applied along the last axis.
         """
-        func = jnp.vectorize(self._apply_func, signature='(n)->(n)')
-        return func(x)  # type: ignore[no-any-return]
+        kernel = self.get_kernel()
+        func = jnp.vectorize(self._apply, signature='(n),(m)->(n)')
+        return func(x, kernel)  # type: ignore[no-any-return]
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
@@ -359,7 +368,7 @@ class FourierOperator(AbstractLinearOperator):
             for i in range(n):
                 e_i = jnp.zeros(n, dtype=x.dtype)
                 e_i = e_i.at[i].set(1.0)
-                matrix = matrix.at[:, i].set(self._apply_func(e_i))
+                matrix = matrix.at[:, i].set(self.mv(e_i))
 
             return matrix
 

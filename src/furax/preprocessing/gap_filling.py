@@ -97,11 +97,11 @@ class GapFillingOperator(equinox.Module):
     def _generate_realization_for(
         self, x: Float[Array, ' *shape'], key: PRNGKeyArray
     ) -> Float[Array, ' *shape']:
+        n = x.shape[-1]
         if isinstance(self.cov, FourierOperator):
             fft_size = self.cov.fft_size
-            psd = self.cov.fourier_kernel
+            psd = self.cov.get_kernel()
         elif isinstance(self.cov, SymmetricBandToeplitzOperator):
-            n = x.shape[-1]
             fft_size = default_fft_size(n)
             # vectorize folded_psd excluding fft_size
             f = jnp.vectorize(self.folded_psd, signature='(b)->(k)', excluded={1})

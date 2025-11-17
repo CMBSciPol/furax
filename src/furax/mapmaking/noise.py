@@ -178,8 +178,10 @@ class AtmosphericNoiseModel(NoiseModel):
         eval_psd = self.psd(freq)
         invntt = jnp.fft.irfft(1.0 / eval_psd, n=fft_size)[..., :correlation_length]
         inv_band = invntt * window
-        padded_band = jnp.pad(inv_band, [(0, 0), (0, fft_size + 1 - inv_band.shape[-1])])
-        symmetrised_band = jnp.concatenate([padded_band, padded_band[..., -2:0:-1]], axis=-1)
+        # pad only the last dimension
+        pad_width = [(0, 0)] * (inv_band.ndim - 1) + [(0, fft_size - (2 * inv_band.shape[-1] - 1))]
+        padded_band = jnp.pad(inv_band, pad_width)
+        symmetrised_band = jnp.concatenate([padded_band, inv_band[..., -1:0:-1]], axis=-1)
         eff_inv_psd = jnp.fft.rfft(symmetrised_band, n=fft_size).real
         new_band = jnp.fft.irfft(1.0 / eff_inv_psd, n=fft_size)[:, :correlation_length] * window
         return SymmetricBandToeplitzOperator(new_band, in_structure=in_structure)

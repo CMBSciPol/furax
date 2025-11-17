@@ -54,7 +54,7 @@ mapmaking = [
     'jax-grid-search',
     'optax',
     'pixell',
-    'sotodlib>=0.6.9.1; python_version<"3.13"',
+    'sotodlib>=0.6.9.1, != 0.6.13; python_version<"3.13"',
     'so3g; python_version<"3.13"',
     'toast>=3.0.0a27',
 ]

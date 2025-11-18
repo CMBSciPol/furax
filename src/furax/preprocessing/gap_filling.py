@@ -1,11 +1,12 @@
 from functools import partial
 
-import equinox
 import jax
 import jax.numpy as jnp
+import lineax as lx
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from furax import FourierOperator, IndexOperator, SymmetricBandToeplitzOperator
+from furax._config import verbose_solver_callback
 from furax.obs._detectors import DetectorArray
 
 default_fft_size = SymmetricBandToeplitzOperator._get_default_fft_size
@@ -15,7 +16,7 @@ __all__ = [
 ]
 
 
-class GapFillingOperator(equinox.Module):
+class GapFillingOperator:
     """Class for filling masked time samples with a constrained noise realization.
 
     We follow the gap-filling algorithm described in https://doi.org/10.1103/PhysRevD.65.022003,
@@ -38,18 +39,38 @@ class GapFillingOperator(equinox.Module):
         >>> gap_filled_x = gf(key, x)
         >>> assert gap_filled_x.shape == x.shape
         >>> assert jnp.all(gap_filled_x[mask] == x[mask])
-
-    Attributes:
-        cov: A SymmetricBandToeplitzOperator or FourierOperator representing the noise covariance.
-        mask_op: An IndexOperator for masking the gaps.
-        detectors: A DetectorArray representing the detectors.
-        rate: The sampling rate of the data.
     """
 
-    cov: SymmetricBandToeplitzOperator | FourierOperator
-    mask_op: IndexOperator
-    detectors: DetectorArray
-    rate: float = 1.0
+    def __init__(
+        self,
+        cov: SymmetricBandToeplitzOperator | FourierOperator,
+        mask_op: IndexOperator,
+        detectors: DetectorArray,
+        *,
+        icov: SymmetricBandToeplitzOperator | FourierOperator | None = None,
+        rate: float = 1.0,
+        max_cg_steps: int = 300,
+        verbose: bool = False,
+    ):
+        """Initializes the gap-filling operator.
+
+        Args:
+            cov: Operator representing the noise covariance.
+            mask_op: Operator for masking the gaps.
+            detectors: The detector array.
+            icov: The inverse covariance operator, to serve as a preconditioner (optional).
+            rate: The sampling rate of the data.
+            max_cg_steps: Maximum number of Conjugate Gradient steps to use.
+            verbose: Whether to print verbose output during CG solves.
+        """
+        self.cov = cov
+        self.icov = icov
+        self.mask_op = mask_op
+        self.detectors = detectors
+        self.rate = rate
+        self._cg_config = {'solver': lx.CG(rtol=1e-6, atol=0, max_steps=max_cg_steps)}
+        if verbose:
+            self._cg_config['callback'] = verbose_solver_callback
 
     def __call__(self, key: PRNGKeyArray, x: Float[Array, ' *shape']) -> Float[Array, ' *shape']:
         """Performs the gap-filling operation.
@@ -61,7 +82,11 @@ class GapFillingOperator(equinox.Module):
         real: Float[Array, ' ...'] = self._generate_realization_for(x, key)
         p, u = self.mask_op, self.mask_op.T  # pack, unpack operators
         incomplete_cov = p @ self.cov @ u
-        op = self.cov @ u @ incomplete_cov.I @ p
+        cg_config = self._cg_config.copy()
+        if self.icov is not None:
+            # Use this approximation as a preconditioner
+            cg_config['preconditioner'] = p @ self.icov @ u
+        op = self.cov @ u @ incomplete_cov.I(**cg_config) @ p
         y: Float[Array, ' ...'] = real + op(x - real)
         # copy valid samples from original vector
         y = y.at[p.indices].set(p(x))

@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from furax.core import FourierOperator
+from furax import FourierOperator
 
 # Enable float64 for better numerical precision in tests
 jax.config.update('jax_enable_x64', True)

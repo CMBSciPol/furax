@@ -56,7 +56,8 @@ class NoiseModel:
     ) -> FourierOperator:
         """Fourier operator representation of the noise model"""
         func = (lambda f: 1.0 / self.psd(f)) if inverse else self.psd
-        return FourierOperator(func, in_structure, sample_rate=sample_rate)
+        # do not use apodization -- sufficient padding is done by the FourierOperator
+        return FourierOperator(func, in_structure, sample_rate=sample_rate, apodize=False)
 
     def l2_loss(self, f: Float[Array, ' a'], Pxx: Float[Array, 'dets a']) -> Float[Array, '']:
         """l2 loss in log-log space

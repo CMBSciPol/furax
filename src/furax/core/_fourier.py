@@ -34,7 +34,7 @@ class FourierOperator(AbstractLinearOperator):
         >>> filtered = op(signal)
     """
 
-    kernel_func: Callable[[Array], Array] = equinox.field(static=True)
+    kernel_func: Callable[[Array], Array]
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     fft_size: int = equinox.field(static=True)
     apodize: bool = equinox.field(static=True)
@@ -47,7 +47,7 @@ class FourierOperator(AbstractLinearOperator):
         in_structure: PyTree[jax.ShapeDtypeStruct],
         *,
         sample_rate: float = 1.0,
-        apodize: bool = True,
+        apodize: bool = False,
         padding_width: int | None = None,
     ):
         """Create a FourierOperator.
@@ -72,7 +72,8 @@ class FourierOperator(AbstractLinearOperator):
             padding_width = 0
 
         # Use a power-of-2 FFT size for efficiency
-        fft_size = _next_power_of_2(n + 2 * padding_width)
+        # Add an extra factor of 2 to avoid edge effects
+        fft_size = _next_power_of_2(n + 2 * padding_width, additional_power=1)
 
         # Compile the kernel function and check its output shape is correct
         jitted_kernel = jax.jit(kernel_func)
@@ -330,13 +331,16 @@ class FourierOperator(AbstractLinearOperator):
         else:
             # No apodization
             # Forward FFT (use rfft for real signals)
-            X = jnp.fft.rfft(x)
+            X = jnp.fft.rfft(x, n=self.fft_size)
 
             # Apply Fourier kernel (already validated to match size)
             X_filtered = X * kernel
 
             # Inverse FFT
             y = jnp.fft.irfft(X_filtered, n=self.fft_size)
+
+            # Extract the original signal length
+            y = y[:n]
 
         return y
 
@@ -387,5 +391,5 @@ class FourierOperator(AbstractLinearOperator):
         return blocks
 
 
-def _next_power_of_2(n: int) -> int:
-    return int(2 ** np.ceil(np.log2(n)))
+def _next_power_of_2(n: int, additional_power: int) -> int:
+    return int(2 ** (additional_power + np.ceil(np.log2(n))))

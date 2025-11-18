@@ -443,11 +443,11 @@ def JonesToMueller(jones):
 #
 ############################################################################################################
 
-def Mueller( stack, frequency, incidenceAngle, rotation, inputIndex=1.0, exitIndex=1.0, reflected=False):
+def Mueller(stack, frequency, incidenceAngle, rotation, inputIndex=1.0, exitIndex=1.0, reflected=False):
     """
-    Returns the Mueller matrix as a 4x4 numpy array for the given Stack, frequency, angle of incidence,
-    rotation of the stack, and optionally input and exit indices of refraction. If you want the reflected
-    Mueller matrix, set reflected to True.
+    Returns the Mueller matrix as a 4x4 numpy array for the given Stack, frequency, 
+    angle of incidence, rotation of the stack, and optionally input and exit indices of refraction. 
+    If you want the reflected Mueller matrix, set reflected to True.
     """
 
     transfer = stackTransferMatrix( stack, frequency, incidenceAngle, rotation, inputIndex, exitIndex )
@@ -462,12 +462,15 @@ def Mueller( stack, frequency, incidenceAngle, rotation, inputIndex=1.0, exitInd
     return mueller
 
 
-def Jones( stack, frequency, incidenceAngle, rotation, inputIndex=1.0, exitIndex=1.0, reflected=False):
+
+
+def Jones(stack, frequency, incidenceAngle, rotation, inputIndex=1.0, exitIndex=1.0, reflected=False):
     """
-    Returns the Jones matrix as a 2x2 complex numpy array for the given Stack, frequency, angle of incidence,
-    rotation of the stack, and optionally input and exit indices of refraction. If you want the reflected
-    Jones matrix, set reflected to True.
+    Returns the Jones matrix as a 2x2 complex numpy array for the given Stack, frequency,
+    angle of incidence, rotation of the stack, and optionally input and exit indices of refraction.
+    If you want the reflected Jones matrix, set reflected to True.
     """
+    
 
     transfer = stackTransferMatrix( stack, frequency, incidenceAngle, rotation, inputIndex, exitIndex )
     jones   = TranToJones(transfer)

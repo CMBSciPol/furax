@@ -34,7 +34,7 @@ class FourierOperator(AbstractLinearOperator):
         >>> filtered = op(signal)
     """
 
-    kernel_func: Callable[[Array], Array]
+    kernel_func: Callable[[Array], Array] = equinox.field(static=True)
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     fft_size: int = equinox.field(static=True)
     apodize: bool = equinox.field(static=True)

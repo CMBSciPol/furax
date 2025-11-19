@@ -44,9 +44,9 @@ class GapFillingOperator:
         self,
         cov: SymmetricBandToeplitzOperator | FourierOperator,
         mask_op: IndexOperator,
-        detectors: DetectorArray,
-        *,
+        detectors: DetectorArray | None = None,
         icov: SymmetricBandToeplitzOperator | FourierOperator | None = None,
+        *,
         rate: float = 1.0,
         max_cg_steps: int = 300,
         verbose: bool = False,
@@ -56,7 +56,7 @@ class GapFillingOperator:
         Args:
             cov: Operator representing the noise covariance.
             mask_op: Operator for masking the gaps.
-            detectors: The detector array.
+            detectors: The detector array (optional, useful for reproducibility).
             icov: The inverse covariance operator, to serve as a preconditioner (optional).
             rate: The sampling rate of the data.
             max_cg_steps: Maximum number of Conjugate Gradient steps to use.

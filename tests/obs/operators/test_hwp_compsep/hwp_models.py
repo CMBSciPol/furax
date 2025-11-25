@@ -6,8 +6,6 @@ from jax.typing import DTypeLike
 from jaxtyping import Float, PyTree, Inexact
 import jax.numpy as jnp
 from furax import AbstractLinearOperator, diagonal, square
-from furax.core.rules import AbstractBinaryRule
-import tools as tl 
 from furax.obs.stokes import (
     Stokes,
     StokesI,
@@ -19,27 +17,17 @@ from furax.obs.stokes import (
 )
 from furax.obs.operators._qu_rotations import QURotationOperator, QURotationTransposeOperator
 
-import transfer_matrixJAX as tm
-
-# Material definitions (unchanged)
-sapphire = tm.material(3.05, 3.38, 2.3e-4, 1.25e-4, 'Sapphire', materialType='uniaxial')
-duroid   = tm.material(1.41, 1.41, 1.2e-3, 1.2e-3, 'RT Duroid', materialType='isotropic')
-mullite = tm.material(2.52, 2.52, 0.0121, 0.0121, 'Mullite', materialType='isotropic')
-epoteck = tm.material(1.7, 1.7, 0., 0., 'Epoteck', materialType='isotropic')
-
-thicknesses   = [0.394*tm.mm, 0.04*tm.mm, 0.212*tm.mm, 3.75*tm.mm, 3.75*tm.mm, 3.75*tm.mm, 0.212*tm.mm, 0.04*tm.mm, 0.394*tm.mm]
-thicknesses_HF = [0.183*tm.mm, 0.04*tm.mm, 0.097*tm.mm, 1.60*tm.mm, 1.60*tm.mm, 1.60*tm.mm, 0.097*tm.mm, 0.04*tm.mm, 0.183*tm.mm]
-materials   = [duroid, epoteck, mullite, sapphire, sapphire, sapphire, mullite, epoteck, duroid]
-angles_MF      = [0.0, 0.0, 0.0, 0.0, 54.0*tm.deg, 0.0, 0.0, 0.0, 0.0]
-angles_HF    = [0.0, 0.0, 0.0, 0.0, 57.0*tm.deg, 0.0, 0.0, 0.0, 0.0]
-hwp_stack   = tm.Stack(thicknesses, materials, angles_MF)
-hwp_stack_HF = tm.Stack(thicknesses_HF, materials, angles_HF)
-
-
+mm = 1e-3
 c = 299792458.0  # m/s
 GHz = 1e9 
 deg = jnp.pi/180.0  
 angleIncidence = 5.0
+
+# Material definitions (unchanged)
+thicknesses   = [0.394* mm, 0.04* mm, 0.212* mm, 3.75* mm, 3.75* mm, 3.75* mm, 0.212* mm, 0.04* mm, 0.394* mm]
+thicknesses_HF = [0.183* mm, 0.04* mm, 0.097* mm, 1.60* mm, 1.60* mm, 1.60* mm, 0.097* mm, 0.04* mm, 0.183* mm]
+angles_MF      = [0.0, 0.0, 0.0, 0.0, 54.0*deg, 0.0, 0.0, 0.0, 0.0]
+angles_HF    = [0.0, 0.0, 0.0, 0.0, 57.0*deg, 0.0, 0.0, 0.0, 0.0]
 
 
 def get_delta(nu, theta, n, nO=3.05):
@@ -103,100 +91,6 @@ def m12(alpha,theta,nu):
 def m21(alpha,theta,freq):
     return(m12(alpha,theta,freq))
 
-
-@square
-class TMHWPOperator(AbstractLinearOperator):
-    """Transfer matrix HWP operator with better structure"""
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    frequency: float
-    angleIncidence: float
-
-    @classmethod
-    def create(
-        cls,
-        shape: tuple[int, ...],
-        dtype: DTypeLike = np.float64,
-        stokes: ValidStokesType = 'IQU',
-        *,
-        frequency: float,
-        angleIncidence: float,
-        angles: Float[Array, '...'] | None = None,
-    ) -> AbstractLinearOperator:
-        in_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
-        hwp = cls(in_structure, frequency, angleIncidence)
-        
-        if angles is None:
-            return hwp
-        
-        rot = QURotationOperator(angles, in_structure)
-        return rot.T @ hwp @ rot
-
-    def mv(self, x: StokesPyTreeType) -> Stokes:
-        Mueller_ = jnp.array(tm.Mueller(hwp_stack, self.frequency*GHz, self.angleIncidence*deg, 0., reflected=False))
-        Mueller_iqu = Mueller_[:-1, :-1] 
-        
-        # Matrix-vector multiplication
-        i = Mueller_iqu[0,0] * x.i + Mueller_iqu[0,1] * x.q + Mueller_iqu[0,2] * x.u
-        q = Mueller_iqu[1,0] * x.i + Mueller_iqu[1,1] * x.q + Mueller_iqu[1,2] * x.u
-        u = Mueller_iqu[2,0] * x.i + Mueller_iqu[2,1] * x.q + Mueller_iqu[2,2] * x.u
-        
-        if isinstance(x, StokesIQU):
-            return StokesIQU(i, q, u)
-        elif isinstance(x, StokesIQUV):
-            # For IQUV, compute V component
-            v = Mueller_[3,0] * x.i + Mueller_[3,1] * x.q + Mueller_[3,2] * x.u + Mueller_[3,3] * x.v
-            return StokesIQUV(i, q, u, v)
-        
-        raise NotImplementedError(f"Stokes type {type(x)} not supported")
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
-
-@square  
-class TMHWP_HFOperator(AbstractLinearOperator):
-    """HF version of transfer matrix HWP operator"""
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    frequency: float
-    angleIncidence: float
-
-    @classmethod
-    def create(
-        cls,
-        shape: tuple[int, ...],
-        dtype: DTypeLike = np.float64,
-        stokes: ValidStokesType = 'IQU',
-        *,
-        frequency: float,
-        angleIncidence: float,
-        angles: Float[Array, '...'] | None = None,
-    ) -> AbstractLinearOperator:
-        in_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
-        hwp = cls(in_structure, frequency, angleIncidence)
-        
-        if angles is None:
-            return hwp
-            
-        rot = QURotationOperator(angles, in_structure)
-        return rot.T @ hwp @ rot
-
-    def mv(self, x: StokesPyTreeType) -> Stokes:
-        Mueller_ = jnp.array(tm.Mueller(hwp_stack_HF, self.frequency*GHz, self.angleIncidence*deg, 0., reflected=False))
-        Mueller_iqu = Mueller_[:-1, :-1]
-        
-        i = Mueller_iqu[0,0] * x.i + Mueller_iqu[0,1] * x.q + Mueller_iqu[0,2] * x.u
-        q = Mueller_iqu[1,0] * x.i + Mueller_iqu[1,1] * x.q + Mueller_iqu[1,2] * x.u
-        u = Mueller_iqu[2,0] * x.i + Mueller_iqu[2,1] * x.q + Mueller_iqu[2,2] * x.u
-        
-        if isinstance(x, StokesIQU):
-            return StokesIQU(i, q, u)
-        elif isinstance(x, StokesIQUV):
-            v = Mueller_[3,0] * x.i + Mueller_[3,1] * x.q + Mueller_[3,2] * x.u + Mueller_[3,3] * x.v
-            return StokesIQUV(i, q, u, v)
-            
-        raise NotImplementedError(f"Stokes type {type(x)} not supported")
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
 
 
 @diagonal
@@ -280,96 +174,6 @@ class HWPStackOperator(AbstractLinearOperator):
         return self._in_structure
 
 
-@diagonal
-class HWPStackBPOperator(AbstractLinearOperator):
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    frequency: float
-    _Mueller_qu: jax.Array  
-    _thickness: float
-    _alpha_2: float
-    _epsilon: float
-    _phi: float
-    _nfreq: int
-    
-    @classmethod
-    def create(
-        cls,
-        shape: tuple[int, ...],
-        dtype: DTypeLike = np.float64,
-        stokes: ValidStokesType = 'IQU',
-        *,
-        frequency: float,
-        angleIncidence: float,
-        epsilon: float,
-        phi: float,
-        thickness: float,
-        alpha_2: float,
-        NFREQ : int,
-        angles: Float[Array, '...'] | None = None,
-    ) -> AbstractLinearOperator:
-        # Ensure dtype is float64
-        dtype = np.float64
-        in_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
-
-        nu_array, weights = tl.get_bp_uKCMB(frequency,NFREQ)
-        m_dust = tl.get_Adust_fgbuster(nu_array)
-        norm = jnp.sum(weights * m_dust)
-        Mueller_avg = jnp.zeros((4, 4))
-        
-        # Layer 1
-        HWP1 = HWP_Stack(frequency*GHz, thickness, angleIncidence*deg, chi=0.)
-        HWP2_base = HWP_Stack(frequency*GHz, thickness, angleIncidence*deg, chi=alpha_2)
-        
-        # Full Mueller matrix product
-        for nu, w, s in zip(nu_array, weights, m_dust):
-            Mueller_full    = HWP1 @ rotation_matrix_mueller(alpha_2).T @ HWP2_base @ rotation_matrix_mueller(alpha_2) @ HWP1
-            Mueller_full      = Mueller_full.at[2, :].multiply(-1)  # Q -> -Q for second row
-            Mueller_full      = Mueller_full.at[:, 2].multiply(-1)  # U -> -U for second column
-            Mueller_avg += w * s * Mueller_full / norm
-            Mueller_qu      = Mueller_avg[:-1, :-1]
-            
-        hwp = cls(
-            _in_structure=in_structure,
-            frequency=frequency,
-            _thickness=thickness,
-            _alpha_2=alpha_2,
-            _epsilon=epsilon,
-            _phi=phi,
-            _Mueller_qu=Mueller_qu,
-            _nfreq = NFREQ
-        )
-        
-        if angles is None:
-            return hwp
-        
-        rot = QURotationOperator(angles + phi, in_structure)
-        return rot.T @ hwp @ rot
-
-
-    def mv(self, x: StokesPyTreeType) -> Stokes:
-        Mueller_qu = self._Mueller_qu
-        
-        # Apply Mueller matrix transformation
-        i_new = Mueller_qu[0, 0] * x.i + Mueller_qu[0, 1] * x.q + Mueller_qu[0, 2] * x.u
-        q_new = Mueller_qu[1, 0] * x.i + Mueller_qu[1, 1] * x.q + Mueller_qu[1, 2] * x.u
-        u_new = Mueller_qu[2, 0] * x.i + Mueller_qu[2, 1] * x.q + Mueller_qu[2, 2] * x.u
-        
-        # Return appropriate Stokes type
-        if isinstance(x, StokesQU):
-            return StokesQU(q_new, u_new)
-        elif isinstance(x, StokesIQU):
-            return StokesIQU(i_new, self._epsilon * q_new, self._epsilon * u_new)
-        elif isinstance(x, StokesIQUV):
-            return StokesIQUV(i_new, q_new, u_new, x.v)  # Fixed: use i_new
-        else:
-            raise NotImplementedError(f"Stokes type {type(x)} not supported")
-    
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
-    
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
-
 
 @diagonal
 class MixedStokesOperator(AbstractLinearOperator):
@@ -402,23 +206,9 @@ class MixedStokesOperator(AbstractLinearOperator):
         # Ensure dtype is float64
         dtype = np.float64
         in_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
-            
-        # # Layer 1
-        HWP1        = HWP_Stack(frequency*GHz, thickness, angleIncidence*deg, chi=0.)
-        HWP2_base   = HWP_Stack(frequency*GHz, thickness, angleIncidence*deg, chi=alpha_2)
         
-        # Full Mueller matrix product
-        Mueller_full    = HWP1 @ rotation_matrix_mueller(alpha_2).T @ HWP2_base @ rotation_matrix_mueller(alpha_2) @ HWP1
-        Mueller_qu      = Mueller_full.at[2, :].multiply(-1)  # Q -> -Q for second row
-        Mueller_qu      = Mueller_qu.at[:, 2].multiply(-1)  # U -> -U for second column
-        Mueller_qu      = Mueller_qu[:-1, :-1]
-        
-        # Pre-compute the final transformation coefficients
-        m11_m22     = Mueller_qu[1 , 1] - Mueller_qu[2 , 2]
-        # m11_m220    = Mueller_qu[1 , 1] + Mueller_qu[2 , 2] 
-        # m11_m22   = m11m22(alpha_2,thickness,frequency * GHz) #
-        m12_m21     = Mueller_qu[1 , 2] + Mueller_qu[2 , 1] #m12m21(alpha_2,thickness,frequency * GHz) #
-        # m12_m21 = m12m21(alpha_2,thickness,frequency * GHz) #
+        m11_m22     = m11m22(alpha_2,thickness,frequency * GHz)
+        m12_m21     = m12m21(alpha_2,thickness,frequency * GHz)
 
         hwp = cls(
             _in_structure=in_structure,
@@ -547,4 +337,99 @@ class ListToStokesOperator(AbstractLinearOperator):
             q=jnp.stack(q_arrays, axis=self.axis),
             u=jnp.stack(u_arrays, axis=self.axis),
         )
+    
+
+# @square
+# # class TMHWPOperator(AbstractLinearOperator):
+#     """Transfer matrix HWP operator with better structure"""
+#     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
+#     frequency: float
+#     angleIncidence: float
+
+#     @classmethod
+#     def create(
+#         cls,
+#         shape: tuple[int, ...],
+#         dtype: DTypeLike = np.float64,
+#         stokes: ValidStokesType = 'IQU',
+#         *,
+#         frequency: float,
+#         angleIncidence: float,
+#         angles: Float[Array, '...'] | None = None,
+#     ) -> AbstractLinearOperator:
+#         in_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
+#         hwp = cls(in_structure, frequency, angleIncidence)
+        
+#         if angles is None:
+#             return hwp
+        
+#         rot = QURotationOperator(angles, in_structure)
+#         return rot.T @ hwp @ rot
+
+#     def mv(self, x: StokesPyTreeType) -> Stokes:
+#         Mueller_ = jnp.array(tm.Mueller(hwp_stack, self.frequency*GHz, self.angleIncidence*deg, 0., reflected=False))
+#         Mueller_iqu = Mueller_[:-1, :-1] 
+        
+#         # Matrix-vector multiplication
+#         i = Mueller_iqu[0,0] * x.i + Mueller_iqu[0,1] * x.q + Mueller_iqu[0,2] * x.u
+#         q = Mueller_iqu[1,0] * x.i + Mueller_iqu[1,1] * x.q + Mueller_iqu[1,2] * x.u
+#         u = Mueller_iqu[2,0] * x.i + Mueller_iqu[2,1] * x.q + Mueller_iqu[2,2] * x.u
+        
+#         if isinstance(x, StokesIQU):
+#             return StokesIQU(i, q, u)
+#         elif isinstance(x, StokesIQUV):
+#             # For IQUV, compute V component
+#             v = Mueller_[3,0] * x.i + Mueller_[3,1] * x.q + Mueller_[3,2] * x.u + Mueller_[3,3] * x.v
+#             return StokesIQUV(i, q, u, v)
+        
+#         raise NotImplementedError(f"Stokes type {type(x)} not supported")
+
+#     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+#         return self._in_structure
+
+# @square  
+# class TMHWP_HFOperator(AbstractLinearOperator):
+#     """HF version of transfer matrix HWP operator"""
+#     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
+#     frequency: float
+#     angleIncidence: float
+
+#     @classmethod
+#     def create(
+#         cls,
+#         shape: tuple[int, ...],
+#         dtype: DTypeLike = np.float64,
+#         stokes: ValidStokesType = 'IQU',
+#         *,
+#         frequency: float,
+#         angleIncidence: float,
+#         angles: Float[Array, '...'] | None = None,
+#     ) -> AbstractLinearOperator:
+#         in_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
+#         hwp = cls(in_structure, frequency, angleIncidence)
+        
+#         if angles is None:
+#             return hwp
+            
+#         rot = QURotationOperator(angles, in_structure)
+#         return rot.T @ hwp @ rot
+
+#     def mv(self, x: StokesPyTreeType) -> Stokes:
+#         Mueller_ = jnp.array(tm.Mueller(hwp_stack_HF, self.frequency*GHz, self.angleIncidence*deg, 0., reflected=False))
+#         Mueller_iqu = Mueller_[:-1, :-1]
+        
+#         i = Mueller_iqu[0,0] * x.i + Mueller_iqu[0,1] * x.q + Mueller_iqu[0,2] * x.u
+#         q = Mueller_iqu[1,0] * x.i + Mueller_iqu[1,1] * x.q + Mueller_iqu[1,2] * x.u
+#         u = Mueller_iqu[2,0] * x.i + Mueller_iqu[2,1] * x.q + Mueller_iqu[2,2] * x.u
+        
+#         if isinstance(x, StokesIQU):
+#             return StokesIQU(i, q, u)
+#         elif isinstance(x, StokesIQUV):
+#             v = Mueller_[3,0] * x.i + Mueller_[3,1] * x.q + Mueller_[3,2] * x.u + Mueller_[3,3] * x.v
+#             return StokesIQUV(i, q, u, v)
+            
+#         raise NotImplementedError(f"Stokes type {type(x)} not supported")
+
+#     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+#         return self._in_structure
     

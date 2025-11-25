@@ -21,9 +21,7 @@ single_cluster_indices = {
     'beta_pl_patches': None,
 }
 valid_keys = {'temp_dust', 'beta_dust', 'beta_pl'}
-valid_patch_keys = {
-    'temp_dust_patches', 'beta_dust_patches', 'beta_pl_patches'
-}
+valid_patch_keys = {'temp_dust_patches', 'beta_dust_patches', 'beta_pl_patches'}
 
 
 def _create_component(
@@ -73,9 +71,7 @@ def _create_component(
             nu,
             frequency0=frequency0,
             temperature=params['temp_dust'],
-            temperature_patch_indices=(
-                patch_indices['temp_dust_patches']
-            ),
+            temperature_patch_indices=(patch_indices['temp_dust_patches']),
             beta=params['beta_dust'],
             beta_patch_indices=patch_indices['beta_dust_patches'],
             in_structure=in_structure,
@@ -191,8 +187,7 @@ def _spectral_likelihood_core_bma(
         f'params.keys(): {params.keys()} , valid_keys: {valid_keys}'
     )
     assert set(patch_indices.keys()).issubset(valid_patch_keys), (
-        f'patch_indices.keys(): {patch_indices.keys()} , '
-        f'valid_patch_keys: {valid_patch_keys}'
+        f'patch_indices.keys(): {patch_indices.keys()} , valid_patch_keys: {valid_patch_keys}'
     )
 
     BMA_T_N_inv_d = (BMA.T @ N.I)(d)
@@ -240,9 +235,7 @@ def sky_signal_bma(
     ComponentParametersDict
         Estimated sky signal for each component.
     """
-    _, s = _spectral_likelihood_core_bma(
-        params, patch_indices, N, d, BMA, N_2
-    )
+    _, s = _spectral_likelihood_core_bma(params, patch_indices, N, d, BMA, N_2)
     return cast(ComponentParametersDict, s)
 
 
@@ -285,9 +278,7 @@ def spectral_log_likelihood_bma(
     Scalar
         The spectral log likelihood value.
     """
-    BMA_T_N_inv_d, s = _spectral_likelihood_core_bma(
-        params, patch_indices, N, d, BMA, N_2
-    )
+    BMA_T_N_inv_d, s = _spectral_likelihood_core_bma(params, patch_indices, N, d, BMA, N_2)
     ll: Scalar = dot(BMA_T_N_inv_d, s)
     return ll
 
@@ -339,8 +330,7 @@ def negative_log_likelihood_bma(
         The negative spectral log likelihood.
     """
     nll: Scalar = -spectral_log_likelihood_bma(
-        params, nu, N, d, dust_nu0, synchrotron_nu0, BMA, patch_indices,
-        N_2
+        params, nu, N, d, dust_nu0, synchrotron_nu0, BMA, patch_indices, N_2
     )
     return nll
 
@@ -384,7 +374,5 @@ def sky_signal(
     ComponentParametersDict
         Estimated sky signal for each component.
     """
-    _, s = _spectral_likelihood_core_bma(
-        params, patch_indices, N, d, BMA, N_2
-    )
+    _, s = _spectral_likelihood_core_bma(params, patch_indices, N, d, BMA, N_2)
     return cast(ComponentParametersDict, s)

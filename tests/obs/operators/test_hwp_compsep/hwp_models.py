@@ -25,12 +25,26 @@ angleIncidence = 5.0
 
 # Material definitions (unchanged)
 thicknesses = [
-    0.394 * mm, 0.04 * mm, 0.212 * mm, 3.75 * mm, 3.75 * mm, 3.75 * mm,
-    0.212 * mm, 0.04 * mm, 0.394 * mm
+    0.394 * mm,
+    0.04 * mm,
+    0.212 * mm,
+    3.75 * mm,
+    3.75 * mm,
+    3.75 * mm,
+    0.212 * mm,
+    0.04 * mm,
+    0.394 * mm,
 ]
 thicknesses_HF = [
-    0.183 * mm, 0.04 * mm, 0.097 * mm, 1.60 * mm, 1.60 * mm, 1.60 * mm,
-    0.097 * mm, 0.04 * mm, 0.183 * mm
+    0.183 * mm,
+    0.04 * mm,
+    0.097 * mm,
+    1.60 * mm,
+    1.60 * mm,
+    1.60 * mm,
+    0.097 * mm,
+    0.04 * mm,
+    0.183 * mm,
 ]
 angles_MF = [0.0, 0.0, 0.0, 0.0, 54.0 * deg, 0.0, 0.0, 0.0, 0.0]
 angles_HF = [0.0, 0.0, 0.0, 0.0, 57.0 * deg, 0.0, 0.0, 0.0, 0.0]
@@ -45,9 +59,7 @@ def compute_effective_index(angleIncidence, chi, nE=3.38, nO=3.05):
     """Compute effective refractive index"""
     sin_inc_sq = jnp.sin(angleIncidence) ** 2
     cos_chi_sq = jnp.cos(chi) ** 2
-    return nE * jnp.sqrt(
-        1 + (nE ** -2 - nO ** -2) * sin_inc_sq * cos_chi_sq
-    )
+    return nE * jnp.sqrt(1 + (nE**-2 - nO**-2) * sin_inc_sq * cos_chi_sq)
 
 
 def HWP_Stack(nu, theta, angleIncidence, chi, nE=3.38, nO=3.05):
@@ -56,43 +68,45 @@ def HWP_Stack(nu, theta, angleIncidence, chi, nE=3.38, nO=3.05):
     cos_d = jnp.cos(d)
     sin_d = jnp.sin(d)
 
-    return jnp.array([
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, cos_d, -sin_d],
-        [0.0, 0.0, sin_d, cos_d]
-    ])
+    return jnp.array(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, cos_d, -sin_d],
+            [0.0, 0.0, sin_d, cos_d],
+        ]
+    )
 
 
 def rotation_matrix_mueller(angle):
     """4x4 Mueller matrix for rotation"""
     cos_2a = jnp.cos(2 * angle)
     sin_2a = jnp.sin(2 * angle)
-    return jnp.array([
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, cos_2a, -sin_2a, 0.0],
-        [0.0, sin_2a, cos_2a, 0.0],
-        [0.0, 0.0, 0.0, 1.0]
-    ])
+    return jnp.array(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, cos_2a, -sin_2a, 0.0],
+            [0.0, sin_2a, cos_2a, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
 
 
 def m11m22(alpha, theta, freq):
-    return (m11(alpha, theta, freq) - m22(alpha, theta, freq))
+    return m11(alpha, theta, freq) - m22(alpha, theta, freq)
 
 
 def m12m21(alpha, theta, freq):
-    return (m12(alpha, theta, freq) + m21(alpha, theta, freq))
+    return m12(alpha, theta, freq) + m21(alpha, theta, freq)
 
 
 def m12m21b(alpha, theta, freq):
-    return (-(m12(alpha, theta, freq) + m21(alpha, theta, freq)))
+    return -(m12(alpha, theta, freq) + m21(alpha, theta, freq))
 
 
 def m11(alpha, theta, nu):
     delta = get_delta(nu, theta, n=3.38, nO=3.05)
-    return (
-        jnp.cos(2 * alpha) ** 2 + jnp.cos(delta) * jnp.sin(2 * alpha) ** 2
-    )
+    return jnp.cos(2 * alpha) ** 2 + jnp.cos(delta) * jnp.sin(2 * alpha) ** 2
 
 
 def m22(alpha, theta, nu):
@@ -107,11 +121,9 @@ def m22(alpha, theta, nu):
 
 def m12(alpha, theta, nu):
     delta = get_delta(nu, theta, n=3.38, nO=3.05)
-    return (
-        jnp.sin(2 * alpha) * jnp.cos(2 * alpha)
-        * (jnp.cos(delta) ** 2 - jnp.cos(delta))
-        - jnp.sin(delta) ** 2 * jnp.sin(2 * alpha)
-    )
+    return jnp.sin(2 * alpha) * jnp.cos(2 * alpha) * (
+        jnp.cos(delta) ** 2 - jnp.cos(delta)
+    ) - jnp.sin(delta) ** 2 * jnp.sin(2 * alpha)
 
 
 def m21(alpha, theta, freq):
@@ -120,9 +132,7 @@ def m21(alpha, theta, freq):
 
 @diagonal
 class HWPStackOperator(AbstractLinearOperator):
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(
-        static=True
-    )
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     frequency: float
     _Mueller_qu: jax.Array
     _thickness: float
@@ -148,12 +158,8 @@ class HWPStackOperator(AbstractLinearOperator):
         dtype = np.float64
         in_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
 
-        HWP1 = HWP_Stack(
-            frequency * GHz, thickness, angleIncidence * deg, chi=0.
-        )
-        HWP2_base = HWP_Stack(
-            frequency * GHz, thickness, angleIncidence * deg, chi=alpha_2
-        )
+        HWP1 = HWP_Stack(frequency * GHz, thickness, angleIncidence * deg, chi=0.0)
+        HWP2_base = HWP_Stack(frequency * GHz, thickness, angleIncidence * deg, chi=alpha_2)
 
         Mueller_full = (
             HWP1
@@ -174,7 +180,7 @@ class HWPStackOperator(AbstractLinearOperator):
             _alpha_2=alpha_2,
             _epsilon=epsilon,
             _phi=phi,
-            _Mueller_qu=Mueller_qu
+            _Mueller_qu=Mueller_qu,
         )
 
         if angles is None:
@@ -186,30 +192,18 @@ class HWPStackOperator(AbstractLinearOperator):
     def mv(self, x: StokesPyTreeType) -> Stokes:
         Mueller_qu = self._Mueller_qu
 
-        i_new = (
-            Mueller_qu[0, 0] * x.i + Mueller_qu[0, 1] * x.q
-            + Mueller_qu[0, 2] * x.u
-        )
-        q_new = (
-            Mueller_qu[1, 0] * x.i + Mueller_qu[1, 1] * x.q
-            + Mueller_qu[1, 2] * x.u
-        )
-        u_new = (
-            Mueller_qu[2, 0] * x.i + Mueller_qu[2, 1] * x.q
-            + Mueller_qu[2, 2] * x.u
-        )
+        i_new = Mueller_qu[0, 0] * x.i + Mueller_qu[0, 1] * x.q + Mueller_qu[0, 2] * x.u
+        q_new = Mueller_qu[1, 0] * x.i + Mueller_qu[1, 1] * x.q + Mueller_qu[1, 2] * x.u
+        u_new = Mueller_qu[2, 0] * x.i + Mueller_qu[2, 1] * x.q + Mueller_qu[2, 2] * x.u
 
         if isinstance(x, StokesQU):
             return StokesQU(q_new, u_new)
         elif isinstance(x, StokesIQU):
-            return StokesIQU(i_new, self._epsilon * q_new,
-                             self._epsilon * u_new)
+            return StokesIQU(i_new, self._epsilon * q_new, self._epsilon * u_new)
         elif isinstance(x, StokesIQUV):
             return StokesIQUV(i_new, q_new, u_new, x.v)
         else:
-            raise NotImplementedError(
-                f"Stokes type {type(x)} not supported"
-            )
+            raise NotImplementedError(f'Stokes type {type(x)} not supported')
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
@@ -220,9 +214,7 @@ class HWPStackOperator(AbstractLinearOperator):
 
 @diagonal
 class MixedStokesOperator(AbstractLinearOperator):
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(
-        static=True
-    )
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
     frequency: float
     _thickness: float
     _alpha_2: float
@@ -276,14 +268,11 @@ class MixedStokesOperator(AbstractLinearOperator):
         if isinstance(x, StokesQU):
             return StokesQU(q_new, u_new)
         elif isinstance(x, StokesIQU):
-            return StokesIQU(x.i, self._epsilon * q_new,
-                             self._epsilon * u_new)
+            return StokesIQU(x.i, self._epsilon * q_new, self._epsilon * u_new)
         elif isinstance(x, StokesIQUV):
             return StokesIQUV(x.i, q_new, u_new, x.v)
         else:
-            raise NotImplementedError(
-                f"Stokes type {type(x)} not supported"
-            )
+            raise NotImplementedError(f'Stokes type {type(x)} not supported')
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
@@ -301,11 +290,10 @@ class StokesToListOperator(AbstractLinearOperator):
         in_structure: The in_structure of the pytree to be unstacked.
         num_elements: Number of elements along the splitting axis.
     """
+
     axis: int = equinox.field(static=True)
     num_elements: int = equinox.field(static=True)
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(
-        static=True
-    )
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(
         self,
@@ -318,14 +306,11 @@ class StokesToListOperator(AbstractLinearOperator):
         self._in_structure = in_structure
 
         if num_elements is None:
-            if hasattr(in_structure, 'i') and hasattr(
-                in_structure.i, 'shape'
-            ):
+            if hasattr(in_structure, 'i') and hasattr(in_structure.i, 'shape'):
                 num_elements = in_structure.i.shape[axis]
             else:
                 raise ValueError(
-                    "num_elements must be provided if it cannot be "
-                    "inferred from in_structure"
+                    'num_elements must be provided if it cannot be inferred from in_structure'
                 )
 
         self.num_elements = num_elements
@@ -352,10 +337,9 @@ class ListToStokesOperator(AbstractLinearOperator):
         axis: The axis along which the leaves are stacked.
         in_structure: The in_structure of the pytree to be stacked.
     """
+
     axis: int = equinox.field(static=True)
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(
-        static=True
-    )
+    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def __init__(
         self,
@@ -365,9 +349,7 @@ class ListToStokesOperator(AbstractLinearOperator):
     ):
         self.axis = axis
         self._in_structure = in_structure
-        assert isinstance(in_structure, list) and isinstance(
-            in_structure[0], StokesIQU
-        ), (
+        assert isinstance(in_structure, list) and isinstance(in_structure[0], StokesIQU), (
             'Wrong format: the input should be a list of StokesIQU trees'
         )
 

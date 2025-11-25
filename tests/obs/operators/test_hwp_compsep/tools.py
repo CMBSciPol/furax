@@ -1,30 +1,31 @@
+from typing import get_args
+
 import jax
 import jax.numpy as jnp
 import jax_healpy as jhp
 import numpy as np
-import healpy as hp
 import pytest
-from furax.obs.stokes import (ValidStokesType,)
-from typing import get_args
-from numpy.random import PCG64, Generator
-from furax.obs.landscapes import StokesLandscape
-import sys
-from jaxtyping import Array, Float, Integer, Key, PyTree, ScalarLike, Shaped
-from fgbuster import CMB, Dust, Synchrotron, MixingMatrix
-import pysm3
-from pysm3 import units as u 
+from fgbuster import Dust, MixingMatrix
 from fgbuster.observation_helpers import _jysr2rj, _rj2cmb
+from jaxtyping import Array, Float, Integer
+from numpy.random import PCG64, Generator
+
+from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators import (
     CMBOperator,
     DustOperator,
     MixingMatrixOperator,
-    SynchrotronOperator,
 )
+from furax.obs.stokes import (
+    ValidStokesType,
+)
+
 
 @pytest.fixture(params=get_args(ValidStokesType))
 def stokes(request: pytest.FixtureRequest) -> ValidStokesType:
     """Parametrized fixture for I, QU, IQU and IQUV."""
     return request.param
+
 
 def get_random_generator(seed: int) -> np.random.Generator:
     return Generator(PCG64(seed))
@@ -42,16 +43,16 @@ class MAG_Landscape(StokesLandscape):
         if shape is None and pixel_shape is None:
             raise TypeError('The shape is not specified.')
         if shape is not None and pixel_shape is not None:
-            raise TypeError('Either the shape or pixel_shape should be specified.')
+            raise TypeError(
+                'Either the shape or pixel_shape should be specified.'
+            )
         shape = shape if pixel_shape is None else pixel_shape[::-1]
         assert shape is not None  # mypy assert
-
         super().__init__(shape, dtype)
         self.stokes = stokes
         self.pixel_shape = shape[::-1]
 
     # --- PyTree interface ---
-
     def tree_flatten(self):
         children = ()
         aux_data = {
@@ -77,24 +78,18 @@ class MAG_Landscape(StokesLandscape):
         nside = int(jnp.sqrt(self.shape[0] // 12))
         return (jhp.ang2pix(nside, theta, phi),)
 
-@pytest.fixture(params=get_args(ValidStokesType))
-def stokes(request: pytest.FixtureRequest) -> ValidStokesType:
-    """Parametrized fixture for I, QU, IQU and IQUV."""
-    return request.param
 
-def get_random_generator(seed: int) -> np.random.Generator:
-    return Generator(PCG64(seed))
-
-
-
-def eval_A(params,f_c,nu_r, in_structure):
-    cmb_template = CMBOperator(nu_r, in_structure=in_structure, units="K_CMB")
+def eval_A(params, f_c, nu_r, in_structure):
+    cmb_template = CMBOperator(
+        nu_r, in_structure=in_structure, units="K_CMB"
+    )
     dust_template = DustOperator(
         nu_r,
         frequency0=f_c,
-        temperature= 20.,
+        temperature=20.,
         beta=params["beta_dust"],
-        in_structure=in_structure,units="K_CMB"
+        in_structure=in_structure,
+        units="K_CMB"
     )
     # synchrotron_template = SynchrotronOperator(
     #     nu_r,
@@ -102,9 +97,10 @@ def eval_A(params,f_c,nu_r, in_structure):
     #     beta_pl=best_params["beta_pl"],
     #     in_structure=in_structure,units="K_CMB"
     # )
-
-    A = MixingMatrixOperator(cmb=cmb_template, dust=dust_template) #, synchrotron=synchrotron_template)
-    return A 
+    A = MixingMatrixOperator(
+        cmb=cmb_template, dust=dust_template
+    )  # , synchrotron=synchrotron_template)
+    return A
 
 
 def get_bp(freq_c, NFREQ):
@@ -112,7 +108,8 @@ def get_bp(freq_c, NFREQ):
     bp = np.zeros_like(nu_r)
     bp[nu_r > 0.925 * freq_c] = 1.
     bp[nu_r > 1.075 * freq_c] = 0.
-    return nu_r,np.nan_to_num(bp, nan=0)
+    return nu_r, np.nan_to_num(bp, nan=0)
+
 
 def get_bp_uKCMB(freq_c, NFREQ):
     nu_r = np.linspace(0.8, 1.2, NFREQ) * freq_c
@@ -120,8 +117,8 @@ def get_bp_uKCMB(freq_c, NFREQ):
     bp[nu_r > 0.925 * freq_c] = 1.
     bp[nu_r > 1.075 * freq_c] = 0.
     weights = bp / _jysr2rj(nu_r)
-    weights /= _rj2cmb(nu_r) 
-    weights /= np.trapz(np.nan_to_num(weights, nan=0), nu_r*1E9)
+    weights /= _rj2cmb(nu_r)
+    weights /= np.trapz(np.nan_to_num(weights, nan=0), nu_r * 1E9)
     bp_norm = [nu_r, np.nan_to_num(weights, nan=0)]
     return bp_norm
 
@@ -129,4 +126,4 @@ def get_bp_uKCMB(freq_c, NFREQ):
 def get_Adust_fgbuster(nu_v):
     mixing_matrix = MixingMatrix(Dust(353.))
     mm_val = mixing_matrix.eval(nu_v, 1.6, 20.)
-    return mm_val[:,0]
+    return mm_val[:, 0]

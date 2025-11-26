@@ -6,7 +6,8 @@ from numpy.testing import assert_allclose
 
 from furax import IndexOperator, SymmetricBandToeplitzOperator
 from furax.obs._detectors import DetectorArray
-from furax.preprocessing.gap_filling import GapFillingOperator
+from furax.preprocessing import GapFillingOperator, generate_noise_realization
+from furax.preprocessing.gap_filling import _folded_psd, _get_kernel
 
 
 class FakeDetectorArray(DetectorArray):
@@ -25,43 +26,31 @@ class FakeDetectorArray(DetectorArray):
     ],
 )
 def test_get_kernel(n_tt: list[int], fft_size: int, expected_kernel: list[int]):
-    n_tt = jnp.array(n_tt)
     expected_kernel = np.array(expected_kernel)
-    actual_kernel = GapFillingOperator._get_kernel(n_tt, fft_size)
+    actual_kernel = _get_kernel(jnp.array(n_tt), fft_size)
     assert_allclose(actual_kernel, expected_kernel)
 
 
 @pytest.mark.parametrize('n_tt, fft_size', [([1, 2], 1), ([1, 2, 3], 4)])
 def test_get_kernel_fail_lagmax(n_tt: list[int], fft_size: int):
     # This test should fail because the maximum lag is too large for the required fft_size
-    n_tt = jnp.array(n_tt)
     with pytest.raises(ValueError):
-        _ = GapFillingOperator._get_kernel(n_tt, fft_size)
+        _ = _get_kernel(jnp.array(n_tt), fft_size)
 
 
-@pytest.mark.parametrize('do_jit', [False, True])
-@pytest.mark.parametrize('x_shape', [(1,), (10,), (1, 100), (2, 10), (2, 100), (1, 2, 100)])
-def test_generate_realization_shape(x_shape: tuple[int, ...], do_jit: bool):
-    x = jnp.zeros(x_shape, dtype=float)
+@pytest.mark.parametrize('shape', [(1,), (10,), (1, 100), (2, 10), (2, 100), (1, 2, 100)])
+def test_generate_realization_shape(shape: tuple[int, ...]):
     key = jax.random.key(31415926539)
-    structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
+    structure = jax.ShapeDtypeStruct(shape, float)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
-    indices = jnp.where(jnp.ones_like(x, dtype=bool))
-    mask_op = IndexOperator(indices, in_structure=structure)
-    dets = FakeDetectorArray(x_shape[:-1])
-    op = GapFillingOperator(cov, mask_op, dets)
-    if do_jit:
-        # avoid error: TypeError: unhashable type: 'jaxlib.xla_extension.ArrayImpl'
-        func = jax.jit(lambda x, k: op._generate_realization_for(x, k))
-    else:
-        func = op._generate_realization_for
-    real = func(x, key)
-    assert real.shape == x_shape
+    dets = FakeDetectorArray(shape[:-1])
+    real = generate_noise_realization(key, cov, dets)
+    assert real.shape == shape
 
 
 @pytest.fixture
 def dummy_shape():
-    shape = (2, 100)
+    shape = (2, 2, 100)
     return shape
 
 
@@ -74,7 +63,7 @@ def dummy_x(dummy_shape):
 
 @pytest.fixture
 def dummy_detectors(dummy_shape):
-    return FakeDetectorArray(dummy_shape[0])
+    return FakeDetectorArray(dummy_shape[:-1])
 
 
 @pytest.fixture
@@ -116,8 +105,7 @@ def dummy_gap_filling_operator(dummy_shape, dummy_mask, dummy_detectors):
     'n_tt, fft_size', [([1], 1), ([1], 2), ([1], 4), ([1, 2], 4), ([3, 2, 1], 8)]
 )
 def test_get_psd_non_negative(n_tt, fft_size):
-    n_tt = np.array(n_tt)
-    psd = GapFillingOperator.folded_psd(n_tt, fft_size)
+    psd = _folded_psd(n_tt, fft_size)
     assert np.all(psd >= 0)
 
 

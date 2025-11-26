@@ -8,7 +8,12 @@ import jax.numpy as jnp
 import optax
 from jaxtyping import Array, Float, PyTree
 
-from furax.core import AbstractLinearOperator, DiagonalOperator, SymmetricBandToeplitzOperator
+from furax.core import (
+    AbstractLinearOperator,
+    DiagonalOperator,
+    FourierOperator,
+    SymmetricBandToeplitzOperator,
+)
 
 from .utils import apodization_window, run_lbfgs
 from .utils import fit_psd_model as fit_atmospheric_psd_model
@@ -41,6 +46,18 @@ class NoiseModel:
     def inverse_operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
     ) -> AbstractLinearOperator: ...
+
+    def to_operator_fourier(
+        self,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
+        *,
+        sample_rate: float,
+        inverse: bool = True,
+    ) -> FourierOperator:
+        """Fourier operator representation of the noise model"""
+        func = (lambda f: 1.0 / self.psd(f)) if inverse else self.psd
+        # do not use apodization -- sufficient padding is done by the FourierOperator
+        return FourierOperator(func, in_structure, sample_rate=sample_rate, apodize=False)
 
     def l2_loss(self, f: Float[Array, ' a'], Pxx: Float[Array, 'dets a']) -> Float[Array, '']:
         """l2 loss in log-log space
@@ -153,20 +170,21 @@ class AtmosphericNoiseModel(NoiseModel):
         inverse fft of the noise psd, which is apodized and cut at given length
         """
 
-        nperseg: int = cast(int, kwargs.get('nperseg'))
         sample_rate: float = cast(float, kwargs.get('sample_rate'))
         correlation_length: int = cast(int, kwargs.get('correlation_length'))
         window = apodization_window(correlation_length)
 
-        freq = jnp.fft.rfftfreq(nperseg, 1 / sample_rate)
+        fft_size = SymmetricBandToeplitzOperator._get_default_fft_size(2 * correlation_length - 1)
+        freq = jnp.fft.rfftfreq(fft_size, 1 / sample_rate)
         eval_psd = self.psd(freq)
-        invntt = jnp.fft.irfft(1.0 / eval_psd, n=nperseg)[..., :correlation_length]
+        invntt = jnp.fft.irfft(1.0 / eval_psd, n=fft_size)[..., :correlation_length]
         inv_band = invntt * window
-        # padded_band = jnp.pad(inv_band, [(0, 0), (0, nperseg // 2 + 1 - inv_band.shape[-1])])
-        padded_band = jnp.pad(inv_band, [(0, 0), (0, nperseg + 1 - inv_band.shape[-1])])
-        symmetrised_band = jnp.concatenate([padded_band, padded_band[..., -2:0:-1]], axis=-1)
-        eff_inv_psd = jnp.fft.rfft(symmetrised_band, n=nperseg).real
-        new_band = jnp.fft.irfft(1.0 / eff_inv_psd, n=nperseg)[:, :correlation_length] * window
+        # pad only the last dimension
+        pad_width = [(0, 0)] * (inv_band.ndim - 1) + [(0, fft_size - (2 * inv_band.shape[-1] - 1))]
+        padded_band = jnp.pad(inv_band, pad_width)
+        symmetrised_band = jnp.concatenate([padded_band, inv_band[..., -1:0:-1]], axis=-1)
+        eff_inv_psd = jnp.fft.rfft(symmetrised_band, n=fft_size).real
+        new_band = jnp.fft.irfft(1.0 / eff_inv_psd, n=fft_size)[:, :correlation_length] * window
         return SymmetricBandToeplitzOperator(new_band, in_structure=in_structure)
 
     def inverse_operator(
@@ -176,14 +194,14 @@ class AtmosphericNoiseModel(NoiseModel):
         inverse fft of the noise psd, which is apodized and cut at given length
         """
 
-        nperseg: int = cast(int, kwargs.get('nperseg'))
         sample_rate: float = cast(float, kwargs.get('sample_rate'))
         correlation_length: int = cast(int, kwargs.get('correlation_length'))
 
-        freq = jnp.fft.rfftfreq(nperseg, 1 / sample_rate)
+        fft_size = SymmetricBandToeplitzOperator._get_default_fft_size(2 * correlation_length - 1)
+        freq = jnp.fft.rfftfreq(fft_size, 1 / sample_rate)
         eval_psd = self.psd(freq)
         inv_psd = jnp.where(eval_psd > 0, 1 / eval_psd, 0.0)
-        invntt = jnp.fft.irfft(inv_psd, n=nperseg)[..., :correlation_length]
+        invntt = jnp.fft.irfft(inv_psd, n=fft_size)[..., :correlation_length]
         window = apodization_window(correlation_length)
 
         return SymmetricBandToeplitzOperator(invntt * window, in_structure)

@@ -540,13 +540,11 @@ class MLMapmaker(MapMaker):
         noise_model = self.get_or_fit_noise_model(observation)
         inv_noise = noise_model.inverse_operator(
             data_struct,
-            nperseg=config.nperseg,
             sample_rate=observation.sample_rate,
             correlation_length=config.correlation_length,
         )
         noise = noise_model.operator(
             data_struct,
-            nperseg=config.nperseg,
             sample_rate=observation.sample_rate,
             correlation_length=config.correlation_length,
         )

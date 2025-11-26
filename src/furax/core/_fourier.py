@@ -89,9 +89,55 @@ class FourierOperator(AbstractLinearOperator):
         self.padding_width = padding_width
         self.sample_rate = sample_rate
 
+    def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
+        """Apply Fourier kernel to input array.
+
+        For multidimensional inputs, the filter is applied along the last axis.
+        """
+        kernel = self.get_kernel()
+        func = jnp.vectorize(self._apply, signature='(n),(m)->(n)')
+        return func(x, kernel)  # type: ignore[no-any-return]
+
     def get_kernel(self) -> Inexact[Array, '...']:
         freqs = jnp.fft.rfftfreq(self.fft_size, d=1 / self.sample_rate)
         return self.kernel_func(freqs)
+
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self._in_structure
+
+    def as_matrix(self) -> Inexact[Array, 'a a']:
+        """Returns the operator as a dense matrix.
+
+        Warning: This can be memory-intensive for large inputs.
+        """
+        from functools import partial
+
+        @partial(jnp.vectorize, signature='(n)->(n,n)')
+        def func(x: Array) -> Array:
+            """Create matrix by applying operator to each basis vector."""
+            n = x.size
+            matrix = jnp.zeros((n, n), dtype=x.dtype)
+
+            for i in range(n):
+                e_i = jnp.zeros(n, dtype=x.dtype)
+                e_i = e_i.at[i].set(1.0)
+                matrix = matrix.at[:, i].set(self.mv(e_i))
+
+            return matrix
+
+        x = jnp.zeros(self.in_structure().shape, self.in_structure().dtype)
+        blocks: Array = func(x)
+
+        # Handle multidimensional case
+        if blocks.ndim > 2:
+            # Return block diagonal matrix
+            import jax.scipy.linalg as jsl
+
+            blocks = blocks.reshape(-1, blocks.shape[-1], blocks.shape[-1])
+            matrix: Array = jsl.block_diag(*blocks)
+            return matrix
+
+        return blocks
 
     @classmethod
     def create_bandpass_operator(
@@ -257,37 +303,6 @@ class FourierOperator(AbstractLinearOperator):
             apodize=apodize,
         )
 
-    @staticmethod
-    def _create_apodization_window(fft_size: int, overlap: int) -> Array:
-        """Create a Hamming window for apodization in overlap regions.
-
-        The window is constructed such that:
-        - It is 1.0 in the middle (valid output region)
-        - It smoothly tapers to 0 in the overlap regions on both sides
-
-        Args:
-            fft_size: Size of the FFT block
-            overlap: Size of the overlap region on each side
-
-        Returns:
-            Window array of shape (fft_size,)
-        """
-        # Create full Hamming window
-        window = jnp.ones(fft_size)
-
-        if overlap > 0:
-            # Create Hamming window for the overlap region
-            # The Hamming window goes from 0 to 1 over the overlap region
-            hamming = 0.54 - 0.46 * jnp.cos(jnp.pi * jnp.arange(overlap) / overlap)
-
-            # Apply taper at the beginning (left overlap)
-            window = window.at[:overlap].set(hamming)
-
-            # Apply taper at the end (right overlap)
-            window = window.at[-overlap:].set(hamming[::-1])
-
-        return window
-
     def _apply(self, x: Array, kernel: Array) -> Array:
         """Apply Fourier kernel using FFT on the entire signal.
 
@@ -344,51 +359,36 @@ class FourierOperator(AbstractLinearOperator):
 
         return y
 
-    def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
-        """Apply Fourier kernel to input array.
+    @staticmethod
+    def _create_apodization_window(fft_size: int, overlap: int) -> Array:
+        """Create a Hamming window for apodization in overlap regions.
 
-        For multidimensional inputs, the filter is applied along the last axis.
+        The window is constructed such that:
+        - It is 1.0 in the middle (valid output region)
+        - It smoothly tapers to 0 in the overlap regions on both sides
+
+        Args:
+            fft_size: Size of the FFT block
+            overlap: Size of the overlap region on each side
+
+        Returns:
+            Window array of shape (fft_size,)
         """
-        kernel = self.get_kernel()
-        func = jnp.vectorize(self._apply, signature='(n),(m)->(n)')
-        return func(x, kernel)  # type: ignore[no-any-return]
+        # Create full Hamming window
+        window = jnp.ones(fft_size)
 
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
+        if overlap > 0:
+            # Create Hamming window for the overlap region
+            # The Hamming window goes from 0 to 1 over the overlap region
+            hamming = 0.54 - 0.46 * jnp.cos(jnp.pi * jnp.arange(overlap) / overlap)
 
-    def as_matrix(self) -> Inexact[Array, 'a a']:
-        """Returns the operator as a dense matrix.
+            # Apply taper at the beginning (left overlap)
+            window = window.at[:overlap].set(hamming)
 
-        Warning: This can be memory-intensive for large inputs.
-        """
-        from functools import partial
+            # Apply taper at the end (right overlap)
+            window = window.at[-overlap:].set(hamming[::-1])
 
-        @partial(jnp.vectorize, signature='(n)->(n,n)')
-        def func(x: Array) -> Array:
-            """Create matrix by applying operator to each basis vector."""
-            n = x.size
-            matrix = jnp.zeros((n, n), dtype=x.dtype)
-
-            for i in range(n):
-                e_i = jnp.zeros(n, dtype=x.dtype)
-                e_i = e_i.at[i].set(1.0)
-                matrix = matrix.at[:, i].set(self.mv(e_i))
-
-            return matrix
-
-        x = jnp.zeros(self.in_structure().shape, self.in_structure().dtype)
-        blocks: Array = func(x)
-
-        # Handle multidimensional case
-        if blocks.ndim > 2:
-            # Return block diagonal matrix
-            import jax.scipy.linalg as jsl
-
-            blocks = blocks.reshape(-1, blocks.shape[-1], blocks.shape[-1])
-            matrix: Array = jsl.block_diag(*blocks)
-            return matrix
-
-        return blocks
+        return window
 
 
 def _next_power_of_2(n: int, additional_power: int) -> int:

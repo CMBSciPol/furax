@@ -31,18 +31,19 @@ jobs:
         python-version: ['3.10', '3.11', '3.12', '3.13']
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Install uv and set the Python version
+        uses: astral-sh/setup-uv@v6
         with:
+          enable-cache: true
           python-version: ${{ matrix.python-version }}
 
+      - name: Set up Python
+        run: uv python install
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install .[dev,mapmaking]
+        run: uv pip install .[dev,mapmaking]
 
       - name: Run tests
-        run: pytest -vv -m "not slow"
+        run: uv run pytest -vv -m "not slow"

@@ -1,15 +1,18 @@
 from . import utils
 from ._logger import logger
-from ._observation import AbstractGroundObservation
-from ._reader import AbstractGroundObservationReader
+from ._observation import AbstractGroundObservation, AbstractGroundObservationResource
+from ._reader import GroundObservationReader
 from .config import MapMakingConfig
+from .mapmaker import MultiObservationMapMaker
 from .preconditioner import BJPreconditioner
 
 __all__ = [
     'BJPreconditioner',
     'AbstractGroundObservation',
-    'AbstractGroundObservationReader',
+    'AbstractGroundObservationResource',
+    'GroundObservationReader',
     'MapMakingConfig',
+    'MultiObservationMapMaker',
     'logger',
     'utils',
 ]

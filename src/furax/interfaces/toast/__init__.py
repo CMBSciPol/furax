@@ -1,7 +1,6 @@
-from .io import ToastReader
-from .observation import ToastObservation
+from .observation import ToastObservation, ToastObservationResource
 
 __all__ = [
-    'ToastReader',
     'ToastObservation',
+    'ToastObservationResource',
 ]

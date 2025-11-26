@@ -1,10 +1,11 @@
+import operator
 import pickle
 from abc import abstractmethod
 from dataclasses import asdict, dataclass
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 import equinox
 import jax
@@ -25,18 +26,373 @@ from furax import (
     IdentityOperator,
     MaskOperator,
 )
-from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
+from furax.core import (
+    BlockColumnOperator,
+    BlockDiagonalOperator,
+    BlockRowOperator,
+    CompositionOperator,
+    IndexOperator,
+)
+from furax.math.quaternion import to_gamma_angles
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
 
 from . import templates
 from ._logger import logger as furax_logger
-from ._observation import AbstractGroundObservation
+from ._observation import AbstractGroundObservation, AbstractGroundObservationResource
+from ._reader import GroundObservationReader
 from .config import Landscapes, MapMakingConfig, Methods
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
+
+T = TypeVar('T')
+
+
+class MultiObservationMapMaker(Generic[T]):
+    """Class for mapping multiple observations together."""
+
+    def __init__(
+        self,
+        resources: list[AbstractGroundObservationResource[T]],
+        config: MapMakingConfig | None = None,
+        logger: Logger | None = None,
+        stokes: ValidStokesType = 'IQU',  # TODO: shoudn't this be in the config?
+    ) -> None:
+        self.resources = resources
+        self.config = config or MapMakingConfig()  # use defaults if not provided
+        self.logger = logger or furax_logger
+        self.landscape = _build_landscape(self.config, stokes=stokes)
+
+    def run(self, out_dir: str | Path | None = None) -> dict[str, Any]:
+        """Runs the mapmaker and return results after saving them to the given directory."""
+        results = self.make_maps()
+
+        # Save outputs
+        if out_dir is not None:
+            out_dir = Path(out_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            self._save(results, out_dir)
+            self.config.dump_yaml(out_dir / 'mapmaking_config.yaml')
+            self.logger.info('Mapmaking config saved to file')
+
+        return results
+
+    def get_reader(self, data_field_names: list[str]) -> GroundObservationReader[T]:
+        """Returns a reader for a list of requested fields."""
+        return GroundObservationReader(self.resources, data_field_names=data_field_names)
+
+    def make_maps(self) -> dict[str, Any]:
+        """Computes the mapmaker results (maps and other products)."""
+        logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
+
+        # Acquisition (I, Q, U Maps -> TOD)
+        acquisitions = self.build_acquisitions()
+        logger_info('Created acquisition operators')
+
+        # Noise
+        weight_operators = self.build_weight_operators(structure=acquisitions[0].out_structure())
+        logger_info('Created weighting operators')
+
+        # RHS
+        rhs = self.accumulate_rhs(acquisitions, weight_operators)
+        logger_info('Accumulated RHS vector')
+
+        # System matrix
+        h = BlockColumnOperator(acquisitions)
+        w = BlockDiagonalOperator(weight_operators)
+        system = (h.T @ w @ h).reduce()
+        logger_info('Set up system matrix')
+
+        # System matrix for preconditioning
+        if self.config.binned:
+            sysdiag = BJPreconditioner.create(system)
+        else:
+            # If ML, use approximate system matrix
+            # TODO: this currently results in an additional IO pass - should be improved.
+            white_w = BlockDiagonalOperator(
+                self.build_weight_operators(
+                    structure=acquisitions[0].out_structure(),
+                    force_white_noise_model=True,
+                )
+            )
+            sysdiag = BJPreconditioner.create((h.T @ white_w @ h).reduce())
+            logger_info('Set up approximate system matrix')
+
+        # Weights matrix and pixel selection
+        weights = sysdiag.get_blocks()
+        selector = self.build_pixel_selection_operator(
+            weights=weights, in_structure=acquisitions[0].in_structure()
+        )
+        logger_info(
+            f'Selected {prod(selector.out_structure().shape)}'
+            + f' / {prod(selector.in_structure().shape)} pixels'
+        )
+
+        # Preconditioner
+        precond = (selector @ sysdiag.inverse() @ selector.T).reduce()
+        logger_info('Set up preconditioner')
+
+        # Set up the mapmaking operator
+        solver = lineax.CG(**asdict(self.config.solver))
+        solver_options = {
+            'preconditioner': lineax.TaggedLinearOperator(precond, lineax.positive_semidefinite_tag)
+        }
+        options = {'solver': solver, 'solver_options': solver_options}
+        mapmaking_operator = selector.T @ (selector @ system @ selector.T).I(**options) @ selector
+
+        @jax.jit
+        def process():  # type: ignore[no-untyped-def]
+            return mapmaking_operator(rhs)
+
+        # Run mapmaking
+        res = process()
+        res.i.block_until_ready()
+        logger_info('Finished mapmaking')
+
+        final_map = np.array([res.i, res.q, res.u])
+        return {'map': final_map, 'weights': np.array(weights)}
+
+    def build_acquisitions(self) -> tuple[AbstractLinearOperator, ...]:
+        # Only read necessary fields
+        required_fields = [
+            'boresight_quaternions',
+            'detector_quaternions',
+            'hwp_angles',
+            'valid_sample_masks',
+        ]
+        if self.config.scanning_mask:
+            required_fields.append('valid_scanning_masks')
+        reader = self.get_reader(required_fields)
+        dtype = self.config.dtype
+
+        @jax.jit
+        def get_acquisition(i: int) -> AbstractLinearOperator:
+            # TODO: handle padding
+            data, _padding = reader.read(i)
+            return _build_acquisition_operator(
+                self.landscape,
+                **data,
+                pointing_chunk_size=self.config.pointing_chunk_size,
+                pointing_on_the_fly=self.config.pointing_on_the_fly,
+                dtype=dtype,
+            )
+
+        return jax.tree.map(get_acquisition, tuple(range(reader.count)))  # type: ignore[no-any-return]
+
+    def build_weight_operators(
+        self, structure: jax.ShapeDtypeStruct, force_white_noise_model: bool = False
+    ) -> tuple[AbstractLinearOperator, ...]:
+        # Get the noise model for each observation
+        models, sample_rates = (
+            self._fit_noise_models() if self.config.fit_noise_model else self._read_noise_models()
+        )
+
+        if not self.config.binned and force_white_noise_model:
+            # Convert each AtmosphericNoiseModel to WhiteNoiseModel
+            models = tuple(model.to_white_noise_model() for model in models)  # type: ignore[union-attr]
+
+        # Build the inverse noise weighting operators
+        return tuple(
+            model.inverse_operator(  # type: ignore[attr-defined]
+                structure,
+                sample_rate=fs,
+                correlation_length=self.config.correlation_length,
+            )
+            for model, fs in zip(models, sample_rates, strict=True)
+        )
+
+    def build_pixel_selection_operator(
+        self,
+        weights: Float[Array, 'pixels stokes stokes'],
+        in_structure: PyTree[jax.ShapeDtypeStruct],
+    ) -> IndexOperator:
+        """Operator that selects the map pixels satisfying the minimum fractional hits (hits_cut)
+        and the minimum condition number (cond_cut) criteria"""
+
+        # Cut pixels with low number of samples
+        hits_quantile = jnp.quantile(weights[(weights[..., 0, 0] > 0),], q=0.95)
+        valid = weights[..., 0, 0] > self.config.hits_cut * hits_quantile
+
+        if self.config.cond_cut > 0:
+            # FIXME: Eigendecomposition is done in CPU currently to avoid JAX errors
+            # eigs = jnp.linalg.eigvalsh(weights)
+            eigs = np.linalg.eigvalsh(weights)
+            valid = jnp.logical_and(
+                valid,
+                eigs[..., 0] > self.config.cond_cut * eigs[..., -1],
+            )
+
+        valid_indices = jnp.argwhere(valid)
+
+        if self.config.landscape.type == Landscapes.WCS:
+            # TODO: test this gain when WCS landscape is supported
+            return IndexOperator(
+                (valid_indices[:, 0], valid_indices[:, 1]), in_structure=in_structure
+            )
+        else:
+            # Healpix
+            return IndexOperator((valid_indices,), in_structure=in_structure)
+
+    def _read_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
+        reader = self.get_reader(['noise_model_fits', 'timestamps'])
+
+        @jax.jit
+        def read_model(i):  # type: ignore[no-untyped-def]
+            data, _padding = reader.read(i)
+            fs = (data['timestamps'].size - 1) / jnp.ptp(data['timestamps'])
+            model = AtmosphericNoiseModel(*data['noise_model_fits'].T)
+            if self.config.binned:
+                return model.to_white_noise_model(), fs
+            else:
+                return model, fs
+
+        models_and_fs = jax.tree.map(read_model, tuple(range(reader.count)))
+        return tuple(zip(*models_and_fs, strict=True))
+
+    def _fit_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
+        # Only read sample data and timestamps (to compute sampling rate)
+        reader = self.get_reader(['sample_data', 'timestamps'])
+
+        # Choose noise model based on mapmaker configuration
+        cls = WhiteNoiseModel if self.config.binned else AtmosphericNoiseModel
+
+        @jax.jit
+        def fit_model(i):  # type: ignore[no-untyped-def]
+            data, _padding = reader.read(i)
+            fs = (data['timestamps'].size - 1) / jnp.ptp(data['timestamps'])
+            f, Pxx = jax.scipy.signal.welch(data['sample_data'], fs=fs, nperseg=self.config.nperseg)
+            model = cls.fit_psd_model(f, Pxx)
+            return model, fs
+
+        models_and_fs = jax.tree.map(fit_model, tuple(range(reader.count)))
+        return tuple(zip(*models_and_fs, strict=True))
+
+    def accumulate_rhs(
+        self,
+        acquisitions: tuple[AbstractLinearOperator, ...],
+        weightings: tuple[AbstractLinearOperator, ...],
+    ) -> StokesPyTreeType:
+        # Only read sample data
+        reader = self.get_reader(['sample_data'])
+
+        @jax.jit
+        def get_rhs(i, acquisition, weighting):  # type: ignore[no-untyped-def]
+            data, _padding = reader.read(i)
+            rhs_op = acquisition.T @ weighting
+            return rhs_op(data['sample_data'])
+
+        # sum RHS across observations
+        return jax.tree.reduce(  # type: ignore[no-any-return]
+            operator.add,
+            jax.tree.map(get_rhs, tuple(range(reader.count)), acquisitions, weightings),
+            is_leaf=lambda x: isinstance(x, Stokes),
+        )
+
+    def _save(self, results: dict[str, Any], out_dir: Path) -> None:
+        for key, m in results.items():
+            if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
+                np.save(out_dir / key, np.array(m))
+            elif isinstance(m, StokesIQU):
+                np.save(out_dir / key, np.stack([m.i, m.q, m.u], axis=0))
+            elif isinstance(m, pixell.enmap.ndmap):
+                pixell.enmap.write_map((out_dir / f'{key}.hdf').as_posix(), m, allow_modify=True)
+            elif isinstance(m, WCS):
+                header = m.to_header()
+                hdu = fits.PrimaryHDU(header=header)
+                hdu.writeto(out_dir / f'{key}.fits', overwrite=True)
+            elif isinstance(m, StokesLandscape):
+                with open(out_dir / f'{key}.pkl', 'wb') as f:
+                    pickle.dump(m, f)
+            elif isinstance(m, dict):
+                self._save(m, out_dir)
+                continue
+            else:
+                # TODO: warning?
+                continue
+            self.logger.info(f'Mapmaking result [{key}] saved to file')
+
+
+def _build_landscape(config: MapMakingConfig, stokes: ValidStokesType = 'IQU') -> StokesLandscape:
+    if config.landscape.type == Landscapes.HPIX:
+        return HealpixLandscape(nside=config.landscape.nside, stokes=stokes, dtype=config.dtype)
+    if config.landscape.type == Landscapes.WCS:
+        raise NotImplementedError
+    raise NotImplementedError
+
+
+def _build_acquisition_operator(
+    landscape: StokesLandscape,
+    boresight_quaternions: Array,
+    detector_quaternions: Array,
+    hwp_angles: Array,
+    pointing_chunk_size: int,
+    pointing_on_the_fly: bool,
+    valid_sample_masks: Array | None = None,
+    valid_scanning_masks: Array | None = None,
+    dtype: DTypeLike = jnp.float64,
+) -> AbstractLinearOperator:
+    """Build an acquisition operator for a single observation."""
+    pointing = _build_pointing_operator(
+        landscape,
+        boresight_quaternions,
+        detector_quaternions,
+        on_the_fly=pointing_on_the_fly,
+        chunk_size=pointing_chunk_size,
+    )
+    ndet = detector_quaternions.shape[0]
+    nsamp = boresight_quaternions.shape[0]
+    data_shape = (ndet, nsamp)
+    gamma = to_gamma_angles(detector_quaternions)
+    polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=dtype, angles=gamma[:, None])
+    hwp = HWPOperator.create(shape=data_shape, dtype=dtype, angles=hwp_angles)
+    acquisition = (polarizer @ hwp @ pointing).reduce()
+    masker = _build_mask_projector(
+        valid_sample_masks,
+        valid_scanning_masks,
+        structure=jax.ShapeDtypeStruct(data_shape, landscape.dtype),
+    )
+    return masker @ acquisition
+
+
+def _build_pointing_operator(
+    landscape: StokesLandscape,
+    boresight_quaternions: Array,
+    detector_quaternions: Array,
+    chunk_size: int,
+    on_the_fly: bool = True,
+    dtype: DTypeLike = jnp.float64,
+) -> AbstractLinearOperator:
+    if not on_the_fly:
+        # get full pixels and weights from TOAST/SOTODLib
+        raise NotImplementedError
+
+    ndet = detector_quaternions.shape[0]
+    nsamp = boresight_quaternions.shape[0]
+
+    return PointingOperator(
+        landscape=landscape,
+        qbore=boresight_quaternions,
+        qdet=detector_quaternions,
+        _in_structure=landscape.structure,
+        _out_structure=Stokes.class_for(landscape.stokes).structure_for((ndet, nsamp), dtype=dtype),
+        chunk_size=chunk_size,
+    )
+
+
+def _build_mask_projector(
+    *valid_masks: Array | None, structure: jax.ShapeDtypeStruct
+) -> AbstractLinearOperator:
+    """Mask operator built from a series of boolean masks."""
+
+    def _masker(valid_mask: Array | None) -> AbstractLinearOperator:
+        if valid_mask is None:
+            return IdentityOperator(structure)
+        return MaskOperator.from_boolean_mask(valid_mask, in_structure=structure)
+
+    combined_masker = CompositionOperator(_masker(valid_mask) for valid_mask in valid_masks)
+    return combined_masker.reduce()
 
 
 @dataclass

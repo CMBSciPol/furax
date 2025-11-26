@@ -87,6 +87,8 @@ def plot_cartview(
     vmins: list[float] | list[None] | None = None,
     vmax_quantile: float = 0.999,
     nside: int | None = None,
+    fig: matplotlib.figure.Figure | None = None,
+    axs: matplotlib.axes._axes.Axes | None = None,
 ) -> tuple[matplotlib.figure.Figure, NDArray[matplotlib.axes.Axes]]:
     """Visualisation function for CAR projection of healpix maps.
     Unlike healpy.cartview, this function returns matplotlib Axes object, and one can have
@@ -103,6 +105,7 @@ def plot_cartview(
         vmins: Minimum values for color scale (one per map)
         vmax_quantile: Quantile to use for automatic vmax determination
         nside: HEALPix nside parameter. If None, inferred from input_maps
+        fig, axs: matplotlib figure and axes
 
     Returns:
         tuple: (figure, axes) matplotlib objects
@@ -128,7 +131,8 @@ def plot_cartview(
     pix_inds = hp.pixelfunc.ang2pix(nside, lon_grid[None, :], lat_grid[:, None], lonlat=True)
 
     n_maps = len(input_maps)
-    fig, axs = plt.subplots(n_maps, 1, figsize=(10, 10 * (ysize / xsize) * n_maps))
+    if fig is None or axs is None:
+        fig, axs = plt.subplots(n_maps, 1, figsize=(10, 10 * (ysize / xsize) * n_maps))
     axs = np.atleast_1d(axs)
 
     for map_no in range(n_maps):

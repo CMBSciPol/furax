@@ -7,19 +7,23 @@ import pytest
 pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
 pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
 
-from furax.interfaces.sotodlib import SOTODLibReader
+from furax.interfaces.sotodlib import SOTODLibObservationResource
+from furax.mapmaking import GroundObservationReader
 
 
-def test_reader() -> None:
+@pytest.fixture
+def reader():
     folder = Path(__file__).parents[2] / 'data/sotodlib'
     files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
+    resources = [SOTODLibObservationResource(f) for f in files]
+    return GroundObservationReader(resources)
 
+
+def test_reader(reader) -> None:
     ndet1 = 2
     nsample1 = 1000
     ndet2 = 14
     nsample2 = 10000
-
-    reader = SOTODLibReader(files)
 
     # Verify out_structure includes all non-optional fields (noise_model_fits is optional)
     assert reader.out_structure == {
@@ -67,29 +71,15 @@ def test_reader_invalid_data_field_name() -> None:
     """Test that passing an invalid data field name raises a ValueError."""
     folder = Path(__file__).parents[2] / 'data/sotodlib'
     files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
+    resources = [SOTODLibObservationResource(f) for f in files]
 
     # Test with single invalid field name
     with pytest.raises(ValueError, match='Data field "invalid_field" NOT supported'):
-        SOTODLibReader(files, data_field_names=['invalid_field'])
+        GroundObservationReader(resources, data_field_names=['invalid_field'])
 
     # Test with mix of valid and invalid field names
     with pytest.raises(ValueError, match='Data field "bad_field" NOT supported'):
-        SOTODLibReader(files, data_field_names=['sample_data', 'bad_field'])
-
-
-@pytest.mark.parametrize(
-    'new_field_names',
-    [
-        ['sample_data'],
-        ['boresight_quaternions', 'detector_quaternions', 'hwp_angles'],
-    ],
-)
-def test_reader_update_data_fields(new_field_names):
-    folder = Path(__file__).parents[2] / 'data/sotodlib'
-    reader = SOTODLibReader([folder / 'test_obs.h5', folder / 'test_obs_2.h5'])
-    new_reader = reader.update_data_field_names(new_field_names)
-    data, _ = new_reader.read(0)
-    assert set(data.keys()) == set(new_field_names)
+        GroundObservationReader(resources, data_field_names=['sample_data', 'bad_field'])
 
 
 def test_reader_subset_of_data_fields() -> None:
@@ -108,13 +98,14 @@ def test_reader_subset_of_data_fields() -> None:
     """
     folder = Path(__file__).parents[2] / 'data/sotodlib'
     files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
+    resources = [SOTODLibObservationResource(f) for f in files]
 
     ndet2 = 14
     nsample2 = 10000
 
     # Test 1: All detector-related fields (sample_data, valid_sample_masks, detector_quaternions)
     detector_fields = ['sample_data', 'valid_sample_masks', 'detector_quaternions']
-    reader = SOTODLibReader(files, data_field_names=detector_fields)
+    reader = GroundObservationReader(resources, data_field_names=detector_fields)
 
     assert set(reader.out_structure.keys()) == set(detector_fields)
     assert reader.out_structure['sample_data'] == jax.ShapeDtypeStruct(
@@ -136,7 +127,7 @@ def test_reader_subset_of_data_fields() -> None:
     # Test 2: All time/boresight-related fields
     # (timestamps, boresight_quaternions, valid_scanning_masks)
     time_fields = ['timestamps', 'boresight_quaternions', 'valid_scanning_masks']
-    reader = SOTODLibReader(files, data_field_names=time_fields)
+    reader = GroundObservationReader(resources, data_field_names=time_fields)
 
     assert set(reader.out_structure.keys()) == set(time_fields)
     assert reader.out_structure['timestamps'] == jax.ShapeDtypeStruct(
@@ -159,7 +150,7 @@ def test_reader_subset_of_data_fields() -> None:
     # (sample_data + timestamps + valid_scanning_masks + boresight_quaternions)
     # This tests loading signal, timestamps, turnaround_flags, and boresight
     mixed_fields = ['sample_data', 'timestamps', 'valid_scanning_masks', 'boresight_quaternions']
-    reader = SOTODLibReader(files, data_field_names=mixed_fields)
+    reader = GroundObservationReader(resources, data_field_names=mixed_fields)
 
     assert set(reader.out_structure.keys()) == set(mixed_fields)
     assert 'valid_sample_masks' not in reader.out_structure
@@ -173,49 +164,49 @@ def test_reader_subset_of_data_fields() -> None:
     assert data['boresight_quaternions'].shape == (nsample2, 4)
 
     # Test 4: Only sample_data (tests loading 'signal' alone)
-    reader = SOTODLibReader(files, data_field_names=['sample_data'])
+    reader = GroundObservationReader(resources, data_field_names=['sample_data'])
     assert set(reader.out_structure.keys()) == {'sample_data'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'sample_data'}
     assert data['sample_data'].shape == (ndet2, nsample2)
 
     # Test 5: Only valid_sample_masks (tests loading 'flags.glitch_flags' alone)
-    reader = SOTODLibReader(files, data_field_names=['valid_sample_masks'])
+    reader = GroundObservationReader(resources, data_field_names=['valid_sample_masks'])
     assert set(reader.out_structure.keys()) == {'valid_sample_masks'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'valid_sample_masks'}
     assert data['valid_sample_masks'].shape == (ndet2, nsample2)
 
     # Test 6: Only valid_scanning_masks (tests loading 'preprocess.turnaround_flags' alone)
-    reader = SOTODLibReader(files, data_field_names=['valid_scanning_masks'])
+    reader = GroundObservationReader(resources, data_field_names=['valid_scanning_masks'])
     assert set(reader.out_structure.keys()) == {'valid_scanning_masks'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'valid_scanning_masks'}
     assert data['valid_scanning_masks'].shape == (nsample2,)
 
     # Test 7: Only timestamps (tests loading 'timestamps' alone)
-    reader = SOTODLibReader(files, data_field_names=['timestamps'])
+    reader = GroundObservationReader(resources, data_field_names=['timestamps'])
     assert set(reader.out_structure.keys()) == {'timestamps'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'timestamps'}
     assert data['timestamps'].shape == (nsample2,)
 
     # Test 8: Only boresight_quaternions (tests loading 'boresight' + 'timestamps')
-    reader = SOTODLibReader(files, data_field_names=['boresight_quaternions'])
+    reader = GroundObservationReader(resources, data_field_names=['boresight_quaternions'])
     assert set(reader.out_structure.keys()) == {'boresight_quaternions'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'boresight_quaternions'}
     assert data['boresight_quaternions'].shape == (nsample2, 4)
 
     # Test 9: Only hwp_angles (tests loading 'hwp_angle' alone)
-    reader = SOTODLibReader(files, data_field_names=['hwp_angles'])
+    reader = GroundObservationReader(resources, data_field_names=['hwp_angles'])
     assert set(reader.out_structure.keys()) == {'hwp_angles'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'hwp_angles'}
     assert data['hwp_angles'].shape == (nsample2,)
 
     # Test 10: Only detector_quaternions (tests loading 'focal_plane' alone)
-    reader = SOTODLibReader(files, data_field_names=['detector_quaternions'])
+    reader = GroundObservationReader(resources, data_field_names=['detector_quaternions'])
     assert set(reader.out_structure.keys()) == {'detector_quaternions'}
     data, _ = reader.read(0)
     assert set(data.keys()) == {'detector_quaternions'}
@@ -223,7 +214,7 @@ def test_reader_subset_of_data_fields() -> None:
 
     # Test 11: Only noise_model_fits (optional field, computed from noise model)
     # Note: This test is skipped if the test data doesn't have noise model
-    reader = SOTODLibReader(files, data_field_names=['noise_model_fits'])
+    reader = GroundObservationReader(resources, data_field_names=['noise_model_fits'])
     assert set(reader.out_structure.keys()) == {'noise_model_fits'}
     try:
         data, _ = reader.read(0)
@@ -238,7 +229,7 @@ def test_reader_subset_of_data_fields() -> None:
     # (boresight_quaternions without explicit timestamps)
     # This tests the special case where timestamps is loaded automatically for boresight
     combo_fields = ['sample_data', 'boresight_quaternions']
-    reader = SOTODLibReader(files, data_field_names=combo_fields)
+    reader = GroundObservationReader(resources, data_field_names=combo_fields)
     assert set(reader.out_structure.keys()) == set(combo_fields)
     data, _ = reader.read(0)
     assert set(data.keys()) == set(combo_fields)

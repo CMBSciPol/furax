@@ -3,35 +3,38 @@ name: CI
 on:
   push:
     branches:
-    - main
+      - main
   pull_request:
     branches:
-    - main
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-
   pre-commit:
     name: Run pre-commit hooks
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-    - uses: j178/prek-action@v1
-      with:
-        prek-version: '0.2.19'
+      - name: Checkout project
+        uses: actions/checkout@v5
+
+      - name: Set up prek and run hooks
+        uses: j178/prek-action@v1
+        with:
+          prek-version: "0.2.19"
 
   test:
     name: Run tests on Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13']
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout project
+        uses: actions/checkout@v5
 
       - name: Install uv and set the Python version
         uses: astral-sh/setup-uv@v6

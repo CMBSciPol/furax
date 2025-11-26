@@ -49,6 +49,7 @@ class GapFillingOperator:
         *,
         rate: float = 1.0,
         max_cg_steps: int = 300,
+        rtol: float = 1e-6,
         verbose: bool = False,
     ):
         """Initializes the gap-filling operator.
@@ -60,6 +61,7 @@ class GapFillingOperator:
             icov: The inverse covariance operator, to serve as a preconditioner (optional).
             rate: The sampling rate of the data.
             max_cg_steps: Maximum number of Conjugate Gradient steps to use.
+            rtol: Convergence criterion for the solver.
             verbose: Whether to print verbose output during CG solves.
         """
         if not isinstance(cov, SymmetricBandToeplitzOperator | FourierOperator):
@@ -69,7 +71,7 @@ class GapFillingOperator:
         self.mask_op = mask_op
         self.detectors = detectors
         self.rate = rate
-        self._cg_config = {'solver': lx.CG(rtol=1e-6, atol=0, max_steps=max_cg_steps)}
+        self._cg_config = {'solver': lx.CG(rtol=rtol, atol=0, max_steps=max_cg_steps)}
         if verbose:
             self._cg_config['callback'] = verbose_solver_callback
 

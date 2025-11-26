@@ -3,53 +3,51 @@ name: CI
 on:
   push:
     branches:
-    - main
+      - main
   pull_request:
     branches:
-    - main
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-
   pre-commit:
     name: Run pre-commit hooks
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.13'
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install pre-commit
-    - name: Run pre-commit
-      run: pre-commit run --all-files --show-diff-on-failure --color=always
+      - name: Checkout project
+        uses: actions/checkout@v5
+
+      - name: Set up prek and run hooks
+        uses: j178/prek-action@v1
+        with:
+          prek-version: "0.2.19"
 
   test:
     name: Run tests on Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13']
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout project
+        uses: actions/checkout@v5
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Install uv and set the Python version
+        uses: astral-sh/setup-uv@v6
         with:
+          version: "0.9.12"
+          enable-cache: true
           python-version: ${{ matrix.python-version }}
 
+      - name: Create virtual environment
+        run: uv venv
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install .[dev,mapmaking]
+        run: uv pip install .[dev,mapmaking]
 
       - name: Run tests
-        run: pytest -vv -m "not slow"
+        run: uv run pytest -vv -m "not slow"

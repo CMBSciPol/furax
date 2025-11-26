@@ -48,8 +48,8 @@ class GapFillingOperator:
         icov: SymmetricBandToeplitzOperator | FourierOperator | None = None,
         *,
         rate: float = 1.0,
-        max_cg_steps: int = 300,
-        rtol: float = 1e-6,
+        max_cg_steps: int = 50,
+        rtol: float = 1e-4,
         verbose: bool = False,
     ):
         """Initializes the gap-filling operator.

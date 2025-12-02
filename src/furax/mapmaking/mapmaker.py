@@ -115,8 +115,8 @@ class MultiObservationMapMaker(Generic[T]):
         rhs = self.accumulate_rhs(h_blocks, w_blocks, maskers)
         logger_info('Accumulated RHS vector')
 
-        # System matrix
-        h = BlockColumnOperator(h_blocks)
+        # System matrix, including sample masking
+        h = BlockDiagonalOperator(maskers) @ BlockColumnOperator(h_blocks)
         w = BlockDiagonalOperator(w_blocks)
         system = (h.T @ w @ h).reduce()
         logger_info('Set up system matrix')

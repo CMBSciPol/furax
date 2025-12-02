@@ -1,9 +1,8 @@
-from .io import SOTODLibReader
 from .mapmaker import load_result
-from .observation import SOTODLibObservation
+from .observation import SOTODLibObservation, SOTODLibObservationResource
 
 __all__ = [
     'load_result',
-    'SOTODLibReader',
     'SOTODLibObservation',
+    'SOTODLibObservationResource',
 ]

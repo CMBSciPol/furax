@@ -107,7 +107,7 @@ class MapMakingConfig:
     scanning_mask: bool = False
     sample_mask: bool = False
     correlation_length: int = 1_000
-    nperseg: int = 1_024
+    nperseg: int = 2_048
     psd_fmin: float = 1e-2
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2

@@ -1,5 +1,6 @@
 from abc import abstractmethod
 from functools import cached_property
+from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 import jax.numpy as jnp
@@ -209,3 +210,15 @@ class AbstractGroundObservation(Generic[T]):
             delta = jnp.degrees(delta)
 
         return alpha, delta
+
+
+class AbstractGroundObservationResource(Generic[T]):
+    def __init__(self, filename: str | Path) -> None:
+        self.file = Path(filename)
+        if not self.file.exists():
+            msg = f'Observation file {self.file!r} does not exist'
+            raise RuntimeError(msg)
+
+    @abstractmethod
+    def request(self, field_names: list[str] | None = None) -> AbstractGroundObservation[T]:
+        """Loads necessary data from disk to make requested data fields available."""

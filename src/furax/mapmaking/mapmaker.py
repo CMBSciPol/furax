@@ -89,6 +89,8 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Acquisition (I, Q, U Maps -> TOD)
         h_blocks = self.build_acquisitions()
+        tod_structure = h_blocks[0].out_structure()
+        map_structure = h_blocks[0].in_structure()
         logger_info('Created acquisition operators')
 
         # Sample mask projectors
@@ -99,7 +101,6 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Created noise models')
 
         # Build the inverse noise weighting operators
-        tod_structure = h_blocks[0].out_structure()
         w_blocks = tuple(
             model.inverse_operator(
                 tod_structure,
@@ -136,7 +137,6 @@ class MultiObservationMapMaker(Generic[T]):
             logger_info('Set up approximate system matrix')
 
         # Weights matrix and pixel selection
-        map_structure = h_blocks[0].in_structure()
         map_weights = sysdiag.get_blocks()
         selector = self.build_pixel_selection_operator(
             weights=map_weights, in_structure=map_structure
@@ -194,6 +194,7 @@ class MultiObservationMapMaker(Generic[T]):
         return jax.tree.map(get_acquisition, tuple(range(reader.count)))  # type: ignore[no-any-return]
 
     def build_sample_maskers(self) -> tuple[AbstractLinearOperator, ...]:
+        """Returns the sample mask projector for each observation."""
         # Only read necessary fields
         required_fields = [
             'valid_sample_masks',
@@ -218,7 +219,7 @@ class MultiObservationMapMaker(Generic[T]):
     def noise_models_and_sample_rates(
         self,
     ) -> tuple[tuple[NoiseModel, ...], tuple[int | float, ...]]:
-        """Returns ((noise_model, sample_rate) for each observation)."""
+        """Returns (noise_model, sample_rate) for each observation."""
         return (
             self._fit_noise_models() if self.config.fit_noise_model else self._read_noise_models()
         )

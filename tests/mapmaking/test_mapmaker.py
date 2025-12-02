@@ -15,8 +15,7 @@ from furax.mapmaking.preconditioner import BJPreconditioner
 
 
 @pytest.fixture(
-    scope='module',
-    params=[(SOTODLibObservationResource, 'sotodlib'), (ToastObservationResource, 'toast')],
+    params=[(SOTODLibObservationResource, 'sotodlib'), (ToastObservationResource, 'toast')]
 )
 def resources(request: pytest.FixtureRequest):
     cls, name = request.param
@@ -29,16 +28,24 @@ def resources(request: pytest.FixtureRequest):
     return [cls(f) for f in files]
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture
 def config():
     return MapMakingConfig(
         pointing_on_the_fly=True, landscape=LandscapeConfig(type=Landscapes.HPIX, nside=16)
     )
 
 
-def test_acquisitions(resources, config):
-    maker = MultiObservationMapMaker(resources, config=config)
-    reader = GroundObservationReader(resources)
+@pytest.fixture
+def maker(resources, config):
+    return MultiObservationMapMaker(resources, config=config)
+
+
+@pytest.fixture
+def reader(resources):
+    return GroundObservationReader(resources)
+
+
+def test_acquisitions(maker, reader):
     operators = maker.build_acquisitions()
     assert len(operators) == 2
     for op in operators:
@@ -46,21 +53,18 @@ def test_acquisitions(resources, config):
         assert op.out_structure() == reader.out_structure['sample_data']
 
 
-def test_noise_models(resources, config):
-    maker = MultiObservationMapMaker(resources, config=config)
+def test_noise_models(maker):
     noise_models, _ = maker.noise_models_and_sample_rates()
     assert len(noise_models) == 2
     # those must be white noise models in binned mapmaking
     assert all(isinstance(model, WhiteNoiseModel) for model in noise_models)
 
 
-def test_accumulate_rhs(resources, config):
-    maker = MultiObservationMapMaker(resources, config=config)
-    h_blocks = maker.build_acquisitions()
-    reader = GroundObservationReader(resources)
+@pytest.fixture
+def w_blocks(config, maker, reader):
     tod_structure = reader.out_structure['sample_data']
     noise_models, sample_rates = maker.noise_models_and_sample_rates()
-    w_blocks = tuple(
+    return tuple(
         model.inverse_operator(
             tod_structure,
             sample_rate=fs,
@@ -68,23 +72,25 @@ def test_accumulate_rhs(resources, config):
         )
         for model, fs in zip(noise_models, sample_rates, strict=True)
     )
+
+
+def test_accumulate_rhs(maker, w_blocks):
+    h_blocks = maker.build_acquisitions()
     maskers = maker.build_sample_maskers()
     rhs = maker.accumulate_rhs(h_blocks, w_blocks, maskers)
     assert rhs.shape == maker.landscape.shape
 
 
-def test_binning(resources, config):
-    maker = MultiObservationMapMaker(resources, config=config)
-    ops = maker.build_acquisitions()
-    h = BlockColumnOperator(ops)
+def test_binning(maker):
+    h_blocks = maker.build_acquisitions()
+    h = BlockColumnOperator(h_blocks)
     system = BJPreconditioner.create((h.T @ h).reduce())
     assert system.in_structure() == maker.landscape.structure
     zeros = system(maker.landscape.full(0))
     assert zeros.shape == maker.landscape.shape
 
 
-def test_full_mapmaker(resources, config):
-    maker = MultiObservationMapMaker(resources, config=config)
+def test_full_mapmaker(maker):
     results = maker.run()
     assert 'map' in results
     assert 'weights' in results

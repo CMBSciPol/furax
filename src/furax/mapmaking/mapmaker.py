@@ -37,6 +37,7 @@ from furax.math.quaternion import to_gamma_angles
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
+from furax.preprocessing import GapFillingOperator
 
 from . import templates
 from ._logger import logger as furax_logger
@@ -224,6 +225,53 @@ class MultiObservationMapMaker(Generic[T]):
             self._fit_noise_models() if self.config.fit_noise_model else self._read_noise_models()
         )
 
+    def accumulate_rhs(
+        self,
+        h_blocks: tuple[AbstractLinearOperator, ...],
+        w_blocks: tuple[AbstractLinearOperator, ...],
+        maskers: tuple[AbstractLinearOperator, ...],
+        cov_blocks: tuple[AbstractLinearOperator, ...] | None = None,
+    ) -> StokesPyTreeType:
+        """Accumulates data into the r.h.s. of the mapmaking equation.
+
+        Also performs gap-filling on the data before projecting into map domain.
+        """
+        # Only read sample data
+        reader = self.get_reader(['sample_data'])
+
+        @jax.jit
+        def get_rhs(i, h_block, w_block, masker, cov_block):  # type: ignore[no-untyped-def]
+            data, _padding = reader.read(i)
+            rhs_op = h_block.T @ masker @ w_block
+            if cov_block is not None and isinstance(masker, MaskOperator):
+                # perform gap-filling
+                # TODO: accept/use MaskOperator instead of IndexOperator
+                # TODO: accept rate: Array
+                # TODO: propagate config options
+                # TODO: generate key using seed in config and/or obsid
+                # TODO: pass actual detector metadata
+                fs = _sample_rate(data['timestamps'])
+                indexer = IndexOperator(
+                    jnp.where(masker.to_boolean_mask()), in_structure=masker.in_structure()
+                )
+                gapfill = GapFillingOperator(cov_block, indexer, icov=w_block, rate=fs)  # type: ignore[arg-type]
+                key = jax.random.key(0)
+                sample_data = gapfill(key, data['sample_data'])
+            else:
+                sample_data = data['sample_data']
+            return rhs_op(sample_data)
+
+        # sum RHS across observations
+        # make a dummy tuple of None if cov_blocks is not provided
+        c_blocks = cov_blocks or (None,) * len(h_blocks)
+        return jax.tree.reduce(  # type: ignore[no-any-return]
+            operator.add,
+            jax.tree.map(
+                get_rhs, tuple(range(reader.count)), h_blocks, w_blocks, maskers, c_blocks
+            ),
+            is_leaf=lambda x: isinstance(x, Stokes),
+        )
+
     def build_pixel_selection_operator(
         self,
         weights: Float[Array, 'pixels stokes stokes'],
@@ -262,7 +310,7 @@ class MultiObservationMapMaker(Generic[T]):
         @jax.jit
         def read_model(i):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
-            fs = (data['timestamps'].size - 1) / jnp.ptp(data['timestamps'])
+            fs = _sample_rate(data['timestamps'])
             model = AtmosphericNoiseModel(*data['noise_model_fits'].T)
             if self.config.binned:
                 return model.to_white_noise_model(), fs
@@ -282,35 +330,13 @@ class MultiObservationMapMaker(Generic[T]):
         @jax.jit
         def fit_model(i):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
-            fs = (data['timestamps'].size - 1) / jnp.ptp(data['timestamps'])
+            fs = _sample_rate(data['timestamps'])
             f, Pxx = jax.scipy.signal.welch(data['sample_data'], fs=fs, nperseg=self.config.nperseg)
             model = cls.fit_psd_model(f, Pxx)
             return model, fs
 
         models_and_fs = jax.tree.map(fit_model, tuple(range(reader.count)))
         return tuple(zip(*models_and_fs, strict=True))  # type: ignore[return-value]
-
-    def accumulate_rhs(
-        self,
-        h_blocks: tuple[AbstractLinearOperator, ...],
-        w_blocks: tuple[AbstractLinearOperator, ...],
-        maskers: tuple[AbstractLinearOperator, ...],
-    ) -> StokesPyTreeType:
-        # Only read sample data
-        reader = self.get_reader(['sample_data'])
-
-        @jax.jit
-        def get_rhs(i, h_block, w_block, masker):  # type: ignore[no-untyped-def]
-            data, _padding = reader.read(i)
-            rhs_op = h_block.T @ masker @ w_block
-            return rhs_op(data['sample_data'])
-
-        # sum RHS across observations
-        return jax.tree.reduce(  # type: ignore[no-any-return]
-            operator.add,
-            jax.tree.map(get_rhs, tuple(range(reader.count)), h_blocks, w_blocks, maskers),
-            is_leaf=lambda x: isinstance(x, Stokes),
-        )
 
     def _save(self, results: dict[str, Any], out_dir: Path) -> None:
         for key, m in results.items():
@@ -334,6 +360,10 @@ class MultiObservationMapMaker(Generic[T]):
                 # TODO: warning?
                 continue
             self.logger.info(f'Mapmaking result [{key}] saved to file')
+
+
+def _sample_rate(timestamps: Float[Array, '...']) -> Array:
+    return (timestamps.size - 1) / jnp.ptp(timestamps)
 
 
 def _build_landscape(config: MapMakingConfig, stokes: ValidStokesType = 'IQU') -> StokesLandscape:

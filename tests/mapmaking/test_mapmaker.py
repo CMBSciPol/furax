@@ -10,6 +10,7 @@ from furax.interfaces.sotodlib import SOTODLibObservationResource
 from furax.interfaces.toast import ToastObservationResource
 from furax.mapmaking import GroundObservationReader, MapMakingConfig, MultiObservationMapMaker
 from furax.mapmaking.config import LandscapeConfig, Landscapes
+from furax.mapmaking.noise import WhiteNoiseModel
 from furax.mapmaking.preconditioner import BJPreconditioner
 
 
@@ -45,14 +46,12 @@ def test_acquisitions(resources, config):
         assert op.out_structure() == reader.out_structure['sample_data']
 
 
-def test_weightings(resources, config):
+def test_noise_models(resources, config):
     maker = MultiObservationMapMaker(resources, config=config)
-    reader = GroundObservationReader(resources)
-    tod_structure = reader.out_structure['sample_data']
-    operators = maker.build_weight_operators(tod_structure)
-    assert len(operators) == 2
-    for op in operators:
-        assert op.in_structure() == tod_structure
+    noise_models, _ = maker.noise_models_and_sample_rates()
+    assert len(noise_models) == 2
+    # those must be white noise models in binned mapmaking
+    assert all(isinstance(model, WhiteNoiseModel) for model in noise_models)
 
 
 def test_accumulate_rhs(resources, config):
@@ -60,7 +59,15 @@ def test_accumulate_rhs(resources, config):
     acquisitions = maker.build_acquisitions()
     reader = GroundObservationReader(resources)
     tod_structure = reader.out_structure['sample_data']
-    weightings = maker.build_weight_operators(tod_structure)
+    noise_models, sample_rates = maker.noise_models_and_sample_rates()
+    weightings = tuple(
+        model.inverse_operator(
+            tod_structure,
+            sample_rate=fs,
+            correlation_length=config.correlation_length,
+        )
+        for model, fs in zip(noise_models, sample_rates, strict=True)
+    )
     rhs = maker.accumulate_rhs(acquisitions, weightings)
     assert rhs.shape == maker.landscape.shape
 

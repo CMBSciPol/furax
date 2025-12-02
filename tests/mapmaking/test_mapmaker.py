@@ -56,11 +56,11 @@ def test_noise_models(resources, config):
 
 def test_accumulate_rhs(resources, config):
     maker = MultiObservationMapMaker(resources, config=config)
-    acquisitions = maker.build_acquisitions()
+    h_blocks = maker.build_acquisitions()
     reader = GroundObservationReader(resources)
     tod_structure = reader.out_structure['sample_data']
     noise_models, sample_rates = maker.noise_models_and_sample_rates()
-    weightings = tuple(
+    w_blocks = tuple(
         model.inverse_operator(
             tod_structure,
             sample_rate=fs,
@@ -68,7 +68,8 @@ def test_accumulate_rhs(resources, config):
         )
         for model, fs in zip(noise_models, sample_rates, strict=True)
     )
-    rhs = maker.accumulate_rhs(acquisitions, weightings)
+    maskers = maker.build_sample_maskers()
+    rhs = maker.accumulate_rhs(h_blocks, w_blocks, maskers)
     assert rhs.shape == maker.landscape.shape
 
 

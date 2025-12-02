@@ -1,26 +1,23 @@
-cff-version: 0.0.0
-title: >-
-  Furax: a Framework for Unified and Robust data Analysis with JAX.
-message: >-
-  If you use this software, please cite it using the metadata from this file.
-type: software
+title: "Furax: a Framework for Unified and Robust data Analysis with JAX"
 authors:
-  - family-names: "Chanial"
-    given-names: "Pierre"
+  - family-names: Chanial
+    given-names: Pierre
     affiliation: "Laboratoire AstroParticule et Cosmologie"
     orcid: "https://orcid.org/0000-0003-1753-524X"
-  - family-names: "Biquard"
-    given-names: "Simon"
-    affiliation: "Laboratoire AstroParticule et Cosmologie"
+  - family-names: Biquard
+    given-names: Simon
+    affiliation: "University of Manchester"
     orcid: "https://orcid.org/0000-0002-1493-2963"
-  - family-names: "Kabalan"
-    given-names: "Wassim"
+  - family-names: Kabalan
+    given-names: Wassim
     affiliation: "Laboratoire AstroParticule et Cosmologie"
     orcid: "https://orcid.org/0009-0001-6501-4564"
-  - family-names: "Sohn"
-    given-names: "Wuhyun"
+  - family-names: Sohn
+    given-names: Wuhyun
     affiliation: "Laboratoire AstroParticule et Cosmologie"
     orcid: "https://orcid.org/0000-0002-6039-8247"
-
-repository-code: 'https://github.com/CMBSciPol/furax'
+cff-version: 1.2.0
+type: software
 license: GPL-3.0
+message: "If you use this software, please cite it using the metadata from this file."
+repository-code: "https://github.com/CMBSciPol/furax"

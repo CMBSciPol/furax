@@ -91,8 +91,20 @@ class MultiObservationMapMaker(Generic[T]):
         acquisitions = self.build_acquisitions()
         logger_info('Created acquisition operators')
 
-        # Noise
-        weight_operators = self.build_weight_operators(structure=acquisitions[0].out_structure())
+        # Noise weighting
+        noise_models, sample_rates = self.noise_models_and_sample_rates()
+        logger_info('Created noise models')
+
+        # Build the inverse noise weighting operators
+        tod_structure = acquisitions[0].out_structure()
+        weight_operators = tuple(
+            model.inverse_operator(
+                tod_structure,
+                sample_rate=fs,
+                correlation_length=self.config.correlation_length,
+            )
+            for model, fs in zip(noise_models, sample_rates, strict=True)
+        )
         logger_info('Created weighting operators')
 
         # RHS
@@ -108,14 +120,14 @@ class MultiObservationMapMaker(Generic[T]):
         # System matrix for preconditioning
         if self.config.binned:
             sysdiag = BJPreconditioner.create(system)
+            logger_info('Compute full system matrix (diagonal case)')
         else:
-            # If ML, use approximate system matrix
-            # TODO: this currently results in an additional IO pass - should be improved.
+            # If ML, use approximate system matrix keeping only diagonal coeffs of weight matrix
+            if not all(isinstance(model, AtmosphericNoiseModel) for model in noise_models):
+                raise ValueError('Expected all noise models to be AtmosphericNoiseModel instances.')
             white_w = BlockDiagonalOperator(
-                self.build_weight_operators(
-                    structure=acquisitions[0].out_structure(),
-                    force_white_noise_model=True,
-                )
+                model.to_white_noise_model().inverse_operator(tod_structure)  # type: ignore[attr-defined]
+                for model in noise_models
             )
             sysdiag = BJPreconditioner.create((h.T @ white_w @ h).reduce())
             logger_info('Set up approximate system matrix')
@@ -181,26 +193,12 @@ class MultiObservationMapMaker(Generic[T]):
 
         return jax.tree.map(get_acquisition, tuple(range(reader.count)))  # type: ignore[no-any-return]
 
-    def build_weight_operators(
-        self, structure: jax.ShapeDtypeStruct, force_white_noise_model: bool = False
-    ) -> tuple[AbstractLinearOperator, ...]:
-        # Get the noise model for each observation
-        models, sample_rates = (
+    def noise_models_and_sample_rates(
+        self,
+    ) -> tuple[tuple[NoiseModel, ...], tuple[int | float, ...]]:
+        """Returns ((noise_model, sample_rate) for each observation)."""
+        return (
             self._fit_noise_models() if self.config.fit_noise_model else self._read_noise_models()
-        )
-
-        if not self.config.binned and force_white_noise_model:
-            # Convert each AtmosphericNoiseModel to WhiteNoiseModel
-            models = tuple(model.to_white_noise_model() for model in models)  # type: ignore[union-attr]
-
-        # Build the inverse noise weighting operators
-        return tuple(
-            model.inverse_operator(  # type: ignore[attr-defined]
-                structure,
-                sample_rate=fs,
-                correlation_length=self.config.correlation_length,
-            )
-            for model, fs in zip(models, sample_rates, strict=True)
         )
 
     def build_pixel_selection_operator(
@@ -235,7 +233,7 @@ class MultiObservationMapMaker(Generic[T]):
             # Healpix
             return IndexOperator((valid_indices,), in_structure=in_structure)
 
-    def _read_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
+    def _read_noise_models(self) -> tuple[tuple[NoiseModel, ...], tuple[int | float, ...]]:
         reader = self.get_reader(['noise_model_fits', 'timestamps'])
 
         @jax.jit
@@ -249,9 +247,9 @@ class MultiObservationMapMaker(Generic[T]):
                 return model, fs
 
         models_and_fs = jax.tree.map(read_model, tuple(range(reader.count)))
-        return tuple(zip(*models_and_fs, strict=True))
+        return tuple(zip(*models_and_fs, strict=True))  # type: ignore[return-value]
 
-    def _fit_noise_models(self) -> tuple[tuple[NoiseModel, float], ...]:
+    def _fit_noise_models(self) -> tuple[tuple[NoiseModel, ...], tuple[int | float, ...]]:
         # Only read sample data and timestamps (to compute sampling rate)
         reader = self.get_reader(['sample_data', 'timestamps'])
 
@@ -267,7 +265,7 @@ class MultiObservationMapMaker(Generic[T]):
             return model, fs
 
         models_and_fs = jax.tree.map(fit_model, tuple(range(reader.count)))
-        return tuple(zip(*models_and_fs, strict=True))
+        return tuple(zip(*models_and_fs, strict=True))  # type: ignore[return-value]
 
     def accumulate_rhs(
         self,
@@ -391,7 +389,7 @@ def _build_mask_projector(
             return IdentityOperator(structure)
         return MaskOperator.from_boolean_mask(valid_mask, in_structure=structure)
 
-    combined_masker = CompositionOperator(_masker(valid_mask) for valid_mask in valid_masks)
+    combined_masker = CompositionOperator([_masker(valid_mask) for valid_mask in valid_masks])
     return combined_masker.reduce()
 
 

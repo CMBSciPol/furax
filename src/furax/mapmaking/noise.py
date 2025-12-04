@@ -217,5 +217,6 @@ class AtmosphericNoiseModel(NoiseModel):
         Pxx: Float[Array, 'dets freq'],
     ) -> 'AtmosphericNoiseModel':
         """Fit a atmospheric (1/f) noise model to data"""
-        params = fit_atmospheric_psd_model(f, Pxx)
+        # TODO: pass the correct number of degrees of freedom: k = n_samples / nperseg
+        params = fit_atmospheric_psd_model(f, Pxx, low_f_cut=1., high_f_cut=10., k=1., f_max=50.)['fit']
         return cls(*params.T)

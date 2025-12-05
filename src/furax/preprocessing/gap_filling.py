@@ -5,9 +5,10 @@ import jax.numpy as jnp
 import lineax as lx
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
-from furax import FourierOperator, IndexOperator, SymmetricBandToeplitzOperator
+from furax import FourierOperator, IndexOperator, MaskOperator, SymmetricBandToeplitzOperator
 from furax._config import verbose_solver_callback
 from furax.obs._detectors import DetectorArray
+from furax.tree import ones_like
 
 __all__ = [
     'GapFillingOperator',
@@ -43,7 +44,7 @@ class GapFillingOperator:
     def __init__(
         self,
         cov: SymmetricBandToeplitzOperator | FourierOperator,
-        mask_op: IndexOperator,
+        mask_op: IndexOperator | MaskOperator,
         detectors: DetectorArray | None = None,
         icov: SymmetricBandToeplitzOperator | FourierOperator | None = None,
         *,
@@ -64,11 +65,17 @@ class GapFillingOperator:
             rtol: Convergence criterion for the solver.
             verbose: Whether to print verbose output during CG solves.
         """
-        if not isinstance(cov, SymmetricBandToeplitzOperator | FourierOperator):
-            raise ValueError('Unsupported covariance operator.')
+        if isinstance(mask_op, IndexOperator):
+            # convert to a MaskOperator
+            boolean_mask = mask_op.T(ones_like(mask_op.out_structure())).astype(bool)
+            self.proj = MaskOperator.from_boolean_mask(
+                boolean_mask, in_structure=mask_op.in_structure()
+            )
+        else:
+            # already a MaskOperator
+            self.proj = mask_op
         self.cov = cov
         self.icov = icov
-        self.mask_op = mask_op
         self.detectors = detectors
         self.rate = rate
         self._cg_config = {'solver': lx.CG(rtol=rtol, atol=0, max_steps=max_cg_steps)}
@@ -84,16 +91,22 @@ class GapFillingOperator:
         """
         # generate a noise realization following the noise covariance
         xi = generate_noise_realization(key, self.cov, self.detectors, fsamp=self.rate)
-        p, u = self.mask_op, self.mask_op.T  # pack, unpack operators
-        incomplete_cov = p @ self.cov @ u
+
+        # the effect of `proj` is to reset gaps to zero
+        # effectively working with only the vector of valid samples
+        valid_cov = self.proj @ self.cov @ self.proj
+
+        # compute the constrained realization
         cg_config = self._cg_config.copy()
         if self.icov is not None:
-            # Use this approximation as a preconditioner
-            cg_config['preconditioner'] = p @ self.icov @ u
-        op = self.cov @ u @ incomplete_cov.I(**cg_config) @ p
+            # use this approximation as a preconditioner
+            cg_config['preconditioner'] = self.proj @ self.icov @ self.proj
+        op = self.cov @ valid_cov.I(**cg_config)
         y = xi + op(x - xi)
-        # copy valid samples from original vector
-        return y.at[p.indices].set(p(x))  # type: ignore[no-any-return]
+
+        # take valid samples from original vector
+        valid_mask = self.proj.to_boolean_mask()
+        return jnp.where(valid_mask, x, y)  # type: ignore[no-any-return]
 
 
 def _get_kernel(n_tt: Float[Array, ' _'], size: int) -> Float[Array, ' {size}']:

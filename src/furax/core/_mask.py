@@ -49,9 +49,12 @@ class MaskOperator(AbstractLinearOperator):
         packed_mask = jnp.packbits(boolean_mask, axis=-1)
         return cls(packed_mask, in_structure=in_structure)
 
+    def to_boolean_mask(self) -> Bool[Array, '...']:
+        return jnp.unpackbits(self.mask, axis=-1, count=self._in_structure.shape[-1])
+
     def mv(self, x: Shaped[Array, '*dims']) -> Shaped[Array, '*dims']:
         # This will be a uint8 array but would be the same size with booleans
-        boolean_mask = jnp.unpackbits(self.mask, axis=-1, count=x.shape[-1])
+        boolean_mask = self.to_boolean_mask()
         # 1 = good, 0 = bad
         return jnp.where(boolean_mask, x, 0)
 

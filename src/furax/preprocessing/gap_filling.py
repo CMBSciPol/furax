@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import lineax as lx
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
-from furax import FourierOperator, IndexOperator, SymmetricBandToeplitzOperator
+from furax import FourierOperator, IndexOperator, MaskOperator, SymmetricBandToeplitzOperator
 from furax._config import verbose_solver_callback
 from furax.obs._detectors import DetectorArray
 
@@ -43,7 +43,7 @@ class GapFillingOperator:
     def __init__(
         self,
         cov: SymmetricBandToeplitzOperator | FourierOperator,
-        mask_op: IndexOperator,
+        mask_op: IndexOperator | MaskOperator,
         detectors: DetectorArray | None = None,
         icov: SymmetricBandToeplitzOperator | FourierOperator | None = None,
         *,
@@ -64,11 +64,15 @@ class GapFillingOperator:
             rtol: Convergence criterion for the solver.
             verbose: Whether to print verbose output during CG solves.
         """
-        if not isinstance(cov, SymmetricBandToeplitzOperator | FourierOperator):
-            raise ValueError('Unsupported covariance operator.')
+        if isinstance(mask_op, MaskOperator):
+            # convert to an IndexOperator
+            boolean_mask = mask_op.to_boolean_mask()
+            self.pack = IndexOperator(jnp.where(boolean_mask), in_structure=mask_op.in_structure())
+        else:
+            # already an IndexOperator
+            self.pack = mask_op
         self.cov = cov
         self.icov = icov
-        self.mask_op = mask_op
         self.detectors = detectors
         self.rate = rate
         self._cg_config = {'solver': lx.CG(rtol=rtol, atol=0, max_steps=max_cg_steps)}
@@ -84,7 +88,7 @@ class GapFillingOperator:
         """
         # generate a noise realization following the noise covariance
         xi = generate_noise_realization(key, self.cov, self.detectors, fsamp=self.rate)
-        p, u = self.mask_op, self.mask_op.T  # pack, unpack operators
+        p, u = self.pack, self.pack.T
         incomplete_cov = p @ self.cov @ u
         cg_config = self._cg_config.copy()
         if self.icov is not None:

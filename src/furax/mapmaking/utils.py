@@ -362,6 +362,18 @@ def _compute_neglnlike(
         mask, (k-2) * jnp.log(Pxx_pred) + k * (Pxx / Pxx_pred), 0
     ))
 
+def _compute_neglnlike_whittle(
+    params: Float[Array, '4'],
+    f: Float[Array, ' a'],
+    Pxx: Float[Array, ' a'],
+    mask: Float[Array, ' a'],
+) -> Float[Array, '1']:
+    # Computes -2logL up to a constant, using Whittle's approximation
+    Pxx_pred = _model(params, f)
+    return jnp.sum(jnp.where(
+        mask, jnp.log(Pxx_pred) + (Pxx / Pxx_pred), 0
+    ))
+
 def _approximate_fit(
     f: Float[Array, ' a'],
     Pxx: Float[Array, ' a'],

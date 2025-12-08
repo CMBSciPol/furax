@@ -102,28 +102,46 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Created noise models')
 
         # Build the inverse noise weighting operators
-        w_blocks = tuple(
+        w_blocks = [
             model.inverse_operator(
                 tod_structure,
                 sample_rate=fs,
                 correlation_length=self.config.correlation_length,
             )
             for model, fs in zip(noise_models, sample_rates, strict=True)
-        )
+        ]
         logger_info('Created weighting operators')
 
         # RHS
-        if self.config.gaps.fill:
-            c_blocks = tuple(
+        if self.config.gaps.fill and not self.config.binned:
+            # need some additional stuff for gap-filling
+            #
+            # this part does not run when binned=True because it is useless
+            # and gap-filling operator does not accept covariance that isn't Fourier or Toeplitz
+
+            def mask2index(op):  # type: ignore[no-untyped-def]
+                if isinstance(op, MaskOperator):
+                    mask = op.to_boolean_mask()
+                elif isinstance(op, IdentityOperator):
+                    # edge case, should happen very rarely
+                    mask = furax.tree.ones_like(tod_structure).astype(bool)
+                else:
+                    raise NotImplementedError
+                return IndexOperator(mask, in_structure=tod_structure)
+
+            indexers = [mask2index(op) for op in maskers]
+            c_blocks = [
                 model.operator(
                     tod_structure,
                     sample_rate=fs,
                     correlation_length=self.config.correlation_length,
                 )
                 for model, fs in zip(noise_models, sample_rates, strict=True)
+            ]
+            logger_info('Created covariance blocks and indexers for gap-filling')
+            rhs = self.accumulate_rhs(
+                h_blocks, w_blocks, maskers, cov_blocks=c_blocks, indexers=indexers
             )
-            logger_info('Created covariance blocks for gap-filling')
-            rhs = self.accumulate_rhs(h_blocks, w_blocks, maskers, cov_blocks=c_blocks)
         else:
             rhs = self.accumulate_rhs(h_blocks, w_blocks, maskers)
         logger_info('Accumulated RHS vector')
@@ -183,7 +201,7 @@ class MultiObservationMapMaker(Generic[T]):
         final_map = np.array([res.i, res.q, res.u])
         return {'map': final_map, 'weights': np.array(map_weights)}
 
-    def build_acquisitions(self) -> tuple[AbstractLinearOperator, ...]:
+    def build_acquisitions(self) -> list[AbstractLinearOperator]:
         # Only read necessary fields
         required_fields = [
             'boresight_quaternions',
@@ -204,14 +222,12 @@ class MultiObservationMapMaker(Generic[T]):
                 dtype=dtype,
             )
 
-        return jax.tree.map(get_acquisition, tuple(range(reader.count)))  # type: ignore[no-any-return]
+        return jax.tree.map(get_acquisition, list(range(reader.count)))  # type: ignore[no-any-return]
 
-    def build_sample_maskers(self) -> tuple[AbstractLinearOperator, ...]:
+    def build_sample_maskers(self) -> list[AbstractLinearOperator]:
         """Returns the sample mask projector for each observation."""
         # Only read necessary fields
-        required_fields = [
-            'valid_sample_masks',
-        ]
+        required_fields = ['valid_sample_masks']
         if self.config.scanning_mask:
             required_fields.append('valid_scanning_masks')
         reader = self.get_reader(required_fields)
@@ -227,44 +243,45 @@ class MultiObservationMapMaker(Generic[T]):
                 structure=jax.ShapeDtypeStruct(shape, dtype),
             )
 
-        return jax.tree.map(get_mask_projector, tuple(range(reader.count)))  # type: ignore[no-any-return]
+        return jax.tree.map(get_mask_projector, list(range(reader.count)))  # type: ignore[no-any-return]
 
-    def noise_models_and_sample_rates(
-        self,
-    ) -> tuple[tuple[NoiseModel, ...], tuple[int | float, ...]]:
-        """Returns (noise_model, sample_rate) for each observation."""
-        return (
+    def noise_models_and_sample_rates(self) -> tuple[list[NoiseModel], list[int | float]]:
+        """Returns a list of (noise_model, sample_rate) tuples for each observation."""
+        # this is a list of tuples
+        models_and_fs = (
             self._fit_noise_models() if self.config.fit_noise_model else self._read_noise_models()
         )
+        # return two lists
+        return [m for m, _ in models_and_fs], [fs for _, fs in models_and_fs]
 
     def accumulate_rhs(
         self,
-        h_blocks: tuple[AbstractLinearOperator, ...],
-        w_blocks: tuple[AbstractLinearOperator, ...],
-        maskers: tuple[AbstractLinearOperator, ...],
-        cov_blocks: tuple[AbstractLinearOperator, ...] | None = None,
+        h_blocks: list[AbstractLinearOperator],
+        w_blocks: list[AbstractLinearOperator],
+        maskers: list[AbstractLinearOperator],
+        cov_blocks: list[AbstractLinearOperator] | None = None,
+        indexers: list[IndexOperator] | None = None,
     ) -> StokesPyTreeType:
         """Accumulates data into the r.h.s. of the mapmaking equation.
 
         Also performs gap-filling on the data before projecting into map domain.
         """
-        # Only read sample data
-        reader = self.get_reader(['sample_data'])
+        # Only read what's needed
+        reader = self.get_reader(['sample_data', 'timestamps'])
 
         @jax.jit
-        def get_rhs(i, h_block, w_block, masker, cov_block):  # type: ignore[no-untyped-def]
+        def get_rhs(i, h_block, w_block, masker, cov_block, indexer):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
             rhs_op = h_block.T @ masker @ w_block
             tod = data['sample_data']
-            if cov_block is not None and isinstance(masker, MaskOperator):
-                # perform gap-filling if a noise covariance is provided
-                # and the masker is not an `IdentityOperator`
+            if cov_block is not None and indexer is not None:
+                # perform gap-filling if a noise covariance and an IndexOperator are provided
                 # TODO: get additional metadata from reader to fold in key generation
-                # TODO: get detector metadat from reader to pass to gap-filling operator
+                # TODO: get detector metadata from reader to pass to gap-filling operator
                 fs = _sample_rate(data['timestamps'])
                 gapfill = GapFillingOperator(
                     cov_block,
-                    masker,
+                    indexer,
                     icov=w_block,
                     rate=fs,  # type: ignore[arg-type]
                     max_cg_steps=self.config.gaps.fill_options.max_steps,
@@ -276,11 +293,12 @@ class MultiObservationMapMaker(Generic[T]):
 
         # sum RHS across observations
         # make a dummy tuple of None if cov_blocks is not provided
-        c_blocks = cov_blocks or (None,) * len(h_blocks)
+        c_blocks = cov_blocks or [None] * len(h_blocks)  # type: ignore[list-item]
+        i_blocks = indexers or [None] * len(h_blocks)  # type: ignore[list-item]
         return jax.tree.reduce(  # type: ignore[no-any-return]
             operator.add,
             jax.tree.map(
-                get_rhs, tuple(range(reader.count)), h_blocks, w_blocks, maskers, c_blocks
+                get_rhs, list(range(reader.count)), h_blocks, w_blocks, maskers, c_blocks, i_blocks
             ),
             is_leaf=lambda x: isinstance(x, Stokes),
         )
@@ -317,7 +335,7 @@ class MultiObservationMapMaker(Generic[T]):
             # Healpix
             return IndexOperator((valid_indices,), in_structure=in_structure)
 
-    def _read_noise_models(self) -> tuple[tuple[NoiseModel, ...], tuple[int | float, ...]]:
+    def _read_noise_models(self) -> list[tuple[NoiseModel, int | float]]:
         reader = self.get_reader(['noise_model_fits', 'timestamps'])
 
         @jax.jit
@@ -330,10 +348,9 @@ class MultiObservationMapMaker(Generic[T]):
             else:
                 return model, fs
 
-        models_and_fs = jax.tree.map(read_model, tuple(range(reader.count)))
-        return tuple(zip(*models_and_fs, strict=True))  # type: ignore[return-value]
+        return jax.tree.map(read_model, list(range(reader.count)))  # type: ignore[no-any-return]
 
-    def _fit_noise_models(self) -> tuple[tuple[NoiseModel, ...], tuple[int | float, ...]]:
+    def _fit_noise_models(self) -> list[tuple[NoiseModel, int | float]]:
         # Only read sample data and timestamps (to compute sampling rate)
         reader = self.get_reader(['sample_data', 'timestamps'])
 
@@ -348,8 +365,7 @@ class MultiObservationMapMaker(Generic[T]):
             model = cls.fit_psd_model(f, Pxx)
             return model, fs
 
-        models_and_fs = jax.tree.map(fit_model, tuple(range(reader.count)))
-        return tuple(zip(*models_and_fs, strict=True))  # type: ignore[return-value]
+        return jax.tree.map(fit_model, list(range(reader.count)))  # type: ignore[no-any-return]
 
     def _save(self, results: dict[str, Any], out_dir: Path) -> None:
         for key, m in results.items():

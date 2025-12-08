@@ -64,14 +64,14 @@ def test_noise_models(maker):
 def w_blocks(config, maker, reader):
     tod_structure = reader.out_structure['sample_data']
     noise_models, sample_rates = maker.noise_models_and_sample_rates()
-    return tuple(
+    return [
         model.inverse_operator(
             tod_structure,
             sample_rate=fs,
             correlation_length=config.correlation_length,
         )
         for model, fs in zip(noise_models, sample_rates, strict=True)
-    )
+    ]
 
 
 def test_accumulate_rhs(maker, w_blocks):

@@ -99,6 +99,32 @@ class TemplatesConfig:
         return all(getattr(self, f.name) is None for f in fields(self))
 
 
+class GapFillingOptions:
+    """Specific gap-filling options"""
+
+    seed: int = 286502183
+    """An integer seed for the noise realization"""
+
+    max_steps: int = 50
+    """The maximum number of iteration steps to invert the system"""
+
+    rtol: float = 1e-4
+    """The relative tolerance of the solver for the gap-filling solve"""
+
+
+class GapsConfig:
+    """Configuration options related to the treatment of gaps"""
+
+    fill: bool = True
+    """Fill data gaps with synthetic noise-like samples"""
+
+    fill_options: GapFillingOptions = GapFillingOptions()
+    """Options to pass to the gap-filling operator"""
+
+    nested_pcg: bool = False
+    """Use the nested PCG method for gap treatment"""
+
+
 @dataclass(frozen=True)
 class MapMakingConfig:
     method: Methods = Methods.BINNED
@@ -117,7 +143,7 @@ class MapMakingConfig:
     fit_noise_model: bool = True
     debug: bool = True
     solver: SolverConfig = SolverConfig()
-    nested_pcg: bool = False
+    gaps: GapsConfig = GapsConfig()
     landscape: LandscapeConfig = LandscapeConfig()
     templates: TemplatesConfig | None = None
     atop_tau: int = 0

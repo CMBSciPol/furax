@@ -113,7 +113,19 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Created weighting operators')
 
         # RHS
-        rhs = self.accumulate_rhs(h_blocks, w_blocks, maskers)
+        if self.config.gaps.fill:
+            c_blocks = tuple(
+                model.operator(
+                    tod_structure,
+                    sample_rate=fs,
+                    correlation_length=self.config.correlation_length,
+                )
+                for model, fs in zip(noise_models, sample_rates, strict=True)
+            )
+            logger_info('Created covariance blocks for gap-filling')
+            rhs = self.accumulate_rhs(h_blocks, w_blocks, maskers, cov_blocks=c_blocks)
+        else:
+            rhs = self.accumulate_rhs(h_blocks, w_blocks, maskers)
         logger_info('Accumulated RHS vector')
 
         # System matrix, including sample masking
@@ -243,18 +255,24 @@ class MultiObservationMapMaker(Generic[T]):
         def get_rhs(i, h_block, w_block, masker, cov_block):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
             rhs_op = h_block.T @ masker @ w_block
+            tod = data['sample_data']
             if cov_block is not None and isinstance(masker, MaskOperator):
-                # perform gap-filling
-                # TODO: propagate config options
-                # TODO: generate key using seed in config and/or obsid
-                # TODO: pass actual detector metadata
+                # perform gap-filling if a noise covariance is provided
+                # and the masker is not an `IdentityOperator`
+                # TODO: get additional metadata from reader to fold in key generation
+                # TODO: get detector metadat from reader to pass to gap-filling operator
                 fs = _sample_rate(data['timestamps'])
-                gapfill = GapFillingOperator(cov_block, masker, icov=w_block, rate=fs)  # type: ignore[arg-type]
-                key = jax.random.key(0)
-                sample_data = gapfill(key, data['sample_data'])
-            else:
-                sample_data = data['sample_data']
-            return rhs_op(sample_data)
+                gapfill = GapFillingOperator(
+                    cov_block,
+                    masker,
+                    icov=w_block,
+                    rate=fs,  # type: ignore[arg-type]
+                    max_cg_steps=self.config.gaps.fill_options.max_steps,
+                    rtol=self.config.gaps.fill_options.rtol,
+                )
+                key = jax.random.key(self.config.gaps.fill_options.seed)
+                tod = gapfill(key, tod)
+            return rhs_op(tod)
 
         # sum RHS across observations
         # make a dummy tuple of None if cov_blocks is not provided
@@ -1025,7 +1043,7 @@ class MLMapmaker(MapMaker):
             p = preconditioner
             h = acquisition @ selector.T
 
-        if not config.nested_pcg:
+        if not config.gaps.nested_pcg:
             M = masker @ inv_noise @ masker
         else:
             nested_solver = lineax.CG(

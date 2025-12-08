@@ -245,16 +245,11 @@ class MultiObservationMapMaker(Generic[T]):
             rhs_op = h_block.T @ masker @ w_block
             if cov_block is not None and isinstance(masker, MaskOperator):
                 # perform gap-filling
-                # TODO: accept/use MaskOperator instead of IndexOperator
-                # TODO: accept rate: Array
                 # TODO: propagate config options
                 # TODO: generate key using seed in config and/or obsid
                 # TODO: pass actual detector metadata
                 fs = _sample_rate(data['timestamps'])
-                indexer = IndexOperator(
-                    jnp.where(masker.to_boolean_mask()), in_structure=masker.in_structure()
-                )
-                gapfill = GapFillingOperator(cov_block, indexer, icov=w_block, rate=fs)  # type: ignore[arg-type]
+                gapfill = GapFillingOperator(cov_block, masker, icov=w_block, rate=fs)  # type: ignore[arg-type]
                 key = jax.random.key(0)
                 sample_data = gapfill(key, data['sample_data'])
             else:

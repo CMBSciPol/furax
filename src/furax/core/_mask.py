@@ -28,8 +28,14 @@ class MaskOperator(AbstractLinearOperator):
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
-        self._in_structure = in_structure
+        if packed_mask.dtype != jnp.uint8:
+            msg = (
+                'Expected an input array of unsigned byte data type.'
+                'You might be looking for the `MaskOperator.from_boolean_mask()` factory.'
+            )
+            raise ValueError(msg)
         self.mask = packed_mask
+        self._in_structure = in_structure
 
     @classmethod
     def from_boolean_mask(

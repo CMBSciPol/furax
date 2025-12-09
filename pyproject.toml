@@ -117,23 +117,17 @@ force-exclude = true # useful with ruff-pre-commit plugin
 src = ["src"]
 
 [tool.ruff.lint]
-select = [
+extend-select = [
     'ARG001', # flake8-unused-function-arguments
-    'E',      # pycodestyle-errors
-    'F',      # pyflakes
     'I',      # isort
     'UP',     # pyupgrade
     'T10',    # flake8-debugger
 ]
 ignore = [
-    'E203',
-    'E731',
-    'E741',
-    'F722', # conflicts with jaxtyping Array annotations
+    'E731', # lambda assignment
+    'E741', # ambiguous variable name
+    'F722', # forward annotation syntax error; conflicts with jaxtyping Array annotations
 ]
-
-[tool.ruff.lint.per-file-ignores]
-"src/furax/core/_base.py" = ['E743']
 
 [tool.ruff.format]
 quote-style = 'single'

@@ -128,7 +128,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
         return InverseOperator(self)
 
     @property
-    def I(self) -> 'AbstractLazyInverseOperator':
+    def I(self) -> 'AbstractLazyInverseOperator':  # noqa: E743
         return self.inverse()
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:

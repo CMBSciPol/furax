@@ -51,8 +51,8 @@ from .preconditioner import BJPreconditioner
 
 @dataclass
 class MapMakingResults:
-    map: Float[np.ndarray, 'pixels stokes']
-    map_weights: Float[np.ndarray, 'pixels stokes']
+    map: Float[np.ndarray, 'stokes pixels']
+    map_weights: Float[np.ndarray, 'pixels stokes stokes']
 
     def save(self, out_dir: str | Path) -> None:
         out_dir = Path(out_dir)

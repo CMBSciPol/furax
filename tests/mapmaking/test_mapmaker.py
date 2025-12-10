@@ -90,7 +90,8 @@ def test_binning(maker):
     assert zeros.shape == maker.landscape.shape
 
 
-def test_full_mapmaker(maker):
+def test_full_mapmaker(maker: MultiObservationMapMaker):
     results = maker.run()
-    assert 'map' in results
-    assert 'weights' in results
+    # check shapes
+    stokes, pixels = results.map.shape
+    assert results.map_weights.shape == (pixels, stokes, stokes)

@@ -23,6 +23,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
     def __init__(
         self,
         data: toast.Data,
+        observation_index: int = 0,
         *,
         det_selection: list[str] | None = None,
         det_mask: int = defaults.det_mask_nonscience,
@@ -36,8 +37,11 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         boresight: str = defaults.boresight_radec,
         cross_psd: tuple[Float[Array, ' freq'], Float[Array, 'det det freq']] | None = None,
     ) -> None:
-        # this is intended to only have one observation
-        self.data: toast.Observation = data.obs[0]
+        # only keep the observation at the given index
+        self.data: toast.Observation = data.obs[observation_index]
+
+        # also keep a reference to the full data container in order to apply toast operators later
+        self._toast_data = data
 
         # toast names
         self._det_selection = det_selection
@@ -118,7 +122,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         """
         if not hasattr(self.data, 'intervals') or 'scanning' not in self.data.intervals:
             # Scanning information missing, first compute the intervals
-            toast.ops.AzimuthIntervals().apply(self.data)
+            toast.ops.AzimuthIntervals().apply(self._toast_data)
         intervals = self.data.intervals['scanning']
         return np.array(intervals[['first', 'last']].tolist())
 
@@ -128,7 +132,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
     def get_left_scan_mask(self) -> Bool[Array, ' samps']:
         if not hasattr(self.data, 'intervals'):
             # Scanning information missing, first compute the intervals
-            toast.ops.AzimuthIntervals().apply(self.data)
+            toast.ops.AzimuthIntervals().apply(self._toast_data)
 
         # Left scan means scanning FROM right TO left
         intervals_list = self.data.intervals['scan_rightleft'][['first', 'last']].tolist()
@@ -140,7 +144,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
     def get_right_scan_mask(self) -> Bool[Array, ' samps']:
         if not hasattr(self.data, 'intervals'):
             # Scanning information missing, first compute the intervals
-            toast.ops.AzimuthIntervals().apply(self.data)
+            toast.ops.AzimuthIntervals().apply(self._toast_data)
 
         # Right scan means scanning FROM left TO right
         intervals_list = self.data.intervals['scan_leftright'][['first', 'last']].tolist()
@@ -182,7 +186,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
             resolution=[resolution * u.arcmin, resolution * u.arcmin],
             dimensions=tuple(),
         )
-        det_pixels.apply(self.data)
+        det_pixels.apply(self._toast_data)
 
         # Un-flatten the pixel indices
         pix = self._get_pixel_indices() % det_pixels._n_pix
@@ -223,7 +227,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
                 nside=landscape.nside,
                 nest=False,
             )
-            det_pixels.apply(self.data)
+            det_pixels.apply(self._toast_data)
             indices = self._get_pixel_indices()
             spin_ang = self._get_detector_angles() - 2 * self.get_detector_offset_angles()[:, None]
             return indices, spin_ang

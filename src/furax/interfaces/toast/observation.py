@@ -37,6 +37,23 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         boresight: str = defaults.boresight_radec,
         cross_psd: tuple[Float[Array, ' freq'], Float[Array, 'det det freq']] | None = None,
     ) -> None:
+        """Create a `ToastObservation` from a `toast.Data` object.
+
+        Args:
+            data: The toast data container.
+            observation_index: The index of the observation of interest in the list.
+                Defaults to zero (the first one).
+            det_selection: A list of detector names to select.
+            det_mask: A bitmask to exclude detectors.
+            det_data: The key for the detector sample data buffer.
+            pixels: The key for the pixel indices buffer.
+            quats: The key for the (RA/dec) expanded quaternions buffer.
+            hwp_angle: The key for the HWP angle buffer.
+            noise_model: The key for the noise model.
+            azimuth: The key for the azimuth angle buffer.
+            elevation: The key for the elevation angle buffer.
+            boresight: The key for the (RA/dec) boresight quaternions buffer.
+        """
         # only keep the observation at the given index
         self.data: toast.Observation = data.obs[observation_index]
 
@@ -54,7 +71,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         self._azimuth = azimuth
         self._elevation = elevation
         self._boresight = boresight
-        self._cross_psd = cross_psd
+        self._cross_psd = cross_psd  # FIXME: unused
 
     @property
     def info(self) -> ObservationMetadata:

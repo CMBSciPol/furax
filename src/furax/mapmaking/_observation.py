@@ -1,4 +1,5 @@
 from abc import abstractmethod
+from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Generic, TypeVar
@@ -16,6 +17,14 @@ from .noise import NoiseModel
 T = TypeVar('T')
 
 
+@dataclass
+class ObservationMetadata:
+    uid: int
+    wafer: str | None = None
+    band: str | None = None
+    telescope: str | None = None
+
+
 class AbstractGroundObservation(Generic[T]):
     """Abstract class for interfacing with ground-based observation data.
 
@@ -26,6 +35,11 @@ class AbstractGroundObservation(Generic[T]):
 
     def __init__(self, data: T) -> None:
         self.data = data
+
+    @property
+    @abstractmethod
+    def info(self) -> ObservationMetadata:
+        """Metadata about the observation"""
 
     @property
     @abstractmethod

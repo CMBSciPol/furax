@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from numpy.testing import assert_allclose
+from numpy.testing import assert_allclose, assert_array_equal
 
 from furax import IndexOperator, SymmetricBandToeplitzOperator
 from furax.obs._detectors import DetectorArray
@@ -117,5 +117,5 @@ def test_valid_samples_and_no_nans(do_jit, dummy_x, dummy_gap_filling_operator):
     else:
         func = op
     y = func(jax.random.key(1234), dummy_x)
-    assert_allclose(op.mask_op(dummy_x), op.mask_op(y))
+    assert_array_equal(op.pack(dummy_x), op.pack(y))
     assert not np.any(np.isnan(y))

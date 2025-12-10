@@ -1,7 +1,7 @@
 import operator
 import pickle
 from abc import abstractmethod
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from logging import Logger
 from math import prod
 from pathlib import Path
@@ -48,6 +48,37 @@ from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
 
+
+@dataclass
+class MapMakingResults:
+    map: Float[np.ndarray, 'pixels stokes']
+    map_weights: Float[np.ndarray, 'pixels stokes']
+
+    def save(self, out_dir: str | Path) -> None:
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # do not use asdict to avoid making copies
+        for field in fields(self):
+            val = getattr(self, field.name)
+            if isinstance(val, jax.Array) or isinstance(val, np.ndarray):
+                np.save(out_dir / field.name, np.array(val))
+            elif isinstance(val, StokesIQU):
+                np.save(out_dir / field.name, np.stack([val.i, val.q, val.u], axis=0))
+            elif isinstance(val, pixell.enmap.ndmap):
+                pixell.enmap.write_map(
+                    (out_dir / f'{field.name}.hdf').as_posix(), val, allow_modify=True
+                )
+            elif isinstance(val, WCS):
+                header = val.to_header()
+                hdu = fits.PrimaryHDU(header=header)
+                hdu.writeto(out_dir / f'{field.name}.fits', overwrite=True)
+            elif isinstance(val, StokesLandscape):
+                with open(out_dir / f'{field.name}.pkl', 'wb') as f:
+                    pickle.dump(val, f)
+            else:
+                furax_logger.warning(f'unsupported field type for {field.name}')
+
+
 T = TypeVar('T')
 
 
@@ -66,15 +97,15 @@ class MultiObservationMapMaker(Generic[T]):
         self.logger = logger or furax_logger
         self.landscape = _build_landscape(self.config, stokes=stokes)
 
-    def run(self, out_dir: str | Path | None = None) -> dict[str, Any]:
+    def run(self, out_dir: str | Path | None = None) -> MapMakingResults:
         """Runs the mapmaker and return results after saving them to the given directory."""
         results = self.make_maps()
 
         # Save outputs
         if out_dir is not None:
             out_dir = Path(out_dir)
-            out_dir.mkdir(parents=True, exist_ok=True)
-            self._save(results, out_dir)
+            results.save(out_dir)
+            self.logger.info(f'Mapmaking results saved to {out_dir}')
             self.config.dump_yaml(out_dir / 'mapmaking_config.yaml')
             self.logger.info('Mapmaking config saved to file')
 
@@ -84,7 +115,7 @@ class MultiObservationMapMaker(Generic[T]):
         """Returns a reader for a list of requested fields."""
         return GroundObservationReader(self.resources, data_field_names=data_field_names)
 
-    def make_maps(self) -> dict[str, Any]:
+    def make_maps(self) -> MapMakingResults:
         """Computes the mapmaker results (maps and other products)."""
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
 
@@ -199,7 +230,7 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Finished mapmaking')
 
         final_map = np.array([res.i, res.q, res.u])
-        return {'map': final_map, 'weights': np.array(map_weights)}
+        return MapMakingResults(final_map, np.array(map_weights))
 
     def build_acquisitions(self) -> list[AbstractLinearOperator]:
         # Only read necessary fields
@@ -366,29 +397,6 @@ class MultiObservationMapMaker(Generic[T]):
             return model, fs
 
         return jax.tree.map(fit_model, list(range(reader.count)))  # type: ignore[no-any-return]
-
-    def _save(self, results: dict[str, Any], out_dir: Path) -> None:
-        for key, m in results.items():
-            if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
-                np.save(out_dir / key, np.array(m))
-            elif isinstance(m, StokesIQU):
-                np.save(out_dir / key, np.stack([m.i, m.q, m.u], axis=0))
-            elif isinstance(m, pixell.enmap.ndmap):
-                pixell.enmap.write_map((out_dir / f'{key}.hdf').as_posix(), m, allow_modify=True)
-            elif isinstance(m, WCS):
-                header = m.to_header()
-                hdu = fits.PrimaryHDU(header=header)
-                hdu.writeto(out_dir / f'{key}.fits', overwrite=True)
-            elif isinstance(m, StokesLandscape):
-                with open(out_dir / f'{key}.pkl', 'wb') as f:
-                    pickle.dump(m, f)
-            elif isinstance(m, dict):
-                self._save(m, out_dir)
-                continue
-            else:
-                # TODO: warning?
-                continue
-            self.logger.info(f'Mapmaking result [{key}] saved to file')
 
 
 def _sample_rate(timestamps: Float[Array, '...']) -> Array:

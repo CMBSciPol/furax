@@ -52,7 +52,16 @@ from .preconditioner import BJPreconditioner
 @dataclass
 class MapMakingResults:
     map: Float[np.ndarray, 'stokes pixels']
+    """The estimated sky map"""
+
     map_weights: Float[np.ndarray, 'pixels stokes stokes']
+    """The map weights (diagonal covariance matrix)"""
+
+    noise_fits: Float[np.ndarray, '...'] | None = None
+    """The fitted noise PSD parameters"""
+
+    wcs: WCS | None = None
+    """The coordinate specification"""
 
     def save(self, out_dir: str | Path) -> None:
         out_dir = Path(out_dir)

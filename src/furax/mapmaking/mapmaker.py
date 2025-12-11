@@ -69,6 +69,8 @@ class MapMakingResults:
         # do not use asdict to avoid making copies
         for field in fields(self):
             val = getattr(self, field.name)
+            if val is None:
+                continue
             if isinstance(val, jax.Array) or isinstance(val, np.ndarray):
                 np.save(out_dir / field.name, np.array(val))
             elif isinstance(val, StokesIQU):

@@ -5,11 +5,13 @@ from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 import jax.numpy as jnp
+import numpy as np
 from astropy.wcs import WCS
 from jaxtyping import Array, Bool, Float
 from numpy.typing import NDArray
 
 from furax.math.quaternion import qmul, to_lonlat_angles
+from furax.obs._detectors import names_to_uids
 from furax.obs.landscapes import StokesLandscape
 
 from .noise import NoiseModel
@@ -50,6 +52,14 @@ class AbstractGroundObservation(Generic[T]):
     @abstractmethod
     def detectors(self) -> list[str]:
         """Returns a list of the detector names."""
+
+    @cached_property
+    def detector_uids(self) -> Array:
+        """Returns an array of detector uids.
+
+        Default implementation uses detector name hashes.
+        """
+        return jnp.asarray(names_to_uids(np.array(self.detectors)))
 
     @property
     def n_detectors(self) -> int:

@@ -4,7 +4,7 @@ from itertools import product
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Array, Float, PRNGKeyArray, Shaped, UInt32
+from jaxtyping import Float, PRNGKeyArray, Shaped, UInt32
 
 
 class DetectorArray:
@@ -38,13 +38,16 @@ class DetectorArray:
 
     def split_key(self, key: PRNGKeyArray) -> Shaped[PRNGKeyArray, ' _']:
         """Produces a new pseudo-random key for each detector."""
-        fold = jax.numpy.vectorize(jax.random.fold_in, signature='(),()->()')
-        subkeys: Shaped[PRNGKeyArray, ' ...'] = fold(key, self._ids())
-        return subkeys
+        fold = jnp.vectorize(jax.random.fold_in, signature='(),()->()')
+        uids = jnp.asarray(names_to_uids(self.names))
+        return fold(key, uids)  # type: ignore[no-any-return]
 
-    def _ids(self) -> UInt32[Array, '...']:
-        # vectorized hashing + converting to int + keeping only 7 bytes
-        name_to_int = np.vectorize(lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0xEFFFFFFF)
-        # return detectors IDs as unsigned 32-bit integers
-        ids: UInt32[Array, ' ...'] = jnp.uint32(name_to_int(self.names))
-        return ids
+
+def names_to_uids(names: Shaped[np.ndarray, '*#dims']) -> UInt32[np.ndarray, '*#dims']:
+    """Converts names to unsigned 32-bit integers using hashing.
+
+    This is typically used to generate deterministic uids for detectors based on their names.
+    """
+    # vectorized hashing + converting to int + keeping only 7 bytes
+    name_to_int = np.vectorize(lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0xEFFFFFFF)
+    return name_to_int(names).astype(np.uint32)  # type: ignore[no-any-return]

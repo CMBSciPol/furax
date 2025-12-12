@@ -5,7 +5,7 @@ from typing import Any
 import h5py
 import jax.numpy as jnp
 import numpy as np
-import pixell
+import pixell.utils
 import so3g.proj
 import yaml
 from astropy.wcs import WCS

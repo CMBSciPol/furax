@@ -8,7 +8,7 @@ pytest.importorskip('toast', reason='toast is not installed. Skipping tests.')
 pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
 
 from furax.interfaces.toast import ToastObservationResource
-from furax.mapmaking import GroundObservationReader
+from furax.mapmaking import GroundObservationReader, ObservationMetadata
 
 
 @pytest.fixture
@@ -27,6 +27,11 @@ def test_reader(reader) -> None:
 
     # Verify out_structure includes all non-optional fields (noise_model_fits is optional)
     assert reader.out_structure == {
+        'metadata': ObservationMetadata(
+            uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),
+            telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),
+            detector_uids=jax.ShapeDtypeStruct((ndet2,), dtype=jnp.uint32),
+        ),
         'sample_data': jax.ShapeDtypeStruct((ndet2, nsample2), dtype=jnp.float64),
         'valid_sample_masks': jax.ShapeDtypeStruct((ndet2, nsample2), dtype=jnp.bool),
         'valid_scanning_masks': jax.ShapeDtypeStruct((nsample2,), dtype=jnp.bool),
@@ -40,6 +45,9 @@ def test_reader(reader) -> None:
 
     data = [reader.read(0), reader.read(1)]
     for datum, _ in data:
+        assert datum['metadata'].uid.shape == ()
+        assert datum['metadata'].telescope_uid.shape == ()
+        assert datum['metadata'].detector_uids.shape == (ndet2,)
         assert datum['sample_data'].shape == (ndet2, nsample2)
         assert datum['valid_sample_masks'].shape == (ndet2, nsample2)
         assert datum['valid_scanning_masks'].shape == (nsample2,)
@@ -49,6 +57,9 @@ def test_reader(reader) -> None:
         assert datum['boresight_quaternions'].shape == (nsample2, 4)
 
     padding1 = data[0][1]
+    assert padding1['metadata'].uid == ()
+    assert padding1['metadata'].telescope_uid == ()
+    assert padding1['metadata'].detector_uids == (ndet2 - ndet1,)
     assert padding1['sample_data'] == (ndet2 - ndet1, nsample2 - nsample1)
     assert padding1['valid_sample_masks'] == (ndet2 - ndet1, nsample2 - nsample1)
     assert padding1['valid_scanning_masks'] == (nsample2 - nsample1,)
@@ -58,6 +69,9 @@ def test_reader(reader) -> None:
     assert padding1['boresight_quaternions'] == (nsample2 - nsample1, 0)
 
     padding2 = data[1][1]
+    assert padding2['metadata'].uid == ()
+    assert padding2['metadata'].telescope_uid == ()
+    assert padding2['metadata'].detector_uids == (0,)
     assert padding2['sample_data'] == (0, 0)
     assert padding2['valid_sample_masks'] == (0, 0)
     assert padding2['valid_scanning_masks'] == (0,)

@@ -1,6 +1,10 @@
 from . import utils
 from ._logger import logger
-from ._observation import AbstractGroundObservation, AbstractGroundObservationResource
+from ._observation import (
+    AbstractGroundObservation,
+    AbstractGroundObservationResource,
+    ObservationMetadata,
+)
 from ._reader import GroundObservationReader
 from .config import MapMakingConfig
 from .mapmaker import MultiObservationMapMaker
@@ -13,6 +17,7 @@ __all__ = [
     'GroundObservationReader',
     'MapMakingConfig',
     'MultiObservationMapMaker',
+    'ObservationMetadata',
     'logger',
     'utils',
 ]

@@ -8,8 +8,7 @@ pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping test
 pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
 
 from furax.interfaces.sotodlib import SOTODLibObservationResource
-from furax.mapmaking import GroundObservationReader
-from furax.mapmaking._observation import ObservationMetadata
+from furax.mapmaking import GroundObservationReader, ObservationMetadata
 
 
 @pytest.fixture

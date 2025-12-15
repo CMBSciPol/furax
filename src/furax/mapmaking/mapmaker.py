@@ -308,8 +308,7 @@ class MultiObservationMapMaker(Generic[T]):
 
         Also performs gap-filling on the data before projecting into map domain.
         """
-        # Only read what's needed
-        # metadata is used by gap-filling
+        # Only read what's needed (metadata is used in gap-filling)
         reader = self.get_reader(['metadata', 'sample_data', 'timestamps'])
 
         @jax.jit
@@ -319,14 +318,12 @@ class MultiObservationMapMaker(Generic[T]):
             tod = data['sample_data']
             if cov_block is not None and indexer is not None:
                 # perform gap-filling if a noise covariance and an IndexOperator are provided
-                # TODO: get additional metadata from reader to fold in key generation
-                # TODO: get detector metadata from reader to pass to gap-filling operator
-                fs = _sample_rate(data['timestamps'])
                 gapfill = GapFillingOperator(
                     cov_block,
                     indexer,
                     icov=w_block,
-                    rate=fs,  # type: ignore[arg-type]
+                    metadata=data['metadata'],
+                    rate=_sample_rate(data['timestamps']),  # type: ignore[arg-type]
                     max_cg_steps=self.config.gaps.fill_options.max_steps,
                     rtol=self.config.gaps.fill_options.rtol,
                 )

@@ -1,14 +1,15 @@
 from collections.abc import Callable
+from hashlib import sha1
 from typing import Any, ClassVar, Generic, TypeVar
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jax.tree_util import register_static
-from jaxtyping import PyTree
+from jaxtyping import PyTree, UInt32
 
 from furax.io.readers import AbstractReader
-from furax.obs._detectors import names_to_uids
 
 from ._observation import (
     AbstractGroundObservation,
@@ -161,8 +162,8 @@ class GroundObservationReader(AbstractReader, Generic[T]):
         def get_metadata(obs: AbstractGroundObservation[T]) -> ObservationMetadata:
             return ObservationMetadata(
                 uid=jnp.array(obs.uid, dtype=jnp.uint32),
-                telescope_uid=jnp.asarray(names_to_uids(obs.telescope)),
-                detector_uids=jnp.asarray(names_to_uids(obs.detectors)),
+                telescope_uid=jnp.asarray(_names_to_uids(obs.telescope)),
+                detector_uids=jnp.asarray(_names_to_uids(obs.detectors)),
             )
 
         return {
@@ -199,3 +200,13 @@ class GroundObservationReader(AbstractReader, Generic[T]):
         observation = resource.request(data_field_names)
         field_reader = GroundObservationReader._get_data_field_readers()
         return {field: field_reader[field](observation) for field in data_field_names}
+
+
+def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[np.ndarray, '...']:
+    """Converts names to unsigned 32-bit integers using hashing.
+
+    This is typically used to generate deterministic uids for detectors based on their names.
+    """
+    # hashing + converting to int + keeping only 7 bytes
+    name_to_int = np.vectorize(lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0xEFFFFFFF)
+    return name_to_int(names).astype(np.uint32)  # type: ignore[no-any-return]

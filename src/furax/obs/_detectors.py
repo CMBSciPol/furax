@@ -1,10 +1,6 @@
-from hashlib import sha1
-from itertools import product
-
 import jax
-import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Float, PRNGKeyArray, Shaped, UInt32
+from jaxtyping import Float
 
 
 class DetectorArray:
@@ -26,28 +22,5 @@ class DetectorArray:
         coords /= length
         self.coords = jax.device_put(coords)
 
-        # generate fake names for the detectors
-        # TODO(simon): accept user-defined names
-        widths = [len(str(s - 1)) for s in self.shape]
-        indices = [[f'{i:0{width}}' for i in range(dim)] for dim, width in zip(self.shape, widths)]
-        flat_names = ['DET_' + ''.join(combination) for combination in product(*indices)]
-        self.names = np.array(flat_names).reshape(self.shape)
-
     def __len__(self) -> int:
         return int(np.prod(self.shape))
-
-    def split_key(self, key: PRNGKeyArray) -> Shaped[PRNGKeyArray, ' _']:
-        """Produces a new pseudo-random key for each detector."""
-        fold = jnp.vectorize(jax.random.fold_in, signature='(),()->()')
-        uids = jnp.asarray(names_to_uids(self.names))
-        return fold(key, uids)  # type: ignore[no-any-return]
-
-
-def names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[np.ndarray, '...']:
-    """Converts names to unsigned 32-bit integers using hashing.
-
-    This is typically used to generate deterministic uids for detectors based on their names.
-    """
-    # vectorized hashing + converting to int + keeping only 7 bytes
-    name_to_int = np.vectorize(lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0xEFFFFFFF)
-    return name_to_int(names).astype(np.uint32)  # type: ignore[no-any-return]

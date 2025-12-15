@@ -13,7 +13,6 @@ from toast.observation import default_values as defaults
 from toast.ops.load_hdf5 import LoadHDF5
 
 from furax.mapmaking import AbstractGroundObservation, AbstractGroundObservationResource
-from furax.mapmaking._observation import ObservationMetadata
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.mapmaking.utils import get_local_meridian_angle
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
@@ -74,11 +73,12 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         self._cross_psd = cross_psd  # FIXME: unused
 
     @property
-    def info(self) -> ObservationMetadata:
-        return ObservationMetadata(
-            uid=self.data.uid,
-            telescope=self.data.telescope.name,
-        )
+    def uid(self) -> int:
+        return self.data.uid  # type: ignore[no-any-return]
+
+    @property
+    def telescope(self) -> str:
+        return self.data.telescope.name  # type: ignore[no-any-return]
 
     @property
     def n_samples(self) -> int:

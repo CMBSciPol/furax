@@ -309,7 +309,8 @@ class MultiObservationMapMaker(Generic[T]):
         Also performs gap-filling on the data before projecting into map domain.
         """
         # Only read what's needed
-        reader = self.get_reader(['sample_data', 'timestamps'])
+        # metadata is used by gap-filling
+        reader = self.get_reader(['metadata', 'sample_data', 'timestamps'])
 
         @jax.jit
         def get_rhs(i, h_block, w_block, masker, cov_block, indexer):  # type: ignore[no-untyped-def]

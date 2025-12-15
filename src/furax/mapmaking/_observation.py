@@ -5,13 +5,12 @@ from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 import jax.numpy as jnp
-import numpy as np
 from astropy.wcs import WCS
-from jaxtyping import Array, Bool, Float
+from jax.tree_util import register_dataclass
+from jaxtyping import Array, Bool, Float, UInt32
 from numpy.typing import NDArray
 
 from furax.math.quaternion import qmul, to_lonlat_angles
-from furax.obs._detectors import names_to_uids
 from furax.obs.landscapes import StokesLandscape
 
 from .noise import NoiseModel
@@ -19,12 +18,12 @@ from .noise import NoiseModel
 T = TypeVar('T')
 
 
+@register_dataclass
 @dataclass
 class ObservationMetadata:
-    uid: int
-    wafer: str | None = None
-    band: str | None = None
-    telescope: str | None = None
+    uid: UInt32[Array, '']
+    telescope_uid: UInt32[Array, '']
+    detector_uids: UInt32[Array, '...']
 
 
 class AbstractGroundObservation(Generic[T]):
@@ -40,8 +39,13 @@ class AbstractGroundObservation(Generic[T]):
 
     @property
     @abstractmethod
-    def info(self) -> ObservationMetadata:
-        """Metadata about the observation"""
+    def uid(self) -> int:
+        """Observation UID"""
+
+    @property
+    @abstractmethod
+    def telescope(self) -> str:
+        """Telescope name"""
 
     @property
     @abstractmethod
@@ -52,14 +56,6 @@ class AbstractGroundObservation(Generic[T]):
     @abstractmethod
     def detectors(self) -> list[str]:
         """Returns a list of the detector names."""
-
-    @cached_property
-    def detector_uids(self) -> Array:
-        """Returns an array of detector uids.
-
-        Default implementation uses detector name hashes.
-        """
-        return jnp.asarray(names_to_uids(np.array(self.detectors)))
 
     @property
     def n_detectors(self) -> int:

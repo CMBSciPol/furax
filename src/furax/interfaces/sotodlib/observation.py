@@ -16,7 +16,6 @@ from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import load_and_preprocess
 
 from furax.mapmaking import AbstractGroundObservation, AbstractGroundObservationResource
-from furax.mapmaking._observation import ObservationMetadata
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math import quaternion
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
@@ -64,11 +63,12 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return cls(data)
 
     @property
-    def info(self) -> ObservationMetadata:
-        return ObservationMetadata(
-            uid=self.data.obs_info.obs_id,
-            telescope=self.data.obs_info.get('telescope'),
-        )
+    def uid(self) -> int:
+        return self.data.obs_info.obs_id  # type: ignore[no-any-return]
+
+    @property
+    def telescope(self) -> str:
+        return self.data.obs_info.get('telescope')  # type: ignore[no-any-return]
 
     @property
     def n_samples(self) -> int:
@@ -293,6 +293,8 @@ class SOTODLibObservationResource(AbstractGroundObservationResource[SOTODLibObse
         else:
             # translate request to sotodlib subfield names
             fields = []
+            if 'metadata' in field_names:
+                fields.append('obs_info')
             if 'sample_data' in field_names:
                 fields.append('signal')
             if 'valid_sample_masks' in field_names:

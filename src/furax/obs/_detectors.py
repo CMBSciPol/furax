@@ -43,7 +43,7 @@ class DetectorArray:
         return fold(key, uids)  # type: ignore[no-any-return]
 
 
-def names_to_uids(names: Shaped[np.ndarray, '*#dims']) -> UInt32[np.ndarray, '*#dims']:
+def names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[np.ndarray, '...']:
     """Converts names to unsigned 32-bit integers using hashing.
 
     This is typically used to generate deterministic uids for detectors based on their names.

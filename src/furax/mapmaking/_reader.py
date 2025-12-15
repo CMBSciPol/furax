@@ -8,8 +8,13 @@ from jax.tree_util import register_static
 from jaxtyping import PyTree
 
 from furax.io.readers import AbstractReader
+from furax.obs._detectors import names_to_uids
 
-from ._observation import AbstractGroundObservation, AbstractGroundObservationResource
+from ._observation import (
+    AbstractGroundObservation,
+    AbstractGroundObservationResource,
+    ObservationMetadata,
+)
 
 T = TypeVar('T')
 
@@ -23,6 +28,7 @@ class GroundObservationReader(AbstractReader, Generic[T]):
     so that all observations have the same structure.
 
     The available data fields for ground observations are:
+        - metadata: observation, telescope and detector uids.
         - sample_data: the detector read-outs.
         - valid_sample_masks: the (boolean) mask indicating which samples are valid (=True).
         - valid_scanning_masks: the (boolean) mask indicating which samples are taken
@@ -35,15 +41,15 @@ class GroundObservationReader(AbstractReader, Generic[T]):
     """
 
     DATA_FIELD_NAMES: ClassVar[list[str]] = [
-        'sample_data',  # the detector read-outs.
-        'valid_sample_masks',  # the (boolean) mask indicating which samples are valid (=True).
-        'valid_scanning_masks',  # the (boolean) mask indicating which samples are taken during
-        # scans and not turnarounds.
-        'timestamps',  # the timestamps of the samples.
-        'hwp_angles',  # the half-wave-plate angles in radians.
-        'detector_quaternions',  # the detector quaternions.
-        'boresight_quaternions',  # the boresight quaternions.
-        'noise_model_fits',  # the fitted parameters for the noise model
+        'metadata',
+        'sample_data',
+        'valid_sample_masks',
+        'valid_scanning_masks',
+        'timestamps',
+        'hwp_angles',
+        'detector_quaternions',
+        'boresight_quaternions',
+        'noise_model_fits',
     ]
     """Supported data field names for ground observations"""
 
@@ -128,8 +134,13 @@ class GroundObservationReader(AbstractReader, Generic[T]):
     @classmethod
     def _get_data_field_structures_for(
         cls, n_detectors: int, n_samples: int
-    ) -> dict[str, jax.ShapeDtypeStruct]:
+    ) -> PyTree[jax.ShapeDtypeStruct]:
         return {
+            'metadata': ObservationMetadata(
+                uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
+                telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
+                detector_uids=jax.ShapeDtypeStruct((n_detectors,), dtype=jnp.uint32),  # type: ignore[arg-type]
+            ),
             'sample_data': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.float64),
             'valid_sample_masks': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.bool),
             'valid_scanning_masks': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
@@ -147,7 +158,15 @@ class GroundObservationReader(AbstractReader, Generic[T]):
                 raise ValueError('Data field not available')
             return x
 
+        def get_metadata(obs: AbstractGroundObservation[T]) -> ObservationMetadata:
+            return ObservationMetadata(
+                uid=jnp.array(obs.uid, dtype=jnp.uint32),
+                telescope_uid=jnp.asarray(names_to_uids(obs.telescope)),
+                detector_uids=jnp.asarray(names_to_uids(obs.detectors)),
+            )
+
         return {
+            'metadata': lambda obs: get_metadata(obs),
             'sample_data': lambda obs: obs.get_tods().astype(jnp.float64),
             'valid_sample_masks': lambda obs: obs.get_sample_mask(),
             'valid_scanning_masks': lambda obs: obs.get_scanning_mask(),

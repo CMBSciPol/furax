@@ -1,6 +1,6 @@
 import operator
 from functools import partial
-from typing import cast
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -126,7 +126,7 @@ def _get_mixing_matrix(
     synchrotron_nu0: float,
     patch_indices: PyTree[Array],
     in_structure: Stokes,
-) -> MixingMatrixOperator:
+) -> AbstractLinearOperator:  # Returns MixingMatrixOperator
     """Helper to construct the MixingMatrixOperator from parameters."""
     components = {}
     for component in _get_available_components(params):
@@ -141,7 +141,7 @@ def _get_mixing_matrix(
     return MixingMatrixOperator(**components)
 
 
-@jax.jit(static_argnums=(3, 4))
+@partial(jax.jit, static_argnums=(3, 4))
 def preconditionner(
     params: PyTree[Array],
     nu: Array,
@@ -149,7 +149,7 @@ def preconditionner(
     dust_nu0: float,
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
-) -> MixingMatrixOperator:
+) -> MixingMatrixOperator:  # type: ignore[valid-type]
     """
     Constructs the MixingMatrixOperator for preconditioning purposes.
 
@@ -301,8 +301,16 @@ def _spectral_log_likelihood_analytical(
 
 
 def _spectral_log_likelihood_fwd(
-    params, nu, N, d, dust_nu0, synchrotron_nu0, patch_indices, op, N_2
-):
+    params: PyTree[Array],
+    nu: Array,
+    N: AbstractLinearOperator,
+    d: Stokes,
+    dust_nu0: float,
+    synchrotron_nu0: float,
+    patch_indices: PyTree[Array],
+    op: AbstractLinearOperator | None,
+    N_2: AbstractLinearOperator | None,
+) -> Any:
     """
     The forward pass implementation for custom_vjp.
     Returns the likelihood (L) and the residuals needed for the backward pass.
@@ -326,7 +334,9 @@ def _spectral_log_likelihood_fwd(
     return L, res
 
 
-def _spectral_log_likelihood_bwd(dust_nu0, synchrotron_nu0, res, g):
+def _spectral_log_likelihood_bwd(
+    dust_nu0: float, synchrotron_nu0: float, res: Any, g: Scalar
+) -> tuple[Any, ...]:
     """
     The backward pass implementation for custom_vjp.
     """
@@ -365,7 +375,7 @@ def _spectral_log_likelihood_bwd(dust_nu0, synchrotron_nu0, res, g):
     # The 'cotangent' vector for the VJP
     u_vec = (2 * g) * op.T(w_r)
 
-    def apply_A_to_fixed_s(p):
+    def apply_A_to_fixed_s(p: PyTree[Array]) -> Any:
         """Helper to differentiate A w.r.t p while holding s constant."""
         A_temp = _get_mixing_matrix(p, nu, dust_nu0, synchrotron_nu0, patch_indices, in_structure)
         return A_temp(s)
@@ -387,7 +397,7 @@ _spectral_log_likelihood_analytical.defvjp(
 )
 
 
-@jax.jit(static_argnums=(4, 5, 9))
+@partial(jax.jit, static_argnums=(4, 5, 9))
 def spectral_log_likelihood(
     params: PyTree[Array],
     nu: Array,
@@ -465,10 +475,20 @@ def _sky_signal_analytical(
     _, s = _spectral_likelihood_core(
         params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0, op, N_2
     )
-    return cast(ComponentParametersDict, s)
+    return s
 
 
-def _sky_signal_fwd(params, nu, N, d, dust_nu0, synchrotron_nu0, patch_indices, op, N_2):
+def _sky_signal_fwd(
+    params: PyTree[Array],
+    nu: Array,
+    N: AbstractLinearOperator,
+    d: Stokes,
+    dust_nu0: float,
+    synchrotron_nu0: float,
+    patch_indices: PyTree[Array],
+    op: AbstractLinearOperator | None,
+    N_2: AbstractLinearOperator | None,
+) -> Any:
     if N_2 is None:
         N_2 = N
     if op is None:
@@ -487,7 +507,9 @@ def _sky_signal_fwd(params, nu, N, d, dust_nu0, synchrotron_nu0, patch_indices, 
     return s, res
 
 
-def _sky_signal_bwd(dust_nu0, synchrotron_nu0, res, g):
+def _sky_signal_bwd(
+    dust_nu0: float, synchrotron_nu0: float, res: Any, g: Scalar
+) -> tuple[Any, ...]:
     """
     Backward pass for sky_signal.
     'g' is the incoming gradient (cotangent) w.r.t the output 's'.
@@ -521,7 +543,7 @@ def _sky_signal_bwd(dust_nu0, synchrotron_nu0, res, g):
     u1 = op.T(residual_term)
 
     # Calculate VJP for: params -> A(w) against cotangent u1
-    def apply_A_w(p):
+    def apply_A_w(p: PyTree[Array]) -> Any:
         A_tmp = _get_mixing_matrix(p, nu, dust_nu0, synchrotron_nu0, patch_indices, in_structure)
         return A_tmp(w)  # Note: 'w' is fixed here
 
@@ -534,7 +556,7 @@ def _sky_signal_bwd(dust_nu0, synchrotron_nu0, res, g):
     u2 = -op.T(N_2.I(d_model_w))
 
     # Calculate VJP for: params -> A(s) against cotangent u2
-    def apply_A_s(p):
+    def apply_A_s(p: PyTree[Array]) -> Any:
         A_tmp = _get_mixing_matrix(p, nu, dust_nu0, synchrotron_nu0, patch_indices, in_structure)
         return A_tmp(s)  # Note: 's' is fixed here
 
@@ -552,7 +574,7 @@ def _sky_signal_bwd(dust_nu0, synchrotron_nu0, res, g):
 _sky_signal_analytical.defvjp(_sky_signal_fwd, _sky_signal_bwd)
 
 
-@jax.jit(static_argnums=(4, 5, 9))
+@partial(jax.jit, static_argnums=(4, 5, 9))
 def sky_signal(
     params: PyTree[Array],
     nu: Array,
@@ -607,10 +629,10 @@ def sky_signal(
     _, s = _spectral_likelihood_core(
         params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0, op, N_2
     )
-    return cast(ComponentParametersDict, s)
+    return s
 
 
-@jax.jit(static_argnums=(4, 5, 9))
+@partial(jax.jit, static_argnums=(4, 5, 9))
 def negative_log_likelihood(
     params: PyTree[Array],
     nu: Array,
@@ -676,7 +698,7 @@ def negative_log_likelihood(
     return nll
 
 
-@jax.jit(static_argnums=(4, 5, 9))
+@partial(jax.jit, static_argnums=(4, 5, 9))
 def spectral_cmb_variance(
     params: PyTree[Array],
     nu: Array,
@@ -735,7 +757,7 @@ def spectral_cmb_variance(
         patch_indices,
         op,
         N_2,
-        analytical_gradient=True,
+        analytical_gradient=analytical_gradient,
     )
 
     cmb_var: Scalar = jax.tree.reduce(operator.add, jax.tree.map(jnp.var, s['cmb']))

@@ -4,10 +4,11 @@ if TYPE_CHECKING:
     pass
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import pytest
 
-from furax import HomothetyOperator
-from furax.obs._likelihoods import _spectral_likelihood_core , spectral_log_likelihood
+from furax import Config, HomothetyOperator
+from furax.obs._likelihoods import _spectral_likelihood_core, spectral_log_likelihood
 from furax.obs.landscapes import FrequencyLandscape
 from furax.obs.operators import (
     CMBOperator,
@@ -254,7 +255,6 @@ def test_analytical_forward(likelihood_setup):
     N2 = setup['N2']
     op = setup['op']
 
-    
     likelihood = spectral_log_likelihood(
         params=base_params,
         nu=nu,
@@ -283,7 +283,10 @@ def test_analytical_forward(likelihood_setup):
 
     assert jnp.allclose(likelihood, likelihood_analytical)
 
-@pytest.mark.skip(reason="Gradient of lx.CG is failing sometimes .. to be tested manually with real data")
+
+@pytest.mark.skip(
+    reason='Gradient of lx.CG is failing sometimes .. to be tested manually with real data'
+)
 def test_analytical_gradient(likelihood_setup):
     setup = likelihood_setup
     d = setup['d']
@@ -296,7 +299,7 @@ def test_analytical_gradient(likelihood_setup):
     N2 = setup['N2']
     op = setup['op']
 
-    with Config(solver=lx.CG(rtol=1e-10 , atol=1e-10 , max_steps=10000)):
+    with Config(solver=lx.CG(rtol=1e-10, atol=1e-10, max_steps=10000)):
         auto_diff_grads = jax.grad(spectral_log_likelihood)(
             base_params,
             nu=nu,
@@ -325,5 +328,9 @@ def test_analytical_gradient(likelihood_setup):
 
     mse = lambda x, y: jax.tree.map(lambda a, b: jnp.mean((a - b) ** 2), x, y)
     mrse = lambda x, y: jax.tree.map(lambda a, b: jnp.mean(((a - b) / b) ** 2), x, y)
-    print(f"MSE between analytical and autodiff gradients: {mse(analytical_grads, auto_diff_grads)}")
-    print(f"MRSE between analytical and autodiff gradients: {mrse(analytical_grads, auto_diff_grads)}")
+    print(
+        f'MSE between analytical and autodiff gradients: {mse(analytical_grads, auto_diff_grads)}'
+    )
+    print(
+        f'MRSE between analytical and autodiff gradients: {mrse(analytical_grads, auto_diff_grads)}'
+    )

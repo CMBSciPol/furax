@@ -257,6 +257,8 @@ class AbstractLazyObservation(ABC, Generic[T]):
 
     def __init__(self, filename: str | Path):
         self.file = Path(filename)
+        if not self.file.exists():
+            raise FileNotFoundError(f'Observation file {self.file} does not exist')
 
     def get_data(self, requested_fields: list[str] | None = None) -> AbstractGroundObservation[T]:
         """Loads observation data from the underlying file.

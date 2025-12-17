@@ -63,7 +63,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return cls(data)
 
     @property
-    def uid(self) -> int:
+    def name(self) -> str:
         return self.data.obs_info.obs_id  # type: ignore[no-any-return]
 
     @property

@@ -73,8 +73,8 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         self._cross_psd = cross_psd  # FIXME: unused
 
     @property
-    def uid(self) -> int:
-        return self.data.uid  # type: ignore[no-any-return]
+    def name(self) -> str:
+        return self.data.name  # type: ignore[no-any-return]
 
     @property
     def telescope(self) -> str:

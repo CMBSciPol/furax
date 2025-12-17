@@ -161,7 +161,7 @@ class GroundObservationReader(AbstractReader, Generic[T]):
 
         def get_metadata(obs: AbstractGroundObservation[T]) -> HashedObservationMetadata:
             return HashedObservationMetadata(
-                uid=jnp.array(obs.uid, dtype=jnp.uint32),
+                uid=jnp.asarray(_names_to_uids(obs.name)),
                 telescope_uid=jnp.asarray(_names_to_uids(obs.telescope)),
                 detector_uids=jnp.asarray(_names_to_uids(obs.detectors)),
             )

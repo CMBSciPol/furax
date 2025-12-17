@@ -41,8 +41,8 @@ class AbstractGroundObservation(Generic[T]):
 
     @property
     @abstractmethod
-    def uid(self) -> int:
-        """Observation UID (unique identifier)"""
+    def name(self) -> str:
+        """Observation name"""
 
     @property
     @abstractmethod

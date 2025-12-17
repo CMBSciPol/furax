@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import pytest
 
 from furax import HomothetyOperator
-from furax.obs._likelihoods import _spectral_likelihood_core
+from furax.obs._likelihoods import _spectral_likelihood_core , spectral_log_likelihood
 from furax.obs.landscapes import FrequencyLandscape
 from furax.obs.operators import (
     CMBOperator,
@@ -242,4 +242,88 @@ def test_operator_and_different_noise(likelihood_setup: dict[str, float]) -> Non
         assert check_tree(s, expected_s)
 
 
-# You can add additional tests if needed for more granular behavior.
+def test_analytical_forward(likelihood_setup):
+    setup = likelihood_setup
+    d = setup['d']
+    nu = setup['nu']
+    base_params = setup['base_params']
+    patch_indices = setup['patch_indices']
+    dust_nu0 = setup['dust_nu0']
+    synchrotron_nu0 = setup['synchrotron_nu0']
+    N1 = setup['N1']
+    N2 = setup['N2']
+    op = setup['op']
+
+    
+    likelihood = spectral_log_likelihood(
+        params=base_params,
+        nu=nu,
+        N=N1,
+        d=d,
+        dust_nu0=dust_nu0,
+        synchrotron_nu0=synchrotron_nu0,
+        patch_indices=patch_indices,
+        op=op,
+        N_2=N2,
+        analytical_gradient=False,
+    )
+
+    likelihood_analytical = spectral_log_likelihood(
+        params=base_params,
+        nu=nu,
+        N=N1,
+        d=d,
+        dust_nu0=dust_nu0,
+        synchrotron_nu0=synchrotron_nu0,
+        patch_indices=patch_indices,
+        op=op,
+        N_2=N2,
+        analytical_gradient=True,
+    )
+
+    assert jnp.allclose(likelihood, likelihood_analytical)
+
+@pytest.mark.skip(reason="Gradient of lx.CG is failing sometimes .. to be tested manually with real data")
+def test_analytical_gradient(likelihood_setup):
+    setup = likelihood_setup
+    d = setup['d']
+    nu = setup['nu']
+    base_params = setup['base_params']
+    patch_indices = setup['patch_indices']
+    dust_nu0 = setup['dust_nu0']
+    synchrotron_nu0 = setup['synchrotron_nu0']
+    N1 = setup['N1']
+    N2 = setup['N2']
+    op = setup['op']
+
+    with Config(solver=lx.CG(rtol=1e-10 , atol=1e-10 , max_steps=10000)):
+        auto_diff_grads = jax.grad(spectral_log_likelihood)(
+            base_params,
+            nu=nu,
+            N=N1,
+            d=d,
+            dust_nu0=dust_nu0,
+            synchrotron_nu0=synchrotron_nu0,
+            patch_indices=patch_indices,
+            op=op,
+            N_2=N2,
+            analytical_gradient=False,
+        )
+
+    analytical_grads = jax.grad(spectral_log_likelihood)(
+        base_params,
+        nu=nu,
+        N=N1,
+        d=d,
+        dust_nu0=dust_nu0,
+        synchrotron_nu0=synchrotron_nu0,
+        patch_indices=patch_indices,
+        op=op,
+        N_2=N2,
+        analytical_gradient=True,
+    )
+
+    mse = lambda x, y: jax.tree.map(lambda a, b: jnp.mean((a - b) ** 2), x, y)
+    mrse = lambda x, y: jax.tree.map(lambda a, b: jnp.mean(((a - b) / b) ** 2), x, y)
+    print(f"MSE between analytical and autodiff gradients: {mse(analytical_grads, auto_diff_grads)}")
+    print(f"MRSE between analytical and autodiff gradients: {mrse(analytical_grads, auto_diff_grads)}")

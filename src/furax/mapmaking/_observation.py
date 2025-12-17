@@ -17,8 +17,6 @@ from furax.obs.landscapes import StokesLandscape
 
 from .noise import NoiseModel
 
-T = TypeVar('T')
-
 
 @register_dataclass
 @dataclass
@@ -28,6 +26,9 @@ class HashedObservationMetadata:
     uid: UInt32[Array, '']
     telescope_uid: UInt32[Array, '']
     detector_uids: UInt32[Array, '*#dets']
+
+
+T = TypeVar('T')
 
 
 class AbstractGroundObservation(ABC, Generic[T]):

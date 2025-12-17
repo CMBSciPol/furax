@@ -4,11 +4,10 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
-import jax
 import jax.numpy as jnp
 from astropy.wcs import WCS
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, Bool, Float, PRNGKeyArray, Shaped, UInt32
+from jaxtyping import Array, Bool, Float, UInt32
 from numpy.typing import NDArray
 
 from furax.math.quaternion import qmul, to_lonlat_angles
@@ -26,11 +25,6 @@ class ObservationMetadata:
     telescope_uid: UInt32[Array, '']
     detector_uids: UInt32[Array, '*#dets']
 
-    def split_key(self, key: PRNGKeyArray) -> Shaped[PRNGKeyArray, '*#dets']:
-        """Folds in metadata to a given PRNG key to form a new PRNG key array."""
-        fold = jnp.vectorize(jax.random.fold_in, signature='(),()->()')
-        return fold(fold(fold(key, self.uid), self.telescope_uid), self.detector_uids)  # type: ignore[no-any-return]
-
 
 class AbstractGroundObservation(Generic[T]):
     """Abstract class for interfacing with ground-based observation data.
@@ -46,7 +40,7 @@ class AbstractGroundObservation(Generic[T]):
     @property
     @abstractmethod
     def uid(self) -> int:
-        """Observation UID"""
+        """Observation UID (unique identifier)"""
 
     @property
     @abstractmethod

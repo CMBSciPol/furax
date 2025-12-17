@@ -3,7 +3,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import lineax as lx
-from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
+from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, Shaped
 
 from furax import FourierOperator, IndexOperator, MaskOperator, SymmetricBandToeplitzOperator
 from furax._config import verbose_solver_callback
@@ -127,6 +127,24 @@ def _folded_psd(
     return psd
 
 
+def split_key(
+    key: PRNGKeyArray, num: int | tuple[int, ...], metadata: ObservationMetadata | None = None
+) -> Shaped[PRNGKeyArray, '*#dets']:
+    if metadata is None:
+        return jax.random.split(key, num)
+
+    meta = metadata
+    fold = jnp.vectorize(jax.random.fold_in, signature='(),()->()')
+    subkeys = fold(fold(fold(key, meta.uid), meta.telescope_uid), meta.detector_uids)
+    if subkeys.shape != num:
+        msg = (
+            'Splitting key using provided metadata resulted in a wrong shape.'
+            f'Expected {num}, got {subkeys.shape}.'
+        )
+        raise RuntimeError(msg)
+    return subkeys  # type: ignore[no-any-return]
+
+
 @partial(jax.jit, static_argnames=('metadata'))
 def generate_noise_realization(
     key: PRNGKeyArray,
@@ -187,9 +205,5 @@ def generate_noise_realization(
         xi = tdata[offset : offset + n]
         return xi - jnp.mean(xi)
 
-    subkeys = (
-        metadata.split_key(key)
-        if metadata is not None
-        else jax.random.split(key, structure.shape[:-1])
-    )
+    subkeys = split_key(key, structure.shape[:-1], metadata)
     return func(subkeys, psd)  # type: ignore[no-any-return]

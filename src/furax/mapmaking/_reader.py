@@ -13,7 +13,7 @@ from furax.io.readers import AbstractReader
 
 from ._observation import (
     AbstractGroundObservation,
-    AbstractGroundObservationResource,
+    AbstractLazyObservation,
     HashedObservationMetadata,
 )
 
@@ -60,7 +60,7 @@ class GroundObservationReader(AbstractReader, Generic[T]):
 
     def __init__(
         self,
-        observations: list[AbstractGroundObservationResource[T]],
+        observations: list[AbstractLazyObservation[T]],
         *,
         data_field_names: list[str] | None = None,
     ) -> None:
@@ -179,15 +179,15 @@ class GroundObservationReader(AbstractReader, Generic[T]):
         }
 
     def _read_structure_impure(
-        self, resource: AbstractGroundObservationResource[T], data_field_names: list[str]
+        self, observation: AbstractLazyObservation[T], data_field_names: list[str]
     ) -> PyTree[jax.ShapeDtypeStruct]:
-        # don't request anything
-        # this still loads minimal info about the observation data
-        observation = resource.request()
+        # request an empty list
+        # this loads sufficient info to determine the structure
+        data = observation.get_data([])
 
         # find the data shape
-        n_detectors = observation.n_detectors
-        n_samples = observation.n_samples
+        n_detectors = data.n_detectors
+        n_samples = data.n_samples
 
         field_structure = GroundObservationReader._get_data_field_structures_for(
             n_detectors=n_detectors, n_samples=n_samples
@@ -195,11 +195,11 @@ class GroundObservationReader(AbstractReader, Generic[T]):
         return {field: field_structure[field] for field in data_field_names}
 
     def _read_data_impure(
-        self, resource: AbstractGroundObservationResource[T], data_field_names: list[str]
+        self, observation: AbstractLazyObservation[T], data_field_names: list[str]
     ) -> PyTree[Array]:
-        observation = resource.request(data_field_names)
+        data = observation.get_data(data_field_names)
         field_reader = GroundObservationReader._get_data_field_readers()
-        return {field: field_reader[field](observation) for field in data_field_names}
+        return {field: field_reader[field](data) for field in data_field_names}
 
 
 def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[np.ndarray, '...']:

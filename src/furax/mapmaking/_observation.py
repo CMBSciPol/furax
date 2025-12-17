@@ -1,8 +1,10 @@
-from abc import abstractmethod
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar
 
 import jax.numpy as jnp
 from astropy.wcs import WCS
@@ -28,7 +30,7 @@ class HashedObservationMetadata:
     detector_uids: UInt32[Array, '*#dets']
 
 
-class AbstractGroundObservation(Generic[T]):
+class AbstractGroundObservation(ABC, Generic[T]):
     """Abstract class for interfacing with ground-based observation data.
 
     This class defines what data is needed for making maps with ground-based data.
@@ -38,6 +40,21 @@ class AbstractGroundObservation(Generic[T]):
 
     def __init__(self, data: T) -> None:
         self.data = data
+
+    @classmethod
+    @abstractmethod
+    def from_file(
+        cls, filename: str | Path, requested_fields: list[str] | None = None
+    ) -> AbstractGroundObservation[T]:
+        """Loads the observation from a binary file.
+
+        Args:
+            filename: The binary file.
+            requested_fields: List of data fields needed.
+                If None, the entire file is loaded into memory.
+                If `[]` (empty list), loads only what's needed to determine buffer shapes.
+                Otherwise, loads whatever is needed to satistfy the request.
+        """
 
     @property
     @abstractmethod
@@ -126,7 +143,7 @@ class AbstractGroundObservation(Generic[T]):
     @abstractmethod
     def get_pointing_and_spin_angles(
         self, landscape: StokesLandscape
-    ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
+    ) -> tuple[Float[Array, ' ...'], Float[Array, ' ...']]:
         """Obtain pointing information and spin angles from the observation"""
 
     @abstractmethod
@@ -234,13 +251,19 @@ class AbstractGroundObservation(Generic[T]):
         return alpha, delta
 
 
-class AbstractGroundObservationResource(Generic[T]):
-    def __init__(self, filename: str | Path) -> None:
-        self.file = Path(filename)
-        if not self.file.exists():
-            msg = f'Observation file {self.file!r} does not exist'
-            raise RuntimeError(msg)
+class AbstractLazyObservation(ABC, Generic[T]):
+    interface_class: ClassVar[type[AbstractGroundObservation[T]]]
 
-    @abstractmethod
-    def request(self, field_names: list[str] | None = None) -> AbstractGroundObservation[T]:
-        """Loads necessary data from disk to make requested data fields available."""
+    def __init__(self, filename: str | Path):
+        self.file = Path(filename)
+
+    def get_data(self, requested_fields: list[str] | None = None) -> AbstractGroundObservation[T]:
+        """Loads observation data from the underlying file.
+
+        Args:
+            requested_fields: List of data fields needed.
+                If None, the entire file is loaded into memory.
+                If `[]` (empty list), loads only what's needed to determine buffer shapes.
+                Otherwise, loads whatever is needed to satistfy the request.
+        """
+        return self.interface_class.from_file(self.file, requested_fields)

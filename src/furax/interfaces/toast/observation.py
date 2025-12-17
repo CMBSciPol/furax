@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import typing
 from functools import cached_property
+from pathlib import Path
 from typing import Any
 
 import jax.numpy as jnp
@@ -12,7 +15,8 @@ from numpy.typing import NDArray
 from toast.observation import default_values as defaults
 from toast.ops.load_hdf5 import LoadHDF5
 
-from furax.mapmaking import AbstractGroundObservation, AbstractGroundObservationResource
+from furax.mapmaking import AbstractGroundObservation
+from furax.mapmaking._observation import AbstractLazyObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.mapmaking.utils import get_local_meridian_angle
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
@@ -71,6 +75,44 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         self._elevation = elevation
         self._boresight = boresight
         self._cross_psd = cross_psd  # FIXME: unused
+
+    @classmethod
+    def from_file(
+        cls, filename: str | Path, requested_fields: list[str] | None = None
+    ) -> ToastObservation:
+        # check that file exists
+        if not Path(filename).exists():
+            raise FileNotFoundError(f'File {filename} does not exist')
+        if isinstance(filename, Path):
+            filename = filename.as_posix()
+
+        # Prepare TOAST loading operator
+        loader = LoadHDF5(files=filename)
+        if requested_fields is not None:
+            # translate request to sotodlib subfield names
+            detdata = []
+            if 'sample_data' in requested_fields:
+                detdata.append(defaults.det_data)
+            if 'valid_sample_masks' in requested_fields:
+                detdata.append(defaults.det_flags)
+
+            shared = [defaults.times]  # Always need to load timestamps
+            if 'hwp_angles' in requested_fields:
+                shared.append(defaults.hwp_angle)
+            if 'boresight_quaternions' in requested_fields:
+                shared.append(defaults.boresight_radec)
+
+            intervals = ['']  # Toast loads all intervals if the list is empty
+            if 'valid_scanning_masks' in requested_fields:
+                intervals.append(defaults.scanning_interval)
+
+            loader.detdata = detdata
+            loader.shared = shared
+            loader.intervals = intervals
+
+        data = toast.Data()
+        loader.apply(data)
+        return ToastObservation(data)
 
     @property
     def name(self) -> str:
@@ -217,7 +259,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
     def get_pointing_and_spin_angles(
         self, landscape: StokesLandscape
-    ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
+    ) -> tuple[Float[Array, ' ...'], Float[Array, ' ...']]:
         """Obtain pointing information and spin angles from the observation"""
 
         det_keys = self.data.detdata.keys()
@@ -299,31 +341,5 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         return jnp.moveaxis(jnp.atleast_3d(quats), -1, 0)
 
 
-class ToastObservationResource(AbstractGroundObservationResource[ToastObservation]):
-    def request(self, field_names: list[str] | None = None) -> ToastObservation:
-        field_names = field_names or []
-        detdata = []
-        if 'sample_data' in field_names:
-            detdata.append(defaults.det_data)
-        if 'valid_sample_masks' in field_names:
-            detdata.append(defaults.det_flags)
-
-        shared = [defaults.times]  # Always need to load timestamps
-        if 'hwp_angles' in field_names:
-            shared.append(defaults.hwp_angle)
-        if 'boresight_quaternions' in field_names:
-            shared.append(defaults.boresight_radec)
-
-        intervals = ['']  # Toast loads all intervals if the list is empty
-        if 'valid_scanning_masks' in field_names:
-            intervals.append(defaults.scanning_interval)
-
-        data = toast.Data()
-        toast_loader = LoadHDF5(
-            files=self.file.as_posix(),
-            detdata=detdata,
-            shared=shared,
-            intervals=intervals,
-        )
-        toast_loader.apply(data)
-        return ToastObservation(data)
+class LazyToastObservation(AbstractLazyObservation[toast.Data]):
+    interface_class = ToastObservation

@@ -1,11 +1,13 @@
 from abc import abstractmethod
+from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 import jax.numpy as jnp
 from astropy.wcs import WCS
-from jaxtyping import Array, Bool, Float
+from jax.tree_util import register_dataclass
+from jaxtyping import Array, Bool, Float, UInt32
 from numpy.typing import NDArray
 
 from furax.math.quaternion import qmul, to_lonlat_angles
@@ -14,6 +16,16 @@ from furax.obs.landscapes import StokesLandscape
 from .noise import NoiseModel
 
 T = TypeVar('T')
+
+
+@register_dataclass
+@dataclass
+class HashedObservationMetadata:
+    """Hashed version of some metadata fields for JAX compatibility."""
+
+    uid: UInt32[Array, '']
+    telescope_uid: UInt32[Array, '']
+    detector_uids: UInt32[Array, '*#dets']
 
 
 class AbstractGroundObservation(Generic[T]):
@@ -26,6 +38,16 @@ class AbstractGroundObservation(Generic[T]):
 
     def __init__(self, data: T) -> None:
         self.data = data
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Observation name"""
+
+    @property
+    @abstractmethod
+    def telescope(self) -> str:
+        """Telescope name"""
 
     @property
     @abstractmethod

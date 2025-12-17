@@ -4,7 +4,7 @@ from ._observation import (
     AbstractGroundObservation,
     HashedObservationMetadata,
 )
-from ._reader import GroundObservationReader
+from ._reader import ObservationReader
 from .config import MapMakingConfig
 from .mapmaker import MultiObservationMapMaker
 from .preconditioner import BJPreconditioner
@@ -13,7 +13,7 @@ __all__ = [
     'BJPreconditioner',
     'AbstractGroundObservation',
     'HashedObservationMetadata',
-    'GroundObservationReader',
+    'ObservationReader',
     'MapMakingConfig',
     'MultiObservationMapMaker',
     'logger',

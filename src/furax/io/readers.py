@@ -158,7 +158,9 @@ class AbstractReader(ABC):
             padding = self.paddings[i]
             data = self._read_data_impure(*args, **keywords, **self.common_keywords)
             device_data = jax.tree.map(
-                lambda leaf, pad: jnp.pad(leaf, [(0, p) for p in pad]), data, padding
+                lambda leaf, pad: jnp.pad(leaf, [(0, p) for p in pad]) if len(pad) > 0 else leaf,
+                data,
+                padding,
             )
             return device_data
 

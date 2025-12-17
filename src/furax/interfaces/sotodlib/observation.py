@@ -5,7 +5,7 @@ from typing import Any
 import h5py
 import jax.numpy as jnp
 import numpy as np
-import pixell
+import pixell.utils
 import so3g.proj
 import yaml
 from astropy.wcs import WCS
@@ -61,6 +61,14 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
         data = load_and_preprocess(observation_id, config, dets=detector_selection)
         return cls(data)
+
+    @property
+    def name(self) -> str:
+        return self.data.obs_info.obs_id  # type: ignore[no-any-return]
+
+    @property
+    def telescope(self) -> str:
+        return self.data.obs_info.get('telescope')  # type: ignore[no-any-return]
 
     @property
     def n_samples(self) -> int:
@@ -285,6 +293,8 @@ class SOTODLibObservationResource(AbstractGroundObservationResource[SOTODLibObse
         else:
             # translate request to sotodlib subfield names
             fields = []
+            if 'metadata' in field_names:
+                fields.append('obs_info')
             if 'sample_data' in field_names:
                 fields.append('signal')
             if 'valid_sample_masks' in field_names:

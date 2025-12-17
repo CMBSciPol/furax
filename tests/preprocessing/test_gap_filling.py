@@ -5,14 +5,8 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax import IndexOperator, SymmetricBandToeplitzOperator
-from furax.obs._detectors import DetectorArray
 from furax.preprocessing import GapFillingOperator, generate_noise_realization
 from furax.preprocessing.gap_filling import _folded_psd, _get_kernel
-
-
-class FakeDetectorArray(DetectorArray):
-    def __init__(self, num: int | tuple[int, ...]) -> None:
-        super().__init__(np.zeros(num), np.zeros(num), 1.0)
 
 
 @pytest.mark.parametrize(
@@ -43,27 +37,19 @@ def test_generate_realization_shape(shape: tuple[int, ...]):
     key = jax.random.key(31415926539)
     structure = jax.ShapeDtypeStruct(shape, float)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
-    dets = FakeDetectorArray(shape[:-1])
-    real = generate_noise_realization(key, cov, dets)
+    real = generate_noise_realization(key, cov)
     assert real.shape == shape
 
 
 @pytest.fixture
 def dummy_shape():
-    shape = (2, 2, 100)
-    return shape
+    return (2, 2, 100)
 
 
 @pytest.fixture
 def dummy_x(dummy_shape):
     key = jax.random.key(987654321)
-    x = jax.random.uniform(key, dummy_shape, dtype=float)
-    return x
-
-
-@pytest.fixture
-def dummy_detectors(dummy_shape):
-    return FakeDetectorArray(dummy_shape[:-1])
+    return jax.random.uniform(key, dummy_shape, dtype=float)
 
 
 @pytest.fixture
@@ -72,8 +58,7 @@ def dummy_mask(dummy_shape):
     samples = dummy_shape[-1]
     gap_size = samples // 10
     left, right = (samples - gap_size) // 2, (samples + gap_size) // 2
-    mask = mask.at[:, left:right].set(False)
-    return mask
+    return mask.at[:, left:right].set(False)
 
 
 @pytest.fixture
@@ -87,18 +72,17 @@ def dummy_mask_op(dummy_x, dummy_mask):
 @pytest.fixture
 def dummy_cov(dummy_x):
     structure = jax.ShapeDtypeStruct(dummy_x.shape, dummy_x.dtype)
-    cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
-    return cov
+    return SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
 
 
 @pytest.fixture
-def dummy_gap_filling_operator(dummy_shape, dummy_mask, dummy_detectors):
+def dummy_gap_filling_operator(dummy_shape, dummy_mask):
     x = jnp.ones(dummy_shape, dtype=float)
     structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
     indices = jnp.where(dummy_mask)
     mask_op = IndexOperator(indices, in_structure=structure)
-    return GapFillingOperator(cov, mask_op, dummy_detectors)
+    return GapFillingOperator(cov, mask_op)
 
 
 @pytest.mark.parametrize(

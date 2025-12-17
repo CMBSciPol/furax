@@ -1,15 +1,21 @@
 from collections.abc import Callable
+from hashlib import sha1
 from typing import Any, ClassVar, Generic, TypeVar
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jax.tree_util import register_static
-from jaxtyping import PyTree
+from jaxtyping import PyTree, UInt32
 
 from furax.io.readers import AbstractReader
 
-from ._observation import AbstractGroundObservation, AbstractGroundObservationResource
+from ._observation import (
+    AbstractGroundObservation,
+    AbstractGroundObservationResource,
+    HashedObservationMetadata,
+)
 
 T = TypeVar('T')
 
@@ -23,6 +29,7 @@ class GroundObservationReader(AbstractReader, Generic[T]):
     so that all observations have the same structure.
 
     The available data fields for ground observations are:
+        - metadata: observation, telescope and detector uids.
         - sample_data: the detector read-outs.
         - valid_sample_masks: the (boolean) mask indicating which samples are valid (=True).
         - valid_scanning_masks: the (boolean) mask indicating which samples are taken
@@ -35,15 +42,15 @@ class GroundObservationReader(AbstractReader, Generic[T]):
     """
 
     DATA_FIELD_NAMES: ClassVar[list[str]] = [
-        'sample_data',  # the detector read-outs.
-        'valid_sample_masks',  # the (boolean) mask indicating which samples are valid (=True).
-        'valid_scanning_masks',  # the (boolean) mask indicating which samples are taken during
-        # scans and not turnarounds.
-        'timestamps',  # the timestamps of the samples.
-        'hwp_angles',  # the half-wave-plate angles in radians.
-        'detector_quaternions',  # the detector quaternions.
-        'boresight_quaternions',  # the boresight quaternions.
-        'noise_model_fits',  # the fitted parameters for the noise model
+        'metadata',
+        'sample_data',
+        'valid_sample_masks',
+        'valid_scanning_masks',
+        'timestamps',
+        'hwp_angles',
+        'detector_quaternions',
+        'boresight_quaternions',
+        'noise_model_fits',
     ]
     """Supported data field names for ground observations"""
 
@@ -128,8 +135,13 @@ class GroundObservationReader(AbstractReader, Generic[T]):
     @classmethod
     def _get_data_field_structures_for(
         cls, n_detectors: int, n_samples: int
-    ) -> dict[str, jax.ShapeDtypeStruct]:
+    ) -> PyTree[jax.ShapeDtypeStruct]:
         return {
+            'metadata': HashedObservationMetadata(
+                uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
+                telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
+                detector_uids=jax.ShapeDtypeStruct((n_detectors,), dtype=jnp.uint32),  # type: ignore[arg-type]
+            ),
             'sample_data': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.float64),
             'valid_sample_masks': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.bool),
             'valid_scanning_masks': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
@@ -147,7 +159,15 @@ class GroundObservationReader(AbstractReader, Generic[T]):
                 raise ValueError('Data field not available')
             return x
 
+        def get_metadata(obs: AbstractGroundObservation[T]) -> HashedObservationMetadata:
+            return HashedObservationMetadata(
+                uid=jnp.asarray(_names_to_uids(obs.name)),
+                telescope_uid=jnp.asarray(_names_to_uids(obs.telescope)),
+                detector_uids=jnp.asarray(_names_to_uids(obs.detectors)),
+            )
+
         return {
+            'metadata': lambda obs: get_metadata(obs),
             'sample_data': lambda obs: obs.get_tods().astype(jnp.float64),
             'valid_sample_masks': lambda obs: obs.get_sample_mask(),
             'valid_scanning_masks': lambda obs: obs.get_scanning_mask(),
@@ -180,3 +200,13 @@ class GroundObservationReader(AbstractReader, Generic[T]):
         observation = resource.request(data_field_names)
         field_reader = GroundObservationReader._get_data_field_readers()
         return {field: field_reader[field](observation) for field in data_field_names}
+
+
+def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[np.ndarray, '...']:
+    """Converts names to unsigned 32-bit integers using hashing.
+
+    This is typically used to generate deterministic uids for detectors based on their names.
+    """
+    # hashing + converting to int + keeping only 7 bytes
+    name_to_int = np.vectorize(lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0xEFFFFFFF)
+    return name_to_int(names).astype(np.uint32)  # type: ignore[no-any-return]

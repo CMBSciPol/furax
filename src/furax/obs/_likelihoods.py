@@ -119,7 +119,74 @@ def _get_available_components(params: PyTree[Array]) -> list[str]:
     return available_components
 
 
-@partial(jax.jit, static_argnums=(5, 6))
+def _get_mixing_matrix(
+    params: PyTree[Array],
+    nu: Array,
+    dust_nu0: float,
+    synchrotron_nu0: float,
+    patch_indices: PyTree[Array],
+    in_structure: Stokes,
+) -> MixingMatrixOperator:
+    """Helper to construct the MixingMatrixOperator from parameters."""
+    components = {}
+    for component in _get_available_components(params):
+        components[component] = _create_component(
+            component,
+            nu,
+            dust_nu0 if component == 'dust' else synchrotron_nu0,
+            params,
+            patch_indices,
+            in_structure,
+        )
+    return MixingMatrixOperator(**components)
+
+
+@jax.jit(static_argnums=(3, 4))
+def preconditionner(
+    params: PyTree[Array],
+    nu: Array,
+    d: Stokes,
+    dust_nu0: float,
+    synchrotron_nu0: float,
+    patch_indices: PyTree[Array] = single_cluster_indices,
+) -> MixingMatrixOperator:
+    """
+    Constructs the MixingMatrixOperator for preconditioning purposes.
+
+    This function builds the mixing matrix operator based on the provided spectral parameters
+    and frequencies, without directly involving the observed data or noise operators.
+    It is typically used to create a preconditioner for iterative solvers in component separation.
+
+    Args:
+        params (PyTree[Array]): Dictionary of spectral parameters.
+        nu (Array): Array of frequencies.
+        d (Stokes): Data in Stokes parameters, used only to infer the `in_structure`
+                    for the MixingMatrixOperator. Its values are not used.
+        dust_nu0 (float): Reference frequency for dust.
+        synchrotron_nu0 (float): Reference frequency for synchrotron.
+        patch_indices (PyTree[Array], optional): Patch indices for spatially varying parameters (default is single_cluster_indices).
+
+    Returns:
+        MixingMatrixOperator: The constructed mixing matrix operator suitable for preconditioning.
+
+    Example:
+        >>> from furax.obs import preconditionner
+        >>> from furax.obs.stokes import Stokes
+        >>> import jax.numpy as jnp
+        >>> nside = 64
+        >>> nu_freqs = jnp.array([30., 40., 100.])
+        >>> dummy_d = Stokes.zeros((len(nu_freqs), 12 * nside**2)) # Dummy data for structure
+        >>> params = {'temp_dust': 20.0, 'beta_dust': 1.54, 'beta_pl': -3.0}
+        >>> dust_nu0_ref = 150.0
+        >>> synchrotron_nu0_ref = 20.0
+        >>> A_precond = preconditionner(params, nu_freqs, dummy_d, dust_nu0_ref, synchrotron_nu0_ref)
+        >>> # The preconditioner can now be used with a solver.
+    """
+    in_structure = Stokes.structure_for((d.shape[1],))
+    A = _get_mixing_matrix(params, nu, dust_nu0, synchrotron_nu0, patch_indices, in_structure)
+    return A
+
+
 def _spectral_likelihood_core(
     params: PyTree[Array],
     patch_indices: PyTree[Array],
@@ -197,18 +264,8 @@ def _spectral_likelihood_core(
         f'patch_indices.keys(): {patch_indices.keys()} , valid_patch_keys: {valid_patch_keys}'
     )
 
-    components = {}
-    for component in _get_available_components(params):
-        components[component] = _create_component(
-            component,
-            nu,
-            dust_nu0 if component == 'dust' else synchrotron_nu0,
-            params,
-            patch_indices,
-            in_structure,
-        )
-
-    A = MixingMatrixOperator(**components)
+    # Use helper to build A
+    A = _get_mixing_matrix(params, nu, dust_nu0, synchrotron_nu0, patch_indices, in_structure)
 
     AND = (A.T @ op.T @ N.I)(d)
     s = (A.T @ op.T @ N_2.I @ op @ A).I(AND)

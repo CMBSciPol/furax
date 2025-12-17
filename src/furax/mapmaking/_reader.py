@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from hashlib import sha1
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -21,7 +21,7 @@ T = TypeVar('T')
 
 
 @register_static
-class GroundObservationReader(AbstractReader, Generic[T]):
+class ObservationReader(AbstractReader, Generic[T]):
     """Jittable reader for ground observations.
 
     The reader is set up with a list of filenames and data field names. Individual files can be
@@ -41,53 +41,31 @@ class GroundObservationReader(AbstractReader, Generic[T]):
         - noise_model_fits: the fitted parameters for the noise model (1/f noise by default).
     """
 
-    DATA_FIELD_NAMES: ClassVar[list[str]] = [
-        'metadata',
-        'sample_data',
-        'valid_sample_masks',
-        'valid_scanning_masks',
-        'timestamps',
-        'hwp_angles',
-        'detector_quaternions',
-        'boresight_quaternions',
-        'noise_model_fits',
-    ]
-    """Supported data field names for ground observations"""
-
-    OPTIONAL_DATA_FIELD_NAMES: ClassVar[list[str]] = [
-        'noise_model_fits',
-    ]
-
     def __init__(
         self,
         observations: list[AbstractLazyObservation[T]],
         *,
-        data_field_names: list[str] | None = None,
+        requested_fields: list[str] | None = None,
     ) -> None:
         """Initializes the reader with a list of filenames and optional list of field names.
 
         Args:
             filenames: A list of filenames. Each filename can be a string or a Path object.
-            data_field_names: Optional list of fields to load. If None, read all non-optional fields
+            requested_fields: Optional list of fields to load. If None, read all non-optional fields.
         """
-        if data_field_names is None:
-            data_field_names = [
-                field
-                for field in self.DATA_FIELD_NAMES
-                if field not in self.OPTIONAL_DATA_FIELD_NAMES
-            ]
+        interface = observations[0].interface_class
+        available = set(interface.AVAILABLE_FIELDS)
+        optional = set(interface.OPTIONAL_FIELDS)
+        if requested_fields is None:
+            fields = available - optional
         else:
-            data_field_names = list(set(data_field_names))  # Remove duplicates if any
-            # Validate field names
-            for name in data_field_names:
-                if name not in self.DATA_FIELD_NAMES:
-                    msg = (
-                        f'Data field "{name}" NOT supported for ground observation data format. '
-                        f'Supported fields: {self.DATA_FIELD_NAMES}'
-                    )
-                    raise ValueError(msg)
+            fields = set(requested_fields)
+            unsupported = fields - available
+            if len(unsupported) > 0:
+                msg = f'Requested data fields {unsupported} are not supported by the interface.'
+                raise ValueError(msg)
 
-        super().__init__(observations, common_keywords={'data_field_names': data_field_names})
+        super().__init__(observations, common_keywords={'data_field_names': list(fields)})
 
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
         """Reads one ground observation from the list of filenames specified in the reader.
@@ -189,7 +167,7 @@ class GroundObservationReader(AbstractReader, Generic[T]):
         n_detectors = data.n_detectors
         n_samples = data.n_samples
 
-        field_structure = GroundObservationReader._get_data_field_structures_for(
+        field_structure = ObservationReader._get_data_field_structures_for(
             n_detectors=n_detectors, n_samples=n_samples
         )
         return {field: field_structure[field] for field in data_field_names}
@@ -198,7 +176,7 @@ class GroundObservationReader(AbstractReader, Generic[T]):
         self, observation: AbstractLazyObservation[T], data_field_names: list[str]
     ) -> PyTree[Array]:
         data = observation.get_data(data_field_names)
-        field_reader = GroundObservationReader._get_data_field_readers()
+        field_reader = ObservationReader._get_data_field_readers()
         return {field: field_reader[field](data) for field in data_field_names}
 
 

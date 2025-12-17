@@ -39,6 +39,23 @@ class AbstractGroundObservation(ABC, Generic[T]):
     (e.g. toast's ``Observation``, sotodlib's ``AxisManager``, ...)
     """
 
+    AVAILABLE_FIELDS: ClassVar[list[str]] = [
+        'metadata',
+        'sample_data',
+        'valid_sample_masks',
+        'valid_scanning_masks',
+        'timestamps',
+        'hwp_angles',
+        'detector_quaternions',
+        'boresight_quaternions',
+        'noise_model_fits',
+    ]
+    """Supported data field names for ground observations"""
+
+    OPTIONAL_FIELDS: ClassVar[list[str]] = [
+        'noise_model_fits',
+    ]
+
     def __init__(self, data: T) -> None:
         self.data = data
 
@@ -54,7 +71,7 @@ class AbstractGroundObservation(ABC, Generic[T]):
             requested_fields: List of data fields needed.
                 If None, the entire file is loaded into memory.
                 If `[]` (empty list), loads only what's needed to determine buffer shapes.
-                Otherwise, loads whatever is needed to satistfy the request.
+                Otherwise, loads whatever is needed to satisfy the request.
         """
 
     @property

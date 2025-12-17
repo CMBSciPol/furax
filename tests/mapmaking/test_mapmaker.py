@@ -8,7 +8,7 @@ pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
 from furax.core import BlockColumnOperator
 from furax.interfaces.sotodlib import LazySOTODLibObservation
 from furax.interfaces.toast import LazyToastObservation
-from furax.mapmaking import GroundObservationReader, MapMakingConfig, MultiObservationMapMaker
+from furax.mapmaking import MapMakingConfig, MultiObservationMapMaker, ObservationReader
 from furax.mapmaking.config import LandscapeConfig, Landscapes
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.mapmaking.preconditioner import BJPreconditioner
@@ -40,7 +40,7 @@ def maker(observations, config):
 
 @pytest.fixture
 def reader(observations):
-    return GroundObservationReader(observations)
+    return ObservationReader(observations)
 
 
 def test_acquisitions(maker, reader):

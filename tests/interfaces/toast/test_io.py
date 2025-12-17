@@ -8,7 +8,7 @@ pytest.importorskip('toast', reason='toast is not installed. Skipping tests.')
 pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
 
 from furax.interfaces.toast import ToastObservationResource
-from furax.mapmaking import GroundObservationReader, ObservationMetadata
+from furax.mapmaking import GroundObservationReader, HashedObservationMetadata
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ def test_reader(reader) -> None:
 
     # Verify out_structure includes all non-optional fields (noise_model_fits is optional)
     assert reader.out_structure == {
-        'metadata': ObservationMetadata(
+        'metadata': HashedObservationMetadata(
             uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),
             telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),
             detector_uids=jax.ShapeDtypeStruct((ndet2,), dtype=jnp.uint32),

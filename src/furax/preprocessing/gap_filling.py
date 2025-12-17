@@ -7,7 +7,7 @@ from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, Shaped
 
 from furax import FourierOperator, IndexOperator, MaskOperator, SymmetricBandToeplitzOperator
 from furax._config import verbose_solver_callback
-from furax.mapmaking import ObservationMetadata
+from furax.mapmaking import HashedObservationMetadata
 
 __all__ = [
     'GapFillingOperator',
@@ -43,7 +43,7 @@ class GapFillingOperator:
         self,
         cov: SymmetricBandToeplitzOperator | FourierOperator,
         mask_op: IndexOperator | MaskOperator,
-        metadata: ObservationMetadata | None = None,
+        metadata: HashedObservationMetadata | None = None,
         icov: SymmetricBandToeplitzOperator | FourierOperator | None = None,
         *,
         rate: float = 1.0,
@@ -128,7 +128,7 @@ def _folded_psd(
 
 
 def split_key(
-    key: PRNGKeyArray, num: int | tuple[int, ...], metadata: ObservationMetadata | None = None
+    key: PRNGKeyArray, num: int | tuple[int, ...], metadata: HashedObservationMetadata | None = None
 ) -> Shaped[PRNGKeyArray, '*#dets']:
     if metadata is None:
         return jax.random.split(key, num)
@@ -149,7 +149,7 @@ def split_key(
 def generate_noise_realization(
     key: PRNGKeyArray,
     cov: FourierOperator | SymmetricBandToeplitzOperator,
-    metadata: ObservationMetadata | None = None,
+    metadata: HashedObservationMetadata | None = None,
     fsamp: float = 1.0,
 ) -> Float[Array, ' *shape']:
     """Generates a Gaussian noise realization with the given covariance.

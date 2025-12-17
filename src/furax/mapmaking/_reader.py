@@ -14,7 +14,7 @@ from furax.io.readers import AbstractReader
 from ._observation import (
     AbstractGroundObservation,
     AbstractGroundObservationResource,
-    ObservationMetadata,
+    HashedObservationMetadata,
 )
 
 T = TypeVar('T')
@@ -137,7 +137,7 @@ class GroundObservationReader(AbstractReader, Generic[T]):
         cls, n_detectors: int, n_samples: int
     ) -> PyTree[jax.ShapeDtypeStruct]:
         return {
-            'metadata': ObservationMetadata(
+            'metadata': HashedObservationMetadata(
                 uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
                 telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
                 detector_uids=jax.ShapeDtypeStruct((n_detectors,), dtype=jnp.uint32),  # type: ignore[arg-type]
@@ -159,8 +159,8 @@ class GroundObservationReader(AbstractReader, Generic[T]):
                 raise ValueError('Data field not available')
             return x
 
-        def get_metadata(obs: AbstractGroundObservation[T]) -> ObservationMetadata:
-            return ObservationMetadata(
+        def get_metadata(obs: AbstractGroundObservation[T]) -> HashedObservationMetadata:
+            return HashedObservationMetadata(
                 uid=jnp.array(obs.uid, dtype=jnp.uint32),
                 telescope_uid=jnp.asarray(_names_to_uids(obs.telescope)),
                 detector_uids=jnp.asarray(_names_to_uids(obs.detectors)),

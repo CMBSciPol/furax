@@ -20,7 +20,9 @@ T = TypeVar('T')
 
 @register_dataclass
 @dataclass
-class ObservationMetadata:
+class HashedObservationMetadata:
+    """Hashed version of some metadata fields for JAX compatibility."""
+
     uid: UInt32[Array, '']
     telescope_uid: UInt32[Array, '']
     detector_uids: UInt32[Array, '*#dets']

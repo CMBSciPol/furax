@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from hashlib import sha1
 from typing import Any, Generic, TypeVar
 
@@ -12,8 +11,8 @@ from jaxtyping import PyTree, UInt32
 from furax.io.readers import AbstractReader
 
 from ._observation import (
-    AbstractGroundObservation,
     AbstractLazyObservation,
+    AbstractObservation,
     HashedObservationMetadata,
 )
 
@@ -54,8 +53,8 @@ class ObservationReader(AbstractReader, Generic[T]):
             requested_fields: Optional list of fields to load. If None, read all non-optional fields.
         """
         interface = observations[0].interface_class
-        available = set(interface.AVAILABLE_FIELDS)
-        optional = set(interface.OPTIONAL_FIELDS)
+        available = set(interface.AVAILABLE_READER_FIELDS)
+        optional = set(interface.OPTIONAL_READER_FIELDS)
         if requested_fields is None:
             fields = available - optional
         else:
@@ -131,13 +130,13 @@ class ObservationReader(AbstractReader, Generic[T]):
         }
 
     @classmethod
-    def _get_data_field_readers(cls) -> dict[str, Callable[[AbstractGroundObservation[Any]], Any]]:
+    def _get_data_field_readers(cls):  # type: ignore[no-untyped-def]
         def if_none_raise_error(x: Any) -> Any:
             if x is None:
                 raise ValueError('Data field not available')
             return x
 
-        def get_metadata(obs: AbstractGroundObservation[T]) -> HashedObservationMetadata:
+        def get_metadata(obs: AbstractObservation[T]) -> HashedObservationMetadata:
             return HashedObservationMetadata(
                 uid=jnp.asarray(_names_to_uids(obs.name)),
                 telescope_uid=jnp.asarray(_names_to_uids(obs.telescope)),

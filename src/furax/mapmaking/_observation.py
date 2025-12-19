@@ -31,30 +31,30 @@ class HashedObservationMetadata:
 T = TypeVar('T')
 
 
-class AbstractGroundObservation(ABC, Generic[T]):
-    """Abstract class for interfacing with ground-based observation data.
+class AbstractObservation(ABC, Generic[T]):
+    """Abstract class for interfacing with any observation data.
 
-    This class defines what data is needed for making maps with ground-based data.
-    It is meant to be used as a base class for interfacing with different containers
-    (e.g. toast's ``Observation``, sotodlib's ``AxisManager``, ...)
+    This class defines what data is needed for making maps. It is meant to be
+    used as a base class for interfacing with different containers (e.g. toast's
+    ``Observation``, sotodlib's ``AxisManager``, litebird_sim's ``Observation``, etc.)
     """
 
-    AVAILABLE_FIELDS: ClassVar[list[str]] = [
+    AVAILABLE_READER_FIELDS: ClassVar[list[str]] = [
         'metadata',
         'sample_data',
         'valid_sample_masks',
-        'valid_scanning_masks',
         'timestamps',
         'hwp_angles',
         'detector_quaternions',
         'boresight_quaternions',
         'noise_model_fits',
     ]
-    """Supported data field names for ground observations"""
+    """Supported data field names for all observations"""
 
-    OPTIONAL_FIELDS: ClassVar[list[str]] = [
+    OPTIONAL_READER_FIELDS: ClassVar[list[str]] = [
         'noise_model_fits',
     ]
+    """Optional data field names"""
 
     def __init__(self, data: T) -> None:
         self.data = data
@@ -63,7 +63,7 @@ class AbstractGroundObservation(ABC, Generic[T]):
     @abstractmethod
     def from_file(
         cls, filename: str | Path, requested_fields: list[str] | None = None
-    ) -> AbstractGroundObservation[T]:
+    ) -> AbstractObservation[T]:
         """Loads the observation from a binary file.
 
         Args:
@@ -116,30 +116,8 @@ class AbstractGroundObservation(ABC, Generic[T]):
         """Returns the HWP angles."""
 
     @abstractmethod
-    def get_scanning_intervals(self) -> NDArray[Any]:
-        """Returns scanning intervals.
-        The output is a list of the starting and ending sample indices
-        """
-
-    @abstractmethod
     def get_sample_mask(self) -> Bool[Array, 'dets samps']:
         """Returns boolean sample mask (True=valid) of the TOD."""
-
-    @abstractmethod
-    def get_left_scan_mask(self) -> Bool[Array, ' samps']:
-        """Returns boolean mask (True=valid) for selection of left-going scans"""
-
-    @abstractmethod
-    def get_right_scan_mask(self) -> Bool[Array, ' samps']:
-        """Returns boolean mask (True=valid) for selection of right-going scans"""
-
-    @abstractmethod
-    def get_azimuth(self) -> Float[Array, ' a']:
-        """Returns the azimuth of the boresight for each sample"""
-
-    @abstractmethod
-    def get_elevation(self) -> Float[Array, ' a']:
-        """Returns the elevation of the boresight for each sample"""
 
     @abstractmethod
     def get_timestamps(self) -> Float[Array, ' a']:
@@ -168,6 +146,44 @@ class AbstractGroundObservation(ABC, Generic[T]):
     def get_noise_model(self) -> None | NoiseModel:
         """Load a pre-computed noise model from the data, if present. Otherwise, return None"""
 
+    @abstractmethod
+    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+        """Returns the boresight quaternions at each time sample"""
+
+    @abstractmethod
+    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
+        """Returns the quaternion offsets of the detectors"""
+
+
+class AbstractGroundObservation(AbstractObservation[T]):
+    """Class for interfacing with ground-based observation data."""
+
+    AVAILABLE_READER_FIELDS: ClassVar[list[str]] = AbstractObservation.AVAILABLE_READER_FIELDS + [
+        'valid_scanning_masks',
+    ]
+
+    @abstractmethod
+    def get_scanning_intervals(self) -> NDArray[Any]:
+        """Returns scanning intervals.
+        The output is a list of the starting and ending sample indices
+        """
+
+    @abstractmethod
+    def get_left_scan_mask(self) -> Bool[Array, ' samps']:
+        """Returns boolean mask (True=valid) for selection of left-going scans"""
+
+    @abstractmethod
+    def get_right_scan_mask(self) -> Bool[Array, ' samps']:
+        """Returns boolean mask (True=valid) for selection of right-going scans"""
+
+    @abstractmethod
+    def get_azimuth(self) -> Float[Array, ' a']:
+        """Returns the azimuth of the boresight for each sample"""
+
+    @abstractmethod
+    def get_elevation(self) -> Float[Array, ' a']:
+        """Returns the elevation of the boresight for each sample"""
+
     def get_scanning_mask(self) -> Bool[Array, ' samp']:
         """Returns a boolean sample mask from scanning intervals (True=scanning)."""
         intervals = self.get_scanning_intervals()
@@ -176,14 +192,6 @@ class AbstractGroundObservation(ABC, Generic[T]):
             mask = mask.at[l:u].set(True)
 
         return mask
-
-    @abstractmethod
-    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
-        """Returns the boresight quaternions at each time sample"""
-
-    @abstractmethod
-    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
-        """Returns the quaternion offsets of the detectors"""
 
     def get_detector_pointing_lonlat(
         self,
@@ -270,14 +278,14 @@ class AbstractGroundObservation(ABC, Generic[T]):
 
 
 class AbstractLazyObservation(ABC, Generic[T]):
-    interface_class: ClassVar[type[AbstractGroundObservation[T]]]
+    interface_class: ClassVar[type[AbstractObservation[T]]]
 
     def __init__(self, filename: str | Path):
         self.file = Path(filename)
         if not self.file.exists():
             raise FileNotFoundError(f'Observation file {self.file} does not exist')
 
-    def get_data(self, requested_fields: list[str] | None = None) -> AbstractGroundObservation[T]:
+    def get_data(self, requested_fields: list[str] | None = None) -> AbstractObservation[T]:
         """Loads observation data from the underlying file.
 
         Args:

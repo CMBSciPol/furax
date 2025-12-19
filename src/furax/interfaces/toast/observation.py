@@ -15,8 +15,7 @@ from numpy.typing import NDArray
 from toast.observation import default_values as defaults
 from toast.ops.load_hdf5 import LoadHDF5
 
-from furax.mapmaking import AbstractGroundObservation
-from furax.mapmaking._observation import AbstractLazyObservation
+from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.mapmaking.utils import get_local_meridian_angle
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape

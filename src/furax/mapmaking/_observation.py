@@ -155,6 +155,12 @@ class AbstractObservation(ABC, Generic[T]):
         """Returns the quaternion offsets of the detectors"""
 
 
+class AbstractSatelliteObservation(AbstractObservation[T]):
+    """Class for interfacing with satellite observation data."""
+
+    pass
+
+
 class AbstractGroundObservation(AbstractObservation[T]):
     """Class for interfacing with ground-based observation data."""
 

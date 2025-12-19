@@ -41,8 +41,8 @@ from furax.preprocessing import GapFillingOperator
 
 from . import templates
 from ._logger import logger as furax_logger
-from ._observation import AbstractGroundObservation, AbstractGroundObservationResource
-from ._reader import GroundObservationReader
+from ._observation import AbstractGroundObservation, AbstractLazyObservation
+from ._reader import ObservationReader
 from .config import Landscapes, MapMakingConfig, Methods
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
@@ -98,12 +98,12 @@ class MultiObservationMapMaker(Generic[T]):
 
     def __init__(
         self,
-        resources: list[AbstractGroundObservationResource[T]],
+        observations: list[AbstractLazyObservation[T]],
         config: MapMakingConfig | None = None,
         logger: Logger | None = None,
         stokes: ValidStokesType = 'IQU',  # TODO: shoudn't this be in the config?
     ) -> None:
-        self.resources = resources
+        self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
         self.landscape = _build_landscape(self.config, stokes=stokes)
@@ -122,9 +122,9 @@ class MultiObservationMapMaker(Generic[T]):
 
         return results
 
-    def get_reader(self, data_field_names: list[str]) -> GroundObservationReader[T]:
+    def get_reader(self, data_field_names: list[str]) -> ObservationReader[T]:
         """Returns a reader for a list of requested fields."""
-        return GroundObservationReader(self.resources, data_field_names=data_field_names)
+        return ObservationReader(self.observations, requested_fields=data_field_names)
 
     def make_maps(self) -> MapMakingResults:
         """Computes the mapmaker results (maps and other products)."""

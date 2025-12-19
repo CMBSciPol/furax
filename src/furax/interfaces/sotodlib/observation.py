@@ -16,8 +16,7 @@ from sotodlib import coords
 from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import load_and_preprocess
 
-from furax.mapmaking import AbstractGroundObservation
-from furax.mapmaking._observation import AbstractLazyObservation
+from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math import quaternion
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape

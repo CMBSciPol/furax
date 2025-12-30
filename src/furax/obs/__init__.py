@@ -1,5 +1,6 @@
 from ._likelihoods import (
     negative_log_likelihood,
+    preconditionner,
     sky_signal,
     spectral_cmb_variance,
     spectral_log_likelihood,
@@ -34,4 +35,5 @@ __all__ = [
     'StackedBeamOperator',
     'StokesToListOperator',
     'ListToStokesOperator',
+    'preconditionner',
 ]

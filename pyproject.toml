@@ -24,10 +24,11 @@ classifiers = [
 requires-python = '>=3.10'
 license = { file = 'LICENSE' }
 dependencies = [
+    'jax>=0.4.38,!=0.7.*',
     'jaxtyping',
     'healpy>=0.18.1',
     'jax-healpy',
-    'lineax',
+    'lineax>=0.0.8',
     'numpy',
     'scipy',
     'typing-extensions; python_version < "3.11"',
@@ -50,7 +51,6 @@ docs = [
 mapmaking = [
     'apischema',
     'h5py',
-    'jax>=0.4.38',
     'jax-grid-search',
     'optax',
     'pixell>=0.31.7',

@@ -58,9 +58,9 @@ mapmaking = [
     'so3g>=0.2.5',
     'toast==3.0.0a40',
 ]
-# lbs = [
-#     'litebird_sim>=0.16.0',
-# ]
+lbs = [
+    'litebird_sim>=0.16.0',
+]
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import cached_property
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 import jax.numpy as jnp
 import litebird_sim as lbs
@@ -12,8 +12,6 @@ from jaxtyping import Array, Bool, Float
 from furax.mapmaking import AbstractLazyObservation, AbstractSatelliteObservation
 from furax.mapmaking.noise import NoiseModel
 from furax.obs.landscapes import StokesLandscape
-
-T = TypeVar('T')
 
 
 class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):

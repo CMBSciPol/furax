@@ -9,7 +9,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import init_logger
-from sotodlib.site_pipeline.util import main_launcher
+from sotodlib.site_pipeline.utils.pipeline import main_launcher
 
 from furax.interfaces.sotodlib.observation import SOTODLibObservation
 from furax.mapmaking.config import MapMakingConfig

@@ -56,7 +56,7 @@ mapmaking = [
     'pixell>=0.31.7',
     'sotodlib[site-pipeline]>=0.6.15; python_version<"3.13"',
     'so3g>=0.2.5',
-    'toast>=3.0.0a40',
+    'toast==3.0.0a40',
 ]
 
 [project.urls]

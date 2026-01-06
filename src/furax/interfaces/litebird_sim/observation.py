@@ -53,7 +53,7 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
 
     @property
     def sample_rate(self) -> float:
-        return self.data.sample_rate_hz  # type: ignore[no-any-return]
+        return self.data.sampling_rate_hz  # type: ignore[no-any-return]
 
     def get_tods(self) -> Array:
         tods = jnp.array(self.data.tod, dtype=jnp.float64)

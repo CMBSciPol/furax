@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import jax.numpy as jnp
 import litebird_sim as lbs
+import numpy as np
 from astropy import wcs
 from jaxtyping import Array, Bool, Float
 
 from furax.mapmaking import AbstractLazyObservation, AbstractSatelliteObservation
-from furax.mapmaking.noise import NoiseModel
-from furax.obs.landscapes import StokesLandscape
+from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
+from furax.obs.landscapes import HealpixLandscape, StokesLandscape
 
 
 class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
@@ -43,13 +43,9 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
         return self.data.n_samples  # type: ignore[no-any-return]
 
     @property
-    def _local_detectors(self) -> list[dict[str, Any]]:
-        """The list of detectors available to this Observation"""
-        return [self.data.detectors_global[i] for i in self.data.det_idx]
-
-    @property
     def detectors(self) -> list[str]:
-        return [det['name'] for det in self._local_detectors]
+        # assumes we have all the detectors
+        return [det['name'] for det in self.data.detectors_global]
 
     @property
     def n_detectors(self) -> int:
@@ -64,16 +60,19 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
         return jnp.atleast_2d(tods)
 
     def get_detector_offset_angles(self) -> Array:
-        raise NotImplementedError
+        return jnp.array(self.data.pol_angle_rad, dtype=jnp.float64)
 
     def get_hwp_angles(self) -> Array:
         return jnp.array(self.data.get_hwp_angle(), dtype=jnp.float64)
 
     def get_sample_mask(self) -> Bool[Array, 'dets samps']:
-        raise NotImplementedError
+        # TODO: take into account global and local flags
+        return jnp.ones((self.n_detectors, self.n_samples), dtype=bool)
 
     def get_timestamps(self) -> Float[Array, ' a']:
-        return self.data.get_times(normalize=False, astropy_times=False)  # type: ignore[no-any-return]
+        return jnp.array(
+            self.data.get_times(normalize=False, astropy_times=False), dtype=jnp.float64
+        )
 
     def get_wcs_shape_and_kernel(
         self,
@@ -85,16 +84,30 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
     def get_pointing_and_spin_angles(
         self, landscape: StokesLandscape
     ) -> tuple[Float[Array, ' ...'], Float[Array, ' ...']]:
-        raise NotImplementedError
+        if not isinstance(landscape, HealpixLandscape):
+            raise RuntimeError('only healpix is supported')
+        pointings, _hwp_angles = self.data.get_pointings()
+        # pointings have shape (N_det, N_samples, 3)
+        theta, phi, psi = np.moveaxis(pointings, -1, 0)
+        pixel_indices = landscape.world2index(theta, phi)
+        spin_angles = jnp.array(psi, dtype=jnp.float64)
+        return pixel_indices, spin_angles
 
     def get_noise_model(self) -> None | NoiseModel:
-        raise NotImplementedError
+        return AtmosphericNoiseModel(
+            sigma=jnp.array(self.data.net_ukrts * 1e-6),
+            alpha=jnp.array(-self.data.alpha),
+            fk=jnp.array(self.data.fknee_mhz * 1e-3),
+            f0=jnp.array(self.data.fmin_hz),
+        )
 
     def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
-        raise NotImplementedError
+        # TODO: coordinate system
+        qbore = self.data.pointing_provider.bore2ecliptic_quats.quats
+        return jnp.array(qbore, dtype=jnp.float64)
 
     def get_detector_quaternions(self) -> Float[Array, 'det 4']:
-        raise NotImplementedError
+        return jnp.concatenate([q.quats for q in self.data.quat], dtype=jnp.float64)
 
 
 class LazyLBSObservation(AbstractLazyObservation[lbs.Observation]):

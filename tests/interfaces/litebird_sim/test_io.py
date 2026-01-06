@@ -4,27 +4,31 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-pytest.importorskip('toast', reason='toast is not installed. Skipping tests.')
+pytest.importorskip('litebird_sim', reason='litebird_sim is not installed. Skipping tests.')
 
-from furax.interfaces.toast import LazyToastObservation
-from furax.mapmaking import AbstractGroundObservation, HashedObservationMetadata, ObservationReader
+from furax.interfaces.litebird_sim import LazyLBSObservation
+from furax.mapmaking import (
+    AbstractSatelliteObservation,
+    HashedObservationMetadata,
+    ObservationReader,
+)
 from furax.tree import as_structure
 
-FOLDER = Path(__file__).parents[2] / 'data/toast'
+FOLDER = Path(__file__).parents[2] / 'data/litebird_sim'
 FILES = ['test_obs.h5', 'test_obs.h5']
 OBS_NDET = [2, 2]
-OBS_NSAMPLE = [1000, 1000]
+OBS_NSAMPLE = [7200, 7200]
 
 
 @pytest.fixture
 def observations():
-    return [LazyToastObservation(FOLDER / f) for f in FILES]
+    return [LazyLBSObservation(FOLDER / f) for f in FILES]
 
 
 def test_reader_all_fields(observations) -> None:
     """Test consistency for all available fields."""
     reader = ObservationReader(
-        observations, requested_fields=AbstractGroundObservation.AVAILABLE_READER_FIELDS
+        observations, requested_fields=AbstractSatelliteObservation.AVAILABLE_READER_FIELDS
     )
     ndet_max, nsample_max = max(OBS_NDET), max(OBS_NSAMPLE)
 
@@ -37,7 +41,6 @@ def test_reader_all_fields(observations) -> None:
         ),
         'sample_data': jax.ShapeDtypeStruct((ndet_max, nsample_max), dtype=jnp.float64),
         'valid_sample_masks': jax.ShapeDtypeStruct((ndet_max, nsample_max), dtype=jnp.bool),
-        'valid_scanning_masks': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.bool),
         'timestamps': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
         'hwp_angles': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
         'detector_quaternions': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
@@ -58,7 +61,6 @@ def test_reader_all_fields(observations) -> None:
         assert padding['metadata'].detector_uids == (ndet_max - ndet,)
         assert padding['sample_data'] == (ndet_max - ndet, nsample_max - nsample)
         assert padding['valid_sample_masks'] == (ndet_max - ndet, nsample_max - nsample)
-        assert padding['valid_scanning_masks'] == (nsample_max - nsample,)
         assert padding['timestamps'] == (nsample_max - nsample,)
         assert padding['hwp_angles'] == (nsample_max - nsample,)
         assert padding['detector_quaternions'] == (ndet_max - ndet, 0)
@@ -83,11 +85,10 @@ def test_reader_invalid_data_field_name(observations) -> None:
     'requested_fields',
     [
         ['sample_data', 'valid_sample_masks', 'detector_quaternions'],  # detector-related
-        ['timestamps', 'boresight_quaternions', 'valid_scanning_masks'],  # time/boresight-related
-        ['sample_data', 'timestamps', 'valid_scanning_masks', 'boresight_quaternions'],  # mixed
+        ['timestamps', 'boresight_quaternions'],  # time/boresight-related
+        ['sample_data', 'timestamps', 'boresight_quaternions'],  # mixed
         ['sample_data'],  # detector data only
         ['valid_sample_masks'],  # detector flags only
-        ['valid_scanning_masks'],  # scanning mask only
         ['boresight_quaternions'],  # boresight quats only
         ['detector_quaternions'],  # detector quats only
         ['timestamps'],  # timestamps only

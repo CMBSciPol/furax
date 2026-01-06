@@ -4,7 +4,10 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+# These tests do not depend only on TOAST but also on sotodlib because the test files
+# are SO-specific (site, telescope, etc.). Therefore we skip if sotodlib is not installed.
 pytest.importorskip('toast', reason='toast is not installed. Skipping tests.')
+pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
 
 from furax.interfaces.toast import LazyToastObservation
 from furax.mapmaking import AbstractGroundObservation, HashedObservationMetadata, ObservationReader

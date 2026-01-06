@@ -9,7 +9,7 @@ from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
-from furax.math.quaternion import qmul, qrot_xaxis, qrot_zaxis, to_xieta_angles
+from furax.math.quaternion import qmul, qrot_xaxis, qrot_zaxis, to_gamma_angles
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import StokesI, StokesIQU, StokesIQUV, StokesPyTreeType, StokesQU
 
@@ -54,7 +54,7 @@ class PointingOperator(AbstractLinearOperator):
                 return tod
 
             # Get the angles to rotate into the telescope frame
-            _xi, _eta, gamma = to_xieta_angles(qdet)
+            gamma = to_gamma_angles(qdet)
             angles = get_local_meridian_angle(qdet_full) - gamma[:, None]
 
             cos_2angles = jnp.cos(2 * angles)
@@ -133,7 +133,7 @@ class PointingTransposeOperator(TransposeOperator):
                 return self._point(xchunk, indices)
 
             # Get the angles to rotate back to the celestial frame
-            _xi, _eta, gamma = to_xieta_angles(qdet)
+            gamma = to_gamma_angles(qdet)
             angles = get_local_meridian_angle(qdet_full) - gamma[:, None]
 
             cos_2angles = jnp.cos(2 * angles)

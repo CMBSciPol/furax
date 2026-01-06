@@ -50,7 +50,6 @@ docs = [
 ]
 mapmaking = [
     'apischema>=0.19.0',
-    'h5py',
     'jax-grid-search',
     'matplotlib',
     'optax',
@@ -90,7 +89,6 @@ skip_covered = true
 module = [
     'apischema',
     'astropy.*',
-    'h5py',
     'healpy',
     'jax_grid_search',
     'jax_healpy',

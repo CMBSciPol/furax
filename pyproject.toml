@@ -59,7 +59,7 @@ mapmaking = [
     'toast==3.0.0a40',
 ]
 lbs = [
-    'litebird_sim>=0.16.0',
+    'litebird_sim @ git+https://github.com/litebird/litebird_sim.git',
 ]
 
 [project.urls]

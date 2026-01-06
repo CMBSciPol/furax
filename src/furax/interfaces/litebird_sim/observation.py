@@ -103,8 +103,11 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
 
     def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
         # TODO: coordinate system
-        qbore = self.data.pointing_provider.bore2ecliptic_quats.quats
-        return jnp.array(qbore, dtype=jnp.float64)
+        #
+        # interpolate to the actual sampling rate
+        qbore = self.data.pointing_provider.bore2ecliptic_quats
+        qbore_full = qbore.slerp(self.data.start_time, self.sample_rate, self.n_samples)
+        return jnp.array(qbore_full, dtype=jnp.float64)
 
     def get_detector_quaternions(self) -> Float[Array, 'det 4']:
         return jnp.concatenate([q.quats for q in self.data.quat], dtype=jnp.float64)

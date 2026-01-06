@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +47,7 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
         """The list of detectors available to this Observation"""
         return [self.data.detectors_global[i] for i in self.data.det_idx]
 
-    @cached_property
+    @property
     def detectors(self) -> list[str]:
         return [det['name'] for det in self._local_detectors]
 

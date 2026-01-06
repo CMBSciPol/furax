@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -105,7 +104,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     def n_samples(self) -> int:
         return self.data.samps.count  # type: ignore[no-any-return]
 
-    @cached_property
+    @property
     def detectors(self) -> list[str]:
         return self.data.dets.vals  # type: ignore[no-any-return]
 

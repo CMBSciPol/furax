@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from functools import cached_property
 from pathlib import Path
 from typing import Any, ClassVar, Generic, TypeVar
 
@@ -89,7 +88,7 @@ class AbstractObservation(ABC, Generic[T]):
     def n_samples(self) -> int:
         """Returns the number of samples in the observation."""
 
-    @cached_property
+    @property
     @abstractmethod
     def detectors(self) -> list[str]:
         """Returns a list of the detector names."""

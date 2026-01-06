@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import typing
-from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -125,7 +124,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
     def n_samples(self) -> int:
         return self.data.n_local_samples  # type: ignore[no-any-return]
 
-    @cached_property
+    @property
     def detectors(self) -> list[str]:
         local_selection: list[str] = self.data.select_local_detectors(
             selection=self._det_selection, flagmask=self._det_mask

@@ -205,7 +205,7 @@ def fit_psd_model(
         in_axes=(None, 0), out_axes={'fit': 0, 'loss': 0, 'num_iter': 0, 'inv_fisher': 0, 'num_freq': None},
     )(f, Pxx)
     print(f'Loss: {results["loss"]}')
-    print(f'Effective Chi2: {results["loss"] / results["num_freq"]}')
+    print(f'Mean Loss per Freq: {results["loss"] / results["num_freq"]}')
     print(f'Num Iter: {results["num_iter"]}')
 
     return results
@@ -259,7 +259,8 @@ def _fit_psd_model_masked(
 
     init_params = _approximate_fit(f, Pxx, mask, low_f_cut=low_f_cut, high_f_cut=high_f_cut)
 
-    loss = lambda scaled_params: _compute_normal_neglnlike(scaled_params * init_params, f, Pxx, mask, k=k)
+    #loss = lambda scaled_params: _compute_normal_neglnlike(scaled_params * init_params, f, Pxx, mask, k=k)
+    loss = lambda scaled_params: _compute_whittle_neglnlike(scaled_params * init_params, f, Pxx, mask)
     opt = optax.lbfgs()
 
     # bounds
@@ -272,7 +273,7 @@ def _fit_psd_model_masked(
         jnp.ones_like(init_params),
         loss,
         opt,
-        max_iter=300,
+        max_iter=100,
         tol=tol,
         upper_bound=up,
         lower_bound=lo,
@@ -349,7 +350,7 @@ def _compute_normal_neglnlike(
         mask, (k/2) * (Pxx / Pxx_pred - 1)**2, 0
     ))
 
-def _compute_neglnlike(
+def _compute_chisq_neglnlike(
     params: Float[Array, '4'],
     f: Float[Array, ' a'],
     Pxx: Float[Array, ' a'],
@@ -357,21 +358,24 @@ def _compute_neglnlike(
     k: float,
 ) -> Float[Array, '1']:
     # Computes -2logL up to a constant, assuming k effective degrees of freedom
+    # Assumes that the PSD estimates follow a chi-sq distribution of order k
     Pxx_pred = _model(params, f)
     return jnp.sum(jnp.where(
         mask, (k-2) * jnp.log(Pxx_pred) + k * (Pxx / Pxx_pred), 0
     ))
 
-def _compute_neglnlike_whittle(
+def _compute_whittle_neglnlike(
     params: Float[Array, '4'],
     f: Float[Array, ' a'],
     Pxx: Float[Array, ' a'],
     mask: Float[Array, ' a'],
 ) -> Float[Array, '1']:
     # Computes -2logL up to a constant, using Whittle's approximation
+    # Factor of 1/Pxx is included in the log term for better interpretability,
+    # even though it results in a constant offset
     Pxx_pred = _model(params, f)
     return jnp.sum(jnp.where(
-        mask, jnp.log(Pxx_pred) + (Pxx / Pxx_pred), 0
+        mask, jnp.log(Pxx_pred / Pxx) + (Pxx / Pxx_pred), 0
     ))
 
 def _approximate_fit(
@@ -386,8 +390,14 @@ def _approximate_fit(
     # f0: set to be the minimum non-zero frequency
     # alpha, fk: fit power-law to (P-sigma**2) as a function of (f+f0) from low_frequency < low_f_cut
 
-    high_Pxx = jnp.where(jnp.logical_and(mask, f > high_f_cut), Pxx, 0)
-    sigma = jnp.sqrt(jnp.sum(high_Pxx ** 2) / jnp.sum(high_Pxx))
+    # For whittle likelihood:
+    high_f_mask = jnp.logical_and(mask, f > high_f_cut)
+    sigma = jnp.sqrt(jnp.sum(jnp.where(high_f_mask, Pxx, 0)) / jnp.sum(high_f_mask))
+
+    # For Gaussian likelihood:
+    #high_Pxx = jnp.where(jnp.logical_and(mask, f > high_f_cut), Pxx, 0)
+    #sigma = jnp.sqrt(jnp.sum(high_Pxx ** 2) / jnp.sum(high_Pxx))
+
     f0 = jnp.min(jnp.where(jnp.logical_and(mask, f > 0), f, jnp.inf))
 
     return _approximate_fit_given_two_parameters(sigma, f0, f, Pxx, mask, low_f_cut)

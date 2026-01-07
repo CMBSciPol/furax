@@ -1,6 +1,6 @@
-from .observation import ToastObservation, ToastObservationResource
+from .observation import LazyToastObservation, ToastObservation
 
 __all__ = [
     'ToastObservation',
-    'ToastObservationResource',
+    'LazyToastObservation',
 ]

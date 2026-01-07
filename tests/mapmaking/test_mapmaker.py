@@ -6,18 +6,16 @@ pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping test
 pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
 
 from furax.core import BlockColumnOperator
-from furax.interfaces.sotodlib import SOTODLibObservationResource
-from furax.interfaces.toast import ToastObservationResource
-from furax.mapmaking import GroundObservationReader, MapMakingConfig, MultiObservationMapMaker
+from furax.interfaces.sotodlib import LazySOTODLibObservation
+from furax.interfaces.toast import LazyToastObservation
+from furax.mapmaking import MapMakingConfig, MultiObservationMapMaker, ObservationReader
 from furax.mapmaking.config import LandscapeConfig, Landscapes
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.mapmaking.preconditioner import BJPreconditioner
 
 
-@pytest.fixture(
-    params=[(SOTODLibObservationResource, 'sotodlib'), (ToastObservationResource, 'toast')]
-)
-def resources(request: pytest.FixtureRequest):
+@pytest.fixture(params=[(LazySOTODLibObservation, 'sotodlib'), (LazyToastObservation, 'toast')])
+def observations(request: pytest.FixtureRequest):
     cls, name = request.param
     folder = Path(__file__).parents[1] / 'data' / name
     if name == 'toast':
@@ -36,13 +34,13 @@ def config():
 
 
 @pytest.fixture
-def maker(resources, config):
-    return MultiObservationMapMaker(resources, config=config)
+def maker(observations, config):
+    return MultiObservationMapMaker(observations, config=config)
 
 
 @pytest.fixture
-def reader(resources):
-    return GroundObservationReader(resources)
+def reader(observations):
+    return ObservationReader(observations)
 
 
 def test_acquisitions(maker, reader):

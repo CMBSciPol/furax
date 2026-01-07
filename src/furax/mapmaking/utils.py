@@ -141,7 +141,6 @@ def fit_psd_model(
     Pxx: Float[Array, 'dets freqs'],
     low_f_cut: float,
     high_f_cut: float,
-    k: float,
     f_min: float | None = None,
     f_max: float | None = None,
     f_mask_intervals: Float[Array, 'n_intervals 2'] | None = None,
@@ -164,8 +163,6 @@ def fit_psd_model(
             Used in choosing the starting point for alpha and f_knee, and bounds for f0
         high_f_cut: Frequency above which the PSD is assumed to be dominated by 1/f noise
             Used in choosing the starting point for sigma, and bounds for fknee
-        k: Effective number of degrees of freedom. If the TOD is stationary, this should be
-            equal to n_samples / nperseg
         f_min: Minimum frequency (inclusive) for fitting region. If None, uses 0
             (includes DC component). Default: None.
         f_max: Maximum frequency (exclusive) for fitting region. If None, uses f[-1].
@@ -201,7 +198,7 @@ def fit_psd_model(
 
     results = jax.vmap(
         lambda f, Pxx: _fit_psd_model_masked(
-            f, Pxx, mask=mask, low_f_cut=low_f_cut, high_f_cut=high_f_cut, k=k),
+            f, Pxx, mask=mask, low_f_cut=low_f_cut, high_f_cut=high_f_cut),
         in_axes=(None, 0), out_axes={'fit': 0, 'loss': 0, 'num_iter': 0, 'inv_fisher': 0, 'num_freq': None},
     )(f, Pxx)
     print(f'Loss: {results["loss"]}')
@@ -217,7 +214,6 @@ def _fit_psd_model_masked(
     mask: Float[Array, ' freqs'],
     low_f_cut: float,
     high_f_cut: float,
-    k: float,
 #) -> tuple[Float[Array, '4'], Float[Array, '1'], Int[Array, '1']]:
 ) -> dict['str', Any]:
     """Fit a 1/f PSD model to the periodogram in log space.
@@ -259,7 +255,6 @@ def _fit_psd_model_masked(
 
     init_params = _approximate_fit(f, Pxx, mask, low_f_cut=low_f_cut, high_f_cut=high_f_cut)
 
-    #loss = lambda scaled_params: _compute_normal_neglnlike(scaled_params * init_params, f, Pxx, mask, k=k)
     loss = lambda scaled_params: _compute_whittle_neglnlike(scaled_params * init_params, f, Pxx, mask)
     opt = optax.lbfgs()
 
@@ -393,10 +388,6 @@ def _approximate_fit(
     # For whittle likelihood:
     high_f_mask = jnp.logical_and(mask, f > high_f_cut)
     sigma = jnp.sqrt(jnp.sum(jnp.where(high_f_mask, Pxx, 0)) / jnp.sum(high_f_mask))
-
-    # For Gaussian likelihood:
-    #high_Pxx = jnp.where(jnp.logical_and(mask, f > high_f_cut), Pxx, 0)
-    #sigma = jnp.sqrt(jnp.sum(high_Pxx ** 2) / jnp.sum(high_Pxx))
 
     f0 = jnp.min(jnp.where(jnp.logical_and(mask, f > 0), f, jnp.inf))
 

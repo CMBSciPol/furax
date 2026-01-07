@@ -1,8 +1,8 @@
-from functools import cached_property
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
 
-import h5py
 import jax.numpy as jnp
 import numpy as np
 import pixell.utils
@@ -15,7 +15,7 @@ from sotodlib import coords
 from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import load_and_preprocess
 
-from furax.mapmaking import AbstractGroundObservation, AbstractGroundObservationResource
+from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math import quaternion
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
@@ -25,13 +25,43 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     """Class for interfacing with sotodlib's AxisManager."""
 
     @classmethod
-    def from_file(cls, filename: str | Path) -> 'SOTODLibObservation':
-        """Loads the observation directly from a binary file."""
+    def from_file(
+        cls, filename: str | Path, requested_fields: list[str] | None = None
+    ) -> SOTODLibObservation:
+        # check that file exists
         if not Path(filename).exists():
             raise FileNotFoundError(f'File {filename} does not exist')
         if isinstance(filename, Path):
             filename = filename.as_posix()
-        data = AxisManager.load(filename)
+
+        # default is to load everything
+        fields = None
+        if requested_fields is not None:
+            # minimum information needed to determine buffer shapes
+            fields = ['dets', 'samp']
+            # translate request to sotodlib subfield names
+            if 'metadata' in requested_fields:
+                fields.append('obs_info')
+            if 'sample_data' in requested_fields:
+                fields.append('signal')
+            if 'valid_sample_masks' in requested_fields:
+                fields.append('flags.glitch_flags')
+            if 'valid_scanning_masks' in requested_fields:
+                fields.append('preprocess.turnaround_flags')
+            if 'timestamps' in requested_fields:
+                fields.append('timestamps')
+            if 'hwp_angles' in requested_fields:
+                fields.append('hwp_angle')
+            if 'boresight_quaternions' in requested_fields:
+                fields.append('boresight')
+                if 'timestamps' not in fields:
+                    fields.append('timestamps')
+            if 'detector_quaternions' in requested_fields:
+                fields.append('focal_plane')
+            if 'noise_model_fits' in requested_fields:
+                fields.append('preprocess.noiseT')
+
+        data = AxisManager.load(filename, fields=fields)
         return cls(data)
 
     @classmethod
@@ -40,7 +70,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         preprocess_config: str | Path | dict[str, Any],
         observation_id: str,
         detector_selection: dict[str, str] | None = None,
-    ) -> 'SOTODLibObservation':
+    ) -> SOTODLibObservation:
         """Loads and preprocesses an observation.
 
         Args:
@@ -74,7 +104,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     def n_samples(self) -> int:
         return self.data.samps.count  # type: ignore[no-any-return]
 
-    @cached_property
+    @property
     def detectors(self) -> list[str]:
         return self.data.dets.vals  # type: ignore[no-any-return]
 
@@ -285,36 +315,5 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return jnp.atleast_2d(quats)
 
 
-class SOTODLibObservationResource(AbstractGroundObservationResource[SOTODLibObservation]):
-    def request(self, field_names: list[str] | None = None) -> SOTODLibObservation:
-        if field_names is None:
-            # load just the info needed to determine the data shape
-            fields = ['dets', 'samps']
-        else:
-            # translate request to sotodlib subfield names
-            fields = []
-            if 'metadata' in field_names:
-                fields.append('obs_info')
-            if 'sample_data' in field_names:
-                fields.append('signal')
-            if 'valid_sample_masks' in field_names:
-                fields.append('flags.glitch_flags')
-            if 'valid_scanning_masks' in field_names:
-                fields.append('preprocess.turnaround_flags')
-            if 'timestamps' in field_names:
-                fields.append('timestamps')
-            if 'hwp_angles' in field_names:
-                fields.append('hwp_angle')
-            if 'boresight_quaternions' in field_names:
-                fields.append('boresight')
-                if 'timestamps' not in fields:
-                    fields.append('timestamps')
-            if 'detector_quaternions' in field_names:
-                fields.append('focal_plane')
-            if 'noise_model_fits' in field_names:
-                fields.append('preprocess.noiseT')
-
-        with h5py.File(self.file.as_posix(), 'r') as h:
-            aman = AxisManager.load(h, fields=fields)
-
-        return SOTODLibObservation(aman)
+class LazySOTODLibObservation(AbstractLazyObservation[AxisManager]):
+    interface_class = SOTODLibObservation

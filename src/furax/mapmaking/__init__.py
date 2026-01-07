@@ -2,20 +2,24 @@ from . import utils
 from ._logger import logger
 from ._observation import (
     AbstractGroundObservation,
-    AbstractGroundObservationResource,
+    AbstractLazyObservation,
+    AbstractObservation,
+    AbstractSatelliteObservation,
     HashedObservationMetadata,
 )
-from ._reader import GroundObservationReader
+from ._reader import ObservationReader
 from .config import MapMakingConfig
 from .mapmaker import MultiObservationMapMaker
 from .preconditioner import BJPreconditioner
 
 __all__ = [
     'BJPreconditioner',
+    'AbstractObservation',
+    'AbstractLazyObservation',
     'AbstractGroundObservation',
-    'AbstractGroundObservationResource',
+    'AbstractSatelliteObservation',
     'HashedObservationMetadata',
-    'GroundObservationReader',
+    'ObservationReader',
     'MapMakingConfig',
     'MultiObservationMapMaker',
     'logger',

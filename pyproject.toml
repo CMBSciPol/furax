@@ -24,16 +24,16 @@ classifiers = [
 requires-python = '>=3.10'
 license = { file = 'LICENSE' }
 dependencies = [
+    'astropy',
+    'equinox',
+    'healpy>=0.18.1',
     'jax>=0.4.38,!=0.7.*',
     'jaxtyping',
-    'healpy>=0.18.1',
     'jax-healpy',
     'lineax>=0.0.8',
     'numpy',
     'scipy',
     'typing-extensions; python_version < "3.11"',
-    'matplotlib',
-    'astropy',
 ]
 dynamic = ['version']
 
@@ -49,15 +49,24 @@ docs = [
     'ipykernel>=6.0',
 ]
 mapmaking = [
-    'apischema',
-    'h5py',
+    'apischema>=0.19.0',
     'jax-grid-search',
+    'matplotlib',
     'optax',
     'pixell>=0.31.7',
+    'pyyaml>=0.6.2',
+]
+so = [
     'sotodlib[site-pipeline]>=0.6.15; python_version<"3.13"',
     'so3g>=0.2.5',
+]
+toast = [
     'toast==3.0.0a40',
 ]
+lbs = [
+    'litebird_sim @ git+https://github.com/litebird/litebird_sim.git',
+]
+interfaces = ["furax[so,toast,lbs]"]
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'
@@ -80,13 +89,13 @@ skip_covered = true
 module = [
     'apischema',
     'astropy.*',
-    'h5py',
     'healpy',
     'jax_grid_search',
     'jax_healpy',
     'lineax',
     'matplotlib.*',
     'mpl_toolkits.*',
+    'litebird_sim',
     'optax',
     'pixell.*',
     'pysm3.*',

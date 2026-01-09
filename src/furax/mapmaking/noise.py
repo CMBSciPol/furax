@@ -5,7 +5,6 @@ from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
-import optax
 from jaxtyping import Array, Float, PyTree
 
 from furax.core import (
@@ -15,7 +14,8 @@ from furax.core import (
     SymmetricBandToeplitzOperator,
 )
 
-from .utils import apodization_window, run_lbfgs
+from .config import NoiseFitConfig
+from .utils import apodization_window, fit_white_noise_model
 from .utils import fit_psd_model as fit_atmospheric_psd_model
 
 
@@ -59,33 +59,13 @@ class NoiseModel:
         # do not use apodization -- sufficient padding is done by the FourierOperator
         return FourierOperator(func, in_structure, sample_rate=sample_rate, apodize=False)
 
-    def l2_loss(self, f: Float[Array, ' a'], Pxx: Float[Array, 'dets a']) -> Float[Array, '']:
-        """l2 loss in log-log space
-        f[0] is assume to be 0
-        """
-        pred = self.log_psd(f[1:])
-        loss = jnp.trapezoid((pred - jnp.log10(Pxx[:, 1:])) ** 2, jnp.log10(f[1:]))
+    def l2_loss(
+        self, f: Float[Array, ' a'], Pxx: Float[Array, 'dets a'], mask: Float[Array, ' a']
+    ) -> Float[Array, '']:
+        """l2 loss in log-log spacea with given frequency mask"""
+        pred = self.log_psd(f)
+        loss = jnp.trapezoid(((pred - jnp.log10(Pxx)) * mask[None, :]) ** 2, jnp.log10(f))
         return jnp.mean(loss)
-
-    @classmethod
-    def fit_psd_model(
-        cls,
-        f: Float[Array, ' freq'],
-        Pxx: Float[Array, 'dets freq'],
-        init_model: 'NoiseModel',
-        max_iter: int,
-        tol: float,
-    ) -> 'NoiseModel':
-        """Fit a noise model to the given psd using l2 loss in log-log space.
-        Must provide an instance of a NoiseModel subclass as init_model,
-        and the output is the fitted noise model of the same class.
-        It is recommended to use the given noise model class's fit_psd_model
-        function instead if available.
-        """
-        loss = jax.jit(lambda m: m.l2_loss(f, Pxx))
-        opt = optax.lbfgs()
-        final_model, _ = run_lbfgs(init_model, loss, opt, max_iter, tol)
-        return final_model  # type: ignore[return-value]
 
 
 @jax.tree_util.register_dataclass
@@ -126,14 +106,18 @@ class WhiteNoiseModel(NoiseModel):
         return DiagonalOperator(inv_var[:, None], in_structure=in_structure)
 
     @classmethod
-    def fit_psd_model(  # type: ignore[override]
+    def fit_psd_model(
         cls,
         f: Float[Array, ' freq'],
         Pxx: Float[Array, 'dets freq'],
+        sample_rate: Array,
+        hwp_freq: Array,
+        config: NoiseFitConfig = NoiseFitConfig(),
     ) -> 'WhiteNoiseModel':
         """Fit a white noise model to data"""
-        # avoid f=0
-        sigma = jnp.power(10, 0.5 * jnp.median(jnp.log10(Pxx[:, 1:]), axis=-1))
+        sigma = fit_white_noise_model(
+            f, Pxx, sample_rate=sample_rate, hwp_freq=hwp_freq, config=config
+        )['fit']
         return cls(sigma)
 
 
@@ -154,7 +138,9 @@ class AtmosphericNoiseModel(NoiseModel):
     @jax.jit
     @partial(jax.vmap, in_axes=(None, 0), out_axes=1)
     def psd(self, f: Float[Array, '']) -> Float[Array, '']:
-        return self.sigma**2 * (1 + ((f + self.f0) / self.fk) ** self.alpha)
+        return jnp.where(
+            self.sigma > 0, self.sigma**2 * (1 + ((f + self.f0) / self.fk) ** self.alpha), 0
+        )
 
     @jax.jit
     @partial(jax.vmap, in_axes=(None, 0), out_axes=1)
@@ -211,11 +197,16 @@ class AtmosphericNoiseModel(NoiseModel):
         return WhiteNoiseModel(sigma=self.sigma)
 
     @classmethod
-    def fit_psd_model(  # type: ignore[override]
+    def fit_psd_model(
         cls,
         f: Float[Array, ' freq'],
         Pxx: Float[Array, 'dets freq'],
+        sample_rate: Array,
+        hwp_freq: Array,
+        config: NoiseFitConfig = NoiseFitConfig(),
     ) -> 'AtmosphericNoiseModel':
         """Fit a atmospheric (1/f) noise model to data"""
-        params = fit_atmospheric_psd_model(f, Pxx)
-        return cls(*params.T)
+        result = fit_atmospheric_psd_model(
+            f, Pxx, sample_rate=sample_rate, hwp_freq=hwp_freq, config=config
+        )
+        return cls(*result['fit'].T)

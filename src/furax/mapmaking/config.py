@@ -50,7 +50,7 @@ class NoiseFitConfig:
 
 @dataclass(frozen=True)
 class LandscapeConfig:
-    type: Landscapes = Landscapes.WCS
+    type: Landscapes = Landscapes.HPIX
     resolution: float = 8.0
     nside: int = 512
 

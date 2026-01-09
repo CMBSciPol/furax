@@ -29,6 +29,26 @@ class SolverConfig:
 
 
 @dataclass(frozen=True)
+class NoiseFitConfig:
+    max_iter: int = 100  # Maximum number of iterations
+    tol: float = 1e-10  # Error tolerance
+    min_freq: float = 1e-10  # Only use f >= min_freq [Hz] for noise fitting
+    max_freq: float = 50  # Only use f < max_freq [Hz] for noise fitting
+    low_freq_threshold: float = (
+        1.0  # Frequency [Hz] below which the PSD is assumed to be dominated by 1/f noise
+    )
+    high_freq_threshold: float = (
+        10.0  # Frequency [Hz] above which the PSD is assumed to be dominated by white noise
+    )
+    mask_hwp_harmonics: bool = True  # Mask HWP harmonics: 1f, 2f, 4f
+    mask_ptc_harmonics: bool = True  # Mask PTC harmonics: 1f, 2f
+    freq_mask_width: float = (
+        0.5  # Full width [Hz] of the frequency mask around HWP and PTC harmonics
+    )
+    ptc_freq: float = 1.4  # PTC frequency [Hz] used for masking
+
+
+@dataclass(frozen=True)
 class LandscapeConfig:
     type: Landscapes = Landscapes.WCS
     resolution: float = 8.0
@@ -134,13 +154,13 @@ class MapMakingConfig:
     sample_mask: bool = False
     correlation_length: int = 1_000
     nperseg: int = 2_048
-    psd_fmin: float = 1e-2
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2
     double_precision: bool = True
     pointing_on_the_fly: bool = False
     pointing_chunk_size: int = 4
     fit_noise_model: bool = True
+    noise_fit: NoiseFitConfig = NoiseFitConfig()
     debug: bool = True
     solver: SolverConfig = SolverConfig()
     gaps: GapsConfig = GapsConfig()

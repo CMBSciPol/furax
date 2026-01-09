@@ -255,8 +255,8 @@ def _fit_psd_model_masked(
     f: Float[Array, ' freqs'],
     Pxx: Float[Array, ' freqs'],
     mask: Float[Array, ' freqs'],
-    low_f_threshold: float,
-    high_f_threshold: float,
+    low_f_threshold: Array,
+    high_f_threshold: Array,
     max_iter: int = 100,
     tol: float = 1e-10,
 ) -> dict['str', Any]:
@@ -462,7 +462,7 @@ def _approximate_white_noise(
     f: Float[Array, ' a'],
     Pxx: Float[Array, ' a'],
     mask: Float[Array, ' a'],
-    high_f_threshold: float,
+    high_f_threshold: Array,
 ) -> Float[Array, '1']:
     # Obtain an approximate level estimated from high-frequency > high_f_threshold
 
@@ -474,8 +474,8 @@ def _approximate_fit(
     f: Float[Array, ' a'],
     Pxx: Float[Array, ' a'],
     mask: Float[Array, ' a'],
-    low_f_threshold: float,
-    high_f_threshold: float,
+    low_f_threshold: Array,
+    high_f_threshold: Array,
 ) -> Float[Array, '4']:
     # Obtain an approximate fit for all parameters:
     # sigma: estimated from high-frequency > high_f_threshold
@@ -494,7 +494,7 @@ def _approximate_fit_given_two_parameters(
     f: Float[Array, ' a'],
     Pxx: Float[Array, ' a'],
     mask: Float[Array, ' a'],
-    low_f_threshold: float,
+    low_f_threshold: Array,
 ) -> Float[Array, '4']:
     # Given sigma and f0, obtain an approximate fit for alpha and fk
     # by fitting power-law to (P-sigma**2) as a function of (f+f0).

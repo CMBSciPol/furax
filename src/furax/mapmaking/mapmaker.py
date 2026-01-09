@@ -742,7 +742,11 @@ class MapMaker:
         )
         hwp_freq = _hwp_frequency(observation.get_timestamps(), observation.get_hwp_angles())
         return Model.fit_psd_model(
-            f, Pxx, sample_rate=jnp.array(observation.sample_rate), hwp_freq=hwp_freq, config=config.noise_fit
+            f,
+            Pxx,
+            sample_rate=jnp.array(observation.sample_rate),
+            hwp_freq=hwp_freq,
+            config=config.noise_fit,
         )
 
     def get_pixel_selector(

@@ -403,7 +403,9 @@ class MultiObservationMapMaker(Generic[T]):
             fs = _sample_rate(data['timestamps'])
             hwp_freq = _hwp_frequency(data['timestamps'], data['hwp_angles'])
             f, Pxx = jax.scipy.signal.welch(data['sample_data'], fs=fs, nperseg=self.config.nperseg)
-            model = cls.fit_psd_model(f, Pxx, hwp_freq=hwp_freq, config=self.config.noise_fit)
+            model = cls.fit_psd_model(
+                f, Pxx, sample_rate=fs, hwp_freq=hwp_freq, config=self.config.noise_fit
+            )
             return model, fs
 
         return jax.tree.map(fit_model, list(range(reader.count)))  # type: ignore[no-any-return]
@@ -739,7 +741,9 @@ class MapMaker:
             observation.get_tods(), fs=observation.sample_rate, nperseg=config.nperseg
         )
         hwp_freq = _hwp_frequency(observation.get_timestamps(), observation.get_hwp_angles())
-        return Model.fit_psd_model(f, Pxx, hwp_freq=hwp_freq, config=config.noise_fit)
+        return Model.fit_psd_model(
+            f, Pxx, sample_rate=jnp.array(observation.sample_rate), hwp_freq=hwp_freq, config=config.noise_fit
+        )
 
     def get_pixel_selector(
         self, blocks: Float[Array, '... nstokes nstokes'], landscape: StokesLandscape

@@ -110,11 +110,14 @@ class WhiteNoiseModel(NoiseModel):
         cls,
         f: Float[Array, ' freq'],
         Pxx: Float[Array, 'dets freq'],
+        sample_rate: Array,
         hwp_freq: Array,
         config: NoiseFitConfig = NoiseFitConfig(),
     ) -> 'WhiteNoiseModel':
         """Fit a white noise model to data"""
-        sigma = fit_white_noise_model(f, Pxx, hwp_freq=hwp_freq, config=config)['fit']
+        sigma = fit_white_noise_model(
+            f, Pxx, sample_rate=sample_rate, hwp_freq=hwp_freq, config=config
+        )['fit']
         return cls(sigma)
 
 
@@ -135,7 +138,9 @@ class AtmosphericNoiseModel(NoiseModel):
     @jax.jit
     @partial(jax.vmap, in_axes=(None, 0), out_axes=1)
     def psd(self, f: Float[Array, '']) -> Float[Array, '']:
-        return self.sigma**2 * (1 + ((f + self.f0) / self.fk) ** self.alpha)
+        return jnp.where(
+            self.sigma > 0, self.sigma**2 * (1 + ((f + self.f0) / self.fk) ** self.alpha), 0
+        )
 
     @jax.jit
     @partial(jax.vmap, in_axes=(None, 0), out_axes=1)
@@ -196,9 +201,12 @@ class AtmosphericNoiseModel(NoiseModel):
         cls,
         f: Float[Array, ' freq'],
         Pxx: Float[Array, 'dets freq'],
+        sample_rate: Array,
         hwp_freq: Array,
         config: NoiseFitConfig = NoiseFitConfig(),
     ) -> 'AtmosphericNoiseModel':
         """Fit a atmospheric (1/f) noise model to data"""
-        result = fit_atmospheric_psd_model(f, Pxx, hwp_freq=hwp_freq, config=config)
+        result = fit_atmospheric_psd_model(
+            f, Pxx, sample_rate=sample_rate, hwp_freq=hwp_freq, config=config
+        )
         return cls(*result['fit'].T)

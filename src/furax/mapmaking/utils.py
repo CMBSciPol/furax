@@ -141,6 +141,7 @@ def _fit_psd_model_legacy(f: Float[Array, ' a'], Pxx: Float[Array, ' a']) -> Flo
 def fit_white_noise_model(
     f: Float[Array, ' freqs'],
     Pxx: Float[Array, 'dets freqs'],
+    sample_rate: Array,
     hwp_freq: Array,
     config: NoiseFitConfig = NoiseFitConfig(),
 ) -> dict[str, Any]:
@@ -164,7 +165,10 @@ def fit_white_noise_model(
                 Shape: (n_detectors, 1)
 
     """
-    mask = _create_frequency_mask_from_config(f, hwp_freq=hwp_freq, config=config)
+    mask = _create_frequency_mask_from_config(
+        f, sample_rate=sample_rate, hwp_freq=hwp_freq, config=config
+    )
+    nyquist = sample_rate / 2
 
     results = jax.vmap(
         lambda f, Pxx: {
@@ -172,7 +176,7 @@ def fit_white_noise_model(
                 f,
                 Pxx,
                 mask=mask,
-                high_f_threshold=config.high_freq_threshold,
+                high_f_threshold=nyquist * config.high_freq_nyquist,
             )
         },
         in_axes=(None, 0),
@@ -185,6 +189,7 @@ def fit_white_noise_model(
 def fit_psd_model(
     f: Float[Array, ' freqs'],
     Pxx: Float[Array, 'dets freqs'],
+    sample_rate: Array,
     hwp_freq: Array,
     config: NoiseFitConfig = NoiseFitConfig(),
 ) -> dict[str, Any]:
@@ -202,6 +207,7 @@ def fit_psd_model(
     Args:
         f: Frequency array (Hz). Shape: (n_freq,)
         Pxx: Power spectral density values. Shape: (n_detectors, n_freq)
+        sample_rate: Sampling rate (Hz)
         hwp_freq: HWP rotation frequency (Hz)
         config: NoiseFitConfig instance
 
@@ -217,15 +223,18 @@ def fit_psd_model(
                 Shape: (n_detectors, 4, 4)
 
     """
-    mask = _create_frequency_mask_from_config(f, hwp_freq=hwp_freq, config=config)
+    mask = _create_frequency_mask_from_config(
+        f, sample_rate=sample_rate, hwp_freq=hwp_freq, config=config
+    )
+    nyquist = sample_rate / 2
 
     results = jax.vmap(
         lambda f, Pxx: _fit_psd_model_masked(
             f,
             Pxx,
             mask=mask,
-            low_f_threshold=config.low_freq_threshold,
-            high_f_threshold=config.high_freq_threshold,
+            low_f_threshold=nyquist * config.low_freq_nyquist,
+            high_f_threshold=nyquist * config.high_freq_nyquist,
             max_iter=config.max_iter,
             tol=config.tol,
         ),
@@ -233,11 +242,11 @@ def fit_psd_model(
         out_axes={'fit': 0, 'loss': 0, 'num_iter': 0, 'inv_fisher': 0, 'num_freq': None},
     )(f, Pxx)
     # TODO: support logger here instead of print
-    print('---- PSD model fit details ----')
-    print(f'Number of frequency bins: {results["num_freq"]}')
-    print(f'Mean loss per bin: {results["loss"] / results["num_freq"]}')
-    print(f'Number of iterations: {results["num_iter"]}')
-    print('-------------------------------')
+    jax.debug.print('---- PSD model fit details ----')
+    jax.debug.print('Number of frequency bins: {}', results['num_freq'])
+    jax.debug.print('Mean loss per bin: {}', results['loss'] / results['num_freq'])
+    jax.debug.print('Number of iterations: {}', results['num_iter'])
+    jax.debug.print('-------------------------------')
 
     return results
 
@@ -250,7 +259,6 @@ def _fit_psd_model_masked(
     high_f_threshold: float,
     max_iter: int = 100,
     tol: float = 1e-10,
-    # ) -> tuple[Float[Array, '4'], Float[Array, '1'], Int[Array, '1']]:
 ) -> dict['str', Any]:
     """Fit a 1/f PSD model to the periodogram in log space.
 
@@ -329,6 +337,7 @@ def _fit_psd_model_masked(
 
 def _create_frequency_mask_from_config(
     f: Float[Array, ' a'],
+    sample_rate: Array,
     hwp_freq: Array,
     config: NoiseFitConfig = NoiseFitConfig(),
 ) -> Float[Array, ' a']:
@@ -358,15 +367,17 @@ def _create_frequency_mask_from_config(
             ]
         )
 
-    return _create_frequency_mask(
-        f, f_min=config.min_freq, f_max=config.max_freq, f_mask_intervals=intervals
-    )
+    nyquist = sample_rate / 2
+    f_min = nyquist * config.min_freq_nyquist
+    f_max = nyquist * config.max_freq_nyquist
+
+    return _create_frequency_mask(f, f_min=f_min, f_max=f_max, f_mask_intervals=intervals)
 
 
 def _create_frequency_mask(
     f: Float[Array, ' a'],
-    f_min: float | None,
-    f_max: float | None,
+    f_min: Array | None,
+    f_max: Array | None,
     f_mask_intervals: Float[Array, 'n_intervals 2'] | None,
 ) -> Float[Array, ' a']:
     """Create a float mask for frequency selection and interval masking.
@@ -492,18 +503,18 @@ def _approximate_fit_given_two_parameters(
     mask = jnp.logical_and(mask, Pxx > sigma**2)
 
     # TODO: ensure sum(mask) >= 2 required for this method to work
-
-    mean_logf = jnp.sum(jnp.where(mask, jnp.log(f + f0), 0)) / jnp.sum(mask)
-    mean_logP = jnp.sum(jnp.where(mask, jnp.log(Pxx - sigma**2), 0)) / jnp.sum(mask)
+    weight = (jnp.sum(mask) > 0) * (1 / jnp.sum(mask))
+    mean_logf = jnp.sum(jnp.where(mask, jnp.log(f + f0), 0)) * weight
+    mean_logP = jnp.sum(jnp.where(mask, jnp.log(Pxx - sigma**2), 0)) * weight
 
     nom = jnp.sum(
         jnp.where(mask, (jnp.log(f + f0) - mean_logf) * (jnp.log(Pxx - sigma**2) - mean_logP), 0)
     )
     denom = jnp.sum(jnp.where(mask, (jnp.log(f + f0) - mean_logf) ** 2, 0))
 
-    bf_alpha = nom / denom
+    bf_alpha = nom * (denom > 0) * (1 / denom)
     bf_log_gamma = mean_logP - mean_logf * bf_alpha
-    bf_fk = jnp.exp((jnp.log(sigma**2) - bf_log_gamma) / bf_alpha)
+    bf_fk = jnp.exp((jnp.log(sigma**2) - bf_log_gamma) * (bf_alpha > 0) * (1 / bf_alpha))
 
     return jnp.array([sigma, bf_alpha, bf_fk, f0])
 
@@ -523,7 +534,7 @@ def _log_model(params: Float[Array, '4'], x: Float[Array, ' a']) -> Float[Array,
 
 def _model(params: Float[Array, '4'], x: Float[Array, ' a']) -> Float[Array, ' a']:
     sigma, alpha, fk, f0 = _unpack(params)
-    return sigma**2 * (1 + ((x + f0) / fk) ** alpha)
+    return jnp.where(sigma > 0, sigma**2 * (1 + ((x + f0) / fk) ** alpha), 0)
 
 
 def _unpack(params: Float[Array, '4']) -> tuple[Array, Array, Array, Array]:

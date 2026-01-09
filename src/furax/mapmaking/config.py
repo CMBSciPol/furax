@@ -30,22 +30,35 @@ class SolverConfig:
 
 @dataclass(frozen=True)
 class NoiseFitConfig:
-    max_iter: int = 100  # Maximum number of iterations
-    tol: float = 1e-10  # Error tolerance
-    min_freq: float = 1e-10  # Only use f >= min_freq [Hz] for noise fitting
-    max_freq: float = 50  # Only use f < max_freq [Hz] for noise fitting
-    low_freq_threshold: float = (
-        1.0  # Frequency [Hz] below which the PSD is assumed to be dominated by 1/f noise
-    )
-    high_freq_threshold: float = (
-        10.0  # Frequency [Hz] above which the PSD is assumed to be dominated by white noise
-    )
-    mask_hwp_harmonics: bool = True  # Mask HWP harmonics: 1f, 2f, 4f
-    mask_ptc_harmonics: bool = True  # Mask PTC harmonics: 1f, 2f
-    freq_mask_width: float = (
-        0.5  # Full width [Hz] of the frequency mask around HWP and PTC harmonics
-    )
-    ptc_freq: float = 1.4  # PTC frequency [Hz] used for masking
+    max_iter: int = 100
+    """Maximum number of iterations"""
+
+    tol: float = 1e-10
+    """Error tolerance"""
+
+    min_freq_nyquist: float = 1e-8
+    """Only use f >= min_freq * nyquist for noise fitting"""
+
+    max_freq_nyquist: float = 1
+    """Only use f < max_freq * nyquist for noise fitting"""
+
+    low_freq_nyquist: float = 0.02
+    """The PSD at f < low_freq * nyquist is assumed to be dominated by 1/f noise"""
+
+    high_freq_nyquist: float = 0.02
+    """The PSD at f > high_freq * nyquist is assumed to be dominated by white noise"""
+
+    mask_hwp_harmonics: bool = True
+    """Mask HWP harmonics: 1f, 2f, 4f"""
+
+    mask_ptc_harmonics: bool = True
+    """Mask PTC harmonics: 1f, 2f"""
+
+    freq_mask_width: float = 0.5
+    """Full width [Hz] of the frequency mask (if used) around HWP and PTC harmonics"""
+
+    ptc_freq: float = 1.4
+    """PTC frequency [Hz] used for masking (if used)"""
 
 
 @dataclass(frozen=True)
@@ -119,6 +132,7 @@ class TemplatesConfig:
         return all(getattr(self, f.name) is None for f in fields(self))
 
 
+@dataclass(frozen=True)
 class GapFillingOptions:
     """Specific gap-filling options"""
 
@@ -132,6 +146,7 @@ class GapFillingOptions:
     """The relative tolerance of the solver for the gap-filling solve"""
 
 
+@dataclass(frozen=True)
 class GapsConfig:
     """Configuration options related to the treatment of gaps"""
 

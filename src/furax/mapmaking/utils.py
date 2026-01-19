@@ -11,6 +11,7 @@ from optax import tree_utils as otu
 from scipy.signal import get_window
 from toast import qarray as qa
 
+from ._logger import logger
 from .config import NoiseFitConfig
 
 
@@ -241,12 +242,14 @@ def fit_psd_model(
         in_axes=(None, 0),
         out_axes={'fit': 0, 'loss': 0, 'num_iter': 0, 'inv_fisher': 0, 'num_freq': None},
     )(f, Pxx)
-    # TODO: support logger here instead of print
-    jax.debug.print('---- PSD model fit details ----')
-    jax.debug.print('Number of frequency bins: {}', results['num_freq'])
-    jax.debug.print('Mean loss per bin: {}', results['loss'] / results['num_freq'])
-    jax.debug.print('Number of iterations: {}', results['num_iter'])
-    jax.debug.print('-------------------------------')
+    def fit_details(results):
+        logger.info(
+            f'---- PSD model fit details ----\n'
+            f'Number of frequency bins: {results["num_freq"]}\n'
+            f'Mean loss per bin: {results["loss"] / results["num_freq"]}\n'
+            f'Number of iterations: {results["num_iter"]}\n'
+            f'-------------------------------')
+    jax.debug.callback(fit_details, results)
 
     return results
 

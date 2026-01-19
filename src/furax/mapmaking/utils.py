@@ -143,7 +143,7 @@ def fit_white_noise_model(
     f: Float[Array, ' freqs'],
     Pxx: Float[Array, 'dets freqs'],
     sample_rate: Array,
-    hwp_freq: Array,
+    hwp_frequency: Array,
     config: NoiseFitConfig = NoiseFitConfig(),
 ) -> dict[str, Any]:
     """Fit a white noise model to the periodogram in log space.
@@ -157,7 +157,7 @@ def fit_white_noise_model(
     Args:
         f: Frequency array (Hz). Shape: (n_freq,)
         Pxx: Power spectral density values. Shape: (n_detectors, n_freq)
-        hwp_freq: HWP rotation frequency (Hz)
+        hwp_frequency: HWP rotation frequency (Hz)
         config: NoiseFitConfig instance
 
     Returns:
@@ -167,7 +167,7 @@ def fit_white_noise_model(
 
     """
     mask = _create_frequency_mask_from_config(
-        f, sample_rate=sample_rate, hwp_freq=hwp_freq, config=config
+        f, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
     )
     nyquist = sample_rate / 2
 
@@ -191,7 +191,7 @@ def fit_psd_model(
     f: Float[Array, ' freqs'],
     Pxx: Float[Array, 'dets freqs'],
     sample_rate: Array,
-    hwp_freq: Array,
+    hwp_frequency: Array,
     config: NoiseFitConfig = NoiseFitConfig(),
 ) -> dict[str, Any]:
     """Fit a 1/f PSD model to the periodogram in log space.
@@ -209,7 +209,7 @@ def fit_psd_model(
         f: Frequency array (Hz). Shape: (n_freq,)
         Pxx: Power spectral density values. Shape: (n_detectors, n_freq)
         sample_rate: Sampling rate (Hz)
-        hwp_freq: HWP rotation frequency (Hz)
+        hwp_frequency: HWP rotation frequency (Hz)
         config: NoiseFitConfig instance
 
     Returns:
@@ -225,7 +225,7 @@ def fit_psd_model(
 
     """
     mask = _create_frequency_mask_from_config(
-        f, sample_rate=sample_rate, hwp_freq=hwp_freq, config=config
+        f, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
     )
     nyquist = sample_rate / 2
 
@@ -341,11 +341,12 @@ def _fit_psd_model_masked(
 def _create_frequency_mask_from_config(
     f: Float[Array, ' a'],
     sample_rate: Array,
-    hwp_freq: Array,
+    hwp_frequency: Array,
     config: NoiseFitConfig = NoiseFitConfig(),
 ) -> Float[Array, ' a']:
     """Create a float mask for frequency selection and interval masking from a NoiseFitConfig."""
 
+    hwp_freq = jnp.abs(hwp_frequency)
     ptc_freq = config.ptc_freq
     d = config.freq_mask_width / 2
 

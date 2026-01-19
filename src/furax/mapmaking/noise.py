@@ -111,12 +111,12 @@ class WhiteNoiseModel(NoiseModel):
         f: Float[Array, ' freq'],
         Pxx: Float[Array, 'dets freq'],
         sample_rate: Array,
-        hwp_freq: Array,
+        hwp_frequency: Array,
         config: NoiseFitConfig = NoiseFitConfig(),
     ) -> 'WhiteNoiseModel':
         """Fit a white noise model to data"""
         sigma = fit_white_noise_model(
-            f, Pxx, sample_rate=sample_rate, hwp_freq=hwp_freq, config=config
+            f, Pxx, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
         )['fit']
         return cls(sigma)
 
@@ -202,11 +202,11 @@ class AtmosphericNoiseModel(NoiseModel):
         f: Float[Array, ' freq'],
         Pxx: Float[Array, 'dets freq'],
         sample_rate: Array,
-        hwp_freq: Array,
+        hwp_frequency: Array,
         config: NoiseFitConfig = NoiseFitConfig(),
     ) -> 'AtmosphericNoiseModel':
         """Fit a atmospheric (1/f) noise model to data"""
         result = fit_atmospheric_psd_model(
-            f, Pxx, sample_rate=sample_rate, hwp_freq=hwp_freq, config=config
+            f, Pxx, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
         )
         return cls(*result['fit'].T)

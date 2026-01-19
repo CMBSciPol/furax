@@ -21,14 +21,14 @@ class Methods(Enum):
     ATOP = 'ATOP'
 
 
-@dataclass(frozen=True)
+@dataclass
 class SolverConfig:
     rtol: float = 1e-6
     atol: float = 0
     max_steps: int = 1_000
 
 
-@dataclass(frozen=True)
+@dataclass
 class NoiseFitConfig:
     max_iter: int = 100
     """Maximum number of iterations"""
@@ -61,37 +61,37 @@ class NoiseFitConfig:
     """PTC frequency [Hz] used for masking (if used)"""
 
 
-@dataclass(frozen=True)
+@dataclass
 class LandscapeConfig:
     type: Landscapes = Landscapes.HPIX
     resolution: float = 8.0
     nside: int = 512
 
 
-@dataclass(frozen=True)
+@dataclass
 class _PolyTemplateConfig:
     max_poly_order: int = 3
 
 
-@dataclass(frozen=True)
+@dataclass
 class _ScanSynchronousTemplateConfig:
     min_poly_order: int = 3
     max_poly_order: int = 7
 
 
-@dataclass(frozen=True)
+@dataclass
 class _HWPSynchronousTemplateConfig:
     n_harmonics: int = 3
 
 
-@dataclass(frozen=True)
+@dataclass
 class _AzimuthHWPSynchronousTemplateConfig:
     n_polynomials: int = 4
     n_harmonics: int = 4
     split_scans: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass
 class _BinAzimuthHWPSynchronousTemplateConfig:
     n_azimuth_bins: int = 4
     n_harmonics: int = 4
@@ -99,13 +99,13 @@ class _BinAzimuthHWPSynchronousTemplateConfig:
     smooth_interpolation: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass
 class _GroundTemplateConfig:
     azimuth_resolution: float = 0.05  # ~3 deg
     elevation_resolution: float = 0.05  # ~3 deg
 
 
-@dataclass(frozen=True)
+@dataclass
 class TemplatesConfig:
     polynomial: _PolyTemplateConfig | None = None
     scan_synchronous: _ScanSynchronousTemplateConfig | None = None
@@ -132,7 +132,7 @@ class TemplatesConfig:
         return all(getattr(self, f.name) is None for f in fields(self))
 
 
-@dataclass(frozen=True)
+@dataclass
 class GapFillingOptions:
     """Specific gap-filling options"""
 
@@ -146,7 +146,7 @@ class GapFillingOptions:
     """The relative tolerance of the solver for the gap-filling solve"""
 
 
-@dataclass(frozen=True)
+@dataclass
 class GapsConfig:
     """Configuration options related to the treatment of gaps"""
 
@@ -160,7 +160,7 @@ class GapsConfig:
     """Use the nested PCG method for gap treatment"""
 
 
-@dataclass(frozen=True)
+@dataclass
 class MapMakingConfig:
     method: Methods = Methods.BINNED
     binned: bool = True

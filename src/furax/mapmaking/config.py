@@ -1,4 +1,4 @@
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -153,7 +153,7 @@ class GapsConfig:
     fill: bool = True
     """Fill data gaps with synthetic noise-like samples"""
 
-    fill_options: GapFillingOptions = GapFillingOptions()
+    fill_options: GapFillingOptions = field(default_factory=GapFillingOptions)
     """Options to pass to the gap-filling operator"""
 
     nested_pcg: bool = False
@@ -175,11 +175,11 @@ class MapMakingConfig:
     pointing_on_the_fly: bool = False
     pointing_chunk_size: int = 4
     fit_noise_model: bool = True
-    noise_fit: NoiseFitConfig = NoiseFitConfig()
+    noise_fit: NoiseFitConfig = field(default_factory=NoiseFitConfig)
     debug: bool = True
     solver: SolverConfig = SolverConfig()
     gaps: GapsConfig = GapsConfig()
-    landscape: LandscapeConfig = LandscapeConfig()
+    landscape: LandscapeConfig = field(default_factory=LandscapeConfig)
     templates: TemplatesConfig | None = None
     atop_tau: int = 0
 

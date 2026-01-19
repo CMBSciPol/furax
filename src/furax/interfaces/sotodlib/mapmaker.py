@@ -9,7 +9,6 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import init_logger
-from sotodlib.site_pipeline.utils.pipeline import main_launcher
 
 from furax.interfaces.sotodlib.observation import SOTODLibObservation
 from furax.mapmaking.config import MapMakingConfig
@@ -151,7 +150,9 @@ def get_parser(parser: ArgumentParser | None = None) -> ArgumentParser:
 
 
 def main_cli() -> None:
-    main_launcher(main, get_parser)
+    #main_launcher(main, get_parser)
+    # Script currently not supported due to an error in packaged sotodlib
+    pass
 
 
 if __name__ == '__main__':

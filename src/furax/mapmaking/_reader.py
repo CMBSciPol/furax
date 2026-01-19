@@ -69,7 +69,9 @@ class ObservationReader(AbstractReader, Generic[T]):
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
         """Reads one ground observation from the list of filenames specified in the reader.
         The data is padded differently depending on the key:
-            - sample_data, timestamps, hwp_angles: padded with 0.0 outside the valid samples
+            - sample_data: padded with 0.0 outside the valid samples
+            - timestamps, hwp_angles: extrapolated in the padded region so that
+                the sample rate and the hwp rotation frequency remain consistent
             - valid_sample_masks, valid_scanning_masks : padded with 0 (False) outside
                 the valid samples
             - detector_quaternions: padded with (1, 0, 0, 0) for invalid detectors, as if they
@@ -83,6 +85,38 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         # Handle fields with non-zero padding
         data_field_names = self.common_keywords['data_field_names']
+        if 'timestamps' in data_field_names:
+            # Extrapolate in the padded region for constant sample rate
+            timestamps = data['timestamps']
+            pad_size = padding['timestamps'][0]  # Padded length along samples axis
+            data_size = timestamps.size - pad_size  # Unpadded length
+            dt = (timestamps[data_size - 1] - timestamps[0]) / (data_size - 1)  # Mean time spacing
+            extrapolated = (
+                timestamps[data_size - 1]
+                + (jnp.arange(timestamps.size, dtype=timestamps.dtype) - (data_size - 1)) * dt
+            )  # Extrapolate from the last non-zero data entry
+            data['timestamps'] = jnp.where(
+                jnp.arange(timestamps.size) < data_size,
+                timestamps,
+                extrapolated,
+            )
+        if 'hwp_angles' in data_field_names:
+            # Extrapolate in the padded region for constant hwp roation frequency
+            hwp_angles = data['hwp_angles']
+            pad_size = padding['hwp_angles'][0]  # Padded length along samples axis
+            data_size = hwp_angles.size - pad_size  # Unpadded length
+            dphi = (jnp.unwrap(hwp_angles)[data_size - 1] - hwp_angles[0]) / (
+                data_size - 1
+            )  # Mean angle spacing
+            extrapolated = (
+                hwp_angles[data_size - 1]
+                + (jnp.arange(hwp_angles.size, dtype=hwp_angles.dtype) - (data_size - 1)) * dphi
+            )  # Extrapolate from the last non-zero data entry
+            data['hwp_angles'] = jnp.where(
+                jnp.arange(hwp_angles.size) < data_size,
+                hwp_angles,
+                extrapolated,
+            ) % (2 * jnp.pi)
         if 'detector_quaternions' in data_field_names:
             # Pad with (1, 0, 0, 0), corresponding to xi=eta=gamma=0.
             zero_padded = jnp.linalg.norm(data['detector_quaternions'], axis=-1) == 0.0

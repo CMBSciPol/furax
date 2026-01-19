@@ -86,13 +86,15 @@ def interpolate_psd(
 
 
 @partial(jax.jit, static_argnames=['nperseg', 'rate'])
-def estimate_psd(
+def estimate_psd_legacy(
     tod: Float[Array, 'a b'], nperseg: int, rate: float
 ) -> Float[Array, 'a {nperseg // 2 + 1}']:
+    """Legacy implementation for computing PSD and fitting 1/f noise model.
+    Use NoiseModel from the mapmaking module instead."""
     # average the periodogram estimate over blocks of size nperseg
     f, Pxx = jax.scipy.signal.welch(tod, fs=rate, nperseg=nperseg)
     # fit and compute full size PSD from fitted parameters
-    params = fit_psd_model(f, Pxx)
+    params = _fit_psd_model_legacy(f, Pxx)
     freq = jnp.fft.rfftfreq(nperseg, 1 / rate)
     func = jnp.vectorize(_model, signature='(p),(n)->(n)')
     psd: Array = func(params, freq)
@@ -100,8 +102,8 @@ def estimate_psd(
 
 
 @partial(jnp.vectorize, signature='(n),(n)->(p)')
-def fit_psd_model(f: Float[Array, ' a'], Pxx: Float[Array, ' a']) -> Float[Array, '4']:
-    """Fit a 1/f PSD model to the periodogram in log space."""
+def _fit_psd_model_legacy(f: Float[Array, ' a'], Pxx: Float[Array, ' a']) -> Float[Array, '4']:
+    """Legacy implementation of fit_psd_model. Use fit_psd_model() instead."""
     # minimise loss for params: (sigma, alpha, fknee, fmin/fknee)
     loss = lambda params: _compute_loss(
         params.at[3].multiply(params[2]), x=f[1:], y=jnp.log10(Pxx[1:])
@@ -151,7 +153,7 @@ def _log_model(params: Float[Array, '4'], x: Float[Array, ' a']) -> Float[Array,
 
 def _model(params: Float[Array, '4'], x: Float[Array, ' a']) -> Float[Array, ' a']:
     sigma, alpha, fk, f0 = _unpack(params)
-    return sigma**2 * (1 + ((x + f0) / fk) ** alpha)
+    return jnp.where(sigma > 0, sigma**2 * (1 + ((x + f0) / fk) ** alpha), 0)
 
 
 def _unpack(params: Float[Array, '4']) -> tuple[Array, Array, Array, Array]:

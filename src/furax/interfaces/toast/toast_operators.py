@@ -35,7 +35,7 @@ from furax.mapmaking.templates import TemplateOperator
 from furax.mapmaking.utils import (
     compute_cross_psd,
     estimate_filtered_psd,
-    estimate_psd,
+    estimate_psd_legacy,
     interpolate_psd,
     next_fast_fft_size,
     psd_to_invntt,
@@ -324,7 +324,7 @@ class LegacyMapMakerToastOperator(ToastOperator):  # type: ignore[misc]
         sample_rate = self._data.sample_rate
         if self.noise_model is None:
             # estimate the noise covariance from the data
-            psd = estimate_psd(self._tods, nperseg=nperseg, rate=sample_rate)
+            psd = estimate_psd_legacy(self._tods, nperseg=nperseg, rate=sample_rate)
         else:
             # use an existing noise model
             freq, psd = self._data._get_psd_model()

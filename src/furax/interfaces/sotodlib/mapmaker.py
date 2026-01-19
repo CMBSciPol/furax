@@ -150,7 +150,7 @@ def get_parser(parser: ArgumentParser | None = None) -> ArgumentParser:
 
 
 def main_cli() -> None:
-    #main_launcher(main, get_parser)
+    # main_launcher(main, get_parser)
     # Script currently not supported due to an error in packaged sotodlib
     pass
 

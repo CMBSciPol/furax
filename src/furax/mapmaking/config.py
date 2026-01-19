@@ -177,8 +177,8 @@ class MapMakingConfig:
     fit_noise_model: bool = True
     noise_fit: NoiseFitConfig = field(default_factory=NoiseFitConfig)
     debug: bool = True
-    solver: SolverConfig = SolverConfig()
-    gaps: GapsConfig = GapsConfig()
+    solver: SolverConfig = field(default_factory=SolverConfig)
+    gaps: GapsConfig = field(default_factory=GapsConfig)
     landscape: LandscapeConfig = field(default_factory=LandscapeConfig)
     templates: TemplatesConfig | None = None
     atop_tau: int = 0

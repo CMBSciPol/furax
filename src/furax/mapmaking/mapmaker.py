@@ -391,8 +391,8 @@ class MultiObservationMapMaker(Generic[T]):
         return jax.tree.map(read_model, list(range(reader.count)))  # type: ignore[no-any-return]
 
     def _fit_noise_models(self) -> list[tuple[NoiseModel, int | float]]:
-        # Only read sample data and timestamps (to compute sampling rate)
-        reader = self.get_reader(['sample_data', 'timestamps'])
+        # Only read sample data, timestamps (to compute sampling rate), and hwp_angles (for masking)
+        reader = self.get_reader(['sample_data', 'timestamps', 'hwp_angles'])
 
         # Choose noise model based on mapmaker configuration
         cls = WhiteNoiseModel if self.config.binned else AtmosphericNoiseModel
@@ -401,15 +401,24 @@ class MultiObservationMapMaker(Generic[T]):
         def fit_model(i):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
             fs = _sample_rate(data['timestamps'])
+            hwp_frequency = _hwp_frequency(data['timestamps'], data['hwp_angles'])
             f, Pxx = jax.scipy.signal.welch(data['sample_data'], fs=fs, nperseg=self.config.nperseg)
-            model = cls.fit_psd_model(f, Pxx)
+            model = cls.fit_psd_model(
+                f, Pxx, sample_rate=fs, hwp_frequency=hwp_frequency, config=self.config.noise_fit
+            )
             return model, fs
 
         return jax.tree.map(fit_model, list(range(reader.count)))  # type: ignore[no-any-return]
 
 
 def _sample_rate(timestamps: Float[Array, '...']) -> Array:
+    # Note that the reader extrapolates timestamps in the padded region, keeping sample rate constant
     return (timestamps.size - 1) / jnp.ptp(timestamps)
+
+
+def _hwp_frequency(timestamps: Float[Array, '...'], hwp_angles: Float[Array, '...']) -> Array:
+    # Note that the reader extrapolates hwp_angles in the padded region, keeping hwp freq constant
+    return (jnp.unwrap(hwp_angles)[-1] - hwp_angles[0]) / jnp.ptp(timestamps) / (2 * jnp.pi)
 
 
 def _build_landscape(config: MapMakingConfig, stokes: ValidStokesType = 'IQU') -> StokesLandscape:
@@ -724,13 +733,21 @@ class MapMaker:
                     return noise_model
                 if config.binned and isinstance(noise_model, AtmosphericNoiseModel):
                     return noise_model.to_white_noise_model()
+            self.logger.info('No noise model found for loading')
 
         # Otherwise, fit the noise model from data
         self.logger.info('Fitting noise model from data')
         f, Pxx = jax.scipy.signal.welch(
             observation.get_tods(), fs=observation.sample_rate, nperseg=config.nperseg
         )
-        return Model.fit_psd_model(f, Pxx)
+        hwp_frequency = _hwp_frequency(observation.get_timestamps(), observation.get_hwp_angles())
+        return Model.fit_psd_model(
+            f,
+            Pxx,
+            sample_rate=jnp.array(observation.sample_rate),
+            hwp_frequency=hwp_frequency,
+            config=config.noise_fit,
+        )
 
     def get_pixel_selector(
         self, blocks: Float[Array, '... nstokes nstokes'], landscape: StokesLandscape

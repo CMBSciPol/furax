@@ -1,4 +1,4 @@
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -21,44 +21,77 @@ class Methods(Enum):
     ATOP = 'ATOP'
 
 
-@dataclass(frozen=True)
+@dataclass
 class SolverConfig:
     rtol: float = 1e-6
     atol: float = 0
     max_steps: int = 1_000
 
 
-@dataclass(frozen=True)
+@dataclass
+class NoiseFitConfig:
+    max_iter: int = 100
+    """Maximum number of iterations"""
+
+    tol: float = 1e-10
+    """Error tolerance"""
+
+    min_freq_nyquist: float = 1e-8
+    """Only use f >= min_freq * nyquist for noise fitting"""
+
+    max_freq_nyquist: float = 1
+    """Only use f < max_freq * nyquist for noise fitting"""
+
+    low_freq_nyquist: float = 0.02
+    """The PSD at f < low_freq * nyquist is assumed to be dominated by 1/f noise"""
+
+    high_freq_nyquist: float = 0.02
+    """The PSD at f > high_freq * nyquist is assumed to be dominated by white noise"""
+
+    mask_hwp_harmonics: bool = True
+    """Mask HWP harmonics: 1f, 2f, 4f"""
+
+    mask_ptc_harmonics: bool = True
+    """Mask PTC harmonics: 1f, 2f"""
+
+    freq_mask_width: float = 0.5
+    """Full width [Hz] of the frequency mask (if used) around HWP and PTC harmonics"""
+
+    ptc_freq: float = 1.4
+    """PTC frequency [Hz] used for masking (if used)"""
+
+
+@dataclass
 class LandscapeConfig:
-    type: Landscapes = Landscapes.WCS
+    type: Landscapes = Landscapes.HPIX
     resolution: float = 8.0
     nside: int = 512
 
 
-@dataclass(frozen=True)
+@dataclass
 class _PolyTemplateConfig:
     max_poly_order: int = 3
 
 
-@dataclass(frozen=True)
+@dataclass
 class _ScanSynchronousTemplateConfig:
     min_poly_order: int = 3
     max_poly_order: int = 7
 
 
-@dataclass(frozen=True)
+@dataclass
 class _HWPSynchronousTemplateConfig:
     n_harmonics: int = 3
 
 
-@dataclass(frozen=True)
+@dataclass
 class _AzimuthHWPSynchronousTemplateConfig:
     n_polynomials: int = 4
     n_harmonics: int = 4
     split_scans: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass
 class _BinAzimuthHWPSynchronousTemplateConfig:
     n_azimuth_bins: int = 4
     n_harmonics: int = 4
@@ -66,13 +99,13 @@ class _BinAzimuthHWPSynchronousTemplateConfig:
     smooth_interpolation: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass
 class _GroundTemplateConfig:
     azimuth_resolution: float = 0.05  # ~3 deg
     elevation_resolution: float = 0.05  # ~3 deg
 
 
-@dataclass(frozen=True)
+@dataclass
 class TemplatesConfig:
     polynomial: _PolyTemplateConfig | None = None
     scan_synchronous: _ScanSynchronousTemplateConfig | None = None
@@ -99,6 +132,7 @@ class TemplatesConfig:
         return all(getattr(self, f.name) is None for f in fields(self))
 
 
+@dataclass
 class GapFillingOptions:
     """Specific gap-filling options"""
 
@@ -112,20 +146,21 @@ class GapFillingOptions:
     """The relative tolerance of the solver for the gap-filling solve"""
 
 
+@dataclass
 class GapsConfig:
     """Configuration options related to the treatment of gaps"""
 
     fill: bool = True
     """Fill data gaps with synthetic noise-like samples"""
 
-    fill_options: GapFillingOptions = GapFillingOptions()
+    fill_options: GapFillingOptions = field(default_factory=GapFillingOptions)
     """Options to pass to the gap-filling operator"""
 
     nested_pcg: bool = False
     """Use the nested PCG method for gap treatment"""
 
 
-@dataclass(frozen=True)
+@dataclass
 class MapMakingConfig:
     method: Methods = Methods.BINNED
     binned: bool = True
@@ -134,17 +169,17 @@ class MapMakingConfig:
     sample_mask: bool = False
     correlation_length: int = 1_000
     nperseg: int = 2_048
-    psd_fmin: float = 1e-2
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2
     double_precision: bool = True
     pointing_on_the_fly: bool = False
     pointing_chunk_size: int = 4
     fit_noise_model: bool = True
+    noise_fit: NoiseFitConfig = field(default_factory=NoiseFitConfig)
     debug: bool = True
-    solver: SolverConfig = SolverConfig()
-    gaps: GapsConfig = GapsConfig()
-    landscape: LandscapeConfig = LandscapeConfig()
+    solver: SolverConfig = field(default_factory=SolverConfig)
+    gaps: GapsConfig = field(default_factory=GapsConfig)
+    landscape: LandscapeConfig = field(default_factory=LandscapeConfig)
     templates: TemplatesConfig | None = None
     atop_tau: int = 0
 

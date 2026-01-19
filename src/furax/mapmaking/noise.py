@@ -5,7 +5,10 @@ from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
+from jax_grid_search import optimize
 from jaxtyping import Array, Float, PyTree
+from optax import lbfgs
+from optax import tree_utils as otu
 
 from furax.core import (
     AbstractLinearOperator,
@@ -14,9 +17,9 @@ from furax.core import (
     SymmetricBandToeplitzOperator,
 )
 
+from ._logger import logger
 from .config import NoiseFitConfig
-from .utils import apodization_window, fit_white_noise_model
-from .utils import fit_psd_model as fit_atmospheric_psd_model
+from .utils import apodization_window
 
 
 @jax.tree_util.register_dataclass
@@ -210,3 +213,404 @@ class AtmosphericNoiseModel(NoiseModel):
             f, Pxx, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
         )
         return cls(*result['fit'].T)
+
+
+def fit_white_noise_model(
+    f: Float[Array, ' freqs'],
+    Pxx: Float[Array, 'dets freqs'],
+    sample_rate: Array,
+    hwp_frequency: Array,
+    config: NoiseFitConfig = NoiseFitConfig(),
+) -> dict[str, Any]:
+    """Fit a white noise model to the periodogram in log space.
+
+    This function fits a model of the form:
+        PSD(f) = sigma^2
+
+    where:
+        - sigma: white noise level
+
+    Args:
+        f: Frequency array (Hz). Shape: (n_freq,)
+        Pxx: Power spectral density values. Shape: (n_detectors, n_freq)
+        hwp_frequency: HWP rotation frequency (Hz)
+        config: NoiseFitConfig instance
+
+    Returns:
+        A dictionary containing following keys:
+            fit: Array of fitted parameters [sigma].
+                Shape: (n_detectors, 1)
+
+    """
+    mask = _create_frequency_mask_from_config(
+        f, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
+    )
+    nyquist = sample_rate / 2
+
+    results = jax.vmap(
+        lambda f, Pxx: {
+            'fit': _approximate_white_noise(
+                f,
+                Pxx,
+                mask=mask,
+                high_f_threshold=nyquist * config.high_freq_nyquist,
+            )
+        },
+        in_axes=(None, 0),
+        out_axes={'fit': 0},
+    )(f, Pxx)
+
+    return results
+
+
+def fit_atmospheric_psd_model(
+    f: Float[Array, ' freqs'],
+    Pxx: Float[Array, 'dets freqs'],
+    sample_rate: Array,
+    hwp_frequency: Array,
+    config: NoiseFitConfig = NoiseFitConfig(),
+) -> dict[str, Any]:
+    """Fit a 1/f PSD model to the periodogram in log space.
+
+    This function fits a model of the form:
+        PSD(f) = sigma^2 * (1 + ((f + f0) / f_knee)^alpha)
+
+    where:
+        - sigma: white noise level
+        - alpha: power law index (typically negative)
+        - f_knee: knee frequency
+        - f0: minimum frequency offset
+
+    Args:
+        f: Frequency array (Hz). Shape: (n_freq,)
+        Pxx: Power spectral density values. Shape: (n_detectors, n_freq)
+        sample_rate: Sampling rate (Hz)
+        hwp_frequency: HWP rotation frequency (Hz)
+        config: NoiseFitConfig instance
+
+    Returns:
+        A dictionary containing following keys:
+            fit: Array of fitted parameters [sigma, alpha, f_knee, f_min].
+                Shape: (n_detectors, 4)
+            loss: Array contaning loss function values (-2logL) evaluated at the fitted parameters.
+                Shape: (n_detectors,)
+            num_iter: Array containing number of iterations spent to obtain the fit.
+                Shape: (n_detectors,)
+            fisher: Array containing fisher matrix values for the fitted parameters.
+                Shape: (n_detectors, 4, 4)
+
+    """
+    mask = _create_frequency_mask_from_config(
+        f, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
+    )
+    nyquist = sample_rate / 2
+
+    results = jax.vmap(
+        lambda f, Pxx: _fit_psd_model_masked(
+            f,
+            Pxx,
+            mask=mask,
+            low_f_threshold=nyquist * config.low_freq_nyquist,
+            high_f_threshold=nyquist * config.high_freq_nyquist,
+            max_iter=config.max_iter,
+            tol=config.tol,
+        ),
+        in_axes=(None, 0),
+        out_axes={'fit': 0, 'loss': 0, 'num_iter': 0, 'inv_fisher': 0, 'num_freq': None},
+    )(f, Pxx)
+
+    def fit_details(results: dict[str, Any]) -> None:
+        logger.info(
+            f'---- PSD model fit details ----\n'
+            f'Number of frequency bins: {results["num_freq"]}\n'
+            f'Mean loss per bin: {results["loss"] / results["num_freq"]}\n'
+            f'Number of iterations: {results["num_iter"]}\n'
+            f'-------------------------------'
+        )
+
+    jax.debug.callback(fit_details, results)
+
+    return results
+
+
+def _fit_psd_model_masked(
+    f: Float[Array, ' freqs'],
+    Pxx: Float[Array, ' freqs'],
+    mask: Float[Array, ' freqs'],
+    low_f_threshold: Array,
+    high_f_threshold: Array,
+    max_iter: int = 100,
+    tol: float = 1e-10,
+) -> dict['str', Any]:
+    """Fit a 1/f PSD model to the periodogram in log space.
+
+    This function fits a model of the form:
+        PSD(f) = sigma^2 * (1 + ((f + f0) / f_knee)^alpha)
+
+    where:
+        - sigma: white noise level
+        - alpha: power law index (typically negative)
+        - f_knee: knee frequency
+        - f0: minimum frequency offset
+
+    Args:
+        f: Frequency array (Hz). Shape: (n_freq,)
+        Pxx: Power spectral density values. Shape: (n_detectors, n_freq)
+        mask: Frequency mask which is 1 at valid frequencies and 0 otherwise
+        low_f_threshold: Frequency below which the PSD is assumed to be dominated by 1/f noise.
+            Used in choosing the starting point for alpha and f_knee
+        high_f_threshold: Frequency above which the PSD is assumed to be dominated by white noise
+            Used in choosing the starting point for sigma
+
+    Returns:
+        params: Array of fitted parameters [sigma, alpha, f_knee, f_min].
+            Shape: (4,)
+
+    Examples:
+        >>> # Basic usage - fit entire frequency range (excluding DC)
+        >>> params = fit_psd_model(f, Pxx)
+
+        >>> # Fit only low frequencies
+        >>> params = fit_psd_model(f, Pxx, f_min=0.01, f_max=1.0)
+
+        >>> # Mask out specific frequency bands (e.g., HWP modes)
+        >>> mask_intervals = jnp.array([[3.8, 7.8], [4.2, 8.2]])  # Mask 3.8-4.2 Hz and 7.8-8.2 Hz
+        >>> params = fit_psd_model(f, Pxx, f_mask_intervals=mask_intervals)
+
+    """
+
+    init_params = _approximate_fit(
+        f, Pxx, mask, low_f_threshold=low_f_threshold, high_f_threshold=high_f_threshold
+    )
+
+    loss = lambda scaled_params: _compute_whittle_neglnlike(
+        scaled_params * init_params, f, Pxx, mask
+    )
+    opt = lbfgs()
+
+    # bounds
+    up = jnp.array([1e3, 1e3, 1e3, 1e3])
+    lo = jnp.array([1e-3, 1e-3, 1e-3, 1e-10])
+
+    # perform minimization
+    scaled_params, state = optimize(
+        jnp.ones_like(init_params),
+        loss,
+        opt,
+        max_iter=max_iter,
+        tol=tol,
+        upper_bound=up,
+        lower_bound=lo,
+    )
+    params = scaled_params * init_params
+    scaled_fisher = 0.5 * jax.hessian(loss)(scaled_params)
+    inv_fisher = (
+        jnp.linalg.pinv(scaled_fisher, rtol=1e-12) * init_params[None, :] * init_params[:, None]
+    )
+
+    return {
+        'fit': params,
+        'loss': state.best_val,
+        'num_iter': jnp.array(otu.tree_get(state, 'count'), dtype=int),
+        'inv_fisher': inv_fisher,
+        'num_freq': jnp.sum(mask),
+    }
+
+
+def _create_frequency_mask_from_config(
+    f: Float[Array, ' a'],
+    sample_rate: Array,
+    hwp_frequency: Array,
+    config: NoiseFitConfig = NoiseFitConfig(),
+) -> Float[Array, ' a']:
+    """Create a float mask for frequency selection and interval masking from a NoiseFitConfig."""
+
+    hwp_freq = jnp.abs(hwp_frequency)
+    ptc_freq = config.ptc_freq
+    d = config.freq_mask_width / 2
+
+    n_intervals = 3 * config.mask_hwp_harmonics + 2 * config.mask_ptc_harmonics
+    intervals = jnp.zeros((n_intervals, 2), dtype=f.dtype)
+
+    if config.mask_hwp_harmonics:
+        # Mask 1, 2, 4 harmonics of HWP
+        intervals = intervals.at[:3, :].set(
+            [
+                [hwp_freq - d, hwp_freq + d],
+                [2 * hwp_freq - d, 2 * hwp_freq + d],
+                [4 * hwp_freq - d, 4 * hwp_freq + d],
+            ]
+        )
+    if config.mask_ptc_harmonics:
+        # Mask 1, 2 harmonics of PTC
+        intervals = intervals.at[-2:, :].set(
+            [
+                [ptc_freq - d, ptc_freq + d],
+                [2 * ptc_freq - d, 2 * ptc_freq + d],
+            ]
+        )
+
+    nyquist = sample_rate / 2
+    f_min = nyquist * config.min_freq_nyquist
+    f_max = nyquist * config.max_freq_nyquist
+
+    return _create_frequency_mask(f, f_min=f_min, f_max=f_max, f_mask_intervals=intervals)
+
+
+def _create_frequency_mask(
+    f: Float[Array, ' a'],
+    f_min: Array | None,
+    f_max: Array | None,
+    f_mask_intervals: Float[Array, 'n_intervals 2'] | None,
+) -> Float[Array, ' a']:
+    """Create a float mask for frequency selection and interval masking.
+
+    Args:
+        f: Frequency array (Hz). Shape: (n_freq,)
+        f_min: Minimum frequency (inclusive) for fitting region. If None, no lower bound.
+        f_max: Maximum frequency (exclusive) for fitting region. If None, no upper bound.
+        f_mask_intervals: Array of shape (n_mask_intervals, 2) specifying frequency
+            intervals to mask during fitting. Each row is [f_start, f_end) where
+            f_start is inclusive and f_end is exclusive.
+
+    Returns:
+        mask: Float array where 1.0 indicates frequencies to include in fit, 0.0 to exclude.
+            Shape: (n_freq,) with same dtype as f.
+    """
+    # Start with all frequencies included
+    mask = jnp.ones_like(f, dtype=f.dtype)
+
+    # Apply f_min bound (inclusive)
+    if f_min is not None:
+        mask = jnp.where(f >= f_min, mask, 0.0)
+
+    # Apply f_max bound (exclusive)
+    if f_max is not None:
+        mask = jnp.where(f < f_max, mask, 0.0)
+
+    # Apply mask intervals
+    if f_mask_intervals is not None:
+        # Check all intervals at once
+        # Shape: (n_freq, n_intervals) - broadcasts f[:,None] against intervals
+        in_any_interval = jnp.any(
+            (f[:, None] >= f_mask_intervals[:, 0]) & (f[:, None] < f_mask_intervals[:, 1]),
+            axis=1,
+        )
+        # Set mask to 0 where frequency is in any masked interval
+        mask = jnp.where(in_any_interval, 0.0, mask)
+
+    return mask
+
+
+def _approximate_white_noise(
+    f: Float[Array, ' a'],
+    Pxx: Float[Array, ' a'],
+    mask: Float[Array, ' a'],
+    high_f_threshold: Array,
+) -> Float[Array, '1']:
+    # Obtain an approximate level estimated from high-frequency > high_f_threshold
+
+    high_f_mask = jnp.logical_and(mask, f > high_f_threshold)
+    return jnp.sqrt(jnp.sum(jnp.where(high_f_mask, Pxx, 0)) / jnp.sum(high_f_mask))
+
+
+def _approximate_fit(
+    f: Float[Array, ' a'],
+    Pxx: Float[Array, ' a'],
+    mask: Float[Array, ' a'],
+    low_f_threshold: Array,
+    high_f_threshold: Array,
+) -> Float[Array, '4']:
+    # Obtain an approximate fit for all parameters:
+    # sigma: estimated from high-frequency > high_f_threshold
+    # f0: set to be the minimum non-zero frequency
+    # alpha, fk: fit power-law to (P-sigma**2) as a function of (f+f0) from low_frequency < low_f_threshold
+
+    sigma = _approximate_white_noise(f, Pxx, mask, high_f_threshold=high_f_threshold)
+    f0 = jnp.min(jnp.where(jnp.logical_and(mask, f > 0), f, jnp.inf))
+
+    return _approximate_fit_given_two_parameters(sigma, f0, f, Pxx, mask, low_f_threshold)
+
+
+def _approximate_fit_given_two_parameters(
+    sigma: Float[Array, '1'],
+    f0: Float[Array, '1'],
+    f: Float[Array, ' a'],
+    Pxx: Float[Array, ' a'],
+    mask: Float[Array, ' a'],
+    low_f_threshold: Array,
+) -> Float[Array, '4']:
+    # Given sigma and f0, obtain an approximate fit for alpha and fk
+    # by fitting power-law to (P-sigma**2) as a function of (f+f0).
+
+    mask = jnp.logical_and(mask, f < low_f_threshold)
+    mask = jnp.logical_and(mask, Pxx > sigma**2)
+
+    # TODO: ensure sum(mask) >= 2 required for this method to work
+    weight = (jnp.sum(mask) > 0) * (1 / jnp.sum(mask))
+    mean_logf = jnp.sum(jnp.where(mask, jnp.log(f + f0), 0)) * weight
+    mean_logP = jnp.sum(jnp.where(mask, jnp.log(Pxx - sigma**2), 0)) * weight
+
+    nom = jnp.sum(
+        jnp.where(mask, (jnp.log(f + f0) - mean_logf) * (jnp.log(Pxx - sigma**2) - mean_logP), 0)
+    )
+    denom = jnp.sum(jnp.where(mask, (jnp.log(f + f0) - mean_logf) ** 2, 0))
+
+    bf_alpha = nom * (denom > 0) * (1 / denom)
+    bf_log_gamma = mean_logP - mean_logf * bf_alpha
+    bf_fk = jnp.exp((jnp.log(sigma**2) - bf_log_gamma) * (bf_alpha > 0) * (1 / bf_alpha))
+
+    return jnp.array([sigma, bf_alpha, bf_fk, f0])
+
+
+def _log_atmospheric_model(params: Float[Array, '4'], x: Float[Array, ' a']) -> Float[Array, ' a']:
+    sigma, alpha, fk, f0 = _unpack_four(params)
+    return 2 * jnp.log10(sigma) + jnp.log10(1 + ((x + f0) / fk) ** alpha)
+
+
+def _atmospheric_model(params: Float[Array, '4'], x: Float[Array, ' a']) -> Float[Array, ' a']:
+    sigma, alpha, fk, f0 = _unpack_four(params)
+    return jnp.where(sigma > 0, sigma**2 * (1 + ((x + f0) / fk) ** alpha), 0)
+
+
+def _unpack_four(params: Float[Array, '4']) -> tuple[Array, Array, Array, Array]:
+    return params[0], params[1], params[2], params[3]
+
+
+def _compute_normal_neglnlike(
+    params: Float[Array, '4'],
+    f: Float[Array, ' a'],
+    Pxx: Float[Array, ' a'],
+    mask: Float[Array, ' a'],
+    k: float,
+) -> Float[Array, '1']:
+    # Computes -2logL up to a constant, assuming k effective degrees of freedom
+    # Assumes that the PSD estimates follow a normal distribution
+    Pxx_pred = _atmospheric_model(params, f)
+    return jnp.sum(jnp.where(mask, (k / 2) * (Pxx / Pxx_pred - 1) ** 2, 0))
+
+
+def _compute_chisq_neglnlike(
+    params: Float[Array, '4'],
+    f: Float[Array, ' a'],
+    Pxx: Float[Array, ' a'],
+    mask: Float[Array, ' a'],
+    k: float,
+) -> Float[Array, '1']:
+    # Computes -2logL up to a constant, assuming k effective degrees of freedom
+    # Assumes that the PSD estimates follow a chi-sq distribution of order k
+    Pxx_pred = _atmospheric_model(params, f)
+    return jnp.sum(jnp.where(mask, (k - 2) * jnp.log(Pxx_pred) + k * (Pxx / Pxx_pred), 0))
+
+
+def _compute_whittle_neglnlike(
+    params: Float[Array, '4'],
+    f: Float[Array, ' a'],
+    Pxx: Float[Array, ' a'],
+    mask: Float[Array, ' a'],
+) -> Float[Array, '1']:
+    # Computes -2logL up to a constant, using Whittle's approximation
+    # Factor of 1/Pxx is included in the log term for better interpretability,
+    # even though it results in a constant offset
+    Pxx_pred = _atmospheric_model(params, f)
+    return jnp.sum(jnp.where(mask, jnp.log(Pxx_pred / Pxx) + (Pxx / Pxx_pred), 0))

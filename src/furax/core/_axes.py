@@ -105,7 +105,7 @@ class AbstractRavelOrReshapeOperator(AbstractLinearOperator):
         return jnp.eye(self.in_size(), dtype=self.out_promoted_dtype)
 
     def transpose(self) -> AbstractLinearOperator:
-        return ReshapeTransposeOperator(self)
+        return ReshapeTransposeOperator(self)  # type: ignore[arg-type]
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure

@@ -184,7 +184,10 @@ class TransposeIndexRule(AbstractBinaryRule):
         coverage = coverage.at[unique_indices].add(
             counts, indices_are_sorted=True, unique_indices=True
         )
+
         diagonal_op = DiagonalOperator(
-            coverage, axis_destination=axis, in_structure=right.in_structure()
+            coverage,
+            axis_destination=axis,  # type: ignore[arg-type]
+            in_structure=right.in_structure(),  # type: ignore[call-arg]
         )
         return [diagonal_op]

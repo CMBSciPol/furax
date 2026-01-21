@@ -197,9 +197,9 @@ class AbstractBinaryRule(AbstractRule, ABC):
             right, self.right_operator_class
         ):
             raise NoReduction
-        if self.left_operator_class is TransposeOperator and left.operator is not right:
+        if self.left_operator_class is TransposeOperator and left.operator is not right:  # type: ignore[attr-defined]
             raise NoReduction
-        if self.right_operator_class is TransposeOperator and right.operator is not left:
+        if self.right_operator_class is TransposeOperator and right.operator is not left:  # type: ignore[attr-defined]
             raise NoReduction
 
     @abstractmethod

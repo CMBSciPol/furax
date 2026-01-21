@@ -85,7 +85,7 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
         *,
         axis_destination: int | Sequence[int] = -1,
         in_structure: PyTree[jax.ShapeDtypeStruct],
-    ):
+    ) -> None:
         if not is_leaf(diagonal):
             raise ValueError(
                 'the diagonal values cannot be a pytree. Use a BlockDiagonalOperator with'
@@ -242,7 +242,7 @@ class DiagonalOperator(BroadcastDiagonalOperator):
                 f'by a DiagonalOperator. For broadcasting, use BroadcastDiagonalOperator.'
             )
 
-    def inverse(self) -> 'AbstractLinearOperator':
+    def inverse(self) -> AbstractLinearOperator:
         return DiagonalInverseOperator(self)
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
@@ -259,7 +259,7 @@ class DiagonalOperator(BroadcastDiagonalOperator):
 class DiagonalInverseOperator(DiagonalOperator, AbstractLazyInverseOperator):
     def __init__(self, operator: DiagonalOperator) -> None:
         AbstractLazyInverseOperator.__init__(self, operator)
-        DiagonalOperator.__init__(
+        DiagonalOperator.__init__(  # type: ignore[call-arg]
             self,
             operator._diagonal,
             axis_destination=operator.axis_destination,
@@ -270,5 +270,5 @@ class DiagonalInverseOperator(DiagonalOperator, AbstractLazyInverseOperator):
     def diagonal(self) -> PyTree[Inexact[Array, '...']]:
         return jnp.where(self._diagonal != 0, 1 / self._diagonal, 0)
 
-    def inverse(self) -> 'AbstractLinearOperator':
+    def inverse(self) -> AbstractLinearOperator:
         return self.operator

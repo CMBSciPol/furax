@@ -1,3 +1,4 @@
+# mypy: disable-error-code=assignment
 # mypy: disable-error-code=method-assign
 import functools
 from abc import ABC, abstractmethod
@@ -16,17 +17,53 @@ from furax._config import Config, ConfigState
 from furax.tree import zeros_like
 
 
-class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[misc]
-    def __init_subclass__(cls, **keywords: Any) -> None:
-        _monkey_patch_operator(cls)
+class AbstractLinearOperator(equinox.Module, ABC):
+    """Base class for linear operators."""
+
+    # Operator properties with default False values
+    @property
+    def is_square(self) -> bool:
+        return False
+
+    @property
+    def is_symmetric(self) -> bool:
+        return False
+
+    @property
+    def is_orthogonal(self) -> bool:
+        return False
+
+    @property
+    def is_diagonal(self) -> bool:
+        return False
+
+    @property
+    def is_lower_triangular(self) -> bool:
+        return False
+
+    @property
+    def is_upper_triangular(self) -> bool:
+        return False
+
+    @property
+    def is_tridiagonal(self) -> bool:
+        return False
+
+    @property
+    def is_positive_semidefinite(self) -> bool:
+        return False
+
+    @property
+    def is_negative_semidefinite(self) -> bool:
+        return False
 
     def __call__(self, x: PyTree[jax.ShapeDtypeStruct]) -> PyTree[jax.ShapeDtypeStruct]:
-        if isinstance(x, lx.AbstractLinearOperator):
+        if isinstance(x, AbstractLinearOperator):
             raise ValueError("Use '@' to compose operators")
         return self.mv(x)
 
     def __matmul__(self, other: Any) -> 'AbstractLinearOperator':
-        if not isinstance(other, lx.AbstractLinearOperator):
+        if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
         if self.in_structure() != other.out_structure():
             raise ValueError('Incompatible linear operator structures')
@@ -39,7 +76,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
         return CompositionOperator([self, other])
 
     def __add__(self, other: Any) -> 'AbstractLinearOperator':
-        if not isinstance(other, lx.AbstractLinearOperator):
+        if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
         if self.in_structure() != other.in_structure():
             raise ValueError('Incompatible linear operator input structures')
@@ -51,7 +88,7 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
         return AdditionOperator([self, other])
 
     def __sub__(self, other: Any) -> 'AbstractLinearOperator':
-        if not isinstance(other, lx.AbstractLinearOperator):
+        if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
         if self.in_structure() != other.in_structure():
             raise ValueError('Incompatible linear operator input structures')
@@ -62,7 +99,8 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
         return result
 
     def __mul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
-        return other * self
+        result: AbstractLinearOperator = other * self
+        return result
 
     def __rmul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
         other = jnp.asarray(other)
@@ -124,12 +162,15 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
     def T(self) -> 'AbstractLinearOperator':
         return self.transpose()
 
-    def inverse(self) -> 'AbstractLazyInverseOperator':
+    def inverse(self) -> 'AbstractLinearOperator':
         return InverseOperator(self)
 
     @property
-    def I(self) -> 'AbstractLazyInverseOperator':  # noqa: E743
+    def I(self) -> 'AbstractLinearOperator':  # noqa: E743
         return self.inverse()
+
+    @abstractmethod
+    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]: ...
 
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return jax.eval_shape(self.mv, self.in_structure())
@@ -155,95 +196,89 @@ class AbstractLinearOperator(lx.AbstractLinearOperator, ABC):  # type: ignore[mi
         return jnp.result_type(*leaves)
 
 
-def _monkey_patch_operator(cls: type[lx.AbstractLinearOperator]) -> None:
-    """Default tags for the operators"""
-    for tag in [
-        lx.is_diagonal,
-        lx.is_lower_triangular,
-        lx.is_upper_triangular,
-        lx.is_tridiagonal,
-        lx.is_symmetric,
-        lx.is_positive_semidefinite,
-        lx.is_negative_semidefinite,
-    ]:
-        if _already_registered(cls, tag):
-            continue
-        tag.register(cls)(lambda _: False)
+def _register_lineax_tags(cls: type[AbstractLinearOperator]) -> None:
+    """Register the properties as lineax tags via singledispatch."""
+    lx.is_diagonal.register(cls)(lambda op: op.is_diagonal)
+    lx.is_symmetric.register(cls)(lambda op: op.is_symmetric)
+    lx.is_positive_semidefinite.register(cls)(lambda op: op.is_positive_semidefinite)
+    lx.is_negative_semidefinite.register(cls)(lambda op: op.is_negative_semidefinite)
+    lx.is_lower_triangular.register(cls)(lambda op: op.is_lower_triangular)
+    lx.is_upper_triangular.register(cls)(lambda op: op.is_upper_triangular)
+    lx.is_tridiagonal.register(cls)(lambda op: op.is_tridiagonal)
 
-    lx.linearise.register(cls)(lambda _: _)
-    lx.conj.register(cls)(lambda _: _)
+    # Additional lineax requirements
+    lx.has_unit_diagonal.register(cls)(lambda op: False)
+    lx.linearise.register(cls)(lambda op: op)
+    lx.conj.register(cls)(lambda op: op)
+    lx.materialise.register(cls)(lambda op: op.as_matrix())
 
 
-def _monkey_patch_lineax_operator(cls: type[lx.AbstractLinearOperator]) -> None:
-    """Patching the lineax operators so that we can call and invert them."""
-    _monkey_patch_operator(cls)
-    cls.__call__ = AbstractLinearOperator.__call__
-    cls.I = AbstractLinearOperator.I
-    cls.inverse = AbstractLinearOperator.inverse
-
-
-def _already_registered(
-    cls: type[lx.AbstractLinearOperator], tag: Callable[[AbstractLinearOperator], bool]
-) -> bool:
-    return any(
-        registered_cls is not object and issubclass(cls, registered_cls)
-        for registered_cls in tag.registry  # type: ignore[attr-defined]
-    )
-
-
-_monkey_patch_lineax_operator(lx.ComposedLinearOperator)
+# Register lineax tags once for the base class
+_register_lineax_tags(AbstractLinearOperator)  # type: ignore[type-abstract]
 
 
 T = TypeVar('T', bound=AbstractLinearOperator)
 
 
-def diagonal(cls: type[T]) -> type[T]:
-    lx.is_diagonal.register(cls)(lambda _: True)
-    symmetric(cls)
-    return cls
+def _always_true(_: AbstractLinearOperator) -> bool:
+    return True
 
 
-def lower_triangular(cls: type[T]) -> type[T]:
-    lx.is_lower_triangular.register(cls)(lambda _: True)
-    square(cls)
-    return cls
-
-
-def upper_triangular(cls: type[T]) -> type[T]:
-    lx.is_upper_triangular.register(cls)(lambda _: True)
-    square(cls)
+def square(cls: type[T]) -> type[T]:
+    """Mark an operator as square."""
+    cls.out_structure = cls.in_structure
+    cls.is_square = property(lambda self: True)
     return cls
 
 
 def symmetric(cls: type[T]) -> type[T]:
-    lx.is_symmetric.register(cls)(lambda _: True)
+    """Mark an operator as symmetric (implies square)."""
     square(cls)
     cls.transpose = lambda self: self
+    cls.is_symmetric = property(lambda self: True)
+    return cls
+
+
+def orthogonal(cls: type[T]) -> type[T]:
+    """Mark an operator as orthogonal."""
+    square(cls)
+    cls.inverse = cls.transpose
+    cls.is_orthogonal = property(lambda self: True)
+    return cls
+
+
+def diagonal(cls: type[T]) -> type[T]:
+    """Mark an operator as diagonal (implies symmetric)."""
+    symmetric(cls)
+    cls.is_diagonal = property(lambda self: True)
+    return cls
+
+
+def lower_triangular(cls: type[T]) -> type[T]:
+    """Mark an operator as lower triangular."""
+    square(cls)
+    cls.is_lower_triangular = property(lambda self: True)
+    return cls
+
+
+def upper_triangular(cls: type[T]) -> type[T]:
+    """Mark an operator as upper triangular."""
+    square(cls)
+    cls.is_upper_triangular = property(lambda self: True)
     return cls
 
 
 def positive_semidefinite(cls: type[T]) -> type[T]:
-    lx.is_positive_semidefinite.register(cls)(lambda _: True)
+    """Mark an operator as positive semi-definite."""
     square(cls)
+    cls.is_positive_semidefinite = property(lambda self: True)
     return cls
 
 
 def negative_semidefinite(cls: type[T]) -> type[T]:
-    lx.is_negative_semidefinite.register(cls)(lambda _: True)
+    """Mark an operator as negative semi-definite."""
     square(cls)
-    return cls
-
-
-# not a lineax tag
-def square(cls: type[T]) -> type[T]:
-    cls.out_structure = cls.in_structure
-    return cls
-
-
-# not a lineax tag
-def orthogonal(cls: type[T]) -> type[T]:
-    square(cls)
-    cls.inverse = cls.transpose
+    cls.is_negative_semidefinite = property(lambda self: True)
     return cls
 
 
@@ -251,6 +286,27 @@ class AdditionOperator(AbstractLinearOperator):
     """An operator that adds two operators, as in C = A + B."""
 
     operands: PyTree[AbstractLinearOperator]
+
+    # Tag propagation properties
+    @property
+    def is_square(self) -> bool:
+        return self.operand_leaves[0].is_square
+
+    @property
+    def is_symmetric(self) -> bool:
+        return all(op.is_symmetric for op in self.operand_leaves)
+
+    @property
+    def is_diagonal(self) -> bool:
+        return all(op.is_diagonal for op in self.operand_leaves)
+
+    @property
+    def is_positive_semidefinite(self) -> bool:
+        return all(op.is_positive_semidefinite for op in self.operand_leaves)
+
+    @property
+    def is_negative_semidefinite(self) -> bool:
+        return all(op.is_negative_semidefinite for op in self.operand_leaves)
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         operands = self.operand_leaves
@@ -328,6 +384,16 @@ class CompositionOperator(AbstractLinearOperator):
     """An operator that composes two operators, as in C = B ∘ A."""
 
     operands: list[AbstractLinearOperator]
+
+    # Tag propagation properties
+    @property
+    def is_square(self) -> bool:
+        result: bool = self.operands[0].out_structure() == self.operands[-1].in_structure()
+        return result
+
+    @property
+    def is_diagonal(self) -> bool:
+        return all(op.is_diagonal for op in self.operands)
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         for operand in reversed(self.operands):
@@ -478,6 +544,7 @@ class AbstractLazyInverseOrthogonalOperator(TransposeOperator, AbstractLazyInver
 
 @orthogonal
 @diagonal
+@positive_semidefinite
 class IdentityOperator(AbstractLinearOperator):
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 

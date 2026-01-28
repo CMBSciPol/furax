@@ -14,6 +14,7 @@ from .core import (
     IndexOperator,
     MaskOperator,
     MoveAxisOperator,
+    OperatorTag,
     RavelOperator,
     ReshapeOperator,
     SumOperator,
@@ -26,6 +27,7 @@ from .core import (
     positive_semidefinite,
     square,
     symmetric,
+    tridiagonal,
     upper_triangular,
 )
 
@@ -49,14 +51,16 @@ __all__ = [
     'FourierOperator',
     'SymmetricBandToeplitzOperator',
     'TreeOperator',
+    'OperatorTag',
+    'square',
+    'symmetric',
+    'orthogonal',
     'diagonal',
+    'tridiagonal',
     'lower_triangular',
     'upper_triangular',
-    'symmetric',
     'positive_semidefinite',
     'negative_semidefinite',
-    'square',
-    'orthogonal',
     # config
     'Config',
     # tree

@@ -3,7 +3,8 @@
 import functools
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Any, TypeVar
+from enum import IntFlag, auto
+from typing import Any, ClassVar, TypeVar
 
 import equinox
 import jax
@@ -17,45 +18,68 @@ from furax._config import Config, ConfigState
 from furax.tree import zeros_like
 
 
+class OperatorTag(IntFlag):
+    """Flags representing properties of linear operators."""
+
+    NONE = 0
+    SQUARE = auto()
+    SYMMETRIC = auto()
+    ORTHOGONAL = auto()
+    DIAGONAL = auto()
+    TRIDIAGONAL = auto()
+    LOWER_TRIANGULAR = auto()
+    UPPER_TRIANGULAR = auto()
+    POSITIVE_SEMIDEFINITE = auto()
+    NEGATIVE_SEMIDEFINITE = auto()
+
+
 class AbstractLinearOperator(equinox.Module, ABC):
     """Base class for linear operators."""
+
+    # Class-level tags (set by decorators)
+    class_tags: ClassVar[OperatorTag] = OperatorTag.NONE
+
+    @property
+    def tags(self) -> OperatorTag:
+        """Get the tags for this operator instance."""
+        return self.class_tags
 
     # Operator properties with default False values
     @property
     def is_square(self) -> bool:
-        return False
+        return bool(self.tags & OperatorTag.SQUARE)
 
     @property
     def is_symmetric(self) -> bool:
-        return False
+        return bool(self.tags & OperatorTag.SYMMETRIC)
 
     @property
     def is_orthogonal(self) -> bool:
-        return False
+        return bool(self.tags & OperatorTag.ORTHOGONAL)
 
     @property
     def is_diagonal(self) -> bool:
-        return False
-
-    @property
-    def is_lower_triangular(self) -> bool:
-        return False
-
-    @property
-    def is_upper_triangular(self) -> bool:
-        return False
+        return bool(self.tags & OperatorTag.DIAGONAL)
 
     @property
     def is_tridiagonal(self) -> bool:
-        return False
+        return bool(self.tags & OperatorTag.TRIDIAGONAL)
+
+    @property
+    def is_lower_triangular(self) -> bool:
+        return bool(self.tags & OperatorTag.LOWER_TRIANGULAR)
+
+    @property
+    def is_upper_triangular(self) -> bool:
+        return bool(self.tags & OperatorTag.UPPER_TRIANGULAR)
 
     @property
     def is_positive_semidefinite(self) -> bool:
-        return False
+        return bool(self.tags & OperatorTag.POSITIVE_SEMIDEFINITE)
 
     @property
     def is_negative_semidefinite(self) -> bool:
-        return False
+        return bool(self.tags & OperatorTag.NEGATIVE_SEMIDEFINITE)
 
     def __call__(self, x: PyTree[jax.ShapeDtypeStruct]) -> PyTree[jax.ShapeDtypeStruct]:
         if isinstance(x, AbstractLinearOperator):
@@ -198,13 +222,13 @@ class AbstractLinearOperator(equinox.Module, ABC):
 
 def _register_lineax_tags(cls: type[AbstractLinearOperator]) -> None:
     """Register the properties as lineax tags via singledispatch."""
-    lx.is_diagonal.register(cls)(lambda op: op.is_diagonal)
     lx.is_symmetric.register(cls)(lambda op: op.is_symmetric)
-    lx.is_positive_semidefinite.register(cls)(lambda op: op.is_positive_semidefinite)
-    lx.is_negative_semidefinite.register(cls)(lambda op: op.is_negative_semidefinite)
+    lx.is_diagonal.register(cls)(lambda op: op.is_diagonal)
+    lx.is_tridiagonal.register(cls)(lambda op: op.is_tridiagonal)
     lx.is_lower_triangular.register(cls)(lambda op: op.is_lower_triangular)
     lx.is_upper_triangular.register(cls)(lambda op: op.is_upper_triangular)
-    lx.is_tridiagonal.register(cls)(lambda op: op.is_tridiagonal)
+    lx.is_positive_semidefinite.register(cls)(lambda op: op.is_positive_semidefinite)
+    lx.is_negative_semidefinite.register(cls)(lambda op: op.is_negative_semidefinite)
 
     # Additional lineax requirements
     lx.has_unit_diagonal.register(cls)(lambda op: False)
@@ -220,65 +244,68 @@ _register_lineax_tags(AbstractLinearOperator)  # type: ignore[type-abstract]
 T = TypeVar('T', bound=AbstractLinearOperator)
 
 
-def _always_true(_: AbstractLinearOperator) -> bool:
-    return True
-
-
 def square(cls: type[T]) -> type[T]:
     """Mark an operator as square."""
+    cls.class_tags |= OperatorTag.SQUARE
     cls.out_structure = cls.in_structure
-    cls.is_square = property(lambda self: True)
     return cls
 
 
 def symmetric(cls: type[T]) -> type[T]:
     """Mark an operator as symmetric (implies square)."""
     square(cls)
+    cls.class_tags |= OperatorTag.SYMMETRIC
     cls.transpose = lambda self: self
-    cls.is_symmetric = property(lambda self: True)
     return cls
 
 
 def orthogonal(cls: type[T]) -> type[T]:
-    """Mark an operator as orthogonal."""
+    """Mark an operator as orthogonal (implies square)."""
     square(cls)
+    cls.class_tags |= OperatorTag.ORTHOGONAL
     cls.inverse = cls.transpose
-    cls.is_orthogonal = property(lambda self: True)
     return cls
 
 
 def diagonal(cls: type[T]) -> type[T]:
-    """Mark an operator as diagonal (implies symmetric)."""
+    """Mark an operator as diagonal (implies symmetric, which implies square)."""
     symmetric(cls)
-    cls.is_diagonal = property(lambda self: True)
+    cls.class_tags |= OperatorTag.DIAGONAL
+    return cls
+
+
+def tridiagonal(cls: type[T]) -> type[T]:
+    """Mark an operator as tridiagonal (implies square)."""
+    square(cls)
+    cls.class_tags |= OperatorTag.TRIDIAGONAL
     return cls
 
 
 def lower_triangular(cls: type[T]) -> type[T]:
-    """Mark an operator as lower triangular."""
+    """Mark an operator as lower triangular (implies square)."""
     square(cls)
-    cls.is_lower_triangular = property(lambda self: True)
+    cls.class_tags |= OperatorTag.LOWER_TRIANGULAR
     return cls
 
 
 def upper_triangular(cls: type[T]) -> type[T]:
-    """Mark an operator as upper triangular."""
+    """Mark an operator as upper triangular (implies square)."""
     square(cls)
-    cls.is_upper_triangular = property(lambda self: True)
+    cls.class_tags |= OperatorTag.UPPER_TRIANGULAR
     return cls
 
 
 def positive_semidefinite(cls: type[T]) -> type[T]:
-    """Mark an operator as positive semi-definite."""
+    """Mark an operator as positive semi-definite (implies square)."""
     square(cls)
-    cls.is_positive_semidefinite = property(lambda self: True)
+    cls.class_tags |= OperatorTag.POSITIVE_SEMIDEFINITE
     return cls
 
 
 def negative_semidefinite(cls: type[T]) -> type[T]:
-    """Mark an operator as negative semi-definite."""
+    """Mark an operator as negative semi-definite (implies square)."""
     square(cls)
-    cls.is_negative_semidefinite = property(lambda self: True)
+    cls.class_tags |= OperatorTag.NEGATIVE_SEMIDEFINITE
     return cls
 
 
@@ -290,23 +317,27 @@ class AdditionOperator(AbstractLinearOperator):
     # Tag propagation properties
     @property
     def is_square(self) -> bool:
-        return self.operand_leaves[0].is_square
+        return super().is_square or self.operand_leaves[0].is_square
 
     @property
     def is_symmetric(self) -> bool:
-        return all(op.is_symmetric for op in self.operand_leaves)
+        return super().is_symmetric or all(op.is_symmetric for op in self.operand_leaves)
 
     @property
     def is_diagonal(self) -> bool:
-        return all(op.is_diagonal for op in self.operand_leaves)
+        return super().is_diagonal or all(op.is_diagonal for op in self.operand_leaves)
 
     @property
     def is_positive_semidefinite(self) -> bool:
-        return all(op.is_positive_semidefinite for op in self.operand_leaves)
+        return super().is_positive_semidefinite or all(
+            op.is_positive_semidefinite for op in self.operand_leaves
+        )
 
     @property
     def is_negative_semidefinite(self) -> bool:
-        return all(op.is_negative_semidefinite for op in self.operand_leaves)
+        return super().is_negative_semidefinite or all(
+            op.is_negative_semidefinite for op in self.operand_leaves
+        )
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         operands = self.operand_leaves
@@ -388,12 +419,14 @@ class CompositionOperator(AbstractLinearOperator):
     # Tag propagation properties
     @property
     def is_square(self) -> bool:
-        result: bool = self.operands[0].out_structure() == self.operands[-1].in_structure()
+        result: bool = super().is_square or (
+            self.operands[0].out_structure() == self.operands[-1].in_structure()
+        )
         return result
 
     @property
     def is_diagonal(self) -> bool:
-        return all(op.is_diagonal for op in self.operands)
+        return super().is_diagonal or all(op.is_diagonal for op in self.operands)
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         for operand in reversed(self.operands):

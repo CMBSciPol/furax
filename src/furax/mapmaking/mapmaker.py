@@ -49,7 +49,7 @@ from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
-from .preconditioner import BJPreconditioner
+from .preconditioner import BJPreconditioner, make_two_level_preconditioner
 from .results import MapMakingResults
 
 T = TypeVar('T')
@@ -181,11 +181,19 @@ class MultiObservationMapMaker(Generic[T]):
         hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
         icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
+        # Restrict system to avoid ill-conditioned pixels
+        A = selector @ A @ selector.T  # type: ignore[assignment]
+        M = selector @ BJ.I @ selector.T  # preconditioner
+
+        # Optional two-level preconditioning
+        if self.config.two_level is not None:
+            rank = self.config.two_level.deflation_size
+            M = make_two_level_preconditioner(A, rank, bj=M)
+
         # Solve the mapmaking system
         solver = lineax.CG(**asdict(self.config.solver))
         spd = OperatorTag.POSITIVE_SEMIDEFINITE
-        lx_system = as_lineax_operator(selector @ A @ selector.T, spd)
-        M = (selector @ BJ.I @ selector.T).reduce()  # preconditioner
+        lx_system = as_lineax_operator(A, spd)
         lx_precond = as_lineax_operator(M, spd)
         rhs_reduced = selector(rhs)
         y0 = M(rhs_reduced)

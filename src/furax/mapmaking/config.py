@@ -26,6 +26,11 @@ class Methods(Enum):
 
 
 @dataclass
+class TwoLevelConfig:
+    deflation_size: int = 20
+
+
+@dataclass
 class SolverConfig:
     rtol: float = 1e-6
     atol: float = 0
@@ -359,6 +364,7 @@ class MapMakingConfig:
     templates: TemplatesConfig | None = None
     atop_tau: int = 0
     sotodlib: SotodlibConfig | None = None
+    two_level: TwoLevelConfig | None = None
 
     @classmethod
     def full_defaults(cls) -> 'MapMakingConfig':

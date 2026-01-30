@@ -1,4 +1,4 @@
-from . import tree
+from . import linalg, tree
 from ._config import Config
 from .core import (
     AbstractLinearOperator,
@@ -61,4 +61,6 @@ __all__ = [
     'Config',
     # tree
     'tree',
+    # linalg
+    'linalg',
 ]

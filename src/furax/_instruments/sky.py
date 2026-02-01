@@ -44,9 +44,8 @@ class FGBusterInstrument(eqx.Module):
     Note:
         The class must be constructed with numpy arrays (not JAX arrays)
         in order to be pysm3 and astropy compatible.
-        when depth_conversion() is called, the arrays are converted
-        to JAX arrays and implicitly copied to GPU.
-
+        The arrays are static and always used as such.
+        Since for a given problem the instrument parameters do not change,
     Examples:
         >>> # Create a default instrument
         >>> instrument = FGBusterInstrument.default_instrument()
@@ -57,7 +56,7 @@ class FGBusterInstrument(eqx.Module):
         >>> instrument = FGBusterInstrument.from_depth_i(frequency, depth_i)
 
         >>> # Convert depth to micro-Kelvin CMB units
-        >>> instrument.depth_conversion(unit='uK_CMB')
+        >>> instrument = instrument.depth_conversion(unit='uK_CMB')
     """
 
     frequency: Array = eqx.field(static=True, converter=np.asarray)
@@ -122,9 +121,9 @@ class FGBusterInstrument(eqx.Module):
         depth_p = np.array(depth_p, dtype=dtype).reshape(-1, 1)
 
         return FGBusterInstrument(
-            frequency=np.array(self.frequency, dtype=dtype).reshape(-1, 1),  # type: ignore[arg-type]
-            depth_i=np.array(depth_i, dtype=dtype),  # type: ignore[arg-type]
-            depth_p=np.array(depth_p, dtype=dtype),  # type: ignore[arg-type]
+            frequency=self.frequency.reshape(-1, 1),
+            depth_i=depth_i,  # type: ignore[arg-type]
+            depth_p=depth_p,  # type: ignore[arg-type]
         )
 
 

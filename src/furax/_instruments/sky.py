@@ -1,12 +1,11 @@
 import sys
-from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pysm3
 import pysm3.units as u
-from jaxtyping import Array, DTypeLike, PRNGKeyArray, PyTree
+from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from ..obs.landscapes import FrequencyLandscape
 from ..obs.stokes import Stokes, ValidStokesType
@@ -15,10 +14,10 @@ if sys.version_info < (3, 11):
     from typing_extensions import Self
 else:
     from typing import Self
+import equinox as eqx
 
 
-@jax.tree_util.register_pytree_node_class
-class FGBusterInstrument:
+class FGBusterInstrument(eqx.Module):
     """
     A PyTree-compatible class for representing an instrument as implemented in FGBuster framework.
 
@@ -45,9 +44,8 @@ class FGBusterInstrument:
     Note:
         The class must be constructed with numpy arrays (not JAX arrays)
         in order to be pysm3 and astropy compatible.
-        when depth_conversion() is called, the arrays are converted
-        to JAX arrays and implicitly copied to GPU.
-
+        The arrays are static and always used as such.
+        Since for a given problem the instrument parameters do not change,
     Examples:
         >>> # Create a default instrument
         >>> instrument = FGBusterInstrument.default_instrument()
@@ -58,26 +56,12 @@ class FGBusterInstrument:
         >>> instrument = FGBusterInstrument.from_depth_i(frequency, depth_i)
 
         >>> # Convert depth to micro-Kelvin CMB units
-        >>> instrument.depth_conversion(unit='uK_CMB')
+        >>> instrument = instrument.depth_conversion(unit='uK_CMB')
     """
 
-    def __init__(self: Self, frequency: Array, depth_i: Array, depth_p: Array) -> None:
-        self.frequency: Array = frequency
-        self.depth_i: Array = depth_i
-        self.depth_p: Array = depth_p
-
-    def tree_flatten(self: Self) -> tuple[PyTree, None]:
-        """
-        Flattens the PyTree structure of the instrument.
-        """
-        return (self.frequency, self.depth_i, self.depth_p), None
-
-    @classmethod
-    def tree_unflatten(cls, _: Any, children: PyTree) -> 'FGBusterInstrument':
-        """
-        Reconstructs the PyTree structure of the instrument.
-        """
-        return cls(*children)
+    frequency: Array = eqx.field(static=True, converter=np.asarray)
+    depth_i: Array = eqx.field(static=True, converter=np.asarray)
+    depth_p: Array = eqx.field(static=True, converter=np.asarray)
 
     @classmethod
     def default_instrument(cls: type[Self]) -> Self:
@@ -114,26 +98,33 @@ class FGBusterInstrument:
         """
         return cls(frequency, depth_i, depth_p)
 
-    def depth_conversion(self, unit: str = 'uK_CMB', dtype: DTypeLike = jnp.float32) -> None:
+    def depth_conversion(
+        self, unit: str = 'uK_CMB', dtype: DTypeLike = jnp.float32
+    ) -> 'FGBusterInstrument':
         """
         Converts depths to a specified unit and dtype.
         """
-        self.depth_i *= u.arcmin * u.uK_CMB
-        self.depth_p *= u.arcmin * u.uK_CMB
+        depth_i = self.depth_i * u.arcmin * u.uK_CMB
+        depth_p = self.depth_p * u.arcmin * u.uK_CMB
 
-        self.depth_i = self.depth_i.to(  # type: ignore[attr-defined]
+        depth_i = depth_i.to(
             getattr(u, unit) * u.arcmin,
             equivalencies=u.cmb_equivalencies(self.frequency * u.GHz),
         )
-        self.depth_p = self.depth_p.to(  # type: ignore[attr-defined]
+        depth_p = depth_p.to(
             getattr(u, unit) * u.arcmin,
             equivalencies=u.cmb_equivalencies(self.frequency * u.GHz),
         )
 
         # add axis for broadcasting
-        self.depth_i = jnp.array(self.depth_i, dtype=dtype).reshape(-1, 1)
-        self.depth_p = jnp.array(self.depth_p, dtype=dtype).reshape(-1, 1)
-        self.frequency = jnp.array(self.frequency, dtype=dtype)
+        depth_i = np.array(depth_i, dtype=dtype).reshape(-1, 1)
+        depth_p = np.array(depth_p, dtype=dtype).reshape(-1, 1)
+
+        return FGBusterInstrument(
+            frequency=self.frequency.reshape(-1, 1),
+            depth_i=depth_i,  # type: ignore[arg-type]
+            depth_p=depth_p,  # type: ignore[arg-type]
+        )
 
 
 def get_sky(nside: int, tag: str = 'c1d0s0') -> pysm3.Sky:
@@ -171,7 +162,7 @@ def get_noise_sigma_from_instrument(
     stokes_type: ValidStokesType = 'IQU',
     unit: str = 'uK_CMB',
 ) -> Stokes:
-    instrument.depth_conversion(unit)
+    instrument = instrument.depth_conversion(unit)
     resolution = jnp.sqrt(4 * jnp.pi / (12 * nside**2)) * 180 / jnp.pi * 60
     match stokes_type:
         case 'I':

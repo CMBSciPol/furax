@@ -323,14 +323,7 @@ def lanczos_eigh(
 
     carry = (selected_ritz_values, eigenvectors, iteration, converged, residual_norms)
 
-    # Note: The while_loop would require all operations to be traceable
-    # For now, use a Python loop for restarts (simpler and works for eager mode)
-    # This can be converted to lax.while_loop if JIT compilation of restarts is needed
-    for _ in range(max_restarts - 1):
-        if jnp.all(converged):
-            break
-        carry = restart_body(carry)
-        _, _, iteration, converged, residual_norms = carry
+    final_carry = jax.lax.while_loop(restart_cond, restart_body, carry)
 
     (
         final_eigenvalues,
@@ -338,7 +331,7 @@ def lanczos_eigh(
         final_iteration,
         final_converged,
         final_residual_norms,
-    ) = carry
+    ) = final_carry
 
     return LanczosResult(
         eigenvalues=final_eigenvalues,

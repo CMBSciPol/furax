@@ -37,11 +37,13 @@ src/furax/
 The codebase centers on `AbstractLinearOperator` (in `core/_base.py`), extending `lineax.AbstractLinearOperator`. Operators are Equinox modules (immutable JAX-compatible dataclasses).
 
 **Key operations:**
-- `A @ B` - composition (B applied first, then A)
-- `A + B` - addition
+- `A(x)` or `A.mv(x)` - apply operator to input vector
+- `A @ B` - composition of operators (B applied first, then A)
+- `A + B` - addition of operators
 - `A.T` - transpose (lazy, uses JAX autodiff)
 - `A.I` - inverse (lazy, solved via lineax)
-- `A(x)` or `A.mv(x)` - apply to input
+
+**Important**: Use `A(x)` or `A.mv(x)` to apply an operator to a vector. The `@` operator is only for composing two operators, not for applying an operator to a vector.
 
 **Operator tags** (decorators in `core/_base.py`):
 - `@diagonal`, `@symmetric`, `@orthogonal` - register lineax tags

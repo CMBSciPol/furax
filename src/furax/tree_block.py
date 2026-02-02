@@ -1,4 +1,9 @@
-"""Block PyTree linear algebra utilities for LOBPCG."""
+"""Block PyTree utilities.
+
+This module provides utilities for working with "block PyTrees" - PyTrees where each leaf
+has an extra leading dimension representing k vectors. For example, a block of k vectors
+where each vector is {'a': (n,), 'b': (m,)} would be represented as {'a': (k, n), 'b': (k, m)}.
+"""
 
 from typing import TypeVar
 
@@ -8,6 +13,19 @@ from jax import Array
 from jaxtyping import Float, Key, Num, PyTree
 
 from furax.core import AbstractLinearOperator
+
+__all__ = [
+    'stack_pytrees',
+    'unstack_pytree',
+    'block_zeros_like',
+    'block_normal_like',
+    'batched_dot',
+    'block_norms',
+    'apply_rotation',
+    'qr_pytree',
+    'orthonormalize',
+    'apply_operator_block',
+]
 
 P = TypeVar('P', bound=PyTree[Num[Array, '...']] | PyTree[jax.ShapeDtypeStruct])
 
@@ -133,17 +151,12 @@ def batched_dot(
                [1., 0.]], dtype=float32)
     """
 
-    # X has shape (k, ...) for each leaf, Y has shape (m, ...) for each leaf
-    # We want G[i, j] = sum over leaves of vdot(X_leaf[i], Y_leaf[j])
     def leaf_gram(x_leaf: Array, y_leaf: Array) -> Array:
-        # x_leaf: (k, ...), y_leaf: (m, ...)
-        # Flatten the non-batch dimensions
         k = x_leaf.shape[0]
         m = y_leaf.shape[0]
-        x_flat = x_leaf.reshape(k, -1)  # (k, n)
-        y_flat = y_leaf.reshape(m, -1)  # (m, n)
-        # Compute G[i, j] = x_flat[i] @ y_flat[j].conj()
-        return x_flat @ jnp.conj(y_flat).T  # (k, m)
+        x_flat = x_leaf.reshape(k, -1)
+        y_flat = y_leaf.reshape(m, -1)
+        return x_flat @ jnp.conj(y_flat).T
 
     leaf_grams = jax.tree.map(leaf_gram, X, Y)
     leaf_list = jax.tree.leaves(leaf_grams)
@@ -151,45 +164,6 @@ def batched_dot(
     for leaf in leaf_list[1:]:
         result = result + leaf
     return result
-
-
-def apply_operator_block(
-    A: AbstractLinearOperator, X: PyTree[Num[Array, 'k ...']]
-) -> PyTree[Num[Array, 'k ...']]:
-    """Apply operator A to each of k vectors in block X using vmap.
-
-    Args:
-        A: A linear operator.
-        X: A block PyTree with k vectors (each leaf has leading dimension k).
-
-    Returns:
-        A block PyTree with A applied to each vector.
-
-    Example:
-        >>> import jax.numpy as jnp
-        >>> from furax import DiagonalOperator
-        >>> from furax.tree import as_structure
-        >>> d = jnp.array([2., 3.])
-        >>> A = DiagonalOperator(d, in_structure=as_structure(d))
-        >>> X = jnp.array([[1., 1.], [0., 1.]])  # 2 vectors
-        >>> apply_operator_block(A, X)
-        Array([[2., 3.],
-               [0., 3.]], dtype=float32)
-    """
-    # Get the tree structure
-    leaves, treedef = jax.tree.flatten(X)
-    k = leaves[0].shape[0]
-
-    # Define a function that applies A to a single vector (represented as leaf slices)
-    def apply_single(i: Array) -> list[Array]:
-        single_x = treedef.unflatten([leaf[i] for leaf in leaves])
-        result = A.mv(single_x)
-        return jax.tree.leaves(result)
-
-    # Vectorize over the batch dimension
-    result_leaves = jax.vmap(apply_single)(jnp.arange(k))
-    # result_leaves is a list of arrays, each of shape (k, ...)
-    return treedef.unflatten(result_leaves)
 
 
 def block_norms(X: PyTree[Num[Array, ' k ...']]) -> Float[Array, ' k']:
@@ -208,12 +182,10 @@ def block_norms(X: PyTree[Num[Array, ' k ...']]) -> Float[Array, ' k']:
         Array([5., 1.], dtype=float32)
     """
 
-    # Compute squared norms for each leaf and sum
     def leaf_squared_norms(leaf: Array) -> Array:
-        # leaf: (k, ...)
         k = leaf.shape[0]
-        flat = leaf.reshape(k, -1)  # (k, n)
-        return jnp.sum(jnp.abs(flat) ** 2, axis=1)  # (k,)
+        flat = leaf.reshape(k, -1)
+        return jnp.sum(jnp.abs(flat) ** 2, axis=1)
 
     leaf_list = jax.tree.leaves(jax.tree.map(leaf_squared_norms, X))
     squared_norms: Array = leaf_list[0]
@@ -247,14 +219,10 @@ def apply_rotation(
                [0., 1.]], dtype=float32)
     """
 
-    # X leaves have shape (m, ...), C has shape (m, k)
-    # Output leaves should have shape (k, ...)
     def rotate_leaf(leaf: Array) -> Array:
-        # leaf: (m, ...)
         m = leaf.shape[0]
         rest_shape = leaf.shape[1:]
-        flat = leaf.reshape(m, -1)  # (m, n)
-        # Result: C.T @ flat -> (k, n)
+        flat = leaf.reshape(m, -1)
         result_flat = C.T @ flat
         k = C.shape[1]
         return result_flat.reshape((k,) + rest_shape)
@@ -287,33 +255,17 @@ def qr_pytree(
     leaves, treedef = jax.tree.flatten(X)
     k = leaves[0].shape[0]
 
-    # Flatten all leaves to get a single (k, n) matrix
     flat_leaves = [leaf.reshape(k, -1) for leaf in leaves]
     sizes = [leaf.shape[1] for leaf in flat_leaves]
-    X_flat = jnp.concatenate(flat_leaves, axis=1)  # (k, total_n)
+    X_flat = jnp.concatenate(flat_leaves, axis=1)
     total_n = X_flat.shape[1]
 
-    # Use SVD for robust orthonormalization that handles k > n case
-    # X_flat = U @ S @ V^T where U is (k, r), S is (r,), V is (total_n, r), r = min(k, n)
     U, S, Vt = jnp.linalg.svd(X_flat, full_matrices=False)
-    # U has orthonormal columns: U^T @ U = I
-    # Q_flat = V @ U^T gives orthonormal rows: Q_flat @ Q_flat^T = I
 
     r = min(k, total_n)
-    # The orthonormalized vectors are V @ diag(sign) where sign normalizes
-    # Actually, we want Q such that Q^T Q = I (orthonormal rows in our convention)
-    # Q_flat = U^T would give us that, but we need to handle dimensions
+    Q_flat = Vt[:r, :]
+    R = (U[:, :r] * S[:r]).T
 
-    # For orthonormal vectors as rows: use Q = U (k, r) transposed view
-    # But we need (r, total_n) shape to split back into leaves
-    # The right singular vectors V (total_n, r) with Vt (r, total_n) are what we need
-    Q_flat = Vt[:r, :]  # (r, total_n)
-
-    # R = U[:, :r] @ diag(S[:r]) gives the coefficients: X_flat = U @ S @ Vt
-    # So X_flat = (U @ diag(S)) @ Vt, meaning R.T = U @ diag(S)
-    R = (U[:, :r] * S[:r]).T  # (r, k)
-
-    # Split back into leaves with shape (r, ...)
     Q_leaves = []
     start = 0
     for i, leaf in enumerate(leaves):
@@ -350,44 +302,36 @@ def orthonormalize(X: PyTree[Num[Array, 'k ...']]) -> PyTree[Num[Array, 'r ...']
     return Q
 
 
-def rayleigh_ritz(
-    S: PyTree[Num[Array, 'm ...']], AS: PyTree[Num[Array, 'm ...']], k: int, largest: bool = False
-) -> tuple[Float[Array, ' k'], PyTree[Num[Array, ' k ...']]]:
-    """Perform Rayleigh-Ritz procedure to extract k Ritz pairs.
-
-    Given a search space S and AS = A @ S, solve the reduced eigenvalue problem
-    S^H A S c = lambda S^H S c and return the k smallest (or largest) eigenvalues
-    and corresponding Ritz vectors.
+def apply_operator_block(
+    A: AbstractLinearOperator, X: PyTree[Num[Array, 'k ...']]
+) -> PyTree[Num[Array, 'k ...']]:
+    """Apply operator A to each of k vectors in block X using vmap.
 
     Args:
-        S: Orthonormal search space with m vectors.
-        AS: A applied to S.
-        k: Number of eigenvalues to return.
-        largest: If True, return largest eigenvalues; otherwise smallest.
+        A: A linear operator.
+        X: A block PyTree with k vectors (each leaf has leading dimension k).
 
     Returns:
-        eigenvalues: The k smallest (or largest) eigenvalues.
-        eigenvectors: A block PyTree with k Ritz vectors.
+        A block PyTree with A applied to each vector.
+
+    Example:
+        >>> import jax.numpy as jnp
+        >>> from furax import DiagonalOperator
+        >>> from furax.tree import as_structure
+        >>> d = jnp.array([2., 3.])
+        >>> A = DiagonalOperator(d, in_structure=as_structure(d))
+        >>> X = jnp.array([[1., 1.], [0., 1.]])  # 2 vectors
+        >>> apply_operator_block(A, X)
+        Array([[2., 3.],
+               [0., 3.]], dtype=float32)
     """
-    # Compute the reduced matrix S^H A S
-    G = batched_dot(S, AS)  # (m, m)
-    # Ensure Hermitian (for numerical stability)
-    G = (G + jnp.conj(G.T)) / 2
+    leaves, treedef = jax.tree.flatten(X)
+    k = leaves[0].shape[0]
 
-    # Solve the dense eigenvalue problem
-    eigenvalues, eigenvectors = jnp.linalg.eigh(G)  # eigenvalues sorted ascending
+    def apply_single(i: Array) -> list[Array]:
+        single_x = treedef.unflatten([leaf[i] for leaf in leaves])
+        result = A.mv(single_x)
+        return jax.tree.leaves(result)
 
-    if largest:
-        # Select k largest (last k)
-        idx = jnp.arange(eigenvalues.shape[0] - k, eigenvalues.shape[0])
-    else:
-        # Select k smallest (first k)
-        idx = jnp.arange(k)
-
-    selected_eigenvalues = eigenvalues[idx]
-    selected_eigenvectors = eigenvectors[:, idx]  # (m, k)
-
-    # Compute Ritz vectors: X = S @ C where C are the selected eigenvectors
-    ritz_vectors = apply_rotation(S, selected_eigenvectors)
-
-    return selected_eigenvalues, ritz_vectors
+    result_leaves = jax.vmap(apply_single)(jnp.arange(k))
+    return treedef.unflatten(result_leaves)

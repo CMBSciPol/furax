@@ -8,8 +8,8 @@ from numpy.testing import assert_allclose
 from furax import BlockDiagonalOperator, DiagonalOperator
 from furax.linalg import LanczosResult, lanczos_eigh, lanczos_tridiag
 from furax.linalg._lanczos import _tridiag_eigh
-from furax.linalg._utils import batched_dot
 from furax.tree import as_structure
+from furax.tree_block import batched_dot
 
 
 class TestTridiagEigh:

@@ -9,8 +9,7 @@ from jaxtyping import Bool, Float, Key, Num, PyTree
 
 from furax import tree
 from furax.core import AbstractLinearOperator
-
-from ._utils import block_normal_like
+from furax.tree_block import block_normal_like
 
 
 class LanczosResult(NamedTuple):

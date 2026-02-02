@@ -8,14 +8,34 @@ from jax import Array
 from jaxtyping import Bool, Float, Num, PyTree
 
 from furax.core import AbstractLinearOperator
-
-from ._utils import (
+from furax.tree_block import (
     apply_operator_block,
+    apply_rotation,
+    batched_dot,
     block_normal_like,
     block_norms,
     orthonormalize,
-    rayleigh_ritz,
 )
+
+
+def _rayleigh_ritz(
+    S: PyTree[Num[Array, 'm ...']], AS: PyTree[Num[Array, 'm ...']], k: int, largest: bool = False
+) -> tuple[Float[Array, ' k'], PyTree[Num[Array, ' k ...']]]:
+    """Perform Rayleigh-Ritz procedure to extract k Ritz pairs."""
+    G = batched_dot(S, AS)
+    G = (G + jnp.conj(G.T)) / 2
+    eigenvalues, eigenvectors = jnp.linalg.eigh(G)
+
+    if largest:
+        idx = jnp.arange(eigenvalues.shape[0] - k, eigenvalues.shape[0])
+    else:
+        idx = jnp.arange(k)
+
+    selected_eigenvalues = eigenvalues[idx]
+    selected_eigenvectors = eigenvectors[:, idx]
+    ritz_vectors = apply_rotation(S, selected_eigenvectors)
+
+    return selected_eigenvalues, ritz_vectors
 
 
 class LOBPCGResult(NamedTuple):
@@ -96,7 +116,7 @@ def lobpcg_standard(
     AX = apply_operator_block(A, X)
 
     # Initial eigenvalue estimates from Rayleigh quotient
-    eigenvalues, X = rayleigh_ritz(X, AX, k, largest)
+    eigenvalues, X = _rayleigh_ritz(X, AX, k, largest)
     AX = apply_operator_block(A, X)
 
     # First iteration (no P)
@@ -117,7 +137,7 @@ def lobpcg_standard(
     AS = concat_blocks(AX, AR)
     S = orthonormalize(S)
     AS = apply_operator_block(A, S)
-    eigenvalues, X = rayleigh_ritz(S, AS, k, largest)
+    eigenvalues, X = _rayleigh_ritz(S, AS, k, largest)
     AX = apply_operator_block(A, X)
     P = R
     AP = AR
@@ -151,7 +171,7 @@ def lobpcg_standard(
         AS = apply_operator_block(A, S)
 
         # Rayleigh-Ritz
-        new_eigenvalues, new_X = rayleigh_ritz(S, AS, k, largest)
+        new_eigenvalues, new_X = _rayleigh_ritz(S, AS, k, largest)
         new_AX = apply_operator_block(A, new_X)
 
         # Update P

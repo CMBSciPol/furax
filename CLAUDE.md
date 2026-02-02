@@ -1,6 +1,68 @@
 # CLAUDE.md
 
-Furax provides composable building blocks for solving inverse problems in astrophysical and cosmological domains.
+Furax provides composable building blocks for solving inverse problems in astrophysical and cosmological domains. It is built on JAX and uses linear operators as the core abstraction for modeling observation pipelines and solving map-making problems.
+
+## Architecture
+
+### Package Structure
+
+```
+src/furax/
+├── core/           # Linear operator framework
+│   ├── _base.py    # AbstractLinearOperator and composition/addition
+│   ├── _blocks.py  # Block operators (row, column, diagonal)
+│   ├── _diagonal.py, _mask.py, _indices.py  # Element-wise operators
+│   └── rules.py    # Algebraic simplification rules
+├── obs/            # Observation modeling
+│   ├── stokes.py   # Stokes vector types (StokesI, StokesQU, StokesIQU)
+│   ├── landscapes.py  # Sky map representations (Healpix, WCS)
+│   └── operators/  # HWP, polarizer, QU rotation, SEDs
+├── mapmaking/      # Map-making algorithms
+│   ├── mapmaker.py # Main map-maker implementation
+│   ├── noise.py    # Noise models (white, atmospheric)
+│   └── config.py   # Configuration classes
+├── linalg/         # Eigenvalue solvers (LOBPCG, Lanczos)
+├── interfaces/     # External library integrations
+│   ├── toast/      # TOAST integration
+│   ├── sotodlib/   # sotodlib integration
+│   └── litebird_sim/  # LiteBIRD simulation integration
+├── math/           # Math utilities (quaternions)
+├── preprocessing/  # Data preprocessing (gap filling)
+├── io/             # I/O utilities
+└── tree.py         # PyTree utilities (dot, norm, add, etc.)
+```
+
+### Core Abstraction: Linear Operators
+
+The codebase centers on `AbstractLinearOperator` (in `core/_base.py`), extending `lineax.AbstractLinearOperator`. Operators are Equinox modules (immutable JAX-compatible dataclasses).
+
+**Key operations:**
+- `A @ B` - composition (B applied first, then A)
+- `A + B` - addition
+- `A.T` - transpose (lazy, uses JAX autodiff)
+- `A.I` - inverse (lazy, solved via lineax)
+- `A(x)` or `A.mv(x)` - apply to input
+
+**Operator tags** (decorators in `core/_base.py`):
+- `@diagonal`, `@symmetric`, `@orthogonal` - register lineax tags
+- `@square` - marks operator as having same input/output structure
+- `@positive_semidefinite`, `@negative_semidefinite`
+
+**Input/output structures** use `jax.ShapeDtypeStruct` PyTrees. Operators define `in_structure()` and `out_structure()` methods.
+
+### Domain Types
+
+- **Stokes vectors**: `StokesI`, `StokesQU`, `StokesIQU`, `StokesIQUV` - registered JAX PyTrees for polarization data
+- **Landscapes**: `HealpixLandscape`, `WCSLandscape` - sky map containers that know their geometry
+- **Observations**: Lazy observation classes that load TOD data on demand
+
+### Key Dependencies
+
+- **JAX**: Array computation and autodiff
+- **Equinox**: Immutable modules (operators are `equinox.Module`)
+- **Lineax**: Linear solver framework (CG, etc.)
+- **jaxtyping**: Array shape annotations
+- **jax-healpy**: HEALPix sphere pixelization
 
 ## Running commands
 

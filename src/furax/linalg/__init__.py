@@ -1,5 +1,6 @@
 """Linear algebra utilities for furax operators."""
 
+from ._lanczos import LanczosResult, lanczos_eigh, lanczos_tridiag
 from ._lobpcg import LOBPCGResult, lobpcg_standard
 from ._utils import (
     block_normal_like,
@@ -12,6 +13,9 @@ from ._utils import (
 __all__ = [
     'lobpcg_standard',
     'LOBPCGResult',
+    'lanczos_eigh',
+    'lanczos_tridiag',
+    'LanczosResult',
     # Block PyTree utilities
     'stack_pytrees',
     'unstack_pytree',

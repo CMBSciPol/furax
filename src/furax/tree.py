@@ -23,6 +23,7 @@ __all__ = [
     'truediv',
     'power',
     'dot',
+    'norm',
     'matvec',
     'vecmat',
     'matmat',
@@ -255,6 +256,23 @@ def dot(x: PyTree[Num[Array, '...']], y: PyTree[Num[Array, '...']]) -> Num[Array
     """
     xy = jax.tree.map(jnp.vdot, x, y)
     return sum(jax.tree.leaves(xy), start=jnp.array(0))
+
+
+def norm(x: PyTree[Num[Array, '...']]) -> Num[Array, '']:
+    """Compute the norm of a PyTree.
+
+    The norm is defined as sqrt(dot(x, x)).
+
+    Args:
+        x: The Pytree.
+
+    Example:
+        >>> import furax as fx
+        >>> x = {'a': jnp.array([3., 4.]), 'b': jnp.array([0.])}
+        >>> fx.tree.norm(x)
+        Array(5., dtype=float32)
+    """
+    return jnp.sqrt(dot(x, x))
 
 
 def matvec(

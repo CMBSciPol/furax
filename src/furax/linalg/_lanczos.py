@@ -9,7 +9,7 @@ from jaxtyping import Bool, Float, Key, Num, PyTree
 
 from furax import tree
 from furax.core import AbstractLinearOperator
-from furax.tree_block import block_normal_like
+from furax.tree_block import block_normal_like, block_zeros_like
 
 
 class LanczosResult(NamedTuple):
@@ -32,7 +32,7 @@ class LanczosResult(NamedTuple):
 
 def lanczos_tridiag(
     A: AbstractLinearOperator,
-    v0: PyTree[Num[Array, '...']],
+    v0: PyTree[Num[Array, ...]],
     m: int,
 ) -> tuple[Float[Array, ' m'], Float[Array, ' m-1'], PyTree[Num[Array, 'm ...']]]:
     """Run m iterations of the Lanczos algorithm to build a tridiagonal matrix.
@@ -57,58 +57,67 @@ def lanczos_tridiag(
     norm_v0 = tree.norm(v0)
     v = tree.mul(1.0 / norm_v0, v0)
 
-    # Initialize storage for Lanczos vectors
-    # We'll store them as a list and stack at the end
-    V_list = [v]
-
-    # Initialize tridiagonal elements
-    alpha_list = []
-    beta_list = []
+    # Pre-allocate storage for Lanczos vectors, tridiagonal elements
+    V = block_zeros_like(v0, m)
+    V = jax.tree.map(lambda V_leaf, v_leaf: V_leaf.at[0].set(v_leaf), V, v)
+    alpha = jnp.zeros(m)
+    beta = jnp.zeros(m - 1) if m > 1 else jnp.array([])
 
     # v_prev = 0 (conceptually)
     v_prev = tree.zeros_like(v)
     beta_prev = jnp.array(0.0)
 
-    for j in range(m):
+    def body_fn(j, carry):  # type: ignore[no-untyped-def]
+        V, alpha, beta, v, v_prev, beta_prev = carry
+
         # w = A @ v_j
-        w = A.mv(v)
+        w = A(v)
 
         # alpha_j = v_j^H @ w
         alpha_j = tree.dot(v, w)
-        alpha_list.append(alpha_j)
+        alpha = alpha.at[j].set(alpha_j)
 
         # w = w - alpha_j * v_j - beta_{j-1} * v_{j-1}
         w = tree.add(tree.mul(-alpha_j, v), w)
         w = tree.add(tree.mul(-beta_prev, v_prev), w)
 
-        # Reorthogonalization (full) to maintain numerical stability
-        # This is important for large m to prevent loss of orthogonality
-        for v_k in V_list:
+        # Reorthogonalization (full) against all previously computed vectors
+        # Scan over all m indices, but only apply for k <= j
+        def reorth_step(carry, k):  # type: ignore[no-untyped-def]
+            w = carry
+            v_k = jax.tree.map(lambda V_leaf: V_leaf[k], V)
             coeff = tree.dot(v_k, w)
+            # Only subtract if k <= j (mask out future vectors)
+            coeff = jnp.where(k <= j, coeff, 0.0)
             w = tree.add(tree.mul(-coeff, v_k), w)
+            return w, None
+
+        w, _ = jax.lax.scan(reorth_step, w, jnp.arange(m))
 
         # beta_j = ||w||
         beta_j = tree.norm(w)
 
-        if j < m - 1:
-            beta_list.append(beta_j)
+        # v_{j+1} = w / beta_j (if beta_j != 0)
+        safe_beta = jnp.maximum(beta_j, 1e-14)
+        v_next = tree.mul(1.0 / safe_beta, w)
 
-            # v_{j+1} = w / beta_j (if beta_j != 0)
-            # Use a small epsilon to avoid division by zero
-            safe_beta = jnp.maximum(beta_j, 1e-14)
-            v_next = tree.mul(1.0 / safe_beta, w)
-            V_list.append(v_next)
+        # Only update beta and V[j+1] if j < m - 1
+        beta = jnp.where(j < m - 1, beta.at[j].set(beta_j), beta)
+        V = jax.lax.cond(
+            j < m - 1,
+            lambda: jax.tree.map(lambda V_leaf, v_leaf: V_leaf.at[j + 1].set(v_leaf), V, v_next),
+            lambda: V,
+        )
 
-            # Update for next iteration
-            v_prev = v
-            v = v_next
-            beta_prev = beta_j
+        # Update for next iteration
+        v_prev = v
+        v = v_next
+        beta_prev = beta_j
 
-    # Stack Lanczos vectors into block PyTree
-    V = jax.tree.map(lambda *leaves: jnp.stack(leaves, axis=0), *V_list)
+        return V, alpha, beta, v, v_prev, beta_prev
 
-    alpha = jnp.array(alpha_list)
-    beta = jnp.array(beta_list) if beta_list else jnp.array([])
+    init_carry = (V, alpha, beta, v, v_prev, beta_prev)
+    V, alpha, beta, _, _, _ = jax.lax.fori_loop(0, m, body_fn, init_carry)
 
     return alpha, beta, V
 
@@ -135,7 +144,7 @@ def _tridiag_eigh(
 
 def lanczos_eigh(
     A: AbstractLinearOperator,
-    v0: PyTree[Num[Array, '...']] | None = None,
+    v0: PyTree[Num[Array, ...]] | None = None,
     *,
     k: int = 1,
     m: int | None = None,

@@ -5,7 +5,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jaxtyping import Bool, Float, Key, Num, PyTree
+from jaxtyping import Float, Num, PRNGKeyArray, PyTree
 
 from furax import tree
 from furax.core import AbstractLinearOperator
@@ -24,15 +24,11 @@ class LanczosResult(NamedTuple):
     Attributes:
         eigenvalues: The k computed eigenvalues, sorted ascending if largest=False.
         eigenvectors: A block PyTree containing k eigenvectors.
-        iterations: The number of iterations performed.
-        converged: A boolean array indicating which eigenpairs have converged.
         residual_norms: The norm of the residual for each eigenpair.
     """
 
     eigenvalues: Float[Array, ' k']
     eigenvectors: PyTree[Num[Array, ' k ...']]
-    iterations: int
-    converged: Bool[Array, ' k']
     residual_norms: Float[Array, ' k']
 
 
@@ -174,58 +170,19 @@ def _compute_residual_norms(
     return block_norms(residuals)
 
 
-def _lanczos_step(
-    A: AbstractLinearOperator,
-    v0: PyTree[Num[Array, '...']],
-    m: int,
-    k: int,
-    largest: bool,
-) -> tuple[Float[Array, ' k'], PyTree[Num[Array, 'k ...']], Float[Array, ' k']]:
-    """Perform one Lanczos iteration and extract the k best eigenpairs.
-
-    Args:
-        A: A Hermitian linear operator.
-        v0: Starting vector (will be normalized).
-        m: Krylov subspace dimension.
-        k: Number of eigenvalues to compute.
-        largest: If True, compute largest eigenvalues; otherwise smallest.
-
-    Returns:
-        eigenvalues: The k eigenvalues.
-        eigenvectors: Block PyTree with k eigenvectors.
-        residual_norms: Residual norms for each eigenpair.
-    """
-    alpha, beta, V = lanczos_tridiag(A, v0, m)
-    ritz_values, ritz_vectors = _tridiag_eigh(alpha, beta)
-
-    # Select k smallest or largest Ritz pairs
-    idx = jnp.arange(m - k, m) if largest else jnp.arange(k)
-    eigenvalues = ritz_values[idx]
-    selected_ritz_vectors = ritz_vectors[:, idx]  # (m, k)
-
-    # Compute eigenvectors: linear combination of Lanczos vectors
-    eigenvectors = apply_rotation(V, selected_ritz_vectors)
-
-    residual_norms = _compute_residual_norms(A, eigenvectors, eigenvalues)
-    return eigenvalues, eigenvectors, residual_norms
-
-
 def lanczos_eigh(
     A: AbstractLinearOperator,
     v0: PyTree[Num[Array, '...']] | None = None,
     *,
     k: int = 1,
     m: int | None = None,
-    max_restarts: int = 10,
-    tol: float = 1e-6,
     largest: bool = False,
-    key: Key[Array, ''] | None = None,
+    key: PRNGKeyArray | None = None,
 ) -> LanczosResult:
     """Lanczos algorithm for computing k smallest/largest eigenvalues.
 
-    Uses the Lanczos algorithm with implicit restarts to compute the k smallest
-    (or largest) eigenvalues and corresponding eigenvectors of a Hermitian
-    linear operator A.
+    Uses the Lanczos algorithm to compute the k smallest (or largest) eigenvalues
+    and corresponding eigenvectors of a Hermitian linear operator A.
 
     Args:
         A: A Hermitian linear operator.
@@ -233,14 +190,11 @@ def lanczos_eigh(
         k: Number of eigenvalues to compute.
         m: Dimension of Krylov subspace. If None, defaults to min(2*k + 1, n) where
            n is the dimension of the operator.
-        max_restarts: Maximum number of implicit restarts.
-        tol: Convergence tolerance for residual norms.
         largest: If True, compute largest eigenvalues; otherwise smallest.
         key: Random key for initialization when v0 is None.
 
     Returns:
-        LanczosResult containing eigenvalues, eigenvectors, iteration count,
-        convergence status, and residual norms.
+        LanczosResult containing eigenvalues, eigenvectors, and residual norms.
 
     Example:
         >>> import jax
@@ -270,37 +224,23 @@ def lanczos_eigh(
     if m < k:
         raise ValueError(f'm ({m}) must be >= k ({k})')
 
-    # Initial Lanczos step
-    eigenvalues, eigenvectors, residual_norms = _lanczos_step(A, v0, m, k, largest)
-    converged = residual_norms < tol
+    # Run Lanczos to build tridiagonal matrix
+    alpha, beta, V = lanczos_tridiag(A, v0, m)
+    ritz_values, ritz_vectors = _tridiag_eigh(alpha, beta)
 
-    # Restart loop: refine using the best eigenvector as new starting vector
-    def restart_cond(carry):  # type: ignore[no-untyped-def]
-        _, _, iteration, converged, _ = carry
-        return jnp.logical_and(iteration < max_restarts, ~jnp.all(converged))
+    # Select k smallest or largest Ritz pairs
+    idx = jnp.arange(m - k, m) if largest else jnp.arange(k)
+    eigenvalues = ritz_values[idx]
+    selected_ritz_vectors = ritz_vectors[:, idx]  # (m, k)
 
-    def restart_body(carry):  # type: ignore[no-untyped-def]
-        _, eigenvectors, iteration, _, _ = carry
-        v0_restart = jax.tree.map(lambda leaf: leaf[0], eigenvectors)
-        new_eigenvalues, new_eigenvectors, new_residual_norms = _lanczos_step(
-            A, v0_restart, m, k, largest
-        )
-        new_converged = new_residual_norms < tol
-        return (new_eigenvalues, new_eigenvectors, iteration + 1, new_converged, new_residual_norms)
+    # Compute eigenvectors: linear combination of Lanczos vectors
+    eigenvectors = apply_rotation(V, selected_ritz_vectors)
 
-    initial_carry = (eigenvalues, eigenvectors, 1, converged, residual_norms)
-    (
-        final_eigenvalues,
-        final_eigenvectors,
-        final_iteration,
-        final_converged,
-        final_residual_norms,
-    ) = jax.lax.while_loop(restart_cond, restart_body, initial_carry)
+    # Compute residual norms
+    residual_norms = _compute_residual_norms(A, eigenvectors, eigenvalues)
 
     return LanczosResult(
-        eigenvalues=final_eigenvalues,
-        eigenvectors=final_eigenvectors,
-        iterations=final_iteration,
-        converged=final_converged,
-        residual_norms=final_residual_norms,
+        eigenvalues=eigenvalues,
+        eigenvectors=eigenvectors,
+        residual_norms=residual_norms,
     )

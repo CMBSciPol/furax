@@ -50,7 +50,7 @@ def low_rank(
             capture most of the operator's action.
         key: Random key for initialization of the eigenvalue solver.
         **solver_kwargs: Additional keyword arguments passed to the solver
-            (e.g., tol, max_iters for lobpcg; tol, max_restarts, m for lanczos).
+            (e.g., tol, max_iters for lobpcg; m for lanczos).
 
     Returns:
         LowRankTerms containing eigenvalues and eigenvectors.

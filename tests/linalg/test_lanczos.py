@@ -116,7 +116,7 @@ class TestLanczosEigh:
         A = DiagonalOperator(d, in_structure=as_structure(d))
 
         key = jax.random.PRNGKey(0)
-        result = lanczos_eigh(A, k=2, key=key, tol=1e-8)
+        result = lanczos_eigh(A, k=2, key=key)
 
         assert isinstance(result, LanczosResult)
         assert result.eigenvalues.shape == (2,)
@@ -131,21 +131,10 @@ class TestLanczosEigh:
         A = DiagonalOperator(d, in_structure=as_structure(d))
 
         key = jax.random.PRNGKey(1)
-        result = lanczos_eigh(A, k=2, key=key, tol=1e-8, largest=True)
+        result = lanczos_eigh(A, k=2, key=key, largest=True)
 
         # Should find the 2 largest eigenvalues: 4.0 and 5.0
         assert_allclose(jnp.sort(result.eigenvalues), jnp.array([4.0, 5.0]), atol=1e-4)
-
-    def test_lanczos_convergence(self):
-        """Test that Lanczos converges and residuals are small."""
-        d = jnp.array([1.0, 2.0, 5.0, 10.0])
-        A = DiagonalOperator(d, in_structure=as_structure(d))
-
-        key = jax.random.PRNGKey(2)
-        result = lanczos_eigh(A, k=2, key=key, max_restarts=20, tol=1e-6)
-
-        assert jnp.all(result.converged)
-        assert jnp.all(result.residual_norms < 1e-5)
 
     def test_lanczos_with_initial_vector(self):
         """Test Lanczos with provided initial vector."""
@@ -154,7 +143,7 @@ class TestLanczosEigh:
 
         # Provide initial vector
         v0 = jnp.array([1.0, 1.0, 1.0])
-        result = lanczos_eigh(A, v0=v0, k=2, tol=1e-8)
+        result = lanczos_eigh(A, v0=v0, k=2)
 
         assert_allclose(jnp.sort(result.eigenvalues), jnp.array([1.0, 2.0]), atol=1e-4)
 
@@ -171,7 +160,7 @@ class TestLanczosEigh:
         )
 
         key = jax.random.PRNGKey(3)
-        result = lanczos_eigh(A, k=2, key=key, tol=1e-6)
+        result = lanczos_eigh(A, k=2, key=key)
 
         # Total eigenvalues are [1, 2, 3], should find smallest 2
         assert_allclose(jnp.sort(result.eigenvalues), jnp.array([1.0, 2.0]), atol=1e-3)
@@ -182,7 +171,7 @@ class TestLanczosEigh:
         A = DiagonalOperator(d, in_structure=as_structure(d))
 
         key = jax.random.PRNGKey(4)
-        result = lanczos_eigh(A, k=1, key=key, tol=1e-8)
+        result = lanczos_eigh(A, k=1, m=4, key=key)
 
         assert result.eigenvalues.shape == (1,)
         assert_allclose(result.eigenvalues[0], 1.0, atol=1e-4)
@@ -193,7 +182,7 @@ class TestLanczosEigh:
         A = DiagonalOperator(d, in_structure=as_structure(d))
 
         key = jax.random.PRNGKey(5)
-        result = lanczos_eigh(A, k=2, m=5, key=key, tol=1e-8)
+        result = lanczos_eigh(A, k=2, m=5, key=key)
 
         assert_allclose(jnp.sort(result.eigenvalues), jnp.array([1.0, 2.0]), atol=1e-4)
 
@@ -220,7 +209,7 @@ class TestLanczosEigh:
         A = DiagonalOperator(d, in_structure=as_structure(d))
 
         key = jax.random.PRNGKey(7)
-        result = lanczos_eigh(A, k=2, key=key, tol=1e-8)
+        result = lanczos_eigh(A, k=2, key=key)
 
         # Check orthonormality of eigenvectors
         G = batched_dot(result.eigenvectors, result.eigenvectors)
@@ -234,7 +223,7 @@ class TestLanczosEigh:
         A = DiagonalOperator(d, in_structure=as_structure(d))
 
         key = jax.random.PRNGKey(8)
-        lanczos_result = lanczos_eigh(A, k=2, key=key, tol=1e-8)
+        lanczos_result = lanczos_eigh(A, k=2, key=key)
 
         key2 = jax.random.PRNGKey(9)
         lobpcg_result = lobpcg_standard(A, k=2, key=key2, tol=1e-8)

@@ -56,7 +56,7 @@ def test_direct_i() -> None:
 
     y = polarizer(x)
 
-    assert as_structure(y) == polarizer.out_structure()
+    assert as_structure(y) == polarizer.out_structure
     expected_y = x.i / 2
     assert_allclose(y, expected_y, atol=1e-15, rtol=1e-15)
 
@@ -72,7 +72,7 @@ def test_create_direct_iqu() -> None:
 
     y = polarizer(x)
 
-    assert as_structure(y) == polarizer.out_structure()
+    assert as_structure(y) == polarizer.out_structure
     expected_y = 0.5 * (x.i + np.cos(2 * angles) * x.q - np.sin(2 * angles) * x.u)
     assert_allclose(y, expected_y, atol=1e-15, rtol=1e-15)
 
@@ -84,7 +84,7 @@ def test_create_transpose(stokes: ValidStokesType) -> None:
 
     y = polarizer.T(x)
 
-    assert as_structure(y) == polarizer.T.out_structure()
+    assert as_structure(y) == polarizer.T.out_structure
     expected_cls = Stokes.class_for(stokes)
     assert isinstance(y, expected_cls)
     expected_y = expected_cls.from_iquv(

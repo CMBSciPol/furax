@@ -30,6 +30,7 @@ from .core import (
     tridiagonal,
     upper_triangular,
 )
+from .interfaces.lineax import as_lineax_operator
 
 __all__ = [
     # core
@@ -52,6 +53,7 @@ __all__ = [
     'SymmetricBandToeplitzOperator',
     'TreeOperator',
     'OperatorTag',
+    'as_lineax_operator',
     'square',
     'symmetric',
     'orthogonal',

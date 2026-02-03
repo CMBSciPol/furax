@@ -33,7 +33,7 @@ class GapFillingOperator:
         >>> in_structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
         >>> mask = jnp.array([1, 1, 1, 0, 0, 1, 1, 1, 1, 1], dtype=bool)
         >>> mask_op = IndexOperator(jnp.where(mask), in_structure=in_structure)
-        >>> cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure)
+        >>> cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=in_structure)
         >>> gf = GapFillingOperator(cov, mask_op)
         >>> gap_filled_x = gf(key, x)
         >>> assert gap_filled_x.shape == x.shape
@@ -67,7 +67,7 @@ class GapFillingOperator:
         if isinstance(mask_op, MaskOperator):
             # convert to an IndexOperator
             boolean_mask = mask_op.to_boolean_mask()
-            self.pack = IndexOperator(jnp.where(boolean_mask), in_structure=mask_op.in_structure())
+            self.pack = IndexOperator(jnp.where(boolean_mask), in_structure=mask_op.in_structure)
         else:
             # already an IndexOperator
             self.pack = mask_op
@@ -163,7 +163,7 @@ def generate_noise_realization(
         fsamp: The sampling frequency of the data (recommended for correct normalization).
     """
     # Structure of the vector that will be generated
-    structure = cov.in_structure()
+    structure = cov.in_structure
 
     # Get the PSD values from the covariance matrix
     n = structure.shape[-1]

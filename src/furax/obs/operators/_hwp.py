@@ -1,9 +1,7 @@
-import equinox
-import jax
 import numpy as np
 from jax import Array
 from jax.typing import DTypeLike
-from jaxtyping import Float, PyTree
+from jaxtyping import Float
 
 from furax import AbstractLinearOperator, diagonal
 from furax.core.rules import AbstractBinaryRule
@@ -24,8 +22,6 @@ from ._qu_rotations import QURotationOperator, QURotationTransposeOperator
 class HWPOperator(AbstractLinearOperator):
     """Operator for an ideal static Half-wave plate."""
 
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-
     @classmethod
     def create(
         cls,
@@ -36,10 +32,10 @@ class HWPOperator(AbstractLinearOperator):
         angles: Float[Array, '...'] | None = None,
     ) -> AbstractLinearOperator:
         in_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
-        hwp = cls(in_structure)
+        hwp = cls(in_structure=in_structure)
         if angles is None:
             return hwp
-        rot = QURotationOperator(angles, in_structure)
+        rot = QURotationOperator(angles=angles, in_structure=in_structure)
         rotated_hwp: AbstractLinearOperator = rot.T @ hwp @ rot
         return rotated_hwp
 
@@ -54,9 +50,6 @@ class HWPOperator(AbstractLinearOperator):
             return StokesIQUV(x.i, x.q, -x.u, -x.v)
         raise NotImplementedError
 
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
-
 
 class QURotationHWPRule(AbstractBinaryRule):
     """Binary rule for R(theta) @ HWP = HWP @ R(-theta)`."""
@@ -68,6 +61,6 @@ class QURotationHWPRule(AbstractBinaryRule):
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         if isinstance(left, QURotationOperator):
-            return [right, QURotationTransposeOperator(left)]
+            return [right, QURotationTransposeOperator(operator=left)]
         assert isinstance(left, QURotationTransposeOperator)
         return [right, left.operator]

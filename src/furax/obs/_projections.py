@@ -32,9 +32,9 @@ def create_projection_operator(
 
     tod_structure = Stokes.class_for(landscape.stokes).structure_for(indices.shape, landscape.dtype)
 
-    rotation = QURotationOperator(samplings.pa, tod_structure)
+    rotation = QURotationOperator(samplings.pa, in_structure=tod_structure)
     reshape = RavelOperator(in_structure=landscape.structure)
-    sampling = IndexOperator(indices, in_structure=reshape.out_structure())
+    sampling = IndexOperator(indices, in_structure=reshape.out_structure)
     projection = rotation @ sampling @ reshape
     return projection
 

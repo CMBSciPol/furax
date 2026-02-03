@@ -1,8 +1,7 @@
 from collections.abc import Sequence
+from dataclasses import field
 from math import prod
-from typing import cast
 
-import equinox
 import jax
 from jax import Array
 from jax import numpy as jnp
@@ -26,16 +25,15 @@ class MoveAxisOperator(AbstractLinearOperator):
 
     Example:
         >>> in_structure = jax.ShapeDtypeStruct((2, 3), jnp.float32)
-        >>> op = MoveAxisOperator(0, 1, in_structure)
+        >>> op = MoveAxisOperator(0, 1, in_structure=in_structure)
         >>> op(jnp.array([[1., 1, 1], [2, 2, 2]]))
         Array([[1., 2.],
                [1., 2.],
                [1., 2.]], dtype=float32)
     """
 
-    source: tuple[int]
-    destination: tuple[int]
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
+    source: tuple[int, ...] = field(metadata={'static': True})
+    destination: tuple[int, ...] = field(metadata={'static': True})
 
     def __init__(
         self,
@@ -43,29 +41,28 @@ class MoveAxisOperator(AbstractLinearOperator):
         destination: int | Sequence[int],
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
-    ):
+    ) -> None:
         if isinstance(source, int):
             source = (source,)
         elif not isinstance(source, tuple):
-            source = cast(tuple[int], tuple(source))
+            source = tuple(source)
         if isinstance(destination, int):
             destination = (destination,)
         elif not isinstance(destination, tuple):
-            destination = cast(tuple[int], tuple(destination))
-        self.source = source
-        self.destination = destination
-        self._in_structure = in_structure
+            destination = tuple(destination)
+        object.__setattr__(self, 'source', source)
+        object.__setattr__(self, 'destination', destination)
+        object.__setattr__(self, 'in_structure', in_structure)
 
     def mv(self, x: PyTree[Array, '...']) -> PyTree[Array, '...']:
         return jax.tree.map(lambda leaf: jnp.moveaxis(leaf, self.source, self.destination), x)
 
     def transpose(self) -> AbstractLinearOperator:
-        return MoveAxisOperator(self.destination, self.source, in_structure=self.out_structure())
+        return MoveAxisOperator(
+            source=self.destination, destination=self.source, in_structure=self.out_structure
+        )
 
     inverse = transpose
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
 
 
 class MoveAxisInverseRule(AbstractBinaryRule):
@@ -96,23 +93,15 @@ class MoveAxisInverseRule(AbstractBinaryRule):
 
 
 class AbstractRavelOrReshapeOperator(AbstractLinearOperator):
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-
-    def __init__(self, in_structure: PyTree[jax.ShapeDtypeStruct]):
-        self._in_structure = in_structure
-
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        return jnp.eye(self.in_size(), dtype=self.out_promoted_dtype)
+        return jnp.eye(self.in_size, dtype=self.out_promoted_dtype)
 
     def transpose(self) -> AbstractLinearOperator:
         return ReshapeTransposeOperator(self)  # type: ignore[arg-type]
 
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
-
     def reduce(self) -> AbstractLinearOperator:
-        if self.out_structure() == self.in_structure():
-            return IdentityOperator(self.in_structure())
+        if self.out_structure == self.in_structure:
+            return IdentityOperator(in_structure=self.in_structure)
         return self
 
 
@@ -133,7 +122,7 @@ class RavelOperator(AbstractRavelOrReshapeOperator):
 
         >>> in_structure = jax.ShapeDtypeStruct((2, 3), jnp.float32)
         >>> op = RavelOperator(in_structure=in_structure)
-        >>> op.out_structure()
+        >>> op.out_structure
         ShapeDtypeStruct(shape=(6,), dtype=float32)
 
         To flatten the first two axes of the leaves of a pytree:
@@ -141,7 +130,7 @@ class RavelOperator(AbstractRavelOrReshapeOperator):
         >>> import furax as fx
         >>> x = [jnp.ones((2, 2)), jnp.ones((2, 2, 8))]
         >>> op = RavelOperator(0, 1, in_structure=fx.tree.as_structure(x))
-        >>> op.out_structure()
+        >>> op.out_structure
         [ShapeDtypeStruct(shape=(4,), dtype=float32),
         ShapeDtypeStruct(shape=(4, 8), dtype=float32)]
 
@@ -151,21 +140,19 @@ class RavelOperator(AbstractRavelOrReshapeOperator):
         >>> import furax as fx
         >>> x = [jnp.ones((2, 2, 3)), jnp.ones((2, 8))]
         >>> op = RavelOperator(-2, -1, in_structure=fx.tree.as_structure(x))
-        >>> op.out_structure()
+        >>> op.out_structure
         [ShapeDtypeStruct(shape=(2, 6), dtype=float32),
         ShapeDtypeStruct(shape=(16,), dtype=float32)]
     """
 
-    first_axis: int = equinox.field(static=True)
-    last_axis: int = equinox.field(static=True)
+    first_axis: int = field(default=0, metadata={'static': True})
+    last_axis: int = field(default=-1, metadata={'static': True})
 
-    def __init__(
-        self,
-        first_axis: int = 0,
-        last_axis: int = -1,
-        *,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ):
+    def __post_init__(self) -> None:
+        first_axis = self.first_axis
+        last_axis = self.last_axis
+        in_structure = self.in_structure
+
         if 0 <= last_axis < first_axis or last_axis < first_axis < 0:
             raise ValueError(
                 f'the first axis ({first_axis}) to be flattened should be before the last one '
@@ -181,10 +168,6 @@ class RavelOperator(AbstractRavelOrReshapeOperator):
                         f'there are no dimensions between {first_axis} and {last_axis} '
                         f'to be flattened in leaf of shape {leaf.shape}.'
                     )
-
-        super().__init__(in_structure)
-        self.first_axis = first_axis
-        self.last_axis = last_axis
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         def func(leaf: Inexact[Array, ' _a']) -> Inexact[Array, ' _b']:
@@ -210,25 +193,14 @@ class ReshapeOperator(AbstractRavelOrReshapeOperator):
         shape: The new shape of the input pytree leaves.
     """
 
-    shape: tuple[int, ...] = equinox.field(static=True)
+    shape: tuple[int, ...] = field(metadata={'static': True})
 
-    def __init__(
-        self,
-        shape: tuple[int, ...],
-        *,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ):
-        self._check_shape(shape, in_structure)
-        super().__init__(in_structure)
-        self.shape = shape
-
-    def _check_shape(
-        self, shape: tuple[int, ...], in_structure: PyTree[jax.ShapeDtypeStruct]
-    ) -> None:
-        for leaf in jax.tree.leaves(in_structure):
-            new_shape = self._normalize_shape(shape, leaf.shape)
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        for leaf in jax.tree.leaves(self.in_structure):
+            new_shape = self._normalize_shape(self.shape, leaf.shape)
             if leaf.size != prod(new_shape):
-                raise ValueError(f'invalid new shape {shape} for leaf of shape {leaf.shape}.')
+                raise ValueError(f'invalid new shape {self.shape} for leaf of shape {leaf.shape}.')
 
     @staticmethod
     def _normalize_shape(shape: tuple[int, ...], leaf_shape: tuple[int, ...]) -> tuple[int, ...]:
@@ -259,7 +231,7 @@ class ReshapeTransposeOperator(TransposeOperator):
         return jax.tree.map(
             lambda leaf, out_structure_leaf: leaf.reshape(out_structure_leaf.shape),
             x,
-            self.out_structure(),
+            self.out_structure,
         )
 
 

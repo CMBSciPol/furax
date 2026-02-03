@@ -1,4 +1,5 @@
-import equinox
+from dataclasses import field
+
 import jax
 from jax import Array
 from jax import numpy as jnp
@@ -41,20 +42,7 @@ class SumOperator(AbstractLinearOperator):
         {'a': Array([1, 1, 1], dtype=int32), 'b': Array([3, 6], dtype=int32)}
     """
 
-    axis: PyTree[tuple[int, ...] | None] = equinox.field(static=True)
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-
-    def __init__(
-        self,
-        axis: PyTree[int | tuple[int, ...] | None] = None,
-        *,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ):
-        self.axis = axis
-        self._in_structure = in_structure
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
+    axis: PyTree[tuple[int, ...] | None] = field(metadata={'static': True})
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         return jax.tree.map(

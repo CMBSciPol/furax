@@ -10,14 +10,13 @@ def test() -> None:
         def mv(self, x):
             return {'c': x['a'], 'd': x['a'][0] + 2 * x['b']}
 
-        def in_structure(self):
-            return {
-                'a': jax.ShapeDtypeStruct((3,), jnp.float32),
-                'b': jax.ShapeDtypeStruct((4,), jnp.float64),
-            }
-
-    op = Op()
-    assert op.out_structure() == {
+    op = Op(
+        in_structure={
+            'a': jax.ShapeDtypeStruct((3,), jnp.float32),
+            'b': jax.ShapeDtypeStruct((4,), jnp.float64),
+        }
+    )
+    assert op.out_structure == {
         'c': jax.ShapeDtypeStruct((3,), jnp.float32),
         'd': jax.ShapeDtypeStruct((4,), jnp.float64),
     }

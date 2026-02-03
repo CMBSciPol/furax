@@ -24,9 +24,11 @@ from furax import (
     DiagonalOperator,
     IdentityOperator,
     IndexOperator,
+    OperatorTag,
     RavelOperator,
     SymmetricBandToeplitzOperator,
 )
+from furax.interfaces.lineax import as_lineax_operator
 from furax.interfaces.toast.observation import ToastObservation
 from furax.mapmaking import MapMakingConfig
 from furax.mapmaking.mapmaker import MapMaker as FuraxMapMaker
@@ -242,7 +244,7 @@ class LegacyMapMakerToastOperator(ToastOperator):  # type: ignore[misc]
 
         # Build the acquisition operator
         h = self._get_acquisition(has_hwp)
-        tod_structure = h.out_structure()
+        tod_structure = h.out_structure
         logger.info('Built acquisition')
 
         # Build the inverse noise covariance matrix
@@ -254,18 +256,18 @@ class LegacyMapMakerToastOperator(ToastOperator):  # type: ignore[misc]
         coverage = h.T(jnp.ones(tod_structure.shape, tod_structure.dtype))
         m = BlockDiagonalOperator(
             StokesIQU(
-                d := DiagonalOperator(
+                d := DiagonalOperator(  # type: ignore[arg-type]
                     coverage.i, in_structure=jax.eval_shape(lambda _: _, coverage.i)
                 ),
-                d,
-                d,
+                d,  # type: ignore[arg-type]
+                d,  # type: ignore[arg-type]
             )
         ).inverse()
 
         # solving
         solver = lx.CG(rtol=self.rtol, atol=self.atol, max_steps=self.max_steps)
         solver_options = {
-            'preconditioner': lx.TaggedLinearOperator(m, lx.positive_semidefinite_tag)
+            'preconditioner': as_lineax_operator(m, OperatorTag.POSITIVE_SEMIDEFINITE),
         }
         with Config(solver=solver, solver_options=solver_options):
             A = (h.T @ invntt @ h).I @ h.T @ invntt
@@ -314,7 +316,7 @@ class LegacyMapMakerToastOperator(ToastOperator):  # type: ignore[misc]
     def _get_invntt(self, structure: PyTree[jax.ShapeDtypeStruct]) -> AbstractLinearOperator:
         if self.binned:
             # we are making a binned map
-            return IdentityOperator(structure)
+            return IdentityOperator(in_structure=structure)
 
         if self.lagmax > self._data.n_samples:
             raise RuntimeError(
@@ -332,18 +334,20 @@ class LegacyMapMakerToastOperator(ToastOperator):  # type: ignore[misc]
             psd = interpolate_psd(freq, psd, fft_size=nperseg, rate=sample_rate)
 
         invntt = psd_to_invntt(psd, self.lagmax)
-        return SymmetricBandToeplitzOperator(invntt, structure)
+        return SymmetricBandToeplitzOperator(invntt, in_structure=structure)
 
     def _get_acquisition(self, has_hwp: bool) -> AbstractLinearOperator:
         reshape = RavelOperator(in_structure=self._landscape.structure)
-        in_struct = reshape.out_structure()
+        in_struct = reshape.out_structure
         meta = {'shape': self._tods.shape, 'stokes': self.stokes}
+        pointing: AbstractLinearOperator
+
         if self.on_the_fly:
             pointing = PointingOperator(
                 self._landscape,
                 self._qbore,
                 self._qdet,
-                _in_structure=in_struct,
+                in_structure=in_struct,
                 _out_structure=Stokes.class_for(self.stokes).structure_for(self._tods.shape),
             )
         else:
@@ -446,7 +450,7 @@ class TemplateMapMakerToastOperator(LegacyMapMakerToastOperator):
 
         # Build the acquisition operator
         acquisition = self._get_acquisition(has_hwp)
-        tod_structure = acquisition.out_structure()
+        tod_structure = acquisition.out_structure
         logger.info('Built acquisition')
 
         # Compute cross psd data for PCA related work, if needed
@@ -500,7 +504,7 @@ class TemplateMapMakerToastOperator(LegacyMapMakerToastOperator):
         solver = lx.CG(rtol=self.rtol, atol=self.atol, max_steps=self.max_steps)
         solver_options = {
             'y0': y0,
-            'preconditioner': lx.TaggedLinearOperator(m, lx.positive_semidefinite_tag),
+            'preconditioner': as_lineax_operator(m, OperatorTag.POSITIVE_SEMIDEFINITE),
         }
         with Config(solver=solver, solver_options=solver_options):
             A = (h.T @ invntt @ h).I @ h.T @ invntt
@@ -573,7 +577,7 @@ class TemplateMapMakerToastOperator(LegacyMapMakerToastOperator):
                 n_modes=n_modes,
             )
             invntt = psd_to_invntt(psd, self.lagmax)
-            return SymmetricBandToeplitzOperator(invntt, structure)
+            return SymmetricBandToeplitzOperator(invntt, in_structure=structure)
 
         return super()._get_invntt(structure)
 

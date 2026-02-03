@@ -200,3 +200,9 @@ def test_diagonal_invalid_broadcast2() -> None:
         _ = DiagonalOperator(values, in_structure=as_structure(x), axis_destination=(-3, -2))
     with pytest.raises(ValueError, match=r'input shape \(4,\) cannot be changed to \(4, 2, 3\)'):
         _ = DiagonalOperator(values, in_structure=as_structure(x), axis_destination=1)
+
+
+def test_diagonal_without_in_structure() -> None:
+    values = jnp.ones(2, dtype=jnp.float16)
+    op = DiagonalOperator(values)
+    assert op.in_structure == as_structure(values)

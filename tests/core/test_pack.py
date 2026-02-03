@@ -53,8 +53,8 @@ def test_pack_structure(
     in_structure: PyTree[jax.ShapeDtypeStruct],
     out_structure: PyTree[jax.ShapeDtypeStruct],
 ) -> None:
-    operator = PackOperator(mask, in_structure)
-    assert operator.out_structure() == out_structure
+    operator = PackOperator(mask, in_structure=in_structure)
+    assert operator.out_structure == out_structure
 
 
 @pytest.mark.parametrize(
@@ -122,7 +122,7 @@ def test_pack_direct(
     expected_y: PyTree[Float[Array, '...']],
     do_jit: bool,
 ) -> None:
-    operator = PackOperator(mask, in_structure)
+    operator = PackOperator(mask, in_structure=in_structure)
     func = operator.__call__
     if do_jit:
         func = jax.jit(func)
@@ -133,10 +133,10 @@ def test_pack_direct(
 def test_pack_transpose() -> None:
     mask = jnp.array([False, True, True, False])
     in_structure = jax.ShapeDtypeStruct((4,), np.float32)
-    operator = PackOperator(mask, in_structure)
+    operator = PackOperator(mask, in_structure=in_structure)
     transposed_operator = operator.T
-    assert transposed_operator.in_structure() == operator.out_structure()
-    assert transposed_operator.out_structure() == operator.in_structure()
+    assert transposed_operator.in_structure == operator.out_structure
+    assert transposed_operator.out_structure == operator.in_structure
 
 
 @pytest.mark.parametrize(
@@ -179,8 +179,8 @@ def test_unpack_structure(
     in_structure: PyTree[jax.ShapeDtypeStruct],
     out_structure: PyTree[jax.ShapeDtypeStruct],
 ) -> None:
-    operator = PackOperator(mask, out_structure).T
-    assert operator.in_structure() == in_structure
+    operator = PackOperator(mask, in_structure=out_structure).T
+    assert operator.in_structure == in_structure
 
 
 @pytest.mark.parametrize(
@@ -248,12 +248,12 @@ def test_unpack_direct(
     expected_y: PyTree[Float[Array, '...']],
     do_jit: bool,
 ) -> None:
-    operator = PackOperator(mask, out_structure).T
+    operator = PackOperator(mask, in_structure=out_structure).T
     func = operator.__call__
     if do_jit:
         func = jax.jit(func)
     actual_y = func(x)
-    assert as_structure(actual_y) == operator.out_structure()
+    assert as_structure(actual_y) == operator.out_structure
     assert equinox.tree_equal(actual_y, expected_y)
     assert_array_equal(operator.as_matrix(), operator.T.as_matrix().T)
 
@@ -261,7 +261,7 @@ def test_unpack_direct(
 def test_pack_unpack_rule() -> None:
     mask = jnp.array([True, False])
     in_structure = jax.ShapeDtypeStruct(mask.shape, np.float32)
-    pack = PackOperator(mask, in_structure)
+    pack = PackOperator(mask, in_structure=in_structure)
     reduced_operator = (pack @ pack.T).reduce()
     assert isinstance(reduced_operator, IdentityOperator)
-    assert reduced_operator.in_structure() == jax.ShapeDtypeStruct((1,), np.float32)
+    assert reduced_operator.in_structure == jax.ShapeDtypeStruct((1,), np.float32)

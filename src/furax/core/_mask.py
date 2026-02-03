@@ -1,4 +1,3 @@
-import equinox
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, PyTree, Shaped, UInt8
@@ -19,23 +18,13 @@ class MaskOperator(AbstractLinearOperator):
     mask: UInt8[Array, '...']
     """Sample mask, bit-packed along the last axis to save memory"""
 
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    """The static input structure of the operator"""
-
-    def __init__(
-        self,
-        packed_mask: UInt8[Array, '...'],
-        *,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ) -> None:
-        if packed_mask.dtype != jnp.uint8:
+    def __post_init__(self) -> None:
+        if self.mask.dtype != jnp.uint8:
             msg = (
                 'Expected an input array of unsigned byte data type.'
                 'You might be looking for the `MaskOperator.from_boolean_mask()` factory.'
             )
             raise ValueError(msg)
-        self.mask = packed_mask
-        self._in_structure = in_structure
 
     @classmethod
     def from_boolean_mask(
@@ -53,19 +42,16 @@ class MaskOperator(AbstractLinearOperator):
 
         # Pack boolean mask along samples axis
         packed_mask = jnp.packbits(boolean_mask, axis=-1)
-        return cls(packed_mask, in_structure=in_structure)
+        return cls(mask=packed_mask, in_structure=in_structure)
 
     def to_boolean_mask(self) -> Bool[Array, '...']:
-        return jnp.unpackbits(self.mask, axis=-1, count=self._in_structure.shape[-1])
+        return jnp.unpackbits(self.mask, axis=-1, count=self.in_structure.shape[-1])
 
     def mv(self, x: Shaped[Array, '*dims']) -> Shaped[Array, '*dims']:
         # This will be a uint8 array but would be the same size with booleans
         boolean_mask = self.to_boolean_mask()
         # 1 = good, 0 = bad
         return jnp.where(boolean_mask, x, 0)
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
 
 
 class InverseBinaryRule(AbstractBinaryRule):
@@ -85,4 +71,4 @@ class InverseBinaryRule(AbstractBinaryRule):
         mask = left.mask & right.mask
 
         # Left and right operators have the same structure, just take one
-        return [MaskOperator(mask, in_structure=left.in_structure())]
+        return [MaskOperator(mask, in_structure=left.in_structure)]

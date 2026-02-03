@@ -47,8 +47,8 @@ def test_acquisitions(maker, reader):
     operators = maker.build_acquisitions()
     assert len(operators) == 2
     for op in operators:
-        assert op.in_structure() == maker.landscape.structure
-        assert op.out_structure() == reader.out_structure['sample_data']
+        assert op.in_structure == maker.landscape.structure
+        assert op.out_structure == reader.out_structure['sample_data']
 
 
 def test_noise_models(maker):
@@ -83,7 +83,7 @@ def test_binning(maker):
     h_blocks = maker.build_acquisitions()
     h = BlockColumnOperator(h_blocks)
     system = BJPreconditioner.create((h.T @ h).reduce())
-    assert system.in_structure() == maker.landscape.structure
+    assert system.in_structure == maker.landscape.structure
     zeros = system(maker.landscape.full(0))
     assert zeros.shape == maker.landscape.shape
 

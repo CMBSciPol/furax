@@ -29,16 +29,16 @@ dependencies = [
     'healpy>=0.18.1',
     'jax>=0.4.38,!=0.7.*',
     'jaxtyping',
-    'jax-healpy',
+    'jax-healpy>=0.5',
     'lineax>=0.0.8',
     'numpy',
     'scipy',
-    'typing-extensions; python_version < "3.11"',
+    'typing-extensions; python_version < "3.13"',
 ]
 dynamic = ['version']
 
 [project.optional-dependencies]
-dev = ['pytest', 'pytest-cov', 'pytest-mock', 'pytest-insubprocess>=1.1', 'setuptools_scm', 'beartype']
+dev = ['ipython', 'pytest', 'pytest-cov', 'pytest-mock', 'pytest-insubprocess>=1.1', 'setuptools_scm', 'beartype']
 comp_sep = ['pysm3']
 docs = [
     'sphinx>=5.0',
@@ -108,7 +108,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 # addopts = '-ra --cov=furax --jaxtyping-packages=furax,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))'
-addopts = '-s -ra --color=yes'
+addopts = '-s -ra --color=yes -m "not slow"'
 testpaths = ['tests']
 markers = ["slow: mark test as slow."]
 

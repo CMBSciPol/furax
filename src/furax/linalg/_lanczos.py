@@ -135,7 +135,8 @@ def _tridiag_eigh(
         eigenvalues: Eigenvalues sorted in ascending order (m,).
         eigenvectors: Eigenvectors as columns (m, m).
     """
-    # Build the full tridiagonal matrix
+    # `jax.scipy.linalg.eigh_tridiag` does not compute eigenvectors...
+    # For now we have to build the full tridiagonal matrix
     T = jnp.diag(alpha) + jnp.diag(beta, k=1) + jnp.diag(beta, k=-1)
     # Compute eigendecomposition
     eigenvalues, eigenvectors = jnp.linalg.eigh(T)

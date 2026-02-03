@@ -9,7 +9,13 @@ from jaxtyping import Bool, Float, Key, Num, PyTree
 
 from furax import tree
 from furax.core import AbstractLinearOperator
-from furax.tree_block import apply_operator_block, block_normal_like, block_zeros_like
+from furax.tree_block import (
+    apply_operator_block,
+    apply_rotation,
+    block_normal_like,
+    block_norms,
+    block_zeros_like,
+)
 
 
 class LanczosResult(NamedTuple):
@@ -143,6 +149,67 @@ def _tridiag_eigh(
     return eigenvalues, eigenvectors
 
 
+def _compute_residual_norms(
+    A: AbstractLinearOperator,
+    eigenvectors: PyTree[Num[Array, 'k ...']],
+    eigenvalues: Float[Array, ' k'],
+) -> Float[Array, ' k']:
+    """Compute residual norms ||A @ x - lambda * x|| for each eigenpair.
+
+    Args:
+        A: The linear operator.
+        eigenvectors: Block PyTree with k eigenvectors.
+        eigenvalues: The k eigenvalues.
+
+    Returns:
+        Residual norms for each eigenpair.
+    """
+    A_eigenvectors = apply_operator_block(A, eigenvectors)
+    k = eigenvalues.shape[0]
+
+    def compute_residual(Ax_leaf: Array, x_leaf: Array) -> Array:
+        return Ax_leaf - eigenvalues.reshape((k,) + (1,) * (x_leaf.ndim - 1)) * x_leaf
+
+    residuals = jax.tree.map(compute_residual, A_eigenvectors, eigenvectors)
+    return block_norms(residuals)
+
+
+def _lanczos_step(
+    A: AbstractLinearOperator,
+    v0: PyTree[Num[Array, '...']],
+    m: int,
+    k: int,
+    largest: bool,
+) -> tuple[Float[Array, ' k'], PyTree[Num[Array, 'k ...']], Float[Array, ' k']]:
+    """Perform one Lanczos iteration and extract the k best eigenpairs.
+
+    Args:
+        A: A Hermitian linear operator.
+        v0: Starting vector (will be normalized).
+        m: Krylov subspace dimension.
+        k: Number of eigenvalues to compute.
+        largest: If True, compute largest eigenvalues; otherwise smallest.
+
+    Returns:
+        eigenvalues: The k eigenvalues.
+        eigenvectors: Block PyTree with k eigenvectors.
+        residual_norms: Residual norms for each eigenpair.
+    """
+    alpha, beta, V = lanczos_tridiag(A, v0, m)
+    ritz_values, ritz_vectors = _tridiag_eigh(alpha, beta)
+
+    # Select k smallest or largest Ritz pairs
+    idx = jnp.arange(m - k, m) if largest else jnp.arange(k)
+    eigenvalues = ritz_values[idx]
+    selected_ritz_vectors = ritz_vectors[:, idx]  # (m, k)
+
+    # Compute eigenvectors: linear combination of Lanczos vectors
+    eigenvectors = apply_rotation(V, selected_ritz_vectors)
+
+    residual_norms = _compute_residual_norms(A, eigenvectors, eigenvalues)
+    return eigenvalues, eigenvectors, residual_norms
+
+
 def lanczos_eigh(
     A: AbstractLinearOperator,
     v0: PyTree[Num[Array, '...']] | None = None,
@@ -192,12 +259,10 @@ def lanczos_eigh(
         if key is None:
             raise ValueError('key must be specified when v0 is None')
         v0_block = block_normal_like(A.in_structure(), 1, key)
-        # Extract single vector from block
         v0 = jax.tree.map(lambda leaf: leaf[0], v0_block)
 
     # Determine Krylov subspace dimension
     if m is None:
-        # Get operator dimension from structure
         leaves = jax.tree.leaves(A.in_structure())
         n = sum(leaf.size for leaf in leaves)
         m = min(2 * k + 1, n)
@@ -205,126 +270,32 @@ def lanczos_eigh(
     if m < k:
         raise ValueError(f'm ({m}) must be >= k ({k})')
 
-    # Run Lanczos iteration
-    alpha, beta, V = lanczos_tridiag(A, v0, m)
-
-    # Compute Ritz values and vectors from tridiagonal matrix
-    ritz_values, ritz_vectors = _tridiag_eigh(alpha, beta)
-
-    # Select k smallest or largest
-    if largest:
-        idx = jnp.arange(m - k, m)
-    else:
-        idx = jnp.arange(k)
-
-    selected_ritz_values = ritz_values[idx]
-    selected_ritz_vectors = ritz_vectors[:, idx]  # (m, k)
-
-    # Compute eigenvector approximations: X = V^T @ ritz_vectors
-    # V has shape (m, ...) for each leaf, ritz_vectors is (m, k)
-    # Result should have shape (k, ...) for each leaf
-    def compute_eigenvectors(V_leaf: Array) -> Array:
-        # V_leaf: (m, ...)
-        m_dim = V_leaf.shape[0]
-        rest_shape = V_leaf.shape[1:]
-        V_flat = V_leaf.reshape(m_dim, -1)  # (m, n)
-        # X_flat = V_flat.T @ selected_ritz_vectors -> (n, k)
-        X_flat = V_flat.T @ selected_ritz_vectors
-        # Transpose to (k, n) then reshape to (k, ...)
-        return X_flat.T.reshape((k,) + rest_shape)
-
-    eigenvectors = jax.tree.map(compute_eigenvectors, V)
-
-    # Compute residual norms: ||A @ x - lambda * x||
-    A_eigenvectors = apply_operator_block(A, eigenvectors)
-
-    # Compute residuals: r_i = A @ x_i - lambda_i * x_i
-    def compute_residual(Ax_leaf: Array, x_leaf: Array) -> Array:
-        # Ax_leaf, x_leaf: (k, ...)
-        # lambda: (k,)
-        return Ax_leaf - selected_ritz_values.reshape((k,) + (1,) * (x_leaf.ndim - 1)) * x_leaf
-
-    residuals = jax.tree.map(compute_residual, A_eigenvectors, eigenvectors)
-
-    # Compute residual norms
-    def leaf_squared_norms(leaf: Array) -> Array:
-        # leaf: (k, ...)
-        flat = leaf.reshape(k, -1)  # (k, n)
-        return jnp.sum(jnp.abs(flat) ** 2, axis=1)  # (k,)
-
-    leaf_list = jax.tree.leaves(jax.tree.map(leaf_squared_norms, residuals))
-    squared_norms = leaf_list[0]
-    for leaf in leaf_list[1:]:
-        squared_norms = squared_norms + leaf
-    residual_norms = jnp.sqrt(squared_norms)
-
+    # Initial Lanczos step
+    eigenvalues, eigenvectors, residual_norms = _lanczos_step(A, v0, m, k, largest)
     converged = residual_norms < tol
 
-    # If not all converged and we have restarts left, we could do implicit restart
-    # For simplicity, we do explicit restarts using the best Ritz vector
-    iteration = 1
-
+    # Restart loop: refine using the best eigenvector as new starting vector
     def restart_cond(carry):  # type: ignore[no-untyped-def]
         _, _, iteration, converged, _ = carry
         return jnp.logical_and(iteration < max_restarts, ~jnp.all(converged))
 
     def restart_body(carry):  # type: ignore[no-untyped-def]
-        eigenvalues, eigenvectors, iteration, converged, residual_norms = carry
-
-        # Use best eigenvector as starting vector for new Lanczos run
-        # Extract first eigenvector (smallest or largest depending on 'largest')
+        _, eigenvectors, iteration, _, _ = carry
         v0_restart = jax.tree.map(lambda leaf: leaf[0], eigenvectors)
-
-        # Run Lanczos again
-        alpha_new, beta_new, V_new = lanczos_tridiag(A, v0_restart, m)
-        ritz_values_new, ritz_vectors_new = _tridiag_eigh(alpha_new, beta_new)
-
-        if largest:
-            idx_new = jnp.arange(m - k, m)
-        else:
-            idx_new = jnp.arange(k)
-
-        new_eigenvalues = ritz_values_new[idx_new]
-        new_ritz_vectors = ritz_vectors_new[:, idx_new]
-
-        def compute_eigenvectors_new(V_leaf: Array) -> Array:
-            m_dim = V_leaf.shape[0]
-            rest_shape = V_leaf.shape[1:]
-            V_flat = V_leaf.reshape(m_dim, -1)
-            X_flat = V_flat.T @ new_ritz_vectors
-            return X_flat.T.reshape((k,) + rest_shape)
-
-        new_eigenvectors = jax.tree.map(compute_eigenvectors_new, V_new)
-
-        # Recompute residuals
-        A_new = apply_operator_block(A, new_eigenvectors)
-
-        def compute_residual_new(Ax_leaf: Array, x_leaf: Array) -> Array:
-            return Ax_leaf - new_eigenvalues.reshape((k,) + (1,) * (x_leaf.ndim - 1)) * x_leaf
-
-        residuals_new = jax.tree.map(compute_residual_new, A_new, new_eigenvectors)
-
-        leaf_list_new = jax.tree.leaves(jax.tree.map(leaf_squared_norms, residuals_new))
-        squared_norms_new = leaf_list_new[0]
-        for leaf in leaf_list_new[1:]:
-            squared_norms_new = squared_norms_new + leaf
-        new_residual_norms = jnp.sqrt(squared_norms_new)
-
+        new_eigenvalues, new_eigenvectors, new_residual_norms = _lanczos_step(
+            A, v0_restart, m, k, largest
+        )
         new_converged = new_residual_norms < tol
-
         return (new_eigenvalues, new_eigenvectors, iteration + 1, new_converged, new_residual_norms)
 
-    carry = (selected_ritz_values, eigenvectors, iteration, converged, residual_norms)
-
-    final_carry = jax.lax.while_loop(restart_cond, restart_body, carry)
-
+    initial_carry = (eigenvalues, eigenvectors, 1, converged, residual_norms)
     (
         final_eigenvalues,
         final_eigenvectors,
         final_iteration,
         final_converged,
         final_residual_norms,
-    ) = final_carry
+    ) = jax.lax.while_loop(restart_cond, restart_body, initial_carry)
 
     return LanczosResult(
         eigenvalues=final_eigenvalues,

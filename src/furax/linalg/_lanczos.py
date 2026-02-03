@@ -9,7 +9,7 @@ from jaxtyping import Bool, Float, Key, Num, PyTree
 
 from furax import tree
 from furax.core import AbstractLinearOperator
-from furax.tree_block import block_normal_like, block_zeros_like
+from furax.tree_block import apply_operator_block, block_normal_like, block_zeros_like
 
 
 class LanczosResult(NamedTuple):
@@ -236,16 +236,7 @@ def lanczos_eigh(
     eigenvectors = jax.tree.map(compute_eigenvectors, V)
 
     # Compute residual norms: ||A @ x - lambda * x||
-    # Apply A to each eigenvector
-    leaves, treedef = jax.tree.flatten(eigenvectors)
-
-    def apply_single(i: Array) -> list[Array]:
-        single_x = treedef.unflatten([leaf[i] for leaf in leaves])
-        result = A.mv(single_x)
-        return jax.tree.leaves(result)
-
-    A_eigenvectors_leaves = jax.vmap(apply_single)(jnp.arange(k))
-    A_eigenvectors = treedef.unflatten(A_eigenvectors_leaves)
+    A_eigenvectors = apply_operator_block(A, eigenvectors)
 
     # Compute residuals: r_i = A @ x_i - lambda_i * x_i
     def compute_residual(Ax_leaf: Array, x_leaf: Array) -> Array:
@@ -306,15 +297,7 @@ def lanczos_eigh(
         new_eigenvectors = jax.tree.map(compute_eigenvectors_new, V_new)
 
         # Recompute residuals
-        leaves_new, treedef_new = jax.tree.flatten(new_eigenvectors)
-
-        def apply_single_new(i: Array) -> list[Array]:
-            single_x = treedef_new.unflatten([leaf[i] for leaf in leaves_new])
-            result = A.mv(single_x)
-            return jax.tree.leaves(result)
-
-        A_new_leaves = jax.vmap(apply_single_new)(jnp.arange(k))
-        A_new = treedef_new.unflatten(A_new_leaves)
+        A_new = apply_operator_block(A, new_eigenvectors)
 
         def compute_residual_new(Ax_leaf: Array, x_leaf: Array) -> Array:
             return Ax_leaf - new_eigenvalues.reshape((k,) + (1,) * (x_leaf.ndim - 1)) * x_leaf

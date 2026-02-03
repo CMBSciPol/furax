@@ -32,7 +32,7 @@ class LanczosResult(NamedTuple):
 
 def lanczos_tridiag(
     A: AbstractLinearOperator,
-    v0: PyTree[Num[Array, ...]],
+    v0: PyTree[Num[Array, '...']],
     m: int,
 ) -> tuple[Float[Array, ' m'], Float[Array, ' m-1'], PyTree[Num[Array, 'm ...']]]:
     """Run m iterations of the Lanczos algorithm to build a tridiagonal matrix.
@@ -145,7 +145,7 @@ def _tridiag_eigh(
 
 def lanczos_eigh(
     A: AbstractLinearOperator,
-    v0: PyTree[Num[Array, ...]] | None = None,
+    v0: PyTree[Num[Array, '...']] | None = None,
     *,
     k: int = 1,
     m: int | None = None,

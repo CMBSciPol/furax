@@ -6,7 +6,7 @@ import equinox
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jaxtyping import Float, Key, Num, PyTree
+from jaxtyping import Float, Num, PRNGKeyArray, PyTree
 
 from furax.core import AbstractLinearOperator
 from furax.core._base import symmetric
@@ -33,7 +33,7 @@ def low_rank(
     *,
     method: Literal['lanczos', 'lobpcg'] = 'lanczos',
     largest: bool = True,
-    key: Key[Array, ''] | None = None,
+    key: PRNGKeyArray | None = None,
     **solver_kwargs: Any,
 ) -> LowRankTerms:
     """Compute a low-rank approximation of a Hermitian operator.

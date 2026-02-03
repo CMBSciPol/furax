@@ -5,7 +5,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jaxtyping import Bool, Float, Num, PyTree
+from jaxtyping import Bool, Float, Num, PRNGKeyArray, PyTree
 
 from furax.core import AbstractLinearOperator
 from furax.tree_block import (
@@ -64,7 +64,7 @@ def lobpcg_standard(
     max_iters: int = 100,
     tol: float = 1e-6,
     largest: bool = False,
-    key: Array | None = None,
+    key: PRNGKeyArray | None = None,
 ) -> LOBPCGResult:
     """LOBPCG for standard eigenvalue problem A x = lambda x.
 

@@ -10,10 +10,11 @@ from ._observation import (
 from ._reader import ObservationReader
 from .config import MapMakingConfig
 from .mapmaker import MultiObservationMapMaker
-from .preconditioner import BJPreconditioner
+from .preconditioner import BJPreconditioner, make_two_level_preconditioner
 
 __all__ = [
     'BJPreconditioner',
+    'make_two_level_preconditioner',
     'AbstractObservation',
     'AbstractLazyObservation',
     'AbstractGroundObservation',

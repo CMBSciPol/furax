@@ -2,9 +2,10 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, PyTree
+from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from furax import AbstractLinearOperator, TreeOperator, symmetric
+from furax import AbstractLinearOperator, IdentityOperator, TreeOperator, symmetric
+from furax.linalg import LowRankOperator, LowRankTerms, low_rank
 from furax.obs.stokes import Stokes
 from furax.tree import _tree_to_dense, zeros_like
 
@@ -64,3 +65,42 @@ class BJPreconditioner(TreeOperator):
     def get_blocks(self) -> Array:
         """Convert the preconditioner blocks as a dense matrix."""
         return _tree_to_dense(self.outer_treedef, self.inner_treedef, self.tree)
+
+
+def make_two_level_preconditioner(
+    A: AbstractLinearOperator,
+    rank: int,
+    key: PRNGKeyArray,
+    bj: AbstractLinearOperator | None = None,
+) -> AbstractLinearOperator:
+    """Builds `M = BJ @ (I - A @ Q) + Q` with `Q = Z @ diag(1/θ) @ Z^T `and `(θ, Z)` eigenpairs of `A`.
+
+    The eigenpairs `(θ, Z)` are estimated using the Lanczos algorithm on the operator `A`. The
+    columns of `Z` span a subspace to be deflated in order to improve the conditioning of `A`.
+
+    In the MAPPRAISER implementation (c.f. https://arxiv.org/abs/2112.03370 and references therein)
+    `Q` is defined as `Z @ (Z.T @ A @ Z).I @ Z.T`. If the extracted eigenpairs are correct, this
+    simplifies to the simple expression above. We use this to improve efficiency.
+
+    Args:
+        A: A Hermitian linear operator.
+        rank: Size of the deflation subspace.
+        key: Key for generating random first guess.
+        bj: A block-Jacobi preconditioner.
+    """
+    # Extract approximate eigenpairs
+    theta, Z = low_rank(A, rank, method='lanczos', largest=False, key=key)
+
+    # Q = Z @ diag(1/θ) @ Z^T
+    Q_terms = LowRankTerms(eigenvalues=1 / theta, eigenvectors=Z)
+    Q = LowRankOperator(Q_terms)
+
+    # R = I - A @ Q
+    id = IdentityOperator(A.out_structure())
+    R = id - A @ Q
+
+    # M = BJ @ R + Q
+    if bj is None:
+        return R + Q
+    else:
+        return bj @ R + Q

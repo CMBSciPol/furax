@@ -13,6 +13,7 @@ from furax.core._base import symmetric
 
 from ._lanczos import lanczos_eigh
 from ._lobpcg import lobpcg_standard
+from ._nystrom import randomized_nystrom
 
 
 class LowRankTerms(NamedTuple):
@@ -31,7 +32,7 @@ def low_rank(
     A: AbstractLinearOperator,
     k: int,
     *,
-    method: Literal['lanczos', 'lobpcg'] = 'lanczos',
+    method: Literal['lanczos', 'lobpcg', 'nystrom'] = 'lanczos',
     largest: bool = True,
     key: PRNGKeyArray | None = None,
     **solver_kwargs: Any,
@@ -42,15 +43,17 @@ def low_rank(
     the k eigenvectors and S contains the corresponding eigenvalues.
 
     Args:
-        A: A Hermitian linear operator.
+        A: A Hermitian linear operator. For 'nystrom', A must also be
+            positive semidefinite.
         k: Number of eigenvalues/eigenvectors to compute.
-        method: Eigenvalue solver to use, either 'lanczos' or 'lobpcg'.
+        method: Eigenvalue solver to use: 'lanczos', 'lobpcg', or 'nystrom'.
         largest: If True (default), compute the k largest eigenvalues.
             For low-rank approximations, largest eigenvalues typically
-            capture most of the operator's action.
+            capture most of the operator's action. Ignored for 'nystrom'.
         key: Random key for initialization of the eigenvalue solver.
         **solver_kwargs: Additional keyword arguments passed to the solver
-            (e.g., tol, max_iters for lobpcg; m for lanczos).
+            (e.g., tol, max_iters for lobpcg; m for lanczos;
+            oversampling for nystrom).
 
     Returns:
         LowRankTerms containing eigenvalues and eigenvectors.
@@ -79,8 +82,16 @@ def low_rank(
             eigenvalues=lobpcg_result.eigenvalues,
             eigenvectors=lobpcg_result.eigenvectors,
         )
+    elif method == 'nystrom':
+        if key is None:
+            raise ValueError("'nystrom' method requires a random key.")
+        nystrom_result = randomized_nystrom(A, k=k, key=key, **solver_kwargs)
+        return LowRankTerms(
+            eigenvalues=nystrom_result.eigenvalues,
+            eigenvectors=nystrom_result.eigenvectors,
+        )
     else:
-        raise ValueError(f"Unknown method: {method!r}. Use 'lanczos' or 'lobpcg'.")
+        raise ValueError(f"Unknown method: {method!r}. Use 'lanczos', 'lobpcg', or 'nystrom'.")
 
 
 def low_rank_mv(terms: LowRankTerms, x: PyTree[Num[Array, '...']]) -> PyTree[Num[Array, '...']]:

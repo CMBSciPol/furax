@@ -14,8 +14,32 @@ from furax.tree_block import (
     batched_dot,
     block_normal_like,
     block_norms,
+    concat_blocks,
     orthonormalize,
 )
+
+
+def _compute_residuals(
+    AX: PyTree[Num[Array, 'k ...']],
+    X: PyTree[Num[Array, 'k ...']],
+    eigenvalues: Float[Array, ' k'],
+) -> PyTree[Num[Array, 'k ...']]:
+    """Compute residuals R = AX - eigenvalues * X."""
+    k = eigenvalues.shape[0]
+    return jax.tree.map(
+        lambda ax, x: ax - eigenvalues.reshape((k,) + (1,) * (x.ndim - 1)) * x,
+        AX,
+        X,
+    )
+
+
+def _check_convergence(
+    R: PyTree[Num[Array, 'k ...']], tol: float
+) -> tuple[Float[Array, ' k'], Bool[Array, ' k']]:
+    """Compute residual norms and check convergence."""
+    residual_norms = block_norms(R)
+    converged = residual_norms < tol
+    return residual_norms, converged
 
 
 def _rayleigh_ritz(
@@ -120,17 +144,8 @@ def lobpcg_standard(
     AX = apply_operator_block(A, X)
 
     # First iteration (no P)
-    R = jax.tree.map(
-        lambda ax_leaf, x_leaf: ax_leaf
-        - eigenvalues.reshape((k,) + (1,) * (x_leaf.ndim - 1)) * x_leaf,
-        AX,
-        X,
-    )
-    residual_norms = block_norms(R)
-    converged = residual_norms < tol
-
-    def concat_blocks(*blocks: PyTree) -> PyTree:
-        return jax.tree.map(lambda *leaves: jnp.concatenate(leaves, axis=0), *blocks)
+    R = _compute_residuals(AX, X, eigenvalues)
+    residual_norms, converged = _check_convergence(R, tol)
 
     AR = apply_operator_block(A, R)
     S = concat_blocks(X, R)
@@ -152,14 +167,8 @@ def lobpcg_standard(
         X, AX, P, AP, eigenvalues, iteration, converged, residual_norms = carry
 
         # Compute residuals
-        R = jax.tree.map(
-            lambda ax_leaf, x_leaf: ax_leaf
-            - eigenvalues.reshape((k,) + (1,) * (x_leaf.ndim - 1)) * x_leaf,
-            AX,
-            X,
-        )
-        residual_norms = block_norms(R)
-        converged = residual_norms < tol
+        R = _compute_residuals(AX, X, eigenvalues)
+        residual_norms, converged = _check_convergence(R, tol)
 
         # Build search space S = [X, R, P]
         AR = apply_operator_block(A, R)
@@ -195,14 +204,8 @@ def lobpcg_standard(
     X, AX, P, AP, eigenvalues, iteration, converged, residual_norms = final_carry
 
     # Final residual computation
-    R = jax.tree.map(
-        lambda ax_leaf, x_leaf: ax_leaf
-        - eigenvalues.reshape((k,) + (1,) * (x_leaf.ndim - 1)) * x_leaf,
-        AX,
-        X,
-    )
-    residual_norms = block_norms(R)
-    converged = residual_norms < tol
+    R = _compute_residuals(AX, X, eigenvalues)
+    residual_norms, converged = _check_convergence(R, tol)
 
     return LOBPCGResult(
         eigenvalues=eigenvalues,

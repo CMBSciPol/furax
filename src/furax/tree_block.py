@@ -17,6 +17,7 @@ from furax.core import AbstractLinearOperator
 __all__ = [
     'stack_pytrees',
     'unstack_pytree',
+    'concat_blocks',
     'block_zeros_like',
     'block_normal_like',
     'batched_dot',
@@ -54,6 +55,26 @@ def stack_pytrees(pytrees: list[PyTree[Num[Array, '...']]]) -> PyTree[Num[Array,
     if not pytrees:
         raise ValueError('Cannot stack an empty list of PyTrees')
     return jax.tree.map(lambda *leaves: jnp.stack(leaves, axis=0), *pytrees)
+
+
+def concat_blocks(*blocks: PyTree[Num[Array, '...']]) -> PyTree[Num[Array, '...']]:
+    """Concatenate multiple block PyTrees along axis 0.
+
+    Args:
+        *blocks: Block PyTrees to concatenate. Each must have the same structure.
+
+    Returns:
+        A block PyTree where each leaf is the concatenation of corresponding leaves.
+
+    Example:
+        >>> import jax.numpy as jnp
+        >>> X = {'a': jnp.array([[1., 2.], [3., 4.]])}  # 2 vectors
+        >>> Y = {'a': jnp.array([[5., 6.]])}  # 1 vector
+        >>> Z = concat_blocks(X, Y)
+        >>> Z['a'].shape
+        (3, 2)
+    """
+    return jax.tree.map(lambda *leaves: jnp.concatenate(leaves, axis=0), *blocks)
 
 
 def unstack_pytree(block: PyTree[Num[Array, ' k ...']], k: int) -> list[PyTree[Num[Array, '...']]]:

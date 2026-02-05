@@ -57,11 +57,11 @@ mapmaking = [
     'pyyaml>=0.6.2',
 ]
 so = [
-    'sotodlib[site-pipeline]>=0.6.15; python_version<"3.13"',
+    'sotodlib[site-pipeline]>=0.6.16',
     'so3g>=0.2.5',
 ]
 toast = [
-    'toast==3.0.0a40',
+    'toast>=3.0.0a42',
 ]
 lbs = [
     'litebird_sim @ git+https://github.com/litebird/litebird_sim.git',

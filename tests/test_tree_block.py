@@ -34,7 +34,7 @@ class TestStackUnstack:
         assert block['a'].shape == (2, 2)
         assert block['b'].shape == (2, 1)
 
-        unstacked = unstack_pytree(block, 2)
+        unstacked = unstack_pytree(block)
         assert_allclose(unstacked[0]['a'], p1['a'])
         assert_allclose(unstacked[0]['b'], p1['b'])
         assert_allclose(unstacked[1]['a'], p2['a'])

@@ -77,14 +77,13 @@ def concat_blocks(*blocks: PyTree[Num[Array, '...']]) -> PyTree[Num[Array, '...'
     return jax.tree.map(lambda *leaves: jnp.concatenate(leaves, axis=0), *blocks)
 
 
-def unstack_pytree(block: PyTree[Num[Array, ' k ...']], k: int) -> list[PyTree[Num[Array, '...']]]:
+def unstack_pytree(block: PyTree[Num[Array, ' k ...']]) -> list[PyTree[Num[Array, '...']]]:
     """Unstack a block PyTree into k individual PyTrees.
 
     Inverse operation of stack_pytrees.
 
     Args:
         block: A PyTree where each leaf has shape (k, ...).
-        k: The number of PyTrees to unstack.
 
     Returns:
         A list of k PyTrees, each with the same structure as block but with the leading dimension
@@ -93,13 +92,14 @@ def unstack_pytree(block: PyTree[Num[Array, ' k ...']], k: int) -> list[PyTree[N
     Example:
         >>> import jax.numpy as jnp
         >>> block = {'a': jnp.array([[1., 2.], [4., 5.]]), 'b': jnp.array([[3.], [6.]])}
-        >>> pytrees = unstack_pytree(block, 2)
+        >>> pytrees = unstack_pytree(block)
         >>> pytrees[0]['a']
         Array([1., 2.], dtype=float32)
         >>> pytrees[1]['b']
         Array([6.], dtype=float32)
     """
     leaves, treedef = jax.tree.flatten(block)
+    k = leaves[0].shape[0]
     return [treedef.unflatten([leaves[j][i] for j in range(len(leaves))]) for i in range(k)]
 
 

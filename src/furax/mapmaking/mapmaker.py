@@ -37,13 +37,13 @@ from furax.math.quaternion import to_gamma_angles
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
-from furax.preprocessing import GapFillingOperator
 
 from . import templates
 from ._logger import logger as furax_logger
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from .config import Landscapes, MapMakingConfig, Methods
+from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner

@@ -8,6 +8,7 @@ from ._observation import (
 )
 from ._reader import ObservationReader
 from .config import MapMakingConfig
+from .gap_filling import GapFillingOperator
 from .mapmaker import MultiObservationMapMaker
 from .preconditioner import BJPreconditioner
 
@@ -17,6 +18,7 @@ __all__ = [
     'AbstractLazyObservation',
     'AbstractGroundObservation',
     'AbstractSatelliteObservation',
+    'GapFillingOperator',
     'HashedObservationMetadata',
     'ObservationReader',
     'MapMakingConfig',

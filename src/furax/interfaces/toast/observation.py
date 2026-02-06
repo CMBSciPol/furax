@@ -16,8 +16,9 @@ from toast.ops.load_hdf5 import LoadHDF5
 
 from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
-from furax.mapmaking.utils import get_local_meridian_angle
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
+
+from .utils import get_local_meridian_angle
 
 
 class ToastObservation(AbstractGroundObservation[toast.Data]):

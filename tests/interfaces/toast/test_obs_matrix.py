@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 import scipy
 
+pytest.importorskip('toast', reason='toast is not installed. Skipping tests.')
+
 from furax import IndexOperator
 from furax.interfaces.toast.obs_matrix import ToastObservationMatrixOperator
 

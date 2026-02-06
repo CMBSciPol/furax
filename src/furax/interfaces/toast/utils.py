@@ -8,8 +8,9 @@ import optax
 from jax_grid_search import optimize
 from jaxtyping import Array, Float
 from optax import tree_utils as otu
-from scipy.signal import get_window
 from toast import qarray as qa
+
+from furax.mapmaking.noise import apodization_window
 
 
 @partial(np.vectorize, signature='(4)->()')
@@ -200,22 +201,6 @@ def psd_to_invntt(
     invntt = jnp.fft.irfft(1 / psd)[..., :correlation_length]
     window = apodization_window(correlation_length)
     return invntt * window
-
-
-def apodization_window(size: int, kind: str = 'chebwin') -> Float[Array, ' {size}']:
-    window_type: tuple[Any, ...]
-    if kind == 'gaussian':
-        q_apo = 3  # apodization factor: cut happens at q_apo * sigma in the Gaussian window
-        window_type = ('general_gaussian', 1, 1 / q_apo * size)
-    elif kind == 'chebwin':
-        at = 150  # attenuation level (dB)
-        window_type = ('chebwin', at)
-    else:
-        raise RuntimeError(f'Apodization window {kind!r} is not supported.')
-
-    window = jnp.array(get_window(window_type, 2 * size))
-    window = jnp.fft.ifftshift(window)[:size]
-    return window
 
 
 @partial(jax.jit, static_argnames=['nperseg', 'rate'])

@@ -1,4 +1,3 @@
-from . import utils
 from ._logger import logger
 from ._observation import (
     AbstractGroundObservation,
@@ -23,5 +22,4 @@ __all__ = [
     'MapMakingConfig',
     'MultiObservationMapMaker',
     'logger',
-    'utils',
 ]

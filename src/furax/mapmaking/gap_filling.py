@@ -7,7 +7,8 @@ from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, Shaped
 
 from furax import FourierOperator, IndexOperator, MaskOperator, SymmetricBandToeplitzOperator
 from furax._config import verbose_solver_callback
-from furax.mapmaking import HashedObservationMetadata
+
+from ._observation import HashedObservationMetadata
 
 __all__ = [
     'GapFillingOperator',

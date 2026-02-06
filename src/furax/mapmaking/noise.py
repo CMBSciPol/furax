@@ -9,6 +9,7 @@ from jax_grid_search import optimize
 from jaxtyping import Array, Float, PyTree
 from optax import lbfgs
 from optax import tree_utils as otu
+from scipy.signal import get_window
 
 from furax.core import (
     AbstractLinearOperator,
@@ -19,7 +20,6 @@ from furax.core import (
 
 from ._logger import logger
 from .config import NoiseFitConfig
-from .utils import apodization_window
 
 
 @jax.tree_util.register_dataclass
@@ -213,6 +213,22 @@ class AtmosphericNoiseModel(NoiseModel):
             f, Pxx, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
         )
         return cls(*result['fit'].T)
+
+
+def apodization_window(size: int, kind: str = 'chebwin') -> Float[Array, ' {size}']:
+    window_type: tuple[Any, ...]
+    if kind == 'gaussian':
+        q_apo = 3  # apodization factor: cut happens at q_apo * sigma in the Gaussian window
+        window_type = ('general_gaussian', 1, 1 / q_apo * size)
+    elif kind == 'chebwin':
+        at = 150  # attenuation level (dB)
+        window_type = ('chebwin', at)
+    else:
+        raise RuntimeError(f'Apodization window {kind!r} is not supported.')
+
+    window = jnp.array(get_window(window_type, 2 * size))
+    window = jnp.fft.ifftshift(window)[:size]
+    return window
 
 
 def fit_white_noise_model(

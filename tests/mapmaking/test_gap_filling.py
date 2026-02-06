@@ -5,8 +5,8 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax import IndexOperator, SymmetricBandToeplitzOperator
-from furax.preprocessing import GapFillingOperator, generate_noise_realization
-from furax.preprocessing.gap_filling import _folded_psd, _get_kernel
+from furax.mapmaking import GapFillingOperator
+from furax.mapmaking.gap_filling import _folded_psd, _get_kernel, generate_noise_realization
 
 
 @pytest.mark.parametrize(

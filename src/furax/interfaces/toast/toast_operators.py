@@ -32,7 +32,11 @@ from furax.mapmaking import MapMakingConfig
 from furax.mapmaking.mapmaker import MapMaker as FuraxMapMaker
 from furax.mapmaking.pointing import PointingOperator
 from furax.mapmaking.templates import TemplateOperator
-from furax.mapmaking.utils import (
+from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
+from furax.obs.landscapes import HealpixLandscape
+from furax.obs.stokes import Stokes, StokesIQU
+
+from .utils import (
     compute_cross_psd,
     estimate_filtered_psd,
     estimate_psd_legacy,
@@ -40,9 +44,6 @@ from furax.mapmaking.utils import (
     next_fast_fft_size,
     psd_to_invntt,
 )
-from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
-from furax.obs.landscapes import HealpixLandscape
-from furax.obs.stokes import Stokes, StokesIQU
 
 ObservationKeysDict: TypeAlias = dict[str, list[str]]
 

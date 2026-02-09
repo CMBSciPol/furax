@@ -63,7 +63,7 @@ class TestPointingWithLocalLandscape:
         map_local = P_local.T.mv(tod)
         np.testing.assert_allclose(map_local.i, map_parent.i, atol=1e-12)
 
-    def test_forward_subset(self, benchmark):
+    def test_forward_subset(self):
         """Forward with a pixel subset: local sky is smaller, tod should still work."""
         nside = 4
         npix = 12 * nside**2
@@ -79,7 +79,7 @@ class TestPointingWithLocalLandscape:
         tod = P_local.mv(sky_local)
         assert tod.i.shape == (2, 5)
 
-    def test_transpose_subset(self, benchmark):
+    def test_transpose_subset(self):
         """Transpose with a pixel subset produces a local-shaped output."""
         nside = 4
         npix = 12 * nside**2

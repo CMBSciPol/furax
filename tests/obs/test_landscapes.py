@@ -190,21 +190,13 @@ class TestLocalLandscapeIndexConversion:
 
 
 class TestLocalLandscapeWorldQuat:
-    def test_world2index_delegates_to_parent(self) -> None:
+    def test_world2index_returns_local(self) -> None:
         parent = _make_simple_parent(20)
         local = LocalStokesLandscape(parent, np.array([2, 5, 10]))
         theta = jnp.array([2.0, 5.0, 7.0])
         phi = jnp.zeros(3)  # unused by _SimpleLandscape
-        global_idx = local.world2index(theta, phi)
-        expected = parent.world2index(theta, phi)
-        assert_array_equal(global_idx, expected)
-
-    def test_world2local_index(self) -> None:
-        parent = _make_simple_parent(20)
-        local = LocalStokesLandscape(parent, np.array([2, 5, 10]))
-        theta = jnp.array([2.0, 5.0, 7.0])
-        phi = jnp.zeros(3)
-        local_idx = local.world2local_index(theta, phi)
+        local_idx = local.world2index(theta, phi)
+        # pixel 2 → local 0, pixel 5 → local 1, pixel 7 → not in local → -1
         assert_array_equal(local_idx, [0, 1, -1])
 
 

@@ -345,20 +345,20 @@ class HorizonLandscape(StokesLandscape):
 
 
 @register_static
-class LocalStokesLandscape:
+class LocalStokesLandscape(StokesLandscape):
     """A landscape representing a subset of pixels from a parent StokesLandscape.
 
     This class wraps a parent StokesLandscape and a sorted array of global pixel indices
     to define a reduced pixel domain. It provides methods to convert between global
     (parent) and local (subset) index spaces.
 
-    The ``world2index`` and ``quat2index`` methods delegate to the parent and return
-    global indices. Use ``world2local_index`` / ``quat2local_index`` or ``global2local``
-    to obtain local indices that can be used to index into arrays of shape ``self.shape``.
+    The ``world2index`` and ``quat2index`` methods return **local** indices (into arrays
+    of shape ``self.shape``). This makes ``LocalStokesLandscape`` a drop-in replacement
+    for ``StokesLandscape`` in operators such as ``PointingOperator``.
 
     Attributes:
         parent: The parent StokesLandscape.
-        global_indices: A sorted 1-D numpy array of unique global pixel indices.
+        global_indices: A sorted 1-D array of unique global pixel indices.
     """
 
     def __init__(
@@ -371,33 +371,30 @@ class LocalStokesLandscape:
             raise ValueError('global_indices must be 1-dimensional.')
         if gi.size > 0 and not jnp.all(jnp.diff(gi) > 0):
             raise ValueError('global_indices must be sorted and contain no duplicates.')
+        super().__init__(shape=(len(gi),), stokes=parent.stokes, dtype=parent.dtype)
         self.parent = parent
         self.global_indices = gi
-
-    @property
-    def shape(self) -> tuple[int]:
-        return (len(self.global_indices),)
 
     @property
     def nlocal(self) -> int:
         return len(self.global_indices)
 
-    @property
-    def stokes(self) -> ValidStokesType:
-        return self.parent.stokes
+    # --- world2pixel / world2index / quat2index overrides ---
 
-    @property
-    def dtype(self) -> DTypeLike:
-        return self.parent.dtype
+    def world2pixel(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], ...]:
+        raise NotImplementedError('LocalStokesLandscape does not support world2pixel directly.')
 
-    @property
-    def size(self) -> int:
-        return len(self.parent.stokes) * self.nlocal
+    def world2index(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> Integer[Array, ' *dims']:
+        """Convert world coordinates to local pixel indices."""
+        return self.global2local(self.parent.world2index(theta, phi))
 
-    @property
-    def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        cls = Stokes.class_for(self.stokes)
-        return cls.structure_for(self.shape, self.dtype)
+    def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
+        """Convert quaternions to local pixel indices."""
+        return self.global2local(self.parent.quat2index(quat))
 
     # --- Index conversion ---
 
@@ -440,58 +437,11 @@ class LocalStokesLandscape:
         )
         return result
 
-    # --- Parent delegation ---
-
-    def world2index(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> Integer[Array, ' *dims']:
-        """Convert world coordinates to global pixel indices (delegates to parent)."""
-        return self.parent.world2index(theta, phi)
-
-    def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
-        """Convert quaternions to global pixel indices (delegates to parent)."""
-        return self.parent.quat2index(quat)
-
-    # --- Convenience: world/quat → local ---
-
-    def world2local_index(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> Integer[Array, ' *dims']:
-        """Convert world coordinates to local pixel indices."""
-        return self.global2local(self.world2index(theta, phi))
-
-    def quat2local_index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
-        """Convert quaternions to local pixel indices."""
-        return self.global2local(self.quat2index(quat))
-
-    # --- Array creation (local shape) ---
-
-    def full(self, fill_value: ScalarLike) -> PyTree[Shaped[Array, ' {self.nlocal}']]:
-        cls = Stokes.class_for(self.stokes)
-        return cls.full(self.shape, fill_value, self.dtype)
-
-    def zeros(self) -> PyTree[Shaped[Array, ' {self.nlocal}']]:
-        return self.full(0)
-
-    def ones(self) -> PyTree[Shaped[Array, ' {self.nlocal}']]:
-        return self.full(1)
-
-    def normal(self, key: Key[Array, '']) -> PyTree[Shaped[Array, ' {self.nlocal}']]:
-        cls = Stokes.class_for(self.stokes)
-        return cls.normal(key, self.shape, self.dtype)
-
-    def uniform(
-        self, key: Key[Array, ''], low: float = 0.0, high: float = 1.0
-    ) -> PyTree[Shaped[Array, ' {self.nlocal}']]:
-        cls = Stokes.class_for(self.stokes)
-        return cls.uniform(self.shape, key, self.dtype, low, high)
-
     # --- Coverage ---
 
     def get_coverage(self, arg: Sampling) -> Integer[Array, ' {self.nlocal}']:
         """Compute per-pixel hit counts in local index space."""
-        global_indices = self.world2index(arg.theta, arg.phi)
-        local_indices = self.global2local(global_indices)
+        local_indices = self.world2index(arg.theta, arg.phi)
         # Filter out pixels not in the local landscape
         valid = local_indices >= 0
         local_indices = jnp.where(valid, local_indices, 0)

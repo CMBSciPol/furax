@@ -29,7 +29,7 @@ class PointingOperator(AbstractLinearOperator):
     Changing this parameter will trigger recompilation of the operator.
     """
 
-    landscape: StokesLandscape = equinox.field(static=True)
+    landscape: StokesLandscape
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)

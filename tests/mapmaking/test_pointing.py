@@ -30,7 +30,7 @@ def _make_pointing_operator(landscape, ndet=2, nsamp=5):
 class TestPointingWithLocalLandscape:
     """Verify PointingOperator works with LocalStokesLandscape as a drop-in."""
 
-    def test_forward_stokes_i(self) -> None:
+    def test_forward_stokes_i(self):
         """Forward (map->tod) with StokesI using the full pixel set should match parent."""
         nside = 4
         parent = HealpixLandscape(nside=nside, stokes='I')
@@ -48,7 +48,7 @@ class TestPointingWithLocalLandscape:
         tod_local = P_local.mv(sky_local)
         np.testing.assert_allclose(tod_local.i, tod_parent.i, atol=1e-12)
 
-    def test_transpose_stokes_i(self) -> None:
+    def test_transpose_stokes_i(self):
         """Transpose (tod->map) with StokesI using the full pixel set should match parent."""
         nside = 4
         parent = HealpixLandscape(nside=nside, stokes='I')
@@ -63,7 +63,7 @@ class TestPointingWithLocalLandscape:
         map_local = P_local.T.mv(tod)
         np.testing.assert_allclose(map_local.i, map_parent.i, atol=1e-12)
 
-    def test_forward_subset(self) -> None:
+    def test_forward_subset(self, benchmark):
         """Forward with a pixel subset: local sky is smaller, tod should still work."""
         nside = 4
         npix = 12 * nside**2
@@ -79,7 +79,7 @@ class TestPointingWithLocalLandscape:
         tod = P_local.mv(sky_local)
         assert tod.i.shape == (2, 5)
 
-    def test_transpose_subset_shape(self) -> None:
+    def test_transpose_subset(self, benchmark):
         """Transpose with a pixel subset produces a local-shaped output."""
         nside = 4
         npix = 12 * nside**2
@@ -92,7 +92,7 @@ class TestPointingWithLocalLandscape:
         sky = P_local.T.mv(tod)
         assert sky.i.shape == local.shape
 
-    def test_forward_iqu(self) -> None:
+    def test_forward_iqu(self):
         """Forward with StokesIQU using the full pixel set should match parent."""
         nside = 4
         parent = HealpixLandscape(nside=nside, stokes='IQU')
@@ -111,7 +111,7 @@ class TestPointingWithLocalLandscape:
         np.testing.assert_allclose(tod_local.q, tod_parent.q, atol=1e-12)
         np.testing.assert_allclose(tod_local.u, tod_parent.u, atol=1e-12)
 
-    def test_roundtrip_forward_transpose(self) -> None:
+    def test_roundtrip_forward_transpose(self):
         """P^T P x should have the correct shape for a local landscape."""
         nside = 4
         npix = 12 * nside**2

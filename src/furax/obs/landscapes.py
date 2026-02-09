@@ -374,6 +374,11 @@ class LocalStokesLandscape(StokesLandscape):
         super().__init__(shape=(len(gi),), stokes=parent.stokes, dtype=parent.dtype)
         self.parent = parent
         self.global_indices = gi
+        # Pre-computed lookup table: lut[global_index] -> local_index, -1 for unmapped
+        npix = math.prod(parent.shape)
+        lut = jnp.full(npix, -1, dtype=jnp.int32)
+        lut = lut.at[gi].set(jnp.arange(len(gi), dtype=jnp.int32))
+        self._global2local_lut = lut
 
     @property
     def nlocal(self) -> int:
@@ -401,13 +406,10 @@ class LocalStokesLandscape(StokesLandscape):
     def global2local(self, indices: Integer[Array, ' *dims']) -> Integer[Array, ' *dims']:
         """Convert global pixel indices to local indices.
 
-        Uses ``jnp.searchsorted`` on the sorted ``global_indices``. Returns -1 for
+        Uses a pre-computed lookup table for O(1) conversion. Returns -1 for
         global indices that are not present in this local landscape.
         """
-        pos = jnp.searchsorted(self.global_indices, indices)
-        pos = jnp.clip(pos, 0, self.nlocal - 1)
-        valid = self.global_indices[pos] == indices
-        return jnp.where(valid, pos, -1)
+        return self._global2local_lut[indices]
 
     def local2global(self, indices: Integer[Array, ' *dims']) -> Integer[Array, ' *dims']:
         """Convert local indices to global pixel indices.

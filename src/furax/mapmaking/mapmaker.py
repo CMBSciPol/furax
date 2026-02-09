@@ -34,7 +34,12 @@ from furax.core import (
     IndexOperator,
 )
 from furax.math.quaternion import to_gamma_angles
-from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
+from furax.obs.landscapes import (
+    HealpixLandscape,
+    LocalStokesLandscape,
+    StokesLandscape,
+    WCSLandscape,
+)
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
 
@@ -132,9 +137,25 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Acquisition (I, Q, U Maps -> TOD)
         h_blocks = self.build_acquisitions()
+        logger_info('Created acquisition operators')
+
+        # Compute coverage to find observed pixels, then switch to local landscape
+        parent_landscape = self.landscape
+        coverage = parent_landscape.zeros()
+        for h_block in h_blocks:
+            out_struct = h_block.out_structure()
+            ones_tod = jnp.ones(out_struct.shape, dtype=out_struct.dtype)
+            coverage = jax.tree.map(jnp.add, coverage, h_block.T.mv(ones_tod))
+        self.landscape = LocalStokesLandscape.from_boolean_mask(parent_landscape, coverage.i > 0)
+        logger_info(
+            f'Built local landscape: {self.landscape.nlocal} / {len(parent_landscape)} pixels'
+        )
+
+        # Rebuild acquisitions with local landscape
+        h_blocks = self.build_acquisitions()
         tod_structure = h_blocks[0].out_structure()
         map_structure = h_blocks[0].in_structure()
-        logger_info('Created acquisition operators')
+        logger_info('Rebuilt acquisition operators with local landscape')
 
         # Sample mask projectors
         maskers = self.build_sample_maskers()
@@ -240,8 +261,17 @@ class MultiObservationMapMaker(Generic[T]):
         res.i.block_until_ready()
         logger_info('Finished mapmaking')
 
-        final_map = np.array([res.i, res.q, res.u])
-        return MapMakingResults(final_map, np.array(map_weights))
+        # Promote from local to parent landscape space
+        local_landscape = self.landscape
+        self.landscape = parent_landscape
+
+        res = local_landscape.promote(res)
+        final_map = np.array([res.i, res.q, res.u])  # type: ignore[attr-defined]
+
+        parent_weights = np.zeros((*parent_landscape.shape, 3, 3), dtype=np.float64)
+        parent_weights[np.asarray(local_landscape.global_indices)] = np.asarray(map_weights)
+
+        return MapMakingResults(final_map, parent_weights)
 
     def build_acquisitions(self) -> list[AbstractLinearOperator]:
         # Only read necessary fields

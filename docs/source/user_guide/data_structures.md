@@ -20,9 +20,8 @@ All Stokes classes inherit from the abstract `Stokes` base class and are JAX PyT
 ### Creating Stokes Parameters
 
 ```python
-import jax
 import jax.numpy as jnp
-from furax.obs import Stokes
+from furax.obs.stokes import Stokes
 
 # Create Stokes parameters from arrays
 i_data = jnp.ones(100)
@@ -44,7 +43,9 @@ stokes_iqu = Stokes.from_stokes(i_data, q_data, u_data)
 Stokes classes provide convenient factory methods for common initialization patterns:
 
 ```python
-from furax.obs import StokesIQU
+import jax.random as jr
+
+from furax.obs.stokes import StokesIQU
 
 # Create zero-initialized Stokes parameters
 stokes_zero = StokesIQU.zeros(shape=(100,))
@@ -56,11 +57,10 @@ stokes_ones = StokesIQU.ones(shape=(100,))
 stokes_full = StokesIQU.full(shape=(100,), fill_value=2.5)
 
 # Create from random normal distribution
-key = jax.random.PRNGKey(42)
-stokes_random = StokesIQU.normal(key, shape=(100,))
+stokes_random = StokesIQU.normal(jr.key(42), shape=(100,))
 
 # Create from uniform distribution
-stokes_uniform = StokesIQU.uniform(key, shape=(100,), minval=-1, maxval=1)
+stokes_uniform = StokesIQU.uniform(jr.key(43), shape=(100,), minval=-1, maxval=1)
 ```
 
 ### Arithmetic Operations
@@ -68,19 +68,24 @@ stokes_uniform = StokesIQU.uniform(key, shape=(100,), minval=-1, maxval=1)
 Stokes parameters support standard arithmetic operations:
 
 ```python
-stokes1 = StokesIQU.normal(jax.random.PRNGKey(0), (100,))
-stokes2 = StokesIQU.normal(jax.random.PRNGKey(1), (100,))
+import jax.random as jr
+
+from furax.obs.stokes import StokesIQU
+
+key1, key2 = jr.split(jr.key(0), 2)
+stokes1 = StokesIQU.normal(key1, (100,))
+stokes2 = StokesIQU.normal(key2, (100,))
 
 # Addition and subtraction
 result_add = stokes1 + stokes2
-result_sub = stokes1 - stokes2
+result_diff = abs(stokes1 - stokes2)
 
-# Scalar multiplication
+# Scalar multiplication / division
 result_mul = 2.0 * stokes1
 result_div = stokes1 / 3.0
 
 # Element-wise operations maintain Stokes structure
-assert isinstance(result_add, StokesIQU)
+assert isinstance(result_diff, StokesIQU)
 ```
 
 ### Accessing Components
@@ -88,15 +93,19 @@ assert isinstance(result_add, StokesIQU)
 Individual Stokes components can be accessed as properties:
 
 ```python
-stokes = StokesIQU.normal(jax.random.PRNGKey(0), (100,))
+import jax.random as jr
 
-# Access individual components
-intensity = stokes.I      # Intensity component
-q_param = stokes.Q        # Q polarization parameter
-u_param = stokes.U        # U polarization parameter
+from furax.obs.stokes import StokesIQU
+
+sky = StokesIQU.normal(jr.key(0), (100,))
+
+# Access individual Stokes parameters
+intensity = sky.i      # Intensity component
+q_parameter = sky.q    # Q polarization parameter
+u_parameter = sky.u    # U polarization parameter
 
 # Check available components
-print(stokes.stokes)      # Returns the Stokes type string, e.g., 'IQU'
+print(sky.stokes)      # Returns the Stokes type string, e.g., 'IQU'
 ```
 
 ## Sky Landscapes
@@ -110,38 +119,36 @@ Landscapes represent sky pixelizations and provide the spatial structure for CMB
 
 ### HealpixLandscape
 
-The most commonly used landscape for CMB analysis, based on the HEALPix pixelization:
+The most commonly used landscape for CMB analysis is based on the HEALPix pixelization:
 
 ```python
-from furax.obs import HealpixLandscape
+from furax.obs.landscapes import HealpixLandscape
 
 # Create a HEALPix landscape for polarization analysis
 landscape = HealpixLandscape(nside=32, stokes='QU')
 
-print(f"Number of pixels: {landscape.npix}")
-print(f"Stokes parameters: {landscape.stokes}")
-print(f"Total size: {landscape.size}")
-
-# Generate random data matching the landscape
-key = jax.random.PRNGKey(42)
-map_data = landscape.normal(key)
-
-print(f"Data shape: {map_data.shape}")
-print(f"Data type: {type(map_data)}")
+print(f'Number of pixels: {landscape.shape[0]}')
+print(f'Stokes parameters: {landscape.stokes}')
+print(f'Total size (Q plus U): {landscape.size}')
 ```
 
-### Landscape Operations
+### Landscape Factories
 
-Landscapes provide methods for generating data and performing spatial operations:
+Landscapes provide methods for generating data:
 
 ```python
+import jax.random as jr
+
+from furax.obs.landscapes import HealpixLandscape
+
 landscape = HealpixLandscape(nside=64, stokes='IQU')
+key = jr.key(42)
 
 # Generate different types of random data
-key = jax.random.PRNGKey(123)
 
 # Gaussian random field
-gaussian_map = landscape.normal(key)
+normal_map = landscape.normal(key)
+print(f'Data structure: {normal_map.structure}')
 
 # Uniform random field
 uniform_map = landscape.uniform(key, minval=-1, maxval=1)
@@ -159,20 +166,21 @@ Landscapes can be used with real CMB data:
 
 ```python
 import healpy as hp
-from furax.obs import HealpixLandscape, Stokes
+from furax.obs.landscapes import HealpixLandscape
+from furax.obs.stokes import Stokes
 
 # Load real CMB map (example)
-# cmb_map = hp.read_map('cmb_data.fits', field=[0, 1, 2])  # I, Q, U
+cmb_map = hp.read_map('cmb_data.fits', field=[0, 1, 2])  # I, Q, U
 
 # Create landscape matching the data
-nside = 512  # Adjust based on your data
+nside = hp.get_nside(cmb_map)
 landscape = HealpixLandscape(nside=nside, stokes='IQU')
 
 # Convert to Furax Stokes structure
-# stokes_data = Stokes.from_stokes(*cmb_map)
+stokes_data = Stokes.from_stokes(*cmb_map)
 
 # Verify compatibility
-# assert stokes_data.shape[0] == landscape.npix
+assert stokes_data.shape == landscape.shape
 ```
 
 ## Integration with Linear Operators
@@ -180,23 +188,27 @@ landscape = HealpixLandscape(nside=nside, stokes='IQU')
 The real power of Furax data structures comes from their integration with linear operators:
 
 ```python
-from furax.core import DiagonalOperator
-from furax.obs import HealpixLandscape
+import jax.random as jr
+
+from furax import DiagonalOperator
+from furax.obs.landscapes import HealpixLandscape
+
+sky_key, weight_key = jr.split(jr.key(0), 2)
 
 # Create landscape and data
 landscape = HealpixLandscape(nside=32, stokes='QU')
-stokes_data = landscape.normal(jax.random.PRNGKey(0))
+data = landscape.normal(sky_key)
 
-# Create a weighting operator
-weights = jnp.ones(landscape.size)
-weight_operator = DiagonalOperator(weights)
+# Create an operator that applies a same weight to the Q and U parameters
+weights = 1 + jr.normal(weight_key, landscape.shape) / 100
+weight_operator = DiagonalOperator(weights, in_structure=landscape.structure)
 
 # Apply operator to data
-weighted_data = weight_operator @ stokes_data
+weighted_data = weight_operator(data)
 
 # The result maintains the same Stokes structure
-print(f"Input type: {type(stokes_data)}")
-print(f"Output type: {type(weighted_data)}")
+print(f'Input type: {data.structure}')
+print(f'Output type: {weighted_data.structure}')
 ```
 
 ## Advanced Usage
@@ -206,28 +218,28 @@ print(f"Output type: {type(weighted_data)}")
 Since all data structures are JAX PyTrees, they work seamlessly with JAX transformations:
 
 ```python
-from functools import partial
+import jax
+import jax.numpy as jnp
+import jax.random as jr
 
-def process_map(stokes_map, noise_level):
-    return stokes_map + noise_level * StokesQU.normal(
-        jax.random.PRNGKey(0), stokes_map.shape
-    )
+from furax.obs.landscapes import HealpixLandscape
 
-# JIT compile the function
-process_map_jit = jax.jit(process_map)
-
-# Vectorize over different noise levels
-process_map_vmap = jax.vmap(
-    partial(process_map, stokes_map),
-    in_axes=(0,)
-)
+noise_levels = jnp.array([0.1, 0.2, 0.3])
+sky_key, *noise_keys = jr.split(jr.key(0), 1 + len(noise_levels))
 
 landscape = HealpixLandscape(nside=16, stokes='QU')
-test_map = landscape.normal(jax.random.PRNGKey(1))
-noise_levels = jnp.array([0.1, 0.2, 0.3])
+sky = landscape.normal(jr.key(0))
+keys = jr.split(jr.key(0), 3)
+
+@jax.jit
+def add_noise(key, stokes_map, noise_level):
+    return stokes_map + noise_level * landscape.normal(key)
+
+# Vectorize over different noise levels
+add_noise_vmap = jax.vmap(add_noise, in_axes=(0, None, 0), out_axes=0)
 
 # Process with different noise levels
-results = process_map_vmap(noise_levels)
+noisy_sky = add_noise_vmap(keys, sky, noise_levels)
 ```
 
 ### Memory Efficiency
@@ -235,14 +247,21 @@ results = process_map_vmap(noise_levels)
 For large-scale analysis, consider memory usage:
 
 ```python
+import jax
+import jax.random as jr
+
+from furax.obs.landscapes import HealpixLandscape
+
+key = jr.key(0)
+
 # For very high resolution maps
 landscape_highres = HealpixLandscape(nside=2048, stokes='IQU')
-print(f"Memory per map: ~{landscape_highres.size * 4 / 1e6:.1f} MB")
+print(f"Memory per map: ~{landscape_highres.nbytes / 2**20:.1f} MiB")
 
 # Use appropriate precision
-import jax
-with jax.config.context(x64_enable=False):  # Use float32
-    efficient_map = landscape_highres.normal(jax.random.PRNGKey(0))
+float64_map = landscape_highres.normal(key)
+with jax.experimental.disable_x64():
+    float32_map = landscape_highres.normal(key)
 ```
 
 ## Best Practices

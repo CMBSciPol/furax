@@ -1,6 +1,6 @@
+from dataclasses import field
 from types import EllipsisType
 
-import equinox
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -21,7 +21,7 @@ class IndexOperator(AbstractLinearOperator):
     Usage:
     To extract the second element of the first axis:
 
-        >>> op = IndexOperator(0, in_structure=jax.ShapeDtypeStruct((10, 4), jax.numpy.float32))
+        >>> op = IndexOperator(1, in_structure=jax.ShapeDtypeStruct((10, 4), jax.numpy.float32))
 
     To extract values from the penultimate axis given an array of indices:
 
@@ -35,12 +35,15 @@ class IndexOperator(AbstractLinearOperator):
         >>> in_structure = jax.ShapeDtypeStruct((4,), jax.numpy.float32)
         >>> out_structure = jax.ShapeDtypeStruct((2,), jax.numpy.float32)
         >>> op = IndexOperator(indices, in_structure=in_structure, out_structure=out_structure)
+
+    So it is usually better to specify an index mask:
+
+        >>> op = IndexOperator(jnp.where(indices), in_structure=in_structure)
     """
 
     indices: tuple[int | slice | Bool[Array, '...'] | Integer[Array, '...'] | EllipsisType, ...]
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    _out_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    unique_indices: bool = equinox.field(static=True)
+    _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
+    unique_indices: bool = field(metadata={'static': True})
 
     def __init__(
         self,
@@ -55,50 +58,61 @@ class IndexOperator(AbstractLinearOperator):
         in_structure: PyTree[jax.ShapeDtypeStruct],
         out_structure: PyTree[jax.ShapeDtypeStruct] | None = None,
         unique_indices: bool | None = None,
+        _out_structure: PyTree[jax.ShapeDtypeStruct] | None = None,
     ) -> None:
+        # Support JAX unflattening which uses the field name _out_structure
+        if _out_structure is not None:
+            out_structure = _out_structure
+
         if not isinstance(indices, tuple):
             indices = (indices,)
-        self._check_indices(indices)
 
-        # Set these attributes first before computing _out_structure
-        self.indices = indices
-        self._in_structure = in_structure
+        # When _out_structure is provided, we're being called from JAX unflattening
+        # and should skip normalization/validation
+        if _out_structure is None:
+            self._check_indices(indices)
 
-        if all(
-            isinstance(_, int | slice | EllipsisType) or isinstance(_, Array) and _.dtype == bool
-            for _ in indices
-        ):
-            unique_indices = True
-        elif unique_indices is None:
-            unique_indices = False
-        if out_structure is None and any(isinstance(_, Array) and _.dtype == bool for _ in indices):
-            raise ValueError(
-                'The output structure must be specified when the indices are determined using a '
-                'boolean array.'
-            )
-        self.unique_indices = unique_indices
-        if out_structure is None:
-            # Compute output structure manually to avoid circular dependency
-            # during initialization
-            def temp_mv(x):  # type: ignore[no-untyped-def]
-                return jax.tree.map(lambda leaf: leaf[self.indices], x)
+            if unique_indices is None:
+                if all(
+                    isinstance(_, int | slice | EllipsisType)
+                    or isinstance(_, Array)
+                    and _.dtype == bool
+                    for _ in indices
+                ):
+                    unique_indices = True
+                else:
+                    unique_indices = False
 
-            self._out_structure = jax.eval_shape(temp_mv, self._in_structure)
-        else:
-            self._out_structure = out_structure
+            if out_structure is None and any(
+                isinstance(_, Array) and _.dtype == bool for _ in indices
+            ):
+                raise ValueError(
+                    'The output structure must be specified when the indices are determined using a '
+                    'boolean array.'
+                )
+
+            if out_structure is None:
+                # Compute output structure manually
+                def temp_mv(x):  # type: ignore[no-untyped-def]
+                    return jax.tree.map(lambda leaf: leaf[indices], x)
+
+                out_structure = jax.eval_shape(temp_mv, in_structure)
+
+        object.__setattr__(self, 'indices', indices)
+        object.__setattr__(self, '_out_structure', out_structure)
+        object.__setattr__(self, 'unique_indices', unique_indices)
+        object.__setattr__(self, 'in_structure', in_structure)
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         return jax.tree.map(lambda leaf: leaf[self.indices], x)
 
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
-
+    @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._out_structure
 
     def reduce(self) -> AbstractLinearOperator:
         if len(self.indexed_axes) == 0:
-            return IdentityOperator(self.in_structure())
+            return IdentityOperator(in_structure=self.in_structure)
         return self
 
     @staticmethod
@@ -169,7 +183,7 @@ class TransposeIndexRule(AbstractBinaryRule):
             raise NoReduction
 
         dtype = right.out_promoted_dtype
-        shapes = {leaf.shape for leaf in jax.tree.leaves(right.in_structure())}
+        shapes = {leaf.shape for leaf in jax.tree.leaves(right.in_structure)}
         if len(shapes) > 1:
             raise NoReduction
         shape = shapes.pop()
@@ -184,7 +198,10 @@ class TransposeIndexRule(AbstractBinaryRule):
         coverage = coverage.at[unique_indices].add(
             counts, indices_are_sorted=True, unique_indices=True
         )
+
         diagonal_op = DiagonalOperator(
-            coverage, axis_destination=axis, in_structure=right.in_structure()
+            coverage,
+            axis_destination=(axis,) if axis >= 0 else (axis,),
+            in_structure=right.in_structure,
         )
         return [diagonal_op]

@@ -42,8 +42,12 @@ def test_dense_symmetric_band_toeplitz(
 def test_fft(n: int, band_values):
     x = jnp.arange(n) + 1
     in_structure = jax.ShapeDtypeStruct((n,), jnp.float64)
-    actual_y = SymmetricBandToeplitzOperator(band_values, in_structure, method='fft')(x)
-    expected_y = SymmetricBandToeplitzOperator(band_values, in_structure, method='dense')(x)
+    actual_y = SymmetricBandToeplitzOperator(band_values, in_structure=in_structure, method='fft')(
+        x
+    )
+    expected_y = SymmetricBandToeplitzOperator(
+        band_values, in_structure=in_structure, method='dense'
+    )(x)
     assert_allclose(actual_y, expected_y)
 
 
@@ -54,7 +58,7 @@ def test(method: str, do_jit: bool) -> None:
     in_structure = jax.ShapeDtypeStruct((6,), jnp.float64)
     x = jnp.array([1.0, 2, 3, 4, 5, 6])
     expected_y = jnp.array([20.0, 33, 48, 57, 58, 50])
-    op = SymmetricBandToeplitzOperator(band_values, in_structure, method=method)
+    op = SymmetricBandToeplitzOperator(band_values, in_structure=in_structure, method=method)
     if do_jit:
         # to avoid error: TypeError: unhashable type: 'jaxlib.xla_extension.ArrayImpl'
         # we capture op in the lambda closure
@@ -91,7 +95,7 @@ def test_multidimensional(
 ) -> None:
     band_values = jnp.arange(prod(band_shape), dtype=jnp.float64).reshape(band_shape)
     in_structure = jax.ShapeDtypeStruct(in_shape, jnp.float64)
-    op = SymmetricBandToeplitzOperator(band_values, in_structure, method=method)
+    op = SymmetricBandToeplitzOperator(band_values, in_structure=in_structure, method=method)
     broadcast_band_values = jnp.broadcast_to(band_values, in_shape[:-1] + (4,))
     expected_blocks = [
         dense_symmetric_band_toeplitz(6, band_values_)

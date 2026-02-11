@@ -1,6 +1,6 @@
 import functools as ft
+from dataclasses import field
 
-import equinox
 import jax
 from jax import Array
 from jax import numpy as jnp
@@ -53,22 +53,16 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
     """
 
     blocks: Inexact[Array, '...']
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    subscripts: str = equinox.field(static=True)
+    subscripts: str = field(default='ij...,j...->i...', metadata={'static': True})
 
-    def __init__(
-        self,
-        blocks: PyTree[Inexact[Array, '...']],
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-        subscripts: str = 'ij...,j...->i...',
-    ) -> None:
-        subscripts = subscripts.replace(' ', '')
-        if not jax.tree.all(jax.tree.map(lambda leaf: len(leaf.shape) >= 2, blocks)):
+    def __post_init__(self) -> None:
+        subscripts = self.subscripts.replace(' ', '')
+        if subscripts != self.subscripts:
+            object.__setattr__(self, 'subscripts', subscripts)
+
+        if not jax.tree.all(jax.tree.map(lambda leaf: len(leaf.shape) >= 2, self.blocks)):
             raise ValueError('The blocks should at least have 2 dimensions.')
         self._parse_subscripts(subscripts)
-        self.blocks = blocks
-        self._in_structure = in_structure
-        self.subscripts = subscripts
 
     def mv(self, x: PyTree[Array, '...']) -> PyTree[Array]:
         if is_leaf(x):
@@ -82,13 +76,10 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
 
     def transpose(self) -> AbstractLinearOperator:
         return DenseBlockDiagonalOperator(
-            self.blocks,
-            self.out_structure(),
-            self._get_transposed_subscripts(self.subscripts),
+            blocks=self.blocks,
+            in_structure=self.out_structure,
+            subscripts=self._get_transposed_subscripts(self.subscripts),
         )
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
 
     @staticmethod
     def _parse_subscripts(subscripts: str) -> tuple[str, str, str]:

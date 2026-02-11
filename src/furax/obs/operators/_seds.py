@@ -1,7 +1,13 @@
+import sys
 from abc import abstractmethod
+from dataclasses import field
 from typing import Any
 
-import equinox
+if sys.version_info >= (3, 13):
+    from warnings import deprecated
+else:
+    from typing_extensions import deprecated
+
 import jax
 import jax.numpy as jnp
 from astropy.cosmology import Planck15
@@ -59,12 +65,10 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
     Attributes:
         frequencies (Array): Reshaped frequency array.
         frequency0 (float): Reference frequency.
-        _in_structure (PyTree): Input structure.
     """
 
     frequencies: Float[Array, ' a']
-    frequency0: float = equinox.field(static=True)
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
+    frequency0: float = field(metadata={'static': True})
 
     def __init__(
         self,
@@ -74,9 +78,10 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
         input_shape = self._get_input_shape(in_structure)
-        self.frequencies = frequencies.reshape((len(frequencies),) + tuple(1 for _ in input_shape))
-        self.frequency0 = frequency0
-        super().__init__(self.sed(), in_structure=in_structure)
+        frequencies = frequencies.reshape((len(frequencies),) + tuple(1 for _ in input_shape))
+        object.__setattr__(self, 'frequencies', frequencies)
+        object.__setattr__(self, 'frequency0', frequency0)
+        super().__init__(self.sed(), axis_destination=-1, in_structure=in_structure)
 
     @staticmethod
     def _get_input_shape(in_structure: PyTree[jax.ShapeDtypeStruct]) -> tuple[int, ...]:
@@ -96,15 +101,6 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
         if len(input_shapes) != 1:
             raise ValueError(f'the leaves of the input do not have the same shape: {in_structure}')
         return input_shapes.pop()  # type: ignore[no-any-return]
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        """
-        Returns the input structure of the operator.
-
-        Returns:
-            PyTree[jax.ShapeDtypeStruct]: The input structure.
-        """
-        return self._in_structure
 
     @abstractmethod
     def sed(self) -> Float[Array, '...']:
@@ -145,7 +141,7 @@ class CMBOperator(AbstractSEDOperator):
         units (str, optional): Units for the operator ('K_CMB' or 'K_RJ'). Defaults to 'K_CMB'.
 
     Example:
-        >>> from furax.operators.seds import CMBOperator
+        >>> from furax.obs import CMBOperator
         >>> import jax.numpy as jnp
         >>> nu = jnp.array([30, 40, 100])  # Frequencies in GHz
         >>> in_structure = ...  # Define input structure (e.g., using HealpixLandscape)
@@ -160,20 +156,24 @@ class CMBOperator(AbstractSEDOperator):
     """
 
     factor: Float[Array, '...'] | float
-    units: str = equinox.field(static=True)
+    units: str = field(metadata={'static': True})
 
     def __init__(
         self,
         frequencies: Float[Array, '...'],
+        *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
         units: str = 'K_CMB',
     ) -> None:
-        self.units = units
+        factor: Float[Array, ...] | float
         if units == 'K_CMB':
-            self.factor = 1.0
+            factor = 1.0
         elif units == 'K_RJ':
-            self.factor = K_RK_2_K_CMB(frequencies)
-
+            factor = K_RK_2_K_CMB(frequencies)
+        else:
+            raise ValueError(f"Unknown units: {units}. Expected 'K_CMB' or 'K_RJ'.")
+        object.__setattr__(self, 'factor', factor)
+        object.__setattr__(self, 'units', units)
         super().__init__(frequencies, in_structure=in_structure)
 
     def sed(self) -> Float[Array, '...']:
@@ -206,18 +206,18 @@ class DustOperator(AbstractSEDOperator):
         factor (Array | float): Conversion factor based on the unit type.
 
     Example:
-        >>> from furax.operators.seds import SynchrotronOperator
+        >>> from furax.obs import DustOperator
         >>> import jax.numpy as jnp
         >>> nu = jnp.array([30, 40, 100])  # Frequencies in GHz
         >>> in_structure = ...  # Define input structure (e.g., using HealpixLandscape)
         >>> beta_dust = 1.54  # Spectral index
         >>> temperature = 20.0  # Dust temperature
         >>> sky_map = ...  # Define sky map
-        >>> dustOperator = SynchrotronOperator(
+        >>> dustOperator = DustOperator(
         ...     frequencies=nu,
         ...     frequency0=20.0,
         ...     beta=beta_dust,
-        ...     temperature=temperature
+        ...     temperature=temperature,
         ...     in_structure=in_structure,
         ...     units='K_CMB',
         ... )
@@ -230,7 +230,7 @@ class DustOperator(AbstractSEDOperator):
     beta: Float[Array, '...']
     beta_patch_indices: Int[Array, '...'] | None
     factor: Float[Array, '...'] | float
-    units: str = equinox.field(static=True)
+    units: str = field(metadata={'static': True})
 
     def __init__(
         self,
@@ -244,22 +244,21 @@ class DustOperator(AbstractSEDOperator):
         beta_patch_indices: Int[Array, '...'] | None = None,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
-        self.temperature = jnp.asarray(temperature)
-        self.temperature_patch_indices = temperature_patch_indices
-        self.beta = jnp.asarray(beta)
-        self.beta_patch_indices = beta_patch_indices
-        self.units = units
-
+        factor: Float[Array, ...] | float
         if units == 'K_CMB':
-            self.factor = K_RK_2_K_CMB(frequencies) / K_RK_2_K_CMB(frequency0)
+            factor = K_RK_2_K_CMB(frequencies) / K_RK_2_K_CMB(frequency0)
         elif units == 'K_RJ':
-            self.factor = 1.0
+            factor = 1.0
+        else:
+            raise ValueError(f"Unknown units: {units}. Expected 'K_CMB' or 'K_RJ'.")
+        object.__setattr__(self, 'temperature', jnp.asarray(temperature))
+        object.__setattr__(self, 'temperature_patch_indices', temperature_patch_indices)
+        object.__setattr__(self, 'beta', jnp.asarray(beta))
+        object.__setattr__(self, 'beta_patch_indices', beta_patch_indices)
+        object.__setattr__(self, 'units', units)
+        object.__setattr__(self, 'factor', factor)
 
-        super().__init__(
-            frequencies,
-            frequency0=frequency0,
-            in_structure=in_structure,
-        )
+        super().__init__(frequencies, frequency0=frequency0, in_structure=in_structure)
 
     def sed(self) -> Float[Array, '...']:
         t = self._get_at(
@@ -321,9 +320,9 @@ class SynchrotronOperator(AbstractSEDOperator):
 
     beta_pl: Float[Array, '...']
     beta_pl_patch_indices: Int[Array, '...'] | None
-    nu_pivot: float = equinox.field(static=True)
-    running: float = equinox.field(static=True)
-    units: str = equinox.field(static=True)
+    nu_pivot: float = field(metadata={'static': True})
+    running: float = field(metadata={'static': True})
+    units: str = field(metadata={'static': True})
     factor: Float[Array, '...'] | float
 
     def __init__(
@@ -338,22 +337,20 @@ class SynchrotronOperator(AbstractSEDOperator):
         beta_pl_patch_indices: Int[Array, '...'] | None = None,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
-        self.beta_pl = jnp.asarray(beta_pl)
-        self.beta_pl_patch_indices = beta_pl_patch_indices
-        self.nu_pivot = nu_pivot
-        self.running = running
-        self.units = units
-
+        factor: Float[Array, ...] | float
         if units == 'K_CMB':
-            self.factor = K_RK_2_K_CMB(frequencies) / K_RK_2_K_CMB(frequency0)
+            factor = K_RK_2_K_CMB(frequencies) / K_RK_2_K_CMB(frequency0)
         elif units == 'K_RJ':
-            self.factor = 1
-
-        super().__init__(
-            frequencies,
-            frequency0=frequency0,
-            in_structure=in_structure,
-        )
+            factor = 1.0
+        else:
+            raise ValueError(f"Unknown units: {units}. Expected 'K_CMB' or 'K_RJ'.")
+        object.__setattr__(self, 'beta_pl', jnp.asarray(beta_pl))
+        object.__setattr__(self, 'beta_pl_patch_indices', beta_pl_patch_indices)
+        object.__setattr__(self, 'nu_pivot', nu_pivot)
+        object.__setattr__(self, 'running', running)
+        object.__setattr__(self, 'units', units)
+        object.__setattr__(self, 'factor', factor)
+        super().__init__(frequencies, frequency0=frequency0, in_structure=in_structure)
 
     def sed(self) -> Float[Array, '...']:
         sed = self._get_at(
@@ -385,7 +382,7 @@ def MixingMatrixOperator(**blocks: AbstractSEDOperator) -> AbstractLinearOperato
         BlockRowOperator: A reduced block row operator representing the mixing matrix.
 
     Example:
-        >>> from furax.operators.seds import CMBOperator, DustOperator,\
+        >>> from furax.obs import CMBOperator, DustOperator,\
              SynchrotronOperator, MixingMatrixOperator
         >>> nu = jnp.array([30, 40, 100])  # Frequencies in GHz
         >>> in_structure = ...  # Define input structure (e.g., using HealpixLandscape)
@@ -410,6 +407,7 @@ def MixingMatrixOperator(**blocks: AbstractSEDOperator) -> AbstractLinearOperato
     return BlockRowOperator(blocks).reduce()
 
 
+@deprecated('Should use a DiagonalOperator')
 @diagonal
 class NoiseDiagonalOperator(AbstractLinearOperator):
     """Constructs a diagonal noise operator.
@@ -419,8 +417,7 @@ class NoiseDiagonalOperator(AbstractLinearOperator):
 
     Args:
         vector: PyTree of arrays representing the noise values.
-        _in_structure: Input structure (PyTree[jax.ShapeDtypeStruct])
-        specifying the shape and dtype.
+        in_structure: Input structure (PyTree[jax.ShapeDtypeStruct]) specifying the shape and dtype.
 
     Example:
         >>> import jax
@@ -431,7 +428,7 @@ class NoiseDiagonalOperator(AbstractLinearOperator):
         >>> landscape = FrequencyLandscape(nside=64, frequencies=jnp.linspace(30, 300, 10))
         >>> noise_sample = landscape.normal(jax.random.key(0))  # small n
         >>> d = landscape.normal(jax.random.key(0))  # d
-        >>> N = NoiseDiagonalOperator(noise_sample, _in_structure=d.structure)
+        >>> N = NoiseDiagonalOperator(noise_sample, in_structure=d.structure)
         >>> N.I(d).structure
         StokesIQU(i=ShapeDtypeStruct(shape=(10, 49152), dtype=float64),
                   q=ShapeDtypeStruct(shape=(10, 49152), dtype=float64),
@@ -439,16 +436,12 @@ class NoiseDiagonalOperator(AbstractLinearOperator):
     """
 
     vector: PyTree[Inexact[Array, '...']]
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return jax.tree.map(lambda v, leaf: v * leaf, self.vector, x)
 
     def inverse(self) -> AbstractLinearOperator:
-        return NoiseDiagonalOperator(1 / self.vector, self._in_structure)
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
+        return NoiseDiagonalOperator(vector=1 / self.vector, in_structure=self.in_structure)
 
     def as_matrix(self) -> Any:
         return jax.tree.map(lambda x: jnp.diag(x.flatten()), self.vector)

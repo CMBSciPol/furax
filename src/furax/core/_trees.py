@@ -1,6 +1,6 @@
+from dataclasses import field
 from typing import Any
 
-import equinox
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -58,23 +58,25 @@ class TreeOperator(AbstractLinearOperator):
     """
 
     tree: PyTree[Array]
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    inner_treedef: PyTreeDef = equinox.field(static=True)
-    outer_treedef: PyTreeDef = equinox.field(static=True)
+    inner_treedef: PyTreeDef = field(metadata={'static': True})
+    outer_treedef: PyTreeDef = field(metadata={'static': True})
 
     def __init__(
         self,
         tree: PyTree[PyTree[Any]],
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
-    ):
-        self.tree = tree
-        self.inner_treedef = jax.tree.structure(in_structure)
-        self.outer_treedef = _get_outer_treedef(in_structure, tree)
-        self._in_structure = in_structure
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
+        inner_treedef: PyTreeDef | None = None,
+        outer_treedef: PyTreeDef | None = None,
+    ) -> None:
+        if inner_treedef is None:
+            inner_treedef = jax.tree.structure(in_structure)
+        if outer_treedef is None:
+            outer_treedef = _get_outer_treedef(in_structure, tree)
+        object.__setattr__(self, 'tree', tree)
+        object.__setattr__(self, 'inner_treedef', inner_treedef)
+        object.__setattr__(self, 'outer_treedef', outer_treedef)
+        object.__setattr__(self, 'in_structure', in_structure)
 
     @property
     def tree_shape(self) -> tuple[int, int]:
@@ -86,13 +88,13 @@ class TreeOperator(AbstractLinearOperator):
 
     def transpose(self) -> AbstractLinearOperator:
         transposed_tree = jax.tree.transpose(self.outer_treedef, self.inner_treedef, self.tree)
-        return TreeOperator(transposed_tree, in_structure=self.out_structure())
+        return TreeOperator(transposed_tree, in_structure=self.out_structure)
 
     def inverse(self) -> AbstractLinearOperator:
         dense = _tree_to_dense(self.outer_treedef, self.inner_treedef, self.tree)
         dense_pinv = jnp.linalg.pinv(dense)
         tree = _dense_to_tree(self.inner_treedef, self.outer_treedef, dense_pinv)
-        return TreeOperator(tree, in_structure=self.out_structure())
+        return TreeOperator(tree, in_structure=self.out_structure)
 
 
 class TreeMultiplicationRule(AbstractBinaryRule):
@@ -109,6 +111,6 @@ class TreeMultiplicationRule(AbstractBinaryRule):
         return [
             TreeOperator(
                 matmat(left.outer_treedef, left.tree, right.outer_treedef, right.tree),
-                in_structure=right.in_structure(),
+                in_structure=right.in_structure,
             )
         ]

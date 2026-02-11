@@ -19,9 +19,9 @@ class PyTreeTest:
 
 def test_identity1() -> None:
     struct = jax.ShapeDtypeStruct((2, 1), np.float32)
-    op = IdentityOperator(struct)
-    assert op.in_size() == 2
-    assert op.out_size() == 2
+    op = IdentityOperator(in_structure=struct)
+    assert op.in_size == 2
+    assert op.out_size == 2
 
     expected = jnp.eye(2)
     assert_array_equal(op.as_matrix(), expected)
@@ -34,9 +34,9 @@ def test_identity2() -> None:
         jax.ShapeDtypeStruct((), np.int32),
         jax.ShapeDtypeStruct((), np.float32),
     )
-    op = IdentityOperator(struct)
-    assert op.in_size() == 4
-    assert op.out_size() == 4
+    op = IdentityOperator(in_structure=struct)
+    assert op.in_size == 4
+    assert op.out_size == 4
 
     expected = jnp.eye(4)
     assert_array_equal(op.as_matrix(), expected)

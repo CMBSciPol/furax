@@ -21,15 +21,15 @@ class Op(AbstractLinearOperator):
     def mv(self, x):
         return jnp.array([[0, self.value], [1, 0]]) @ x
 
-    def in_structure(self):
-        return jax.ShapeDtypeStruct((2,), jnp.float32)
+
+_op_structure = jax.ShapeDtypeStruct((2,), jnp.float32)
 
 
 def test_add(
     pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-    operand_leaves = Op(1), Op(2)
-    extra_operand = Op(3)
+    operand_leaves = Op(1, in_structure=_op_structure), Op(2, in_structure=_op_structure)
+    extra_operand = Op(3, in_structure=_op_structure)
     operands = pytree_builder(*operand_leaves)
     op = AdditionOperator(operands)
     added_op = op + extra_operand
@@ -44,8 +44,8 @@ def test_add(
 def test_radd(
     pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-    operand_leaves = Op(1), Op(2)
-    extra_operand = Op(3)
+    operand_leaves = Op(1, in_structure=_op_structure), Op(2, in_structure=_op_structure)
+    extra_operand = Op(3, in_structure=_op_structure)
     operands = pytree_builder(*operand_leaves)
     op = AdditionOperator(operands)
     added_op = extra_operand + op
@@ -60,8 +60,8 @@ def test_radd(
 def test_sub(
     pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-    operand_leaves = Op(1), Op(2)
-    extra_operand = Op(3)
+    operand_leaves = Op(1, in_structure=_op_structure), Op(2, in_structure=_op_structure)
+    extra_operand = Op(3, in_structure=_op_structure)
     operands = pytree_builder(*operand_leaves)
     op = AdditionOperator(operands)
     subtracted_op = op - extra_operand
@@ -76,7 +76,7 @@ def test_sub(
 def test_transpose(
     pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-    operand_leaves = Op(1), Op(2)
+    operand_leaves = Op(1, in_structure=_op_structure), Op(2, in_structure=_op_structure)
     operands = pytree_builder(*operand_leaves)
     op = AdditionOperator(operands)
     transposed_op = op.T
@@ -98,7 +98,7 @@ def test_transpose(
 def test_neg(
     pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-    operand_leaves = Op(1), Op(2)
+    operand_leaves = Op(1, in_structure=_op_structure), Op(2, in_structure=_op_structure)
     operands = pytree_builder(*operand_leaves)
     op = AdditionOperator(operands)
     neg_op = -op
@@ -116,7 +116,7 @@ def test_neg(
 def test_reduce_1(
     pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-    operand = Op(1)
+    operand = Op(1, in_structure=_op_structure)
     op = AdditionOperator(pytree_builder(operand))
     assert op.reduce() == operand
 
@@ -124,8 +124,10 @@ def test_reduce_1(
 def test_reduce_2(
     pytree_builder: Callable[[AbstractLinearOperator, ...], PyTree[AbstractLinearOperator]],
 ) -> None:
-    h = HomothetyOperator(3.0, jax.ShapeDtypeStruct((3,), jnp.float32))
-    op = AdditionOperator(pytree_builder(CompositionOperator([h, h]), Op(2)))
+    h = HomothetyOperator(3.0, in_structure=jax.ShapeDtypeStruct((3,), jnp.float32))
+    op = AdditionOperator(
+        pytree_builder(CompositionOperator([h, h]), Op(2, in_structure=_op_structure))
+    )
     assert isinstance(op, AdditionOperator)
     assert isinstance(op.operand_leaves[0], CompositionOperator)
     assert isinstance(op.operand_leaves[1], Op)
@@ -138,8 +140,8 @@ def test_reduce_2(
 def test_input_pytree1() -> None:
     dtype = jnp.float64
     structure = {'a': jax.ShapeDtypeStruct((3,), dtype), 'b': jax.ShapeDtypeStruct((2,), dtype)}
-    op1 = HomothetyOperator(2, structure)
-    op2 = IdentityOperator(structure)
+    op1 = HomothetyOperator(2, in_structure=structure)
+    op2 = IdentityOperator(in_structure=structure)
     op = op1 + op2
     x = {'a': jnp.ones(3, dtype), 'b': jnp.ones(2, dtype)}
     actual_y = op(x)
@@ -156,11 +158,8 @@ def test_input_pytree2() -> None:
         def mv(self, x):
             return {'a': x['a'] + x['b'], 'b': x['b']}
 
-        def in_structure(self):
-            return structure
-
-    op1 = Op1()
-    op2 = IdentityOperator(structure)
+    op1 = Op1(in_structure=structure)
+    op2 = IdentityOperator(in_structure=structure)
     op = op1 + op2
     x = {'a': jnp.full(3, 3.0, dtype), 'b': jnp.full(3, 2.0, dtype)}
     actual_y = op(x)
@@ -169,18 +168,18 @@ def test_input_pytree2() -> None:
 
 
 def test_add_invalid_in_structure() -> None:
-    class Op_(Op):
-        def in_structure(self):
-            return jax.ShapeDtypeStruct((3,), jnp.float32)
+    _op3_structure = jax.ShapeDtypeStruct((3,), jnp.float32)
 
     with pytest.raises(ValueError, match='Incompatible linear operator input structures'):
-        _ = Op(1) + Op_(1)
+        _ = Op(1, in_structure=_op_structure) + Op(1, in_structure=_op3_structure)
 
 
 def test_add_invalid_out_structure() -> None:
-    class Op_(Op):
-        def out_structure(self):
-            return jax.ShapeDtypeStruct((3,), jnp.float32)
+    class Op_(AbstractLinearOperator):
+        value: float
+
+        def mv(self, x):
+            return jnp.array([[0, self.value], [1, 0], [0, 0]]) @ x
 
     with pytest.raises(ValueError, match='Incompatible linear operator output structures'):
-        _ = Op(1) + Op_(1)
+        _ = Op(1, in_structure=_op_structure) + Op_(1, in_structure=_op_structure)

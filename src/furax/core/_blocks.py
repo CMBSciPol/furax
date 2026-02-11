@@ -19,13 +19,12 @@ class AbstractBlockOperator(AbstractLinearOperator, ABC):
     blocks: PyTree[AbstractLinearOperator]
 
     def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:
-        self.blocks = blocks
+        object.__setattr__(self, 'blocks', blocks)
+        super().__init__(in_structure=self._tree_map(lambda op: op.in_structure))
 
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._tree_map(lambda op: op.in_structure())
-
+    @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._tree_map(lambda op: op.out_structure())
+        return self._tree_map(lambda op: op.out_structure)
 
     def reduce(self) -> AbstractLinearOperator:
         return type(self)(self._tree_map(lambda op: op.reduce()))
@@ -51,7 +50,7 @@ class BlockRowOperator(AbstractBlockOperator):
 
     Examples:
         >>> x = jnp.array([1, 2], jnp.float32)
-        >>> I = IdentityOperator(jax.ShapeDtypeStruct((2,), jnp.float32))
+        >>> I = IdentityOperator(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
         >>> op_list = BlockRowOperator([I, 2*I, 3*I])
         >>> op_list.as_matrix()
         Array([[1., 0., 2., 0., 3., 0.],
@@ -66,12 +65,16 @@ class BlockRowOperator(AbstractBlockOperator):
 
     def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:
         super().__init__(blocks)
-        operators = self.block_leaves
-        ref_structure = operators[0].out_structure()
+        try:
+            operators = self.block_leaves
+            ref_structure = operators[0].out_structure
+        except (AttributeError, TypeError):
+            # During JAX/equinox tree operations, operators may have boolean placeholders
+            return
         invalid_structures = [
             structure
             for operator in operators[1:]
-            if (structure := operator.out_structure()) != ref_structure
+            if (structure := operator.out_structure) != ref_structure
         ]
         if len(invalid_structures) > 0:
             structures_as_str = '\n - '.join(str(structure) for structure in invalid_structures)
@@ -93,8 +96,9 @@ class BlockRowOperator(AbstractBlockOperator):
     def transpose(self) -> AbstractLinearOperator:
         return BlockColumnOperator(self._tree_map(lambda op: op.T))
 
+    @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.block_leaves[0].out_structure()
+        return self.block_leaves[0].out_structure
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         return jnp.hstack([op.as_matrix() for op in self.block_leaves])
@@ -134,6 +138,10 @@ class BlockDiagonalOperator(AbstractBlockOperator):
          'c': Array([6., 3.], dtype=float32)}
     """
 
+    def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:
+        # required: otherwise, the parent constructor would not be called by the dataclass-generated constructor
+        super().__init__(blocks)
+
     def mv(self, vector: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
         return self._tree_map(lambda op, vect: op.mv(vect), vector)
 
@@ -142,7 +150,7 @@ class BlockDiagonalOperator(AbstractBlockOperator):
 
     def inverse(self) -> AbstractLinearOperator:
         # if some of the blocks are not square, let's defer to the default inverse method
-        if not jax.tree.all(self._tree_map(lambda op: op.in_structure() == op.out_structure())):
+        if not jax.tree.all(self._tree_map(lambda op: op.in_structure == op.out_structure)):
             return super().inverse()
         return BlockDiagonalOperator(self._tree_map(lambda op: op.I))
 
@@ -154,7 +162,7 @@ class BlockDiagonalOperator(AbstractBlockOperator):
         op = super().reduce()
         assert isinstance(op, BlockDiagonalOperator)
         if all(isinstance(block, IdentityOperator) for block in op.block_leaves):
-            return IdentityOperator(self.in_structure())
+            return IdentityOperator(in_structure=self.in_structure)
         return op
 
 
@@ -165,7 +173,7 @@ class BlockColumnOperator(AbstractBlockOperator):
 
     Examples:
         >>> x = jnp.array([1, 2], jnp.float32)
-        >>> I = IdentityOperator(jax.ShapeDtypeStruct((2,), jnp.float32))
+        >>> I = IdentityOperator(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
         >>> op_list = BlockColumnOperator([I, I, I])
         >>> op_list.as_matrix()
         Array([[1., 0.],
@@ -188,12 +196,17 @@ class BlockColumnOperator(AbstractBlockOperator):
 
     def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:
         super().__init__(blocks)
-        operators = self.block_leaves
-        ref_structure = operators[0].in_structure()
+        try:
+            operators = self.block_leaves
+            ref_structure = operators[0].in_structure
+        except (AttributeError, TypeError):
+            # During JAX/equinox tree operations, operators may have boolean placeholders
+            return
+        object.__setattr__(self, 'in_structure', ref_structure)
         invalid_structures = [
             structure
             for operator in operators[1:]
-            if (structure := operator.in_structure()) != ref_structure
+            if (structure := operator.in_structure) != ref_structure
         ]
         if len(invalid_structures) > 0:
             structures_as_str = '\n - '.join(str(structure) for structure in invalid_structures)
@@ -208,9 +221,6 @@ class BlockColumnOperator(AbstractBlockOperator):
 
     def transpose(self) -> AbstractLinearOperator:
         return BlockRowOperator(self._tree_map(lambda op: op.T))
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.block_leaves[0].in_structure()
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         return jnp.vstack([op.as_matrix() for op in self.block_leaves])

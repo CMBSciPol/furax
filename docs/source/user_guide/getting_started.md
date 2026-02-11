@@ -36,57 +36,61 @@ This includes additional dependencies like PySM3 for foreground modeling.
 
 Furax relies on the JAX ecosystem and scientific Python packages:
 
-- **Core**: JAX, Lineax, NumPy
-- **Astronomy**: HealPy, AstroPy, jax-healpy
-- **Development**: pytest, ruff, mypy
+- **Core**: JAX
+- **Astronomy**: jax-healpy, astropy
+- **Development**: pytest, pre-commit, ruff, mypy
 
 ## First Steps
-
-### Import Furax
-
-```python
-import jax
-import jax.numpy as jnp
-import furax
-```
 
 Enable 64-bit precision for better numerical accuracy:
 
 ```python
+import jax
 jax.config.update('jax_enable_x64', True)
 ```
 
 ### Create Your First Sky Map
 
 ```python
-from furax.obs import HealpixLandscape
+import jax.random as jr
+
+from furax.obs.landscapes import HealpixLandscape
 
 # Create a HEALPix landscape for polarization analysis
 landscape = HealpixLandscape(nside=32, stokes='IQU')
 
 # Generate a random CMB-like sky
-key = jax.random.PRNGKey(42)
-cmb_map = landscape.normal(key)
+cmb_map = landscape.normal(jr.key(42))
 
-print(f"Map shape: {cmb_map.shape}")
-print(f"Stokes parameters: {cmb_map.stokes}")
-print(f"Number of pixels: {landscape.npix}")
+print(f'Map shape: {cmb_map.shape}')
+print(f'Stokes parameters: {cmb_map.stokes}')
+print(f'Number of pixels: {landscape.shape[0]}')
 ```
 
 ### Basic Linear Operators
 
+Furax provides composable linear operators that can be combined through addition, composition of block assembly. The primary interest of these operators is that they rely on a sparse representation of the underlying matrices.
+
 ```python
-from furax.core import DiagonalOperator
+import jax.numpy as jnp
+import jax.random as jr
+
+from furax import DiagonalOperator
+from furax.tree import as_structure
+from furax.obs.landscapes import HealpixLandscape
+
+landscape = HealpixLandscape(nside=32, stokes='IQU')
+cmb_map = landscape.normal(jr.key(42))
+n_pixel = landscape.shape[0]
 
 # Create a noise weighting operator
-noise_variance = jnp.ones(landscape.size)
-noise_weights = DiagonalOperator(1.0 / noise_variance)
+noise_weights = DiagonalOperator(1.0 / jnp.full(n_pixel, jnp.sqrt(n_pixel)), in_structure=landscape.structure)
 
-# Apply to your map
-weighted_map = noise_weights @ cmb_map
+# Apply the weights to the I, Q and U Stokes parameters of the map
+weighted_map = noise_weights(cmb_map)
 
-print(f"Input type: {type(cmb_map)}")
-print(f"Output type: {type(weighted_map)}")
+print(f'Input type: {as_structure(cmb_map)}')
+print(f'Output type: {as_structure(weighted_map)}')
 ```
 
 ### Operator Composition
@@ -94,100 +98,134 @@ print(f"Output type: {type(weighted_map)}")
 The power of Furax comes from composable operators:
 
 ```python
-from furax.core import BlockDiagonalOperator
+import jax.numpy as jnp
+import jax.random as jr
 
-# Create component-wise processing
-n_pix = landscape.npix
+from furax import BlockDiagonalOperator, DiagonalOperator
+from furax.obs.landscapes import HealpixLandscape
+from furax.obs.stokes import StokesIQU
 
-# Different processing for I, Q, U
-i_processor = DiagonalOperator(1.0 * jnp.ones(n_pix))      # No change to I
-q_processor = DiagonalOperator(2.0 * jnp.ones(n_pix))      # Amplify Q
-u_processor = DiagonalOperator(0.5 * jnp.ones(n_pix))      # Reduce U
+landscape = HealpixLandscape(nside=32, stokes='IQU')
+cmb_map = landscape.normal(jr.key(42))
+n_pixel = landscape.shape[0]
+
+# Create a component-wise processing
+i_processor = DiagonalOperator(1.0 * jnp.ones(n_pixel))  # No change to I
+q_processor = DiagonalOperator(2.0 * jnp.ones(n_pixel))  # Amplify Q
+u_processor = DiagonalOperator(0.5 * jnp.ones(n_pixel))  # Reduce U
 
 # Combine into block diagonal operator
-component_processor = BlockDiagonalOperator([
-    i_processor, q_processor, u_processor
-])
+component_processor = BlockDiagonalOperator(StokesIQU(i_processor, q_processor, u_processor))
+
+# The noise weights apply the same diagonal matrix to I, Q and U
+noise_weights = DiagonalOperator(1.0 / jnp.full(n_pixel, jnp.sqrt(n_pixel)), in_structure=landscape.structure)
 
 # Compose with noise weighting
 full_pipeline = component_processor @ noise_weights
 
 # Apply the full pipeline
-processed_map = full_pipeline @ cmb_map
+processed_map = full_pipeline(cmb_map)
 
-print(f"Pipeline applied successfully!")
+print(f'Pipeline applied successfully!')
 ```
 
 ## Working with Real Data
 
-### Loading HEALPix Maps
+### Reconstruction problem
 
 ```python
-import healpy as hp
-from furax.obs import Stokes
-
-# Load a real CMB map (example with Planck data)
-# planck_map = hp.read_map('planck_cmb.fits', field=[0, 1, 2])  # I, Q, U
-
-# For this example, simulate Planck-like data
-nside_planck = 512
-landscape_hires = HealpixLandscape(nside=nside_planck, stokes='IQU')
-simulated_planck = landscape_hires.normal(jax.random.PRNGKey(100))
-
-print(f"High-resolution map: {landscape_hires.npix} pixels")
-```
-
-### Configuration Management
-
-Control solver settings with configuration contexts:
-
-```python
+import jax.numpy as jnp
+import jax.random as jr
 import lineax as lx
-from furax import Config
+from furax import HomothetyOperator, IndexOperator
+from furax.tree import as_structure
+
+n_pixel = 10
+pixels = jnp.arange(n_pixel, dtype=jnp.int32)
+obs_key, map_key, noise_key = jr.split(jr.key(0), 3)
+
+observed_pixels = jnp.concatenate([jr.permutation(key, pixels) for key in jr.split(obs_key, 100)])
+actual_map = jr.normal(map_key, (n_pixel,))
+σ_noise = 0.01
+noise = jr.normal(noise_key, observed_pixels.shape) * σ_noise
+
+acquisition_op = IndexOperator(observed_pixels, in_structure=as_structure(actual_map))
+observed_values = acquisition_op(actual_map) + noise
+
+noise_op = HomothetyOperator(σ_noise ** 2, in_structure=as_structure(observed_values))
+
+ml = (acquisition_op.T @ noise_op.I @ acquisition_op).I @ acquisition_op.T @ noise_op.I
+
+# Using default setup (using CG)
+maximum_likelihood_map = ml(observed_values)
+print('Actual map:', actual_map)
+print('Reconstructed map:', maximum_likelihood_map)
+print('Difference:', abs(actual_map - maximum_likelihood_map))
 
 # Use high-precision solver for critical calculations
-with Config(solver=lx.CG(rtol=1e-10, max_steps=2000)):
-    precise_result = full_pipeline @ cmb_map
+solver = lx.CG(rtol=1e-10, atol=1e-10, max_steps=2000)
+high_precision_ml = (acquisition_op.T @ noise_op.I @ acquisition_op).I(solver=solver) @ acquisition_op.T @ noise_op.I
 
-# Default solver for routine operations
-standard_result = full_pipeline @ cmb_map
-
-print("Configuration contexts allow flexible solver control")
+high_precision_map = high_precision_ml(observed_values)
+print('Difference:', abs(actual_map - high_precision_map))
 ```
-
-## Common Patterns
 
 ### Pixel Masking
 
 ```python
-from furax.core import IndexOperator
+import jax.numpy as jnp
+import jax.random as jr
+import jax_healpy as hp
+
+from furax import IndexOperator
+from furax.obs.landscapes import HealpixLandscape
+from furax.tree import as_structure
+
+GALACTIC_MAX_LATITUDE = 5.  # degrees
+
+landscape = HealpixLandscape(nside=128, stokes='IQU')
+n_pixel = landscape.shape[0]
+pixels = jnp.arange(n_pixel, dtype=jnp.int32)
+lon, lat = hp.pix2ang(landscape.nside, pixels, lonlat=True)
+good_pixels = abs(lat) > GALACTIC_MAX_LATITUDE
 
 # Create a galactic plane mask (simplified)
-good_pixels = jnp.arange(n_pix)[::2]  # Keep every other pixel
-mask_operator = IndexOperator(good_pixels, input_size=landscape.size)
+mask_operator = IndexOperator(jnp.where(good_pixels), in_structure=landscape.structure)
 
 # Apply mask
-masked_data = mask_operator @ cmb_map
-print(f"Masked data size: {masked_data.shape}")
+cmb_map = landscape.normal(jr.key(0))
+masked_map = mask_operator(cmb_map)
+print(f'Input map: {as_structure(cmb_map)}')
+print(f'Output map: {as_structure(masked_map)}')
 ```
 
 ### Frequency Analysis
 
 ```python
+import jax.numpy as jnp
+import jax.random as jr
+
+from furax import IndexOperator
+from furax.obs.landscapes import HealpixLandscape
+from furax.tree import as_structure
+
 # Multi-frequency analysis setup
-frequencies = jnp.array([30., 44., 70., 100., 143., 217., 353.])  # GHz
-n_freq = len(frequencies)
+frequencies = jnp.array([70., 150., 353.])  # GHz
+landscape = HealpixLandscape(nside=128, stokes='IQU')
+n_pixel = landscape.shape[0]
 
 # Create multi-frequency landscape
-freq_maps = []
-for i, freq in enumerate(frequencies):
-    freq_key = jax.random.PRNGKey(200 + i)
-    freq_map = landscape.normal(freq_key)
-    freq_maps.append(freq_map)
+obs_key, *keys = jr.split(jr.key(0), len(frequencies) + 1)
+freq_maps = [landscape.normal(key) for key in keys]
 
-# Stack frequency maps
-multi_freq_data = jnp.stack([fmap.flatten() for fmap in freq_maps])
-print(f"Multi-frequency data shape: {multi_freq_data.shape}")
+pixels = jr.randint(obs_key, (100,), 0, n_pixel - 1)
+projection = IndexOperator(pixels, in_structure=landscape.structure)
+
+# get the observed pixels (noiseless)
+tod = projection(freq_maps)
+
+# The tod is a list of StokesIQU
+print(f'Multi-frequency tod structure: {as_structure(tod)}')
 ```
 
 ## Error Handling and Debugging
@@ -196,9 +234,11 @@ print(f"Multi-frequency data shape: {multi_freq_data.shape}")
 
 ```python
 # Inspect operator properties
-print(f"Operator is symmetric: {noise_weights.symmetric}")
-print(f"Operator is positive definite: {noise_weights.positive_semidefinite}")
-print(f"Operator shape: {noise_weights.shape}")
+op = ...
+print(f'Operator is symmetric: {op.is_symmetric}')
+print(f'Operator is positive definite: {op.is_positive_semidefinite}')
+print(f'Operator input structure: {op.in_structure}')
+print(f'Operator output structure: {op.out_structure}')
 ```
 
 ### Matrix Visualization
@@ -206,14 +246,19 @@ print(f"Operator shape: {noise_weights.shape}")
 For small problems, visualize operators as matrices:
 
 ```python
+import jax.numpy as jnp
+
+from furax import DiagonalOperator
+from furax.obs.landscapes import HealpixLandscape
+
 # Only for small operators!
-small_landscape = HealpixLandscape(nside=2, stokes='I')  # 12 pixels
-small_weights = DiagonalOperator(jnp.arange(1., 13.))
+small_landscape = HealpixLandscape(nside=2, stokes='I')  # 48 pixels
+small_weights = DiagonalOperator(1. + jnp.arange(small_landscape.shape[0]))
 
 # Convert to explicit matrix for debugging
 weight_matrix = small_weights.as_matrix()
-print(f"Weight matrix shape: {weight_matrix.shape}")
-print("Diagonal elements:", jnp.diag(weight_matrix))
+print(f'Weight matrix shape: {weight_matrix.shape}')
+print('Diagonal elements:', jnp.diag(weight_matrix))
 ```
 
 ## Performance Tips
@@ -221,33 +266,50 @@ print("Diagonal elements:", jnp.diag(weight_matrix))
 ### Use JAX Transformations
 
 ```python
+import jax
+import jax.random as jr
+
+from furax import DiagonalOperator
+from furax.obs.landscapes import HealpixLandscape
+
 # JIT compile for repeated operations
 @jax.jit
 def process_many_maps(operator, maps):
-    return jax.vmap(lambda m: operator @ m)(maps)
+    return jax.vmap(lambda m: operator(m))(maps)
+
+batch_size = 10
+landscape = HealpixLandscape(nside=128, stokes='IQU')
+op_key = jr.key(0)
+map_keys = jr.split(jr.key(1), batch_size)
+op = DiagonalOperator(1 + 0.01 * jr.normal(op_key, landscape.shape))
 
 # Generate batch of maps
-keys = jax.random.split(jax.random.PRNGKey(500), 10)
-map_batch = jax.vmap(lambda k: landscape.normal(k))(keys)
+map_batch = jax.vmap(landscape.normal)(map_keys)
 
 # Process batch efficiently
-processed_batch = process_many_maps(noise_weights, map_batch)
-print(f"Processed {len(processed_batch)} maps in batch")
+processed_batch = process_many_maps(op, map_batch)
+print(f'Processed {batch_size} maps in batch: {processed_batch.structure}')
 ```
 
 ### Memory Management
 
 ```python
+import jax.numpy as jnp
+import jax.random as jr
+
+from furax import DiagonalOperator
+from furax.obs.landscapes import HealpixLandscape
+
 # For large problems, avoid creating explicit matrices
-large_landscape = HealpixLandscape(nside=128, stokes='IQU')  # ~200k parameters
+landscape = HealpixLandscape(nside=256, stokes='IQU')  # ~200k parameters
 
 # Good: matrix-free operations
-large_weights = DiagonalOperator(jnp.ones(large_landscape.size))
-large_map = large_landscape.zeros()  # Zero map to avoid memory for random data
-result = large_weights @ large_map
+large_weights = DiagonalOperator(jnp.ones(landscape.shape[0]), in_structure=landscape.structure)
+large_map = landscape.random(jr.key(0))  # Zero map to avoid memory for random data
+result = large_weights(large_map)
 
 # Avoid: large_weights.as_matrix() - would use ~160GB for float64!
-print(f"Matrix-free operation completed for {large_landscape.size} parameters")
+print(f'Matrix-free operation completed for {landscape.size} parameters')
 ```
 
 ## Next Steps

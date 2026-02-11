@@ -1,8 +1,8 @@
 from collections.abc import Callable
+from dataclasses import field
 from functools import partial
 from typing import ClassVar
 
-import equinox
 import jax
 import jax.numpy as jnp
 import jax.scipy.linalg as jsl
@@ -59,18 +59,17 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
 
     METHODS: ClassVar[tuple[str, ...]] = 'dense', 'direct', 'fft', 'overlap_save'
     band_values: Float[Array, '...']
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    method: str = equinox.field(static=True)
-    fft_size: int | None = equinox.field(static=True)
+    method: str = field(metadata={'static': True})
+    fft_size: int | None = field(metadata={'static': True})
 
     def __init__(
         self,
         band_values: Float[Array, ' a'],
-        in_structure: PyTree[jax.ShapeDtypeStruct],
         *,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
         method: str = 'overlap_save',
         fft_size: int | None = None,
-    ):
+    ) -> None:
         if method not in self.METHODS:
             raise ValueError(f'Invalid method {method}. Choose from: {", ".join(self.METHODS)}')
 
@@ -81,12 +80,13 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
             if fft_size < band_number:
                 raise ValueError('The FFT size should not be less than the number of bands.')
 
-        self.band_values = band_values
-        self._in_structure = in_structure
-        self.method = method
         if fft_size is None and method.startswith('overlap_'):
             fft_size = self._get_default_fft_size(band_number)
-        self.fft_size = fft_size
+
+        object.__setattr__(self, 'band_values', band_values)
+        object.__setattr__(self, 'method', method)
+        object.__setattr__(self, 'fft_size', fft_size)
+        object.__setattr__(self, 'in_structure', in_structure)
 
     @staticmethod
     def _get_default_fft_size(band_number: int) -> int:
@@ -198,16 +198,13 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         def func(x: Array, band_values: Array) -> Array:
             return dense_symmetric_band_toeplitz(x.size, band_values)
 
-        x = jnp.zeros(self.in_structure().shape, self.in_structure().dtype)
+        x = jnp.zeros(self.in_structure.shape, self.in_structure.dtype)
         blocks: Array = func(x, self.band_values)
         if blocks.ndim > 2:
             blocks = blocks.reshape(-1, blocks.shape[-1], blocks.shape[-1])
             matrix: Array = jsl.block_diag(*blocks)
             return matrix
         return blocks
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
 
 
 def dense_symmetric_band_toeplitz(n: int, band_values: ArrayLike) -> Array:

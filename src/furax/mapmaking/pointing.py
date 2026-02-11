@@ -1,6 +1,6 @@
+from dataclasses import field
 from functools import partial
 
-import equinox
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -29,12 +29,11 @@ class PointingOperator(AbstractLinearOperator):
     Changing this parameter will trigger recompilation of the operator.
     """
 
-    landscape: StokesLandscape = equinox.field(static=True)
+    landscape: StokesLandscape = field(metadata={'static': True})
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    _out_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    chunk_size: int = equinox.field(static=True, default=16)
+    _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
+    chunk_size: int = field(default=16, metadata={'static': True})
 
     @jit
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
@@ -72,7 +71,7 @@ class PointingOperator(AbstractLinearOperator):
             raise NotImplementedError
 
         # Loop over chunks of detectors
-        ndet, nsamp = self.out_structure().shape
+        ndet, nsamp = self.out_structure.shape
         chunk_size = min(self.chunk_size, ndet)
         if chunk_size > 0:
             n_chunks = (ndet + chunk_size - 1) // chunk_size
@@ -104,14 +103,12 @@ class PointingOperator(AbstractLinearOperator):
         tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
         return tod_out
 
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
-
+    @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._out_structure
 
     def transpose(self) -> AbstractLinearOperator:
-        return PointingTransposeOperator(self)
+        return PointingTransposeOperator(operator=self)
 
 
 class PointingTransposeOperator(TransposeOperator):
@@ -155,7 +152,7 @@ class PointingTransposeOperator(TransposeOperator):
             return self._point(tod, indices)
 
         # Loop over chunks of detectors
-        ndet, _ = self.in_structure().shape
+        ndet, _ = self.in_structure.shape
         chunk_size = min(self.operator.chunk_size, ndet)
         if chunk_size > 0:
             n_chunks = (ndet + chunk_size - 1) // chunk_size

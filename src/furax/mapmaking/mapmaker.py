@@ -1,13 +1,12 @@
 import operator
 import pickle
 from abc import abstractmethod
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from logging import Logger
 from math import prod
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
-import equinox
 import jax
 import jax.numpy as jnp
 import lineax
@@ -25,6 +24,8 @@ from furax import (
     DiagonalOperator,
     IdentityOperator,
     MaskOperator,
+    OperatorTag,
+    SymmetricBandToeplitzOperator,
 )
 from furax.core import (
     BlockColumnOperator,
@@ -38,6 +39,7 @@ from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
 
+from ..interfaces.lineax import as_lineax_operator
 from . import templates
 from ._logger import logger as furax_logger
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
@@ -67,27 +69,27 @@ class MapMakingResults:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         # do not use asdict to avoid making copies
-        for field in fields(self):
-            val = getattr(self, field.name)
+        for field_ in fields(self):
+            val = getattr(self, field_.name)
             if val is None:
                 continue
             if isinstance(val, jax.Array) or isinstance(val, np.ndarray):
-                np.save(out_dir / field.name, np.array(val))
+                np.save(out_dir / field_.name, np.array(val))
             elif isinstance(val, StokesIQU):
-                np.save(out_dir / field.name, np.stack([val.i, val.q, val.u], axis=0))
+                np.save(out_dir / field_.name, np.stack([val.i, val.q, val.u], axis=0))
             elif isinstance(val, pixell.enmap.ndmap):
                 pixell.enmap.write_map(
-                    (out_dir / f'{field.name}.hdf').as_posix(), val, allow_modify=True
+                    (out_dir / f'{field_.name}.hdf').as_posix(), val, allow_modify=True
                 )
             elif isinstance(val, WCS):
                 header = val.to_header()
                 hdu = fits.PrimaryHDU(header=header)
-                hdu.writeto(out_dir / f'{field.name}.fits', overwrite=True)
+                hdu.writeto(out_dir / f'{field_.name}.fits', overwrite=True)
             elif isinstance(val, StokesLandscape):
-                with open(out_dir / f'{field.name}.pkl', 'wb') as f:
+                with open(out_dir / f'{field_.name}.pkl', 'wb') as f:
                     pickle.dump(val, f)
             else:
-                furax_logger.warning(f'unsupported field type for {field.name}')
+                furax_logger.warning(f'unsupported field type for {field_.name}')
 
 
 T = TypeVar('T')
@@ -132,8 +134,8 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Acquisition (I, Q, U Maps -> TOD)
         h_blocks = self.build_acquisitions()
-        tod_structure = h_blocks[0].out_structure()
-        map_structure = h_blocks[0].in_structure()
+        tod_structure = h_blocks[0].out_structure
+        map_structure = h_blocks[0].in_structure
         logger_info('Created acquisition operators')
 
         # Sample mask projectors
@@ -215,8 +217,8 @@ class MultiObservationMapMaker(Generic[T]):
             weights=map_weights, in_structure=map_structure
         )
         logger_info(
-            f'Selected {prod(selector.out_structure().shape)}'
-            + f' / {prod(selector.in_structure().shape)} pixels'
+            f'Selected {prod(selector.out_structure.shape)}'
+            + f' / {prod(selector.in_structure.shape)} pixels'
         )
 
         # Preconditioner
@@ -226,7 +228,7 @@ class MultiObservationMapMaker(Generic[T]):
         # Set up the mapmaking operator
         solver = lineax.CG(**asdict(self.config.solver))
         solver_options = {
-            'preconditioner': lineax.TaggedLinearOperator(precond, lineax.positive_semidefinite_tag)
+            'preconditioner': as_lineax_operator(precond, OperatorTag.POSITIVE_SEMIDEFINITE)
         }
         options = {'solver': solver, 'solver_options': solver_options}
         mapmaking_operator = selector.T @ (selector @ system @ selector.T).I(**options) @ selector
@@ -475,7 +477,7 @@ def _build_pointing_operator(
         landscape=landscape,
         qbore=boresight_quaternions,
         qdet=detector_quaternions,
-        _in_structure=landscape.structure,
+        in_structure=landscape.structure,
         _out_structure=Stokes.class_for(landscape.stokes).structure_for((ndet, nsamp), dtype=dtype),
         chunk_size=chunk_size,
     )
@@ -488,7 +490,7 @@ def _build_mask_projector(
 
     def _masker(valid_mask: Array | None) -> AbstractLinearOperator:
         if valid_mask is None:
-            return IdentityOperator(structure)
+            return IdentityOperator(in_structure=structure)
         return MaskOperator.from_boolean_mask(valid_mask, in_structure=structure)
 
     combined_masker = CompositionOperator([_masker(valid_mask) for valid_mask in valid_masks])
@@ -594,7 +596,7 @@ class MapMaker:
                 landscape=landscape,
                 qbore=observation.get_boresight_quaternions(),
                 qdet=observation.get_detector_quaternions(),
-                _in_structure=landscape.structure,
+                in_structure=landscape.structure,
                 _out_structure=Stokes.class_for(landscape.stokes).structure_for(
                     (observation.n_detectors, observation.n_samples), dtype=landscape.dtype
                 ),
@@ -661,7 +663,7 @@ class MapMaker:
             shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
         )
         if not self.config.scanning_mask:
-            return IdentityOperator(in_structure)
+            return IdentityOperator(in_structure=in_structure)
 
         mask = observation.get_scanning_mask()
         out_structure = ShapeDtypeStruct(
@@ -684,7 +686,7 @@ class MapMaker:
             shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
         )
         if not self.config.scanning_mask:
-            return IdentityOperator(structure)
+            return IdentityOperator(in_structure=structure)
 
         # mask is broadcasted along detector axis
         mask = observation.get_scanning_mask()
@@ -700,7 +702,7 @@ class MapMaker:
             shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
         )
         if not self.config.sample_mask:
-            return IdentityOperator(structure)
+            return IdentityOperator(in_structure=structure)
 
         # Note the mask value is 1 at valid (unmasked) samples
         mask = observation.get_sample_mask()
@@ -775,13 +777,13 @@ class MapMaker:
 
     def get_template_operator(
         self, observation: AbstractGroundObservation[Any]
-    ) -> AbstractLinearOperator:
+    ) -> BlockRowOperator:
         """Create and return a template operator corresponding to the
         name and configuration provided.
         """
         config = self.config
         assert config.templates is not None
-        blocks = {}
+        blocks: dict[str, AbstractLinearOperator] = {}
 
         if poly := config.templates.polynomial:
             blocks['polynomial'] = templates.PolynomialTemplateOperator.create(
@@ -884,7 +886,7 @@ class MapMaker:
                 (nonzero_hits[:, 0], nonzero_hits[:, 1]),
                 in_structure=furax.tree.as_structure(self._ground_coverage),
             )
-            flattener = templates.StokesIQUFlattenOperator(in_structure=indexer.out_structure())
+            flattener = templates.StokesIQUFlattenOperator(in_structure=indexer.out_structure)
             self._ground_selector = flattener @ indexer
 
             blocks['ground'] = ground_op @ self._ground_selector.T
@@ -918,7 +920,7 @@ class BinnedMapMaker(MapMaker):
         # Optional mask for scanning
         masker = self.get_scanning_masker(observation)
         acquisition = masker @ acquisition
-        data_struct = masker.out_structure()  # Now with a subset of samples
+        data_struct = masker.out_structure  # Now with a subset of samples
         logger_info('Created scanning mask operator')
 
         # Noise
@@ -1015,9 +1017,10 @@ class MLMapmaker(MapMaker):
         logger_info('Created noise and inverse noise covariance operators')
 
         # Approximate system matrix with diagonal noise covariance and full map pixels
-        diag_inv_noise = DiagonalOperator(
-            diagonal=inv_noise.band_values[..., [0]], in_structure=data_struct
-        )
+        if not isinstance(inv_noise, SymmetricBandToeplitzOperator):
+            raise NotImplementedError
+
+        diag_inv_noise = DiagonalOperator(inv_noise.band_values[..., [0]], in_structure=data_struct)
         diag_system = BJPreconditioner.create(acquisition.T @ diag_inv_noise @ masker @ acquisition)
         logger_info('Created approximate system matrix')
 
@@ -1025,7 +1028,7 @@ class MLMapmaker(MapMaker):
         blocks = diag_system.get_blocks()
         selector = self.get_pixel_selector(blocks, landscape)
         logger_info(
-            f'Selected {prod(selector.out_structure().shape)}\
+            f'Selected {prod(selector.out_structure.shape)}\
                             /{prod(landscape.shape)} pixels'
         )
 
@@ -1033,15 +1036,15 @@ class MLMapmaker(MapMaker):
         positive_sample_hits = (
             (masker @ acquisition @ selector.T)(
                 StokesIQU.from_iquv(
-                    i=jnp.ones(selector.out_structure().shape, dtype=data.dtype),
-                    q=jnp.zeros(selector.out_structure().shape, dtype=data.dtype),
-                    u=jnp.zeros(selector.out_structure().shape, dtype=data.dtype),
+                    i=jnp.ones(selector.out_structure.shape, dtype=data.dtype),
+                    q=jnp.zeros(selector.out_structure.shape, dtype=data.dtype),
+                    u=jnp.zeros(selector.out_structure.shape, dtype=data.dtype),
                     v=None,  # type: ignore[arg-type]
                 )
             )
             > 0
         ).astype(data.dtype)
-        masker = DiagonalOperator(diagonal=positive_sample_hits, in_structure=data_struct)
+        masker = DiagonalOperator(positive_sample_hits, in_structure=data_struct)
         logger_info(f'Updated valid sample fraction: {jnp.mean(masker._diagonal):.4f}')
 
         # Preconditioner
@@ -1059,32 +1062,32 @@ class MLMapmaker(MapMaker):
                 tmpl_sys = (tmpl_op.T @ diag_inv_noise @ masker @ tmpl_op).reduce()
                 # Approximation to the diagonal of the matrix
                 norm_sys = jnp.abs(
-                    jax.jit(lambda x: tmpl_sys(x))(furax.tree.ones_like(tmpl_op.in_structure()))
+                    jax.jit(lambda x: tmpl_sys(x))(furax.tree.ones_like(tmpl_op.in_structure))
                 )
                 # Regualrisation value is REGVAL times the smallest non-zero eigenvalue
                 regs[tmpl] = REGVAL * jnp.min(norm_sys[norm_sys > 0])
                 tmpl_inv_sys[tmpl] = DiagonalOperator(
-                    diagonal=(norm_sys + regs[tmpl]),
-                    in_structure=tmpl_op.in_structure(),
+                    (norm_sys + regs[tmpl]),
+                    in_structure=tmpl_op.in_structure,
                 ).inverse()
             template_preconditioner = BlockDiagonalOperator(tmpl_inv_sys)
             logger_info('Built template preconditioner')
             template_reg_op = BlockDiagonalOperator(
                 [
-                    DiagonalOperator(
-                        diagonal=jnp.array([0.0]), in_structure=selector.out_structure()
-                    ),
+                    DiagonalOperator(jnp.array([0.0]), in_structure=selector.out_structure),
                     {
                         tmpl: regs[tmpl]
-                        * IdentityOperator(in_structure=template_op.blocks[tmpl].in_structure())
+                        * IdentityOperator(in_structure=template_op.blocks[tmpl].in_structure)
                         for tmpl in template_op.blocks.keys()
                     },
                 ]
             )
             logger_info('Built template regularizer')
-            print(f'Template operator input structure: {template_op.in_structure()}')
+            print(f'Template operator input structure: {template_op.in_structure}')
 
         # Mapmaking operator
+        p: AbstractLinearOperator
+        h: AbstractLinearOperator
         if config.use_templates:
             p = BlockDiagonalOperator([preconditioner, template_preconditioner])
             h = BlockRowOperator([acquisition @ selector.T, template_op])
@@ -1102,9 +1105,9 @@ class MLMapmaker(MapMaker):
                 max_steps=30,
             )
             nested_solver_options = {
-                'preconditioner': lineax.TaggedLinearOperator(
-                    masker @ inv_noise @ masker, lineax.positive_semidefinite_tag
-                )
+                'preconditioner': as_lineax_operator(
+                    masker @ inv_noise @ masker, OperatorTag.POSITIVE_SEMIDEFINITE
+                ),
             }
             M = (
                 masker
@@ -1118,7 +1121,7 @@ class MLMapmaker(MapMaker):
 
         solver = lineax.CG(**asdict(config.solver))
         solver_options = {
-            'preconditioner': lineax.TaggedLinearOperator(p, lineax.positive_semidefinite_tag)
+            'preconditioner': as_lineax_operator(p, OperatorTag.POSITIVE_SEMIDEFINITE),
         }
         options = {'solver': solver, 'solver_options': solver_options}
         if config.use_templates:
@@ -1227,7 +1230,7 @@ class TwoStepMapmaker(MapMaker):
         blocks = system.get_blocks()
         selector = self.get_pixel_selector(blocks, landscape)
         logger_info(
-            f'Selected {prod(selector.out_structure().shape)}\
+            f'Selected {prod(selector.out_structure.shape)}\
                             /{prod(landscape.shape)} pixels'
         )
 
@@ -1288,18 +1291,24 @@ class TwoStepMapmaker(MapMaker):
 
 
 class ATOPProjectionOperator(AbstractLinearOperator):
-    tau: int = equinox.field(static=True)
-    n_det: int = equinox.field(static=True)
-    n_samp: int = equinox.field(static=True)
-    _in_structure: jax.ShapeDtypeStruct = equinox.field(static=True)
+    tau: int = field(metadata={'static': True})
+    n_det: int = field(metadata={'static': True})
+    n_samp: int = field(metadata={'static': True})
 
-    def __init__(self, tau: int, *, in_structure: PyTree[jax.ShapeDtypeStruct]):
-        self.tau = tau
-        self._in_structure = in_structure
-        self.n_det, self.n_samp = in_structure.shape
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
+    def __init__(
+        self,
+        tau: int,
+        *,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
+        n_det: int | None = None,
+        n_samp: int | None = None,
+    ) -> None:
+        if n_det is None:
+            n_det, n_samp = in_structure.shape
+        object.__setattr__(self, 'tau', tau)
+        object.__setattr__(self, 'n_det', n_det)
+        object.__setattr__(self, 'n_samp', n_samp)
+        object.__setattr__(self, 'in_structure', in_structure)
 
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
         if self.n_samp % self.tau == 0:
@@ -1374,7 +1383,7 @@ class ATOPMapMaker(MapMaker):
         blocks = diag_system.get_blocks()
         selector = self.get_pixel_selector(blocks, landscape)
         logger_info(
-            f'Selected {prod(selector.out_structure().shape)}\
+            f'Selected {prod(selector.out_structure.shape)}\
                             /{prod(landscape.shape)} pixels'
         )
 
@@ -1389,7 +1398,7 @@ class ATOPMapMaker(MapMaker):
 
         solver = lineax.CG(**asdict(config.solver))
         solver_options = {
-            'preconditioner': lineax.TaggedLinearOperator(p, lineax.positive_semidefinite_tag)
+            'preconditioner': as_lineax_operator(p, OperatorTag.POSITIVE_SEMIDEFINITE),
         }
         with Config(solver=solver, solver_options=solver_options):
             mapmaking_operator = (h.T @ mp @ ap @ mp @ h).I @ h.T @ mp @ ap @ mp
@@ -1427,7 +1436,6 @@ class IQUModulationOperator(AbstractLinearOperator):
     only half of the QU rotation needs to be computed
     """
 
-    _in_structure: PyTree[ShapeDtypeStruct] = equinox.field(static=True)
     cos_hwp_angle: Float[Array, ' samps']
     sin_hwp_angle: Float[Array, ' samps']
 
@@ -1437,15 +1445,13 @@ class IQUModulationOperator(AbstractLinearOperator):
         hwp_angle: Float[Array, '...'],
         dtype: DTypeLike = jnp.float32,
     ) -> None:
-        self._in_structure = Stokes.class_for('IQU').structure_for(shape, dtype)
-        self.cos_hwp_angle = jnp.cos(4 * hwp_angle.astype(dtype))
-        self.sin_hwp_angle = jnp.sin(4 * hwp_angle.astype(dtype))
+        in_structure = Stokes.class_for('IQU').structure_for(shape, dtype)
+        object.__setattr__(self, 'cos_hwp_angle', jnp.cos(4 * hwp_angle.astype(dtype)))
+        object.__setattr__(self, 'sin_hwp_angle', jnp.sin(4 * hwp_angle.astype(dtype)))
+        object.__setattr__(self, 'in_structure', in_structure)
 
     def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:
         return x.i + self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u  # type: ignore[union-attr]
-
-    def in_structure(self) -> PyTree[ShapeDtypeStruct]:
-        return self._in_structure
 
 
 class QUModulationOperator(AbstractLinearOperator):
@@ -1454,7 +1460,6 @@ class QUModulationOperator(AbstractLinearOperator):
     only half of the QU rotation needs to be computed
     """
 
-    _in_structure: PyTree[ShapeDtypeStruct] = equinox.field(static=True)
     cos_hwp_angle: Float[Array, ' samps']
     sin_hwp_angle: Float[Array, ' samps']
 
@@ -1464,12 +1469,10 @@ class QUModulationOperator(AbstractLinearOperator):
         hwp_angle: Float[Array, '...'],
         dtype: DTypeLike = jnp.float32,
     ) -> None:
-        self._in_structure = Stokes.class_for('QU').structure_for(shape, dtype)
-        self.cos_hwp_angle = jnp.cos(4 * hwp_angle.astype(dtype))
-        self.sin_hwp_angle = jnp.sin(4 * hwp_angle.astype(dtype))
+        in_structure = Stokes.class_for('QU').structure_for(shape, dtype)
+        object.__setattr__(self, 'cos_hwp_angle', jnp.cos(4 * hwp_angle.astype(dtype)))
+        object.__setattr__(self, 'sin_hwp_angle', jnp.sin(4 * hwp_angle.astype(dtype)))
+        object.__setattr__(self, 'in_structure', in_structure)
 
     def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:
         return self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u  # type: ignore[union-attr]
-
-    def in_structure(self) -> PyTree[ShapeDtypeStruct]:
-        return self._in_structure

@@ -1,13 +1,14 @@
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import field
 
-import equinox
 import jax
 from jax import Array
 from jax import numpy as jnp
+from jax.typing import ArrayLike
 from jaxtyping import Inexact, PyTree
 
-from furax.tree import is_leaf
+from furax.tree import as_structure, is_leaf
 
 from ._base import AbstractLazyInverseOperator, AbstractLinearOperator, diagonal
 
@@ -76,41 +77,44 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
     """
 
     _diagonal: Inexact[Array, '...']
-    axis_destination: tuple[int, ...] = equinox.field(static=True)
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
+    axis_destination: int | tuple[int, ...] = field(
+        default=-1, kw_only=True, metadata={'static': True}
+    )
 
     def __init__(
         self,
-        diagonal: Inexact[Array, '...'],
+        diagonal: ArrayLike,
         *,
         axis_destination: int | Sequence[int] = -1,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
+        in_structure: PyTree[jax.ShapeDtypeStruct] | None = None,
     ):
+        # Validation
         if not is_leaf(diagonal):
             raise ValueError(
                 'the diagonal values cannot be a pytree. Use a BlockDiagonalOperator with'
                 'DiagonalOperators or BroadcastDiagonalOperators instead.'
             )
+        diagonal = jnp.asarray(diagonal)
+
         if diagonal.ndim == 0:
             raise ValueError('the diagonal values are scalar. Use HomothetyOperator instead.')
+
+        # Normalize axis_destination if needed
         if isinstance(axis_destination, int):
+            ndim = diagonal.ndim
             if axis_destination >= 0:
-                # if a positive int is specified, return (axis, axis + 1, axis + 2, ...)
-                axis_destination = tuple(range(axis_destination, axis_destination + diagonal.ndim))
+                axis_destination = tuple(range(axis_destination, axis_destination + ndim))
             else:
-                # if a negative int is specified, return (..., axis - 2, axis - 1, axis)
-                axis_destination = tuple(
-                    range(axis_destination - diagonal.ndim + 1, axis_destination + 1)
-                )
-        if not isinstance(axis_destination, tuple):
+                axis_destination = tuple(range(axis_destination - ndim + 1, axis_destination + 1))
+        elif not isinstance(axis_destination, tuple):
             axis_destination = tuple(axis_destination)
 
-        self._diagonal = diagonal
-        self.axis_destination = axis_destination
-        self._in_structure = in_structure
+        object.__setattr__(self, '_diagonal', diagonal)
+        object.__setattr__(self, 'axis_destination', tuple(axis_destination))
+        super().__init__(in_structure=in_structure)
 
-        # check dimensions
-        _ = AbstractLinearOperator.out_structure(self)
+        # check dimensions by computing the actual output structure (not the @square shortcut)
+        _ = jax.eval_shape(self.mv, in_structure)
 
     @property
     def diagonal(self) -> Inexact[Array, '...']:
@@ -130,6 +134,7 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
 
     def _normalize_axes(self, input_leaf_shape: tuple[int, ...]) -> tuple[int, ...]:
         """Returns positive axes according to the input leaf shape."""
+        assert isinstance(self.axis_destination, tuple)
         axes = tuple(
             axis if axis >= 0 else len(input_leaf_shape) + axis for axis in self.axis_destination
         )
@@ -183,9 +188,6 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
 
         return jax.tree.map(func, x)
 
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
-
 
 @diagonal
 class DiagonalOperator(BroadcastDiagonalOperator):
@@ -229,6 +231,17 @@ class DiagonalOperator(BroadcastDiagonalOperator):
         >>> assert_allclose(x['ground'] * detector_gains, y['ground'])
     """
 
+    def __init__(
+        self,
+        diagonal: ArrayLike,
+        *,
+        axis_destination: int | Sequence[int] = -1,
+        in_structure: PyTree[jax.ShapeDtypeStruct] | None = None,
+    ):
+        if in_structure is None:
+            in_structure = as_structure(diagonal)
+        super().__init__(diagonal, axis_destination=axis_destination, in_structure=in_structure)
+
     def _check_leaf_shapes(
         self,
         diagonal_shape: tuple[int, ...],
@@ -242,7 +255,7 @@ class DiagonalOperator(BroadcastDiagonalOperator):
                 f'by a DiagonalOperator. For broadcasting, use BroadcastDiagonalOperator.'
             )
 
-    def inverse(self) -> 'AbstractLinearOperator':
+    def inverse(self) -> AbstractLinearOperator:
         return DiagonalInverseOperator(self)
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
@@ -250,25 +263,27 @@ class DiagonalOperator(BroadcastDiagonalOperator):
             jnp.broadcast_to(
                 self._reshape_diagonal(self._normalize_axes(leaf.shape), leaf.ndim), leaf.shape
             ).ravel()
-            for leaf in jax.tree.leaves(self.in_structure())
+            for leaf in jax.tree.leaves(self.in_structure)
         ]
         matrix = jnp.diag(jnp.concatenate(diagonals, dtype=self.out_promoted_dtype))
         return matrix
 
 
 class DiagonalInverseOperator(DiagonalOperator, AbstractLazyInverseOperator):
+    operator: DiagonalOperator  # More specific type hint than parent class
+
     def __init__(self, operator: DiagonalOperator) -> None:
-        AbstractLazyInverseOperator.__init__(self, operator)
-        DiagonalOperator.__init__(
-            self,
-            operator._diagonal,
-            axis_destination=operator.axis_destination,
-            in_structure=operator.in_structure(),
-        )
+        # We cannot use super().__init__ here because the MRO would route through
+        # AbstractLazyInverseOperator which expects an 'operator' argument.
+        # Instead, we manually initialize the attributes from both parent classes.
+        object.__setattr__(self, 'operator', operator)
+        object.__setattr__(self, '_diagonal', operator._diagonal)
+        object.__setattr__(self, 'axis_destination', operator.axis_destination)
+        object.__setattr__(self, 'in_structure', operator.in_structure)
 
     @property
     def diagonal(self) -> PyTree[Inexact[Array, '...']]:
-        return jnp.where(self._diagonal != 0, 1 / self._diagonal, 0)
+        return jnp.where(self.operator._diagonal != 0, 1 / self.operator._diagonal, 0)
 
-    def inverse(self) -> 'AbstractLinearOperator':
+    def inverse(self) -> AbstractLinearOperator:
         return self.operator

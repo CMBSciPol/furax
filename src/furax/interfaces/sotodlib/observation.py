@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jax.numpy as jnp
 import numpy as np
@@ -19,6 +19,7 @@ from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math import quaternion
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
+from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
 
 
 class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
@@ -122,6 +123,25 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         """Returns the timestream data."""
         tods = jnp.array(self.data.signal, dtype=jnp.float64)
         return jnp.atleast_2d(tods)
+
+    def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> StokesPyTreeType:
+        """Returns the demodulated timestream data as a Stokes pytree.
+
+        'IQUV' is not supported.
+        """
+        if stokes == 'IQUV':
+            raise NotImplementedError
+        kls = Stokes.class_for(stokes)
+        return kls.from_iquv(**{s: self._get_demodulated_tod(s) for s in stokes})  # type: ignore[arg-type]
+
+    def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> Array:
+        attr = {
+            'I': 'dsT',
+            'Q': 'demodQ',
+            'U': 'demodU',
+        }[stoke]
+        tod = jnp.array(getattr(self.data, attr), dtype=jnp.float64)
+        return jnp.atleast_2d(tod)
 
     def get_detector_offset_angles(self) -> Array:
         """Returns the detector offset angles."""

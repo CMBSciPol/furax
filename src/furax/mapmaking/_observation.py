@@ -13,6 +13,7 @@ from numpy.typing import NDArray
 
 from furax.math.quaternion import qmul, to_lonlat_angles
 from furax.obs.landscapes import StokesLandscape
+from furax.obs.stokes import ValidStokesType
 
 from .noise import NoiseModel
 
@@ -105,6 +106,13 @@ class AbstractObservation(ABC, Generic[T]):
     @abstractmethod
     def get_tods(self) -> Array:
         """Returns the timestream data."""
+
+    def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> Any:
+        """Returns demodulated timestream data as a Stokes pytree.
+
+        Subclasses that support demodulated data should override this method.
+        """
+        raise NotImplementedError(f'{type(self).__name__} does not support demodulated TODs')
 
     @abstractmethod
     def get_detector_offset_angles(self) -> Array:

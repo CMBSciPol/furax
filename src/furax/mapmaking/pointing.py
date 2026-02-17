@@ -11,7 +11,7 @@ from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
 from furax.math.quaternion import qmul, qrot_xaxis, qrot_zaxis, to_gamma_angles
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.stokes import StokesI, StokesIQU, StokesIQUV, StokesPyTreeType, StokesQU
+from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesIQUV, StokesPyTreeType, StokesQU
 
 __all__ = [
     'PointingOperator',
@@ -32,8 +32,32 @@ class PointingOperator(AbstractLinearOperator):
     landscape: StokesLandscape
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
+    chunk_size: int = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
-    chunk_size: int = field(default=16, metadata={'static': True})
+
+    @classmethod
+    def create(
+        cls,
+        landscape: StokesLandscape,
+        boresight_quaternions: Float[Array, 'samp 4'],
+        detector_quaternions: Float[Array, 'det 4'],
+        *,
+        chunk_size: int = 16,
+    ) -> 'PointingOperator':
+        # explicitly determine the output structure
+        ndet = detector_quaternions.shape[0]
+        nsamp = boresight_quaternions.shape[0]
+        out_structure = Stokes.class_for(landscape.stokes).structure_for(
+            (ndet, nsamp), dtype=landscape.dtype
+        )
+        return cls(
+            landscape,
+            qbore=boresight_quaternions,
+            qdet=detector_quaternions,
+            chunk_size=chunk_size,
+            in_structure=landscape.structure,
+            _out_structure=out_structure,
+        )
 
     @jit
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:

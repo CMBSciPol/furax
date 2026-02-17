@@ -130,7 +130,12 @@ class MultiObservationMapMaker(Generic[T]):
 
     def get_reader(self, data_field_names: list[str]) -> ObservationReader[T]:
         """Returns a reader for a list of requested fields."""
-        return ObservationReader(self.observations, requested_fields=data_field_names)
+        return ObservationReader(
+            self.observations,
+            requested_fields=data_field_names,
+            demodulated=self.config.demodulated,
+            stokes=self.config.stokes,
+        )
 
     def make_maps(self) -> MapMakingResults:
         """Computes the mapmaker results (maps and other products)."""
@@ -256,6 +261,7 @@ class MultiObservationMapMaker(Generic[T]):
             'detector_quaternions',
         ]
         if not self.config.demodulated:
+            # FIXME: this does not handle the case of a telescope without HWP
             required_fields.append('hwp_angles')
         reader = self.get_reader(required_fields)
         dtype = self.config.dtype
@@ -267,6 +273,7 @@ class MultiObservationMapMaker(Generic[T]):
                 self.landscape,
                 boresight_quaternions=data['boresight_quaternions'],
                 detector_quaternions=data['detector_quaternions'],
+                demodulated=self.config.demodulated,
                 hwp_angles=data.get('hwp_angles'),
                 pointing_chunk_size=self.config.pointing_chunk_size,
                 pointing_on_the_fly=self.config.pointing_on_the_fly,
@@ -302,8 +309,8 @@ class MultiObservationMapMaker(Generic[T]):
         models_and_fs = (
             self._fit_noise_models() if self.config.fit_noise_model else self._read_noise_models()
         )
-        # return two lists
-        return [m for m, _ in models_and_fs], [fs for _, fs in models_and_fs]
+        models, sample_rates = zip(*models_and_fs)
+        return list(models), list(sample_rates)
 
     def accumulate_rhs(
         self,
@@ -327,6 +334,7 @@ class MultiObservationMapMaker(Generic[T]):
             tod = data['sample_data']
             if cov_block is not None and indexer is not None:
                 # perform gap-filling if a noise covariance and an IndexOperator are provided
+                # FIXME: probably broken with demodulated data
                 gapfill = GapFillingOperator(
                     cov_block,
                     indexer,
@@ -446,6 +454,7 @@ def _build_acquisition_operator(
     landscape: StokesLandscape,
     boresight_quaternions: Array,
     detector_quaternions: Array,
+    demodulated: bool,
     hwp_angles: Array | None,
     pointing_chunk_size: int,
     pointing_on_the_fly: bool,
@@ -454,38 +463,39 @@ def _build_acquisition_operator(
     """Build an acquisition operator for a single observation. Does not include masking."""
     if not pointing_on_the_fly:
         raise NotImplementedError
+
     ndet = detector_quaternions.shape[0]
     nsamp = boresight_quaternions.shape[0]
     data_shape = (ndet, nsamp)
+
+    # if no HWP angles are provided, we can rotate directly into the detector frame
+    pointing = PointingOperator.create(
+        landscape,
+        boresight_quaternions,
+        detector_quaternions,
+        chunk_size=pointing_chunk_size,
+        frame='detector' if hwp_angles is None else 'boresight',
+    )
+
+    # demodulated case: independent I/Q/U time streams, no polarizer
+    # CAUTION: assumes demodulation takes care of "polarisation angle flip from HWP"
+    if demodulated:
+        return pointing
+
+    # if not demodulated, we need a polarizer at the end
+    # if the telescope has no HWP, no need to rotate because already in detector frame
     if hwp_angles is None:
-        # no HWP, simplify acquisition by rotating directly into the detector frame
-        # and having no rotation before the polarizer
-        pointing = PointingOperator.create(
-            landscape,
-            boresight_quaternions,
-            detector_quaternions,
-            chunk_size=pointing_chunk_size,
-            frame='detector',
-        )
         polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=dtype)
-        acquisition = polarizer @ pointing
-    else:
-        # there is a HWP, so we need to rotate into the telescope frame
-        # because the HWP angle is expressed in that frame
-        pointing = PointingOperator.create(
-            landscape,
-            boresight_quaternions,
-            detector_quaternions,
-            chunk_size=pointing_chunk_size,
-            frame='boresight',
-        )
-        hwp = HWPOperator.create(shape=data_shape, dtype=dtype, angles=hwp_angles)
-        polarizer = LinearPolarizerOperator.create(
-            shape=data_shape,
-            dtype=dtype,
-            angles=to_gamma_angles(detector_quaternions)[:, None],
-        )
-        acquisition = polarizer @ hwp @ pointing
+        return polarizer @ pointing
+
+    # if we get this far, that means the acquisition should include HWP modulation
+    hwp = HWPOperator.create(shape=data_shape, dtype=dtype, angles=hwp_angles)
+    polarizer = LinearPolarizerOperator.create(
+        shape=data_shape,
+        dtype=dtype,
+        angles=to_gamma_angles(detector_quaternions)[:, None],
+    )
+    acquisition = polarizer @ hwp @ pointing
     return acquisition.reduce()
 
 

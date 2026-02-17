@@ -470,7 +470,7 @@ def _build_acquisition_operator(
             boresight_quaternions,
             detector_quaternions,
             chunk_size=pointing_chunk_size,
-            frame='telescope',
+            frame='boresight',
         )
         hwp = HWPOperator.create(shape=data_shape, dtype=dtype, angles=hwp_angles)
         polarizer = LinearPolarizerOperator.create(

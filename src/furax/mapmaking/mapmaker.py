@@ -445,43 +445,41 @@ def _build_acquisition_operator(
     dtype: DTypeLike = jnp.float64,
 ) -> AbstractLinearOperator:
     """Build an acquisition operator for a single observation. Does not include masking."""
-    pointing = _build_pointing_operator(
-        landscape,
-        boresight_quaternions,
-        detector_quaternions,
-        on_the_fly=pointing_on_the_fly,
-        chunk_size=pointing_chunk_size,
-    )
+    if not pointing_on_the_fly:
+        raise NotImplementedError
     ndet = detector_quaternions.shape[0]
     nsamp = boresight_quaternions.shape[0]
     data_shape = (ndet, nsamp)
-    gamma = to_gamma_angles(detector_quaternions)
-    polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=dtype, angles=gamma[:, None])
     if hwp_angles is None:
+        # no HWP, simplify acquisition by rotating directly into the detector frame
+        # and having no rotation before the polarizer
+        pointing = PointingOperator.create(
+            landscape,
+            boresight_quaternions,
+            detector_quaternions,
+            chunk_size=pointing_chunk_size,
+            frame='detector',
+        )
+        polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=dtype)
         acquisition = polarizer @ pointing
     else:
+        # there is a HWP, so we need to rotate into the telescope frame
+        # because the HWP angle is expressed in that frame
+        pointing = PointingOperator.create(
+            landscape,
+            boresight_quaternions,
+            detector_quaternions,
+            chunk_size=pointing_chunk_size,
+            frame='telescope',
+        )
         hwp = HWPOperator.create(shape=data_shape, dtype=dtype, angles=hwp_angles)
+        polarizer = LinearPolarizerOperator.create(
+            shape=data_shape,
+            dtype=dtype,
+            angles=to_gamma_angles(detector_quaternions)[:, None],
+        )
         acquisition = polarizer @ hwp @ pointing
     return acquisition.reduce()
-
-
-def _build_pointing_operator(
-    landscape: StokesLandscape,
-    boresight_quaternions: Array,
-    detector_quaternions: Array,
-    chunk_size: int,
-    on_the_fly: bool = True,
-) -> AbstractLinearOperator:
-    if not on_the_fly:
-        # get full pixels and weights from TOAST/SOTODLib
-        raise NotImplementedError
-
-    return PointingOperator.create(
-        landscape,
-        boresight_quaternions,
-        detector_quaternions,
-        chunk_size=chunk_size,
-    )
 
 
 def _build_mask_projector(

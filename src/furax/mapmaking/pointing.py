@@ -1,5 +1,6 @@
 from dataclasses import field
 from functools import partial
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -33,6 +34,7 @@ class PointingOperator(AbstractLinearOperator):
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
     chunk_size: int = field(metadata={'static': True})
+    sub_gamma: bool = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
 
     @classmethod
@@ -43,6 +45,7 @@ class PointingOperator(AbstractLinearOperator):
         detector_quaternions: Float[Array, 'det 4'],
         *,
         chunk_size: int = 16,
+        frame: Literal['telescope', 'detector'] = 'telescope',
     ) -> 'PointingOperator':
         # explicitly determine the output structure
         ndet = detector_quaternions.shape[0]
@@ -54,6 +57,7 @@ class PointingOperator(AbstractLinearOperator):
             landscape,
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
+            sub_gamma=frame == 'telescope',
             chunk_size=chunk_size,
             in_structure=landscape.structure,
             _out_structure=out_structure,
@@ -77,8 +81,9 @@ class PointingOperator(AbstractLinearOperator):
                 return tod
 
             # Get the angles to rotate into the telescope frame
-            gamma = to_gamma_angles(qdet)
-            angles = get_local_meridian_angle(qdet_full) - gamma[:, None]
+            angles = get_local_meridian_angle(qdet_full)
+            if self.sub_gamma:
+                angles -= to_gamma_angles(qdet)[:, None]
 
             cos_2angles = jnp.cos(2 * angles)
             sin_2angles = jnp.sin(2 * angles)
@@ -154,8 +159,9 @@ class PointingTransposeOperator(TransposeOperator):
                 return self._point(xchunk, indices)
 
             # Get the angles to rotate back to the celestial frame
-            gamma = to_gamma_angles(qdet)
-            angles = get_local_meridian_angle(qdet_full) - gamma[:, None]
+            angles = get_local_meridian_angle(qdet_full)
+            if self.operator.sub_gamma:
+                angles -= to_gamma_angles(qdet)[:, None]
 
             cos_2angles = jnp.cos(2 * angles)
             sin_2angles = jnp.sin(2 * angles)

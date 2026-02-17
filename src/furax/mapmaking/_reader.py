@@ -10,6 +10,7 @@ from jax.tree_util import register_static
 from jaxtyping import PyTree, UInt32
 
 from furax.io.readers import AbstractReader
+from furax.obs.stokes import Stokes, ValidStokesType
 
 from ._observation import (
     AbstractLazyObservation,
@@ -46,13 +47,19 @@ class ObservationReader(AbstractReader, Generic[T]):
         observations: Sequence[AbstractLazyObservation[T]],
         *,
         requested_fields: list[str] | None = None,
+        demodulated: bool = False,
+        stokes: ValidStokesType = 'IQU',
     ) -> None:
         """Initializes the reader with a list of filenames and optional list of field names.
 
         Args:
             filenames: A list of filenames. Each filename can be a string or a Path object.
             requested_fields: Optional list of fields to load. If None, read all non-optional fields.
+            demodulated: Whether to read demodulated TODs.
+            stokes: Stokes components to read when demodulated.
         """
+        self.demodulated = demodulated
+        self.stokes = stokes
         interface = observations[0].interface_class
         available = set(interface.AVAILABLE_READER_FIELDS)
         optional = set(interface.OPTIONAL_READER_FIELDS)
@@ -144,17 +151,26 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         return data, padding
 
-    @classmethod
     def _get_data_field_structures_for(
-        cls, n_detectors: int, n_samples: int
+        self, n_detectors: int, n_samples: int
     ) -> PyTree[jax.ShapeDtypeStruct]:
+        demodulated = self.demodulated
+        stokes = self.stokes
+
+        tod_shape = (n_detectors, n_samples)
+        sample_data_structure = (
+            Stokes.class_for(stokes).structure_for(tod_shape, jnp.float64)
+            if demodulated
+            else jax.ShapeDtypeStruct(tod_shape, jnp.float64)
+        )
+
         return {
             'metadata': HashedObservationMetadata(
                 uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
                 telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
                 detector_uids=jax.ShapeDtypeStruct((n_detectors,), dtype=jnp.uint32),  # type: ignore[arg-type]
             ),
-            'sample_data': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.float64),
+            'sample_data': sample_data_structure,
             'valid_sample_masks': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.bool),
             'valid_scanning_masks': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
             'timestamps': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
@@ -164,8 +180,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             'noise_model_fits': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
         }
 
-    @classmethod
-    def _get_data_field_readers(cls):  # type: ignore[no-untyped-def]
+    def _get_data_field_readers(self):  # type: ignore[no-untyped-def]
         def if_none_raise_error(x: Any) -> Any:
             if x is None:
                 raise ValueError('Data field not available')
@@ -178,9 +193,19 @@ class ObservationReader(AbstractReader, Generic[T]):
                 detector_uids=jnp.asarray(_names_to_uids(obs.detectors)),
             )
 
+        demodulated = self.demodulated
+        stokes = self.stokes
+
+        def get_sample_data(obs: AbstractObservation[T]) -> Any:
+            if demodulated:
+                tods = obs.get_demodulated_tods(stokes=stokes)
+            else:
+                tods = obs.get_tods()
+            return jax.tree.map(lambda x: x.astype(jnp.float64), tods)
+
         return {
             'metadata': lambda obs: get_metadata(obs),
-            'sample_data': lambda obs: obs.get_tods().astype(jnp.float64),
+            'sample_data': get_sample_data,
             'valid_sample_masks': lambda obs: obs.get_sample_mask(),
             'valid_scanning_masks': lambda obs: obs.get_scanning_mask(),
             'timestamps': lambda obs: obs.get_timestamps(),
@@ -201,7 +226,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         n_detectors = data.n_detectors
         n_samples = data.n_samples
 
-        field_structure = ObservationReader._get_data_field_structures_for(
+        field_structure = self._get_data_field_structures_for(
             n_detectors=n_detectors, n_samples=n_samples
         )
         return {field: field_structure[field] for field in data_field_names}
@@ -210,7 +235,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         self, observation: AbstractLazyObservation[T], data_field_names: list[str]
     ) -> PyTree[Array]:
         data = observation.get_data(data_field_names)
-        field_reader = ObservationReader._get_data_field_readers()
+        field_reader = self._get_data_field_readers()
         return {field: field_reader[field](data) for field in data_field_names}
 
 

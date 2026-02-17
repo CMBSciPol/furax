@@ -104,12 +104,15 @@ class MultiObservationMapMaker(Generic[T]):
         observations: Sequence[AbstractLazyObservation[T]],
         config: MapMakingConfig | None = None,
         logger: Logger | None = None,
-        stokes: ValidStokesType = 'IQU',  # TODO: shoudn't this be in the config?
     ) -> None:
         self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
-        self.landscape = _build_landscape(self.config, stokes=stokes)
+        if self.config.stokes != 'IQU':
+            # TODO: test that stokes != 'IQU' is fine before enabling this
+            msg = f"MultiObservationMapMaker only supports stokes='IQU', got '{self.config.stokes}'"
+            raise ValueError(msg)
+        self.landscape = _build_landscape(self.config)
 
     def run(self, out_dir: str | Path | None = None) -> MapMakingResults:
         """Runs the mapmaker and return results after saving them to the given directory."""
@@ -427,9 +430,13 @@ def _hwp_frequency(timestamps: Float[Array, '...'], hwp_angles: Float[Array, '..
     return (jnp.unwrap(hwp_angles)[-1] - hwp_angles[0]) / jnp.ptp(timestamps) / (2 * jnp.pi)
 
 
-def _build_landscape(config: MapMakingConfig, stokes: ValidStokesType = 'IQU') -> StokesLandscape:
+def _build_landscape(config: MapMakingConfig) -> StokesLandscape:
     if config.landscape.type == Landscapes.HPIX:
-        return HealpixLandscape(nside=config.landscape.nside, stokes=stokes, dtype=config.dtype)
+        return HealpixLandscape(
+            nside=config.landscape.nside,
+            stokes=config.stokes,
+            dtype=config.dtype,
+        )
     if config.landscape.type == Landscapes.WCS:
         raise NotImplementedError
     raise NotImplementedError

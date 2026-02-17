@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field, fields
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jax.numpy as jnp
 import yaml
@@ -164,6 +164,7 @@ class GapsConfig:
 class MapMakingConfig:
     method: Methods = Methods.BINNED
     binned: bool = True
+    stokes: Literal['I', 'QU', 'IQU', 'IQUV'] = 'IQU'
     demodulated: bool = False
     scanning_mask: bool = False
     sample_mask: bool = False

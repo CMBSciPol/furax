@@ -45,7 +45,7 @@ class PointingOperator(AbstractLinearOperator):
         detector_quaternions: Float[Array, 'det 4'],
         *,
         chunk_size: int = 16,
-        frame: Literal['telescope', 'detector'] = 'telescope',
+        frame: Literal['boresight', 'detector'] = 'boresight',
     ) -> 'PointingOperator':
         # explicitly determine the output structure
         ndet = detector_quaternions.shape[0]
@@ -57,7 +57,7 @@ class PointingOperator(AbstractLinearOperator):
             landscape,
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
-            sub_gamma=frame == 'telescope',
+            sub_gamma=frame == 'boresight',
             chunk_size=chunk_size,
             in_structure=landscape.structure,
             _out_structure=out_structure,

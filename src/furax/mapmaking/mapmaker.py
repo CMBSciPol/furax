@@ -471,21 +471,15 @@ def _build_pointing_operator(
     detector_quaternions: Array,
     chunk_size: int,
     on_the_fly: bool = True,
-    dtype: DTypeLike = jnp.float64,
 ) -> AbstractLinearOperator:
     if not on_the_fly:
         # get full pixels and weights from TOAST/SOTODLib
         raise NotImplementedError
 
-    ndet = detector_quaternions.shape[0]
-    nsamp = boresight_quaternions.shape[0]
-
-    return PointingOperator(
-        landscape=landscape,
-        qbore=boresight_quaternions,
-        qdet=detector_quaternions,
-        in_structure=landscape.structure,
-        _out_structure=Stokes.class_for(landscape.stokes).structure_for((ndet, nsamp), dtype=dtype),
+    return PointingOperator.create(
+        landscape,
+        boresight_quaternions,
+        detector_quaternions,
         chunk_size=chunk_size,
     )
 
@@ -599,14 +593,10 @@ class MapMaker:
         det_off_ang = observation.get_detector_offset_angles().astype(landscape.dtype)
 
         if self.config.pointing_on_the_fly:
-            pointing = PointingOperator(
-                landscape=landscape,
-                qbore=observation.get_boresight_quaternions(),
-                qdet=observation.get_detector_quaternions(),
-                in_structure=landscape.structure,
-                _out_structure=Stokes.class_for(landscape.stokes).structure_for(
-                    (observation.n_detectors, observation.n_samples), dtype=landscape.dtype
-                ),
+            pointing = PointingOperator.create(
+                landscape,
+                observation.get_boresight_quaternions(),
+                observation.get_detector_quaternions(),
                 chunk_size=self.config.pointing_chunk_size,
             )
             return pointing

@@ -251,8 +251,9 @@ class MultiObservationMapMaker(Generic[T]):
         required_fields = [
             'boresight_quaternions',
             'detector_quaternions',
-            'hwp_angles',
         ]
+        if not self.config.demodulated:
+            required_fields.append('hwp_angles')
         reader = self.get_reader(required_fields)
         dtype = self.config.dtype
 
@@ -261,7 +262,9 @@ class MultiObservationMapMaker(Generic[T]):
             data, _padding = reader.read(i)
             return _build_acquisition_operator(
                 self.landscape,
-                **data,
+                boresight_quaternions=data['boresight_quaternions'],
+                detector_quaternions=data['detector_quaternions'],
+                hwp_angles=data.get('hwp_angles'),
                 pointing_chunk_size=self.config.pointing_chunk_size,
                 pointing_on_the_fly=self.config.pointing_on_the_fly,
                 dtype=dtype,
@@ -436,7 +439,7 @@ def _build_acquisition_operator(
     landscape: StokesLandscape,
     boresight_quaternions: Array,
     detector_quaternions: Array,
-    hwp_angles: Array,
+    hwp_angles: Array | None,
     pointing_chunk_size: int,
     pointing_on_the_fly: bool,
     dtype: DTypeLike = jnp.float64,
@@ -454,8 +457,11 @@ def _build_acquisition_operator(
     data_shape = (ndet, nsamp)
     gamma = to_gamma_angles(detector_quaternions)
     polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=dtype, angles=gamma[:, None])
-    hwp = HWPOperator.create(shape=data_shape, dtype=dtype, angles=hwp_angles)
-    acquisition = polarizer @ hwp @ pointing
+    if hwp_angles is None:
+        acquisition = polarizer @ pointing
+    else:
+        hwp = HWPOperator.create(shape=data_shape, dtype=dtype, angles=hwp_angles)
+        acquisition = polarizer @ hwp @ pointing
     return acquisition.reduce()
 
 

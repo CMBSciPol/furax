@@ -250,27 +250,10 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_noise_model(self) -> None | NoiseModel:
         """Load precomputed noise model from the data, if present. Otherwise, return None"""
-
-        preproc = self.data.get('preprocess')
-        if preproc is None:
+        try:
+            return self._get_noise_model_for_stoke('I')
+        except ValueError:
             return None
-
-        if 'noiseT' in preproc:
-            fit = preproc.noiseT
-        else:
-            return None
-
-        # sotodlib fit's columns: (w, fknee, alpha), with
-        # psd = wn**2 * (1 + (fknee / f) ** alpha)
-        # Note the difference in the sign of alpha
-        assert np.all(fit.noise_model_coeffs.vals == np.array(['white_noise', 'fknee', 'alpha']))
-
-        return AtmosphericNoiseModel(
-            sigma=jnp.array(fit.fit[:, 0]),
-            alpha=jnp.array(-fit.fit[:, 2]),
-            fk=jnp.array(fit.fit[:, 1]),
-            f0=1e-5 * jnp.ones_like(fit.fit[:, 1]),
-        )
 
     def get_demodulated_noise_models(self, stokes: ValidStokesType = 'IQU') -> StokesPyTreeType:
         """Returns per-Stokes noise model fit arrays as a Stokes pytree."""
@@ -288,6 +271,9 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if attr not in preproc:
             raise ValueError(f'No {attr} noise model available')
         fit = getattr(preproc, attr)
+        # sotodlib fit's columns: (w, fknee, alpha), with
+        # psd = wn**2 * (1 + (fknee / f) ** alpha)
+        # Note the difference in the sign of alpha
         assert np.all(fit.noise_model_coeffs.vals == np.array(['white_noise', 'fknee', 'alpha']))
         return AtmosphericNoiseModel(
             sigma=jnp.array(fit.fit[:, 0]),

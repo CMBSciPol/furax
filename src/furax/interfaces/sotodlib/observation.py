@@ -138,7 +138,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if stokes == 'IQUV':
             raise NotImplementedError
         kls = Stokes.class_for(stokes)
-        return kls.from_iquv(**{s: self._get_demodulated_tod(s) for s in stokes})  # type: ignore[arg-type]
+        tods = tuple(self._get_demodulated_tod(s) for s in stokes)  # type: ignore[arg-type]
+        return kls.from_stokes(*tods)
 
     def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> Array:
         attr = {

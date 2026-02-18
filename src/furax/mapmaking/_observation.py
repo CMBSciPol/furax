@@ -114,6 +114,15 @@ class AbstractObservation(ABC, Generic[T]):
         """
         raise NotImplementedError(f'{type(self).__name__} does not support demodulated TODs')
 
+    def get_demodulated_noise_models(self, stokes: ValidStokesType = 'IQU') -> Any:
+        """Returns per-Stokes pre-computed noise model fit arrays as a Stokes pytree.
+
+        Subclasses that support demodulated data should override this method.
+        """
+        raise NotImplementedError(
+            f'{type(self).__name__} does not support demodulated noise models'
+        )
+
     @abstractmethod
     def get_detector_offset_angles(self) -> Array:
         """Returns the detector offset angles ('gamma')."""

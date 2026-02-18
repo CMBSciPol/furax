@@ -64,6 +64,9 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 fields.append('focal_plane')
             if 'noise_model_fits' in requested_fields:
                 fields.append('preprocess.noiseT')
+                # TODO: only include those if running demodulated?
+                fields.append('preprocess.noiseQ')
+                fields.append('preprocess.noiseU')
 
         data = AxisManager.load(filename, fields=fields)
         return cls(data)

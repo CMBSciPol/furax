@@ -412,17 +412,25 @@ class MultiObservationMapMaker(Generic[T]):
         reader = self.get_reader(['sample_data', 'timestamps', 'hwp_angles'])
 
         # Choose noise model based on mapmaker configuration
-        cls = WhiteNoiseModel if self.config.binned else AtmosphericNoiseModel
+        noise_model_class = WhiteNoiseModel if self.config.binned else AtmosphericNoiseModel
+
+        # Helper function to use in a jax.tree.map() call below
+        def _compute_Pxx_and_fit(tod, fs, fhwp):  # type: ignore[no-untyped-def]
+            f, Pxx = jax.scipy.signal.welch(tod, fs=fs, nperseg=self.config.nperseg)
+            return noise_model_class.fit_psd_model(
+                f,
+                Pxx,
+                sample_rate=fs,
+                hwp_frequency=fhwp,
+                config=self.config.noise_fit,
+            )
 
         @jax.jit
         def fit_model(i):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
             fs = _sample_rate(data['timestamps'])
-            hwp_frequency = _hwp_frequency(data['timestamps'], data['hwp_angles'])
-            f, Pxx = jax.scipy.signal.welch(data['sample_data'], fs=fs, nperseg=self.config.nperseg)
-            model = cls.fit_psd_model(
-                f, Pxx, sample_rate=fs, hwp_frequency=hwp_frequency, config=self.config.noise_fit
-            )
+            fhwp = _hwp_frequency(data['timestamps'], data['hwp_angles'])
+            model = jax.tree.map(lambda x: _compute_Pxx_and_fit(x, fs, fhwp), data['sample_data'])
             return model, fs
 
         return jax.tree.map(fit_model, list(range(reader.count)))  # type: ignore[no-any-return]

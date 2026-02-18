@@ -142,12 +142,13 @@ class ObservationReader(AbstractReader, Generic[T]):
                 zero_padded[:, None], last_quaternion[None, :], data['boresight_quaternions']
             )
         if 'noise_model_fits' in data_field_names:
-            zero_padded = data['noise_model_fits'][:, 0] == 0.0
-            data['noise_model_fits'] = jnp.where(
-                zero_padded[:, None],
-                jnp.array([[0.0, 0.0, 1.0, 0.1]]),
-                data['noise_model_fits'],
-            )
+            default = jnp.array([[0.0, 0.0, 1.0, 0.1]])
+
+            def _pad_noise_fits(arr: Array) -> Array:
+                zero_padded = arr[:, 0] == 0.0
+                return jnp.where(zero_padded[:, None], default, arr)
+
+            data['noise_model_fits'] = jax.tree.map(_pad_noise_fits, data['noise_model_fits'])
 
         return data, padding
 
@@ -177,7 +178,11 @@ class ObservationReader(AbstractReader, Generic[T]):
             'hwp_angles': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
             'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
             'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), jnp.float64),
-            'noise_model_fits': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
+            'noise_model_fits': (
+                Stokes.class_for(stokes).structure_for((n_detectors, 4), jnp.float64)
+                if demodulated
+                else jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64)
+            ),
         }
 
     def _get_data_field_readers(self):  # type: ignore[no-untyped-def]
@@ -212,7 +217,11 @@ class ObservationReader(AbstractReader, Generic[T]):
             'hwp_angles': lambda obs: obs.get_hwp_angles(),
             'detector_quaternions': lambda obs: obs.get_detector_quaternions(),
             'boresight_quaternions': lambda obs: obs.get_boresight_quaternions(),
-            'noise_model_fits': lambda obs: if_none_raise_error(obs.get_noise_model()).to_array(),
+            'noise_model_fits': (
+                (lambda obs: obs.get_demodulated_noise_models(stokes=stokes))
+                if demodulated
+                else (lambda obs: if_none_raise_error(obs.get_noise_model()).to_array())
+            ),
         }
 
     def _read_structure_impure(

@@ -34,11 +34,12 @@ def make_observations(name: str) -> list:
     return [LazySOTODLibObservation(f) for f in files]
 
 
-def make_config(demodulated: bool = False) -> MapMakingConfig:
+def make_config(demodulated: bool = False, fit_noise_model: bool = True) -> MapMakingConfig:
     return MapMakingConfig(
         pointing_on_the_fly=True,
         landscape=LandscapeConfig(type=Landscapes.HPIX, nside=16),
         demodulated=demodulated,
+        fit_noise_model=fit_noise_model,
     )
 
 
@@ -56,9 +57,10 @@ def test_acquisitions(name, demodulated):
 
 
 @pytest.mark.parametrize('name,demodulated', PARAMS)
-def test_noise_models(name, demodulated):
+@pytest.mark.parametrize('fit_models', [True, False])
+def test_noise_models(name, demodulated: bool, fit_models: bool):
     observations = make_observations(name)
-    config = make_config(demodulated)
+    config = make_config(demodulated=demodulated, fit_noise_model=fit_models)
     maker = MultiObservationMapMaker(observations, config=config)
     noise_models, _ = maker.noise_models_and_sample_rates()
     assert len(noise_models) == len(observations)

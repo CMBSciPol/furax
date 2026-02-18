@@ -274,6 +274,30 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             f0=1e-5 * jnp.ones_like(fit.fit[:, 1]),
         )
 
+    def get_demodulated_noise_models(self, stokes: ValidStokesType = 'IQU') -> StokesPyTreeType:
+        """Returns per-Stokes noise model fit arrays as a Stokes pytree."""
+        if stokes == 'IQUV':
+            raise NotImplementedError
+        kls = Stokes.class_for(stokes)
+        arrays = tuple(self._get_noise_model_for_stoke(s).to_array() for s in stokes)  # type: ignore[arg-type]
+        return kls.from_stokes(*arrays)
+
+    def _get_noise_model_for_stoke(self, stoke: Literal['I', 'Q', 'U']) -> AtmosphericNoiseModel:
+        preproc = self.data.get('preprocess')
+        if preproc is None:
+            raise ValueError('No preprocess data available')
+        attr = {'I': 'noiseT', 'Q': 'noiseQ', 'U': 'noiseU'}[stoke]
+        if attr not in preproc:
+            raise ValueError(f'No {attr} noise model available')
+        fit = getattr(preproc, attr)
+        assert np.all(fit.noise_model_coeffs.vals == np.array(['white_noise', 'fknee', 'alpha']))
+        return AtmosphericNoiseModel(
+            sigma=jnp.array(fit.fit[:, 0]),
+            alpha=jnp.array(-fit.fit[:, 2]),
+            fk=jnp.array(fit.fit[:, 1]),
+            f0=1e-5 * jnp.ones_like(fit.fit[:, 1]),
+        )
+
     '''
     def get_noise_fits(self, fmin: float) -> NDArray[np.float64]:
         """Returns fitted values of the noise psd with 1/f and white noise,

@@ -399,11 +399,14 @@ class MultiObservationMapMaker(Generic[T]):
         def read_model(i):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
             fs = _sample_rate(data['timestamps'])
-            model = AtmosphericNoiseModel(*data['noise_model_fits'].T)
+            model = jax.tree.map(lambda x: AtmosphericNoiseModel(*x.T), data['noise_model_fits'])
             if self.config.binned:
-                return model.to_white_noise_model(), fs
-            else:
-                return model, fs
+                model = jax.tree.map(
+                    lambda m: m.to_white_noise_model(),
+                    model,
+                    is_leaf=lambda x: isinstance(x, AtmosphericNoiseModel),
+                )
+            return model, fs
 
         return jax.tree.map(read_model, list(range(reader.count)))  # type: ignore[no-any-return]
 

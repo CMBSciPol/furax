@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 
+from furax.obs.stokes import Stokes
+
 pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
 pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
 
@@ -61,7 +63,16 @@ def test_noise_models(name, demodulated):
     noise_models, _ = maker.noise_models_and_sample_rates()
     assert len(noise_models) == len(observations)
     # those must be white noise models in binned mapmaking
-    assert all(isinstance(model, WhiteNoiseModel) for model in noise_models)
+    # in the demodulated case each model is a Stokes pytree of per-component WhiteNoiseModels
+    if demodulated:
+        for model_tree in noise_models:
+            assert isinstance(model_tree, Stokes.class_for(config.stokes))
+            assert all(
+                isinstance(getattr(model_tree, stoke.lower()), WhiteNoiseModel)
+                for stoke in config.stokes
+            )
+    else:
+        assert all(isinstance(model, WhiteNoiseModel) for model in noise_models)
 
 
 @pytest.mark.parametrize('name,demodulated', PARAMS)

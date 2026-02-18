@@ -47,7 +47,7 @@ def test_acquisitions(name, demodulated):
     maker = MultiObservationMapMaker(observations, config=config)
     reader = ObservationReader(observations, demodulated=demodulated)
     operators = maker.build_acquisitions()
-    assert len(operators) == 2
+    assert len(operators) == len(observations)
     for op in operators:
         assert op.in_structure == maker.landscape.structure
         assert op.out_structure == reader.out_structure['sample_data']
@@ -59,7 +59,7 @@ def test_noise_models(name, demodulated):
     config = make_config(demodulated)
     maker = MultiObservationMapMaker(observations, config=config)
     noise_models, _ = maker.noise_models_and_sample_rates()
-    assert len(noise_models) == 2
+    assert len(noise_models) == len(observations)
     # those must be white noise models in binned mapmaking
     assert all(isinstance(model, WhiteNoiseModel) for model in noise_models)
 

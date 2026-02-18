@@ -155,14 +155,9 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Created noise models')
 
         # Build the inverse noise weighting operators
-        w_blocks = [
-            model.inverse_operator(
-                tod_structure,
-                sample_rate=fs,
-                correlation_length=self.config.correlation_length,
-            )
-            for model, fs in zip(noise_models, sample_rates, strict=True)
-        ]
+        w_blocks = self.noise_operator_blocks(
+            noise_models, tod_structure, sample_rates, self.config.correlation_length, inverse=True
+        )
         logger_info('Created weighting operators')
 
         # RHS
@@ -183,14 +178,13 @@ class MultiObservationMapMaker(Generic[T]):
                 return IndexOperator(mask, in_structure=tod_structure)
 
             indexers = [mask2index(op) for op in maskers]
-            c_blocks = [
-                model.operator(
-                    tod_structure,
-                    sample_rate=fs,
-                    correlation_length=self.config.correlation_length,
-                )
-                for model, fs in zip(noise_models, sample_rates, strict=True)
-            ]
+            c_blocks = self.noise_operator_blocks(
+                noise_models,
+                tod_structure,
+                sample_rates,
+                self.config.correlation_length,
+                inverse=False,
+            )
             logger_info('Created covariance blocks and indexers for gap-filling')
             rhs = self.accumulate_rhs(
                 h_blocks, w_blocks, maskers, cov_blocks=c_blocks, indexers=indexers
@@ -211,10 +205,13 @@ class MultiObservationMapMaker(Generic[T]):
             logger_info('Compute full system matrix (diagonal case)')
         else:
             # If ML, use approximate system matrix keeping only diagonal coeffs of weight matrix
-            if not all(isinstance(model, AtmosphericNoiseModel) for model in noise_models):
-                raise ValueError('Expected all noise models to be AtmosphericNoiseModel instances.')
             white_w = BlockDiagonalOperator(
-                model.to_white_noise_model().inverse_operator(tod_structure)  # type: ignore[attr-defined]
+                jax.tree.map(
+                    lambda m, s: m.to_white_noise_model().inverse_operator(s),
+                    model,
+                    tod_structure,
+                    is_leaf=lambda x: isinstance(x, NoiseModel),
+                )
                 for model in noise_models
             )
             sysdiag = BJPreconditioner.create((h.T @ white_w @ h).reduce())
@@ -303,6 +300,31 @@ class MultiObservationMapMaker(Generic[T]):
 
         return jax.tree.map(get_mask_projector, list(range(reader.count)))  # type: ignore[no-any-return]
 
+    @staticmethod
+    def noise_operator_blocks(
+        noise_models: list[PyTree[NoiseModel]],
+        structure: PyTree[jax.ShapeDtypeStruct],
+        sample_rates: list[float],
+        correlation_length: int,
+        *,
+        inverse: bool,
+    ) -> list[PyTree[AbstractLinearOperator]]:
+        """Build (inverse) noise covariance blocks, supporting pytree noise models."""
+
+        return [
+            jax.tree.map(
+                lambda m, s: (m.inverse_operator if inverse else m.operator)(
+                    s,
+                    sample_rate=fs,
+                    correlation_length=correlation_length,
+                ),
+                model,
+                structure,
+                is_leaf=lambda x: isinstance(x, NoiseModel),
+            )
+            for model, fs in zip(noise_models, sample_rates, strict=True)
+        ]
+
     def noise_models_and_sample_rates(self) -> tuple[list[NoiseModel], list[int | float]]:
         """Returns a list of (noise_model, sample_rate) tuples for each observation."""
         # this is a list of tuples
@@ -330,6 +352,7 @@ class MultiObservationMapMaker(Generic[T]):
         @jax.jit
         def get_rhs(i, h_block, w_block, masker, cov_block, indexer):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
+            # FIXME: broken in demodulated case
             rhs_op = h_block.T @ masker @ w_block
             tod = data['sample_data']
             if cov_block is not None and indexer is not None:

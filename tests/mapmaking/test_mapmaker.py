@@ -85,14 +85,13 @@ def test_accumulate_rhs(name, demodulated):
     reader = ObservationReader(observations, demodulated=demodulated)
     tod_structure = reader.out_structure['sample_data']
     noise_models, sample_rates = maker.noise_models_and_sample_rates()
-    w_blocks = [
-        model.inverse_operator(
-            tod_structure,
-            sample_rate=fs,
-            correlation_length=config.correlation_length,
-        )
-        for model, fs in zip(noise_models, sample_rates, strict=True)
-    ]
+    w_blocks = MultiObservationMapMaker.noise_operator_blocks(
+        noise_models,
+        tod_structure,
+        sample_rates,
+        config.correlation_length,
+        inverse=True,
+    )
     h_blocks = maker.build_acquisitions()
     maskers = maker.build_sample_maskers(h_blocks[0].out_structure)
     rhs = maker.accumulate_rhs(h_blocks, w_blocks, maskers)

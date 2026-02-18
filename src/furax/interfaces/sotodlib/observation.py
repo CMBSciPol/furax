@@ -44,7 +44,9 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             if 'metadata' in requested_fields:
                 fields.append('obs_info')
             if 'sample_data' in requested_fields:
-                fields.append('signal')
+                # include both original and demodulated TOD
+                # TODO: choose?
+                fields.extend(['signal', 'dsT', 'demodQ', 'demodU'])
             if 'valid_sample_masks' in requested_fields:
                 fields.append('flags.glitch_flags')
             if 'valid_scanning_masks' in requested_fields:
@@ -55,6 +57,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 fields.append('hwp_angle')
             if 'boresight_quaternions' in requested_fields:
                 fields.append('boresight')
+                # FIXME: why do we need timestamps here?
                 if 'timestamps' not in fields:
                     fields.append('timestamps')
             if 'detector_quaternions' in requested_fields:

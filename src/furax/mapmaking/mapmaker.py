@@ -148,7 +148,7 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Created acquisition operators')
 
         # Sample mask projectors
-        maskers = self.build_sample_maskers()
+        maskers = self.build_sample_maskers(tod_structure)
 
         # Noise weighting
         noise_models, sample_rates = self.noise_models_and_sample_rates()
@@ -282,15 +282,15 @@ class MultiObservationMapMaker(Generic[T]):
 
         return jax.tree.map(get_acquisition, list(range(reader.count)))  # type: ignore[no-any-return]
 
-    def build_sample_maskers(self) -> list[AbstractLinearOperator]:
+    def build_sample_maskers(
+        self, tod_structure: PyTree[jax.ShapeDtypeStruct]
+    ) -> list[AbstractLinearOperator]:
         """Returns the sample mask projector for each observation."""
         # Only read necessary fields
         required_fields = ['valid_sample_masks']
         if self.config.scanning_mask:
             required_fields.append('valid_scanning_masks')
         reader = self.get_reader(required_fields)
-        shape = reader.out_structure['valid_sample_masks'].shape
-        dtype = self.config.dtype
 
         @jax.jit
         def get_mask_projector(i: int) -> AbstractLinearOperator:
@@ -298,7 +298,7 @@ class MultiObservationMapMaker(Generic[T]):
             return _build_mask_projector(
                 data['valid_sample_masks'],
                 data.get('valid_scanning_masks'),
-                structure=jax.ShapeDtypeStruct(shape, dtype),
+                structure=tod_structure,
             )
 
         return jax.tree.map(get_mask_projector, list(range(reader.count)))  # type: ignore[no-any-return]

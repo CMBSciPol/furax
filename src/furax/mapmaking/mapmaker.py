@@ -395,8 +395,10 @@ class MultiObservationMapMaker(Generic[T]):
         and the minimum condition number (cond_cut) criteria"""
 
         # Cut pixels with low number of samples
-        hits_quantile = jnp.quantile(weights[(weights[..., 0, 0] > 0),], q=0.95)
-        valid = weights[..., 0, 0] > self.config.hits_cut * hits_quantile
+        # Use the trace of each pixel's block as a proxy for the number of hits
+        hits = jnp.trace(weights, axis1=-2, axis2=-1)
+        hits_quantile = jnp.quantile(hits[hits > 0], q=0.95)
+        valid = hits > self.config.hits_cut * hits_quantile
 
         if self.config.cond_cut > 0:
             # Cut pixels with poor condition number

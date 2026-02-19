@@ -311,19 +311,23 @@ class MultiObservationMapMaker(Generic[T]):
     ) -> list[PyTree[AbstractLinearOperator]]:
         """Build (inverse) noise covariance blocks, supporting pytree noise models."""
 
-        return [
-            jax.tree.map(
-                lambda m, s: (m.inverse_operator if inverse else m.operator)(
-                    s,
-                    sample_rate=fs,
-                    correlation_length=correlation_length,
-                ),
+        def to_operator(
+            leaf_model: NoiseModel, leaf_structure: jax.ShapeDtypeStruct, fs: float
+        ) -> AbstractLinearOperator:
+            func = leaf_model.inverse_operator if inverse else leaf_model.operator
+            return func(leaf_structure, sample_rate=fs, correlation_length=correlation_length)
+
+        def func_block(model: PyTree[NoiseModel], fs: float) -> BlockDiagonalOperator:
+            # this accomodates an arbitrary pytree of noise models (e.g. StokesIQU for demodulated data)
+            operator_tree = jax.tree.map(
+                lambda leaf, struct: to_operator(leaf, struct, fs),
                 model,
                 structure,
                 is_leaf=lambda x: isinstance(x, NoiseModel),
             )
-            for model, fs in zip(noise_models, sample_rates, strict=True)
-        ]
+            return BlockDiagonalOperator(operator_tree)
+
+        return [func_block(model, fs) for model, fs in zip(noise_models, sample_rates, strict=True)]
 
     def noise_models_and_sample_rates(self) -> tuple[list[NoiseModel], list[int | float]]:
         """Returns a list of (noise_model, sample_rate) tuples for each observation."""

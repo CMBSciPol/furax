@@ -356,7 +356,6 @@ class MultiObservationMapMaker(Generic[T]):
         @jax.jit
         def get_rhs(i, h_block, w_block, masker, cov_block, indexer):  # type: ignore[no-untyped-def]
             data, _padding = reader.read(i)
-            # FIXME: broken in demodulated case
             rhs_op = h_block.T @ masker @ w_block
             tod = data['sample_data']
             if cov_block is not None and indexer is not None:

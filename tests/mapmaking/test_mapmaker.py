@@ -40,6 +40,7 @@ def make_config(demodulated: bool = False, fit_noise_model: bool = True) -> MapM
         landscape=LandscapeConfig(type=Landscapes.HPIX, nside=16),
         demodulated=demodulated,
         fit_noise_model=fit_noise_model,
+        nperseg=512,
     )
 
 

@@ -119,4 +119,4 @@ def test_full_mapmaker(name, demodulated):
     maker = MultiObservationMapMaker(observations, config=config)
     results = maker.run()
     stokes, pixels = results.map.shape
-    assert results.map_weights.shape == (pixels, stokes, stokes)
+    assert results.weights.shape == (stokes, stokes, pixels)

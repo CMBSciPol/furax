@@ -57,7 +57,7 @@ class MapMakingResults:
     map: Float[np.ndarray, 'stokes pixels']
     """The estimated sky map"""
 
-    map_weights: Float[np.ndarray, 'pixels stokes stokes']
+    weights: Float[np.ndarray, 'stokes stokes pixels']
     """The map weights (diagonal covariance matrix)"""
 
     noise_fits: Float[np.ndarray, '...'] | None = None
@@ -249,7 +249,9 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Finished mapmaking')
 
         final_map = np.array([res.i, res.q, res.u])
-        return MapMakingResults(final_map, np.array(map_weights))
+        # move pixels dimensions to last axis
+        weights = jnp.moveaxis(map_weights, 0, -1)
+        return MapMakingResults(final_map, np.array(weights))
 
     def build_acquisitions(self) -> list[AbstractLinearOperator]:
         # Only read necessary fields

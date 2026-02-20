@@ -233,11 +233,14 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Set up the mapmaking operator
         solver = lineax.CG(**asdict(self.config.solver))
-        solver_options = {
-            'preconditioner': as_lineax_operator(precond, OperatorTag.POSITIVE_SEMIDEFINITE)
+        inverse_options = {
+            'solver': solver,
+            'preconditioner': precond,
+            'y0': precond(selector(rhs)),
         }
-        options = {'solver': solver, 'solver_options': solver_options}
-        mapmaking_operator = selector.T @ (selector @ system @ selector.T).I(**options) @ selector
+        mapmaking_operator = (
+            selector.T @ (selector @ system @ selector.T).I(**inverse_options) @ selector
+        )
 
         @jax.jit
         def process():  # type: ignore[no-untyped-def]

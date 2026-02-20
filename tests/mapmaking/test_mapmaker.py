@@ -7,6 +7,7 @@ from furax.obs.stokes import Stokes
 pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
 pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
 
+from furax._config import Config
 from furax.core import BlockColumnOperator
 from furax.interfaces.sotodlib import LazySOTODLibObservation
 from furax.interfaces.toast import LazyToastObservation
@@ -117,6 +118,16 @@ def test_full_mapmaker(name, demodulated):
     observations = make_observations(name)
     config = make_config(demodulated)
     maker = MultiObservationMapMaker(observations, config=config)
-    results = maker.run()
+
+    num_steps = None
+
+    def capture_iterations(solution):
+        nonlocal num_steps
+        num_steps = int(solution.stats['num_steps'])
+
+    with Config(solver_callback=capture_iterations):
+        results = maker.run()
+
     stokes, pixels = results.map.shape
     assert results.weights.shape == (stokes, stokes, pixels)
+    assert num_steps == 1, f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'

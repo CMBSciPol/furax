@@ -31,6 +31,16 @@ def test_inverse_dense(base_op_and_dense) -> None:
     assert_allclose(jnp.linalg.inv(dense), base_op.I.as_matrix())
 
 
+def test_parametrized_inverse_solver_options_raises() -> None:
+    class Op(AbstractLinearOperator):
+        def mv(self, x):
+            return x
+
+    op = Op(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
+    with pytest.raises(ValueError, match='solver_options'):
+        op.I(solver_options={'rtol': 1e-6})
+
+
 def test_parametrized_inverse_empty() -> None:
     class Op(AbstractLinearOperator):
         def mv(self, x):

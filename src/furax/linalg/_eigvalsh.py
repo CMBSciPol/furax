@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 
+@jax.jit
 def _eigvalsh_2x2(A: Float[Array, '... 2 2']) -> Float[Array, '... 2']:
     """Analytic eigenvalues of batched symmetric 2x2 matrices, sorted ascending."""
     # symmetric 2x2 matrix
@@ -20,6 +21,7 @@ def _eigvalsh_2x2(A: Float[Array, '... 2 2']) -> Float[Array, '... 2']:
     return jnp.stack([mean - half_diff, mean + half_diff], axis=-1)
 
 
+@jax.jit
 def _eigvalsh_3x3(A: Float[Array, '... 3 3']) -> Float[Array, '... 3']:
     """Analytic eigenvalues of batched symmetric 3x3 matrices, sorted ascending.
 
@@ -84,9 +86,9 @@ def eigvalsh(A: Float[Array, '... n n'], batch_size: int = 10_000) -> Float[Arra
     if n == 1:
         return A[..., :1, 0]
     elif n == 2:
-        return _eigvalsh_2x2(A)
+        return _eigvalsh_2x2(A)  # type: ignore[no-any-return]
     elif n == 3:
-        return _eigvalsh_3x3(A)
+        return _eigvalsh_3x3(A)  # type: ignore[no-any-return]
     else:
         leading = A.shape[:-2]
         flat = A.reshape(-1, n, n)

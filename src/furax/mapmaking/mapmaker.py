@@ -406,8 +406,9 @@ class MultiObservationMapMaker(Generic[T]):
         valid = hits > self.config.hits_cut * hits_quantile
 
         if self.config.cond_cut > 0:
-            # Cut pixels with poor condition number
-            eigs = jnp.linalg.eigvalsh(weights)
+            # FIXME: Eigendecomposition is done in CPU currently to avoid JAX errors
+            # eigs = jnp.linalg.eigvalsh(weights)
+            eigs = np.linalg.eigvalsh(weights)
             valid = jnp.logical_and(
                 valid,
                 eigs[..., 0] > self.config.cond_cut * eigs[..., -1],

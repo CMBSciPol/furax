@@ -574,6 +574,9 @@ class InverseOperator(AbstractLazyInverseOperator):
         if callback is not MISSING:
             config_options['solver_callback'] = callback
         if options:
+            if 'solver_options' in options:
+                msg = 'pass solver_options (preconditioner, etc.) directly as keyword arguments'
+                raise ValueError(msg)
             config_options['solver_options'] = options
         if x is None and config_options:
             with Config(**config_options):

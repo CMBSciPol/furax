@@ -1,38 +1,63 @@
+import importlib.util
 from pathlib import Path
 
 import pytest
 
-from furax.obs.stokes import Stokes
-
-pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
-pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
-
 from furax._config import Config
 from furax.core import BlockColumnOperator
-from furax.interfaces.sotodlib import LazySOTODLibObservation
-from furax.interfaces.toast import LazyToastObservation
-from furax.mapmaking import MapMakingConfig, MultiObservationMapMaker, ObservationReader
+from furax.mapmaking import (
+    AbstractLazyObservation,
+    MapMakingConfig,
+    MultiObservationMapMaker,
+    ObservationReader,
+)
 from furax.mapmaking.config import LandscapeConfig, Landscapes
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.mapmaking.preconditioner import BJPreconditioner
+from furax.obs.stokes import Stokes
+
+# Skip tests for interfaces that are not installed
+sotodlib_installed = importlib.util.find_spec('sotodlib') is not None
+toast_installed = importlib.util.find_spec('toast') is not None
 
 # Parameters for all the tests below.
 # We test sotodlib and toast, as well as sotodlib with demodulated data.
 # Add more lines to test other interfaces/combinations.
 PARAMS = [
-    pytest.param('sotodlib', False, id='sotodlib'),
-    pytest.param('sotodlib', True, id='sotodlib-demod'),
-    pytest.param('toast', False, id='toast'),
+    pytest.param(
+        'sotodlib',
+        False,
+        id='sotodlib',
+        marks=pytest.mark.skipif(not sotodlib_installed, reason='sotodlib is not installed'),
+    ),
+    pytest.param(
+        'sotodlib',
+        True,
+        id='sotodlib-demod',
+        marks=pytest.mark.skipif(not sotodlib_installed, reason='sotodlib is not installed'),
+    ),
+    pytest.param(
+        'toast',
+        False,
+        id='toast',
+        marks=pytest.mark.skipif(not toast_installed, reason='toast is not installed'),
+    ),
 ]
 
 
-def make_observations(name: str) -> list:
+def make_observations(name: str) -> list[AbstractLazyObservation]:
     folder = Path(__file__).parents[1] / 'data' / name
     if name == 'toast':
+        from furax.interfaces.toast import LazyToastObservation
+
         files = [folder / 'test_obs.h5'] * 2
         return [LazyToastObservation(f) for f in files]
-    files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
-    return [LazySOTODLibObservation(f) for f in files]
+    elif name == 'sotodlib':
+        from furax.interfaces.sotodlib import LazySOTODLibObservation
+
+        files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
+        return [LazySOTODLibObservation(f) for f in files]
+    raise NotImplementedError
 
 
 def make_config(demodulated: bool = False, fit_noise_model: bool = True) -> MapMakingConfig:

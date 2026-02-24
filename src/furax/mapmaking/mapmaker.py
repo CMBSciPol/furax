@@ -512,16 +512,17 @@ def _build_acquisition_operator(
     data_shape = (ndet, nsamp)
 
     # if no HWP angles are provided, we can rotate directly into the detector frame
+    # NB: in the case of demodulation, we must flip the angles
     pointing = PointingOperator.create(
         landscape,
         boresight_quaternions,
         detector_quaternions,
         chunk_size=pointing_chunk_size,
+        flip_angles=demodulated,
         frame='detector' if hwp_angles is None else 'boresight',
     )
 
     # demodulated case: independent I/Q/U time streams, no polarizer
-    # CAUTION: assumes demodulation takes care of "polarisation angle flip from HWP"
     if demodulated:
         return pointing
 

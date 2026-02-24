@@ -36,6 +36,7 @@ class PointingOperator(AbstractLinearOperator):
     qdet: Float[Array, 'det 4']
     chunk_size: int = field(metadata={'static': True})
     sub_gamma: bool = field(metadata={'static': True})
+    flip_angles: bool = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
 
     @classmethod
@@ -47,6 +48,7 @@ class PointingOperator(AbstractLinearOperator):
         *,
         chunk_size: int = 16,
         frame: Literal['boresight', 'detector'] = 'boresight',
+        flip_angles: bool = False,
     ) -> 'PointingOperator':
         # explicitly determine the output structure
         ndet = detector_quaternions.shape[0]
@@ -60,6 +62,7 @@ class PointingOperator(AbstractLinearOperator):
             qdet=detector_quaternions,
             sub_gamma=frame == 'boresight',
             chunk_size=chunk_size,
+            flip_angles=flip_angles,
             in_structure=landscape.structure,
             _out_structure=out_structure,
         )
@@ -85,6 +88,8 @@ class PointingOperator(AbstractLinearOperator):
             angles = get_local_meridian_angle(qdet_full)
             if self.sub_gamma:
                 angles -= to_gamma_angles(qdet)[:, None]
+            if self.flip_angles:
+                angles = -angles
 
             # Return the rotated Stokes parameters
             return rotate_qu(tod, angles)  # type: ignore[no-any-return]
@@ -152,6 +157,8 @@ class PointingTransposeOperator(TransposeOperator):
             angles = get_local_meridian_angle(qdet_full)
             if self.operator.sub_gamma:
                 angles -= to_gamma_angles(qdet)[:, None]
+            if self.operator.flip_angles:
+                angles = -angles
 
             return self._point(rotate_qu(xchunk, -angles), indices)
 

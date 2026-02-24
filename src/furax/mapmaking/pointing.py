@@ -12,7 +12,8 @@ from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
 from furax.math.quaternion import qmul, qrot_xaxis, qrot_zaxis, to_gamma_angles
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesIQUV, StokesPyTreeType, StokesQU
+from furax.obs.operators._qu_rotations import rotate_qu
+from furax.obs.stokes import Stokes, StokesI, StokesPyTreeType
 
 __all__ = [
     'PointingOperator',
@@ -85,19 +86,8 @@ class PointingOperator(AbstractLinearOperator):
             if self.sub_gamma:
                 angles -= to_gamma_angles(qdet)[:, None]
 
-            cos_2angles = jnp.cos(2 * angles)
-            sin_2angles = jnp.sin(2 * angles)
-            q = tod.q * cos_2angles - tod.u * sin_2angles
-            u = tod.q * sin_2angles + tod.u * cos_2angles
-
             # Return the rotated Stokes parameters
-            if isinstance(tod, StokesQU):
-                return StokesQU(q, u)
-            if isinstance(tod, StokesIQU):
-                return StokesIQU(tod.i, q, u)
-            if isinstance(tod, StokesIQUV):
-                return StokesIQUV(tod.i, q, u, tod.v)
-            raise NotImplementedError
+            return rotate_qu(tod, angles)  # type: ignore[no-any-return]
 
         # Loop over chunks of detectors
         ndet, nsamp = self.out_structure.shape
@@ -163,23 +153,7 @@ class PointingTransposeOperator(TransposeOperator):
             if self.operator.sub_gamma:
                 angles -= to_gamma_angles(qdet)[:, None]
 
-            cos_2angles = jnp.cos(2 * angles)
-            sin_2angles = jnp.sin(2 * angles)
-
-            # opposite sign for the transpose
-            q = xchunk.q * cos_2angles + xchunk.u * sin_2angles
-            u = -xchunk.q * sin_2angles + xchunk.u * cos_2angles
-
-            tod: StokesPyTreeType
-            if isinstance(xchunk, StokesQU):
-                tod = StokesQU(q, u)
-            elif isinstance(xchunk, StokesIQU):
-                tod = StokesIQU(xchunk.i, q, u)
-            elif isinstance(xchunk, StokesIQUV):
-                tod = StokesIQUV(xchunk.i, q, u, xchunk.v)
-            else:
-                raise NotImplementedError
-            return self._point(tod, indices)
+            return self._point(rotate_qu(xchunk, -angles), indices)
 
         # Loop over chunks of detectors
         ndet, _ = self.in_structure.shape

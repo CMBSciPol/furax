@@ -35,8 +35,8 @@ class PointingOperator(AbstractLinearOperator):
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
     chunk_size: int = field(metadata={'static': True})
-    sub_gamma: bool = field(metadata={'static': True})
-    flip_angles: bool = field(metadata={'static': True})
+    demod: bool = field(metadata={'static': True})
+    frame: Literal['boresight', 'detector'] = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
 
     @classmethod
@@ -47,8 +47,8 @@ class PointingOperator(AbstractLinearOperator):
         detector_quaternions: Float[Array, 'det 4'],
         *,
         chunk_size: int = 16,
+        demod: bool = False,
         frame: Literal['boresight', 'detector'] = 'boresight',
-        flip_angles: bool = False,
     ) -> 'PointingOperator':
         # explicitly determine the output structure
         ndet = detector_quaternions.shape[0]
@@ -60,9 +60,9 @@ class PointingOperator(AbstractLinearOperator):
             landscape,
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
-            sub_gamma=frame == 'boresight',
             chunk_size=chunk_size,
-            flip_angles=flip_angles,
+            frame=frame,
+            demod=demod,
             in_structure=landscape.structure,
             _out_structure=out_structure,
         )
@@ -84,14 +84,8 @@ class PointingOperator(AbstractLinearOperator):
                 # no rotation needed
                 return tod
 
-            # Get the angles to rotate into the telescope frame
-            angles = get_local_meridian_angle(qdet_full)
-            if self.sub_gamma:
-                angles -= to_gamma_angles(qdet)[:, None]
-            if self.flip_angles:
-                angles = -angles
-
             # Return the rotated Stokes parameters
+            angles = self._get_angles(qdet_full, qdet)
             return rotate_qu(tod, angles)  # type: ignore[no-any-return]
 
         # Loop over chunks of detectors
@@ -127,6 +121,18 @@ class PointingOperator(AbstractLinearOperator):
         tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
         return tod_out
 
+    def _get_angles(self, qfull, qdet):  # type: ignore[no-untyped-def]
+        # Get the angles to rotate into the desired frame
+        alpha = get_local_meridian_angle(qfull)
+        gamma = to_gamma_angles(qdet)[:, None]
+        if self.demod:
+            return 2 * gamma - alpha
+        if self.frame == 'detector':
+            return alpha
+        if self.frame == 'boresight':
+            return alpha - gamma
+        raise NotImplementedError
+
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._out_structure
@@ -154,12 +160,7 @@ class PointingTransposeOperator(TransposeOperator):
                 return self._point(xchunk, indices)
 
             # Get the angles to rotate back to the celestial frame
-            angles = get_local_meridian_angle(qdet_full)
-            if self.operator.sub_gamma:
-                angles -= to_gamma_angles(qdet)[:, None]
-            if self.operator.flip_angles:
-                angles = -angles
-
+            angles = self.operator._get_angles(qdet_full, qdet)
             return self._point(rotate_qu(xchunk, -angles), indices)
 
         # Loop over chunks of detectors

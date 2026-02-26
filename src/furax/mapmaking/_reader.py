@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from jax.tree_util import register_static
+from jax.typing import DTypeLike
 from jaxtyping import PyTree, UInt32
 
 from furax.io.readers import AbstractReader
@@ -49,6 +50,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         requested_fields: list[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
+        dtype: DTypeLike = jnp.float32,
     ) -> None:
         """Initializes the reader with a list of filenames and optional list of field names.
 
@@ -57,9 +59,11 @@ class ObservationReader(AbstractReader, Generic[T]):
             requested_fields: Optional list of fields to load. If None, read all non-optional fields.
             demodulated: Whether to read demodulated TODs.
             stokes: Stokes components to read when demodulated.
+            dtype: Floating-point dtype for all data fields except timestamps (default: float32).
         """
         self.demodulated = demodulated
         self.stokes = stokes
+        self.dtype = dtype
         interface = observations[0].interface_class
         available = set(interface.AVAILABLE_READER_FIELDS)
         optional = set(interface.OPTIONAL_READER_FIELDS)
@@ -125,12 +129,13 @@ class ObservationReader(AbstractReader, Generic[T]):
                 hwp_angles,
                 extrapolated,
             ) % (2 * jnp.pi)
+        dtype = self.dtype
         if 'detector_quaternions' in data_field_names:
             # Pad with (1, 0, 0, 0), corresponding to xi=eta=gamma=0.
             zero_padded = jnp.linalg.norm(data['detector_quaternions'], axis=-1) == 0.0
             data['detector_quaternions'] = jnp.where(
                 zero_padded[:, None],
-                jnp.array([[1.0, 0.0, 0.0, 0.0]]),
+                jnp.array([[1.0, 0.0, 0.0, 0.0]], dtype=dtype),
                 data['detector_quaternions'],
             )
         if 'boresight_quaternions' in data_field_names:
@@ -142,7 +147,7 @@ class ObservationReader(AbstractReader, Generic[T]):
                 zero_padded[:, None], last_quaternion[None, :], data['boresight_quaternions']
             )
         if 'noise_model_fits' in data_field_names:
-            default = jnp.array([[0.0, 0.0, 1.0, 0.1]])
+            default = jnp.array([[0.0, 0.0, 1.0, 0.1]], dtype=dtype)
 
             def _pad_noise_fits(arr: Array) -> Array:
                 zero_padded = arr[:, 0] == 0.0
@@ -157,12 +162,13 @@ class ObservationReader(AbstractReader, Generic[T]):
     ) -> PyTree[jax.ShapeDtypeStruct]:
         demodulated = self.demodulated
         stokes = self.stokes
+        dtype = self.dtype
 
         tod_shape = (n_detectors, n_samples)
         sample_data_structure = (
-            Stokes.class_for(stokes).structure_for(tod_shape, jnp.float64)
+            Stokes.class_for(stokes).structure_for(tod_shape, dtype)
             if demodulated
-            else jax.ShapeDtypeStruct(tod_shape, jnp.float64)
+            else jax.ShapeDtypeStruct(tod_shape, dtype)
         )
 
         return {
@@ -175,13 +181,13 @@ class ObservationReader(AbstractReader, Generic[T]):
             'valid_sample_masks': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.bool),
             'valid_scanning_masks': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
             'timestamps': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
-            'hwp_angles': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
-            'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
-            'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), jnp.float64),
+            'hwp_angles': jax.ShapeDtypeStruct((n_samples,), dtype),
+            'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), dtype),
+            'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), dtype),
             'noise_model_fits': (
-                Stokes.class_for(stokes).structure_for((n_detectors, 4), jnp.float64)
+                Stokes.class_for(stokes).structure_for((n_detectors, 4), dtype)
                 if demodulated
-                else jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64)
+                else jax.ShapeDtypeStruct((n_detectors, 4), dtype)
             ),
         }
 
@@ -201,12 +207,14 @@ class ObservationReader(AbstractReader, Generic[T]):
         demodulated = self.demodulated
         stokes = self.stokes
 
+        dtype = self.dtype
+
         def get_sample_data(obs: AbstractObservation[T]) -> Any:
             if demodulated:
                 tods = obs.get_demodulated_tods(stokes=stokes)
             else:
                 tods = obs.get_tods()
-            return jax.tree.map(lambda x: x.astype(jnp.float64), tods)
+            return jax.tree.map(lambda x: x.astype(dtype), tods)
 
         return {
             'metadata': lambda obs: get_metadata(obs),
@@ -214,13 +222,19 @@ class ObservationReader(AbstractReader, Generic[T]):
             'valid_sample_masks': lambda obs: obs.get_sample_mask(),
             'valid_scanning_masks': lambda obs: obs.get_scanning_mask(),
             'timestamps': lambda obs: obs.get_timestamps(),
-            'hwp_angles': lambda obs: obs.get_hwp_angles(),
-            'detector_quaternions': lambda obs: obs.get_detector_quaternions(),
-            'boresight_quaternions': lambda obs: obs.get_boresight_quaternions(),
+            'hwp_angles': lambda obs: obs.get_hwp_angles().astype(dtype),
+            'detector_quaternions': lambda obs: obs.get_detector_quaternions().astype(dtype),
+            'boresight_quaternions': lambda obs: obs.get_boresight_quaternions().astype(dtype),
             'noise_model_fits': (
-                (lambda obs: obs.get_demodulated_noise_models(stokes=stokes))
+                (
+                    lambda obs: jax.tree.map(
+                        lambda x: x.astype(dtype), obs.get_demodulated_noise_models(stokes=stokes)
+                    )
+                )
                 if demodulated
-                else (lambda obs: if_none_raise_error(obs.get_noise_model()).to_array())
+                else (
+                    lambda obs: if_none_raise_error(obs.get_noise_model()).to_array().astype(dtype)
+                )
             ),
         }
 

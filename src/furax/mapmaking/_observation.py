@@ -8,7 +8,7 @@ from typing import Any, ClassVar, Generic, TypeVar
 import jax.numpy as jnp
 from astropy.wcs import WCS
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, Bool, Float, UInt32
+from jaxtyping import Array, Bool, DTypeLike, Float, UInt32
 from numpy.typing import NDArray
 
 from furax.math.quaternion import qmul, to_lonlat_angles
@@ -104,10 +104,12 @@ class AbstractObservation(ABC, Generic[T]):
         """Returns the sampling rate (in Hz) of the data."""
 
     @abstractmethod
-    def get_tods(self) -> Array:
+    def get_tods(self, dtype: DTypeLike = jnp.float32) -> Array:
         """Returns the timestream data."""
 
-    def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> Any:
+    def get_demodulated_tods(
+        self, stokes: ValidStokesType = 'IQU', dtype: DTypeLike = jnp.float32
+    ) -> Any:
         """Returns demodulated timestream data as a Stokes pytree.
 
         Subclasses that support demodulated data should override this method.

@@ -9,7 +9,7 @@ import numpy as np
 import toast
 from astropy import units as u
 from astropy.wcs import WCS
-from jaxtyping import Array, Bool, Float
+from jaxtyping import Array, Bool, DTypeLike, Float
 from numpy.typing import NDArray
 from toast.observation import default_values as defaults
 from toast.ops.load_hdf5 import LoadHDF5
@@ -141,10 +141,10 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         """Returns the sampling rate (in Hz) of the data."""
         return self._focal_plane.sample_rate.to_value(u.Hz)  # type: ignore[no-any-return]
 
-    def get_tods(self) -> Array:
+    def get_tods(self, dtype: DTypeLike = jnp.float32) -> Array:
         """Returns the timestream data."""
         # furax's LinearPolarizerOperator assumes power, TOAST assumes temperature
-        tods = 0.5 * jnp.array(self.data.detdata[self._det_data][self.detectors, :])
+        tods = 0.5 * jnp.array(self.data.detdata[self._det_data][self.detectors, :], dtype=dtype)
         return jnp.atleast_2d(tods)
 
     def _get_detector_angles(self) -> Array:

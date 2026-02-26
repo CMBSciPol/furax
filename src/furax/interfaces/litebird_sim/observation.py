@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import litebird_sim as lbs
 import numpy as np
 from astropy import wcs
-from jaxtyping import Array, Bool, Float
+from jaxtyping import Array, Bool, DTypeLike, Float
 
 from furax.mapmaking import AbstractLazyObservation, AbstractSatelliteObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
@@ -55,8 +55,8 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
     def sample_rate(self) -> float:
         return self.data.sampling_rate_hz  # type: ignore[no-any-return]
 
-    def get_tods(self) -> Array:
-        tods = jnp.array(self.data.tod, dtype=jnp.float64)
+    def get_tods(self, dtype: DTypeLike = jnp.float32) -> Array:
+        tods = jnp.array(self.data.tod, dtype=dtype)
         return jnp.atleast_2d(tods)
 
     def get_detector_offset_angles(self) -> Array:

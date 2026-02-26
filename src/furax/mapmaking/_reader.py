@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from jax.tree_util import register_static
+from jax.typing import DTypeLike
 from jaxtyping import PyTree, UInt32
 
 from furax.io.readers import AbstractReader
@@ -49,6 +50,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         requested_fields: list[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
+        dtype: DTypeLike = jnp.float32,
     ) -> None:
         """Initializes the reader with a list of filenames and optional list of field names.
 
@@ -57,9 +59,11 @@ class ObservationReader(AbstractReader, Generic[T]):
             requested_fields: Optional list of fields to load. If None, read all non-optional fields.
             demodulated: Whether to read demodulated TODs.
             stokes: Stokes components to read when demodulated.
+            dtype: Floating-point dtype for all data fields except timestamps (default: float32).
         """
         self.demodulated = demodulated
         self.stokes = stokes
+        self.dtype = dtype
         interface = observations[0].interface_class
         available = set(interface.AVAILABLE_READER_FIELDS)
         optional = set(interface.OPTIONAL_READER_FIELDS)
@@ -157,12 +161,13 @@ class ObservationReader(AbstractReader, Generic[T]):
     ) -> PyTree[jax.ShapeDtypeStruct]:
         demodulated = self.demodulated
         stokes = self.stokes
+        dtype = self.dtype
 
         tod_shape = (n_detectors, n_samples)
         sample_data_structure = (
-            Stokes.class_for(stokes).structure_for(tod_shape, jnp.float64)
+            Stokes.class_for(stokes).structure_for(tod_shape, dtype)
             if demodulated
-            else jax.ShapeDtypeStruct(tod_shape, jnp.float64)
+            else jax.ShapeDtypeStruct(tod_shape, dtype)
         )
 
         return {
@@ -200,13 +205,13 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         demodulated = self.demodulated
         stokes = self.stokes
+        dtype = self.dtype
 
         def get_sample_data(obs: AbstractObservation[T]) -> Any:
             if demodulated:
-                tods = obs.get_demodulated_tods(stokes=stokes)
+                return obs.get_demodulated_tods(stokes=stokes, dtype=dtype)
             else:
-                tods = obs.get_tods()
-            return jax.tree.map(lambda x: x.astype(jnp.float64), tods)
+                return obs.get_tods(dtype=dtype)
 
         return {
             'metadata': lambda obs: get_metadata(obs),

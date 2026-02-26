@@ -22,7 +22,7 @@ def build_acquisition_operator(
     demodulated: bool = False,
     pointing_on_the_fly: bool = True,
     pointing_chunk_size: int = 16,
-    dtype: DTypeLike = jnp.float64,
+    dtype: DTypeLike = jnp.float32,
 ) -> AbstractLinearOperator:
     """Build an acquisition operator for a single observation. Does not include masking."""
     # The TOD shape

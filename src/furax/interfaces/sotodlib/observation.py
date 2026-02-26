@@ -9,7 +9,7 @@ import pixell.utils
 import so3g.proj
 import yaml
 from astropy.wcs import WCS
-from jaxtyping import Array, Bool, Float, Integer
+from jaxtyping import Array, Bool, DTypeLike, Float, Integer
 from numpy.typing import NDArray
 from sotodlib import coords
 from sotodlib.core import AxisManager
@@ -122,13 +122,15 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         duration: float = self.data.timestamps[-1] - self.data.timestamps[0]
         return (self.n_samples - 1) / duration
 
-    def get_tods(self) -> Array:
+    def get_tods(self, dtype: DTypeLike = jnp.float32) -> Array:
         """Returns the timestream data."""
         # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
-        tods = jnp.array(self.data.signal, dtype=jnp.float64)
+        tods = jnp.array(self.data.signal, dtype=dtype)
         return 0.5 * jnp.atleast_2d(tods)
 
-    def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> StokesPyTreeType:
+    def get_demodulated_tods(
+        self, stokes: ValidStokesType = 'IQU', dtype: DTypeLike = jnp.float32
+    ) -> StokesPyTreeType:
         """Returns the demodulated timestream data as a Stokes pytree.
 
         'IQUV' is not supported.
@@ -136,12 +138,12 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if stokes == 'IQUV':
             raise NotImplementedError
         kls = Stokes.class_for(stokes)
-        tods = tuple(self._get_demodulated_tod(s) for s in stokes)  # type: ignore[arg-type]
+        tods = tuple(self._get_demodulated_tod(s, dtype) for s in stokes)  # type: ignore[arg-type]
         return kls.from_stokes(*tods)
 
-    def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> Array:
+    def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U'], dtype: DTypeLike) -> Array:
         attr = {'I': 'dsT', 'Q': 'demodQ', 'U': 'demodU'}[stoke]
-        tod = jnp.array(getattr(self.data, attr), dtype=jnp.float64)
+        tod = jnp.array(getattr(self.data, attr), dtype=dtype)
         return 0.5 * jnp.atleast_2d(tod)
 
     def get_detector_offset_angles(self) -> Array:

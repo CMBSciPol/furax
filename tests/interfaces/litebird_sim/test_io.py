@@ -23,10 +23,13 @@ def observations():
     return [LazyLBSObservation(FOLDER / f) for f in FILES]
 
 
-def test_reader_all_fields(observations) -> None:
+@pytest.mark.parametrize('dtype', [jnp.float32, jnp.float64])
+def test_reader_all_fields(observations, dtype) -> None:
     """Test consistency for all available fields."""
     reader = ObservationReader(
-        observations, requested_fields=AbstractSatelliteObservation.AVAILABLE_READER_FIELDS
+        observations,
+        requested_fields=AbstractSatelliteObservation.AVAILABLE_READER_FIELDS,
+        dtype=dtype,
     )
     ndet_max, nsample_max = max(OBS_NDET), max(OBS_NSAMPLE)
 
@@ -37,7 +40,7 @@ def test_reader_all_fields(observations) -> None:
             telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),
             detector_uids=jax.ShapeDtypeStruct((ndet_max,), dtype=jnp.uint32),
         ),
-        'sample_data': jax.ShapeDtypeStruct((ndet_max, nsample_max), dtype=jnp.float64),
+        'sample_data': jax.ShapeDtypeStruct((ndet_max, nsample_max), dtype=dtype),
         'valid_sample_masks': jax.ShapeDtypeStruct((ndet_max, nsample_max), dtype=jnp.bool),
         'timestamps': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
         'hwp_angles': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),

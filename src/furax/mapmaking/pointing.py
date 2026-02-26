@@ -224,25 +224,7 @@ def get_local_meridian_angle(q: Float[Array, '*dims 4']) -> Float[Array, ' *dims
     vd = qrot_zaxis(q)
     vo = qrot_xaxis(q)
 
-    # The vector orthogonal to the line of sight that is parallel
-    # to the local meridian.
-    dir_ang = jnp.arctan2(vd[1], vd[0])
-    dir_r = jnp.sqrt(1.0 - vd[2] * vd[2])
-    vm_z = -dir_r
-    vm_x = vd[2] * jnp.cos(dir_ang)
-    vm_y = vd[2] * jnp.sin(dir_ang)
-
-    # Compute the rotation angle from the meridian vector to the
-    # orientation vector.  The direction vector is normal to the plane
-    # containing these two vectors, so the rotation angle is:
-    #
-    # angle = atan2((v_m x v_o) . v_d, v_m . v_o)
-    #
-    alpha_y = (
-        vd[0] * (vm_y * vo[2] - vm_z * vo[1])
-        - vd[1] * (vm_x * vo[2] - vm_z * vo[0])
-        + vd[2] * (vm_x * vo[1] - vm_y * vo[0])
-    )
-    alpha_x = vm_x * vo[0] + vm_y * vo[1] + vm_z * vo[2]
-
-    return jnp.arctan2(alpha_y, alpha_x)
+    # Simplified form of atan2((v_m x v_o) . v_d, v_m . v_o) where v_m is the
+    # projection of -Z onto the tangent plane. Using vd ⊥ vo (orthonormal frame)
+    # and cancelling the common dir_r scale factor inside atan2, this reduces to:
+    return jnp.arctan2(vd[0] * vo[1] - vd[1] * vo[0], -vo[2])

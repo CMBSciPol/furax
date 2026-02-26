@@ -172,7 +172,7 @@ class MapMakingConfig:
     nperseg: int = 2_048
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2
-    double_precision: bool = True
+    double_precision: bool = False
     pointing_on_the_fly: bool = False
     pointing_chunk_size: int = 4
     fit_noise_model: bool = True

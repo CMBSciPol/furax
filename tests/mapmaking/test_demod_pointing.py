@@ -58,7 +58,7 @@ def test_demod_acquisition_vs_sotodlib():
     )
 
     # Compare: furax_map is a StokesIQU pytree, sotodlib_map has shape (3, npix).
-    # Tolerance is loose because sotodlib's signal is cast to float32 before projection.
-    np.testing.assert_allclose(np.array(furax_map.i), sotodlib_map[0], rtol=1e-5, atol=0)
-    np.testing.assert_allclose(np.array(furax_map.q), sotodlib_map[1], rtol=1e-5, atol=0)
-    np.testing.assert_allclose(np.array(furax_map.u), sotodlib_map[2], rtol=1e-5, atol=0)
+    # Tolerance is loose because both signal and pointing angles are float32.
+    np.testing.assert_allclose(np.array(furax_map.i), sotodlib_map[0], rtol=1e-4, atol=0)
+    np.testing.assert_allclose(np.array(furax_map.q), sotodlib_map[1], rtol=1e-4, atol=0)
+    np.testing.assert_allclose(np.array(furax_map.u), sotodlib_map[2], rtol=1e-4, atol=0)

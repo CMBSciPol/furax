@@ -155,4 +155,6 @@ def test_full_mapmaker(name, demodulated):
 
     stokes, pixels = results.map.shape
     assert results.weights.shape == (stokes, stokes, pixels)
-    assert num_steps == 1, f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'
+    assert num_steps <= 2, (
+        f'Expected CG to converge in 1-2 iterations (binned map), got {num_steps}'
+    )

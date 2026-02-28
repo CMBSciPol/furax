@@ -14,7 +14,7 @@ from furax.core import TransposeOperator
 from furax.math import quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
 from furax.obs.landscapes import HorizonLandscape
-from furax.obs.stokes import Stokes, ValidStokesType
+from furax.obs.stokes import ValidStokesType
 
 from . import AbstractGroundObservation
 from .pointing import PointingOperator
@@ -829,12 +829,10 @@ class GroundTemplateOperator(TemplateOperator):
         n_dets = detector_quaternions.shape[0]
         n_samps = boresight_azimuth.size
 
-        pointing = PointingOperator(
-            landscape=horizon_landscape,
-            qbore=boresight_quaternions,
-            qdet=detector_quaternions,
-            in_structure=horizon_landscape.structure,
-            _out_structure=Stokes.class_for(stokes).structure_for((n_dets, n_samps)),
+        pointing = PointingOperator.create(
+            horizon_landscape,
+            boresight_quaternions,
+            detector_quaternions,
             chunk_size=chunk_size,
         )
 

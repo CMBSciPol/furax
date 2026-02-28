@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jax.numpy as jnp
 import numpy as np
@@ -19,6 +19,7 @@ from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math import quaternion
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
+from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
 
 
 class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
@@ -43,7 +44,9 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             if 'metadata' in requested_fields:
                 fields.append('obs_info')
             if 'sample_data' in requested_fields:
-                fields.append('signal')
+                # include both original and demodulated TOD
+                # TODO: choose?
+                fields.extend(['signal', 'dsT', 'demodQ', 'demodU'])
             if 'valid_sample_masks' in requested_fields:
                 fields.append('flags.glitch_flags')
             if 'valid_scanning_masks' in requested_fields:
@@ -54,12 +57,14 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 fields.append('hwp_angle')
             if 'boresight_quaternions' in requested_fields:
                 fields.append('boresight')
+                # FIXME: why do we need timestamps here?
                 if 'timestamps' not in fields:
                     fields.append('timestamps')
             if 'detector_quaternions' in requested_fields:
                 fields.append('focal_plane')
             if 'noise_model_fits' in requested_fields:
-                fields.append('preprocess.noiseT')
+                # TODO: choose?
+                fields.extend(['preprocess.noiseT', 'preprocess.noiseQ', 'preprocess.noiseU'])
 
         data = AxisManager.load(filename, fields=fields)
         return cls(data)
@@ -122,6 +127,26 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         """Returns the timestream data."""
         tods = jnp.array(self.data.signal, dtype=jnp.float64)
         return jnp.atleast_2d(tods)
+
+    def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> StokesPyTreeType:
+        """Returns the demodulated timestream data as a Stokes pytree.
+
+        'IQUV' is not supported.
+        """
+        if stokes == 'IQUV':
+            raise NotImplementedError
+        kls = Stokes.class_for(stokes)
+        tods = tuple(self._get_demodulated_tod(s) for s in stokes)  # type: ignore[arg-type]
+        return kls.from_stokes(*tods)
+
+    def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> Array:
+        attr = {
+            'I': 'dsT',
+            'Q': 'demodQ',
+            'U': 'demodU',
+        }[stoke]
+        tod = jnp.array(getattr(self.data, attr), dtype=jnp.float64)
+        return jnp.atleast_2d(tod)
 
     def get_detector_offset_angles(self) -> Array:
         """Returns the detector offset angles."""
@@ -225,21 +250,31 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_noise_model(self) -> None | NoiseModel:
         """Load precomputed noise model from the data, if present. Otherwise, return None"""
+        try:
+            return self._get_noise_model_for_stoke('I')
+        except ValueError:
+            return None
 
+    def get_demodulated_noise_models(self, stokes: ValidStokesType = 'IQU') -> StokesPyTreeType:
+        """Returns per-Stokes noise model fit arrays as a Stokes pytree."""
+        if stokes == 'IQUV':
+            raise NotImplementedError
+        kls = Stokes.class_for(stokes)
+        arrays = tuple(self._get_noise_model_for_stoke(s).to_array() for s in stokes)  # type: ignore[arg-type]
+        return kls.from_stokes(*arrays)
+
+    def _get_noise_model_for_stoke(self, stoke: Literal['I', 'Q', 'U']) -> AtmosphericNoiseModel:
         preproc = self.data.get('preprocess')
         if preproc is None:
-            return None
-
-        if 'noiseT' in preproc:
-            fit = preproc.noiseT
-        else:
-            return None
-
+            raise ValueError('No preprocess data available')
+        attr = {'I': 'noiseT', 'Q': 'noiseQ', 'U': 'noiseU'}[stoke]
+        if attr not in preproc:
+            raise ValueError(f'No {attr} noise model available')
+        fit = getattr(preproc, attr)
         # sotodlib fit's columns: (w, fknee, alpha), with
         # psd = wn**2 * (1 + (fknee / f) ** alpha)
         # Note the difference in the sign of alpha
         assert np.all(fit.noise_model_coeffs.vals == np.array(['white_noise', 'fknee', 'alpha']))
-
         return AtmosphericNoiseModel(
             sigma=jnp.array(fit.fit[:, 0]),
             alpha=jnp.array(-fit.fit[:, 2]),

@@ -1,85 +1,135 @@
+import importlib.util
 from pathlib import Path
 
 import pytest
 
-pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
-pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
-
+from furax._config import Config
 from furax.core import BlockColumnOperator
-from furax.interfaces.sotodlib import LazySOTODLibObservation
-from furax.interfaces.toast import LazyToastObservation
-from furax.mapmaking import MapMakingConfig, MultiObservationMapMaker, ObservationReader
+from furax.mapmaking import (
+    AbstractLazyObservation,
+    MapMakingConfig,
+    MultiObservationMapMaker,
+    ObservationReader,
+)
 from furax.mapmaking.config import LandscapeConfig, Landscapes
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.mapmaking.preconditioner import BJPreconditioner
+from furax.obs.stokes import Stokes
+
+# Skip tests for interfaces that are not installed
+sotodlib_installed = importlib.util.find_spec('sotodlib') is not None
+toast_installed = importlib.util.find_spec('toast') is not None
+
+# Parameters for all the tests below.
+# We test sotodlib and toast, as well as sotodlib with demodulated data.
+# Add more lines to test other interfaces/combinations.
+PARAMS = [
+    pytest.param(
+        'sotodlib',
+        False,
+        id='sotodlib',
+        marks=pytest.mark.skipif(not sotodlib_installed, reason='sotodlib is not installed'),
+    ),
+    pytest.param(
+        'sotodlib',
+        True,
+        id='sotodlib-demod',
+        marks=pytest.mark.skipif(not sotodlib_installed, reason='sotodlib is not installed'),
+    ),
+    pytest.param(
+        'toast',
+        False,
+        id='toast',
+        marks=pytest.mark.skipif(not toast_installed, reason='toast is not installed'),
+    ),
+]
 
 
-@pytest.fixture(params=[(LazySOTODLibObservation, 'sotodlib'), (LazyToastObservation, 'toast')])
-def observations(request: pytest.FixtureRequest):
-    cls, name = request.param
+def make_observations(name: str) -> list[AbstractLazyObservation]:
     folder = Path(__file__).parents[1] / 'data' / name
     if name == 'toast':
-        # only one test file exists
+        from furax.interfaces.toast import LazyToastObservation
+
         files = [folder / 'test_obs.h5'] * 2
-    else:
+        return [LazyToastObservation(f) for f in files]
+    elif name == 'sotodlib':
+        from furax.interfaces.sotodlib import LazySOTODLibObservation
+
         files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
-    return [cls(f) for f in files]
+        return [LazySOTODLibObservation(f) for f in files]
+    raise NotImplementedError
 
 
-@pytest.fixture
-def config():
+def make_config(demodulated: bool = False, fit_noise_model: bool = True) -> MapMakingConfig:
     return MapMakingConfig(
-        pointing_on_the_fly=True, landscape=LandscapeConfig(type=Landscapes.HPIX, nside=16)
+        pointing_on_the_fly=True,
+        landscape=LandscapeConfig(type=Landscapes.HPIX, nside=16),
+        demodulated=demodulated,
+        fit_noise_model=fit_noise_model,
+        nperseg=512,
     )
 
 
-@pytest.fixture
-def maker(observations, config):
-    return MultiObservationMapMaker(observations, config=config)
-
-
-@pytest.fixture
-def reader(observations):
-    return ObservationReader(observations)
-
-
-def test_acquisitions(maker, reader):
+@pytest.mark.parametrize('name,demodulated', PARAMS)
+def test_acquisitions(name, demodulated):
+    observations = make_observations(name)
+    config = make_config(demodulated)
+    maker = MultiObservationMapMaker(observations, config=config)
+    reader = ObservationReader(observations, demodulated=demodulated)
     operators = maker.build_acquisitions()
-    assert len(operators) == 2
+    assert len(operators) == len(observations)
     for op in operators:
         assert op.in_structure == maker.landscape.structure
         assert op.out_structure == reader.out_structure['sample_data']
 
 
-def test_noise_models(maker):
+@pytest.mark.parametrize('name,demodulated', PARAMS)
+@pytest.mark.parametrize('fit_models', [True, False])
+def test_noise_models(name, demodulated: bool, fit_models: bool):
+    observations = make_observations(name)
+    config = make_config(demodulated=demodulated, fit_noise_model=fit_models)
+    maker = MultiObservationMapMaker(observations, config=config)
     noise_models, _ = maker.noise_models_and_sample_rates()
-    assert len(noise_models) == 2
+    assert len(noise_models) == len(observations)
     # those must be white noise models in binned mapmaking
-    assert all(isinstance(model, WhiteNoiseModel) for model in noise_models)
+    # in the demodulated case each model is a Stokes pytree of per-component WhiteNoiseModels
+    if demodulated:
+        for model_tree in noise_models:
+            assert isinstance(model_tree, Stokes.class_for(config.stokes))
+            assert all(
+                isinstance(getattr(model_tree, stoke.lower()), WhiteNoiseModel)
+                for stoke in config.stokes
+            )
+    else:
+        assert all(isinstance(model, WhiteNoiseModel) for model in noise_models)
 
 
-@pytest.fixture
-def w_blocks(config, maker, reader):
+@pytest.mark.parametrize('name,demodulated', PARAMS)
+def test_accumulate_rhs(name, demodulated):
+    observations = make_observations(name)
+    config = make_config(demodulated)
+    maker = MultiObservationMapMaker(observations, config=config)
+    reader = ObservationReader(observations, demodulated=demodulated)
     tod_structure = reader.out_structure['sample_data']
     noise_models, sample_rates = maker.noise_models_and_sample_rates()
-    return [
-        model.inverse_operator(
-            tod_structure,
-            sample_rate=fs,
-            correlation_length=config.correlation_length,
-        )
-        for model, fs in zip(noise_models, sample_rates, strict=True)
-    ]
-
-
-def test_accumulate_rhs(maker, w_blocks):
+    w_blocks = MultiObservationMapMaker.noise_operator_blocks(
+        noise_models,
+        tod_structure,
+        sample_rates,
+        config.correlation_length,
+        inverse=True,
+    )
     h_blocks = maker.build_acquisitions()
-    maskers = maker.build_sample_maskers()
+    maskers = maker.build_sample_maskers(h_blocks[0].out_structure)
     rhs = maker.accumulate_rhs(h_blocks, w_blocks, maskers)
     assert rhs.shape == maker.landscape.shape
 
 
-def test_binning(maker):
+@pytest.mark.parametrize('name,demodulated', PARAMS)
+def test_binning(name, demodulated):
+    observations = make_observations(name)
+    config = make_config(demodulated)
+    maker = MultiObservationMapMaker(observations, config=config)
     h_blocks = maker.build_acquisitions()
     h = BlockColumnOperator(h_blocks)
     system = BJPreconditioner.create((h.T @ h).reduce())
@@ -88,8 +138,21 @@ def test_binning(maker):
     assert zeros.shape == maker.landscape.shape
 
 
-def test_full_mapmaker(maker: MultiObservationMapMaker):
-    results = maker.run()
-    # check shapes
+@pytest.mark.parametrize('name,demodulated', PARAMS)
+def test_full_mapmaker(name, demodulated):
+    observations = make_observations(name)
+    config = make_config(demodulated)
+    maker = MultiObservationMapMaker(observations, config=config)
+
+    num_steps = None
+
+    def capture_iterations(solution):
+        nonlocal num_steps
+        num_steps = int(solution.stats['num_steps'])
+
+    with Config(solver_callback=capture_iterations):
+        results = maker.run()
+
     stokes, pixels = results.map.shape
-    assert results.map_weights.shape == (pixels, stokes, stokes)
+    assert results.weights.shape == (stokes, stokes, pixels)
+    assert num_steps == 1, f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'

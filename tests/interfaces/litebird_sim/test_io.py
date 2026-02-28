@@ -4,8 +4,6 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-pytest.importorskip('litebird_sim', reason='litebird_sim is not installed. Skipping tests.')
-
 from furax.interfaces.litebird_sim import LazyLBSObservation
 from furax.mapmaking import (
     AbstractSatelliteObservation,

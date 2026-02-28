@@ -1,8 +1,6 @@
 import os
 from pathlib import Path
-from typing import Annotated
 
-import typer
 import yaml
 from sotodlib.core.axisman import AxisManager
 from sotodlib.mapmaking.utils import downsample_obs
@@ -10,40 +8,43 @@ from sotodlib.preprocess.preprocess_util import preproc_or_load_group
 
 from .util import detector_selection, resolve_obsids, setup_logger, standard_obsdir
 
-app = typer.Typer()
 
+def prepare(  # type: ignore[no-untyped-def]
+    init_config: Path,
+    proc_config: Path | None = None,
+    obsid: list[str] | None = None,
+    obsids_file: Path | None = None,
+    outdir: Path | None = None,
+    wafer: str = 'ws0',
+    band: str = 'f090',
+    downsample: int = 1,
+    loglevel: str = 'info',
+    log_path: Path | None = None,
+    overwrite: bool = False,
+    dry_run: bool = False,
+):
+    """Load observations via preprocessing config and save to binary files.
 
-@app.command()  # type: ignore[misc]
-def prepare(
-    init_config: Annotated[Path, typer.Option(help='Base layer preprocessing config file.')],
-    proc_config: Annotated[
-        Path | None, typer.Option(help='Second layer preprocessing config file.')
-    ] = None,
-    obsid: Annotated[list[str] | None, typer.Option(help='Observation id(s) to process.')] = None,
-    obsids_file: Annotated[
-        Path | None, typer.Option(help='Text file with one obsid per line.')
-    ] = None,
-    outdir: Annotated[
-        Path | None,
-        typer.Option(help='Output directory. Defaults to preproc archive index parent.'),
-    ] = None,
-    wafer: Annotated[str, typer.Option(help='Wafer slot selection.')] = 'ws0',
-    band: Annotated[str, typer.Option(help='Wafer bandpass selection.')] = 'f090',
-    downsample: Annotated[int, typer.Option(help='Downsampling factor.')] = 1,
-    verbose: Annotated[
-        int, typer.Option('--verbose', '-v', count=True, help='Increase verbosity.')
-    ] = 1,
-    log_path: Annotated[Path | None, typer.Option(help='Log output path.')] = None,
-    overwrite: Annotated[bool, typer.Option(help='Overwrite existing files.')] = False,
-    dry_run: Annotated[bool, typer.Option(help='Stop before any actual processing.')] = False,
-) -> None:
-    """Load observations via preprocessing config and save to binary files."""
-    logger = setup_logger(verbose, log_path)
+    Args:
+        init_config: Base layer preprocessing config file.
+        proc_config: Second layer preprocessing config file.
+        obsid: Observation id(s) to process.
+        obsids_file: Text file with one obsid per line.
+        outdir: Output directory. Defaults to preproc archive index parent.
+        wafer: Wafer slot selection.
+        band: Wafer bandpass selection.
+        downsample: Downsampling factor.
+        loglevel: Logging level (debug, info, warning, error).
+        log_path: Log output path.
+        overwrite: Overwrite existing files.
+        dry_run: Stop before any actual processing.
+    """
+    logger = setup_logger(loglevel, log_path)
 
     obsids = resolve_obsids(obsid, obsids_file)
     if len(obsids) == 0:
         logger.warning('no observations to prepare')
-        raise typer.Abort()
+        return
 
     det_select = detector_selection(wafer, band)
 
@@ -53,8 +54,8 @@ def prepare(
     roots = {layer.parent.resolve() for layer in layers}
     if len(roots) > 1:
         logger.error('all preproc configs must share the same root directory')
-        raise typer.Exit(code=1)
-    os.chdir(init_config.parents[2])
+        return 1
+    os.chdir(init_config.parents[3])
 
     if outdir is None:
         # use last configuration layer to determine output directory
@@ -67,7 +68,7 @@ def prepare(
     logger.info(f'writing observations to /.../{obsdir.relative_to(outdir.parent)}')
 
     if dry_run:
-        raise typer.Exit()
+        return
 
     for obs_id in obsids:
         filename = f'{obs_id}.h5'

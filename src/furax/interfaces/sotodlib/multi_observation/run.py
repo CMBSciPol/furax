@@ -1,38 +1,32 @@
 from pathlib import Path
-from typing import Annotated
-
-import typer
 
 from furax.interfaces.sotodlib import LazySOTODLibObservation
 from furax.mapmaking import MapMakingConfig, MultiObservationMapMaker
 
 from .util import resolve_obsids, setup_logger
 
-app = typer.Typer()
 
+def run(  # type: ignore[no-untyped-def]
+    obsdir: Path,
+    obsid: list[str] | None = None,
+    obsids_file: Path | None = None,
+    outdir: Path = Path.cwd(),
+    mapmaking_config: Path | None = None,
+    loglevel: str = 'info',
+    log_path: Path | None = None,
+):
+    """Run the mapmaker on prepared binary observation files.
 
-@app.command()  # type: ignore[misc]
-def run(
-    obsdir: Annotated[Path, typer.Option(help='Directory containing prepared .h5 files.')],
-    obsid: Annotated[
-        list[str] | None,
-        typer.Option(
-            help='Observation id(s) to map. If not specified, use all .h5 files in obsdir.'
-        ),
-    ] = None,
-    obsids_file: Annotated[
-        Path | None, typer.Option(help='Text file with one obsid per line.')
-    ] = None,
-    outdir: Annotated[Path, typer.Option(help='Output directory for maps.')] = Path.cwd(),
-    mapmaking_config: Annotated[Path | None, typer.Option(help='Mapmaking config file.')] = None,
-    verbose: Annotated[
-        int, typer.Option('--verbose', '-v', count=True, help='Increase verbosity.')
-    ] = 1,
-    log_path: Annotated[Path | None, typer.Option(help='Log output path.')] = None,
-) -> None:
-    """Run the mapmaker on prepared binary observation files."""
-
-    logger = setup_logger(verbose, log_path)
+    Args:
+        obsdir: Directory containing prepared .h5 files.
+        obsid: Observation id(s) to map. If not specified, use all .h5 files in obsdir.
+        obsids_file: Text file with one obsid per line.
+        outdir: Output directory for maps.
+        mapmaking_config: Mapmaking config file.
+        loglevel: Logging level (debug, info, warning, error).
+        log_path: Log output path.
+    """
+    logger = setup_logger(loglevel, log_path)
 
     obsids = resolve_obsids(obsid, obsids_file)
     if obsids:
@@ -48,7 +42,7 @@ def run(
 
     if len(obsfiles) == 0:
         logger.warning('no observations to map')
-        raise typer.Abort()
+        return
 
     observations = [LazySOTODLibObservation(f) for f in obsfiles]
 
@@ -70,4 +64,4 @@ def run(
         logger.info('finished mapmaking')
     except Exception as e:
         logger.exception('mapmaking failed', exc_info=e)
-        raise typer.Exit(code=1)
+        return 1

@@ -2,9 +2,8 @@ import logging
 from pathlib import Path
 
 
-def setup_logger(verbose: int, log_path: Path | None) -> logging.Logger:
-    levels = [logging.WARNING, logging.INFO, logging.DEBUG]
-    level = levels[min(verbose, len(levels) - 1)]
+def setup_logger(loglevel: str, log_path: Path | None) -> logging.Logger:
+    level = logging.getLevelName(loglevel.upper())
     logger = logging.getLogger('furax.mapmaker')
     logger.setLevel(level)
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')

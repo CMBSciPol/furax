@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from hashlib import sha1
 from typing import Any, Generic, TypeVar
 
@@ -42,7 +43,7 @@ class ObservationReader(AbstractReader, Generic[T]):
 
     def __init__(
         self,
-        observations: list[AbstractLazyObservation[T]],
+        observations: Sequence[AbstractLazyObservation[T]],
         *,
         requested_fields: list[str] | None = None,
     ) -> None:

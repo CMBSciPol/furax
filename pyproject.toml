@@ -57,9 +57,9 @@ mapmaking = [
     'pyyaml>=0.6.2',
 ]
 so = [
+    'cyclopts>=4.6.0',
     'sotodlib[site-pipeline]>=0.6.16',
     'so3g>=0.2.5',
-    'typer>=0.23.1',
 ]
 toast = [
     'toast>=3.0.0a42',
@@ -75,7 +75,7 @@ repository = 'https://github.com/CMBSciPol/furax'
 
 [project.scripts]
 furax-so-atomic-map = 'furax.interfaces.sotodlib.mapmaker:main_cli'
-furax-so-multi-map = 'furax.interfaces.sotodlib.multi_observation.main:app'
+furax-so-multi-map = 'furax.interfaces.sotodlib.multi_observation.__main__:app'
 
 [tool.coverage.report]
 exclude_lines = [
@@ -91,6 +91,7 @@ skip_covered = true
 module = [
     'apischema',
     'astropy.*',
+    'cyclopts',
     'healpy',
     'jax_grid_search',
     'jax_healpy',
@@ -105,7 +106,6 @@ module = [
     'so3g.*',
     'sotodlib.*',
     'toast.*',
-    'typer',
 ]
 ignore_missing_imports = true
 

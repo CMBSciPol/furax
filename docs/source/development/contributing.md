@@ -116,13 +116,13 @@ pytest -m "slow"
 - **Data fixtures**: Cached test data with automatic downloads
 - **Custom assertions**: Specialized checks for Furax data types
 
-### UPDATE ME. Writing Tests
+### Writing Tests
 
 Use parametrized fixtures for comprehensive testing:
 
 ```python
 import pytest
-from furax.obs import Stokes
+from furax.obs.stokes import Stokes
 
 @pytest.mark.parametrize("stokes_fixture", ["I", "QU", "IQU"], indirect=True)
 def test_stokes_arithmetic(stokes_fixture):
@@ -204,10 +204,10 @@ Key requirements:
 
 ### Data Structure Development
 
-#UPDATE ME. New Stokes classes should follow the established pattern:
+New Stokes classes should follow the established pattern:
 
 ```python
-from furax.obs import Stokes
+from furax.obs.stokes import Stokes
 from jaxtyping import Array, Float
 
 class StokesXY(Stokes):

@@ -69,7 +69,8 @@ print(f'Number of pixels: {landscape.shape[0]}')
 
 ### Basic Linear Operators
 
-Furax provides composable linear operators that can be combined through addition, composition of block assembly. The primary interest of these operators is that they rely on a sparse representation of the underlying matrices.
+Furax provides composable linear operators that can be combined through addition, composition or block assembly.
+The primary interest of these operators is that they rely on a sparse representation of the underlying matrices.
 
 ```python
 import jax.numpy as jnp
@@ -305,11 +306,10 @@ landscape = HealpixLandscape(nside=256, stokes='IQU')  # ~200k parameters
 
 # Good: matrix-free operations
 large_weights = DiagonalOperator(jnp.ones(landscape.shape[0]), in_structure=landscape.structure)
-large_map = landscape.random(jr.key(0))  # Zero map to avoid memory for random data
+large_map = landscape.normal(jr.key(0))
 result = large_weights(large_map)
 
 # Avoid: large_weights.as_matrix() - would use ~160GB for float64!
-print(f'Matrix-free operation completed for {landscape.size} parameters')
 ```
 
 ## Next Steps

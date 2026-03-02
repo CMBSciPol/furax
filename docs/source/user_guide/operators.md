@@ -6,18 +6,18 @@ Linear operators are the computational backbone of Furax, providing composable b
 
 ### Abstract Linear Operator
 
-All operators in Furax inherit from `AbstractLinearOperator`, which extends Lineax operators with additional functionality:
+All operators in Furax inherit from `AbstractLinearOperator`, a frozen dataclass abstract base class:
 
 - **Composition**: Operators can be composed using the `@` operator (matrix multiplication)
 - **Addition**: Operators can be added using the `+` operator
 - **Scalar Operations**: Support for scalar multiplication and division
 - **Matrix Representation**: Convert to explicit matrices for debugging with `as_matrix()`
-- **Properties**: Automatic inference of mathematical properties (symmetric, positive definite, etc.)
+- **Properties**: Static mathematical properties set via decorators (`@symmetric`, `@diagonal`, etc.)
 
 ```python
 import jax.numpy as jnp
 
-from furax.core import DiagonalOperator
+from furax import DiagonalOperator
 
 # Create operators
 op1 = DiagonalOperator(jnp.array([1., 2., 3.]))
@@ -49,7 +49,7 @@ Perfect for pixel-based weighting, noise covariance, and preconditioning.
 ```python
 import jax.numpy as jnp
 
-from furax.core import DiagonalOperator
+from furax import DiagonalOperator
 
 # Create a diagonal operator for weighting
 weights = jnp.array([1.0, 0.5, 2.0, 1.5])
@@ -69,7 +69,7 @@ For operations that need broadcasting across multiple dimensions:
 import jax
 import jax.numpy as jnp
 
-from furax.core import BroadcastDiagonalOperator
+from furax import BroadcastDiagonalOperator
 
 # Diagonal values to broadcast
 diag_values = jnp.array([1., 2., 3.])
@@ -100,7 +100,7 @@ any Python container, as long as it is a PyTree.
 ```python
 import jax.numpy as jnp
 
-from furax.core import BlockDiagonalOperator, DiagonalOperator
+from furax import BlockDiagonalOperator, DiagonalOperator
 
 # Create individual block operators
 block1 = DiagonalOperator(jnp.array([1., 2.]))
@@ -303,7 +303,7 @@ data = {
     'U': jnp.array([1., 1.])
 }
 
-result = tree_op @ data
+result = tree_op(data)
 # Each component is processed by its corresponding operator
 ```
 
@@ -314,11 +314,13 @@ result = tree_op @ data
 Operators can be composed to create sophisticated analysis pipelines:
 
 ```python
+import jax.random
+
 from furax import (
     DiagonalOperator, BlockDiagonalOperator,
-    IndexOperator, ReshapeOperator
+    IndexOperator,
 )
-from furax.obs import HealpixLandscape
+from furax.obs.landscapes import HealpixLandscape
 
 # Create a landscape for QU polarization
 landscape = HealpixLandscape(nside=8, stokes='QU')
@@ -329,27 +331,26 @@ noise_weighting = DiagonalOperator(1.0 / noise_var)
 
 # 2. Pixel selection (mask bad pixels)
 good_pixels = jnp.arange(landscape.size)[::2]  # Select every other pixel
-pixel_selection = IndexOperator(good_pixels, landscape.size)
+pixel_selection = IndexOperator(good_pixels, in_structure=noise_weighting.out_structure)
 
 # 3. Component-wise processing
-q_size = landscape.npix
-u_size = landscape.npix
+n_pix = landscape.shape[0]
 
-q_processor = DiagonalOperator(jnp.ones(q_size))
-u_processor = DiagonalOperator(2.0 * jnp.ones(u_size))
+q_processor = DiagonalOperator(jnp.ones(n_pix))
+u_processor = DiagonalOperator(2.0 * jnp.ones(n_pix))
 component_processor = BlockDiagonalOperator([q_processor, u_processor])
 
 # Compose the full pipeline
 analysis_pipeline = pixel_selection @ component_processor @ noise_weighting
 
 # Apply to data
-data = landscape.normal(jax.random.PRNGKey(0))
-processed_data = analysis_pipeline @ data
+data = landscape.normal(jax.random.key(0))
+processed_data = analysis_pipeline(data)
 ```
 
 ### Iterative Solvers
 
-Furax operators work seamlessly with jnp.scipy and lineax solvers:
+Furax operators work seamlessly with jax.scipy and lineax solvers:
 
 ```python
 import jax
@@ -390,12 +391,12 @@ def large_scale_analysis(operator, data):
     """Perform analysis without forming explicit matrices."""
 
     # Matrix-vector product (never forms the full matrix)
-    result = operator @ data
+    result = operator(data)
 
     # Operator norms and properties
     print(f"Operator properties:")
-    print(f"  Symmetric: {operator.symmetric}")
-    print(f"  Positive semidefinite: {operator.positive_semidefinite}")
+    print(f"  Symmetric: {operator.is_symmetric}")
+    print(f"  Positive semidefinite: {operator.is_positive_semidefinite}")
 
     return result
 
@@ -419,7 +420,7 @@ import jax.numpy as jnp
 
 from furax import DiagonalOperator
 
-# Diagonal operators are automatically symmetric and PSD if diagonal > 0
+# Diagonal operators are tagged as symmetric but not as PSD (tags are static, not value-dependent)
 positive_diag = DiagonalOperator(jnp.array([1., 2., 3.]))
 print(f"Square: {positive_diag.is_square}")  # True
 print(f"Symmetric: {positive_diag.is_symmetric}")  # True
@@ -520,7 +521,7 @@ batch_apply(data_batch)
 For large-scale problems:
 
 1. **Use appropriate operator types**: Diagonal operators are more memory-efficient than dense operators
-2. **Avoid explicit matrix formation**: Use `operator @ data` instead of `operator.as_matrix() @ data`
+2. **Avoid explicit matrix formation**: Use `operator(data)` instead of `operator.as_matrix() @ data`
 3. **Consider block structure**: Block operators can reduce memory usage for structured problems
 4. **Use appropriate precision**: Float32 vs Float64 trade-offs
 

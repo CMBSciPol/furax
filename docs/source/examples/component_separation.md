@@ -20,10 +20,11 @@ Furax provides spectral energy density (SED) operators that model the frequency 
 ```python
 import jax
 import jax.numpy as jnp
-from furax.obs import HealpixLandscape, StokesIQU
-from furax.obs.operators import CMBOperator, DustOperator, SynchrotronOperator
-from furax.obs.operators import MixingMatrixOperator
-from furax.core import DiagonalOperator, BlockDiagonalOperator
+import jax.random as jr
+from furax.obs.landscapes import HealpixLandscape
+from furax.obs.stokes import StokesIQU
+from furax.obs import CMBOperator, DustOperator, SynchrotronOperator, MixingMatrixOperator
+from furax import DiagonalOperator, BlockDiagonalOperator
 
 # Define observation frequencies (GHz)
 frequencies = jnp.array([30., 44., 70., 100., 143., 217., 353.])
@@ -32,20 +33,24 @@ n_freq = len(frequencies)
 # Create sky landscape (low resolution for example)
 nside = 32
 landscape = HealpixLandscape(nside=nside, stokes='IQU')
-n_pix = landscape.npix
+n_pix = landscape.shape[0]
 ```
 
 ### Create Spectral Components
 
 ```python
 # Create SED operators for each component
-cmb_sed = CMBOperator(frequencies)
-dust_sed = DustOperator(frequencies, beta=1.54, T_dust=20.0)  # Typical values
-sync_sed = SynchrotronOperator(frequencies, beta=-3.1)        # Typical spectral index
+cmb_sed = CMBOperator(frequencies, in_structure=landscape.structure)
+dust_sed = DustOperator(
+    frequencies, beta=1.54, temperature=20.0, in_structure=landscape.structure
+)
+sync_sed = SynchrotronOperator(
+    frequencies, beta_pl=-3.1, in_structure=landscape.structure
+)
 
-print(f"CMB SED shape: {cmb_sed.shape}")
-print(f"Dust SED shape: {dust_sed.shape}")
-print(f"Synchrotron SED shape: {sync_sed.shape}")
+print(f"CMB SED in_structure: {cmb_sed.in_structure}")
+print(f"Dust SED in_structure: {dust_sed.in_structure}")
+print(f"Synchrotron SED in_structure: {sync_sed.in_structure}")
 ```
 
 ### Build the Mixing Matrix
@@ -55,9 +60,10 @@ The mixing matrix relates the observed data to the underlying components:
 ```python
 # Combine SED operators into a mixing matrix
 # Each column represents one component's frequency dependence
-mixing_matrix = MixingMatrixOperator([cmb_sed, dust_sed, sync_sed])
+mixing_matrix = MixingMatrixOperator(cmb=cmb_sed, dust=dust_sed, synchrotron=sync_sed)
 
-print(f"Mixing matrix shape: {mixing_matrix.shape}")
+print(f"Mixing matrix in_structure: {mixing_matrix.in_structure}")
+print(f"Mixing matrix out_structure: {mixing_matrix.out_structure}")
 print(f"Components: CMB, Dust, Synchrotron")
 ```
 
@@ -65,24 +71,18 @@ print(f"Components: CMB, Dust, Synchrotron")
 
 ```python
 # Generate true sky components
-key = jax.random.PRNGKey(42)
-keys = jax.random.split(key, 3)
+keys = jr.split(jr.key(42), 3)
 
 # True component amplitudes (IQU for each pixel)
 cmb_true = landscape.normal(keys[0])        # CMB fluctuations
 dust_true = 0.1 * landscape.uniform(keys[1], minval=0, maxval=1)  # Dust template
 sync_true = 0.05 * landscape.uniform(keys[2], minval=0, maxval=1) # Synchrotron template
 
-# Stack components: shape (n_components, n_stokes * n_pix)
-true_components = jnp.stack([
-    cmb_true.flatten(),
-    dust_true.flatten(),
-    sync_true.flatten()
-])
+# Stack components into the mixing matrix's input structure
+true_components = {'cmb': cmb_true, 'dust': dust_true, 'synchrotron': sync_true}
 
-# Generate observed data: mixing_matrix @ true_components
-observed_data = mixing_matrix @ true_components
-print(f"Observed data shape: {observed_data.shape}")  # (n_freq, n_stokes * n_pix)
+# Generate observed data: mixing_matrix(true_components)
+observed_data = mixing_matrix(true_components)
 ```
 
 ### Add Realistic Noise
@@ -93,8 +93,7 @@ print(f"Observed data shape: {observed_data.shape}")  # (n_freq, n_stokes * n_pi
 noise_levels = jnp.array([2.0, 2.5, 4.5, 2.0, 2.2, 4.8, 14.7])  # μK_CMB RMS
 
 # Generate correlated noise per frequency
-noise_key = jax.random.PRNGKey(123)
-noise_keys = jax.random.split(noise_key, n_freq)
+noise_keys = jr.split(jr.key(123), n_freq)
 
 noise_realizations = []
 for i, (noise_level, nkey) in enumerate(zip(noise_levels, noise_keys)):
@@ -133,24 +132,22 @@ inv_noise_covariance = BlockDiagonalOperator([
 
 ```python
 import lineax as lx
-from furax import Config
 
 # Set up the normal equations: (A^T N^-1 A) s = A^T N^-1 d
 # where A = mixing_matrix, N^-1 = inv_noise_covariance, d = data, s = components
 
 At_Ninv = mixing_matrix.T @ inv_noise_covariance
 At_Ninv_A = At_Ninv @ mixing_matrix
-At_Ninv_d = At_Ninv @ noisy_observed_data.flatten()
 
-print(f"Normal equation matrix shape: {At_Ninv_A.shape}")
+At_Ninv_d = At_Ninv(noisy_observed_data.flatten())
+
+print(f"Normal equation operator in_structure: {At_Ninv_A.in_structure}")
 print(f"Right-hand side shape: {At_Ninv_d.shape}")
 
 # Solve the system
-with Config(solver=lx.CG(rtol=1e-8, max_steps=1000)):
-    solution = lx.linear_solve(At_Ninv_A, At_Ninv_d)
+solver = lx.CG(rtol=1e-8, max_steps=1000)
+recovered_components = At_Ninv_A.I(solver=solver)(At_Ninv_d)
 
-recovered_components = solution.value
-print(f"Solver converged: {solution.result}")
 print(f"Recovered components shape: {recovered_components.shape}")
 ```
 
@@ -164,9 +161,9 @@ recovered_dust = recovered_components[landscape.size:2*landscape.size]
 recovered_sync = recovered_components[2*landscape.size:]
 
 # Convert back to Stokes format
-recovered_cmb_stokes = StokesIQU.from_array(recovered_cmb.reshape(3, -1))
-recovered_dust_stokes = StokesIQU.from_array(recovered_dust.reshape(3, -1))
-recovered_sync_stokes = StokesIQU.from_array(recovered_sync.reshape(3, -1))
+recovered_cmb_stokes = StokesIQU(*recovered_cmb.reshape(3, -1))
+recovered_dust_stokes = StokesIQU(*recovered_dust.reshape(3, -1))
+recovered_sync_stokes = StokesIQU(*recovered_sync.reshape(3, -1))
 
 # Compute residuals
 cmb_residual = jnp.mean((recovered_cmb - cmb_true.flatten())**2)
@@ -183,31 +180,28 @@ print(f"Synchrotron recovery RMS: {jnp.sqrt(sync_residual):.4f}")
 ### Including Priors
 
 ```python
-from furax.core import SymmetricBandToeplitzOperator
+from furax import SymmetricBandToeplitzOperator
 
 # Add spatial priors (e.g., smoothness prior for CMB)
-def create_smoothing_prior(landscape, correlation_length_arcmin=60):
+def create_smoothing_prior(n_pix, correlation_length=5):
     """Create a smoothness prior operator."""
-    # This is a simplified example - real implementation would use
-    # spherical harmonics or proper correlation functions
-
     # Create a band-limited Toeplitz approximation
-    n_bands = min(10, landscape.npix // 10)
+    n_bands = min(10, n_pix // 10)
     bands = []
     for i in range(n_bands):
         if i == 0:
-            # Main diagonal
-            band = jnp.ones(landscape.npix)
+            band = 1.0
         else:
-            # Off-diagonals with exponential decay
-            decay = jnp.exp(-i / 5.0)
-            band = decay * jnp.ones(landscape.npix - i)
+            band = jnp.exp(-i / correlation_length)
         bands.append(band)
 
-    return SymmetricBandToeplitzOperator(bands)
+    bands = jnp.array(bands)
+    return SymmetricBandToeplitzOperator(
+        bands, in_structure=jax.ShapeDtypeStruct((n_pix,), jnp.float64)
+    )
 
 # Create priors for each component
-cmb_prior = create_smoothing_prior(landscape)
+cmb_prior = create_smoothing_prior(n_pix)
 dust_prior = DiagonalOperator(jnp.ones(landscape.size))  # Flat prior for dust
 sync_prior = DiagonalOperator(jnp.ones(landscape.size))  # Flat prior for sync
 
@@ -225,11 +219,9 @@ prior_weight = 0.1  # Adjust prior strength
 regularized_matrix = At_Ninv_A + prior_weight * prior_matrix
 
 # Solve regularized system
-with Config(solver=lx.CG(rtol=1e-8, max_steps=1000)):
-    regularized_solution = lx.linear_solve(regularized_matrix, At_Ninv_d)
-
-regularized_components = regularized_solution.value
-print(f"Regularized solver converged: {regularized_solution.result}")
+solver = lx.CG(rtol=1e-8, max_steps=1000)
+regularized_components = regularized_matrix.I(solver=solver)(At_Ninv_d)
+print(f"Regularized solution shape: {regularized_components.shape}")
 ```
 
 ### Multi-scale Analysis
@@ -240,7 +232,7 @@ def compute_angular_power_spectrum(stokes_map, landscape):
     """Compute angular power spectrum (simplified)."""
     # In practice, would use healpy.sphtfunc.anafast or similar
     # This is a placeholder for demonstration
-    intensity = stokes_map.I
+    intensity = stokes_map.i
     return jnp.var(intensity)  # Simplified variance as proxy for power
 
 # Compare power spectra
@@ -273,11 +265,17 @@ train_data, val_data = split_frequency_data(
 )
 
 # Train on subset
-train_mixing = MixingMatrixOperator([
-    CMBOperator(frequencies[train_freq_idx]),
-    DustOperator(frequencies[train_freq_idx], beta=1.54, T_dust=20.0),
-    SynchrotronOperator(frequencies[train_freq_idx], beta=-3.1)
-])
+train_mixing = MixingMatrixOperator(
+    cmb=CMBOperator(frequencies[train_freq_idx], in_structure=landscape.structure),
+    dust=DustOperator(
+        frequencies[train_freq_idx], beta=1.54, temperature=20.0,
+        in_structure=landscape.structure,
+    ),
+    synchrotron=SynchrotronOperator(
+        frequencies[train_freq_idx], beta_pl=-3.1,
+        in_structure=landscape.structure,
+    ),
+)
 
 # Solve using training data only
 # ... (similar to above but with train_mixing and train_data)
@@ -287,7 +285,7 @@ train_mixing = MixingMatrixOperator([
 
 ```python
 # Analyze fit quality
-predicted_data = mixing_matrix @ recovered_components
+predicted_data = mixing_matrix(recovered_components)
 residuals = noisy_observed_data.flatten() - predicted_data
 
 # Chi-square per frequency

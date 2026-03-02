@@ -74,7 +74,7 @@ def w_blocks(config, maker, reader):
 
 def test_accumulate_rhs(maker, w_blocks):
     h_blocks = maker.build_acquisitions()
-    maskers = maker.build_sample_maskers()
+    maskers = maker.build_sample_maskers(h_blocks[0].out_structure)
     rhs = maker.accumulate_rhs(h_blocks, w_blocks, maskers)
     assert rhs.shape == maker.landscape.shape
 

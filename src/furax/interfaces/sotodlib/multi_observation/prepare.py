@@ -55,7 +55,7 @@ def prepare(  # type: ignore[no-untyped-def]
     if len(roots) > 1:
         logger.error('all preproc configs must share the same root directory')
         return 1
-    os.chdir(init_config.parents[3])
+    os.chdir(init_config.parents[2])
 
     if outdir is None:
         # use last configuration layer to determine output directory

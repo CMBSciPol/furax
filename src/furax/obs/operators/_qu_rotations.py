@@ -1,3 +1,4 @@
+import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
@@ -17,6 +18,27 @@ from ..stokes import (
     StokesQU,
     ValidStokesType,
 )
+
+
+@jax.jit
+def rotate_qu(x: StokesPyTreeType, angles: Float[Array, '...']) -> StokesPyTreeType:
+    """Rotate QU Stokes parameters by the given angles (in radians).
+
+    The transpose rotation is obtained by passing ``-angles``.
+    """
+    if isinstance(x, StokesI):
+        return x
+    cos_2angles = jnp.cos(2 * angles)
+    sin_2angles = jnp.sin(2 * angles)
+    q = x.q * cos_2angles - x.u * sin_2angles
+    u = x.q * sin_2angles + x.u * cos_2angles
+    if isinstance(x, StokesQU):
+        return StokesQU(q, u)
+    if isinstance(x, StokesIQU):
+        return StokesIQU(x.i, q, u)
+    if isinstance(x, StokesIQUV):
+        return StokesIQUV(x.i, q, u, x.v)
+    raise NotImplementedError
 
 
 @orthogonal
@@ -41,21 +63,7 @@ class QURotationOperator(AbstractLinearOperator):
         return cls(angles=angles, in_structure=structure)
 
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
-        if isinstance(x, StokesI):
-            return x
-
-        cos_2angles = jnp.cos(2 * self.angles)
-        sin_2angles = jnp.sin(2 * self.angles)
-        q = x.q * cos_2angles - x.u * sin_2angles
-        u = x.q * sin_2angles + x.u * cos_2angles
-
-        if isinstance(x, StokesQU):
-            return StokesQU(q, u)
-        if isinstance(x, StokesIQU):
-            return StokesIQU(x.i, q, u)
-        if isinstance(x, StokesIQUV):
-            return StokesIQUV(x.i, q, u, x.v)
-        raise NotImplementedError
+        return rotate_qu(x, self.angles)  # type: ignore[no-any-return]
 
     def transpose(self) -> AbstractLinearOperator:
         return QURotationTransposeOperator(operator=self)
@@ -65,21 +73,7 @@ class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
     operator: QURotationOperator
 
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
-        if isinstance(x, StokesI):
-            return x
-
-        cos_2angles = jnp.cos(2 * self.operator.angles)
-        sin_2angles = jnp.sin(2 * self.operator.angles)
-        q = x.q * cos_2angles + x.u * sin_2angles
-        u = -x.q * sin_2angles + x.u * cos_2angles
-
-        if isinstance(x, StokesQU):
-            return StokesQU(q, u)
-        if isinstance(x, StokesIQU):
-            return StokesIQU(x.i, q, u)
-        if isinstance(x, StokesIQUV):
-            return StokesIQUV(x.i, q, u, x.v)
-        raise NotImplementedError
+        return rotate_qu(x, -self.operator.angles)  # type: ignore[no-any-return]
 
 
 class QURotationRule(AbstractBinaryRule):

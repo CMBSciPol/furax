@@ -36,7 +36,7 @@ class HWPOperator(AbstractLinearOperator):
         if angles is None:
             return hwp
         rot = QURotationOperator(angles=angles, in_structure=in_structure)
-        rotated_hwp: AbstractLinearOperator = rot.T @ hwp @ rot
+        rotated_hwp: AbstractLinearOperator = rot @ hwp @ rot.T
         return rotated_hwp
 
     def mv(self, x: StokesPyTreeType) -> Stokes:

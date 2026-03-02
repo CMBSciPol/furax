@@ -66,8 +66,8 @@ def test_rotating_hwp_iquv() -> None:
 
     expected_y = StokesIQUV(
         i=x.i,
-        q=jnp.array([1.0, -2, -1, 2, 1]),
-        u=jnp.array([-2.0, -1, 2, 1, -2]),
+        q=jnp.array([1.0, 2, -1, -2, 1]),
+        u=jnp.array([-2.0, 1, 2, -1, -2]),
         v=-x.v,
     )
     assert equinox.tree_equal(actual_y, expected_y, atol=1e-15, rtol=1e-15)

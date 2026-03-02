@@ -7,13 +7,14 @@ import numpy as np
 import pytest
 from numpy.random import PCG64, Generator
 
-from furax import Config, DiagonalOperator
+from furax import Config, DiagonalOperator, OperatorTag
 from furax._instruments.sat import (
     DETECTOR_ARRAY_SHAPE,
     NDIR_PER_DETECTOR,
     create_acquisition,
     create_detector_directions,
 )
+from furax.interfaces.lineax import as_lineax_operator
 from furax.obs._samplings import create_random_sampling
 from furax.obs.landscapes import HealpixLandscape
 from furax.tree import as_structure
@@ -48,20 +49,20 @@ def test_solver(planck_iqu_256, sat_nhits):
     h = h.reduce()
 
     # preconditioner
-    tod_structure = h.out_structure()
+    tod_structure = h.out_structure
     coverage = h.T(jnp.ones(tod_structure.shape, tod_structure.dtype))
     m = DiagonalOperator(coverage.i, in_structure=as_structure(coverage)).I
-    m = lx.TaggedLinearOperator(m, lx.positive_semidefinite_tag)
-    hTh = lx.TaggedLinearOperator(h.T @ h, lx.positive_semidefinite_tag)
+    lineax_m = as_lineax_operator(m, OperatorTag.POSITIVE_SEMIDEFINITE)
+    lineax_hTh = as_lineax_operator(h.T @ h, OperatorTag.POSITIVE_SEMIDEFINITE)
     tod = h(sky)
     b = h.T(tod)
 
-    options = {'preconditioner': m}
+    options = {'preconditioner': lineax_m}
 
     # solving
     time0 = time.time()
     solution = lx.linear_solve(
-        hTh, b, solver=Config.instance().solver, throw=False, options=options
+        lineax_hTh, b, solver=Config.instance().solver, throw=False, options=options
     )
     jax.block_until_ready(solution.value)
     print(f'No JIT: {time.time() - time0}')
@@ -77,7 +78,7 @@ def test_solver(planck_iqu_256, sat_nhits):
     def func(tod):
         b = h.T(tod)
         return lx.linear_solve(
-            hTh, b, solver=Config.instance().solver, throw=False, options=options
+            lineax_hTh, b, solver=Config.instance().solver, throw=False, options=options
         )
 
     time0 = time.time()

@@ -122,7 +122,7 @@ Use parametrized fixtures for comprehensive testing:
 
 ```python
 import pytest
-from furax.obs import Stokes
+from furax.obs.stokes import Stokes
 
 @pytest.mark.parametrize("stokes_fixture", ["I", "QU", "IQU"], indirect=True)
 def test_stokes_arithmetic(stokes_fixture):
@@ -160,36 +160,45 @@ sbatch slurms/astro-sim-v100-testing.slurm
 When creating new operators, inherit from `AbstractLinearOperator`:
 
 ```python
-from furax.core import AbstractLinearOperator
+from dataclasses import field
+
+from furax import AbstractLinearOperator, symmetric
 from jaxtyping import Array, Float
 
+@symmetric
 class MyCustomOperator(AbstractLinearOperator):
-    def __init__(self, parameter: float):
-        self.parameter = parameter
+    """A custom homothety operator with static scaling factor.
 
-    def __call__(self, x: Float[Array, "n"]) -> Float[Array, "n"]:
+    Example:
+
+        >>> op = MyCustomOperator(10, in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
+        >>> op(jnp.array([1., 2]))
+        Array([10., 20.], dtype=float32)
+        >>> op.I(jnp.array([1., 2]))
+        Array([0.1, 0.2], dtype=float32)
+
+    """
+    scaling_factor: float = field(metadata={'static': True})
+
+    def mv(self, x: Float[Array, "n"]) -> Float[Array, "n"]:
         # Implement the linear operation
-        return self.parameter * x
+        return self.scaling_factor * x
+
+    def inverse(self) -> AbstractLinearOperator:
+        # Overrides the default implementation
+        return MyCustomOperator(1/self.scaling_factor, in_structure=self.in_structure)
 
     @property
-    def size(self) -> int:
-        # Return the operator size
-        return self._input_size
+    def is_negative_semidefinite(self) -> bool:
+        return self.scaling_factor <= 0
 
     @property
-    def symmetric(self) -> bool:
-        # Return True if operator is symmetric
-        return True
-
-    @property
-    def positive_semidefinite(self) -> bool:
-        # Return True if operator is PSD
-        return self.parameter >= 0
+    def is_positive_semidefinite(self) -> bool:
+        return self.scaling_factor >= 0
 ```
 
 Key requirements:
-- Implement `__call__` for matrix-vector multiplication
-- Define `size` property
+- Implement `mv` for matrix-vector multiplication
 - Specify mathematical properties when known
 - Include comprehensive docstrings with examples
 
@@ -198,11 +207,9 @@ Key requirements:
 New Stokes classes should follow the established pattern:
 
 ```python
-from furax.obs import Stokes
-import jax_dataclasses as jdc
+from furax.obs.stokes import Stokes
 from jaxtyping import Array, Float
 
-@jdc.pytree_dataclass
 class StokesXY(Stokes):
     """Custom Stokes parameters for X and Y polarization."""
 

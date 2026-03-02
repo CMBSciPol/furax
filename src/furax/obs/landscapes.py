@@ -33,7 +33,7 @@ class Landscape(ABC):
 
     @abstractmethod
     def uniform(
-        self, key: Key[Array, ''], low: float = 0.0, high: float = 1.0
+        self, key: Key[Array, ''], minval: float = 0.0, maxval: float = 1.0
     ) -> PyTree[Shaped[Array, '...']]: ...
 
     @abstractmethod
@@ -98,10 +98,10 @@ class StokesLandscape(Landscape):
         return cls.normal(key, self.shape, self.dtype)
 
     def uniform(
-        self, key: Key[Array, ''], low: float = 0.0, high: float = 1.0
+        self, key: Key[Array, ''], minval: float = 0.0, maxval: float = 1.0
     ) -> PyTree[Shaped[Array, ' {self.npixel}']]:
         cls = Stokes.class_for(self.stokes)
-        return cls.uniform(self.shape, key, self.dtype, low, high)
+        return cls.uniform(self.shape, key, self.dtype, minval, maxval)
 
     def get_coverage(self, arg: Sampling) -> Integer[Array, ' {self.npixel}']:
         indices = self.world2index(arg.theta, arg.phi)

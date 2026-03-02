@@ -1,6 +1,6 @@
 from collections.abc import Callable
+from dataclasses import field
 
-import equinox
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -26,7 +26,7 @@ class FourierOperator(AbstractLinearOperator):
         >>> fs = 200.0  # sampling frequency
         >>> cutoff = 10.0  # cutoff frequency
         >>> op = FourierOperator(
-        ...     fourier_kernel=lambda f: f < cutoff,  # low-pass filter
+        ...     lambda f: f < cutoff,  # low-pass filter
         ...     in_structure=jax.ShapeDtypeStruct((n,), float),
         ...     sample_rate=fs,
         ... )
@@ -34,22 +34,21 @@ class FourierOperator(AbstractLinearOperator):
         >>> filtered = op(signal)
     """
 
-    kernel_func: Callable[[Array], Array] = equinox.field(static=True)
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-    fft_size: int = equinox.field(static=True)
-    apodize: bool = equinox.field(static=True)
-    padding_width: int = equinox.field(static=True)
+    kernel_func: Callable[[Array], Array] = field(metadata={'static': True})
+    fft_size: int = field(metadata={'static': True})
+    apodize: bool = field(metadata={'static': True})
+    padding_width: int = field(metadata={'static': True})
     sample_rate: float
 
     def __init__(
         self,
         kernel_func: Callable[[Float[Array, '...']], Inexact[Array, '...']],
-        in_structure: PyTree[jax.ShapeDtypeStruct],
         *,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
         sample_rate: float = 1.0,
         apodize: bool = False,
         padding_width: int | None = None,
-    ):
+    ) -> None:
         """Create a FourierOperator.
 
         Args:
@@ -82,12 +81,12 @@ class FourierOperator(AbstractLinearOperator):
         if kernel.shape[-1] != freqs.size:
             raise ValueError('Bad kernel shape')
 
-        self.kernel_func = jitted_kernel
-        self._in_structure = in_structure
-        self.fft_size = fft_size
-        self.apodize = apodize
-        self.padding_width = padding_width
-        self.sample_rate = sample_rate
+        object.__setattr__(self, 'kernel_func', jitted_kernel)
+        object.__setattr__(self, 'fft_size', fft_size)
+        object.__setattr__(self, 'apodize', apodize)
+        object.__setattr__(self, 'padding_width', padding_width)
+        object.__setattr__(self, 'sample_rate', sample_rate)
+        object.__setattr__(self, 'in_structure', in_structure)
 
     def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
         """Apply Fourier kernel to input array.
@@ -101,9 +100,6 @@ class FourierOperator(AbstractLinearOperator):
     def get_kernel(self) -> Inexact[Array, '...']:
         freqs = jnp.fft.rfftfreq(self.fft_size, d=1 / self.sample_rate)
         return self.kernel_func(freqs)
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
 
     def as_matrix(self) -> Inexact[Array, 'a a']:
         """Returns the operator as a dense matrix.
@@ -125,7 +121,7 @@ class FourierOperator(AbstractLinearOperator):
 
             return matrix
 
-        x = jnp.zeros(self.in_structure().shape, self.in_structure().dtype)
+        x = jnp.zeros(self.in_structure.shape, self.in_structure.dtype)
         blocks: Array = func(x)
 
         # Handle multidimensional case
@@ -298,7 +294,7 @@ class FourierOperator(AbstractLinearOperator):
 
         return cls(
             kernel_func,
-            in_structure,
+            in_structure=in_structure,
             sample_rate=sample_rate,
             apodize=apodize,
         )

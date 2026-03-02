@@ -20,7 +20,7 @@ def test_move_axis(
 ) -> None:
     in_structure = jax.ShapeDtypeStruct((1, 2, 3, 4), jnp.float64)
     op = MoveAxisOperator(source, destination, in_structure=in_structure)
-    assert op.out_structure().shape == expected_shape
+    assert op.out_structure.shape == expected_shape
     x = jnp.ones(in_structure.shape, in_structure.dtype)
     y = op(x)
     assert y.dtype == in_structure.dtype
@@ -32,7 +32,7 @@ def test_move_axis_pytree() -> None:
     destination = 1
     in_structure = {'x': jax.ShapeDtypeStruct((1, 2, 3, 4), jnp.float64)}
     op = MoveAxisOperator(source, destination, in_structure=in_structure)
-    assert op.out_structure() == {'x': jax.ShapeDtypeStruct((2, 1, 3, 4), jnp.float64)}
+    assert op.out_structure == {'x': jax.ShapeDtypeStruct((2, 1, 3, 4), jnp.float64)}
     x = {'x': jnp.ones((1, 2, 3, 4), jnp.float64)}
     assert equinox.tree_equal(op(x), {'x': jnp.ones((2, 1, 3, 4), jnp.float64)})
 
@@ -61,8 +61,8 @@ def test_move_axis_orthogonal() -> None:
     op = MoveAxisOperator(0, 1, in_structure=in_structure)
     reduced_op = (op.T @ op).reduce()
     assert isinstance(reduced_op, IdentityOperator)
-    assert reduced_op.in_structure() == op.in_structure()
+    assert reduced_op.in_structure == op.in_structure
 
     reduced_op = (op @ op.T).reduce()
     assert isinstance(reduced_op, IdentityOperator)
-    assert reduced_op.in_structure() == op.out_structure()
+    assert reduced_op.in_structure == op.out_structure

@@ -36,7 +36,7 @@ def test_get_kernel_fail_lagmax(n_tt: list[int], fft_size: int):
 def test_generate_realization_shape(shape: tuple[int, ...]):
     key = jax.random.key(31415926539)
     structure = jax.ShapeDtypeStruct(shape, float)
-    cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
+    cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=structure)
     real = generate_noise_realization(key, cov)
     assert real.shape == shape
 
@@ -72,14 +72,14 @@ def dummy_mask_op(dummy_x, dummy_mask):
 @pytest.fixture
 def dummy_cov(dummy_x):
     structure = jax.ShapeDtypeStruct(dummy_x.shape, dummy_x.dtype)
-    return SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
+    return SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=structure)
 
 
 @pytest.fixture
 def dummy_gap_filling_operator(dummy_shape, dummy_mask):
     x = jnp.ones(dummy_shape, dtype=float)
     structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
-    cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), structure)
+    cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=structure)
     indices = jnp.where(dummy_mask)
     mask_op = IndexOperator(indices, in_structure=structure)
     return GapFillingOperator(cov, mask_op)

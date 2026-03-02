@@ -182,8 +182,8 @@ def test_direct_transpose(indices) -> None:
     index_op = IndexOperator(indices, in_structure=jax.ShapeDtypeStruct((2, 3, 2), jnp.float32))
     op = index_op @ index_op.T
     reduced_op = op.reduce()
-    assert reduced_op.in_structure() == op.in_structure()
-    assert reduced_op.out_structure() == op.out_structure()
+    assert reduced_op.in_structure == op.in_structure
+    assert reduced_op.out_structure == op.out_structure
     assert_array_equal(reduced_op.as_matrix(), op.as_matrix())
 
 
@@ -198,8 +198,8 @@ def test_rule_direct_transpose_non_unique_indices(indices) -> None:
     index_op = IndexOperator(indices, in_structure=jax.ShapeDtypeStruct((10,), jnp.float32))
     op = index_op @ index_op.T
     reduced_op = op.reduce()
-    assert reduced_op.in_structure() == op.in_structure()
-    assert reduced_op.out_structure() == op.out_structure()
+    assert reduced_op.in_structure == op.in_structure
+    assert reduced_op.out_structure == op.out_structure
     assert_array_equal(reduced_op.as_matrix(), op.as_matrix())
 
 
@@ -215,6 +215,6 @@ def test_rule_transpose_direct(indices) -> None:
     op = index_op.T @ index_op
     reduced_op = op.reduce()
     assert isinstance(reduced_op, DiagonalOperator)
-    assert reduced_op.in_structure() == op.in_structure()
-    assert reduced_op.out_structure() == op.out_structure()
+    assert reduced_op.in_structure == op.in_structure
+    assert reduced_op.out_structure == op.out_structure
     assert_array_equal(reduced_op.as_matrix(), op.as_matrix())

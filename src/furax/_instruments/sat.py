@@ -59,7 +59,7 @@ def create_acquisition(
 ) -> AbstractLinearOperator:
     tod_shape = len(detector_dirs), len(samplings)
     proj = create_projection_operator(landscape, samplings, detector_dirs)
-    hwp = HWPOperator(proj.out_structure())
+    hwp = HWPOperator(in_structure=proj.out_structure)
     polarizer = LinearPolarizerOperator.create(tod_shape, stokes=landscape.stokes)
     acquisition: AbstractLinearOperator = polarizer @ hwp @ proj
     return acquisition.reduce()

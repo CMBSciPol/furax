@@ -8,6 +8,7 @@ from jaxtyping import Array, PyTree, Scalar
 
 from furax import AbstractLinearOperator, IdentityOperator
 from furax.obs.operators._seds import (
+    AbstractSEDOperator,
     CMBOperator,
     DustOperator,
     MixingMatrixOperator,
@@ -34,7 +35,7 @@ def _create_component(
     params: PyTree[Array],
     patch_indices: PyTree[Array],
     in_structure: Stokes,
-) -> AbstractLinearOperator:
+) -> AbstractSEDOperator:
     """
     Create a linear operator component corresponding to the given astrophysical signal.
 
@@ -128,7 +129,7 @@ def _get_mixing_matrix(
     in_structure: Stokes,
 ) -> AbstractLinearOperator:  # Returns MixingMatrixOperator
     """Helper to construct the MixingMatrixOperator from parameters."""
-    components = {}
+    components: dict[str, AbstractSEDOperator] = {}
     for component in _get_available_components(params):
         components[component] = _create_component(
             component,
@@ -255,7 +256,7 @@ def _spectral_likelihood_core(
         N_2 = N
 
     if op is None:
-        op = IdentityOperator(d.structure)
+        op = IdentityOperator(in_structure=d.structure)
 
     assert set(params.keys()).issubset(valid_keys), (
         f'params.keys(): {params.keys()} , valid_keys: {valid_keys}'
@@ -318,7 +319,7 @@ def _spectral_log_likelihood_fwd(
     if N_2 is None:
         N_2 = N
     if op is None:
-        op = IdentityOperator(d.structure)
+        op = IdentityOperator(in_structure=d.structure)
 
     # Run the core logic to get 's' (sky signal)
     # We re-use the core function to ensure consistency
@@ -437,7 +438,7 @@ def spectral_log_likelihood(
         >>> nside = 64
         >>> nu_freqs = jnp.array([30., 40., 100.])
         >>> d_data = Stokes.zeros((len(nu_freqs), 12 * nside**2)) # Example observed data
-        >>> inv_noise = HomothetyOperator(jnp.ones(1), _in_structure=d_data.structure) # Example inverse noise
+        >>> inv_noise = HomothetyOperator(jnp.ones(1), in_structure=d_data.structure) # Example inverse noise
         >>> params = {'temp_dust': 20.0, 'beta_dust': 1.54, 'beta_pl': -3.0}
         >>> dust_nu0_ref = 150.0
         >>> synchrotron_nu0_ref = 20.0
@@ -492,7 +493,7 @@ def _sky_signal_fwd(
     if N_2 is None:
         N_2 = N
     if op is None:
-        op = IdentityOperator(d.structure)
+        op = IdentityOperator(in_structure=d.structure)
 
     # 1. Compute 's' using the core logic
     # We rely on the existing core function which builds A and solves M s = b
@@ -614,7 +615,7 @@ def sky_signal(
         >>> nside = 64
         >>> nu_freqs = jnp.array([30., 40., 100.])
         >>> d_data = Stokes.zeros((len(nu_freqs), 12 * nside**2)) # Example observed data
-        >>> inv_noise = HomothetyOperator(jnp.ones(1), _in_structure=d_data.structure) # Example inverse noise
+        >>> inv_noise = HomothetyOperator(jnp.ones(1), in_structure=d_data.structure) # Example inverse noise
         >>> params = {'temp_dust': 20.0, 'beta_dust': 1.54, 'beta_pl': -3.0}
         >>> dust_nu0_ref = 150.0
         >>> synchrotron_nu0_ref = 20.0
@@ -676,7 +677,7 @@ def negative_log_likelihood(
         >>> nside = 64
         >>> nu_freqs = jnp.array([30., 40., 100.])
         >>> d_data = Stokes.zeros((len(nu_freqs), 12 * nside**2)) # Example observed data
-        >>> inv_noise = HomothetyOperator(jnp.ones(1), _in_structure=d_data.structure) # Example inverse noise
+        >>> inv_noise = HomothetyOperator(jnp.ones(1), in_structure=d_data.structure) # Example inverse noise
         >>> params = {'temp_dust': 20.0, 'beta_dust': 1.54, 'beta_pl': -3.0}
         >>> dust_nu0_ref = 150.0
         >>> synchrotron_nu0_ref = 20.0
@@ -740,7 +741,7 @@ def spectral_cmb_variance(
         >>> nside = 64
         >>> nu_freqs = jnp.array([30., 40., 100.])
         >>> d_data = Stokes.zeros((len(nu_freqs), 12 * nside**2)) # Example observed data
-        >>> inv_noise = HomothetyOperator(jnp.ones(1), _in_structure=d_data.structure) # Example inverse noise
+        >>> inv_noise = HomothetyOperator(jnp.ones(1), in_structure=d_data.structure) # Example inverse noise
         >>> params = {'temp_dust': 20.0, 'beta_dust': 1.54, 'beta_pl': -3.0}
         >>> dust_nu0_ref = 150.0
         >>> synchrotron_nu0_ref = 20.0

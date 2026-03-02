@@ -19,7 +19,14 @@ class BJPreconditioner(TreeOperator):
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ):
-        super().__init__(tree, in_structure=in_structure)
+        from ..tree import _get_outer_treedef
+
+        inner_treedef = jax.tree.structure(in_structure)
+        outer_treedef = _get_outer_treedef(in_structure, tree)
+        object.__setattr__(self, 'tree', tree)
+        object.__setattr__(self, 'in_structure', in_structure)
+        object.__setattr__(self, 'inner_treedef', inner_treedef)
+        object.__setattr__(self, 'outer_treedef', outer_treedef)
 
         # Check that we have a (square) Stokes-pytree of Stokes-pytrees
         pytree_is_stokes = isinstance(tree, Stokes)
@@ -36,10 +43,10 @@ class BJPreconditioner(TreeOperator):
         The operator is assumed to be diagonal with respect with all dimensions of the pytree.
         """
         # Check the input and output structure of the operator
-        in_struct = op.in_structure()
+        in_struct = op.in_structure
         if not isinstance(in_struct, Stokes):
             raise ValueError('operator must act on Stokes pytrees (sky maps)')
-        if not in_struct == op.out_structure():
+        if not in_struct == op.out_structure:
             raise ValueError('operator must be square')
 
         # Create the preconditioner by evaluating the operator

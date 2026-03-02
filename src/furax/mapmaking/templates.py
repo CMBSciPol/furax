@@ -1,7 +1,7 @@
 from abc import abstractmethod
+from dataclasses import field
 from typing import Any
 
-import equinox
 import jax
 import numpy as np
 from jax import Array
@@ -10,6 +10,7 @@ from jaxtyping import DTypeLike, Float, Inexact, Int, PyTree
 from numpy.typing import NDArray
 
 from furax import AbstractLinearOperator
+from furax.core import TransposeOperator
 from furax.math import quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
 from furax.obs.landscapes import HorizonLandscape
@@ -24,12 +25,9 @@ class TemplateOperator(AbstractLinearOperator):
     The input and output structures are fixed.
     """
 
-    n_params: int = equinox.field(static=True)  # Number of template parameters
-    n_dets: int = equinox.field(static=True)  # Number of detecotrs
-    n_samps: int = equinox.field(static=True)  # Number of samples
-
-    _in_structure: jax.ShapeDtypeStruct = equinox.field(static=True)
-    _out_structure: jax.ShapeDtypeStruct = equinox.field(static=True)
+    n_params: int = field(metadata={'static': True})  # Number of template parameters
+    n_dets: int = field(metadata={'static': True})  # Number of detecotrs
+    n_samps: int = field(metadata={'static': True})  # Number of samples
 
     def __init__(
         self,
@@ -38,22 +36,19 @@ class TemplateOperator(AbstractLinearOperator):
         n_samps: int,  # Number of samples
         dtype: DTypeLike,
     ) -> None:
-        self.n_params = n_params
-        self.n_dets = n_dets
-        self.n_samps = n_samps
-        self._in_structure = jax.ShapeDtypeStruct((n_params,), dtype)
-        self._out_structure = jax.ShapeDtypeStruct((n_dets, n_samps), dtype)
+        object.__setattr__(self, 'n_params', n_params)
+        object.__setattr__(self, 'n_dets', n_dets)
+        object.__setattr__(self, 'n_samps', n_samps)
+        super().__init__(in_structure=jax.ShapeDtypeStruct((n_params,), dtype))
 
-    def in_structure(self) -> jax.ShapeDtypeStruct:
-        return self._in_structure
-
+    @property
     def out_structure(self) -> jax.ShapeDtypeStruct:
-        return self._out_structure
+        return jax.ShapeDtypeStruct((self.n_dets, self.n_samps), self.in_structure.dtype)
 
     @classmethod
     def from_dict(
         cls, name: str, config: dict[str, Any], observation: AbstractGroundObservation[Any]
-    ) -> AbstractLinearOperator:
+    ) -> 'TemplateOperator':
         """Create and return a template operator corresponding to the
         name and configuration provided.
         """
@@ -124,10 +119,10 @@ class PolynomialTemplateOperator(TemplateOperator):
     with varying sizes, that addes up to (n_samps, max_poly_order+1)
     """
 
-    max_poly_order: int = equinox.field(static=True)
-    n_intervals: int = equinox.field(static=True)
-    blocks: PyTree[Float[Array, '...']] = equinox.field(static=True)
-    block_slice_indices: PyTree[int] = equinox.field(static=True)
+    max_poly_order: int = field(metadata={'static': True})
+    n_intervals: int = field(metadata={'static': True})
+    blocks: PyTree[Float[Array, '...']] = field(metadata={'static': True})
+    block_slice_indices: PyTree[int] = field(metadata={'static': True})
 
     def __init__(
         self,
@@ -141,10 +136,10 @@ class PolynomialTemplateOperator(TemplateOperator):
     ) -> None:
         # TODO: add checks
         super().__init__(n_params, n_dets, n_samps, dtype)
-        self.max_poly_order = max_poly_order
-        self.n_intervals = len(blocks)
-        self.blocks = blocks
-        self.block_slice_indices = block_slice_indices
+        object.__setattr__(self, 'max_poly_order', max_poly_order)
+        object.__setattr__(self, 'n_intervals', len(blocks))
+        object.__setattr__(self, 'blocks', blocks)
+        object.__setattr__(self, 'block_slice_indices', block_slice_indices)
 
     @classmethod
     def create(
@@ -228,7 +223,7 @@ class PolynomialTemplateOperator(TemplateOperator):
         return {}
 
 
-class PolynomialTemplateTransposeOperator(AbstractLinearOperator):
+class PolynomialTemplateTransposeOperator(TransposeOperator):
     operator: PolynomialTemplateOperator
 
     def mv(self, x: Float[Array, 'a b']) -> Float[Array, '...']:
@@ -243,12 +238,6 @@ class PolynomialTemplateTransposeOperator(AbstractLinearOperator):
 
         return jnp.concatenate([b.ravel() for b in block_mvs])
 
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.out_structure()
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.in_structure()
-
 
 class ScanSynchronousTemplateOperator(TemplateOperator):
     """Operator for scan-synchronous signal templates.
@@ -256,9 +245,9 @@ class ScanSynchronousTemplateOperator(TemplateOperator):
     with individual polynomial coefficients for each detector.
     """
 
-    min_poly_order: int = equinox.field(static=True)
-    max_poly_order: int = equinox.field(static=True)
-    templates: Float[Array, 'ord samp'] = equinox.field(static=True)
+    min_poly_order: int = field(metadata={'static': True})
+    max_poly_order: int = field(metadata={'static': True})
+    templates: Float[Array, 'ord samp'] = field(metadata={'static': True})
 
     def __init__(
         self,
@@ -272,9 +261,9 @@ class ScanSynchronousTemplateOperator(TemplateOperator):
     ):
         # TODO: add checks
         super().__init__(n_params, n_dets, n_samps, dtype)
-        self.min_poly_order = min_poly_order
-        self.max_poly_order = max_poly_order
-        self.templates = templates
+        object.__setattr__(self, 'min_poly_order', min_poly_order)
+        object.__setattr__(self, 'max_poly_order', max_poly_order)
+        object.__setattr__(self, 'templates', templates)
 
     @classmethod
     def create(
@@ -323,7 +312,7 @@ class ScanSynchronousTemplateOperator(TemplateOperator):
         return {}
 
 
-class ScanSynchronousTemplateTransposeOperator(AbstractLinearOperator):
+class ScanSynchronousTemplateTransposeOperator(TransposeOperator):
     operator: ScanSynchronousTemplateOperator
 
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det ord']:
@@ -331,12 +320,6 @@ class ScanSynchronousTemplateTransposeOperator(AbstractLinearOperator):
 
         params = jnp.einsum('ij,kj->ik', x, self.operator.templates)
         return params.ravel()
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.out_structure()
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.in_structure()
 
 
 class HWPSynchronousTemplateOperator(TemplateOperator):
@@ -347,8 +330,8 @@ class HWPSynchronousTemplateOperator(TemplateOperator):
     are assumed to be constant throughout the scan.
     """
 
-    n_harmonics: int = equinox.field(static=True)
-    templates: Float[Array, 'harm samp'] = equinox.field(static=True)
+    n_harmonics: int = field(metadata={'static': True})
+    templates: Float[Array, 'harm samp'] = field(metadata={'static': True})
 
     def __init__(
         self,
@@ -361,8 +344,8 @@ class HWPSynchronousTemplateOperator(TemplateOperator):
     ):
         # TODO: add checks
         super().__init__(n_params, n_dets, n_samps, dtype)
-        self.n_harmonics = n_harmonics
-        self.templates = templates
+        object.__setattr__(self, 'n_harmonics', n_harmonics)
+        object.__setattr__(self, 'templates', templates)
 
     @classmethod
     def create(
@@ -405,7 +388,7 @@ class HWPSynchronousTemplateOperator(TemplateOperator):
         return {}
 
 
-class HWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
+class HWPSynchronousTemplateTransposeOperator(TransposeOperator):
     operator: HWPSynchronousTemplateOperator
 
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det harm']:
@@ -413,12 +396,6 @@ class HWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
 
         params = jnp.einsum('ij,kj->ik', x, self.operator.templates)
         return params.ravel()
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.out_structure()
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.in_structure()
 
 
 class CommonModeTemplateOperator(TemplateOperator):
@@ -429,8 +406,8 @@ class CommonModeTemplateOperator(TemplateOperator):
     are assumed to be constant throughout the scan.
     """
 
-    n_modes: int = equinox.field(static=True)
-    templates: Float[Array, 'mode samp'] = equinox.field(static=True)
+    n_modes: int = field(metadata={'static': True})
+    templates: Float[Array, 'mode samp'] = field(metadata={'static': True})
 
     def __init__(
         self,
@@ -443,8 +420,8 @@ class CommonModeTemplateOperator(TemplateOperator):
     ):
         # TODO: add checks
         super().__init__(n_params, n_dets, n_samps, dtype)
-        self.n_modes = n_modes
-        self.templates = templates
+        object.__setattr__(self, 'n_modes', n_modes)
+        object.__setattr__(self, 'templates', templates)
 
     @classmethod
     def create(
@@ -495,7 +472,7 @@ class CommonModeTemplateOperator(TemplateOperator):
         return {}
 
 
-class CommonModeTemplateTransposeOperator(AbstractLinearOperator):
+class CommonModeTemplateTransposeOperator(TransposeOperator):
     operator: CommonModeTemplateOperator
 
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det mode']:
@@ -503,12 +480,6 @@ class CommonModeTemplateTransposeOperator(AbstractLinearOperator):
 
         params = jnp.einsum('ij,kj->ik', x, self.operator.templates)
         return params.ravel()
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.out_structure()
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.in_structure()
 
 
 class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
@@ -521,8 +492,8 @@ class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
     The coefficients are unique per detector.
     """
 
-    n_polynomials: int = equinox.field(static=True)
-    n_harmonics: int = equinox.field(static=True)
+    n_polynomials: int = field(metadata={'static': True})
+    n_harmonics: int = field(metadata={'static': True})
     poly_templates: Float[Array, 'poly samp']
     harm_templates: Float[Array, 'harm samp']
     min_azimuth: Float[Array, '']
@@ -543,12 +514,12 @@ class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
     ):
         # TODO: add checks
         super().__init__(n_params, n_dets, n_samps, dtype)
-        self.n_polynomials = n_polynomials
-        self.n_harmonics = n_harmonics
-        self.poly_templates = poly_templates
-        self.harm_templates = harm_templates
-        self.min_azimuth = min_azimuth
-        self.max_azimuth = max_azimuth
+        object.__setattr__(self, 'n_polynomials', n_polynomials)
+        object.__setattr__(self, 'n_harmonics', n_harmonics)
+        object.__setattr__(self, 'poly_templates', poly_templates)
+        object.__setattr__(self, 'harm_templates', harm_templates)
+        object.__setattr__(self, 'min_azimuth', min_azimuth)
+        object.__setattr__(self, 'max_azimuth', max_azimuth)
 
     @classmethod
     def create(
@@ -634,7 +605,7 @@ class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
         return {'azimuth_grid': azimuth, 'fit_at_azimuth_grid': az_fit}
 
 
-class AzimuthHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
+class AzimuthHWPSynchronousTemplateTransposeOperator(TransposeOperator):
     operator: AzimuthHWPSynchronousTemplateOperator
 
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, ' param']:
@@ -657,12 +628,6 @@ class AzimuthHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
             axis=-1,
         ).ravel()
 
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.out_structure()
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.in_structure()
-
 
 class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
     """Operator for azimuth and HWP-synchronous signal templates.
@@ -675,8 +640,8 @@ class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
     The coefficients are unique per detector.
     """
 
-    n_azimuth_bins: int = equinox.field(static=True)
-    n_harmonics: int = equinox.field(static=True)
+    n_azimuth_bins: int = field(metadata={'static': True})
+    n_harmonics: int = field(metadata={'static': True})
     bin_templates: Float[Array, 'bin samp']
     harm_templates: Float[Array, 'harm samp']
 
@@ -693,10 +658,10 @@ class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
     ):
         # TODO: add checks
         super().__init__(n_params, n_dets, n_samps, dtype)
-        self.n_azimuth_bins = n_azimuth_bins
-        self.n_harmonics = n_harmonics
-        self.bin_templates = bin_templates
-        self.harm_templates = harm_templates
+        object.__setattr__(self, 'n_azimuth_bins', n_azimuth_bins)
+        object.__setattr__(self, 'n_harmonics', n_harmonics)
+        object.__setattr__(self, 'bin_templates', bin_templates)
+        object.__setattr__(self, 'harm_templates', harm_templates)
 
     @classmethod
     def create(
@@ -794,7 +759,7 @@ class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
         return {}
 
 
-class BinAzimuthHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
+class BinAzimuthHWPSynchronousTemplateTransposeOperator(TransposeOperator):
     operator: BinAzimuthHWPSynchronousTemplateOperator
 
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, ' param']:
@@ -816,12 +781,6 @@ class BinAzimuthHWPSynchronousTemplateTransposeOperator(AbstractLinearOperator):
             ),
             axis=-1,
         ).ravel()
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.out_structure()
-
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.operator.in_structure()
 
 
 class GroundTemplateOperator(TemplateOperator):
@@ -874,7 +833,7 @@ class GroundTemplateOperator(TemplateOperator):
             landscape=horizon_landscape,
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
-            _in_structure=horizon_landscape.structure,
+            in_structure=horizon_landscape.structure,
             _out_structure=Stokes.class_for(stokes).structure_for((n_dets, n_samps)),
             chunk_size=chunk_size,
         )
@@ -951,17 +910,5 @@ class GroundTemplateOperator(TemplateOperator):
 
 
 class StokesIQUFlattenOperator(AbstractLinearOperator):
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-
-    def __init__(
-        self,
-        *,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ):
-        self._in_structure = in_structure
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
-
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> Inexact[Array, ' _b']:
         return jnp.concatenate([x.i, x.q, x.u])

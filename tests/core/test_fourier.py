@@ -57,7 +57,7 @@ class TestFourierOperator:
 
         # Create operator with apodization
         op = FourierOperator(
-            kernel_func=lambda f: ((f >= 1.0) & (f <= 10.0)).astype(jnp.complex128),
+            lambda f: ((f >= 1.0) & (f <= 10.0)).astype(jnp.complex128),
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
             sample_rate=sample_rate,
             apodize=True,
@@ -88,7 +88,7 @@ class TestFourierOperator:
         # Test with custom padding width
         padding_width = 100
         op = FourierOperator(
-            kernel_func=lambda f: ((f >= 1.0) & (f <= 10.0)).astype(jnp.complex128),
+            lambda f: ((f >= 1.0) & (f <= 10.0)).astype(jnp.complex128),
             in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
             sample_rate=sample_rate,
             apodize=True,
@@ -145,7 +145,7 @@ class TestFourierOperator:
 
         with pytest.raises(ValueError, match='Bad kernel shape'):
             FourierOperator(
-                kernel_func=bad_kernel_func,
+                bad_kernel_func,
                 in_structure=jax.ShapeDtypeStruct((n,), jnp.float64),
                 sample_rate=100.0,
             )

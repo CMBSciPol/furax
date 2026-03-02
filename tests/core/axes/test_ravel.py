@@ -64,7 +64,7 @@ def test_ravel(
     expected_y: PyTree[jax.Array],
     do_jit: bool,
 ) -> None:
-    op = RavelOperator(first_axis, last_axis, in_structure=as_structure(x))
+    op = RavelOperator(first_axis=first_axis, last_axis=last_axis, in_structure=as_structure(x))
     if do_jit:
         jitted_op_t = jax.jit(lambda x: op.T.mv(x))
         jitted_op = jax.jit(lambda x: op.mv(x))
@@ -91,7 +91,7 @@ def test_ravel(
 def test_as_matrix(
     first_axis: int, last_axis: int, in_structure: PyTree[jax.ShapeDtypeStruct]
 ) -> None:
-    op = RavelOperator(first_axis, last_axis, in_structure=in_structure)
+    op = RavelOperator(first_axis=first_axis, last_axis=last_axis, in_structure=in_structure)
     matrix = op.as_matrix()
     expected_matrix = AbstractLinearOperator.as_matrix(op)
     assert_array_equal(matrix, expected_matrix)
@@ -120,7 +120,7 @@ def test_as_matrix(
 def test_reduction(
     first_axis: int, last_axis: int, in_structure: PyTree[jax.ShapeDtypeStruct]
 ) -> None:
-    op = RavelOperator(first_axis, last_axis, in_structure=in_structure)
+    op = RavelOperator(first_axis=first_axis, last_axis=last_axis, in_structure=in_structure)
     assert isinstance(op.reduce(), IdentityOperator)
 
 
@@ -128,25 +128,25 @@ def test_reduction(
 def test_invalid_axes1(first_axis: int, last_axis: int) -> None:
     structure = jax.ShapeDtypeStruct((1, 2, 3), jnp.float32)
     with pytest.raises(ValueError, match='the first axis'):
-        _ = RavelOperator(first_axis, last_axis, in_structure=structure)
+        _ = RavelOperator(first_axis=first_axis, last_axis=last_axis, in_structure=structure)
 
 
 @pytest.mark.parametrize('first_axis, last_axis', [(1, -3), (-1, 1)])
 def test_invalid_axes2(first_axis: int, last_axis: int) -> None:
     structure = jax.ShapeDtypeStruct((1, 2, 3), jnp.float32)
     with pytest.raises(ValueError, match='there are no dimensions'):
-        _ = RavelOperator(first_axis, last_axis, in_structure=structure)
+        _ = RavelOperator(first_axis=first_axis, last_axis=last_axis, in_structure=structure)
 
 
 def test_ravel_rules1() -> None:
     op = RavelOperator(in_structure=jax.ShapeDtypeStruct((10, 20), jnp.float64))
     op_reduced = (op.T @ op).reduce()
     assert isinstance(op_reduced, IdentityOperator)
-    assert op_reduced.in_structure() == op.in_structure()
+    assert op_reduced.in_structure == op.in_structure
 
 
 def test_ravel_rules2() -> None:
     op = RavelOperator(in_structure=jax.ShapeDtypeStruct((10, 20), jnp.float64))
     op_reduced = (op @ op.T).reduce()
     assert isinstance(op_reduced, IdentityOperator)
-    assert op_reduced.in_structure() == op.out_structure()
+    assert op_reduced.in_structure == op.out_structure

@@ -40,14 +40,14 @@ def test_iqu() -> None:
 
 def test_orthogonal(stokes: ValidStokesType) -> None:
     hwp = QURotationOperator.create(shape=(), stokes=stokes, angles=1.1)
-    x = fx.tree.ones_like(hwp.out_structure())
+    x = fx.tree.ones_like(hwp.out_structure)
     y = hwp.T(hwp(x))
     assert equinox.tree_equal(y, x, atol=1e-15, rtol=1e-15)
 
 
 def test_matmul(stokes: ValidStokesType) -> None:
     structure = Stokes.class_for(stokes).structure_for(())
-    hwp = QURotationOperator(1.1, structure)
+    hwp = QURotationOperator(1.1, in_structure=structure)
     assert isinstance(hwp @ hwp.T, IdentityOperator)
     assert isinstance(hwp.T @ hwp, IdentityOperator)
 
@@ -58,10 +58,10 @@ def test_matmul(stokes: ValidStokesType) -> None:
 )
 def test_rules(stokes: ValidStokesType, transpose_left, transpose_right, expected_value) -> None:
     structure = Stokes.class_for(stokes).structure_for(())
-    left = QURotationOperator(1, structure)
+    left = QURotationOperator(1, in_structure=structure)
     if transpose_left:
         left = left.T
-    right = QURotationOperator(2, structure)
+    right = QURotationOperator(2, in_structure=structure)
     if transpose_right:
         right = right.T
     reduced_op = (left @ right).reduce()

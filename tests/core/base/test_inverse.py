@@ -36,10 +36,7 @@ def test_parametrized_inverse_empty() -> None:
         def mv(self, x):
             return x
 
-        def in_structure(self):
-            return jax.ShapeDtypeStruct((2,), jnp.float32)
-
-    op = Op()
+    op = Op(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
     inv_op = op.I
     assert inv_op() is inv_op
 
@@ -55,9 +52,6 @@ def test_parametrized_inverse() -> None:
     class Op(AbstractLinearOperator):
         def mv(self, x):
             return m @ x
-
-        def in_structure(self):
-            return jax.ShapeDtypeStruct((4,), jnp.float64)
 
     m = jnp.array(
         [
@@ -76,7 +70,7 @@ def test_parametrized_inverse() -> None:
         ]
     )
 
-    op = Op()
+    op = Op(in_structure=jax.ShapeDtypeStruct((4,), jnp.float64))
     b = jnp.array([1.0, 1.0, 1.0, 1.0], dtype=jnp.float64)
 
     solver = lx._solver.NormalCG(rtol=1e-6, atol=1e-6, max_steps=5)

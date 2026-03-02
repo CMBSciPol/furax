@@ -14,6 +14,7 @@ from .core import (
     IndexOperator,
     MaskOperator,
     MoveAxisOperator,
+    OperatorTag,
     RavelOperator,
     ReshapeOperator,
     SumOperator,
@@ -26,8 +27,10 @@ from .core import (
     positive_semidefinite,
     square,
     symmetric,
+    tridiagonal,
     upper_triangular,
 )
+from .interfaces.lineax import as_lineax_operator
 
 __all__ = [
     # core
@@ -49,14 +52,17 @@ __all__ = [
     'FourierOperator',
     'SymmetricBandToeplitzOperator',
     'TreeOperator',
+    'OperatorTag',
+    'as_lineax_operator',
+    'square',
+    'symmetric',
+    'orthogonal',
     'diagonal',
+    'tridiagonal',
     'lower_triangular',
     'upper_triangular',
-    'symmetric',
     'positive_semidefinite',
     'negative_semidefinite',
-    'square',
-    'orthogonal',
     # config
     'Config',
     # tree

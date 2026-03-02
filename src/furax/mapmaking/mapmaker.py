@@ -1,6 +1,7 @@
 import operator
 import pickle
 from abc import abstractmethod
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, fields
 from logging import Logger
 from math import prod
@@ -100,7 +101,7 @@ class MultiObservationMapMaker(Generic[T]):
 
     def __init__(
         self,
-        observations: list[AbstractLazyObservation[T]],
+        observations: Sequence[AbstractLazyObservation[T]],
         config: MapMakingConfig | None = None,
         logger: Logger | None = None,
         stokes: ValidStokesType = 'IQU',  # TODO: shoudn't this be in the config?
@@ -118,9 +119,9 @@ class MultiObservationMapMaker(Generic[T]):
         if out_dir is not None:
             out_dir = Path(out_dir)
             results.save(out_dir)
-            self.logger.info(f'Mapmaking results saved to {out_dir}')
+            self.logger.info(f'saved results to {out_dir}')
             self.config.dump_yaml(out_dir / 'mapmaking_config.yaml')
-            self.logger.info('Mapmaking config saved to file')
+            self.logger.info('saved mapmaking configuration to file')
 
         return results
 

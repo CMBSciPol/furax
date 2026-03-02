@@ -18,6 +18,7 @@ from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float, PyTree
 
+import furax.linalg
 import furax.tree
 from furax import (
     AbstractLinearOperator,
@@ -359,9 +360,7 @@ class MultiObservationMapMaker(Generic[T]):
         valid = weights[..., 0, 0] > self.config.hits_cut * hits_quantile
 
         if self.config.cond_cut > 0:
-            # FIXME: Eigendecomposition is done in CPU currently to avoid JAX errors
-            # eigs = jnp.linalg.eigvalsh(weights)
-            eigs = np.linalg.eigvalsh(weights)
+            eigs = furax.linalg.eigvalsh(weights)
             valid = jnp.logical_and(
                 valid,
                 eigs[..., 0] > self.config.cond_cut * eigs[..., -1],

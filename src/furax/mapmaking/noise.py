@@ -1,4 +1,4 @@
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, cast
@@ -24,7 +24,7 @@ from .config import NoiseFitConfig
 
 @jax.tree_util.register_dataclass
 @dataclass
-class NoiseModel:
+class NoiseModel(ABC):
     """Dataclass for noise models used for ground observation data"""
 
     @property
@@ -60,7 +60,9 @@ class NoiseModel:
         """Fourier operator representation of the noise model"""
         func = (lambda f: 1.0 / self.psd(f)) if inverse else self.psd
         # do not use apodization -- sufficient padding is done by the FourierOperator
-        return FourierOperator(func, in_structure, sample_rate=sample_rate, apodize=False)
+        return FourierOperator(
+            func, in_structure=in_structure, sample_rate=sample_rate, apodize=False
+        )
 
     def l2_loss(
         self, f: Float[Array, ' a'], Pxx: Float[Array, 'dets a'], mask: Float[Array, ' a']
@@ -194,7 +196,7 @@ class AtmosphericNoiseModel(NoiseModel):
         invntt = jnp.fft.irfft(inv_psd, n=fft_size)[..., :correlation_length]
         window = apodization_window(correlation_length)
 
-        return SymmetricBandToeplitzOperator(invntt * window, in_structure)
+        return SymmetricBandToeplitzOperator(invntt * window, in_structure=in_structure)
 
     def to_white_noise_model(self) -> WhiteNoiseModel:
         return WhiteNoiseModel(sigma=self.sigma)

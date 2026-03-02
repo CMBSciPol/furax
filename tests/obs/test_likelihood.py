@@ -34,7 +34,7 @@ def likelihood_setup(stokes: ValidStokesType):
     n1 = landscape.normal(jax.random.PRNGKey(1))
     n2 = landscape.normal(jax.random.PRNGKey(2))
 
-    op = HomothetyOperator(5.0, _in_structure=d.structure)
+    op = HomothetyOperator(5.0, in_structure=d.structure)
     base_params = {
         'temp_dust': 20.0,
         'beta_dust': 1.54,
@@ -80,8 +80,8 @@ def likelihood_setup(stokes: ValidStokesType):
     A_cs = MixingMatrixOperator(cmb=cmb, synchrotron=synchrotron)
 
     # Noise operators
-    N1 = NoiseDiagonalOperator(n1, _in_structure=d.structure)
-    N2 = NoiseDiagonalOperator(n2, _in_structure=d.structure)
+    N1 = NoiseDiagonalOperator(n1, in_structure=d.structure)
+    N2 = NoiseDiagonalOperator(n2, in_structure=d.structure)
 
     # Package everything into a dictionary for easy access in tests
     return {

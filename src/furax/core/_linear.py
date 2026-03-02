@@ -1,5 +1,3 @@
-import equinox
-import jax
 from jax import Array
 from jaxtyping import Bool, PyTree
 
@@ -15,17 +13,9 @@ class PackOperator(AbstractLinearOperator):
     """
 
     mask: Bool[Array, '...']
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-
-    def __init__(self, mask: Bool[Array, '...'], in_structure: PyTree[jax.ShapeDtypeStruct]):
-        self.mask = mask
-        self._in_structure = in_structure
 
     def mv(self, x: PyTree[Array, '...']) -> PyTree[Array]:
         return x[self.mask]
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
 
 
 class PackUnpackRule(AbstractBinaryRule):

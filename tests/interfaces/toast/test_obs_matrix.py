@@ -16,10 +16,10 @@ def test() -> None:
         '/home/chanial/work/scipol/data/nside064/toast_telescope_all_time_all_obs_matrix.npz'
     )
     obs = ToastObservationMatrixOperator(matobs_path)
-    ones = jnp.ones(obs.in_structure().shape, np.float32)
+    ones = jnp.ones(obs.in_structure.shape, np.float32)
     y = obs(ones)
     mask = y != 0
-    pack = IndexOperator(jnp.where(mask)[0], in_structure=obs.in_structure())
+    pack = IndexOperator(jnp.where(mask)[0], in_structure=obs.in_structure)
     unpack = pack.T
 
     solver = lx.CG(rtol=1e-6, atol=1e-6, max_steps=500)

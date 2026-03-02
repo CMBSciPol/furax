@@ -9,15 +9,12 @@ class Op(AbstractLinearOperator):
     def mv(self, x):
         return 2 * x
 
-    def in_structure(self):
-        return jax.ShapeDtypeStruct((3,), np.float32)
 
-    def out_structure(self):
-        return jax.ShapeDtypeStruct((), np.float32)
+_op_structure = jax.ShapeDtypeStruct((3,), np.float32)
 
 
 def test_rmul() -> None:
-    mul_op = 2 * Op()
+    mul_op = 2 * Op(in_structure=_op_structure)
     assert isinstance(mul_op, CompositionOperator)
     assert isinstance(mul_op.operands[0], HomothetyOperator)
     assert mul_op.operands[0].value == 2
@@ -25,7 +22,7 @@ def test_rmul() -> None:
 
 
 def test_mul() -> None:
-    mul_op = Op() * 2
+    mul_op = Op(in_structure=_op_structure) * 2
     assert isinstance(mul_op, CompositionOperator)
     assert isinstance(mul_op.operands[0], HomothetyOperator)
     assert mul_op.operands[0].value == 2
@@ -33,7 +30,7 @@ def test_mul() -> None:
 
 
 def test_truediv() -> None:
-    mul_op = Op() / 2
+    mul_op = Op(in_structure=_op_structure) / 2
     assert isinstance(mul_op, CompositionOperator)
     assert isinstance(mul_op.operands[0], HomothetyOperator)
     assert mul_op.operands[0].value == 0.5
@@ -41,7 +38,7 @@ def test_truediv() -> None:
 
 
 def test_neg() -> None:
-    mul_op = -Op()
+    mul_op = -Op(in_structure=_op_structure)
     assert isinstance(mul_op, CompositionOperator)
     assert isinstance(mul_op.operands[0], HomothetyOperator)
     assert mul_op.operands[0].value == -1
@@ -49,5 +46,5 @@ def test_neg() -> None:
 
 
 def test_pos() -> None:
-    mul_op = +Op()
+    mul_op = +Op(in_structure=_op_structure)
     assert isinstance(mul_op, Op)

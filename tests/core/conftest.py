@@ -39,9 +39,9 @@ def base_op_and_dense(request: pytest.FixtureRequest) -> (AbstractLinearOperator
     in_structure = (jax.ShapeDtypeStruct((2, 3), dtype), jax.ShapeDtypeStruct((1,), dtype))
     match request.param:
         case 0:
-            return IdentityOperator(in_structure), jnp.identity(7, dtype)
+            return IdentityOperator(in_structure=in_structure), jnp.identity(7, dtype)
         case 1:
-            return HomothetyOperator(2.0, in_structure), 2.0 * jnp.identity(7, dtype)
+            return HomothetyOperator(2.0, in_structure=in_structure), 2.0 * jnp.identity(7, dtype)
         case 2:
             return (
                 BlockDiagonalOperator(

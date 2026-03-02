@@ -221,7 +221,12 @@ def test_block_row_nested() -> None:
         'x': jax.ShapeDtypeStruct((2,), jnp.float16),
         'y': jax.ShapeDtypeStruct((3,), jnp.float32),
     }
-    op = BlockRowOperator({'a': IdentityOperator(structure), 'b': IdentityOperator(structure)})
+    op = BlockRowOperator(
+        {
+            'a': IdentityOperator(in_structure=structure),
+            'b': IdentityOperator(in_structure=structure),
+        }
+    )
     x = {'a': fx.tree.ones_like(structure), 'b': fx.tree.full_like(structure, 2)}
     y = op(x)
     expected_y = fx.tree.full_like(structure, 3)
@@ -234,7 +239,10 @@ def test_block_diagonal_nested() -> None:
         'y': jax.ShapeDtypeStruct((3,), jnp.float32),
     }
     op = BlockDiagonalOperator(
-        {'a': IdentityOperator(structure), 'b': HomothetyOperator(2, structure)}
+        {
+            'a': IdentityOperator(in_structure=structure),
+            'b': HomothetyOperator(2, in_structure=structure),
+        }
     )
     x = {'a': fx.tree.ones_like(structure), 'b': fx.tree.full_like(structure, 2)}
     y = op(x)
@@ -248,7 +256,10 @@ def test_block_column_nested() -> None:
         'y': jax.ShapeDtypeStruct((3,), jnp.float32),
     }
     op = BlockColumnOperator(
-        {'a': IdentityOperator(structure), 'b': HomothetyOperator(2, structure)}
+        {
+            'a': IdentityOperator(in_structure=structure),
+            'b': HomothetyOperator(2, in_structure=structure),
+        }
     )
     x = fx.tree.ones_like(structure)
     y = op(x)
@@ -257,7 +268,7 @@ def test_block_column_nested() -> None:
 
 
 def test_block_row_single_leaf() -> None:
-    id = IdentityOperator(jax.ShapeDtypeStruct((2,), jnp.float32))
+    id = IdentityOperator(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
     op = BlockRowOperator([id])
     x = jnp.array([1.0, 2.0], jnp.float32)
     y = op([x])
@@ -266,7 +277,7 @@ def test_block_row_single_leaf() -> None:
 
 
 def test_block_diagonal_single_leaf() -> None:
-    id = IdentityOperator(jax.ShapeDtypeStruct((2,), jnp.float32))
+    id = IdentityOperator(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
     op = BlockDiagonalOperator([id])
     x = jnp.array([1.0, 2.0], jnp.float32)
     y = op([x])
@@ -277,7 +288,7 @@ def test_block_diagonal_single_leaf() -> None:
 
 
 def test_block_column_single_leaf() -> None:
-    id = IdentityOperator(jax.ShapeDtypeStruct((2,), jnp.float32))
+    id = IdentityOperator(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
     op = BlockColumnOperator([id])
     x = jnp.array([1.0, 2.0], jnp.float32)
     y = op(x)
@@ -290,10 +301,10 @@ def test_block_column_single_leaf() -> None:
 def test_reduce_block_diagonal() -> None:
     op = BlockDiagonalOperator(
         {
-            'a': IdentityOperator(jax.ShapeDtypeStruct((3,), dtype=jnp.float64)),
-            'b': IdentityOperator(jax.ShapeDtypeStruct((), jnp.float32)),
+            'a': IdentityOperator(in_structure=jax.ShapeDtypeStruct((3,), dtype=jnp.float64)),
+            'b': IdentityOperator(in_structure=jax.ShapeDtypeStruct((), jnp.float32)),
         }
     )
     reduced_op = op.reduce()
     assert isinstance(reduced_op, IdentityOperator)
-    assert reduced_op.in_structure() == op.in_structure()
+    assert reduced_op.in_structure == op.in_structure

@@ -1,8 +1,6 @@
-import equinox
-import jax
 import numpy as np
 from jax.typing import DTypeLike
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float
 
 from furax import AbstractLinearOperator
 from furax.core.rules import AbstractBinaryRule
@@ -21,8 +19,6 @@ from ._qu_rotations import QURotationOperator
 class LinearPolarizerOperator(AbstractLinearOperator):
     """Class that integrates the input Stokes parameters assuming a linear polarizer."""
 
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
-
     @classmethod
     def create(
         cls,
@@ -33,10 +29,10 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         angles: Float[Array, '...'] | None = None,
     ) -> AbstractLinearOperator:
         in_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
-        polarizer = cls(in_structure)
+        polarizer = cls(in_structure=in_structure)
         if angles is None:
             return polarizer
-        rot = QURotationOperator(angles, in_structure)
+        rot = QURotationOperator(angles=angles, in_structure=in_structure)
         rotated_polarizer: AbstractLinearOperator = polarizer @ rot
         return rotated_polarizer
 
@@ -46,9 +42,6 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         if isinstance(x, StokesQU):
             return 0.5 * x.q
         return 0.5 * (x.i + x.q)
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
 
 
 class LinearPolarizerHWPRule(AbstractBinaryRule):

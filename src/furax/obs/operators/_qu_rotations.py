@@ -1,10 +1,8 @@
-import equinox
-import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
 from jax.typing import DTypeLike
-from jaxtyping import Float, PyTree
+from jaxtyping import Float
 
 from furax import AbstractLinearOperator, orthogonal
 from furax.core import AbstractLazyInverseOrthogonalOperator
@@ -29,7 +27,6 @@ class QURotationOperator(AbstractLinearOperator):
     """
 
     angles: Float[Array, '...']
-    _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
 
     @classmethod
     def create(
@@ -41,7 +38,7 @@ class QURotationOperator(AbstractLinearOperator):
         angles: Float[Array, '...'],
     ) -> AbstractLinearOperator:
         structure = Stokes.class_for(stokes).structure_for(shape, dtype)
-        return cls(angles, structure)
+        return cls(angles=angles, in_structure=structure)
 
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
         if isinstance(x, StokesI):
@@ -61,10 +58,7 @@ class QURotationOperator(AbstractLinearOperator):
         raise NotImplementedError
 
     def transpose(self) -> AbstractLinearOperator:
-        return QURotationTransposeOperator(self)
-
-    def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._in_structure
+        return QURotationTransposeOperator(operator=self)
 
 
 class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
@@ -112,4 +106,4 @@ class QURotationRule(AbstractBinaryRule):
                 angles = -left.operator.angles - right.operator.angles
             else:
                 raise NoReduction
-        return [QURotationOperator(angles, right.in_structure())]
+        return [QURotationOperator(angles=angles, in_structure=right.in_structure)]

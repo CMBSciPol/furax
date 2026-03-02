@@ -64,7 +64,7 @@ class AlgebraicReductionRule(AbstractNaryRule):
         if len(operands) < 2:
             return operands
 
-        in_structure = operands[-1].in_structure()
+        in_structure = operands[-1].in_structure
 
         identity_rule = IdentityRule()
         homothety_rule = HomothetyRule()
@@ -95,7 +95,7 @@ class AlgebraicReductionRule(AbstractNaryRule):
                 index += 1
 
         if len(operands) == 0:
-            return [IdentityOperator(in_structure)]
+            return [IdentityOperator(in_structure=in_structure)]
         return operands
 
 
@@ -127,7 +127,7 @@ class HomothetyRule(AbstractNaryRule):
             return operands
 
         # apply the homothety on the smallest number of elements
-        apply_on_left = first.out_size() <= last.in_size()
+        apply_on_left = first.out_size <= last.in_size
         if homothety_number == 1:
             if apply_on_left and isinstance(first, HomothetyOperator):
                 return operands
@@ -135,8 +135,8 @@ class HomothetyRule(AbstractNaryRule):
                 return operands
 
         if apply_on_left:
-            return [HomothetyOperator(value, first.out_structure())] + new_operands
-        return new_operands + [HomothetyOperator(value, last.in_structure())]
+            return [HomothetyOperator(value, in_structure=first.out_structure)] + new_operands
+        return new_operands + [HomothetyOperator(value, in_structure=last.in_structure)]
 
 
 class IdentityRule(AbstractNaryRule):
@@ -197,9 +197,9 @@ class AbstractBinaryRule(AbstractRule, ABC):
             right, self.right_operator_class
         ):
             raise NoReduction
-        if self.left_operator_class is TransposeOperator and left.operator is not right:
+        if self.left_operator_class is TransposeOperator and left.operator is not right:  # type: ignore[attr-defined]
             raise NoReduction
-        if self.right_operator_class is TransposeOperator and right.operator is not left:
+        if self.right_operator_class is TransposeOperator and right.operator is not left:  # type: ignore[attr-defined]
             raise NoReduction
 
     @abstractmethod

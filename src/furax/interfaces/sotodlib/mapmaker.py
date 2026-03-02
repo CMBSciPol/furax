@@ -9,6 +9,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import init_logger
+from sotodlib.site_pipeline.utils.pipeline import main_launcher
 
 from furax.interfaces.sotodlib.observation import SOTODLibObservation
 from furax.mapmaking.config import MapMakingConfig
@@ -21,7 +22,8 @@ def main(
     preprocess_config: str | Path | dict[str, Any] | None,
     mapmaking_config: str | Path | MapMakingConfig,
     obs_id: str | None = None,
-    det_select: dict[str, str] | None = None,
+    wafer: str | None = None,
+    band: str | None = None,
     verbosity: int = 3,
     binary_filepath: str | Path | None = None,
     obs: AxisManager | None = None,
@@ -72,6 +74,15 @@ def main(
 
     # Create map-maker
     maker = MapMaker.from_config(mapmaking_config, logger=logger)
+
+    if wafer is None and band is None:
+        det_select = None
+    else:
+        det_select = {}
+        if wafer:
+            det_select['wafer_slot'] = wafer
+        if band:
+            det_select['wafer.bandpass'] = band
 
     # Load observation
     if obs is None:
@@ -134,7 +145,8 @@ def get_parser(parser: ArgumentParser | None = None) -> ArgumentParser:
     parser.add_argument('preprocess_config', help='Preprocessing configuration file')
     parser.add_argument('mapmaking_config', help='Mapmaking configuration file')
     parser.add_argument('--obs-id', help='obs-id of the observation')
-    # TODO: add support for det_select
+    parser.add_argument('--wafer', help='wafer slot selection')
+    parser.add_argument('--band', help='wafer bandpass selection')
 
     parser.add_argument(
         '--verbosity',
@@ -150,9 +162,7 @@ def get_parser(parser: ArgumentParser | None = None) -> ArgumentParser:
 
 
 def main_cli() -> None:
-    # main_launcher(main, get_parser)
-    # Script currently not supported due to an error in packaged sotodlib
-    pass
+    main_launcher(main, get_parser)
 
 
 if __name__ == '__main__':

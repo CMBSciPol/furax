@@ -57,6 +57,7 @@ mapmaking = [
     'pyyaml>=0.6.2',
 ]
 so = [
+    'cyclopts>=4.6.0',
     'sotodlib[site-pipeline]>=0.6.16',
     'so3g>=0.2.5',
 ]
@@ -73,7 +74,8 @@ homepage = 'https://scipol.in2p3.fr'
 repository = 'https://github.com/CMBSciPol/furax'
 
 [project.scripts]
-furax-mapmaker = 'furax.interfaces.sotodlib.mapmaker:main_cli'
+furax-so-atomic-map = 'furax.interfaces.sotodlib.mapmaker:main_cli'
+furax-so-multi-map = 'furax.interfaces.sotodlib.multi_observation.__main__:app'
 
 [tool.coverage.report]
 exclude_lines = [
@@ -89,6 +91,7 @@ skip_covered = true
 module = [
     'apischema',
     'astropy.*',
+    'cyclopts',
     'healpy',
     'jax_grid_search',
     'jax_healpy',

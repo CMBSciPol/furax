@@ -341,8 +341,8 @@ class MultiObservationMapMaker(Generic[T]):
         models_and_fs = (
             self._fit_noise_models() if self.config.fit_noise_model else self._read_noise_models()
         )
-        # return two lists
-        return [m for m, _ in models_and_fs], [fs for _, fs in models_and_fs]
+        models, sample_rates = zip(*models_and_fs)
+        return list(models), list(sample_rates)
 
     def accumulate_rhs(
         self,

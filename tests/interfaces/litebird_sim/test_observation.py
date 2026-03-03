@@ -2,8 +2,6 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip('litebird_sim', reason='litebird_sim is not installed. Skipping tests.')
-
 from furax.interfaces.litebird_sim import LBSObservation
 
 

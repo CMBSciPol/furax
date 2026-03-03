@@ -73,6 +73,9 @@ Quick Example
    # Apply the operator
    weighted_data = weight_op(stokes_data)
 
+Table of Contents
+-----------------
+
 .. toctree::
    :maxdepth: 2
    :caption: User Guide

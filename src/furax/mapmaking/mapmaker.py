@@ -109,10 +109,6 @@ class MultiObservationMapMaker(Generic[T]):
         self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
-        if self.config.stokes != 'IQU':
-            # TODO: test that stokes != 'IQU' is fine before enabling this
-            msg = f"MultiObservationMapMaker only supports stokes='IQU', got '{self.config.stokes}'"
-            raise ValueError(msg)
         self.landscape = _build_landscape(self.config)
 
     def run(self, out_dir: str | Path | None = None) -> MapMakingResults:
@@ -249,10 +245,10 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Run mapmaking
         res = process()
-        res.i.block_until_ready()
+        jax.tree.leaves(res)[0].block_until_ready()
         logger_info('Finished mapmaking')
 
-        final_map = np.array([res.i, res.q, res.u])
+        final_map = np.array(jax.tree.leaves(res))
         # move pixels dimensions to last axis
         weights = jnp.moveaxis(map_weights, 0, -1)
         return MapMakingResults(final_map, np.array(weights))
@@ -529,14 +525,19 @@ def _build_acquisition_operator(
     # if not demodulated, we need a polarizer at the end
     # if the telescope has no HWP, no need to rotate because already in detector frame
     if hwp_angles is None:
-        polarizer = LinearPolarizerOperator.create(shape=data_shape, dtype=dtype)
+        polarizer = LinearPolarizerOperator.create(
+            shape=data_shape, dtype=dtype, stokes=landscape.stokes
+        )
         return polarizer @ pointing
 
     # if we get this far, that means the acquisition should include HWP modulation
-    hwp = HWPOperator.create(shape=data_shape, dtype=dtype, angles=hwp_angles)
+    hwp = HWPOperator.create(
+        shape=data_shape, dtype=dtype, stokes=landscape.stokes, angles=hwp_angles
+    )
     polarizer = LinearPolarizerOperator.create(
         shape=data_shape,
         dtype=dtype,
+        stokes=landscape.stokes,
         angles=to_gamma_angles(detector_quaternions)[:, None],
     )
     acquisition = polarizer @ hwp @ pointing

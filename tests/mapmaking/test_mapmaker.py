@@ -14,7 +14,7 @@ from furax.mapmaking import (
 from furax.mapmaking.config import LandscapeConfig, Landscapes
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.mapmaking.preconditioner import BJPreconditioner
-from furax.obs.stokes import Stokes
+from furax.obs.stokes import Stokes, ValidStokesType
 
 # Skip tests for interfaces that are not installed
 sotodlib_installed = importlib.util.find_spec('sotodlib') is not None
@@ -60,22 +60,31 @@ def make_observations(name: str) -> list[AbstractLazyObservation]:
     raise NotImplementedError
 
 
-def make_config(demodulated: bool = False, fit_noise_model: bool = True) -> MapMakingConfig:
+STOKES_PARAMS = ['I', 'QU', 'IQU']
+
+
+def make_config(
+    stokes: ValidStokesType = 'IQU',
+    demodulated: bool = False,
+    fit_noise_model: bool = True,
+) -> MapMakingConfig:
     return MapMakingConfig(
         pointing_on_the_fly=True,
         landscape=LandscapeConfig(type=Landscapes.HPIX, nside=16),
+        stokes=stokes,
         demodulated=demodulated,
         fit_noise_model=fit_noise_model,
         nperseg=512,
     )
 
 
+@pytest.mark.parametrize('stokes', STOKES_PARAMS)
 @pytest.mark.parametrize('name,demodulated', PARAMS)
-def test_acquisitions(name, demodulated):
+def test_acquisitions(name, demodulated, stokes):
     observations = make_observations(name)
-    config = make_config(demodulated)
+    config = make_config(stokes, demodulated)
     maker = MultiObservationMapMaker(observations, config=config)
-    reader = ObservationReader(observations, demodulated=demodulated)
+    reader = ObservationReader(observations, demodulated=demodulated, stokes=stokes)
     operators = maker.build_acquisitions()
     assert len(operators) == len(observations)
     for op in operators:
@@ -83,11 +92,12 @@ def test_acquisitions(name, demodulated):
         assert op.out_structure == reader.out_structure['sample_data']
 
 
+@pytest.mark.parametrize('stokes', STOKES_PARAMS)
 @pytest.mark.parametrize('name,demodulated', PARAMS)
 @pytest.mark.parametrize('fit_models', [True, False])
-def test_noise_models(name, demodulated: bool, fit_models: bool):
+def test_noise_models(name, demodulated, fit_models, stokes):
     observations = make_observations(name)
-    config = make_config(demodulated=demodulated, fit_noise_model=fit_models)
+    config = make_config(stokes=stokes, demodulated=demodulated, fit_noise_model=fit_models)
     maker = MultiObservationMapMaker(observations, config=config)
     noise_models, _ = maker.noise_models_and_sample_rates()
     assert len(noise_models) == len(observations)
@@ -104,12 +114,13 @@ def test_noise_models(name, demodulated: bool, fit_models: bool):
         assert all(isinstance(model, WhiteNoiseModel) for model in noise_models)
 
 
+@pytest.mark.parametrize('stokes', STOKES_PARAMS)
 @pytest.mark.parametrize('name,demodulated', PARAMS)
-def test_accumulate_rhs(name, demodulated):
+def test_accumulate_rhs(name, demodulated, stokes):
     observations = make_observations(name)
-    config = make_config(demodulated)
+    config = make_config(stokes, demodulated)
     maker = MultiObservationMapMaker(observations, config=config)
-    reader = ObservationReader(observations, demodulated=demodulated)
+    reader = ObservationReader(observations, demodulated=demodulated, stokes=stokes)
     tod_structure = reader.out_structure['sample_data']
     noise_models, sample_rates = maker.noise_models_and_sample_rates()
     w_blocks = MultiObservationMapMaker.noise_operator_blocks(
@@ -125,10 +136,11 @@ def test_accumulate_rhs(name, demodulated):
     assert rhs.shape == maker.landscape.shape
 
 
+@pytest.mark.parametrize('stokes', STOKES_PARAMS)
 @pytest.mark.parametrize('name,demodulated', PARAMS)
-def test_binning(name, demodulated):
+def test_binning(name, demodulated, stokes):
     observations = make_observations(name)
-    config = make_config(demodulated)
+    config = make_config(stokes, demodulated)
     maker = MultiObservationMapMaker(observations, config=config)
     h_blocks = maker.build_acquisitions()
     h = BlockColumnOperator(h_blocks)
@@ -138,10 +150,11 @@ def test_binning(name, demodulated):
     assert zeros.shape == maker.landscape.shape
 
 
+@pytest.mark.parametrize('stokes', STOKES_PARAMS)
 @pytest.mark.parametrize('name,demodulated', PARAMS)
-def test_full_mapmaker(name, demodulated):
+def test_full_mapmaker(name, demodulated, stokes):
     observations = make_observations(name)
-    config = make_config(demodulated)
+    config = make_config(stokes, demodulated)
     maker = MultiObservationMapMaker(observations, config=config)
 
     num_steps = None
@@ -153,6 +166,6 @@ def test_full_mapmaker(name, demodulated):
     with Config(solver_callback=capture_iterations):
         results = maker.run()
 
-    stokes, pixels = results.map.shape
-    assert results.weights.shape == (stokes, stokes, pixels)
+    n_stokes, pixels = results.map.shape
+    assert results.weights.shape == (n_stokes, n_stokes, pixels)
     assert num_steps == 1, f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'

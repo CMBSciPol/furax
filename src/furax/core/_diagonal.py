@@ -196,11 +196,10 @@ class DiagonalOperator(BroadcastDiagonalOperator):
     The axes to be used for the multiplication can be specified: given a 1-dimensional array
     ``diagonal`` and a 2-dimensional array ``x``:
 
-        op_first_axis = DiagonalOperator(diagonal, axis_destination=0)
-    op_first_axis(x) is conceptually equivalent to ``diagonal[:, None] * x``.
-
-        op_last_axis = DiagonalOperator(diagonal, axis_destination=-1)
-    op_last_axis(x) is conceptually equivalent to the usual broadcasting ``diagonal[None, :] * x``.
+    - ``op_first_axis = DiagonalOperator(diagonal, axis_destination=0)``
+      is conceptually equivalent to ``diagonal[:, None] * x``.
+    - ``op_last_axis = DiagonalOperator(diagonal, axis_destination=-1)``
+      is conceptually equivalent to the usual broadcasting ``diagonal[None, :] * x``.
 
 
     Args:

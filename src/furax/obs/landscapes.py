@@ -56,9 +56,9 @@ class StokesLandscape(Landscape):
     Attributes:
         shape: The shape of the array that stores the map values. The dimensions are in the reverse
             order of the FITS NAXIS* keywords. For a 2-dimensional map, the shape corresponds to
-            (NAXIS2, NAXIS1) or (:math:`n_row`, :math:`n_col`), i.e. (:math:`n_y`, :math:`n_x`).
+            (NAXIS2, NAXIS1) or (:math:`n_\\mathrm{row}`, :math:`n_\\mathrm{col}`), i.e. (:math:`n_y`, :math:`n_x`).
         pixel_shape: The shape in reversed order. For a 2-dimensional map, the shape corresponds to
-            (NAXIS1, NAXIS2) or (:math:`n_col`, :math:`n_row`), i.e. (:math:`n_x`, :math:`n_y`).
+            (NAXIS1, NAXIS2) or (:math:`n_\\mathrm{col}`, :math:`n_\\mathrm{row}`), i.e. (:math:`n_x`, :math:`n_y`).
         stokes: The identifier for the Stokes vectors (`I`, `QU`, `IQU` or `IQUV`)
         dtype: The data type for the values of the landscape.
     """
@@ -129,7 +129,7 @@ class StokesLandscape(Landscape):
             phi (float): Spherical :math:`\phi` angle.
 
         Returns:
-            *floats: x, y, z, ... pixel coordinates
+            tuple[float, ...]: x, y, z, ... pixel coordinates
         """
 
     def pixel2index(self, *coords: Float[Array, ' *dims']) -> Integer[Array, ' *ndims']:
@@ -145,6 +145,7 @@ class StokesLandscape(Landscape):
         Integer values of the pixel coordinates correspond to the pixel centers. The points
         :math:`(p_x, p_y)` strictly inside a pixel centered on the integer coordinates
         :math:`(i_x, i_y)` verify
+
             - :math:`i_x - ½ < p_x < i_x + ½`
             - :math:`i_y - ½ < p_y < i_y + ½`
 

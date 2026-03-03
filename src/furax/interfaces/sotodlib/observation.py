@@ -57,7 +57,6 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 fields.append('hwp_angle')
             if 'boresight_quaternions' in requested_fields:
                 fields.append('boresight')
-                # FIXME: why do we need timestamps here?
                 if 'timestamps' not in fields:
                     fields.append('timestamps')
             if 'detector_quaternions' in requested_fields:

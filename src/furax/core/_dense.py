@@ -24,6 +24,7 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
     Example:
         For a matrix made of three 2x4 diagonal blocks, and input block columns of three blocks of
         four elements each, the operator can be written as:
+
         >>> blocks = jnp.arange(24).reshape(3, 2, 4)
         >>> op = DenseBlockDiagonalOperator(
         ...     blocks, jax.ShapeDtypeStruct((3, 4), jnp.int32), 'imn,in->im')
@@ -40,6 +41,7 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
         The notion of block diagonality should be understood in a tensor context. The representation
         of this operator as a 2d matrix, which relies on the row-major layout, may not be block
         diagonal.
+
         >>> blocks = jnp.arange(24).reshape(3, 2, 4)
         >>> op = DenseBlockDiagonalOperator(blocks, jax.ShapeDtypeStruct((2, 4), jnp.int32))
         >>> op.as_matrix()

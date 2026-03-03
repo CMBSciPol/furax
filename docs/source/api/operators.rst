@@ -87,6 +87,7 @@ Index and Reshape Operators
    :members:
    :undoc-members:
    :show-inheritance:
+   :exclude-members: shape
 
 .. autoclass:: MoveAxisOperator
    :members:
@@ -97,6 +98,7 @@ Index and Reshape Operators
    :members:
    :undoc-members:
    :show-inheritance:
+   :exclude-members: first_axis, last_axis
 
 Tree Operators
 --------------
@@ -107,6 +109,7 @@ Tree Operators
    :members:
    :undoc-members:
    :show-inheritance:
+   :exclude-members: inner_treedef, outer_treedef, tree_shape
 
 Configuration
 -------------

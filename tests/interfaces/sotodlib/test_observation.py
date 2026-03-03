@@ -2,9 +2,6 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
-pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
-
 from furax.interfaces.sotodlib import SOTODLibObservation
 
 

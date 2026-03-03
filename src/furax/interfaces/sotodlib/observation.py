@@ -140,11 +140,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return kls.from_stokes(*tods)
 
     def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> Array:
-        attr = {
-            'I': 'dsT',
-            'Q': 'demodQ',
-            'U': 'demodU',
-        }[stoke]
+        attr = {'I': 'dsT', 'Q': 'demodQ', 'U': 'demodU'}[stoke]
         tod = jnp.array(getattr(self.data, attr), dtype=jnp.float64)
         return jnp.atleast_2d(tod)
 

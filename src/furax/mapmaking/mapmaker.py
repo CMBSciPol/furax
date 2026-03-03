@@ -412,7 +412,7 @@ class MultiObservationMapMaker(Generic[T]):
         valid_indices = jnp.argwhere(valid)
 
         if self.config.landscape.type == Landscapes.WCS:
-            # TODO: test this gain when WCS landscape is supported
+            # TODO: test this again when WCS landscape is supported
             return IndexOperator(
                 (valid_indices[:, 0], valid_indices[:, 1]), in_structure=in_structure
             )
@@ -605,7 +605,6 @@ class MapMaker:
                 self._save(m, out_dir)
                 continue
             else:
-                # TODO: warning?
                 continue
             self.logger.info(f'Mapmaking result [{key}] saved to file')
 

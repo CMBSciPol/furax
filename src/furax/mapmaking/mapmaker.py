@@ -507,40 +507,44 @@ def _build_acquisition_operator(
     nsamp = boresight_quaternions.shape[0]
     data_shape = (ndet, nsamp)
 
-    # if no HWP angles are provided, we can rotate directly into the detector frame
-    # NB: in the case of demodulation, 'demod' parameter takes priority
+    # Rotate into detector frame unless a HWP is present (even if demodulated)
+    # NB: for demodulated data we have to rotate the other way...
+    has_hwp = hwp_angles is not None or demodulated
     pointing = PointingOperator.create(
         landscape,
         boresight_quaternions,
         detector_quaternions,
         chunk_size=pointing_chunk_size,
         demod=demodulated,
-        frame='detector' if hwp_angles is None else 'boresight',
+        frame='boresight' if has_hwp else 'detector',
     )
 
-    # demodulated case: independent I/Q/U time streams, no polarizer
-    if demodulated:
-        return pointing
-
-    # if not demodulated, we need a polarizer at the end
-    # if the telescope has no HWP, no need to rotate because already in detector frame
-    if hwp_angles is None:
-        polarizer = LinearPolarizerOperator.create(
-            shape=data_shape, dtype=dtype, stokes=landscape.stokes
-        )
-        return polarizer @ pointing
-
-    # if we get this far, that means the acquisition should include HWP modulation
-    hwp = HWPOperator.create(
-        shape=data_shape, dtype=dtype, stokes=landscape.stokes, angles=hwp_angles
-    )
+    # If there is no HWP, we just add a polarizer at the end
+    # NB: already in detector frame at this point
     polarizer = LinearPolarizerOperator.create(
         shape=data_shape,
         dtype=dtype,
         stokes=landscape.stokes,
-        angles=to_gamma_angles(detector_quaternions)[:, None],
     )
-    acquisition = polarizer @ hwp @ pointing
+    if not has_hwp:
+        return polarizer @ pointing
+
+    # If there is a HWP, we need an additional rotation related to detector angle
+    gamma = to_gamma_angles(detector_quaternions)[:, None]
+    rot = QURotationOperator.create(data_shape, dtype, landscape.stokes, angles=gamma)
+
+    # In the demodulated case, there is no polarizer
+    if demodulated:
+        return rot.T @ pointing
+
+    # In the general case, we include polarizer and HWP
+    hwp = HWPOperator.create(
+        shape=data_shape,
+        dtype=dtype,
+        angles=hwp_angles,
+        stokes=landscape.stokes,
+    )
+    acquisition = polarizer @ rot.T @ hwp @ pointing
     return acquisition.reduce()
 
 

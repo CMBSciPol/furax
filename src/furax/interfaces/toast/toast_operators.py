@@ -36,7 +36,7 @@ from furax.mapmaking.pointing import PointingOperator
 from furax.mapmaking.templates import TemplateOperator
 from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.landscapes import HealpixLandscape
-from furax.obs.stokes import Stokes, StokesIQU
+from furax.obs.stokes import StokesIQU
 
 from .utils import (
     compute_cross_psd,
@@ -343,13 +343,7 @@ class LegacyMapMakerToastOperator(ToastOperator):  # type: ignore[misc]
         pointing: AbstractLinearOperator
 
         if self.on_the_fly:
-            pointing = PointingOperator(
-                self._landscape,
-                self._qbore,
-                self._qdet,
-                in_structure=in_struct,
-                _out_structure=Stokes.class_for(self.stokes).structure_for(self._tods.shape),
-            )
+            pointing = PointingOperator.create(self._landscape, self._qbore, self._qdet)
         else:
             sampling = IndexOperator(self._pixels, in_structure=in_struct)
             rotation = QURotationOperator.create(

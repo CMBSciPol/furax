@@ -4,9 +4,6 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-pytest.importorskip('sotodlib', reason='sotodlib is not installed. Skipping tests.')
-pytest.importorskip('so3g', reason='so3g is not installed. Skipping tests.')
-
 from furax.interfaces.sotodlib import LazySOTODLibObservation
 from furax.mapmaking import AbstractGroundObservation, HashedObservationMetadata, ObservationReader
 from furax.tree import as_structure

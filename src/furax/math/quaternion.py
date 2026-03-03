@@ -166,6 +166,15 @@ def to_xieta_angles(q: Quat) -> tuple[Ang, Ang, Ang]:
 
 
 @jit
+def from_xieta_angles(xi: Ang, eta: Ang, gamma: Ang) -> Quat:
+    """Compute quaternions from the xieta coordinate system angles (xi, eta, gamma)."""
+    theta = jnp.asin((xi**2 + eta**2) ** 0.5)
+    phi = jnp.atan2(-xi, -eta)
+    psi = gamma - phi
+    return from_iso_angles(theta, phi, psi)  # type: ignore[no-any-return]
+
+
+@jit
 @partial(jnp.vectorize, signature='(4)->()')
 def to_gamma_angles(q: Quat) -> Ang:
     """Convert quaternions to the xieta coordinate system angles (xi, eta, gamma),
@@ -226,12 +235,3 @@ def to_polarization_angle(q: Quat) -> Ang:
     v = qrot_zaxis(q)
     u = qrot_xaxis(q)
     return jnp.arctan2(v[0] * u[1] - v[1] * u[0], -u[2])
-
-
-@jit
-def from_xieta_angles(xi: Ang, eta: Ang, gamma: Ang) -> Quat:
-    """Compute quaternions from the xieta coordinate system angles (xi, eta, gamma)."""
-    theta = jnp.asin((xi**2 + eta**2) ** 0.5)
-    phi = jnp.atan2(-xi, -eta)
-    psi = gamma - phi
-    return from_iso_angles(theta, phi, psi)  # type: ignore[no-any-return]

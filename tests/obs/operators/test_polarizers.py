@@ -47,7 +47,7 @@ def test_hwp_rule_with_angles(stokes: ValidStokesType) -> None:
     assert len(op.operands) == 2
     assert isinstance(op.operands[0], LinearPolarizerOperator)
     assert isinstance(op.operands[1], QURotationOperator)
-    assert op.operands[1].angles == -3.0
+    assert op.operands[1].angles == 3.0
 
 
 def test_direct_i() -> None:

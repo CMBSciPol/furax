@@ -33,7 +33,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         if angles is None:
             return polarizer
         rot = QURotationOperator(angles=angles, in_structure=in_structure)
-        rotated_polarizer: AbstractLinearOperator = polarizer @ rot.T
+        rotated_polarizer: AbstractLinearOperator = polarizer @ rot
         return rotated_polarizer
 
     def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:

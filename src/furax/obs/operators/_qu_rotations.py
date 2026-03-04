@@ -28,8 +28,8 @@ def _rotate_qu(
     """Apply the QU rotation given precomputed cos(2a) and sin(2a)."""
     if isinstance(x, StokesI):
         return x
-    q = x.q * cos_2angles - x.u * sin_2angles
-    u = x.q * sin_2angles + x.u * cos_2angles
+    q = x.q * cos_2angles + x.u * sin_2angles
+    u = -x.q * sin_2angles + x.u * cos_2angles
     if isinstance(x, StokesQU):
         return StokesQU(q, u)
     if isinstance(x, StokesIQU):

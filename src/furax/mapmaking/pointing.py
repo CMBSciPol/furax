@@ -102,7 +102,7 @@ class PointingOperator(AbstractLinearOperator):
 
             # Return the rotated Stokes parameters
             cos_angles, sin_angles = self._get_cos_sin_angles(qdet_full)
-            return rotate_qu_cs(tod, cos_angles, -sin_angles)  # type: ignore[no-any-return]
+            return rotate_qu_cs(tod, cos_angles, sin_angles)  # type: ignore[no-any-return]
 
         # Loop over chunks of detectors
         ndet, nsamp = self.out_structure.shape
@@ -170,10 +170,7 @@ class PointingOperator(AbstractLinearOperator):
 
         # Polarization angles: (ndet, nsamp)
         pa = to_polarization_angle(qdet_full)
-
-        # mv applies rotate_qu_cs(tod, cos_pa, -sin_pa) = rotation by -pa.
-        # When flip=True, sin_pa is negated before the outer negation → rotation by +pa.
-        angles = pa if self.flip else -pa
+        angles = -pa if self.flip else pa
 
         # QURotationOperator: tod (ndet, nsamp) → rotated tod (ndet, nsamp)
         qu_rot_op = QURotationOperator(angles=angles, in_structure=index_op.out_structure)
@@ -206,9 +203,9 @@ class PointingTransposeOperator(TransposeOperator):
                 # no rotation needed
                 return self._point(xchunk, indices)
 
-            # Get the angles to rotate back to the celestial frame
+            # Rotate back to the celestial frame with the inverse rotation
             cos_angles, sin_angles = self.operator._get_cos_sin_angles(qdet_full)
-            rotated = rotate_qu_cs(xchunk, cos_angles, sin_angles)
+            rotated = rotate_qu_cs(xchunk, cos_angles, -sin_angles)
             return self._point(rotated, indices)
 
         # Loop over chunks of detectors

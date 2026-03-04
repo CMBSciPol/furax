@@ -225,9 +225,14 @@ def to_polarization_angle_cos_sin(q: Quat) -> tuple[Ang, Ang]:
     """
     a, b, c, d = q
     cos_theta = a**2 - b**2 - c**2 + d**2
-    half_sin_theta = 0.5 * jnp.sqrt(1 - cos_theta**2)
-    cos_pa = (a * c - b * d) / half_sin_theta
-    sin_pa = (a * b + c * d) / half_sin_theta
+    # clip to avoid numerical issues giving cos_theta**2 > 1
+    half_sin_theta = 0.5 * jnp.sqrt(jnp.clip(1 - cos_theta**2, 0.0, None))
+    at_pole = half_sin_theta == 0
+    safe = jnp.where(at_pole, 1.0, half_sin_theta)
+    # angle undefined at the pole, use pa = 0
+    # this matches the result of to_polarization_angle (atan2(0, 0) = 0)
+    cos_pa = jnp.where(at_pole, 1.0, (a * c - b * d) / safe)
+    sin_pa = jnp.where(at_pole, 0.0, (a * b + c * d) / safe)
     return cos_pa, sin_pa
 
 

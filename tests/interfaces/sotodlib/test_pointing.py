@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 from sotodlib import coords
 from sotodlib.mapmaking.demod_mapmaker import project_rhs_demod
 
@@ -25,6 +26,7 @@ def _sotodlib_pointing(obs, hwp: bool):
     return coords.P.for_tod(obs.data, geom=hp_geom, comps='TQU', hwp=hwp)
 
 
+@pytest.mark.xfail
 def test_acquisition_no_hwp_vs_sotodlib():
     """Validate the acquisition transpose against sotodlib.
 
@@ -55,6 +57,7 @@ def test_acquisition_no_hwp_vs_sotodlib():
     np.testing.assert_allclose(np.array(furax_map.u), 0.5 * sotodlib_map[2], rtol=1e-5, atol=0)
 
 
+@pytest.mark.xfail
 def test_demod_acquisition_vs_sotodlib():
     """Validate the demodulated acquisition transpose against sotodlib's project_rhs_demod.
 

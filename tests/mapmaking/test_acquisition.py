@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-import numpy as np
 from numpy.testing import assert_allclose
 
 from furax.mapmaking.acquisition import build_acquisition_operator
@@ -39,7 +38,7 @@ def test_no_hwp_acquisition_formula() -> None:
     U_p = sky.u.ravel()[indices]
     expected = 0.5 * (I_p + jnp.cos(2 * pa) * Q_p + jnp.sin(2 * pa) * U_p)
 
-    assert_allclose(np.asarray(tod), np.asarray(expected), rtol=1e-10)
+    assert_allclose(tod, expected, rtol=1e-10)
 
 
 def test_no_hwp_acquisition_transpose_formula() -> None:
@@ -58,28 +57,30 @@ def test_no_hwp_acquisition_transpose_formula() -> None:
     # Reference: scatter TOD into sky weighted by polarization angle
     qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
-    flat_indices = np.asarray(landscape.quat2index(qdet_full)).ravel()
-    d = np.asarray(tod).ravel()
-    pa_flat = np.asarray(pa).ravel()
-
+    flat_indices = landscape.quat2index(qdet_full).ravel()
+    d = tod.ravel()
     npix = len(landscape)
-    expected_I = np.zeros(npix)
-    expected_Q = np.zeros(npix)
-    expected_U = np.zeros(npix)
-    np.add.at(expected_I, flat_indices, 0.5 * d)
-    np.add.at(expected_Q, flat_indices, 0.5 * np.cos(2 * pa_flat) * d)
-    np.add.at(expected_U, flat_indices, 0.5 * np.sin(2 * pa_flat) * d)
+    zeros = jnp.zeros(npix)
+    expected_I = zeros.at[flat_indices].add(0.5 * d)
+    expected_Q = zeros.at[flat_indices].add(0.5 * jnp.cos(2 * pa).ravel() * d)
+    expected_U = zeros.at[flat_indices].add(0.5 * jnp.sin(2 * pa).ravel() * d)
 
-    assert_allclose(np.asarray(sky.i), expected_I, rtol=1e-10)
-    assert_allclose(np.asarray(sky.q), expected_Q, rtol=1e-10)
-    assert_allclose(np.asarray(sky.u), expected_U, rtol=1e-10)
+    assert_allclose(sky.i, expected_I, rtol=1e-10)
+    assert_allclose(sky.q, expected_Q, rtol=1e-10)
+    assert_allclose(sky.u, expected_U, rtol=1e-10)
 
 
 def test_hwp_acquisition_formula() -> None:
     """HWP acquisition: d = 0.5*(I + cos(phi)*Q + sin(phi)*U).
 
-    phi = 2*(pa + 2*(alpha - gamma)) where pa is the polarization angle, alpha is the HWP angle,
-    and gamma is the detector orientation angle.
+    phi = 2*(-gamma + 2*chi + pa-gamma) where
+    - pa is the polarization angle
+    - chi is the HWP angle
+    - gamma is the detector orientation angle
+
+    This reflects the fact that we first rotate into the boresight frame,
+    where the HWP angle is measured, before applying the HWP rotation. Also,
+    the detector gamma angle is flipped as a result of the HWP.
     """
     landscape = HealpixLandscape(NSIDE, 'IQU')
 
@@ -96,22 +97,21 @@ def test_hwp_acquisition_formula() -> None:
     qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     indices = landscape.quat2index(qdet_full)  # (ndet, nsamp)
-    gamma = to_gamma_angles(qdet)  # (ndet,)
-    phi = 2 * (pa + 2 * (hwp_angles[None, :] - gamma[:, None]))  # (ndet, nsamp)
+    gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)
+    phi = 2 * (-gamma + 2 * hwp_angles[None, :] + pa - gamma)  # (ndet, nsamp)
 
     I_p = sky.i.ravel()[indices]
     Q_p = sky.q.ravel()[indices]
     U_p = sky.u.ravel()[indices]
     expected = 0.5 * (I_p + jnp.cos(phi) * Q_p + jnp.sin(phi) * U_p)
 
-    assert_allclose(np.asarray(tod), np.asarray(expected), rtol=1e-10)
+    assert_allclose(tod, expected, rtol=1e-10)
 
 
 def test_hwp_acquisition_transpose_formula() -> None:
     """HWP acquisition transpose: I += 0.5*d, Q += 0.5*cos(phi)*d, U += 0.5*sin(phi)*d.
 
-    phi = 2*(pa + 2*(alpha - gamma)) where pa is the polarization angle, alpha is the HWP angle,
-    and gamma is the detector orientation angle.
+    See test_hw_acquisition_formula for a description of phi.
     """
     landscape = HealpixLandscape(NSIDE, 'IQU')
 
@@ -126,22 +126,18 @@ def test_hwp_acquisition_transpose_formula() -> None:
     sky = acq.T(tod)
 
     qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
-    pa = np.asarray(to_polarization_angle(qdet_full))  # (ndet, nsamp)
-    flat_indices = np.asarray(landscape.quat2index(qdet_full)).ravel()
-    gamma = np.asarray(to_gamma_angles(qdet))  # (ndet,)
-    phi = 2 * (pa + 2 * (np.asarray(hwp_angles)[None, :] - gamma[:, None]))  # (ndet, nsamp)
+    pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
+    flat_indices = landscape.quat2index(qdet_full).ravel()
+    gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)
+    phi = 2 * (-gamma + 2 * hwp_angles[None, :] + pa - gamma)  # (ndet, nsamp)
 
-    d = np.asarray(tod).ravel()
-    phi_flat = phi.ravel()
-
+    d = tod.ravel()
     npix = len(landscape)
-    expected_I = np.zeros(npix)
-    expected_Q = np.zeros(npix)
-    expected_U = np.zeros(npix)
-    np.add.at(expected_I, flat_indices, 0.5 * d)
-    np.add.at(expected_Q, flat_indices, 0.5 * np.cos(phi_flat) * d)
-    np.add.at(expected_U, flat_indices, 0.5 * np.sin(phi_flat) * d)
+    zeros = jnp.zeros(npix)
+    expected_I = zeros.at[flat_indices].add(0.5 * d)
+    expected_Q = zeros.at[flat_indices].add(0.5 * jnp.cos(phi).ravel() * d)
+    expected_U = zeros.at[flat_indices].add(0.5 * jnp.sin(phi).ravel() * d)
 
-    assert_allclose(np.asarray(sky.i), expected_I, rtol=1e-10)
-    assert_allclose(np.asarray(sky.q), expected_Q, rtol=1e-10)
-    assert_allclose(np.asarray(sky.u), expected_U, rtol=1e-10)
+    assert_allclose(sky.i, expected_I, rtol=1e-10)
+    assert_allclose(sky.q, expected_Q, rtol=1e-10)
+    assert_allclose(sky.u, expected_U, rtol=1e-10)

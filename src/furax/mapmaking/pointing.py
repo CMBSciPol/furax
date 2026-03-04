@@ -62,6 +62,9 @@ class PointingOperator(AbstractLinearOperator):
         # This absorbs the frame correction into qdet so that _get_cos_sin_angles always
         # works the same way, regardless of frame. Pixel indices are unaffected because
         # a z-rotation does not change the direction of the boresight (z) axis.
+        #
+        # NB: the xieta parametrization is incomplete and cannot describe all rotations.
+        # We thus prefer this approach which only cancels the z rotation.
         if frame == 'boresight':
             gamma = to_gamma_angles(detector_quaternions)  # (ndet,)
             half_gamma = 0.5 * gamma
@@ -141,6 +144,7 @@ class PointingOperator(AbstractLinearOperator):
         """
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
         indices = self.landscape.quat2index(qdet_full)
+        # this takes care of multi-dimensional landscapes
         ravel_op = RavelOperator(in_structure=self.landscape.structure)
         index_op = IndexOperator(indices, in_structure=ravel_op.out_structure)
         pa = to_polarization_angle(qdet_full)

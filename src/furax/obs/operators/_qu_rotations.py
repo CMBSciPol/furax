@@ -1,3 +1,21 @@
+"""QU rotation operators and helper functions.
+
+Angle conventions
+-----------------
+``R(theta)`` expresses how the polarisation state (Stokes vector) of an incident beam of
+light transforms under a rotation of angle ``theta`` about the x axis. In other words,
+if a polariser or a wave plate is rotated by an angle ``theta`` from the x axis, the
+Mueller matrix ``M(theta)`` for the rotated component is
+
+    M(theta) = R(-theta) @ M @ R(theta)
+
+which encodes successively (from right to left):
+
+- the rotation of the input Stokes vector into the local frame of the component;
+- the effect of the "bare" component (in its local frame);
+- the rotation back to the original frame.
+"""
+
 import jax
 import numpy as np
 from jax import Array

@@ -515,7 +515,7 @@ def _build_acquisition_operator(
         boresight_quaternions,
         detector_quaternions,
         chunk_size=pointing_chunk_size,
-        demod=demodulated,
+        flip=demodulated,
         frame='boresight' if has_hwp else 'detector',
     )
 

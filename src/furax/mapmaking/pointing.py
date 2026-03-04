@@ -45,7 +45,7 @@ class PointingOperator(AbstractLinearOperator):
         detector_quaternions: Float[Array, 'det 4'],
         *,
         chunk_size: int = 16,
-        demod: bool = False,
+        flip: bool = False,
         frame: Literal['boresight', 'detector'] = 'boresight',
     ) -> 'PointingOperator':
         # Explicitly determine the output structure
@@ -73,7 +73,7 @@ class PointingOperator(AbstractLinearOperator):
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
             chunk_size=chunk_size,
-            flip=demod,
+            flip=flip,
             in_structure=landscape.structure,
             _out_structure=out_structure,
         )

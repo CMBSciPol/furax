@@ -14,6 +14,7 @@ from jax import jit
 from jaxtyping import Array, Float
 
 __all__ = [
+    'euler',
     'to_polarization_angle_cos_sin',
     'qmul',
     'qrot',
@@ -23,9 +24,37 @@ __all__ = [
 ]
 
 Quat: TypeAlias = Float[Array, '... 4']
+
+
 Vec3: TypeAlias = Float[Array, '... 3']
 Ang3: TypeAlias = Float[Array, '... 3']
 Ang: TypeAlias = Float[Array, '...']
+
+
+@partial(jit, static_argnums=(0,))
+def euler(axis: int, angle: Float[Array, '...']) -> Quat:
+    """The quaternion representing an Euler rotation.
+
+    For example, if axis=2 the computed quaternion(s) will have
+    components:
+
+        q = (cos(angle/2), 0, 0, sin(angle/2))
+
+    Args:
+        axis: The index of the cartesian axis of the rotation (x, y, z).
+            Must be 0, 1, or 2.
+        angle: Angle of rotation, in radians.
+
+    Returns:
+        Quaternion array of shape (..., 4).
+    """
+    angle = jnp.asarray(angle)
+    c = jnp.cos(angle / 2)
+    s = jnp.sin(angle / 2)
+    zeros = jnp.zeros_like(angle)
+    components = [c, zeros, zeros, zeros]
+    components[axis + 1] = s
+    return jnp.stack(components, axis=-1)
 
 
 @jit

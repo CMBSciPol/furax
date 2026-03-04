@@ -10,6 +10,7 @@ from jaxtyping import Array, Float, PyTree
 from furax import AbstractLinearOperator
 from furax.core import IndexOperator, RavelOperator, TransposeOperator
 from furax.math.quaternion import (
+    euler,
     qmul,
     to_gamma_angles,
     to_polarization_angle,
@@ -64,14 +65,11 @@ class PointingOperator(AbstractLinearOperator):
         # a z-rotation does not change the direction of the boresight (z) axis.
         #
         # NB: the xieta parametrization is incomplete and cannot describe all rotations.
-        # We thus prefer this approach which only cancels the z rotation.
+        # Thus converting to xieta and back (with gamma=0) may not work in full generality.
+        # This approach is more general and just as efficient.
         if frame == 'boresight':
-            gamma = to_gamma_angles(detector_quaternions)  # (ndet,)
-            half_gamma = 0.5 * gamma
-            zeros = jnp.zeros_like(half_gamma)
-            q_z_neg = jnp.stack(
-                [jnp.cos(half_gamma), zeros, zeros, -jnp.sin(half_gamma)], axis=-1
-            )  # (ndet, 4) — z-rotation by -gamma
+            gamma = to_gamma_angles(detector_quaternions)
+            q_z_neg = euler(2, -gamma)  # z-rotation by -gamma
             detector_quaternions = qmul(detector_quaternions, q_z_neg)
 
         return cls(

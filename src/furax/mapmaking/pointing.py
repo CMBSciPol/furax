@@ -39,7 +39,6 @@ class PointingOperator(AbstractLinearOperator):
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
     chunk_size: int = field(metadata={'static': True})
-    flip: bool = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
 
     @classmethod
@@ -50,7 +49,6 @@ class PointingOperator(AbstractLinearOperator):
         detector_quaternions: Float[Array, 'det 4'],
         *,
         chunk_size: int = 16,
-        flip: bool = False,
         frame: Literal['boresight', 'detector'] = 'boresight',
     ) -> 'PointingOperator':
         # Explicitly determine the output structure
@@ -78,7 +76,6 @@ class PointingOperator(AbstractLinearOperator):
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
             chunk_size=chunk_size,
-            flip=flip,
             in_structure=landscape.structure,
             _out_structure=out_structure,
         )
@@ -101,7 +98,7 @@ class PointingOperator(AbstractLinearOperator):
                 return tod
 
             # Return the rotated Stokes parameters
-            cos_angles, sin_angles = self._get_cos_sin_angles(qdet_full)
+            cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
             return rotate_qu_cs(tod, cos_angles, sin_angles)  # type: ignore[no-any-return]
 
         # Loop over chunks of detectors
@@ -137,44 +134,17 @@ class PointingOperator(AbstractLinearOperator):
         tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
         return tod_out
 
-    def _get_cos_sin_angles(self, qfull):  # type: ignore[no-untyped-def]
-        cos_angles, sin_angles = to_polarization_angle_cos_sin(qfull)
-        if self.flip:
-            # rotate the other way...
-            sin_angles = -sin_angles
-        return cos_angles, sin_angles
-
     def as_expanded_operator(self) -> AbstractLinearOperator:
-        """Return the equivalent CompositionOperator: QURotationOperator @ IndexOperator @ RavelOperator.
+        """Return the equivalent QURotationOperator @ IndexOperator @ RavelOperator.
 
-        Expands all detector and sample combinations at once (no chunking) to produce an
-        explicit three-step operator: a RavelOperator to flatten the sky map, an IndexOperator
-        that samples the flat pixel indices, and a QURotationOperator that rotates by the
-        opposite of the polarization angle.
-
-        This is equivalent to mv() but expressed as a composition of standard operators,
-        which is useful for testing and validation.
+        Equivalent to mv() but as an explicit composition, useful for testing.
         """
-        # Full quaternions for every (detector, sample) pair: (ndet, nsamp, 4)
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
-
-        # Pixel indices: (ndet, nsamp) — always 1D flat indices into the raveled sky
         indices = self.landscape.quat2index(qdet_full)
-
-        # RavelOperator: sky landscape.shape → flat (npix,) per leaf
-        # mv() does x.ravel()[indices], so we must ravel first before indexing
         ravel_op = RavelOperator(in_structure=self.landscape.structure)
-
-        # IndexOperator: flat sky (npix,) → tod (ndet, nsamp)
         index_op = IndexOperator(indices, in_structure=ravel_op.out_structure)
-
-        # Polarization angles: (ndet, nsamp)
         pa = to_polarization_angle(qdet_full)
-        angles = -pa if self.flip else pa
-
-        # QURotationOperator: tod (ndet, nsamp) → rotated tod (ndet, nsamp)
-        qu_rot_op = QURotationOperator(angles=angles, in_structure=index_op.out_structure)
-
+        qu_rot_op = QURotationOperator(angles=pa, in_structure=index_op.out_structure)
         return qu_rot_op @ index_op @ ravel_op
 
     @property
@@ -204,7 +174,7 @@ class PointingTransposeOperator(TransposeOperator):
                 return self._point(xchunk, indices)
 
             # Rotate back to the celestial frame with the inverse rotation
-            cos_angles, sin_angles = self.operator._get_cos_sin_angles(qdet_full)
+            cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
             rotated = rotate_qu_cs(xchunk, cos_angles, -sin_angles)
             return self._point(rotated, indices)
 

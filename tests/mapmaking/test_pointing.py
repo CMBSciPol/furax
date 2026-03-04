@@ -42,9 +42,8 @@ def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
 
 
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
-@pytest.mark.parametrize('flip', [False, True])
 @pytest.mark.parametrize('frame', ['boresight', 'detector'])
-def test_as_expanded_operator_mv(stokes, flip, frame, landscape_type) -> None:
+def test_as_expanded_operator_mv(stokes, frame, landscape_type) -> None:
     """PointingOperator.mv is equivalent to as_expanded_operator().mv."""
     landscape = _make_landscape(landscape_type, stokes)
 
@@ -53,9 +52,7 @@ def test_as_expanded_operator_mv(stokes, flip, frame, landscape_type) -> None:
     qbore = _random_unit_quats(key1, (NSAMP,))
     qdet = _random_unit_quats(key2, (NDET,))
 
-    pointing_op = PointingOperator.create(
-        landscape, qbore, qdet, flip=flip, frame=frame, chunk_size=2
-    )
+    pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, chunk_size=2)
     sky = landscape.normal(key3)
 
     tod_direct = pointing_op(sky)
@@ -68,9 +65,8 @@ def test_as_expanded_operator_mv(stokes, flip, frame, landscape_type) -> None:
 
 
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
-@pytest.mark.parametrize('flip', [False, True])
 @pytest.mark.parametrize('frame', ['boresight', 'detector'])
-def test_as_expanded_operator_transpose_mv(stokes, flip, frame, landscape_type) -> None:
+def test_as_expanded_operator_transpose_mv(stokes, frame, landscape_type) -> None:
     """PointingOperator.T.mv is equivalent to as_expanded_operator().T.mv."""
     landscape = _make_landscape(landscape_type, stokes)
 
@@ -79,9 +75,7 @@ def test_as_expanded_operator_transpose_mv(stokes, flip, frame, landscape_type) 
     qbore = _random_unit_quats(key1, (NSAMP,))
     qdet = _random_unit_quats(key2, (NDET,))
 
-    pointing_op = PointingOperator.create(
-        landscape, qbore, qdet, flip=flip, frame=frame, chunk_size=2
-    )
+    pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, chunk_size=2)
     tod = pointing_op.out_structure
     tod = jax.tree.map(lambda s: jax.random.normal(key3, s.shape, s.dtype), tod)
 

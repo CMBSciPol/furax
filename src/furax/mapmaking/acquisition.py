@@ -31,14 +31,12 @@ def build_acquisition_operator(
     data_shape = (ndet, nsamp)
 
     # Rotate into detector frame unless a HWP is present (even if demodulated)
-    # NB: for demodulated data we have to rotate the other way...
     has_hwp = hwp_angles is not None or demodulated
     pointing = PointingOperator.create(
         landscape,
         boresight_quaternions,
         detector_quaternions,
         chunk_size=pointing_chunk_size,
-        flip=demodulated,
         frame='boresight' if has_hwp else 'detector',
     )
     if not pointing_on_the_fly:
@@ -54,9 +52,15 @@ def build_acquisition_operator(
     if not has_hwp:
         return polarizer @ pointing
 
-    # If there is a HWP, we need an additional rotation related to detector angle
+    # If there is a HWP, we are in the boresight frame so we need another rotation
+    # In the demodulated case, we need to flip this angle(!)
     gamma = to_gamma_angles(detector_quaternions)[:, None]
-    rot = QURotationOperator.create(data_shape, dtype, landscape.stokes, angles=gamma)
+    rot = QURotationOperator.create(
+        data_shape,
+        dtype,
+        landscape.stokes,
+        angles=-gamma if demodulated else gamma,
+    )
 
     # In the demodulated case, there is no polarizer
     if demodulated:
@@ -66,7 +70,7 @@ def build_acquisition_operator(
     hwp = HWPOperator.create(
         shape=data_shape,
         dtype=dtype,
-        angles=hwp_angles,
         stokes=landscape.stokes,
+        angles=hwp_angles,
     )
     return polarizer @ rot @ hwp @ pointing

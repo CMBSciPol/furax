@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import numpy as np
-import pytest
 from numpy.testing import assert_allclose
 from sotodlib import coords
 from sotodlib.mapmaking.demod_mapmaker import project_rhs_demod
@@ -65,7 +64,6 @@ def test_acquisition_no_hwp_vs_sotodlib():
     assert_allclose(furax_map.u, 0.5 * sotodlib_map[2], rtol=1e-5, atol=0)
 
 
-@pytest.mark.xfail
 def test_demod_acquisition_vs_sotodlib():
     """Validate the demodulated acquisition transpose against sotodlib's project_rhs_demod.
 

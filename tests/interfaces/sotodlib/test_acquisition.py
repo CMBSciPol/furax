@@ -2,12 +2,15 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.testing import assert_allclose
 from sotodlib import coords
 from sotodlib.mapmaking.demod_mapmaker import project_rhs_demod
 
 from furax.interfaces.sotodlib import LazySOTODLibObservation
 from furax.mapmaking import MultiObservationMapMaker
+from furax.mapmaking.acquisition import build_acquisition_operator
 from furax.mapmaking.config import LandscapeConfig, Landscapes, MapMakingConfig
+from furax.obs.landscapes import HealpixLandscape
 
 FOLDER = Path(__file__).parents[2] / 'data' / 'sotodlib'
 NSIDE = 16
@@ -26,7 +29,6 @@ def _sotodlib_pointing(obs, hwp: bool):
     return coords.P.for_tod(obs.data, geom=hp_geom, comps='TQU', hwp=hwp)
 
 
-@pytest.mark.xfail
 def test_acquisition_no_hwp_vs_sotodlib():
     """Validate the acquisition transpose against sotodlib.
 
@@ -41,8 +43,14 @@ def test_acquisition_no_hwp_vs_sotodlib():
 
     lazy_obs = LazySOTODLibObservation(FOLDER / 'test_obs_2.h5')
     obs = lazy_obs.get_data()
-    maker = MultiObservationMapMaker([lazy_obs], config=_make_config(demodulated=False))
-    (h,) = maker.build_acquisitions()
+    landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
+    h = build_acquisition_operator(
+        landscape,
+        obs.get_boresight_quaternions(),
+        obs.get_detector_quaternions(),
+        hwp_angles=None,
+        pointing_on_the_fly=True,
+    )
 
     tods = obs.get_tods()
     furax_map = h.T(tods)
@@ -52,9 +60,9 @@ def test_acquisition_no_hwp_vs_sotodlib():
 
     # furax = 0.5 * sotodlib (the LinearPolarizerOperator applies a factor of 0.5).
     # Tolerance is loose because sotodlib's signal is cast to float32 before projection.
-    np.testing.assert_allclose(np.array(furax_map.i), 0.5 * sotodlib_map[0], rtol=1e-5, atol=0)
-    np.testing.assert_allclose(np.array(furax_map.q), 0.5 * sotodlib_map[1], rtol=1e-5, atol=0)
-    np.testing.assert_allclose(np.array(furax_map.u), 0.5 * sotodlib_map[2], rtol=1e-5, atol=0)
+    assert_allclose(furax_map.i, 0.5 * sotodlib_map[0], rtol=1e-5, atol=0)
+    assert_allclose(furax_map.q, 0.5 * sotodlib_map[1], rtol=1e-5, atol=0)
+    assert_allclose(furax_map.u, 0.5 * sotodlib_map[2], rtol=1e-5, atol=0)
 
 
 @pytest.mark.xfail
@@ -89,6 +97,6 @@ def test_demod_acquisition_vs_sotodlib():
 
     # Compare: furax_map is a StokesIQU pytree, sotodlib_map has shape (3, npix).
     # Tolerance is loose because sotodlib's signal is cast to float32 before projection.
-    np.testing.assert_allclose(np.array(furax_map.i), sotodlib_map[0], rtol=1e-5, atol=0)
-    np.testing.assert_allclose(np.array(furax_map.q), sotodlib_map[1], rtol=1e-5, atol=0)
-    np.testing.assert_allclose(np.array(furax_map.u), sotodlib_map[2], rtol=1e-5, atol=0)
+    assert_allclose(furax_map.i, sotodlib_map[0], rtol=1e-5, atol=0)
+    assert_allclose(furax_map.q, sotodlib_map[1], rtol=1e-5, atol=0)
+    assert_allclose(furax_map.u, sotodlib_map[2], rtol=1e-5, atol=0)

@@ -8,10 +8,15 @@ from jax import jit, lax
 from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator
-from furax.core import TransposeOperator
-from furax.math.quaternion import qmul, to_gamma_angles, to_polarization_angle_cos_sin
+from furax.core import IndexOperator, TransposeOperator
+from furax.math.quaternion import (
+    qmul,
+    to_gamma_angles,
+    to_polarization_angle,
+    to_polarization_angle_cos_sin,
+)
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.operators._qu_rotations import rotate_qu_cs
+from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
 from furax.obs.stokes import Stokes, StokesI, StokesPyTreeType
 
 __all__ = [
@@ -138,6 +143,39 @@ class PointingOperator(AbstractLinearOperator):
             # rotate the other way...
             sin_angles = -sin_angles
         return cos_angles, sin_angles
+
+    def as_expanded_operator(self) -> AbstractLinearOperator:
+        """Return the equivalent CompositionOperator: QURotationOperator @ IndexOperator.
+
+        Expands all detector and sample combinations at once (no chunking) to produce an
+        explicit two-step operator: an IndexOperator that samples sky pixels followed by a
+        QURotationOperator that rotates by the opposite of the polarization angle.
+
+        This is equivalent to mv() but expressed as a composition of standard operators,
+        which is useful for testing and validation.
+
+        Note: only valid for 1-dimensional landscapes (e.g. HEALPix).
+        """
+        # Full quaternions for every (detector, sample) pair: (ndet, nsamp, 4)
+        qdet_full = qmul(self.qbore, self.qdet[:, None, :])
+
+        # Pixel indices: (ndet, nsamp)
+        indices = self.landscape.quat2index(qdet_full)
+
+        # IndexOperator: sky (npix,) → tod (ndet, nsamp)
+        index_op = IndexOperator(indices, in_structure=self.landscape.structure)
+
+        # Polarization angles: (ndet, nsamp)
+        pa = to_polarization_angle(qdet_full)
+
+        # mv applies rotate_qu_cs(tod, cos_pa, -sin_pa) = rotation by -pa.
+        # When flip=True, sin_pa is negated before the outer negation → rotation by +pa.
+        angles = pa if self.flip else -pa
+
+        # QURotationOperator: tod (ndet, nsamp) → rotated tod (ndet, nsamp)
+        qu_rot_op = QURotationOperator(angles=angles, in_structure=index_op.out_structure)
+
+        return qu_rot_op @ index_op
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:

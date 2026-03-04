@@ -2,13 +2,37 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.tree_util import register_static
 from numpy.testing import assert_allclose
 
 from furax.mapmaking.pointing import PointingOperator
-from furax.obs.landscapes import HealpixLandscape
+from furax.obs.landscapes import HealpixLandscape, StokesLandscape
+from furax.obs.stokes import ValidStokesType
 
 NSIDE = 4
 NDET, NSAMP = 3, 10
+
+
+@register_static
+class CARStokesLandscape(StokesLandscape):
+    """Simple 2D grid landscape covering the full sphere.
+
+    Maps (theta, phi) to (col, row) pixel coordinates where:
+        col = phi / (2*pi) * ncol  in [0, ncol)
+        row = theta / pi * nrow    in [0, nrow)
+    """
+
+    def world2pixel(self, theta, phi):
+        nrow, ncol = self.shape
+        col = phi / (2 * jnp.pi) * ncol - 0.5
+        row = theta / jnp.pi * nrow - 0.5
+        return col, row
+
+
+def _make_landscape(landscape_type: str, stokes: ValidStokesType) -> StokesLandscape:
+    if landscape_type == 'healpix':
+        return HealpixLandscape(NSIDE, stokes)
+    return CARStokesLandscape((5, 3), stokes)
 
 
 def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
@@ -17,11 +41,12 @@ def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
     return q / jnp.linalg.norm(q, axis=-1, keepdims=True)
 
 
+@pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
 @pytest.mark.parametrize('flip', [False, True])
 @pytest.mark.parametrize('frame', ['boresight', 'detector'])
-def test_as_expanded_operator_mv(stokes, flip, frame) -> None:
+def test_as_expanded_operator_mv(stokes, flip, frame, landscape_type) -> None:
     """PointingOperator.mv is equivalent to as_expanded_operator().mv."""
-    landscape = HealpixLandscape(NSIDE, stokes)
+    landscape = _make_landscape(landscape_type, stokes)
 
     key = jax.random.PRNGKey(42)
     key1, key2, key3 = jax.random.split(key, 3)
@@ -42,11 +67,12 @@ def test_as_expanded_operator_mv(stokes, flip, frame) -> None:
         assert_allclose(np.asarray(leaf_direct), np.asarray(leaf_expanded), rtol=1e-10)
 
 
+@pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
 @pytest.mark.parametrize('flip', [False, True])
 @pytest.mark.parametrize('frame', ['boresight', 'detector'])
-def test_as_expanded_operator_transpose_mv(stokes, flip, frame) -> None:
+def test_as_expanded_operator_transpose_mv(stokes, flip, frame, landscape_type) -> None:
     """PointingOperator.T.mv is equivalent to as_expanded_operator().T.mv."""
-    landscape = HealpixLandscape(NSIDE, stokes)
+    landscape = _make_landscape(landscape_type, stokes)
 
     key = jax.random.PRNGKey(42)
     key1, key2, key3 = jax.random.split(key, 3)

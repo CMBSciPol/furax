@@ -8,7 +8,7 @@ from jax import jit, lax
 from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator
-from furax.core import IndexOperator, TransposeOperator
+from furax.core import IndexOperator, RavelOperator, TransposeOperator
 from furax.math.quaternion import (
     qmul,
     to_gamma_angles,
@@ -145,25 +145,28 @@ class PointingOperator(AbstractLinearOperator):
         return cos_angles, sin_angles
 
     def as_expanded_operator(self) -> AbstractLinearOperator:
-        """Return the equivalent CompositionOperator: QURotationOperator @ IndexOperator.
+        """Return the equivalent CompositionOperator: QURotationOperator @ IndexOperator @ RavelOperator.
 
         Expands all detector and sample combinations at once (no chunking) to produce an
-        explicit two-step operator: an IndexOperator that samples sky pixels followed by a
-        QURotationOperator that rotates by the opposite of the polarization angle.
+        explicit three-step operator: a RavelOperator to flatten the sky map, an IndexOperator
+        that samples the flat pixel indices, and a QURotationOperator that rotates by the
+        opposite of the polarization angle.
 
         This is equivalent to mv() but expressed as a composition of standard operators,
         which is useful for testing and validation.
-
-        Note: only valid for 1-dimensional landscapes (e.g. HEALPix).
         """
         # Full quaternions for every (detector, sample) pair: (ndet, nsamp, 4)
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
 
-        # Pixel indices: (ndet, nsamp)
+        # Pixel indices: (ndet, nsamp) — always 1D flat indices into the raveled sky
         indices = self.landscape.quat2index(qdet_full)
 
-        # IndexOperator: sky (npix,) → tod (ndet, nsamp)
-        index_op = IndexOperator(indices, in_structure=self.landscape.structure)
+        # RavelOperator: sky landscape.shape → flat (npix,) per leaf
+        # mv() does x.ravel()[indices], so we must ravel first before indexing
+        ravel_op = RavelOperator(in_structure=self.landscape.structure)
+
+        # IndexOperator: flat sky (npix,) → tod (ndet, nsamp)
+        index_op = IndexOperator(indices, in_structure=ravel_op.out_structure)
 
         # Polarization angles: (ndet, nsamp)
         pa = to_polarization_angle(qdet_full)
@@ -175,7 +178,7 @@ class PointingOperator(AbstractLinearOperator):
         # QURotationOperator: tod (ndet, nsamp) → rotated tod (ndet, nsamp)
         qu_rot_op = QURotationOperator(angles=angles, in_structure=index_op.out_structure)
 
-        return qu_rot_op @ index_op
+        return qu_rot_op @ index_op @ ravel_op
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:

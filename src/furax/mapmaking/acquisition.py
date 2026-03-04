@@ -60,7 +60,7 @@ def build_acquisition_operator(
 
     # In the demodulated case, there is no polarizer
     if demodulated:
-        return rot.T @ pointing
+        return rot @ pointing
 
     # In the general case, we include polarizer and HWP
     hwp = HWPOperator.create(
@@ -69,4 +69,4 @@ def build_acquisition_operator(
         angles=hwp_angles,
         stokes=landscape.stokes,
     )
-    return polarizer @ rot.T @ hwp @ pointing
+    return polarizer @ rot @ hwp @ pointing

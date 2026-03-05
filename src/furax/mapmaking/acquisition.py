@@ -64,7 +64,7 @@ def build_acquisition_operator(
     # In the demodulated case, there is no polarizer
     # And the gamma angle is flipped!
     if demodulated:
-        return rot.T @ pointing
+        return 0.5 * rot.T @ pointing
 
     # In the general case, we include polarizer and HWP
     hwp = HWPOperator.create(

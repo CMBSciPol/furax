@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import jax
 import numpy as np
 from numpy.testing import assert_allclose
 from sotodlib import coords
@@ -57,11 +58,9 @@ def test_acquisition_no_hwp_vs_sotodlib():
     pmap = _sotodlib_pointing(obs, hwp=False)
     sotodlib_map = pmap.to_map(tod=obs.data, signal=np.array(tods, dtype=np.float32))
 
-    # furax = 0.5 * sotodlib (the LinearPolarizerOperator applies a factor of 0.5).
-    # Tolerance is loose because sotodlib's signal is cast to float32 before projection.
-    assert_allclose(furax_map.i, 0.5 * sotodlib_map[0], rtol=1e-5, atol=0)
-    assert_allclose(furax_map.q, 0.5 * sotodlib_map[1], rtol=1e-5, atol=0)
-    assert_allclose(furax_map.u, 0.5 * sotodlib_map[2], rtol=1e-5, atol=0)
+    # Furax TODs assume power, so they are 2x smaller
+    for i, leaf in enumerate(jax.tree.leaves(furax_map)):
+        assert_allclose(2 * leaf, sotodlib_map[i], rtol=1e-5, atol=0)
 
 
 def test_demod_acquisition_vs_sotodlib():
@@ -93,8 +92,6 @@ def test_demod_acquisition_vs_sotodlib():
         det_weightsQU=None,
     )
 
-    # Compare: furax_map is a StokesIQU pytree, sotodlib_map has shape (3, npix).
-    # Tolerance is loose because sotodlib's signal is cast to float32 before projection.
-    assert_allclose(furax_map.i, sotodlib_map[0], rtol=1e-5, atol=0)
-    assert_allclose(furax_map.q, sotodlib_map[1], rtol=1e-5, atol=0)
-    assert_allclose(furax_map.u, sotodlib_map[2], rtol=1e-5, atol=0)
+    # Furax TODs assume power, so they are 2x smaller
+    for i, leaf in enumerate(jax.tree.leaves(furax_map)):
+        assert_allclose(2 * leaf, sotodlib_map[i], rtol=1e-5, atol=0)

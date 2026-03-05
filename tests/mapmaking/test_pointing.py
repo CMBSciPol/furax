@@ -1,9 +1,8 @@
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
+from equinox import tree_equal
 from jax.tree_util import register_static
-from numpy.testing import assert_allclose
 
 from furax.mapmaking.pointing import PointingOperator
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape
@@ -58,10 +57,7 @@ def test_as_expanded_operator_mv(stokes, frame, landscape_type) -> None:
     tod_direct = pointing_op(sky)
     tod_expanded = pointing_op.as_expanded_operator()(sky)
 
-    for leaf_direct, leaf_expanded in zip(
-        jax.tree.leaves(tod_direct), jax.tree.leaves(tod_expanded)
-    ):
-        assert_allclose(np.asarray(leaf_direct), np.asarray(leaf_expanded), rtol=1e-10)
+    assert tree_equal(tod_direct, tod_expanded, rtol=1e-10, atol=0)
 
 
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
@@ -82,7 +78,4 @@ def test_as_expanded_operator_transpose_mv(stokes, frame, landscape_type) -> Non
     sky_direct = pointing_op.T(tod)
     sky_expanded = pointing_op.as_expanded_operator().T(tod)
 
-    for leaf_direct, leaf_expanded in zip(
-        jax.tree.leaves(sky_direct), jax.tree.leaves(sky_expanded)
-    ):
-        assert_allclose(np.asarray(leaf_direct), np.asarray(leaf_expanded), rtol=1e-10)
+    assert tree_equal(sky_direct, sky_expanded, rtol=1e-10, atol=0)

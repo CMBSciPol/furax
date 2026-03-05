@@ -73,7 +73,7 @@ def test_no_hwp_acquisition_transpose_formula() -> None:
 def test_hwp_acquisition_formula() -> None:
     """HWP acquisition: d = 0.5*(I + cos(phi)*Q + sin(phi)*U).
 
-    phi = 2*(-gamma + 2*chi + pa-gamma) where
+    phi = 2*(2*chi + pa - 2*gamma) where
     - pa is the polarization angle
     - chi is the HWP angle
     - gamma is the detector orientation angle
@@ -98,7 +98,7 @@ def test_hwp_acquisition_formula() -> None:
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     indices = landscape.quat2index(qdet_full)  # (ndet, nsamp)
     gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)
-    phi = 2 * (-gamma + 2 * hwp_angles[None, :] + pa - gamma)  # (ndet, nsamp)
+    phi = 2 * (2 * hwp_angles[None, :] + pa - 2 * gamma)  # (ndet, nsamp)
 
     I_p = sky.i.ravel()[indices]
     Q_p = sky.q.ravel()[indices]
@@ -129,7 +129,7 @@ def test_hwp_acquisition_transpose_formula() -> None:
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     flat_indices = landscape.quat2index(qdet_full).ravel()
     gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)
-    phi = 2 * (-gamma + 2 * hwp_angles[None, :] + pa - gamma)  # (ndet, nsamp)
+    phi = 2 * (2 * hwp_angles[None, :] + pa - 2 * gamma)  # (ndet, nsamp)
 
     d = tod.ravel()
     npix = len(landscape)

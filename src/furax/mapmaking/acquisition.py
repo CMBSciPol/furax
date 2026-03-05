@@ -53,18 +53,18 @@ def build_acquisition_operator(
         return polarizer @ pointing
 
     # If there is a HWP, we are in the boresight frame so we need another rotation
-    # In the demodulated case, we need to flip this angle(!)
     gamma = to_gamma_angles(detector_quaternions)[:, None]
     rot = QURotationOperator.create(
         data_shape,
         dtype,
         landscape.stokes,
-        angles=-gamma if demodulated else gamma,
+        angles=gamma,
     )
 
     # In the demodulated case, there is no polarizer
+    # And the gamma angle is flipped!
     if demodulated:
-        return rot @ pointing
+        return rot.T @ pointing
 
     # In the general case, we include polarizer and HWP
     hwp = HWPOperator.create(

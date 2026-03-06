@@ -32,8 +32,8 @@ def test_iqu() -> None:
 
     expected_y = StokesIQU(
         i=x.i,
-        q=jnp.array([1.0, -2, -1, 2, 1]),
-        u=jnp.array([2.0, 1, -2, -1, 2]),
+        q=jnp.array([1.0, 2, -1, -2, 1]),
+        u=jnp.array([2.0, -1, -2, 1, 2]),
     )
     assert equinox.tree_equal(actual_y, expected_y, atol=1e-15, rtol=1e-15)
 

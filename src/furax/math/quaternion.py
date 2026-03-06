@@ -14,16 +14,47 @@ from jax import jit
 from jaxtyping import Array, Float
 
 __all__ = [
+    'euler',
+    'to_polarization_angle_cos_sin',
     'qmul',
     'qrot',
     'qrot_xaxis',
     'qrot_zaxis',
+    'to_polarization_angle',
 ]
 
 Quat: TypeAlias = Float[Array, '... 4']
+
+
 Vec3: TypeAlias = Float[Array, '... 3']
 Ang3: TypeAlias = Float[Array, '... 3']
 Ang: TypeAlias = Float[Array, '...']
+
+
+@partial(jit, static_argnums=(0,))
+def euler(axis: int, angle: Float[Array, '...']) -> Quat:
+    """The quaternion representing an Euler rotation.
+
+    For example, if axis=2 the computed quaternion(s) will have
+    components:
+
+        q = (cos(angle/2), 0, 0, sin(angle/2))
+
+    Args:
+        axis: The index of the cartesian axis of the rotation (x, y, z).
+            Must be 0, 1, or 2.
+        angle: Angle of rotation, in radians.
+
+    Returns:
+        Quaternion array of shape (..., 4).
+    """
+    angle = jnp.asarray(angle)
+    c = jnp.cos(angle / 2)
+    s = jnp.sin(angle / 2)
+    zeros = jnp.zeros_like(angle)
+    components = [c, zeros, zeros, zeros]
+    components[axis + 1] = s
+    return jnp.stack(components, axis=-1)
 
 
 @jit
@@ -164,6 +195,15 @@ def to_xieta_angles(q: Quat) -> tuple[Ang, Ang, Ang]:
 
 
 @jit
+def from_xieta_angles(xi: Ang, eta: Ang, gamma: Ang) -> Quat:
+    """Compute quaternions from the xieta coordinate system angles (xi, eta, gamma)."""
+    theta = jnp.asin((xi**2 + eta**2) ** 0.5)
+    phi = jnp.atan2(-xi, -eta)
+    psi = gamma - phi
+    return from_iso_angles(theta, phi, psi)  # type: ignore[no-any-return]
+
+
+@jit
 @partial(jnp.vectorize, signature='(4)->()')
 def to_gamma_angles(q: Quat) -> Ang:
     """Convert quaternions to the xieta coordinate system angles (xi, eta, gamma),
@@ -174,9 +214,58 @@ def to_gamma_angles(q: Quat) -> Ang:
 
 
 @jit
-def from_xieta_angles(xi: Ang, eta: Ang, gamma: Ang) -> Quat:
-    """Compute quaternions from the xieta coordinate system angles (xi, eta, gamma)."""
-    theta = jnp.asin((xi**2 + eta**2) ** 0.5)
-    phi = jnp.atan2(-xi, -eta)
-    psi = gamma - phi
-    return from_iso_angles(theta, phi, psi)  # type: ignore[no-any-return]
+@partial(jnp.vectorize, signature='(4)->(),()')
+def to_polarization_angle_cos_sin(q: Quat) -> tuple[Ang, Ang]:
+    """Compute cos and sin of the polarization angle from the rotation quaternion.
+
+    Equivalent to ``(cos(pa), sin(pa))`` where ``pa = to_polarization_angle(q)``,
+    but avoids transcendental functions by using quaternion algebra directly.
+
+    See :func:`to_polarization_angle` for the definition and convention.
+    """
+    a, b, c, d = q
+    cos_theta = a**2 - b**2 - c**2 + d**2
+    # clip to avoid numerical issues giving cos_theta**2 > 1
+    half_sin_theta = 0.5 * jnp.sqrt(jnp.clip(1 - cos_theta**2, 0.0, None))
+    at_pole = half_sin_theta == 0
+    safe = jnp.where(at_pole, 1.0, half_sin_theta)
+    # angle undefined at the pole, use pa = 0
+    # this matches the result of to_polarization_angle (atan2(0, 0) = 0)
+    cos_pa = jnp.where(at_pole, 1.0, (a * c - b * d) / safe)
+    sin_pa = jnp.where(at_pole, 0.0, (a * b + c * d) / safe)
+    return cos_pa, sin_pa
+
+
+@jit
+@partial(jnp.vectorize, signature='(4)->()')
+def to_polarization_angle(q: Quat) -> Ang:
+    """Compute the polarization angle from the rotation quaternion using the COSMO convention.
+
+    The polarization angle is measured from the South through the East.
+
+    The rotation quaternion `q` transforms detector coordinates to celestial (equatorial) coordinates.
+    In detector coordinates:
+    - The detector points in the z direction.
+    - The detector is sensitive to electric fields in the x direction.
+
+    After applying the rotation:
+    - The vector `v` identifies the point on the equatorial sphere where the detector is pointing.
+    - The vector `u` defines the polarization-sensitive direction, tangent to the unit sphere at `v`.
+
+    The unit vector toward the South in the tangent plane is:
+    - `w = -z - (-z · v) v`
+
+    The polarization angle `pa` between `w` and `u` is computed as:
+    - `cos(pa) = w · u = -u_z` (since `u · v = 0`)
+    - `sin(pa) = (w × u) · v = (u × v) · w = (v × u) · z = v_x u_y - v_y u_x`
+    - Therefore, `pa = atan2(v_x u_y - v_y u_x, -u_z)`
+
+    Args:
+        q: Rotation quaternion array of shape (*dims, 4).
+
+    Returns:
+        Polarization angle array of shape (*dims).
+    """
+    v = qrot_zaxis(q)
+    u = qrot_xaxis(q)
+    return jnp.arctan2(v[0] * u[1] - v[1] * u[0], -u[2])

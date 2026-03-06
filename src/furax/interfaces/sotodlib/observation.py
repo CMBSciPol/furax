@@ -124,8 +124,9 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_tods(self) -> Array:
         """Returns the timestream data."""
+        # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
         tods = jnp.array(self.data.signal, dtype=jnp.float64)
-        return jnp.atleast_2d(tods)
+        return 0.5 * jnp.atleast_2d(tods)
 
     def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> StokesPyTreeType:
         """Returns the demodulated timestream data as a Stokes pytree.
@@ -141,7 +142,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> Array:
         attr = {'I': 'dsT', 'Q': 'demodQ', 'U': 'demodU'}[stoke]
         tod = jnp.array(getattr(self.data, attr), dtype=jnp.float64)
-        return jnp.atleast_2d(tod)
+        return 0.5 * jnp.atleast_2d(tod)
 
     def get_detector_offset_angles(self) -> Array:
         """Returns the detector offset angles."""

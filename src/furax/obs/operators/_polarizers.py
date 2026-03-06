@@ -45,7 +45,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):
 
 
 class LinearPolarizerHWPRule(AbstractBinaryRule):
-    """Binary rule for R(theta) @ HWP = HWP @ R(-theta)`."""
+    """Binary rule for LinPol @ HWP = LinPol`."""
 
     left_operator_class = LinearPolarizerOperator
     right_operator_class = HWPOperator

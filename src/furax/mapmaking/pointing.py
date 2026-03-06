@@ -1,5 +1,4 @@
 from dataclasses import field
-from functools import partial
 from typing import Literal
 
 import jax
@@ -9,10 +8,16 @@ from jax import jit, lax
 from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator
-from furax.core import TransposeOperator
-from furax.math.quaternion import qmul, qrot_xaxis, qrot_zaxis, to_gamma_angles
+from furax.core import IndexOperator, RavelOperator, TransposeOperator
+from furax.math.quaternion import (
+    euler,
+    qmul,
+    to_gamma_angles,
+    to_polarization_angle,
+    to_polarization_angle_cos_sin,
+)
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.operators._qu_rotations import rotate_qu
+from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
 from furax.obs.stokes import Stokes, StokesI, StokesPyTreeType
 
 __all__ = [
@@ -35,8 +40,6 @@ class PointingOperator(AbstractLinearOperator):
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
     chunk_size: int = field(metadata={'static': True})
-    demod: bool = field(metadata={'static': True})
-    frame: Literal['boresight', 'detector'] = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
 
     @classmethod
@@ -47,22 +50,33 @@ class PointingOperator(AbstractLinearOperator):
         detector_quaternions: Float[Array, 'det 4'],
         *,
         chunk_size: int = 16,
-        demod: bool = False,
         frame: Literal['boresight', 'detector'] = 'boresight',
     ) -> 'PointingOperator':
-        # explicitly determine the output structure
+        # Explicitly determine the output structure
         ndet = detector_quaternions.shape[0]
         nsamp = boresight_quaternions.shape[0]
         out_structure = Stokes.class_for(landscape.stokes).structure_for(
             (ndet, nsamp), dtype=landscape.dtype
         )
+
+        # In boresight frame, strip the z-rotation (gamma) from each detector quaternion.
+        # This absorbs the frame correction into qdet so that _get_cos_sin_angles always
+        # works the same way, regardless of frame. Pixel indices are unaffected because
+        # a z-rotation does not change the direction of the boresight (z) axis.
+        #
+        # NB: the xieta parametrization is incomplete and cannot describe all rotations.
+        # Thus converting to xieta and back (with gamma=0) may not work in full generality.
+        # This approach is more general and just as efficient.
+        if frame == 'boresight':
+            gamma = to_gamma_angles(detector_quaternions)
+            q_z_neg = euler(2, -gamma)  # z-rotation by -gamma
+            detector_quaternions = qmul(detector_quaternions, q_z_neg)
+
         return cls(
             landscape,
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
             chunk_size=chunk_size,
-            frame=frame,
-            demod=demod,
             in_structure=landscape.structure,
             _out_structure=out_structure,
         )
@@ -85,8 +99,8 @@ class PointingOperator(AbstractLinearOperator):
                 return tod
 
             # Return the rotated Stokes parameters
-            angles = self._get_angles(qdet_full, qdet)
-            return rotate_qu(tod, angles)  # type: ignore[no-any-return]
+            cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
+            return rotate_qu_cs(tod, cos_angles, sin_angles)  # type: ignore[no-any-return]
 
         # Loop over chunks of detectors
         ndet, nsamp = self.out_structure.shape
@@ -121,17 +135,19 @@ class PointingOperator(AbstractLinearOperator):
         tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
         return tod_out
 
-    def _get_angles(self, qfull, qdet):  # type: ignore[no-untyped-def]
-        # Get the angles to rotate into the desired frame
-        alpha = get_local_meridian_angle(qfull)
-        gamma = to_gamma_angles(qdet)[:, None]
-        if self.demod:
-            return 2 * gamma - alpha
-        if self.frame == 'detector':
-            return alpha
-        if self.frame == 'boresight':
-            return alpha - gamma
-        raise NotImplementedError
+    def as_expanded_operator(self) -> AbstractLinearOperator:
+        """Return the equivalent QURotationOperator @ IndexOperator @ RavelOperator.
+
+        Equivalent to mv() but as an explicit composition, useful for testing.
+        """
+        qdet_full = qmul(self.qbore, self.qdet[:, None, :])
+        indices = self.landscape.quat2index(qdet_full)
+        # this takes care of multi-dimensional landscapes
+        ravel_op = RavelOperator(in_structure=self.landscape.structure)
+        index_op = IndexOperator(indices, in_structure=ravel_op.out_structure)
+        pa = to_polarization_angle(qdet_full)
+        qu_rot_op = QURotationOperator(angles=pa, in_structure=index_op.out_structure)
+        return qu_rot_op @ index_op @ ravel_op
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -159,9 +175,10 @@ class PointingTransposeOperator(TransposeOperator):
                 # no rotation needed
                 return self._point(xchunk, indices)
 
-            # Get the angles to rotate back to the celestial frame
-            angles = self.operator._get_angles(qdet_full, qdet)
-            return self._point(rotate_qu(xchunk, -angles), indices)
+            # Rotate back to the celestial frame with the inverse rotation
+            cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
+            rotated = rotate_qu_cs(xchunk, cos_angles, -sin_angles)
+            return self._point(rotated, indices)
 
         # Loop over chunks of detectors
         ndet, _ = self.in_structure.shape
@@ -202,47 +219,3 @@ class PointingTransposeOperator(TransposeOperator):
             tod,
         )
         return sky
-
-
-@jit
-@partial(jnp.vectorize, signature='(4)->()')
-def get_local_meridian_angle(q: Float[Array, '*dims 4']) -> Float[Array, ' *dims']:
-    """
-    Compute angle between local meridian and orientation vector from quaternions.
-
-    Assumes that the quaternions encode the rotation between the celestial frame
-    and some other frame (e.g. detector or boresight frame). The "orientation vector"
-    is the unit vector of the latter frame obtained by rotating the X axis of the
-    celestial frame. For a detector this will be the polarization sensitive direction.
-    The local meridian vector is obtained by projecting the -Z axis of the celestial
-    frame onto the plane orthogonal to the pointing direction.
-    The angle is then measured clockwise from the orientation vector.
-
-    partially taken from
-    https://github.com/hpc4cmb/toast/blob/toast3/src/toast/ops/stokes_weights/kernels_jax.py#L19
-    """
-    vd = qrot_zaxis(q)
-    vo = qrot_xaxis(q)
-
-    # The vector orthogonal to the line of sight that is parallel
-    # to the local meridian.
-    dir_ang = jnp.arctan2(vd[1], vd[0])
-    dir_r = jnp.sqrt(1.0 - vd[2] * vd[2])
-    vm_z = -dir_r
-    vm_x = vd[2] * jnp.cos(dir_ang)
-    vm_y = vd[2] * jnp.sin(dir_ang)
-
-    # Compute the rotation angle from the meridian vector to the
-    # orientation vector.  The direction vector is normal to the plane
-    # containing these two vectors, so the rotation angle is:
-    #
-    # angle = atan2((v_m x v_o) . v_d, v_m . v_o)
-    #
-    alpha_y = (
-        vd[0] * (vm_y * vo[2] - vm_z * vo[1])
-        - vd[1] * (vm_x * vo[2] - vm_z * vo[0])
-        + vd[2] * (vm_x * vo[1] - vm_y * vo[0])
-    )
-    alpha_x = vm_x * vo[0] + vm_y * vo[1] + vm_z * vo[2]
-
-    return jnp.arctan2(alpha_y, alpha_x)

@@ -36,7 +36,6 @@ from furax.core import (
     CompositionOperator,
     IndexOperator,
 )
-from furax.math.quaternion import to_gamma_angles
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
@@ -46,6 +45,7 @@ from . import templates
 from ._logger import logger as furax_logger
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
+from .acquisition import build_acquisition_operator
 from .config import Landscapes, MapMakingConfig, Methods
 from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
@@ -268,12 +268,12 @@ class MultiObservationMapMaker(Generic[T]):
         @jax.jit
         def get_acquisition(i: int) -> AbstractLinearOperator:
             data, _padding = reader.read(i)
-            return _build_acquisition_operator(
+            return build_acquisition_operator(
                 self.landscape,
-                boresight_quaternions=data['boresight_quaternions'],
-                detector_quaternions=data['detector_quaternions'],
+                data['boresight_quaternions'],
+                data['detector_quaternions'],
+                data.get('hwp_angles'),
                 demodulated=self.config.demodulated,
-                hwp_angles=data.get('hwp_angles'),
                 pointing_chunk_size=self.config.pointing_chunk_size,
                 pointing_on_the_fly=self.config.pointing_on_the_fly,
                 dtype=dtype,
@@ -487,61 +487,6 @@ def _build_landscape(config: MapMakingConfig) -> StokesLandscape:
     if config.landscape.type == Landscapes.WCS:
         raise NotImplementedError
     raise NotImplementedError
-
-
-def _build_acquisition_operator(
-    landscape: StokesLandscape,
-    boresight_quaternions: Array,
-    detector_quaternions: Array,
-    demodulated: bool,
-    hwp_angles: Array | None,
-    pointing_chunk_size: int,
-    pointing_on_the_fly: bool,
-    dtype: DTypeLike = jnp.float64,
-) -> AbstractLinearOperator:
-    """Build an acquisition operator for a single observation. Does not include masking."""
-    if not pointing_on_the_fly:
-        raise NotImplementedError
-
-    ndet = detector_quaternions.shape[0]
-    nsamp = boresight_quaternions.shape[0]
-    data_shape = (ndet, nsamp)
-
-    # if no HWP angles are provided, we can rotate directly into the detector frame
-    # NB: in the case of demodulation, 'demod' parameter takes priority
-    pointing = PointingOperator.create(
-        landscape,
-        boresight_quaternions,
-        detector_quaternions,
-        chunk_size=pointing_chunk_size,
-        demod=demodulated,
-        frame='detector' if hwp_angles is None else 'boresight',
-    )
-
-    # demodulated case: independent I/Q/U time streams, no polarizer
-    if demodulated:
-        return pointing
-
-    # if not demodulated, we need a polarizer at the end
-    # if the telescope has no HWP, no need to rotate because already in detector frame
-    if hwp_angles is None:
-        polarizer = LinearPolarizerOperator.create(
-            shape=data_shape, dtype=dtype, stokes=landscape.stokes
-        )
-        return polarizer @ pointing
-
-    # if we get this far, that means the acquisition should include HWP modulation
-    hwp = HWPOperator.create(
-        shape=data_shape, dtype=dtype, stokes=landscape.stokes, angles=hwp_angles
-    )
-    polarizer = LinearPolarizerOperator.create(
-        shape=data_shape,
-        dtype=dtype,
-        stokes=landscape.stokes,
-        angles=to_gamma_angles(detector_quaternions)[:, None],
-    )
-    acquisition = polarizer @ hwp @ pointing
-    return acquisition.reduce()
 
 
 def _build_mask_projector(

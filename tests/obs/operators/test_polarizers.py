@@ -73,7 +73,7 @@ def test_create_direct_iqu() -> None:
     y = polarizer(x)
 
     assert as_structure(y) == polarizer.out_structure
-    expected_y = 0.5 * (x.i + np.cos(2 * angles) * x.q - np.sin(2 * angles) * x.u)
+    expected_y = 0.5 * (x.i + np.cos(2 * angles) * x.q + np.sin(2 * angles) * x.u)
     assert_allclose(y, expected_y, atol=1e-15, rtol=1e-15)
 
 
@@ -88,6 +88,6 @@ def test_create_transpose(stokes: ValidStokesType) -> None:
     expected_cls = Stokes.class_for(stokes)
     assert isinstance(y, expected_cls)
     expected_y = expected_cls.from_iquv(
-        0.5 * x, 0.5 * np.cos(2 * angles) * x, -0.5 * np.sin(2 * angles) * x, 0 * x
+        0.5 * x, 0.5 * np.cos(2 * angles) * x, 0.5 * np.sin(2 * angles) * x, 0 * x
     )
     assert equinox.tree_equal(y, expected_y, atol=1e-15, rtol=1e-15)

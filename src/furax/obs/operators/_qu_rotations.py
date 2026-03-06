@@ -1,3 +1,21 @@
+"""QU rotation operators and helper functions.
+
+Angle conventions
+-----------------
+``R(theta)`` expresses how the polarisation state (Stokes vector) of an incident beam of
+light transforms under a rotation of angle ``theta`` about the x axis. In other words,
+if a polariser or a wave plate is rotated by an angle ``theta`` from the x axis, the
+Mueller matrix ``M(theta)`` for the rotated component is
+
+    M(theta) = R(-theta) @ M @ R(theta)
+
+which encodes successively (from right to left):
+
+- the rotation of the input Stokes vector into the local frame of the component;
+- the effect of the "bare" component (in its local frame);
+- the rotation back to the original frame.
+"""
+
 import jax
 import numpy as np
 from jax import Array
@@ -20,18 +38,16 @@ from ..stokes import (
 )
 
 
-@jax.jit
-def rotate_qu(x: StokesPyTreeType, angles: Float[Array, '...']) -> StokesPyTreeType:
-    """Rotate QU Stokes parameters by the given angles (in radians).
-
-    The transpose rotation is obtained by passing ``-angles``.
-    """
+def _rotate_qu(
+    x: StokesPyTreeType,
+    cos_2angles: Float[Array, '...'],
+    sin_2angles: Float[Array, '...'],
+) -> StokesPyTreeType:
+    """Apply the QU rotation given precomputed cos(2a) and sin(2a)."""
     if isinstance(x, StokesI):
         return x
-    cos_2angles = jnp.cos(2 * angles)
-    sin_2angles = jnp.sin(2 * angles)
-    q = x.q * cos_2angles - x.u * sin_2angles
-    u = x.q * sin_2angles + x.u * cos_2angles
+    q = x.q * cos_2angles + x.u * sin_2angles
+    u = -x.q * sin_2angles + x.u * cos_2angles
     if isinstance(x, StokesQU):
         return StokesQU(q, u)
     if isinstance(x, StokesIQU):
@@ -39,6 +55,31 @@ def rotate_qu(x: StokesPyTreeType, angles: Float[Array, '...']) -> StokesPyTreeT
     if isinstance(x, StokesIQUV):
         return StokesIQUV(x.i, q, u, x.v)
     raise NotImplementedError
+
+
+@jax.jit
+def rotate_qu(x: StokesPyTreeType, angles: Float[Array, '...']) -> StokesPyTreeType:
+    """Rotate QU Stokes parameters by the given angles (in radians).
+
+    The transpose rotation is obtained by passing ``-angles``.
+    """
+    return _rotate_qu(x, jnp.cos(2 * angles), jnp.sin(2 * angles))
+
+
+@jax.jit
+def rotate_qu_cs(
+    x: StokesPyTreeType,
+    cos_angles: Float[Array, '...'],
+    sin_angles: Float[Array, '...'],
+) -> StokesPyTreeType:
+    """Rotate QU Stokes parameters given precomputed cos(a) and sin(a).
+
+    The transpose rotation is obtained by negating ``sin_angles``.
+    """
+    # double angle formulas
+    cos_2angles = cos_angles**2 - sin_angles**2
+    sin_2angles = 2 * cos_angles * sin_angles
+    return _rotate_qu(x, cos_2angles, sin_2angles)
 
 
 @orthogonal

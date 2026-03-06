@@ -5,6 +5,7 @@ from typing import Any, Generic, TypeVar
 import jax
 import jax.numpy as jnp
 import numpy as np
+from fastquat import Quaternion
 from jax import Array
 from jax.tree_util import register_static
 from jaxtyping import PyTree, UInt32
@@ -127,19 +128,19 @@ class ObservationReader(AbstractReader, Generic[T]):
             ) % (2 * jnp.pi)
         if 'detector_quaternions' in data_field_names:
             # Pad with (1, 0, 0, 0), corresponding to xi=eta=gamma=0.
-            zero_padded = jnp.linalg.norm(data['detector_quaternions'], axis=-1) == 0.0
-            data['detector_quaternions'] = jnp.where(
-                zero_padded[:, None],
-                jnp.array([[1.0, 0.0, 0.0, 0.0]]),
-                data['detector_quaternions'],
+            q = data['detector_quaternions']
+            zero_padded = q.norm() == 0.0
+            data['detector_quaternions'] = Quaternion.from_array(
+                jnp.where(zero_padded[:, None], jnp.array([[1.0, 0.0, 0.0, 0.0]]), q.wxyz)
             )
         if 'boresight_quaternions' in data_field_names:
             # Pad with the last non-zero quaternion provided.
-            pad_size = padding['boresight_quaternions'][0]  # samples axis
-            last_quaternion = data['boresight_quaternions'][-pad_size - 1, :]
-            zero_padded = jnp.linalg.norm(data['boresight_quaternions'], axis=-1) == 0.0
-            data['boresight_quaternions'] = jnp.where(
-                zero_padded[:, None], last_quaternion[None, :], data['boresight_quaternions']
+            q = data['boresight_quaternions']
+            pad_size = padding['boresight_quaternions'].wxyz[0]  # samples axis
+            last_quaternion = q.wxyz[-pad_size - 1, :]
+            zero_padded = q.norm() == 0.0
+            data['boresight_quaternions'] = Quaternion.from_array(
+                jnp.where(zero_padded[:, None], last_quaternion[None, :], q.wxyz)
             )
         if 'noise_model_fits' in data_field_names:
             default = jnp.array([[0.0, 0.0, 1.0, 0.1]])
@@ -176,8 +177,12 @@ class ObservationReader(AbstractReader, Generic[T]):
             'valid_scanning_masks': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
             'timestamps': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
             'hwp_angles': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
-            'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
-            'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), jnp.float64),
+            'detector_quaternions': Quaternion.tree_unflatten(
+                None, [jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64)]
+            ),
+            'boresight_quaternions': Quaternion.tree_unflatten(
+                None, [jax.ShapeDtypeStruct((n_samples, 4), jnp.float64)]
+            ),
             'noise_model_fits': (
                 Stokes.class_for(stokes).structure_for((n_detectors, 4), jnp.float64)
                 if demodulated

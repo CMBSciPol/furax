@@ -1,8 +1,9 @@
 import jax.numpy as jnp
+from fastquat import Quaternion
 from jaxtyping import Array, DTypeLike
 
 from furax import AbstractLinearOperator
-from furax.math.quaternion import to_gamma_angles
+from furax.math.coords import to_gamma_angles
 from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.landscapes import StokesLandscape
 
@@ -15,8 +16,8 @@ __all__ = [
 
 def build_acquisition_operator(
     landscape: StokesLandscape,
-    boresight_quaternions: Array,
-    detector_quaternions: Array,
+    boresight_quaternions: Quaternion,
+    detector_quaternions: Quaternion,
     hwp_angles: Array | None = None,
     *,
     demodulated: bool = False,

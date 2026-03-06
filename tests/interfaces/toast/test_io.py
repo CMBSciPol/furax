@@ -3,6 +3,8 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import pytest
+from equinox import tree_equal
+from fastquat import Quaternion
 
 from furax.interfaces.toast import LazyToastObservation
 from furax.mapmaking import AbstractGroundObservation, HashedObservationMetadata, ObservationReader
@@ -31,27 +33,34 @@ def test_reader_all_fields(observations) -> None:
     ndet_max, nsample_max = max(OBS_NDET), max(OBS_NSAMPLE)
 
     # check output structure is as expected
-    assert reader.out_structure == {
-        'metadata': HashedObservationMetadata(
-            uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),
-            telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),
-            detector_uids=jax.ShapeDtypeStruct((ndet_max,), dtype=jnp.uint32),
-        ),
-        'sample_data': jax.ShapeDtypeStruct((ndet_max, nsample_max), dtype=jnp.float64),
-        'valid_sample_masks': jax.ShapeDtypeStruct((ndet_max, nsample_max), dtype=jnp.bool),
-        'valid_scanning_masks': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.bool),
-        'timestamps': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
-        'hwp_angles': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
-        'detector_quaternions': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
-        'boresight_quaternions': jax.ShapeDtypeStruct((nsample_max, 4), dtype=jnp.float64),
-        'noise_model_fits': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
-    }
+    assert tree_equal(
+        reader.out_structure,
+        {
+            'metadata': HashedObservationMetadata(
+                uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),
+                telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),
+                detector_uids=jax.ShapeDtypeStruct((ndet_max,), dtype=jnp.uint32),
+            ),
+            'sample_data': jax.ShapeDtypeStruct((ndet_max, nsample_max), dtype=jnp.float64),
+            'valid_sample_masks': jax.ShapeDtypeStruct((ndet_max, nsample_max), dtype=jnp.bool),
+            'valid_scanning_masks': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.bool),
+            'timestamps': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
+            'hwp_angles': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
+            'detector_quaternions': Quaternion.tree_unflatten(
+                None, [jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64)]
+            ),
+            'boresight_quaternions': Quaternion.tree_unflatten(
+                None, [jax.ShapeDtypeStruct((nsample_max, 4), dtype=jnp.float64)]
+            ),
+            'noise_model_fits': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
+        },
+    )
 
     for i in range(len(FILES)):
         datum, padding = reader.read(i)
 
         # check structure
-        assert as_structure(datum) == reader.out_structure
+        assert tree_equal(as_structure(datum), reader.out_structure)
 
         # check padding consistency
         ndet, nsample = OBS_NDET[i], OBS_NSAMPLE[i]
@@ -63,8 +72,8 @@ def test_reader_all_fields(observations) -> None:
         assert padding['valid_scanning_masks'] == (nsample_max - nsample,)
         assert padding['timestamps'] == (nsample_max - nsample,)
         assert padding['hwp_angles'] == (nsample_max - nsample,)
-        assert padding['detector_quaternions'] == (ndet_max - ndet, 0)
-        assert padding['boresight_quaternions'] == (nsample_max - nsample, 0)
+        assert padding['detector_quaternions'].wxyz == (ndet_max - ndet, 0)
+        assert padding['boresight_quaternions'].wxyz == (nsample_max - nsample, 0)
         assert padding['noise_model_fits'] == (ndet_max - ndet, 0)
 
 

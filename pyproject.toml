@@ -26,6 +26,7 @@ license = { file = 'LICENSE' }
 dependencies = [
     'astropy',
     'equinox',
+    'fastquat>=0.5.2',
     'healpy>=0.18.1',
     'jax>=0.4.38,!=0.7.*',
     'jaxtyping',
@@ -92,6 +93,7 @@ module = [
     'apischema',
     'astropy.*',
     'cyclopts',
+    'fastquat',
     'healpy',
     'jax_grid_search',
     'jax_healpy',

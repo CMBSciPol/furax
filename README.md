@@ -1,5 +1,10 @@
 # Furax
 
+[![PyPI version](https://badge.fury.io/py/furax.svg)](https://badge.fury.io/py/furax)
+[![Documentation Status](https://readthedocs.org/projects/furax/badge/?version=latest)](https://jax-healpy.readthedocs.io/en/latest/?badge=latest)
+[![CI](https://github.com/CMBSciPol/furax/actions/workflows/ci.yml/badge.svg)](https://github.com/CMBSciPol/furax/actions/workflows/ci.yml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 Furax: a Framework for Unified and Robust data Analysis with JAX.
 
 This framework provides building blocks for solving inverse problems, in particular in the astrophysical and cosmological domains.

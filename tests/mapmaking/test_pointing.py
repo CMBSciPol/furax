@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 from equinox import tree_equal
+from fastquat import Quaternion
 from jax.tree_util import register_static
 
 from furax.mapmaking.pointing import PointingOperator
@@ -34,12 +35,6 @@ def _make_landscape(landscape_type: str, stokes: ValidStokesType) -> StokesLands
     return CARStokesLandscape((5, 3), stokes)
 
 
-def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
-    """Generate random unit quaternions."""
-    q = jax.random.normal(key, (*shape, 4))
-    return q / jnp.linalg.norm(q, axis=-1, keepdims=True)
-
-
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
 @pytest.mark.parametrize('frame', ['boresight', 'detector'])
 def test_as_expanded_operator_mv(stokes, frame, landscape_type) -> None:
@@ -48,8 +43,8 @@ def test_as_expanded_operator_mv(stokes, frame, landscape_type) -> None:
 
     key = jax.random.PRNGKey(42)
     key1, key2, key3 = jax.random.split(key, 3)
-    qbore = _random_unit_quats(key1, (NSAMP,))
-    qdet = _random_unit_quats(key2, (NDET,))
+    qbore = Quaternion.random(key1, (NSAMP,))
+    qdet = Quaternion.random(key2, (NDET,))
 
     pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, chunk_size=2)
     sky = landscape.normal(key3)
@@ -68,8 +63,8 @@ def test_as_expanded_operator_transpose_mv(stokes, frame, landscape_type) -> Non
 
     key = jax.random.PRNGKey(42)
     key1, key2, key3 = jax.random.split(key, 3)
-    qbore = _random_unit_quats(key1, (NSAMP,))
-    qdet = _random_unit_quats(key2, (NDET,))
+    qbore = Quaternion.random(key1, (NSAMP,))
+    qdet = Quaternion.random(key2, (NDET,))
 
     pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, chunk_size=2)
     tod = pointing_op.out_structure

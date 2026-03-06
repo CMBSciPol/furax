@@ -1,18 +1,19 @@
 import jax
 import jax.numpy as jnp
+from fastquat import Quaternion
+from furax.math.quaternion import to_gamma_angles, to_polarization_angle
 from numpy.testing import assert_allclose
 
 from furax.mapmaking.acquisition import build_acquisition_operator
-from furax.math.quaternion import qmul, to_gamma_angles, to_polarization_angle
 from furax.obs.landscapes import HealpixLandscape
 
 NSIDE = 4
 NDET, NSAMP = 3, 10
 
 
-def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
+def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> Quaternion:
     q = jax.random.normal(key, (*shape, 4))
-    return q / jnp.linalg.norm(q, axis=-1, keepdims=True)
+    return Quaternion.from_array(q / jnp.linalg.norm(q, axis=-1, keepdims=True))
 
 
 def test_no_hwp_acquisition_formula() -> None:
@@ -29,7 +30,9 @@ def test_no_hwp_acquisition_formula() -> None:
     tod = acq(sky)
 
     # Reference: sample pixels and apply polarization angle formula directly
-    qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
+    qdet_full = Quaternion.from_array(qbore.wxyz[None, :, :]) * Quaternion.from_array(
+        qdet.wxyz[:, None, :]
+    )  # (ndet, nsamp)
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     indices = landscape.quat2index(qdet_full)  # (ndet, nsamp)
 
@@ -55,7 +58,9 @@ def test_no_hwp_acquisition_transpose_formula() -> None:
     sky = acq.T(tod)
 
     # Reference: scatter TOD into sky weighted by polarization angle
-    qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
+    qdet_full = Quaternion.from_array(qbore.wxyz[None, :, :]) * Quaternion.from_array(
+        qdet.wxyz[:, None, :]
+    )  # (ndet, nsamp)
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     flat_indices = landscape.quat2index(qdet_full).ravel()
     d = tod.ravel()
@@ -94,7 +99,9 @@ def test_hwp_acquisition_formula() -> None:
     acq = build_acquisition_operator(landscape, qbore, qdet, hwp_angles=hwp_angles)
     tod = acq(sky)
 
-    qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
+    qdet_full = Quaternion.from_array(qbore.wxyz[None, :, :]) * Quaternion.from_array(
+        qdet.wxyz[:, None, :]
+    )  # (ndet, nsamp)
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     indices = landscape.quat2index(qdet_full)  # (ndet, nsamp)
     gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)
@@ -125,7 +132,9 @@ def test_hwp_acquisition_transpose_formula() -> None:
     acq = build_acquisition_operator(landscape, qbore, qdet, hwp_angles=hwp_angles)
     sky = acq.T(tod)
 
-    qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
+    qdet_full = Quaternion.from_array(qbore.wxyz[None, :, :]) * Quaternion.from_array(
+        qdet.wxyz[:, None, :]
+    )  # (ndet, nsamp)
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     flat_indices = landscape.quat2index(qdet_full).ravel()
     gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)

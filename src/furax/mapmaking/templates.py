@@ -4,6 +4,7 @@ from typing import Any
 
 import jax
 import numpy as np
+from fastquat import Quaternion
 from jax import Array
 from jax import numpy as jnp
 from jaxtyping import DTypeLike, Float, Inexact, Int, PyTree
@@ -11,7 +12,7 @@ from numpy.typing import NDArray
 
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
-from furax.math import quaternion
+from furax.math.coords import from_lonlat_angles, to_lonlat_angles, to_xieta_angles
 from furax.obs import HWPOperator, LinearPolarizerOperator
 from furax.obs.landscapes import HorizonLandscape
 from furax.obs.stokes import ValidStokesType
@@ -799,7 +800,7 @@ class GroundTemplateOperator(TemplateOperator):
         boresight_azimuth: Float[Array, ' samps'],
         boresight_elevation: Float[Array, ' samps'],
         boresight_rotation: Float[Array, ' samps'],
-        detector_quaternions: Float[Array, 'dets 4'],
+        detector_quaternions: Quaternion,
         hwp_angles: Float[Array, ' samps'],
         stokes: ValidStokesType,
         dtype: DTypeLike,
@@ -821,10 +822,10 @@ class GroundTemplateOperator(TemplateOperator):
             horizon_landscape = landscape
 
         # Azimuth increases in an opposite way to longitude
-        boresight_quaternions = quaternion.from_lonlat_angles(
+        boresight_quaternions = from_lonlat_angles(
             -boresight_azimuth, boresight_elevation, boresight_rotation
         )
-        _, _, det_gamma = quaternion.to_xieta_angles(detector_quaternions)
+        _, _, det_gamma = to_xieta_angles(detector_quaternions)
 
         n_dets = detector_quaternions.shape[0]
         n_samps = boresight_azimuth.size
@@ -859,7 +860,7 @@ class GroundTemplateOperator(TemplateOperator):
         elevation_resolution: float,
         boresight_azimuth: Float[Array, ' samps'],
         boresight_elevation: Float[Array, ' samps'],
-        detector_quaternions: Float[Array, 'dets 4'],
+        detector_quaternions: Quaternion,
         stokes: ValidStokesType,
         dtype: DTypeLike,
     ) -> HorizonLandscape:
@@ -868,13 +869,9 @@ class GroundTemplateOperator(TemplateOperator):
         az_grid = jnp.linspace(jnp.min(boresight_azimuth), jnp.max(boresight_azimuth), n_grid)
         el_grid = jnp.linspace(jnp.min(boresight_elevation), jnp.max(boresight_elevation), n_grid)
         az_mesh, el_mesh = jnp.meshgrid(az_grid, el_grid, indexing='ij')
-        qbore_mesh = quaternion.from_lonlat_angles(
-            -az_mesh, el_mesh, jnp.zeros_like(az_mesh)
-        )  # (ndet,N_GRID,N_GRID,4)
-        qfull_mesh = quaternion.qmul(
-            qbore_mesh[None, :, :, :], detector_quaternions[:, None, None, :]
-        )
-        det_az_mesh, det_el_mesh, _ = quaternion.to_lonlat_angles(qfull_mesh)
+        qmesh = from_lonlat_angles(-az_mesh, el_mesh, 0)  # (N_GRID, N_GRID)
+        qfull_mesh = qmesh.reshape((1, *qmesh.shape)) * detector_quaternions.reshape((-1, 1, 1))
+        det_az_mesh, det_el_mesh, _ = to_lonlat_angles(qfull_mesh)
         det_az_mesh = -det_az_mesh
 
         # Azimuth angle is first restricted to to [0,2pi),

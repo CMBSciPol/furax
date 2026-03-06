@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import litebird_sim as lbs
 import numpy as np
 from astropy import wcs
+from fastquat import Quaternion
 from jaxtyping import Array, Bool, Float
 
 from furax.mapmaking import AbstractLazyObservation, AbstractSatelliteObservation
@@ -101,16 +102,18 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
             f0=jnp.array(self.data.fmin_hz),
         )
 
-    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+    def get_boresight_quaternions(self) -> Quaternion:
         # TODO: coordinate system
         #
         # interpolate to the actual sampling rate
         qbore = self.data.pointing_provider.bore2ecliptic_quats
         qbore_full = qbore.slerp(self.data.start_time, self.sample_rate, self.n_samples)
-        return jnp.array(qbore_full, dtype=jnp.float64)
+        return Quaternion.from_array(jnp.array(qbore_full, dtype=jnp.float64))
 
-    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
-        return jnp.concatenate([q.quats for q in self.data.quat], dtype=jnp.float64)
+    def get_detector_quaternions(self) -> Quaternion:
+        return Quaternion.from_array(
+            jnp.concatenate([q.quats for q in self.data.quat], dtype=jnp.float64)
+        )
 
 
 class LazyLBSObservation(AbstractLazyObservation[lbs.Observation]):

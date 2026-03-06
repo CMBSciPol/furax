@@ -65,7 +65,7 @@ toast = [
     'toast>=3.0.0a42',
 ]
 lbs = [
-    'litebird_sim @ git+https://github.com/litebird/litebird_sim.git',
+    'litebird_sim>=0.16.1',
 ]
 interfaces = ["furax[so,toast,lbs]"]
 

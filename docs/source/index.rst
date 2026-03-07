@@ -1,7 +1,8 @@
 Furax Documentation
 ====================
 
-**Furax** is a Framework for Unified and Robust data Analysis with JAX, providing building blocks for solving inverse problems in astrophysical and cosmological domains. It focuses on Cosmic Microwave Background (CMB) analysis with two main components:
+**Furax** is a Framework for Unified and Robust data Analysis with JAX, providing building blocks for solving inverse problems in astrophysical and cosmological domains.
+It focuses on Cosmic Microwave Background (CMB) analysis with two main components:
 
 1. **Linear Operators** (``furax.core``): Composable linear algebra operators built on top of JAX and Lineax
 2. **Stokes Parameters & Landscapes** (``furax.obs``): Data structures for CMB polarization analysis
@@ -28,39 +29,49 @@ Install Furax with:
 
    pip install furax
 
-For development or component separation features:
+Optional extras are available for additional features:
 
 .. code-block:: bash
 
-   # Development installation
-   pip install -e .[dev]
+   # Component separation (adds PySM3)
+   pip install furax[comp_sep]
 
-   # With component separation features
-   pip install -e .[comp_sep]
+   # Mapmaking utilities
+   pip install furax[mapmaking]
+
+   # Instrument interfaces (SO, TOAST, LiteBIRD)
+   pip install furax[interfaces]
+
+For development:
+
+.. code-block:: bash
+
+   git clone https://github.com/CMBSciPol/furax.git
+   cd furax
+   pip install -e .[dev]
 
 Quick Example
 -------------
 
 .. code-block:: python
 
-   import jax
    import jax.numpy as jnp
-   from furax.obs import HealpixLandscape, Stokes
-   from furax.core import DiagonalOperator
+   import jax.random as jr
+   from furax import DiagonalOperator
+   from furax.obs.landscapes import HealpixLandscape
 
    # Create a HEALPix landscape for polarization data
    landscape = HealpixLandscape(nside=32, stokes='QU')
 
    # Generate random Stokes parameters
-   key = jax.random.PRNGKey(42)
-   stokes_data = landscape.normal(key)
+   stokes_data = landscape.normal(jr.key(42))
 
    # Create a diagonal operator for weighting
    weights = jnp.ones(landscape.size)
-   weight_op = DiagonalOperator(weights)
+   weight_op = DiagonalOperator(weights, in_structure=landscape.structure)
 
    # Apply the operator
-   weighted_data = weight_op @ stokes_data
+   weighted_data = weight_op(stokes_data)
 
 Table of Contents
 -----------------
@@ -86,7 +97,6 @@ Table of Contents
 
    api/data_structures
    api/operators
-   api/index
 
 .. toctree::
    :maxdepth: 1

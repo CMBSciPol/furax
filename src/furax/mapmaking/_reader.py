@@ -248,11 +248,11 @@ class ObservationReader(AbstractReader, Generic[T]):
         return {field: field_reader[field](data) for field in data_field_names}
 
 
-def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[np.ndarray, '...']:
+def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[Array, '...']:
     """Converts names to unsigned 32-bit integers using hashing.
 
     This is typically used to generate deterministic uids for detectors based on their names.
     """
     # hashing + converting to int + keeping only 7 bytes
     name_to_int = np.vectorize(lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0xEFFFFFFF)
-    return name_to_int(names).astype(np.uint32)  # type: ignore[no-any-return]
+    return jnp.asarray(name_to_int(names), dtype=jnp.uint32)

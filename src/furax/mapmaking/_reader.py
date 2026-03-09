@@ -50,7 +50,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         requested_fields: list[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
-        dtype: DTypeLike = jnp.float32,
+        tod_dtype: DTypeLike = jnp.float32,
     ) -> None:
         """Initializes the reader with a list of filenames and optional list of field names.
 
@@ -63,7 +63,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         """
         self.demodulated = demodulated
         self.stokes = stokes
-        self.dtype = dtype
+        self.tod_dtype = tod_dtype
         interface = observations[0].interface_class
         available = set(interface.AVAILABLE_READER_FIELDS)
         optional = set(interface.OPTIONAL_READER_FIELDS)
@@ -157,17 +157,13 @@ class ObservationReader(AbstractReader, Generic[T]):
         return data, padding
 
     def _get_data_field_structures_for(
-        self, n_detectors: int, n_samples: int
+        self, tod_shape: tuple[int, ...]
     ) -> PyTree[jax.ShapeDtypeStruct]:
-        demodulated = self.demodulated
-        stokes = self.stokes
-        dtype = self.dtype
-
-        tod_shape = (n_detectors, n_samples)
+        n_detectors, n_samples = tod_shape
         sample_data_structure = (
-            Stokes.class_for(stokes).structure_for(tod_shape, dtype)
-            if demodulated
-            else jax.ShapeDtypeStruct(tod_shape, dtype)
+            Stokes.class_for(self.stokes).structure_for(tod_shape, self.tod_dtype)
+            if self.demodulated
+            else jax.ShapeDtypeStruct(tod_shape, self.tod_dtype)
         )
 
         return {
@@ -184,8 +180,8 @@ class ObservationReader(AbstractReader, Generic[T]):
             'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
             'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), jnp.float64),
             'noise_model_fits': (
-                Stokes.class_for(stokes).structure_for((n_detectors, 4), jnp.float64)
-                if demodulated
+                Stokes.class_for(self.stokes).structure_for((n_detectors, 4), jnp.float64)
+                if self.demodulated
                 else jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64)
             ),
         }
@@ -198,20 +194,16 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         def get_metadata(obs: AbstractObservation[T]) -> HashedObservationMetadata:
             return HashedObservationMetadata(
-                uid=jnp.asarray(_names_to_uids(obs.name)),
-                telescope_uid=jnp.asarray(_names_to_uids(obs.telescope)),
-                detector_uids=jnp.asarray(_names_to_uids(obs.detectors)),
+                uid=_names_to_uids(obs.name),
+                telescope_uid=_names_to_uids(obs.telescope),
+                detector_uids=_names_to_uids(obs.detectors),
             )
 
-        demodulated = self.demodulated
-        stokes = self.stokes
-        dtype = self.dtype
-
         def get_sample_data(obs: AbstractObservation[T]) -> Any:
-            if demodulated:
-                return obs.get_demodulated_tods(stokes=stokes, dtype=dtype)
+            if self.demodulated:
+                return obs.get_demodulated_tods(stokes=self.stokes, dtype=self.tod_dtype)
             else:
-                return obs.get_tods(dtype=dtype)
+                return obs.get_tods(dtype=self.tod_dtype)
 
         return {
             'metadata': lambda obs: get_metadata(obs),
@@ -223,8 +215,8 @@ class ObservationReader(AbstractReader, Generic[T]):
             'detector_quaternions': lambda obs: obs.get_detector_quaternions(),
             'boresight_quaternions': lambda obs: obs.get_boresight_quaternions(),
             'noise_model_fits': (
-                (lambda obs: obs.get_demodulated_noise_models(stokes=stokes))
-                if demodulated
+                (lambda obs: obs.get_demodulated_noise_models(stokes=self.stokes))
+                if self.demodulated
                 else (lambda obs: if_none_raise_error(obs.get_noise_model()).to_array())
             ),
         }
@@ -237,12 +229,8 @@ class ObservationReader(AbstractReader, Generic[T]):
         data = observation.get_data([])
 
         # find the data shape
-        n_detectors = data.n_detectors
-        n_samples = data.n_samples
-
-        field_structure = self._get_data_field_structures_for(
-            n_detectors=n_detectors, n_samples=n_samples
-        )
+        tod_shape = (data.n_detectors, data.n_samples)
+        field_structure = self._get_data_field_structures_for(tod_shape)
         return {field: field_structure[field] for field in data_field_names}
 
     def _read_data_impure(

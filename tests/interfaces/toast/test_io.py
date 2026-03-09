@@ -29,7 +29,7 @@ def test_reader_all_fields(observations, dtype) -> None:
     reader = ObservationReader(
         observations,
         requested_fields=AbstractGroundObservation.AVAILABLE_READER_FIELDS,
-        dtype=dtype,
+        tod_dtype=dtype,
     )
     ndet_max, nsample_max = max(OBS_NDET), max(OBS_NSAMPLE)
 

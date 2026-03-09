@@ -121,7 +121,7 @@ def qrot_zaxis(q: Quat) -> Vec3:
     w, x, y, z = q
     n = jnp.sum(q**2)
     s = jnp.where(n > 1e-8, 2 / n, 0)
-    return jnp.array([0, 0, 1]) + s * jnp.array([x * z + w * y, y * z - w * x, -x * x - y * y])
+    return jnp.stack([s * (x * z + w * y), s * (y * z - w * x), 1 - s * (x * x + y * y)])
 
 
 @jit
@@ -131,7 +131,7 @@ def qrot_xaxis(q: Quat) -> Vec3:
     w, x, y, z = q
     n = jnp.sum(q**2)
     s = jnp.where(n > 1e-8, 2 / n, 0)
-    return jnp.array([1, 0, 0]) + s * jnp.array([-y * y - z * z, x * y + w * z, x * z - w * y])
+    return jnp.stack([1 - s * (y * y + z * z), s * (x * y + w * z), s * (x * z - w * y)])
 
 
 def unstack_angles(angles: Ang3) -> tuple[Ang, Ang, Ang]:

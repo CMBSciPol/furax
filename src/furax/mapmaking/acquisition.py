@@ -22,7 +22,7 @@ def build_acquisition_operator(
     demodulated: bool = False,
     pointing_on_the_fly: bool = True,
     pointing_chunk_size: int = 16,
-    dtype: DTypeLike = jnp.float32,
+    tod_dtype: DTypeLike = jnp.float32,
 ) -> AbstractLinearOperator:
     """Build an acquisition operator for a single observation. Does not include masking."""
     # The TOD shape
@@ -40,13 +40,14 @@ def build_acquisition_operator(
         frame='boresight' if has_hwp else 'detector',
     )
     if not pointing_on_the_fly:
+        # as_expanded_operator() will raise ValueError if landscape.dtype != float64
         pointing = pointing.as_expanded_operator()  # type: ignore[assignment]
 
     # If there is no HWP, we just add a polarizer at the end
     # NB: already in detector frame at this point
     polarizer = LinearPolarizerOperator.create(
         shape=data_shape,
-        dtype=dtype,
+        dtype=tod_dtype,
         stokes=landscape.stokes,
     )
     if not has_hwp:
@@ -56,7 +57,7 @@ def build_acquisition_operator(
     gamma = to_gamma_angles(detector_quaternions)[:, None]
     rot = QURotationOperator.create(
         data_shape,
-        dtype,
+        tod_dtype,
         landscape.stokes,
         angles=gamma,
     )
@@ -69,7 +70,7 @@ def build_acquisition_operator(
     # In the general case, we include polarizer and HWP
     hwp = HWPOperator.create(
         shape=data_shape,
-        dtype=dtype,
+        dtype=tod_dtype,
         stokes=landscape.stokes,
         angles=hwp_angles,
     )

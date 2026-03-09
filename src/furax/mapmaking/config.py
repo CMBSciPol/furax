@@ -219,5 +219,5 @@ class MapMakingConfig:
         return (self.templates is not None) and (not self.templates.empty)
 
     @property
-    def dtype(self) -> DTypeLike:
+    def tod_dtype(self) -> DTypeLike:
         return jnp.float64 if self.double_precision else jnp.float32  # type: ignore[no-any-return]

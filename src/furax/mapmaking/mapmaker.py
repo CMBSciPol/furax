@@ -132,7 +132,7 @@ class MultiObservationMapMaker(Generic[T]):
             requested_fields=data_field_names,
             demodulated=self.config.demodulated,
             stokes=self.config.stokes,
-            tod_dtype=self.config.dtype,
+            tod_dtype=self.config.tod_dtype,
         )
 
     def make_maps(self) -> MapMakingResults:
@@ -264,7 +264,7 @@ class MultiObservationMapMaker(Generic[T]):
             # FIXME: this does not handle the case of a telescope without HWP
             required_fields.append('hwp_angles')
         reader = self.get_reader(required_fields)
-        dtype = self.config.dtype
+        dtype = self.config.tod_dtype
 
         @jax.jit
         def get_acquisition(i: int) -> AbstractLinearOperator:
@@ -277,7 +277,7 @@ class MultiObservationMapMaker(Generic[T]):
                 demodulated=self.config.demodulated,
                 pointing_chunk_size=self.config.pointing_chunk_size,
                 pointing_on_the_fly=self.config.pointing_on_the_fly,
-                dtype=dtype,
+                tod_dtype=dtype,
             )
 
         return jax.tree.map(get_acquisition, list(range(reader.count)))  # type: ignore[no-any-return]
@@ -480,11 +480,7 @@ def _hwp_frequency(timestamps: Float[Array, '...'], hwp_angles: Float[Array, '..
 
 def _build_landscape(config: MapMakingConfig) -> StokesLandscape:
     if config.landscape.type == Landscapes.HPIX:
-        return HealpixLandscape(
-            nside=config.landscape.nside,
-            stokes=config.stokes,
-            dtype=config.dtype,
-        )
+        return HealpixLandscape(nside=config.landscape.nside, stokes=config.stokes)
     if config.landscape.type == Landscapes.WCS:
         raise NotImplementedError
     raise NotImplementedError
@@ -581,11 +577,11 @@ class MapMaker:
             wcs_shape, wcs_kernel = observation.get_wcs_shape_and_kernel(
                 resolution=self.config.landscape.resolution, projection='car'
             )
-            return WCSLandscape(wcs_shape, wcs_kernel, stokes=stokes, dtype=self.config.dtype)
+            return WCSLandscape(wcs_shape, wcs_kernel, stokes=stokes, dtype=self.config.tod_dtype)
 
         if self.config.landscape.type == Landscapes.HPIX:
             return HealpixLandscape(
-                nside=self.config.landscape.nside, stokes=stokes, dtype=self.config.dtype
+                nside=self.config.landscape.nside, stokes=stokes, dtype=self.config.tod_dtype
             )
 
         raise TypeError('Landscape type not supported')
@@ -607,6 +603,11 @@ class MapMaker:
             return pointing
 
         else:
+            if landscape.dtype != jnp.float64:
+                raise ValueError(
+                    'The expanded pointing operator only supports float64. '
+                    'Use pointing_on_the_fly=True for single-precision support.'
+                )
             pixel_inds, spin_ang = observation.get_pointing_and_spin_angles(landscape)
             point_ang = spin_ang + det_off_ang[:, None]
 
@@ -642,15 +643,17 @@ class MapMaker:
             meta = {
                 'shape': (observation.n_detectors, observation.n_samples),
                 'stokes': landscape.stokes,
-                'dtype': self.config.dtype,
+                'dtype': self.config.tod_dtype,
             }
             polarizer = LinearPolarizerOperator.create(
                 **meta,  # type: ignore[arg-type]
-                angles=observation.get_detector_offset_angles().astype(self.config.dtype)[:, None],
+                angles=observation.get_detector_offset_angles().astype(self.config.tod_dtype)[
+                    :, None
+                ],
             )
             hwp = HWPOperator.create(
                 **meta,  # type: ignore[arg-type]
-                angles=observation.get_hwp_angles().astype(self.config.dtype),
+                angles=observation.get_hwp_angles().astype(self.config.tod_dtype),
             )
 
             return (polarizer @ hwp @ pointing).reduce()
@@ -662,14 +665,14 @@ class MapMaker:
         of the given TOD of shape (ndets, nsamps).
         """
         in_structure = ShapeDtypeStruct(
-            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
+            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.tod_dtype
         )
         if not self.config.scanning_mask:
             return IdentityOperator(in_structure=in_structure)
 
         mask = observation.get_scanning_mask()
         out_structure = ShapeDtypeStruct(
-            shape=(observation.n_detectors, np.sum(mask)), dtype=self.config.dtype
+            shape=(observation.n_detectors, np.sum(mask)), dtype=self.config.tod_dtype
         )
         masker = IndexOperator(
             (slice(None), jnp.array(mask)),
@@ -685,7 +688,7 @@ class MapMaker:
         of the given TOD (of shape (ndets, nsamps)) to zero.
         """
         structure = ShapeDtypeStruct(
-            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
+            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.tod_dtype
         )
         if not self.config.scanning_mask:
             return IdentityOperator(in_structure=structure)
@@ -701,7 +704,7 @@ class MapMaker:
         zero at masked (flagged) samples.
         """
         structure = ShapeDtypeStruct(
-            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
+            shape=(observation.n_detectors, observation.n_samples), dtype=self.config.tod_dtype
         )
         if not self.config.sample_mask:
             return IdentityOperator(in_structure=structure)
@@ -793,7 +796,7 @@ class MapMaker:
                 intervals=observation.get_scanning_intervals(),
                 times=observation.get_elapsed_times(),
                 n_dets=observation.n_detectors,
-                dtype=config.dtype,
+                dtype=config.tod_dtype,
             )
         if sss := config.templates.scan_synchronous:
             blocks['scan_synchronous'] = templates.ScanSynchronousTemplateOperator.create(
@@ -801,14 +804,14 @@ class MapMaker:
                 max_poly_order=sss.max_poly_order,
                 azimuth=jnp.array(observation.get_azimuth()),
                 n_dets=observation.n_detectors,
-                dtype=config.dtype,
+                dtype=config.tod_dtype,
             )
         if hwpss := config.templates.hwp_synchronous:
             blocks['hwp_synchronous'] = templates.HWPSynchronousTemplateOperator.create(
                 n_harmonics=hwpss.n_harmonics,
                 hwp_angles=observation.get_hwp_angles(),
                 n_dets=observation.n_detectors,
-                dtype=config.dtype,
+                dtype=config.tod_dtype,
             )
         if azhwpss := config.templates.azhwp_synchronous:
             if azhwpss.split_scans:
@@ -819,7 +822,7 @@ class MapMaker:
                         azimuth=observation.get_azimuth(),
                         hwp_angles=observation.get_hwp_angles(),
                         n_dets=observation.n_detectors,
-                        dtype=config.dtype,
+                        dtype=config.tod_dtype,
                         scan_mask=observation.get_left_scan_mask(),
                     )
                 )
@@ -830,7 +833,7 @@ class MapMaker:
                         azimuth=observation.get_azimuth(),
                         hwp_angles=observation.get_hwp_angles(),
                         n_dets=observation.n_detectors,
-                        dtype=config.dtype,
+                        dtype=config.tod_dtype,
                         scan_mask=observation.get_right_scan_mask(),
                     )
                 )
@@ -842,7 +845,7 @@ class MapMaker:
                         azimuth=observation.get_azimuth(),
                         hwp_angles=observation.get_hwp_angles(),
                         n_dets=observation.n_detectors,
-                        dtype=config.dtype,
+                        dtype=config.tod_dtype,
                     )
                 )
         if binazhwpss := config.templates.binazhwp_synchronous:
@@ -855,7 +858,7 @@ class MapMaker:
                     azimuth=observation.get_azimuth(),
                     hwp_angles=observation.get_hwp_angles(),
                     n_dets=observation.n_detectors,
-                    dtype=config.dtype,
+                    dtype=config.tod_dtype,
                 )
             )
         if ground := config.templates.ground:
@@ -866,7 +869,7 @@ class MapMaker:
                 boresight_elevation=observation.get_elevation(),
                 detector_quaternions=observation.get_detector_quaternions(),
                 stokes='IQU',
-                dtype=config.dtype,
+                dtype=config.tod_dtype,
             )
             ground_op = templates.GroundTemplateOperator.create(
                 azimuth_resolution=ground.azimuth_resolution,
@@ -877,7 +880,7 @@ class MapMaker:
                 detector_quaternions=observation.get_detector_quaternions(),
                 hwp_angles=observation.get_hwp_angles(),
                 stokes='IQU',
-                dtype=config.dtype,
+                dtype=config.tod_dtype,
                 landscape=self._ground_landscape,
                 chunk_size=config.pointing_chunk_size,
             )
@@ -911,7 +914,7 @@ class BinnedMapMaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'Binned Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = observation.get_tods().astype(config.tod_dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation, stokes='IQU')
 
@@ -986,7 +989,7 @@ class MLMapmaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'ML Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = observation.get_tods().astype(config.tod_dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation, stokes='IQU')
 
@@ -1207,7 +1210,7 @@ class TwoStepMapmaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'Two-Step Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = observation.get_tods().astype(config.tod_dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation, stokes='IQU')
 
@@ -1343,7 +1346,7 @@ class ATOPMapMaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'ATOP Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = observation.get_tods().astype(config.tod_dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation, stokes='QU')
 

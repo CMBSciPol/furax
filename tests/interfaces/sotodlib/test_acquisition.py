@@ -52,7 +52,7 @@ def test_acquisition_no_hwp_vs_sotodlib():
         obs.get_detector_quaternions(),
         hwp_angles=None,
         pointing_on_the_fly=True,
-        dtype=jnp.float64,
+        tod_dtype=jnp.float64,
     )
 
     tods = obs.get_tods(dtype=jnp.float64)

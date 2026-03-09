@@ -668,14 +668,11 @@ def asoperator(
         def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
             return partial_func(x)
 
-        def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-            return in_structure
-
     if not hasattr(func, 'lower'):
         func = jax.jit(func)
     partial_func = Partial(func, **keywords)
     _check_params(partial_func)
-    return Operator()
+    return Operator(in_structure=in_structure)
 
 
 def _check_params(func: Callable[..., Any]) -> None:

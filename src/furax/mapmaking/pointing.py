@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import jit, lax
-from jaxtyping import Array, DTypeLike, Float, PyTree
+from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import IndexOperator, RavelOperator, TransposeOperator
@@ -51,14 +51,13 @@ class PointingOperator(AbstractLinearOperator):
         *,
         chunk_size: int = 16,
         frame: Literal['boresight', 'detector'] = 'boresight',
-        tod_dtype: DTypeLike = jnp.float32,
     ) -> 'PointingOperator':
         # Explicitly determine the output structure
         ndet = detector_quaternions.shape[0]
         nsamp = boresight_quaternions.shape[0]
 
         stokes_cls = Stokes.class_for(landscape.stokes)
-        out_structure = stokes_cls.structure_for((ndet, nsamp), dtype=tod_dtype)
+        out_structure = stokes_cls.structure_for((ndet, nsamp), dtype=landscape.dtype)
 
         # In boresight frame, strip the z-rotation (gamma) from each detector quaternion.
         # This absorbs the frame correction into qdet so that _get_cos_sin_angles always
@@ -103,9 +102,7 @@ class PointingOperator(AbstractLinearOperator):
             cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
 
             # Do all the arithmetic in double precision but cast to the required dtype at the end
-            tod = rotate_qu_cs(tod, cos_angles, sin_angles)
-            dtype = self.out_structure.dtype
-            return jax.tree.map(lambda x: x.astype(dtype), tod)  # type: ignore[no-any-return]
+            return rotate_qu_cs(tod, cos_angles, sin_angles)  # type: ignore[no-any-return]
 
         # Loop over chunks of detectors
         ndet, nsamp = self.out_structure.shape
@@ -141,16 +138,7 @@ class PointingOperator(AbstractLinearOperator):
         """Return the equivalent QURotationOperator @ IndexOperator @ RavelOperator.
 
         Equivalent to mv() but as an explicit composition, useful for testing.
-
-        Raises:
-            ValueError: If the landscape dtype is not float64. Single-precision is only
-                supported by the on-the-fly operator, which can cast angles at the end of mv().
         """
-        if self.out_structure.dtype != jnp.float64:
-            raise ValueError(
-                'The expanded pointing operator only supports float64. '
-                'Use pointing_on_the_fly=True for single-precision support.'
-            )
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
         indices = self.landscape.quat2index(qdet_full)
         # this takes care of multi-dimensional landscapes
@@ -189,8 +177,6 @@ class PointingTransposeOperator(TransposeOperator):
             # Rotate back to the celestial frame with the inverse rotation
             cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
             rotated = rotate_qu_cs(xchunk, cos_angles, -sin_angles)
-
-            # dtype is handled inside this method
             return self._point(rotated, indices)
 
         # Loop over chunks of detectors

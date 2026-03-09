@@ -264,7 +264,6 @@ class MultiObservationMapMaker(Generic[T]):
             # FIXME: this does not handle the case of a telescope without HWP
             required_fields.append('hwp_angles')
         reader = self.get_reader(required_fields)
-        dtype = self.config.tod_dtype
 
         @jax.jit
         def get_acquisition(i: int) -> AbstractLinearOperator:
@@ -277,7 +276,6 @@ class MultiObservationMapMaker(Generic[T]):
                 demodulated=self.config.demodulated,
                 pointing_chunk_size=self.config.pointing_chunk_size,
                 pointing_on_the_fly=self.config.pointing_on_the_fly,
-                tod_dtype=dtype,
             )
 
         return jax.tree.map(get_acquisition, list(range(reader.count)))  # type: ignore[no-any-return]
@@ -479,8 +477,9 @@ def _hwp_frequency(timestamps: Float[Array, '...'], hwp_angles: Float[Array, '..
 
 
 def _build_landscape(config: MapMakingConfig) -> StokesLandscape:
+    dtype = jnp.float64
     if config.landscape.type == Landscapes.HPIX:
-        return HealpixLandscape(nside=config.landscape.nside, stokes=config.stokes)
+        return HealpixLandscape(config.landscape.nside, config.stokes, dtype=dtype)
     if config.landscape.type == Landscapes.WCS:
         raise NotImplementedError
     raise NotImplementedError
@@ -603,11 +602,6 @@ class MapMaker:
             return pointing
 
         else:
-            if landscape.dtype != jnp.float64:
-                raise ValueError(
-                    'The expanded pointing operator only supports float64. '
-                    'Use pointing_on_the_fly=True for single-precision support.'
-                )
             pixel_inds, spin_ang = observation.get_pointing_and_spin_angles(landscape)
             point_ang = spin_ang + det_off_ang[:, None]
 
@@ -640,20 +634,18 @@ class MapMaker:
         if self.config.demodulated:
             return pointing
         else:
-            meta = {
-                'shape': (observation.n_detectors, observation.n_samples),
-                'stokes': landscape.stokes,
-                'dtype': self.config.tod_dtype,
-            }
+            tod_shape = (observation.n_detectors, observation.n_samples)
             polarizer = LinearPolarizerOperator.create(
-                **meta,  # type: ignore[arg-type]
-                angles=observation.get_detector_offset_angles().astype(self.config.tod_dtype)[
-                    :, None
-                ],
+                tod_shape,
+                self.config.tod_dtype,
+                landscape.stokes,
+                angles=observation.get_detector_offset_angles()[:, None],
             )
             hwp = HWPOperator.create(
-                **meta,  # type: ignore[arg-type]
-                angles=observation.get_hwp_angles().astype(self.config.tod_dtype),
+                tod_shape,
+                self.config.tod_dtype,
+                landscape.stokes,
+                angles=observation.get_hwp_angles(),
             )
 
             return (polarizer @ hwp @ pointing).reduce()

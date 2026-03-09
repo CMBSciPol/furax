@@ -1,5 +1,4 @@
-import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array
 
 from furax import AbstractLinearOperator
 from furax.math.quaternion import to_gamma_angles
@@ -22,7 +21,6 @@ def build_acquisition_operator(
     demodulated: bool = False,
     pointing_on_the_fly: bool = True,
     pointing_chunk_size: int = 16,
-    tod_dtype: DTypeLike = jnp.float32,
 ) -> AbstractLinearOperator:
     """Build an acquisition operator for a single observation. Does not include masking."""
     # The TOD shape
@@ -45,22 +43,13 @@ def build_acquisition_operator(
 
     # If there is no HWP, we just add a polarizer at the end
     # NB: already in detector frame at this point
-    polarizer = LinearPolarizerOperator.create(
-        shape=data_shape,
-        dtype=tod_dtype,
-        stokes=landscape.stokes,
-    )
+    polarizer = LinearPolarizerOperator.create(data_shape, landscape.dtype, landscape.stokes)
     if not has_hwp:
         return polarizer @ pointing
 
     # If there is a HWP, we are in the boresight frame so we need another rotation
     gamma = to_gamma_angles(detector_quaternions)[:, None]
-    rot = QURotationOperator.create(
-        data_shape,
-        tod_dtype,
-        landscape.stokes,
-        angles=gamma,
-    )
+    rot = QURotationOperator.create(data_shape, landscape.dtype, landscape.stokes, angles=gamma)
 
     # In the demodulated case, there is no polarizer
     # And the gamma angle is flipped!
@@ -68,10 +57,5 @@ def build_acquisition_operator(
         return 0.5 * rot.T @ pointing
 
     # In the general case, we include polarizer and HWP
-    hwp = HWPOperator.create(
-        shape=data_shape,
-        dtype=tod_dtype,
-        stokes=landscape.stokes,
-        angles=hwp_angles,
-    )
+    hwp = HWPOperator.create(data_shape, landscape.dtype, landscape.stokes, angles=hwp_angles)
     return polarizer @ rot @ hwp @ pointing

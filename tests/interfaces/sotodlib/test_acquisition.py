@@ -22,7 +22,6 @@ def _make_config(demodulated: bool) -> MapMakingConfig:
         pointing_on_the_fly=True,
         landscape=LandscapeConfig(type=Landscapes.HPIX, nside=NSIDE),
         demodulated=demodulated,
-        double_precision=True,
     )
 
 
@@ -52,10 +51,9 @@ def test_acquisition_no_hwp_vs_sotodlib():
         obs.get_detector_quaternions(),
         hwp_angles=None,
         pointing_on_the_fly=True,
-        tod_dtype=jnp.float64,
     )
 
-    tods = obs.get_tods(dtype=jnp.float64)
+    tods = obs.get_tods()
     furax_map = h.T(tods)
 
     pmap = _sotodlib_pointing(obs, hwp=False)

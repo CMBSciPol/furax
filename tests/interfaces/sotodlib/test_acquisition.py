@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 from numpy.testing import assert_allclose
 from sotodlib import coords
@@ -21,6 +22,7 @@ def _make_config(demodulated: bool) -> MapMakingConfig:
         pointing_on_the_fly=True,
         landscape=LandscapeConfig(type=Landscapes.HPIX, nside=NSIDE),
         demodulated=demodulated,
+        double_precision=True,
     )
 
 
@@ -43,16 +45,17 @@ def test_acquisition_no_hwp_vs_sotodlib():
 
     lazy_obs = LazySOTODLibObservation(FOLDER / 'test_obs_2.h5')
     obs = lazy_obs.get_data()
-    landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
+    landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype=jnp.float64)
     h = build_acquisition_operator(
         landscape,
         obs.get_boresight_quaternions(),
         obs.get_detector_quaternions(),
         hwp_angles=None,
         pointing_on_the_fly=True,
+        dtype=jnp.float64,
     )
 
-    tods = obs.get_tods()
+    tods = obs.get_tods(dtype=jnp.float64)
     furax_map = h.T(tods)
 
     pmap = _sotodlib_pointing(obs, hwp=False)
@@ -60,7 +63,7 @@ def test_acquisition_no_hwp_vs_sotodlib():
 
     # Furax TODs assume power, so they are 2x smaller
     for i, leaf in enumerate(jax.tree.leaves(furax_map)):
-        assert_allclose(2 * leaf, sotodlib_map[i], rtol=1e-5, atol=0)
+        assert_allclose(2 * leaf, sotodlib_map[i], rtol=1e-5)
 
 
 def test_demod_acquisition_vs_sotodlib():
@@ -94,4 +97,4 @@ def test_demod_acquisition_vs_sotodlib():
 
     # Furax TODs assume power, so they are 2x smaller
     for i, leaf in enumerate(jax.tree.leaves(furax_map)):
-        assert_allclose(2 * leaf, sotodlib_map[i], rtol=1e-5, atol=0)
+        assert_allclose(2 * leaf, sotodlib_map[i], rtol=1e-5)

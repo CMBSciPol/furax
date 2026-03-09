@@ -49,9 +49,11 @@ class SumOperator(AbstractLinearOperator):
             self._sum_leaf,
             self.axis,
             x,
-            is_leaf=lambda leaf: leaf is None
-            or isinstance(leaf, tuple)
-            and all(isinstance(element, int) for element in leaf),
+            is_leaf=lambda leaf: (
+                leaf is None
+                or isinstance(leaf, tuple)
+                and all(isinstance(element, int) for element in leaf)
+            ),
         )
 
     @staticmethod

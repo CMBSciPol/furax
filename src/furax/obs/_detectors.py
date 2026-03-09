@@ -1,26 +1,20 @@
-import jax
+import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Float
+from jaxtyping import ArrayLike, Float
 
 
 class DetectorArray:
     # Z-axis is assumed to be the boresight of the telescope
     def __init__(
         self,
-        x: Float[Array, '*#dims'],
-        y: Float[Array, '*#dims'],
-        z: Float[Array | float, '*#dims'],
+        x: Float[ArrayLike, '*#dims'],
+        y: Float[ArrayLike, '*#dims'],
+        z: Float[ArrayLike, '*#dims'],
     ) -> None:
-        self.shape = np.broadcast(
-            x, y, z
-        ).shape  # FIXME: check jax broadcast so that we can accept Arrays
-        length = np.sqrt(x**2 + y**2 + z**2)
-        coords = np.empty((3,) + self.shape)
-        coords[0] = x
-        coords[1] = y
-        coords[2] = z
-        coords /= length
-        self.coords = jax.device_put(coords)
+        x, y, z = jnp.broadcast_arrays(x, y, z)
+        self.shape = x.shape
+        length = jnp.sqrt(x**2 + y**2 + z**2)
+        self.coords = jnp.stack((x, y, z), axis=-1) / length
 
     def __len__(self) -> int:
         return int(np.prod(self.shape))

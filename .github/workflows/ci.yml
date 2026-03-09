@@ -18,12 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout project
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Set up prek and run hooks
         uses: j178/prek-action@v1
         with:
-          prek-version: "0.2.19"
+          prek-version: "0.3.5"
 
   test:
     name: Run tests on Python ${{ matrix.python-version }}
@@ -34,12 +34,12 @@ jobs:
 
     steps:
       - name: Checkout project
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install uv and set the Python version
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
         with:
-          version: "0.9.12"
+          version: "0.10.9"
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 

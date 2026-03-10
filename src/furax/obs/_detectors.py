@@ -14,7 +14,7 @@ class DetectorArray:
         x, y, z = jnp.broadcast_arrays(x, y, z)
         self.shape = x.shape
         length = jnp.sqrt(x**2 + y**2 + z**2)
-        self.coords = jnp.stack((x, y, z), axis=-1) / length
+        self.coords = jnp.stack((x, y, z), axis=0) / length
 
     def __len__(self) -> int:
         return int(np.prod(self.shape))

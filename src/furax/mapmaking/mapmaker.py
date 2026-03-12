@@ -38,7 +38,7 @@ from furax.core import (
 )
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
-from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
+from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesPyTreeType, ValidStokesType
 
 from ..interfaces.lineax import as_lineax_operator
 from . import templates
@@ -301,6 +301,30 @@ class MultiObservationMapMaker(Generic[T]):
             )
 
         return jax.tree.map(get_mask_projector, list(range(reader.count)))  # type: ignore[no-any-return]
+
+    def accumulate_hit_map(
+        self,
+        acquisition_blocks: list[AbstractLinearOperator],
+        maskers: list[AbstractLinearOperator],
+    ) -> StokesI:
+        """Accumulate the raw sample hit count per pixel across all observations."""
+
+        @jax.jit
+        def get_hits(h, masker):  # type: ignore[no-untyped-def]
+            # the pointing operator should be the first in the acquisition chain, so the last operand...
+            pointing = h.operands[-1]
+            pointing_i = pointing.as_stokes_i()
+            # evaluate on a vector of ones built for the masker's structure (could be multiple things)
+            ones = furax.tree.ones_like(masker.in_structure)
+            masked_ones = jax.tree.leaves(masker(ones))[0]
+            return pointing_i.T(StokesI(masked_ones))
+
+        is_operator = lambda x: isinstance(x, AbstractLinearOperator)
+        return jax.tree.reduce(  # type: ignore[no-any-return]
+            operator.add,
+            jax.tree.map(get_hits, acquisition_blocks, maskers, is_leaf=is_operator),
+            is_leaf=lambda x: isinstance(x, Stokes),
+        )
 
     @staticmethod
     def noise_operator_blocks(

@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 
+import jax.numpy as jnp
 import pytest
 
 from furax._config import Config
@@ -14,7 +15,7 @@ from furax.mapmaking import (
 from furax.mapmaking.config import LandscapeConfig, Landscapes
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.mapmaking.preconditioner import BJPreconditioner
-from furax.obs.stokes import Stokes, ValidStokesType
+from furax.obs.stokes import Stokes, StokesI, ValidStokesType
 
 # Skip tests for interfaces that are not installed
 sotodlib_installed = importlib.util.find_spec('sotodlib') is not None
@@ -134,6 +135,22 @@ def test_accumulate_rhs(name, demodulated, stokes):
     maskers = maker.build_sample_maskers(h_blocks[0].out_structure)
     rhs = maker.accumulate_rhs(h_blocks, w_blocks, maskers)
     assert rhs.shape == maker.landscape.shape
+
+
+@pytest.mark.parametrize('stokes', STOKES_PARAMS)
+@pytest.mark.parametrize('name,demodulated', PARAMS)
+def test_accumulate_hit_map(name, demodulated, stokes):
+    observations = make_observations(name)
+    config = make_config(stokes, demodulated)
+    maker = MultiObservationMapMaker(observations, config=config)
+    h_blocks = maker.build_acquisitions()
+    maskers = maker.build_sample_maskers(h_blocks[0].out_structure)
+    hit_map = maker.accumulate_hit_map(h_blocks, maskers)
+    assert isinstance(hit_map, StokesI)
+    assert hit_map.shape == maker.landscape.shape
+    # hit maps should be nonnegative integers
+    assert jnp.all(hit_map.i >= 0)
+    assert jnp.all(hit_map.i == jnp.floor(hit_map.i))
 
 
 @pytest.mark.parametrize('stokes', STOKES_PARAMS)

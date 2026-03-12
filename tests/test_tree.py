@@ -170,6 +170,18 @@ def test_dot_invalid_pytrees() -> None:
 
 
 @pytest.mark.parametrize(
+    'x, expected_norm',
+    [
+        (jnp.array([3.0, 4.0]), 5.0),
+        ({'a': jnp.array([3.0, 0.0]), 'b': jnp.array([0.0, 4.0])}, 5.0),
+        ({'a': jnp.array([1.0, 2.0, 2.0])}, 3.0),
+    ],
+)
+def test_norm(x, expected_norm) -> None:
+    assert jnp.allclose(fx.tree.norm(x), expected_norm)
+
+
+@pytest.mark.parametrize(
     'structure, a, x, expected_y',
     [
         (

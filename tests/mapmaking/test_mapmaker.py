@@ -1,10 +1,10 @@
 import importlib.util
+from math import prod
 from pathlib import Path
 
 import jax.numpy as jnp
 import pytest
 
-from furax._config import Config
 from furax.core import BlockColumnOperator
 from furax.mapmaking import (
     AbstractLazyObservation,
@@ -173,16 +173,10 @@ def test_full_mapmaker(name, demodulated, stokes):
     observations = make_observations(name)
     config = make_config(stokes, demodulated)
     maker = MultiObservationMapMaker(observations, config=config)
-
-    num_steps = None
-
-    def capture_iterations(solution):
-        nonlocal num_steps
-        num_steps = int(solution.stats['num_steps'])
-
-    with Config(solver_callback=capture_iterations):
-        results = maker.run()
-
-    n_stokes, pixels = results.map.shape
-    assert results.weights.shape == (n_stokes, n_stokes, pixels)
+    results = maker.run()
+    n_stokes = len(stokes)
+    n_pixel = prod(results.map.shape)
+    assert results.icov.shape == (n_stokes, n_stokes, n_pixel)
+    assert results.solver_stats is not None
+    num_steps = results.solver_stats['num_steps']
     assert num_steps == 1, f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'

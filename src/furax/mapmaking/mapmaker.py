@@ -16,7 +16,7 @@ import pixell.enmap
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, DTypeLike, Float, PyTree
+from jaxtyping import Array, Bool, DTypeLike, Float, Integer, PyTree
 
 import furax.linalg
 import furax.tree
@@ -55,13 +55,19 @@ from .preconditioner import BJPreconditioner
 
 @dataclass
 class MapMakingResults:
-    map: Float[np.ndarray, 'stokes pixels']
+    map: StokesPyTreeType
     """The estimated sky map"""
 
-    weights: Float[np.ndarray, 'stokes stokes pixels']
-    """The map weights (diagonal covariance matrix)"""
+    hit_map: Integer[Array, ' pixels']
+    """The number of valid samples per pixel"""
 
-    noise_fits: Float[np.ndarray, '...'] | None = None
+    icov: Float[Array, 'stokes stokes pixels']
+    """The per-pixel inverse noise covariance matrix (H^T N^{-1} H)"""
+
+    solver_stats: dict[str, Any] | None = None
+    """Statistics from the linear solver (e.g. num_steps, max_steps)"""
+
+    noise_fits: Float[Array, '...'] | None = None
     """The fitted noise PSD parameters"""
 
     wcs: WCS | None = None
@@ -77,8 +83,9 @@ class MapMakingResults:
                 continue
             if isinstance(val, jax.Array) or isinstance(val, np.ndarray):
                 np.save(out_dir / field_.name, np.array(val))
-            elif isinstance(val, StokesIQU):
-                np.save(out_dir / field_.name, np.stack([val.i, val.q, val.u], axis=0))
+            elif isinstance(val, Stokes):
+                arr = np.array(jax.tree.leaves(val))
+                np.save(out_dir / field_.name, arr)
             elif isinstance(val, pixell.enmap.ndmap):
                 pixell.enmap.write_map(
                     (out_dir / f'{field_.name}.hdf').as_posix(), val, allow_modify=True
@@ -91,7 +98,7 @@ class MapMakingResults:
                 with open(out_dir / f'{field_.name}.pkl', 'wb') as f:
                     pickle.dump(val, f)
             else:
-                furax_logger.warning(f'unsupported field type for {field_.name}')
+                furax_logger.warning(f'not saving {field_.name}')
 
 
 T = TypeVar('T')
@@ -214,44 +221,54 @@ class MultiObservationMapMaker(Generic[T]):
             sysdiag = BJPreconditioner.create((h.T @ white_w @ h).reduce())
             logger_info('Set up approximate system matrix')
 
-        # Weights matrix and pixel selection
-        map_weights = sysdiag.get_blocks()
-        selector = self.build_pixel_selection_operator(
-            weights=map_weights, in_structure=map_structure
-        )
-        logger_info(
-            f'Selected {prod(selector.out_structure.shape)}'
-            + f' / {prod(selector.in_structure.shape)} pixels'
-        )
+        # Inverse covariance matrix and pixel selection
+        icov = sysdiag.get_blocks()
+        valid_pixels = self.pixel_selection(icov)
+        logger_info(f'Selected {valid_pixels.sum()} / {valid_pixels.size} pixels')
+        # move pixels to last axis
+        icov = jnp.moveaxis(icov, 0, -1)
+
+        # Pixel selection operator
+        valid_indices = jnp.argwhere(valid_pixels)
+        if self.config.landscape.type == Landscapes.WCS:
+            # TODO: test this again when WCS landscape is supported
+            selector = IndexOperator(
+                (valid_indices[:, 0], valid_indices[:, 1]), in_structure=map_structure
+            )
+        else:
+            # Healpix
+            selector = IndexOperator((valid_indices,), in_structure=map_structure)
+
+        # Hit map (only at selected pixels)
+        hit_map = self.accumulate_hit_map(h_blocks, maskers).i.astype(jnp.int64)
+        hit_map = hit_map.at[~valid_pixels].set(0)
+        logger_info('Computed hit map')
 
         # Preconditioner
         precond = (selector @ sysdiag.inverse() @ selector.T).reduce()
         logger_info('Set up preconditioner')
 
-        # Set up the mapmaking operator
+        # Solve the mapmaking system
         solver = lineax.CG(**asdict(self.config.solver))
-        inverse_options = {
-            'solver': solver,
-            'preconditioner': precond,
-            'y0': precond(selector(rhs)),
-        }
-        mapmaking_operator = (
-            selector.T @ (selector @ system @ selector.T).I(**inverse_options) @ selector
+        spd = OperatorTag.POSITIVE_SEMIDEFINITE
+        lx_system = as_lineax_operator(selector @ system @ selector.T, spd)
+        lx_precond = as_lineax_operator(precond, spd)
+        rhs_reduced = selector(rhs)
+        y0 = precond(rhs_reduced)
+
+        solution = lineax.linear_solve(
+            lx_system,
+            rhs_reduced,
+            solver=solver,
+            options={'preconditioner': lx_precond, 'y0': y0},
+            throw=False,
         )
-
-        @jax.jit
-        def process():  # type: ignore[no-untyped-def]
-            return mapmaking_operator(rhs)
-
-        # Run mapmaking
-        res = process()
-        jax.tree.leaves(res)[0].block_until_ready()
-        logger_info('Finished mapmaking')
-
-        final_map = np.array(jax.tree.leaves(res))
-        # move pixels dimensions to last axis
-        weights = jnp.moveaxis(map_weights, 0, -1)
-        return MapMakingResults(final_map, np.array(weights))
+        estimate = selector.T(solution.value)
+        num_steps = solution.stats['num_steps']
+        logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
+        return MapMakingResults(
+            map=estimate, icov=icov, hit_map=hit_map, solver_stats=solution.stats
+        )
 
     def build_acquisitions(self) -> list[AbstractLinearOperator]:
         # Only read necessary fields
@@ -412,14 +429,10 @@ class MultiObservationMapMaker(Generic[T]):
             is_leaf=lambda x: isinstance(x, Stokes),
         )
 
-    def build_pixel_selection_operator(
-        self,
-        weights: Float[Array, 'pixels stokes stokes'],
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ) -> IndexOperator:
-        """Operator that selects the map pixels satisfying the minimum fractional hits (hits_cut)
-        and the minimum condition number (cond_cut) criteria"""
-
+    def pixel_selection(
+        self, weights: Float[Array, 'pixels stokes stokes']
+    ) -> Bool[Array, ' pixels']:
+        """Compute pixel selection according to hit and condition number cuts."""
         # Cut pixels with low number of samples
         # Use the trace of each pixel's block as a proxy for the number of hits
         hits = jnp.trace(weights, axis1=-2, axis2=-1)
@@ -433,16 +446,7 @@ class MultiObservationMapMaker(Generic[T]):
                 eigs[..., 0] > self.config.cond_cut * eigs[..., -1],
             )
 
-        valid_indices = jnp.argwhere(valid)
-
-        if self.config.landscape.type == Landscapes.WCS:
-            # TODO: test this again when WCS landscape is supported
-            return IndexOperator(
-                (valid_indices[:, 0], valid_indices[:, 1]), in_structure=in_structure
-            )
-        else:
-            # Healpix
-            return IndexOperator((valid_indices,), in_structure=in_structure)
+        return valid
 
     def _read_noise_models(self) -> list[tuple[NoiseModel, int | float]]:
         reader = self.get_reader(['noise_model_fits', 'timestamps'])

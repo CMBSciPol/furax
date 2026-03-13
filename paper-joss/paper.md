@@ -40,7 +40,7 @@ The ``Framework for Unified and Robust data Analysis with JAX'' (Furax) is an op
 
 # Statement of Need
 
-Modern CMB experiments such as LiteBIRD [@litebird2023], the Simons Observatory [@simons2019], the South Pole Observatory [@spo] and CMB-S4 [@cmbs4-2022] generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. The central problem in CMB data analysis is map-making: recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
+Contemporary and future CMB experiments such as LiteBIRD [@litebird2023], the Simons Observatory [@simons2019], the South Pole Observatory [@spo] and CMB-S4 [@cmbs4-2022] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. The central problem in CMB data analysis is map-making: recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
 
 $$\mathbf{d} = \mathbf{P}\mathbf{m} + \mathbf{n}$$
 
@@ -52,7 +52,7 @@ requires efficient application of the pointing operator and its transpose. Exist
 
 # State of the Field
 
-Several tools exist for CMB data processing. TOAST provides a comprehensive MPI-parallel framework used in production pipelines for experiments like Planck and LiteBIRD, but its C++ core prevents automatic differentiation. The healpy library wraps the HEALPix C library for Python, offering essential spherical harmonic transforms and pixel operations, but runs only on CPU and does not support operator composition. PySM generates realistic sky simulations including multiple astrophysical components, but operates strictly in forward mode. Component separation tools like FGBuster implement parametric methods but rely on simplified noise models. Other JAX-based tools such as jax-healpy [@jax-healpy2024] and s2fft [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework. Furax complements these tools by providing a unified, differentiable operator framework that can integrate with existing pipelines through interfaces to TOAST and other libraries.
+Several tools exist for CMB data processing. TOAST provides a comprehensive MPI-parallel framework used in production pipelines for experiments like Planck, the Simons Observatory and LiteBIRD, but its C++ core prevents automatic differentiation. The healpy library wraps the HEALPix C library for Python, offering essential spherical harmonic transforms and pixel operations, but runs only on CPU and does not support operator composition. PySM generates realistic sky simulations including multiple astrophysical components, but operates strictly in forward mode. Component separation tools like FGBuster [@rizzieri2025] implement parametric methods but rely on simplified noise models. Other JAX-based tools such as jax-healpy [@jax-healpy2024] and s2fft [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework. Furax complements these tools by providing a unified, differentiable operator framework that can integrate with existing pipelines through interfaces to TOAST and other libraries.
 
 # Software Design
 
@@ -129,7 +129,7 @@ Table: Domain-specific operators for CMB data analysis. {#tbl:applied-operators}
 
 # Research Impact Statement
 
-Furax was developed within the ERC-funded SciPol project to enable gradient-based optimization in CMB data analysis pipelines. The framework's differentiability opens new possibilities for neural network integration and end-to-end optimization of map-making and component separation. The modular design supports rapid prototyping of analysis methods while maintaining compatibility with production pipelines through TOAST integration. Furax provides essential infrastructure for developing next-generation analysis techniques for LiteBIRD, the Simons Observatory, and CMB-S4.
+Furax was developed within the ERC-funded SciPol project to enable gradient-based optimization in CMB data analysis pipelines . The framework's differentiability opens new possibilities for neural network integration and end-to-end optimization of map-making and component separation. The modular design supports rapid prototyping of analysis methods while maintaining compatibility with production pipelines through TOAST integration. Furax provides essential infrastructure for developing next-generation analysis techniques for LiteBIRD, the Simons Observatory, and CMB-S4.
 
 # AI Usage Disclosure
 
@@ -137,6 +137,10 @@ AI-assisted tools were used for code documentation and manuscript preparation. A
 
 # Acknowledgements
 
-This work was supported by the European Research Council under the European Union's Horizon 2020 research and innovation programme (Grant agreement No. 101044073 - SciPol). We acknowledge the developers of JAX, lineax, and jax-healpy for providing the foundational tools upon which Furax is built. Computing resources were provided by GENCI at IDRIS (Jean Zay supercomputer) under allocation 2024-AD011015549.
+This work was carried out within the \textsc{SciPol} project (\href{https://scipol.in2p3.fr}{scipol.in2p3.fr}), supported by the European Research Council (ERC) under the European Union’s Horizon 2020 research and innovation programme (Grant Agreement No.~101044073, PI: Josquin Errard). 
+
+Computing resources were provided by GENCI at IDRIS (Jean Zay supercomputer) under allocations 2024-AD010414161R2 and 2025-A0190416919. 
+
+This work has also received funding by the European Union’s Horizon 2020 research and innovation program under grant agreement no. 101007633 CMB-Inflate.
 
 # References

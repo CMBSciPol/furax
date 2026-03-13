@@ -1,9 +1,10 @@
 import importlib.util
+from math import prod
 from pathlib import Path
 
+import jax.numpy as jnp
 import pytest
 
-from furax._config import Config
 from furax.core import BlockColumnOperator
 from furax.mapmaking import (
     AbstractLazyObservation,
@@ -14,7 +15,7 @@ from furax.mapmaking import (
 from furax.mapmaking.config import LandscapeConfig, Landscapes
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.mapmaking.preconditioner import BJPreconditioner
-from furax.obs.stokes import Stokes, ValidStokesType
+from furax.obs.stokes import Stokes, StokesI, ValidStokesType
 
 # Skip tests for interfaces that are not installed
 sotodlib_installed = importlib.util.find_spec('sotodlib') is not None
@@ -138,6 +139,22 @@ def test_accumulate_rhs(name, demodulated, stokes):
 
 @pytest.mark.parametrize('stokes', STOKES_PARAMS)
 @pytest.mark.parametrize('name,demodulated', PARAMS)
+def test_accumulate_hit_map(name, demodulated, stokes):
+    observations = make_observations(name)
+    config = make_config(stokes, demodulated)
+    maker = MultiObservationMapMaker(observations, config=config)
+    h_blocks = maker.build_acquisitions()
+    maskers = maker.build_sample_maskers(h_blocks[0].out_structure)
+    hit_map = maker.accumulate_hit_map(h_blocks, maskers)
+    assert isinstance(hit_map, StokesI)
+    assert hit_map.shape == maker.landscape.shape
+    # hit maps should be nonnegative integers
+    assert jnp.all(hit_map.i >= 0)
+    assert jnp.all(hit_map.i == jnp.floor(hit_map.i))
+
+
+@pytest.mark.parametrize('stokes', STOKES_PARAMS)
+@pytest.mark.parametrize('name,demodulated', PARAMS)
 def test_binning(name, demodulated, stokes):
     observations = make_observations(name)
     config = make_config(stokes, demodulated)
@@ -156,16 +173,10 @@ def test_full_mapmaker(name, demodulated, stokes):
     observations = make_observations(name)
     config = make_config(stokes, demodulated)
     maker = MultiObservationMapMaker(observations, config=config)
-
-    num_steps = None
-
-    def capture_iterations(solution):
-        nonlocal num_steps
-        num_steps = int(solution.stats['num_steps'])
-
-    with Config(solver_callback=capture_iterations):
-        results = maker.run()
-
-    n_stokes, pixels = results.map.shape
-    assert results.weights.shape == (n_stokes, n_stokes, pixels)
+    results = maker.run()
+    n_stokes = len(stokes)
+    n_pixel = prod(results.map.shape)
+    assert results.icov.shape == (n_stokes, n_stokes, n_pixel)
+    assert results.solver_stats is not None
+    num_steps = results.solver_stats['num_steps']
     assert num_steps == 1, f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'

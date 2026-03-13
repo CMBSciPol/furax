@@ -1,5 +1,5 @@
 ---
-title: 'Furax: A Modular JAX Framework for Linear Operators in Cosmological Data Analysis'
+title: 'Furax: A JAX-based framework for linear operators in cosmological data analysis'
 tags:
   - Python
   - JAX
@@ -19,13 +19,10 @@ authors:
     orcid: 0000-0003-2651-0314
     affiliation: 1
   - name: Wuhyun Sohn
-    orcid: 0000-0000-0000-0000
-    affiliation: 1
-  - name: et al. TBD (SciPol team)
     affiliation: 1
   - name: Josquin Errard
     orcid: 0000-0002-1419-0031
-    affiliation: 1 
+    affiliation: 1
 affiliations:
   - name: Université Paris Cité, CNRS, Astroparticule et Cosmologie, F-75013 Paris, France
     index: 1
@@ -36,100 +33,55 @@ bibliography: paper.bib
 
 # Summary
 
-The ``Framework for Unified and Robust data Analysis with JAX'' (Furax) is an open-source Python framework designed to construct and manipulate linear operators for solving inverse problems in astrophysics and cosmology. Built on JAX [@jax2018], Furax draws inspiration from the PyOperators library [@chanial2012pyoperators] and lineax [@kidger2024lineax] to provide generic operators for solving inverse problems and domain-specific operators for cosmic microwave background (CMB) data analysis. The framework provides composable building blocks including pointing operators, half-wave plate models, polarizers, Stokes parameter rotations, and spectral energy distribution (SED) operators. Furax leverages JAX's automatic differentiation, just-in-time compilation, and hardware acceleration to enable gradient-based optimization on GPUs and TPUs. The modular architecture allows researchers to rapidly prototype and test analysis pipelines while maintaining computational efficiency for production-scale datasets.
+Furax (Framework for Unified and Robust data Analysis with JAX) is an open-source Python framework designed for constructing and manipulating linear operators in astrophysical inverse problems. Built on the JAX ecosystem [@jax2018], Furax provides a composable operator algebra with support for automatic differentiation, just-in-time compilation, and hardware acceleration on GPUs and TPUs.
+
+The framework combines generic linear-algebra operators with domain-specific components used in cosmic microwave background (CMB) data analysis. These include pointing operators, polarization modulation models, Stokes parameter rotations, and spectral energy distribution (SED) operators used in component separation. Furax enables researchers to rapidly prototype and test analysis pipelines while maintaining performance compatible with large-scale cosmological datasets.
 
 # Statement of Need
 
-Contemporary and future CMB experiments such as LiteBIRD [@litebird2023], the Simons Observatory [@simons2019], the South Pole Observatory [@spo] and CMB-S4 [@cmbs4-2022] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. The central problem in CMB data analysis is map-making: recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
+Modern CMB experiments such as LiteBIRD [@litebird2023], the Simons Observatory [@simons2019], the South Pole Observatory [@spo] and CMB-S4 [@cmbs4-2022] produce extremely large time-ordered datasets that must be processed to reconstruct sky maps and extract cosmological parameters. These analyses rely heavily on repeated applications of linear operators describing the instrument response, noise filtering, and astrophysical models.
 
-$$\mathbf{d} = \mathbf{P}\mathbf{m} + \mathbf{n}$$
+Existing frameworks provide high-performance data processing pipelines but generally lack differentiability and tight integration with modern machine-learning tools. As gradient-based inference methods become increasingly important in cosmological data analysis, there is a growing need for software frameworks that combine efficient operator algebra with automatic differentiation and accelerator support.
 
-where $\mathbf{P}$ is the pointing matrix encoding the instrument response and $\mathbf{n}$ is the noise. The generalized least-squares solution
-
-$$\hat{\mathbf{m}} = (\mathbf{P}^T \mathbf{N}^{-1} \mathbf{P})^{-1} \mathbf{P}^T \mathbf{N}^{-1} \mathbf{d}$$
-
-requires efficient application of the pointing operator and its transpose. Existing tools like TOAST [@toast2021] provide MPI-parallel production pipelines but lack differentiability. The healpy library [@zonca2019] offers a standard HEALPix interface but is CPU-only and does not support operator algebra. Sky simulation tools like PySM [@pysm3] focus on forward modeling, while component separation codes like FGBuster [@fgbuster2022] have limited noise modeling capabilities. Furax fills this gap by providing a differentiable operator framework that integrates with modern machine learning workflows while maintaining the performance required for CMB data analysis.
+Furax addresses this need by providing a differentiable operator framework built on JAX. The framework allows researchers to construct complex forward models from composable operators while benefiting from JAX’s automatic differentiation and hardware acceleration capabilities.
 
 # State of the Field
 
-Several tools exist for CMB data processing. TOAST provides a comprehensive MPI-parallel framework used in production pipelines for experiments like Planck, the Simons Observatory and LiteBIRD, but its C++ core prevents automatic differentiation. The healpy library wraps the HEALPix C library for Python, offering essential spherical harmonic transforms and pixel operations, but runs only on CPU and does not support operator composition. PySM generates realistic sky simulations including multiple astrophysical components, but operates strictly in forward mode. Component separation tools like FGBuster [@rizzieri2025] implement parametric methods but rely on simplified noise models. Other JAX-based tools such as jax-healpy [@jax-healpy2024] and s2fft [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework. Furax complements these tools by providing a unified, differentiable operator framework that can integrate with existing pipelines through interfaces to TOAST and other libraries.
+Several software packages support CMB data analysis workflows. The TOAST framework [@toast2021] provides large-scale MPI-parallel pipelines used in production analyses for experiments such as Planck, LiteBIRD, and the Simons Observatory. However, its C++ core prevents automatic differentiation and limits integration with modern differentiable programming workflows.
+
+Healpy [@zonca2019] provides Python access to HEALPix routines widely used in CMB analysis but runs only on CPUs and does not provide an operator algebra framework. Simulation tools such as PySM [@pysm3] focus on forward sky modelling, while component separation packages such as FGBuster [@fgbuster2022] implement parametric fitting methods with simplified noise models.
+
+Recent JAX-based tools such as jax-healpy and s2fft provide GPU-accelerated spherical transforms but do not offer a general framework for composing linear operators.
+
+Furax complements these tools by providing a unified operator algebra framework that integrates with the JAX ecosystem and supports differentiable forward models for cosmological data analysis.
 
 # Software Design
 
-Furax's architecture centers on composable linear operators that extend lineax's `AbstractLinearOperator`. Operators are combined using standard mathematical notation:
+Furax is built around composable linear operators derived from the `lineax.AbstractLinearOperator` interface. Operators can be combined using standard algebraic syntax and applied to arrays or PyTrees:
 
 ```python
-H = instrument_operator @ pointing @ rotation
-y = H(sky_map)      # Forward model
-x = H.T(data)       # Transpose application
-solution = H.I(y)   # Inverse via lineax solver
+H = instrument_operator @ pointing_operator
+data = H(sky_map)
+sky_estimate = H.T(data)
 ```
 
-**Operator Algebra.** The base class `AbstractLinearOperator` provides a default implementation for standard linear algebra operations that enable intuitive composition and manipulation of operators:
+This abstraction allows complex models to be expressed as compositions of simpler operators, enabling clear and modular pipeline construction.
 
-| Operation | Syntax | Comment |
-|-----------|--------|---------|
-| Addition | `A + B` |  |
-| Composition | `A @ B` |  |
-| Multiplication by scalar | `k * A` | Returns the composition of a HomothetyOperator and A |
-| Transpose | `A.T` | Through JAX autodiff, but can be overridden |
-| Inverse | `A.I` or `A.I(solver=..., maxiter=..., preconditioner=...)` | By default, the CG solver is used, but it can be overridden |
-| Block Assembly | `BlockColumnOperator([A, B])`, `BlockDiagonalOperator([A, B])`, `BlockRowOperator([A, B])` | Handle any PyTree of Operators: `Block*Operator({'a': A, 'b': B})` |
-| Flattened dense matrix | `A.as_matrix()` |  |
-| Algebraic reduction | `A.reduce()` |  |
+The framework provides a collection of generic operators for common mathematical transformations, including diagonal operators, reshaping operators, masking operators, and structured matrices such as banded Toeplitz operators used in correlated noise modelling.
 
-Table: Supported operator operations in Furax. {#tbl:operations}
+In addition to these generic components, Furax includes domain-specific operators relevant to CMB experiments. These include polarization rotation operators, half-wave plate modulation models, linear polarizers, and spectral energy distribution operators for astrophysical components such as the CMB, Galactic dust, and synchrotron emission.
 
-**Generic Operators.** Furax provides a comprehensive suite of generic operators for common mathematical operations:
+Furax also supports block operators that enable efficient representation of multi-detector and multi-frequency systems commonly encountered in CMB experiments.
 
-| Operator | Description |
-|----------|-------------|
-| `IdentityOperator` |  |
-| `HomothetyOperator` |  |
-| `DiagonalOperator` |  |
-| `BroadcastDiagonalOperator` | Non-square operator for broadcasting |
-| `TensorOperator` | For dense matrix operations |
-| `TreeOperator` | For generalized matrix operations |
-| `SumOperator` | Sum along axes |
-| `IndexOperator` | Can be used for projecting skies onto time-ordered series |
-| `MaskOperator` | Bit-encoded 0- or 1-valued mask |
-| `MoveAxisOperator` |  |
-| `ReshapeOperator` |  |
-| `RavelOperator` |  |
-| `SymmetricBandToeplitzOperator` | Methods: direct, FFT, overlap and save |
-| `Block*Operator` | Block assembly operators (column, diagonal, row) |
+By relying on JAX transformations, Furax operators are compatible with automatic differentiation, vectorization, and just-in-time compilation, enabling efficient execution on CPUs, GPUs, and TPUs.
 
-Table: Generic operators available in Furax. {#tbl:generic-operators}
+# Research Impact
 
-**Domain-Specific Operators.** For CMB data analysis, Furax includes specialized operators tailored to instrument modeling and astrophysical components:
+Furax was developed within the ERC-funded SciPol project to support the development of next-generation CMB data analysis pipelines. The framework enables gradient-based optimization and differentiable forward modelling, opening new possibilities for end-to-end inference pipelines and integration with machine-learning methods.
 
-| Operator | Description |
-|----------|-------------|
-| `QURotationOperator` |  |
-| `HWPOperator` | Ideal HWP |
-| `LinearPolarizerOperator` | Ideal linear polarizer |
-| `CMBOperator` | Parametrized CMB SED |
-| `DustOperator` | Parametrized dust SED |
-| `SynchrotronOperator` | Parametrized synchrotron SED |
-| `PointingOperator` | On-the-fly projection matrix |
-| `MapSpaceBeamOperator` | Sparse Beam operator |
-| `TemplateOperator` | For template map-making |
+The modular operator-based design facilitates rapid prototyping of new analysis techniques while maintaining compatibility with existing large-scale processing pipelines through interfaces with tools such as TOAST.
 
-Table: Domain-specific operators for CMB data analysis. {#tbl:applied-operators}
-
-**Stokes Parameter Types.** Furax represents polarization through dedicated PyTree-compatible types: `StokesI`, `StokesQU`, `StokesIQU`, and `StokesIQUV`. These types support arithmetic operations, broadcasting, and seamless integration with JAX transformations.
-
-**Block Operators.** The framework provides three block operator types for structuring complex models: `BlockRowOperator` for horizontal concatenation, `BlockDiagonalOperator` for independent parallel operations, and `BlockColumnOperator` for vertical stacking. These operators enable efficient representation of multi-detector and multi-frequency systems.
-
-**Algebraic Reduction.** Furax implements automatic operator simplification through a rule-based system. For example, consecutive QU rotations combine their angles, and identity operators are eliminated from compositions. The reduction system handles complex patterns including the commutation rule for half-wave plates: $R(\theta) \circ \text{HWP} = \text{HWP} \circ R(-\theta)$.
-
-**CMB Operators.** Domain-specific operators include `HWPOperator` for half-wave plate modeling, `LinearPolarizerOperator` for polarization extraction implementing $d = \frac{1}{2}(I + Q\cos 2\psi + U\sin 2\psi)$, `QURotationOperator` for polarization angle rotations, and `HealpixLandscape` for spherical pixelization. Spectral operators (`CMBOperator`, `DustOperator`, `SynchrotronOperator`) enable frequency-dependent component separation with support for spatially varying spectral indices.
-
-**Toeplitz Operations.** The `SymmetricBandToeplitzOperator` provides efficient convolution operations with five algorithm choices: dense multiplication, direct convolution, FFT-based, overlap-save, and overlap-add methods. This operator is central to correlated noise modeling and gap-filling procedures based on constrained Gaussian realizations [@stompor2002].
-
-# Research Impact Statement
-
-Furax was developed within the ERC-funded SciPol project to enable gradient-based optimization in CMB data analysis pipelines . The framework's differentiability opens new possibilities for neural network integration and end-to-end optimization of map-making and component separation. The modular design supports rapid prototyping of analysis methods while maintaining compatibility with production pipelines through TOAST integration. Furax provides essential infrastructure for developing next-generation analysis techniques for LiteBIRD, the Simons Observatory, and CMB-S4.
+Furax therefore provides an important piece of infrastructure for developing analysis methods for future cosmological surveys, including LiteBIRD, the Simons Observatory, and CMB-S4.
 
 # AI Usage Disclosure
 
@@ -137,10 +89,10 @@ AI-assisted tools were used for code documentation and manuscript preparation. A
 
 # Acknowledgements
 
-This work was carried out within the \textsc{SciPol} project (\href{https://scipol.in2p3.fr}{scipol.in2p3.fr}), supported by the European Research Council (ERC) under the European Union’s Horizon 2020 research and innovation programme (Grant Agreement No.~101044073, PI: Josquin Errard). 
+This work was carried out within the \textsc{SciPol} project (\href{https://scipol.in2p3.fr}{scipol.in2p3.fr}), supported by the European Research Council (ERC) under the European Union’s Horizon 2020 research and innovation programme (Grant Agreement No.~101044073, PI: Josquin Errard).
 
-Computing resources were provided by GENCI at IDRIS (Jean Zay supercomputer) under allocations 2024-AD010414161R2 and 2025-A0190416919. 
+Computing resources were provided by GENCI at IDRIS (Jean Zay supercomputer) under allocations 2024-AD010414161R2 and 2025-A0190416919.
 
-This work has also received funding by the European Union’s Horizon 2020 research and innovation program under grant agreement no. 101007633 CMB-Inflate.
+This work has also received funding from the European Union’s Horizon 2020 research and innovation program under grant agreement no. 101007633 CMB-Inflate.
 
 # References

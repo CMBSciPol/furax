@@ -2,6 +2,7 @@ import importlib.util
 from math import prod
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -92,43 +93,41 @@ class TestMultiObsMapMaker:
         config = make_config(stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         reader = ObservationReader(observations, demodulated=demodulated, stokes=stokes)
-        blocks = maker.build_blocks()
-        assert len(blocks) == len(observations) == reader.count
-        for block in blocks:
-            assert block.map_structure == maker.landscape.structure
-            assert block.tod_structure == reader.out_structure['sample_data']
+        blocks = maker.build_model()
+        n_obs = jax.tree.leaves(blocks)[0].shape[0]
+        assert n_obs == len(observations) == reader.count
+        assert blocks.map_structure == maker.landscape.structure
+        assert blocks.tod_structure == reader.out_structure['sample_data']
 
     def test_last_acquisition_operand_is_pointing(self, name, demodulated, stokes):
         observations = make_observations(name)
         config = make_config(stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        acquisitions = [block.H for block in maker.build_blocks()]
-        for h in acquisitions:
-            assert isinstance(h, CompositionOperator)
-            assert isinstance(h.operands[-1], PointingOperator)
+        h = maker.build_model().H
+        assert isinstance(h, CompositionOperator)
+        assert isinstance(h.operands[-1], PointingOperator)
 
     @pytest.mark.parametrize('fit_models', [True, False])
     def test_white_noise_models_binned_or_demodulated(self, name, demodulated, stokes, fit_models):
         observations = make_observations(name)
         config = make_config(stokes=stokes, demodulated=demodulated, fit_noise_model=fit_models)
         maker = MultiObservationMapMaker(observations, config=config)
-        noise_models = [block.noise_model for block in maker.build_blocks()]
+        noise_model = maker.build_model().noise_model
         if demodulated:
             # In demodulated case each block has a Stokes pytree of per-component WhiteNoiseModel's
-            for model_tree in noise_models:
-                assert isinstance(model_tree, Stokes.class_for(config.stokes))
-                assert all(
-                    isinstance(getattr(model_tree, stoke.lower()), WhiteNoiseModel)
-                    for stoke in config.stokes
-                )
+            assert isinstance(noise_model, Stokes.class_for(config.stokes))
+            assert all(
+                isinstance(getattr(noise_model, stoke.lower()), WhiteNoiseModel)
+                for stoke in config.stokes
+            )
         else:
-            assert all(isinstance(model, WhiteNoiseModel) for model in noise_models)
+            assert isinstance(noise_model, WhiteNoiseModel)
 
     def test_rhs_shape(self, name, demodulated, stokes):
         observations = make_observations(name)
         config = make_config(stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        blocks = maker.build_blocks()
+        blocks = maker.build_model()
         rhs = maker.accumulate_rhs(blocks)
         assert rhs.shape == maker.landscape.shape
 
@@ -136,7 +135,7 @@ class TestMultiObsMapMaker:
         observations = make_observations(name)
         config = make_config(stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        blocks = maker.build_blocks()
+        blocks = maker.build_model()
         hits = maker.accumulate_hits(blocks)
         assert hits.shape == maker.landscape.shape
         assert jnp.all(hits >= 0)

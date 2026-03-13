@@ -20,8 +20,13 @@ from .pointing import PointingOperator
 
 @register_dataclass
 @dataclass
-class ObservationBlock:
-    """Holds the operators and data for a single observation (block)."""
+class ObservationModel:
+    """Holds the operators and data for one or more observations.
+
+    When stacked via ``jax.lax.scan``, the array fields carry a leading batch
+    dimension over observations while static fields (structures, chunk sizes)
+    remain shared.
+    """
 
     H: AbstractLinearOperator
     """Acquisition operator"""
@@ -41,7 +46,7 @@ class ObservationBlock:
     @classmethod
     def create(
         cls, data: Any, padding: Any, config: MapMakingConfig, landscape: StokesLandscape
-    ) -> 'ObservationBlock':
+    ) -> 'ObservationModel':
         H = build_acquisition_operator(
             landscape,
             data['boresight_quaternions'],

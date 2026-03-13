@@ -18,6 +18,7 @@ from jax import ShapeDtypeStruct
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
 import furax.linalg
+import furax.tree as tree
 from furax import (
     AbstractLinearOperator,
     Config,
@@ -33,8 +34,8 @@ from furax.core import (
     BlockRowOperator,
     IndexOperator,
 )
-from furax.mapmaking._block import (
-    ObservationBlock,
+from furax.mapmaking._model import (
+    ObservationModel,
     _hwp_frequency,
 )
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
@@ -156,9 +157,11 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
 
         # Acquisition blocks
-        blocks = self.build_blocks()
-        H = BlockColumnOperator([b.masker @ b.H for b in blocks])
-        W = BlockDiagonalOperator([b.W for b in blocks])
+        blocks = self.build_model()
+        n_obs = len(self.observations)
+        block_list = [jax.tree.map(lambda x, i=i: x[i], blocks) for i in range(n_obs)]
+        H = BlockColumnOperator([b.masker @ b.H for b in block_list])
+        W = BlockDiagonalOperator([b.W for b in block_list])
         A = (H.T @ W @ H).reduce()
         logger_info('Created acquisition operators')
 
@@ -179,7 +182,7 @@ class MultiObservationMapMaker(Generic[T]):
                     block.tod_structure,
                     is_leaf=lambda x: isinstance(x, NoiseModel),
                 )
-                for block in blocks
+                for block in block_list
             )
             sysdiag = (H.T @ Wdiag @ H).reduce()
 
@@ -199,7 +202,7 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Pixel selection operator
         valid_indices = jnp.argwhere(valid_pixels)
-        map_structure = blocks[0].map_structure
+        map_structure = blocks.map_structure
         if self.config.landscape.type == Landscapes.WCS:
             # TODO: test this again when WCS landscape is supported
             selector = IndexOperator(
@@ -230,7 +233,7 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
         return MapMakingResults(map=estimate, icov=icov, hit_map=hits, solver_stats=solution.stats)
 
-    def build_blocks(self) -> list[ObservationBlock]:
+    def build_model(self) -> ObservationModel:
         # Only read necessary fields
         required_fields = [
             'boresight_quaternions',
@@ -251,38 +254,35 @@ class MultiObservationMapMaker(Generic[T]):
             required_fields.append('metadata')
         reader = self.get_reader(required_fields)
 
-        @jax.jit
-        def func(i: int) -> ObservationBlock:
+        def build_one(_, i):  # type: ignore[no-untyped-def]
             data, padding = reader.read(i)
-            return ObservationBlock.create(data, padding, self.config, self.landscape)
+            return None, ObservationModel.create(data, padding, self.config, self.landscape)
 
-        return jax.tree.map(func, list(range(reader.count)))  # type: ignore[no-any-return]
+        _, model = jax.lax.scan(build_one, None, jnp.arange(reader.count))
+        return model  # type: ignore[no-any-return]
 
-    def accumulate_hits(self, blocks: list[ObservationBlock]) -> Int64[Array, ' pixels']:
-        stacked = jax.tree.map(lambda *xs: jnp.stack(xs), *blocks)
-        total, _ = jax.lax.scan(
-            lambda carry, b: (carry + b.hits(), None),
-            jnp.zeros(len(self.landscape), dtype=jnp.int64),
-            stacked,
-        )
+    def accumulate_hits(self, models: ObservationModel) -> Int64[Array, ' pixels']:
+        def acc(carry, model):  # type: ignore[no-untyped-def]
+            return carry + model.hits(), None
+
+        # StokesLandscape.__len__ doesn't include Stokes parameters factor
+        init = jnp.zeros(len(self.landscape), dtype=jnp.int64)
+        total, _ = jax.lax.scan(acc, init, models)
         return total
 
-    def accumulate_rhs(self, blocks: list[ObservationBlock]) -> StokesPyTreeType:
+    def accumulate_rhs(self, models: ObservationModel) -> StokesPyTreeType:
         """Accumulate the RHS vector across all observations"""
         reader = self.get_reader(['metadata', 'sample_data'])
-        stacked = jax.tree.map(lambda *xs: jnp.stack(xs), *blocks)
 
-        def step(carry, args):  # type: ignore[no-untyped-def]
-            i, block = args
+        def acc(carry, args):  # type: ignore[no-untyped-def]
+            i, model = args
             data, _ = reader.read(i)
-            carry = carry + block.rhs(data, self.config)
+            carry = carry + model.rhs(data, self.config)
             return carry, None
 
-        # ObservationBlock.rhs() returns an array directly
-        init = jnp.zeros(blocks[0].map_structure.shape)
-        args = (jnp.arange(reader.count), stacked)
-        total, _ = jax.lax.scan(step, init, args)
-        return total  # type: ignore[return-value]
+        init = tree.zeros_like(models.map_structure)
+        total, _ = jax.lax.scan(acc, init, (jnp.arange(reader.count), models))
+        return total  # type: ignore[no-any-return]
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']

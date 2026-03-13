@@ -75,7 +75,7 @@ def test_demod_acquisition_vs_sotodlib():
     lazy_obs = LazySOTODLibObservation(FOLDER / 'test_obs_2.h5')
     obs = lazy_obs.get_data()
     maker = MultiObservationMapMaker([lazy_obs], config=_make_config(demodulated=True))
-    (h,) = maker.build_acquisitions()
+    h = maker.build_model().H
 
     # Get demodulated TODs (I, Q, U)
     tod_iqu = obs.get_demodulated_tods(stokes='IQU')

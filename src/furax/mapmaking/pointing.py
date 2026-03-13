@@ -1,3 +1,4 @@
+import copy
 from dataclasses import field
 from typing import Literal
 
@@ -134,6 +135,23 @@ class PointingOperator(AbstractLinearOperator):
         )
         tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
         return tod_out
+
+    def as_stokes_i(self) -> 'PointingOperator':
+        """Return a copy of this operator restricted to StokesI."""
+        if self.landscape.stokes == 'I':
+            return self
+        landscape = copy.copy(self.landscape)
+        landscape.stokes = 'I'
+        ndet, nsamp = self.qdet.shape[0], self.qbore.shape[0]
+        out_structure = StokesI.structure_for((ndet, nsamp), dtype=landscape.dtype)
+        return PointingOperator(
+            landscape,
+            qbore=self.qbore,
+            qdet=self.qdet,
+            chunk_size=self.chunk_size,
+            in_structure=landscape.structure,
+            _out_structure=out_structure,
+        )
 
     def as_expanded_operator(self) -> AbstractLinearOperator:
         """Return the equivalent QURotationOperator @ IndexOperator @ RavelOperator.

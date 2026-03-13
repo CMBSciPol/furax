@@ -20,6 +20,8 @@ authors:
     affiliation: 1
   - name: Wuhyun Sohn
     affiliation: 1
+  - name: the SciPol team
+    affiliation: 1
   - name: Josquin Errard
     orcid: 0000-0002-1419-0031
     affiliation: 1
@@ -49,7 +51,7 @@ Furax addresses this need by providing a differentiable operator framework built
 
 Several software packages support CMB data analysis workflows. The TOAST framework [@toast2021] provides large-scale MPI-parallel pipelines used in production analyses for experiments such as Planck, LiteBIRD, and the Simons Observatory. However, its C++ core prevents automatic differentiation and limits integration with modern differentiable programming workflows.
 
-Healpy [@zonca2019] provides Python access to HEALPix routines widely used in CMB analysis but runs only on CPUs and does not provide an operator algebra framework. Simulation tools such as PySM [@pysm3] focus on forward sky modelling, while component separation packages such as FGBuster [@fgbuster2022] implement parametric fitting methods with simplified noise models.
+Healpy [@zonca2019] provides Python access to HEALPix routines widely used in CMB analysis but runs only on CPUs and does not provide an operator algebra framework. Simulation tools such as PySM [@pysm3] focus on forward sky modelling, while component separation packages such as FGBuster [@fgbuster2022,@rizzieri2025] implement parametric fitting methods with simplified noise models.
 
 Recent JAX-based tools such as jax-healpy and s2fft provide GPU-accelerated spherical transforms but do not offer a general framework for composing linear operators.
 
@@ -77,11 +79,11 @@ By relying on JAX transformations, Furax operators are compatible with automatic
 
 # Research Impact
 
-Furax was developed within the ERC-funded SciPol project to support the development of next-generation CMB data analysis pipelines. The framework enables gradient-based optimization and differentiable forward modelling, opening new possibilities for end-to-end inference pipelines and integration with machine-learning methods.
+Furax was developed within the ERC-funded \textsc{SciPol} project to support the development of next-generation CMB data analysis pipelines. The framework enables gradient-based optimization and differentiable forward modelling, opening new possibilities for end-to-end inference pipelines and integration with machine-learning methods.
 
 The modular operator-based design facilitates rapid prototyping of new analysis techniques while maintaining compatibility with existing large-scale processing pipelines through interfaces with tools such as TOAST.
 
-Furax therefore provides an important piece of infrastructure for developing analysis methods for future cosmological surveys, including LiteBIRD, the Simons Observatory, and CMB-S4.
+Furax therefore provides an important piece of infrastructure for developing analysis methods for future cosmological surveys, including LiteBIRD, the Simons Observatory, the South Pole Observatory, and CMB-S4.
 
 # AI Usage Disclosure
 

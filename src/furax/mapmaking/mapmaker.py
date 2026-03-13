@@ -1,4 +1,3 @@
-import operator
 import pickle
 from abc import abstractmethod
 from collections.abc import Sequence
@@ -16,10 +15,9 @@ import pixell.enmap
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, Bool, DTypeLike, Float, Integer, PyTree
+from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
 import furax.linalg
-import furax.tree
 from furax import (
     AbstractLinearOperator,
     Config,
@@ -33,21 +31,22 @@ from furax.core import (
     BlockColumnOperator,
     BlockDiagonalOperator,
     BlockRowOperator,
-    CompositionOperator,
     IndexOperator,
+)
+from furax.mapmaking._block import (
+    ObservationBlock,
+    _hwp_frequency,
 )
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
-from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesPyTreeType, ValidStokesType
+from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
 
 from ..interfaces.lineax import as_lineax_operator
 from . import templates
 from ._logger import logger as furax_logger
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
-from .acquisition import build_acquisition_operator
 from .config import Landscapes, MapMakingConfig, Methods
-from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
@@ -116,7 +115,18 @@ class MultiObservationMapMaker(Generic[T]):
         self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
-        self.landscape = _build_landscape(self.config)
+        self.landscape = self._landscape()
+
+    def _landscape(self) -> StokesLandscape:
+        if self.config.landscape.type == Landscapes.HPIX:
+            return HealpixLandscape(
+                nside=self.config.landscape.nside,
+                stokes=self.config.stokes,
+                dtype=self.config.dtype,
+            )
+        if self.config.landscape.type == Landscapes.WCS:
+            raise NotImplementedError
+        raise NotImplementedError
 
     def run(self, out_dir: str | Path | None = None) -> MapMakingResults:
         """Runs the mapmaker and return results after saving them to the given directory."""
@@ -145,98 +155,51 @@ class MultiObservationMapMaker(Generic[T]):
         """Computes the mapmaker results (maps and other products)."""
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
 
-        # Acquisition (I, Q, U Maps -> TOD)
-        h_blocks = self.build_acquisitions()
-        tod_structure = h_blocks[0].out_structure
-        map_structure = h_blocks[0].in_structure
+        # Acquisition blocks
+        blocks = self.build_blocks()
+        H = BlockColumnOperator([b.masker @ b.H for b in blocks])
+        W = BlockDiagonalOperator([b.W for b in blocks])
+        A = (H.T @ W @ H).reduce()
         logger_info('Created acquisition operators')
 
-        # Sample mask projectors
-        maskers = self.build_sample_maskers(tod_structure)
-
-        # Hit map
-        hits = self.accumulate_hit_map(h_blocks, maskers).i.astype(jnp.int64)
+        hits = self.accumulate_hits(blocks).block_until_ready()
         logger_info('Computed hit map')
 
-        # Noise weighting
-        noise_models, sample_rates = self.noise_models_and_sample_rates()
-        logger_info('Created noise models')
-
-        # Build the inverse noise weighting operators
-        w_blocks = self.noise_operator_blocks(
-            noise_models, tod_structure, sample_rates, self.config.correlation_length, inverse=True
-        )
-        logger_info('Created weighting operators')
-
-        # RHS
-        if self.config.gaps.fill and not self.config.binned:
-            # need some additional stuff for gap-filling
-            #
-            # this part does not run when binned=True because it is useless
-            # and gap-filling operator does not accept covariance that isn't Fourier or Toeplitz
-
-            def mask2index(op):  # type: ignore[no-untyped-def]
-                if isinstance(op, MaskOperator):
-                    mask = op.to_boolean_mask()
-                elif isinstance(op, IdentityOperator):
-                    # edge case, should happen very rarely
-                    mask = furax.tree.ones_like(tod_structure).astype(bool)
-                else:
-                    raise NotImplementedError
-                return IndexOperator(mask, in_structure=tod_structure)
-
-            indexers = [mask2index(op) for op in maskers]
-            c_blocks = self.noise_operator_blocks(
-                noise_models,
-                tod_structure,
-                sample_rates,
-                self.config.correlation_length,
-                inverse=False,
-            )
-            logger_info('Created covariance blocks and indexers for gap-filling')
-            rhs = self.accumulate_rhs(
-                h_blocks, w_blocks, maskers, cov_blocks=c_blocks, indexers=indexers
-            )
-        else:
-            rhs = self.accumulate_rhs(h_blocks, w_blocks, maskers)
+        rhs = self.accumulate_rhs(blocks)
         logger_info('Accumulated RHS vector')
 
-        # System matrix, including sample masking
-        h = BlockDiagonalOperator(maskers) @ BlockColumnOperator(h_blocks)
-        w = BlockDiagonalOperator(w_blocks)
-        system = (h.T @ w @ h).reduce()
-        logger_info('Set up system matrix')
-
-        # System matrix for preconditioning
+        # Preconditioning
         if self.config.binned:
-            sysdiag = BJPreconditioner.create(system)
-            logger_info('Compute full system matrix (diagonal case)')
+            sysdiag = A
         else:
-            # If ML, use approximate system matrix keeping only diagonal coeffs of weight matrix
-            white_w = BlockDiagonalOperator(
+            Wdiag = BlockDiagonalOperator(
                 jax.tree.map(
                     lambda m, s: m.to_white_noise_model().inverse_operator(s),
-                    model,
-                    tod_structure,
+                    block.noise_model,
+                    block.tod_structure,
                     is_leaf=lambda x: isinstance(x, NoiseModel),
                 )
-                for model in noise_models
+                for block in blocks
             )
-            sysdiag = BJPreconditioner.create((h.T @ white_w @ h).reduce())
-            logger_info('Set up approximate system matrix')
+            sysdiag = (H.T @ Wdiag @ H).reduce()
 
-        # Inverse covariance matrix and pixel selection
-        icov = sysdiag.get_blocks()
+        BJ = BJPreconditioner.create(sysdiag)
+        icov = BJ.get_blocks().block_until_ready()
+        logger_info('Computed white noise inverse covariance')
+
+        # Pixel selection
         valid_pixels = self.pixel_selection(hits, icov)
-        logger_info(f'Selected {valid_pixels.sum()} / {valid_pixels.size} pixels')
-        # move pixels to last axis
-        icov = jnp.moveaxis(icov, 0, -1)
+        n_selected = jnp.sum(valid_pixels)
+        n_observed = jnp.sum(hits > 0)
+        n_total = valid_pixels.size
+        logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
 
-        # Excluded pixels have zero hits
-        hits = hits.at[~valid_pixels].set(0)
+        hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
+        icov = jnp.moveaxis(icov, 0, -1)  # pixels to last dim, for saving
 
         # Pixel selection operator
         valid_indices = jnp.argwhere(valid_pixels)
+        map_structure = blocks[0].map_structure
         if self.config.landscape.type == Landscapes.WCS:
             # TODO: test this again when WCS landscape is supported
             selector = IndexOperator(
@@ -246,17 +209,14 @@ class MultiObservationMapMaker(Generic[T]):
             # Healpix
             selector = IndexOperator((valid_indices,), in_structure=map_structure)
 
-        # Preconditioner
-        precond = (selector @ sysdiag.inverse() @ selector.T).reduce()
-        logger_info('Set up preconditioner')
-
         # Solve the mapmaking system
         solver = lineax.CG(**asdict(self.config.solver))
         spd = OperatorTag.POSITIVE_SEMIDEFINITE
-        lx_system = as_lineax_operator(selector @ system @ selector.T, spd)
-        lx_precond = as_lineax_operator(precond, spd)
+        lx_system = as_lineax_operator(selector @ A @ selector.T, spd)
+        M = (selector @ BJ.I @ selector.T).reduce()  # preconditioner
+        lx_precond = as_lineax_operator(M, spd)
         rhs_reduced = selector(rhs)
-        y0 = precond(rhs_reduced)
+        y0 = M(rhs_reduced)
 
         solution = lineax.linear_solve(
             lx_system,
@@ -270,164 +230,59 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
         return MapMakingResults(map=estimate, icov=icov, hit_map=hits, solver_stats=solution.stats)
 
-    def build_acquisitions(self) -> list[AbstractLinearOperator]:
+    def build_blocks(self) -> list[ObservationBlock]:
         # Only read necessary fields
         required_fields = [
             'boresight_quaternions',
             'detector_quaternions',
+            'valid_sample_masks',
+            'timestamps',
         ]
         if not self.config.demodulated:
             # FIXME: this does not handle the case of a telescope without HWP
             required_fields.append('hwp_angles')
-        reader = self.get_reader(required_fields)
-        dtype = self.config.dtype
-
-        @jax.jit
-        def get_acquisition(i: int) -> AbstractLinearOperator:
-            data, _padding = reader.read(i)
-            return build_acquisition_operator(
-                self.landscape,
-                data['boresight_quaternions'],
-                data['detector_quaternions'],
-                data.get('hwp_angles'),
-                demodulated=self.config.demodulated,
-                pointing_chunk_size=self.config.pointing_chunk_size,
-                pointing_on_the_fly=self.config.pointing_on_the_fly,
-                dtype=dtype,
-            )
-
-        return jax.tree.map(get_acquisition, list(range(reader.count)))  # type: ignore[no-any-return]
-
-    def build_sample_maskers(
-        self, tod_structure: PyTree[jax.ShapeDtypeStruct]
-    ) -> list[AbstractLinearOperator]:
-        """Returns the sample mask projector for each observation."""
-        # Only read necessary fields
-        required_fields = ['valid_sample_masks']
         if self.config.scanning_mask:
             required_fields.append('valid_scanning_masks')
+        if self.config.fit_noise_model:
+            required_fields.extend(['sample_data', 'hwp_angles'])
+        else:
+            required_fields.append('noise_model_fits')
+        if self.config.gaps.fill and not self.config.binned:
+            required_fields.append('metadata')
         reader = self.get_reader(required_fields)
 
         @jax.jit
-        def get_mask_projector(i: int) -> AbstractLinearOperator:
-            data, _padding = reader.read(i)
-            return _build_mask_projector(
-                data['valid_sample_masks'],
-                data.get('valid_scanning_masks'),
-                structure=tod_structure,
-            )
+        def func(i: int) -> ObservationBlock:
+            data, padding = reader.read(i)
+            return ObservationBlock.create(data, padding, self.config, self.landscape)
 
-        return jax.tree.map(get_mask_projector, list(range(reader.count)))  # type: ignore[no-any-return]
+        return jax.tree.map(func, list(range(reader.count)))  # type: ignore[no-any-return]
 
-    def accumulate_hit_map(
-        self,
-        acquisition_blocks: list[AbstractLinearOperator],
-        maskers: list[AbstractLinearOperator],
-    ) -> StokesI:
-        """Accumulate the raw sample hit count per pixel across all observations."""
-
-        @jax.jit
-        def get_hits(h, masker):  # type: ignore[no-untyped-def]
-            # the pointing operator should be the first in the acquisition chain, so the last operand...
-            pointing = h.operands[-1]
-            pointing_i = pointing.as_stokes_i()
-            # evaluate on a vector of ones built for the masker's structure (could be multiple things)
-            ones = furax.tree.ones_like(masker.in_structure)
-            masked_ones = jax.tree.leaves(masker(ones))[0]
-            return pointing_i.T(StokesI(masked_ones))
-
-        is_operator = lambda x: isinstance(x, AbstractLinearOperator)
-        return jax.tree.reduce(  # type: ignore[no-any-return]
-            operator.add,
-            jax.tree.map(get_hits, acquisition_blocks, maskers, is_leaf=is_operator),
-            is_leaf=lambda x: isinstance(x, Stokes),
+    def accumulate_hits(self, blocks: list[ObservationBlock]) -> Int64[Array, ' pixels']:
+        stacked = jax.tree.map(lambda *xs: jnp.stack(xs), *blocks)
+        total, _ = jax.lax.scan(
+            lambda carry, b: (carry + b.hits(), None),
+            jnp.zeros(len(self.landscape), dtype=jnp.int64),
+            stacked,
         )
+        return total
 
-    @staticmethod
-    def noise_operator_blocks(
-        noise_models: list[PyTree[NoiseModel]],
-        structure: PyTree[jax.ShapeDtypeStruct],
-        sample_rates: list[float],
-        correlation_length: int,
-        *,
-        inverse: bool,
-    ) -> list[PyTree[AbstractLinearOperator]]:
-        """Build (inverse) noise covariance blocks, supporting pytree noise models."""
+    def accumulate_rhs(self, blocks: list[ObservationBlock]) -> StokesPyTreeType:
+        """Accumulate the RHS vector across all observations"""
+        reader = self.get_reader(['metadata', 'sample_data'])
+        stacked = jax.tree.map(lambda *xs: jnp.stack(xs), *blocks)
 
-        def to_operator(
-            leaf_model: NoiseModel, leaf_structure: jax.ShapeDtypeStruct, fs: float
-        ) -> AbstractLinearOperator:
-            func = leaf_model.inverse_operator if inverse else leaf_model.operator
-            return func(leaf_structure, sample_rate=fs, correlation_length=correlation_length)
+        def step(carry, args):  # type: ignore[no-untyped-def]
+            i, block = args
+            data, _ = reader.read(i)
+            carry = carry + block.rhs(data, self.config)
+            return carry, None
 
-        def func_block(model: PyTree[NoiseModel], fs: float) -> BlockDiagonalOperator:
-            # this accomodates an arbitrary pytree of noise models (e.g. StokesIQU for demodulated data)
-            operator_tree = jax.tree.map(
-                lambda leaf, struct: to_operator(leaf, struct, fs),
-                model,
-                structure,
-                is_leaf=lambda x: isinstance(x, NoiseModel),
-            )
-            return BlockDiagonalOperator(operator_tree)
-
-        return [func_block(model, fs) for model, fs in zip(noise_models, sample_rates, strict=True)]
-
-    def noise_models_and_sample_rates(self) -> tuple[list[NoiseModel], list[int | float]]:
-        """Returns a list of (noise_model, sample_rate) tuples for each observation."""
-        # this is a list of tuples
-        models_and_fs = (
-            self._fit_noise_models() if self.config.fit_noise_model else self._read_noise_models()
-        )
-        models, sample_rates = zip(*models_and_fs)
-        return list(models), list(sample_rates)
-
-    def accumulate_rhs(
-        self,
-        h_blocks: list[AbstractLinearOperator],
-        w_blocks: list[AbstractLinearOperator],
-        maskers: list[AbstractLinearOperator],
-        cov_blocks: list[AbstractLinearOperator] | None = None,
-        indexers: list[IndexOperator] | None = None,
-    ) -> StokesPyTreeType:
-        """Accumulates data into the r.h.s. of the mapmaking equation.
-
-        Also performs gap-filling on the data before projecting into map domain.
-        """
-        # Only read what's needed (metadata is used in gap-filling)
-        reader = self.get_reader(['metadata', 'sample_data', 'timestamps'])
-
-        @jax.jit
-        def get_rhs(i, h_block, w_block, masker, cov_block, indexer):  # type: ignore[no-untyped-def]
-            data, _padding = reader.read(i)
-            rhs_op = h_block.T @ masker @ w_block
-            tod = data['sample_data']
-            if cov_block is not None and indexer is not None:
-                # perform gap-filling if a noise covariance and an IndexOperator are provided
-                # FIXME: probably broken with demodulated data
-                gapfill = GapFillingOperator(
-                    cov_block,
-                    indexer,
-                    icov=w_block,
-                    metadata=data['metadata'],
-                    rate=_sample_rate(data['timestamps']),  # type: ignore[arg-type]
-                    max_cg_steps=self.config.gaps.fill_options.max_steps,
-                    rtol=self.config.gaps.fill_options.rtol,
-                )
-                key = jax.random.key(self.config.gaps.fill_options.seed)
-                tod = gapfill(key, tod)
-            return rhs_op(tod)
-
-        # sum RHS across observations
-        # make a dummy tuple of None if cov_blocks is not provided
-        c_blocks = cov_blocks or [None] * len(h_blocks)  # type: ignore[list-item]
-        i_blocks = indexers or [None] * len(h_blocks)  # type: ignore[list-item]
-        return jax.tree.reduce(  # type: ignore[no-any-return]
-            operator.add,
-            jax.tree.map(
-                get_rhs, list(range(reader.count)), h_blocks, w_blocks, maskers, c_blocks, i_blocks
-            ),
-            is_leaf=lambda x: isinstance(x, Stokes),
-        )
+        # ObservationBlock.rhs() returns an array directly
+        init = jnp.zeros(blocks[0].map_structure.shape)
+        args = (jnp.arange(reader.count), stacked)
+        total, _ = jax.lax.scan(step, init, args)
+        return total  # type: ignore[return-value]
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -445,88 +300,6 @@ class MultiObservationMapMaker(Generic[T]):
             )
 
         return valid
-
-    def _read_noise_models(self) -> list[tuple[NoiseModel, int | float]]:
-        reader = self.get_reader(['noise_model_fits', 'timestamps'])
-
-        @jax.jit
-        def read_model(i):  # type: ignore[no-untyped-def]
-            data, _padding = reader.read(i)
-            fs = _sample_rate(data['timestamps'])
-            model = jax.tree.map(lambda x: AtmosphericNoiseModel(*x.T), data['noise_model_fits'])
-            if self.config.binned:
-                model = jax.tree.map(
-                    lambda m: m.to_white_noise_model(),
-                    model,
-                    is_leaf=lambda x: isinstance(x, AtmosphericNoiseModel),
-                )
-            return model, fs
-
-        return jax.tree.map(read_model, list(range(reader.count)))  # type: ignore[no-any-return]
-
-    def _fit_noise_models(self) -> list[tuple[NoiseModel, int | float]]:
-        # Only read sample data, timestamps (to compute sampling rate), and hwp_angles (for masking)
-        reader = self.get_reader(['sample_data', 'timestamps', 'hwp_angles'])
-
-        # Choose noise model based on mapmaker configuration
-        noise_model_class = WhiteNoiseModel if self.config.binned else AtmosphericNoiseModel
-
-        # Helper function to use in a jax.tree.map() call below
-        def _compute_Pxx_and_fit(tod, fs, fhwp):  # type: ignore[no-untyped-def]
-            f, Pxx = jax.scipy.signal.welch(tod, fs=fs, nperseg=self.config.nperseg)
-            return noise_model_class.fit_psd_model(
-                f,
-                Pxx,
-                sample_rate=fs,
-                hwp_frequency=fhwp,
-                config=self.config.noise_fit,
-            )
-
-        @jax.jit
-        def fit_model(i):  # type: ignore[no-untyped-def]
-            data, _padding = reader.read(i)
-            fs = _sample_rate(data['timestamps'])
-            fhwp = _hwp_frequency(data['timestamps'], data['hwp_angles'])
-            model = jax.tree.map(lambda x: _compute_Pxx_and_fit(x, fs, fhwp), data['sample_data'])
-            return model, fs
-
-        return jax.tree.map(fit_model, list(range(reader.count)))  # type: ignore[no-any-return]
-
-
-def _sample_rate(timestamps: Float[Array, '...']) -> Array:
-    # Note that the reader extrapolates timestamps in the padded region, keeping sample rate constant
-    return (timestamps.size - 1) / jnp.ptp(timestamps)
-
-
-def _hwp_frequency(timestamps: Float[Array, '...'], hwp_angles: Float[Array, '...']) -> Array:
-    # Note that the reader extrapolates hwp_angles in the padded region, keeping hwp freq constant
-    return (jnp.unwrap(hwp_angles)[-1] - hwp_angles[0]) / jnp.ptp(timestamps) / (2 * jnp.pi)
-
-
-def _build_landscape(config: MapMakingConfig) -> StokesLandscape:
-    if config.landscape.type == Landscapes.HPIX:
-        return HealpixLandscape(
-            nside=config.landscape.nside,
-            stokes=config.stokes,
-            dtype=config.dtype,
-        )
-    if config.landscape.type == Landscapes.WCS:
-        raise NotImplementedError
-    raise NotImplementedError
-
-
-def _build_mask_projector(
-    *valid_masks: Array | None, structure: jax.ShapeDtypeStruct
-) -> AbstractLinearOperator:
-    """Mask operator built from a series of boolean masks."""
-
-    def _masker(valid_mask: Array | None) -> AbstractLinearOperator:
-        if valid_mask is None:
-            return IdentityOperator(in_structure=structure)
-        return MaskOperator.from_boolean_mask(valid_mask, in_structure=structure)
-
-    combined_masker = CompositionOperator([_masker(valid_mask) for valid_mask in valid_masks])
-    return combined_masker.reduce()
 
 
 @dataclass

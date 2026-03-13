@@ -5,7 +5,7 @@ from pathlib import Path
 import jax.numpy as jnp
 import pytest
 
-from furax.core import BlockColumnOperator
+from furax.core import CompositionOperator
 from furax.mapmaking import (
     AbstractLazyObservation,
     MapMakingConfig,
@@ -14,8 +14,8 @@ from furax.mapmaking import (
 )
 from furax.mapmaking.config import LandscapeConfig, Landscapes
 from furax.mapmaking.noise import WhiteNoiseModel
-from furax.mapmaking.preconditioner import BJPreconditioner
-from furax.obs.stokes import Stokes, StokesI, ValidStokesType
+from furax.mapmaking.pointing import PointingOperator
+from furax.obs.stokes import Stokes, ValidStokesType
 
 # Skip tests for interfaces that are not installed
 sotodlib_installed = importlib.util.find_spec('sotodlib') is not None
@@ -81,102 +81,76 @@ def make_config(
 
 @pytest.mark.parametrize('stokes', STOKES_PARAMS)
 @pytest.mark.parametrize('name,demodulated', PARAMS)
-def test_acquisitions(name, demodulated, stokes):
-    observations = make_observations(name)
-    config = make_config(stokes, demodulated)
-    maker = MultiObservationMapMaker(observations, config=config)
-    reader = ObservationReader(observations, demodulated=demodulated, stokes=stokes)
-    operators = maker.build_acquisitions()
-    assert len(operators) == len(observations)
-    for op in operators:
-        assert op.in_structure == maker.landscape.structure
-        assert op.out_structure == reader.out_structure['sample_data']
+class TestMultiObsMapMaker:
+    """Test the multi-observation mapmaker.
 
+    Use a class in order to parametrize over multiple tests at once.
+    """
 
-@pytest.mark.parametrize('stokes', STOKES_PARAMS)
-@pytest.mark.parametrize('name,demodulated', PARAMS)
-@pytest.mark.parametrize('fit_models', [True, False])
-def test_noise_models(name, demodulated, fit_models, stokes):
-    observations = make_observations(name)
-    config = make_config(stokes=stokes, demodulated=demodulated, fit_noise_model=fit_models)
-    maker = MultiObservationMapMaker(observations, config=config)
-    noise_models, _ = maker.noise_models_and_sample_rates()
-    assert len(noise_models) == len(observations)
-    # those must be white noise models in binned mapmaking
-    # in the demodulated case each model is a Stokes pytree of per-component WhiteNoiseModels
-    if demodulated:
-        for model_tree in noise_models:
-            assert isinstance(model_tree, Stokes.class_for(config.stokes))
-            assert all(
-                isinstance(getattr(model_tree, stoke.lower()), WhiteNoiseModel)
-                for stoke in config.stokes
-            )
-    else:
-        assert all(isinstance(model, WhiteNoiseModel) for model in noise_models)
+    def test_blocks_vs_reader_structure(self, name, demodulated, stokes):
+        observations = make_observations(name)
+        config = make_config(stokes, demodulated)
+        maker = MultiObservationMapMaker(observations, config=config)
+        reader = ObservationReader(observations, demodulated=demodulated, stokes=stokes)
+        blocks = maker.build_blocks()
+        assert len(blocks) == len(observations) == reader.count
+        for block in blocks:
+            assert block.map_structure == maker.landscape.structure
+            assert block.tod_structure == reader.out_structure['sample_data']
 
+    def test_last_acquisition_operand_is_pointing(self, name, demodulated, stokes):
+        observations = make_observations(name)
+        config = make_config(stokes, demodulated)
+        maker = MultiObservationMapMaker(observations, config=config)
+        acquisitions = [block.H for block in maker.build_blocks()]
+        for h in acquisitions:
+            assert isinstance(h, CompositionOperator)
+            assert isinstance(h.operands[-1], PointingOperator)
 
-@pytest.mark.parametrize('stokes', STOKES_PARAMS)
-@pytest.mark.parametrize('name,demodulated', PARAMS)
-def test_accumulate_rhs(name, demodulated, stokes):
-    observations = make_observations(name)
-    config = make_config(stokes, demodulated)
-    maker = MultiObservationMapMaker(observations, config=config)
-    reader = ObservationReader(observations, demodulated=demodulated, stokes=stokes)
-    tod_structure = reader.out_structure['sample_data']
-    noise_models, sample_rates = maker.noise_models_and_sample_rates()
-    w_blocks = MultiObservationMapMaker.noise_operator_blocks(
-        noise_models,
-        tod_structure,
-        sample_rates,
-        config.correlation_length,
-        inverse=True,
-    )
-    h_blocks = maker.build_acquisitions()
-    maskers = maker.build_sample_maskers(h_blocks[0].out_structure)
-    rhs = maker.accumulate_rhs(h_blocks, w_blocks, maskers)
-    assert rhs.shape == maker.landscape.shape
+    @pytest.mark.parametrize('fit_models', [True, False])
+    def test_white_noise_models_binned_or_demodulated(self, name, demodulated, stokes, fit_models):
+        observations = make_observations(name)
+        config = make_config(stokes=stokes, demodulated=demodulated, fit_noise_model=fit_models)
+        maker = MultiObservationMapMaker(observations, config=config)
+        noise_models = [block.noise_model for block in maker.build_blocks()]
+        if demodulated:
+            # In demodulated case each block has a Stokes pytree of per-component WhiteNoiseModel's
+            for model_tree in noise_models:
+                assert isinstance(model_tree, Stokes.class_for(config.stokes))
+                assert all(
+                    isinstance(getattr(model_tree, stoke.lower()), WhiteNoiseModel)
+                    for stoke in config.stokes
+                )
+        else:
+            assert all(isinstance(model, WhiteNoiseModel) for model in noise_models)
 
+    def test_rhs_shape(self, name, demodulated, stokes):
+        observations = make_observations(name)
+        config = make_config(stokes, demodulated)
+        maker = MultiObservationMapMaker(observations, config=config)
+        blocks = maker.build_blocks()
+        rhs = maker.accumulate_rhs(blocks)
+        assert rhs.shape == maker.landscape.shape
 
-@pytest.mark.parametrize('stokes', STOKES_PARAMS)
-@pytest.mark.parametrize('name,demodulated', PARAMS)
-def test_accumulate_hit_map(name, demodulated, stokes):
-    observations = make_observations(name)
-    config = make_config(stokes, demodulated)
-    maker = MultiObservationMapMaker(observations, config=config)
-    h_blocks = maker.build_acquisitions()
-    maskers = maker.build_sample_maskers(h_blocks[0].out_structure)
-    hit_map = maker.accumulate_hit_map(h_blocks, maskers)
-    assert isinstance(hit_map, StokesI)
-    assert hit_map.shape == maker.landscape.shape
-    # hit maps should be nonnegative integers
-    assert jnp.all(hit_map.i >= 0)
-    assert jnp.all(hit_map.i == jnp.floor(hit_map.i))
+    def test_hits_are_nonnegative(self, name, demodulated, stokes):
+        observations = make_observations(name)
+        config = make_config(stokes, demodulated)
+        maker = MultiObservationMapMaker(observations, config=config)
+        blocks = maker.build_blocks()
+        hits = maker.accumulate_hits(blocks)
+        assert hits.shape == maker.landscape.shape
+        assert jnp.all(hits >= 0)
 
-
-@pytest.mark.parametrize('stokes', STOKES_PARAMS)
-@pytest.mark.parametrize('name,demodulated', PARAMS)
-def test_binning(name, demodulated, stokes):
-    observations = make_observations(name)
-    config = make_config(stokes, demodulated)
-    maker = MultiObservationMapMaker(observations, config=config)
-    h_blocks = maker.build_acquisitions()
-    h = BlockColumnOperator(h_blocks)
-    system = BJPreconditioner.create((h.T @ h).reduce())
-    assert system.in_structure == maker.landscape.structure
-    zeros = system(maker.landscape.full(0))
-    assert zeros.shape == maker.landscape.shape
-
-
-@pytest.mark.parametrize('stokes', STOKES_PARAMS)
-@pytest.mark.parametrize('name,demodulated', PARAMS)
-def test_full_mapmaker(name, demodulated, stokes):
-    observations = make_observations(name)
-    config = make_config(stokes, demodulated)
-    maker = MultiObservationMapMaker(observations, config=config)
-    results = maker.run()
-    n_stokes = len(stokes)
-    n_pixel = prod(results.map.shape)
-    assert results.icov.shape == (n_stokes, n_stokes, n_pixel)
-    assert results.solver_stats is not None
-    num_steps = results.solver_stats['num_steps']
-    assert num_steps == 1, f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'
+    def test_full_mapmaker(self, name, demodulated, stokes):
+        observations = make_observations(name)
+        config = make_config(stokes, demodulated)
+        maker = MultiObservationMapMaker(observations, config=config)
+        results = maker.run()
+        n_stokes = len(stokes)
+        n_pixel = prod(results.map.shape)
+        assert results.icov.shape == (n_stokes, n_stokes, n_pixel)
+        assert results.solver_stats is not None
+        num_steps = results.solver_stats['num_steps']
+        assert num_steps == 1, (
+            f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'
+        )

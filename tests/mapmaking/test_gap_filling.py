@@ -37,7 +37,7 @@ def test_generate_realization_shape(shape: tuple[int, ...]):
     key = jax.random.key(31415926539)
     structure = jax.ShapeDtypeStruct(shape, float)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=structure)
-    real = generate_noise_realization(key, cov)
+    real = generate_noise_realization(key, cov, 1.0)
     assert real.shape == shape
 
 

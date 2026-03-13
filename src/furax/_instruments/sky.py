@@ -1,11 +1,14 @@
 import sys
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pysm3
 import pysm3.units as u
+from jax.typing import ArrayLike
 from jaxtyping import Array, DTypeLike, PRNGKeyArray
+from numpy.typing import NDArray
 
 from ..obs.landscapes import FrequencyLandscape
 from ..obs.stokes import Stokes, ValidStokesType
@@ -14,6 +17,8 @@ if sys.version_info < (3, 11):
     from typing_extensions import Self
 else:
     from typing import Self
+import sys
+
 import equinox as eqx
 
 
@@ -59,20 +64,50 @@ class FGBusterInstrument(eqx.Module):
         >>> instrument = instrument.depth_conversion(unit='uK_CMB')
     """
 
-    frequency: Array = eqx.field(static=True, converter=np.asarray)
-    depth_i: Array = eqx.field(static=True, converter=np.asarray)
-    depth_p: Array = eqx.field(static=True, converter=np.asarray)
+    # 1. Store the internal data as static tuples so JAX can hash/compare them safely
+    _frequency: tuple[float, ...] = eqx.field(static=True)
+    _depth_i: tuple[float, ...] = eqx.field(static=True)
+    _depth_p: tuple[float, ...] = eqx.field(static=True)
+
+    def __init__(self, frequency: ArrayLike, depth_i: ArrayLike, depth_p: ArrayLike) -> None:
+        """Custom init to freeze numpy arrays into nested, hashable tuples."""
+
+        def _freeze_array(arr: ArrayLike) -> Any:
+            # .tolist() converts numpy arrays to nested standard python lists
+            parsed = np.asarray(arr).tolist()
+
+            # Recursively convert those lists into immutable tuples
+            def _to_tuple(item: object) -> Any:
+                return tuple(_to_tuple(x) for x in item) if isinstance(item, list) else item
+
+            return _to_tuple(parsed)
+
+        self._frequency = _freeze_array(frequency)
+        self._depth_i = _freeze_array(depth_i)
+        self._depth_p = _freeze_array(depth_p)
+
+    # 2. Expose the data publicly as standard numpy arrays via properties
+    @property
+    def frequency(self) -> NDArray[Any]:
+        return np.asarray(self._frequency)
+
+    @property
+    def depth_i(self) -> NDArray[Any]:
+        return np.asarray(self._depth_i)
+
+    @property
+    def depth_p(self) -> NDArray[Any]:
+        return np.asarray(self._depth_p)
 
     @classmethod
-    def default_instrument(cls: type[Self]) -> Self:
+    def default_instrument(cls: type['Self']) -> 'Self':
         """
         Returns a default instrument with predefined parameters.
         """
-
         frequency = np.arange(10.0, 300, 30.0)
         depth_p = (np.linspace(20, 40, 10) - 30) ** 2
         depth_i = (np.linspace(20, 40, 10) - 30) ** 2
-        return cls(frequency, depth_i, depth_p)  # type: ignore[arg-type]
+        return cls(frequency, depth_i, depth_p)
 
     @classmethod
     def from_depth_i(cls, frequency: Array, depth_i: Array) -> 'FGBusterInstrument':
@@ -87,7 +122,7 @@ class FGBusterInstrument(eqx.Module):
         """
         Creates an instrument using polarization depth and derives intensity depth.
         """
-        depth_i = depth_p / jnp.sqrt(2)
+        depth_i = depth_p / np.sqrt(2)
         return cls(frequency, depth_i, depth_p)
 
     @classmethod
@@ -104,6 +139,7 @@ class FGBusterInstrument(eqx.Module):
         """
         Converts depths to a specified unit and dtype.
         """
+        # Because we used @property, self.depth_i and self.frequency act like normal numpy arrays here!
         depth_i = self.depth_i * u.arcmin * u.uK_CMB
         depth_p = self.depth_p * u.arcmin * u.uK_CMB
 
@@ -116,14 +152,13 @@ class FGBusterInstrument(eqx.Module):
             equivalencies=u.cmb_equivalencies(self.frequency * u.GHz),
         )
 
-        # add axis for broadcasting
         depth_i = np.array(depth_i, dtype=dtype).reshape(-1, 1)
         depth_p = np.array(depth_p, dtype=dtype).reshape(-1, 1)
 
         return FGBusterInstrument(
             frequency=self.frequency.reshape(-1, 1),
-            depth_i=depth_i,  # type: ignore[arg-type]
-            depth_p=depth_p,  # type: ignore[arg-type]
+            depth_i=depth_i,
+            depth_p=depth_p,
         )
 
 
@@ -236,7 +271,9 @@ def get_observation(
     """
     pysm_sky = get_sky(nside, tag)
 
-    landscapes = FrequencyLandscape(nside, instrument.frequency, stokes_type, dtype=dtype)
+    landscapes = FrequencyLandscape(
+        nside, jnp.asarray(instrument.frequency), stokes_type, dtype=dtype
+    )
     if noise_ratio > 0:
         gauss_sky = landscapes.normal(key) * noise_ratio
         sigma = get_noise_sigma_from_instrument(instrument, nside, stokes_type, unit=unit)

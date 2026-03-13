@@ -25,7 +25,7 @@ authors:
     affiliation: 1
   - name: Josquin Errard
     orcid: 0000-0002-1419-0031
-    affiliation 1 
+    affiliation: 1 
 affiliations:
   - name: Université Paris Cité, CNRS, Astroparticule et Cosmologie, F-75013 Paris, France
     index: 1
@@ -40,7 +40,7 @@ The ``Framework for Unified and Robust data Analysis with JAX'' (Furax) is an op
 
 # Statement of Need
 
-Modern CMB experiments such as LiteBIRD [@litebird2023], the Simons Observatory [@simons2019], and CMB-S4 [@cmbs4-2022] generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. The central problem in CMB data analysis is map-making: recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
+Modern CMB experiments such as LiteBIRD [@litebird2023], the Simons Observatory [@simons2019], the South Pole Observatory [@spo] and CMB-S4 [@cmbs4-2022] generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. The central problem in CMB data analysis is map-making: recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
 
 $$\mathbf{d} = \mathbf{P}\mathbf{m} + \mathbf{n}$$
 

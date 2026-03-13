@@ -5,6 +5,8 @@
 [![CI](https://github.com/CMBSciPol/furax/actions/workflows/ci.yml/badge.svg)](https://github.com/CMBSciPol/furax/actions/workflows/ci.yml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
+[**Docs**](https://furax.readthedocs.io/en/stable)
+
 Furax: a Framework for Unified and Robust data Analysis with JAX.
 
 This framework provides building blocks for solving inverse problems, in particular in the astrophysical and cosmological domains.

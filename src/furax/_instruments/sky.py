@@ -25,7 +25,43 @@ import equinox as eqx
 class FGBusterInstrument(eqx.Module):
     """
     A PyTree-compatible class for representing an instrument as implemented in FGBuster framework.
-    ... (Keep your original docstring)
+
+    This class handles frequency, depth for intensity (depth_i),
+    and depth for polarization (depth_p) for a given instrument.
+    It provides utility methods for constructing instruments
+    from various parameters, converting depths
+    to desired units, and supporting JAX's PyTree structure.
+
+    Attributes:
+        frequency (Array): Array of frequency values.
+        depth_i (Array): Depth values for intensity.
+        depth_p (Array): Depth values for polarization.
+
+    Methods:
+      default_instrument(): Returns a default instrument with predefined parameters.
+      from_depth_i(): Creates an instrument using
+                      intensity depth and derives polarization depth.
+      from_depth_p(): Creates an instrument using
+                      polarization depth and derives intensity depth.
+      from_params(): Directly creates an instrument from
+                      given frequency, intensity depth, and polarization depth.
+          depth_conversion(): Converts depths to a specified unit and dtype.
+    Note:
+        The class must be constructed with numpy arrays (not JAX arrays)
+        in order to be pysm3 and astropy compatible.
+        The arrays are static and always used as such.
+        Since for a given problem the instrument parameters do not change,
+    Examples:
+        >>> # Create a default instrument
+        >>> instrument = FGBusterInstrument.default_instrument()
+
+        >>> # Create an instrument from intensity depth
+        >>> frequency = np.arange(10.0, 300, 30.0)
+        >>> depth_i = (np.linspace(20, 40, 10) - 30) ** 2
+        >>> instrument = FGBusterInstrument.from_depth_i(frequency, depth_i)
+
+        >>> # Convert depth to micro-Kelvin CMB units
+        >>> instrument = instrument.depth_conversion(unit='uK_CMB')
     """
 
     # 1. Store the internal data as static tuples so JAX can hash/compare them safely

@@ -154,6 +154,10 @@ class MultiObservationMapMaker(Generic[T]):
         # Sample mask projectors
         maskers = self.build_sample_maskers(tod_structure)
 
+        # Hit map
+        hits = self.accumulate_hit_map(h_blocks, maskers).i.astype(jnp.int64)
+        logger_info('Computed hit map')
+
         # Noise weighting
         noise_models, sample_rates = self.noise_models_and_sample_rates()
         logger_info('Created noise models')
@@ -223,10 +227,13 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Inverse covariance matrix and pixel selection
         icov = sysdiag.get_blocks()
-        valid_pixels = self.pixel_selection(icov)
+        valid_pixels = self.pixel_selection(hits, icov)
         logger_info(f'Selected {valid_pixels.sum()} / {valid_pixels.size} pixels')
         # move pixels to last axis
         icov = jnp.moveaxis(icov, 0, -1)
+
+        # Excluded pixels have zero hits
+        hits = hits.at[~valid_pixels].set(0)
 
         # Pixel selection operator
         valid_indices = jnp.argwhere(valid_pixels)
@@ -238,11 +245,6 @@ class MultiObservationMapMaker(Generic[T]):
         else:
             # Healpix
             selector = IndexOperator((valid_indices,), in_structure=map_structure)
-
-        # Hit map (only at selected pixels)
-        hit_map = self.accumulate_hit_map(h_blocks, maskers).i.astype(jnp.int64)
-        hit_map = hit_map.at[~valid_pixels].set(0)
-        logger_info('Computed hit map')
 
         # Preconditioner
         precond = (selector @ sysdiag.inverse() @ selector.T).reduce()
@@ -266,9 +268,7 @@ class MultiObservationMapMaker(Generic[T]):
         estimate = selector.T(solution.value)
         num_steps = solution.stats['num_steps']
         logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
-        return MapMakingResults(
-            map=estimate, icov=icov, hit_map=hit_map, solver_stats=solution.stats
-        )
+        return MapMakingResults(map=estimate, icov=icov, hit_map=hits, solver_stats=solution.stats)
 
     def build_acquisitions(self) -> list[AbstractLinearOperator]:
         # Only read necessary fields
@@ -430,12 +430,10 @@ class MultiObservationMapMaker(Generic[T]):
         )
 
     def pixel_selection(
-        self, weights: Float[Array, 'pixels stokes stokes']
+        self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
     ) -> Bool[Array, ' pixels']:
         """Compute pixel selection according to hit and condition number cuts."""
         # Cut pixels with low number of samples
-        # Use the trace of each pixel's block as a proxy for the number of hits
-        hits = jnp.trace(weights, axis1=-2, axis2=-1)
         hits_quantile = jnp.quantile(hits[hits > 0], q=0.95)
         valid = hits > self.config.hits_cut * hits_quantile
 

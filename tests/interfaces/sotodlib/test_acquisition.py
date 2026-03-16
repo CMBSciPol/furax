@@ -61,8 +61,11 @@ def test_demod_acquisition_vs_sotodlib():
     The furax acquisition transpose H.T maps demodulated (I, Q, U) TODs to a sky map.
     This should match sotodlib's project_rhs_demod with unit detector weights.
     """
+    from furax.mapmaking.config import SotodlibConfig
 
-    lazy_obs = LazySOTODLibObservation(FOLDER / 'test_obs_2.h5')
+    lazy_obs = LazySOTODLibObservation(
+        FOLDER / 'test_obs_2.h5', sotodlib_config=SotodlibConfig(demodulated=True)
+    )
     obs = lazy_obs.get_data()
     landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
     h = build_acquisition_operator(

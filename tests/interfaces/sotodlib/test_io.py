@@ -6,6 +6,8 @@ import pytest
 
 from furax.interfaces.sotodlib import LazySOTODLibObservation
 from furax.mapmaking import AbstractGroundObservation, HashedObservationMetadata, ObservationReader
+from furax.mapmaking.config import SotodlibConfig
+from furax.obs.stokes import Stokes
 from furax.tree import as_structure
 
 FOLDER = Path(__file__).parents[2] / 'data/sotodlib'
@@ -17,6 +19,12 @@ OBS_NSAMPLE = [1_000, 10_000]
 @pytest.fixture
 def observations():
     return [LazySOTODLibObservation(FOLDER / f) for f in FILES]
+
+
+@pytest.fixture
+def demod_observations():
+    sotodlib_config = SotodlibConfig(demodulated=True)
+    return [LazySOTODLibObservation(FOLDER / f, sotodlib_config=sotodlib_config) for f in FILES]
 
 
 def test_reader_all_fields(observations) -> None:
@@ -96,4 +104,74 @@ def test_reader_invalid_data_field_name(observations) -> None:
 def test_reader_subset_of_data_fields(observations, requested_fields: list[str]) -> None:
     """Test that passing a subset of data fields loads only those fields."""
     reader = ObservationReader(observations, requested_fields=requested_fields)
+    assert set(reader.out_structure.keys()) == set(requested_fields)
+
+
+def test_reader_all_fields_demod(demod_observations) -> None:
+    """Test consistency for all available fields in demodulated mode."""
+    stokes = 'IQU'
+    reader = ObservationReader(
+        demod_observations,
+        requested_fields=AbstractGroundObservation.AVAILABLE_READER_FIELDS,
+        demodulated=True,
+        stokes=stokes,
+    )
+    ndet_max, nsample_max = max(OBS_NDET), max(OBS_NSAMPLE)
+    kls = Stokes.class_for(stokes)
+
+    assert reader.out_structure == {
+        'metadata': HashedObservationMetadata(
+            uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),
+            telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),
+            detector_uids=jax.ShapeDtypeStruct((ndet_max,), dtype=jnp.uint32),
+        ),
+        'sample_data': kls.structure_for((ndet_max, nsample_max), jnp.float64),
+        'valid_sample_masks': jax.ShapeDtypeStruct((ndet_max, nsample_max), dtype=jnp.bool),
+        'valid_scanning_masks': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.bool),
+        'timestamps': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
+        'hwp_angles': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
+        'detector_quaternions': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
+        'boresight_quaternions': jax.ShapeDtypeStruct((nsample_max, 4), dtype=jnp.float64),
+        'noise_model_fits': kls.structure_for((ndet_max, 4), jnp.float64),
+    }
+
+    for i in range(len(FILES)):
+        datum, padding = reader.read(i)
+
+        assert as_structure(datum) == reader.out_structure
+
+        ndet, nsample = OBS_NDET[i], OBS_NSAMPLE[i]
+        assert padding['metadata'].uid == ()
+        assert padding['metadata'].telescope_uid == ()
+        assert padding['metadata'].detector_uids == (ndet_max - ndet,)
+        assert all(
+            getattr(padding['sample_data'], s) == (ndet_max - ndet, nsample_max - nsample)
+            for s in stokes.lower()
+        )
+        assert padding['valid_sample_masks'] == (ndet_max - ndet, nsample_max - nsample)
+        assert padding['valid_scanning_masks'] == (nsample_max - nsample,)
+        assert padding['timestamps'] == (nsample_max - nsample,)
+        assert padding['hwp_angles'] == (nsample_max - nsample,)
+        assert padding['detector_quaternions'] == (ndet_max - ndet, 0)
+        assert padding['boresight_quaternions'] == (nsample_max - nsample, 0)
+        assert all(
+            getattr(padding['noise_model_fits'], s) == (ndet_max - ndet, 0) for s in stokes.lower()
+        )
+
+
+@pytest.mark.parametrize(
+    'requested_fields',
+    [
+        ['sample_data'],
+        ['sample_data', 'noise_model_fits'],
+        ['sample_data', 'timestamps', 'boresight_quaternions'],
+    ],
+)
+def test_reader_subset_of_data_fields_demod(
+    demod_observations, requested_fields: list[str]
+) -> None:
+    """Test that passing a subset of data fields loads only those fields in demodulated mode."""
+    reader = ObservationReader(
+        demod_observations, requested_fields=requested_fields, demodulated=True
+    )
     assert set(reader.out_structure.keys()) == set(requested_fields)

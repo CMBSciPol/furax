@@ -44,15 +44,14 @@ def run(  # type: ignore[no-untyped-def]
         logger.warning('no observations to map')
         return
 
-    observations = [LazySOTODLibObservation(f) for f in obsfiles]
-
-    logger.info(f'found {len(observations)} observations')
-
     if mapmaking_config is None:
         config = MapMakingConfig()
         logger.warning('no mapmaking configuration specified, using defaults')
     else:
         config = MapMakingConfig.load_yaml(mapmaking_config)
+
+    observations = [LazySOTODLibObservation(f, sotodlib_config=config.sotodlib) for f in obsfiles]
+    logger.info(f'found {len(observations)} observations')
 
     maker = MultiObservationMapMaker(observations, config=config, logger=logger)
     logger.info('loaded config and set up mapmaker')

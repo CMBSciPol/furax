@@ -161,11 +161,35 @@ class GapsConfig:
 
 
 @dataclass
+class SotodlibConfig:
+    """Configuration options specific to the sotodlib interface."""
+
+    # see https://github.com/simonsobs/so3g/blob/master/python/proj/coords.py#L45
+    site: Literal['so', 'so_sat1', 'so_sat2', 'so_sat3', 'so_lat'] = 'so'
+    """Observatory site identifier"""
+
+    weather: Literal['toco', 'typical'] = 'toco'
+    """Atmospheric condition tag for so3g sightline model"""
+
+    demodulated: bool = False
+    """Use demodulated TODs (HWP-specific data from sotodlib preprocessing)."""
+
+    wobble_correction: bool = False
+    """Apply HWP wobble correction to the line of sight."""
+
+    noise_source: Literal['preprocess', 'mapmaking'] = 'preprocess'
+    """Which precomputed noise model to use when fit_noise_model is False.
+
+    'preprocess': use per-stoke noise fits (noiseT, noiseQ, noiseU) from preprocessing.
+    'mapmaking': use the white noise estimate from noiseQ_mapmaking.
+    """
+
+
+@dataclass
 class MapMakingConfig:
     method: Methods = Methods.BINNED
     binned: bool = True
     stokes: Literal['I', 'QU', 'IQU', 'IQUV'] = 'IQU'
-    demodulated: bool = False
     scanning_mask: bool = False
     sample_mask: bool = False
     correlation_length: int = 1_000
@@ -183,6 +207,7 @@ class MapMakingConfig:
     landscape: LandscapeConfig = field(default_factory=LandscapeConfig)
     templates: TemplatesConfig | None = None
     atop_tau: int = 0
+    sotodlib: SotodlibConfig | None = None
 
     @classmethod
     def full_defaults(cls) -> 'MapMakingConfig':
@@ -213,6 +238,10 @@ class MapMakingConfig:
         """Serialize the config to a YAML string."""
         data = serialize(MapMakingConfig, self)
         return yaml.dump(data, indent=2)
+
+    @property
+    def demodulated(self) -> bool:
+        return self.sotodlib.demodulated if self.sotodlib is not None else False
 
     @property
     def use_templates(self) -> bool:

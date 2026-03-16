@@ -300,7 +300,7 @@ class AbstractGroundObservation(AbstractObservation[T]):
 
 
 class AbstractLazyObservation(ABC, Generic[T]):
-    interface_class: ClassVar[type[AbstractObservation[T]]]
+    interface_class: type[AbstractObservation[T]]
 
     def __init__(self, filename: str | Path):
         self.file = Path(filename)

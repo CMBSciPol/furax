@@ -85,18 +85,23 @@ def main(
             det_select['wafer.bandpass'] = band
 
     # Load observation
+    sotodlib_config = mapmaking_config.sotodlib
     if obs is None:
         if binary_filepath is not None:
-            observation = SOTODLibObservation.from_file(binary_filepath)
+            observation = SOTODLibObservation.from_file(
+                binary_filepath, sotodlib_config=sotodlib_config
+            )
             logger.info(f'Observation data loaded from {binary_filepath}')
         else:
             if obs_id is None or preprocess_config is None:
                 msg = 'obs_id and preprocess_config must be specified if obs is not given'
                 raise ValueError(msg)
-            observation = SOTODLibObservation.from_preprocess(preprocess_config, obs_id, det_select)
+            observation = SOTODLibObservation.from_preprocess(
+                preprocess_config, obs_id, det_select, sotodlib_config=sotodlib_config
+            )
             logger.info('Observation data loaded from preprocessing config')
     else:
-        observation = SOTODLibObservation(obs)
+        observation = SOTODLibObservation(obs, sotodlib_config)
 
     # Make maps
     results = maker.run(observation=observation, out_dir=output_path)

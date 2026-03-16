@@ -12,10 +12,12 @@ from astropy.wcs import WCS
 from jaxtyping import Array, Bool, Float, Integer
 from numpy.typing import NDArray
 from sotodlib import coords
+from sotodlib.coords.helpers import get_deflected_sightline
 from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import load_and_preprocess
 
 from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
+from furax.mapmaking.config import SotodlibConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math import quaternion
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
@@ -25,9 +27,16 @@ from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
 class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     """Class for interfacing with sotodlib's AxisManager."""
 
+    def __init__(self, data: AxisManager, sotodlib_config: SotodlibConfig | None = None) -> None:
+        super().__init__(data)
+        self._sotodlib_config = sotodlib_config or SotodlibConfig()
+
     @classmethod
     def from_file(
-        cls, filename: str | Path, requested_fields: list[str] | None = None
+        cls,
+        filename: str | Path,
+        requested_fields: list[str] | None = None,
+        sotodlib_config: SotodlibConfig | None = None,
     ) -> SOTODLibObservation:
         # check that file exists
         if not Path(filename).exists():
@@ -37,6 +46,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
         # default is to load everything
         fields = None
+        config = sotodlib_config or SotodlibConfig()
         if requested_fields is not None:
             # minimum information needed to determine buffer shapes
             fields = ['dets', 'samp']
@@ -44,9 +54,10 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             if 'metadata' in requested_fields:
                 fields.append('obs_info')
             if 'sample_data' in requested_fields:
-                # include both original and demodulated TOD
-                # TODO: choose?
-                fields.extend(['signal', 'dsT', 'demodQ', 'demodU'])
+                if config.demodulated:
+                    fields.extend(['dsT', 'demodQ', 'demodU'])
+                else:
+                    fields.append('signal')
             if 'valid_sample_masks' in requested_fields:
                 fields.append('flags.glitch_flags')
             if 'valid_scanning_masks' in requested_fields:
@@ -59,14 +70,18 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 fields.append('boresight')
                 if 'timestamps' not in fields:
                     fields.append('timestamps')
+                if config.wobble_correction:
+                    fields.append('wobble_params')
             if 'detector_quaternions' in requested_fields:
                 fields.append('focal_plane')
             if 'noise_model_fits' in requested_fields:
-                # TODO: choose?
-                fields.extend(['preprocess.noiseT', 'preprocess.noiseQ', 'preprocess.noiseU'])
+                if config.noise_source == 'mapmaking':
+                    fields.append('preprocess.noiseQ_mapmaking')
+                else:
+                    fields.extend(['preprocess.noiseT', 'preprocess.noiseQ', 'preprocess.noiseU'])
 
         data = AxisManager.load(filename, fields=fields)
-        return cls(data)
+        return cls(data, config)
 
     @classmethod
     def from_preprocess(
@@ -74,6 +89,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         preprocess_config: str | Path | dict[str, Any],
         observation_id: str,
         detector_selection: dict[str, str] | None = None,
+        sotodlib_config: SotodlibConfig | None = None,
     ) -> SOTODLibObservation:
         """Loads and preprocesses an observation.
 
@@ -83,6 +99,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 (e.g. 'obs_1714550584_satp3_1111111').
             detector_selection: Optional dictionary to select a subset of detectors
                 (e.g. {'wafer_slot': 'ws0', 'wafer.bandpass': 'f150'}).
+            sotodlib_config: Optional sotodlib-specific configuration.
+
         Returns:
             An instance of SOTODLibObservation.
         """
@@ -94,7 +112,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 config = yaml.safe_load(file)
 
         data = load_and_preprocess(observation_id, config, dets=detector_selection)
-        return cls(data)
+        return cls(data, sotodlib_config)
 
     @property
     def name(self) -> str:
@@ -263,6 +281,15 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         preproc = self.data.get('preprocess')
         if preproc is None:
             raise ValueError('No preprocess data available')
+        if self._sotodlib_config.noise_source == 'mapmaking':
+            wn = preproc['noiseQ_mapmaking.white_noise']
+            sigma = jnp.array(wn, dtype=jnp.float64)
+            return AtmosphericNoiseModel(
+                sigma=sigma,
+                alpha=jnp.ones_like(sigma),  # fake
+                fk=jnp.ones_like(sigma),  # fake
+                f0=jnp.ones_like(sigma),  # fake
+            )
         attr = {'I': 'noiseT', 'Q': 'noiseQ', 'U': 'noiseU'}[stoke]
         if attr not in preproc:
             raise ValueError(f'No {attr} noise model available')
@@ -270,7 +297,10 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         # sotodlib fit's columns: (w, fknee, alpha), with
         # psd = wn**2 * (1 + (fknee / f) ** alpha)
         # Note the difference in the sign of alpha
-        assert np.all(fit.noise_model_coeffs.vals == np.array(['white_noise', 'fknee', 'alpha']))
+        expected = ['white_noise', 'fknee', 'alpha']
+        actual = list(fit.noise_model_coeffs.vals)
+        if actual != expected:
+            raise ValueError(f'Unexpected noise model coefficients: {actual}, expected {expected}')
         return AtmosphericNoiseModel(
             sigma=jnp.array(fit.fit[:, 0]),
             alpha=jnp.array(-fit.fit[:, 2]),
@@ -325,14 +355,22 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
         """Returns the boresight quaternions at each time sample"""
-        csl = so3g.proj.CelestialSightLine.az_el(
-            self.data.timestamps,
-            self.data.boresight.az,
-            self.data.boresight.el,
-            roll=self.data.boresight.roll,
-            site='so',
-            weather='typical',
-        )
+        site = self._sotodlib_config.site
+        weather = self._sotodlib_config.weather
+        if self._sotodlib_config.wobble_correction:
+            wobble = self.data.get('wobble_params')
+            if wobble is None:
+                raise ValueError('wobble_params not found in observation data')
+            csl = get_deflected_sightline(self.data, wobble, site=site, weather=weather)
+        else:
+            csl = so3g.proj.CelestialSightLine.az_el(
+                self.data.timestamps,
+                self.data.boresight.az,
+                self.data.boresight.el,
+                roll=self.data.boresight.roll,
+                site=site,
+                weather=weather,
+            )
         return jnp.array(csl.Q, dtype=jnp.float64)
 
     def get_detector_quaternions(self) -> Float[Array, 'det 4']:
@@ -342,9 +380,17 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             jnp.array(self.data.focal_plane.eta, dtype=jnp.float64),
             jnp.array(self.data.focal_plane.gamma, dtype=jnp.float64),
         )
-
         return jnp.atleast_2d(quats)
 
 
 class LazySOTODLibObservation(AbstractLazyObservation[AxisManager]):
     interface_class = SOTODLibObservation
+
+    def __init__(self, filename: str | Path, sotodlib_config: SotodlibConfig | None = None) -> None:
+        super().__init__(filename)
+        self._sotodlib_config = sotodlib_config
+
+    def get_data(self, requested_fields: list[str] | None = None) -> SOTODLibObservation:
+        return SOTODLibObservation.from_file(
+            self.file, requested_fields, sotodlib_config=self._sotodlib_config
+        )

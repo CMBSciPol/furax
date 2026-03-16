@@ -9,6 +9,7 @@ import numpy as np
 import toast
 from astropy import units as u
 from astropy.wcs import WCS
+from fastquat import Quaternion
 from jaxtyping import Array, Bool, Float
 from numpy.typing import NDArray
 from toast.observation import default_values as defaults
@@ -317,16 +318,16 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         )
         return noise_model
 
-    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+    def get_boresight_quaternions(self) -> Quaternion:
         if self._boresight not in self.data.shared:
             raise ValueError('Boresight field not provided.')
         quats = jnp.array(self.data.shared[self._boresight].data)
-        return jnp.roll(quats, 1, axis=-1)
+        return Quaternion.from_array(jnp.roll(quats, 1, axis=-1))
 
-    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
+    def get_detector_quaternions(self) -> Quaternion:
         quats = jnp.array([self._focal_plane[d]['quat'] for d in self.detectors])
         quats = jnp.roll(quats, 1, axis=-1)
-        return jnp.atleast_2d(quats)
+        return Quaternion.from_array(jnp.atleast_2d(quats))
 
     def _get_expanded_quats(self) -> Array:
         """Returns expanded pointing quaternions.

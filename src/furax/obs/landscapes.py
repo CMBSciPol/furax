@@ -7,10 +7,11 @@ import jax_healpy as jhp
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
+from fastquat import Quaternion
 from jax.tree_util import register_static
 from jaxtyping import Array, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
-from furax.math.quaternion import qrot_zaxis, to_iso_angles
+from furax.math.coords import ZAXIS, to_iso_angles
 from furax.obs._samplings import Sampling
 from furax.obs.stokes import Stokes, ValidStokesType
 
@@ -175,14 +176,12 @@ class StokesLandscape(Landscape):
             stride *= dim
         return jnp.where(valid, indices, -1)
 
-    def quat2world(
-        self, quat: Float[Array, '*dims 4']
-    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+    def quat2world(self, quat: Quaternion) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Converts quaternion to WCS angles (theta, phi)."""
         theta, phi, _psi = to_iso_angles(quat)
         return theta, phi
 
-    def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
+    def quat2index(self, quat: Quaternion) -> Integer[Array, ' *dims']:
         """Converts quaternion to 1-dimensional pixel indices."""
         world = self.quat2world(quat)
         return self.world2index(*world)
@@ -200,7 +199,7 @@ class HealpixLandscape(StokesLandscape):
         self.nside = nside
 
     @jax.jit
-    def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
+    def quat2index(self, quat: Quaternion) -> Integer[Array, ' *dims']:
         r"""Convert quaternion to HEALPix index in ring ordering.
 
         Args:
@@ -210,7 +209,7 @@ class HealpixLandscape(StokesLandscape):
             int: HEALPix map index for ring ordering scheme.
         """
         # we want the 3 dimensions on the left
-        vec = jnp.moveaxis(qrot_zaxis(quat), -1, 0)
+        vec = jnp.moveaxis(quat.rotate_vector(ZAXIS), -1, 0)
         pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec)
         return pix
 

@@ -5,14 +5,14 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 import numpy as np
+from fastquat import Quaternion
 from jax import jit, lax
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import IndexOperator, RavelOperator, TransposeOperator
-from furax.math.quaternion import (
+from furax.math.coords import (
     euler,
-    qmul,
     to_gamma_angles,
     to_polarization_angle,
     to_polarization_angle_cos_sin,
@@ -38,8 +38,8 @@ class PointingOperator(AbstractLinearOperator):
     """
 
     landscape: StokesLandscape
-    qbore: Float[Array, 'samp 4']
-    qdet: Float[Array, 'det 4']
+    qbore: Quaternion
+    qdet: Quaternion
     chunk_size: int = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
 
@@ -47,8 +47,8 @@ class PointingOperator(AbstractLinearOperator):
     def create(
         cls,
         landscape: StokesLandscape,
-        boresight_quaternions: Float[Array, 'samp 4'],
-        detector_quaternions: Float[Array, 'det 4'],
+        boresight_quaternions: Quaternion,
+        detector_quaternions: Quaternion,
         *,
         chunk_size: int = 16,
         frame: Literal['boresight', 'detector'] = 'boresight',
@@ -71,7 +71,7 @@ class PointingOperator(AbstractLinearOperator):
         if frame == 'boresight':
             gamma = to_gamma_angles(detector_quaternions)
             q_z_neg = euler(2, -gamma)  # z-rotation by -gamma
-            detector_quaternions = qmul(detector_quaternions, q_z_neg)
+            detector_quaternions = detector_quaternions * q_z_neg
 
         return cls(
             landscape,
@@ -86,10 +86,10 @@ class PointingOperator(AbstractLinearOperator):
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
         """Performs the 'un-pointing' operation, i.e. map->tod."""
 
-        def mv_inner(qdet: Float[Array, 'det 4']) -> StokesPyTreeType:
+        def mv_inner(qdet: Quaternion) -> StokesPyTreeType:
             # Expand detector quaternions from boresight and offsets
-            # (samples, 4) x (det, 1, 4) -> (det, samples, 4)
-            qdet_full = qmul(self.qbore, qdet[:, None, :])
+            # (1, samp) x (det, 1) -> (det, samp)
+            qdet_full = self.qbore.reshape((1, -1)) * qdet.reshape((-1, 1))
 
             # Get pixel indices and sample the pixels
             indices = self.landscape.quat2index(qdet_full)
@@ -122,7 +122,7 @@ class PointingOperator(AbstractLinearOperator):
             idet = jnp.clip(idet, max=ndet - 1)
 
             # process chunk
-            tod_chunk = mv_inner(self.qdet[idet])
+            tod_chunk = mv_inner(Quaternion.from_array(self.qdet.wxyz[idet]))
 
             # update the output pytree
             return jax.tree.map(
@@ -158,7 +158,7 @@ class PointingOperator(AbstractLinearOperator):
 
         Equivalent to mv() but as an explicit composition, useful for testing.
         """
-        qdet_full = qmul(self.qbore, self.qdet[:, None, :])
+        qdet_full = self.qbore.reshape((1, -1)) * self.qdet.reshape((-1, 1))
         indices = self.landscape.quat2index(qdet_full)
         # this takes care of multi-dimensional landscapes
         ravel_op = RavelOperator(in_structure=self.landscape.structure)
@@ -182,9 +182,9 @@ class PointingTransposeOperator(TransposeOperator):
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
         """Performs the 'pointing' operation, i.e. tod->map."""
 
-        def mv_inner(xchunk: StokesPyTreeType, qdet: Float[Array, 'det 4']) -> StokesPyTreeType:
+        def mv_inner(xchunk: StokesPyTreeType, qdet: Quaternion) -> StokesPyTreeType:
             # Expand detector quaternions from boresight and offsets
-            qdet_full = qmul(self.operator.qbore, qdet[:, None, :])
+            qdet_full = self.operator.qbore.reshape((1, -1)) * qdet.reshape((-1, 1))
 
             # Get pixel indices
             indices = self.operator.landscape.quat2index(qdet_full)
@@ -215,7 +215,8 @@ class PointingTransposeOperator(TransposeOperator):
             idet = jnp.clip(idet, max=ndet - 1)
 
             # process chunk
-            sky_chunk = mv_inner(unique[:, None] * x[idet], self.operator.qdet[idet])
+            q_chunk = Quaternion.from_array(self.operator.qdet.wxyz[idet])
+            sky_chunk = mv_inner(unique[:, None] * x[idet], q_chunk)
 
             # combine the results of the chunks into one sky map
             return jax.tree.map(

@@ -9,6 +9,7 @@ import pixell.utils
 import so3g.proj
 import yaml
 from astropy.wcs import WCS
+from fastquat import Quaternion
 from jaxtyping import Array, Bool, Float, Integer
 from numpy.typing import NDArray
 from sotodlib import coords
@@ -17,7 +18,7 @@ from sotodlib.preprocess.preprocess_util import load_and_preprocess
 
 from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
-from furax.math import quaternion
+from furax.math.coords import from_xieta_angles
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
 
@@ -323,7 +324,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return fit[:, 1]  # type: ignore[no-any-return]
     '''
 
-    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+    def get_boresight_quaternions(self) -> Quaternion:
         """Returns the boresight quaternions at each time sample"""
         csl = so3g.proj.CelestialSightLine.az_el(
             self.data.timestamps,
@@ -333,17 +334,16 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             site='so',
             weather='typical',
         )
-        return jnp.array(csl.Q, dtype=jnp.float64)
+        return Quaternion.from_array(jnp.array(csl.Q, dtype=jnp.float64))
 
-    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
+    def get_detector_quaternions(self) -> Quaternion:
         """Returns the quaternion offsets of the detectors"""
-        quats = quaternion.from_xieta_angles(
+        quats = from_xieta_angles(
             jnp.array(self.data.focal_plane.xi, dtype=jnp.float64),
             jnp.array(self.data.focal_plane.eta, dtype=jnp.float64),
             jnp.array(self.data.focal_plane.gamma, dtype=jnp.float64),
         )
-
-        return jnp.atleast_2d(quats)
+        return Quaternion.from_array(jnp.atleast_2d(quats.wxyz))
 
 
 class LazySOTODLibObservation(AbstractLazyObservation[AxisManager]):

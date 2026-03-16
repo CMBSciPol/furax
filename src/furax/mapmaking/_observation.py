@@ -7,11 +7,12 @@ from typing import Any, ClassVar, Generic, TypeVar
 
 import jax.numpy as jnp
 from astropy.wcs import WCS
+from fastquat import Quaternion
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Bool, Float, UInt32
 from numpy.typing import NDArray
 
-from furax.math.quaternion import qmul, to_lonlat_angles
+from furax.math.coords import to_lonlat_angles
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import ValidStokesType
 
@@ -163,11 +164,11 @@ class AbstractObservation(ABC, Generic[T]):
         """Load a pre-computed noise model from the data, if present. Otherwise, return None"""
 
     @abstractmethod
-    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+    def get_boresight_quaternions(self) -> Quaternion:
         """Returns the boresight quaternions at each time sample"""
 
     @abstractmethod
-    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
+    def get_detector_quaternions(self) -> Quaternion:
         """Returns the quaternion offsets of the detectors"""
 
 
@@ -269,24 +270,23 @@ class AbstractGroundObservation(AbstractObservation[T]):
 
         """
         # Get quaternions for boresight and detector offsets
-        boresight_quaternions = self.get_boresight_quaternions()  # (n_samples, 4)
-        detector_quaternions = self.get_detector_quaternions()  # (n_dets, 4)
+        boresight_quaternions = self.get_boresight_quaternions()
+        detector_quaternions = self.get_detector_quaternions()
 
         # Apply scanning mask first if requested
         if use_scanning_mask:
-            mask = self.get_scanning_mask()  # (n_samples,) boolean array
-            boresight_quaternions = boresight_quaternions[mask, :]
+            mask = self.get_scanning_mask()
+            boresight_quaternions = Quaternion.from_array(boresight_quaternions.wxyz[mask, :])
 
         # Apply subsampling after masking if requested
         if thin_samples > 1:
-            boresight_quaternions = boresight_quaternions[::thin_samples, :]
+            boresight_quaternions = Quaternion.from_array(
+                boresight_quaternions.wxyz[::thin_samples, :]
+            )
 
         # Combine boresight pointing with detector offsets via quaternion multiplication
-        # Broadcasting: (1, n_final_samples, 4) * (n_dets, 1, 4) -> (n_dets, n_final_samples, 4)
-        qdet_full = qmul(
-            boresight_quaternions[None, :, :],  # (1, n_final_samples, 4)
-            detector_quaternions[:, None, :],  # (n_dets, 1, 4)
-        )  # Result: (n_dets, n_final_samples, 4)
+        # Broadcasting: (1, n_final_samples) * (n_dets, 1) -> (n_dets, n_final_samples)
+        qdet_full = boresight_quaternions.reshape((1, -1)) * detector_quaternions.reshape((-1, 1))
 
         # Convert quaternions to longitude/latitude angles in radians
         alpha, delta, _ = to_lonlat_angles(qdet_full)

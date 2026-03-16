@@ -246,20 +246,6 @@ class MultiObservationMapMaker(Generic[T]):
         total, _ = jax.lax.scan(acc, init, models)
         return total
 
-    def _system_operator(
-        self, model: ObservationModel, *, diag: bool = False
-    ) -> AbstractLinearOperator:
-        """Build the system operator H.T @ W @ H accumulated over observations."""
-
-        def apply(x):  # type: ignore[no-untyped-def]
-            def step(acc, m):  # type: ignore[no-untyped-def]
-                return tree.add(acc, m.apply_system(x, white_noise=diag)), None
-
-            result, _ = jax.lax.scan(step, tree.zeros_like(x), model)
-            return result
-
-        return asoperator(apply, in_structure=model.map_structure)
-
     def accumulate_rhs(self, models: ObservationModel) -> StokesPyTreeType:
         """Accumulate the RHS vector across all observations"""
         reader = self.get_reader(['metadata', 'sample_data'])
@@ -290,6 +276,20 @@ class MultiObservationMapMaker(Generic[T]):
             )
 
         return valid
+
+    def _system_operator(
+        self, model: ObservationModel, *, diag: bool = False
+    ) -> AbstractLinearOperator:
+        """Build the system operator H.T @ W @ H accumulated over observations."""
+
+        def apply(x):  # type: ignore[no-untyped-def]
+            def step(acc, m):  # type: ignore[no-untyped-def]
+                return tree.add(acc, m.apply_system(x, white_noise=diag)), None
+
+            result, _ = jax.lax.scan(step, tree.zeros_like(x), model)
+            return result
+
+        return asoperator(apply, in_structure=model.map_structure)
 
 
 @dataclass

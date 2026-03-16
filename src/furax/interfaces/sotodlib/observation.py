@@ -356,8 +356,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             self.data.boresight.az,
             self.data.boresight.el,
             roll=self.data.boresight.roll,
-            site='so',
-            weather='typical',
+            site=self._sotodlib_config.site,
+            weather=self._sotodlib_config.weather,
         )
         return jnp.array(csl.Q, dtype=jnp.float64)
 

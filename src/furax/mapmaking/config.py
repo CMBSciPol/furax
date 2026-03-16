@@ -164,6 +164,13 @@ class GapsConfig:
 class SotodlibConfig:
     """Configuration options specific to the sotodlib interface."""
 
+    # see https://github.com/simonsobs/so3g/blob/master/python/proj/coords.py#L45
+    site: Literal['so', 'so_sat1', 'so_sat2', 'so_sat3', 'so_lat'] = 'so'
+    """Observatory site identifier"""
+
+    weather: Literal['toco', 'typical'] = 'toco'
+    """Atmospheric condition tag for so3g sightline model"""
+
     noise_source: Literal['preprocess', 'mapmaking'] = 'preprocess'
     """Which precomputed noise model to use when fit_noise_model is False.
 

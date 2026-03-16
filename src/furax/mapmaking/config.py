@@ -161,6 +161,18 @@ class GapsConfig:
 
 
 @dataclass
+class SotodlibConfig:
+    """Configuration options specific to the sotodlib interface."""
+
+    noise_source: Literal['preprocess', 'mapmaking'] = 'preprocess'
+    """Which precomputed noise model to use when fit_noise_model is False.
+
+    'preprocess': use per-stoke noise fits (noiseT, noiseQ, noiseU) from preprocessing.
+    'mapmaking': use the white noise estimate from noiseQ_mapmaking.
+    """
+
+
+@dataclass
 class MapMakingConfig:
     method: Methods = Methods.BINNED
     binned: bool = True
@@ -183,6 +195,7 @@ class MapMakingConfig:
     landscape: LandscapeConfig = field(default_factory=LandscapeConfig)
     templates: TemplatesConfig | None = None
     atop_tau: int = 0
+    sotodlib: SotodlibConfig = field(default_factory=SotodlibConfig)
 
     @classmethod
     def full_defaults(cls) -> 'MapMakingConfig':

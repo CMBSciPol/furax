@@ -106,7 +106,6 @@ def main(
         try:
             obs = load_and_preprocess(obs_id, preprocess_config, dets=det_select)
             logger.info('Observationa data loaded')
-            observation = SOTODLibObservation(data=obs)
         except Exception as exception:
             logger.info(f'Loading failed for {obs_id}')
             logger.info(exception)
@@ -132,6 +131,7 @@ def main(
 
             # Set up mapmaker and output path
             maker = MapMaker.from_config(config=config, logger=logger)
+            observation = SOTODLibObservation(obs, config.sotodlib)
 
             # Make maps
             try:

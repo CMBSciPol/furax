@@ -47,7 +47,7 @@ class GapFillingOperator:
         metadata: HashedObservationMetadata | None = None,
         icov: SymmetricBandToeplitzOperator | FourierOperator | None = None,
         *,
-        rate: float = 1.0,
+        rate: ArrayLike = 1.0,
         max_cg_steps: int = 50,
         rtol: float = 1e-4,
         verbose: bool = False,
@@ -87,7 +87,7 @@ class GapFillingOperator:
             x: The vector to be filled.
         """
         # generate a noise realization following the noise covariance
-        xi = generate_noise_realization(key, self.cov, self.metadata, fsamp=self.rate)
+        xi = generate_noise_realization(key, self.cov, self.rate, metadata=self.metadata)
         p, u = self.pack, self.pack.T
         incomplete_cov = p @ self.cov @ u
         cg_config = self._cg_config.copy()
@@ -150,8 +150,8 @@ def split_key(
 def generate_noise_realization(
     key: PRNGKeyArray,
     cov: FourierOperator | SymmetricBandToeplitzOperator,
+    fsamp: ArrayLike,
     metadata: HashedObservationMetadata | None = None,
-    fsamp: float = 1.0,
 ) -> Float[Array, ' *shape']:
     """Generates a Gaussian noise realization with the given covariance.
 
@@ -176,6 +176,7 @@ def generate_noise_realization(
     else:
         raise NotImplementedError
 
+    fsamp = jnp.asarray(fsamp)
     npsd = fft_size // 2 + 1
     if npsd != psd.shape[-1]:
         msg = f'PSD size {psd.shape[-1]} does not match expected size {npsd} for {fft_size=}.'

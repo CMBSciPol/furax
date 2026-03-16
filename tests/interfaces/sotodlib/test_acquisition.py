@@ -8,22 +8,12 @@ from sotodlib import coords
 from sotodlib.mapmaking.demod_mapmaker import project_rhs_demod
 
 from furax.interfaces.sotodlib import LazySOTODLibObservation
-from furax.mapmaking import MultiObservationMapMaker
 from furax.mapmaking.acquisition import build_acquisition_operator
-from furax.mapmaking.config import LandscapeConfig, Landscapes, MapMakingConfig
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.stokes import StokesI
 
 FOLDER = Path(__file__).parents[2] / 'data' / 'sotodlib'
 NSIDE = 16
-
-
-def _make_config(demodulated: bool) -> MapMakingConfig:
-    return MapMakingConfig(
-        pointing_on_the_fly=True,
-        landscape=LandscapeConfig(type=Landscapes.HPIX, nside=NSIDE),
-        demodulated=demodulated,
-    )
 
 
 def _sotodlib_pointing(obs, hwp: bool):
@@ -74,8 +64,15 @@ def test_demod_acquisition_vs_sotodlib():
 
     lazy_obs = LazySOTODLibObservation(FOLDER / 'test_obs_2.h5')
     obs = lazy_obs.get_data()
-    maker = MultiObservationMapMaker([lazy_obs], config=_make_config(demodulated=True))
-    (h,) = maker.build_acquisitions()
+    landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
+    h = build_acquisition_operator(
+        landscape,
+        obs.get_boresight_quaternions(),
+        obs.get_detector_quaternions(),
+        hwp_angles=None,
+        demodulated=True,
+        pointing_on_the_fly=True,
+    )
 
     # Get demodulated TODs (I, Q, U)
     tod_iqu = obs.get_demodulated_tods(stokes='IQU')

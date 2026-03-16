@@ -47,7 +47,7 @@ PARAMS = [
 ]
 
 
-def make_observations(name: str) -> list[AbstractLazyObservation]:
+def make_observations(name: str, demodulated: bool = False) -> list[AbstractLazyObservation]:
     folder = Path(__file__).parents[1] / 'data' / name
     if name == 'toast':
         from furax.interfaces.toast import LazyToastObservation
@@ -57,8 +57,9 @@ def make_observations(name: str) -> list[AbstractLazyObservation]:
     elif name == 'sotodlib':
         from furax.interfaces.sotodlib import LazySOTODLibObservation
 
+        sotodlib_config = SotodlibConfig(demodulated=True) if demodulated else None
         files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']
-        return [LazySOTODLibObservation(f) for f in files]
+        return [LazySOTODLibObservation(f, sotodlib_config=sotodlib_config) for f in files]
     raise NotImplementedError
 
 
@@ -89,7 +90,7 @@ class TestMultiObsMapMaker:
     """
 
     def test_blocks_vs_reader_structure(self, name, demodulated, stokes):
-        observations = make_observations(name)
+        observations = make_observations(name, demodulated)
         config = make_config(stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         reader = ObservationReader(observations, demodulated=demodulated, stokes=stokes)
@@ -100,7 +101,7 @@ class TestMultiObsMapMaker:
         assert blocks.tod_structure == reader.out_structure['sample_data']
 
     def test_last_acquisition_operand_is_pointing(self, name, demodulated, stokes):
-        observations = make_observations(name)
+        observations = make_observations(name, demodulated)
         config = make_config(stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         h = maker.build_model().H
@@ -109,7 +110,7 @@ class TestMultiObsMapMaker:
 
     @pytest.mark.parametrize('fit_models', [True, False])
     def test_white_noise_models_binned_or_demodulated(self, name, demodulated, stokes, fit_models):
-        observations = make_observations(name)
+        observations = make_observations(name, demodulated)
         config = make_config(stokes=stokes, demodulated=demodulated, fit_noise_model=fit_models)
         maker = MultiObservationMapMaker(observations, config=config)
         noise_model = maker.build_model().noise_model
@@ -124,7 +125,7 @@ class TestMultiObsMapMaker:
             assert isinstance(noise_model, WhiteNoiseModel)
 
     def test_rhs_shape(self, name, demodulated, stokes):
-        observations = make_observations(name)
+        observations = make_observations(name, demodulated)
         config = make_config(stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         blocks = maker.build_model()
@@ -132,7 +133,7 @@ class TestMultiObsMapMaker:
         assert rhs.shape == maker.landscape.shape
 
     def test_hits_are_nonnegative(self, name, demodulated, stokes):
-        observations = make_observations(name)
+        observations = make_observations(name, demodulated)
         config = make_config(stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         blocks = maker.build_model()
@@ -141,7 +142,7 @@ class TestMultiObsMapMaker:
         assert jnp.all(hits >= 0)
 
     def test_full_mapmaker(self, name, demodulated, stokes):
-        observations = make_observations(name)
+        observations = make_observations(name, demodulated)
         config = make_config(stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         results = maker.run()

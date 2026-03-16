@@ -174,7 +174,7 @@ class SotodlibConfig:
     demodulated: bool = False
     """Use demodulated TODs (HWP-specific data from sotodlib preprocessing)."""
 
-    apply_wobble_correction: bool = True
+    wobble_correction: bool = False
     """Apply HWP wobble correction to the line of sight."""
 
     noise_source: Literal['preprocess', 'mapmaking'] = 'preprocess'

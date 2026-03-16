@@ -69,7 +69,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 fields.append('boresight')
                 if 'timestamps' not in fields:
                     fields.append('timestamps')
-                if config.apply_wobble_correction:
+                if config.wobble_correction:
                     fields.append('wobble_params')
             if 'detector_quaternions' in requested_fields:
                 fields.append('focal_plane')
@@ -356,7 +356,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         """Returns the boresight quaternions at each time sample"""
         site = self._sotodlib_config.site
         weather = self._sotodlib_config.weather
-        if self._sotodlib_config.apply_wobble_correction:
+        if self._sotodlib_config.wobble_correction:
             wobble = self.data.get('wobble_params')
             if wobble is None:
                 raise ValueError('wobble_params not found in observation data')

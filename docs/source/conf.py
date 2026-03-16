@@ -11,8 +11,8 @@ import sys
 
 sys.path.insert(0, os.path.abspath('../../'))
 
-project = 'jax-healpy'
-copyright = '2024-2025, Furax contributors.'
+project = 'furax'
+copyright = '2024-2026, Furax contributors.'
 author = 'Furax contributors'
 
 # Get version from setuptools_scm

@@ -30,6 +30,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
 
     Five methods are available, where N is the size of the Toeplitz matrix and K the number
     of non-zero bands:
+
         - dense, using the dense matrix: O(N^2)
         - direct, using a direct convolution: O(NK)
         - fft, applying the DFT on the whole input: O(NlogN)

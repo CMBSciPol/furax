@@ -368,7 +368,6 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             jnp.array(self.data.focal_plane.eta, dtype=jnp.float64),
             jnp.array(self.data.focal_plane.gamma, dtype=jnp.float64),
         )
-
         return jnp.atleast_2d(quats)
 
 

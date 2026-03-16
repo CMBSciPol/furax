@@ -57,16 +57,26 @@ class BJPreconditioner(TreeOperator):
         stokes = in_struct.stokes
         tree_cls = Stokes.class_for(stokes)
 
-        reduced_op = op.reduce()
-        f = jax.jit(lambda x: reduced_op.mv(x))
+        n = len(in_leaves_ref)
 
-        def _compute_for_stokes(i):  # type: ignore[no-untyped-def]
-            zeros = in_leaves_ref.copy()
-            zeros[i] = jnp.ones_like(in_leaves_ref[i])
-            in_pytree = jax.tree.unflatten(in_treedef, zeros)
-            return f(in_pytree)
+        # Build batched probes: probe_leaves[j] has shape (n, *leaf.shape)
+        # Row i is ones if i==j else zeros — unit vectors in Stokes-component space
+        probe_leaves = []
+        for j, leaf in enumerate(in_leaves_ref):
+            rows = [jnp.ones_like(leaf) if i == j else jnp.zeros_like(leaf) for i in range(n)]
+            probe_leaves.append(jnp.stack(rows))
+        batched_probe = jax.tree.unflatten(in_treedef, probe_leaves)
 
-        tree = tree_cls(**{stoke: _compute_for_stokes(i) for i, stoke in enumerate(stokes.lower())})
+        # Single batched call: out_leaves[j][i] = (A @ e_i)[j](p) = A_{j,i}(p)
+        batched_out = jax.vmap(op)(batched_probe)
+        out_leaves, _ = jax.tree.flatten(batched_out)
+
+        tree = tree_cls(
+            **{
+                stoke: jax.tree.unflatten(in_treedef, [out_leaves[j][i] for j in range(n)])
+                for i, stoke in enumerate(stokes.lower())
+            }
+        )
         return cls(tree, in_structure=in_struct)
 
     def get_blocks(self) -> Array:

@@ -171,6 +171,9 @@ class SotodlibConfig:
     weather: Literal['toco', 'typical'] = 'toco'
     """Atmospheric condition tag for so3g sightline model"""
 
+    demodulated: bool = False
+    """Use demodulated TODs (HWP-specific data from sotodlib preprocessing)."""
+
     apply_wobble_correction: bool = True
     """Apply HWP wobble correction to the line of sight."""
 
@@ -187,7 +190,6 @@ class MapMakingConfig:
     method: Methods = Methods.BINNED
     binned: bool = True
     stokes: Literal['I', 'QU', 'IQU', 'IQUV'] = 'IQU'
-    demodulated: bool = False
     scanning_mask: bool = False
     sample_mask: bool = False
     correlation_length: int = 1_000
@@ -236,6 +238,10 @@ class MapMakingConfig:
         """Serialize the config to a YAML string."""
         data = serialize(MapMakingConfig, self)
         return yaml.dump(data, indent=2)
+
+    @property
+    def demodulated(self) -> bool:
+        return self.sotodlib.demodulated if self.sotodlib is not None else False
 
     @property
     def use_templates(self) -> bool:

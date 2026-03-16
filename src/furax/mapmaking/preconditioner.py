@@ -6,7 +6,7 @@ from jaxtyping import Array, PyTree
 
 from furax import AbstractLinearOperator, TreeOperator, symmetric
 from furax.obs.stokes import Stokes
-from furax.tree import _tree_to_dense, zeros_like
+from furax.tree import _get_outer_treedef, _tree_to_dense, zeros_like
 
 
 @symmetric
@@ -19,7 +19,6 @@ class BJPreconditioner(TreeOperator):
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ):
-        from ..tree import _get_outer_treedef
 
         inner_treedef = jax.tree.structure(in_structure)
         outer_treedef = _get_outer_treedef(in_structure, tree)
@@ -31,7 +30,9 @@ class BJPreconditioner(TreeOperator):
         # Check that we have a (square) Stokes-pytree of Stokes-pytrees
         pytree_is_stokes = isinstance(tree, Stokes)
         subtrees_are_the_same_stokes = jax.tree.map(
-            lambda x: isinstance(x, type(tree)), tree, is_leaf=lambda x: x is not tree
+            lambda x: isinstance(x, type(tree)),
+            tree,
+            is_leaf=lambda x: x is not tree,
         )
         if not (pytree_is_stokes and subtrees_are_the_same_stokes):
             raise ValueError('tree must be a square Stokes-pytree matrix')

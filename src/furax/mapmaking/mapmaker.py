@@ -29,15 +29,8 @@ from furax import (
     SymmetricBandToeplitzOperator,
     asoperator,
 )
-from furax.core import (
-    BlockDiagonalOperator,
-    BlockRowOperator,
-    IndexOperator,
-)
-from furax.mapmaking._model import (
-    ObservationModel,
-    _hwp_frequency,
-)
+from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
+from furax.mapmaking._model import ObservationModel, _hwp_frequency
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
@@ -165,9 +158,9 @@ class MultiObservationMapMaker(Generic[T]):
                 y = m.masker(m.H(x))
                 y = m.W(y)
                 y = m.H.T(m.masker.T(y))
-                return jax.tree.map(jnp.add, acc, y), None
+                return tree.add(acc, y), None
 
-            zeros = jax.tree.map(jnp.zeros_like, x)
+            zeros = tree.zeros_like(x)
             result, _ = jax.lax.scan(step, zeros, model)
             return result
 
@@ -196,9 +189,9 @@ class MultiObservationMapMaker(Generic[T]):
                     y = m.masker(m.H(x))
                     y = wdiag(y)
                     y = m.H.T(m.masker.T(y))
-                    return jax.tree.map(jnp.add, acc, y), None
+                    return tree.add(acc, y), None
 
-                zeros = jax.tree.map(jnp.zeros_like, x)
+                zeros = tree.zeros_like(x)
                 result, _ = jax.lax.scan(step, zeros, model)
                 return result
 

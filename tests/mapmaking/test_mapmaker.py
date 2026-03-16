@@ -13,7 +13,7 @@ from furax.mapmaking import (
     MultiObservationMapMaker,
     ObservationReader,
 )
-from furax.mapmaking.config import LandscapeConfig, Landscapes
+from furax.mapmaking.config import LandscapeConfig, Landscapes, SotodlibConfig
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.mapmaking.pointing import PointingOperator
 from furax.obs.stokes import Stokes, ValidStokesType
@@ -74,9 +74,9 @@ def make_config(
         pointing_on_the_fly=True,
         landscape=LandscapeConfig(type=Landscapes.HPIX, nside=16),
         stokes=stokes,
-        demodulated=demodulated,
         fit_noise_model=fit_noise_model,
         nperseg=512,
+        sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
     )
 
 

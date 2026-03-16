@@ -195,7 +195,7 @@ class MapMakingConfig:
     landscape: LandscapeConfig = field(default_factory=LandscapeConfig)
     templates: TemplatesConfig | None = None
     atop_tau: int = 0
-    sotodlib: SotodlibConfig = field(default_factory=SotodlibConfig)
+    sotodlib: SotodlibConfig | None = None
 
     @classmethod
     def full_defaults(cls) -> 'MapMakingConfig':

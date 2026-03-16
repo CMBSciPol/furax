@@ -27,9 +27,9 @@ from furax import (
     MaskOperator,
     OperatorTag,
     SymmetricBandToeplitzOperator,
+    asoperator,
 )
 from furax.core import (
-    BlockColumnOperator,
     BlockDiagonalOperator,
     BlockRowOperator,
     IndexOperator,
@@ -156,35 +156,53 @@ class MultiObservationMapMaker(Generic[T]):
         """Computes the mapmaker results (maps and other products)."""
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
 
-        # Acquisition blocks
-        blocks = self.build_model()
-        n_obs = len(self.observations)
-        block_list = [jax.tree.map(lambda x, i=i: x[i], blocks) for i in range(n_obs)]
-        H = BlockColumnOperator([b.masker @ b.H for b in block_list])
-        W = BlockDiagonalOperator([b.W for b in block_list])
-        A = (H.T @ W @ H).reduce()
-        logger_info('Created acquisition operators')
+        # Build system matrix from stacked ObservationModel
+        model = self.build_model()
+        map_structure = model.map_structure
 
-        hits = self.accumulate_hits(blocks).block_until_ready()
+        def _apply_A(x):  # type: ignore[no-untyped-def]
+            def step(acc, m):  # type: ignore[no-untyped-def]
+                y = m.masker(m.H(x))
+                y = m.W(y)
+                y = m.H.T(m.masker.T(y))
+                return jax.tree.map(jnp.add, acc, y), None
+
+            zeros = jax.tree.map(jnp.zeros_like, x)
+            result, _ = jax.lax.scan(step, zeros, model)
+            return result
+
+        A = asoperator(_apply_A, in_structure=map_structure)
+        logger_info('Created system operator')
+
+        hits = self.accumulate_hits(model).block_until_ready()
         logger_info('Computed hit map')
 
-        rhs = self.accumulate_rhs(blocks)
+        rhs = self.accumulate_rhs(model)
         logger_info('Accumulated RHS vector')
 
         # Preconditioning
         if self.config.binned:
             sysdiag = A
         else:
-            Wdiag = BlockDiagonalOperator(
-                jax.tree.map(
-                    lambda m, s: m.to_white_noise_model().inverse_operator(s),
-                    block.noise_model,
-                    block.tod_structure,
-                    is_leaf=lambda x: isinstance(x, NoiseModel),
-                )
-                for block in block_list
-            )
-            sysdiag = (H.T @ Wdiag @ H).reduce()
+
+            def _apply_sysdiag(x):  # type: ignore[no-untyped-def]
+                def step(acc, m):  # type: ignore[no-untyped-def]
+                    wdiag = jax.tree.map(
+                        lambda noise, s: noise.to_white_noise_model().inverse_operator(s),
+                        m.noise_model,
+                        m.tod_structure,
+                        is_leaf=lambda nm: isinstance(nm, NoiseModel),
+                    )
+                    y = m.masker(m.H(x))
+                    y = wdiag(y)
+                    y = m.H.T(m.masker.T(y))
+                    return jax.tree.map(jnp.add, acc, y), None
+
+                zeros = jax.tree.map(jnp.zeros_like, x)
+                result, _ = jax.lax.scan(step, zeros, model)
+                return result
+
+            sysdiag = asoperator(_apply_sysdiag, in_structure=map_structure)
 
         BJ = BJPreconditioner.create(sysdiag)
         icov = BJ.get_blocks().block_until_ready()
@@ -202,7 +220,6 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Pixel selection operator
         valid_indices = jnp.argwhere(valid_pixels)
-        map_structure = blocks.map_structure
         if self.config.landscape.type == Landscapes.WCS:
             # TODO: test this again when WCS landscape is supported
             selector = IndexOperator(

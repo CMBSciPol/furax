@@ -89,6 +89,23 @@ class ObservationModel:
         hits_stokes = pointing_i.T(StokesI(masked_ones))
         return jnp.int64(hits_stokes.i)  # type: ignore[no-any-return]
 
+    def white_noise_W(self) -> AbstractLinearOperator:
+        """Build the inverse white noise covariance operator."""
+        operator_tree = jax.tree.map(
+            lambda noise, s: noise.to_white_noise_model().inverse_operator(s),
+            self.noise_model,
+            self.tod_structure,
+            is_leaf=lambda nm: isinstance(nm, NoiseModel),
+        )
+        return BlockDiagonalOperator(operator_tree)
+
+    def apply_system(self, x: Stokes, *, white_noise: bool = False) -> Stokes:
+        """Applies H.T @ W @ H (+ TOD masking) to x for this observation."""
+        weight = self.white_noise_W() if white_noise else self.W
+        y = self.masker(self.H(x))
+        y = weight(y)
+        return self.H.T(self.masker.T(y))  # type: ignore[no-any-return]
+
     def rhs(self, data: Any, config: MapMakingConfig) -> Stokes:
         """Accumulates data into the r.h.s. of the mapmaking equation.
 

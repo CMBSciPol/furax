@@ -152,19 +152,7 @@ class MultiObservationMapMaker(Generic[T]):
         # Build system matrix from stacked ObservationModel
         model = self.build_model()
         map_structure = model.map_structure
-
-        def _apply_A(x):  # type: ignore[no-untyped-def]
-            def step(acc, m):  # type: ignore[no-untyped-def]
-                y = m.masker(m.H(x))
-                y = m.W(y)
-                y = m.H.T(m.masker.T(y))
-                return tree.add(acc, y), None
-
-            zeros = tree.zeros_like(x)
-            result, _ = jax.lax.scan(step, zeros, model)
-            return result
-
-        A = asoperator(_apply_A, in_structure=map_structure)
+        A = self._system_operator(model)
         logger_info('Created system operator')
 
         hits = self.accumulate_hits(model).block_until_ready()
@@ -174,29 +162,7 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Accumulated RHS vector')
 
         # Preconditioning
-        if self.config.binned:
-            sysdiag = A
-        else:
-
-            def _apply_sysdiag(x):  # type: ignore[no-untyped-def]
-                def step(acc, m):  # type: ignore[no-untyped-def]
-                    wdiag = jax.tree.map(
-                        lambda noise, s: noise.to_white_noise_model().inverse_operator(s),
-                        m.noise_model,
-                        m.tod_structure,
-                        is_leaf=lambda nm: isinstance(nm, NoiseModel),
-                    )
-                    y = m.masker(m.H(x))
-                    y = wdiag(y)
-                    y = m.H.T(m.masker.T(y))
-                    return tree.add(acc, y), None
-
-                zeros = tree.zeros_like(x)
-                result, _ = jax.lax.scan(step, zeros, model)
-                return result
-
-            sysdiag = asoperator(_apply_sysdiag, in_structure=map_structure)
-
+        sysdiag = A if self.config.binned else self._system_operator(model, diag=True)
         BJ = BJPreconditioner.create(sysdiag)
         icov = BJ.get_blocks().block_until_ready()
         logger_info('Computed white noise inverse covariance')
@@ -279,6 +245,20 @@ class MultiObservationMapMaker(Generic[T]):
         init = jnp.zeros(len(self.landscape), dtype=jnp.int64)
         total, _ = jax.lax.scan(acc, init, models)
         return total
+
+    def _system_operator(
+        self, model: ObservationModel, *, diag: bool = False
+    ) -> AbstractLinearOperator:
+        """Build the system operator H.T @ W @ H accumulated over observations."""
+
+        def apply(x):  # type: ignore[no-untyped-def]
+            def step(acc, m):  # type: ignore[no-untyped-def]
+                return tree.add(acc, m.apply_system(x, white_noise=diag)), None
+
+            result, _ = jax.lax.scan(step, tree.zeros_like(x), model)
+            return result
+
+        return asoperator(apply, in_structure=model.map_structure)
 
     def accumulate_rhs(self, models: ObservationModel) -> StokesPyTreeType:
         """Accumulate the RHS vector across all observations"""

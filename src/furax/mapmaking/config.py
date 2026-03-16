@@ -171,6 +171,9 @@ class SotodlibConfig:
     weather: Literal['toco', 'typical'] = 'toco'
     """Atmospheric condition tag for so3g sightline model"""
 
+    apply_wobble_correction: bool = True
+    """Apply HWP wobble correction to the line of sight."""
+
     noise_source: Literal['preprocess', 'mapmaking'] = 'preprocess'
     """Which precomputed noise model to use when fit_noise_model is False.
 

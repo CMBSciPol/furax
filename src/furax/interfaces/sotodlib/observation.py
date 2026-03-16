@@ -12,6 +12,7 @@ from astropy.wcs import WCS
 from jaxtyping import Array, Bool, Float, Integer
 from numpy.typing import NDArray
 from sotodlib import coords
+from sotodlib.coords.helpers import get_deflected_sightline
 from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import load_and_preprocess
 
@@ -45,6 +46,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
         # default is to load everything
         fields = None
+        config = sotodlib_config or SotodlibConfig()
         if requested_fields is not None:
             # minimum information needed to determine buffer shapes
             fields = ['dets', 'samp']
@@ -67,17 +69,18 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 fields.append('boresight')
                 if 'timestamps' not in fields:
                     fields.append('timestamps')
+                if config.apply_wobble_correction:
+                    fields.append('wobble_params')
             if 'detector_quaternions' in requested_fields:
                 fields.append('focal_plane')
             if 'noise_model_fits' in requested_fields:
-                _config = sotodlib_config or SotodlibConfig()
-                if _config.noise_source == 'mapmaking':
+                if config.noise_source == 'mapmaking':
                     fields.append('preprocess.noiseQ_mapmaking')
                 else:
                     fields.extend(['preprocess.noiseT', 'preprocess.noiseQ', 'preprocess.noiseU'])
 
         data = AxisManager.load(filename, fields=fields)
-        return cls(data, sotodlib_config)
+        return cls(data, config)
 
     @classmethod
     def from_preprocess(
@@ -351,14 +354,22 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
         """Returns the boresight quaternions at each time sample"""
-        csl = so3g.proj.CelestialSightLine.az_el(
-            self.data.timestamps,
-            self.data.boresight.az,
-            self.data.boresight.el,
-            roll=self.data.boresight.roll,
-            site=self._sotodlib_config.site,
-            weather=self._sotodlib_config.weather,
-        )
+        site = self._sotodlib_config.site
+        weather = self._sotodlib_config.weather
+        if self._sotodlib_config.apply_wobble_correction:
+            wobble = self.data.get('wobble_params')
+            if wobble is None:
+                raise ValueError('wobble_params not found in observation data')
+            csl = get_deflected_sightline(self.data, wobble, site=site, weather=weather)
+        else:
+            csl = so3g.proj.CelestialSightLine.az_el(
+                self.data.timestamps,
+                self.data.boresight.az,
+                self.data.boresight.el,
+                roll=self.data.boresight.roll,
+                site=site,
+                weather=weather,
+            )
         return jnp.array(csl.Q, dtype=jnp.float64)
 
     def get_detector_quaternions(self) -> Float[Array, 'det 4']:

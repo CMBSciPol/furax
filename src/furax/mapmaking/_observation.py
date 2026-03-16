@@ -149,7 +149,7 @@ class AbstractObservation(ABC, Generic[T]):
         self,
         resolution: float = 8.0,  # units: arcmins
         projection: str = 'car',
-    ) -> tuple[tuple[int, ...], WCS]:
+    ) -> tuple[tuple[int, int], WCS]:
         """Returns the shape and object corresponding to a WCS projection"""
 
     @abstractmethod

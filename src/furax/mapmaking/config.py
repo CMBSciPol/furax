@@ -5,13 +5,16 @@ from typing import Any, Literal
 
 import jax.numpy as jnp
 import yaml
-from apischema import deserialize, serialize
+from apischema import deserialize, deserializer, serialize, serializer
+from apischema.conversions import Conversion
 from jax.typing import DTypeLike
 
+from furax.obs.landscapes import ProjectionType
 
-class Landscapes(Enum):
-    WCS = 'WCS'
-    HPIX = 'Healpix'
+# apischema serializes IntEnum by value (integer) by default; override to use the name instead
+# so that YAML config files show e.g. 'CAR' rather than '0'.
+serializer(Conversion(lambda p: p.name, source=ProjectionType, target=str))
+deserializer(Conversion(lambda s: ProjectionType[s], source=str, target=ProjectionType))
 
 
 class Methods(Enum):
@@ -62,10 +65,107 @@ class NoiseFitConfig:
 
 
 @dataclass
-class LandscapeConfig:
-    type: Landscapes = Landscapes.HPIX
-    resolution: float = 8.0
+class HealpixLandscapeConfig:
+    """Configuration for a HEALPix output map.
+
+    Example::
+
+        healpix:
+          nside: 512
+    """
+
     nside: int = 512
+    ordering: Literal['nest', 'ring'] = 'ring'
+
+    def __post_init__(self) -> None:
+        if self.ordering == 'nest':
+            raise ValueError('NESTED ordering not supported')
+
+
+@dataclass
+class SkyPatch:
+    """Explicit rectangular sky patch for WCS map construction.
+
+    Example::
+
+        patch:
+          center: [30.0, -10.0]  # ra, dec in degrees
+          width: 20.0
+          height: 10.0
+    """
+
+    center: tuple[float, float]
+    """Center ``(ra, dec)`` in degrees."""
+
+    width: float
+    """Width in degrees."""
+
+    height: float
+    """Height in degrees."""
+
+
+@dataclass
+class WCSLandscapeConfig:
+    """Configuration for a WCS-projected output map.
+
+    ``projection`` applies to all modes except ``geometry_file``, where it is read from the file.
+
+    The map extent is determined by exactly one of three mutually exclusive modes:
+
+    1. **geometry_file**: read shape and WCS directly from a FITS/HDF file via
+       ``pixell.enmap.read_map_geometry``. All other fields are ignored.
+    2. **patch**: build a rectangular patch of sky at the given ``resolution``.
+    3. **auto** (no geometry specified): scan the observations to compute each observation's
+       bounding box, take their union, and pixelise at the given ``resolution``.
+
+    Examples::
+
+        # Auto footprint at 4 arcmin resolution
+        car:
+          resolution: 4.0
+
+        # Explicit patch
+        car:
+          resolution: 4.0
+          patch:
+            center: [30.0, -10.0]
+            width: 20.0
+            height: 10.0
+
+        # Geometry from file
+        car:
+          geometry_file: /path/to/map.fits
+    """
+
+    projection: ProjectionType = ProjectionType.CAR
+    """WCS projection type."""
+
+    resolution: float = 4.0
+    """Pixel resolution in arcminutes."""
+
+    geometry_file: str | None = None
+    """Path to a FITS or HDF map file from which to read the output geometry."""
+
+    patch: SkyPatch | None = None
+    """Explicit sky patch definition. Mutually exclusive with ``geometry_file``."""
+
+    def __post_init__(self) -> None:
+        if self.geometry_file is not None and self.patch is not None:
+            raise ValueError('geometry_file and patch are mutually exclusive.')
+
+    @property
+    def has_geometry(self) -> bool:
+        return self.geometry_file is not None or self.patch is not None
+
+
+@dataclass
+class LandscapeConfig:
+    healpix: HealpixLandscapeConfig | None = field(default_factory=HealpixLandscapeConfig)
+    wcs: WCSLandscapeConfig | None = None
+
+    def __post_init__(self) -> None:
+        if (self.healpix is None) == (self.wcs is None):
+            raise ValueError('exactly one of healpix or wcs must be set.')
 
 
 @dataclass
@@ -223,7 +323,7 @@ class MapMakingConfig:
     @classmethod
     def load_dict(cls, data: dict[str, Any]) -> 'MapMakingConfig':
         """Load and instantiate a ``MapMakingConfig`` from a dictionary."""
-        return deserialize(MapMakingConfig, data)  # type: ignore[no-any-return]
+        return deserialize(MapMakingConfig, data)
 
     def dump_yaml(self, path: str | Path) -> None:
         """Dump the config to a YAML file.

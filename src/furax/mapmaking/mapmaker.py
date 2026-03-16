@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import lineax
 import numpy as np
 import pixell.enmap
+import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
@@ -31,7 +32,12 @@ from furax import (
 )
 from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
 from furax.mapmaking._model import ObservationModel, _hwp_frequency
-from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
+from furax.obs.landscapes import (
+    AstropyWCSLandscape,
+    HealpixLandscape,
+    StokesLandscape,
+    WCSLandscape,
+)
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
 
@@ -40,7 +46,7 @@ from . import templates
 from ._logger import logger as furax_logger
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
-from .config import Landscapes, MapMakingConfig, Methods
+from .config import LandscapeConfig, MapMakingConfig, Methods, WCSLandscapeConfig
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
@@ -109,18 +115,38 @@ class MultiObservationMapMaker(Generic[T]):
         self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
-        self.landscape = self._landscape()
+        self.landscape = self._make_landscape()
 
-    def _landscape(self) -> StokesLandscape:
-        if self.config.landscape.type == Landscapes.HPIX:
-            return HealpixLandscape(
-                nside=self.config.landscape.nside,
-                stokes=self.config.stokes,
-                dtype=self.config.dtype,
+    def _make_landscape(self) -> StokesLandscape:
+        stokes, dtype = self.config.stokes, self.config.dtype
+        lc = self.config.landscape
+        if (landscape := _static_landscape(lc, stokes, dtype)) is not None:
+            return landscape
+        assert lc.wcs is not None  # mypy: _static_landscape returns None only for auto WCS
+        return self._scan_wcs_footprint(lc.wcs)
+
+    def _scan_wcs_footprint(self, wcs_config: WCSLandscapeConfig) -> WCSLandscape:
+        """Scan observations to determine the combined WCS footprint and build a WCSLandscape.
+
+        Performs a preliminary pass over all observations, loading the pointing data needed
+        to compute each observation's sky coverage, then combines them into a unified footprint.
+        """
+        res = wcs_config.resolution * pixell.utils.arcmin
+        proj = wcs_config.projection.name.lower()
+        pointing_fields = ['boresight_quaternions', 'detector_quaternions']
+
+        n = len(self.observations)
+        boxes = np.empty((n, 2, 2))  # [[dec_lo, ra_lo], [dec_hi, ra_hi]] per obs
+        for i, lazy_obs in enumerate(self.observations):
+            obs = lazy_obs.get_data(pointing_fields)
+            shape, wcs = obs.get_wcs_shape_and_kernel(
+                resolution=wcs_config.resolution, projection=proj
             )
-        if self.config.landscape.type == Landscapes.WCS:
-            raise NotImplementedError
-        raise NotImplementedError
+            boxes[i] = pixell.enmap.box(shape, wcs)
+
+        union_box = np.stack([boxes[:, 0].min(axis=0), boxes[:, 1].max(axis=0)])
+        shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
+        return WCSLandscape.from_wcs(shape, wcs, self.config.stokes, self.config.dtype)
 
     def run(self, out_dir: str | Path | None = None) -> MapMakingResults:
         """Runs the mapmaker and return results after saving them to the given directory."""
@@ -169,24 +195,14 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Pixel selection
         valid_pixels = self.pixel_selection(hits, icov)
+        selector = IndexOperator(jnp.where(valid_pixels), in_structure=map_structure)
         n_selected = jnp.sum(valid_pixels)
         n_observed = jnp.sum(hits > 0)
         n_total = valid_pixels.size
         logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
 
         hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
-        icov = jnp.moveaxis(icov, 0, -1)  # pixels to last dim, for saving
-
-        # Pixel selection operator
-        valid_indices = jnp.argwhere(valid_pixels)
-        if self.config.landscape.type == Landscapes.WCS:
-            # TODO: test this again when WCS landscape is supported
-            selector = IndexOperator(
-                (valid_indices[:, 0], valid_indices[:, 1]), in_structure=map_structure
-            )
-        else:
-            # Healpix
-            selector = IndexOperator((valid_indices,), in_structure=map_structure)
+        icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
         # Solve the mapmaking system
         solver = lineax.CG(**asdict(self.config.solver))
@@ -242,7 +258,7 @@ class MultiObservationMapMaker(Generic[T]):
             return carry + model.hits(), None
 
         # StokesLandscape.__len__ doesn't include Stokes parameters factor
-        init = jnp.zeros(len(self.landscape), dtype=jnp.int64)
+        init = jnp.zeros(self.landscape.shape, dtype=jnp.int64)
         total, _ = jax.lax.scan(acc, init, models)
         return total
 
@@ -290,6 +306,48 @@ class MultiObservationMapMaker(Generic[T]):
             return result
 
         return asoperator(apply, in_structure=model.map_structure)
+
+
+def _static_landscape(
+    lc: LandscapeConfig,
+    stokes: ValidStokesType,
+    dtype: DTypeLike,
+) -> StokesLandscape | None:
+    """Build a landscape from config alone, without observation data.
+
+    Returns None if the landscape cannot be determined without scanning observations
+    (i.e. WCS with no explicit geometry).
+    """
+    if lc.healpix is not None:
+        return HealpixLandscape(nside=lc.healpix.nside, stokes=stokes, dtype=dtype)
+    if lc.wcs is not None and lc.wcs.has_geometry:
+        return _wcs_landscape_from_geometry(lc.wcs, stokes, dtype)
+    return None
+
+
+def _wcs_landscape_from_geometry(
+    wcs_config: WCSLandscapeConfig,
+    stokes: ValidStokesType,
+    dtype: DTypeLike,
+) -> WCSLandscape:
+    """Build a WCSLandscape from an explicit geometry specification."""
+    if not wcs_config.has_geometry:
+        raise ValueError('wcs_config must specify a geometry_file or patch.')
+    if wcs_config.geometry_file is not None:
+        shape, wcs = pixell.enmap.read_map_geometry(wcs_config.geometry_file)
+    else:
+        assert wcs_config.patch is not None  # mypy: has_geometry guarantees patch is set here
+        res = wcs_config.resolution * pixell.utils.arcmin
+        half_w = np.radians(wcs_config.patch.width / 2)
+        half_h = np.radians(wcs_config.patch.height / 2)
+        ra_rad, dec_rad = np.radians(wcs_config.patch.center)
+        corners = np.array(
+            [[dec_rad - half_h, ra_rad - half_w], [dec_rad + half_h, ra_rad + half_w]],
+        )
+        shape, wcs = pixell.enmap.geometry(
+            pos=corners, res=res, proj=wcs_config.projection.name.lower()
+        )
+    return WCSLandscape.from_wcs(shape, wcs, stokes, dtype)
 
 
 @dataclass
@@ -365,18 +423,14 @@ class MapMaker:
         self, observation: AbstractGroundObservation[Any], stokes: ValidStokesType = 'IQU'
     ) -> StokesLandscape:
         """Landscape used for mapmaking with given observation"""
-        if self.config.landscape.type == Landscapes.WCS:
-            wcs_shape, wcs_kernel = observation.get_wcs_shape_and_kernel(
-                resolution=self.config.landscape.resolution, projection='car'
-            )
-            return WCSLandscape(wcs_shape, wcs_kernel, stokes=stokes, dtype=self.config.dtype)
-
-        if self.config.landscape.type == Landscapes.HPIX:
-            return HealpixLandscape(
-                nside=self.config.landscape.nside, stokes=stokes, dtype=self.config.dtype
-            )
-
-        raise TypeError('Landscape type not supported')
+        lc = self.config.landscape
+        if (landscape := _static_landscape(lc, stokes, self.config.dtype)) is not None:
+            return landscape
+        assert lc.wcs is not None  # mypy: _static_landscape returns None only for auto WCS
+        wcs_shape, wcs_kernel = observation.get_wcs_shape_and_kernel(
+            resolution=lc.wcs.resolution, projection=lc.wcs.projection.name.lower()
+        )
+        return WCSLandscape.from_wcs(wcs_shape, wcs_kernel, stokes, self.config.dtype)
 
     def get_pointing(
         self, observation: AbstractGroundObservation[Any], landscape: StokesLandscape
@@ -398,7 +452,7 @@ class MapMaker:
             pixel_inds, spin_ang = observation.get_pointing_and_spin_angles(landscape)
             point_ang = spin_ang + det_off_ang[:, None]
 
-            if isinstance(landscape, WCSLandscape):
+            if isinstance(landscape, WCSLandscape | AstropyWCSLandscape):
                 assert pixel_inds.shape[-1] == 2, 'Wrong WCS landscape format'
                 indexer = IndexOperator(
                     (pixel_inds[..., 0], pixel_inds[..., 1]), in_structure=landscape.structure
@@ -555,15 +609,7 @@ class MapMaker:
             eigs[..., -1] > config.hits_cut * hits_quantile,
             eigs[..., 0] > config.cond_cut * eigs[..., -1],
         )
-        valid_indices = jnp.argwhere(valid)
-
-        if config.landscape.type == Landscapes.WCS:
-            return IndexOperator(
-                (valid_indices[:, 0], valid_indices[:, 1]), in_structure=landscape.structure
-            )
-        else:
-            # Healpix
-            return IndexOperator((valid_indices,), in_structure=landscape.structure)
+        return IndexOperator(jnp.where(valid), in_structure=landscape.structure)
 
     def get_template_operator(
         self, observation: AbstractGroundObservation[Any]
@@ -747,6 +793,8 @@ class BinnedMapMaker(MapMaker):
 
         output = {'map': final_map, 'weights': weights}
         if isinstance(landscape, WCSLandscape):
+            output['wcs'] = landscape.to_wcs()
+        elif isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
         if config.fit_noise_model:
             output['noise_fit'] = noise_model.to_array()  # type: ignore[assignment]
@@ -945,6 +993,8 @@ class MLMapmaker(MapMaker):
 
         output = {'map': final_map, 'weights': weights, 'weights_uncut': blocks}
         if isinstance(landscape, WCSLandscape):
+            output['wcs'] = landscape.to_wcs()
+        elif isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
         if config.fit_noise_model:
             output['noise_fit'] = noise_model.to_array()
@@ -1063,6 +1113,8 @@ class TwoStepMapmaker(MapMaker):
         for key in tmpl_ampl.keys():
             output[f'template_{key}'] = tmpl_ampl[key]
         if isinstance(landscape, WCSLandscape):
+            output['wcs'] = landscape.to_wcs()
+        elif isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
         if config.fit_noise_model:
             output['noise_fit'] = noise_model.to_array()
@@ -1209,7 +1261,7 @@ class ATOPMapMaker(MapMaker):
         final_map = np.array([result_map.q, result_map.u])
 
         output = {'map': final_map, 'weights': blocks}
-        if isinstance(landscape, WCSLandscape):
+        if isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
         if config.fit_noise_model:
             output['noise_fit'] = noise_model.to_array()

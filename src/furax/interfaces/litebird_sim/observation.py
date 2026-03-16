@@ -78,7 +78,7 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
         self,
         resolution: float = 8.0,  # units: arcmins
         projection: str = 'car',
-    ) -> tuple[tuple[int, ...], wcs.WCS]:
+    ) -> tuple[tuple[int, int], wcs.WCS]:
         raise NotImplementedError
 
     def get_pointing_and_spin_angles(

@@ -1,5 +1,7 @@
 import math
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import IntEnum
 
 import jax
 import jax.numpy as jnp
@@ -175,17 +177,144 @@ class StokesLandscape(Landscape):
             stride *= dim
         return jnp.where(valid, indices, -1)
 
-    def quat2world(
-        self, quat: Float[Array, '*dims 4']
-    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
-        """Converts quaternion to WCS angles (theta, phi)."""
-        theta, phi, _psi = to_iso_angles(quat)
-        return theta, phi
+    def quat2pixel(self, quat: Float[Array, '*dims 4']) -> tuple[Float[Array, ' *dims'], ...]:
+        """Converts quaternion to floating-point pixel coordinates."""
+        theta, phi, _ = to_iso_angles(quat)  # psi not needed
+        return self.world2pixel(theta, phi)
 
     def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
         """Converts quaternion to 1-dimensional pixel indices."""
-        world = self.quat2world(quat)
-        return self.world2index(*world)
+        return self.pixel2index(*self.quat2pixel(quat))
+
+
+class ProjectionType(IntEnum):
+    """Supported WCS projection types."""
+
+    CAR = 0
+
+
+@register_static
+@dataclass
+class WCSProjection:
+    """Class that holds basic WCS projection paramters."""
+
+    crpix: tuple[float, float]
+    """Reference pixel ``(crpix_x, crpix_y)`` in 1-indexed FITS convention."""
+    crval: tuple[float, float]
+    """Reference coordinate ``(lon_deg, lat_deg)`` in degrees."""
+    cdelt: tuple[float, float]
+    """Pixel scale ``(cdelt_x_deg, cdelt_y_deg)`` in degrees per pixel."""
+    type: ProjectionType = ProjectionType.CAR
+    """Projection type (only CAR is supported for now)."""
+
+    @classmethod
+    def from_astropy(cls, wcs: WCS) -> 'WCSProjection':
+        """Extract a WCSProjection from an astropy WCS object."""
+        projection = ProjectionType[wcs.wcs.ctype[0].split('-')[-1]]
+        return cls(
+            crpix=(float(wcs.wcs.crpix[0]), float(wcs.wcs.crpix[1])),
+            crval=(float(wcs.wcs.crval[0]), float(wcs.wcs.crval[1])),
+            cdelt=(float(wcs.wcs.cdelt[0]), float(wcs.wcs.cdelt[1])),
+            type=projection,
+        )
+
+
+@register_static
+class WCSLandscape(StokesLandscape):
+    """Base class for WCS-projected Stokes landscapes."""
+
+    def __init__(
+        self,
+        shape: tuple[int, int],
+        projection: WCSProjection,
+        stokes: ValidStokesType = 'IQU',
+        dtype: DTypeLike = np.float64,
+    ) -> None:
+        super().__init__(shape, stokes, dtype)
+        self.projection = projection
+
+    @property
+    def crpix(self) -> tuple[float, float]:
+        return self.projection.crpix
+
+    @property
+    def crval(self) -> tuple[float, float]:
+        return self.projection.crval
+
+    @property
+    def cdelt(self) -> tuple[float, float]:
+        return self.projection.cdelt
+
+    def to_wcs(self) -> WCS:
+        """Reconstruct an astropy WCS object from the stored projection parameters."""
+        proj = self.projection.type.name
+        wcs = WCS(naxis=2)
+        wcs.wcs.ctype = [f'RA---{proj}', f'DEC--{proj}']
+        wcs.wcs.crpix = list(self.crpix)
+        wcs.wcs.crval = list(self.crval)
+        wcs.wcs.cdelt = list(self.cdelt)
+        wcs.wcs.set()
+        return wcs
+
+    @classmethod
+    def class_for(cls, projection_type: ProjectionType) -> type['WCSLandscape']:
+        """Return the WCSLandscape subclass for the given projection type."""
+        if projection_type == ProjectionType.CAR:
+            return CARLandscape
+        raise ValueError(f'Unsupported projection type: {projection_type!r}')
+
+    @classmethod
+    def from_wcs(
+        cls,
+        shape: tuple[int, int],
+        wcs: WCS,
+        stokes: ValidStokesType = 'IQU',
+        dtype: DTypeLike = np.float64,
+    ) -> 'WCSLandscape':
+        """Create a WCSLandscape subclass instance from an astropy WCS object.
+
+        Dispatches to the appropriate subclass based on the projection type.
+        """
+        projection = WCSProjection.from_astropy(wcs)
+        return cls.class_for(projection.type)(shape, projection, stokes, dtype)
+
+
+@register_static
+class CARLandscape(WCSLandscape):
+    r"""Class representing a CAR (Plate Carrée) projected map of Stokes vectors.
+
+    The projection is a simple linear mapping:
+
+    .. math::
+
+        p_x = \frac{\Delta\lambda}{\delta_x} + (c_x - 1)
+
+        p_y = \frac{\phi - \phi_0}{\delta_y} + (c_y - 1)
+
+    where :math:`\Delta\lambda = ((\lambda - \lambda_0 + 180) \bmod 360) - 180` handles
+    the 0°/360° RA wrap, :math:`(\lambda_0, \phi_0)` is ``crval``, :math:`(\delta_x, \delta_y)`
+    is ``cdelt`` in degrees, and :math:`(c_x, c_y)` is ``crpix`` (1-indexed FITS convention).
+    """
+
+    @jax.jit
+    def world2pixel(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        r"""Convert spherical angles to CAR pixel coordinates in pure JAX.
+
+        Args:
+            theta (float): Spherical :math:`\theta` angle (co-latitude, 0 at north pole).
+            phi (float): Spherical :math:`\phi` angle (longitude).
+
+        Returns:
+            Pixel coordinate pair ``(pix_x, pix_y)`` as float arrays.
+        """
+        lon_deg = jnp.degrees(phi)
+        lat_deg = jnp.degrees(jnp.pi / 2 - theta)
+        lon_diff = ((lon_deg - self.crval[0]) + 180) % 360 - 180
+        pix_x = lon_diff / self.cdelt[0] + (self.crpix[0] - 1)
+        pix_y = (lat_deg - self.crval[1]) / self.cdelt[1] + (self.crpix[1] - 1)
+        return pix_x, pix_y
 
 
 @register_static
@@ -245,7 +374,7 @@ class FrequencyLandscape(HealpixLandscape):
 
 
 @register_static
-class WCSLandscape(StokesLandscape):
+class AstropyWCSLandscape(StokesLandscape):
     """Class representing an astropy WCS map of Stokes vectors."""
 
     def __init__(
@@ -258,9 +387,10 @@ class WCSLandscape(StokesLandscape):
         super().__init__(shape, stokes, dtype)
         self.wcs = wcs
 
+    @jax.jit
     def world2pixel(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, ' *dims'], Integer[Array, ' *dims']]:
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         r"""Convert angles to WCS map indices.
 
         Args:
@@ -274,9 +404,9 @@ class WCSLandscape(StokesLandscape):
         def f(theta, phi):  # type: ignore[no-untyped-def]
             # SkyCoord takes (lon,lat)
             pix_i, pix_j = self.wcs.world_to_pixel(SkyCoord(phi, (np.pi / 2 - theta), unit='rad'))
-            return tuple(np.array(np.round([pix_i, pix_j]), dtype=np.int64))
+            return np.array(pix_i), np.array(pix_j)
 
-        struct = jax.ShapeDtypeStruct(theta.shape, jnp.int64)
+        struct = jax.ShapeDtypeStruct(theta.shape, theta.dtype)
         result_shape = (struct, struct)
 
         return jax.pure_callback(f, result_shape, theta, phi)  # type: ignore[no-any-return]

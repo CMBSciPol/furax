@@ -54,9 +54,10 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             if 'metadata' in requested_fields:
                 fields.append('obs_info')
             if 'sample_data' in requested_fields:
-                # include both original and demodulated TOD
-                # TODO: choose?
-                fields.extend(['signal', 'dsT', 'demodQ', 'demodU'])
+                if config.demodulated:
+                    fields.extend(['dsT', 'demodQ', 'demodU'])
+                else:
+                    fields.append('signal')
             if 'valid_sample_masks' in requested_fields:
                 fields.append('flags.glitch_flags')
             if 'valid_scanning_masks' in requested_fields:

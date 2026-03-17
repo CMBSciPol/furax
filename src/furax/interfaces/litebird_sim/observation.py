@@ -10,7 +10,7 @@ from jaxtyping import Array, Bool, Float
 
 from furax.mapmaking import AbstractLazyObservation, AbstractSatelliteObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
-from furax.obs.landscapes import HealpixLandscape, StokesLandscape
+from furax.obs.landscapes import HealpixLandscape, ProjectionType, StokesLandscape
 
 
 class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
@@ -76,8 +76,8 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
 
     def get_wcs_shape_and_kernel(
         self,
-        resolution: float = 8.0,  # units: arcmins
-        projection: str = 'car',
+        resolution_arcmin: float,
+        projection: ProjectionType = ProjectionType.CAR,
     ) -> tuple[tuple[int, int], wcs.WCS]:
         raise NotImplementedError
 

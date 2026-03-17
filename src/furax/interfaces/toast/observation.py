@@ -16,7 +16,12 @@ from toast.ops.load_hdf5 import LoadHDF5
 
 from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
-from furax.obs.landscapes import AstropyWCSLandscape, HealpixLandscape, StokesLandscape
+from furax.obs.landscapes import (
+    AstropyWCSLandscape,
+    HealpixLandscape,
+    ProjectionType,
+    StokesLandscape,
+)
 
 from .utils import get_local_meridian_angle
 
@@ -229,8 +234,8 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
     def get_wcs_shape_and_kernel(
         self,
-        resolution: float = 8.0,  # units: arcmins
-        projection: str = 'car',
+        resolution_arcmin: float,
+        projection: ProjectionType = ProjectionType.CAR,
     ) -> tuple[tuple[int, int], WCS]:
         """Returns the shape and object corresponding to a WCS projection.
         Here, this is obtained while we compute the pointing and pixelisation."""
@@ -241,7 +246,8 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         det_pixels = toast.ops.PixelsWCS(
             detector_pointing=det_pointing,
             pixels=self._pixels,
-            resolution=[resolution * u.arcmin, resolution * u.arcmin],
+            resolution=[res := (resolution_arcmin * u.arcmin), res],
+            projection=projection.name,
             dimensions=tuple(),
         )
         det_pixels.apply(self._toast_data)

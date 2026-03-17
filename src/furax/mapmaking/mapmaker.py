@@ -140,7 +140,7 @@ class MultiObservationMapMaker(Generic[T]):
         for i, lazy_obs in enumerate(self.observations):
             obs = lazy_obs.get_data(pointing_fields)
             shape, wcs = obs.get_wcs_shape_and_kernel(
-                resolution=wcs_config.resolution, projection=proj
+                resolution_arcmin=wcs_config.resolution, projection=wcs_config.projection
             )
             boxes[i] = pixell.enmap.box(shape, wcs)
 
@@ -427,7 +427,7 @@ class MapMaker:
             return landscape
         assert lc.wcs is not None  # mypy: _static_landscape returns None only for auto WCS
         wcs_shape, wcs_kernel = observation.get_wcs_shape_and_kernel(
-            resolution=lc.wcs.resolution, projection=lc.wcs.projection.name.lower()
+            resolution_arcmin=lc.wcs.resolution, projection=lc.wcs.projection
         )
         return WCSLandscape.from_wcs(wcs_shape, wcs_kernel, stokes, self.config.dtype)
 

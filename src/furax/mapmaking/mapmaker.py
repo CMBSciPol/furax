@@ -43,6 +43,7 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 
 from ..interfaces.lineax import as_lineax_operator
 from . import templates
+from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
@@ -136,15 +137,19 @@ class MultiObservationMapMaker(Generic[T]):
         pointing_fields = ['boresight_quaternions', 'detector_quaternions']
 
         n = len(self.observations)
-        boxes = np.empty((n, 2, 2))  # [[dec_lo, ra_lo], [dec_hi, ra_hi]] per obs
+        corners_rad = np.empty((n, 2, 2))  # [[dec_lo, ra_lo], [dec_hi, ra_hi]] per obs in radians
         for i, lazy_obs in enumerate(self.observations):
             obs = lazy_obs.get_data(pointing_fields)
             shape, wcs = obs.get_wcs_shape_and_kernel(
                 resolution_arcmin=wcs_config.resolution, projection=wcs_config.projection
             )
-            boxes[i] = pixell.enmap.box(shape, wcs)
+            # corners returns radians
+            corners_rad[i] = pixell.enmap.corners(shape, wcs)
 
-        union_box = np.stack([boxes[:, 0].min(axis=0), boxes[:, 1].max(axis=0)])
+        dec_lo = corners_rad[:, 0, 0].min()
+        dec_hi = corners_rad[:, 1, 0].max()
+        ra_lo, ra_hi = minimum_enclosing_arc(corners_rad[:, :, 1])
+        union_box = np.array([[dec_lo, ra_lo], [dec_hi, ra_hi]])
         shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
         return WCSLandscape.from_wcs(shape, wcs, self.config.stokes, self.config.dtype)
 

@@ -25,7 +25,7 @@ authors:
     affiliation: 1
   - name: Josquin Errard
     orcid: 0000-0002-1419-0031
-    affiliation: 1 
+    affiliation: 1
 affiliations:
   - name: Université Paris Cité, CNRS, Astroparticule et Cosmologie, F-75013 Paris, France
     index: 1
@@ -40,7 +40,7 @@ The ``Framework for Unified and Robust data Analysis with JAX'' (Furax) is an op
 
 # Statement of Need
 
-Contemporary and future CMB experiments such as LiteBIRD [@litebird2023], the Simons Observatory [@simons2019], the South Pole Observatory [@spo] and CMB-S4 [@cmbs4-2022] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. The central problem in CMB data analysis is map-making: recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
+Contemporary and future CMB experiments such as LiteBIRD [@litebird2023], the Simons Observatory [@simons2019], the South Pole Observatory [@spo] and CMB-S4 [@cmbs4-2022] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. One of the central problems in CMB data analysis is map-making: recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
 
 $$\mathbf{d} = \mathbf{P}\mathbf{m} + \mathbf{n}$$
 
@@ -60,62 +60,64 @@ Furax's architecture centers on composable linear operators that extend lineax's
 
 ```python
 H = instrument_operator @ pointing @ rotation
-y = H(sky_map)      # Forward model
-x = H.T(data)       # Transpose application
-solution = H.I(y)   # Inverse via lineax solver
+N = HomothetyOperator(0.5**2, in_structure=H.out_structure)
+y = H(sky_map) + noise  # Forward model including noise
+A = (H.T @ N.I @ H).I @ H.T @ N.I
+solution = A(y)      # Inverse via solvers
 ```
 
 **Operator Algebra.** The base class `AbstractLinearOperator` provides a default implementation for standard linear algebra operations that enable intuitive composition and manipulation of operators:
 
-| Operation | Syntax | Comment |
-|-----------|--------|---------|
-| Addition | `A + B` |  |
-| Composition | `A @ B` |  |
-| Multiplication by scalar | `k * A` | Returns the composition of a HomothetyOperator and A |
-| Transpose | `A.T` | Through JAX autodiff, but can be overridden |
-| Inverse | `A.I` or `A.I(solver=..., maxiter=..., preconditioner=...)` | By default, the CG solver is used, but it can be overridden |
-| Block Assembly | `BlockColumnOperator([A, B])`, `BlockDiagonalOperator([A, B])`, `BlockRowOperator([A, B])` | Handle any PyTree of Operators: `Block*Operator({'a': A, 'b': B})` |
-| Flattened dense matrix | `A.as_matrix()` |  |
-| Algebraic reduction | `A.reduce()` |  |
+| Operation                 | &nbsp;Syntax                                                       | Comment                                                                               |
+|---------------------------|--------------------------------------------------------------------|---------------------------------------------------------------------------------------|
+| Addition                  | `A + B`                                                            |                                                                                       |
+| Composition               | `A @ B`                                                            |                                                                                       |
+| Multiplication by scalar  | `k * A`                                                            | Returns the composition of a HomothetyOperator and A                                  |
+| Transpose                 | `A.T`                                                              | Through JAX autodiff, but can be overridden                                           |
+| Inverse                   | `A.I` or `A.I(solver=..., preconditioner=...)`                     | By default, the CG solver is used, but it can be overridden                           |
+| Block&nbsp;Assembly       | `BlockColumnOperator`, `BlockDiagonalOperator`, `BlockRowOperator` | Handle any PyTree of operators: `Block`...`Operator`({`'cmb'`:...,&nbsp;`'dust'`:...}) |
+| Flattened dense matrix    | `A.as_matrix()`                                                    |                                                                                       |
+| Algebraic reduction       | `A.reduce()`                                                       |                                                                                       |
 
-Table: Supported operator operations in Furax. {#tbl:operations}
+Table: Supported operator operations in Furax.
 
 **Generic Operators.** Furax provides a comprehensive suite of generic operators for common mathematical operations:
 
-| Operator | Description |
-|----------|-------------|
-| `IdentityOperator` |  |
-| `HomothetyOperator` |  |
-| `DiagonalOperator` |  |
-| `BroadcastDiagonalOperator` | Non-square operator for broadcasting |
-| `TensorOperator` | For dense matrix operations |
-| `TreeOperator` | For generalized matrix operations |
-| `SumOperator` | Sum along axes |
-| `IndexOperator` | Can be used for projecting skies onto time-ordered series |
-| `MaskOperator` | Bit-encoded 0- or 1-valued mask |
-| `MoveAxisOperator` |  |
-| `ReshapeOperator` |  |
-| `RavelOperator` |  |
-| `SymmetricBandToeplitzOperator` | Methods: direct, FFT, overlap and save |
-| `Block*Operator` | Block assembly operators (column, diagonal, row) |
+| Operator                        | Description                                              |
+|---------------------------------|----------------------------------------------------------|
+| `IdentityOperator`              |                                                          |
+| `HomothetyOperator`             |                                                          |
+| `DiagonalOperator`              |                                                          |
+| `BroadcastDiagonalOperator`     | Non-square operator for broadcasting                     |
+| `TensorOperator`                | For dense matrix operations                              |
+| `TreeOperator`                  | For generalized matrix operations                        |
+| `SumOperator`                   | Sum along axes                                           |
+| `IndexOperator`                 | Can be used for projecting skies onto time-ordered series |
+| `MaskOperator`                  | Bit-encoded 0- or 1-valued mask                          |
+| `MoveAxisOperator`              |                                                          |
+| `ReshapeOperator`               |                                                          |
+| `RavelOperator`                 |                                                          |
+| `FFTOperator`                   | Fast Fourier transform                                   |
+| `SymmetricBandToeplitzOperator` | Methods: direct, FFT, overlap and save                   |
+| `Block*Operator`                | Block assembly operators (column, diagonal, row)         |
 
-Table: Generic operators available in Furax. {#tbl:generic-operators}
+Table: Generic operators available in Furax.
 
 **Domain-Specific Operators.** For CMB data analysis, Furax includes specialized operators tailored to instrument modeling and astrophysical components:
 
-| Operator | Description |
-|----------|-------------|
-| `QURotationOperator` |  |
-| `HWPOperator` | Ideal HWP |
-| `LinearPolarizerOperator` | Ideal linear polarizer |
-| `CMBOperator` | Parametrized CMB SED |
-| `DustOperator` | Parametrized dust SED |
-| `SynchrotronOperator` | Parametrized synchrotron SED |
-| `PointingOperator` | On-the-fly projection matrix |
-| `MapSpaceBeamOperator` | Sparse Beam operator |
-| `TemplateOperator` | For template map-making |
+| Operator                  | Description                  |
+|---------------------------|------------------------------|
+| `QURotationOperator`      |                              |
+| `HWPOperator`             | Ideal HWP                    |
+| `LinearPolarizerOperator` | Ideal linear polarizer       |
+| `CMBOperator`             | Parametrized CMB SED         |
+| `DustOperator`            | Parametrized dust SED        |
+| `SynchrotronOperator`     | Parametrized synchrotron SED |
+| `PointingOperator`        | On-the-fly projection matrix |
+| `MapSpaceBeamOperator`    | Sparse Beam operator         |
+| `TemplateOperator`        | For template map-making      |
 
-Table: Domain-specific operators for CMB data analysis. {#tbl:applied-operators}
+Table: Domain-specific operators for CMB data analysis.
 
 **Stokes Parameter Types.** Furax represents polarization through dedicated PyTree-compatible types: `StokesI`, `StokesQU`, `StokesIQU`, and `StokesIQUV`. These types support arithmetic operations, broadcasting, and seamless integration with JAX transformations.
 
@@ -125,11 +127,11 @@ Table: Domain-specific operators for CMB data analysis. {#tbl:applied-operators}
 
 **CMB Operators.** Domain-specific operators include `HWPOperator` for half-wave plate modeling, `LinearPolarizerOperator` for polarization extraction implementing $d = \frac{1}{2}(I + Q\cos 2\psi + U\sin 2\psi)$, `QURotationOperator` for polarization angle rotations, and `HealpixLandscape` for spherical pixelization. Spectral operators (`CMBOperator`, `DustOperator`, `SynchrotronOperator`) enable frequency-dependent component separation with support for spatially varying spectral indices.
 
-**Toeplitz Operations.** The `SymmetricBandToeplitzOperator` provides efficient convolution operations with five algorithm choices: dense multiplication, direct convolution, FFT-based, overlap-save, and overlap-add methods. This operator is central to correlated noise modeling and gap-filling procedures based on constrained Gaussian realizations [@stompor2002].
+**Toeplitz Operations.** The `SymmetricBandToeplitzOperator` provides efficient convolution operations with five algorithm choices: dense multiplication, direct convolution, FFT-based and overlap-save methods. This operator is central to correlated noise modeling and gap-filling procedures based on constrained Gaussian realizations [@stompor2002].
 
 # Research Impact Statement
 
-Furax was developed within the ERC-funded SciPol project to enable gradient-based optimization in CMB data analysis pipelines . The framework's differentiability opens new possibilities for neural network integration and end-to-end optimization of map-making and component separation. The modular design supports rapid prototyping of analysis methods while maintaining compatibility with production pipelines through TOAST integration. Furax provides essential infrastructure for developing next-generation analysis techniques for LiteBIRD, the Simons Observatory, and CMB-S4.
+Furax was developed within the ERC-funded SciPol project to enable gradient-based optimization in CMB data analysis pipelines. The framework's differentiability opens new possibilities for neural network integration and end-to-end optimization of map-making and component separation. The modular design supports rapid prototyping of analysis methods while maintaining compatibility with production pipelines through TOAST integration. Furax provides essential infrastructure for developing next-generation analysis techniques for e.g., LiteBIRD, the Simons Observatory, and CMB-S4.
 
 # AI Usage Disclosure
 
@@ -137,9 +139,9 @@ AI-assisted tools were used for code documentation and manuscript preparation. A
 
 # Acknowledgements
 
-This work was carried out within the \textsc{SciPol} project (\href{https://scipol.in2p3.fr}{scipol.in2p3.fr}), supported by the European Research Council (ERC) under the European Union’s Horizon 2020 research and innovation programme (Grant Agreement No.~101044073, PI: Josquin Errard). 
+This work was carried out within the \textsc{SciPol} project (\href{https://scipol.in2p3.fr}{scipol.in2p3.fr}), supported by the European Research Council (ERC) under the European Union’s Horizon 2020 research and innovation programme (Grant Agreement No.~101044073, PI: Josquin Errard).
 
-Computing resources were provided by GENCI at IDRIS (Jean Zay supercomputer) under allocations 2024-AD010414161R2 and 2025-A0190416919. 
+Computing resources were provided by GENCI at IDRIS (Jean Zay supercomputer) under allocations 2024-AD010414161R2 and 2025-A0190416919.
 
 This work has also received funding by the European Union’s Horizon 2020 research and innovation program under grant agreement no. 101007633 CMB-Inflate.
 

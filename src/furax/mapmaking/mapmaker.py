@@ -257,7 +257,6 @@ class MultiObservationMapMaker(Generic[T]):
         def acc(carry, model):  # type: ignore[no-untyped-def]
             return carry + model.hits(), None
 
-        # StokesLandscape.__len__ doesn't include Stokes parameters factor
         init = jnp.zeros(self.landscape.shape, dtype=jnp.int64)
         total, _ = jax.lax.scan(acc, init, models)
         return total

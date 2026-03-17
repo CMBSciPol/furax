@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import jax
@@ -12,7 +12,7 @@ from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, StokesI
 
 from .acquisition import build_acquisition_operator
-from .config import MapMakingConfig
+from .config import MapMakingConfig, Methods
 from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
@@ -58,7 +58,7 @@ class ObservationModel:
             dtype=config.dtype,
         )
         masker = _mask_projector(
-            data['valid_sample_masks'],
+            _sample_mask(data, config),
             data.get('valid_scanning_masks'),
             structure=H.out_structure,
         )
@@ -66,6 +66,8 @@ class ObservationModel:
         W = _noise_operator(
             noise_model, H.out_structure, sample_rate, config.correlation_length, inverse=True
         )
+        if F_T := _template_deprojector(config, H.out_structure):
+            W = F_T @ W
         return cls(H, W, masker, noise_model, sample_rate)
 
     @property
@@ -175,6 +177,24 @@ def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel]
     return noise_model, fs
 
 
+def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
+    """Get the sample mask from data.
+    For ATOP mapmaker, extra pixels may be masked depending on atop_tau. """
+
+    mask = data['valid_sample_masks'],
+
+    if config.method == Methods.ATOP:
+        tau = config.atop_tau
+        F_T = _template_deprojector(config, jax.ShapeDtypeStruct(mask.shape, jnp.float32))
+        # Mask all tau-intervals that are partially masked
+        interval_mask = jnp.abs(F_T(mask.astype(jnp.flot32))) < 0.5 / tau
+        mask = jnp.logical_and(mask, interval_mask)
+        # Handle the partial interval at the end
+        mask = mask.at[:,(tau * (mask.shape[-1] // tau)):].set(False)
+    
+    return mask
+
+
 def _noise_operator(
     noise_model: NoiseModel,
     tod_structure: jax.ShapeDtypeStruct,
@@ -193,6 +213,17 @@ def _noise_operator(
         is_leaf=lambda x: isinstance(x, NoiseModel),
     )
     return BlockDiagonalOperator(operator_tree)
+
+def _template_deprojector(
+    config: MapMakingConfig,
+    tod_structure: jax.ShapeDtypeStruct,
+) -> AbstractLinearOperator:
+    """Build the deprojection operator for ATOP mapmaker.
+    The data is assumed to be not demodulated. """
+    if config.method == Methods.ATOP:
+        return ATOPProjectionOperator(config.atop_tau, in_structure=tod_structure)
+    else:
+        return None
 
 
 def _sample_rate(timestamps: Float[Array, '...']) -> Float[Array, '']:
@@ -219,3 +250,37 @@ def _mask_projector(
 
     combined_masker = CompositionOperator([_masker(valid_mask) for valid_mask in valid_masks])
     return combined_masker.reduce()
+
+
+class ATOPProjectionOperator(AbstractLinearOperator):
+    tau: int = field(metadata={'static': True})
+    n_det: int = field(metadata={'static': True})
+    n_samp: int = field(metadata={'static': True})
+
+    def __init__(
+        self,
+        tau: int,
+        *,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
+        n_det: int | None = None,
+        n_samp: int | None = None,
+    ) -> None:
+        if n_det is None:
+            n_det, n_samp = in_structure.shape
+        object.__setattr__(self, 'tau', tau)
+        object.__setattr__(self, 'n_det', n_det)
+        object.__setattr__(self, 'n_samp', n_samp)
+        object.__setattr__(self, 'in_structure', in_structure)
+
+    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
+        if self.n_samp % self.tau == 0:
+            y = x.reshape(self.n_det, self.n_samp // self.tau, self.tau)
+            y = y - jnp.mean(y, axis=-1)[:, :, None]
+            return y.reshape(self.n_det, self.n_samp)
+        else:
+            n_int = self.n_samp // self.tau
+            y = x[:, : n_int * self.tau].reshape(self.n_det, n_int, self.tau)
+            y = y - jnp.mean(y, axis=-1)[:, :, None]
+            return jnp.concatenate(
+                [y.reshape(self.n_det, n_int * self.tau), x[:, -(self.n_samp % self.tau) :]], axis=1
+            )

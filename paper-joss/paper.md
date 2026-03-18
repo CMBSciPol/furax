@@ -69,7 +69,7 @@ bibliography: paper.bib
 
 # Statement of Need
 
-Contemporary and future CMB experiments such as the Simons Observatory [@simons2019], the South Pole Observatory [@spo], QUBIC [@qubic2022] and LiteBIRD [@litebird2023] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. A central problem in CMB data analysis is to exploit data acquisition redundancy through map-making, i.e. recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
+Contemporary and future CMB experiments such as the Simons Observatory [@simons2019], the South Pole Observatory [@spo], QUBIC [@qubic2022] and LiteBIRD [@litebird2023] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. A central problem in CMB data analysis is to exploit data acquisition redundancy through map-making, i.e. recovering the sky signal $\mathbf{m}$ (and potentially separating its components) from noisy observations $\mathbf{d}$ through the linear model
 
 $$\mathbf{d} = \mathbf{H}\mathbf{m} + \mathbf{n}$$
 
@@ -79,26 +79,35 @@ $$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{N}^{-1} \mathbf{H})^{-1} \mathbf{H
 
 to more sophisticated methods such as template-based map-making [@poletti2017]. All require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra.
 
-Furax addresses these two challenges: (1) providing a differentiable operator framework that lends itself to integration into machine learning workflows while maintaining the performance required for production-scale data analysis, and (2) offering a modular architecture that facilitates experimentation with data acquisition models and noise systematics.
+`Furax` addresses these challenges by: (1) providing a differentiable operator algebra framework, (2) offering a modular architecture that facilitates experimentation with realistic instrument models and noise systematics, (3) supporting the exploration of novel map-making techniques, and (4) enabling integration with data reduction pipelines with GPU-accelerated performance for production-scale datasets,.
 
 
 # State of the Field
 
-Several tools exist for CMB data processing in a somewhat fragmented landscape
-- Sky simulation tools like `PySM` [@pysm3] generates realistic sky simulations including multiple astrophysical components, but operates strictly in forward mode
-- while component separation codes like `FGBuster` [@fgbuster2022] have limited noise modeling capabilities.
+Many frameworks and tools exist for CMB data processing in a somewhat fragmented landscape
+
+Frameworks:
+
 - `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck, the Simons Observatory and LiteBIRD, but its C++ core prevents automatic differentiation.
+- `PyOperators` [@chanial2012pyoperators]: used by the QUBIC analysis pipeline, `Furax` precursor but CPU-only
+- `lineax` [@kidger2024lineax]: JAX-compatible but no CMB analysis operators, reliance on non-JAX libraries.
+
+Map-makers, component separation estimators:
+
+- `MAPPRAISER` [@mappraiser2022] CPU only
+- `Commander3` [@galloway2023beyondplanck]
+- `FGBuster` [@fgbuster2022], [@rizzieri2025] implement parametric methods but rely on simplified noise models / have limited noise modeling capabilities
+
+Low-level libraries:
+
+- Sky simulation tools like `PySM` [@pysm3] generate realistic sky simulations including multiple astrophysical components, but operates strictly in forward mode
+- `DUCC` [@ducc] collection of highly optimized CPU C++17 subroutines
 - The `healpy` library [@zonca2019] wraps the HEALPix C library for Python, offering essential spherical harmonic transforms and pixel operations, but runs only on CPU and does not support operator composition.
 - `jax-healpy` [@jax-healpy2024] is JAX-compatible but does not support operator algebra.
-- `Commander3` [@galloway2023beyondplanck]
-- `MAPRAISER` [@mappraiser2022]
-- `DUCC` [@ducc] collection of highly optimized CPU C++17 subroutines
-- `FGBuster` [@rizzieri2025] implement parametric methods but rely on simplified noise models.
-- `PyOperators` [@chanial2012pyoperators] precursor but CPU only
-- `lineax` [@kidger2024lineax] precursor, JAX-compatible but no CMB analysis operators, reliance on libraries other than `JAX`.
 - Other JAX-based tools such as `s2fft` [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework.
 
 `Furax` complements these tools by providing a unified, differentiable operator framework that can glue together various libraries and integrate with existing pipelines through interfaces to TOAST and other libraries.
+
 
 # Software Design
 
@@ -167,15 +176,16 @@ Table: Generic operators available in `Furax`.
 
 Table: Domain-specific operators for CMB data analysis.
 
-**Stokes Parameter Types.** `Furax` represents polarization through dedicated PyTree-compatible types: `StokesI`, `StokesQU`, `StokesIQU`, and `StokesIQUV`. These types support arithmetic operations, broadcasting, and seamless integration with JAX transformations.
+**Stokes Parameter Types.** `Furax` represents polarization through dedicated JAX Pytrees: `StokesI`, `StokesQU`, `StokesIQU`, and `StokesIQUV`. These types support arithmetic operations, broadcasting, and seamless integration with JAX transformations.
 
-**Block Operators.** The framework provides three block operator types for structuring complex models: `BlockRowOperator` for horizontal concatenation, `BlockDiagonalOperator` for independent parallel operations, and `BlockColumnOperator` for vertical stacking. These operators enable efficient representation of multi-detector and multi-frequency systems.
+**Block Operators.** The framework provides three block operator types for structuring complex models: `BlockRowOperator` for horizontal concatenation, `BlockDiagonalOperator` for independent parallel operations, and `BlockColumnOperator` for vertical stacking. These operators enable efficient representation of multi-observation or multi-component systems.
 
-**Algebraic Reduction.** `Furax` implements automatic operator simplification through a rule-based system. For example, consecutive QU rotations combine their angles, and identity operators are eliminated from compositions. The reduction system handles complex patterns including the commutation rule for half-wave plates: $R(\theta) \circ \text{HWP} = \text{HWP} \circ R(-\theta)$.
+Algebraic Reduction. Furax implements automatic operator simplification through a rule-based system, complementing XLA's optimizations [@xla2017]. For example, consecutive QU rotations combine their angles, and compositions involving block operators such as $P^\top N^{-1} P$ are decomposed into $\sum_i P_i^\top N_i^{-1} P_i$, exploiting block structure to reduce computational cost. The system also handles algebraic identities such as the commutation rule for half-wave plates: $R(\theta) \circ \text{HWP} = \text{HWP} \circ R(-\theta)$.
 
-**CMB Operators.** Domain-specific operators include `HWPOperator` for half-wave plate modeling, `LinearPolarizerOperator` for polarization extraction implementing $d = \frac{1}{2}(I + Q\cos 2\psi + U\sin 2\psi)$, `QURotationOperator` for polarization angle rotations, and `HealpixLandscape` for spherical pixelization. Spectral operators (`CMBOperator`, `DustOperator`, `SynchrotronOperator`) enable frequency-dependent component separation with support for spatially varying spectral indices.
+**Discrete Fourier Operations.** In addition to the `FFTOperator`, the `SymmetricBandToeplitzOperator` provides efficient convolution operations using the overlap-save method. This operator is central to correlated noise modeling and gap-filling procedures based on constrained Gaussian realizations [@stompor2002].
 
-**Toeplitz Operations.** The `SymmetricBandToeplitzOperator` provides efficient convolution operations with five algorithm choices: dense multiplication, direct convolution, FFT-based and overlap-save methods. This operator is central to correlated noise modeling and gap-filling procedures based on constrained Gaussian realizations [@stompor2002].
+**Observation Operators.** Domain-specific operators include `HWPOperator` for half-wave plate modeling, `LinearPolarizerOperator` for polarization extraction implementing $d = \frac{1}{2}(I + Q\cos 2\psi + U\sin 2\psi)$, `QURotationOperator` for polarization angle rotations, and `HealpixLandscape` for spherical pixelization. Spectral operators (`CMBOperator`, `DustOperator`, `SynchrotronOperator`) enable frequency-dependent component separation with support for spatially varying spectral indices.
+
 
 # Research Impact Statement
 
@@ -183,7 +193,7 @@ Table: Domain-specific operators for CMB data analysis.
 
 # AI Usage Disclosure
 
-AI-assisted tools were used for code documentation and manuscript preparation. All technical content was verified by the authors.
+AI-assisted tools were used for code documentation and manuscript preparation. All AI-generated content was verified by the authors.
 
 # Acknowledgements
 

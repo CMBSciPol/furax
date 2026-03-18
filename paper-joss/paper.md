@@ -73,7 +73,7 @@ Contemporary and future CMB experiments such as the Simons Observatory [@simons2
 
 $$\mathbf{d} = \mathbf{H}\mathbf{m} + \mathbf{n}$$
 
-where $\mathbf{H}$ represents the data acquisition system — encoding the pointing matrix, instrument response, and other effects — and $\mathbf{n}$ is the noise. The generalized least-squares solution given by
+where $\mathbf{H}$ represents the data acquisition system — encoding the pointing matrix, instrument response, and other effects — and $\mathbf{n}$ is the noise. The estimation of the solution to this equation can be done in many ways, The generalized least-squares solution given by
 
   $$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{N}^{-1} \mathbf{H})^{-1} \mathbf{H}^\top \mathbf{N}^{-1} \mathbf{d}$$
 
@@ -97,8 +97,8 @@ Pytrees. Operators are combined using standard mathematical notation:
 H = detector_response @ hwp @ pointing @ rotation
 N = HomothetyOperator(σ**2, in_structure=H.out_structure)
 sky_map = {'cmb': jnp.random(…), 'dust': …, 'atmosphere': …, …}
+A = (H.T @ N.I @ H).I @ H.T @ N.I  # Sky map maximum-likelihood estimator
 y = H(sky_map) + noise             # Forward model including noise
-A = (H.T @ N.I @ H).I @ H.T @ N.I  # Sky map Maximum-L estimator
 solution = A(y)                    # Inverse via solvers
 ```
 

@@ -10,6 +10,7 @@ from apischema.conversions import Conversion
 from jax.typing import DTypeLike
 
 from furax.obs.landscapes import ProjectionType
+from furax.obs.stokes import ValidStokesType
 
 # apischema serializes IntEnum by value (integer) by default; override to use the name instead
 # so that YAML config files show e.g. 'CAR' rather than '0'.
@@ -160,6 +161,7 @@ class WCSLandscapeConfig:
 
 @dataclass
 class LandscapeConfig:
+    stokes: ValidStokesType = 'IQU'
     healpix: HealpixLandscapeConfig | None = field(default_factory=HealpixLandscapeConfig)
     wcs: WCSLandscapeConfig | None = None
 
@@ -289,7 +291,6 @@ class SotodlibConfig:
 class MapMakingConfig:
     method: Methods = Methods.BINNED
     binned: bool = True
-    stokes: Literal['I', 'QU', 'IQU', 'IQUV'] = 'IQU'
     scanning_mask: bool = False
     sample_mask: bool = False
     correlation_length: int = 1_000

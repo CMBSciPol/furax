@@ -116,22 +116,21 @@ class MultiObservationMapMaker(Generic[T]):
         self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
-        self.landscape = self._make_landscape()
+        self.landscape = (
+            _static_landscape(self.config.landscape, self.config.dtype)
+            or self._scan_wcs_footprint()
+        )
 
-    def _make_landscape(self) -> StokesLandscape:
-        stokes, dtype = self.config.stokes, self.config.dtype
-        lc = self.config.landscape
-        if (landscape := _static_landscape(lc, stokes, dtype)) is not None:
-            return landscape
-        assert lc.wcs is not None  # mypy: _static_landscape returns None only for auto WCS
-        return self._scan_wcs_footprint(lc.wcs)
-
-    def _scan_wcs_footprint(self, wcs_config: WCSLandscapeConfig) -> WCSLandscape:
+    def _scan_wcs_footprint(self) -> WCSLandscape:
         """Scan observations to determine the combined WCS footprint and build a WCSLandscape.
 
         Performs a preliminary pass over all observations, loading the pointing data needed
         to compute each observation's sky coverage, then combines them into a unified footprint.
         """
+        lc = self.config.landscape
+        if lc.wcs is None:
+            raise ValueError('WCS landscape config is required for auto footprint scanning.')
+        wcs_config = lc.wcs
         res = wcs_config.resolution * pixell.utils.arcmin
         proj = wcs_config.projection.name.lower()
         pointing_fields = ['boresight_quaternions', 'detector_quaternions']
@@ -151,7 +150,7 @@ class MultiObservationMapMaker(Generic[T]):
         ra_lo, ra_hi = minimum_enclosing_arc(corners_rad[:, :, 1])
         union_box = np.array([[dec_lo, ra_lo], [dec_hi, ra_hi]])
         shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
-        return WCSLandscape.from_wcs(shape, wcs, self.config.stokes, self.config.dtype)
+        return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
 
     def run(self, out_dir: str | Path | None = None) -> MapMakingResults:
         """Runs the mapmaker and return results after saving them to the given directory."""
@@ -173,7 +172,7 @@ class MultiObservationMapMaker(Generic[T]):
             self.observations,
             requested_fields=data_field_names,
             demodulated=self.config.demodulated,
-            stokes=self.config.stokes,
+            stokes=self.config.landscape.stokes,
         )
 
     def make_maps(self) -> MapMakingResults:
@@ -312,20 +311,16 @@ class MultiObservationMapMaker(Generic[T]):
         return asoperator(apply, in_structure=model.map_structure)
 
 
-def _static_landscape(
-    lc: LandscapeConfig,
-    stokes: ValidStokesType,
-    dtype: DTypeLike,
-) -> StokesLandscape | None:
+def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape | None:
     """Build a landscape from config alone, without observation data.
 
     Returns None if the landscape cannot be determined without scanning observations
     (i.e. WCS with no explicit geometry).
     """
     if lc.healpix is not None:
-        return HealpixLandscape(nside=lc.healpix.nside, stokes=stokes, dtype=dtype)
+        return HealpixLandscape(nside=lc.healpix.nside, stokes=lc.stokes, dtype=dtype)
     if lc.wcs is not None and lc.wcs.has_geometry:
-        return _wcs_landscape_from_geometry(lc.wcs, stokes, dtype)
+        return _wcs_landscape_from_geometry(lc.wcs, lc.stokes, dtype)
     return None
 
 
@@ -423,18 +418,16 @@ class MapMaker:
     def from_yaml(cls, path: str | Path, logger: Logger | None = None) -> 'MapMaker':
         return cls.from_config(MapMakingConfig.load_yaml(path), logger=logger)
 
-    def get_landscape(
-        self, observation: AbstractGroundObservation[Any], stokes: ValidStokesType = 'IQU'
-    ) -> StokesLandscape:
+    def get_landscape(self, observation: AbstractGroundObservation[Any]) -> StokesLandscape:
         """Landscape used for mapmaking with given observation"""
         lc = self.config.landscape
-        if (landscape := _static_landscape(lc, stokes, self.config.dtype)) is not None:
+        if (landscape := _static_landscape(lc, self.config.dtype)) is not None:
             return landscape
         assert lc.wcs is not None  # mypy: _static_landscape returns None only for auto WCS
         wcs_shape, wcs_kernel = observation.get_wcs_shape_and_kernel(
             resolution_arcmin=lc.wcs.resolution, projection=lc.wcs.projection
         )
-        return WCSLandscape.from_wcs(wcs_shape, wcs_kernel, stokes, self.config.dtype)
+        return WCSLandscape.from_wcs(wcs_shape, wcs_kernel, lc.stokes, self.config.dtype)
 
     def get_pointing(
         self, observation: AbstractGroundObservation[Any], landscape: StokesLandscape
@@ -751,7 +744,7 @@ class BinnedMapMaker(MapMaker):
         # Data and landscape
         data = observation.get_tods().astype(config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
-        landscape = self.get_landscape(observation, stokes='IQU')
+        landscape = self.get_landscape(observation)
 
         # Acquisition (I, Q, U Maps -> TOD)
         acquisition = self.get_acquisition(observation, landscape=landscape)
@@ -828,7 +821,7 @@ class MLMapmaker(MapMaker):
         # Data and landscape
         data = observation.get_tods().astype(config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
-        landscape = self.get_landscape(observation, stokes='IQU')
+        landscape = self.get_landscape(observation)
 
         # Acquisition (I, Q, U Maps -> TOD)
         acquisition = self.get_acquisition(observation, landscape=landscape)
@@ -1051,7 +1044,7 @@ class TwoStepMapmaker(MapMaker):
         # Data and landscape
         data = observation.get_tods().astype(config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
-        landscape = self.get_landscape(observation, stokes='IQU')
+        landscape = self.get_landscape(observation)
 
         # Acquisition (I, Q, U Maps -> TOD)
         acquisition = self.get_acquisition(observation, landscape=landscape)
@@ -1181,6 +1174,8 @@ class ATOPMapMaker(MapMaker):
             raise ValueError('ATOP Mapmaker is currently incompatible with binned=False')
         if self.config.atop_tau < 2:
             raise ValueError('ATOP tau should be at least 2')
+        if self.config.landscape.stokes != 'QU':
+            raise ValueError('ATOP only compatible with stokes=QU')
 
     def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]:
         config = self.config
@@ -1189,7 +1184,7 @@ class ATOPMapMaker(MapMaker):
         # Data and landscape
         data = observation.get_tods().astype(config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
-        landscape = self.get_landscape(observation, stokes='QU')
+        landscape = self.get_landscape(observation)
 
         # Acquisition (I, Q, U Maps -> TOD)
         acquisition = self.get_acquisition(observation, landscape=landscape)

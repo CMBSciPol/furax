@@ -283,18 +283,36 @@ class WCSLandscape(StokesLandscape):
 class CARLandscape(WCSLandscape):
     r"""Class representing a CAR (Plate Carrée) projected map of Stokes vectors.
 
-    The projection is a simple linear mapping:
+    CAR maps native coordinates linearly to the projection plane (``x = φ, y = θ``).
+    Requiring ``phi_0 = 0`` aligns the native and celestial equators, reducing the
+    celestial-to-native rotation to a pure RA shift and making the full world-to-pixel
+    mapping linear in ``(RA, Dec)``:
 
     .. math::
 
         p_x = \frac{\Delta\lambda}{\delta_x} + (c_x - 1)
 
-        p_y = \frac{\phi - \phi_0}{\delta_y} + (c_y - 1)
+        p_y = \frac{\phi}{\delta_y} + (c_y - 1)
 
     where :math:`\Delta\lambda = ((\lambda - \lambda_0 + 180) \bmod 360) - 180` handles
-    the 0°/360° RA wrap, :math:`(\lambda_0, \phi_0)` is ``crval``, :math:`(\delta_x, \delta_y)`
+    the 0°/360° RA wrap, :math:`(\lambda_0, 0.0)` is ``crval``, :math:`(\delta_x, \delta_y)`
     is ``cdelt`` in degrees, and :math:`(c_x, c_y)` is ``crpix`` (1-indexed FITS convention).
     """
+
+    def __init__(
+        self,
+        shape: tuple[int, int],
+        projection: WCSProjection,
+        stokes: ValidStokesType = 'IQU',
+        dtype: DTypeLike = np.float64,
+    ) -> None:
+        if projection.crval[1] != 0.0:
+            msg = (
+                f'CAR projection requires crval_dec = 0 (native and celestial equators must'
+                f' coincide), got {projection.crval[1]}'
+            )
+            raise ValueError(msg)
+        super().__init__(shape, projection, stokes, dtype)
 
     @jax.jit
     def world2pixel(
@@ -313,7 +331,7 @@ class CARLandscape(WCSLandscape):
         lat_deg = jnp.degrees(jnp.pi / 2 - theta)
         lon_diff = ((lon_deg - self.crval[0]) + 180) % 360 - 180
         pix_x = lon_diff / self.cdelt[0] + (self.crpix[0] - 1)
-        pix_y = (lat_deg - self.crval[1]) / self.cdelt[1] + (self.crpix[1] - 1)
+        pix_y = lat_deg / self.cdelt[1] + (self.crpix[1] - 1)
         return pix_x, pix_y
 
 

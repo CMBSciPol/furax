@@ -114,17 +114,33 @@ class TestWCSLandscape:
         wcs.wcs.set()
         return wcs
 
-    def test_landscape_matches_astropy(self, projection_type: ProjectionType):
+    @pytest.mark.parametrize(
+        'shape, res_deg, crval, ra_range, dec_range',
+        [
+            ((100, 200), 0.1, (180.0, 0.0), (176.0, 184.0), (-4.0, 4.0)),  # standard patch
+            ((50, 50), 0.2, (1.0, 0.0), (0.0, 2.0), (-5.0, 5.0)),  # near RA=0
+            ((50, 50), 0.2, (359.0, 0.0), (357.0, 361.0), (-5.0, 5.0)),  # near RA=360
+            ((80, 120), 0.15, (45.0, 0.0), (42.0, 48.0), (-4.0, 4.0)),  # non-standard RA
+            ((30, 90), 0.5, (270.0, 0.0), (264.0, 276.0), (-10.0, 10.0)),  # wide patch
+        ],
+    )
+    def test_world2pixel_matches_astropy(
+        self,
+        projection_type: ProjectionType,
+        shape: tuple[int, int],
+        res_deg: float,
+        crval: tuple[float, float],
+        ra_range: tuple[float, float],
+        dec_range: tuple[float, float],
+    ):
         """WCSLandscape.world2pixel must agree with AstropyWCSLandscape to float precision."""
-        shape = (100, 200)
-        wcs = self._make_wcs(shape, projection_type, res_deg=0.1, crval=(180.0, 0.0))
+        wcs = self._make_wcs(shape, projection_type, res_deg=res_deg, crval=crval)
         landscape = WCSLandscape.from_wcs(shape, wcs, stokes='I')
         wcs_landscape = AstropyWCSLandscape(shape, wcs, stokes='I')
 
-        # Samples inside the map (Dec ±4°, RA 176°–184°)
         rng = np.random.default_rng(0)
-        dec = rng.uniform(-4.0, 4.0, 50)  # degrees
-        ra = rng.uniform(176.0, 184.0, 50)  # degrees
+        dec = rng.uniform(*dec_range, 50)
+        ra = rng.uniform(*ra_range, 50)
         theta = jnp.array(np.pi / 2 - np.radians(dec))
         phi = jnp.array(np.radians(ra))
 

@@ -94,26 +94,26 @@ Several tools exist for CMB data processing. `TOAST` provides a comprehensive MP
 Pytrees. Operators are combined using standard mathematical notation:
 
 ```python
-H = instrument_response @ hwp @ pointing @ rotation
-N = HomothetyOperator(0.5**2, in_structure=H.out_structure)
-sky_map = {'cmb': jnp.random(...), 'dust': ..., 'atmosphere': ...}
-y = H(sky_map) + noise  # Forward model including noise
-A = (H.T @ N.I @ H).I @ H.T @ N.I
-solution = A(y)      # Inverse via solvers
+H = detector_response @ hwp @ pointing @ rotation
+N = HomothetyOperator(σ**2, in_structure=H.out_structure)
+sky_map = {'cmb': jnp.random(…), 'dust': …, 'atmosphere': …, …}
+y = H(sky_map) + noise             # Forward model including noise
+A = (H.T @ N.I @ H).I @ H.T @ N.I  # Sky map Maximum-L estimator
+solution = A(y)                    # Inverse via solvers
 ```
 
 **Operator Algebra.** The base class `AbstractLinearOperator` provides a default implementation for standard linear algebra operations that enable intuitive composition and manipulation of operators:
 
-| Operation                | Syntax                                                             |
-|--------------------------|--------------------------------------------------------------------|
-| Addition                 | `A + B`                                                            |
-| Composition              | `A @ B`                                                            |
-| Multiplication by scalar | `k * A`                                                            |
-| Transpose                | `A.T`                                                              |
-| Inverse                  | `A.I` or `A.I(solver=..., preconditioner=...)`                     |
+| Operation                | Syntax                                                          |
+|--------------------------|-----------------------------------------------------------------|
+| Addition                 | `A + B`                                                         |
+| Composition              | `A @ B`                                                         |
+| Multiplication by scalar | `k * A`                                                         |
+| Transpose                | `A.T`                                                           |
+| Inverse                  | `A.I` or `A.I(solver=…, preconditioner=…)`               |
 | Block Assembly           | `BlockColumnOperator`, `BlockDiagonalOperator`, `BlockRowOperator` |
-| Flattened dense matrix   | `A.as_matrix()`                                                    |
-| Algebraic reduction      | `A.reduce()`                                                       |
+| Flattened dense matrix   | `A.as_matrix()`                                                 |
+| Algebraic reduction      | `A.reduce()`                                                    |
 
 Table: Supported operator operations in `Furax`.
 

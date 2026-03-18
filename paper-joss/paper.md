@@ -104,16 +104,16 @@ solution = A(y)                    # Inverse via solvers
 
 **Operator Algebra.** The base class `AbstractLinearOperator` provides a default implementation for standard linear algebra operations that enable intuitive composition and manipulation of operators:
 
-| Operation                | Syntax                                                          |
-|--------------------------|-----------------------------------------------------------------|
-| Addition                 | `A + B`                                                         |
-| Composition              | `A @ B`                                                         |
-| Multiplication by scalar | `k * A`                                                         |
-| Transpose                | `A.T`                                                           |
-| Inverse                  | `A.I` or `A.I(solver=…, preconditioner=…)`               |
+| Operation                | Syntax                                                             |
+|--------------------------|--------------------------------------------------------------------|
+| Addition                 | `A + B`                                                            |
+| Composition              | `A @ B`                                                            |
+| Multiplication by scalar | `k * A`                                                            |
+| Transpose                | `A.T`                                                              |
+| Inverse                  | `A.I` or `A.I(solver=…, preconditioner=…)`                         |
 | Block Assembly           | `BlockColumnOperator`, `BlockDiagonalOperator`, `BlockRowOperator` |
-| Flattened dense matrix   | `A.as_matrix()`                                                 |
-| Algebraic reduction      | `A.reduce()`                                                    |
+| Flattened dense matrix   | `A.as_matrix()`                                                    |
+| Algebraic reduction      | `A.reduce()`                                                       |
 
 Table: Supported operator operations in `Furax`.
 

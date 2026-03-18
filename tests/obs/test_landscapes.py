@@ -8,11 +8,13 @@ from numpy.testing import assert_array_almost_equal, assert_array_equal
 from furax.obs._samplings import Sampling
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
+    CARLandscape,
     FrequencyLandscape,
     HealpixLandscape,
     ProjectionType,
     StokesLandscape,
     WCSLandscape,
+    WCSProjection,
 )
 from furax.obs.stokes import Stokes, ValidStokesType
 
@@ -150,13 +152,14 @@ class TestWCSLandscape:
         assert_array_almost_equal(x, ref_x, decimal=12)
         assert_array_almost_equal(y, ref_y, decimal=12)
 
-    def test_landscape_matches_pixell(self, projection_type: ProjectionType):
+    def test_world2pixel_matches_pixell(self, projection_type: ProjectionType):
         """WCSLandscape.world2pixel must agree with pixell's sky2pix to float precision."""
         pytest.importorskip('pixell')
         import pixell.enmap
 
+        # box edges at +/- 5° in RA and Dec
         shape, wcs = pixell.enmap.geometry(
-            pos=np.radians([[-5, -5], [5, 5]]),
+            pos=np.radians([[-5, 5], [5, -5]]),
             res=np.radians(0.1),
             proj=projection_type.name.lower(),
         )
@@ -196,3 +199,82 @@ class TestWCSLandscape:
         x1, y1 = landscape.world2pixel(theta[1:2], phi_pos[1:2])
         assert_array_almost_equal(x0, x1, decimal=12)
         assert_array_almost_equal(y0, y1, decimal=12)
+
+
+class TestWCSConventions:
+    """Tests documenting the FITS/pixell WCS sign conventions used throughout this codebase.
+
+    Key convention: in FITS, RA decreases left-to-right (east is left). This means:
+    - cdelt[0] (RA pixel scale) must be negative.
+    - A bounding box passed to pixell must be [[dec_lo, ra_hi], [dec_hi, ra_lo]],
+      i.e. the west edge (larger RA) comes first.
+    - A point with higher RA than crval maps to a smaller (more negative) x pixel index.
+    """
+
+    def _make_landscape(self, crval_ra: float = 30.0, res_deg: float = 1.0) -> WCSLandscape:
+        """Build a 10x10 CAR landscape centred at (crval_ra, 0) dec with negative cdelt_ra."""
+        shape = (10, 10)
+        wcs = WCS(naxis=2)
+        wcs.wcs.ctype = ['RA---CAR', 'DEC--CAR']
+        wcs.wcs.crpix = [5.5, 5.5]
+        wcs.wcs.crval = [crval_ra, 0.0]
+        wcs.wcs.cdelt = [-res_deg, res_deg]
+        wcs.wcs.set()
+        return WCSLandscape.from_wcs(shape, wcs, stokes='I')
+
+    def test_car_requires_crval_dec_zero(self) -> None:
+        """CARLandscape must reject a projection with non-zero crval_dec."""
+        projection = WCSProjection(
+            crpix=(5.5, 5.5),
+            crval=(30.0, 45.0),  # non-zero dec
+            cdelt=(-1.0, 1.0),
+            type=ProjectionType.CAR,
+        )
+        with pytest.raises(ValueError, match='crval_dec'):
+            CARLandscape((10, 10), projection, stokes='I')
+
+    def test_higher_ra_maps_to_smaller_x_pixel(self) -> None:
+        """A point east of crval (higher RA) must map to a smaller x pixel index.
+
+        This is the direct consequence of cdelt_ra < 0: increasing RA moves left (west
+        is right, east is left) as seen on a standard sky map.
+        """
+        landscape = self._make_landscape(crval_ra=30.0, res_deg=1.0)
+        theta = jnp.full(2, np.pi / 2)  # equator
+        # ra=31° is 1° east of crval=30°; ra=29° is 1° west
+        phi = jnp.radians(jnp.array([31.0, 29.0]))
+        x_east, _ = landscape.world2pixel(theta[0:1], phi[0:1])
+        x_west, _ = landscape.world2pixel(theta[1:2], phi[1:2])
+        assert x_east[0] < x_west[0], 'higher RA must map to smaller x coordinate'
+
+    def test_pixell_geometry_corners_roundtrip(self) -> None:
+        """pixell.enmap.corners(corner=True) returns pixel edges and round-trips with
+        pixell.enmap.geometry(), which also takes pixel edges as pos.
+
+        The resulting map covers the same sky region: pixel (0, 0) and pixel (nrow-1, ncol-1)
+        centers are at the same coordinates in the original and round-tripped geometries.
+        """
+        pytest.importorskip('pixell')
+        import pixell.enmap
+
+        # Build a reference geometry
+        box = np.radians([[-5.0, 35.0], [5.0, 25.0]])
+        shape, wcs = pixell.enmap.geometry(pos=box, res=np.radians(1.0), proj='car')
+
+        # Round-trip through corners(corner=True) -> geometry
+        corners = pixell.enmap.corners(shape, wcs, corner=True)
+        shape2, wcs2 = pixell.enmap.geometry(pos=corners, res=np.radians(1.0), proj='car')
+
+        assert shape2 == shape
+
+        landscape1 = WCSLandscape.from_wcs(shape, wcs, stokes='I')
+        landscape2 = WCSLandscape.from_wcs(shape2, wcs2, stokes='I')
+
+        nrow, ncol = shape
+        theta = jnp.array([np.pi / 2 - np.radians(-5.0), np.pi / 2 - np.radians(4.0)])
+        phi = jnp.array([np.radians(35.0), np.radians(26.0)])
+
+        x1, y1 = landscape1.world2pixel(theta, phi)
+        x2, y2 = landscape2.world2pixel(theta, phi)
+        assert_array_almost_equal(x1, x2, decimal=12)
+        assert_array_almost_equal(y1, y2, decimal=12)

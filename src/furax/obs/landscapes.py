@@ -1,4 +1,5 @@
 import math
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import IntEnum
@@ -206,6 +207,15 @@ class WCSProjection:
     """Pixel scale ``(cdelt_x_deg, cdelt_y_deg)`` in degrees per pixel."""
     type: ProjectionType = ProjectionType.CAR
     """Projection type (only CAR is supported for now)."""
+
+    def __post_init__(self) -> None:
+        if self.cdelt[0] > 0:
+            warnings.warn(
+                f'cdelt_ra = {self.cdelt[0]} is positive; FITS convention requires cdelt_ra < 0'
+                ' (RA decreases left-to-right).',
+                UserWarning,
+                stacklevel=2,
+            )
 
     @classmethod
     def from_astropy(cls, wcs: WCS) -> 'WCSProjection':

@@ -136,19 +136,24 @@ class MultiObservationMapMaker(Generic[T]):
         pointing_fields = ['boresight_quaternions', 'detector_quaternions']
 
         n = len(self.observations)
-        corners_rad = np.empty((n, 2, 2))  # [[dec_lo, ra_lo], [dec_hi, ra_hi]] per obs in radians
+        corners_rad = np.empty((2, 2, n))  # [bottom-left, top-right] corners per observation
         for i, lazy_obs in enumerate(self.observations):
             obs = lazy_obs.get_data(pointing_fields)
             shape, wcs = obs.get_wcs_shape_and_kernel(
                 resolution_arcmin=wcs_config.resolution, projection=wcs_config.projection
             )
-            # corners returns radians
-            corners_rad[i] = pixell.enmap.corners(shape, wcs)
+            # RA _decreases_ left-to-right (increases toward the East)
+            # so each corner pair is technically [[dec_lo, ra_hi], [dec_hi, ra_lo]]
+            corners_rad[..., i] = pixell.enmap.corners(shape, wcs, corner=True)
 
-        dec_lo = corners_rad[:, 0, 0].min()
-        dec_hi = corners_rad[:, 1, 0].max()
-        ra_lo, ra_hi = minimum_enclosing_arc(corners_rad[:, :, 1])
-        union_box = np.array([[dec_lo, ra_lo], [dec_hi, ra_hi]])
+        # find the corners of the smallest box covering all the individual patches
+        dec_lo = corners_rad[0, 0].min()
+        dec_hi = corners_rad[1, 0].max()
+        # minimum_enclosing_arc expects [lo, hi] intervals with shape (2, n)
+        ra_lo, ra_hi = minimum_enclosing_arc(corners_rad[::-1, 1].T)
+        union_box = np.array([[dec_lo, ra_hi], [dec_hi, ra_lo]])
+
+        # create the final shape and WCS objects for this covering box
         shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
         return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
 
@@ -339,10 +344,8 @@ def _wcs_landscape_from_geometry(
         res = wcs_config.resolution * pixell.utils.arcmin
         half_w = np.radians(wcs_config.patch.width / 2)
         half_h = np.radians(wcs_config.patch.height / 2)
-        ra_rad, dec_rad = np.radians(wcs_config.patch.center)
-        corners = np.array(
-            [[dec_rad - half_h, ra_rad - half_w], [dec_rad + half_h, ra_rad + half_w]],
-        )
+        ra, dec = np.radians(wcs_config.patch.center)
+        corners = np.array([[dec - half_h, ra + half_w], [dec + half_h, ra - half_w]])
         shape, wcs = pixell.enmap.geometry(
             pos=corners, res=res, proj=wcs_config.projection.name.lower()
         )

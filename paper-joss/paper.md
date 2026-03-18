@@ -109,7 +109,7 @@ Pytrees. Operators are combined using standard mathematical notation:
 H = detector_response @ filter @ hwp @ pointing @ rotation  @ mixing_matrix
 N = HomothetyOperator(σ**2, in_structure=H.out_structure)  # Noise covariance
 m = {'cmb': jnp.random(…), 'dust': …, 'atmosphere': …, …}  # Sky components
-A = (H.T @ N.I @ H).I @ H.T @ N.I  # Sky map maximum-likelihood estimator
+A = (H.T @ N.I @ H).I @ H.T @ N.I  # Sky components' maximum-likelihood estimator
 d = H(m) + noise                   # noisy TOD
 solution = A(d)                    # Inverse via solvers
 ```
@@ -179,7 +179,7 @@ Table: Domain-specific operators for CMB data analysis.
 
 # Research Impact Statement
 
-`Furax` was developed within the ERC-funded SciPol project to enable gradient-based optimization in CMB data analysis pipelines. The framework's differentiability opens new possibilities for neural network integration and end-to-end optimization of map-making and component separation. The modular design supports rapid prototyping of analysis methods while maintaining compatibility with production pipelines through TOAST integration. `Furax` provides essential infrastructure for developing next-generation analysis techniques for e.g., LiteBIRD, the Simons Observatory, and CMB-S4.
+`Furax` was developed within the SciPol project to enable gradient-based optimization in CMB data analysis pipelines. The framework's differentiability opens new possibilities for neural network integration and end-to-end optimization of map-making and component separation. The modular design supports rapid prototyping of analysis methods while maintaining compatibility with production pipelines through TOAST integration. `Furax` provides essential infrastructure for developing next-generation analysis techniques for e.g., the Simons Observatory, QUBIC and LiteBIRD.
 
 # AI Usage Disclosure
 

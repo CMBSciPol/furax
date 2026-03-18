@@ -19,7 +19,7 @@ authors:
     orcid: 0000-0003-2651-0314
     affiliation: 1
   - name: Wuhyun Sohn
-    orcid: 0000-0000-0000-0000
+    orcid: 0000-0002-6039-8247
     affiliation: 1
   - name: Artem Basyrov
     orcid: 0000-0002-4365-4405

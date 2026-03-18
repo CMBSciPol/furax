@@ -42,7 +42,7 @@ authors:
   - name: Amalia Villarrubia-Aguilar
     orcid: 0000-0000-0000-0000
     affiliation: 1
-  - name: Andr\'ea Landais
+  - name: Andréa Landais
     orcid: 0000-0000-0000-0000
     affiliation: 1
   - name: Josquin Errard

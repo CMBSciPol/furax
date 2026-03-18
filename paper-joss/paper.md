@@ -62,30 +62,36 @@ bibliography: paper.bib
 
 # Summary
 
-  The _Framework for Unified and Robust data Analysis with JAX_ (`Furax`) is an open-source Python framework for modeling data acquisition systems and solving inverse problems in astrophysics and cosmology. Built on JAX [@jax2018] and drawing inspiration from `PyOperators` [@chanial2012pyoperators] and `Lineax` [@kidger2024lineax], `Furax` provides composable building blocks in the form of generic and domain-specific linear operators.
+  The _Framework for Unified and Robust data Analysis with JAX_ (`Furax`) is an open-source Python framework for modeling data acquisition systems and solving inverse problems in astrophysics and cosmology. Built on `JAX` [@jax2018] and drawing inspiration from `PyOperators` [@chanial2012pyoperators] and `Lineax` [@kidger2024lineax], `Furax` provides composable building blocks in the form of generic and domain-specific linear operators.
   Generic operators include diagonal, block, Toeplitz, and indexing operators. Domain-specific operators are provided for cosmic microwave background (CMB) data analysis, with the architecture designed to extend to other fields: pointing matrices, half-wave plate models, polarizers, Stokes parameter rotations, and spectral energy distribution (SED) operators.
   `Furax` leverages JAX's automatic differentiation, just-in-time compilation, and hardware acceleration to enable gradient-based optimization on GPUs and TPUs. Its modular architecture allows researchers to rapidly prototype analysis pipelines while maintaining computational efficiency for production-scale datasets.
 
 
 # Statement of Need
 
-Contemporary and future CMB experiments such as LiteBIRD [@litebird2023], the Simons Observatory [@simons2019], the South Pole Observatory [@spo] and CMB-S4 [@cmbs4-2022] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. One of the central problems in CMB data analysis is map-making: recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
+Contemporary and future CMB experiments such as the Simons Observatory [@simons2019], the South Pole Observatory [@spo], QUBIC [@qubic] and LiteBIRD [@litebird2023] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. A central problem in CMB data analysis is to exploit data acquisition redundancy through map-making, i.e. recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
 
-$$\mathbf{d} = \mathbf{P}\mathbf{m} + \mathbf{n}$$
+$$\mathbf{d} = \mathbf{H}\mathbf{m} + \mathbf{n}$$
 
-where $\mathbf{P}$ is the pointing matrix encoding the instrument response and $\mathbf{n}$ is the noise. The generalized least-squares solution
+where $\mathbf{H}$ represents the data acquisition system — encoding the pointing matrix, instrument response, and other effects — and $\mathbf{n}$ is the noise. The generalized least-squares solution given by
 
-$$\hat{\mathbf{m}} = (\mathbf{P}^T \mathbf{N}^{-1} \mathbf{P})^{-1} \mathbf{P}^T \mathbf{N}^{-1} \mathbf{d}$$
+  $$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{N}^{-1} \mathbf{H})^{-1} \mathbf{H}^\top \mathbf{N}^{-1} \mathbf{d}$$
 
-requires efficient application of the pointing operator and its transpose. Existing tools like TOAST [@toast2021] provide MPI-parallel production pipelines but lack differentiability. The healpy library [@zonca2019] offers a standard HEALPix interface but is CPU-only and does not support operator algebra. Sky simulation tools like PySM [@pysm3] focus on forward modeling, while component separation codes like FGBuster [@fgbuster2022] have limited noise modeling capabilities. `Furax` fills this gap by providing a differentiable operator framework that integrates with modern machine learning workflows while maintaining the performance required for CMB data analysis.
+requires efficient application of the forward acquisition operator and its transpose.
+
+Furax addresses two challenges: (1) providing a differentiable operator framework that integrates with modern machine learning workflows while maintaining the performance required for production-scale data analysis, and (2) offering a modular architecture that facilitates experimentation with data acquisition models and noise systematics.
+
 
 # State of the Field
+
+Existing tools like TOAST [@toast2021] provide MPI-parallel production pipelines but lack differentiability. The healpy library [@zonca2019] offers a standard HEALPix interface but is CPU-only and does not support operator algebra. Sky simulation tools like PySM [@pysm3] focus on forward modeling, while component separation codes like FGBuster [@fgbuster2022] have limited noise modeling capabilities.
 
 Several tools exist for CMB data processing. `TOAST` provides a comprehensive MPI-parallel framework used in production pipelines for experiments like Planck, the Simons Observatory and LiteBIRD, but its C++ core prevents automatic differentiation. The `healpy` library wraps the HEALPix C library for Python, offering essential spherical harmonic transforms and pixel operations, but runs only on CPU and does not support operator composition. `PySM` generates realistic sky simulations including multiple astrophysical components, but operates strictly in forward mode. Component separation tools like `FGBuster` [@rizzieri2025] implement parametric methods but rely on simplified noise models. Other JAX-based tools such as `jax-healpy` [@jax-healpy2024] and s2fft [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework. `Furax` complements these tools by providing a unified, differentiable operator framework that can integrate with existing pipelines through interfaces to TOAST and other libraries.
 
 # Software Design
 
-`Furax`'s architecture centers on composable linear operators that extend lineax's `AbstractLinearOperator`. Operators are combined using standard mathematical notation:
+`Furax`'s architecture centers on composable linear operators, which are implemented as Python dataclasses registered as `JAX`
+Pytrees. Operators are combined using standard mathematical notation:
 
 ```python
 H = instrument_response @ hwp @ pointing @ rotation

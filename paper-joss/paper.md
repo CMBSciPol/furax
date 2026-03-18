@@ -62,7 +62,10 @@ bibliography: paper.bib
 
 # Summary
 
-The ``Framework for Unified and Robust data Analysis with JAX'' (Furax) is an open-source Python framework designed to construct and manipulate linear operators for solving inverse problems in astrophysics and cosmology. Built on JAX [@jax2018], Furax draws inspiration from the PyOperators library [@chanial2012pyoperators] and lineax [@kidger2024lineax] to provide generic operators for solving inverse problems and domain-specific operators for cosmic microwave background (CMB) data analysis. The framework provides composable building blocks including pointing operators, half-wave plate models, polarizers, Stokes parameter rotations, and spectral energy distribution (SED) operators. Furax leverages JAX's automatic differentiation, just-in-time compilation, and hardware acceleration to enable gradient-based optimization on GPUs and TPUs. The modular architecture allows researchers to rapidly prototype and test analysis pipelines while maintaining computational efficiency for production-scale datasets.
+  The "Framework for Unified and Robust data Analysis with JAX" (Furax) is an open-source Python framework for modeling data acquisition systems and solving inverse problems in astrophysics and cosmology. Built on JAX [@jax2018] and drawing inspiration from PyOperators [@chanial2012pyoperators] and Lineax [@kidger2024lineax], Furax provides composable building blocks in the form of generic and domain-specific linear operators.
+  Generic operators include diagonal, block, Toeplitz, and indexing operators. Domain-specific operators are provided for cosmic microwave background (CMB) data analysis, with the architecture designed to extend to other fields: pointing matrices, half-wave plate models, polarizers, Stokes parameter rotations, and spectral energy distribution (SED) operators.
+  Furax leverages JAX's automatic differentiation, just-in-time compilation, and hardware acceleration to enable gradient-based optimization on GPUs and TPUs. Its modular architecture allows researchers to rapidly prototype analysis pipelines while maintaining computational efficiency for production-scale datasets.
+
 
 # Statement of Need
 

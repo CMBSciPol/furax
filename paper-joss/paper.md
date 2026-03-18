@@ -69,7 +69,7 @@ bibliography: paper.bib
 
 # Statement of Need
 
-Contemporary and future CMB experiments such as the Simons Observatory [@simons2019], the South Pole Observatory [@spo], QUBIC [@qubic] and LiteBIRD [@litebird2023] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. A central problem in CMB data analysis is to exploit data acquisition redundancy through map-making, i.e. recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
+Contemporary and future CMB experiments such as the Simons Observatory [@simons2019], the South Pole Observatory [@spo], QUBIC [@qubic2022] and LiteBIRD [@litebird2023] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. A central problem in CMB data analysis is to exploit data acquisition redundancy through map-making, i.e. recovering the sky signal $\mathbf{m}$ from noisy observations $\mathbf{d}$ through the linear model
 
 $$\mathbf{d} = \mathbf{H}\mathbf{m} + \mathbf{n}$$
 
@@ -84,9 +84,21 @@ Furax addresses two challenges: (1) providing a differentiable operator framewor
 
 # State of the Field
 
-Existing tools like TOAST [@toast2021] provide MPI-parallel production pipelines but lack differentiability. The healpy library [@zonca2019] offers a standard HEALPix interface but is CPU-only and does not support operator algebra. Sky simulation tools like PySM [@pysm3] focus on forward modeling, while component separation codes like FGBuster [@fgbuster2022] have limited noise modeling capabilities.
+Several tools exist for CMB data processing in a somewhat fragmented landscape
+- Sky simulation tools like `PySM` [@pysm3] generates realistic sky simulations including multiple astrophysical components, but operates strictly in forward mode
+- while component separation codes like `FGBuster` [@fgbuster2022] have limited noise modeling capabilities.
+- `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck, the Simons Observatory and LiteBIRD, but its C++ core prevents automatic differentiation.
+- The `healpy` library [@zonca2019] wraps the HEALPix C library for Python, offering essential spherical harmonic transforms and pixel operations, but runs only on CPU and does not support operator composition.
+- `jax-healpy` [@jax-healpy2024] is JAX-compatible but does not support operator algebra.
+- `Commander3` [@galloway2023beyondplanck]
+- `MAPRAISER` [@mappraiser2022]
+- `DUCC` [@ducc] collection of highly optimized CPU C++17 subroutines
+- `FGBuster` [@rizzieri2025] implement parametric methods but rely on simplified noise models.
+- `PyOperators` [@chanial2012pyoperators] precursor but CPU only
+- `lineax` [@kidger2024lineax] precursor, JAX-compatible but no CMB analysis operators, reliance on libraries other than `JAX`.
+- Other JAX-based tools such as `s2fft` [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework.
 
-Several tools exist for CMB data processing. `TOAST` provides a comprehensive MPI-parallel framework used in production pipelines for experiments like Planck, the Simons Observatory and LiteBIRD, but its C++ core prevents automatic differentiation. The `healpy` library wraps the HEALPix C library for Python, offering essential spherical harmonic transforms and pixel operations, but runs only on CPU and does not support operator composition. `PySM` generates realistic sky simulations including multiple astrophysical components, but operates strictly in forward mode. Component separation tools like `FGBuster` [@rizzieri2025] implement parametric methods but rely on simplified noise models. Other JAX-based tools such as `jax-healpy` [@jax-healpy2024] and s2fft [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework. `Furax` complements these tools by providing a unified, differentiable operator framework that can integrate with existing pipelines through interfaces to TOAST and other libraries.
+`Furax` complements these tools by providing a unified, differentiable operator framework that can glue together various libraries and integrate with existing pipelines through interfaces to TOAST and other libraries.
 
 # Software Design
 
@@ -94,12 +106,12 @@ Several tools exist for CMB data processing. `TOAST` provides a comprehensive MP
 Pytrees. Operators are combined using standard mathematical notation:
 
 ```python
-H = detector_response @ hwp @ pointing @ rotation
-N = HomothetyOperator(σ**2, in_structure=H.out_structure)
-sky_map = {'cmb': jnp.random(…), 'dust': …, 'atmosphere': …, …}
+H = detector_response @ filter @ hwp @ pointing @ rotation  @ mixing_matrix
+N = HomothetyOperator(σ**2, in_structure=H.out_structure)  # Noise covariance
+m = {'cmb': jnp.random(…), 'dust': …, 'atmosphere': …, …}  # Sky components
 A = (H.T @ N.I @ H).I @ H.T @ N.I  # Sky map maximum-likelihood estimator
-y = H(sky_map) + noise             # Forward model including noise
-solution = A(y)                    # Inverse via solvers
+d = H(m) + noise                   # noisy TOD
+solution = A(d)                    # Inverse via solvers
 ```
 
 **Operator Algebra.** The base class `AbstractLinearOperator` provides a default implementation for standard linear algebra operations that enable intuitive composition and manipulation of operators:

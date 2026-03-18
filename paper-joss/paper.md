@@ -106,7 +106,7 @@ Several tools exist for CMB data processing in a somewhat fragmented landscape
 Pytrees. Operators are combined using standard mathematical notation:
 
 ```python
-H = detector_response @ filter @ hwp @ pointing @ rotation  @ mixing_matrix
+H = detector_response @ band_pass @ hwp @ pointing @ rotation  @ mixing_matrix
 N = HomothetyOperator(σ**2, in_structure=H.out_structure)  # Noise covariance
 m = {'cmb': jnp.random(…), 'dust': …, 'atmosphere': …, …}  # Sky components
 A = (H.T @ N.I @ H).I @ H.T @ N.I  # Sky components' maximum-likelihood estimator
@@ -179,7 +179,7 @@ Table: Domain-specific operators for CMB data analysis.
 
 # Research Impact Statement
 
-`Furax` was developed within the SciPol project to enable gradient-based optimization in CMB data analysis pipelines. The framework's differentiability opens new possibilities for neural network integration and end-to-end optimization of map-making and component separation. The modular design supports rapid prototyping of analysis methods while maintaining compatibility with production pipelines through TOAST integration. `Furax` provides essential infrastructure for developing next-generation analysis techniques for e.g., the Simons Observatory, QUBIC and LiteBIRD.
+`Furax` was developed within the [\textsc{SciPol} project](https://scipol.in2p3.fr) to enable GPU-accelerated and gradient-based optimization in CMB data analysis pipelines. The framework's differentiability opens new possibilities for neural network integration and end-to-end optimization of map-making and component separation. The modular design supports rapid prototyping of analysis methods while maintaining compatibility with production pipelines through TOAST integration. `Furax` provides essential infrastructure for developing next-generation analysis techniques for e.g., the Simons Observatory, QUBIC and LiteBIRD.
 
 # AI Usage Disclosure
 
@@ -187,7 +187,7 @@ AI-assisted tools were used for code documentation and manuscript preparation. A
 
 # Acknowledgements
 
-This work was carried out within the \textsc{SciPol} project (\href{https://scipol.in2p3.fr}{scipol.in2p3.fr}), supported by the European Research Council (ERC) under the European Union’s Horizon 2020 research and innovation programme (Grant Agreement No.~101044073, PI: Josquin Errard).
+This work was supported by the European Research Council (ERC) under the European Union’s Horizon 2020 research and innovation programme (Grant Agreement No.~101044073, PI: Josquin Errard).
 
 Computing resources were provided by GENCI at IDRIS (Jean Zay supercomputer) under allocations 2024-AD010414161R2 and 2025-A0190416919.
 

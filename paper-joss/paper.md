@@ -59,8 +59,9 @@ Several tools exist for CMB data processing. TOAST provides a comprehensive MPI-
 Furax's architecture centers on composable linear operators that extend lineax's `AbstractLinearOperator`. Operators are combined using standard mathematical notation:
 
 ```python
-H = instrument_operator @ pointing @ rotation
+H = instrument_response @ hwp @ pointing @ rotation
 N = HomothetyOperator(0.5**2, in_structure=H.out_structure)
+sky_map = {'cmb': jnp.random(...), 'dust': ..., 'atmosphere': ...}
 y = H(sky_map) + noise  # Forward model including noise
 A = (H.T @ N.I @ H).I @ H.T @ N.I
 solution = A(y)      # Inverse via solvers
@@ -68,38 +69,38 @@ solution = A(y)      # Inverse via solvers
 
 **Operator Algebra.** The base class `AbstractLinearOperator` provides a default implementation for standard linear algebra operations that enable intuitive composition and manipulation of operators:
 
-| Operation                 | &nbsp;Syntax                                                       | Comment                                                                               |
-|---------------------------|--------------------------------------------------------------------|---------------------------------------------------------------------------------------|
-| Addition                  | `A + B`                                                            |                                                                                       |
-| Composition               | `A @ B`                                                            |                                                                                       |
-| Multiplication by scalar  | `k * A`                                                            | Returns the composition of a HomothetyOperator and A                                  |
-| Transpose                 | `A.T`                                                              | Through JAX autodiff, but can be overridden                                           |
-| Inverse                   | `A.I` or `A.I(solver=..., preconditioner=...)`                     | By default, the CG solver is used, but it can be overridden                           |
-| Block&nbsp;Assembly       | `BlockColumnOperator`, `BlockDiagonalOperator`, `BlockRowOperator` | Handle any PyTree of operators: `Block`...`Operator`({`'cmb'`:...,&nbsp;`'dust'`:...}) |
-| Flattened dense matrix    | `A.as_matrix()`                                                    |                                                                                       |
-| Algebraic reduction       | `A.reduce()`                                                       |                                                                                       |
+| Operation                | Syntax                                                             |
+|--------------------------|--------------------------------------------------------------------|
+| Addition                 | `A + B`                                                            |
+| Composition              | `A @ B`                                                            |
+| Multiplication by scalar | `k * A`                                                            |
+| Transpose                | `A.T`                                                              |
+| Inverse                  | `A.I` or `A.I(solver=..., preconditioner=...)`                     |
+| Block Assembly           | `BlockColumnOperator`, `BlockDiagonalOperator`, `BlockRowOperator` |
+| Flattened dense matrix   | `A.as_matrix()`                                                    |
+| Algebraic reduction      | `A.reduce()`                                                       |
 
 Table: Supported operator operations in Furax.
 
 **Generic Operators.** Furax provides a comprehensive suite of generic operators for common mathematical operations:
 
-| Operator                        | Description                                              |
-|---------------------------------|----------------------------------------------------------|
-| `IdentityOperator`              |                                                          |
-| `HomothetyOperator`             |                                                          |
-| `DiagonalOperator`              |                                                          |
-| `BroadcastDiagonalOperator`     | Non-square operator for broadcasting                     |
-| `TensorOperator`                | For dense matrix operations                              |
-| `TreeOperator`                  | For generalized matrix operations                        |
-| `SumOperator`                   | Sum along axes                                           |
+| Operator                        | Description                                               |
+|---------------------------------|-----------------------------------------------------------|
+| `IdentityOperator`              |                                                           |
+| `HomothetyOperator`             | Multiplication by a scalar                                |
+| `DiagonalOperator`              | Element-wise multiplication                               |
+| `BroadcastDiagonalOperator`     | Non-square operator for broadcasting                      |
+| `TensorOperator`                | For dense matrix operations                               |
+| `TreeOperator`                  | For generalized matrix operations                         |
+| `SumOperator`                   | Sum along axes                                            |
 | `IndexOperator`                 | Can be used for projecting skies onto time-ordered series |
-| `MaskOperator`                  | Bit-encoded 0- or 1-valued mask                          |
-| `MoveAxisOperator`              |                                                          |
-| `ReshapeOperator`               |                                                          |
-| `RavelOperator`                 |                                                          |
-| `FFTOperator`                   | Fast Fourier transform                                   |
-| `SymmetricBandToeplitzOperator` | Methods: direct, FFT, overlap and save                   |
-| `Block*Operator`                | Block assembly operators (column, diagonal, row)         |
+| `MaskOperator`                  | Bit-encoded 0- or 1-valued mask                           |
+| `MoveAxisOperator`              | Manipulate axes of input pytrees                          |
+| `ReshapeOperator`               | Reshape input pytrees                                     |
+| `RavelOperator`                 | Flatten input pytrees                                     |
+| `FFTOperator`                   | Fast Fourier transform                                    |
+| `SymmetricBandToeplitzOperator` | Methods: direct, FFT, overlap and save                    |
+| `Block*Operator`                | Block assembly operators (column, diagonal, row)          |
 
 Table: Generic operators available in Furax.
 
@@ -107,7 +108,7 @@ Table: Generic operators available in Furax.
 
 | Operator                  | Description                  |
 |---------------------------|------------------------------|
-| `QURotationOperator`      |                              |
+| `QURotationOperator`      | Stokes QU rotation           |
 | `HWPOperator`             | Ideal HWP                    |
 | `LinearPolarizerOperator` | Ideal linear polarizer       |
 | `CMBOperator`             | Parametrized CMB SED         |

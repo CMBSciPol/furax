@@ -86,7 +86,7 @@ Table: Supported operator operations in Furax.
 
 | Operator                        | Description                                               |
 |---------------------------------|-----------------------------------------------------------|
-| `IdentityOperator`              |                                                           |
+| `IdentityOperator`              | Returns the input unchanged                               |
 | `HomothetyOperator`             | Multiplication by a scalar                                |
 | `DiagonalOperator`              | Element-wise multiplication                               |
 | `BroadcastDiagonalOperator`     | Non-square operator for broadcasting                      |
@@ -99,8 +99,8 @@ Table: Supported operator operations in Furax.
 | `ReshapeOperator`               | Reshape input pytrees                                     |
 | `RavelOperator`                 | Flatten input pytrees                                     |
 | `FFTOperator`                   | Fast Fourier transform                                    |
-| `SymmetricBandToeplitzOperator` | Methods: direct, FFT, overlap and save                    |
-| `Block*Operator`                | Block assembly operators (column, diagonal, row)          |
+| `SymmetricBandToeplitzOperator` | Methods: direct convolution, FFT, overlap and save        |
+| `Block...Operator`              | Block assembly operators (column, diagonal, row)          |
 
 Table: Generic operators available in Furax.
 

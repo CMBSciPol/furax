@@ -73,13 +73,13 @@ Contemporary and future CMB experiments such as the Simons Observatory [@simons2
 
 $$\mathbf{d} = \mathbf{H}\mathbf{m} + \mathbf{n}$$
 
-where $\mathbf{H}$ represents the data acquisition system — encoding the pointing matrix, instrument response, and other effects — and $\mathbf{n}$ is the noise. The estimation of the solution to this equation can be done in many ways, The generalized least-squares solution given by
+where $\mathbf{H}$ represents the data acquisition system — encoding the pointing matrix, instrument response, and other effects — and $\mathbf{n}$ is the noise.   Several techniques can be used to estimate the solution to this equation, from the generalized least-squares estimator:
 
-  $$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{N}^{-1} \mathbf{H})^{-1} \mathbf{H}^\top \mathbf{N}^{-1} \mathbf{d}$$
+$$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{N}^{-1} \mathbf{H})^{-1} \mathbf{H}^\top \mathbf{N}^{-1} \mathbf{d}$$
 
-requires efficient application of the forward acquisition operator and its transpose.
+to more sophisticated methods such as template-based map-making [@poletti2017]. All require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra.
 
-Furax addresses two challenges: (1) providing a differentiable operator framework that lends itself to integration into machine learning workflows while maintaining the performance required for production-scale data analysis, and (2) offering a modular architecture that facilitates experimentation with data acquisition models and noise systematics.
+Furax addresses these two challenges: (1) providing a differentiable operator framework that lends itself to integration into machine learning workflows while maintaining the performance required for production-scale data analysis, and (2) offering a modular architecture that facilitates experimentation with data acquisition models and noise systematics.
 
 
 # State of the Field

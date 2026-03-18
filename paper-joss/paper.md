@@ -21,10 +21,30 @@ authors:
   - name: Wuhyun Sohn
     orcid: 0000-0000-0000-0000
     affiliation: 1
-  - name: et al. TBD (SciPol team)
+  - name: Artem Basyrov
+    orcid: 0000-0000-0000-0000
+    affiliation: 1
+  - name: Benjamin Beringue
+    orcid: 0000-0000-0000-0000
+    affiliation: 1
+  - name: Alexandre Boucaud
+    orcid: 0000-0000-0000-0000
+    affiliation: 1
+  - name: Radek Stompor
+    orcid: 0000-0000-0000-0000
+    affiliation: 1
+  - name: Ema Tsang King Sang
+    orcid: 0000-0000-0000-0000
+    affiliation: 1
+  - name: Amalia Villarrubia-Aguilar
+    orcid: 0000-0000-0000-0000
+    affiliation: 1
+  - name: Andr\'ea Landais
+    orcid: 0000-0000-0000-0000
     affiliation: 1
   - name: Josquin Errard
     orcid: 0000-0002-1419-0031
+    corresponding: true
     affiliation: 1
 affiliations:
   - name: Université Paris Cité, CNRS, Astroparticule et Cosmologie, F-75013 Paris, France

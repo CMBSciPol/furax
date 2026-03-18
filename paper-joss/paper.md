@@ -22,7 +22,7 @@ authors:
     orcid: 0000-0000-0000-0000
     affiliation: 1
   - name: Artem Basyrov
-    orcid: 0000-0000-0000-0000
+    orcid: 0000-0002-4365-4405
     affiliation: 1
   - name: Benjamin Beringue
     orcid: 0000-0000-0000-0000

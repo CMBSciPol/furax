@@ -12,9 +12,14 @@ from ._base import AbstractLinearOperator
 
 
 class DenseBlockDiagonalOperator(AbstractLinearOperator):
-    """Operator for block diagonal dense matrix operations involving pytrees.
+    """Operator that applies block diagonal dense matrices via einsum.
 
-    Only the diagonal blocks are stored by the operator.
+    Only the diagonal blocks are stored, making this more memory-efficient than
+    a full dense matrix. The operation is defined by einsum subscripts.
+
+    Attributes:
+        blocks: The dense blocks as an array (at least 2D).
+        subscripts: Einsum subscripts defining the operation (default: 'ij...,j...->i...').
 
     Example:
         For a matrix made of three 2x4 diagonal blocks, and input block columns of three blocks of

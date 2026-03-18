@@ -14,11 +14,18 @@ from ._base import AbstractLazyInverseOperator, AbstractLinearOperator, diagonal
 
 
 class BroadcastDiagonalOperator(AbstractLinearOperator):
-    """Class representing a generalized diagonal operation.
+    """Operator that performs element-wise multiplication with broadcasting.
 
-    This operator is not necessarily diagonal. It can be a block row operator with diagonal blocks
-    if the broadcasting extends the dimensions of the inputs on the left (regular broadcasting), or
-    a block diagonal operator with blocks being columns if the broadcasting applies on the right.
+    Unlike `DiagonalOperator`, this operator can change the output shape through
+    broadcasting, making it non-square. Depending on the broadcasting direction:
+        - Left broadcasting (extending dimensions on the left): equivalent to a
+          block row operator with diagonal blocks.
+        - Right broadcasting (extending dimensions on the right): equivalent to a
+          block diagonal operator with column blocks.
+
+    Attributes:
+        diagonal: The diagonal values.
+        axis_destination: The axes along which to apply the diagonal values.
 
     Args:
         diagonal: The diagonal values for the generalized diagonal operator.
@@ -29,7 +36,7 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
             scalar integer, the dimensions will be ``(axis - diagonal.ndim, ..., axis)``.
         in_structure: The expected structure of the operator input.
 
-    Usage:
+    Example:
         >>> import furax as fx
         >>> import jax.numpy as jnp
         >>> from numpy.testing import assert_allclose
@@ -191,17 +198,18 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
 
 @diagonal
 class DiagonalOperator(BroadcastDiagonalOperator):
-    """Class representing a diagonal operator.
+    """Operator that performs element-wise multiplication: D(x) = d * x.
 
-    The axes to be used for the multiplication can be specified: given a 1-dimensional array
-    ``diagonal`` and a 2-dimensional array ``x``:
+    The diagonal operator is symmetric and square. Its inverse divides by the
+    diagonal values (zeros are handled by returning zero).
 
-        op_first_axis = DiagonalOperator(diagonal, axis_destination=0)
-    op_first_axis(x) is conceptually equivalent to ``diagonal[:, None] * x``.
+    The multiplication axes can be specified via ``axis_destination``:
+        - ``axis_destination=0``: ``diagonal[:, None] * x`` (multiply along first axis)
+        - ``axis_destination=-1``: ``diagonal * x`` (standard broadcasting, default)
 
-        op_last_axis = DiagonalOperator(diagonal, axis_destination=-1)
-    op_last_axis(x) is conceptually equivalent to the usual broadcasting ``diagonal[None, :] * x``.
-
+    Attributes:
+        diagonal: The diagonal values.
+        axis_destination: The axes along which to apply the diagonal values.
 
     Args:
         diagonal: The diagonal values for the diagonal operator.
@@ -212,7 +220,7 @@ class DiagonalOperator(BroadcastDiagonalOperator):
             integer, the dimensions will be ``(axis - diagonal.ndim, ..., axis)``.
         in_structure: The expected structure of the operator input.
 
-    Usage:
+    Example:
         >>> import furax as fx
         >>> from numpy.testing import assert_allclose
         >>> key_gain, key_tod, key_common = jax.random.split(jax.random.PRNGKey(0), 3)

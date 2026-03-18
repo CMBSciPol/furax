@@ -79,7 +79,7 @@ where $\mathbf{H}$ represents the data acquisition system — encoding the point
 
 requires efficient application of the forward acquisition operator and its transpose.
 
-Furax addresses two challenges: (1) providing a differentiable operator framework that integrates with modern machine learning workflows while maintaining the performance required for production-scale data analysis, and (2) offering a modular architecture that facilitates experimentation with data acquisition models and noise systematics.
+Furax addresses two challenges: (1) providing a differentiable operator framework that lends itself to integration into machine learning workflows while maintaining the performance required for production-scale data analysis, and (2) offering a modular architecture that facilitates experimentation with data acquisition models and noise systematics.
 
 
 # State of the Field

@@ -53,6 +53,9 @@ affiliations:
   - name: Université Paris Cité, CNRS, Astroparticule et Cosmologie, F-75013 Paris, France
     index: 1
     ror: 03tnjrr49
+  - name: Jodrell Bank Centre for Astrophysics, The University of Manchester, Oxford Road, Manchester M13 9PL, UK
+    index: 2
+    ror: 027m9bs27
 date: 21 March 2026
 bibliography: paper.bib
 ---

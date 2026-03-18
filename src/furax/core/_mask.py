@@ -8,12 +8,16 @@ from .rules import AbstractBinaryRule
 
 @symmetric
 class MaskOperator(AbstractLinearOperator):
-    """Operator that sets values to zero according to a boolean mask.
+    """Operator that zeros out values according to a boolean mask: M(x) = x * mask.
 
-    The mask is bit-packed to save memory and unpacked as needed when applying to a vector.
-    The mask is stored as a pytree matching the operator's ``in_structure``.
+    The mask is symmetric and idempotent (M @ M = M). A True value means the
+    data point is valid and preserved; False values are set to zero.
 
-    A True value in the boolean mask means that the data point is valid.
+    The mask is bit-packed internally to save memory. Use ``from_boolean_mask()``
+    to create from a standard boolean array.
+
+    Attributes:
+        mask: Bit-packed mask as a pytree matching ``in_structure``.
     """
 
     mask: PyTree[UInt8[Array, '...']]

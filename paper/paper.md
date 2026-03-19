@@ -85,7 +85,7 @@ to more sophisticated methods such as template-based map-making [@poletti2017]. 
 
 Historically, many data reduction pipelines developed by large collaborations have been tied to specific experiments and did not outlive them, often due to the lack of genericity, reliance on legacy technologies or evolving hardware paradigms. `Furax` aims to break this pattern by being experiment-agnostic and built on Python and JAX—a modern, sustainable foundation.
 
-`Furax` addresses the above challenges by: (1) providing a differentiable operator algebra framework, (2) offering a modular architecture that facilitates experimentation with realistic instrument models and complex noise systematics, (3) supporting the exploration of novel map-making techniques, and (4) enabling integration with production pipelines through GPU-accelerated performance for terabyte-scale datasets.
+Furax addresses the above challenges by: (1) extending the lineax operator algebra with domain-specific operators for CMB data analysis, exposing them through an intuitive, math-like interface, (2) offering a modular architecture that facilitates experimentation with realistic instrument models and complex noise systematics, (3) unlocking advanced statistical inference techniques—such as Bayesian hierarchical modeling in high-dimensional spaces—via integration with JAX-based probabilistic programming and sampling tools [@numpyro; @blackjax], and (4) enabling the seamless integration of neural networks with linear operators to facilitate future simulation-based inference [@BoeltsDeistler_sbi_2025] for CMB data reduction.
 
 
 # State of the Field

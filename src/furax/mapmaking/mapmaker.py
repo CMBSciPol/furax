@@ -31,7 +31,7 @@ from furax import (
     asoperator,
 )
 from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
-from furax.mapmaking._model import ObservationModel, _hwp_frequency
+from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
@@ -41,10 +41,10 @@ from furax.obs.landscapes import (
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
 
-from ..interfaces.lineax import as_lineax_operator
 from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
+from ._model import ObservationModel, _hwp_frequency
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig

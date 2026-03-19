@@ -36,7 +36,7 @@ authors:
     affiliation: 1
   - name: Magdy Morshed
     orcid: 0000-0002-3214-8881
-    affiliation: 3,4
+    affiliation: 3
   - name: Radek Stompor
     orcid: 0000-0002-9777-3813
     affiliation: 1
@@ -59,8 +59,7 @@ affiliations:
     ror: 027m9bs27
   - name: Istituto Nazionale di Fisica Nucleare, Sezione di Ferrara, via Saragat 1, I-44122 Ferrara, Italy
     index: 3
-  - name: Dipartimento di Fisica e Scienze della Terra, Universit`a degli Studi di Ferrara, via Saragat 1, I-44122 Ferrara, Italy
-    index: 4
+    ror: 00zs3y046 
 date: 21 March 2026
 bibliography: paper.bib
 ---
@@ -68,7 +67,7 @@ bibliography: paper.bib
 # Summary
 
 The _Framework for Unified and Robust data Analysis with JAX_ (`Furax`) is an open-source Python framework for modeling data acquisition systems and solving inverse problems in astrophysics and cosmology. Built on `JAX` [@jax2018], `Furax` provides composable building blocks in the form of general-purpose and domain-specific linear operators, along with pre-conditioners and solvers for their numerical inversion.
-Domain-specific tools are provided for astrophysical and cosmic microwave background (CMB) data analysis—including map-making, instrument modeling, and astrophysical component separation—with an modular architecture designed to extend to other fields.
+Domain-specific tools are provided for astrophysical and cosmic microwave background (CMB) data analysis—including map-making, instrument modeling, and astrophysical component separation—with a modular architecture designed to extend to other fields.
 
 `Furax` fully utilises JAX's just-in-time compilation and automatic differentiation to achieve competitive performance, further accelerated using GPUs or TPUs. With `Furax`, researchers can rapidly prototype and validate analysis pipelines with production-ready computational efficiency.
 
@@ -227,5 +226,7 @@ This work was supported by the European Research Council (ERC) under the Europea
 Computing resources were provided by GENCI at IDRIS (Jean Zay supercomputer) under allocations 2024-AD010414161R2 and 2025-A0190416919.
 
 This work has also received funding by the European Union’s Horizon 2020 research and innovation program under grant agreement no. 101007633 CMB-Inflate.
+
+MM is funded by the European Union (ERC, RELiCS, project number 101116027). Views and opinions expressed are however those of the authors only and do not necessarily reflect those of the European Union or the European Research Council Executive Agency. Neither the European Union nor the granting authority can be held responsible for them.
 
 # References

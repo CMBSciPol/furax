@@ -5,12 +5,12 @@ on:
     branches:
       - main
     paths-ignore:
-      - 'paper-joss/**'
+      - 'paper/**'
   pull_request:
     branches:
       - main
     paths-ignore:
-      - 'paper-joss/**'
+      - 'paper/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

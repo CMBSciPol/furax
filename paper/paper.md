@@ -95,7 +95,7 @@ $$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{F_T}^{-1} \mathbf{H})^{-1} \mathbf
 
 where $\mathbf{F_T}$ is a weighting and deprojection operator defined as,
 
-$$F_T = \mathbf{W} - \mathbf{W} \mathbf{T} (\mathbf{T}^\top \mathbf{W} \mathbf{T})^{-1} \mathbf{T}^\top\mathbf{W}$$
+$$\mathbd{F_T} = \mathbf{W} - \mathbf{W} \mathbf{T} (\mathbf{T}^\top \mathbf{W} \mathbf{T})^{-1} \mathbf{T}^\top\mathbf{W}$$
 
 for some suitable chosen, positively defined weights, $\mathbf{W}$. All such solutions require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra.
 

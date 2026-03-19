@@ -66,7 +66,7 @@ bibliography: paper.bib
   The _Framework for Unified and Robust data Analysis with JAX_ (`Furax`) is an open-source Python framework for modeling data acquisition systems and solving inverse problems in astrophysics and cosmology. Built on `JAX` [@jax2018], `Furax` provides composable building blocks in the form of general-purpose and domain-specific linear operators, along with pre-conditioners and solvers for their numerical inversion.
   Domain-specific tools are provided for astrophysical and cosmic microwave background (CMB) data analysis—including map-making, instrument modeling, and astrophysical component separation—with an modular architecture designed to extend to other fields.
 
-Furax fully utilises JAX's just-in-time compilation and automatic differentiation to achieve competitive performance, further accelerated using GPUs or TPUs. With Furax, researchers can rapidly prototype and validate analysis pipelines with production-ready computational efficiency.
+`Furax` fully utilises JAX's just-in-time compilation and automatic differentiation to achieve competitive performance, further accelerated using GPUs or TPUs. With `Furax`, researchers can rapidly prototype and validate analysis pipelines with production-ready computational efficiency.
 
 `Furax` is hosted on [GitHub](https://github.com/CMBSciPol/furax), installable via [PyPI](https://pypi.org/project/furax) and documented on [Read the Docs](https://furax.readthedocs.io).
 
@@ -83,7 +83,7 @@ $$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{N}^{-1} \mathbf{H})^{-1} \mathbf{H
 
 to more sophisticated methods such as template-based map-making [@poletti2017]. All require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra.
 
-Historically, many data reduction pipelines developed by large collaborations have been tied to specific experiments and did not outlive them, often due to the lack of genericity, reliance on legacy technologies or evolving hardware paradigms. Furax aims to break this pattern by being experiment-agnostic and built on Python and JAX—a modern, sustainable foundation.
+Historically, many data reduction pipelines developed by large collaborations have been tied to specific experiments and did not outlive them, often due to the lack of genericity, reliance on legacy technologies or evolving hardware paradigms. `Furax` aims to break this pattern by being experiment-agnostic and built on Python and JAX—a modern, sustainable foundation.
 
 `Furax` addresses the above challenges by: (1) providing a differentiable operator algebra framework, (2) offering a modular architecture that facilitates experimentation with realistic instrument models and complex noise systematics, (3) supporting the exploration of novel map-making techniques, and (4) enabling integration with production pipelines through GPU-accelerated performance for terabyte-scale datasets.
 
@@ -103,9 +103,9 @@ On the other hand, many low-level libraries:
 - Other JAX-based tools such as `s2fft` [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework.
 -->
 
-  Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. MAPPRAISER [@mappraiser2022] and Commander [@galloway2023beyondplanck] are map-makers; FGBuster [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; PySM [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
+Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. MAPPRAISER [@mappraiser2022] and Commander [@galloway2023beyondplanck] are map-makers; FGBuster [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; PySM [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
 
-  Furax fills this gap by providing a unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as jax-healpy [@jax-healpy2024] and s2fft [@s2fft2024]) and connects with production pipelines through interfaces to TOAST and other tools.
+`Furax` fills this gap by providing a unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as jax-healpy [@jax-healpy2024] and s2fft [@s2fft2024]) and connects with production pipelines through interfaces to TOAST and other tools.
 
 
 # Software Design
@@ -179,7 +179,7 @@ Table: Domain-specific operators for astrophysics or CMB data analysis.
 
 For instance, `HWPOperator` is used for half-wave plate modeling, `LinearPolarizerOperator` for polarization extraction and `QURotationOperator` for polarization angle rotations. The spectral operators (`CMBOperator`, `DustOperator`, `SynchrotronOperator`) enable frequency-dependent component separation with support for spatially varying spectral indices.
 
-**Algebraic Reduction.** Furax implements operator simplification through a rule-based system, complementing XLA's low-level optimizations [@xla2017]. For example, consecutive QU rotations combine their angles, and compositions involving block operators such as $P^\top N^{-1} P$ are decomposed into $\sum_i P_i^\top N_i^{-1} P_i$, exploiting block structure to reduce computational cost. The system also handles algebraic identities such as the commutation rule for half-wave plates: $R(\theta) \circ \text{HWP} = \text{HWP} \circ R(-\theta)$.
+**Algebraic Reduction.** `Furax` implements operator simplification through a rule-based system, complementing XLA's low-level optimizations [@xla2017]. For example, consecutive QU rotations combine their angles, and compositions involving block operators such as $P^\top N^{-1} P$ are decomposed into $\sum_i P_i^\top N_i^{-1} P_i$, exploiting block structure to reduce computational cost. The system also handles algebraic identities such as the commutation rule for half-wave plates: $R(\theta) \circ \text{HWP} = \text{HWP} \circ R(-\theta)$.
 
 **Stokes Parameter Types.** `Furax` represents polarization through dedicated JAX Pytrees: `StokesI`, `StokesQU`, `StokesIQU`, and `StokesIQUV`. These types support arithmetic operations, broadcasting, and seamless integration with JAX transformations.
 

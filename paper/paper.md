@@ -134,7 +134,7 @@ Most experiment-agnostic data analysis libraries focus on specific tasks—map-m
 `Furax`'s architecture centers on composable linear operators, which are implemented as Python dataclasses registered as `JAX` Pytrees. Operators are combined using standard mathematical notation:
 
 ```python
-H = detector_response @ band_pass @ hwp @ pointing @ rotation  @ mixing_matrix
+H = detector_response @ band_pass @ hwp @ rotation @ pointing @ mixing_matrix
 N = HomothetyOperator(σ**2, in_structure=H.out_structure)  # Noise covariance
 m = {'cmb': jnp.random(…), 'dust': …, 'atmosphere': …, …}  # Sky components
 A = (H.T @ N.I @ H).I @ H.T @ N.I  # Sky components' maximum-likelihood estimator
@@ -199,7 +199,7 @@ Table: Domain-specific operators for astrophysics or CMB data analysis.
 
 For instance, `HWPOperator` is used for half-wave plate modeling, `LinearPolarizerOperator` for polarization extraction and `QURotationOperator` for polarization angle rotations. The spectral operators (`CMBOperator`, `DustOperator`, `SynchrotronOperator`) enable frequency-dependent component separation with support for spatially varying spectral indices.
 
-**Algebraic Reduction.** `Furax` implements operator simplification through a rule-based system, complementing XLA's low-level optimizations [@xla2017]. For example, consecutive QU rotations combine their angles, and compositions involving block operators such as $P^\top N^{-1} P$ are decomposed into $\sum_i P_i^\top N_i^{-1} P_i$, exploiting block structure to reduce computational cost. The system also handles algebraic identities such as the commutation rule for half-wave plates: $R(\theta) \circ \text{HWP} = \text{HWP} \circ R(-\theta)$.
+**Algebraic Reduction.** `Furax` implements operator simplification through a rule-based system, complementing XLA's low-level optimizations [@xla2017]. For example, consecutive QU rotations combine their angles, and compositions involving block operators such as $P^\top N^{-1} P$ are decomposed into $\sum_i P_i^\top N_i^{-1} P_i$, exploiting block structure to reduce computational cost. The system also handles algebraic identities such as the commutation rule for ideal half-wave plates: $R(\theta) \circ \text{HWP} = \text{HWP} \circ R(-\theta)$.
 
 **Stokes Parameter Types.** `Furax` represents polarization through dedicated JAX Pytrees: `StokesI`, `StokesQU`, `StokesIQU`, and `StokesIQUV`. These types support arithmetic operations, broadcasting, and seamless integration with JAX transformations.
 

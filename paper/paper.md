@@ -1,5 +1,5 @@
 ---
-title: '`Furax`: A Modular JAX Framework for Linear Operators in Cosmological Data Analysis'
+title: "`Furax`: A Modular JAX Framework for Linear Operators in Cosmological Data Analysis"
 tags:
   - Python
   - JAX
@@ -59,7 +59,7 @@ affiliations:
     ror: 027m9bs27
   - name: Istituto Nazionale di Fisica Nucleare, Sezione di Ferrara, via Saragat 1, I-44122 Ferrara, Italy
     index: 3
-    ror: 00zs3y046 
+    ror: 00zs3y046
 date: 21 March 2026
 bibliography: paper.bib
 ---
@@ -73,10 +73,10 @@ Domain-specific tools are provided for astrophysical and cosmic microwave backgr
 
 `Furax` is hosted on [GitHub](https://github.com/CMBSciPol/furax), installable via [PyPI](https://pypi.org/project/furax) and documented on [Read the Docs](https://furax.readthedocs.io).
 
-
 # Statement of Need
 
 Contemporary and future CMB experiments such as the Simons Observatory [@simons2019], the South Pole Observatory [@spo], QUBIC [@qubic2022] and LiteBIRD [@litebird2023] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. A central problem in CMB data analysis is to exploit data acquisition redundancy through map-making, i.e. recovering the sky signal $\mathbf{m}$ (and potentially separating its components) from noisy observations $\mathbf{d}$ through the linear model
+
 <!--
 $$\mathbf{d} = \mathbf{H}\mathbf{m} + \mathbf{n}$$
 
@@ -97,7 +97,7 @@ where $\mathbf{F_T}$ is a weighting and deprojection operator defined as,
 
 $$F_T = \mathbf{W} - \mathbf{W} \mathbf{T} (\mathbf{T}^\top \mathbf{W} \mathbf{T})^{-1} \mathbf{T}^\top\mathbf{W}$$
 
-for some suitable chosen, positively defined weights, $\mathbf{W}$. All such solutions require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra. 
+for some suitable chosen, positively defined weights, $\mathbf{W}$. All such solutions require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra.
 
 Historically, many data reduction pipelines developed by large collaborations have been tied to specific experiments and did not outlive them, often due to the lack of generality, reliance on legacy technologies or evolving hardware paradigms. `Furax` aims to break this pattern by being experiment-agnostic and built on Python and JAX—a modern, sustainable foundation.
 
@@ -106,16 +106,16 @@ Historically, many data reduction pipelines developed by large collaborations ha
 # State of the Field
 
 Few experiment-agnostic frameworks for astrophysics and CMB data analysis exist.
+
 <!--
 - `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck and the Simons Observatory, but its C++ core does not fully support differentiability or GPU acceleration, although this has been explored [@demeure2023].
 - `PyOperators` [@chanial2012pyoperators]: provides an operator algebra and is used by the QUBIC data analysis pipeline. This library is `Furax` CPU-only precursor.
 - `lineax` [@kidger2024lineax]: offers a JAX-compatible operator algebra but lacks domain-specific operators and relies on a third-party library for its base operator class.
 -->
 
-- `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck and the Simons Observatory, but its C++ core does not fully support differentiability or GPU acceleration, although this has been explored [@demeure2023]. 
-`Commander` [@galloway2023beyondplanck] is a complementary end-to-end Bayesian framework designed to infer astrophysical components and cosmological parameters from CMB data, from maps (and in some implementations timelines) to cosmology.
+- `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck and the Simons Observatory, but its C++ core does not fully support differentiability or GPU acceleration, although this has been explored [@demeure2023].
+- `Commander` [@galloway2023beyondplanck] is a complementary end-to-end Bayesian framework designed to infer astrophysical components and cosmological parameters from CMB data, from maps (and in some implementations timelines) to cosmology.
 - At a lower level, `PyOperators` [@chanial2012pyoperators] provides an operator algebra and is used by the QUBIC data analysis pipeline, and can be seen as a CPU-only precursor to Furax. Similarly, `lineax` [@kidger2024lineax] offers a JAX-compatible operator algebra but lacks domain-specific operators and relies on a third-party library for its base operator class.
-
 
 <!--
 On the other hand, many low-level libraries:
@@ -128,7 +128,6 @@ On the other hand, many low-level libraries:
 Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. `MAPPRAISER` [@mappraiser2022] is a map-maker; `FGBuster` [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; `Commander` [@galloway2023beyondplanck] is more general and aims at providing an end-to-end approach, from raw data to cosmology; `PySM` [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
 
 `Furax` fills this gap by providing a unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as `jax-healpy` [@jax-healpy2024] and `s2fft` [@s2fft2024]) and connects with production pipelines through interfaces to `TOAST` and other tools.
-
 
 # Software Design
 
@@ -146,7 +145,7 @@ solution = A(d)                    # Inverse via solvers
 **Operator Algebra.** The base class `AbstractLinearOperator` provides a default implementation for standard linear algebra operations that enable intuitive composition and manipulation of operators:
 
 | Operation                | Syntax                                                             |
-|--------------------------|--------------------------------------------------------------------|
+| ------------------------ | ------------------------------------------------------------------ |
 | Addition                 | `A + B`                                                            |
 | Composition              | `A @ B`                                                            |
 | Multiplication by scalar | `k * A`                                                            |
@@ -159,7 +158,7 @@ Table: Supported operator operations in `Furax`.
 **Generic Operators.** `Furax` provides a comprehensive suite of generic operators for common mathematical operations:
 
 | Operator                        | Description                                               |
-|---------------------------------|-----------------------------------------------------------|
+| ------------------------------- | --------------------------------------------------------- |
 | `IdentityOperator`              | Returns the input unchanged                               |
 | `HomothetyOperator`             | Multiplication by a scalar                                |
 | `DiagonalOperator`              | Element-wise multiplication                               |
@@ -182,11 +181,10 @@ Table: Generic operators available in `Furax`.
 
 The block operators provided by the framework enable efficient structuring of complex multi-observation or multi-component systems. `SymmetricBandToeplitzOperator` provides efficient convolution operations using the overlap-save method. This operator is central to correlated noise modeling and gap-filling procedures based on constrained Gaussian realizations [@stompor2002].
 
-
 **Domain-Specific Operators.** For CMB data analysis, `Furax` includes specialized operators tailored to instrument modeling and astrophysical components:
 
 | Operator                  | Description                  |
-|---------------------------|------------------------------|
+| ------------------------- | ---------------------------- |
 | `QURotationOperator`      | Stokes QU rotation           |
 | `HWPOperator`             | Ideal half-wave plate        |
 | `LinearPolarizerOperator` | Ideal linear polarizer       |

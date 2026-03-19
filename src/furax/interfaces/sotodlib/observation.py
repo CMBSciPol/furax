@@ -76,7 +76,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 if 'timestamps' not in fields:
                     fields.append('timestamps')
                 if config.wobble_correction:
-                    fields.append('wobble_params')
+                    fields.extend(['wobble_params', 'det_info', 'hwp_angle'])
             if 'detector_quaternions' in requested_fields:
                 fields.append('focal_plane')
             if 'noise_model_fits' in requested_fields:

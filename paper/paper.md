@@ -108,10 +108,12 @@ Historically, many data reduction pipelines developed by large collaborations ha
 3) supporting the exploration of novel map-making techniques, including integration with JAX-based probabilistic programming tools [@numpyro; @blackjax], which unlocks advanced statistical inference methods such as Bayesian hierarchical modeling in high-dimensional spaces,
 4) enabling integration with production pipelines for terabyte-scale datasets through GPU acceleration, and supporting hybrid approaches that combine neural networks with linear operators for simulation-based inference [@BoeltsDeistler_sbi_2025].
 
+
 # State of the Field
 
-Few experiment-agnostic frameworks for astrophysics and CMB data analysis exist.
+A number of software packages developed for astrophysics and CMB data analysis currently exist. Many target a specific data set, or are limited to a particular step of the data analysis pipeline, or provide a highly-integrated, end-to-end framework. Some provide functionality for either data modelling or analysis only. Furax distinguishes itself from these by providing a flexible, general, unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as jax-healpy [@jax-healpy2024] and s2fft [@s2fft2024]) as well as interfaces to some other existing tools, such as `PySM` [@pysm3] used to generate realistic multi-component sky simulations.
 
+Few experiment-agnostic CMB data analysis frameworks exist:
 - `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck and the Simons Observatory, but its C++ core does not fully support differentiability or GPU acceleration, although this has been explored [@demeure2023].
 - `Commander` [@galloway2023beyondplanck] is a complementary end-to-end Bayesian framework designed to infer astrophysical components and cosmological parameters from CMB data, from maps (and in some implementations timelines) to cosmology, but it currently lacks GPU support.
 - At a lower level, `PyOperators` [@chanial2012pyoperators] provides an operator algebra and is used by the QUBIC data analysis pipeline, and can be seen as a CPU-only precursor to Furax. Similarly, `lineax` [@kidger2024lineax] offers a JAX-compatible operator algebra but lacks domain-specific operators and relies on a third-party library for its base operator class.
@@ -122,9 +124,9 @@ On the other hand, many low-level libraries:
 - The `healpy` library [@zonca2019] wraps the HEALPix C library for Python, offering essential spherical harmonic transforms and pixel operations, but runs only on CPU and does not support operator composition.
 -->
 
-Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. `MAPPRAISER` [@mappraiser2022] is a map-maker; `FGBuster` [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; `PySM` [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
-
-`Furax` fills this gap by providing a unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as `jax-healpy` [@jax-healpy2024] and `s2fft` [@s2fft2024]) and connects with production pipelines through interfaces to `TOAST` and other tools.
+Some existing software packages particularly relevant for this work include:
+- `MIDAPACK` [@mappraiser2022] is a low and middle layer, massively parallel (MPI) C library for CMB inverse problems, featuring `MAPPRAISER`, a flexible map-making code, which builds on it
+- `FGBuster` [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models
 
 # Software Design
 

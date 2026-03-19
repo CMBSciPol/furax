@@ -17,7 +17,7 @@ authors:
     orcid: 0000-0002-1493-2963
     affiliation: 2
   - name: Wassim Kabalan
-    orcid: 0000-0003-2651-0314
+    orcid: 0009-0001-6501-4564
     affiliation: 1
   - name: Wuhyun Sohn
     orcid: 0000-0002-6039-8247
@@ -101,31 +101,28 @@ for some suitable chosen, positively defined weights, $\mathbf{W}$. All such sol
 
 Historically, many data reduction pipelines developed by large collaborations have been tied to specific experiments and did not outlive them, often due to the lack of generality, reliance on legacy technologies or evolving hardware paradigms. `Furax` aims to break this pattern by being experiment-agnostic and built on Python and JAX—a modern, sustainable foundation.
 
-`Furax` addresses the above challenges by: (1) providing a differentiable operator algebra framework, (2) offering a modular architecture that facilitates experimentation with realistic instrument models and complex noise systematics, (3) supporting the exploration of novel map-making techniques, and (4) enabling integration with production pipelines through GPU-accelerated performance for terabyte-scale datasets.
+`Furax` addresses the above challenges by:
+
+1) providing an operator algebra framework with domain-specific operators for astrophysics and CMB data analysis, exposed through an intuitive, math-like interface,
+2) offering a modular architecture that facilitates experimentation with realistic instrument models and complex noise systematics,
+3) supporting the exploration of novel map-making techniques, including integration with JAX-based probabilistic programming tools [@numpyro; @blackjax], which unlocks advanced statistical inference methods such as Bayesian hierarchical modeling in high-dimensional spaces,
+4) enabling integration with production pipelines for terabyte-scale datasets through GPU acceleration, and supporting hybrid approaches that combine neural networks with linear operators for simulation-based inference [@BoeltsDeistler_sbi_2025].
 
 # State of the Field
 
 Few experiment-agnostic frameworks for astrophysics and CMB data analysis exist.
 
-<!--
 - `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck and the Simons Observatory, but its C++ core does not fully support differentiability or GPU acceleration, although this has been explored [@demeure2023].
-- `PyOperators` [@chanial2012pyoperators]: provides an operator algebra and is used by the QUBIC data analysis pipeline. This library is `Furax` CPU-only precursor.
-- `lineax` [@kidger2024lineax]: offers a JAX-compatible operator algebra but lacks domain-specific operators and relies on a third-party library for its base operator class.
--->
-
-- `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck and the Simons Observatory, but its C++ core does not fully support differentiability or GPU acceleration, although this has been explored [@demeure2023].
-- `Commander` [@galloway2023beyondplanck] is a complementary end-to-end Bayesian framework designed to infer astrophysical components and cosmological parameters from CMB data, from maps (and in some implementations timelines) to cosmology.
+- `Commander` [@galloway2023beyondplanck] is a complementary end-to-end Bayesian framework designed to infer astrophysical components and cosmological parameters from CMB data, from maps (and in some implementations timelines) to cosmology, but it currently lacks GPU support.
 - At a lower level, `PyOperators` [@chanial2012pyoperators] provides an operator algebra and is used by the QUBIC data analysis pipeline, and can be seen as a CPU-only precursor to Furax. Similarly, `lineax` [@kidger2024lineax] offers a JAX-compatible operator algebra but lacks domain-specific operators and relies on a third-party library for its base operator class.
 
 <!--
 On the other hand, many low-level libraries:
 - `DUCC` [@ducc] collection of highly optimized CPU C++17 subroutines
 - The `healpy` library [@zonca2019] wraps the HEALPix C library for Python, offering essential spherical harmonic transforms and pixel operations, but runs only on CPU and does not support operator composition.
-- `jax-healpy` [@jax-healpy2024] is JAX-compatible but does not support operator algebra.
-- Other JAX-based tools such as `s2fft` [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework.
 -->
 
-Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. `MAPPRAISER` [@mappraiser2022] is a map-maker; `FGBuster` [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; `Commander` [@galloway2023beyondplanck] is more general and aims at providing an end-to-end approach, from raw data to cosmology; `PySM` [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
+Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. `MAPPRAISER` [@mappraiser2022] is a map-maker; `FGBuster` [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; `PySM` [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
 
 `Furax` fills this gap by providing a unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as `jax-healpy` [@jax-healpy2024] and `s2fft` [@s2fft2024]) and connects with production pipelines through interfaces to `TOAST` and other tools.
 

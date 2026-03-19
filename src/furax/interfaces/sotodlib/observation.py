@@ -20,7 +20,12 @@ from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
 from furax.mapmaking.config import SotodlibConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math import quaternion
-from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
+from furax.obs.landscapes import (
+    AstropyWCSLandscape,
+    HealpixLandscape,
+    ProjectionType,
+    StokesLandscape,
+)
 from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
 
 
@@ -206,13 +211,13 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_wcs_shape_and_kernel(
         self,
-        resolution: float = 8.0,  # units: arcmins
-        projection: str = 'car',
-    ) -> tuple[tuple[int, ...], WCS]:
+        resolution_arcmin: float,
+        projection: ProjectionType = ProjectionType.CAR,
+    ) -> tuple[tuple[int, int], WCS]:
         """Returns astropy WCS kernel object corresponding to the observed sky"""
 
-        res = resolution * pixell.utils.arcmin
-        wcs_kernel_init = coords.get_wcs_kernel('car', 0, 0, res=res)
+        res = resolution_arcmin * pixell.utils.arcmin
+        wcs_kernel_init = coords.get_wcs_kernel(projection.name.lower(), 0, 0, res=res)
         wcs_shape, wcs_kernel = coords.get_footprint(self.data, wcs_kernel_init)
 
         return wcs_shape, wcs_kernel
@@ -223,7 +228,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         """Obtain pointing information and spin angles from the observation"""
 
         # Projection Matrix class instance for the observation
-        if isinstance(landscape, WCSLandscape):
+        if isinstance(landscape, AstropyWCSLandscape):
             # TODO: pass 'cuts' keyword here for time slices (glitches etc)?
             P = coords.P.for_tod(self.data, wcs_kernel=landscape.wcs, comps='TQU', hwp=True)
         elif isinstance(landscape, HealpixLandscape):

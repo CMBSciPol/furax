@@ -16,7 +16,12 @@ from toast.ops.load_hdf5 import LoadHDF5
 
 from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
-from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
+from furax.obs.landscapes import (
+    AstropyWCSLandscape,
+    HealpixLandscape,
+    ProjectionType,
+    StokesLandscape,
+)
 
 from .utils import get_local_meridian_angle
 
@@ -229,9 +234,9 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
     def get_wcs_shape_and_kernel(
         self,
-        resolution: float = 8.0,  # units: arcmins
-        projection: str = 'car',
-    ) -> tuple[tuple[int, ...], WCS]:
+        resolution_arcmin: float,
+        projection: ProjectionType = ProjectionType.CAR,
+    ) -> tuple[tuple[int, int], WCS]:
         """Returns the shape and object corresponding to a WCS projection.
         Here, this is obtained while we compute the pointing and pixelisation."""
 
@@ -241,7 +246,8 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         det_pixels = toast.ops.PixelsWCS(
             detector_pointing=det_pointing,
             pixels=self._pixels,
-            resolution=[resolution * u.arcmin, resolution * u.arcmin],
+            resolution=[res := (resolution_arcmin * u.arcmin), res],
+            projection=projection.name,
             dimensions=tuple(),
         )
         det_pixels.apply(self._toast_data)
@@ -267,7 +273,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
             spin_ang = self._get_detector_angles() - 2 * self.get_detector_offset_angles()[:, None]
             return indices, spin_ang
 
-        elif isinstance(landscape, WCSLandscape):
+        elif isinstance(landscape, AstropyWCSLandscape):
             raise ValueError(
                 'Pointing information is missing from the data. \
                         This is supposed to be obtained when computing \

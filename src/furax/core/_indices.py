@@ -14,11 +14,16 @@ __all__ = ['IndexOperator']
 
 
 class IndexOperator(AbstractLinearOperator):
-    """Class for indexing operations on pytrees.
+    """Operator that extracts elements by indexing: y = x[indices].
 
-    The operation is conceptually the same as y = x[indices]
+    Supports integer indices, slices, boolean masks, and advanced indexing.
+    When indices are unique, the operator satisfies: I @ I.T = Identity.
 
-    Usage:
+    Attributes:
+        indices: The indexing tuple (integers, slices, arrays, or Ellipsis).
+        unique_indices: Whether the indices select unique elements (enables optimizations).
+
+    Example:
     To extract the second element of the first axis:
 
         >>> op = IndexOperator(1, in_structure=jax.ShapeDtypeStruct((10, 4), jax.numpy.float32))

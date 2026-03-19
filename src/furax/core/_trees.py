@@ -13,27 +13,21 @@ from .rules import AbstractBinaryRule
 
 
 class TreeOperator(AbstractLinearOperator):
-    """Operator applying a generalized matrix, where the matrix is a pytree of pytrees.
+    """Operator defined by a generalized matrix as a pytree of pytrees.
 
-    Using a Tree Operator rather than a dense operator can be beneficial when the matrix structure
-    allows for optimization, such as exploiting symmetries, shared elements, zero values, or
-    broadcastable components. XLA will then apply Common Subexpression Elimination and Dead Code
-    Elimination.
+    More memory-efficient than dense matrices when the structure allows XLA
+    optimizations (symmetries, zeros, shared elements, broadcasting).
 
-    The structure of the generalized matrix is the tree product of an outer tree structure
-    whose leaves represent the rows and an inner tree structure whose leaves represents the columns.
-    A tree product of two tree structures is formed by replacing each leaf of the first tree with a
-    copy of the second. The leaves of the generalized matrix must be broadcastable when they belong
-    to same inner tree (elements of the same row). There is no such requirement for leaves of
-    different inner trees (elements of different rows).
+    The structure of the generalized matrix is the tree product: outer_treedef x inner_treedef,
+    analogous to a matrix where rows are represented by an outer tree and columns by the inner tree.
 
-    The inner structure of the generalized matrix is given by the `in_structure` argument.
+    Leaves within the same row must be broadcastable; no such constraint applies across rows.
 
     Attributes:
-        outer_treedef: The PyTreeDef of the outer tree structure.
-        inner_treedef: The PyTreeDef of the inner tree structure.
-        tree_shape: The shape of the generalized matrix, defined by the number of leaves in
-            the outer structure followed by those in the inner structure.
+        tree: The generalized matrix as a pytree of pytrees.
+        outer_treedef: PyTreeDef for rows.
+        inner_treedef: PyTreeDef for columns.
+        tree_shape: (num_rows, num_cols) in terms of tree leaves.
 
     Example:
         To represent the Mueller Matrix of a quarter-wave plate with a vertical fast-axis:

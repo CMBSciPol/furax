@@ -54,17 +54,17 @@ def K_RK_2_K_CMB(nu: Array | float) -> Array:
 
 
 class AbstractSEDOperator(BroadcastDiagonalOperator):
-    """
-    Abstract base class for Spectral Energy Distribution (SED) operators.
+    """Abstract base class for Spectral Energy Distribution (SED) operators.
 
-    Args:
-        frequencies (Array): Array of frequencies.
-        frequency0 (float, optional): Reference frequency. Defaults to 100e9.
-        in_structure (PyTree): Input structure describing the shape and dtype of the input.
+    SED operators model how astrophysical components emit radiation across
+    frequencies. They broadcast sky maps to multiple frequency channels.
+
+    Subclasses must implement the ``sed()`` method to define the spectral
+    energy distribution.
 
     Attributes:
-        frequencies (Array): Reshaped frequency array.
-        frequency0 (float): Reference frequency.
+        frequencies: Array of observation frequencies.
+        frequency0: Reference frequency for the SED normalization.
     """
 
     frequencies: Float[Array, ' a']
@@ -132,27 +132,21 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
 
 
 class CMBOperator(AbstractSEDOperator):
-    """
-    Operator for Cosmic Microwave Background (CMB) spectral energy distribution.
+    """Operator for Cosmic Microwave Background (CMB) spectral energy distribution.
 
-    Args:
-        frequencies (Array): Array of frequencies.
-        in_structure (PyTree): Input structure describing the shape and dtype of the input.
-        units (str, optional): Units for the operator ('K_CMB' or 'K_RJ'). Defaults to 'K_CMB'.
+    The CMB has a blackbody spectrum at T_CMB ~ 2.725 K. In K_CMB units, the
+    SED is constant (unity) across frequencies. In K_RJ units, a frequency-dependent
+    conversion factor is applied.
+
+    Attributes:
+        frequencies: Observation frequencies [GHz].
+        units: Output units ('K_CMB' or 'K_RJ').
+        factor: Unit conversion factor.
 
     Example:
-        >>> from furax.obs import CMBOperator
-        >>> import jax.numpy as jnp
-        >>> nu = jnp.array([30, 40, 100])  # Frequencies in GHz
-        >>> in_structure = ...  # Define input structure (e.g., using HealpixLandscape)
-        >>> sky_map = ...  # Define sky map
-        >>> cmbOp = CMBOperator(
-        ...     frequencies=nu,
-        ...     in_structure=in_structure,
-        ...     units='K_CMB',
-        ... )
-        >>> result = cmbOp(sky_map)
-        >>> print(result)
+        >>> nu = jnp.array([30, 40, 100])  # GHz
+        >>> cmb_op = CMBOperator(frequencies=nu, in_structure=landscape.structure)
+        >>> tod = cmb_op(sky_map)  # Broadcasts CMB map to all frequencies
     """
 
     factor: Float[Array, '...'] | float
@@ -187,42 +181,28 @@ class CMBOperator(AbstractSEDOperator):
 
 
 class DustOperator(AbstractSEDOperator):
-    """
-    Operator for dust spectral energy distribution.
+    """Operator for thermal dust spectral energy distribution.
 
-    Args:
-        frequencies (Array): Array of frequencies.
-        frequency0 (float, optional): Reference frequency. Defaults to 100.
-        temperature (float | Array): Dust temperature.
-        units (str, optional): Units for the operator ('K_CMB' or 'K_RJ'). Defaults to 'K_CMB'.
-        temperature_patch_indices (Array | None, optional): Indices for patch-based temperature.
-        beta (float | Array): Spectral index beta.
-        beta_patch_indices (Array | None, optional): Indices for patch-based beta.
-        in_structure (PyTree): Input structure.
+    Models dust emission as a modified blackbody: a power law times a Planck
+    function. The SED is: (nu/nu0)^(1+beta) * B(nu,T)/B(nu0,T), where B is
+    the Planck function.
+
+    Supports spatially varying spectral parameters via patch indices.
 
     Attributes:
-        temperature (Array): Dust temperature.
-        beta (Array): Spectral index beta.
-        factor (Array | float): Conversion factor based on the unit type.
+        frequencies: Observation frequencies [GHz].
+        frequency0: Reference frequency [GHz].
+        temperature: Dust temperature [K].
+        beta: Spectral index (typically ~1.5).
+        units: Output units ('K_CMB' or 'K_RJ').
 
     Example:
-        >>> from furax.obs import DustOperator
-        >>> import jax.numpy as jnp
-        >>> nu = jnp.array([30, 40, 100])  # Frequencies in GHz
-        >>> in_structure = ...  # Define input structure (e.g., using HealpixLandscape)
-        >>> beta_dust = 1.54  # Spectral index
-        >>> temperature = 20.0  # Dust temperature
-        >>> sky_map = ...  # Define sky map
-        >>> dustOperator = DustOperator(
-        ...     frequencies=nu,
-        ...     frequency0=20.0,
-        ...     beta=beta_dust,
-        ...     temperature=temperature,
-        ...     in_structure=in_structure,
-        ...     units='K_CMB',
+        >>> nu = jnp.array([100, 143, 217, 353])  # GHz
+        >>> dust_op = DustOperator(
+        ...     frequencies=nu, frequency0=353, beta=1.54, temperature=20.0,
+        ...     in_structure=landscape.structure
         ... )
-        >>> result = dustOperator(sky_map)
-        >>> print(result)
+        >>> tod = dust_op(dust_map)
     """
 
     temperature: Float[Array, '...']
@@ -274,48 +254,28 @@ class DustOperator(AbstractSEDOperator):
 
 
 class SynchrotronOperator(AbstractSEDOperator):
-    """Spectral Energy Distribution (SED) operator for synchrotron emission.
+    """Operator for synchrotron spectral energy distribution.
 
-    This operator models synchrotron emission based on a power-law SED
-    with optional running of the spectral index.
+    Models synchrotron emission as a power law: (nu/nu0)^beta, with optional
+    spectral index running: (nu/nu0)^(beta + running * log(nu/nu_pivot)).
+
+    Supports spatially varying spectral parameters via patch indices.
 
     Attributes:
-        beta_pl (Float[Array, '...']): Power-law spectral index values.
-        beta_pl_patch_indices (Int[Array, '...'] | None):
-             Optional indices for patch-specific beta values.
-        nu_pivot (float): Pivot frequency in GHz for the running spectral index. Default is 1.0 GHz.
-        running (float): Running of the spectral index. Default is 0.0.
-        units (str): Output unit for the operator, either 'K_CMB' or 'K_RJ'.
-        factor (Float[Array, '...'] | float): Conversion factor between units.
-
-    Args:
-        frequencies (Float[Array, '...']): Frequencies in GHz.
-        frequency0 (float): Reference frequency for the SED. Default is 100 GHz.
-        nu_pivot (float): Pivot frequency for running spectral index. Default is 1.0 GHz.
-        running (float): Running of the spectral index. Default is 0.0.
-        units (str): Units of the output, either 'K_CMB' or 'K_RJ'. Default is 'K_CMB'.
-        beta_pl (float | Float[Array, '...']):
-            Power-law spectral index or an array of indices.
-        beta_pl_patch_indices (Int[Array, '...'] | None):
-            Optional indices for patch-specific beta values.
-        in_structure (PyTree[jax.ShapeDtypeStruct]): Input structure defining the shape of the data.
+        frequencies: Observation frequencies [GHz].
+        frequency0: Reference frequency [GHz].
+        beta_pl: Power-law spectral index (typically ~ -3).
+        nu_pivot: Pivot frequency for running [GHz].
+        running: Running of the spectral index.
+        units: Output units ('K_CMB' or 'K_RJ').
 
     Example:
-        >>> from furax.obs import SynchrotronOperator
-        >>> import jax.numpy as jnp
-        >>> nu = jnp.array([30, 40, 100])  # Frequencies in GHz
-        >>> in_structure = ...  # Define input structure (e.g., using HealpixLandscape)
-        >>> sky_map = ...  # Define sky map
-        >>> beta_pl = -3.0  # Spectral index
-        >>> synchrotron_operator = SynchrotronOperator(
-        ...     frequencies=nu,
-        ...     frequency0=20.0,
-        ...     beta_pl=beta_pl,
-        ...     in_structure=in_structure,
-        ...     units='K_CMB',
+        >>> nu = jnp.array([30, 44, 70])  # GHz
+        >>> sync_op = SynchrotronOperator(
+        ...     frequencies=nu, frequency0=30, beta_pl=-3.0,
+        ...     in_structure=landscape.structure
         ... )
-        >>> result = synchrotron_operator(sky_map)
-        >>> print(result)
+        >>> tod = sync_op(synchrotron_map)
     """
 
     beta_pl: Float[Array, '...']

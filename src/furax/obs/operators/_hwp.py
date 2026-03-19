@@ -20,7 +20,16 @@ from ._qu_rotations import QURotationOperator, QURotationTransposeOperator
 
 @diagonal
 class HWPOperator(AbstractLinearOperator):
-    """Operator for an ideal static Half-wave plate."""
+    """Operator for an ideal half-wave plate (HWP).
+
+    A HWP flips the sign of the U (and V) Stokes parameters while leaving
+    I and Q unchanged. This models the Mueller matrix diag(1, 1, -1, -1).
+
+    The operator is diagonal and symmetric. For a rotating HWP at angle theta,
+    use ``HWPOperator.create(..., angles=theta)`` which computes R(-theta) @ HWP @ R(theta).
+
+    Algebraic rule: R(theta) @ HWP = HWP @ R(-theta).
+    """
 
     @classmethod
     def create(

@@ -12,7 +12,7 @@ from jaxtyping import Array, Bool, Float, UInt32
 from numpy.typing import NDArray
 
 from furax.math.quaternion import qmul, to_lonlat_angles
-from furax.obs.landscapes import StokesLandscape
+from furax.obs.landscapes import ProjectionType, StokesLandscape
 from furax.obs.stokes import ValidStokesType
 
 from .noise import NoiseModel
@@ -147,9 +147,9 @@ class AbstractObservation(ABC, Generic[T]):
     @abstractmethod
     def get_wcs_shape_and_kernel(
         self,
-        resolution: float = 8.0,  # units: arcmins
-        projection: str = 'car',
-    ) -> tuple[tuple[int, ...], WCS]:
+        resolution_arcmin: float,
+        projection: ProjectionType = ProjectionType.CAR,
+    ) -> tuple[tuple[int, int], WCS]:
         """Returns the shape and object corresponding to a WCS projection"""
 
     @abstractmethod

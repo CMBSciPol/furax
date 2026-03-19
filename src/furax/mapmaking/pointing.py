@@ -27,14 +27,21 @@ __all__ = [
 
 
 class PointingOperator(AbstractLinearOperator):
-    """Pointing operator that expands pointing on the fly to save memory.
+    """Operator that projects sky maps to time-ordered data (TOD) using quaternion pointing.
 
-    It is equivalent to the composition of (i) an IndexOperator to sample the sky pixels (ii) a
-    QURotationOperator to rotate into the telescope frame.
+    Equivalent to: QURotation @ Index @ Ravel, but computed on-the-fly to save memory.
+    For each detector and time sample, it:
+    1. Computes the sky pixel from boresight and detector quaternions
+    2. Samples the sky map at that pixel
+    3. Rotates Stokes QU by the polarization angle
 
-    The performance/memory tradeoff is controlled by the ``chunk_size`` parameter.
-    A chunk size of 0 means no chunking, i.e. the entire operation is done in one go.
-    Changing this parameter will trigger recompilation of the operator.
+    The transpose accumulates TOD into a sky map (binning).
+
+    Attributes:
+        landscape: The sky pixelization (HEALPix landscape).
+        qbore: Boresight quaternions, shape (n_samples, 4).
+        qdet: Detector quaternions, shape (n_detectors, 4).
+        chunk_size: Number of detectors per chunk (memory/speed tradeoff).
     """
 
     landscape: StokesLandscape

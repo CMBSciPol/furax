@@ -84,9 +84,19 @@ def rotate_qu_cs(
 
 @orthogonal
 class QURotationOperator(AbstractLinearOperator):
-    """Operator for QU rotations.
+    """Operator that rotates Q and U Stokes parameters by angle theta.
 
-    The angles in the constructor are in radians.
+    Applies the rotation matrix R(theta) which transforms (Q, U) as:
+        Q' = Q*cos(2*theta) + U*sin(2*theta)
+        U' = -Q*sin(2*theta) + U*cos(2*theta)
+
+    I and V components are unchanged. The operator is orthogonal:
+    R.T = R.I = R(-theta).
+
+    Consecutive rotations combine: R(a) @ R(b) = R(a+b).
+
+    Attributes:
+        angles: Rotation angles in radians.
     """
 
     angles: Float[Array, '...']

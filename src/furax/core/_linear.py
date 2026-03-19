@@ -6,10 +6,12 @@ from .rules import AbstractBinaryRule
 
 
 class PackOperator(AbstractLinearOperator):
-    """Class for packing the leaves of a PyTree according to a common mask.
+    """Operator that extracts elements using a boolean mask: y = x[mask].
 
-    The operation is conceptually the same as:
-        y = x[mask]
+    This operator satisfies: Pack @ Pack.T = Identity (orthogonal on its range).
+
+    Attributes:
+        mask: Boolean array selecting elements to extract.
     """
 
     mask: Bool[Array, '...']

@@ -64,7 +64,7 @@ class ObservationModel:
         )
         noise_model, sample_rate = _noise_model(data, config)
         W = _noise_operator(
-            noise_model, H.out_structure, sample_rate, config.correlation_length, inverse=True
+            noise_model, H.out_structure, sample_rate, config.noise.correlation_length, inverse=True
         )
         return cls(H, W, masker, noise_model, sample_rate)
 
@@ -118,7 +118,7 @@ class ObservationModel:
                 self.noise_model,
                 self.tod_structure,
                 self.sample_rate,
-                config.correlation_length,
+                config.noise.correlation_length,
                 inverse=False,
             )
             gapfill = GapFillingOperator(
@@ -149,18 +149,18 @@ class ObservationModel:
 def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel], Array]:
     """Compute the noise model and sample rate for a single observation block."""
     fs = _sample_rate(data['timestamps'])
-    if config.fit_noise_model:
+    if config.noise.fit_from_data:
         noise_model_class = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
         fhwp = _hwp_frequency(data['timestamps'], data['hwp_angles'])
 
         def _compute_Pxx_and_fit(tod):  # type: ignore[no-untyped-def]
-            f, Pxx = jax.scipy.signal.welch(tod, fs=fs, nperseg=config.nperseg)
+            f, Pxx = jax.scipy.signal.welch(tod, fs=fs, nperseg=config.noise.fitting.nperseg)
             return noise_model_class.fit_psd_model(
                 f,
                 Pxx,
                 sample_rate=fs,
                 hwp_frequency=fhwp,
-                config=config.noise_fit,
+                config=config.noise.fitting,
             )
 
         noise_model = jax.tree.map(_compute_Pxx_and_fit, data['sample_data'])

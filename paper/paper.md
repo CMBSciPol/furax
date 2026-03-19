@@ -100,7 +100,7 @@ $$F_T = \mathbf{W} - \mathbf{W} \mathbf{T} (\mathbf{T}^\top \mathbf{W} \mathbf{T
 
 for some suitable chosen, positively defined weights, $\mathbf{W}$. All such solutions require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra. 
 
-Historically, many data reduction pipelines developed by large collaborations have been tied to specific experiments and did not outlive them, often due to the lack of genericity, reliance on legacy technologies or evolving hardware paradigms. `Furax` aims to break this pattern by being experiment-agnostic and built on Python and JAX—a modern, sustainable foundation.
+Historically, many data reduction pipelines developed by large collaborations have been tied to specific experiments and did not outlive them, often due to the lack of generality, reliance on legacy technologies or evolving hardware paradigms. `Furax` aims to break this pattern by being experiment-agnostic and built on Python and JAX—a modern, sustainable foundation.
 
 `Furax` addresses the above challenges by: (1) providing a differentiable operator algebra framework, (2) offering a modular architecture that facilitates experimentation with realistic instrument models and complex noise systematics, (3) supporting the exploration of novel map-making techniques, and (4) enabling integration with production pipelines through GPU-accelerated performance for terabyte-scale datasets.
 
@@ -128,7 +128,7 @@ On the other hand, many low-level libraries:
 
 Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. `MAPPRAISER` [@mappraiser2022] is a map-maker; `FGBuster` [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; `Commander` [@galloway2023beyondplanck] is more general and aims at providing an end-to-end approach, from raw data to cosmology; `PySM` [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
 
-`Furax` fills this gap by providing a unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as `jax-healpy` [@jax-healpy2024] and s2fft [@s2fft2024]) and connects with production pipelines through interfaces to `TOAST` and other tools.
+`Furax` fills this gap by providing a unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as `jax-healpy` [@jax-healpy2024] and `s2fft` [@s2fft2024]) and connects with production pipelines through interfaces to `TOAST` and other tools.
 
 
 # Software Design

@@ -111,7 +111,7 @@ Historically, many data reduction pipelines developed by large collaborations ha
 
 # State of the Field
 
-A number of software packages developed for astrophysics and CMB data analysis currently exist. Many target a specific data set, or are limited to a particular step of the data analysis pipeline, or provide a highly-integrated, end-to-end framework. Some provide functionality for either data modelling or analysis only. Furax distinguishes itself from these by providing a flexible, general, unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as jax-healpy [@jax-healpy2024] and s2fft [@s2fft2024]) as well as interfaces to some other existing tools, such as `PySM` [@pysm3] used to generate realistic multi-component sky simulations.
+Most software packages developed for astrophysics and CMB data analysis target a specific data set, or are limited to a particular step of the data analysis pipeline, or provide a highly-integrated, end-to-end framework. Some provide functionality for either data modelling or analysis only. Furax distinguishes itself from these by providing a flexible, general, unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as jax-healpy [@jax-healpy2024] and s2fft [@s2fft2024]) as well as interfaces to some other existing tools, such as `PySM` [@pysm3] used to generate realistic multi-component sky simulations.
 
 Few experiment-agnostic CMB data analysis frameworks exist:
 - `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck and the Simons Observatory, but its C++ core does not fully support differentiability or GPU acceleration, although this has been explored [@demeure2023].
@@ -127,6 +127,7 @@ On the other hand, many low-level libraries:
 Some existing software packages particularly relevant for this work include:
 - `MIDAPACK` [@mappraiser2022] is a low and middle layer, massively parallel (MPI) C library for CMB inverse problems, featuring `MAPPRAISER`, a flexible map-making code, which builds on it
 - `FGBuster` [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models
+
 
 # Software Design
 

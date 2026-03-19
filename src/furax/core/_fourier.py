@@ -15,12 +15,19 @@ __all__ = [
 
 @square
 class FourierOperator(AbstractLinearOperator):
-    """Apply a kernel in the Fourier domain.
+    """Operator that applies a frequency-domain kernel via FFT.
 
-    This operator applies element-wise multiplication with a kernel in the Fourier domain.
-    The kernel can be complex-valued.
+    Performs element-wise multiplication in Fourier space: Y = IFFT(FFT(x) * kernel).
+    The filter is applied along the last axis. Supports optional apodization to
+    reduce edge artifacts.
 
-    Usage:
+    Attributes:
+        kernel_func: Function that returns the kernel given frequencies.
+        sample_rate: Sample rate of the input signal [Hz].
+        apodize: Whether to apply Hamming window apodization.
+        fft_size: Size of the FFT (power of 2 for efficiency).
+
+    Example:
         >>> import jax.numpy as jnp
         >>> n = 1000
         >>> fs = 200.0  # sampling frequency

@@ -21,22 +21,25 @@ __all__ = [
 
 @symmetric
 class SymmetricBandToeplitzOperator(AbstractLinearOperator):
-    """Class to represent Symmetric Band Toeplitz matrices.
+    """Operator for symmetric band Toeplitz convolution.
 
-    If the specified band values are multidimensional, the operator is block diagonal, each block
-    being a symmetric band Toeplitz matrix that uses the last dimension for the band values.
+    A Toeplitz matrix has constant diagonals. This operator is symmetric and
+    exploits the band structure for efficient computation. For multidimensional
+    band values, the operator is block diagonal.
 
-    The band values may be broadcast to match the input shape of the operator.
+    Available methods (N = matrix size, K = number of bands):
+        - ``dense``: dense matrix multiplication, O(N^2)
+        - ``direct``: direct convolution, O(NK)
+        - ``fft``: FFT on the whole input, O(N log N)
+        - ``overlap_save``: FFT on chunks (default), O(N log K)
+        - ``overlap_add``: FFT on chunks, O(N log K)
 
-    Five methods are available, where N is the size of the Toeplitz matrix and K the number
-    of non-zero bands:
-        - dense, using the dense matrix: O(N^2)
-        - direct, using a direct convolution: O(NK)
-        - fft, applying the DFT on the whole input: O(NlogN)
-        - overlap_save, applying the DFT on chunked input: O(NlogK)
-        - overlap_add, applying the DFT on chunked input: O(NlogK)
+    Attributes:
+        band_values: The band values (first element is the diagonal).
+        method: The computation method.
+        fft_size: FFT size for overlap methods.
 
-    Usage:
+    Example:
         >>> tod = jnp.ones((2, 5))
         >>> op = SymmetricBandToeplitzOperator(
         ... jnp.array([[1., 0.5], [1, 0.25]]),

@@ -18,10 +18,13 @@ __all__ = [
 
 
 class MoveAxisOperator(AbstractLinearOperator):
-    """Operator to move axes of pytree leaves to new positions.
+    """Operator that moves axes of pytree leaves: y = jnp.moveaxis(x, source, destination).
 
-    The operation is conceptually the same as:
-        y = jnp.moveaxis(x, source, destination)
+    This operator is orthogonal: its transpose and inverse are the reverse axis move.
+
+    Attributes:
+        source: The source axis or axes to move.
+        destination: The destination axis or axes.
 
     Example:
         >>> in_structure = jax.ShapeDtypeStruct((2, 3), jnp.float32)
@@ -106,18 +109,18 @@ class AbstractRavelOrReshapeOperator(AbstractLinearOperator):
 
 
 class RavelOperator(AbstractRavelOrReshapeOperator):
-    """Class for raveling dimensions of pytree leaves.
+    """Operator that flattens pytree leaves: y = x.ravel().
 
-    When instantiated with the default values, this operation is conceptually the same as:
-        y = x.ravel()
+    By default, all dimensions are flattened. Use ``first_axis`` and ``last_axis``
+    to flatten only a subset of contiguous axes.
 
-    The input dimensions can also be partially flattened between two axes.
+    This operator is orthogonal: its transpose restores the original shape.
 
     Attributes:
-        first_axis: The first axis of the pytree leaves that will be flattened.
-        last_axis: The last axis of the pytree leaves that will be flattened.
+        first_axis: The first axis to flatten (default: 0).
+        last_axis: The last axis to flatten (default: -1).
 
-    Examples:
+    Example:
         To flatten the leaves of a pytree:
 
         >>> in_structure = jax.ShapeDtypeStruct((2, 3), jnp.float32)
@@ -184,13 +187,12 @@ class RavelOperator(AbstractRavelOrReshapeOperator):
 
 
 class ReshapeOperator(AbstractRavelOrReshapeOperator):
-    """Class for reshaping pytree leaves.
+    """Operator that reshapes pytree leaves: y = x.reshape(shape).
 
-    The operation is conceptually the same as:
-        y = x.reshape(new_shape)
+    This operator is orthogonal: its transpose restores the original shape.
 
     Attributes:
-        shape: The new shape of the input pytree leaves.
+        shape: The new shape of the pytree leaves. Use -1 for one inferred dimension.
     """
 
     shape: tuple[int, ...] = field(metadata={'static': True})

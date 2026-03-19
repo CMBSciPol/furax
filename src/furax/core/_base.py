@@ -612,6 +612,18 @@ class AbstractLazyInverseOrthogonalOperator(TransposeOperator, AbstractLazyInver
 @diagonal
 @positive_semidefinite
 class IdentityOperator(AbstractLinearOperator):
+    """Operator that returns its input unchanged: I(x) = x.
+
+    The identity operator is diagonal, orthogonal and positive semi-definite.
+    Its transpose and inverse are itself.
+
+    Example:
+        >>> I = IdentityOperator(in_structure=jax.ShapeDtypeStruct((3,), jnp.float32))
+        >>> x = jnp.array([1.0, 2.0, 3.0])
+        >>> I(x)
+        Array([1., 2., 3.], dtype=float32)
+    """
+
     def __matmul__(self, other: Any) -> AbstractLinearOperator:
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
@@ -626,6 +638,24 @@ class IdentityOperator(AbstractLinearOperator):
 
 @diagonal
 class HomothetyOperator(AbstractLinearOperator):
+    """Operator that multiplies its input by a scalar: H(x) = k * x.
+
+    The homothety operator is diagonal, symmetric and positive semi-definite
+    (for positive values). Two consecutive homotheties compose by multiplying
+    their scalars: H(k1) @ H(k2) = H(k1 * k2).
+
+    Attributes:
+        value: The scalar multiplier.
+
+    Example:
+        >>> H = HomothetyOperator(2.0, in_structure=jax.ShapeDtypeStruct((3,), jnp.float32))
+        >>> x = jnp.array([1.0, 2.0, 3.0])
+        >>> H(x)
+        Array([2., 4., 6.], dtype=float32)
+        >>> H.I(x)  # Inverse: divides by 2
+        Array([0.5, 1. , 1.5], dtype=float32)
+    """
+
     value: Scalar | int | float
 
     def __matmul__(self, other: Any) -> AbstractLinearOperator:

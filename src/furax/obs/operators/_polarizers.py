@@ -17,7 +17,16 @@ from ._qu_rotations import QURotationOperator
 
 
 class LinearPolarizerOperator(AbstractLinearOperator):
-    """Class that integrates the input Stokes parameters assuming a linear polarizer."""
+    """Operator for an ideal linear polarizer.
+
+    Extracts the intensity seen by a linear polarizer aligned with the x-axis:
+    d = 0.5 * (I + Q). For a polarizer at angle psi, use
+    ``LinearPolarizerOperator.create(..., angles=psi)``.
+
+    This implements: d = 0.5 * (I + Q*cos(2*psi) + U*sin(2*psi)).
+
+    Algebraic rule: LinearPolarizer @ HWP = LinearPolarizer.
+    """
 
     @classmethod
     def create(

@@ -9,18 +9,19 @@ from ._base import AbstractLinearOperator
 
 
 class SumOperator(AbstractLinearOperator):
-    """Class to perform summation over pytree leaves.
+    """Operator that sums pytree leaves along specified axes.
 
-    The axes along which summation is performed follow the NumPy conventions:
+    Follows NumPy conventions for axis specification:
+        - ``None``: sum all dimensions
+        - ``int``: sum a single axis
+        - ``()``: no reduction (identity)
+        - ``tuple[int, ...]``: sum multiple axes
 
-    - `None`: all dimensions are reduced.
-    - `int`: a single axis is reduced.
-    - `()`: no reduction is applied.
-    - `tuple of int`: multiple axes are reduced.
+    The axis specification can be a pytree matching the input structure to
+    apply different reductions to different leaves.
 
-    As with `jax.vmap`, the structure of the specified axes must match the structure of the operator
-    input. Specifically, they must form a tree prefix of the input, meaning that their structure
-    must align with the leading part of the input's PyTree structure.
+    Attributes:
+        axis: The axes along which to sum, as a pytree or single value.
 
     Example:
         To sum along every dimension of all leaves:

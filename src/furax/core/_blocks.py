@@ -44,11 +44,17 @@ class AbstractBlockOperator(AbstractLinearOperator, ABC):
 
 
 class BlockRowOperator(AbstractBlockOperator):
-    """A block row operator, where each block is an operator.
+    """Operator that horizontally concatenates block operators: [A | B | C].
 
-    The blocks are stored in a pytree structure, with each leaf being an AbstractLinearOperator.
+    Applies each block to the corresponding part of a pytree input and sums
+    the results. All blocks must have the same output structure.
 
-    Examples:
+    Transpose: BlockRowOperator.T = BlockColumnOperator
+
+    Attributes:
+        blocks: A pytree of operators (all with identical output structure).
+
+    Example:
         >>> x = jnp.array([1, 2], jnp.float32)
         >>> I = IdentityOperator(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
         >>> op_list = BlockRowOperator([I, 2*I, 3*I])
@@ -105,9 +111,15 @@ class BlockRowOperator(AbstractBlockOperator):
 
 
 class BlockDiagonalOperator(AbstractBlockOperator):
-    """A block diagonal operator, where each block is an operator.
+    """Operator with independent diagonal blocks: diag(A, B, C).
 
-    The blocks are stored in a pytree structure, with each leaf being an AbstractLinearOperator.
+    Applies each block independently to the corresponding part of a pytree input.
+    No constraints on block input/output structures.
+
+    The inverse is the block diagonal of individual inverses (if all blocks are square).
+
+    Attributes:
+        blocks: A pytree of operators.
 
     Example:
         >>> x = jnp.array([1, 2], jnp.float32)
@@ -167,11 +179,17 @@ class BlockDiagonalOperator(AbstractBlockOperator):
 
 
 class BlockColumnOperator(AbstractBlockOperator):
-    """A block column operator, where each block is an operator.
+    """Operator that vertically stacks block operators: [A; B; C].
 
-    The blocks are stored in a pytree structure, with each leaf being an AbstractLinearOperator.
+    Applies each block to the same input and returns a pytree of outputs.
+    All blocks must have the same input structure.
 
-    Examples:
+    Transpose: BlockColumnOperator.T = BlockRowOperator
+
+    Attributes:
+        blocks: A pytree of operators (all with identical input structure).
+
+    Example:
         >>> x = jnp.array([1, 2], jnp.float32)
         >>> I = IdentityOperator(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
         >>> op_list = BlockColumnOperator([I, I, I])

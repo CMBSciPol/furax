@@ -165,7 +165,7 @@ class WCSLandscapeConfig:
 @dataclass
 class LandscapeConfig:
     stokes: ValidStokesType = 'IQU'
-    healpix: HealpixLandscapeConfig | None = field(default_factory=HealpixLandscapeConfig)
+    healpix: HealpixLandscapeConfig | None = None
     wcs: WCSLandscapeConfig | None = None
 
     def __post_init__(self) -> None:
@@ -318,7 +318,9 @@ class MapMakingConfig:
     debug: bool = True
     solver: SolverConfig = field(default_factory=SolverConfig)
     gaps: GapsConfig = field(default_factory=GapsConfig)
-    landscape: LandscapeConfig = field(default_factory=LandscapeConfig)
+    landscape: LandscapeConfig = field(
+        default_factory=lambda: LandscapeConfig(healpix=HealpixLandscapeConfig())
+    )
     templates: TemplatesConfig | None = None
     atop_tau: int = 0
     sotodlib: SotodlibConfig | None = None

@@ -31,9 +31,12 @@ authors:
   - name: Alexandre Boucaud
     orcid: 0000-0001-7387-2633
     affiliation: 1
+  - name: Andréa Landais
+    orcid: 0009-0005-8436-1333
+    affiliation: 1
   - name: Magdy Morshed
     orcid: 0000-0002-3214-8881
-    affiliation: 3
+    affiliation: 3,4
   - name: Radek Stompor
     orcid: 0000-0002-9777-3813
     affiliation: 1
@@ -42,9 +45,6 @@ authors:
     affiliation: 1
   - name: Amalia Villarrubia-Aguilar
     orcid: 0009-0004-4775-9935
-    affiliation: 1
-  - name: Andréa Landais
-    orcid: 0009-0005-8436-1333
     affiliation: 1
   - name: Josquin Errard
     orcid: 0000-0002-1419-0031
@@ -57,6 +57,10 @@ affiliations:
   - name: Jodrell Bank Centre for Astrophysics, The University of Manchester, Oxford Road, Manchester M13 9PL, UK
     index: 2
     ror: 027m9bs27
+  - name: Istituto Nazionale di Fisica Nucleare, Sezione di Ferrara, via Saragat 1, I-44122 Ferrara, Italy
+    index: 3
+  - name: Dipartimento di Fisica e Scienze della Terra, Universit`a degli Studi di Ferrara, via Saragat 1, I-44122 Ferrara, Italy
+    index: 4
 date: 21 March 2026
 bibliography: paper.bib
 ---

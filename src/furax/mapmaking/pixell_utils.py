@@ -1,6 +1,7 @@
 from typing import Any
 
 import healpy as hp
+import jax
 import matplotlib.axes
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,22 +9,18 @@ import pixell.enmap
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from numpy.typing import NDArray
 
-from furax.obs.landscapes import WCSLandscape
+from furax.obs.landscapes import AstropyWCSLandscape, WCSLandscape
 from furax.obs.stokes import StokesPyTreeType
 
 
-def ndmap_from_wcs_landscape(map: StokesPyTreeType, landscape: WCSLandscape) -> pixell.enmap.ndmap:
+def ndmap_from_wcs_landscape(
+    map: StokesPyTreeType, landscape: WCSLandscape | AstropyWCSLandscape
+) -> pixell.enmap.ndmap:
     """Convert a given Stokes pytree to pixell's ndmap"""
-    if landscape.stokes == 'I':
-        return pixell.enmap.ndmap(map.i, landscape.wcs)  # type: ignore[union-attr]
-    if landscape.stokes == 'QU':
-        return pixell.enmap.ndmap([map.q, map.u], landscape.wcs)  # type: ignore[union-attr]
-    if landscape.stokes == 'IQU':
-        return pixell.enmap.ndmap([map.i, map.q, map.u], landscape.wcs)  # type: ignore[union-attr]
-    if landscape.stokes == 'IQUV':
-        return pixell.enmap.ndmap([map.i, map.q, map.u, map.v], landscape.wcs)  # type: ignore[union-attr]
-    else:
-        raise NotImplementedError(f'Stokes {landscape.stokes} not supported')
+    wcs = landscape.wcs if isinstance(landscape, AstropyWCSLandscape) else landscape.to_wcs()
+    leaves = jax.tree.leaves(map)
+    data = leaves[0] if len(leaves) == 1 else leaves
+    return pixell.enmap.ndmap(data, wcs)
 
 
 def plot_ndmap(

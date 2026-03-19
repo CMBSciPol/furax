@@ -89,7 +89,6 @@ skip_covered = true
 
 [[tool.mypy.overrides]]
 module = [
-    'apischema',
     'astropy.*',
     'cyclopts',
     'healpy',

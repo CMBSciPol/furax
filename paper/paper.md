@@ -194,7 +194,7 @@ For instance, `HWPOperator` is used for half-wave plate modeling, `LinearPolariz
 
 # Research Impact Statement
 
-`Furax` was developed within the [\textsc{SciPol} project](https://scipol.in2p3.fr) to enable GPU-accelerated and gradient-based optimization in CMB data analysis pipelines. The framework's differentiability opens new possibilities for neural network integration and end-to-end optimization of map-making and component separation. The modular design supports rapid prototyping of analysis methods while maintaining compatibility with production pipelines through TOAST integration. `Furax` provides essential infrastructure for developing next-generation analysis techniques for e.g., the Simons Observatory, QUBIC and LiteBIRD.
+`Furax` was developed within the [\textsc{SciPol} project](https://scipol.in2p3.fr) to enable GPU-accelerated and gradient-based optimization in CMB data analysis pipelines. The framework's differentiability opens new possibilities for neural network integration and end-to-end optimization of map-making and component separation. The modular design supports rapid prototyping of analysis methods while maintaining compatibility with production pipelines through TOAST integration. `Furax` provides essential infrastructure for developing next-generation analysis techniques for e.g., the Simons Observatory, the South Pole Observatory, QUBIC and LiteBIRD.
 
 # AI Usage Disclosure
 

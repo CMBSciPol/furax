@@ -96,7 +96,7 @@ class NoiseConfig:
 
 
 @dataclass
-class HealpixLandscapeConfig:
+class HealpixConfig:
     """Configuration for a HEALPix output map.
 
     Example:
@@ -138,7 +138,7 @@ class SkyPatch:
 
 
 @dataclass
-class WCSLandscapeConfig:
+class WCSConfig:
     """Configuration for a WCS-projected output map.
 
     ``projection`` applies to all modes except ``geometry_file``, where it is read from the file.
@@ -195,8 +195,8 @@ class WCSLandscapeConfig:
 @dataclass
 class LandscapeConfig:
     stokes: ValidStokesType = 'IQU'
-    healpix: HealpixLandscapeConfig | None = None
-    wcs: WCSLandscapeConfig | None = None
+    healpix: HealpixConfig | None = None
+    wcs: WCSConfig | None = None
 
     def __post_init__(self) -> None:
         if (self.healpix is None) == (self.wcs is None):
@@ -268,7 +268,7 @@ class TemplatesConfig:
 
 
 @dataclass
-class GapFillingOptions:
+class GapFillingConfig:
     """Specific gap-filling options"""
 
     seed: int = 286502183
@@ -288,7 +288,7 @@ class GapsConfig:
     fill: bool = True
     """Fill data gaps with synthetic noise-like samples"""
 
-    fill_options: GapFillingOptions = field(default_factory=GapFillingOptions)
+    fill_options: GapFillingConfig = field(default_factory=GapFillingConfig)
     """Options to pass to the gap-filling operator"""
 
     nested_pcg: bool = False
@@ -345,7 +345,7 @@ class MapMakingConfig:
     solver: SolverConfig = field(default_factory=SolverConfig)
     gaps: GapsConfig = field(default_factory=GapsConfig)
     landscape: LandscapeConfig = field(
-        default_factory=lambda: LandscapeConfig(healpix=HealpixLandscapeConfig())
+        default_factory=lambda: LandscapeConfig(healpix=HealpixConfig())
     )
     templates: TemplatesConfig | None = None
     atop_tau: int = 0

@@ -47,7 +47,7 @@ from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
-from .config import LandscapeConfig, MapMakingConfig, Methods, WCSLandscapeConfig
+from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
@@ -330,7 +330,7 @@ def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape 
 
 
 def _wcs_landscape_from_geometry(
-    wcs_config: WCSLandscapeConfig,
+    wcs_config: WCSConfig,
     stokes: ValidStokesType,
     dtype: DTypeLike,
 ) -> WCSLandscape:

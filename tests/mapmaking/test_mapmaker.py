@@ -168,7 +168,6 @@ def _config(
     else:
         lc = LandscapeConfig(
             stokes=stokes,
-            healpix=None,
             wcs=WCSLandscapeConfig(
                 projection=ProjectionType.CAR,
                 resolution=60.0,

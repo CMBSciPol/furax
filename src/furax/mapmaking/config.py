@@ -79,8 +79,11 @@ class NoiseConfig:
 
     ``correlation_length`` sets the Toeplitz bandwidth (in samples) of the inverse-noise
     operator.  It is only used by the atmospheric (1/f) noise model and is ignored when
-    running binned (white-noise) mapmaking.
+    ``white`` is True.
     """
+
+    white: bool = True
+    """Use a white (diagonal) noise model.  Set to False for the atmospheric (1/f) model."""
 
     fit_from_data: bool = True
     """Fit the noise model from the TOD PSD (True) or load it from the data pipeline (False)."""
@@ -331,7 +334,6 @@ class SotodlibConfig:
 @dataclass
 class MapMakingConfig:
     method: Methods = Methods.BINNED
-    binned: bool = True
     scanning_mask: bool = False
     sample_mask: bool = False
     hits_cut: float = 1e-2
@@ -378,6 +380,10 @@ class MapMakingConfig:
         """Serialize the config to a YAML string."""
         data = serialize(MapMakingConfig, self)
         return yaml.dump(data, indent=2)
+
+    @property
+    def binned(self) -> bool:
+        return self.noise.white
 
     @property
     def demodulated(self) -> bool:

@@ -16,6 +16,8 @@ from furax.mapmaking import (
 from furax.mapmaking.config import (
     HealpixLandscapeConfig,
     LandscapeConfig,
+    NoiseConfig,
+    NoiseFitConfig,
     PointingConfig,
     SkyPatch,
     SotodlibConfig,
@@ -176,7 +178,6 @@ def _config(
     return MapMakingConfig(
         pointing=PointingConfig(on_the_fly=True),
         landscape=lc,
-        fit_noise_model=fit_noise_model,
-        nperseg=512,
+        noise=NoiseConfig(fit_from_data=fit_noise_model, fitting=NoiseFitConfig(nperseg=512)),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
     )

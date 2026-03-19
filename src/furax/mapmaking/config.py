@@ -34,6 +34,9 @@ class SolverConfig:
 
 @dataclass
 class NoiseFitConfig:
+    nperseg: int = 2_048
+    """Welch window length in samples for PSD estimation."""
+
     max_iter: int = 100
     """Maximum number of iterations"""
 
@@ -63,6 +66,30 @@ class NoiseFitConfig:
 
     ptc_freq: float = 1.4
     """PTC frequency [Hz] used for masking (if used)"""
+
+
+@dataclass
+class NoiseConfig:
+    """Configuration for noise modelling.
+
+    ``fit_from_data`` controls where the noise model comes from:
+
+    - ``True`` (default): fit a noise model directly from the TOD power spectral density.
+    - ``False``: load precomputed noise parameters from the data pipeline.
+
+    ``correlation_length`` sets the Toeplitz bandwidth (in samples) of the inverse-noise
+    operator.  It is only used by the atmospheric (1/f) noise model and is ignored when
+    running binned (white-noise) mapmaking.
+    """
+
+    fit_from_data: bool = True
+    """Fit the noise model from the TOD PSD (True) or load it from the data pipeline (False)."""
+
+    correlation_length: int = 1_000
+    """Toeplitz bandwidth in samples.  Only relevant for the atmospheric (1/f) noise model."""
+
+    fitting: NoiseFitConfig = field(default_factory=NoiseFitConfig)
+    """Options controlling PSD estimation and model fitting."""
 
 
 @dataclass
@@ -307,14 +334,11 @@ class MapMakingConfig:
     binned: bool = True
     scanning_mask: bool = False
     sample_mask: bool = False
-    correlation_length: int = 1_000
-    nperseg: int = 2_048
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2
     double_precision: bool = True
     pointing: PointingConfig = field(default_factory=PointingConfig)
-    fit_noise_model: bool = True
-    noise_fit: NoiseFitConfig = field(default_factory=NoiseFitConfig)
+    noise: NoiseConfig = field(default_factory=NoiseConfig)
     debug: bool = True
     solver: SolverConfig = field(default_factory=SolverConfig)
     gaps: GapsConfig = field(default_factory=GapsConfig)

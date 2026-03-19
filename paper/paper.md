@@ -3,6 +3,7 @@ title: '`Furax`: A Modular JAX Framework for Linear Operators in Cosmological Da
 tags:
   - Python
   - JAX
+  - astrophysics
   - cosmology
   - CMB
   - inverse problems
@@ -62,9 +63,10 @@ bibliography: paper.bib
 
 # Summary
 
-  The _Framework for Unified and Robust data Analysis with JAX_ (`Furax`) is an open-source Python framework for modeling data acquisition systems and solving inverse problems in astrophysics and cosmology. Built on `JAX` [@jax2018], `Furax` provides composable building blocks in the form of generic and domain-specific linear operators, along with pre-conditioners and solvers for their numerical inversion.
-  Generic operators include diagonal, block, Toeplitz, and indexing operators. Domain-specific operators are provided for cosmic microwave background (CMB) data analysis, with the architecture designed to extend to other fields: pointing matrices, half-wave plate models, polarizers, Stokes parameter rotations, and spectral energy distribution (SED) operators.
-  `Furax` leverages JAX's automatic differentiation, just-in-time compilation, and hardware acceleration to enable gradient-based optimization on GPUs and TPUs. Its modular architecture allows researchers to rapidly prototype analysis pipelines while maintaining computational efficiency for production-scale datasets.
+  The _Framework for Unified and Robust data Analysis with JAX_ (`Furax`) is an open-source Python framework for modeling data acquisition systems and solving inverse problems in astrophysics and cosmology. Built on `JAX` [@jax2018], `Furax` provides composable building blocks in the form of general-purpose and domain-specific linear operators, along with pre-conditioners and solvers for their numerical inversion.
+  Domain-specific tools are provided for astrophysical and cosmic microwave background (CMB) data analysis—including map-making, instrument modeling, and astrophysical component separation—with an modular architecture designed to extend to other fields.
+
+Furax fully utilises JAX's just-in-time compilation and automatic differentiation to achieve competitive performance, further accelerated using GPUs or TPUs. With Furax, researchers can rapidly prototype and validate analysis pipelines with production-ready computational efficiency.
 
 `Furax` is hosted on [GitHub](https://github.com/CMBSciPol/furax), installable via [PyPI](https://pypi.org/project/furax) and documented on [Read the Docs](https://furax.readthedocs.io).
 
@@ -75,43 +77,35 @@ Contemporary and future CMB experiments such as the Simons Observatory [@simons2
 
 $$\mathbf{d} = \mathbf{H}\mathbf{m} + \mathbf{n}$$
 
-where $\mathbf{H}$ represents the data acquisition system — encoding the pointing matrix, instrument response, and other effects — and $\mathbf{n}$ is the noise. Several techniques can be used to estimate the solution to this equation, from the generalized least-squares estimator:
+where $\mathbf{H}$ represents the data acquisition system—encoding the pointing matrix, instrument response, and other effects—and $\mathbf{n}$ is the noise. Several techniques can be used to estimate the solution to this equation, from the generalized least-squares estimator:
 
 $$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{N}^{-1} \mathbf{H})^{-1} \mathbf{H}^\top \mathbf{N}^{-1} \mathbf{d}$$
 
 to more sophisticated methods such as template-based map-making [@poletti2017]. All require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra.
 
-Historically, many data reduction pipelines developed by large collaborations have been tied to specific experiments and did not outlive them, often due to the lack of genericity, reliance on legacy technologies or evolving hardware paradigms. Furax aims to break this pattern by being experiment-agnostic and built on Python and JAX — a modern, sustainable foundation.
+Historically, many data reduction pipelines developed by large collaborations have been tied to specific experiments and did not outlive them, often due to the lack of genericity, reliance on legacy technologies or evolving hardware paradigms. Furax aims to break this pattern by being experiment-agnostic and built on Python and JAX—a modern, sustainable foundation.
 
-`Furax` addresses the above challenges by: (1) providing a differentiable operator algebra framework, (2) offering a modular architecture that facilitates experimentation with realistic instrument models and noise systematics, (3) supporting the exploration of novel map-making techniques, and (4) enabling integration with data reduction pipelines through GPU-accelerated performance for production-scale datasets.
+`Furax` addresses the above challenges by: (1) providing a differentiable operator algebra framework, (2) offering a modular architecture that facilitates experimentation with realistic instrument models and complex noise systematics, (3) supporting the exploration of novel map-making techniques, and (4) enabling integration with production pipelines through GPU-accelerated performance for terabyte-scale datasets.
 
 
 # State of the Field
 
-TO BE IMPROVED.
-Many frameworks and tools exist for CMB data processing in a somewhat fragmented landscape
-
-Frameworks:
-
+Few experiment-agnostic framework for astrophysics and CMB data analysis exist.
 - `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck and the Simons Observatory, but its C++ core does not fully support differentiability or GPU acceleration, although this has been explored [@demeure2023].
-- `PyOperators` [@chanial2012pyoperators]: used by the QUBIC analysis pipeline, `Furax` precursor but CPU-only
-- `lineax` [@kidger2024lineax]: JAX-compatible but no CMB analysis operators, reliance on non-JAX libraries.
+- `PyOperators` [@chanial2012pyoperators]: provides an operator algebra but is only used by the QUBIC data analysis pipeline. This library is `Furax` CPU-only precursor.
+- `lineax` [@kidger2024lineax]: offers a JAX-compatible operator algebra but lacks domain-specific operators and relies on a third-party library for its base operator class.
 
-Map-makers, component separation estimators:
-
-- `MAPPRAISER/MIDAPACK` [@mappraiser2022] CPU only INFO REQUIRED
-- `Commander` [@galloway2023beyondplanck] INFO REQUIRED
-- `FGBuster` [@fgbuster2022], [@rizzieri2025] implement parametric methods but rely on simplified noise models / have limited noise modeling capabilities
-
-Low-level libraries:
-
-- Sky simulation tools like `PySM` [@pysm3] generate realistic sky simulations including multiple astrophysical components, but operates strictly in forward mode
+<!--
+On the other hand, many low-level libraries:
 - `DUCC` [@ducc] collection of highly optimized CPU C++17 subroutines
 - The `healpy` library [@zonca2019] wraps the HEALPix C library for Python, offering essential spherical harmonic transforms and pixel operations, but runs only on CPU and does not support operator composition.
 - `jax-healpy` [@jax-healpy2024] is JAX-compatible but does not support operator algebra.
 - Other JAX-based tools such as `s2fft` [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework.
+-->
 
-`Furax` complements these tools by providing a unified, differentiable operator framework that can glue together various libraries and integrate with existing pipelines through interfaces to TOAST and other libraries.
+  Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. MAPPRAISER [@mappraiser2022] and Commander [@galloway2023beyondplanck] are map-makers; FGBuster [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; PySM [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
+
+  Furax fills this gap by providing a unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as jax-healpy [@jax-healpy2024] and s2fft [@s2fft2024]) and connects with production pipelines through interfaces to TOAST and other tools.
 
 
 # Software Design

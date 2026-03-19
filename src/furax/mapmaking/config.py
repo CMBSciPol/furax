@@ -69,7 +69,8 @@ class NoiseFitConfig:
 class HealpixLandscapeConfig:
     """Configuration for a HEALPix output map.
 
-    Example::
+    Example:
+        In a YAML config file:
 
         healpix:
           nside: 512
@@ -87,7 +88,8 @@ class HealpixLandscapeConfig:
 class SkyPatch:
     """Explicit rectangular sky patch for WCS map construction.
 
-    Example::
+    Example:
+        In a YAML config file:
 
         patch:
           center: [30.0, -10.0]  # ra, dec in degrees
@@ -119,7 +121,8 @@ class WCSLandscapeConfig:
     3. **auto** (no geometry specified): scan the observations to compute each observation's
        bounding box, take their union, and pixelise at the given ``resolution``.
 
-    Examples::
+    Examples:
+        In a YAML config file:
 
         # Auto footprint at 4 arcmin resolution
         car:

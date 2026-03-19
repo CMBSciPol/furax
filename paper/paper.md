@@ -15,7 +15,7 @@ authors:
     affiliation: 1
   - name: Simon Biquard
     orcid: 0000-0002-1493-2963
-    affiliation: 1,2
+    affiliation: 2
   - name: Wassim Kabalan
     orcid: 0000-0003-2651-0314
     affiliation: 1

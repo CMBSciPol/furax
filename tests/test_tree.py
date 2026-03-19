@@ -11,7 +11,7 @@ from numpy.testing import assert_array_equal
 
 import furax as fx
 from furax.obs.stokes import StokesIQU, StokesIQUV
-from furax.tree import _dense_to_tree, _get_outer_treedef, _tree_to_dense
+from furax.tree import _dense_to_tree, _get_outer_treedef, _tree_to_dense, concatenate
 
 
 @pytest.mark.parametrize(
@@ -370,3 +370,36 @@ def test_dense_to_tree(
 ):
     actual_tree = _dense_to_tree(outer_structure, inner_structure, dense)
     assert tree_equal(actual_tree, expected_tree)
+
+
+class TestConcatenate:
+    """Tests for concatenate."""
+
+    def test_two_pytrees(self):
+        X = {'a': jnp.array([[1.0, 2.0], [3.0, 4.0]])}
+        Y = {'a': jnp.array([[5.0, 6.0]])}
+        Z = concatenate([X, Y])
+        assert Z['a'].shape == (3, 2)
+        assert_array_equal(Z['a'], jnp.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]))
+
+    def test_three_pytrees(self):
+        X = {'a': jnp.array([[1.0], [2.0]])}
+        Y = {'a': jnp.array([[3.0]])}
+        Z = {'a': jnp.array([[4.0], [5.0], [6.0]])}
+        result = concatenate([X, Y, Z])
+        assert result['a'].shape == (6, 1)
+        assert_array_equal(result['a'].squeeze(), jnp.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]))
+
+    def test_axis(self):
+        X = {'a': jnp.array([[1.0, 2.0], [3.0, 4.0]])}
+        Y = {'a': jnp.array([[5.0], [6.0]])}
+        Z = concatenate([X, Y], axis=1)
+        assert Z['a'].shape == (2, 3)
+        assert_array_equal(Z['a'], jnp.array([[1.0, 2.0, 5.0], [3.0, 4.0, 6.0]]))
+
+    def test_multiple_leaves(self):
+        X = {'a': jnp.array([[1.0, 2.0]]), 'b': jnp.array([[3.0]])}
+        Y = {'a': jnp.array([[4.0, 5.0]]), 'b': jnp.array([[6.0]])}
+        Z = concatenate([X, Y])
+        assert_array_equal(Z['a'], jnp.array([[1.0, 2.0], [4.0, 5.0]]))
+        assert_array_equal(Z['b'], jnp.array([[3.0], [6.0]]))

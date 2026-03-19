@@ -186,7 +186,7 @@ For instance, `HWPOperator` is used for half-wave plate modeling, `LinearPolariz
 
 **Landscape Types.** They specify how input signals are discretized on the sky (e.g., HEALPix spherical pixelization) and provide the mapping to world coordinates.
 
-**Map-making classes.** `Furax` features several map-making algorithms including the simple binned estimator, but also maximum-likelihood and template deprojection methods. `PointingOperator` implements the sky-to-TOD projection and rotation into the instrument frame, expanding the time-dependent pointing information on the fly to save memory. `MultiObservationMapMaker` provides simultaneous reconstruction across multiple observations without recompilation of compute kernels. `BJPreconditioner` implements the block-Jacobi preconditioner to accelerate convergence.
+**Map-making classes.** `Furax` features several map-making algorithms, including the binned estimator, maximum-likelihood, and template deprojection methods. `PointingOperator` implements the sky-to-TOD projection and rotation into the instrument frame, expanding the time-dependent pointing information on the fly to save memory. `MultiObservationMapMaker` provides simultaneous reconstruction across multiple observations without recompiling the compute kernels. `BJPreconditioner` implements the block Jacobi preconditioner to accelerate convergence of the numerical inverse.
 
 # Research Impact Statement
 

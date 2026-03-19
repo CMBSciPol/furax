@@ -1,5 +1,5 @@
 ---
-title: "`Furax`: A Modular JAX Framework for Linear Operators in Cosmological Data Analysis"
+title: "`Furax`: A Modular JAX Framework for Linear Operators in Astrophysical and Cosmological Data Analysis"
 tags:
   - Python
   - JAX

@@ -87,11 +87,17 @@ $$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{N}^{-1} \mathbf{H})^{-1} \mathbf{H
 
 to more sophisticated methods such as template-based map-making [@poletti2017]. All require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra.
 -->
+
 $$\mathbf{d} = \mathbf{H}\mathbf{m} + \mathbf{T}\mathbf{t} + \mathbf{n}$$
+
 where $\mathbf{H}$ represents the data acquisition system, encoding the pointing matrix, instrument response, and other effects; $\mathbf{T}$ denotes the unwanted additive effects, which need to be removed in the analysis process, and n is the noise. A general solution can be then obtained in a form of a generalized least-squares estimator, [@poletti2017]:
+
 $$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{F_T}^{-1} \mathbf{H})^{-1} \mathbf{H}^\top \mathbf{F_T}^{-1} \mathbf{d}$$
+
 where $\mathbf{F_T}$ is a weighting and deprojection operator defined as,
+
 $$F_T = \mathbf{W} - \mathbf{W} \mathbf{T} (\mathbf{T}^t \mathbf{W} \mathbf{T})^{-1} \mathbf{T}\mathbf{W}$$
+
 for some suitable chosen, positively defined weights, $\mathbf{W}$. All such solutions require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra. 
 
 Historically, many data reduction pipelines developed by large collaborations have been tied to specific experiments and did not outlive them, often due to the lack of genericity, reliance on legacy technologies or evolving hardware paradigms. `Furax` aims to break this pattern by being experiment-agnostic and built on Python and JAX—a modern, sustainable foundation.

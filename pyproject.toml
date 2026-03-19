@@ -1,6 +1,6 @@
 [build-system]
 build-backend = 'setuptools.build_meta'
-requires = ['setuptools==69.2.0', 'setuptools_scm[toml]>=6.2', 'wheel']
+requires = ['setuptools==82.0.1', 'setuptools_scm[toml]>=6.2', 'wheel']
 
 [project]
 name = 'furax'
@@ -22,7 +22,8 @@ classifiers = [
     'Topic :: Scientific/Engineering',
 ]
 requires-python = '>=3.10'
-license = { file = 'LICENSE' }
+license = 'MIT'
+license-files = ['LICENSE']
 dependencies = [
     'astropy',
     'equinox',

@@ -78,7 +78,7 @@ Domain-specific tools are provided for astrophysical and cosmic microwave backgr
 # Statement of Need
 
 Contemporary and future CMB experiments such as the Simons Observatory [@simons2019], the South Pole Observatory [@spo], QUBIC [@qubic2022] and LiteBIRD [@litebird2023] will generate massive time-ordered data (TOD) streams that must be processed to extract cosmological information. A central problem in CMB data analysis is to exploit data acquisition redundancy through map-making, i.e. recovering the sky signal $\mathbf{m}$ (and potentially separating its components) from noisy observations $\mathbf{d}$ through the linear model
-
+<!--
 $$\mathbf{d} = \mathbf{H}\mathbf{m} + \mathbf{n}$$
 
 where $\mathbf{H}$ represents the data acquisition system—encoding the pointing matrix, instrument response, and other effects—and $\mathbf{n}$ is the noise. Several techniques can be used to estimate the solution to this equation, from the generalized least-squares estimator:
@@ -86,11 +86,17 @@ where $\mathbf{H}$ represents the data acquisition system—encoding the pointin
 $$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{N}^{-1} \mathbf{H})^{-1} \mathbf{H}^\top \mathbf{N}^{-1} \mathbf{d}$$
 
 to more sophisticated methods such as template-based map-making [@poletti2017]. All require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra.
+-->
+$$\mathbf{d} = \mathbf{H}\mathbf{m} + \mathbf{T}\mathbf{t} + \mathbf{n}$$
+where $\mathbf{H}$ represents the data acquisition system, encoding the pointing matrix, instrument response, and other effects; $\mathbf{T}$ denotes the unwanted additive effects, which need to be removed in the analysis process, and n is the noise. A general solution can be then obtained in a form of a generalized least-squares estimator, [@poletti2017]:
+$$\hat{\mathbf{m}} = (\mathbf{H}^\top \mathbf{F_T}^{-1} \mathbf{H})^{-1} \mathbf{H}^\top \mathbf{F_T}^{-1} \mathbf{d}$$
+where $\mathbf{F_T}$ is a weighting and deprojection operator defined as,
+$$F_T = \mathbf{W} - \mathbf{W} \mathbf{T} (\mathbf{T}^t \mathbf{W} \mathbf{T})^{-1} \mathbf{T}\mathbf{W}$$
+for some suitable chosen, positively defined weights, $\mathbf{W}$. All such solutions require efficient application of the acquisition operator and its transpose, and would benefit from a framework supporting operator algebra. 
 
 Historically, many data reduction pipelines developed by large collaborations have been tied to specific experiments and did not outlive them, often due to the lack of genericity, reliance on legacy technologies or evolving hardware paradigms. `Furax` aims to break this pattern by being experiment-agnostic and built on Python and JAX—a modern, sustainable foundation.
 
 `Furax` addresses the above challenges by: (1) providing a differentiable operator algebra framework, (2) offering a modular architecture that facilitates experimentation with realistic instrument models and complex noise systematics, (3) supporting the exploration of novel map-making techniques, and (4) enabling integration with production pipelines through GPU-accelerated performance for terabyte-scale datasets.
-
 
 # State of the Field
 

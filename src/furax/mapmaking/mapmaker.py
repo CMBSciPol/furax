@@ -116,6 +116,11 @@ class MultiObservationMapMaker(Generic[T]):
         self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
+        if self.config.method == Methods.ATOP and self.config.stokes[0] == 'I':
+            self.logger.info(
+                f'Received stokes={self.config.stokes}, but ATOP does not support intensity map reconstruction.'
+                + f' Falling back to stokes={self.config.stokes[1:]} instead.')
+            self.config.stokes = self.config.stokes[1:]
         self.landscape = (
             _static_landscape(self.config.landscape, self.config.dtype)
             or self._scan_wcs_footprint()

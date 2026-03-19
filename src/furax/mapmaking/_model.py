@@ -215,13 +215,13 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
     """Get the sample mask from data.
     For ATOP mapmaker, extra pixels may be masked depending on atop_tau."""
 
-    mask = (data['valid_sample_masks'],)
+    mask = data['valid_sample_masks']
 
     if config.method == Methods.ATOP:
         tau = config.atop_tau
         F_T = _template_deprojector(config, jax.ShapeDtypeStruct(mask.shape, jnp.float32))
         # Mask all tau-intervals that are partially masked
-        interval_mask = jnp.abs(F_T(mask.astype(jnp.flot32))) < 0.5 / tau
+        interval_mask = jnp.abs(F_T(mask.astype(jnp.float32))) < 0.5 / tau
         mask = jnp.logical_and(mask, interval_mask)
         # Handle the partial interval at the end
         mask = mask.at[:, (tau * (mask.shape[-1] // tau)) :].set(False)

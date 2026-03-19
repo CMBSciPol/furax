@@ -164,11 +164,7 @@ Table: Supported operator operations in `Furax`.
 
 Table: Generic operators available in `Furax`.
 
-
-**Block Assembly.** The three block operators provided by the framework enable efficient structuring of complex multi-observation or multi-component systems.
-
-
-**Discrete Fourier Operations.** In addition to the `FFTOperator`, the `SymmetricBandToeplitzOperator` provides efficient convolution operations using the overlap-save method. This operator is central to correlated noise modeling and gap-filling procedures based on constrained Gaussian realizations [@stompor2002].
+The block operators provided by the framework enable efficient structuring of complex multi-observation or multi-component systems. `SymmetricBandToeplitzOperator` provides efficient convolution operations using the overlap-save method. This operator is central to correlated noise modeling and gap-filling procedures based on constrained Gaussian realizations [@stompor2002].
 
 
 **Domain-Specific Operators.** For CMB data analysis, `Furax` includes specialized operators tailored to instrument modeling and astrophysical components:

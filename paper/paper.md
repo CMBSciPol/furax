@@ -63,8 +63,8 @@ bibliography: paper.bib
 
 # Summary
 
-  The _Framework for Unified and Robust data Analysis with JAX_ (`Furax`) is an open-source Python framework for modeling data acquisition systems and solving inverse problems in astrophysics and cosmology. Built on `JAX` [@jax2018], `Furax` provides composable building blocks in the form of general-purpose and domain-specific linear operators, along with pre-conditioners and solvers for their numerical inversion.
-  Domain-specific tools are provided for astrophysical and cosmic microwave background (CMB) data analysis—including map-making, instrument modeling, and astrophysical component separation—with an modular architecture designed to extend to other fields.
+The _Framework for Unified and Robust data Analysis with JAX_ (`Furax`) is an open-source Python framework for modeling data acquisition systems and solving inverse problems in astrophysics and cosmology. Built on `JAX` [@jax2018], `Furax` provides composable building blocks in the form of general-purpose and domain-specific linear operators, along with pre-conditioners and solvers for their numerical inversion.
+Domain-specific tools are provided for astrophysical and cosmic microwave background (CMB) data analysis—including map-making, instrument modeling, and astrophysical component separation—with an modular architecture designed to extend to other fields.
 
 `Furax` fully utilises JAX's just-in-time compilation and automatic differentiation to achieve competitive performance, further accelerated using GPUs or TPUs. With `Furax`, researchers can rapidly prototype and validate analysis pipelines with production-ready computational efficiency.
 
@@ -91,6 +91,7 @@ Historically, many data reduction pipelines developed by large collaborations ha
 # State of the Field
 
 Few experiment-agnostic framework for astrophysics and CMB data analysis exist.
+
 - `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck and the Simons Observatory, but its C++ core does not fully support differentiability or GPU acceleration, although this has been explored [@demeure2023].
 - `PyOperators` [@chanial2012pyoperators]: provides an operator algebra and is used by the QUBIC data analysis pipeline. This library is `Furax` CPU-only precursor.
 - `lineax` [@kidger2024lineax]: offers a JAX-compatible operator algebra but lacks domain-specific operators and relies on a third-party library for its base operator class.

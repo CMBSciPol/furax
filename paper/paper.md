@@ -126,9 +126,9 @@ On the other hand, many low-level libraries:
 - Other JAX-based tools such as `s2fft` [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework.
 -->
 
-Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. MAPPRAISER [@mappraiser2022] is a map-maker; FGBuster [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; Commander [@galloway2023beyondplanck] is more general and aims at providing an end-to-end approach, from raw data to cosmology; PySM [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
+Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. `MAPPRAISER` [@mappraiser2022] is a map-maker; `FGBuster` [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; `Commander` [@galloway2023beyondplanck] is more general and aims at providing an end-to-end approach, from raw data to cosmology; `PySM` [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
 
-`Furax` fills this gap by providing a unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as jax-healpy [@jax-healpy2024] and s2fft [@s2fft2024]) and connects with production pipelines through interfaces to TOAST and other tools.
+`Furax` fills this gap by providing a unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as `jax-healpy` [@jax-healpy2024] and s2fft [@s2fft2024]) and connects with production pipelines through interfaces to `TOAST` and other tools.
 
 
 # Software Design

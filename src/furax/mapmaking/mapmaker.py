@@ -439,12 +439,12 @@ class MapMaker:
 
         det_off_ang = observation.get_detector_offset_angles().astype(landscape.dtype)
 
-        if self.config.pointing_on_the_fly:
+        if self.config.pointing.on_the_fly:
             pointing = PointingOperator.create(
                 landscape,
                 observation.get_boresight_quaternions(),
                 observation.get_detector_quaternions(),
-                chunk_size=self.config.pointing_chunk_size,
+                chunk_size=self.config.pointing.chunk_size,
             )
             return pointing
 
@@ -713,7 +713,7 @@ class MapMaker:
                 stokes='IQU',
                 dtype=config.dtype,
                 landscape=self._ground_landscape,
-                chunk_size=config.pointing_chunk_size,
+                chunk_size=config.pointing.chunk_size,
             )
             ones_tod = jnp.ones((observation.n_detectors, observation.n_samples), dtype=jnp.float64)
             self._ground_coverage = ground_op.T(ones_tod)

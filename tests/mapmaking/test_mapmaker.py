@@ -16,6 +16,7 @@ from furax.mapmaking import (
 from furax.mapmaking.config import (
     HealpixLandscapeConfig,
     LandscapeConfig,
+    PointingConfig,
     SkyPatch,
     SotodlibConfig,
     WCSLandscapeConfig,
@@ -173,7 +174,7 @@ def _config(
             ),
         )
     return MapMakingConfig(
-        pointing_on_the_fly=True,
+        pointing=PointingConfig(on_the_fly=True),
         landscape=lc,
         fit_noise_model=fit_noise_model,
         nperseg=512,

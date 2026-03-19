@@ -53,8 +53,8 @@ class ObservationModel:
             data['detector_quaternions'],
             data.get('hwp_angles'),
             demodulated=config.demodulated,
-            pointing_chunk_size=config.pointing_chunk_size,
-            pointing_on_the_fly=config.pointing_on_the_fly,
+            pointing_chunk_size=config.pointing.chunk_size,
+            pointing_on_the_fly=config.pointing.on_the_fly,
             dtype=config.dtype,
         )
         masker = _mask_projector(

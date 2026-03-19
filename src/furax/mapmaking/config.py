@@ -266,6 +266,17 @@ class GapsConfig:
 
 
 @dataclass
+class PointingConfig:
+    """Configuration options for pointing computation."""
+
+    on_the_fly: bool = False
+    """Compute pointing on the fly instead of pre-computing pixel indices."""
+
+    chunk_size: int = 4
+    """Number of detector chunks to process at a time when computing pointing on the fly."""
+
+
+@dataclass
 class SotodlibConfig:
     """Configuration options specific to the sotodlib interface."""
 
@@ -301,8 +312,7 @@ class MapMakingConfig:
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2
     double_precision: bool = True
-    pointing_on_the_fly: bool = False
-    pointing_chunk_size: int = 4
+    pointing: PointingConfig = field(default_factory=PointingConfig)
     fit_noise_model: bool = True
     noise_fit: NoiseFitConfig = field(default_factory=NoiseFitConfig)
     debug: bool = True

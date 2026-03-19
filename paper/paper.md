@@ -26,25 +26,25 @@ authors:
     orcid: 0000-0002-4365-4405
     affiliation: 1
   - name: Benjamin Beringue
-    orcid: 0000-0000-0000-0000
+    orcid: 0000-0001-9571-6148
     affiliation: 1
   - name: Alexandre Boucaud
     orcid: 0000-0001-7387-2633
     affiliation: 1
   - name: Magdy Morshed
-    orcid: 0000-0000-0000-0000
+    orcid: 0000-0002-3214-8881
     affiliation: 3
   - name: Radek Stompor
-    orcid: 0000-0000-0000-0000
+    orcid: 0000-0002-9777-3813
     affiliation: 1
   - name: Ema Tsang King Sang
-    orcid: 0000-0000-0000-0000
+    orcid: 0009-0001-6108-9518
     affiliation: 1
   - name: Amalia Villarrubia-Aguilar
-    orcid: 0000-0000-0000-0000
+    orcid: 0009-0004-4775-9935
     affiliation: 1
   - name: Andréa Landais
-    orcid: 0000-0000-0000-0000
+    orcid: 0009-0005-8436-1333
     affiliation: 1
   - name: Josquin Errard
     orcid: 0000-0002-1419-0031

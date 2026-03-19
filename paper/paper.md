@@ -90,7 +90,7 @@ Historically, many data reduction pipelines developed by large collaborations ha
 
 # State of the Field
 
-Few experiment-agnostic framework for astrophysics and CMB data analysis exist.
+Few experiment-agnostic frameworks for astrophysics and CMB data analysis exist.
 
 - `TOAST` [@toast2021] provides a comprehensive MPI-parallel modular framework used in production pipelines for experiments like Planck and the Simons Observatory, but its C++ core does not fully support differentiability or GPU acceleration, although this has been explored [@demeure2023].
 - `PyOperators` [@chanial2012pyoperators]: provides an operator algebra and is used by the QUBIC data analysis pipeline. This library is `Furax` CPU-only precursor.
@@ -104,7 +104,7 @@ On the other hand, many low-level libraries:
 - Other JAX-based tools such as `s2fft` [@s2fft2024] provide GPU-accelerated spherical transforms but do not offer a complete operator algebra framework.
 -->
 
-Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. MAPPRAISER [@mappraiser2022] and Commander [@galloway2023beyondplanck] are map-makers; FGBuster [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; PySM [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
+Most experiment-agnostic data analysis libraries focus on specific tasks—map-making, component separation, or sky simulation—and are to our knowledge CPU-only. MAPPRAISER [@mappraiser2022] is a map-maker; FGBuster [@fgbuster2022; @rizzieri2025] implements parametric component separation but relies on simplified noise models; Commander [@galloway2023beyondplanck] is more general and aims at providing an end-to-end approach, from raw data to cosmology; PySM [@pysm3] generates realistic multi-component sky simulations but operates strictly in forward mode.
 
 `Furax` fills this gap by providing a unified, differentiable operator framework that integrates low-level JAX-compatible libraries (such as jax-healpy [@jax-healpy2024] and s2fft [@s2fft2024]) and connects with production pipelines through interfaces to TOAST and other tools.
 

@@ -18,3 +18,5 @@ __pycache__
 *.pyo
 *.pyd
 *.pytest_cache
+
+.DS_store

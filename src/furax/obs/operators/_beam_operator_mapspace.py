@@ -15,6 +15,7 @@ from furax import (
 )
 from furax.obs.stokes import StokesIQU
 
+jax.config.update("jax_enable_x64", True)
 
 @square
 class MapSpaceBeamOperator(AbstractLinearOperator):
@@ -22,8 +23,9 @@ class MapSpaceBeamOperator(AbstractLinearOperator):
 
     Attributes:
         _in_structure: Input structure of the operator.
-        _indices: Indices of the CSR format sparse matrix.
-        _data: Data of the CSR format sparse matrix.
+        indices: Indices of the CSR format sparse matrix.
+        data: Data of the CSR format sparse matrix.
+        observed_pixels: Pixels where the beam has non-zero response.
     """
 
     _in_structure: PyTree[jax.ShapeDtypeStruct] = equinox.field(static=True)
@@ -43,6 +45,7 @@ class MapSpaceBeamOperator(AbstractLinearOperator):
         Args:
             indices: Indices of the CSR format sparse matrix.
             data: Data of the CSR format sparse matrix.
+            observed_pixels: Pixels where the beam has non-zero response.
             in_structure: Input structure of the operator.
         """
         self._in_structure = in_structure
@@ -54,6 +57,7 @@ class MapSpaceBeamOperator(AbstractLinearOperator):
         result = jnp.zeros_like(x)
         observed_values = jnp.sum(self.data * x[self.indices], axis=1)
         return result.at[self.observed_pixels].set(observed_values, unique_indices=True)
+        #return jnp.sum(self.data * x[self.indices], axis=1)
 
     def in_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._in_structure
@@ -65,7 +69,7 @@ class MapSpaceBeamOperator(AbstractLinearOperator):
     def from_file(cls, filename: str | Path) -> Self:
         sparse_matrix = jnp.load(filename)
         indices = jnp.array(sparse_matrix['indices'], dtype=jnp.int32)
-        data = jnp.array(sparse_matrix['data'], dtype=jnp.float32)
+        data = jnp.array(sparse_matrix['data'], dtype=jnp.float64)
         observed_pixels = jnp.array(sparse_matrix['observed_pixels'], dtype=jnp.int32)
 
         n_neighbours = sparse_matrix['max_nnz']
@@ -109,6 +113,7 @@ class MapSpaceBeamOperatorInverse(AbstractLinearOperator):
 
         x_sol, _ = cg(matvec, x)
         return cast(Inexact[Array, '...'], x_sol)
+        return x
 
 
 class StokesToListOperator(AbstractLinearOperator):
@@ -145,9 +150,9 @@ class StokesToListOperator(AbstractLinearOperator):
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         return [
             StokesIQU(
-                i=jnp.take(jnp.atleast_2d(x.i), f, axis=self._axis),
-                q=jnp.take(jnp.atleast_2d(x.q), f, axis=self._axis),
-                u=jnp.take(jnp.atleast_2d(x.u), f, axis=self._axis),
+                i=jnp.take(x.i, f, axis=self._axis),
+                q=jnp.take(x.q, f, axis=self._axis),
+                u=jnp.take(x.u, f, axis=self._axis),
             )
             for f in range(jnp.atleast_2d(x.i).shape[self._axis])
         ]

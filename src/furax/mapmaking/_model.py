@@ -55,6 +55,7 @@ class ObservationModel:
             demodulated=config.demodulated,
             pointing_chunk_size=config.pointing.chunk_size,
             pointing_on_the_fly=config.pointing.on_the_fly,
+            pointing_interpolate=config.pointing.interpolation == 'bilinear',
             dtype=config.dtype,
         )
         masker = _mask_projector(
@@ -82,7 +83,7 @@ class ObservationModel:
         # there is a unit test for that
         pointing = self.H.operands[-1]
         assert isinstance(pointing, PointingOperator)  # mypy assert
-        pointing_i = pointing.as_stokes_i()
+        pointing_i = pointing.as_stokes_i(interpolate=False)
         ones = tree.ones_like(self.tod_structure)
         # the masker could be acting on a Stokes pytree or an Array
         masked_ones = jax.tree.leaves(self.masker(ones))[0]

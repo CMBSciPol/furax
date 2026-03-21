@@ -297,13 +297,22 @@ class GapsConfig:
 
 @dataclass
 class PointingConfig:
-    """Configuration options for pointing computation."""
+    """Configuration options for pointing computation.
+
+    ``interpolation`` controls how the sky map is sampled:
+
+    - ``'nearest'``: nearest-neighbor (default, fastest).
+    - ``'bilinear'``: bilinear interpolation using the four nearest pixels.
+    """
 
     on_the_fly: bool = True
     """Compute pointing on the fly instead of pre-computing pixel indices."""
 
     chunk_size: int = 32
     """Number of detector chunks to process at a time when computing pointing on the fly."""
+
+    interpolation: Literal['nearest', 'bilinear'] = 'nearest'
+    """Pixel interpolation scheme used when sampling the sky map."""
 
 
 @dataclass

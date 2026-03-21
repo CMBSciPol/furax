@@ -140,6 +140,25 @@ class TestMultiObsMapMaker:
             f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'
         )
 
+    def test_bilinear_pointing_is_interpolated(self, name, demodulated, stokes, landscape_type):
+        """PointingConfig(interpolation='bilinear') sets interpolate=True on the PointingOperator."""
+        observations = _observations(name, demodulated)
+        config = _config(landscape_type, stokes, demodulated, interpolation='bilinear')
+        maker = MultiObservationMapMaker(observations, config=config)
+        h = maker.build_model().H
+        assert isinstance(h, CompositionOperator)
+        assert isinstance(h.operands[-1], PointingOperator)
+        assert h.operands[-1].interpolate
+
+    def test_bilinear_mapmaker_runs(self, name, demodulated, stokes, landscape_type):
+        """Mapmaker runs end-to-end with bilinear interpolation."""
+        observations = _observations(name, demodulated)
+        config = _config(landscape_type, stokes, demodulated, interpolation='bilinear')
+        maker = MultiObservationMapMaker(observations, config=config)
+        results = maker.run()
+        n_stokes = len(stokes)
+        assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
+
 
 def _observations(name: str, demodulated: bool = False) -> list[AbstractLazyObservation]:
     folder = Path(__file__).parents[1] / 'data' / name
@@ -162,6 +181,7 @@ def _config(
     stokes: ValidStokesType,
     demodulated: bool = False,
     fit_noise_model: bool = True,
+    interpolation: Literal['nearest', 'bilinear'] = 'nearest',
 ) -> MapMakingConfig:
     if landscape_type == 'healpix':
         lc = LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16))
@@ -175,7 +195,7 @@ def _config(
             ),
         )
     return MapMakingConfig(
-        pointing=PointingConfig(on_the_fly=True),
+        pointing=PointingConfig(on_the_fly=True, interpolation=interpolation),
         landscape=lc,
         noise=NoiseConfig(fit_from_data=fit_noise_model, fitting=NoiseFitConfig(nperseg=512)),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,

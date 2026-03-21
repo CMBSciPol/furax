@@ -445,6 +445,7 @@ class MapMaker:
                 observation.get_boresight_quaternions(),
                 observation.get_detector_quaternions(),
                 chunk_size=self.config.pointing.chunk_size,
+                interpolate=self.config.pointing.interpolation == 'bilinear',
             )
             return pointing
 

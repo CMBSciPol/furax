@@ -2,7 +2,9 @@ import jax
 import jax.numpy as jnp
 import pytest
 from equinox import tree_equal
+from numpy.testing import assert_array_almost_equal
 
+import furax.tree as ftree
 from furax.mapmaking.pointing import PointingOperator
 from furax.obs.landscapes import CARLandscape, HealpixLandscape, StokesLandscape, WCSProjection
 from furax.obs.stokes import ValidStokesType
@@ -63,3 +65,36 @@ class TestAsExpandedOperator:
         sky_expanded = pointing_op.as_expanded_operator().T(tod)
 
         assert tree_equal(sky_direct, sky_expanded, rtol=1e-10, atol=0)
+
+
+@pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
+class TestInterpolate:
+    def test_adjoint(self, stokes, landscape_type) -> None:
+        """<P x, y> = <x, P^T y> for the interpolated operator."""
+        landscape = _make_landscape(landscape_type, stokes)
+
+        key = jax.random.PRNGKey(7)
+        k1, k2, k3, k4 = jax.random.split(key, 4)
+        qbore = _random_unit_quats(k1, (NSAMP,))
+        qdet = _random_unit_quats(k2, (NDET,))
+
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        sky = landscape.normal(k3)
+        tod = jax.tree.map(lambda s: jax.random.normal(k4, s.shape, s.dtype), op.out_structure)
+
+        lhs = ftree.dot(op(sky), tod)
+        rhs = ftree.dot(sky, op.T(tod))
+        assert_array_almost_equal(lhs, rhs, decimal=10)
+
+    def test_uniform_sky(self, landscape_type) -> None:
+        """Sampling a uniform sky returns the same constant (weights always sum to 1)."""
+        landscape = _make_landscape(landscape_type, 'I')
+
+        key = jax.random.PRNGKey(7)
+        k1, k2 = jax.random.split(key)
+        qbore = _random_unit_quats(k1, (NSAMP,))
+        qdet = _random_unit_quats(k2, (NDET,))
+
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        tod = op(landscape.full(3.14))
+        assert_array_almost_equal(tod.i, 3.14, decimal=10)

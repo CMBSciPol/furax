@@ -160,9 +160,15 @@ class PointingOperator(AbstractLinearOperator):
         tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
         return tod_out
 
-    def as_stokes_i(self) -> 'PointingOperator':
-        """Return a copy of this operator restricted to StokesI."""
-        if self.landscape.stokes == 'I':
+    def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
+        """Return a copy of this operator restricted to StokesI.
+
+        Args:
+            interpolate: Override the interpolation flag.  If ``None`` (default),
+                the flag is inherited from ``self.interpolate``.
+        """
+        effective_interpolate = self.interpolate if interpolate is None else interpolate
+        if self.landscape.stokes == 'I' and effective_interpolate == self.interpolate:
             return self
         landscape = copy.copy(self.landscape)
         landscape.stokes = 'I'
@@ -173,7 +179,7 @@ class PointingOperator(AbstractLinearOperator):
             qbore=self.qbore,
             qdet=self.qdet,
             chunk_size=self.chunk_size,
-            interpolate=self.interpolate,
+            interpolate=effective_interpolate,
             in_structure=landscape.structure,
             _out_structure=out_structure,
         )

@@ -188,6 +188,22 @@ class StokesLandscape(Landscape):
         """Converts quaternion to 1-dimensional pixel indices."""
         return self.pixel2index(*self.quat2pixel(quat))
 
+    def world2interp(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
+        """Returns (indices, weights) with a trailing neighbor dimension for interpolation.
+
+        Subclasses must override this to support interpolated pointing.
+        """
+        raise NotImplementedError(f'{type(self).__name__} does not support interpolation')
+
+    def quat2interp(
+        self, quat: Float[Array, '*dims 4']
+    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
+        """Converts quaternion to (indices, weights) for interpolation."""
+        theta, phi, _ = to_iso_angles(quat)
+        return self.world2interp(theta, phi)
+
 
 class ProjectionType(IntEnum):
     """Supported WCS projection types."""
@@ -345,6 +361,36 @@ class CARLandscape(WCSLandscape):
         pix_y = lat_deg / self.cdelt[1] + (self.crpix[1] - 1)
         return pix_x, pix_y
 
+    def world2interp(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
+        """Returns (indices, weights) for bilinear interpolation (n=4)."""
+        pix_x, pix_y = self.world2pixel(theta, phi)
+
+        # Integer coordinates of the four neighbors
+        x0 = jnp.floor(pix_x).astype(jnp.int32)
+        y0 = jnp.floor(pix_y).astype(jnp.int32)
+        x1 = x0 + 1
+        y1 = y0 + 1
+
+        # Fractional parts
+        fx = (pix_x - x0).astype(self.dtype)
+        fy = (pix_y - y0).astype(self.dtype)
+
+        # Bilinear weights: (bottom-left, bottom-right, top-left, top-right)
+        w00 = (1 - fx) * (1 - fy)
+        w10 = fx * (1 - fy)
+        w01 = (1 - fx) * fy
+        w11 = fx * fy
+
+        # Stack neighbor coords along a trailing axis, call pixel2index once
+        # pixel2index handles bounds, returning -1 for out-of-bounds
+        xs = jnp.stack([x0, x1, x0, x1], axis=-1).astype(pix_x.dtype)
+        ys = jnp.stack([y0, y0, y1, y1], axis=-1).astype(pix_y.dtype)
+        indices = self.pixel2index(xs, ys)
+        weights = jnp.stack([w00, w10, w01, w11], axis=-1)
+        return indices, weights
+
 
 @register_static
 class HealpixLandscape(StokesLandscape):
@@ -371,6 +417,16 @@ class HealpixLandscape(StokesLandscape):
         vec = jnp.moveaxis(qrot_zaxis(quat), -1, 0)
         pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec)
         return pix
+
+    def world2interp(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
+        """Returns (indices, weights) for bilinear HEALPix interpolation (n=4)."""
+        # get_interp_weights returns (4, *dims) for both pixels and weights
+        pixels, weights = jhp.get_interp_weights(self.nside, theta, phi)
+        indices = jnp.moveaxis(pixels, 0, -1)
+        weights = jnp.moveaxis(weights, 0, -1).astype(self.dtype)
+        return indices, weights
 
     @jax.jit
     def world2pixel(

@@ -1,5 +1,5 @@
 import operator
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from math import prod
 from typing import Any, TypeVar
 
@@ -22,6 +22,7 @@ __all__ = [
     'mul',
     'truediv',
     'power',
+    'concatenate',
     'dot',
     'norm',
     'matvec',
@@ -236,6 +237,29 @@ def truediv(a: PyTree[Array], b: PyTree[Array]) -> PyTree[Array]:
 
 def power(a: PyTree[Array], b: PyTree[Array]) -> PyTree[Array]:
     return apply(operator.pow, a, b)
+
+
+def concatenate(
+    pytrees: Sequence[PyTree[Num[Array, '...']]], axis: int = 0
+) -> PyTree[Num[Array, '...']]:
+    """Concatenate multiple PyTrees along an axis.
+
+    Args:
+        pytrees: PyTrees to concatenate. Each must have the same structure.
+        axis: The axis along which to concatenate. Default is 0.
+
+    Returns:
+        A PyTree where each leaf is the concatenation of corresponding leaves.
+
+    Example:
+        >>> import jax.numpy as jnp
+        >>> X = {'a': jnp.array([[1., 2.], [3., 4.]])}
+        >>> Y = {'a': jnp.array([[5., 6.]])}
+        >>> Z = concatenate([X, Y])
+        >>> Z['a'].shape
+        (3, 2)
+    """
+    return jax.tree.map(lambda *leaves: jnp.concatenate(leaves, axis=axis), *pytrees)
 
 
 def dot(x: PyTree[Num[Array, '...']], y: PyTree[Num[Array, '...']]) -> Num[Array, '']:

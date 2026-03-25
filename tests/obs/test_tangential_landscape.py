@@ -77,6 +77,28 @@ class TestXy2Pixel:
         assert_array_almost_equal(pix_x_max, 2.5)
 
 
+class TestOffsetCenter:
+    """Tests for the x0, y0 center offset."""
+
+    def test_center_maps_to_map_center(self) -> None:
+        """(x0, y0) must map to the geometric center of the pixel grid."""
+        ls = TangentialLandscape(SHAPE, DX, DY, HEIGHT, x0=500.0, y0=-300.0)
+        pix_x, pix_y = ls.xy2pixel(jnp.array(500.0), jnp.array(-300.0))
+        assert_array_almost_equal(pix_x, 1.0)  # same as (0, 0) on centred map
+        assert_array_almost_equal(pix_y, 1.5)
+
+    def test_pixel_centers_shifted(self) -> None:
+        """Pixel centers must be offset by (x0, y0) relative to the default map."""
+        x0, y0 = 500.0, -300.0
+        ls = TangentialLandscape(SHAPE, DX, DY, HEIGHT, x0=x0, y0=y0)
+        # pixel centers are at x0 + {-100, 0, 100}
+        xs = jnp.array([x0 - 100.0, x0, x0 + 100.0])
+        ys = jnp.array([y0 - 150.0, y0 - 50.0, y0 + 50.0])
+        pix_x, pix_y = ls.xy2pixel(xs, ys)
+        assert_array_almost_equal(pix_x, [0.0, 1.0, 2.0])
+        assert_array_almost_equal(pix_y, [0.0, 1.0, 2.0])
+
+
 class TestWorld2Pixel:
     def test_consistency_with_xy2pixel(self, landscape: TangentialLandscape) -> None:
         """world2pixel must agree with the direct gnomonic formula via xy2pixel."""

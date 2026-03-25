@@ -591,6 +591,8 @@ class TangentialLandscape(StokesLandscape):
         dx: float,
         dy: float,
         height: float,
+        x0: float = 0.0,
+        y0: float = 0.0,
         stokes: ValidStokesType = 'I',
         dtype: DTypeLike = np.float64,
     ) -> None:
@@ -600,6 +602,8 @@ class TangentialLandscape(StokesLandscape):
         self.dx = dx
         self.dy = dy
         self.height = height
+        self.x0 = x0
+        self.y0 = y0
 
     @property
     def extent(self) -> tuple[float, float]:
@@ -615,14 +619,18 @@ class TangentialLandscape(StokesLandscape):
         dx: float,
         dy: float,
         height: float,
+        x0: float = 0.0,
+        y0: float = 0.0,
         stokes: ValidStokesType = 'I',
         dtype: DTypeLike = np.float64,
     ) -> 'TangentialLandscape':
         """Create a landscape from physical extent and pixel spacing.
 
-        The map covers ``[-x_size/2, x_size/2]`` × ``[-y_size/2, y_size/2]``. The number
-        of pixels is ``ceil(x_size / dx)`` × ``ceil(y_size / dy)``, so the actual covered
-        area may be slightly larger than requested to accommodate whole pixels.
+        The map is centered at ``(x0, y0)`` and covers
+        ``[x0 - x_size/2, x0 + x_size/2]`` × ``[y0 - y_size/2, y0 + y_size/2]``.
+        The number of pixels is ``ceil(x_size / dx)`` × ``ceil(y_size / dy)``, so the
+        actual covered area may be slightly larger than requested to accommodate whole
+        pixels.
 
         Args:
             x_size: Total physical width of the map (same units as ``height``).
@@ -630,12 +638,14 @@ class TangentialLandscape(StokesLandscape):
             dx: Pixel spacing along x.
             dy: Pixel spacing along y.
             height: Height of the tangent plane above the telescope.
+            x0: Physical x-coordinate of the map center (default 0).
+            y0: Physical y-coordinate of the map center (default 0).
             stokes: Stokes components to store (default ``'I'``).
             dtype: Data type for map values.
         """
         n_x = int(np.ceil(x_size / dx))
         n_y = int(np.ceil(y_size / dy))
-        return cls((n_y, n_x), dx, dy, height, stokes, dtype)
+        return cls((n_y, n_x), dx, dy, height, x0, y0, stokes, dtype)
 
     def xy2pixel(
         self,
@@ -644,8 +654,8 @@ class TangentialLandscape(StokesLandscape):
     ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Convert physical coordinates to floating-point pixel coordinates.
 
-        The map is centered at the origin. Integer pixel coordinates correspond to pixel
-        centers; pixel ``(0, 0)`` is centered at ``(-(n_x-1)/2 * dx, -(n_y-1)/2 * dy)``.
+        The map is centered at ``(x0, y0)``. Integer pixel coordinates correspond to
+        pixel centers.
 
         Args:
             x: Physical x-coordinates.
@@ -655,8 +665,8 @@ class TangentialLandscape(StokesLandscape):
             Floating-point pixel coordinate pair ``(pix_x, pix_y)``.
         """
         n_x, n_y = self.pixel_shape
-        pix_x = x / self.dx + n_x / 2 - 0.5
-        pix_y = y / self.dy + n_y / 2 - 0.5
+        pix_x = (x - self.x0) / self.dx + n_x / 2 - 0.5
+        pix_y = (y - self.y0) / self.dy + n_y / 2 - 0.5
         return pix_x, pix_y
 
     @jax.jit

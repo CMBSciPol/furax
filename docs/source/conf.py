@@ -11,8 +11,8 @@ import sys
 
 sys.path.insert(0, os.path.abspath('../../'))
 
-project = 'jax-healpy'
-copyright = '2024-2025, Furax contributors.'
+project = 'furax'
+copyright = '2024-2026, Furax contributors.'
 author = 'Furax contributors'
 
 # Get version from setuptools_scm
@@ -74,7 +74,7 @@ napoleon_type_aliases = None
 napoleon_use_admonition_for_examples = False
 napoleon_use_admonition_for_notes = False
 napoleon_use_admonition_for_references = False
-napoleon_use_ivar = False
+napoleon_use_ivar = True
 napoleon_use_param = True
 napoleon_use_rtype = True
 

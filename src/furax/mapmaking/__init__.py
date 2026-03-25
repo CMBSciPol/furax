@@ -7,12 +7,14 @@ from ._observation import (
     HashedObservationMetadata,
 )
 from ._reader import ObservationReader
+from .atmosphere import AtmospherePointingOperator
 from .config import MapMakingConfig
 from .gap_filling import GapFillingOperator
 from .mapmaker import MultiObservationMapMaker
 from .preconditioner import BJPreconditioner
 
 __all__ = [
+    'AtmospherePointingOperator',
     'BJPreconditioner',
     'AbstractObservation',
     'AbstractLazyObservation',

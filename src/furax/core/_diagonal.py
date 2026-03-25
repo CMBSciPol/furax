@@ -18,10 +18,11 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
 
     Unlike `DiagonalOperator`, this operator can change the output shape through
     broadcasting, making it non-square. Depending on the broadcasting direction:
-        - Left broadcasting (extending dimensions on the left): equivalent to a
-          block row operator with diagonal blocks.
-        - Right broadcasting (extending dimensions on the right): equivalent to a
-          block diagonal operator with column blocks.
+
+    - Left broadcasting (extending dimensions on the left): equivalent to a
+      block row operator with diagonal blocks.
+    - Right broadcasting (extending dimensions on the right): equivalent to a
+      block diagonal operator with column blocks.
 
     Attributes:
         diagonal: The diagonal values.

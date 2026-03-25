@@ -25,16 +25,11 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
 
     Attributes:
         diagonal: The diagonal values.
-        axis_destination: The axes along which to apply the diagonal values.
-
-    Args:
-        diagonal: The diagonal values for the generalized diagonal operator.
         axis_destination: The axes along which the generalized diagonal values are applied to the
             input. If the type is a sequence, there should be as many axes as the number of
             dimensions in the ``diagonal`` input. If the type is a non-negative scalar integer, the
             dimensions will be ``(axis, ..., axis + diagonal.ndim - 1)``. If the type is a negative
             scalar integer, the dimensions will be ``(axis - diagonal.ndim, ..., axis)``.
-        in_structure: The expected structure of the operator input.
 
     Example:
         >>> import furax as fx
@@ -209,16 +204,11 @@ class DiagonalOperator(BroadcastDiagonalOperator):
 
     Attributes:
         diagonal: The diagonal values.
-        axis_destination: The axes along which to apply the diagonal values.
-
-    Args:
-        diagonal: The diagonal values for the diagonal operator.
         axis_destination: The axes along which the diagonal values are applied to the input.
             If the type is a sequence, there should be as many axes as the number of dimensions in
             the ``diagonal`` input. If the type is a non-negative scalar integer, the dimensions
             will be ``(axis, ..., axis + diagonal.ndim - 1)``. If the type is a negative scalar
             integer, the dimensions will be ``(axis - diagonal.ndim, ..., axis)``.
-        in_structure: The expected structure of the operator input.
 
     Example:
         >>> import furax as fx

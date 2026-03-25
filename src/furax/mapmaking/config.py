@@ -34,6 +34,9 @@ class SolverConfig:
 
 @dataclass
 class NoiseFitConfig:
+    nperseg: int = 2_048
+    """Welch window length in samples for PSD estimation."""
+
     max_iter: int = 100
     """Maximum number of iterations"""
 
@@ -55,7 +58,7 @@ class NoiseFitConfig:
     mask_hwp_harmonics: bool = True
     """Mask HWP harmonics: 1f, 2f, 4f"""
 
-    mask_ptc_harmonics: bool = True
+    mask_ptc_harmonics: bool = False
     """Mask PTC harmonics: 1f, 2f"""
 
     freq_mask_width: float = 0.5
@@ -66,7 +69,34 @@ class NoiseFitConfig:
 
 
 @dataclass
-class HealpixLandscapeConfig:
+class NoiseConfig:
+    """Configuration for noise modelling.
+
+    ``fit_from_data`` controls where the noise model comes from:
+
+    - ``True`` (default): fit a noise model directly from the TOD power spectral density.
+    - ``False``: load precomputed noise parameters from the data pipeline.
+
+    ``correlation_length`` sets the Toeplitz bandwidth (in samples) of the inverse-noise
+    operator.  It is only used by the atmospheric (1/f) noise model and is ignored when
+    ``white`` is True.
+    """
+
+    white: bool = True
+    """Use a white (diagonal) noise model.  Set to False for the atmospheric (1/f) model."""
+
+    fit_from_data: bool = True
+    """Fit the noise model from the TOD PSD (True) or load it from the data pipeline (False)."""
+
+    correlation_length: int = 1_000
+    """Toeplitz bandwidth in samples.  Only relevant for the atmospheric (1/f) noise model."""
+
+    fitting: NoiseFitConfig = field(default_factory=NoiseFitConfig)
+    """Options controlling PSD estimation and model fitting."""
+
+
+@dataclass
+class HealpixConfig:
     """Configuration for a HEALPix output map.
 
     Example:
@@ -108,7 +138,7 @@ class SkyPatch:
 
 
 @dataclass
-class WCSLandscapeConfig:
+class WCSConfig:
     """Configuration for a WCS-projected output map.
 
     ``projection`` applies to all modes except ``geometry_file``, where it is read from the file.
@@ -165,8 +195,8 @@ class WCSLandscapeConfig:
 @dataclass
 class LandscapeConfig:
     stokes: ValidStokesType = 'IQU'
-    healpix: HealpixLandscapeConfig | None = field(default_factory=HealpixLandscapeConfig)
-    wcs: WCSLandscapeConfig | None = None
+    healpix: HealpixConfig | None = None
+    wcs: WCSConfig | None = None
 
     def __post_init__(self) -> None:
         if (self.healpix is None) == (self.wcs is None):
@@ -238,7 +268,7 @@ class TemplatesConfig:
 
 
 @dataclass
-class GapFillingOptions:
+class GapFillingConfig:
     """Specific gap-filling options"""
 
     seed: int = 286502183
@@ -258,11 +288,22 @@ class GapsConfig:
     fill: bool = True
     """Fill data gaps with synthetic noise-like samples"""
 
-    fill_options: GapFillingOptions = field(default_factory=GapFillingOptions)
+    fill_options: GapFillingConfig = field(default_factory=GapFillingConfig)
     """Options to pass to the gap-filling operator"""
 
     nested_pcg: bool = False
     """Use the nested PCG method for gap treatment"""
+
+
+@dataclass
+class PointingConfig:
+    """Configuration options for pointing computation."""
+
+    on_the_fly: bool = True
+    """Compute pointing on the fly instead of pre-computing pixel indices."""
+
+    chunk_size: int = 32
+    """Number of detector chunks to process at a time when computing pointing on the fly."""
 
 
 @dataclass
@@ -293,22 +334,19 @@ class SotodlibConfig:
 @dataclass
 class MapMakingConfig:
     method: Methods = Methods.BINNED
-    binned: bool = True
     scanning_mask: bool = False
     sample_mask: bool = False
-    correlation_length: int = 1_000
-    nperseg: int = 2_048
     hits_cut: float = 1e-2
     cond_cut: float = 1e-2
     double_precision: bool = True
-    pointing_on_the_fly: bool = False
-    pointing_chunk_size: int = 4
-    fit_noise_model: bool = True
-    noise_fit: NoiseFitConfig = field(default_factory=NoiseFitConfig)
+    pointing: PointingConfig = field(default_factory=PointingConfig)
+    noise: NoiseConfig = field(default_factory=NoiseConfig)
     debug: bool = True
     solver: SolverConfig = field(default_factory=SolverConfig)
     gaps: GapsConfig = field(default_factory=GapsConfig)
-    landscape: LandscapeConfig = field(default_factory=LandscapeConfig)
+    landscape: LandscapeConfig = field(
+        default_factory=lambda: LandscapeConfig(healpix=HealpixConfig())
+    )
     templates: TemplatesConfig | None = None
     atop_tau: int = 0
     sotodlib: SotodlibConfig | None = None
@@ -342,6 +380,10 @@ class MapMakingConfig:
         """Serialize the config to a YAML string."""
         data = serialize(MapMakingConfig, self)
         return yaml.dump(data, indent=2)
+
+    @property
+    def binned(self) -> bool:
+        return self.noise.white
 
     @property
     def demodulated(self) -> bool:

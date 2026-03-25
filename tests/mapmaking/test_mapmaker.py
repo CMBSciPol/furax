@@ -14,11 +14,14 @@ from furax.mapmaking import (
     ObservationReader,
 )
 from furax.mapmaking.config import (
-    HealpixLandscapeConfig,
+    HealpixConfig,
     LandscapeConfig,
+    NoiseConfig,
+    NoiseFitConfig,
+    PointingConfig,
     SkyPatch,
     SotodlibConfig,
-    WCSLandscapeConfig,
+    WCSConfig,
 )
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.mapmaking.pointing import PointingOperator
@@ -161,21 +164,19 @@ def _config(
     fit_noise_model: bool = True,
 ) -> MapMakingConfig:
     if landscape_type == 'healpix':
-        lc = LandscapeConfig(stokes=stokes, healpix=HealpixLandscapeConfig(nside=16))
+        lc = LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16))
     else:
         lc = LandscapeConfig(
             stokes=stokes,
-            healpix=None,
-            wcs=WCSLandscapeConfig(
+            wcs=WCSConfig(
                 projection=ProjectionType.CAR,
                 resolution=60.0,
                 patch=SkyPatch(center=(0.0, 0.0), width=20.0, height=20.0),
             ),
         )
     return MapMakingConfig(
-        pointing_on_the_fly=True,
+        pointing=PointingConfig(on_the_fly=True),
         landscape=lc,
-        fit_noise_model=fit_noise_model,
-        nperseg=512,
+        noise=NoiseConfig(fit_from_data=fit_noise_model, fitting=NoiseFitConfig(nperseg=512)),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
     )

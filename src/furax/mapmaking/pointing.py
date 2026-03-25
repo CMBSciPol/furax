@@ -207,7 +207,7 @@ class PointingOperator(AbstractLinearOperator):
     ) -> StokesPyTreeType:
         """Sample the flat map at positions given by qdet_full."""
         if not self.interpolate:
-            return x_flat[self._quat2index(qdet_full)]  # type: ignore[index]
+            return x_flat[self._quat2index(qdet_full)]
 
         indices, weights = self._quat2interp(qdet_full)
         # Zero out contributions from out-of-bounds pixels (index == -1)

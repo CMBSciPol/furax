@@ -366,30 +366,36 @@ class CARLandscape(WCSLandscape):
     ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
         """Returns (indices, weights) for bilinear interpolation (n=4)."""
         pix_x, pix_y = self.world2pixel(theta, phi)
-
-        # Integer coordinates of the four neighbors
-        x0 = jnp.floor(pix_x).astype(jnp.int32)
-        y0 = jnp.floor(pix_y).astype(jnp.int32)
-        x1 = x0 + 1
-        y1 = y0 + 1
-
-        # Fractional parts
-        fx = (pix_x - x0).astype(self.dtype)
-        fy = (pix_y - y0).astype(self.dtype)
-
-        # Bilinear weights: (bottom-left, bottom-right, top-left, top-right)
-        w00 = (1 - fx) * (1 - fy)
-        w10 = fx * (1 - fy)
-        w01 = (1 - fx) * fy
-        w11 = fx * fy
-
-        # Stack neighbor coords along a trailing axis, call pixel2index once
-        # pixel2index handles bounds, returning -1 for out-of-bounds
-        xs = jnp.stack([x0, x1, x0, x1], axis=-1).astype(pix_x.dtype)
-        ys = jnp.stack([y0, y0, y1, y1], axis=-1).astype(pix_y.dtype)
+        xs, ys, weights = _2d_bilinear_interp(pix_y, pix_y)
         indices = self.pixel2index(xs, ys)
-        weights = jnp.stack([w00, w10, w01, w11], axis=-1)
         return indices, weights
+
+
+def _2d_bilinear_interp(
+    pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
+) -> tuple[Float[Array, '*dims 4'], Float[Array, '*dims 4'], Float[Array, '*dims 4']]:
+    # Integer coordinates of the four neighbors
+    x0 = jnp.floor(pix_x).astype(jnp.int32)
+    y0 = jnp.floor(pix_y).astype(jnp.int32)
+    x1 = x0 + 1
+    y1 = y0 + 1
+
+    # Fractional parts
+    fx = pix_x - x0
+    fy = pix_y - y0
+
+    # Bilinear weights: (bottom-left, bottom-right, top-left, top-right)
+    w00 = (1 - fx) * (1 - fy)
+    w10 = fx * (1 - fy)
+    w01 = (1 - fx) * fy
+    w11 = fx * fy
+
+    # Stack neighbor coords along a trailing axis, call pixel2index once
+    # pixel2index handles bounds, returning -1 for out-of-bounds
+    xs = jnp.stack([x0, x1, x0, x1], axis=-1).astype(pix_x.dtype)
+    ys = jnp.stack([y0, y0, y1, y1], axis=-1).astype(pix_y.dtype)
+    weights = jnp.stack([w00, w10, w01, w11], axis=-1)
+    return xs, ys, weights
 
 
 @register_static
@@ -723,3 +729,27 @@ class TangentialLandscape(StokesLandscape):
         """
         x, y = self.quat2xy(quat)
         return self.xy2pixel(x, y)
+
+    def xy2interp(
+        self,
+        x: Float[Array, ' *dims'],
+        y: Float[Array, ' *dims'],
+    ) -> tuple[Integer[Array, ' *dims 4'], Float[Array, ' *dims 4']]:
+        """Bilinear interpolation weights and indices for physical coordinates.
+
+        Returns the four neighbouring pixel indices and their bilinear weights.
+        Out-of-bounds neighbours are marked with index ``-1`` and weight ``0``.
+
+        Args:
+            x: Physical x-coordinates.
+            y: Physical y-coordinates.
+
+        Returns:
+            ``(indices, weights)`` where both have shape ``(*dims, 4)`` and the
+            trailing axis runs over the four neighbours in order
+            ``(i0,j0), (i1,j0), (i0,j1), (i1,j1)``.
+        """
+        pix_x, pix_y = self.xy2pixel(x, y)
+        xs, ys, weights = _2d_bilinear_interp(pix_x, pix_y)
+        indices = self.pixel2index(xs, ys)
+        return indices, weights

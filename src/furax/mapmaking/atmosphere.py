@@ -21,8 +21,7 @@ class AtmospherePointingOperator(PointingOperator):
        giving physical coordinates ``(x, y)``.
     2. Adds the wind displacement ``(vx * t, vy * t)`` to obtain the atmosphere sample
        position.
-    3. Samples the atmosphere map at that position (nearest-neighbour; bilinear
-       interpolation will be added once the interpolation PR lands).
+    3. Samples the atmosphere map at that position (nearest-neighbour or bilinear).
 
     The transpose accumulates TOD back into the atmosphere map (binning).
 
@@ -34,6 +33,7 @@ class AtmospherePointingOperator(PointingOperator):
         wind_displacement: Pre-computed wind offset ``(vx * t_k, vy * t_k)`` for each
             sample, shape ``(n_samples, 2)``.
         chunk_size: Number of detectors processed per chunk (memory/speed trade-off).
+        interpolate: If ``True``, use bilinear interpolation; otherwise nearest-neighbour.
     """
 
     landscape: TangentialLandscape  # narrows PointingOperator.landscape
@@ -46,9 +46,10 @@ class AtmospherePointingOperator(PointingOperator):
         boresight_quaternions: Float[Array, 'samp 4'],
         detector_quaternions: Float[Array, 'det 4'],
         wind_velocity: Float[Array, '2'],
-        times: Float[Array, 'samp'],
+        times: Float[Array, ' samp'],
         *,
         chunk_size: int = 16,
+        interpolate: bool = False,
     ) -> 'AtmospherePointingOperator':
         """Create an AtmospherePointingOperator.
 
@@ -61,6 +62,7 @@ class AtmospherePointingOperator(PointingOperator):
                 ``landscape.height`` per second.
             times: Elapsed time for each sample, shape ``(n_samples,)``.
             chunk_size: Number of detectors per chunk.
+            interpolate: Use bilinear interpolation (default: nearest-neighbour).
         """
         ndet = detector_quaternions.shape[0]
         nsamp = boresight_quaternions.shape[0]
@@ -71,13 +73,25 @@ class AtmospherePointingOperator(PointingOperator):
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
             chunk_size=chunk_size,
+            interpolate=interpolate,
             _out_structure=out_structure,
             wind_displacement=wind_displacement,
             in_structure=landscape.structure,
         )
 
-    def _quat2index(self, qdet_full: Float[Array, '*dims 4']) -> Array:
+    def _wind_xy(
+        self, qdet_full: Float[Array, '*dims 4']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Gnomonic projection onto the atmosphere screen, including wind displacement."""
         x, y = self.landscape.quat2xy(qdet_full)
-        x = x + self.wind_displacement[None, :, 0]
-        y = y + self.wind_displacement[None, :, 1]
+        return (
+            x + self.wind_displacement[None, :, 0],
+            y + self.wind_displacement[None, :, 1],
+        )
+
+    def _quat2index(self, qdet_full: Float[Array, '*dims 4']) -> Array:
+        x, y = self._wind_xy(qdet_full)
         return self.landscape.pixel2index(*self.landscape.xy2pixel(x, y))
+
+    def _quat2interp(self, qdet_full: Float[Array, '*dims 4']) -> tuple[Array, Array]:
+        return self.landscape.xy2interp(*self._wind_xy(qdet_full))

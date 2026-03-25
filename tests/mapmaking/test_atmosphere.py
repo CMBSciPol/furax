@@ -19,6 +19,9 @@ def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
     return q / jnp.linalg.norm(q, axis=-1, keepdims=True)
 
 
+WIND_VELOCITY = jnp.array([1.0, 0.5])
+
+
 def _make_operator(
     wind_velocity=None,
     times=None,
@@ -29,7 +32,7 @@ def _make_operator(
 ) -> tuple[AtmospherePointingOperator, TangentialLandscape, StokesI]:
     """Return (operator, landscape, atm_map) for use in tests."""
     if wind_velocity is None:
-        wind_velocity = jnp.zeros(2)
+        wind_velocity = WIND_VELOCITY
     if times is None:
         times = jnp.arange(nsamp, dtype=jnp.float64)
 
@@ -76,6 +79,24 @@ class TestAtmosphereOperatorMv:
             qdet_full = qmul(op.qbore, op.qdet[d : d + 1, None, :])  # (1, samp, 4)
             x, y = landscape.quat2xy(qdet_full[0])  # (samp,)
             idx = landscape.pixel2index(*landscape.xy2pixel(x, y))
+            expected = flat.i[idx]
+            assert_array_almost_equal(tod.i[d], expected)
+
+    def test_wind_shifts_sample_positions(self) -> None:
+        """With non-zero wind, samples must come from wind-displaced positions."""
+        wind_velocity = WIND_VELOCITY
+        times = jnp.arange(NSAMP, dtype=jnp.float64)
+        op, landscape, atm = _make_operator(wind_velocity=wind_velocity, times=times)
+
+        tod = op(atm)
+
+        flat = atm.ravel()
+        for d in range(NDET):
+            qdet_full = qmul(op.qbore, op.qdet[d : d + 1, None, :])  # (1, samp, 4)
+            x, y = landscape.quat2xy(qdet_full[0])  # (samp,)
+            x_shifted = x + times * wind_velocity[0]
+            y_shifted = y + times * wind_velocity[1]
+            idx = landscape.pixel2index(*landscape.xy2pixel(x_shifted, y_shifted))
             expected = flat.i[idx]
             assert_array_almost_equal(tod.i[d], expected)
 

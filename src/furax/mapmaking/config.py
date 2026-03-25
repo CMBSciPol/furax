@@ -58,7 +58,7 @@ class NoiseFitConfig:
     mask_hwp_harmonics: bool = True
     """Mask HWP harmonics: 1f, 2f, 4f"""
 
-    mask_ptc_harmonics: bool = True
+    mask_ptc_harmonics: bool = False
     """Mask PTC harmonics: 1f, 2f"""
 
     freq_mask_width: float = 0.5

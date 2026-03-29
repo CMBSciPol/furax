@@ -2,8 +2,8 @@ import jax
 import jax.numpy as jnp
 from numpy.testing import assert_array_almost_equal
 
-from furax.mapmaking.atmosphere import AtmospherePointingOperator
 from furax.math.quaternion import qmul
+from furax.obs.atmosphere import AtmospherePointingOperator
 from furax.obs.landscapes import TangentialLandscape
 from furax.obs.stokes import StokesI
 
@@ -13,13 +13,12 @@ NSAMP = 20
 HEIGHT = 100.0
 DX = DY = 10.0
 
+WIND_VELOCITY = jnp.array([1.0, 0.5])
+
 
 def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
     q = jax.random.normal(key, (*shape, 4))
     return q / jnp.linalg.norm(q, axis=-1, keepdims=True)
-
-
-WIND_VELOCITY = jnp.array([1.0, 0.5])
 
 
 def _make_operator(
@@ -56,7 +55,13 @@ def _make_operator(
     atm_map = landscape.normal(k3)
 
     op = AtmospherePointingOperator.from_wind(
-        landscape, qbore, qdet, wind_velocity, times, chunk_size=chunk_size
+        landscape,
+        qbore,
+        qdet,
+        wind_velocity,
+        times,
+        chunk_size=chunk_size,
+        interpolate=False,
     )
     return op, landscape, atm_map
 

@@ -1,9 +1,8 @@
 from jaxtyping import Array, Float
 
 from furax.obs.landscapes import TangentialLandscape
+from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import StokesI
-
-from .pointing import PointingOperator
 
 __all__ = [
     'AtmospherePointingOperator',
@@ -49,7 +48,7 @@ class AtmospherePointingOperator(PointingOperator):
         times: Float[Array, ' samp'],
         *,
         chunk_size: int = 16,
-        interpolate: bool = False,
+        interpolate: bool = True,
     ) -> 'AtmospherePointingOperator':
         """Create an AtmospherePointingOperator.
 

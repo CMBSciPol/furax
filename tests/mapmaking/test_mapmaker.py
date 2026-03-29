@@ -25,8 +25,8 @@ from furax.mapmaking.config import (
     WCSConfig,
 )
 from furax.mapmaking.noise import WhiteNoiseModel
-from furax.mapmaking.pointing import PointingOperator
 from furax.obs.landscapes import ProjectionType
+from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, ValidStokesType
 
 # Skip tests for interfaces that are not installed

@@ -14,8 +14,10 @@ from .operators import (
     QURotationOperator,
     SynchrotronOperator,
 )
+from .pointing import PointingOperator
 
 __all__ = [
+    'PointingOperator',
     'HWPOperator',
     'LinearPolarizerOperator',
     'QURotationOperator',

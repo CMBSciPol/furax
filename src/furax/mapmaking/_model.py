@@ -10,13 +10,13 @@ from jaxtyping import Array, Float, Int64, PyTree
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, symmetric, tree
 from furax.core import BlockDiagonalOperator, CompositionOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
+from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesPyTreeType
 
 from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig, Methods
 from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
-from .pointing import PointingOperator
 from .templates import ATOPProjectionOperator
 
 

@@ -5,8 +5,8 @@ from equinox import tree_equal
 from numpy.testing import assert_array_almost_equal
 
 import furax.tree as ftree
-from furax.mapmaking.pointing import PointingOperator
 from furax.obs.landscapes import CARLandscape, HealpixLandscape, StokesLandscape, WCSProjection
+from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import ValidStokesType
 
 NSIDE = 4

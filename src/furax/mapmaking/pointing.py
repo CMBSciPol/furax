@@ -105,15 +105,15 @@ class PointingOperator(AbstractLinearOperator):
             if self.interpolate:
                 indices, weights = self.landscape.quat2interp(qdet_full)
                 # Zero out contributions from out-of-bounds pixels (index == -1)
+                # pixel index 0 is guaranteed to exist, and weight is zeroed simultaneously
                 valid = indices >= 0
-                safe_indices = jnp.where(valid, indices, 0)
-                valid_weights = jnp.where(valid, weights, jnp.zeros_like(weights))
-                weight_sum = valid_weights.sum(axis=-1, keepdims=True)
-                valid_weights = valid_weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
-                flat = x.ravel()
+                indices = jnp.where(valid, indices, 0)
+                weights = jnp.where(valid, weights, 0.0)
+                weight_sum = weights.sum(axis=-1, keepdims=True)
+                unit_weights = weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
                 tod = jax.tree.map(
-                    lambda m: jnp.sum(m[safe_indices] * valid_weights, axis=-1),
-                    flat,
+                    lambda m: jnp.sum(m[indices] * unit_weights, axis=-1),
+                    x.ravel(),
                 )
             else:
                 indices = self.landscape.quat2index(qdet_full)

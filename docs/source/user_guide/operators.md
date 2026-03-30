@@ -361,7 +361,7 @@ from furax import SymmetricBandToeplitzOperator
 
 # Create a positive definite operator for solving Ax = b
 band = jnp.array([1., 0.5, 0.25, 0.125])
-A = SymmetricBandToeplitzOperator(band, in_structure=jax.ShapeDtypeStruct((6,), jnp.float32), method='direct')
+A = SymmetricBandToeplitzOperator(band, in_structure=jax.ShapeDtypeStruct((6,), jnp.float32))
 
 # Right-hand side
 b = jnp.array([1., 2., 3., 4., 5., 6.])

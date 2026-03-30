@@ -366,7 +366,7 @@ class CARLandscape(WCSLandscape):
     ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
         """Returns (indices, weights) for bilinear interpolation (n=4)."""
         pix_x, pix_y = self.world2pixel(theta, phi)
-        xs, ys, weights = _2d_bilinear_interp(pix_y, pix_y)
+        xs, ys, weights = _2d_bilinear_interp(pix_x, pix_y)
         indices = self.pixel2index(xs, ys)
         return indices, weights
 

@@ -201,6 +201,92 @@ class TestWCSLandscape:
         assert_array_almost_equal(y0, y1, decimal=12)
 
 
+class TestInterp:
+    """Tests for world2interp (and quat2interp) on landscape subclasses."""
+
+    @pytest.fixture
+    def car(self):
+        """10×10 CAR landscape centred at RA=0, Dec=0 with 0.1° pixels.
+
+        pix_x = lon_deg / (-0.1) + 4.5
+        pix_y = lat_deg / 0.1 + 4.5
+        """
+        proj = WCSProjection(crpix=(5.5, 5.5), crval=(0.0, 0.0), cdelt=(-0.1, 0.1))
+        return CARLandscape((10, 10), proj, stokes='I')
+
+    def test_not_implemented(self):
+        """A landscape without world2interp raises NotImplementedError."""
+
+        class MinimalLandscape(StokesLandscape):
+            def world2pixel(self, theta, phi):
+                return (theta,)
+
+        landscape = MinimalLandscape((10,), 'I')
+        with pytest.raises(NotImplementedError):
+            landscape.world2interp(jnp.array(1.0), jnp.array(0.0))
+
+    def test_car_output_shapes(self, car):
+        theta = jnp.full((3, 5), np.pi / 2)
+        phi = jnp.zeros((3, 5))
+        indices, weights = car.world2interp(theta, phi)
+        assert indices.shape == (3, 5, 4)
+        assert weights.shape == (3, 5, 4)
+
+    def test_healpix_output_shapes(self):
+        landscape = HealpixLandscape(8, 'I')
+        theta = jnp.full((3, 5), np.pi / 2)
+        phi = jnp.zeros((3, 5))
+        indices, weights = landscape.world2interp(theta, phi)
+        assert indices.shape == (3, 5, 4)
+        assert weights.shape == (3, 5, 4)
+
+    def test_car_weights_sum_to_one(self, car):
+        rng = np.random.default_rng(0)
+        # pix_x, pix_y strictly inside [0.5, 8.5] to stay in-bounds
+        pix_x = rng.uniform(0.5, 8.5, 30)
+        pix_y = rng.uniform(0.5, 8.5, 30)
+        lon_deg = (pix_x - 4.5) * (-0.1)
+        lat_deg = (pix_y - 4.5) * 0.1
+        theta = jnp.array(np.pi / 2 - np.radians(lat_deg))
+        phi = jnp.array(np.radians(lon_deg))
+        _, weights = car.world2interp(theta, phi)
+        assert_array_almost_equal(weights.sum(axis=-1), 1.0, decimal=12)
+
+    def test_healpix_weights_sum_to_one(self):
+        landscape = HealpixLandscape(8, 'I')
+        rng = np.random.default_rng(42)
+        theta = jnp.array(rng.uniform(0.1, np.pi - 0.1, 30))
+        phi = jnp.array(rng.uniform(0.0, 2 * np.pi, 30))
+        _, weights = landscape.world2interp(theta, phi)
+        assert_array_almost_equal(weights.sum(axis=-1), 1.0, decimal=12)
+
+    def test_car_bilinear_weights(self, car):
+        """Bilinear weights match the (1-fx)*(1-fy) formula derived from world2pixel."""
+        theta = jnp.array(np.pi / 2 - np.radians(0.13))
+        phi = jnp.array(np.radians(0.17))
+        pix_x, pix_y = car.world2pixel(theta, phi)
+        fx = pix_x - jnp.floor(pix_x)
+        fy = pix_y - jnp.floor(pix_y)
+        expected = jnp.array([(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy])
+        _, weights = car.world2interp(theta, phi)
+        assert_array_almost_equal(weights, expected, decimal=12)
+
+    def test_car_pixel_midpoint(self, car):
+        """At crval (phi=0, theta=pi/2), pix=(4.5, 4.5) is equidistant from four pixels."""
+        theta = jnp.array(np.pi / 2)
+        phi = jnp.array(0.0)
+        _, weights = car.world2interp(theta, phi)
+        assert_array_almost_equal(weights, [0.25, 0.25, 0.25, 0.25], decimal=12)
+
+    def test_car_oob_all_minus_one(self, car):
+        """A point far outside the map returns -1 for all four neighbor indices."""
+        # phi=radians(100) → pix_x ≈ -995.5, all four neighbors outside [0, 9]
+        theta = jnp.array(np.pi / 2)
+        phi = jnp.array(np.radians(100.0))
+        indices, _ = car.world2interp(theta, phi)
+        assert_array_equal(indices, -1)
+
+
 class TestWCSConventions:
     """Tests documenting the FITS/pixell WCS sign conventions used throughout this codebase.
 

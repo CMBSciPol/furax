@@ -48,6 +48,7 @@ class PointingOperator(AbstractLinearOperator):
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
     chunk_size: int = field(metadata={'static': True})
+    interpolate: bool = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
 
     @classmethod
@@ -59,6 +60,7 @@ class PointingOperator(AbstractLinearOperator):
         *,
         chunk_size: int = 16,
         frame: Literal['boresight', 'detector'] = 'boresight',
+        interpolate: bool = False,
     ) -> 'PointingOperator':
         # Explicitly determine the output structure
         ndet = detector_quaternions.shape[0]
@@ -85,6 +87,7 @@ class PointingOperator(AbstractLinearOperator):
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
             chunk_size=chunk_size,
+            interpolate=interpolate,
             in_structure=landscape.structure,
             _out_structure=out_structure,
         )
@@ -99,8 +102,22 @@ class PointingOperator(AbstractLinearOperator):
             qdet_full = qmul(self.qbore, qdet[:, None, :])
 
             # Get pixel indices and sample the pixels
-            indices = self.landscape.quat2index(qdet_full)
-            tod = x.ravel()[indices]
+            if self.interpolate:
+                indices, weights = self.landscape.quat2interp(qdet_full)
+                # Zero out contributions from out-of-bounds pixels (index == -1)
+                # pixel index 0 is guaranteed to exist, and weight is zeroed simultaneously
+                valid = indices >= 0
+                indices = jnp.where(valid, indices, 0)
+                weights = jnp.where(valid, weights, 0.0)
+                weight_sum = weights.sum(axis=-1, keepdims=True)
+                unit_weights = weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
+                tod = jax.tree.map(
+                    lambda m: jnp.sum(m[indices] * unit_weights, axis=-1),
+                    x.ravel(),
+                )
+            else:
+                indices = self.landscape.quat2index(qdet_full)
+                tod = x.ravel()[indices]
 
             if isinstance(tod, StokesI):
                 # no rotation needed
@@ -143,9 +160,15 @@ class PointingOperator(AbstractLinearOperator):
         tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
         return tod_out
 
-    def as_stokes_i(self) -> 'PointingOperator':
-        """Return a copy of this operator restricted to StokesI."""
-        if self.landscape.stokes == 'I':
+    def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
+        """Return a copy of this operator restricted to StokesI.
+
+        Args:
+            interpolate: Override the interpolation flag.  If ``None`` (default),
+                the flag is inherited from ``self.interpolate``.
+        """
+        effective_interpolate = self.interpolate if interpolate is None else interpolate
+        if self.landscape.stokes == 'I' and effective_interpolate == self.interpolate:
             return self
         landscape = copy.copy(self.landscape)
         landscape.stokes = 'I'
@@ -156,6 +179,7 @@ class PointingOperator(AbstractLinearOperator):
             qbore=self.qbore,
             qdet=self.qdet,
             chunk_size=self.chunk_size,
+            interpolate=effective_interpolate,
             in_structure=landscape.structure,
             _out_structure=out_structure,
         )
@@ -165,6 +189,8 @@ class PointingOperator(AbstractLinearOperator):
 
         Equivalent to mv() but as an explicit composition, useful for testing.
         """
+        if self.interpolate:
+            raise NotImplementedError('as_expanded_operator does not support interpolate=True')
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
         indices = self.landscape.quat2index(qdet_full)
         # this takes care of multi-dimensional landscapes
@@ -193,17 +219,33 @@ class PointingTransposeOperator(TransposeOperator):
             # Expand detector quaternions from boresight and offsets
             qdet_full = qmul(self.operator.qbore, qdet[:, None, :])
 
-            # Get pixel indices
-            indices = self.operator.landscape.quat2index(qdet_full)
+            if self.operator.interpolate:
+                indices, weights = self.operator.landscape.quat2interp(qdet_full)
+                # Zero out contributions from out-of-bounds pixels (index == -1)
+                valid = indices >= 0
+                safe_indices = jnp.where(valid, indices, 0)
+                valid_weights = jnp.where(valid, weights, jnp.zeros_like(weights))
+                weight_sum = valid_weights.sum(axis=-1, keepdims=True)
+                valid_weights = valid_weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
 
-            if isinstance(xchunk, StokesI):
-                # no rotation needed
-                return self._point(xchunk, indices)
+                if isinstance(xchunk, StokesI):
+                    return self._point_interp(xchunk, safe_indices, valid_weights)
 
-            # Rotate back to the celestial frame with the inverse rotation
-            cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
-            rotated = rotate_qu_cs(xchunk, cos_angles, -sin_angles)
-            return self._point(rotated, indices)
+                cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
+                rotated = rotate_qu_cs(xchunk, cos_angles, -sin_angles)
+                return self._point_interp(rotated, safe_indices, valid_weights)
+            else:
+                # Get pixel indices
+                indices = self.operator.landscape.quat2index(qdet_full)
+
+                if isinstance(xchunk, StokesI):
+                    # no rotation needed
+                    return self._point(xchunk, indices)
+
+                # Rotate back to the celestial frame with the inverse rotation
+                cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
+                rotated = rotate_qu_cs(xchunk, cos_angles, -sin_angles)
+                return self._point(rotated, indices)
 
         # Loop over chunks of detectors
         ndet, _ = self.in_structure.shape
@@ -241,6 +283,23 @@ class PointingTransposeOperator(TransposeOperator):
         zeros = jnp.zeros(np.prod(sky_shape), self.operator.landscape.dtype)
         sky: StokesPyTreeType = jax.tree.map(
             lambda x: zeros.at[flat_pixels].add(x.ravel()).reshape(sky_shape),
+            tod,
+        )
+        return sky
+
+    def _point_interp(
+        self, tod: StokesPyTreeType, indices: Array, weights: Array
+    ) -> StokesPyTreeType:
+        # indices: (*chunk, samp, n), weights: (*chunk, samp, n)
+        # tod leaves: (*chunk, samp)
+        sky_shape = self.operator.landscape.shape
+        n_pixels = int(np.prod(sky_shape))
+        zeros = jnp.zeros(n_pixels, self.operator.landscape.dtype)
+        flat_indices = indices.ravel()
+        sky: StokesPyTreeType = jax.tree.map(
+            lambda t: (
+                zeros.at[flat_indices].add((t[..., None] * weights).ravel()).reshape(sky_shape)
+            ),
             tod,
         )
         return sky

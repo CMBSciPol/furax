@@ -51,29 +51,25 @@ class BJPreconditioner(TreeOperator):
             raise ValueError('operator must be square')
 
         # Create the preconditioner by evaluating the operator
-        in_pytree = zeros_like(in_struct)
-        in_leaves_ref, in_treedef = jax.tree.flatten(in_pytree)
-
+        basis = zeros_like(in_struct)
+        basis_leaves, treedef = jax.tree.flatten(basis)
+        n = len(basis_leaves)
         stokes = in_struct.stokes
         tree_cls = Stokes.class_for(stokes)
 
-        n = len(in_leaves_ref)
-
-        # Build batched probes: probe_leaves[j] has shape (n, *leaf.shape)
-        # Row i is ones if i==j else zeros — unit vectors in Stokes-component space
-        probe_leaves = []
-        for j, leaf in enumerate(in_leaves_ref):
-            rows = [jnp.ones_like(leaf) if i == j else jnp.zeros_like(leaf) for i in range(n)]
-            probe_leaves.append(jnp.stack(rows))
-        batched_probe = jax.tree.unflatten(in_treedef, probe_leaves)
-
-        # Single batched call: out_leaves[j][i] = (A @ e_i)[j](p) = A_{j,i}(p)
-        batched_out = jax.vmap(op)(batched_probe)
-        out_leaves, _ = jax.tree.flatten(batched_out)
+        out_leaves = []
+        for j in range(n):
+            probe_leaves = [
+                jnp.ones_like(leaf) if i == j else jnp.zeros_like(leaf)
+                for i, leaf in enumerate(basis_leaves)
+            ]
+            probe = jax.tree.unflatten(treedef, probe_leaves)
+            result = op(probe)
+            out_leaves.append(jax.tree.leaves(result))
 
         tree = tree_cls(
             **{
-                stoke: jax.tree.unflatten(in_treedef, [out_leaves[j][i] for j in range(n)])
+                stoke: jax.tree.unflatten(treedef, [out_leaves[j][i] for j in range(n)])
                 for i, stoke in enumerate(stokes.lower())
             }
         )

@@ -923,8 +923,6 @@ class ATOPProjectionOperator(AbstractLinearOperator):
     ) -> None:
         n_det, n_samp = in_structure.shape
         object.__setattr__(self, 'tau', tau)
-        object.__setattr__(self, 'n_det', n_det)
-        object.__setattr__(self, 'n_samp', n_samp)
         object.__setattr__(self, 'in_structure', in_structure)
 
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:

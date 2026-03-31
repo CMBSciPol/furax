@@ -926,14 +926,15 @@ class ATOPProjectionOperator(AbstractLinearOperator):
         object.__setattr__(self, 'in_structure', in_structure)
 
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
-        if self.n_samp % self.tau == 0:
-            y = x.reshape(self.n_det, self.n_samp // self.tau, self.tau)
+        n_det, n_samp = self.in_structure.shape
+        if n_samp % self.tau == 0:
+            y = x.reshape(n_det, n_samp // self.tau, self.tau)
             y = y - jnp.mean(y, axis=-1)[:, :, None]
-            return y.reshape(self.n_det, self.n_samp)
+            return y.reshape(n_det, n_samp)
         else:
-            n_int = self.n_samp // self.tau
-            y = x[:, : n_int * self.tau].reshape(self.n_det, n_int, self.tau)
+            n_int = n_samp // self.tau
+            y = x[:, : n_int * self.tau].reshape(n_det, n_int, self.tau)
             y = y - jnp.mean(y, axis=-1)[:, :, None]
             return jnp.concatenate(
-                [y.reshape(self.n_det, n_int * self.tau), x[:, -(self.n_samp % self.tau) :]], axis=1
+                [y.reshape(n_det, n_int * self.tau), x[:, -(n_samp % self.tau) :]], axis=1
             )

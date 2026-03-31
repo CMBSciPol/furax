@@ -213,7 +213,9 @@ def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel]
 
 def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
     """Get the sample mask from data.
-    For ATOP mapmaker, extra pixels may be masked depending on atop_tau."""
+    
+    For ATOP mapmaker, extra pixels may be masked depending on atop_tau.
+    """
 
     mask = data['valid_sample_masks']
 

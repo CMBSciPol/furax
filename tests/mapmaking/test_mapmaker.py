@@ -181,7 +181,7 @@ ATOP_TAU = 10
 class TestATOPMapMaker:
     """Test ATOP support in MultiObservationMapMaker."""
 
-    #    @pytest.mark.slow
+    @pytest.mark.slow
     def test_atop_full_mapmaker(self, name, landscape_type):
         """ATOP runs end-to-end and produces a QU map with the correct shape."""
         observations = _observations(name)

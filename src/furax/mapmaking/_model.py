@@ -221,10 +221,10 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
 
     if config.method == Methods.ATOP:
         tau = config.atop_tau
-        F_T = _template_deprojector(config, jax.ShapeDtypeStruct(mask.shape, jnp.float32))
+        F_T = _template_deprojector(config, jax.ShapeDtypeStruct(mask.shape, jnp.bool))
         if F_T:
             # Mask all tau-intervals that are partially masked
-            interval_mask = jnp.abs(F_T(mask.astype(jnp.float32))) < 0.5 / tau
+            interval_mask = jnp.abs(F_T(mask)) < 0.5 / tau
             mask = jnp.logical_and(mask, interval_mask)
             # Handle the partial interval at the end
             mask = mask.at[:, (tau * (mask.shape[-1] // tau)) :].set(False)

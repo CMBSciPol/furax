@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+import functools
+from dataclasses import dataclass, field
 from typing import Any
 
 import jax
@@ -6,10 +7,10 @@ import jax.numpy as jnp
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, Int64, PyTree
 
-from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
+from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, symmetric, tree
 from furax.core import BlockDiagonalOperator, CompositionOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.stokes import Stokes, StokesI
+from furax.obs.stokes import Stokes, StokesI, StokesPyTreeType
 
 from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig
@@ -145,6 +146,43 @@ class ObservationModel:
         else:
             raise NotImplementedError
         return IndexOperator(mask, in_structure=self.tod_structure)
+
+
+@functools.partial(jax.jit, static_argnames=['diag'])
+def _system_scan(
+    model: ObservationModel, x: StokesPyTreeType, *, diag: bool = False
+) -> StokesPyTreeType:
+    """Apply H^T W H to x, summed over the batch of observations in model.
+
+    `model` is an explicit JIT argument so it is never captured as an XLA constant.
+
+    Args:
+        model: Stacked ObservationModel with a leading batch dimension over observations.
+        x: Input sky map pytree.
+        diag: If True, use the diagonal white-noise approximation for W.
+    """
+
+    def accumulate(lhs, obs):  # type: ignore[no-untyped-def]
+        return tree.add(lhs, obs.apply_system(x, white_noise=diag)), None
+
+    lhs, _ = jax.lax.scan(accumulate, tree.zeros_like(x), model)
+    return lhs
+
+
+@symmetric
+class SystemOperator(AbstractLinearOperator):
+    """System operator A = sum_obs H_i^T W_i H_i stored as a JAX-traceable pytree.
+
+    ``model`` is a non-static dataclass field, so its arrays appear as dynamic
+    pytree leaves when lineax flattens this operator. They therefore flow as
+    traced runtime values through the CG kernel — never as XLA constants.
+    """
+
+    model: ObservationModel
+    diag: bool = field(metadata={'static': True})
+
+    def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
+        return _system_scan(self.model, x, diag=self.diag)  # type: ignore[no-any-return]
 
 
 def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel], Array]:

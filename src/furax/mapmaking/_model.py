@@ -1,5 +1,4 @@
-import functools
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import jax
@@ -17,6 +16,7 @@ from .config import MapMakingConfig, Methods
 from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pointing import PointingOperator
+from .templates import ATOPProjectionOperator
 
 
 @register_dataclass
@@ -69,7 +69,7 @@ class ObservationModel:
             noise_model, H.out_structure, sample_rate, config.noise.correlation_length, inverse=True
         )
         if F_T := _template_deprojector(config, H.out_structure):
-            W = F_T @ W
+            W = W @ F_T
         return cls(H, W, masker, noise_model, sample_rate)
 
     @property
@@ -213,7 +213,7 @@ def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel]
 
 def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
     """Get the sample mask from data.
-    
+
     For ATOP mapmaker, extra pixels may be masked depending on atop_tau.
     """
 
@@ -288,37 +288,3 @@ def _mask_projector(
 
     combined_masker = CompositionOperator([_masker(valid_mask) for valid_mask in valid_masks])
     return combined_masker.reduce()
-
-
-class ATOPProjectionOperator(AbstractLinearOperator):
-    tau: int = field(metadata={'static': True})
-    n_det: int = field(metadata={'static': True})
-    n_samp: int = field(metadata={'static': True})
-
-    def __init__(
-        self,
-        tau: int,
-        *,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-        n_det: int | None = None,
-        n_samp: int | None = None,
-    ) -> None:
-        if n_det is None:
-            n_det, n_samp = in_structure.shape
-        object.__setattr__(self, 'tau', tau)
-        object.__setattr__(self, 'n_det', n_det)
-        object.__setattr__(self, 'n_samp', n_samp)
-        object.__setattr__(self, 'in_structure', in_structure)
-
-    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
-        if self.n_samp % self.tau == 0:
-            y = x.reshape(self.n_det, self.n_samp // self.tau, self.tau)
-            y = y - jnp.mean(y, axis=-1)[:, :, None]
-            return y.reshape(self.n_det, self.n_samp)
-        else:
-            n_int = self.n_samp // self.tau
-            y = x[:, : n_int * self.tau].reshape(self.n_det, n_int, self.tau)
-            y = y - jnp.mean(y, axis=-1)[:, :, None]
-            return jnp.concatenate(
-                [y.reshape(self.n_det, n_int * self.tau), x[:, -(self.n_samp % self.tau) :]], axis=1
-            )

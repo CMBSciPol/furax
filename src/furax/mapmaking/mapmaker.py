@@ -31,7 +31,6 @@ from furax import (
 )
 from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
 from furax.interfaces.lineax import as_lineax_operator
-from furax.mapmaking._model import ATOPProjectionOperator, ObservationModel, _hwp_frequency
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
@@ -1162,7 +1161,9 @@ class ATOPMapMaker(MapMaker):
         logger_info('Created acquisition operator')
 
         # ATOP projector
-        atop_projector = ATOPProjectionOperator(self.config.atop_tau, in_structure=data_struct)
+        atop_projector = templates.ATOPProjectionOperator(
+            self.config.atop_tau, in_structure=data_struct
+        )
 
         # Optional mask for scanning
         masker = self.get_mask_projector(observation)

@@ -171,12 +171,7 @@ def _system_scan(
 
 @symmetric
 class SystemOperator(AbstractLinearOperator):
-    """System operator A = sum_obs H_i^T W_i H_i stored as a JAX-traceable pytree.
-
-    ``model`` is a non-static dataclass field, so its arrays appear as dynamic
-    pytree leaves when lineax flattens this operator. They therefore flow as
-    traced runtime values through the CG kernel — never as XLA constants.
-    """
+    """System operator A = sum_obs H_i^T W_i H_i stored as a JAX-traceable pytree."""
 
     model: ObservationModel
     diag: bool = field(metadata={'static': True})

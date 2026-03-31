@@ -1,7 +1,7 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, fields
 from logging import Logger
 from math import prod
 from pathlib import Path
@@ -16,7 +16,7 @@ import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
+from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer
 
 import furax.linalg
 import furax.tree as tree
@@ -30,7 +30,7 @@ from furax import (
     SymmetricBandToeplitzOperator,
 )
 from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
-from furax.interfaces.linear import as_lineax_operator
+from furax.interfaces.lineax import as_lineax_operator
 from furax.mapmaking._model import ATOPProjectionOperator, ObservationModel, _hwp_frequency
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -116,11 +116,17 @@ class MultiObservationMapMaker(Generic[T]):
         self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
-        if self.config.method == Methods.ATOP and self.config.stokes[0] == 'I':
+        if self.config.method == Methods.ATOP and self.config.landscape.stokes[0] == 'I':
+            if self.config.landscape.stokes != 'IQU':
+                raise ValueError(
+                    f'ATOP does not support intensity map reconstruction and stokes={self.config.landscape.stokes!r}'
+                    " cannot be reduced to a supported type. Use stokes='QU' instead."
+                )
             self.logger.info(
-                f'Received stokes={self.config.stokes}, but ATOP does not support intensity map reconstruction.'
-                + f' Falling back to stokes={self.config.stokes[1:]} instead.')
-            self.config.stokes = self.config.stokes[1:]
+                "Received stokes='IQU', but ATOP does not support intensity map reconstruction."
+                " Falling back to stokes='QU' instead."
+            )
+            self.config.landscape.stokes = 'QU'
         self.landscape = (
             _static_landscape(self.config.landscape, self.config.dtype)
             or self._scan_wcs_footprint()

@@ -220,13 +220,14 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
     if config.method == Methods.ATOP:
         tau = config.atop_tau
         F_T = _template_deprojector(config, jax.ShapeDtypeStruct(mask.shape, jnp.float32))
-        # Mask all tau-intervals that are partially masked
-        interval_mask = jnp.abs(F_T(mask.astype(jnp.float32))) < 0.5 / tau
-        mask = jnp.logical_and(mask, interval_mask)
-        # Handle the partial interval at the end
-        mask = mask.at[:, (tau * (mask.shape[-1] // tau)) :].set(False)
+        if F_T:
+            # Mask all tau-intervals that are partially masked
+            interval_mask = jnp.abs(F_T(mask.astype(jnp.float32))) < 0.5 / tau
+            mask = jnp.logical_and(mask, interval_mask)
+            # Handle the partial interval at the end
+            mask = mask.at[:, (tau * (mask.shape[-1] // tau)) :].set(False)
 
-    return mask
+    return mask  # type: ignore[no-any-return]
 
 
 def _noise_operator(
@@ -252,7 +253,7 @@ def _noise_operator(
 def _template_deprojector(
     config: MapMakingConfig,
     tod_structure: jax.ShapeDtypeStruct,
-) -> AbstractLinearOperator:
+) -> AbstractLinearOperator | None:
     """Build the deprojection operator for ATOP mapmaker.
     The data is assumed to be not demodulated."""
     if config.method == Methods.ATOP:

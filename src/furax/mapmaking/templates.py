@@ -921,7 +921,6 @@ class ATOPProjectionOperator(AbstractLinearOperator):
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
-        n_det, n_samp = in_structure.shape
         object.__setattr__(self, 'tau', tau)
         object.__setattr__(self, 'in_structure', in_structure)
 

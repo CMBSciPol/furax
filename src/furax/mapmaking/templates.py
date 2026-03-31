@@ -914,8 +914,6 @@ class StokesIQUFlattenOperator(AbstractLinearOperator):
 
 class ATOPProjectionOperator(AbstractLinearOperator):
     tau: int = field(metadata={'static': True})
-    n_det: int = field(metadata={'static': True})
-    n_samp: int = field(metadata={'static': True})
 
     def __init__(
         self,

@@ -173,7 +173,7 @@ ATOP_PARAMS = [
         marks=pytest.mark.skipif(not toast_installed, reason='toast is not installed'),
     ),
 ]
-ATOP_TAU = 4
+ATOP_TAU = 10
 
 
 @pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
@@ -181,11 +181,11 @@ ATOP_TAU = 4
 class TestATOPMapMaker:
     """Test ATOP support in MultiObservationMapMaker."""
 
-    @pytest.mark.slow
+    #    @pytest.mark.slow
     def test_atop_full_mapmaker(self, name, landscape_type):
         """ATOP runs end-to-end and produces a QU map with the correct shape."""
         observations = _observations(name)
-        config = _atop_config(landscape_type)
+        config = _config(landscape_type, stokes='QU', method=Methods.ATOP, atop_tau=ATOP_TAU)
         maker = MultiObservationMapMaker(observations, config=config)
         results = maker.run()
         assert results.icov.shape == (2, 2, *maker.landscape.shape)
@@ -193,7 +193,7 @@ class TestATOPMapMaker:
     def test_atop_iqu_stokes_falls_back_to_qu(self, name, landscape_type):
         """stokes='IQU' with ATOP is converted to 'QU'."""
         observations = _observations(name)
-        config = _atop_config(landscape_type, stokes='IQU')
+        config = _config(landscape_type, stokes='IQU', method=Methods.ATOP, atop_tau=ATOP_TAU)
         maker = MultiObservationMapMaker(observations, config=config)
         assert maker.config.landscape.stokes == 'QU'
 
@@ -215,30 +215,6 @@ class TestATOPStokesValidation:
     def test_iquv_stokes_raises(self):
         with pytest.raises(ValueError, match='cannot be reduced to a supported type'):
             MultiObservationMapMaker([], config=self._base_config('IQUV'))
-
-
-def _atop_config(
-    landscape_type: Literal['healpix', 'car'],
-    stokes: ValidStokesType = 'QU',
-) -> MapMakingConfig:
-    if landscape_type == 'healpix':
-        lc = LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16))
-    else:
-        lc = LandscapeConfig(
-            stokes=stokes,
-            wcs=WCSConfig(
-                projection=ProjectionType.CAR,
-                resolution=60.0,
-                patch=SkyPatch(center=(0.0, 0.0), width=20.0, height=20.0),
-            ),
-        )
-    return MapMakingConfig(
-        method=Methods.ATOP,
-        atop_tau=ATOP_TAU,
-        pointing=PointingConfig(on_the_fly=True),
-        landscape=lc,
-        noise=NoiseConfig(fit_from_data=False),
-    )
 
 
 def _observations(name: str, demodulated: bool = False) -> list[AbstractLazyObservation]:
@@ -263,6 +239,8 @@ def _config(
     demodulated: bool = False,
     fit_noise_model: bool = True,
     interpolation: Literal['nearest', 'bilinear'] = 'nearest',
+    method: Methods = Methods.BINNED,
+    atop_tau: int = 0,
 ) -> MapMakingConfig:
     if landscape_type == 'healpix':
         lc = LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16))
@@ -276,8 +254,10 @@ def _config(
             ),
         )
     return MapMakingConfig(
+        method=method,
         pointing=PointingConfig(on_the_fly=True, interpolation=interpolation),
         landscape=lc,
         noise=NoiseConfig(fit_from_data=fit_noise_model, fitting=NoiseFitConfig(nperseg=512)),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
+        atop_tau=atop_tau,
     )

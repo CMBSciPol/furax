@@ -179,6 +179,11 @@ class SystemOperator(AbstractLinearOperator):
     models: ObservationModel
     diag: bool = field(default=False, metadata={'static': True})
 
+    def __init__(self, models: ObservationModel, *, diag: bool = False):
+        object.__setattr__(self, 'models', models)
+        object.__setattr__(self, 'diag', diag)
+        object.__setattr__(self, 'in_structure', models.map_structure)
+
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
         return _system_scan(self.models, x, diag=self.diag)  # type: ignore[no-any-return]
 

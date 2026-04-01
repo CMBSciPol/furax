@@ -155,8 +155,7 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Build system matrix from stacked ObservationModel
         model = self.build_model()
-        map_structure = model.map_structure
-        A = SystemOperator(model, in_structure=map_structure)
+        A = SystemOperator(model)
         logger_info('Created system operator')
 
         hits = self.accumulate_hits(model).block_until_ready()
@@ -166,18 +165,14 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Accumulated RHS vector')
 
         # Preconditioning
-        sysdiag = (
-            A
-            if self.config.binned
-            else SystemOperator(model, diag=True, in_structure=map_structure)
-        )
+        sysdiag = A if self.config.binned else SystemOperator(model, diag=True)
         BJ = BJPreconditioner.create(sysdiag)
         icov = BJ.get_blocks().block_until_ready()
         logger_info('Computed white noise inverse covariance')
 
         # Pixel selection
         valid_pixels = self.pixel_selection(hits, icov)
-        selector = IndexOperator(jnp.where(valid_pixels), in_structure=map_structure)
+        selector = IndexOperator(jnp.where(valid_pixels), in_structure=model.map_structure)
         n_selected = jnp.sum(valid_pixels)
         n_observed = jnp.sum(hits > 0)
         n_total = valid_pixels.size

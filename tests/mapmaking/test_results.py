@@ -128,16 +128,36 @@ def test_healpix_hit_map_roundtrip(healpix_results, tmp_path):
     assert_array_equal(hit_map_read, healpix_results.hit_map)
 
 
+def test_healpix_icov_column_names(healpix_results, tmp_path):
+    healpix_results.save(tmp_path)
+    from astropy.io import fits as _fits
+
+    with _fits.open(tmp_path / 'icov.fits') as hdul:
+        names = [c.name for c in hdul[1].columns]
+    assert names == ['II', 'IQ', 'IU', 'QQ', 'QU', 'UU']
+
+
 def test_healpix_icov_roundtrip(healpix_results, tmp_path):
     healpix_results.save(tmp_path)
-    icov_read = np.array(hp.read_map(tmp_path / 'icov.fits', field=list(range(9))))
-    assert_array_almost_equal(icov_read, healpix_results.icov.reshape(9, NPIX))
+    # icov is stored as upper triangle: (n_upper, npix) with n_upper=6 for IQU
+    icov_read = np.array(hp.read_map(tmp_path / 'icov.fits', field=list(range(6))))
+    icov = np.array(healpix_results.icov)
+    upper = [(i, j) for i in range(3) for j in range(i, 3)]
+    expected = np.stack([icov[i, j] for i, j in upper])
+    assert_array_almost_equal(icov_read, expected)
 
 
-def test_healpix_ring_ordering(healpix_results, tmp_path):
+def test_healpix_hit_map_column_name(healpix_results, tmp_path):
     healpix_results.save(tmp_path)
-    header = fits.open(tmp_path / 'map.fits')[1].header
-    assert header['ORDERING'] == 'RING'
+    with fits.open(tmp_path / 'hit_map.fits') as hdul:
+        assert hdul[1].columns[0].name == 'HITS'
+
+
+def test_healpix_ordering(healpix_results, tmp_path):
+    healpix_results.save(tmp_path)
+    expected = 'NESTED' if healpix_results.landscape.nested else 'RING'
+    with fits.open(tmp_path / 'map.fits') as hdul:
+        assert hdul[1].header['ORDERING'] == expected
 
 
 # --- WCS (CAR) ---
@@ -175,8 +195,12 @@ def test_wcs_hit_map_roundtrip(car_results, tmp_path):
 
 def test_wcs_icov_roundtrip(car_results, tmp_path):
     car_results.save(tmp_path)
+    # icov is stored as upper triangle: (n_upper, ny, nx)
     data = fits.open(tmp_path / 'icov.fits')[0].data
-    assert_array_almost_equal(data, car_results.icov)
+    icov = np.array(car_results.icov)
+    upper = [(i, j) for i in range(3) for j in range(i, 3)]
+    expected = np.stack([icov[i, j] for i, j in upper])
+    assert_array_almost_equal(data, expected)
 
 
 # --- AstropyWCS ---
@@ -222,14 +246,3 @@ def test_unknown_landscape_map_roundtrip(unknown_landscape_results, tmp_path):
     assert_array_almost_equal(data[0], unknown_landscape_results.map.i)
     assert_array_almost_equal(data[1], unknown_landscape_results.map.q)
     assert_array_almost_equal(data[2], unknown_landscape_results.map.u)
-
-
-# --- None fields skipped ---
-
-
-def test_none_fields_not_saved(healpix_results, tmp_path):
-    assert healpix_results.solver_stats is None
-    assert healpix_results.noise_fits is None
-    healpix_results.save(tmp_path)
-    assert not any(tmp_path.glob('solver_stats.*'))
-    assert not any(tmp_path.glob('noise_fits.*'))

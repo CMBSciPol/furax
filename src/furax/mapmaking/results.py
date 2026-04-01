@@ -1,11 +1,10 @@
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import healpy as hp
 import jax
 import numpy as np
-import pixell.enmap
 from astropy.io import fits
 from jaxtyping import Array, Float, Integer
 
@@ -15,7 +14,7 @@ from furax.obs.landscapes import (
     StokesLandscape,
     WCSLandscape,
 )
-from furax.obs.stokes import Stokes, StokesPyTreeType
+from furax.obs.stokes import StokesPyTreeType
 
 from ._logger import logger as furax_logger
 
@@ -47,26 +46,25 @@ class MapMakingResults:
     def save(self, out_dir: str | Path) -> None:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        # do not use asdict to avoid making copies
-        for field_ in fields(self):
-            val = getattr(self, field_.name)
-            if val is None:
-                continue
-            if isinstance(val, jax.Array) or isinstance(val, np.ndarray):
-                self._save_array(np.array(val), field_.name, out_dir)
-            elif isinstance(val, Stokes):
-                leaves = [np.array(leaf) for leaf in jax.tree.leaves(val)]
-                self._save_array(np.array(leaves), field_.name, out_dir)
-            elif isinstance(val, pixell.enmap.ndmap):
-                pixell.enmap.write_map(
-                    (out_dir / f'{field_.name}.hdf').as_posix(), val, allow_modify=True
-                )
-            elif isinstance(val, StokesLandscape):
-                pass  # landscape is not saved to file
-            else:
-                furax_logger.warning(f'not saving {field_.name}')
+        leaves = [np.array(leaf) for leaf in jax.tree.leaves(self.map)]
+        self._save_array(np.array(leaves), 'map', out_dir)
+        self._save_array(np.array(self.hit_map), 'hit_map', out_dir, column_names=['HITS'])
+        self._save_icov(np.array(self.icov), out_dir)
+        if self.noise_fits is not None:
+            np.save(out_dir / 'noise_fits', np.array(self.noise_fits))
 
-    def _save_array(self, arr: np.ndarray, name: str, out_dir: Path) -> None:
+    def _save_icov(self, arr: np.ndarray, out_dir: Path) -> None:
+        """Save the inverse covariance, storing only the upper triangle with stokes-aware names."""
+        stokes = self.landscape.stokes
+        ns = len(stokes)
+        upper = [(i, j) for i in range(ns) for j in range(i, ns)]
+        column_names = [stokes[i] + stokes[j] for i, j in upper]
+        arr_upper = np.stack([arr[i, j] for i, j in upper], axis=0)
+        self._save_array(arr_upper, 'icov', out_dir, column_names=column_names)
+
+    def _save_array(
+        self, arr: np.ndarray, name: str, out_dir: Path, column_names: list[str] | None = None
+    ) -> None:
         """Save a numpy array as FITS (WCS or HEALPix) or npy depending on the landscape."""
         if isinstance(self.landscape, WCSLandscape):
             hdu = fits.PrimaryHDU(arr, header=fits.Header(self.landscape.to_wcs().to_header()))
@@ -77,7 +75,11 @@ class MapMakingResults:
         elif isinstance(self.landscape, HealpixLandscape):
             maps = [arr] if arr.ndim == 1 else list(arr.reshape(-1, arr.shape[-1]))
             hp.write_map(
-                str(out_dir / f'{name}.fits'), maps, nest=self.landscape.nested, overwrite=True
+                str(out_dir / f'{name}.fits'),
+                maps,
+                nest=self.landscape.nested,
+                column_names=column_names,
+                overwrite=True,
             )
         else:
             furax_logger.warning(

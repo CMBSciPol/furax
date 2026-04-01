@@ -1,7 +1,7 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass
 from logging import Logger
 from math import prod
 from pathlib import Path
@@ -50,55 +50,7 @@ from ._reader import ObservationReader
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
-
-
-@dataclass
-class MapMakingResults:
-    map: StokesPyTreeType
-    """The estimated sky map"""
-
-    hit_map: Integer[Array, ' pixels']
-    """The number of valid samples per pixel"""
-
-    icov: Float[Array, 'stokes stokes pixels']
-    """The per-pixel inverse noise covariance matrix (H^T N^{-1} H)"""
-
-    solver_stats: dict[str, Any] | None = None
-    """Statistics from the linear solver (e.g. num_steps, max_steps)"""
-
-    noise_fits: Float[Array, '...'] | None = None
-    """The fitted noise PSD parameters"""
-
-    wcs: WCS | None = None
-    """The coordinate specification"""
-
-    def save(self, out_dir: str | Path) -> None:
-        out_dir = Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        # do not use asdict to avoid making copies
-        for field_ in fields(self):
-            val = getattr(self, field_.name)
-            if val is None:
-                continue
-            if isinstance(val, jax.Array) or isinstance(val, np.ndarray):
-                np.save(out_dir / field_.name, np.array(val))
-            elif isinstance(val, Stokes):
-                arr = np.array(jax.tree.leaves(val))
-                np.save(out_dir / field_.name, arr)
-            elif isinstance(val, pixell.enmap.ndmap):
-                pixell.enmap.write_map(
-                    (out_dir / f'{field_.name}.hdf').as_posix(), val, allow_modify=True
-                )
-            elif isinstance(val, WCS):
-                header = val.to_header()
-                hdu = fits.PrimaryHDU(header=header)
-                hdu.writeto(out_dir / f'{field_.name}.fits', overwrite=True)
-            elif isinstance(val, StokesLandscape):
-                with open(out_dir / f'{field_.name}.pkl', 'wb') as f:
-                    pickle.dump(val, f)
-            else:
-                furax_logger.warning(f'not saving {field_.name}')
-
+from .results import MapMakingResults
 
 T = TypeVar('T')
 
@@ -253,7 +205,13 @@ class MultiObservationMapMaker(Generic[T]):
         estimate = selector.T(solution.value)
         num_steps = solution.stats['num_steps']
         logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
-        return MapMakingResults(map=estimate, icov=icov, hit_map=hits, solver_stats=solution.stats)
+        return MapMakingResults(
+            map=estimate,
+            icov=icov,
+            hit_map=hits,
+            solver_stats=solution.stats,
+            landscape=self.landscape,
+        )
 
     def build_model(self) -> ObservationModel:
         # Only read necessary fields

@@ -166,7 +166,7 @@ class AtmosphericNoiseModel(NoiseModel):
         correlation_length: int = cast(int, kwargs.get('correlation_length'))
         window = apodization_window(correlation_length)
 
-        fft_size = SymmetricBandToeplitzOperator._get_default_fft_size(2 * correlation_length - 1)
+        fft_size = SymmetricBandToeplitzOperator._get_next_power_of_two(2 * correlation_length - 1)
         freq = jnp.fft.rfftfreq(fft_size, 1 / sample_rate)
         eval_psd = self.psd(freq)
         invntt = jnp.fft.irfft(1.0 / eval_psd, n=fft_size)[..., :correlation_length]
@@ -189,7 +189,7 @@ class AtmosphericNoiseModel(NoiseModel):
         sample_rate: float = cast(float, kwargs.get('sample_rate'))
         correlation_length: int = cast(int, kwargs.get('correlation_length'))
 
-        fft_size = SymmetricBandToeplitzOperator._get_default_fft_size(2 * correlation_length - 1)
+        fft_size = SymmetricBandToeplitzOperator._get_next_power_of_two(2 * correlation_length - 1)
         freq = jnp.fft.rfftfreq(fft_size, 1 / sample_rate)
         eval_psd = self.psd(freq)
         inv_psd = jnp.where(eval_psd > 0, 1 / eval_psd, 0.0)

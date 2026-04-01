@@ -171,7 +171,7 @@ def generate_noise_realization(
         fft_size = cov.fft_size
         psd = cov.get_kernel()
     elif isinstance(cov, SymmetricBandToeplitzOperator):
-        fft_size = SymmetricBandToeplitzOperator._get_default_fft_size(n)
+        fft_size = SymmetricBandToeplitzOperator._get_next_power_of_two(n)
         psd = _folded_psd(cov.band_values, fft_size)
     else:
         raise NotImplementedError

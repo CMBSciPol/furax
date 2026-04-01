@@ -226,8 +226,10 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
         # Mask all tau-intervals that are partially masked
         interval_mask = jnp.abs(F(mask)) < 0.5 / tau
         mask = jnp.logical_and(mask, interval_mask)
-        # Handle the partial interval at the end
-        mask = mask.at[:, (tau * (mask.shape[-1] // tau)) :].set(False)
+        # The partial interval at the end is unchanged by ATOP operator
+        # -> True samples get interval_mask = False (since 1 > 0.5/tau)
+        # -> False samples have mask = False
+        # in both cases the logical and eliminates the tail
 
     return mask  # type: ignore[no-any-return]
 

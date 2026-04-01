@@ -1,3 +1,5 @@
+import importlib.util
+
 import healpy as hp
 import jax.numpy as jnp
 import numpy as np
@@ -15,6 +17,8 @@ from furax.obs.landscapes import (
     WCSProjection,
 )
 from furax.obs.stokes import StokesIQU
+
+pixell_installed = importlib.util.find_spec('pixell') is not None
 
 NSIDE = 4
 NPIX = 12 * NSIDE**2
@@ -228,6 +232,86 @@ def test_astropy_wcs_map_roundtrip(astropy_wcs_results, tmp_path):
     assert_array_almost_equal(data[0], astropy_wcs_results.map.i)
     assert_array_almost_equal(data[1], astropy_wcs_results.map.q)
     assert_array_almost_equal(data[2], astropy_wcs_results.map.u)
+
+
+# --- pixell loading ---
+
+
+@pytest.mark.skipif(not pixell_installed, reason='pixell not installed')
+class TestPixellLoading:
+    def test_wcs_map(self, car_results, tmp_path):
+        from pixell import enmap
+
+        car_results.save(tmp_path)
+        m = enmap.read_map(str(tmp_path / 'map.fits'))
+        assert_array_almost_equal(m[0], car_results.map.i)
+        assert_array_almost_equal(m[1], car_results.map.q)
+        assert_array_almost_equal(m[2], car_results.map.u)
+
+    def test_wcs_hit_map(self, car_results, tmp_path):
+        from pixell import enmap
+
+        car_results.save(tmp_path)
+        m = enmap.read_map(str(tmp_path / 'hit_map.fits'))
+        assert_array_equal(np.array(m), car_results.hit_map)
+
+    def test_wcs_icov(self, car_results, tmp_path):
+        from pixell import enmap
+
+        car_results.save(tmp_path)
+        m = enmap.read_map(str(tmp_path / 'icov.fits'))
+        icov = np.array(car_results.icov)
+        upper = [(i, j) for i in range(3) for j in range(i, 3)]
+        expected = np.stack([icov[i, j] for i, j in upper])
+        assert_array_almost_equal(np.array(m), expected)
+
+    def test_astropy_wcs_map(self, astropy_wcs_results, tmp_path):
+        from pixell import enmap
+
+        astropy_wcs_results.save(tmp_path)
+        m = enmap.read_map(str(tmp_path / 'map.fits'))
+        assert_array_almost_equal(m[0], astropy_wcs_results.map.i)
+        assert_array_almost_equal(m[1], astropy_wcs_results.map.q)
+        assert_array_almost_equal(m[2], astropy_wcs_results.map.u)
+
+    def test_astropy_wcs_hit_map(self, astropy_wcs_results, tmp_path):
+        from pixell import enmap
+
+        astropy_wcs_results.save(tmp_path)
+        m = enmap.read_map(str(tmp_path / 'hit_map.fits'))
+        assert_array_equal(np.array(m), astropy_wcs_results.hit_map)
+
+    def test_astropy_wcs_icov(self, astropy_wcs_results, tmp_path):
+        from pixell import enmap
+
+        astropy_wcs_results.save(tmp_path)
+        m = enmap.read_map(str(tmp_path / 'icov.fits'))
+        icov = np.array(astropy_wcs_results.icov)
+        upper = [(i, j) for i in range(3) for j in range(i, 3)]
+        expected = np.stack([icov[i, j] for i, j in upper])
+        assert_array_almost_equal(np.array(m), expected)
+
+    def test_wcs_header_consistency(self, car_results, tmp_path):
+        from pixell import enmap
+
+        car_results.save(tmp_path)
+        m = enmap.read_map(str(tmp_path / 'map.fits'))
+        wcs = car_results.landscape.to_wcs()
+        assert list(m.wcs.wcs.ctype) == list(wcs.wcs.ctype)
+        np.testing.assert_allclose(m.wcs.wcs.crval, wcs.wcs.crval)
+        np.testing.assert_allclose(m.wcs.wcs.crpix, wcs.wcs.crpix)
+        np.testing.assert_allclose(m.wcs.wcs.cdelt, wcs.wcs.cdelt)
+
+    def test_astropy_wcs_header_consistency(self, astropy_wcs_results, tmp_path):
+        from pixell import enmap
+
+        astropy_wcs_results.save(tmp_path)
+        m = enmap.read_map(str(tmp_path / 'map.fits'))
+        wcs = astropy_wcs_results.landscape.wcs
+        assert list(m.wcs.wcs.ctype) == list(wcs.wcs.ctype)
+        np.testing.assert_allclose(m.wcs.wcs.crval, wcs.wcs.crval)
+        np.testing.assert_allclose(m.wcs.wcs.crpix, wcs.wcs.crpix)
+        np.testing.assert_allclose(m.wcs.wcs.cdelt, wcs.wcs.cdelt)
 
 
 # --- Unknown landscape ---

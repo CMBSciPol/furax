@@ -403,25 +403,32 @@ class HealpixLandscape(StokesLandscape):
     """Class representing a Healpix-projected map of Stokes vectors."""
 
     def __init__(
-        self, nside: int, stokes: ValidStokesType = 'IQU', dtype: DTypeLike = np.float64
+        self,
+        nside: int,
+        stokes: ValidStokesType = 'IQU',
+        dtype: DTypeLike = np.float64,
+        nested: bool = False,
     ) -> None:
+        if nested:
+            raise NotImplementedError('NESTED pixel ordering is not fully supported by jax-healpy.')
         shape = (12 * nside**2,)
         super().__init__(shape, stokes, dtype)
         self.nside = nside
+        self.nested = nested
 
     @jax.jit
     def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
-        r"""Convert quaternion to HEALPix index in ring ordering.
+        r"""Convert quaternion to HEALPix pixel index.
 
         Args:
             quat (float): Quaternion.
 
         Returns:
-            int: HEALPix map index for ring ordering scheme.
+            int: HEALPix pixel index.
         """
         # we want the 3 dimensions on the left
         vec = jnp.moveaxis(qrot_zaxis(quat), -1, 0)
-        pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec)
+        pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec, nest=self.nested)
         return pix
 
     def world2interp(
@@ -429,7 +436,7 @@ class HealpixLandscape(StokesLandscape):
     ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
         """Returns (indices, weights) for bilinear HEALPix interpolation (n=4)."""
         # get_interp_weights returns (4, *dims) for both pixels and weights
-        pixels, weights = jhp.get_interp_weights(self.nside, theta, phi)
+        pixels, weights = jhp.get_interp_weights(self.nside, theta, phi, nest=self.nested)
         indices = jnp.moveaxis(pixels, 0, -1)
         weights = jnp.moveaxis(weights, 0, -1).astype(self.dtype)
         return indices, weights
@@ -438,16 +445,16 @@ class HealpixLandscape(StokesLandscape):
     def world2pixel(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Integer[Array, ' *dims'], ...]:
-        r"""Convert angles to HEALPix index for HEALPix ring ordering scheme.
+        r"""Convert angles to HEALPix pixel index.
 
         Args:
             theta (float): Spherical :math:`\theta` angle.
             phi (float): Spherical :math:`\phi` angle.
 
         Returns:
-            int: HEALPix map index for ring ordering scheme.
+            int: HEALPix pixel index.
         """
-        return (jhp.ang2pix(self.nside, theta, phi),)
+        return (jhp.ang2pix(self.nside, theta, phi, nest=self.nested),)
 
 
 @register_static

@@ -330,7 +330,12 @@ def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape 
     (i.e. WCS with no explicit geometry).
     """
     if lc.healpix is not None:
-        return HealpixLandscape(nside=lc.healpix.nside, stokes=lc.stokes, dtype=dtype)
+        return HealpixLandscape(
+            nside=lc.healpix.nside,
+            stokes=lc.stokes,
+            dtype=dtype,
+            nested=lc.healpix.ordering == 'nest',
+        )
     if lc.wcs is not None and lc.wcs.has_geometry:
         return _wcs_landscape_from_geometry(lc.wcs, lc.stokes, dtype)
     return None

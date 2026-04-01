@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+import functools
+from dataclasses import dataclass, field
 from typing import Any
 
 import jax

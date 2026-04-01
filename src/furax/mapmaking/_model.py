@@ -1,6 +1,6 @@
 import functools
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -151,10 +151,11 @@ class ObservationModel:
         return IndexOperator(mask, in_structure=self.tod_structure)
 
 
+_StokesPyTree = TypeVar('_StokesPyTree', bound=StokesPyTreeType)
+
+
 @functools.partial(jax.jit, static_argnames=['diag'])
-def _system_scan(
-    model: ObservationModel, x: StokesPyTreeType, *, diag: bool = False
-) -> StokesPyTreeType:
+def _system_scan(model: ObservationModel, x: _StokesPyTree, *, diag: bool = False) -> _StokesPyTree:
     """Apply H^T W H to x, summed over the batch of observations in model.
 
     `model` is an explicit JIT argument so it is never captured as an XLA constant.
@@ -174,17 +175,17 @@ def _system_scan(
 
 @symmetric
 class SystemOperator(AbstractLinearOperator):
-    """System operator A = sum_obs H_i^T W_i H_i stored as a JAX-traceable pytree."""
+    """System operator for multiple observations: `A = Σ_i H_i^T W_i H_i`."""
 
     models: ObservationModel
-    diag: bool = field(default=False, metadata={'static': True})
+    diag: bool = field(metadata={'static': True})
 
     def __init__(self, models: ObservationModel, *, diag: bool = False):
         object.__setattr__(self, 'models', models)
         object.__setattr__(self, 'diag', diag)
         object.__setattr__(self, 'in_structure', models.map_structure)
 
-    def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
+    def mv(self, x: _StokesPyTree) -> _StokesPyTree:
         return _system_scan(self.models, x, diag=self.diag)  # type: ignore[no-any-return]
 
 

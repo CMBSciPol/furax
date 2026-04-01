@@ -5,8 +5,7 @@ from furax import AbstractLinearOperator
 from furax.math.quaternion import to_gamma_angles
 from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.landscapes import StokesLandscape
-
-from .pointing import PointingOperator
+from furax.obs.pointing import PointingOperator
 
 __all__ = [
     'build_acquisition_operator',

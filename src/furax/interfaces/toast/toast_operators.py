@@ -32,10 +32,10 @@ from furax.interfaces.lineax import as_lineax_operator
 from furax.interfaces.toast.observation import ToastObservation
 from furax.mapmaking import MapMakingConfig
 from furax.mapmaking.mapmaker import MapMaker as FuraxMapMaker
-from furax.mapmaking.pointing import PointingOperator
 from furax.mapmaking.templates import TemplateOperator
 from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.landscapes import HealpixLandscape
+from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import StokesIQU
 
 from .utils import (

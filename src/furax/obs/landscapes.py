@@ -366,30 +366,36 @@ class CARLandscape(WCSLandscape):
     ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
         """Returns (indices, weights) for bilinear interpolation (n=4)."""
         pix_x, pix_y = self.world2pixel(theta, phi)
-
-        # Integer coordinates of the four neighbors
-        x0 = jnp.floor(pix_x).astype(jnp.int32)
-        y0 = jnp.floor(pix_y).astype(jnp.int32)
-        x1 = x0 + 1
-        y1 = y0 + 1
-
-        # Fractional parts
-        fx = (pix_x - x0).astype(self.dtype)
-        fy = (pix_y - y0).astype(self.dtype)
-
-        # Bilinear weights: (bottom-left, bottom-right, top-left, top-right)
-        w00 = (1 - fx) * (1 - fy)
-        w10 = fx * (1 - fy)
-        w01 = (1 - fx) * fy
-        w11 = fx * fy
-
-        # Stack neighbor coords along a trailing axis, call pixel2index once
-        # pixel2index handles bounds, returning -1 for out-of-bounds
-        xs = jnp.stack([x0, x1, x0, x1], axis=-1).astype(pix_x.dtype)
-        ys = jnp.stack([y0, y0, y1, y1], axis=-1).astype(pix_y.dtype)
+        xs, ys, weights = _2d_bilinear_interp(pix_x, pix_y)
         indices = self.pixel2index(xs, ys)
-        weights = jnp.stack([w00, w10, w01, w11], axis=-1)
         return indices, weights
+
+
+def _2d_bilinear_interp(
+    pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
+) -> tuple[Float[Array, '*dims 4'], Float[Array, '*dims 4'], Float[Array, '*dims 4']]:
+    # Integer coordinates of the four neighbors
+    x0 = jnp.floor(pix_x).astype(jnp.int32)
+    y0 = jnp.floor(pix_y).astype(jnp.int32)
+    x1 = x0 + 1
+    y1 = y0 + 1
+
+    # Fractional parts
+    fx = pix_x - x0
+    fy = pix_y - y0
+
+    # Bilinear weights: (bottom-left, bottom-right, top-left, top-right)
+    w00 = (1 - fx) * (1 - fy)
+    w10 = fx * (1 - fy)
+    w01 = (1 - fx) * fy
+    w11 = fx * fy
+
+    # Stack neighbor coords along a trailing axis, call pixel2index once
+    # pixel2index handles bounds, returning -1 for out-of-bounds
+    xs = jnp.stack([x0, x1, x0, x1], axis=-1).astype(pix_x.dtype)
+    ys = jnp.stack([y0, y0, y1, y1], axis=-1).astype(pix_y.dtype)
+    weights = jnp.stack([w00, w10, w01, w11], axis=-1)
+    return xs, ys, weights
 
 
 @register_static
@@ -557,3 +563,193 @@ class HorizonLandscape(StokesLandscape):
         pix_j = jnp.round(((azimuth - az_min) % (2 * jnp.pi)) / daz - 0.5).astype(jnp.int64)
 
         return pix_i, pix_j
+
+
+@register_static
+class TangentialLandscape(StokesLandscape):
+    r"""Class representing a flat map in the local tangent plane at zenith.
+
+    Implements the gnomonic (tangential) projection: a ray from the telescope origin
+    in direction :math:`\hat{v}` intersects the horizontal plane at height :math:`h` at
+
+    .. math::
+
+        x = h \frac{v_x}{v_z}, \quad y = h \frac{v_y}{v_z}
+
+    where :math:`v_z = \cos\theta` is the elevation cosine (z-axis = zenith).
+
+    The map is a 2D Cartesian grid in physical units (same units as ``height``), centered
+    at the origin. Pixel spacing is ``dx`` along x and ``dy`` along y, so the map covers
+    ``[-n_x*dx/2, n_x*dx/2]`` × ``[-n_y*dy/2, n_y*dy/2]``.
+
+    Attributes:
+        shape: Array shape ``(n_y, n_x)`` in row-major order.
+        dx: Pixel spacing along the x-axis (same units as ``height``).
+        dy: Pixel spacing along the y-axis (same units as ``height``).
+        height: Height of the tangent plane above the telescope (same units as ``dx``/``dy``).
+        stokes: Stokes components stored in the map (default ``'I'``).
+        dtype: Data type for map values.
+    """
+
+    def __init__(
+        self,
+        shape: tuple[int, int],
+        dx: float,
+        dy: float,
+        height: float,
+        x0: float = 0.0,
+        y0: float = 0.0,
+        stokes: ValidStokesType = 'I',
+        dtype: DTypeLike = np.float64,
+    ) -> None:
+        if stokes != 'I':
+            raise NotImplementedError
+        super().__init__(shape, stokes, dtype)
+        self.dx = dx
+        self.dy = dy
+        self.height = height
+        self.x0 = x0
+        self.y0 = y0
+
+    @property
+    def extent(self) -> tuple[float, float]:
+        """Physical size of the map ``(x_size, y_size)`` in the same units as ``dx``/``dy``."""
+        n_x, n_y = self.pixel_shape
+        return n_x * self.dx, n_y * self.dy
+
+    @classmethod
+    def from_extent(
+        cls,
+        x_size: float,
+        y_size: float,
+        dx: float,
+        dy: float,
+        height: float,
+        x0: float = 0.0,
+        y0: float = 0.0,
+        stokes: ValidStokesType = 'I',
+        dtype: DTypeLike = np.float64,
+    ) -> 'TangentialLandscape':
+        """Create a landscape from physical extent and pixel spacing.
+
+        The map is centered at ``(x0, y0)`` and covers
+        ``[x0 - x_size/2, x0 + x_size/2]`` × ``[y0 - y_size/2, y0 + y_size/2]``.
+        The number of pixels is ``ceil(x_size / dx)`` × ``ceil(y_size / dy)``, so the
+        actual covered area may be slightly larger than requested to accommodate whole
+        pixels.
+
+        Args:
+            x_size: Total physical width of the map (same units as ``height``).
+            y_size: Total physical height of the map (same units as ``height``).
+            dx: Pixel spacing along x.
+            dy: Pixel spacing along y.
+            height: Height of the tangent plane above the telescope.
+            x0: Physical x-coordinate of the map center (default 0).
+            y0: Physical y-coordinate of the map center (default 0).
+            stokes: Stokes components to store (default ``'I'``).
+            dtype: Data type for map values.
+        """
+        n_x = int(np.ceil(x_size / dx))
+        n_y = int(np.ceil(y_size / dy))
+        return cls((n_y, n_x), dx, dy, height, x0, y0, stokes, dtype)
+
+    def xy2pixel(
+        self,
+        x: Float[Array, ' *dims'],
+        y: Float[Array, ' *dims'],
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Convert physical coordinates to floating-point pixel coordinates.
+
+        The map is centered at ``(x0, y0)``. Integer pixel coordinates correspond to
+        pixel centers.
+
+        Args:
+            x: Physical x-coordinates.
+            y: Physical y-coordinates.
+
+        Returns:
+            Floating-point pixel coordinate pair ``(pix_x, pix_y)``.
+        """
+        n_x, n_y = self.pixel_shape
+        pix_x = (x - self.x0) / self.dx + n_x / 2 - 0.5
+        pix_y = (y - self.y0) / self.dy + n_y / 2 - 0.5
+        return pix_x, pix_y
+
+    @jax.jit
+    def world2pixel(
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        r"""Convert ISO spherical angles to pixel coordinates via gnomonic projection.
+
+        Args:
+            theta: Co-latitude from zenith (0 at zenith, :math:`\pi/2` at horizon).
+            phi: Azimuthal angle.
+
+        Returns:
+            Floating-point pixel coordinate pair ``(pix_x, pix_y)``.
+        """
+        sin_theta = jnp.sin(theta)
+        cos_theta = jnp.cos(theta)
+        x = self.height * sin_theta * jnp.cos(phi) / cos_theta
+        y = self.height * sin_theta * jnp.sin(phi) / cos_theta
+        return self.xy2pixel(x, y)
+
+    def quat2xy(
+        self, quat: Float[Array, '*dims 4']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Convert quaternions to physical (x, y) coordinates on the tangent plane.
+
+        Uses :func:`qrot_zaxis` to extract the pointing direction and applies the exact
+        gnomonic projection. This is the primary conversion step used by
+        :class:`AtmosphereOperator` before adding wind displacement.
+
+        Args:
+            quat: Pointing quaternions (z-axis = zenith frame).
+
+        Returns:
+            Physical coordinate pair ``(x, y)``.
+        """
+        v = qrot_zaxis(quat)
+        # cos(theta) = (a² + d²) - (b² + c²) = v[..., 2]
+        # sin(theta) cos(phi) = 2 (ca + db) = v[..., 0]
+        # sin(theta) sin(phi) = 2 (cd - ab) = v[..., 1]
+        x = self.height * v[..., 0] / v[..., 2]
+        y = self.height * v[..., 1] / v[..., 2]
+        return x, y
+
+    def quat2pixel(
+        self, quat: Float[Array, '*dims 4']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Convert quaternions to floating-point pixel coordinates.
+
+        Overrides the base-class implementation to use :func:`qrot_zaxis` directly,
+        avoiding the round-trip through ISO angles.
+        """
+        x, y = self.quat2xy(quat)
+        return self.xy2pixel(x, y)
+
+    def xy2interp(
+        self,
+        x: Float[Array, ' *dims'],
+        y: Float[Array, ' *dims'],
+    ) -> tuple[Integer[Array, ' *dims 4'], Float[Array, ' *dims 4']]:
+        """Bilinear interpolation weights and indices for physical coordinates.
+
+        Returns the four neighbouring pixel indices and their bilinear weights.
+        Out-of-bounds neighbours are marked with index ``-1`` and weight ``0``.
+
+        Args:
+            x: Physical x-coordinates.
+            y: Physical y-coordinates.
+
+        Returns:
+            ``(indices, weights)`` where both have shape ``(*dims, 4)`` and the
+            trailing axis runs over the four neighbours in order
+            ``(i0,j0), (i1,j0), (i0,j1), (i1,j1)``.
+        """
+        pix_x, pix_y = self.xy2pixel(x, y)
+        xs, ys, weights = _2d_bilinear_interp(pix_x, pix_y)
+        indices = self.pixel2index(xs, ys)
+        return indices, weights

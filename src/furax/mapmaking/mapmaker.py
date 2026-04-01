@@ -38,6 +38,7 @@ from furax.obs.landscapes import (
     WCSLandscape,
 )
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
+from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
 
 from . import templates
@@ -48,7 +49,6 @@ from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
-from .pointing import PointingOperator
 from .preconditioner import BJPreconditioner
 
 

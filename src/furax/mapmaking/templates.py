@@ -14,10 +14,10 @@ from furax.core import TransposeOperator
 from furax.math import quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
 from furax.obs.landscapes import HorizonLandscape
+from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import ValidStokesType
 
-from . import AbstractGroundObservation
-from .pointing import PointingOperator
+from ._observation import AbstractGroundObservation
 
 
 class TemplateOperator(AbstractLinearOperator):

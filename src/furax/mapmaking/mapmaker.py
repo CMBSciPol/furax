@@ -126,10 +126,10 @@ class MultiObservationMapMaker(Generic[T]):
         if self.config.method == Methods.ATOP:
             if not self.config.binned:
                 raise ValueError('ATOP requires a white noise model (noise.white=True).')
-            if self.config.landscape.stokes[0] == 'I':
-                if self.config.landscape.stokes != 'IQU':
+            if 'I' in (stokes := self.config.landscape.stokes):
+                if stokes != 'IQU':
                     raise ValueError(
-                        f'ATOP does not support intensity map reconstruction and stokes={self.config.landscape.stokes!r}'
+                        f'ATOP does not support intensity map reconstruction and {stokes=!r}'
                         " cannot be reduced to a supported type. Use stokes='QU' instead."
                     )
                 self.logger.info(

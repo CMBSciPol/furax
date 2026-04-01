@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
-from numpy.testing import assert_array_almost_equal
+from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 from furax.mapmaking.results import MapMakingResults
 from furax.obs.landscapes import (
@@ -125,7 +125,7 @@ def test_healpix_map_roundtrip(healpix_results, tmp_path):
 def test_healpix_hit_map_roundtrip(healpix_results, tmp_path):
     healpix_results.save(tmp_path)
     hit_map_read = hp.read_map(tmp_path / 'hit_map.fits')
-    assert_array_almost_equal(hit_map_read, healpix_results.hit_map)
+    assert_array_equal(hit_map_read, healpix_results.hit_map)
 
 
 def test_healpix_icov_roundtrip(healpix_results, tmp_path):
@@ -170,7 +170,7 @@ def test_wcs_map_roundtrip(car_results, tmp_path):
 def test_wcs_hit_map_roundtrip(car_results, tmp_path):
     car_results.save(tmp_path)
     data = fits.open(tmp_path / 'hit_map.fits')[0].data
-    assert_array_almost_equal(data, car_results.hit_map)
+    assert_array_equal(data, car_results.hit_map)
 
 
 def test_wcs_icov_roundtrip(car_results, tmp_path):

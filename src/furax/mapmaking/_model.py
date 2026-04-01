@@ -176,11 +176,11 @@ def _system_scan(
 class SystemOperator(AbstractLinearOperator):
     """System operator A = sum_obs H_i^T W_i H_i stored as a JAX-traceable pytree."""
 
-    model: ObservationModel
-    diag: bool = field(metadata={'static': True})
+    models: ObservationModel
+    diag: bool = field(default=False, metadata={'static': True})
 
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
-        return _system_scan(self.model, x, diag=self.diag)  # type: ignore[no-any-return]
+        return _system_scan(self.models, x, diag=self.diag)  # type: ignore[no-any-return]
 
 
 def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel], Array]:

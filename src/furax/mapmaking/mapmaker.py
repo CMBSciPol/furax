@@ -204,7 +204,7 @@ class MultiObservationMapMaker(Generic[T]):
         # Build system matrix from stacked ObservationModel
         model = self.build_model()
         map_structure = model.map_structure
-        A = SystemOperator(model=model, diag=False, in_structure=model.map_structure)
+        A = SystemOperator(model, in_structure=map_structure)
         logger_info('Created system operator')
 
         hits = self.accumulate_hits(model).block_until_ready()
@@ -217,7 +217,7 @@ class MultiObservationMapMaker(Generic[T]):
         sysdiag = (
             A
             if self.config.binned
-            else SystemOperator(model=model, diag=True, in_structure=model.map_structure)
+            else SystemOperator(model, diag=True, in_structure=map_structure)
         )
         BJ = BJPreconditioner.create(sysdiag)
         icov = BJ.get_blocks().block_until_ready()

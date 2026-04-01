@@ -1,7 +1,7 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, fields
 from logging import Logger
 from math import prod
 from pathlib import Path
@@ -16,7 +16,7 @@ import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
+from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer
 
 import furax.linalg
 import furax.tree as tree
@@ -115,10 +115,28 @@ class MultiObservationMapMaker(Generic[T]):
         self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
+        self._check_config()
         self.landscape = (
             _static_landscape(self.config.landscape, self.config.dtype)
             or self._scan_wcs_footprint()
         )
+
+    def _check_config(self) -> None:
+        """Validate and adjust config for method-specific compatibility."""
+        if self.config.method == Methods.ATOP:
+            if not self.config.binned:
+                raise ValueError('ATOP requires a white noise model (noise.white=True).')
+            if 'I' in (stokes := self.config.landscape.stokes):
+                if stokes != 'IQU':
+                    raise ValueError(
+                        f'ATOP does not support intensity map reconstruction and {stokes=!r}'
+                        " cannot be reduced to a supported type. Use stokes='QU' instead."
+                    )
+                self.logger.info(
+                    "Received stokes='IQU', but ATOP does not support intensity map reconstruction."
+                    " Falling back to stokes='QU' instead."
+                )
+                self.config.landscape.stokes = 'QU'
 
     def _scan_wcs_footprint(self) -> WCSLandscape:
         """Scan observations to determine the combined WCS footprint and build a WCSLandscape.
@@ -1122,40 +1140,6 @@ class TwoStepMapmaker(MapMaker):
         return output
 
 
-class ATOPProjectionOperator(AbstractLinearOperator):
-    tau: int = field(metadata={'static': True})
-    n_det: int = field(metadata={'static': True})
-    n_samp: int = field(metadata={'static': True})
-
-    def __init__(
-        self,
-        tau: int,
-        *,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-        n_det: int | None = None,
-        n_samp: int | None = None,
-    ) -> None:
-        if n_det is None:
-            n_det, n_samp = in_structure.shape
-        object.__setattr__(self, 'tau', tau)
-        object.__setattr__(self, 'n_det', n_det)
-        object.__setattr__(self, 'n_samp', n_samp)
-        object.__setattr__(self, 'in_structure', in_structure)
-
-    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
-        if self.n_samp % self.tau == 0:
-            y = x.reshape(self.n_det, self.n_samp // self.tau, self.tau)
-            y = y - jnp.mean(y, axis=-1)[:, :, None]
-            return y.reshape(self.n_det, self.n_samp)
-        else:
-            n_int = self.n_samp // self.tau
-            y = x[:, : n_int * self.tau].reshape(self.n_det, n_int, self.tau)
-            y = y - jnp.mean(y, axis=-1)[:, :, None]
-            return jnp.concatenate(
-                [y.reshape(self.n_det, n_int * self.tau), x[:, -(self.n_samp % self.tau) :]], axis=1
-            )
-
-
 class ATOPMapMaker(MapMaker):
     """Class for ATOP mapmaking with diagonal noise covariance."""
 
@@ -1184,7 +1168,9 @@ class ATOPMapMaker(MapMaker):
         logger_info('Created acquisition operator')
 
         # ATOP projector
-        atop_projector = ATOPProjectionOperator(self.config.atop_tau, in_structure=data_struct)
+        atop_projector = templates.ATOPProjectionOperator(
+            self.config.atop_tau, in_structure=data_struct
+        )
 
         # Optional mask for scanning
         masker = self.get_mask_projector(observation)

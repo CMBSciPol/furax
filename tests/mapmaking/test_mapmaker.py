@@ -16,6 +16,7 @@ from furax.mapmaking import (
 from furax.mapmaking.config import (
     HealpixConfig,
     LandscapeConfig,
+    Methods,
     NoiseConfig,
     NoiseFitConfig,
     PointingConfig,
@@ -160,6 +161,62 @@ class TestMultiObsMapMaker:
         assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
 
 
+ATOP_PARAMS = [
+    pytest.param(
+        'sotodlib',
+        id='sotodlib',
+        marks=pytest.mark.skipif(not sotodlib_installed, reason='sotodlib is not installed'),
+    ),
+    pytest.param(
+        'toast',
+        id='toast',
+        marks=pytest.mark.skipif(not toast_installed, reason='toast is not installed'),
+    ),
+]
+ATOP_TAU = 10
+
+
+@pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
+@pytest.mark.parametrize('name', ATOP_PARAMS)
+class TestATOPMapMaker:
+    """Test ATOP support in MultiObservationMapMaker."""
+
+    @pytest.mark.slow
+    def test_atop_full_mapmaker(self, name, landscape_type):
+        """ATOP runs end-to-end and produces a QU map with the correct shape."""
+        observations = _observations(name)
+        config = _config(landscape_type, stokes='QU', method=Methods.ATOP, atop_tau=ATOP_TAU)
+        maker = MultiObservationMapMaker(observations, config=config)
+        results = maker.run()
+        assert results.icov.shape == (2, 2, *maker.landscape.shape)
+
+    def test_atop_iqu_stokes_falls_back_to_qu(self, name, landscape_type):
+        """stokes='IQU' with ATOP is converted to 'QU'."""
+        observations = _observations(name)
+        config = _config(landscape_type, stokes='IQU', method=Methods.ATOP, atop_tau=ATOP_TAU)
+        maker = MultiObservationMapMaker(observations, config=config)
+        assert maker.config.landscape.stokes == 'QU'
+
+
+class TestATOPStokesValidation:
+    """Test that invalid Stokes configurations raise errors when using ATOP."""
+
+    def _base_config(self, stokes: ValidStokesType) -> MapMakingConfig:
+        return MapMakingConfig(
+            method=Methods.ATOP,
+            atop_tau=ATOP_TAU,
+            landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16)),
+        )
+
+    def test_i_stokes_raises(self):
+        with pytest.raises(ValueError, match='cannot be reduced to a supported type'):
+            MultiObservationMapMaker([], config=self._base_config('I'))
+
+    def test_iquv_stokes_raises(self):
+        with pytest.raises(ValueError, match='cannot be reduced to a supported type'):
+            MultiObservationMapMaker([], config=self._base_config('IQUV'))
+
+
 def _observations(name: str, demodulated: bool = False) -> list[AbstractLazyObservation]:
     folder = Path(__file__).parents[1] / 'data' / name
     if name == 'toast':
@@ -182,6 +239,8 @@ def _config(
     demodulated: bool = False,
     fit_noise_model: bool = True,
     interpolation: Literal['nearest', 'bilinear'] = 'nearest',
+    method: Methods = Methods.BINNED,
+    atop_tau: int = 0,
 ) -> MapMakingConfig:
     if landscape_type == 'healpix':
         lc = LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16))
@@ -195,8 +254,10 @@ def _config(
             ),
         )
     return MapMakingConfig(
+        method=method,
         pointing=PointingConfig(on_the_fly=True, interpolation=interpolation),
         landscape=lc,
         noise=NoiseConfig(fit_from_data=fit_noise_model, fitting=NoiseFitConfig(nperseg=512)),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
+        atop_tau=atop_tau,
     )

@@ -910,3 +910,23 @@ class GroundTemplateOperator(TemplateOperator):
 class StokesIQUFlattenOperator(AbstractLinearOperator):
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> Inexact[Array, ' _b']:
         return jnp.concatenate([x.i, x.q, x.u])
+
+
+class ATOPProjectionOperator(AbstractLinearOperator):
+    tau: int = field(metadata={'static': True})
+
+    def __init__(
+        self,
+        tau: int,
+        *,
+        in_structure: PyTree[jax.ShapeDtypeStruct],
+    ) -> None:
+        object.__setattr__(self, 'tau', tau)
+        object.__setattr__(self, 'in_structure', in_structure)
+
+    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
+        n_det, n_samp = self.in_structure.shape
+        n_int, n_rem = divmod(n_samp, self.tau)
+        y = x[:, : n_int * self.tau].reshape(n_det, n_int, self.tau)
+        y = y - jnp.mean(y, axis=-1)[:, :, None]
+        return jnp.concatenate([y.reshape(n_det, n_int * self.tau), x[:, -n_rem:]], axis=1)

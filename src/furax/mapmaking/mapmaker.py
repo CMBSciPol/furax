@@ -28,7 +28,6 @@ from furax import (
     MaskOperator,
     OperatorTag,
     SymmetricBandToeplitzOperator,
-    asoperator,
 )
 from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
 from furax.interfaces.lineax import as_lineax_operator
@@ -44,7 +43,7 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel, _hwp_frequency
+from ._model import ObservationModel, SystemOperator, _hwp_frequency
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
@@ -187,7 +186,7 @@ class MultiObservationMapMaker(Generic[T]):
         # Build system matrix from stacked ObservationModel
         model = self.build_model()
         map_structure = model.map_structure
-        A = self._system_operator(model)
+        A = SystemOperator(model=model, diag=False, in_structure=model.map_structure)
         logger_info('Created system operator')
 
         hits = self.accumulate_hits(model).block_until_ready()
@@ -197,7 +196,11 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Accumulated RHS vector')
 
         # Preconditioning
-        sysdiag = A if self.config.binned else self._system_operator(model, diag=True)
+        sysdiag = (
+            A
+            if self.config.binned
+            else SystemOperator(model=model, diag=True, in_structure=model.map_structure)
+        )
         BJ = BJPreconditioner.create(sysdiag)
         icov = BJ.get_blocks().block_until_ready()
         logger_info('Computed white noise inverse covariance')
@@ -300,20 +303,6 @@ class MultiObservationMapMaker(Generic[T]):
             )
 
         return valid
-
-    def _system_operator(
-        self, model: ObservationModel, *, diag: bool = False
-    ) -> AbstractLinearOperator:
-        """Build the system operator H.T @ W @ H accumulated over observations."""
-
-        def apply(x):  # type: ignore[no-untyped-def]
-            def step(acc, m):  # type: ignore[no-untyped-def]
-                return tree.add(acc, m.apply_system(x, white_noise=diag)), None
-
-            result, _ = jax.lax.scan(step, tree.zeros_like(x), model)
-            return result
-
-        return asoperator(apply, in_structure=model.map_structure)
 
 
 def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape | None:

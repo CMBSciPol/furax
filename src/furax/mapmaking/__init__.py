@@ -11,6 +11,7 @@ from .config import MapMakingConfig
 from .gap_filling import GapFillingOperator
 from .mapmaker import MultiObservationMapMaker
 from .preconditioner import BJPreconditioner
+from .results import MapMakingResults
 
 __all__ = [
     'BJPreconditioner',
@@ -22,6 +23,7 @@ __all__ = [
     'HashedObservationMetadata',
     'ObservationReader',
     'MapMakingConfig',
+    'MapMakingResults',
     'MultiObservationMapMaker',
     'logger',
 ]

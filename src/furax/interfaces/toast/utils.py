@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from jax_grid_search import optimize
+import optimistix as optx
 from jaxtyping import Array, Float
 from optax import tree_utils as otu
 from toast import qarray as qa
@@ -105,11 +105,13 @@ def estimate_psd_legacy(
 @partial(jnp.vectorize, signature='(n),(n)->(p)')
 def _fit_psd_model_legacy(f: Float[Array, ' a'], Pxx: Float[Array, ' a']) -> Float[Array, '4']:
     """Legacy implementation of fit_psd_model. Use fit_psd_model() instead."""
+
     # minimise loss for params: (sigma, alpha, fknee, fmin/fknee)
-    loss = lambda params: _compute_loss(
-        params.at[3].multiply(params[2]), x=f[1:], y=jnp.log10(Pxx[1:])
-    )
-    opt = optax.lbfgs()
+    def loss_fn(params: Float[Array, '4'], _aux: Any = None) -> Float[Array, '']:
+        # replicate original multiply logic
+        x = f[1:]
+        y = jnp.log10(Pxx[1:])
+        return _compute_loss(params.at[3].multiply(params[2]), x=x, y=y)
 
     # estimate white noise level from the top 10% high-freq PSD
     # the formula is slightly more accurate than a simple sum
@@ -120,21 +122,20 @@ def _fit_psd_model_legacy(f: Float[Array, ' a'], Pxx: Float[Array, ' a']) -> Flo
     maxf = f[-1]
     init_params = jnp.array([sigma_init, -1.0, 0.1 * maxf, 1e-5])
 
-    # bounds
-    up = jnp.array([jnp.inf, -0.1, maxf, 1e-3])
-    lo = jnp.array([0, -10, e := jnp.finfo(f.dtype).eps, e])
+    # Solver
+    solver: optx.LBFGS[Any, Any, Any, Any] = optx.LBFGS(rtol=1e-12, atol=1e-12)
 
-    # perform minimization
-    tol = jnp.median(Pxx**2) * 1e-12
-    params, _ = optimize(
+    # run minimization
+    sol: optx.Solution[Any, Any] = optx.minimise(
+        loss_fn,
+        solver,
         init_params,
-        loss,
-        opt,
-        max_iter=300,
-        tol=tol,
-        upper_bound=up,
-        lower_bound=lo,
+        max_steps=300,
+        throw=False,
     )
+
+    # extract solution
+    params = sol.value
 
     return params.at[3].multiply(params[2])  # type: ignore[no-any-return]
 

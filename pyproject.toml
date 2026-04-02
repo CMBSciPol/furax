@@ -94,7 +94,6 @@ module = [
     'astropy.*',
     'cyclopts',
     'healpy',
-    'jax_grid_search',
     'jax_healpy',
     'lineax',
     'matplotlib.*',

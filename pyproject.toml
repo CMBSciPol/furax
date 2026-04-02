@@ -107,7 +107,6 @@ module = [
     'so3g.*',
     'sotodlib.*',
     'toast.*',
-    'optimistix',
 ]
 ignore_missing_imports = true
 

@@ -350,15 +350,15 @@ def fit_atmospheric_psd_model(
 
 
 def _fit_psd_model_masked(
-    f: jnp.ndarray,
-    Pxx: jnp.ndarray,
-    mask: jnp.ndarray,
-    low_f_threshold: jnp.ndarray,
-    high_f_threshold: jnp.ndarray,
+    f: Float[Array, ' freqs'],
+    Pxx: Float[Array, 'dets freqs'],
+    mask: Float[Array, ''],
+    low_f_threshold: Array,
+    high_f_threshold: Array,
     max_iter: int = 100,
     tol: float = 1e-10,
-) -> dict:
-    """Fit a 1/f PSD model to the periodogram in log space."""
+) -> dict['str', Any]:
+    """Fit a 1/f PSD model to the periodogram in log space"""
 
     # 1. Initial parameter estimate (sigma, alpha, f_knee, f0)
     init_params = _approximate_fit(
@@ -366,17 +366,18 @@ def _fit_psd_model_masked(
     )
 
     # 2. Loss function in scaled variables (scaled = params / init_params)
-    #    Must accept two arguments: (scaled_params, args)
-    def loss_fn(scaled_params, _args=None):
+    def loss_fn(scaled_params: Array, _args: Any = None) -> Array:
         params = scaled_params * init_params
         return _compute_whittle_neglnlike(params, f, Pxx, mask)
 
     # 3. Optimistix LBFGS solver
-    solver = optx.LBFGS(rtol=tol, atol=tol)
+    solver: optx.LBFGS[Any, Any, Any, Any] = optx.LBFGS(rtol=tol, atol=tol)
     init_scaled = jnp.ones_like(init_params)
 
     # 4. Run optimisation (args=None by default, has_aux=False)
-    sol = optx.minimise(loss_fn, solver, init_scaled, max_steps=max_iter, throw=False)
+    sol: optx.Solution[Any, Any] = optx.minimise(
+        loss_fn, solver, init_scaled, max_steps=max_iter, throw=False
+    )
 
     # 5. Extract results
     scaled_params = sol.value

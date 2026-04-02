@@ -359,6 +359,41 @@ def _fit_psd_model_masked(
     max_iter: int = 100,
     tol: float = 1e-10,
 ) -> dict['str', Any]:
+    """Fit a 1/f PSD model to the periodogram in log space with a frequency mask.
+
+    This function fits a model of the form:
+        PSD(f) = sigma^2 * (1 + ((f + f0) / f_knee)^alpha)
+
+    where:
+        - sigma: white noise level
+        - alpha: power law index (typically negative)
+        - f_knee: knee frequency
+        - f0: minimum frequency offset
+
+    Args:
+        f: Frequency array (Hz). Shape: (n_freq,)
+        Pxx: Power spectral density values. Shape: (n_detectors, n_freq)
+        mask: Frequency mask which is 1 at valid frequencies and 0 otherwise
+        low_f_threshold: Frequency below which the PSD is assumed to be dominated by 1/f noise.
+            Used in choosing the starting point for alpha and f_knee
+        high_f_threshold: Frequency above which the PSD is assumed to be dominated by white noise
+            Used in choosing the starting point for sigma
+
+    Returns:
+        params: Array of fitted parameters [sigma, alpha, f_knee, f_min].
+            Shape: (4,)
+
+    Examples:
+        >>> # Basic usage - fit entire frequency range (excluding DC)
+        >>> params = fit_psd_model(f, Pxx)
+
+        >>> # Fit only low frequencies
+        >>> params = fit_psd_model(f, Pxx, f_min=0.01, f_max=1.0)
+
+        >>> # Mask out specific frequency bands (e.g., HWP modes)
+        >>> mask_intervals = jnp.array([[3.8, 7.8], [4.2, 8.2]])  # Mask 3.8-4.2 Hz and 7.8-8.2 Hz
+        >>> params = fit_psd_model(f, Pxx, f_mask_intervals=mask_intervals)
+    """
     # 1. Initial parameter estimate (sigma, alpha, f_knee, f0)
     init_params = _approximate_fit(
         f, Pxx, mask, low_f_threshold=low_f_threshold, high_f_threshold=high_f_threshold

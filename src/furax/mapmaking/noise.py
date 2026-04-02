@@ -358,7 +358,7 @@ def _fit_psd_model_masked(
     high_f_threshold: Array,
     max_iter: int = 100,
     tol: float = 1e-10,
-) -> dict['str', Any]:
+) -> dict[str, Any]:
     """Fit a 1/f PSD model to the periodogram in log space with a frequency mask.
 
     This function fits a model of the form:

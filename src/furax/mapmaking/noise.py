@@ -5,9 +5,7 @@ from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
-from jax_grid_search import optimize
 from jaxtyping import Array, Float, PyTree
-from optax import lbfgs
 from optax import tree_utils as otu
 from scipy.signal import get_window
 
@@ -17,6 +15,7 @@ from furax.core import (
     FourierOperator,
     SymmetricBandToeplitzOperator,
 )
+from furax.math.lbfgs import run_lbfgs
 
 from ._logger import logger
 from .config import NoiseFitConfig
@@ -359,8 +358,8 @@ def _fit_psd_model_masked(
     high_f_threshold: Array,
     max_iter: int = 100,
     tol: float = 1e-10,
-) -> dict['str', Any]:
-    """Fit a 1/f PSD model to the periodogram in log space.
+) -> dict[str, Any]:
+    """Fit a 1/f PSD model to the periodogram in log space with a frequency mask.
 
     This function fits a model of the form:
         PSD(f) = sigma^2 * (1 + ((f + f0) / f_knee)^alpha)
@@ -394,42 +393,44 @@ def _fit_psd_model_masked(
         >>> # Mask out specific frequency bands (e.g., HWP modes)
         >>> mask_intervals = jnp.array([[3.8, 7.8], [4.2, 8.2]])  # Mask 3.8-4.2 Hz and 7.8-8.2 Hz
         >>> params = fit_psd_model(f, Pxx, f_mask_intervals=mask_intervals)
-
     """
-
+    # 1. Initial parameter estimate (sigma, alpha, f_knee, f0)
     init_params = _approximate_fit(
         f, Pxx, mask, low_f_threshold=low_f_threshold, high_f_threshold=high_f_threshold
     )
 
-    loss = lambda scaled_params: _compute_whittle_neglnlike(
-        scaled_params * init_params, f, Pxx, mask
-    )
-    opt = lbfgs()
+    # 2. Loss function in scaled variables (scaled = params / init_params)
+    def loss_fn(scaled_params: Array) -> Array:
+        params = scaled_params * init_params
+        return _compute_whittle_neglnlike(params, f, Pxx, mask)
 
-    # bounds
-    up = jnp.array([1e3, 1e3, 1e3, 1e3])
+    # 3. Run optimisation with bounds on scaled parameters
     lo = jnp.array([1e-3, 1e-3, 1e-3, 1e-10])
-
-    # perform minimization
-    scaled_params, state = optimize(
+    up = jnp.array([1e3, 1e3, 1e3, 1e3])
+    scaled_params, state = run_lbfgs(
         jnp.ones_like(init_params),
-        loss,
-        opt,
+        loss_fn,
         max_iter=max_iter,
         tol=tol,
-        upper_bound=up,
         lower_bound=lo,
+        upper_bound=up,
     )
+
+    # 4. Extract results
     params = scaled_params * init_params
-    scaled_fisher = 0.5 * jax.hessian(loss)(scaled_params)
+    loss_final = loss_fn(scaled_params)
+    num_iter = otu.tree_get(state, 'count')
+
+    # 5. Fisher information matrix
+    scaled_fisher = 0.5 * jax.hessian(loss_fn)(scaled_params)
     inv_fisher = (
         jnp.linalg.pinv(scaled_fisher, rtol=1e-12) * init_params[None, :] * init_params[:, None]
     )
 
     return {
         'fit': params,
-        'loss': state.best_val,
-        'num_iter': jnp.array(otu.tree_get(state, 'count'), dtype=int),
+        'loss': loss_final,
+        'num_iter': jnp.array(num_iter, dtype=int),
         'inv_fisher': inv_fisher,
         'num_freq': jnp.sum(mask),
     }

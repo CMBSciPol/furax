@@ -1,16 +1,14 @@
 from functools import partial
-from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from jax_grid_search import optimize
 from jaxtyping import Array, Float
-from optax import tree_utils as otu
 from toast import qarray as qa
 
 from furax.mapmaking.noise import apodization_window
+from furax.math.lbfgs import run_lbfgs
 
 
 @partial(np.vectorize, signature='(4)->()')
@@ -105,11 +103,12 @@ def estimate_psd_legacy(
 @partial(jnp.vectorize, signature='(n),(n)->(p)')
 def _fit_psd_model_legacy(f: Float[Array, ' a'], Pxx: Float[Array, ' a']) -> Float[Array, '4']:
     """Legacy implementation of fit_psd_model. Use fit_psd_model() instead."""
+
     # minimise loss for params: (sigma, alpha, fknee, fmin/fknee)
-    loss = lambda params: _compute_loss(
-        params.at[3].multiply(params[2]), x=f[1:], y=jnp.log10(Pxx[1:])
-    )
-    opt = optax.lbfgs()
+    def loss_fn(params: Float[Array, '4']) -> Float[Array, '']:
+        x = f[1:]
+        y = jnp.log10(Pxx[1:])
+        return _compute_loss(params.at[3].multiply(params[2]), x=x, y=y)
 
     # estimate white noise level from the top 10% high-freq PSD
     # the formula is slightly more accurate than a simple sum
@@ -121,22 +120,15 @@ def _fit_psd_model_legacy(f: Float[Array, ' a'], Pxx: Float[Array, ' a']) -> Flo
     init_params = jnp.array([sigma_init, -1.0, 0.1 * maxf, 1e-5])
 
     # bounds
+    e = jnp.finfo(f.dtype).eps
+    lo = jnp.array([0.0, -10.0, e, e])
     up = jnp.array([jnp.inf, -0.1, maxf, 1e-3])
-    lo = jnp.array([0, -10, e := jnp.finfo(f.dtype).eps, e])
 
-    # perform minimization
-    tol = jnp.median(Pxx**2) * 1e-12
-    params, _ = optimize(
-        init_params,
-        loss,
-        opt,
-        max_iter=300,
-        tol=tol,
-        upper_bound=up,
-        lower_bound=lo,
+    params, _ = run_lbfgs(
+        init_params, loss_fn, max_iter=300, tol=1e-12, lower_bound=lo, upper_bound=up
     )
 
-    return params.at[3].multiply(params[2])  # type: ignore[no-any-return]
+    return params.at[3].multiply(params[2])
 
 
 def _compute_loss(
@@ -163,32 +155,6 @@ def _unpack(params: Float[Array, '4']) -> tuple[Array, Array, Array, Array]:
     f_knee = params[2]
     f_min = params[3]
     return net, alpha, f_knee, f_min
-
-
-def run_lbfgs(init_params: Any, fun: Any, opt: Any, max_iter: int, tol: float) -> tuple[Array, Any]:
-    """Minimizes a function using the L-BFGS solver.
-
-    From https://optax.readthedocs.io/en/latest/_collections/examples/lbfgs.html#l-bfgs-solver
-    """
-    value_and_grad_fun = optax.value_and_grad_from_state(fun)
-
-    def step(carry):  # type: ignore[no-untyped-def]
-        params, state = carry
-        value, grad = value_and_grad_fun(params, state=state)
-        updates, state = opt.update(grad, state, params, value=value, grad=grad, value_fn=fun)
-        params = optax.apply_updates(params, updates)
-        return params, state
-
-    def continuing_criterion(carry):  # type: ignore[no-untyped-def]
-        _, state = carry
-        iter_num = otu.tree_get(state, 'count')
-        grad = otu.tree_get(state, 'grad')
-        err = otu.tree_l2_norm(grad)
-        return (iter_num == 0) | ((iter_num < max_iter) & (err >= tol))
-
-    init_carry = (init_params, opt.init(init_params))
-    final_params, final_state = jax.lax.while_loop(continuing_criterion, step, init_carry)
-    return final_params, final_state
 
 
 @partial(jax.jit, static_argnames=['correlation_length'])

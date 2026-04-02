@@ -352,15 +352,13 @@ def fit_atmospheric_psd_model(
 
 def _fit_psd_model_masked(
     f: Float[Array, ' freqs'],
-    Pxx: Float[Array, 'dets freqs'],
-    mask: Float[Array, ''],
+    Pxx: Float[Array, ' freqs'],
+    mask: Float[Array, ' freqs'],
     low_f_threshold: Array,
     high_f_threshold: Array,
     max_iter: int = 100,
     tol: float = 1e-10,
 ) -> dict['str', Any]:
-    """Fit a 1/f PSD model to the periodogram in log space"""
-
     # 1. Initial parameter estimate (sigma, alpha, f_knee, f0)
     init_params = _approximate_fit(
         f, Pxx, mask, low_f_threshold=low_f_threshold, high_f_threshold=high_f_threshold

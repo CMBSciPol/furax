@@ -7,8 +7,6 @@ import jax
 import jax.numpy as jnp
 import optimistix as optx
 from jaxtyping import Array, Float, PyTree
-from optax import lbfgs
-from optax import tree_utils as otu
 from scipy.signal import get_window
 
 from furax.core import (
@@ -364,14 +362,12 @@ def _fit_psd_model_masked(
 
     # 1. Initial parameter estimate (sigma, alpha, f_knee, f0)
     init_params = _approximate_fit(
-        f, Pxx, mask,
-        low_f_threshold=low_f_threshold,
-        high_f_threshold=high_f_threshold
+        f, Pxx, mask, low_f_threshold=low_f_threshold, high_f_threshold=high_f_threshold
     )
 
     # 2. Loss function in scaled variables (scaled = params / init_params)
     #    Must accept two arguments: (scaled_params, args)
-    def loss_fn(scaled_params, args=None):
+    def loss_fn(scaled_params, _args=None):
         params = scaled_params * init_params
         return _compute_whittle_neglnlike(params, f, Pxx, mask)
 
@@ -380,26 +376,18 @@ def _fit_psd_model_masked(
     init_scaled = jnp.ones_like(init_params)
 
     # 4. Run optimisation (args=None by default, has_aux=False)
-    sol = optx.minimise(
-        loss_fn,
-        solver,
-        init_scaled,
-        max_steps=max_iter,
-        throw=False
-    )
+    sol = optx.minimise(loss_fn, solver, init_scaled, max_steps=max_iter, throw=False)
 
     # 5. Extract results
     scaled_params = sol.value
     params = scaled_params * init_params
-    loss_final = loss_fn(scaled_params)   # args ignored
+    loss_final = loss_fn(scaled_params)  # args ignored
     num_iter = sol.stats.get('num_steps', 0)
 
     # 6. Fisher information matrix (as in original code)
     scaled_fisher = 0.5 * jax.hessian(loss_fn, argnums=0)(scaled_params, None)
     inv_fisher = (
-        jnp.linalg.pinv(scaled_fisher, rtol=1e-12) *
-        init_params[None, :] *
-        init_params[:, None]
+        jnp.linalg.pinv(scaled_fisher, rtol=1e-12) * init_params[None, :] * init_params[:, None]
     )
 
     return {

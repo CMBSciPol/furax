@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
-from jax_grid_search import optimize
+import optimistix as optx
 from jaxtyping import Array, Float, PyTree
 from optax import lbfgs
 from optax import tree_utils as otu
@@ -352,84 +352,60 @@ def fit_atmospheric_psd_model(
 
 
 def _fit_psd_model_masked(
-    f: Float[Array, ' freqs'],
-    Pxx: Float[Array, ' freqs'],
-    mask: Float[Array, ' freqs'],
-    low_f_threshold: Array,
-    high_f_threshold: Array,
+    f: jnp.ndarray,
+    Pxx: jnp.ndarray,
+    mask: jnp.ndarray,
+    low_f_threshold: jnp.ndarray,
+    high_f_threshold: jnp.ndarray,
     max_iter: int = 100,
     tol: float = 1e-10,
-) -> dict['str', Any]:
-    """Fit a 1/f PSD model to the periodogram in log space.
+) -> dict:
+    """Fit a 1/f PSD model to the periodogram in log space."""
 
-    This function fits a model of the form:
-        PSD(f) = sigma^2 * (1 + ((f + f0) / f_knee)^alpha)
-
-    where:
-        - sigma: white noise level
-        - alpha: power law index (typically negative)
-        - f_knee: knee frequency
-        - f0: minimum frequency offset
-
-    Args:
-        f: Frequency array (Hz). Shape: (n_freq,)
-        Pxx: Power spectral density values. Shape: (n_detectors, n_freq)
-        mask: Frequency mask which is 1 at valid frequencies and 0 otherwise
-        low_f_threshold: Frequency below which the PSD is assumed to be dominated by 1/f noise.
-            Used in choosing the starting point for alpha and f_knee
-        high_f_threshold: Frequency above which the PSD is assumed to be dominated by white noise
-            Used in choosing the starting point for sigma
-
-    Returns:
-        params: Array of fitted parameters [sigma, alpha, f_knee, f_min].
-            Shape: (4,)
-
-    Examples:
-        >>> # Basic usage - fit entire frequency range (excluding DC)
-        >>> params = fit_psd_model(f, Pxx)
-
-        >>> # Fit only low frequencies
-        >>> params = fit_psd_model(f, Pxx, f_min=0.01, f_max=1.0)
-
-        >>> # Mask out specific frequency bands (e.g., HWP modes)
-        >>> mask_intervals = jnp.array([[3.8, 7.8], [4.2, 8.2]])  # Mask 3.8-4.2 Hz and 7.8-8.2 Hz
-        >>> params = fit_psd_model(f, Pxx, f_mask_intervals=mask_intervals)
-
-    """
-
+    # 1. Initial parameter estimate (sigma, alpha, f_knee, f0)
     init_params = _approximate_fit(
-        f, Pxx, mask, low_f_threshold=low_f_threshold, high_f_threshold=high_f_threshold
+        f, Pxx, mask,
+        low_f_threshold=low_f_threshold,
+        high_f_threshold=high_f_threshold
     )
 
-    loss = lambda scaled_params: _compute_whittle_neglnlike(
-        scaled_params * init_params, f, Pxx, mask
-    )
-    opt = lbfgs()
+    # 2. Loss function in scaled variables (scaled = params / init_params)
+    #    Must accept two arguments: (scaled_params, args)
+    def loss_fn(scaled_params, args=None):
+        params = scaled_params * init_params
+        return _compute_whittle_neglnlike(params, f, Pxx, mask)
 
-    # bounds
-    up = jnp.array([1e3, 1e3, 1e3, 1e3])
-    lo = jnp.array([1e-3, 1e-3, 1e-3, 1e-10])
+    # 3. Optimistix LBFGS solver
+    solver = optx.LBFGS(rtol=tol, atol=tol)
+    init_scaled = jnp.ones_like(init_params)
 
-    # perform minimization
-    scaled_params, state = optimize(
-        jnp.ones_like(init_params),
-        loss,
-        opt,
-        max_iter=max_iter,
-        tol=tol,
-        upper_bound=up,
-        lower_bound=lo,
+    # 4. Run optimisation (args=None by default, has_aux=False)
+    sol = optx.minimise(
+        loss_fn,
+        solver,
+        init_scaled,
+        max_steps=max_iter,
+        throw=False
     )
+
+    # 5. Extract results
+    scaled_params = sol.value
     params = scaled_params * init_params
-    scaled_fisher = 0.5 * jax.hessian(loss)(scaled_params)
+    loss_final = loss_fn(scaled_params)   # args ignored
+    num_iter = sol.stats.get('num_steps', 0)
+
+    # 6. Fisher information matrix (as in original code)
+    scaled_fisher = 0.5 * jax.hessian(loss_fn, argnums=0)(scaled_params, None)
     inv_fisher = (
-        jnp.linalg.pinv(scaled_fisher, rtol=1e-12) * init_params[None, :] * init_params[:, None]
+        jnp.linalg.pinv(scaled_fisher, rtol=1e-12) *
+        init_params[None, :] *
+        init_params[:, None]
     )
 
     return {
         'fit': params,
-        'loss': state.best_val,
-        'num_iter': jnp.array(otu.tree_get(state, 'count'), dtype=int),
+        'loss': loss_final,
+        'num_iter': jnp.array(num_iter, dtype=int),
         'inv_fisher': inv_fisher,
         'num_freq': jnp.sum(mask),
     }

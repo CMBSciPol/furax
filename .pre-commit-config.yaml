@@ -50,7 +50,6 @@ repos:
     - scipy
     - optax
     - traitlets
-    - optimistix
     args:
     - --strict
     - --show-error-codes

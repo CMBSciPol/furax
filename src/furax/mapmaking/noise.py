@@ -5,8 +5,8 @@ from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
-import optimistix as optx
 from jaxtyping import Array, Float, PyTree
+from optax import tree_utils as otu
 from scipy.signal import get_window
 
 from furax.core import (
@@ -15,6 +15,7 @@ from furax.core import (
     FourierOperator,
     SymmetricBandToeplitzOperator,
 )
+from furax.math.lbfgs import run_lbfgs
 
 from ._logger import logger
 from .config import NoiseFitConfig
@@ -366,27 +367,29 @@ def _fit_psd_model_masked(
     )
 
     # 2. Loss function in scaled variables (scaled = params / init_params)
-    def loss_fn(scaled_params: Array, _args: Any = None) -> Array:
+    def loss_fn(scaled_params: Array) -> Array:
         params = scaled_params * init_params
         return _compute_whittle_neglnlike(params, f, Pxx, mask)
 
-    # 3. Optimistix LBFGS solver
-    solver: optx.LBFGS[Any, Any, Any, Any] = optx.LBFGS(rtol=tol, atol=tol)
-    init_scaled = jnp.ones_like(init_params)
-
-    # 4. Run optimisation (args=None by default, has_aux=False)
-    sol: optx.Solution[Any, Any] = optx.minimise(
-        loss_fn, solver, init_scaled, max_steps=max_iter, throw=False
+    # 3. Run optimisation with bounds on scaled parameters
+    lo = jnp.array([1e-3, 1e-3, 1e-3, 1e-10])
+    up = jnp.array([1e3, 1e3, 1e3, 1e3])
+    scaled_params, state = run_lbfgs(
+        jnp.ones_like(init_params),
+        loss_fn,
+        max_iter=max_iter,
+        tol=tol,
+        lower_bound=lo,
+        upper_bound=up,
     )
 
-    # 5. Extract results
-    scaled_params = sol.value
+    # 4. Extract results
     params = scaled_params * init_params
-    loss_final = loss_fn(scaled_params)  # args ignored
-    num_iter = sol.stats.get('num_steps', 0)
+    loss_final = loss_fn(scaled_params)
+    num_iter = otu.tree_get(state, 'count')
 
-    # 6. Fisher information matrix (as in original code)
-    scaled_fisher = 0.5 * jax.hessian(loss_fn, argnums=0)(scaled_params, None)
+    # 5. Fisher information matrix
+    scaled_fisher = 0.5 * jax.hessian(loss_fn)(scaled_params)
     inv_fisher = (
         jnp.linalg.pinv(scaled_fisher, rtol=1e-12) * init_params[None, :] * init_params[:, None]
     )

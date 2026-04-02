@@ -35,6 +35,7 @@ dependencies = [
     'numpy',
     'scipy',
     'typing-extensions; python_version < "3.13"',
+    "optimistix>=0.0.11",
 ]
 dynamic = ['version']
 
@@ -51,7 +52,7 @@ docs = [
 ]
 mapmaking = [
     'apischema>=0.19.0',
-    'jax-grid-search',
+    'optimistix',
     'matplotlib',
     'optax',
     'pixell>=0.31.7',

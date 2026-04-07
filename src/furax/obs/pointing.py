@@ -176,7 +176,7 @@ class PointingOperator(AbstractLinearOperator):
         if self.interpolate:
             raise NotImplementedError('as_expanded_operator does not support interpolate=True')
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
-        indices = self.landscape.quat2index(qdet_full)
+        indices = self._quat2index(qdet_full)
         # this takes care of multi-dimensional landscapes
         ravel_op = RavelOperator(in_structure=self.landscape.structure)
         index_op = IndexOperator(indices, in_structure=ravel_op.out_structure)

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import IntFlag, auto
 from typing import Any, ClassVar, TypeVar, overload
 
-if sys.version_info >= (3, 11):
+if sys.version_info >= (3, 12):
     from typing import dataclass_transform
 else:
     from typing_extensions import dataclass_transform

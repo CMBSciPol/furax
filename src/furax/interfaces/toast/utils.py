@@ -1,14 +1,13 @@
 from functools import partial
 
+import cadre
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 from jaxtyping import Array, Float
 from toast import qarray as qa
 
 from furax.mapmaking.noise import apodization_window
-from furax.math.lbfgs import run_lbfgs
 
 
 @partial(np.vectorize, signature='(4)->()')
@@ -124,11 +123,18 @@ def _fit_psd_model_legacy(f: Float[Array, ' a'], Pxx: Float[Array, ' a']) -> Flo
     lo = jnp.array([0.0, -10.0, e, e])
     up = jnp.array([jnp.inf, -0.1, maxf, 1e-3])
 
-    params, _ = run_lbfgs(
-        init_params, loss_fn, max_iter=300, tol=1e-12, lower_bound=lo, upper_bound=up
+    params, _ = cadre.minimize(
+        loss_fn,
+        init_params,
+        solver_name='optax_lbfgs',
+        max_iter=300,
+        atol=1e-10,
+        rtol=1e-10,
+        lower_bound=lo,
+        upper_bound=up,
     )
 
-    return params.at[3].multiply(params[2])
+    return params.at[3].multiply(params[2])  # type: ignore[no-any-return]
 
 
 def _compute_loss(
@@ -136,7 +142,7 @@ def _compute_loss(
 ) -> Float[Array, '1']:
     y_pred = _log_model(params, x)
     w = jnp.where(x > 0, 1.0, 0.0)
-    return jnp.mean(optax.l2_loss(w * y_pred, w * y))
+    return jnp.mean(0.5 * (w * y_pred - w * y) ** 2)
 
 
 def _log_model(params: Float[Array, '4'], x: Float[Array, ' a']) -> Float[Array, ' a']:

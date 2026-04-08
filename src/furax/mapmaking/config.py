@@ -40,8 +40,11 @@ class NoiseFitConfig:
     max_iter: int = 100
     """Maximum number of iterations"""
 
-    tol: float = 1e-10
-    """Error tolerance"""
+    atol: float = 1e-10
+    """Absolute minimiser tolerance (step size and function value change)"""
+
+    rtol: float = 1e-10
+    """Relative minimiser tolerance (step size and function value change)"""
 
     min_freq_nyquist: float = 1e-8
     """Only use f >= min_freq * nyquist for noise fitting"""

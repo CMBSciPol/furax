@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, cast
 
+import cadre
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
-from optax import tree_utils as otu
 from scipy.signal import get_window
 
 from furax.core import (
@@ -15,7 +15,6 @@ from furax.core import (
     FourierOperator,
     SymmetricBandToeplitzOperator,
 )
-from furax.math.lbfgs import run_lbfgs
 
 from ._logger import logger
 from .config import NoiseFitConfig
@@ -330,7 +329,8 @@ def fit_atmospheric_psd_model(
             low_f_threshold=nyquist * config.low_freq_nyquist,
             high_f_threshold=nyquist * config.high_freq_nyquist,
             max_iter=config.max_iter,
-            tol=config.tol,
+            atol=config.atol,
+            rtol=config.rtol,
         ),
         in_axes=(None, 0),
         out_axes={'fit': 0, 'loss': 0, 'num_iter': 0, 'inv_fisher': 0, 'num_freq': None},
@@ -357,7 +357,8 @@ def _fit_psd_model_masked(
     low_f_threshold: Array,
     high_f_threshold: Array,
     max_iter: int = 100,
-    tol: float = 1e-10,
+    atol: float = 1e-10,
+    rtol: float = 1e-10,
 ) -> dict[str, Any]:
     """Fit a 1/f PSD model to the periodogram in log space with a frequency mask.
 
@@ -407,11 +408,13 @@ def _fit_psd_model_masked(
     # 3. Run optimisation with bounds on scaled parameters
     lo = jnp.array([1e-3, 1e-3, 1e-3, 1e-10])
     up = jnp.array([1e3, 1e3, 1e3, 1e3])
-    scaled_params, state = run_lbfgs(
-        jnp.ones_like(init_params),
+    scaled_params, state = cadre.minimize(
         loss_fn,
+        jnp.ones_like(init_params),
+        solver_name='optax_lbfgs',
         max_iter=max_iter,
-        tol=tol,
+        atol=atol,
+        rtol=rtol,
         lower_bound=lo,
         upper_bound=up,
     )
@@ -419,7 +422,7 @@ def _fit_psd_model_masked(
     # 4. Extract results
     params = scaled_params * init_params
     loss_final = loss_fn(scaled_params)
-    num_iter = otu.tree_get(state, 'count')
+    num_iter = state.iter_num
 
     # 5. Fisher information matrix
     scaled_fisher = 0.5 * jax.hessian(loss_fn)(scaled_params)

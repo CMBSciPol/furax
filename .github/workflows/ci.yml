@@ -47,7 +47,7 @@ jobs:
         run: uv venv
 
       - name: Install dependencies
-        run: uv pip install .[dev,mapmaking,interfaces]
+        run: uv pip install .[dev,mapmaking,so,toast]
 
       - name: Run tests
-        run: uv run pytest -vv -m "not slow"
+        run: .venv/bin/python -m pytest -vv -m "not slow"

@@ -26,12 +26,12 @@ license = 'MIT'
 license-files = ['LICENSE']
 dependencies = [
     'astropy',
-    'equinox',
+    'equinox>=0.13.6',
     'healpy>=0.18.1',
-    'jax>=0.4.38,!=0.7.*',
-    'jaxtyping',
+    'jax>=0.8',
+    'jaxtyping>=0.3.9',
     'jax-healpy>=0.5',
-    'lineax>=0.0.8',
+    'lineax>=0.1',
     'numpy',
     'scipy',
     'typing-extensions; python_version < "3.13"',

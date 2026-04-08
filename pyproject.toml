@@ -25,15 +25,15 @@ requires-python = '>=3.11'
 license = 'MIT'
 license-files = ['LICENSE']
 dependencies = [
-    'astropy',
-    'equinox',
-    'healpy>=0.18.1',
-    'jax>=0.4.38,!=0.7.*',
-    'jaxtyping',
+    'astropy>=7.2',
+    'equinox>=0.13.8',
+    'healpy>=1.19.0',
+    'jax>=0.10.0',
+    'jaxtyping>=0.3.9',
     'jax-healpy>=0.5',
-    'lineax>=0.0.8',
-    'numpy',
-    'scipy',
+    'lineax>=0.1.1',
+    'numpy>=2.0',
+    'scipy>=1.14',
     'typing-extensions; python_version < "3.13"',
 ]
 dynamic = ['version']
@@ -52,13 +52,13 @@ docs = [
 mapmaking = [
     'apischema>=0.19.0',
     'jax-cadre>=0.1.2',
-    'matplotlib',
+    'matplotlib>=3.8.4',
     'pixell>=0.31.3',
-    'pyyaml>=0.6.2',
+    'pyyaml>=6.0.3',
 ]
 so = [
     'cyclopts>=4.6.0',
-    'sotodlib[site-pipeline]>=0.6.16',
+    'sotodlib[site-pipeline]>=0.6.19',
     'so3g>=0.2.7; python_version >= "3.13"',  # official Python 3.13 support since v0.2.5
     'so3g>=0.2.4; python_version < "3.13"',  # keep v0.2.4; it has wheels for macOS 13+
 ]

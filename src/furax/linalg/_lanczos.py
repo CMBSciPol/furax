@@ -35,6 +35,80 @@ class LanczosResult(NamedTuple):
 # =============================================================================
 
 
+def _lanczos_loop(
+    A: AbstractLinearOperator,
+    V_m: PyTree[Num[Array, 'm ...']],
+    alpha: Float[Array, ' m'],
+    beta: Float[Array, ' m-1'],
+    v_start: PyTree[Num[Array, '...']],
+    v_prev: PyTree[Num[Array, '...']],
+    beta_prev: Float[Array, ''],
+    j_start: int,
+    m: int,
+) -> tuple[
+    PyTree[Num[Array, 'm ...']],
+    Float[Array, ' m'],
+    Float[Array, ' m-1'],
+    Float[Array, ''],
+    PyTree[Num[Array, '...']],
+]:
+    """Run Lanczos iterations from absolute position j_start to m-1.
+
+    V_m[j_start] must already be set to v_start before calling.
+
+    Args:
+        A: A Hermitian linear operator.
+        V_m: Pre-allocated m-vector basis with V_m[j_start] = v_start.
+        alpha: Diagonal array (m,), may be pre-filled for j < j_start.
+        beta: Off-diagonal array (m-1,), may be pre-filled for j < j_start.
+        v_start: Starting vector for the first iteration.
+        v_prev: Previous Lanczos vector (zeros for a fresh start).
+        beta_prev: Previous beta (0 for a fresh start).
+        j_start: Absolute index of the first iteration.
+        m: Total number of Lanczos vectors.
+
+    Returns:
+        V_m: Updated m-vector basis.
+        alpha: Updated diagonal (m,).
+        beta: Updated off-diagonal (m-1,).
+        beta_last: Residual norm after the final step.
+        v_last: Residual direction after the final step.
+    """
+
+    def body_fn(j, carry):  # type: ignore[no-untyped-def]
+        V_m, alpha, beta, v, v_prev, beta_prev = carry
+
+        w = A(v)
+        alpha_j = tree.dot(v, w)
+        alpha = alpha.at[j].set(alpha_j)
+
+        w = tree.add(tree.mul(-alpha_j, v), w)
+        w = tree.add(tree.mul(-beta_prev, v_prev), w)
+
+        def reorth_step(k, w):  # type: ignore[no-untyped-def]
+            v_k = jax.tree.map(lambda V_leaf: V_leaf[k], V_m)
+            coeff = tree.dot(v_k, w)
+            return tree.add(tree.mul(-coeff, v_k), w)
+
+        w = jax.lax.fori_loop(0, j + 1, reorth_step, w)
+
+        beta_j = tree.norm(w)
+        v_next = tree.mul(1.0 / jnp.maximum(beta_j, 1e-14), w)
+
+        beta = jnp.where(j < m - 1, beta.at[j].set(beta_j), beta)
+        V_m = jax.lax.cond(
+            j < m - 1,
+            lambda: jax.tree.map(lambda V_leaf, v_leaf: V_leaf.at[j + 1].set(v_leaf), V_m, v_next),
+            lambda: V_m,
+        )
+
+        return V_m, alpha, beta, v_next, v, beta_j
+
+    init_carry = (V_m, alpha, beta, v_start, v_prev, beta_prev)
+    V_m, alpha, beta, v_last, _, beta_last = jax.lax.fori_loop(j_start, m, body_fn, init_carry)
+    return V_m, alpha, beta, beta_last, v_last
+
+
 def lanczos_tridiag(
     A: AbstractLinearOperator,
     v0: PyTree[Num[Array, '...']],
@@ -67,67 +141,16 @@ def lanczos_tridiag(
         beta_last: Norm of the residual after m steps (the m-th beta).
         v_last: Residual direction after m steps (the (m+1)-th Lanczos vector).
     """
-    # Normalize v0
-    norm_v0 = tree.norm(v0)
-    v = tree.mul(1.0 / norm_v0, v0)
+    v = tree.mul(1.0 / tree.norm(v0), v0)
 
-    # Pre-allocate storage for Lanczos vectors, tridiagonal elements
     V = block_zeros_like(v0, m)
     V = jax.tree.map(lambda V_leaf, v_leaf: V_leaf.at[0].set(v_leaf), V, v)
     alpha = jnp.zeros(m)
     beta = jnp.zeros(m - 1) if m > 1 else jnp.array([])
 
-    # v_prev = 0 (conceptually)
-    v_prev = tree.zeros_like(v)
-    beta_prev = jnp.array(0.0)
-
-    def body_fn(j, carry):  # type: ignore[no-untyped-def]
-        V, alpha, beta, v, v_prev, beta_prev = carry
-
-        # w = A @ v_j
-        w = A(v)
-
-        # alpha_j = v_j^H @ w
-        alpha_j = tree.dot(v, w)
-        alpha = alpha.at[j].set(alpha_j)
-
-        # w = w - alpha_j * v_j - beta_{j-1} * v_{j-1}
-        w = tree.add(tree.mul(-alpha_j, v), w)
-        w = tree.add(tree.mul(-beta_prev, v_prev), w)
-
-        # Full reorthogonalization against all previously computed vectors
-        def reorth_step(k, w):  # type: ignore[no-untyped-def]
-            v_k = jax.tree.map(lambda V_leaf: V_leaf[k], V)
-            coeff = tree.dot(v_k, w)
-            return tree.add(tree.mul(-coeff, v_k), w)
-
-        w = jax.lax.fori_loop(0, j + 1, reorth_step, w)
-
-        # beta_j = ||w||
-        beta_j = tree.norm(w)
-
-        # v_{j+1} = w / beta_j (if beta_j != 0)
-        safe_beta = jnp.maximum(beta_j, 1e-14)
-        v_next = tree.mul(1.0 / safe_beta, w)
-
-        # Only update beta and V[j+1] if j < m - 1
-        beta = jnp.where(j < m - 1, beta.at[j].set(beta_j), beta)
-        V = jax.lax.cond(
-            j < m - 1,
-            lambda: jax.tree.map(lambda V_leaf, v_leaf: V_leaf.at[j + 1].set(v_leaf), V, v_next),
-            lambda: V,
-        )
-
-        # Update for next iteration
-        v_prev = v
-        v = v_next
-        beta_prev = beta_j
-
-        return V, alpha, beta, v, v_prev, beta_prev
-
-    init_carry = (V, alpha, beta, v, v_prev, beta_prev)
-    V, alpha, beta, v_last, _, beta_last = jax.lax.fori_loop(0, m, body_fn, init_carry)
-
+    V, alpha, beta, beta_last, v_last = _lanczos_loop(
+        A, V, alpha, beta, v, tree.zeros_like(v), jnp.array(0.0), 0, m
+    )
     return alpha, beta, V, beta_last, v_last
 
 
@@ -264,11 +287,11 @@ def _build_ks_matrix(
 ) -> Float[Array, 'm m']:
     """Build the bordered tridiagonal m×m inner matrix H for Krylov-Schur.
 
-    The matrix has the structure::
+    The matrix has the structure:
 
-        H[:k, :k] = diag(theta_k)          (k Ritz values)
-        H[k,  :k] = h                       (coupling row)
-        H[:k,  k] = h                       (coupling col, symmetry)
+        H[:k, :k] = diag(theta_k)  # k Ritz values
+        H[k,  :k] = h              # coupling row
+        H[:k,  k] = h              # coupling col
         H[k:,  k:] = tridiag(alpha_ext, beta_ext)
 
     Args:
@@ -306,10 +329,7 @@ def _ks_extend(
     """Extend a k-step Krylov-Schur factorization to m steps.
 
     Runs p = m - k Lanczos iterations starting from v_start with full
-    reorthogonalization against all accumulated vectors.  Unlike
-    :func:`_extend_lanczos`, there is no single β connecting V_k to v_start;
-    the full k-dimensional coupling is handled by reorthogonalization at the
-    first step.
+    reorthogonalization against all accumulated vectors.
 
     Args:
         A: A Hermitian linear operator.
@@ -326,7 +346,6 @@ def _ks_extend(
         beta_last: Residual norm after m steps.
         v_last: Residual direction after m steps (unit norm).
     """
-    p = m - k
     dtype = jax.tree.leaves(v_start)[0].dtype
 
     # Pre-allocate m-vector basis; fill first k slots with Ritz vectors
@@ -334,48 +353,17 @@ def _ks_extend(
     V_m = jax.tree.map(lambda Vm_l, Vk_l: Vm_l.at[:k].set(Vk_l), V_m, V_k)
     V_m = jax.tree.map(lambda Vm_l, vn_l: Vm_l.at[k].set(vn_l), V_m, v_start)
 
-    alpha_ext = jnp.zeros(p, dtype=dtype)
-    beta_store = jnp.zeros(p, dtype=dtype)  # beta_store[p-1] is beta_last
-
-    # v_prev at j=0 is the last Ritz vector; beta_prev=0 so it cancels out,
+    # v_prev is the last Ritz vector; beta_prev=0 so it cancels out,
     # and full reorthogonalization handles the coupling to all Ritz vectors.
     v_prev = jax.tree.map(lambda leaf: leaf[k - 1], V_m)
 
-    def body_fn(j, carry):  # type: ignore[no-untyped-def]
-        V_m, alpha_ext, beta_store, v, v_prev, beta_prev = carry
-        j_abs = j + k  # absolute position in the m-step factorization
+    alpha = jnp.zeros(m, dtype=dtype)
+    beta = jnp.zeros(m - 1, dtype=dtype)
 
-        w = A(v)
-        alpha_j = tree.dot(v, w)
-        alpha_ext = alpha_ext.at[j].set(alpha_j)
-
-        w = tree.add(tree.mul(-alpha_j, v), w)
-        w = tree.add(tree.mul(-beta_prev, v_prev), w)
-
-        # Full reorthogonalization against all accumulated vectors
-        def reorth_step(k_idx, w):  # type: ignore[no-untyped-def]
-            v_k = jax.tree.map(lambda V_leaf: V_leaf[k_idx], V_m)
-            coeff = tree.dot(v_k, w)
-            return tree.add(tree.mul(-coeff, v_k), w)
-
-        w = jax.lax.fori_loop(0, j_abs + 1, reorth_step, w)
-
-        beta_j = tree.norm(w)
-        v_new = tree.mul(1.0 / jnp.maximum(beta_j, 1e-14), w)
-
-        beta_store = beta_store.at[j].set(beta_j)
-        V_m = jax.lax.cond(
-            j_abs < m - 1,
-            lambda: jax.tree.map(lambda Vm_l, vn_l: Vm_l.at[j_abs + 1].set(vn_l), V_m, v_new),
-            lambda: V_m,
-        )
-
-        return V_m, alpha_ext, beta_store, v_new, v, beta_j
-
-    init_carry = (V_m, alpha_ext, beta_store, v_start, v_prev, jnp.array(0.0, dtype=dtype))
-    V_m, alpha_ext, beta_store, v_last, _, beta_last = jax.lax.fori_loop(0, p, body_fn, init_carry)
-
-    return alpha_ext, beta_store[: p - 1], V_m, beta_last, v_last
+    V_m, alpha, beta, beta_last, v_last = _lanczos_loop(
+        A, V_m, alpha, beta, v_start, v_prev, jnp.array(0.0, dtype=dtype), k, m
+    )
+    return alpha[k:], beta[k:], V_m, beta_last, v_last
 
 
 def lanczos_ks(
@@ -385,8 +373,8 @@ def lanczos_ks(
     k: int = 20,
     m: int | None = None,
     which: str = 'smallest',
-    max_restarts: int = 20,
-    tol: float = 1e-6,
+    max_restarts: int = 300,
+    tol: float = 1e-10,
 ) -> LanczosResult:
     """Krylov-Schur method (thick restart Lanczos) for computing k eigenpairs.
 

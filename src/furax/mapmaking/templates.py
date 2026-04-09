@@ -9,7 +9,7 @@ from jax import numpy as jnp
 from jaxtyping import DTypeLike, Float, Inexact, Int, PyTree
 from numpy.typing import NDArray
 
-from furax import AbstractLinearOperator
+from furax import AbstractLinearOperator, square
 from furax.core import TransposeOperator
 from furax.math import quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
@@ -912,6 +912,7 @@ class StokesIQUFlattenOperator(AbstractLinearOperator):
         return jnp.concatenate([x.i, x.q, x.u])
 
 
+@square
 class ATOPProjectionOperator(AbstractLinearOperator):
     tau: int = field(metadata={'static': True})
 
@@ -928,5 +929,8 @@ class ATOPProjectionOperator(AbstractLinearOperator):
         n_det, n_samp = self.in_structure.shape
         n_int, n_rem = divmod(n_samp, self.tau)
         y = x[:, : n_int * self.tau].reshape(n_det, n_int, self.tau)
-        y = y - jnp.mean(y, axis=-1)[:, :, None]
-        return jnp.concatenate([y.reshape(n_det, n_int * self.tau), x[:, -n_rem:]], axis=1)
+        y = y - jnp.mean(y, axis=-1, keepdims=True)
+        y = y.reshape(n_det, n_int * self.tau)
+        if n_rem == 0:
+            return y
+        return jnp.concatenate([y, x[:, -n_rem:]], axis=1)

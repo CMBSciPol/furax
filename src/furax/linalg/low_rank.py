@@ -1,6 +1,6 @@
 """Low-rank approximation for PyTree-aware linear operators."""
 
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, TypeAlias, get_args
 
 import jax
 import jax.numpy as jnp
@@ -9,12 +9,14 @@ from jaxtyping import Float, Num, PRNGKeyArray, PyTree
 
 from furax.core import AbstractLinearOperator
 from furax.core._base import symmetric
-from furax.tree import normal_like, zeros_like
+from furax.tree import dot, normal_like, zeros_like
 from furax.tree_block import block_normal_like, block_zeros_like
 
-from ._lanczos import lanczos_eigh
+from ._lanczos import lanczos_eigh, lanczos_ks
 from ._lobpcg import lobpcg_standard
 from ._nystrom import randomized_nystrom
+
+LowRankMethod: TypeAlias = Literal['lanczos', 'ks', 'lobpcg', 'nystrom']
 
 
 class LowRankTerms(NamedTuple):
@@ -33,7 +35,7 @@ def low_rank(
     A: AbstractLinearOperator,
     rank: int,
     *,
-    method: Literal['lanczos', 'lobpcg', 'nystrom'] = 'lanczos',
+    method: LowRankMethod = 'lanczos',
     largest: bool = True,
     key: PRNGKeyArray | None = None,
     **kwargs: Any,
@@ -47,12 +49,11 @@ def low_rank(
         A: A Hermitian linear operator. For 'nystrom', A must also be
             positive semidefinite.
         rank: Number of eigenvalues/eigenvectors to compute.
-        method: Eigenvalue solver to use: 'lanczos', 'lobpcg', or 'nystrom'.
-        largest: If True (default), compute the largest eigenvalues.
-            Only supported for 'lobpcg'. Ignored for 'lanczos' and 'nystrom'.
+        method: Eigenvalue solver to use: 'lanczos', 'ks', 'lobpcg', or 'nystrom'.
         key: Random key for initialization of the eigenvalue solver.
-        **kwargs: Additional keyword arguments passed to the underlying method.
-            (e.g., tol, maxiter for lobpcg; oversampling for nystrom).
+        **kwargs: Additional keyword arguments passed to the solver
+            (e.g., tol, maxiter, largest for lobpcg; m, max_restarts, tol for ks;
+            oversampling for nystrom).
 
     Returns:
         LowRankTerms containing eigenvalues and eigenvectors.
@@ -71,10 +72,17 @@ def low_rank(
     """
     if method == 'lanczos':
         v0 = normal_like(A.in_structure, key) if key is not None else zeros_like(A.in_structure)
-        lanczos_result = lanczos_eigh(A, v0, rank=rank, **kwargs)
+        lanczos_result = lanczos_eigh(A, v0, k=rank, **kwargs)
         return LowRankTerms(
             eigenvalues=lanczos_result.eigenvalues,
             eigenvectors=lanczos_result.eigenvectors,
+        )
+    elif method == 'ks':
+        v0 = normal_like(A.in_structure, key) if key is not None else zeros_like(A.in_structure)
+        ks_result = lanczos_ks(A, v0, k=rank, **kwargs)
+        return LowRankTerms(
+            eigenvalues=ks_result.eigenvalues,
+            eigenvectors=ks_result.eigenvectors,
         )
     elif method == 'lobpcg':
         X = (
@@ -96,7 +104,7 @@ def low_rank(
             eigenvectors=nystrom_result.eigenvectors,
         )
     else:
-        raise ValueError(f"Unknown method: {method!r}. Use 'lanczos', 'lobpcg', or 'nystrom'.")
+        raise ValueError(f'Unknown method: {method!r}. Use one of {get_args(LowRankMethod)}.')
 
 
 def low_rank_mv(terms: LowRankTerms, x: PyTree[Num[Array, '...']]) -> PyTree[Num[Array, '...']]:
@@ -125,19 +133,7 @@ def low_rank_mv(terms: LowRankTerms, x: PyTree[Num[Array, '...']]) -> PyTree[Num
     """
 
     # Compute coeffs = U^T @ x (shape: (k,))
-    # For each eigenvector u_i and input x, compute dot(u_i, x)
-    def leaf_dots(u_leaf: Array, x_leaf: Array) -> Array:
-        # u_leaf: (k, ...), x_leaf: (...)
-        # Flatten trailing dims and compute dot for each of k vectors
-        k = u_leaf.shape[0]
-        u_flat = u_leaf.reshape(k, -1)  # (k, n)
-        x_flat = x_leaf.ravel()  # (n,)
-        return u_flat @ jnp.conj(x_flat)  # (k,)
-
-    leaf_dots_list = jax.tree.leaves(jax.tree.map(leaf_dots, terms.eigenvectors, x))
-    coeffs = leaf_dots_list[0]
-    for leaf in leaf_dots_list[1:]:
-        coeffs = coeffs + leaf
+    coeffs = jax.vmap(dot, (0, None), 0)(terms.eigenvectors, x)
 
     # Scale by eigenvalues: S * coeffs
     scaled = terms.eigenvalues * coeffs  # (k,)

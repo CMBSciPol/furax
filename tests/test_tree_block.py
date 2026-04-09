@@ -13,7 +13,6 @@ from furax.tree_block import (
     block_zeros_like,
     gram,
     matvec,
-    orthonormalize,
     qr,
     stack,
     unstack,
@@ -226,7 +225,7 @@ class TestOrthonormalization:
         """Test that QR produces orthonormal vectors."""
         key = jax.random.PRNGKey(0)
         X = {'a': jax.random.normal(key, (3, 5))}
-        Q, R = qr(X)
+        Q, _ = qr(X)
 
         # Check Q^T Q = I (orthonormal rows)
         G = gram(Q, Q)
@@ -242,11 +241,3 @@ class TestOrthonormalization:
         X_reconstructed = vecmat(Q, R)
         assert_allclose(X_reconstructed['a'], X['a'], atol=1e-5)
         assert_allclose(X_reconstructed['b'], X['b'], atol=1e-5)
-
-    def test_orthonormalize(self):
-        """Test orthonormalize produces orthonormal vectors."""
-        X = {'a': jnp.array([[1.0, 1.0], [1.0, 0.0]])}  # Non-orthogonal
-        Q = orthonormalize(X)
-
-        G = gram(Q, Q)
-        assert_allclose(G, jnp.eye(2), atol=1e-5)

@@ -9,12 +9,7 @@ from jaxtyping import Bool, Float, Num, PyTree
 
 from furax import tree
 from furax.core import AbstractLinearOperator
-from furax.tree_block import (
-    block_norm,
-    gram,
-    orthonormalize,
-    vecmat,
-)
+from furax.tree_block import block_norm, gram, qr, vecmat
 
 
 class LOBPCGResult(NamedTuple):
@@ -125,7 +120,7 @@ def lobpcg_standard(
     M = jax.vmap(preconditioner.mv) if preconditioner is not None else None
 
     # Step 1: Orthonormalize initial vectors
-    X = orthonormalize(X)
+    X, _ = qr(X)
 
     # Step 2: Compute AX and initial Rayleigh quotient
     AX = A(X)
@@ -139,7 +134,7 @@ def lobpcg_standard(
     if M is not None:
         R = M(R)
 
-    S = orthonormalize(tree.concatenate([X, R]))
+    S, _ = qr(tree.concatenate([X, R]))
     eigenvalues, X, AX = _rayleigh_ritz(S, A(S), k, largest)
     P = R
     iteration = 1
@@ -159,7 +154,7 @@ def lobpcg_standard(
             R = M(R)
 
         # Build search space S = [X, R, P] and orthonormalize
-        S = orthonormalize(tree.concatenate([X, R, P]))
+        S, _ = qr(tree.concatenate([X, R, P]))
         AS = A(S)
 
         # Rayleigh-Ritz

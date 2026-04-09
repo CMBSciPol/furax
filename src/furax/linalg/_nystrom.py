@@ -7,13 +7,7 @@ from jaxtyping import Array, Float, Num, PRNGKeyArray, PyTree
 from furax import tree
 from furax.core import AbstractLinearOperator
 from furax.core._base import symmetric
-from furax.tree_block import (
-    block_from_array,
-    block_normal_like,
-    block_to_array,
-    gram,
-    orthonormalize,
-)
+from furax.tree_block import block_from_array, block_normal_like, block_to_array, gram, qr
 
 
 class NystromResult(NamedTuple):
@@ -53,7 +47,7 @@ def randomized_nystrom(
     Omega = block_normal_like(A.in_structure, k, key)
 
     # Orthogonalize for numerical stability
-    Q = orthonormalize(Omega)
+    Q, _ = qr(Omega)
 
     # Sketch the matrix: Y = A @ Q
     Y = jax.vmap(A.mv)(Q)

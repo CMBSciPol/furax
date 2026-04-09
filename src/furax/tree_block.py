@@ -29,7 +29,6 @@ __all__ = [
     'matvec',
     'vecmat',
     'qr',
-    'orthonormalize',
 ]
 
 P = TypeVar('P', bound=PyTree[Num[Array, '...']] | PyTree[jax.ShapeDtypeStruct])
@@ -300,14 +299,14 @@ def qr(
     """QR decomposition for block PyTrees.
 
     Computes Q, R such that vecmat(Q, R) = X, where Q is orthonormal.
-    If k > n (more vectors than dimension), returns r = min(k, n) orthonormal vectors.
+    r = min(k, n), so if k > n only n orthonormal vectors are returned.
 
     Args:
         X: A block PyTree with k vectors.
 
     Returns:
         Q: An orthonormal block PyTree with r = min(k, n) vectors.
-        R: A (r, k) matrix such that vecmat(Q, R) = X.
+        R: A (r, k) upper-triangular matrix such that vecmat(Q, R) = X.
 
     Example:
         >>> import jax.numpy as jnp
@@ -317,29 +316,5 @@ def qr(
         Array(True, dtype=bool)
     """
     X_flat, treedef, shapes = block_to_array(X)
-    U, S, Vt = jnp.linalg.svd(X_flat, full_matrices=False)
-    R = (U * S).T
-    return block_from_array(Vt, treedef, shapes), R
-
-
-def orthonormalize(X: PyTree[Num[Array, 'k ...']]) -> PyTree[Num[Array, 'r ...']]:
-    """Return orthonormalized version of block PyTree X.
-
-    Uses SVD for robust orthonormalization. If k > n (more vectors than dimension),
-    returns r = min(k, n) orthonormal vectors.
-
-    Args:
-        X: A block PyTree with k vectors.
-
-    Returns:
-        Q: An orthonormal block PyTree with r = min(k, n) vectors.
-
-    Example:
-        >>> import jax.numpy as jnp
-        >>> X = {'a': jnp.array([[1., 0.], [1., 1.]])}
-        >>> Q = orthonormalize(X)
-        >>> jnp.allclose(gram(Q, Q), jnp.eye(2), atol=1e-5)
-        Array(True, dtype=bool)
-    """
-    Q, _ = qr(X)
-    return Q
+    Q, R = jnp.linalg.qr(X_flat.T)
+    return block_from_array(Q.T, treedef, shapes), R

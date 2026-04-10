@@ -44,6 +44,10 @@ def run(  # type: ignore[no-untyped-def]
         logger.warning('no observations to map')
         return
 
+    with open(outdir / 'mapped_obsids.txt', 'w') as f:
+        for obsfile in obsfiles:
+            f.write(f'{obsfile.stem}\n')
+
     if mapmaking_config is None:
         config = MapMakingConfig()
         logger.warning('no mapmaking configuration specified, using defaults')

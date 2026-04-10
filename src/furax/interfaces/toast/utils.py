@@ -128,7 +128,7 @@ def _fit_psd_model_legacy(f: Float[Array, ' a'], Pxx: Float[Array, ' a']) -> Flo
         init_params,
         solver_name='optax_lbfgs',
         max_iter=300,
-        atol=1e-10,
+        atol=0,
         rtol=1e-10,
         lower_bound=lo,
         upper_bound=up,

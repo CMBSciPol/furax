@@ -301,13 +301,13 @@ def _template_deprojector(
         return None
 
 
-def _sample_rate(timestamps: Float[Array, ...]) -> Float[Array, '']:
+def _sample_rate(timestamps: Float[Array, '...']) -> Float[Array, '']:
     # Note that the reader extrapolates timestamps in the padded region, keeping sample rate constant
     return (timestamps.size - 1) / jnp.ptp(timestamps)
 
 
 def _hwp_frequency(
-    timestamps: Float[Array, ...], hwp_angles: Float[Array, ...]
+    timestamps: Float[Array, '...'], hwp_angles: Float[Array, '...']
 ) -> Float[Array, '']:
     # Note that the reader extrapolates hwp_angles in the padded region, keeping hwp freq constant
     return (jnp.unwrap(hwp_angles)[-1] - hwp_angles[0]) / jnp.ptp(timestamps) / (2 * jnp.pi)

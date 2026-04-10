@@ -208,7 +208,7 @@ def test_fit_atmospheric_psd_model():
         Pxx,
         sample_rate=jnp.array(10.0),
         hwp_frequency=jnp.array(0.0),
-        config=NoiseFitConfig(mask_hwp_harmonics=False, max_iter=50, tol=1e-4),
+        config=NoiseFitConfig(mask_hwp_harmonics=False, max_iter=50),
     )
     assert result['fit'].shape == (1, 4)
     assert result['loss'].shape == (1,)

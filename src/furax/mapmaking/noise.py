@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, cast
 
+import cadre
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
-from optax import tree_utils as otu
 from scipy.signal import get_window
 
 from furax.core import (
@@ -15,7 +15,6 @@ from furax.core import (
     FourierOperator,
     SymmetricBandToeplitzOperator,
 )
-from furax.math.lbfgs import run_lbfgs
 
 from ._logger import logger
 from .config import NoiseFitConfig
@@ -407,11 +406,13 @@ def _fit_psd_model_masked(
     # 3. Run optimisation with bounds on scaled parameters
     lo = jnp.array([1e-3, 1e-3, 1e-3, 1e-10])
     up = jnp.array([1e3, 1e3, 1e3, 1e3])
-    scaled_params, state = run_lbfgs(
-        jnp.ones_like(init_params),
+    scaled_params, state = cadre.minimize(
         loss_fn,
+        jnp.ones_like(init_params),
+        solver_name='optax_lbfgs',
         max_iter=max_iter,
-        tol=tol,
+        atol=0,
+        rtol=tol,
         lower_bound=lo,
         upper_bound=up,
     )
@@ -419,7 +420,7 @@ def _fit_psd_model_masked(
     # 4. Extract results
     params = scaled_params * init_params
     loss_final = loss_fn(scaled_params)
-    num_iter = otu.tree_get(state, 'count')
+    num_iter = state.iter_num
 
     # 5. Fisher information matrix
     scaled_fisher = 0.5 * jax.hessian(loss_fn)(scaled_params)

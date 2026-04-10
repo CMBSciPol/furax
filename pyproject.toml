@@ -51,8 +51,8 @@ docs = [
 ]
 mapmaking = [
     'apischema>=0.19.0',
+    'jax-cadre>=0.1.2',
     'matplotlib',
-    'optax',
     'pixell>=0.31.7',
     'pyyaml>=0.6.2',
 ]
@@ -90,6 +90,7 @@ skip_covered = true
 [[tool.mypy.overrides]]
 module = [
     'astropy.*',
+    'cadre',
     'cyclopts',
     'healpy',
     'jax_healpy',
@@ -97,7 +98,6 @@ module = [
     'matplotlib.*',
     'mpl_toolkits.*',
     'litebird_sim',
-    'optax',
     'pixell.*',
     'pysm3.*',
     'scipy.*',

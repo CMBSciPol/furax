@@ -48,7 +48,6 @@ repos:
     - lineax
     - types-PyYAML
     - scipy
-    - optax
     - traitlets
     args:
     - --strict

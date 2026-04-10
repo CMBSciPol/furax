@@ -41,7 +41,7 @@ class NoiseFitConfig:
     """Maximum number of iterations"""
 
     tol: float = 1e-10
-    """Error tolerance"""
+    """Relative minimiser tolerance (step size and function value change)"""
 
     min_freq_nyquist: float = 1e-8
     """Only use f >= min_freq * nyquist for noise fitting"""

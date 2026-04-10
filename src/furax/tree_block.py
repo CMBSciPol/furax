@@ -93,6 +93,11 @@ def unstack(
     )
 
 
+def _prepend_dim(x: P, k: int) -> PyTree[jax.ShapeDtypeStruct]:
+    """Return a PyTree of ShapeDtypeStructs with an extra leading dimension of size k."""
+    return jax.tree.map(lambda leaf: jax.ShapeDtypeStruct((k,) + leaf.shape, leaf.dtype), x)
+
+
 def block_zeros_like(x: P, k: int) -> P:
     """Create a block of k zero PyTrees with an extra leading dimension.
 
@@ -110,7 +115,7 @@ def block_zeros_like(x: P, k: int) -> P:
         >>> block['a'].shape
         (3, 2)
     """
-    result: P = jax.tree.map(lambda leaf: jnp.zeros((k,) + leaf.shape, leaf.dtype), x)
+    result: P = _tree.zeros_like(_prepend_dim(x, k))
     return result
 
 
@@ -133,11 +138,7 @@ def block_normal_like(x: P, k: int, key: Key[Array, '']) -> P:
         >>> block['a'].shape
         (3, 2)
     """
-    key_leaves = jax.random.split(key, len(jax.tree.leaves(x)))
-    keys = jax.tree.unflatten(jax.tree.structure(x), key_leaves)
-    result: P = jax.tree.map(
-        lambda leaf, key: jax.random.normal(key, (k,) + leaf.shape, leaf.dtype), x, keys
-    )
+    result: P = _tree.normal_like(_prepend_dim(x, k), key)
     return result
 
 

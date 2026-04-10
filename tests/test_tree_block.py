@@ -3,9 +3,11 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from equinox import tree_equal
 from numpy.testing import assert_allclose
 
 from furax.tree_block import (
+    _prepend_dim,
     block_from_array,
     block_norm,
     block_normal_like,
@@ -70,6 +72,45 @@ class TestStackUnstack:
             unstacked = unstack(block, axis=axis)
             assert_allclose(unstacked[0]['a'], p1['a'])
             assert_allclose(unstacked[1]['b'], p2['b'])
+
+
+@pytest.mark.parametrize(
+    'x, k, expected',
+    [
+        (
+            {'a': jnp.array([1.0], dtype=jnp.float32), 'b': jnp.array([1], dtype=jnp.int32)},
+            4,
+            {
+                'a': jax.ShapeDtypeStruct((4, 1), jnp.float32),
+                'b': jax.ShapeDtypeStruct((4, 1), jnp.int32),
+            },
+        ),
+        (
+            {'a': jnp.array(1.0, dtype=jnp.float32)},
+            2,
+            {'a': jax.ShapeDtypeStruct((2,), jnp.float32)},
+        ),
+        (
+            {'a': jnp.ones((3, 4), dtype=jnp.float32)},
+            5,
+            {'a': jax.ShapeDtypeStruct((5, 3, 4), jnp.float32)},
+        ),
+        (
+            {
+                'a': jax.ShapeDtypeStruct((2,), jnp.float32),
+                'b': jax.ShapeDtypeStruct((3, 4), jnp.float16),
+            },
+            5,
+            {
+                'a': jax.ShapeDtypeStruct((5, 2), jnp.float32),
+                'b': jax.ShapeDtypeStruct((5, 3, 4), jnp.float16),
+            },
+        ),
+    ],
+)
+def test_prepend_dim(x, k, expected):
+    result = _prepend_dim(x, k)
+    assert tree_equal(result, expected)
 
 
 class TestBlockCreation:

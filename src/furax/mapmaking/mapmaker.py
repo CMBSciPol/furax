@@ -16,6 +16,8 @@ import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer
 
 import furax.linalg
@@ -44,7 +46,7 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel, SystemOperator, _hwp_frequency
+from ._model import ObservationModel, SystemOperator, _hwp_frequency, pad_model
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
@@ -53,6 +55,46 @@ from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
 
 T = TypeVar('T')
+
+
+def _prepare_parallel(
+    models: ObservationModel,
+    n_devices: int | None = None,
+) -> tuple[ObservationModel, jax.Array]:
+    """Reshape and shard an ObservationModel for multi-device vmap(scan).
+
+    Reshapes model leaves from (n_obs, ...) to (n_dev, n_local, ...) and
+    shards the leading axis across devices. Also returns a matching index
+    array of shape (n_dev, n_local) for use by accumulate_rhs.
+
+    Pads with dummy observations (zeroed masker) when n_obs % n_dev != 0.
+    """
+    n_obs = jax.tree.leaves(models)[0].shape[0]
+    n_dev = n_devices if n_devices is not None else jax.device_count()
+
+    n_pad = (-n_obs) % n_dev  # 0 when already divisible
+    if n_pad > 0:
+        models = pad_model(models, n_pad)
+
+    n_local = (n_obs + n_pad) // n_dev
+
+    models = jax.tree.map(lambda a: a.reshape(n_dev, n_local, *a.shape[1:]), models)
+
+    real_indices = jnp.arange(n_obs, dtype=jnp.int32)
+    if n_pad > 0:
+        pad_indices = jnp.full(n_pad, n_obs - 1, dtype=jnp.int32)
+        all_indices = jnp.concatenate([real_indices, pad_indices])
+    else:
+        all_indices = real_indices
+    indices = all_indices.reshape(n_dev, n_local)
+
+    if n_dev > 1:
+        mesh = Mesh(np.array(jax.devices()[:n_dev]), ('obs',))
+        sharding = NamedSharding(mesh, P('obs'))
+        models = jax.device_put(models, sharding)
+        indices = jax.device_put(indices, sharding)
+
+    return models, indices
 
 
 class MultiObservationMapMaker(Generic[T]):
@@ -149,19 +191,30 @@ class MultiObservationMapMaker(Generic[T]):
             stokes=self.config.landscape.stokes,
         )
 
-    def make_maps(self) -> MapMakingResults:
-        """Computes the mapmaker results (maps and other products)."""
+    def make_maps(self, n_devices: int | None = None) -> MapMakingResults:
+        """Computes the mapmaker results (maps and other products).
+
+        Args:
+            n_devices: Number of devices to parallelise over. Defaults to
+                ``jax.device_count()`` (all available devices).
+        """
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
 
-        # Build system matrix from stacked ObservationModel
+        # Build system matrix from stacked ObservationModel, then reshape/shard
+        # for multi-device parallelism: (n_obs,...) → (n_dev, n_local,...)
         model = self.build_model()
+        model, indices = _prepare_parallel(model, n_devices=n_devices)
+        n_dev = jax.tree.leaves(model)[0].shape[0]
+        n_local = jax.tree.leaves(model)[0].shape[1]
+        logger_info(f'Prepared model for parallelism: {n_dev} device(s), {n_local} obs/device')
+
         A = SystemOperator(model)
         logger_info('Created system operator')
 
         hits = self.accumulate_hits(model).block_until_ready()
         logger_info('Computed hit map')
 
-        rhs = self.accumulate_rhs(model)
+        rhs = self.accumulate_rhs(model, indices)
         logger_info('Accumulated RHS vector')
 
         # Preconditioning
@@ -237,26 +290,58 @@ class MultiObservationMapMaker(Generic[T]):
         return model  # type: ignore[no-any-return]
 
     def accumulate_hits(self, models: ObservationModel) -> Int64[Array, ' pixels']:
-        def acc(carry, model):  # type: ignore[no-untyped-def]
-            return carry + model.hits(), None
+        """Accumulate hit map across all observations using vmap(scan).
 
-        init = jnp.zeros(self.landscape.shape, dtype=jnp.int64)
-        total, _ = jax.lax.scan(acc, init, models)
-        return total
+        models has shape (n_dev, n_local, ...) — each device scans its local
+        chunk sequentially, devices run in parallel. A flat (n_obs, ...) model
+        is treated as a single-device case.
+        """
+        map_shape = self.landscape.shape
+        if models.sample_rate.ndim == 1:
+            # Flat (n_obs,...) model — wrap as single device
+            models = jax.tree.map(lambda a: a[None], models)
 
-    def accumulate_rhs(self, models: ObservationModel) -> StokesPyTreeType:
-        """Accumulate the RHS vector across all observations"""
+        def scan_local(local_model: ObservationModel) -> Int64[Array, ' pixels']:
+            init = jnp.zeros(map_shape, dtype=jnp.int64)
+            total, _ = jax.lax.scan(
+                lambda carry, obs: (carry + obs.hits(), None), init, local_model
+            )
+            return total
+
+        per_device = jax.vmap(scan_local)(models)
+        return jnp.sum(per_device, axis=0)
+
+    def accumulate_rhs(
+        self, models: ObservationModel, indices: jax.Array | None = None
+    ) -> StokesPyTreeType:
+        """Accumulate the RHS vector across all observations using vmap(scan).
+
+        models and indices both have shape (n_dev, n_local, ...) — each device
+        reads and accumulates its local observations sequentially. When indices
+        is None (called without _prepare_parallel), a single-device layout is
+        assumed and indices are derived from the model's leading axis.
+        """
         reader = self.get_reader(['metadata', 'sample_data'])
+        config = self.config
 
-        def acc(carry, args):  # type: ignore[no-untyped-def]
-            i, model = args
-            data, _ = reader.read(i)
-            carry = carry + model.rhs(data, self.config)
-            return carry, None
+        if indices is None:
+            n_obs = jax.tree.leaves(models)[0].shape[0]
+            indices = jnp.arange(n_obs, dtype=jnp.int32)[None]  # (1, n_obs)
+            models = jax.tree.map(lambda a: a[None], models)  # (1, n_obs, ...)
 
-        init = tree.zeros_like(models.map_structure)
-        total, _ = jax.lax.scan(acc, init, (jnp.arange(reader.count), models))
-        return total  # type: ignore[no-any-return]
+        def scan_local(local_model: ObservationModel, local_indices: jax.Array) -> StokesPyTreeType:
+            init = tree.zeros_like(models.map_structure)
+
+            def acc(carry, args):  # type: ignore[no-untyped-def]
+                i, obs = args
+                data, _ = reader.read(i)
+                return carry + obs.rhs(data, config), None
+
+            total, _ = jax.lax.scan(acc, init, (local_indices, local_model))
+            return total  # type: ignore[no-any-return]
+
+        per_device = jax.vmap(scan_local)(models, indices)
+        return jax.tree.map(lambda y: jnp.sum(y, axis=0), per_device)  # type: ignore[no-any-return]
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']

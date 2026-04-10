@@ -63,36 +63,63 @@ def _prepare_parallel(
 ) -> tuple[ObservationModel, jax.Array]:
     """Reshape and shard an ObservationModel for multi-device vmap(scan).
 
-    Reshapes model leaves from (n_obs, ...) to (n_dev, n_local, ...) and
-    shards the leading axis across devices. Also returns a matching index
-    array of shape (n_dev, n_local) for use by accumulate_rhs.
-
+    **Single-process mode**: reshapes model leaves from (n_obs, ...) to
+    (n_dev, n_local, ...) and shards the leading axis across local devices.
     Pads with dummy observations (zeroed masker) when n_obs % n_dev != 0.
+
+    **Distributed mode** (after jax.distributed.initialize() with multiple
+    processes): ``models`` must already contain only this process's local
+    observations, pre-padded so that ``n_local_obs % n_local_dev == 0``.
+    Each process reshapes its local slice to (n_local_dev, n_obs_per_dev, ...)
+    and assembles a globally-sharded array covering all processes and devices.
+    The global mesh is a flat 1D layout: n_proc × n_local_dev devices total.
+    ``n_devices`` is ignored in distributed mode.
     """
     n_obs = jax.tree.leaves(models)[0].shape[0]
-    n_dev = n_devices if n_devices is not None else jax.device_count()
 
-    n_pad = (-n_obs) % n_dev  # 0 when already divisible
-    if n_pad > 0:
-        models = pad_model(models, n_pad)
+    if jax.process_count() > 1:
+        # Distributed: reshape local slice across local devices, then assemble
+        # a globally-sharded array that spans all processes.
+        n_local_dev = jax.local_device_count()
+        n_obs_per_dev = n_obs // n_local_dev  # pre-padded, so exact
 
-    n_local = (n_obs + n_pad) // n_dev
+        models = jax.tree.map(lambda a: a.reshape(n_local_dev, n_obs_per_dev, *a.shape[1:]), models)
 
-    models = jax.tree.map(lambda a: a.reshape(n_dev, n_local, *a.shape[1:]), models)
+        # Global observation indices for this process's slice
+        proc_start = jax.process_index() * n_obs
+        indices = jnp.arange(proc_start, proc_start + n_obs, dtype=jnp.int32).reshape(
+            n_local_dev, n_obs_per_dev
+        )
 
-    real_indices = jnp.arange(n_obs, dtype=jnp.int32)
-    if n_pad > 0:
-        pad_indices = jnp.full(n_pad, n_obs - 1, dtype=jnp.int32)
-        all_indices = jnp.concatenate([real_indices, pad_indices])
-    else:
-        all_indices = real_indices
-    indices = all_indices.reshape(n_dev, n_local)
-
-    if n_dev > 1:
-        mesh = Mesh(np.array(jax.devices()[:n_dev]), ('obs',))
+        mesh = Mesh(np.array(jax.devices()), ('obs',))
         sharding = NamedSharding(mesh, P('obs'))
-        models = jax.device_put(models, sharding)
-        indices = jax.device_put(indices, sharding)
+        models = jax.tree.map(lambda a: jax.make_array_from_process_local_data(sharding, a), models)
+        indices = jax.make_array_from_process_local_data(sharding, indices)
+    else:
+        # Single-process: existing logic
+        n_dev = n_devices if n_devices is not None else jax.device_count()
+
+        n_pad = (-n_obs) % n_dev  # 0 when already divisible
+        if n_pad > 0:
+            models = pad_model(models, n_pad)
+
+        n_local = (n_obs + n_pad) // n_dev
+
+        models = jax.tree.map(lambda a: a.reshape(n_dev, n_local, *a.shape[1:]), models)
+
+        real_indices = jnp.arange(n_obs, dtype=jnp.int32)
+        if n_pad > 0:
+            pad_indices = jnp.full(n_pad, n_obs - 1, dtype=jnp.int32)
+            all_indices = jnp.concatenate([real_indices, pad_indices])
+        else:
+            all_indices = real_indices
+        indices = all_indices.reshape(n_dev, n_local)
+
+        if n_dev > 1:
+            mesh = Mesh(np.array(jax.devices()[:n_dev]), ('obs',))
+            sharding = NamedSharding(mesh, P('obs'))
+            models = jax.device_put(models, sharding)
+            indices = jax.device_put(indices, sharding)
 
     return models, indices
 
@@ -172,8 +199,8 @@ class MultiObservationMapMaker(Generic[T]):
         """Runs the mapmaker and return results after saving them to the given directory."""
         results = self.make_maps()
 
-        # Save outputs
-        if out_dir is not None:
+        # Save outputs on process 0 only (all processes hold the same replicated result)
+        if out_dir is not None and jax.process_index() == 0:
             out_dir = Path(out_dir)
             results.save(out_dir)
             self.logger.info(f'saved results to {out_dir}')
@@ -211,10 +238,10 @@ class MultiObservationMapMaker(Generic[T]):
         A = SystemOperator(model)
         logger_info('Created system operator')
 
-        hits = self.accumulate_hits(model).block_until_ready()
+        hits = jax.jit(self.accumulate_hits)(model).block_until_ready()
         logger_info('Computed hit map')
 
-        rhs = self.accumulate_rhs(model, indices)
+        rhs = jax.jit(self.accumulate_rhs)(model, indices)
         logger_info('Accumulated RHS vector')
 
         # Preconditioning
@@ -286,8 +313,41 @@ class MultiObservationMapMaker(Generic[T]):
             data, padding = reader.read(i)
             return None, ObservationModel.create(data, padding, self.config, self.landscape)
 
-        _, model = jax.lax.scan(build_one, None, jnp.arange(reader.count))
+        if jax.process_count() > 1:
+            # Each process builds only its own contiguous slice of observations.
+            # Mirrors the padding/chunking logic of _local_slice so _prepare_parallel
+            # receives a correctly-sized local model without redundant I/O.
+            n_obs = reader.count
+            n_global_dev = jax.device_count()  # n_proc * n_local_dev
+            n_total = n_obs + (-n_obs) % n_global_dev  # pad to divisibility
+            chunk = n_total // jax.process_count()
+            start = jax.process_index() * chunk
+            n_real = min(chunk, max(0, n_obs - start))  # real obs for this process
+            n_pad = chunk - n_real
+
+            _, model = jax.lax.scan(build_one, None, jnp.arange(start, start + n_real))
+            if n_pad > 0:
+                model = pad_model(model, n_pad)
+        else:
+            _, model = jax.lax.scan(build_one, None, jnp.arange(reader.count))
+
         return model  # type: ignore[no-any-return]
+
+    def _local_slice(self, model: ObservationModel) -> ObservationModel:
+        """Slice the full model to this process's local observation subset.
+
+        Pads total observations to divisibility by ``jax.device_count()``
+        (= n_proc × n_local_dev), then takes this process's contiguous chunk.
+        Dummy padding observations contribute nothing to sums (zeroed masker).
+        """
+        n_obs = jax.tree.leaves(model)[0].shape[0]
+        n_global_dev = jax.device_count()  # n_proc * n_local_dev
+        n_total = n_obs + (-n_obs) % n_global_dev
+        if n_total > n_obs:
+            model = pad_model(model, n_total - n_obs)
+        chunk = n_total // jax.process_count()
+        start = jax.process_index() * chunk
+        return jax.tree.map(lambda a: a[start : start + chunk], model)  # type: ignore[no-any-return]
 
     def accumulate_hits(self, models: ObservationModel) -> Int64[Array, ' pixels']:
         """Accumulate hit map across all observations using vmap(scan).

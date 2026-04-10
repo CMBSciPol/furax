@@ -1,6 +1,6 @@
-import functools
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from functools import partial
+from typing import Any, Self, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -48,7 +48,7 @@ class ObservationModel:
     @classmethod
     def create(
         cls, data: Any, padding: Any, config: MapMakingConfig, landscape: StokesLandscape
-    ) -> 'ObservationModel':
+    ) -> Self:
         H = build_acquisition_operator(
             landscape,
             data['boresight_quaternions'],
@@ -137,7 +137,7 @@ class ObservationModel:
             )
             key = jax.random.key(config.gaps.fill_options.seed)
             tod = gapfill(key, tod)
-        rhs: Stokes = (self.H.T @ self.masker @ self.W)(tod)
+        rhs: Stokes = self.H.T(self.masker(self.W(tod)))
         return rhs
 
     def _get_indexer(self) -> IndexOperator:
@@ -151,26 +151,74 @@ class ObservationModel:
         return IndexOperator(mask, in_structure=self.tod_structure)
 
 
+def pad_model(models: ObservationModel, n_pad: int) -> ObservationModel:
+    """Pad models with n_pad dummy observations that contribute nothing to sums.
+
+    The dummy observations are copies of the last real observation with their
+    masker array leaves zeroed out, so masker(x) = 0 for any x.
+    """
+    last = jax.tree.map(lambda a: jnp.repeat(a[-1:], n_pad, axis=0), models)
+    zero_masker = jax.tree.map(jnp.zeros_like, last.masker)
+    padded = ObservationModel(
+        H=last.H,
+        W=last.W,
+        masker=zero_masker,
+        noise_model=last.noise_model,
+        sample_rate=last.sample_rate,
+    )
+    return jax.tree.map(lambda a, b: jnp.concatenate([a, b], axis=0), models, padded)  # type: ignore[no-any-return]
+
+
 _StokesPyTree = TypeVar('_StokesPyTree', bound=StokesPyTreeType)
 
 
-@functools.partial(jax.jit, static_argnames=['diag'])
-def _system_scan(model: ObservationModel, x: _StokesPyTree, *, diag: bool = False) -> _StokesPyTree:
-    """Apply H^T W H to x, summed over the batch of observations in model.
+@partial(jax.jit, static_argnames=['diag', 'mesh'])
+def _system_scan(
+    model: ObservationModel,
+    x: _StokesPyTree,
+    *,
+    diag: bool = False,
+    mesh: jax.sharding.Mesh | None = None,
+) -> _StokesPyTree:
+    """Apply H^T W H to x, summed over all observations in model.
 
     `model` is an explicit JIT argument so it is never captured as an XLA constant.
 
     Args:
-        model: Stacked ObservationModel with a leading batch dimension over observations.
+        model: Stacked ObservationModel with a flat leading obs axis sharded across
+            devices. Each device scans its slice sequentially; psum reduces globally.
         x: Input sky map pytree.
         diag: If True, use the diagonal white-noise approximation for W.
+        mesh: The concrete Mesh on which `model` is sharded. When set, shard_map is
+            used to parallelise the scan across devices. Must be the same Mesh object
+            that was used when sharding the model arrays.
     """
 
-    def accumulate(lhs, obs):  # type: ignore[no-untyped-def]
-        return tree.add(lhs, obs.apply_system(x, white_noise=diag)), None
+    if mesh is None:
 
-    lhs, _ = jax.lax.scan(accumulate, tree.zeros_like(x), model)
-    return lhs
+        def step(lhs: _StokesPyTree, obs: ObservationModel) -> tuple[_StokesPyTree, None]:
+            return tree.add(lhs, obs.apply_system(x, white_noise=diag)), None
+
+        lhs, _ = jax.lax.scan(step, tree.zeros_like(x), model)
+        return lhs
+
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    # Re-impose 'obs' sharding on the model in case its annotation was stripped
+    # (e.g. closure capture during lineax abstract eval drops sharding metadata).
+    obs_sharding = NamedSharding(mesh, P('obs'))
+    model = jax.tree.map(lambda a: jax.reshard(a, obs_sharding), model)
+
+    @jax.shard_map(mesh=mesh, in_specs=(P('obs'), P()), out_specs=P(), check_vma=False)
+    def local_scan(local_model: ObservationModel, local_x: _StokesPyTree) -> _StokesPyTree:
+        def step(lhs: _StokesPyTree, obs: ObservationModel) -> tuple[_StokesPyTree, None]:
+            return tree.add(lhs, obs.apply_system(local_x, white_noise=diag)), None
+
+        lhs, _ = jax.lax.scan(step, tree.zeros_like(local_x), local_model)
+        return jax.lax.psum(lhs, axis_name='obs')  # type: ignore[no-any-return]
+
+    return local_scan(model, x)
 
 
 @symmetric
@@ -179,14 +227,22 @@ class SystemOperator(AbstractLinearOperator):
 
     models: ObservationModel
     diag: bool = field(metadata={'static': True})
+    mesh: jax.sharding.Mesh | None = field(metadata={'static': True})
 
-    def __init__(self, models: ObservationModel, *, diag: bool = False):
+    def __init__(
+        self,
+        models: ObservationModel,
+        *,
+        diag: bool = False,
+        mesh: jax.sharding.Mesh | None = None,
+    ):
         object.__setattr__(self, 'models', models)
         object.__setattr__(self, 'diag', diag)
+        object.__setattr__(self, 'mesh', mesh)
         object.__setattr__(self, 'in_structure', models.map_structure)
 
     def mv(self, x: _StokesPyTree) -> _StokesPyTree:
-        return _system_scan(self.models, x, diag=self.diag)  # type: ignore[no-any-return]
+        return _system_scan(self.models, x, diag=self.diag, mesh=self.mesh)  # type: ignore[no-any-return]
 
 
 def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel], Array]:

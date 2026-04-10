@@ -93,7 +93,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         observations: Sequence[AbstractLazyObservation[T]],
         local_indices: Sequence[int],
         *,
-        requested_fields: list[str] | None = None,
+        requested_fields: Sequence[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
     ) -> Self:
@@ -149,7 +149,7 @@ class ObservationReader(AbstractReader, Generic[T]):
     @staticmethod
     def _resolve_fields(
         observations: Sequence[AbstractLazyObservation[T]],
-        requested_fields: list[str] | None,
+        requested_fields: Sequence[str] | None,
     ) -> list[str]:
         interface = observations[0].interface_class
         available = set(interface.AVAILABLE_READER_FIELDS)

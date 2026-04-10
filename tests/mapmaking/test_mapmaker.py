@@ -157,16 +157,18 @@ class TestMultiObsMapMaker:
     Use a class in order to parametrize over multiple tests at once.
     """
 
-    def test_blocks_vs_reader_structure(self, name, demodulated, stokes, landscape_type):
+    def test_model_vs_reader_structure(self, name, demodulated, stokes, landscape_type):
         observations = _observations(name, demodulated)
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        reader = ObservationReader(observations, demodulated=demodulated, stokes=stokes)
-        blocks = maker.build_model()
-        n_obs = jax.tree.leaves(blocks)[0].shape[0]
+        reader = ObservationReader.from_observations(
+            observations, demodulated=demodulated, stokes=stokes
+        )
+        model = maker.build_model()
+        n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
-        assert blocks.map_structure == maker.landscape.structure
-        assert blocks.tod_structure == reader.out_structure['sample_data']
+        assert model.map_structure == maker.landscape.structure
+        assert model.tod_structure == reader.out_structure['sample_data']
 
     def test_last_acquisition_operand_is_pointing(self, name, demodulated, stokes, landscape_type):
         observations = _observations(name, demodulated)
@@ -199,15 +201,16 @@ class TestMultiObsMapMaker:
         observations = _observations(name, demodulated)
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        blocks = maker.build_model()
-        rhs = maker.accumulate_rhs(blocks)
+        model = maker.distribute(maker.build_model())
+        indices = maker.distribute(maker.get_padded_indices())
+        rhs = maker.accumulate_rhs(model, indices)
         assert rhs.shape == maker.landscape.shape
 
     def test_hits_are_nonnegative(self, name, demodulated, stokes, landscape_type):
         observations = _observations(name, demodulated)
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        blocks = maker.build_model()
+        blocks = maker.distribute(maker.build_model())
         hits = maker.accumulate_hits(blocks)
         assert hits.shape == maker.landscape.shape
         assert jnp.all(hits >= 0)

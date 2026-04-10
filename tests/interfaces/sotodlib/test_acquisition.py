@@ -7,7 +7,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 from sotodlib import coords
 from sotodlib.mapmaking.demod_mapmaker import project_rhs_demod
 
-from furax.interfaces.sotodlib import LazySOTODLibObservation
+from furax.interfaces.sotodlib.observation import LazySOTODLibObservation
 from furax.mapmaking.acquisition import build_acquisition_operator
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.stokes import StokesI

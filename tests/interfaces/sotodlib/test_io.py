@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from furax.interfaces.sotodlib import LazySOTODLibObservation
+from furax.interfaces.sotodlib.observation import LazySOTODLibObservation
 from furax.mapmaking import AbstractGroundObservation, HashedObservationMetadata, ObservationReader
 from furax.mapmaking.config import SotodlibConfig
 from furax.obs.stokes import Stokes

@@ -1,6 +1,12 @@
 import functools
+import sys
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
+
+if sys.version_info < (3, 11):
+    from typing_extensions import Self
+else:
+    from typing import Self
 
 import jax
 import jax.numpy as jnp
@@ -48,7 +54,7 @@ class ObservationModel:
     @classmethod
     def create(
         cls, data: Any, padding: Any, config: MapMakingConfig, landscape: StokesLandscape
-    ) -> 'ObservationModel':
+    ) -> Self:
         H = build_acquisition_operator(
             landscape,
             data['boresight_quaternions'],
@@ -151,6 +157,24 @@ class ObservationModel:
         return IndexOperator(mask, in_structure=self.tod_structure)
 
 
+def pad_model(models: ObservationModel, n_pad: int) -> ObservationModel:
+    """Pad models with n_pad dummy observations that contribute nothing to sums.
+
+    The dummy observations are copies of the last real observation with their
+    masker array leaves zeroed out, so masker(x) = 0 for any x.
+    """
+    last = jax.tree.map(lambda a: jnp.repeat(a[-1:], n_pad, axis=0), models)
+    zero_masker = jax.tree.map(jnp.zeros_like, last.masker)
+    padded = ObservationModel(
+        H=last.H,
+        W=last.W,
+        masker=zero_masker,
+        noise_model=last.noise_model,
+        sample_rate=last.sample_rate,
+    )
+    return jax.tree.map(lambda a, b: jnp.concatenate([a, b], axis=0), models, padded)  # type: ignore[no-any-return]
+
+
 _StokesPyTree = TypeVar('_StokesPyTree', bound=StokesPyTreeType)
 
 
@@ -161,16 +185,22 @@ def _system_scan(model: ObservationModel, x: _StokesPyTree, *, diag: bool = Fals
     `model` is an explicit JIT argument so it is never captured as an XLA constant.
 
     Args:
-        model: Stacked ObservationModel with a leading batch dimension over observations.
+        model: Stacked ObservationModel with leading axes (n_dev, n_local, ...).
+            Each device scans over its n_local observations sequentially (memory-
+            efficient), while vmap distributes across devices (parallelism).
         x: Input sky map pytree.
         diag: If True, use the diagonal white-noise approximation for W.
     """
 
-    def accumulate(lhs, obs):  # type: ignore[no-untyped-def]
-        return tree.add(lhs, obs.apply_system(x, white_noise=diag)), None
+    def scan_local(local_model: ObservationModel) -> _StokesPyTree:
+        def accumulate(lhs: _StokesPyTree, obs: ObservationModel) -> tuple[_StokesPyTree, None]:
+            return tree.add(lhs, obs.apply_system(x, white_noise=diag)), None
 
-    lhs, _ = jax.lax.scan(accumulate, tree.zeros_like(x), model)
-    return lhs
+        lhs, _ = jax.lax.scan(accumulate, tree.zeros_like(x), local_model)
+        return lhs
+
+    per_device = jax.vmap(scan_local)(model)
+    return jax.tree.map(lambda y: jnp.sum(y, axis=0), per_device)  # type: ignore[no-any-return]
 
 
 @symmetric

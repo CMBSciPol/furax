@@ -164,10 +164,7 @@ class AbstractReader(ABC):
             )
             return device_data
 
-        data = jax.lax.switch(
-            data_index,
-            [lambda i=i: io_callback(callback, self.out_structure, i) for i in range(self.count)],
-        )
+        data = io_callback(callback, self.out_structure, data_index)
         padding = jax.lax.switch(
             data_index, [lambda i=i: self.paddings[i] for i in range(self.count)]
         )

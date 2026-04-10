@@ -1,54 +1,64 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking.templates import ATOPProjectionOperator
 
 
-class TestATOPProjectionOperatorTail:
-    """Test behaviour of ATOPProjectionOperator when n_samp is not divisible by tau."""
-
-    tau = 4
-
-    def _make_op(self, n_det: int, n_samp: int, tau: int) -> ATOPProjectionOperator:
+class TestATOPProjectionOperator:
+    def make_op(self, n_det: int, n_samp: int, tau: int) -> ATOPProjectionOperator:
         return ATOPProjectionOperator(
             tau, in_structure=jax.ShapeDtypeStruct((n_det, n_samp), jnp.float64)
         )
 
-    def test_full_intervals_are_demeaned(self):
-        """Samples in complete intervals have their interval mean subtracted."""
-        n_det, n_samp = 1, 10  # 2 full intervals + tail of 2
-        x = jnp.ones((n_det, n_samp))
-        op = self._make_op(n_det, n_samp, self.tau)
-        y = op(x)
-        # mean of all-ones interval is 1, so result is 0
-        assert_array_equal(y[0, : 2 * self.tau], jnp.zeros(2 * self.tau))
+    @pytest.mark.parametrize(
+        'tau,x_vals,expected_vals',
+        [
+            (2, [1, 3, 5, 7], [-1, 1, -1, 1]),
+            (3, [0, 3, 6, 10, 10, 10], [-3, 0, 3, 0, 0, 0]),
+            (4, [0, 0, 0, 0, 1, 1, 1, 1, 2, 4, 6, 8], [0, 0, 0, 0, 0, 0, 0, 0, -3, -1, 1, 3]),
+        ],
+    )
+    def test_demeaning_per_interval(self, tau: int, x_vals: list, expected_vals: list):
+        """Each interval has its own mean removed, not a global one."""
+        x = jnp.array([x_vals], dtype=jnp.float64)
+        y = self.make_op(1, len(x_vals), tau)(x)
+        assert_allclose(y, [expected_vals])
 
-    def test_tail_is_passed_through_unchanged(self):
+    def test_tail_passed_through_unchanged(self):
         """Samples in the partial tail interval are returned as-is."""
-        n_det, n_samp = 1, 10  # tail = indices 8, 9
+        n_det, n_samp, tau = 1, 10, 4  # tail at indices 8, 9
         x = jnp.arange(n_det * n_samp, dtype=jnp.float64).reshape(n_det, n_samp)
-        op = self._make_op(n_det, n_samp, self.tau)
-        y = op(x)
-        assert_array_equal(y[0, 2 * self.tau :], x[0, 2 * self.tau :])
+        y = self.make_op(n_det, n_samp, tau)(x)
+        assert_array_equal(y[0, 2 * tau :], x[0, 2 * tau :])
 
-    @pytest.mark.parametrize('tail_value', [True, False])
-    def test_tail_zeroed_by_interval_mask(self, tail_value):
-        """The interval_mask logic in _sample_mask zeros the tail regardless of its value.
+    def test_multiple_detectors_demeaned_independently(self):
+        """Each detector row is demeaned using its own interval means."""
+        tau = 4
+        n_det, n_samp = 3, 8
+        x = jnp.stack([jnp.full((n_samp,), float(d)) for d in range(n_det)])
+        y = self.make_op(n_det, n_samp, tau)(x)
+        assert_array_equal(y, jnp.zeros((n_det, n_samp)))
 
-        True tail: abs(F(mask)) = abs(1) = 1 > 0.5/tau → interval_mask False → masked out.
-        False tail: abs(F(mask)) = abs(0) = 0 < 0.5/tau → interval_mask True, but mask & True = False.
-        """
-        tau = self.tau
-        n_det, n_samp = 1, 10
-        # Build an all-valid mask and optionally set tail to False
-        mask = jnp.ones((n_det, n_samp), dtype=jnp.bool_)
-        if not tail_value:
-            mask = mask.at[0, 2 * tau :].set(False)
+    @pytest.mark.parametrize('n_samp,tau', [(8, 4), (10, 4)])
+    def test_idempotent(self, n_samp: int, tau: int):
+        """Test that op(op(x)) == op(x): operator is a projector."""
+        n_det = 2
+        x = jax.random.normal(jax.random.PRNGKey(0), (n_det, n_samp))
+        op = self.make_op(n_det, n_samp, tau)
+        assert_allclose(op(op(x)), op(x), atol=1e-6)
 
-        op = ATOPProjectionOperator(tau, in_structure=jax.ShapeDtypeStruct(mask.shape, jnp.bool_))
-        interval_mask = jnp.abs(op(mask)) < 0.5 / tau
-        result = jnp.logical_and(mask, interval_mask)
+    def test_tau_one(self):
+        """With tau=1, every sample is its own interval, so output is all zeros."""
+        n_det, n_samp = 2, 6
+        x = jax.random.normal(jax.random.PRNGKey(1), (n_det, n_samp))
+        y = self.make_op(n_det, n_samp, tau=1)(x)
+        assert_allclose(y, jnp.zeros((n_det, n_samp)), atol=1e-6)
 
-        assert_array_equal(result[0, 2 * tau :], jnp.zeros(n_samp - 2 * tau, dtype=jnp.bool_))
+    def test_tau_equals_n_samp(self):
+        """With tau=n_samp, a single interval covers all samples; output sums to zero."""
+        n_det, n_samp = 2, 8
+        x = jax.random.normal(jax.random.PRNGKey(2), (n_det, n_samp))
+        y = self.make_op(n_det, n_samp, tau=n_samp)(x)
+        assert_allclose(y.sum(axis=-1), jnp.zeros(n_det), atol=1e-6)

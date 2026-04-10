@@ -53,7 +53,7 @@ def test_fft(n: int, band_values):
 
 @pytest.mark.parametrize('do_jit', [False, True])
 @pytest.mark.parametrize('method', SymmetricBandToeplitzOperator.METHODS)
-def test(method: str, do_jit: bool) -> None:
+def test_methods(method: str, do_jit: bool) -> None:
     band_values = jnp.array([4.0, 3, 2, 1])
     in_structure = jax.ShapeDtypeStruct((6,), jnp.float64)
     x = jnp.array([1.0, 2, 3, 4, 5, 6])
@@ -62,9 +62,9 @@ def test(method: str, do_jit: bool) -> None:
     if do_jit:
         # to avoid error: TypeError: unhashable type: 'jaxlib.xla_extension.ArrayImpl'
         # we capture op in the lambda closure
-        func = jit(lambda x: SymmetricBandToeplitzOperator.mv(op, x))
+        func = jit(op.mv)
     else:
-        func = op
+        func = op.mv
     y = func(x)
     assert_allclose(y, expected_y, rtol=1e-7, atol=1e-7)
 
@@ -111,9 +111,16 @@ def test_multidimensional(
 
 
 @pytest.mark.parametrize(
-    'band_number, expected_fft_size',
-    [(1, 2), (2, 4), (3, 8), (4, 8), (5, 16), (1023, 2048), (1024, 2048), (1025, 4096)],
+    'n, expected',
+    [(1, 1), (2, 2), (3, 4), (4, 4), (5, 8), (1023, 1024), (1024, 1024), (1025, 2048)],
 )
-def test_default_size(band_number: int, expected_fft_size: int):
-    actual_fft_size = SymmetricBandToeplitzOperator._get_default_fft_size(band_number)
-    assert actual_fft_size == expected_fft_size
+def test_next_power_of_two(n: int, expected: int):
+    assert SymmetricBandToeplitzOperator._get_next_power_of_two(n) == expected
+
+
+@pytest.mark.parametrize(
+    'overlap, expected_fft_size',
+    [(0, 2), (1, 2), (2, 4), (3, 8), (6, 32), (100, 1024), (998, 8192), (1998, 16384)],
+)
+def test_optimal_fft_size(overlap: int, expected_fft_size: int):
+    assert SymmetricBandToeplitzOperator._get_optimal_fft_size(overlap) == expected_fft_size

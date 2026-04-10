@@ -31,8 +31,8 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         - ``dense``: dense matrix multiplication
         - ``direct``: direct convolution
         - ``fft``: FFT on the whole input
-        - ``overlap_save_parallel``: batched FFT on chunks (default)
         - ``overlap_save_sequential``: sequential FFT on chunks
+        - ``overlap_save_parallel``: batched FFT on chunks (default)
 
     ============================  =========  ======
     Method                        Time       Memory

@@ -1,3 +1,4 @@
+import logging
 import pickle
 from abc import abstractmethod
 from collections.abc import Sequence
@@ -16,6 +17,8 @@ import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer
 
 import furax.linalg
@@ -44,7 +47,7 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel, SystemOperator, _hwp_frequency
+from ._model import ObservationModel, SystemOperator, _hwp_frequency, pad_model
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
@@ -130,8 +133,8 @@ class MultiObservationMapMaker(Generic[T]):
         """Runs the mapmaker and return results after saving them to the given directory."""
         results = self.make_maps()
 
-        # Save outputs
-        if out_dir is not None:
+        # Save outputs on process 0 only (all processes hold the same replicated result)
+        if out_dir is not None and jax.process_index() == 0:
             out_dir = Path(out_dir)
             results.save(out_dir)
             self.logger.info(f'saved results to {out_dir}')
@@ -153,15 +156,28 @@ class MultiObservationMapMaker(Generic[T]):
         """Computes the mapmaker results (maps and other products)."""
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
 
-        # Build system matrix from stacked ObservationModel
-        model = self.build_model()
+        n_proc = jax.process_count()
+        rank = jax.process_index()
+        logger_info(
+            f'Distributed layout: {n_proc} process(es), rank {rank}/{n_proc - 1}, '
+            f'{jax.local_device_count()} local device(s), '
+            f'{jax.device_count()} total device(s)'
+        )
+
+        model, indices = self.build_and_shard_model()
+        n_dev = jax.tree.leaves(model)[0].shape[0]
+        n_local = jax.tree.leaves(model)[0].shape[1]
+        logger_info(f'Sharded model: {n_dev} device(s), {n_local} obs/device (including padding)')
+        if self.logger.isEnabledFor(logging.DEBUG):
+            jax.debug.visualize_array_sharding(indices.reshape(-1))
+
         A = SystemOperator(model)
         logger_info('Created system operator')
 
-        hits = self.accumulate_hits(model).block_until_ready()
+        hits = jax.jit(self.accumulate_hits)(model).block_until_ready()
         logger_info('Computed hit map')
 
-        rhs = self.accumulate_rhs(model)
+        rhs = jax.jit(self.accumulate_rhs)(model, indices)
         logger_info('Accumulated RHS vector')
 
         # Preconditioning
@@ -208,8 +224,21 @@ class MultiObservationMapMaker(Generic[T]):
             landscape=self.landscape,
         )
 
-    def build_model(self) -> ObservationModel:
-        # Only read necessary fields
+    def build_and_shard_model(self) -> tuple[ObservationModel, jax.Array]:
+        """Build and shard the ObservationModel for multi-device vmap(scan).
+
+        Observations are distributed across processes using a balanced floor/ceil
+        scheme, then each process's slice is padded to a multiple of the local device
+        count. When multiple devices are available, the result is sharded along the
+        leading axis so that each device owns one row.
+
+        Returns:
+            A tuple ``(model, indices)`` where both have shape
+            ``(n_local_dev, n_per_dev, ...)``. ``indices[d, i]`` is the index into
+            the global observation list for slot ``(d, i)``. Padding slots point to
+            the last real observation owned by this process; their masker is zeroed
+            by ``pad_model`` so they contribute nothing to any accumulated quantity.
+        """
         required_fields = [
             'boresight_quaternions',
             'detector_quaternions',
@@ -233,30 +262,65 @@ class MultiObservationMapMaker(Generic[T]):
             data, padding = reader.read(i)
             return None, ObservationModel.create(data, padding, self.config, self.landscape)
 
-        _, model = jax.lax.scan(build_one, None, jnp.arange(reader.count))
-        return model  # type: ignore[no-any-return]
+        # Each process reads only a slice of the global observation list
+        start, n_owned, n_pad = get_obs_distribution_to_process(reader.count)
+        indices_owned = jnp.arange(start, start + n_owned, dtype=np.int32)
+        _, model = jax.lax.scan(build_one, None, indices_owned)
+
+        # Pad to a multiple of jax.local_device_count(), then reshape
+        if n_pad > 0:
+            model = pad_model(model, n_pad)
+        n_local_dev = jax.local_device_count()
+        n_chunk = n_owned + n_pad
+        shape = (n_local_dev, n_chunk // n_local_dev)
+        model = jax.tree.map(lambda a: a.reshape(*shape, *a.shape[1:]), model)
+
+        # Padded slots point to the last real obs (their masker is zeroed)
+        padded_indices = jnp.pad(indices_owned, (0, n_pad), mode='edge').reshape(shape)
+
+        # Shard if there is more than one device so JAX can dispatch computation
+        indices: Array = padded_indices
+        if jax.device_count() > 1:
+            mesh = Mesh(np.array(jax.devices()), ('obs',))
+            sharding = NamedSharding(mesh, P('obs'))
+            if jax.process_count() > 1:
+                model = jax.tree.map(
+                    lambda a: jax.make_array_from_process_local_data(sharding, a), model
+                )
+                indices = jax.make_array_from_process_local_data(sharding, padded_indices)  # type: ignore[arg-type]
+            else:
+                model = jax.device_put(model, sharding)
+                indices = jax.device_put(padded_indices, sharding)
+
+        return model, indices
 
     def accumulate_hits(self, models: ObservationModel) -> Int64[Array, ' pixels']:
-        def acc(carry, model):  # type: ignore[no-untyped-def]
-            return carry + model.hits(), None
+        """Accumulate hit map across all observations using vmap(scan).
 
+        models has shape (n_dev, n_local, ...) — each device scans its local
+        chunk sequentially, devices run in parallel.
+        """
         init = jnp.zeros(self.landscape.shape, dtype=jnp.int64)
-        total, _ = jax.lax.scan(acc, init, models)
-        return total
+        total_hits = _vmap_scan_sum(lambda carry, obs: (carry + obs.hits(), None), init, models)
+        return total_hits  # type: ignore[no-any-return]
 
-    def accumulate_rhs(self, models: ObservationModel) -> StokesPyTreeType:
-        """Accumulate the RHS vector across all observations"""
+    def accumulate_rhs(self, models: ObservationModel, indices: jax.Array) -> StokesPyTreeType:
+        """Accumulate the RHS vector across all observations using vmap(scan).
+
+        models and indices both have shape (n_dev, n_local, ...) — each device
+        reads and accumulates its local observations sequentially.
+        """
         reader = self.get_reader(['metadata', 'sample_data'])
+        config = self.config
 
-        def acc(carry, args):  # type: ignore[no-untyped-def]
-            i, model = args
+        def step(carry: StokesPyTreeType, args: Any) -> tuple[StokesPyTreeType, None]:
+            obs, i = args
             data, _ = reader.read(i)
-            carry = carry + model.rhs(data, self.config)
-            return carry, None
+            return carry + obs.rhs(data, config), None
 
         init = tree.zeros_like(models.map_structure)
-        total, _ = jax.lax.scan(acc, init, (jnp.arange(reader.count), models))
-        return total  # type: ignore[no-any-return]
+        rhs = _vmap_scan_sum(step, init, models, indices)
+        return rhs  # type: ignore[no-any-return]
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -274,6 +338,62 @@ class MultiObservationMapMaker(Generic[T]):
             )
 
         return valid
+
+
+def _vmap_scan_sum(step_fn: Any, init: Any, *args: Any) -> Any:
+    """vmap(scan(step_fn, init)) over args, then sum results over the device axis."""
+
+    def scan_local(*local_args: Any) -> Any:
+        xs = local_args[0] if len(local_args) == 1 else local_args
+        out, _ = jax.lax.scan(step_fn, init, xs)
+        return out
+
+    per_device = jax.vmap(scan_local)(*args)
+    return jax.tree.map(lambda y: jnp.sum(y, axis=0), per_device)
+
+
+def get_obs_distribution_to_process(n_obs: int) -> tuple[int, int, int]:
+    """Compute this process's observation slice for distributed mapmaking.
+
+    Distributes `n_obs` observations across processes using a balanced floor/ceil
+    scheme, ensuring each process owns at least `floor(n_obs / n_proc)` observations.
+    The owned slice is then padded to the next multiple of the local device count
+    so that the model can be reshaped into `(n_local_dev, chunk // n_local_dev, ...)`.
+    All processes use the same chunk size.
+
+    Args:
+        n_obs: Total number of observations across all processes.
+
+    Returns:
+        A tuple ``(start, n_owned, n_pad)`` where ``start`` is the index of the
+        first observation owned by this process, ``n_owned`` is the number of real
+        observations, and ``n_pad`` is the number of padding slots appended so that
+        ``n_owned + n_pad`` is a multiple of ``n_local_dev``.
+
+    Raises:
+        ValueError: If ``n_obs < n_proc``, i.e. there are not enough observations
+            to assign at least one to every process.
+    """
+    rank = jax.process_index()
+    n_proc = jax.process_count()
+    n_local_dev = jax.local_device_count()
+
+    if n_obs < n_proc:
+        raise ValueError(
+            f'Not enough observations ({n_obs}) for {n_proc} processes. '
+            f'Use fewer SLURM tasks or provide more observations.'
+        )
+
+    # First 'rem' processes get one extra obs
+    base, rem = divmod(n_obs, n_proc)
+    n_owned = base + (1 if rank < rem else 0)
+    start = rank * base + min(rank, rem)
+
+    # Uniform chunk size = ceil(n_obs / n_proc), padded to multiple of n_local_dev
+    max_owned = base + (rem > 0)
+    chunk = max_owned + (-max_owned) % n_local_dev
+
+    return start, n_owned, chunk - n_owned
 
 
 def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape | None:

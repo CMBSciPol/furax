@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from furax.interfaces.sotodlib import SOTODLibObservation
+from furax.interfaces.sotodlib.observation import SOTODLibObservation
 
 
 def test_from_file() -> None:

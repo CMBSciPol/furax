@@ -1,3 +1,11 @@
+import os
+
+import jax
+
+if 'SLURM_JOB_ID' in os.environ:
+    jax.distributed.initialize()
+
+
 from cyclopts import App
 
 from .prepare import prepare

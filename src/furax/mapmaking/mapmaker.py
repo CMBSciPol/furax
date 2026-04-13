@@ -279,6 +279,7 @@ class MultiObservationMapMaker(Generic[T]):
         padded_indices = jnp.pad(indices_owned, (0, n_pad), mode='edge').reshape(shape)
 
         # Shard if there is more than one device so JAX can dispatch computation
+        indices: Array = padded_indices
         if jax.device_count() > 1:
             mesh = Mesh(np.array(jax.devices()), ('obs',))
             sharding = NamedSharding(mesh, P('obs'))

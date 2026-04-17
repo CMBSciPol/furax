@@ -1168,30 +1168,33 @@ class ATOPMapMaker(MapMaker):
         # Preconditioner
         preconditioner = selector @ diag_system.inverse() @ selector.T
 
-        # Mapmaking operator
-        p = preconditioner
+        # Mapmaking operators
         h = acquisition @ selector.T
         mp = masker
         ap = inv_noise @ atop_projector
+        lhs = h.T @ mp @ ap @ mp @ h
+        rhs_op = jax.jit(lambda d: (h.T @ mp @ ap @ mp).reduce()(d))
 
-        solver = lineax.CG(**asdict(config.solver))
-        solver_options = {
-            'preconditioner': as_lineax_operator(p, OperatorTag.POSITIVE_SEMIDEFINITE),
-        }
-        with Config(solver=solver, solver_options=solver_options):
-            mapmaking_operator = (h.T @ mp @ ap @ mp @ h).I @ h.T @ mp @ ap @ mp
-
-        @jax.jit
-        def process(d):  # type: ignore[no-untyped-def]
-            return mapmaking_operator.reduce()(d)
-
+        solver = lineax.CG(**asdict(self.config.solver))
+        spd = OperatorTag.POSITIVE_SEMIDEFINITE
+        lx_system = as_lineax_operator(lhs, spd)
+        lx_precond = as_lineax_operator(preconditioner.reduce(), spd)
         logger_info('Completed setting up the solver')
 
         # Run mapmaking
-        rec_map = process(data)
-        result_map = selector.T(rec_map)
+        rhs = rhs_op(data)
+        y0 = preconditioner(rhs)
+        solution = lineax.linear_solve(
+            lx_system,
+            rhs,
+            solver=solver,
+            options={'preconditioner': lx_precond, 'y0': y0},
+            throw=False,
+        )
+        result_map = selector.T(solution.value)
         result_map.q.block_until_ready()
-        logger_info('Finished mapmaking computation')
+        num_steps = solution.stats['num_steps']
+        logger_info(f'Finished mapmaking computation. Number of PCG steps: {num_steps}')
 
         # Format output and compute auxilary data
         final_map = np.array([result_map.q, result_map.u])

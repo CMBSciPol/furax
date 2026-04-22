@@ -908,26 +908,18 @@ class MLMapmaker(MapMaker):
                 atol=config.solver.atol,
                 max_steps=30,
             )
-            nested_solver_options = {
-                'preconditioner': as_lineax_operator(
-                    masker @ inv_noise @ masker, OperatorTag.POSITIVE_SEMIDEFINITE
-                ),
-            }
             M = (
                 masker
                 @ (masker @ noise @ masker).I(
                     solver=nested_solver,
-                    solver_options=nested_solver_options,
+                    preconditioner=masker @ inv_noise @ masker,
                 )
                 @ masker
             )
             logger_info('Set up nested PCG for the noise inverse')
 
         solver = lineax.CG(**asdict(config.solver))
-        solver_options = {
-            'preconditioner': as_lineax_operator(p, OperatorTag.POSITIVE_SEMIDEFINITE),
-        }
-        options = {'solver': solver, 'solver_options': solver_options}
+        options = {'solver': solver, 'preconditioner': p}
         if config.use_templates:
             mapmaking_operator = (h.T @ M @ h + reg).I(**options) @ h.T @ M
         else:

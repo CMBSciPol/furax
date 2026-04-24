@@ -1,3 +1,4 @@
+import logging
 from typing import get_args
 
 import healpy as hp
@@ -13,6 +14,11 @@ from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT
 @pytest.fixture(scope='session', autouse=True)
 def enable_x64() -> None:
     jax.config.update('jax_enable_x64', True)
+
+
+@pytest.fixture(scope='session', autouse=True)
+def silence_furax_logger() -> None:
+    logging.getLogger('furax-mapmaking').setLevel(logging.WARNING)
 
 
 def load_planck(nside: int) -> np.ndarray:

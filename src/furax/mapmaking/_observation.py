@@ -131,6 +131,12 @@ class AbstractObservation(ABC, Generic[T]):
     def get_hwp_angles(self) -> Array:
         """Returns the HWP angles."""
 
+    def get_hwp_frequency(self) -> Float[Array, '']:
+        """Returns the average HWP rotation frequency in Hz."""
+        hwp_angles = self.get_hwp_angles()
+        timestamps = self.get_timestamps()
+        return (jnp.unwrap(hwp_angles)[-1] - hwp_angles[0]) / jnp.ptp(timestamps) / (2 * jnp.pi)
+
     @abstractmethod
     def get_sample_mask(self) -> Bool[Array, 'dets samps']:
         """Returns boolean sample mask (True=valid) of the TOD."""

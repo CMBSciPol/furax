@@ -118,6 +118,19 @@ class TestAlm2Map:
         for leaf in jax.tree.leaves(maps):
             assert jnp.issubdtype(leaf.dtype, jnp.floating)
 
+    def test_reshape_promotes_2d_single_freq_input(self):
+        """A 2-D alm leaf (lmax+1, 2*lmax+1) should be reshaped to (1, lmax+1, 2*lmax+1)."""
+        struct = StokesIQU.structure_for((NALM_ROWS, NALM_COLS), jnp.complex128)
+        op = Alm2Map(lmax=LMAX, nside=NSIDE, in_structure=struct)
+        alms = StokesIQU(
+            i=jnp.zeros((NALM_ROWS, NALM_COLS), dtype=jnp.complex128),
+            q=jnp.zeros((NALM_ROWS, NALM_COLS), dtype=jnp.complex128),
+            u=jnp.zeros((NALM_ROWS, NALM_COLS), dtype=jnp.complex128),
+        )
+        maps = op(alms)
+        for leaf in jax.tree.leaves(maps):
+            assert leaf.shape == (1, NPIX)
+
     def test_transpose_returns_map2alm(self, alm2map):
         """Transpose of Alm2Map should return a Map2Alm instance."""
         assert isinstance(alm2map.T, Map2Alm)

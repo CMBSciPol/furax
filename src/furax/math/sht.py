@@ -6,7 +6,7 @@ The two core operators are:
 - :class:`Alm2Map`: synthesis transform (spherical harmonic coefficients → pixel map).
 
 Both operators accept PyTree inputs whose leaves are 2-D arrays of shape
-``(nfreq, npix)`` or ``(nfreq, nalm)``.  A 1-D leaf is promoted to 2-D via
+``(nfreq, npix)`` or ``(nfreq, lmax+1, 2*lmax+1)``.  A 1-D leaf is promoted to 2-D via
 ``jnp.atleast_2d`` before processing so that single-frequency inputs work
 without special-casing.  The frequency loop is implemented with
 ``jax.lax.scan``, which keeps the computation inside a single XLA while-loop
@@ -19,9 +19,8 @@ and avoids unrolling the frequency axis.
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Inexact, PyTree
-
 import jax_healpy as jhp
+from jaxtyping import Array, Inexact, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator
 from furax.core.rules import AbstractBinaryRule, NoReduction
@@ -34,7 +33,7 @@ class Map2Alm(AbstractLinearOperator):
     ``(nfreq, npix)``.  A 1-D leaf is silently promoted to ``(1, npix)`` via
     ``jnp.atleast_2d``.  The transform is applied independently to every
     frequency row using ``jax.lax.scan``, producing an output leaf of shape
-    ``(nfreq, nalm)`` where ``nalm = (lmax + 1) * (lmax + 2) // 2``.
+    ``(nfreq, lmax+1, 2*lmax+1)``.
 
     Attributes:
         lmax: Maximum spherical harmonic degree.
@@ -64,17 +63,17 @@ class Map2Alm(AbstractLinearOperator):
 
         Returns:
             PyTree with the same structure as *x*; each leaf has shape
-            ``(nfreq, nalm)`` and complex dtype.
+            ``(nfreq, lmax+1, 2*lmax+1)`` and complex dtype.
         """
 
-        def func(value):
+        def func(value: jax.Array) -> jax.Array:
             value = jnp.atleast_2d(value)  # (nfreq, npix)
 
-            def scan_fn(_, row):
+            def scan_fn(_: None, row: jax.Array) -> tuple[None, jax.Array]:
                 return None, jhp.map2alm(row, iter=0, lmax=self.lmax, pol=False)
 
             _, alms = jax.lax.scan(scan_fn, None, value)
-            return alms  # (nfreq, nalm)
+            return alms  # (nfreq, lmax+1, 2*lmax+1)
 
         return jax.tree.map(func, x)
 
@@ -101,8 +100,9 @@ class Alm2Map(AbstractLinearOperator):
     """Synthesis spherical harmonic transform: alm coefficients → pixel map.
 
     Each leaf of the input PyTree must be a 2-D array of shape
-    ``(nfreq, nalm)``.  A 1-D leaf is silently promoted to ``(1, nalm)`` via
-    ``jnp.atleast_2d``.  The transform is applied independently to every
+    ``(nfreq, lmax+1, 2*lmax+1)``.  A 2-D leaf ``(lmax+1, 2*lmax+1)`` is
+    silently reshaped to ``(1, lmax+1, 2*lmax+1)`` via ``reshape(-1, ...)``,
+    handling the single-frequency case without branching.  The transform is applied independently to every
     frequency row using ``jax.lax.scan``, producing an output leaf of shape
     ``(nfreq, npix)`` where ``npix = 12 * nside ** 2``.
 
@@ -115,8 +115,7 @@ class Alm2Map(AbstractLinearOperator):
         >>> from furax.math.sht import Alm2Map
         >>> from furax.obs.stokes import StokesIQU
         >>> nside, lmax, nfreq = 32, 63, 3
-        >>> nalm = (lmax + 1) * (lmax + 2) // 2
-        >>> structure = StokesIQU.structure_for((nfreq, nalm), jnp.complex128)
+        >>> structure = StokesIQU.structure_for((nfreq, lmax+1, 2*lmax+1), jnp.complex128)
         >>> op = Alm2Map(lmax=lmax, nside=nside, in_structure=structure)
     """
 
@@ -127,18 +126,18 @@ class Alm2Map(AbstractLinearOperator):
         """Apply the synthesis SHT to every leaf of *x*.
 
         Args:
-            x: Input PyTree whose leaves have shape ``(nfreq, nalm)`` or
-                ``(nalm,)`` for a single frequency.
+            x: Input PyTree whose leaves have shape ``(nfreq, lmax+1, 2*lmax+1)`` or
+                ``(lmax+1, 2*lmax+1,)`` for a single frequency.
 
         Returns:
             PyTree with the same structure as *x*; each leaf has shape
             ``(nfreq, npix)`` and real dtype.
         """
 
-        def func(value):
-            value = jnp.atleast_2d(value)  # (nfreq, nalm)
+        def func(value: jax.Array) -> jax.Array:
+            value = value.reshape(-1, *value.shape[-2:])  # (nfreq, lmax+1, 2*lmax+1)
 
-            def scan_fn(_, row):
+            def scan_fn(_: None, row: jax.Array) -> tuple[None, jax.Array]:
                 return None, jnp.real(jhp.alm2map(row, nside=self.nside, lmax=self.lmax, pol=False))
 
             _, maps = jax.lax.scan(scan_fn, None, value)

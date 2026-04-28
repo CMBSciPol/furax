@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from hashlib import sha1
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Self, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -44,22 +44,35 @@ class ObservationReader(AbstractReader, Generic[T]):
 
     def __init__(
         self,
+        *args: Sequence[Any],
+        demodulated: bool,
+        stokes: ValidStokesType,
+        common_keywords: dict[str, Any] | None = None,
+        structures: list[PyTree[jax.ShapeDtypeStruct]] | None = None,
+        **keywords: Sequence[Any],
+    ) -> None:
+        # Set before super().__init__ so _read_structure_impure can use them
+        self.demodulated = demodulated
+        self.stokes = stokes
+        super().__init__(*args, common_keywords=common_keywords, structures=structures, **keywords)
+
+    @classmethod
+    def from_observations(
+        cls,
         observations: Sequence[AbstractLazyObservation[T]],
         *,
         requested_fields: list[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
-    ) -> None:
-        """Initializes the reader with a list of filenames and optional list of field names.
+    ) -> Self:
+        """Create a reader, performing I/O to infer data structures.
 
         Args:
-            filenames: A list of filenames. Each filename can be a string or a Path object.
+            observations: List of lazy observations to read.
             requested_fields: Optional list of fields to load. If None, read all non-optional fields.
             demodulated: Whether to read demodulated TODs.
             stokes: Stokes components to read when demodulated.
         """
-        self.demodulated = demodulated
-        self.stokes = stokes
         interface = observations[0].interface_class
         available = set(interface.AVAILABLE_READER_FIELDS)
         optional = set(interface.OPTIONAL_READER_FIELDS)
@@ -72,7 +85,12 @@ class ObservationReader(AbstractReader, Generic[T]):
                 msg = f'Requested data fields {unsupported} are not supported by the interface.'
                 raise ValueError(msg)
 
-        super().__init__(observations, common_keywords={'data_field_names': list(fields)})
+        return cls(
+            list(observations),
+            common_keywords={'data_field_names': list(fields)},
+            demodulated=demodulated,
+            stokes=stokes,
+        )
 
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
         """Reads one ground observation from the list of filenames specified in the reader.
@@ -152,12 +170,14 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         return data, padding
 
+    @staticmethod
     def _get_data_field_structures_for(
-        self, n_detectors: int, n_samples: int
+        n_detectors: int,
+        n_samples: int,
+        *,
+        demodulated: bool,
+        stokes: ValidStokesType,
     ) -> PyTree[jax.ShapeDtypeStruct]:
-        demodulated = self.demodulated
-        stokes = self.stokes
-
         tod_shape = (n_detectors, n_samples)
         sample_data_structure = (
             Stokes.class_for(stokes).structure_for(tod_shape, jnp.float64)
@@ -230,13 +250,11 @@ class ObservationReader(AbstractReader, Generic[T]):
         # request an empty list
         # this loads sufficient info to determine the structure
         data = observation.get_data([])
-
-        # find the data shape
-        n_detectors = data.n_detectors
-        n_samples = data.n_samples
-
         field_structure = self._get_data_field_structures_for(
-            n_detectors=n_detectors, n_samples=n_samples
+            data.n_detectors,
+            data.n_samples,
+            demodulated=self.demodulated,
+            stokes=self.stokes,
         )
         return {field: field_structure[field] for field in data_field_names}
 

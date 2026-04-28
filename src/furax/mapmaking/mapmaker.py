@@ -276,6 +276,49 @@ class MultiObservationMapMaker(Generic[T]):
         return valid
 
 
+def get_obs_distribution_to_process(n_obs: int) -> tuple[int, int, int]:
+    """Compute this process's observation slice for distributed mapmaking.
+
+    Distributes ``n_obs`` observations across processes as evenly as possible
+    (first ``n_obs % n_proc`` processes get one extra), then pads each process's
+    share to the next multiple of ``local_device_count`` so every device has a
+    uniform workload.  All processes end up with the same number of total slots
+    (``n_owned + n_pad``), which is required for multi-process sharding.
+
+    Args:
+        n_obs: Total number of observations across all processes.
+
+    Returns:
+        A tuple ``(start, n_owned, n_pad)`` where ``start`` is the index of the
+        first real observation owned by this process, ``n_owned`` is the number
+        of real observations, and ``n_pad`` is the number of padding slots so that
+        ``n_owned + n_pad`` is a multiple of ``local_device_count``.
+
+    Raises:
+        ValueError: If ``n_obs < n_proc``.
+    """
+    rank = jax.process_index()
+    n_proc = jax.process_count()
+    n_local = jax.local_device_count()
+
+    if n_obs < n_proc:
+        raise ValueError(
+            f'Not enough observations ({n_obs}) for {n_proc} processes. '
+            f'Use fewer SLURM tasks or provide more observations.'
+        )
+
+    base = n_obs // n_proc
+    remainder = n_obs % n_proc
+    max_owned = base + (1 if remainder > 0 else 0)
+    n_per_proc = max_owned + (-max_owned) % n_local  # ceil to next multiple of n_local
+
+    n_owned = base + (1 if rank < remainder else 0)
+    start = rank * base + min(rank, remainder)
+    n_pad = n_per_proc - n_owned
+
+    return start, n_owned, n_pad
+
+
 def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape | None:
     """Build a landscape from config alone, without observation data.
 

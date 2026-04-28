@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import jax
+
 from furax.interfaces.sotodlib.observation import LazySOTODLibObservation
 from furax.mapmaking import MapMakingConfig, MultiObservationMapMaker
 
@@ -26,7 +28,7 @@ def run(  # type: ignore[no-untyped-def]
         loglevel: Logging level (debug, info, warning, error).
         log_path: Log output path.
     """
-    logger = setup_logger(loglevel, log_path)
+    logger = setup_logger(loglevel, log_path, process_index=jax.process_index())
 
     obsids = resolve_obsids(obsid, obsids_file)
     if obsids:

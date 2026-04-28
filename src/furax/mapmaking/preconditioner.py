@@ -6,7 +6,7 @@ from jaxtyping import Array, PyTree
 
 from furax import AbstractLinearOperator, TreeOperator, symmetric
 from furax.obs.stokes import Stokes
-from furax.tree import _get_outer_treedef, _tree_to_dense, zeros_like
+from furax.tree import _dense_to_tree, _get_outer_treedef, _tree_to_dense, zeros_like
 
 
 @symmetric
@@ -74,6 +74,14 @@ class BJPreconditioner(TreeOperator):
             }
         )
         return cls(tree, in_structure=in_struct)
+
+    def inverse(self) -> 'BJPreconditioner':
+        # FIXME: we override the parent implementation so that the symmetric tag is preserved
+        # there might be a better way of doing that
+        dense = _tree_to_dense(self.outer_treedef, self.inner_treedef, self.tree)
+        dense_inv = jnp.linalg.inv(dense)
+        tree = _dense_to_tree(self.inner_treedef, self.outer_treedef, dense_inv)
+        return BJPreconditioner(tree, in_structure=self.in_structure)
 
     def get_blocks(self) -> Array:
         """Convert the preconditioner blocks as a dense matrix."""

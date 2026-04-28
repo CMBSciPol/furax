@@ -224,7 +224,7 @@ def _observations(name: str, demodulated: bool = False) -> list[AbstractLazyObse
         files = [folder / 'test_obs.h5'] * 2
         return [LazyToastObservation(f) for f in files]
     elif name == 'sotodlib':
-        from furax.interfaces.sotodlib import LazySOTODLibObservation
+        from furax.interfaces.sotodlib.observation import LazySOTODLibObservation
 
         sotodlib_config = SotodlibConfig(demodulated=True) if demodulated else None
         files = [folder / 'test_obs.h5', folder / 'test_obs_2.h5']

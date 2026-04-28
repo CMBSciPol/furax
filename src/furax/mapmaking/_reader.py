@@ -73,24 +73,89 @@ class ObservationReader(AbstractReader, Generic[T]):
             demodulated: Whether to read demodulated TODs.
             stokes: Stokes components to read when demodulated.
         """
+        fields = cls._resolve_fields(observations, requested_fields)
+        return cls(
+            list(observations),
+            common_keywords={'data_field_names': fields},
+            demodulated=demodulated,
+            stokes=stokes,
+        )
+
+    @classmethod
+    def from_observations_distributed(
+        cls,
+        observations: Sequence[AbstractLazyObservation[T]],
+        local_indices: Sequence[int],
+        *,
+        requested_fields: list[str] | None = None,
+        demodulated: bool = False,
+        stokes: ValidStokesType = 'IQU',
+    ) -> Self:
+        """Create a reader for distributed mapmaking.
+
+        Each process opens only its local observation files to read their shapes, then
+        an all-gather synchronises the shapes so every process can build structures for
+        all observations without duplicate I/O.  Requires a JAX distributed context.
+
+        Args:
+            observations: Full list of observations across all processes.
+            local_indices: Indices into ``observations`` owned by this process.
+            requested_fields: Optional list of fields to load.
+            demodulated: Whether to read demodulated TODs.
+            stokes: Stokes components to read when demodulated.
+        """
+        from jax.experimental import multihost_utils as mhu
+
+        fields = cls._resolve_fields(observations, requested_fields)
+
+        # Each process reads shapes only for its local observations
+        def _shape(idx: int) -> tuple[int, int, int]:
+            data = observations[idx].get_data([])
+            return idx, data.n_detectors, data.n_samples
+
+        local_shapes = np.array([_shape(idx) for idx in local_indices], dtype=np.int32)
+
+        # All-gather → (n_procs * n_local, 3), sort by global index
+        all_shapes = mhu.process_allgather(local_shapes).reshape(-1, 3)
+        all_shapes = all_shapes[np.argsort(all_shapes[:, 0])]
+
+        structures = [
+            {
+                field: all_field_structures[field]
+                for field in fields
+                for all_field_structures in [
+                    cls._get_data_field_structures_for(
+                        int(n_det), int(n_samp), demodulated=demodulated, stokes=stokes
+                    )
+                ]
+            }
+            for _, n_det, n_samp in all_shapes
+        ]
+
+        return cls(
+            list(observations),
+            common_keywords={'data_field_names': fields},
+            demodulated=demodulated,
+            stokes=stokes,
+            structures=structures,
+        )
+
+    @staticmethod
+    def _resolve_fields(
+        observations: Sequence[AbstractLazyObservation[T]],
+        requested_fields: list[str] | None,
+    ) -> list[str]:
         interface = observations[0].interface_class
         available = set(interface.AVAILABLE_READER_FIELDS)
         optional = set(interface.OPTIONAL_READER_FIELDS)
         if requested_fields is None:
-            fields = available - optional
-        else:
-            fields = set(requested_fields)
-            unsupported = fields - available
-            if len(unsupported) > 0:
-                msg = f'Requested data fields {unsupported} are not supported by the interface.'
-                raise ValueError(msg)
-
-        return cls(
-            list(observations),
-            common_keywords={'data_field_names': list(fields)},
-            demodulated=demodulated,
-            stokes=stokes,
-        )
+            return sorted(available - optional)
+        unsupported = set(requested_fields) - available
+        if unsupported:
+            raise ValueError(
+                f'Requested data fields {unsupported} are not supported by the interface.'
+            )
+        return list(requested_fields)
 
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
         """Reads one ground observation from the list of filenames specified in the reader.

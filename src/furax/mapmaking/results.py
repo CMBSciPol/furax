@@ -118,9 +118,9 @@ class MapMakingResults:
             noise_fits=noise_fits,
         )
 
-    @classmethod
+    @staticmethod
     def _load_array(
-        cls, name: str, out_dir: Path, landscape: StokesLandscape, n_fields: int
+        name: str, out_dir: Path, landscape: StokesLandscape, n_fields: int
     ) -> np.ndarray:
         """Load a [n_fields, *pixel_dims] array from FITS or npy.
 
@@ -152,15 +152,15 @@ class MapMakingResults:
                 raise FileNotFoundError(f'Expected file not found: {path}')
             return np.load(path)  # type: ignore[no-any-return]
 
-    @classmethod
-    def _load_map(cls, out_dir: Path, landscape: StokesLandscape) -> StokesPyTreeType:
+    @staticmethod
+    def _load_map(out_dir: Path, landscape: StokesLandscape) -> StokesPyTreeType:
         ns = len(landscape.stokes)
-        arr = cls._load_array('map', out_dir, landscape, ns)
+        arr = MapMakingResults._load_array('map', out_dir, landscape, ns)
         stokes_cls = Stokes.class_for(landscape.stokes)
         return stokes_cls(*[jnp.array(arr[i]) for i in range(ns)])
 
-    @classmethod
-    def _load_hit_map(cls, out_dir: Path, landscape: StokesLandscape) -> Array:
+    @staticmethod
+    def _load_hit_map(out_dir: Path, landscape: StokesLandscape) -> Array:
         if isinstance(landscape, (WCSLandscape, AstropyWCSLandscape)):
             path = out_dir / 'hit_map.fits'
             if not path.exists():
@@ -178,12 +178,12 @@ class MapMakingResults:
                 raise FileNotFoundError(f'Expected file not found: {path}')
             return jnp.array(np.load(path))
 
-    @classmethod
-    def _load_icov(cls, out_dir: Path, landscape: StokesLandscape) -> Array:
+    @staticmethod
+    def _load_icov(out_dir: Path, landscape: StokesLandscape) -> Array:
         stokes = landscape.stokes
         ns = len(stokes)
         n_upper = ns * (ns + 1) // 2
-        arr_upper = cls._load_array('icov', out_dir, landscape, n_upper)
+        arr_upper = MapMakingResults._load_array('icov', out_dir, landscape, n_upper)
 
         upper = [(i, j) for i in range(ns) for j in range(i, ns)]
         pixel_shape = arr_upper.shape[1:]
@@ -194,15 +194,15 @@ class MapMakingResults:
                 icov[j, i] = arr_upper[k]
         return jnp.array(icov)
 
-    @classmethod
-    def _load_noise_fits(cls, out_dir: Path) -> Array | None:
+    @staticmethod
+    def _load_noise_fits(out_dir: Path) -> Array | None:
         path = out_dir / 'noise_fits.npy'
         if not path.exists():
             return None
         return jnp.array(np.load(path))
 
-    @classmethod
-    def _load_solver_stats(cls, out_dir: Path) -> dict[str, Any] | None:
+    @staticmethod
+    def _load_solver_stats(out_dir: Path) -> dict[str, Any] | None:
         path = out_dir / 'solver_stats.json'
         if not path.exists():
             return None

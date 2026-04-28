@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from furax.interfaces.sotodlib import LazySOTODLibObservation
+from furax.interfaces.sotodlib.observation import LazySOTODLibObservation
 from furax.mapmaking import MapMakingConfig, MultiObservationMapMaker
 
 from .util import resolve_obsids, setup_logger

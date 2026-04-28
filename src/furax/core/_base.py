@@ -125,7 +125,12 @@ class AbstractLinearOperator(ABC):
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
         if self.in_structure != other.out_structure:
-            raise ValueError('Incompatible linear operator structures')
+            msg = (
+                f'Incompatible linear operator structures: '
+                f'self.in_structure={self.in_structure}, '
+                f'other.out_structure={other.out_structure}'
+            )
+            raise ValueError(msg)
         if isinstance(other, CompositionOperator):
             return NotImplemented
         if isinstance(other, AbstractLazyInverseOperator):

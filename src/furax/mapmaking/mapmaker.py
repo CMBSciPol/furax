@@ -44,7 +44,7 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel, SystemOperator, _hwp_frequency
+from ._model import ObservationModel, SystemOperator
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
@@ -552,7 +552,7 @@ class MapMaker:
         f, Pxx = jax.scipy.signal.welch(
             observation.get_tods(), fs=observation.sample_rate, nperseg=config.noise.fitting.nperseg
         )
-        hwp_frequency = _hwp_frequency(observation.get_timestamps(), observation.get_hwp_angles())
+        hwp_frequency = observation.get_hwp_frequency()
         return Model.fit_psd_model(
             f,
             Pxx,

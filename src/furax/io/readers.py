@@ -1,12 +1,6 @@
-import sys
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from typing import Any
-
-if sys.version_info < (3, 11):
-    pass
-else:
-    pass
 
 import jax
 import jax.numpy as jnp

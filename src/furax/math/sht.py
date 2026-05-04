@@ -40,6 +40,9 @@ class Map2Alm(AbstractLinearOperator):
         nside: HEALPix resolution parameter, carried so that
             :meth:`transpose` / :meth:`inverse` can construct
             :class:`Alm2Map` with the correct resolution.
+        iter: Number of iterations for the map2alm solver; more iterations,
+            which are more expensive, yield more accurate alm coefficients.
+            (default is 3)
 
     Example:
         >>> import jax.numpy as jnp
@@ -53,6 +56,7 @@ class Map2Alm(AbstractLinearOperator):
 
     lmax: int
     nside: int
+    iter: int = 3
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         """Apply the analysis SHT to every leaf of *x*.
@@ -68,23 +72,9 @@ class Map2Alm(AbstractLinearOperator):
 
         def func(value: jax.Array) -> jax.Array:
             value = jnp.atleast_2d(value)  # (nfreq, npix)
-
-            def scan_fn(_: None, row: jax.Array) -> tuple[None, jax.Array]:
-                return None, jhp.map2alm(row, iter=0, lmax=self.lmax, pol=False)
-
-            _, alms = jax.lax.scan(scan_fn, None, value)
-            return alms  # (nfreq, lmax+1, 2*lmax+1)
+            return jhp.map2alm(value, iter=self.iter, lmax=self.lmax, pol=False)  # (nfreq, lmax+1, 2*lmax+1)
 
         return jax.tree.map(func, x)
-
-    def transpose(self) -> 'Alm2Map':
-        """Return the transpose operator :class:`Alm2Map`.
-
-        Returns:
-            An :class:`Alm2Map` whose ``in_structure`` matches the output
-            structure of this operator (i.e. alm space).
-        """
-        return Alm2Map(lmax=self.lmax, nside=self.nside, in_structure=self.out_structure)
 
     def inverse(self) -> 'Alm2Map':
         """Return the pseudo-inverse operator :class:`Alm2Map`.
@@ -93,7 +83,10 @@ class Map2Alm(AbstractLinearOperator):
             An :class:`Alm2Map` whose ``in_structure`` matches the output
             structure of this operator (i.e. alm space).
         """
-        return Alm2Map(lmax=self.lmax, nside=self.nside, in_structure=self.out_structure)
+        return Alm2Map(lmax=self.lmax, 
+                       nside=self.nside, 
+                       iter=self.iter, 
+                       in_structure=self.out_structure)
 
 
 class Alm2Map(AbstractLinearOperator):
@@ -109,6 +102,8 @@ class Alm2Map(AbstractLinearOperator):
     Attributes:
         lmax: Maximum spherical harmonic degree.
         nside: HEALPix resolution parameter used by the synthesis step.
+        iter: Number of iterations for the map2alm solver used by 
+            the transpose/inverse. (Default is 3)
 
     Example:
         >>> import jax.numpy as jnp
@@ -121,6 +116,7 @@ class Alm2Map(AbstractLinearOperator):
 
     lmax: int
     nside: int
+    iter: int = 3
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         """Apply the synthesis SHT to every leaf of *x*.
@@ -136,23 +132,9 @@ class Alm2Map(AbstractLinearOperator):
 
         def func(value: jax.Array) -> jax.Array:
             value = value.reshape(-1, *value.shape[-2:])  # (nfreq, lmax+1, 2*lmax+1)
-
-            def scan_fn(_: None, row: jax.Array) -> tuple[None, jax.Array]:
-                return None, jnp.real(jhp.alm2map(row, nside=self.nside, lmax=self.lmax, pol=False))
-
-            _, maps = jax.lax.scan(scan_fn, None, value)
-            return maps  # (nfreq, npix)
+            return jnp.real(jhp.alm2map(value, nside=self.nside, lmax=self.lmax, pol=False))
 
         return jax.tree.map(func, x)
-
-    def transpose(self) -> 'Map2Alm':
-        """Return the transpose operator :class:`Map2Alm`.
-
-        Returns:
-            A :class:`Map2Alm` whose ``in_structure`` matches the output
-            structure of this operator (i.e. map space).
-        """
-        return Map2Alm(lmax=self.lmax, nside=self.nside, in_structure=self.out_structure)
 
     def inverse(self) -> 'Map2Alm':
         """Return the pseudo-inverse operator :class:`Map2Alm`.
@@ -161,7 +143,10 @@ class Alm2Map(AbstractLinearOperator):
             A :class:`Map2Alm` whose ``in_structure`` matches the output
             structure of this operator (i.e. map space).
         """
-        return Map2Alm(lmax=self.lmax, nside=self.nside, in_structure=self.out_structure)
+        return Map2Alm(lmax=self.lmax, 
+                       nside=self.nside,
+                       iter=self.iter,
+                       in_structure=self.out_structure)
 
 
 class SHTRule(AbstractBinaryRule):

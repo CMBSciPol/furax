@@ -89,9 +89,7 @@ class BeamOperator(AbstractLinearOperator):
     lmax: int
     beam_fl: Float[Array, 'ab']
 
-    def mv(
-        self, x: PyTree[Inexact[Array, 'nfreq npix']]
-    ) -> PyTree[Inexact[Array, 'nfreq npix']]:
+    def mv(self, x: PyTree[Inexact[Array, 'nfreq npix']]) -> PyTree[Inexact[Array, 'nfreq npix']]:
         """Apply the beam to input sky maps.
 
         Args:
@@ -110,9 +108,7 @@ class BeamOperator(AbstractLinearOperator):
         fl = jnp.broadcast_to(jnp.atleast_2d(self.beam_fl), (nfreq, self.lmax + 1))
         alm_beam = jax.tree.map(lambda alm_leaf: _apply_fl_to_alm_leaf(alm_leaf, fl), alm)
 
-        return Alm2Map(lmax=self.lmax, nside=nside, in_structure=map2alm.out_structure).mv(
-            alm_beam
-        )
+        return Alm2Map(lmax=self.lmax, nside=nside, in_structure=map2alm.out_structure).mv(alm_beam)
 
     def inverse(self) -> 'BeamOperator':
         """Return a :class:`BeamOperator` with the reciprocal transfer function.
@@ -162,9 +158,7 @@ class BeamOperatorIQU(AbstractLinearOperator):
     lmax: int
     beam_fl: PyTree[Float[Array, 'ab']]
 
-    def mv(
-        self, x: PyTree[Inexact[Array, 'nfreq npix']]
-    ) -> PyTree[Inexact[Array, 'nfreq npix']]:
+    def mv(self, x: PyTree[Inexact[Array, 'nfreq npix']]) -> PyTree[Inexact[Array, 'nfreq npix']]:
         """Apply per-Stokes beams to input sky maps.
 
         Args:
@@ -181,9 +175,7 @@ class BeamOperatorIQU(AbstractLinearOperator):
         alm = map2alm.mv(x)
 
         alm_beam = jax.tree.map(_apply_fl_to_alm_leaf, alm, self.beam_fl)
-        return Alm2Map(lmax=self.lmax, nside=nside, in_structure=map2alm.out_structure).mv(
-            alm_beam
-        )
+        return Alm2Map(lmax=self.lmax, nside=nside, in_structure=map2alm.out_structure).mv(alm_beam)
 
     def inverse(self) -> 'BeamOperatorIQU':
         """Return a :class:`BeamOperatorIQU` with per-Stokes reciprocal transfer functions.

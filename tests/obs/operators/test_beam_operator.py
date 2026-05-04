@@ -246,9 +246,7 @@ class TestBeamRule:
     def test_combined_beam_fl_is_product(self, half_beam_fl, map_structure):
         """Reduced beam_fl must equal the element-wise product of both beam_fls."""
         op1 = BeamOperator(lmax=LMAX, beam_fl=half_beam_fl, in_structure=map_structure)
-        op2 = BeamOperator(
-            lmax=LMAX, beam_fl=half_beam_fl * 0.5, in_structure=map_structure
-        )
+        op2 = BeamOperator(lmax=LMAX, beam_fl=half_beam_fl * 0.5, in_structure=map_structure)
         reduced = (op1 @ op2).reduce()
         assert isinstance(reduced, BeamOperator)
         expected_fl = half_beam_fl * (half_beam_fl * 0.5)

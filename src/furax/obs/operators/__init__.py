@@ -9,6 +9,7 @@ from ._seds import (
     NoiseDiagonalOperator,
     SynchrotronOperator,
 )
+from ._beam_operator import BeamOperator, BeamOperatorIQU
 
 __all__ = [
     # _hwp
@@ -24,4 +25,7 @@ __all__ = [
     'SynchrotronOperator',
     'MixingMatrixOperator',
     'NoiseDiagonalOperator',
+    # _beam_operator
+    'BeamOperator',
+    'BeamOperatorIQU',
 ]

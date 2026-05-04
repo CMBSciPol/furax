@@ -72,7 +72,9 @@ class Map2Alm(AbstractLinearOperator):
 
         def func(value: jax.Array) -> jax.Array:
             value = jnp.atleast_2d(value)  # (nfreq, npix)
-            return jhp.map2alm(value, iter=self.iter, lmax=self.lmax, pol=False)  # (nfreq, lmax+1, 2*lmax+1)
+            return jhp.map2alm(
+                value, iter=self.iter, lmax=self.lmax, pol=False
+            )  # (nfreq, lmax+1, 2*lmax+1)
 
         return jax.tree.map(func, x)
 
@@ -83,10 +85,9 @@ class Map2Alm(AbstractLinearOperator):
             An :class:`Alm2Map` whose ``in_structure`` matches the output
             structure of this operator (i.e. alm space).
         """
-        return Alm2Map(lmax=self.lmax, 
-                       nside=self.nside, 
-                       iter=self.iter, 
-                       in_structure=self.out_structure)
+        return Alm2Map(
+            lmax=self.lmax, nside=self.nside, iter=self.iter, in_structure=self.out_structure
+        )
 
 
 class Alm2Map(AbstractLinearOperator):
@@ -102,7 +103,7 @@ class Alm2Map(AbstractLinearOperator):
     Attributes:
         lmax: Maximum spherical harmonic degree.
         nside: HEALPix resolution parameter used by the synthesis step.
-        iter: Number of iterations for the map2alm solver used by 
+        iter: Number of iterations for the map2alm solver used by
             the transpose/inverse. (Default is 3)
 
     Example:
@@ -143,10 +144,9 @@ class Alm2Map(AbstractLinearOperator):
             A :class:`Map2Alm` whose ``in_structure`` matches the output
             structure of this operator (i.e. map space).
         """
-        return Map2Alm(lmax=self.lmax, 
-                       nside=self.nside,
-                       iter=self.iter,
-                       in_structure=self.out_structure)
+        return Map2Alm(
+            lmax=self.lmax, nside=self.nside, iter=self.iter, in_structure=self.out_structure
+        )
 
 
 class SHTRule(AbstractBinaryRule):

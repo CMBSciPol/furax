@@ -6,12 +6,7 @@ import pytest
 
 from furax.core._base import CompositionOperator
 from furax.math.sht import Alm2Map, Map2Alm
-from furax.obs.operators._beam_operator import (
-    BeamIQURule,
-    BeamOperator,
-    BeamOperatorIQU,
-    BeamRule,
-)
+from furax.obs.operators._beam_operator import BeamOperator, BeamOperatorIQU
 from furax.obs.stokes import StokesIQU
 
 jax.config.update('jax_enable_x64', True)

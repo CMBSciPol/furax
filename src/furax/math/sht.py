@@ -31,14 +31,14 @@ class Map2Alm(AbstractLinearOperator):
 
     Each leaf of the input PyTree must be a 2-D array of shape
     ``(nfreq, npix)``.  A 1-D leaf is silently promoted to ``(1, npix)`` via
-    ``jnp.atleast_2d``.  The transform is applied independently to every
-    frequency row using ``jax.lax.scan``, producing an output leaf of shape
+    ``jnp.atleast_2d``.  The transform are applied to all frequency rows, 
+    via ``jnp.map2alm`` producing an output leaf of shape
     ``(nfreq, lmax+1, 2*lmax+1)``.
 
     Attributes:
         lmax: Maximum spherical harmonic degree.
         nside: HEALPix resolution parameter, carried so that
-            :meth:`transpose` / :meth:`inverse` can construct
+            :meth:`inverse` can construct
             :class:`Alm2Map` with the correct resolution.
         iter: Number of iterations for the map2alm solver; more iterations,
             which are more expensive, yield more accurate alm coefficients.
@@ -96,15 +96,15 @@ class Alm2Map(AbstractLinearOperator):
     Each leaf of the input PyTree must be a 2-D array of shape
     ``(nfreq, lmax+1, 2*lmax+1)``.  A 2-D leaf ``(lmax+1, 2*lmax+1)`` is
     silently reshaped to ``(1, lmax+1, 2*lmax+1)`` via ``reshape(-1, ...)``,
-    handling the single-frequency case without branching.  The transform is applied independently to every
-    frequency row using ``jax.lax.scan``, producing an output leaf of shape
+    handling the single-frequency case without branching.  The transform are applied 
+    to all frequency rows, via ``jnp.alm2map`` producing an output leaf of shape
     ``(nfreq, npix)`` where ``npix = 12 * nside ** 2``.
 
     Attributes:
         lmax: Maximum spherical harmonic degree.
         nside: HEALPix resolution parameter used by the synthesis step.
         iter: Number of iterations for the map2alm solver used by
-            the transpose/inverse. (Default is 3)
+            the inverse. (Default is 3)
 
     Example:
         >>> import jax.numpy as jnp
@@ -178,8 +178,11 @@ class SHTRule(AbstractBinaryRule):
             :class:`~furax.IdentityOperator` on the alm input space.
 
         Raises:
-            NoReduction: If the operator pair does not match the expected types.
+            NoReduction: If the operator pair does not match the expected types
+            or if the transforms use different ``lmax`` values.
         """
         if isinstance(op1, Map2Alm) and isinstance(op2, Alm2Map):
+            if op1.lmax != op2.lmax:
+                raise NoReduction
             return [IdentityOperator(in_structure=op2.in_structure)]
         raise NoReduction

@@ -78,7 +78,7 @@ class BeamOperator(AbstractLinearOperator):
     Example:
         >>> import jax.numpy as jnp
         >>> from furax.obs.stokes import StokesIQU
-        >>> from furax.obs.operators.beam_operator import BeamOperator
+        >>> from furax.obs.operators import BeamOperator
         >>> nside, lmax, nfreq = 16, 31, 2
         >>> npix = 12 * nside ** 2
         >>> structure = StokesIQU.structure_for((nfreq, npix), jnp.float64)
@@ -99,6 +99,7 @@ class BeamOperator(AbstractLinearOperator):
             Beam-smoothed PyTree with the same structure and leaf shapes as *x*.
         """
         first_leaf = jax.tree_util.tree_leaves(x)[0]
+        first_leaf = jnp.atleast_2d(first_leaf)  # (nfreq, npix)
         nside = jhp.npix2nside(first_leaf.shape[-1])
 
         map2alm = Map2Alm(lmax=self.lmax, nside=nside, in_structure=self.in_structure)
@@ -146,7 +147,7 @@ class BeamOperatorIQU(AbstractLinearOperator):
     Example:
         >>> import jax.numpy as jnp
         >>> from furax.obs.stokes import StokesIQU
-        >>> from furax.obs.operators.beam_operator import BeamOperatorIQU
+        >>> from furax.obs.operators import BeamOperatorIQU
         >>> nside, lmax, nfreq = 16, 31, 2
         >>> npix = 12 * nside ** 2
         >>> structure = StokesIQU.structure_for((nfreq, npix), jnp.float64)
@@ -169,6 +170,7 @@ class BeamOperatorIQU(AbstractLinearOperator):
             Beam-smoothed PyTree with the same structure and leaf shapes as *x*.
         """
         first_leaf = jax.tree_util.tree_leaves(x)[0]
+        first_leaf = jnp.atleast_2d(first_leaf)  # (nfreq, npix)
         nside = jhp.npix2nside(first_leaf.shape[-1])
 
         map2alm = Map2Alm(lmax=self.lmax, nside=nside, in_structure=self.in_structure)

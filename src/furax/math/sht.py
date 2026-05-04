@@ -8,9 +8,7 @@ The two core operators are:
 Both operators accept PyTree inputs whose leaves are 2-D arrays of shape
 ``(nfreq, npix)`` or ``(nfreq, lmax+1, 2*lmax+1)``.  A 1-D leaf is promoted to 2-D via
 ``jnp.atleast_2d`` before processing so that single-frequency inputs work
-without special-casing.  The frequency loop is implemented with
-``jax.lax.scan``, which keeps the computation inside a single XLA while-loop
-and avoids unrolling the frequency axis.
+without special-casing.
 
 :class:`SHTRule` registers an algebraic simplification so that the composition
 ``Map2Alm @ Alm2Map`` (synthesis followed by analysis) is reduced to an
@@ -32,7 +30,7 @@ class Map2Alm(AbstractLinearOperator):
     Each leaf of the input PyTree must be a 2-D array of shape
     ``(nfreq, npix)``.  A 1-D leaf is silently promoted to ``(1, npix)`` via
     ``jnp.atleast_2d``.  The transform are applied to all frequency rows, 
-    via ``jnp.map2alm`` producing an output leaf of shape
+    via ``jhp.map2alm`` producing an output leaf of shape
     ``(nfreq, lmax+1, 2*lmax+1)``.
 
     Attributes:
@@ -97,7 +95,7 @@ class Alm2Map(AbstractLinearOperator):
     ``(nfreq, lmax+1, 2*lmax+1)``.  A 2-D leaf ``(lmax+1, 2*lmax+1)`` is
     silently reshaped to ``(1, lmax+1, 2*lmax+1)`` via ``reshape(-1, ...)``,
     handling the single-frequency case without branching.  The transform are applied 
-    to all frequency rows, via ``jnp.alm2map`` producing an output leaf of shape
+    to all frequency rows, via ``jhp.alm2map`` producing an output leaf of shape
     ``(nfreq, npix)`` where ``npix = 12 * nside ** 2``.
 
     Attributes:

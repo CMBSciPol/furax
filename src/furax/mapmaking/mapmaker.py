@@ -126,7 +126,7 @@ class MultiObservationMapMaker(Generic[T]):
         """Build an ObservationReader for this process's local observations."""
         return ObservationReader.from_observations_distributed(
             self.observations,
-            tuple(self.get_indices()),
+            tuple(self.get_padded_indices()),
             requested_fields=required_fields,
             demodulated=self.config.demodulated,
             stokes=self.config.landscape.stokes,

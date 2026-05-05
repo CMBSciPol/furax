@@ -115,9 +115,11 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         local_shapes = np.array([_shape(idx) for idx in local_indices], dtype=np.int32)
 
-        # All-gather → (n_procs * n_local, 3), sort by global index
+        # All-gather → (n_procs * n_local, 3), sort and deduplicate (padding repeats indices)
         all_shapes = mhu.process_allgather(local_shapes).reshape(-1, 3)
-        all_shapes = all_shapes[np.argsort(all_shapes[:, 0])]
+        all_shapes = all_shapes[np.argsort(all_shapes[:, 0], kind='stable')]
+        _, first = np.unique(all_shapes[:, 0], return_index=True)
+        all_shapes = all_shapes[first]
 
         structures = [
             {

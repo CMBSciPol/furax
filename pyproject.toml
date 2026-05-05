@@ -59,7 +59,8 @@ mapmaking = [
 so = [
     'cyclopts>=4.6.0',
     'sotodlib[site-pipeline]>=0.6.16',
-    'so3g>=0.2.5',
+    'so3g>=0.2.5; python_version >= "3.13"',  # v0.2.5 has official 3.13 support
+    'so3g>=0.2.4; python_version < "3.13"',  # keep v0.2.4; it has wheels for macOS 13+
 ]
 toast = [
     'toast>=3.0.0a42',

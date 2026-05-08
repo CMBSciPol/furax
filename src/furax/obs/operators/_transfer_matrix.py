@@ -38,6 +38,8 @@ _SIGMA = jnp.array(
 __all__ = [
     'Material',
     'Stack',
+    'SO_MF_HWP_STACK',
+    'SO_HF_HWP_STACK',
     'mueller_matrix',
 ]
 
@@ -100,6 +102,66 @@ class Stack:
             materials=tuple(materials),
             crystal_angles=tuple(crystal_angles),
         )
+
+
+# ---------------------------------------------------------------------------
+# Simons Observatory HWP stacks
+# ---------------------------------------------------------------------------
+
+_MM = 1e-3  # metres per millimetre
+_DEG = np.pi / 180  # radians per degree
+
+# Materials (shared between MF and HF)
+_SAPPHIRE = Material(n_o=3.05, n_e=3.38, loss_o=2.3e-4, loss_e=1.25e-4)
+_DUROID = Material.isotropic(n=1.41, loss=1.2e-3)
+_MULLITE = Material.isotropic(n=2.52, loss=0.0121)
+_EPOTECK = Material.isotropic(n=1.70, loss=0.0)
+
+_SO_MATERIALS = (
+    _DUROID,
+    _EPOTECK,
+    _MULLITE,
+    _SAPPHIRE,
+    _SAPPHIRE,
+    _SAPPHIRE,
+    _MULLITE,
+    _EPOTECK,
+    _DUROID,
+)
+
+SO_MF_HWP_STACK = Stack(
+    thicknesses=(
+        0.394 * _MM,
+        0.04 * _MM,
+        0.212 * _MM,
+        3.75 * _MM,
+        3.75 * _MM,
+        3.75 * _MM,
+        0.212 * _MM,
+        0.04 * _MM,
+        0.394 * _MM,
+    ),
+    materials=_SO_MATERIALS,
+    crystal_angles=(0.0, 0.0, 0.0, 0.0, 54.0 * _DEG, 0.0, 0.0, 0.0, 0.0),
+)
+"""Simons Observatory MF (85–145 GHz) HWP stack."""
+
+SO_HF_HWP_STACK = Stack(
+    thicknesses=(
+        0.183 * _MM,
+        0.04 * _MM,
+        0.097 * _MM,
+        1.60 * _MM,
+        1.60 * _MM,
+        1.60 * _MM,
+        0.097 * _MM,
+        0.04 * _MM,
+        0.183 * _MM,
+    ),
+    materials=_SO_MATERIALS,
+    crystal_angles=(0.0, 0.0, 0.0, 0.0, 57.0 * _DEG, 0.0, 0.0, 0.0, 0.0),
+)
+"""Simons Observatory HF (225–280 GHz) HWP stack."""
 
 
 # ---------------------------------------------------------------------------

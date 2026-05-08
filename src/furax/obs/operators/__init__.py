@@ -10,7 +10,7 @@ from ._seds import (
     NoiseDiagonalOperator,
     SynchrotronOperator,
 )
-from ._transfer_matrix import Material, Stack, mueller_matrix
+from ._transfer_matrix import SO_HF_HWP_STACK, SO_MF_HWP_STACK, Material, Stack, mueller_matrix
 
 __all__ = [
     # _hwp
@@ -34,5 +34,7 @@ __all__ = [
     # _transfer_matrix
     'Material',
     'Stack',
+    'SO_MF_HWP_STACK',
+    'SO_HF_HWP_STACK',
     'mueller_matrix',
 ]

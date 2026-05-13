@@ -50,20 +50,20 @@ class TestLowRankMv:
 
     def test_low_rank_mv_formula(self):
         """low_rank_mv computes U @ diag(S) @ U^T @ x."""
-        U = jnp.array([[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
+        U = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])  # (k=2, n=3)
         S = jnp.array([2.0, 3.0])
         terms = LowRankTerms(eigenvalues=S, eigenvectors=U)
         x = jnp.array([1.0, 1.0, 1.0])
-        # U^T x = [1, 1], S * [1, 1] = [2, 3], U @ [2, 3] = [2, 3, 0]
+        # U @ x = [1, 1], S * [1, 1] = [2, 3], U^T @ [2, 3] = [2, 3, 0]
         assert_allclose(low_rank_mv(terms, x), jnp.array([2.0, 3.0, 0.0]))
 
     def test_low_rank_mv_pytree(self):
         """low_rank_mv handles PyTree input/output."""
-        U = {'a': jnp.array([[1.0, 0.0]]), 'b': jnp.array([[0.0, 1.0]])}
+        U = {'a': jnp.array([[1.0]]), 'b': jnp.array([[0.0]])}  # (k=1, n=1) per leaf
         S = jnp.array([2.0])
         terms = LowRankTerms(eigenvalues=S, eigenvectors=U)
         x = {'a': jnp.array([3.0]), 'b': jnp.array([5.0])}
-        # U^T x = [1*3 + 0*5] = [3], S * [3] = [6], U @ [6] = {'a': [6], 'b': [0]}
+        # U @ x = [1*3 + 0*5] = [3], S * [3] = [6], U^T @ [6] = {'a': [6], 'b': [0]}
         result = low_rank_mv(terms, x)
         assert_allclose(result['a'], jnp.array([6.0]))
         assert_allclose(result['b'], jnp.array([0.0]))

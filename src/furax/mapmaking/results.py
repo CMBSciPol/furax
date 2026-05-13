@@ -132,7 +132,8 @@ class MapMakingResults:
             if not path.exists():
                 raise FileNotFoundError(f'Expected file not found: {path}')
             with fits.open(path) as hdul:
-                return np.array(hdul[0].data)
+                arr = np.asarray(hdul[0].data)
+                return arr.astype(arr.dtype.newbyteorder('='), copy=False)
         elif isinstance(landscape, HealpixLandscape):
             path = out_dir / f'{name}.fits'
             if not path.exists():
@@ -145,7 +146,7 @@ class MapMakingResults:
             # hp.read_map with field=0 drops the leading dim; restore it
             if arr.ndim == len(landscape.shape):
                 arr = arr[np.newaxis]
-            return arr
+            return arr.astype(arr.dtype.newbyteorder('='), copy=False)
         else:
             path = out_dir / f'{name}.npy'
             if not path.exists():
@@ -166,12 +167,14 @@ class MapMakingResults:
             if not path.exists():
                 raise FileNotFoundError(f'Expected file not found: {path}')
             with fits.open(path) as hdul:
-                return jnp.array(hdul[0].data)
+                arr = hdul[0].data
+                return jnp.array(arr.astype(arr.dtype.newbyteorder('='), copy=False))
         elif isinstance(landscape, HealpixLandscape):
             path = out_dir / 'hit_map.fits'
             if not path.exists():
                 raise FileNotFoundError(f'Expected file not found: {path}')
-            return jnp.array(hp.read_map(str(path), field=0))
+            hits = hp.read_map(str(path), field=0)
+            return jnp.array(hits.astype(hits.dtype.newbyteorder('='), copy=False))
         else:
             path = out_dir / 'hit_map.npy'
             if not path.exists():

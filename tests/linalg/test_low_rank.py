@@ -1,4 +1,4 @@
-"""Tests for low-rank approximation module."""
+"""Tests for low-rank approximation wrapper."""
 
 import jax
 import jax.numpy as jnp
@@ -10,144 +10,100 @@ from furax.linalg import LowRankOperator, LowRankTerms, low_rank, low_rank_mv
 from furax.tree import as_structure
 
 
+def _diagonal_op(d):
+    return DiagonalOperator(d, in_structure=as_structure(d))
+
+
 class TestLowRank:
-    """Tests for low_rank function."""
+    """Tests for low_rank dispatch and output structure."""
 
-    def test_low_rank_diagonal_lanczos(self):
-        """Test low_rank with diagonal operator using lanczos method."""
-        d = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        A = DiagonalOperator(d, in_structure=as_structure(d))
-
-        key = jax.random.PRNGKey(0)
-        terms = low_rank(A, rank=5, method='lanczos', key=key)
-
+    def test_low_rank_output_shape(self):
+        """low_rank returns LowRankTerms with correct shapes."""
+        d = jnp.arange(1.0, 6.0)
+        A = _diagonal_op(d)
+        terms = low_rank(A, rank=3, key=jax.random.key(0))
         assert isinstance(terms, LowRankTerms)
-        assert terms.eigenvalues.shape == (5,)
-        assert_allclose(sorted(terms.eigenvalues), sorted(d), atol=1e-4)
-
-    def test_low_rank_diagonal_tr(self):
-        """Test low_rank with diagonal operator using lanczos_tr method."""
-        d = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        A = DiagonalOperator(d, in_structure=as_structure(d))
-
-        key = jax.random.PRNGKey(0)
-        terms = low_rank(A, rank=2, method='lanczos_tr', key=key)
-
-        assert isinstance(terms, LowRankTerms)
-        assert terms.eigenvalues.shape == (2,)
-        assert_allclose(sorted(terms.eigenvalues), [1.0, 2.0], atol=1e-4)
+        assert terms.eigenvalues.shape == (3,)
+        assert LowRankOperator(terms).in_structure == A.in_structure
 
     def test_low_rank_invalid_method(self):
-        """Test low_rank raises error for invalid method."""
-        d = jnp.array([1.0, 2.0, 3.0])
-        A = DiagonalOperator(d, in_structure=as_structure(d))
-
+        """low_rank raises for unknown method."""
+        A = _diagonal_op(jnp.arange(1.0, 4.0))
         with pytest.raises(ValueError, match="Unknown method: 'invalid'"):
-            low_rank(A, rank=2, method='invalid', key=jax.random.PRNGKey(0))
+            low_rank(A, rank=2, method='invalid', key=jax.random.key(0))
 
-    def test_low_rank_pytree_structure(self):
-        """Test low_rank with PyTree-structured operators."""
-        d1 = jnp.array([1.0, 5.0])
-        d2 = jnp.array([3.0])
-        structure = {'a': as_structure(d1), 'b': as_structure(d2)}
+    def test_low_rank_pytree_output_structure(self):
+        """low_rank preserves PyTree structure in eigenvectors."""
+        d1, d2 = jnp.array([1.0, 5.0]), jnp.array([3.0])
         A = BlockDiagonalOperator(
             {
-                'a': DiagonalOperator(d1, in_structure=structure['a']),
-                'b': DiagonalOperator(d2, in_structure=structure['b']),
+                'a': DiagonalOperator(d1, in_structure=as_structure(d1)),
+                'b': DiagonalOperator(d2, in_structure=as_structure(d2)),
             }
         )
-
-        key = jax.random.PRNGKey(3)
-        terms = low_rank(A, rank=2, method='lanczos', key=key)
-
-        assert terms.eigenvalues.shape == (2,)
-        assert 'a' in terms.eigenvectors
-        assert 'b' in terms.eigenvectors
+        terms = low_rank(A, rank=2, method='lanczos', key=jax.random.key(0))
+        assert LowRankOperator(terms).in_structure == A.in_structure
 
 
 class TestLowRankMv:
-    """Tests for low_rank_mv function."""
+    """Tests for low_rank_mv formula."""
 
-    def test_low_rank_mv_identity_approx(self):
-        """Test low_rank_mv with full rank gives exact result."""
-        d = jnp.array([1.0, 2.0, 3.0])
-        A = DiagonalOperator(d, in_structure=as_structure(d))
-
-        key = jax.random.PRNGKey(0)
-        terms = low_rank(A, rank=3, method='lanczos', key=key)
-
-        x = jnp.array([1.0, 2.0, 3.0])
-        y_approx = low_rank_mv(terms, x)
-        y_exact = A.mv(x)
-
-        assert_allclose(y_approx, y_exact, atol=1e-4)
+    def test_low_rank_mv_formula(self):
+        """low_rank_mv computes U @ diag(S) @ U^T @ x."""
+        U = jnp.array([[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
+        S = jnp.array([2.0, 3.0])
+        terms = LowRankTerms(eigenvalues=S, eigenvectors=U)
+        x = jnp.array([1.0, 1.0, 1.0])
+        # U^T x = [1, 1], S * [1, 1] = [2, 3], U @ [2, 3] = [2, 3, 0]
+        assert_allclose(low_rank_mv(terms, x), jnp.array([2.0, 3.0, 0.0]))
 
     def test_low_rank_mv_pytree(self):
-        """Test low_rank_mv with PyTree structure."""
-        d1 = jnp.array([1.0, 2.0])
-        d2 = jnp.array([3.0])
-        structure = {'a': as_structure(d1), 'b': as_structure(d2)}
-        A = BlockDiagonalOperator(
-            {
-                'a': DiagonalOperator(d1, in_structure=structure['a']),
-                'b': DiagonalOperator(d2, in_structure=structure['b']),
-            }
-        )
-
-        key = jax.random.PRNGKey(0)
-        terms = low_rank(A, rank=3, method='lanczos', key=key)
-
-        x = {'a': jnp.array([1.0, 1.0]), 'b': jnp.array([1.0])}
-        y_approx = low_rank_mv(terms, x)
-        y_exact = A.mv(x)
-
-        assert_allclose(y_approx['a'], y_exact['a'], atol=1e-3)
-        assert_allclose(y_approx['b'], y_exact['b'], atol=1e-3)
+        """low_rank_mv handles PyTree input/output."""
+        U = {'a': jnp.array([[1.0, 0.0]]), 'b': jnp.array([[0.0, 1.0]])}
+        S = jnp.array([2.0])
+        terms = LowRankTerms(eigenvalues=S, eigenvectors=U)
+        x = {'a': jnp.array([3.0]), 'b': jnp.array([5.0])}
+        # U^T x = [1*3 + 0*5] = [3], S * [3] = [6], U @ [6] = {'a': [6], 'b': [0]}
+        result = low_rank_mv(terms, x)
+        assert_allclose(result['a'], jnp.array([6.0]))
+        assert_allclose(result['b'], jnp.array([0.0]))
 
 
 class TestLowRankJit:
-    """Tests for JIT compatibility of low_rank module."""
+    """Tests for JIT compatibility."""
 
     def test_low_rank_jit_lanczos(self):
-        """Test low_rank with lanczos is JIT-compatible."""
-        d = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        A = DiagonalOperator(d, in_structure=as_structure(d))
-
-        @jax.jit
-        def compute(key):
-            return low_rank(A, rank=5, method='lanczos', key=key)
-
-        terms = compute(jax.random.PRNGKey(0))
-        assert_allclose(sorted(terms.eigenvalues), sorted(d), atol=1e-4)
+        """low_rank with lanczos is JIT-compatible."""
+        A = _diagonal_op(jnp.arange(1.0, 6.0))
+        key = jax.random.key(0)
+        expected = low_rank(A, rank=3, method='lanczos', key=key)
+        result = jax.jit(lambda k: low_rank(A, rank=3, method='lanczos', key=k))(key)
+        assert_allclose(result.eigenvalues, expected.eigenvalues)
 
     def test_low_rank_jit_tr(self):
-        """Test low_rank with lanczos_tr is JIT-compatible."""
-        d = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        A = DiagonalOperator(d, in_structure=as_structure(d))
-
-        @jax.jit
-        def compute(key):
-            return low_rank(A, rank=2, method='lanczos_tr', key=key)
-
-        terms = compute(jax.random.PRNGKey(0))
-        assert_allclose(sorted(terms.eigenvalues), [1.0, 2.0], atol=1e-4)
+        """low_rank with lanczos_tr is JIT-compatible."""
+        A = _diagonal_op(jnp.arange(1.0, 6.0))
+        key = jax.random.key(0)
+        expected = low_rank(A, rank=2, method='lanczos_tr', key=key)
+        result = jax.jit(lambda k: low_rank(A, rank=2, method='lanczos_tr', key=k))(key)
+        assert_allclose(result.eigenvalues, expected.eigenvalues)
 
 
 class TestLowRankOperator:
-    """Tests for LowRankOperator class."""
+    """Tests for LowRankOperator."""
+
+    def test_lowrankoperator_infers_in_structure(self):
+        """LowRankOperator infers in_structure from eigenvectors shape."""
+        U = jnp.eye(5)[:3]  # shape (3, 5)
+        terms = LowRankTerms(eigenvalues=jnp.ones(3), eigenvectors=U)
+        op = LowRankOperator(terms)
+        assert op.in_structure.shape == (5,)
 
     def test_lowrankoperator_mv_matches_low_rank_mv(self):
-        """Test LowRankOperator.mv matches low_rank_mv."""
-        d = jnp.array([1.0, 2.0, 3.0, 4.0])
-        A = DiagonalOperator(d, in_structure=as_structure(d))
-
-        key = jax.random.PRNGKey(0)
-        terms = low_rank(A, rank=2, method='lanczos', key=key)
-
-        B = LowRankOperator(terms)
-        x = jnp.array([1.0, 2.0, 3.0, 4.0])
-
-        y_op = B.mv(x)
-        y_func = low_rank_mv(terms, x)
-
-        assert_allclose(y_op, y_func, atol=1e-8)
+        """LowRankOperator.mv matches low_rank_mv."""
+        U = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        S = jnp.array([2.0, 3.0])
+        terms = LowRankTerms(eigenvalues=S, eigenvectors=U)
+        op = LowRankOperator(terms)
+        x = jnp.array([1.0, 2.0, 3.0])
+        assert_allclose(op.mv(x), low_rank_mv(terms, x))

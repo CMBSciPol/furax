@@ -427,13 +427,11 @@ def lanczos_tr(
     init_converged = _check_converged(beta_last, S, wanted_idx)
 
     def cond_fn(state):  # type: ignore[no-untyped-def]
-        *_, iteration, converged, _theta, _S = state
+        *_, iteration, converged, _theta, _S, _wanted_idx = state
         return jnp.logical_and(iteration < max_restarts, ~converged)
 
     def body_fn(state):  # type: ignore[no-untyped-def]
-        V, beta_last, v_last, iteration, _converged, theta, S = state
-
-        wanted_idx = _select_wanted(theta, beta_last, S)
+        V, beta_last, v_last, iteration, _converged, theta, S, wanted_idx = state
 
         # thick-restart: rotate basis to Ritz vectors
         V_k = _vecmat(V, S[:, wanted_idx])
@@ -450,15 +448,13 @@ def lanczos_tr(
         wanted_idx = _select_wanted(theta, beta_last, S)
         converged = _check_converged(beta_last, S, wanted_idx)
 
-        return V, beta_last, v_last, iteration + 1, converged, theta, S
+        return V, beta_last, v_last, iteration + 1, converged, theta, S, wanted_idx
 
-    init_state = (V, beta_last, v_last, jnp.array(0), init_converged, theta, S)
-    V, beta_last, _v_last, _iters, _conv, theta, S = jax.lax.while_loop(
+    init_state = (V, beta_last, v_last, jnp.array(0), init_converged, theta, S, wanted_idx)
+    V, beta_last, _v_last, _iters, _conv, theta, S, wanted_idx = jax.lax.while_loop(
         cond_fn, body_fn, init_state
     )
 
-    # Reuse (theta, S) from final state — no additional eigendecomposition needed
-    wanted_idx = _select_wanted(theta, beta_last, S)
     # Sort selected pairs by eigenvalue ascending
     wanted_idx = wanted_idx[jnp.argsort(theta[wanted_idx])]
     eigenvalues = theta[wanted_idx]

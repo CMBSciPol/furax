@@ -13,6 +13,8 @@ from .operators import (
     LinearPolarizerOperator,
     QURotationOperator,
     SynchrotronOperator,
+    BeamOperator,
+    BeamOperatorIQU,
 )
 from .pointing import PointingOperator
 
@@ -30,4 +32,6 @@ __all__ = [
     'spectral_cmb_variance',
     'sky_signal',
     'preconditionner',
+    'BeamOperator',
+    'BeamOperatorIQU',
 ]

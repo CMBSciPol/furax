@@ -63,7 +63,7 @@ so = [
     'so3g>=0.2.4; python_version < "3.13"',  # keep v0.2.4; it has wheels for macOS 13+
 ]
 toast = [
-    'toast>=3.0.0a42',
+    'toast>=3.0.3',
 ]
 lbs = [
     'litebird_sim>=0.16.1',

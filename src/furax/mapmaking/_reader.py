@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from jax.experimental import multihost_utils as mhu
 from jax.tree_util import register_static
 from jaxtyping import PyTree, UInt32
 
@@ -61,82 +62,60 @@ class ObservationReader(AbstractReader, Generic[T]):
         cls,
         observations: Sequence[AbstractLazyObservation[T]],
         *,
-        requested_fields: list[str] | None = None,
+        subset_indices: Sequence[int] | None = None,
+        requested_fields: Sequence[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
     ) -> Self:
         """Create a reader, performing I/O to infer data structures.
 
         Args:
-            observations: List of lazy observations to read.
+            observations: Full list of lazy observations.
+            subset_indices: Optional indices into ``observations``; when set, only
+                those are opened on this process to infer shapes, and shapes are
+                synchronised across processes (distributed-mode shortcut).
             requested_fields: Optional list of fields to load. If None, read all non-optional fields.
             demodulated: Whether to read demodulated TODs.
             stokes: Stokes components to read when demodulated.
         """
         fields = cls._resolve_fields(observations, requested_fields)
-        return cls(
-            list(observations),
-            common_keywords={'data_field_names': fields},
-            demodulated=demodulated,
-            stokes=stokes,
-        )
+        common_keywords = {'data_field_names': fields}
+        if subset_indices is None:
+            # Default path: AbstractReader.__init__ will call _read_structures(),
+            # opening every observation on this process to infer its structure.
+            return cls(
+                list(observations),
+                common_keywords=common_keywords,
+                demodulated=demodulated,
+                stokes=stokes,
+            )
 
-    @classmethod
-    def from_observations_distributed(
-        cls,
-        observations: Sequence[AbstractLazyObservation[T]],
-        local_indices: Sequence[int],
-        *,
-        requested_fields: Sequence[str] | None = None,
-        demodulated: bool = False,
-        stokes: ValidStokesType = 'IQU',
-    ) -> Self:
-        """Create a reader for distributed mapmaking.
-
-        Each process opens only its local observation files to read their shapes, then
-        an all-gather synchronises the shapes so every process can build structures for
-        all observations without duplicate I/O.  Requires a JAX distributed context.
-
-        Args:
-            observations: Full list of observations across all processes.
-            local_indices: Indices into ``observations`` owned by this process.
-            requested_fields: Optional list of fields to load.
-            demodulated: Whether to read demodulated TODs.
-            stokes: Stokes components to read when demodulated.
-        """
-        from jax.experimental import multihost_utils as mhu
-
-        fields = cls._resolve_fields(observations, requested_fields)
-
-        # Each process reads shapes only for its local observations
+        # Distributed-mode shortcut. Each process opens only its subset; an
+        # all-gather then makes every rank agree on the full structures list so
+        # padding / out_structure / etc. are consistent. Bypasses the superclass's
+        # per-item I/O by passing the assembled `structures` directly.
         def _shape(idx: int) -> tuple[int, int, int]:
             data = observations[idx].get_data([])
             return idx, data.n_detectors, data.n_samples
 
-        local_shapes = np.array([_shape(idx) for idx in local_indices], dtype=np.int32)
+        local_shapes = np.array([_shape(idx) for idx in subset_indices], dtype=np.int64)
 
-        # All-gather → (n_procs * n_local, 3), sort and deduplicate (padding repeats indices)
+        # All-gather → (n_procs * n_local, 3). Padding (see ``get_padded_indices``,
+        # which uses ``np.pad(..., mode='edge')``) makes some indices repeat across
+        # ranks; keep only one entry per obs index.
         all_shapes = mhu.process_allgather(local_shapes).reshape(-1, 3)
-        all_shapes = all_shapes[np.argsort(all_shapes[:, 0], kind='stable')]
-        _, first = np.unique(all_shapes[:, 0], return_index=True)
-        all_shapes = all_shapes[first]
+        by_idx = {int(idx): (int(n_det), int(n_samp)) for idx, n_det, n_samp in all_shapes}
 
-        structures = [
-            {
-                field: all_field_structures[field]
-                for field in fields
-                for all_field_structures in [
-                    cls._get_data_field_structures_for(
-                        int(n_det), int(n_samp), demodulated=demodulated, stokes=stokes
-                    )
-                ]
-            }
-            for _, n_det, n_samp in all_shapes
-        ]
+        def _struct_for(n_det: int, n_samp: int) -> PyTree[jax.ShapeDtypeStruct]:
+            field_struct = cls._get_data_field_structures_for(
+                n_det, n_samp, demodulated=demodulated, stokes=stokes
+            )
+            return {field: field_struct[field] for field in fields}
 
+        structures = [_struct_for(*by_idx[idx]) for idx in sorted(by_idx)]
         return cls(
             list(observations),
-            common_keywords={'data_field_names': fields},
+            common_keywords=common_keywords,
             demodulated=demodulated,
             stokes=stokes,
             structures=structures,

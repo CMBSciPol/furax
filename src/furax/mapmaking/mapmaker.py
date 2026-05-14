@@ -124,9 +124,11 @@ class MultiObservationMapMaker(Generic[T]):
 
     def get_reader(self, required_fields: Sequence[str]) -> ObservationReader[T]:
         """Build an ObservationReader for this process's local observations."""
-        return ObservationReader.from_observations_distributed(
+        # Pass padded indices: process_allgather inside from_observations needs every
+        # rank to send the same shape, so all ranks must report the same obs count.
+        return ObservationReader.from_observations(
             self.observations,
-            tuple(self.get_padded_indices()),
+            subset_indices=tuple(self.get_padded_indices()),
             requested_fields=required_fields,
             demodulated=self.config.demodulated,
             stokes=self.config.landscape.stokes,

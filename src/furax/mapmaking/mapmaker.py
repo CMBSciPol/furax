@@ -302,9 +302,6 @@ class MultiObservationMapMaker(Generic[T]):
         _, model = jax.lax.scan(build_one, None, self.get_indices())
 
         _, _, n_pad = self.obs_distribution
-        if n_pad == 0:
-            return model  # type: ignore[no-any-return]
-
         return pad_model(model, n_pad)
 
     def accumulate_hits(self, models: ObservationModel) -> Int64[Array, ' pixels']:

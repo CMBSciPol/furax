@@ -159,6 +159,8 @@ def pad_model(models: ObservationModel, n_pad: int) -> ObservationModel:
     The dummy observations are copies of the last real observation with their
     masker array leaves zeroed out, so masker(x) = 0 for any x.
     """
+    if n_pad == 0:
+        return models
     last = jax.tree.map(lambda a: jnp.repeat(a[-1:], n_pad, axis=0), models)
     zero_masker = jax.tree.map(jnp.zeros_like, last.masker)
     padded = ObservationModel(

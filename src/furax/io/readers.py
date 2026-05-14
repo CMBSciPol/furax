@@ -39,10 +39,8 @@ class AbstractReader(ABC):
         Args:
             *args: One list per positional argument to the read function, one element per data item.
             common_keywords: Keyword arguments shared by all data items.
-            structures: Pre-computed per-item output structures.  When provided the
-                constructor skips all I/O and uses them directly; when ``None``
-                (the default) structures are inferred by calling
-                ``_read_structure_impure`` on each item.
+            structures: Pre-computed per-item output structures.
+                When provided, constructor skips all I/O and uses them directly.
             **keywords: One list per keyword argument to the read function, one element per data item.
         """
         self.args, self.keywords = self._normalize_args_keywords(args, keywords)
@@ -50,6 +48,10 @@ class AbstractReader(ABC):
         self.common_keywords = common_keywords or {}
         if structures is None:
             structures = self._read_structures()
+        elif len(structures) != self.count:
+            raise ValueError(
+                f'structures length {len(structures)} does not match data count {self.count}'
+            )
         self._infer_structure_and_paddings(structures)
 
     def _infer_structure_and_paddings(self, structures: list[PyTree[jax.ShapeDtypeStruct]]) -> None:

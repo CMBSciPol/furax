@@ -4,6 +4,8 @@ from typing import Any, Self, TypeVar
 
 import jax
 import jax.numpy as jnp
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, Int64, PyTree
 
@@ -201,9 +203,6 @@ def _system_scan(
 
         lhs, _ = jax.lax.scan(step, tree.zeros_like(x), model)
         return lhs
-
-    from jax.sharding import NamedSharding
-    from jax.sharding import PartitionSpec as P
 
     # Re-impose 'obs' sharding on the model in case its annotation was stripped
     # (e.g. closure capture during lineax abstract eval drops sharding metadata).

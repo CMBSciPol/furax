@@ -76,8 +76,9 @@ class BJPreconditioner(TreeOperator):
         return cls(tree, in_structure=in_struct)
 
     def inverse(self) -> 'BJPreconditioner':
-        # FIXME: we override the parent implementation so that the symmetric tag is preserved
-        # there might be a better way of doing that
+        # Override the parent inverse so the result stays a BJPreconditioner and
+        # keeps the @symmetric tag; the generic TreeOperator inverse would
+        # downgrade to a plain operator.
         dense = _tree_to_dense(self.outer_treedef, self.inner_treedef, self.tree)
         dense_inv = jnp.linalg.inv(dense)
         tree = _dense_to_tree(self.inner_treedef, self.outer_treedef, dense_inv)

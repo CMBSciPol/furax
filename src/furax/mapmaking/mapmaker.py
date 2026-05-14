@@ -315,6 +315,7 @@ class MultiObservationMapMaker(Generic[T]):
         def step(carry, model):  # type: ignore[no-untyped-def]
             return carry + model.hits(), None
 
+        # check_vma=False: furax operator chain inside the body lacks manual-axis annotations.
         @jax.shard_map(mesh=self.mesh, in_specs=P('obs'), out_specs=P(), check_vma=False)
         def local_hits(local_models: ObservationModel) -> Int64[Array, ' pixels']:
             hits, _ = jax.lax.scan(step, init, local_models)
@@ -336,6 +337,7 @@ class MultiObservationMapMaker(Generic[T]):
             data, _ = reader.read(i)
             return furax.tree.add(carry, obs.rhs(data, self.config)), None
 
+        # check_vma=False: furax operator chain inside the body lacks manual-axis annotations.
         @jax.shard_map(
             mesh=self.mesh, in_specs=(P('obs'), P('obs')), out_specs=P(), check_vma=False
         )

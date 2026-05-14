@@ -204,11 +204,13 @@ def _system_scan(
         lhs, _ = jax.lax.scan(step, tree.zeros_like(x), model)
         return lhs
 
-    # Re-impose 'obs' sharding on the model in case its annotation was stripped
-    # (e.g. closure capture during lineax abstract eval drops sharding metadata).
+    # lineax's abstract eval drops the NamedSharding on closure-captured arrays,
+    # so shard_map sees replicated leaves and rejects the P('obs') in_specs.
+    # Reshard restores it (the fix JAX's error message points to).
     obs_sharding = NamedSharding(mesh, P('obs'))
     model = jax.tree.map(lambda a: jax.reshard(a, obs_sharding), model)
 
+    # check_vma=False: furax operator chain inside the body lacks manual-axis annotations.
     @jax.shard_map(mesh=mesh, in_specs=(P('obs'), P()), out_specs=P(), check_vma=False)
     def local_scan(local_model: ObservationModel, local_x: _StokesPyTree) -> _StokesPyTree:
         def step(lhs: _StokesPyTree, obs: ObservationModel) -> tuple[_StokesPyTree, None]:

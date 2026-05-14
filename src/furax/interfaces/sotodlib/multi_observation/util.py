@@ -2,16 +2,20 @@ import logging
 from pathlib import Path
 
 
-def setup_logger(loglevel: str, log_path: Path | None) -> logging.Logger:
+def setup_logger(loglevel: str, log_path: Path | None, process_index: int = 0) -> logging.Logger:
     level = logging.getLevelName(loglevel.upper())
     logger = logging.getLogger('furax.mapmaker')
     logger.setLevel(level)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    logger.propagate = False
+    formatter = logging.Formatter(
+        f'%(asctime)s - [rank {process_index}] - %(levelname)s - %(message)s'
+    )
     ch = logging.StreamHandler()
     ch.setLevel(level)
     ch.setFormatter(formatter)
     logger.addHandler(ch)
     if log_path is not None:
+        log_path = log_path.with_stem(f'{log_path.stem}.rank{process_index}')
         log_path.parent.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(log_path)
         fh.setLevel(logging.DEBUG)

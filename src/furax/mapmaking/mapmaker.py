@@ -2,7 +2,6 @@ import pickle
 from abc import abstractmethod
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from functools import cached_property
 from logging import Logger
 from math import prod
 from pathlib import Path
@@ -17,6 +16,7 @@ import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
+from jax.experimental import multihost_utils as mhu
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
@@ -93,7 +93,7 @@ class MultiObservationMapMaker(Generic[T]):
                 )
                 self.config.landscape.stokes = 'QU'
 
-    @cached_property
+    @property
     def mesh(self) -> Mesh:
         return jax.make_mesh((jax.device_count(),), ('obs',))
 
@@ -103,13 +103,9 @@ class MultiObservationMapMaker(Generic[T]):
 
     def distribute(self, x: PyTree) -> PyTree:
         """Shard a pytree of process-local arrays along the leading 'obs' axis."""
-        if jax.process_count() > 1:
-            return jax.tree.map(
-                lambda a: jax.make_array_from_process_local_data(self.sharding, a), x
-            )
-        return jax.device_put(x, self.sharding)
+        return jax.tree.map(lambda a: jax.make_array_from_process_local_data(self.sharding, a), x)
 
-    @cached_property
+    @property
     def obs_distribution(self) -> tuple[int, int, int]:
         """``(start, n_owned, n_pad)`` for this process."""
         return get_obs_distribution_to_process(self.n_observations)
@@ -182,6 +178,9 @@ class MultiObservationMapMaker(Generic[T]):
             self.config.dump_yaml(out_dir / 'mapmaking_config.yaml')
             self.logger.info('saved mapmaking configuration to file')
 
+        # Barrier so other ranks don't race ahead while rank 0 is still writing.
+        mhu.sync_global_devices('mapmaker.run.save_done')
+
         return results
 
     @property
@@ -220,7 +219,8 @@ class MultiObservationMapMaker(Generic[T]):
         hits = jax.jit(self.accumulate_hits)(model).block_until_ready()
         logger_info('Computed hit map')
 
-        rhs = jax.block_until_ready(self.accumulate_rhs(model, indices))
+        rhs_reader = self.get_reader(['metadata', 'sample_data'])
+        rhs = jax.block_until_ready(jax.jit(self.accumulate_rhs)(model, indices, rhs_reader))
         logger_info('Accumulated RHS vector')
 
         # Preconditioning
@@ -325,14 +325,20 @@ class MultiObservationMapMaker(Generic[T]):
 
         return local_hits(models)
 
-    def accumulate_rhs(self, models: ObservationModel, indices: Array) -> StokesPyTreeType:
+    def accumulate_rhs(
+        self,
+        models: ObservationModel,
+        indices: Array,
+        reader: ObservationReader[T],
+    ) -> StokesPyTreeType:
         """Accumulate the RHS vector across all observations.
 
         Uses shard_map + scan with psum for multi-device execution. ``indices``
         must be sharded along the same 'obs' axis as ``models`` (see
-        :meth:`shard_obs`).
+        :meth:`distribute`). ``reader`` is passed in (rather than built here)
+        so this method stays jit-friendly — building the reader triggers an
+        all-gather that must run outside ``jax.jit``.
         """
-        reader = self.get_reader(['metadata', 'sample_data'])
 
         def step(carry: StokesPyTreeType, args: Any) -> tuple[StokesPyTreeType, None]:
             obs, i = args
@@ -367,35 +373,46 @@ class MultiObservationMapMaker(Generic[T]):
         return valid
 
 
-def get_obs_distribution_to_process(n_obs: int) -> tuple[int, int, int]:
-    """Compute this process's observation slice for distributed mapmaking.
+def get_obs_distribution_to_process(
+    n_obs: int,
+    rank: int | None = None,
+    n_proc: int | None = None,
+    n_local: int | None = None,
+) -> tuple[int, int, int]:
+    """Compute this process's slice for distributed mapmaking.
 
     Distributes ``n_obs`` observations across processes as evenly as possible
     (first ``n_obs % n_proc`` processes get one extra), then pads each process's
-    share to the next multiple of ``local_device_count`` so every device has a
-    uniform workload.  All processes end up with the same number of total slots
+    share to the next multiple of ``n_local`` so every device has a uniform
+    workload.  All processes end up with the same number of total slots
     (``n_owned + n_pad``), which is required for multi-process sharding.
 
     Args:
         n_obs: Total number of observations across all processes.
+        rank: Process index. Defaults to ``jax.process_index()``.
+        n_proc: Process count. Defaults to ``jax.process_count()``.
+        n_local: Local device count. Defaults to ``jax.local_device_count()``.
 
     Returns:
         A tuple ``(start, n_owned, n_pad)`` where ``start`` is the index of the
         first real observation owned by this process, ``n_owned`` is the number
         of real observations, and ``n_pad`` is the number of padding slots so that
-        ``n_owned + n_pad`` is a multiple of ``local_device_count``.
+        ``n_owned + n_pad`` is a multiple of ``n_local``.
 
     Raises:
         ValueError: If ``n_obs < n_proc``.
     """
-    rank = jax.process_index()
-    n_proc = jax.process_count()
-    n_local = jax.local_device_count()
+    if rank is None:
+        rank = jax.process_index()
+    if n_proc is None:
+        n_proc = jax.process_count()
+    if n_local is None:
+        n_local = jax.local_device_count()
 
     if n_obs < n_proc:
         raise ValueError(
             f'Not enough observations ({n_obs}) for {n_proc} processes. '
-            f'Use fewer SLURM tasks or provide more observations.'
+            f'Provide more observations or run with fewer processes.'
         )
 
     base = n_obs // n_proc

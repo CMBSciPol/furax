@@ -110,13 +110,13 @@ class MultiObservationMapMaker(Generic[T]):
         """``(start, n_owned, n_pad)`` for this process."""
         return get_obs_distribution_to_process(self.n_observations)
 
-    def get_indices(self) -> np.ndarray:
+    def get_read_indices(self) -> np.ndarray:
         start, n_owned, _ = self.obs_distribution
         return np.arange(start, start + n_owned)
 
-    def get_padded_indices(self) -> np.ndarray:
+    def get_padded_read_indices(self) -> np.ndarray:
         _, _, n_pad = self.obs_distribution
-        return np.pad(self.get_indices(), (0, n_pad), mode='edge')
+        return np.pad(self.get_read_indices(), (0, n_pad), mode='edge')
 
     def get_reader(self, required_fields: Sequence[str]) -> ObservationReader[T]:
         """Build an ObservationReader for this process's local observations."""
@@ -124,7 +124,7 @@ class MultiObservationMapMaker(Generic[T]):
         # rank to send the same shape, so all ranks must report the same obs count.
         return ObservationReader.from_observations(
             self.observations,
-            subset_indices=tuple(self.get_padded_indices()),
+            read_indices=tuple(self.get_padded_read_indices()),
             requested_fields=required_fields,
             demodulated=self.config.demodulated,
             stokes=self.config.landscape.stokes,
@@ -211,7 +211,7 @@ class MultiObservationMapMaker(Generic[T]):
         )
 
         model = self.distribute(self.build_model())
-        indices = self.distribute(self.get_padded_indices())
+        read_indices = self.distribute(self.get_padded_read_indices())
 
         A = SystemOperator(model, mesh=self.mesh)
         logger_info('Created system operator')
@@ -220,7 +220,7 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Computed hit map')
 
         rhs_reader = self.get_reader(['metadata', 'sample_data'])
-        rhs = jax.block_until_ready(jax.jit(self.accumulate_rhs)(model, indices, rhs_reader))
+        rhs = jax.block_until_ready(jax.jit(self.accumulate_rhs)(model, read_indices, rhs_reader))
         logger_info('Accumulated RHS vector')
 
         # Preconditioning
@@ -299,7 +299,7 @@ class MultiObservationMapMaker(Generic[T]):
             data, padding = reader.read(i)
             return None, ObservationModel.create(data, padding, self.config, self.landscape)
 
-        _, model = jax.lax.scan(build_one, None, self.get_indices())
+        _, model = jax.lax.scan(build_one, None, self.get_read_indices())
 
         _, _, n_pad = self.obs_distribution
         return pad_model(model, n_pad)
@@ -325,12 +325,12 @@ class MultiObservationMapMaker(Generic[T]):
     def accumulate_rhs(
         self,
         models: ObservationModel,
-        indices: Array,
+        read_indices: Array,
         reader: ObservationReader[T],
     ) -> StokesPyTreeType:
         """Accumulate the RHS vector across all observations.
 
-        Uses shard_map + scan with psum for multi-device execution. ``indices``
+        Uses shard_map + scan with psum for multi-device execution.  ``read_indices``
         must be sharded along the same 'obs' axis as ``models`` (see
         :meth:`distribute`). ``reader`` is passed in (rather than built here)
         so this method stays jit-friendly — building the reader triggers an
@@ -350,7 +350,7 @@ class MultiObservationMapMaker(Generic[T]):
             rhs, _ = jax.lax.scan(step, self.landscape.zeros(), (local_models, local_indices))
             return jax.lax.psum(rhs, axis_name='obs')  # type: ignore[no-any-return]
 
-        return local_rhs(models, indices)
+        return local_rhs(models, read_indices)
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']

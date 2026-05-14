@@ -178,7 +178,7 @@ class TestMultiObsMapMaker:
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         model = maker.distribute(maker.build_model())
-        indices = maker.distribute(maker.get_padded_indices())
+        indices = maker.distribute(maker.get_padded_read_indices())
         reader = maker.get_reader(['metadata', 'sample_data'])
         rhs = maker.accumulate_rhs(model, indices, reader)
         assert rhs.shape == maker.landscape.shape

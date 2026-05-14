@@ -62,7 +62,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         cls,
         observations: Sequence[AbstractLazyObservation[T]],
         *,
-        subset_indices: Sequence[int] | None = None,
+        read_indices: Sequence[int] | None = None,
         requested_fields: Sequence[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
@@ -80,7 +80,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         """
         fields = cls._resolve_fields(observations, requested_fields)
         common_keywords = {'data_field_names': fields}
-        if subset_indices is None:
+        if read_indices is None:
             # Default path: AbstractReader.__init__ will call _read_structures(),
             # opening every observation on this process to infer its structure.
             return cls(
@@ -98,7 +98,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             data = observations[idx].get_data([])
             return idx, data.n_detectors, data.n_samples
 
-        local_shapes = np.array([_shape(idx) for idx in subset_indices], dtype=np.int64)
+        local_shapes = np.array([_shape(idx) for idx in read_indices], dtype=np.int64)
 
         # All-gather → (n_procs * n_local, 3). Padding (see ``get_padded_indices``,
         # which uses ``np.pad(..., mode='edge')``) makes some indices repeat across

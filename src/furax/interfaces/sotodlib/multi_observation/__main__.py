@@ -1,11 +1,9 @@
-import os
+from furax.distributed import maybe_init
 
-import jax
+# Must run before import that touches the JAX backend
+maybe_init()
 
-if 'SLURM_JOB_ID' in os.environ:
-    jax.distributed.initialize()
-
-
+# ruff: noqa: E402
 from cyclopts import App
 
 from .prepare import prepare

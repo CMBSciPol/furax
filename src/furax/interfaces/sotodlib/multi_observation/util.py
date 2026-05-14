@@ -14,8 +14,8 @@ def setup_logger(loglevel: str, log_path: Path | None, process_index: int = 0) -
     ch.setLevel(level)
     ch.setFormatter(formatter)
     logger.addHandler(ch)
-    # Only rank 0 writes to the final logfile
-    if process_index == 0 and log_path is not None:
+    if log_path is not None:
+        log_path = log_path.with_stem(f'{log_path.stem}.rank{process_index}')
         log_path.parent.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(log_path)
         fh.setLevel(logging.DEBUG)

@@ -57,6 +57,12 @@ class MapMakingResults:
     noise_fits: Float[Array, '...'] | None = None
     """The fitted noise PSD parameters"""
 
+    template_amplitudes: dict[str, np.ndarray] | None = None
+    """Per-observation template amplitudes ``{template_name: array (n_obs, n_params)}``.
+
+    Populated only by the two-step estimator. Persisted to disk in step 5.
+    """
+
     def save(self, out_dir: str | Path) -> None:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)

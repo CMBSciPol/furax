@@ -18,6 +18,7 @@ from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import ValidStokesType
 
 from ._observation import AbstractGroundObservation
+from .config import TemplatesConfig
 
 
 class TemplateOperator(AbstractLinearOperator):
@@ -910,6 +911,35 @@ class GroundTemplateOperator(TemplateOperator):
 class StokesIQUFlattenOperator(AbstractLinearOperator):
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> Inexact[Array, ' _b']:
         return jnp.concatenate([x.i, x.q, x.u])
+
+
+def template_required_fields(config: TemplatesConfig) -> set[str]:
+    """Reader field names required to build the active template operators in `config`.
+
+    Excludes fields the multi-obs mapmaker always loads (boresight/detector quaternions,
+    hwp_angles, valid_sample_masks, timestamps).
+    """
+    fields: set[str] = set()
+    if config.polynomial is not None:
+        # Polynomial templates need per-obs scanning_intervals (not yet in reader).
+        # Multi-obs two-step does not support polynomial yet (see plan: Out of Scope).
+        raise NotImplementedError(
+            'Polynomial templates are not supported in the multi-obs two-step path: '
+            'PolynomialTemplateOperator stores per-interval blocks as a Python list of '
+            'arrays with varying lengths and cannot be stacked across observations.'
+        )
+    if config.scan_synchronous is not None:
+        fields.add('azimuth')
+    if config.azhwp_synchronous is not None:
+        fields.add('azimuth')
+        if config.azhwp_synchronous.split_scans:
+            fields.update({'left_scan_mask', 'right_scan_mask'})
+    if config.binazhwp_synchronous is not None:
+        fields.add('azimuth')
+    if config.ground is not None:
+        fields.update({'azimuth', 'elevation'})
+    # hwp_synchronous needs hwp_angles, already always loaded by the multi-obs mapmaker.
+    return fields
 
 
 @square

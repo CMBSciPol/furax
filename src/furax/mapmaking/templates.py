@@ -248,7 +248,7 @@ class ScanSynchronousTemplateOperator(TemplateOperator):
 
     min_poly_order: int = field(metadata={'static': True})
     max_poly_order: int = field(metadata={'static': True})
-    templates: Float[Array, 'ord samp'] = field(metadata={'static': True})
+    templates: Float[Array, 'ord samp']
 
     def __init__(
         self,
@@ -332,7 +332,7 @@ class HWPSynchronousTemplateOperator(TemplateOperator):
     """
 
     n_harmonics: int = field(metadata={'static': True})
-    templates: Float[Array, 'harm samp'] = field(metadata={'static': True})
+    templates: Float[Array, 'harm samp']
 
     def __init__(
         self,

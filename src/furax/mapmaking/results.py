@@ -24,8 +24,11 @@ __all__ = [
     'MapMakingResults',
 ]
 
-_VALID_FIELDS = frozenset({'map', 'hit_map', 'icov', 'noise_fits', 'solver_stats'})
+_VALID_FIELDS = frozenset(
+    {'map', 'hit_map', 'icov', 'noise_fits', 'solver_stats', 'template_amplitudes'}
+)
 _REQUIRED_FIELDS = frozenset({'map', 'hit_map', 'icov'})
+_AMPLITUDES_DIR = 'amplitudes'
 
 
 class _JsonEncoder(json.JSONEncoder):
@@ -60,7 +63,8 @@ class MapMakingResults:
     template_amplitudes: dict[str, np.ndarray] | None = None
     """Per-observation template amplitudes ``{template_name: array (n_obs, n_params)}``.
 
-    Populated only by the two-step estimator. Persisted to disk in step 5.
+    Populated only by the two-step estimator. Persisted to disk as one ``.npz`` per
+    observation under ``<out_dir>/amplitudes/obs_<i>.npz`` by :meth:`save`.
     """
 
     def save(self, out_dir: str | Path) -> None:
@@ -75,6 +79,8 @@ class MapMakingResults:
         if self.solver_stats is not None:
             with open(out_dir / 'solver_stats.json', 'w') as f:
                 json.dump(self.solver_stats, f, indent=2, cls=_JsonEncoder)
+        if self.template_amplitudes is not None:
+            self._save_template_amplitudes(out_dir)
 
     @classmethod
     def load(
@@ -114,6 +120,11 @@ class MapMakingResults:
 
         noise_fits = cls._load_noise_fits(out_dir) if 'noise_fits' in fields_to_load else None
         solver_stats = cls._load_solver_stats(out_dir) if 'solver_stats' in fields_to_load else None
+        template_amplitudes = (
+            cls._load_template_amplitudes(out_dir)
+            if 'template_amplitudes' in fields_to_load
+            else None
+        )
 
         return cls(
             map=sky_map,
@@ -122,6 +133,7 @@ class MapMakingResults:
             icov=icov,
             solver_stats=solver_stats,
             noise_fits=noise_fits,
+            template_amplitudes=template_amplitudes,
         )
 
     @staticmethod
@@ -217,6 +229,34 @@ class MapMakingResults:
             return None
         with open(path) as f:
             return json.load(f)  # type: ignore[no-any-return]
+
+    def _save_template_amplitudes(self, out_dir: Path) -> None:
+        """Write one ``.npz`` per observation under ``<out_dir>/amplitudes/obs_<i>.npz``.
+
+        Each ``.npz`` stores ``{template_name: amplitudes_for_that_obs}``. The leading
+        observation axis is the same across templates; the per-obs slice keeps the
+        per-template parameter dimensions.
+        """
+        assert self.template_amplitudes is not None  # for mypy
+        amplitudes_dir = out_dir / _AMPLITUDES_DIR
+        amplitudes_dir.mkdir(parents=True, exist_ok=True)
+        # All templates share the leading n_obs dim; take it from the first entry.
+        n_obs = next(iter(self.template_amplitudes.values())).shape[0]
+        for i in range(n_obs):
+            payload = {name: np.asarray(arr[i]) for name, arr in self.template_amplitudes.items()}
+            np.savez(amplitudes_dir / f'obs_{i}.npz', **payload)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _load_template_amplitudes(out_dir: Path) -> dict[str, np.ndarray] | None:
+        amplitudes_dir = out_dir / _AMPLITUDES_DIR
+        if not amplitudes_dir.exists():
+            return None
+        files = sorted(amplitudes_dir.glob('obs_*.npz'), key=lambda p: int(p.stem.split('_')[1]))
+        if not files:
+            return None
+        per_obs = [np.load(f) for f in files]
+        names = list(per_obs[0].keys())
+        return {name: np.stack([p[name] for p in per_obs], axis=0) for name in names}
 
     def _save_icov(self, arr: np.ndarray, out_dir: Path) -> None:
         """Save the inverse covariance, storing only the upper triangle with stokes-aware names."""

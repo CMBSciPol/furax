@@ -183,6 +183,10 @@ class ObservationReader(AbstractReader, Generic[T]):
                 if demodulated
                 else jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64)
             ),
+            'azimuth': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
+            'elevation': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
+            'left_scan_mask': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
+            'right_scan_mask': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
         }
 
     def _get_data_field_readers(self):  # type: ignore[no-untyped-def]
@@ -222,6 +226,10 @@ class ObservationReader(AbstractReader, Generic[T]):
                 if demodulated
                 else (lambda obs: if_none_raise_error(obs.get_noise_model()).to_array())
             ),
+            'azimuth': lambda obs: obs.get_azimuth(),
+            'elevation': lambda obs: obs.get_elevation(),
+            'left_scan_mask': lambda obs: obs.get_left_scan_mask(),
+            'right_scan_mask': lambda obs: obs.get_right_scan_mask(),
         }
 
     def _read_structure_impure(

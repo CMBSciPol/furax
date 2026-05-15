@@ -188,6 +188,10 @@ class AbstractGroundObservation(AbstractObservation[T]):
 
     AVAILABLE_READER_FIELDS: ClassVar[list[str]] = AbstractObservation.AVAILABLE_READER_FIELDS + [
         'valid_scanning_masks',
+        'azimuth',
+        'elevation',
+        'left_scan_mask',
+        'right_scan_mask',
     ]
 
     @abstractmethod

@@ -16,7 +16,7 @@ import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer
+from jaxtyping import Array, Bool, DTypeLike, Float, Integer
 
 import furax.linalg
 import furax.tree as tree
@@ -155,18 +155,17 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Build system matrix from stacked ObservationModel
         model = self.build_model()
-        n_obs = len(self.observations)
-        A = model.get_system_operator(n_obs)
+        A = model.get_system_operator()
         logger_info('Created system operator')
 
-        hits = self.accumulate_hits(model).block_until_ready()
+        hits = model.accumulate_hits().block_until_ready()
         logger_info('Computed hit map')
 
         rhs = self.accumulate_rhs(model)
         logger_info('Accumulated RHS vector')
 
         # Preconditioning
-        sysdiag = A if self.config.binned else model.get_system_operator(n_obs, diag=True)
+        sysdiag = A if self.config.binned else model.get_system_operator(diag=True)
         BJ = BJPreconditioner.create(sysdiag)
         icov = BJ.get_blocks().block_until_ready()
         logger_info('Computed white noise inverse covariance')
@@ -236,14 +235,6 @@ class MultiObservationMapMaker(Generic[T]):
 
         _, model = jax.lax.scan(build_one, None, jnp.arange(reader.count))
         return model  # type: ignore[no-any-return]
-
-    def accumulate_hits(self, models: ObservationModel) -> Int64[Array, ' pixels']:
-        def acc(carry, model):  # type: ignore[no-untyped-def]
-            return carry + model.hits(), None
-
-        init = jnp.zeros(self.landscape.shape, dtype=jnp.int64)
-        total, _ = jax.lax.scan(acc, init, models)
-        return total
 
     def accumulate_rhs(self, models: ObservationModel) -> StokesPyTreeType:
         """Accumulate the RHS vector across all observations"""

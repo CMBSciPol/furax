@@ -81,25 +81,30 @@ class ObservationModel:
     def map_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.H.in_structure
 
-    def get_system_operator(self, n_obs: int, *, diag: bool = False) -> AbstractLinearOperator:
-        H = ScanBlockColumnOperator(self.H, n_obs)
-        M = ScanBlockDiagonalOperator(self.masker, n_obs)
+    @property
+    def n_observations(self) -> int:
+        # assuming stacked pytree
+        return jax.tree.leaves(self.H)[0].shape[0]  # type: ignore[no-any-return]
+
+    def get_system_operator(self, *, diag: bool = False) -> AbstractLinearOperator:
+        n = self.n_observations
+        H = ScanBlockColumnOperator(self.H, n)
+        M = ScanBlockDiagonalOperator(self.masker, n)
         weight = self.diag_W() if diag else self.W
-        W = ScanBlockDiagonalOperator(weight, n_obs)
+        W = ScanBlockDiagonalOperator(weight, n)
         return (H.T @ M @ W @ M @ H).reduce()
 
-    def hits(self) -> Int64[Array, ' pixels']:
+    def accumulate_hits(self) -> Int64[Array, ' pixels']:
+        n = self.n_observations
         assert isinstance(self.H, CompositionOperator)  # mypy assert
-        # the pointing operator should be the first in the acquisition chain, so the last operand...
-        # there is a unit test for that
+        # pointing operator is the last operand of the acquisition chain (see unit test)
         pointing = self.H.operands[-1]
         assert isinstance(pointing, PointingOperator)  # mypy assert
-        pointing_i = pointing.as_stokes_i(interpolate=False)
-        ones = tree.ones_like(self.tod_structure)
-        # the masker could be acting on a Stokes pytree or an Array
-        masked_ones = jax.tree.leaves(self.masker(ones))[0]
-        hits_stokes = pointing_i.T(StokesI(masked_ones))
-        return jnp.int64(hits_stokes.i)  # type: ignore[no-any-return]
+        P = ScanBlockColumnOperator(pointing.as_stokes_i(interpolate=False), n)
+        M = ScanBlockDiagonalOperator(self.masker, n)
+        ones = tree.ones_like(M.in_structure)
+        masked_i = jax.tree.leaves(M(ones))[0]
+        return jnp.int64(P.T(StokesI(masked_i)).i)  # type: ignore[no-any-return]
 
     def diag_W(self) -> AbstractLinearOperator:
         """Build the inverse white noise covariance operator."""

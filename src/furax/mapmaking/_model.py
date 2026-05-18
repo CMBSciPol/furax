@@ -1,5 +1,4 @@
-import functools
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 import jax
@@ -7,12 +6,13 @@ import jax.numpy as jnp
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, Int64, PyTree
 
-from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, symmetric, tree
+from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.core import BlockDiagonalOperator, CompositionOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesPyTreeType
 
+from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
 from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig, Methods
 from .gap_filling import GapFillingOperator
@@ -81,6 +81,13 @@ class ObservationModel:
     def map_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.H.in_structure
 
+    def get_system_operator(self, n_obs: int, *, diag: bool = False) -> AbstractLinearOperator:
+        H = ScanBlockColumnOperator(self.H, n_obs)
+        M = ScanBlockDiagonalOperator(self.masker, n_obs)
+        weight = self.diag_W() if diag else self.W
+        W = ScanBlockDiagonalOperator(weight, n_obs)
+        return (H.T @ M @ W @ M @ H).reduce()
+
     def hits(self) -> Int64[Array, ' pixels']:
         assert isinstance(self.H, CompositionOperator)  # mypy assert
         # the pointing operator should be the first in the acquisition chain, so the last operand...
@@ -94,7 +101,7 @@ class ObservationModel:
         hits_stokes = pointing_i.T(StokesI(masked_ones))
         return jnp.int64(hits_stokes.i)  # type: ignore[no-any-return]
 
-    def white_noise_W(self) -> AbstractLinearOperator:
+    def diag_W(self) -> AbstractLinearOperator:
         """Build the inverse white noise covariance operator."""
         operator_tree = jax.tree.map(
             lambda noise, s: noise.to_white_noise_model().inverse_operator(s),
@@ -103,13 +110,6 @@ class ObservationModel:
             is_leaf=lambda nm: isinstance(nm, NoiseModel),
         )
         return BlockDiagonalOperator(operator_tree)
-
-    def apply_system(self, x: Stokes, *, white_noise: bool = False) -> Stokes:
-        """Applies H.T @ W @ H (+ TOD masking) to x for this observation."""
-        weight = self.white_noise_W() if white_noise else self.W
-        y = self.masker(self.H(x))
-        y = weight(y)
-        return self.H.T(self.masker.T(y))  # type: ignore[no-any-return]
 
     def rhs(self, data: Any, config: MapMakingConfig) -> Stokes:
         """Accumulates data into the r.h.s. of the mapmaking equation.
@@ -152,41 +152,6 @@ class ObservationModel:
 
 
 _StokesPyTree = TypeVar('_StokesPyTree', bound=StokesPyTreeType)
-
-
-@functools.partial(jax.jit, static_argnames=['diag'])
-def _system_scan(model: ObservationModel, x: _StokesPyTree, *, diag: bool = False) -> _StokesPyTree:
-    """Apply H^T W H to x, summed over the batch of observations in model.
-
-    `model` is an explicit JIT argument so it is never captured as an XLA constant.
-
-    Args:
-        model: Stacked ObservationModel with a leading batch dimension over observations.
-        x: Input sky map pytree.
-        diag: If True, use the diagonal white-noise approximation for W.
-    """
-
-    def accumulate(lhs, obs):  # type: ignore[no-untyped-def]
-        return tree.add(lhs, obs.apply_system(x, white_noise=diag)), None
-
-    lhs, _ = jax.lax.scan(accumulate, tree.zeros_like(x), model)
-    return lhs
-
-
-@symmetric
-class SystemOperator(AbstractLinearOperator):
-    """System operator for multiple observations: `A = Σ_i H_i^T W_i H_i`."""
-
-    models: ObservationModel
-    diag: bool = field(metadata={'static': True})
-
-    def __init__(self, models: ObservationModel, *, diag: bool = False):
-        object.__setattr__(self, 'models', models)
-        object.__setattr__(self, 'diag', diag)
-        object.__setattr__(self, 'in_structure', models.map_structure)
-
-    def mv(self, x: _StokesPyTree) -> _StokesPyTree:
-        return _system_scan(self.models, x, diag=self.diag)  # type: ignore[no-any-return]
 
 
 def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel], Array]:

@@ -44,7 +44,7 @@ from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesTyp
 from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel, SystemOperator
+from ._model import ObservationModel
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
@@ -155,7 +155,8 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Build system matrix from stacked ObservationModel
         model = self.build_model()
-        A = SystemOperator(model)
+        n_obs = len(self.observations)
+        A = model.get_system_operator(n_obs)
         logger_info('Created system operator')
 
         hits = self.accumulate_hits(model).block_until_ready()
@@ -165,7 +166,7 @@ class MultiObservationMapMaker(Generic[T]):
         logger_info('Accumulated RHS vector')
 
         # Preconditioning
-        sysdiag = A if self.config.binned else SystemOperator(model, diag=True)
+        sysdiag = A if self.config.binned else model.get_system_operator(n_obs, diag=True)
         BJ = BJPreconditioner.create(sysdiag)
         icov = BJ.get_blocks().block_until_ready()
         logger_info('Computed white noise inverse covariance')

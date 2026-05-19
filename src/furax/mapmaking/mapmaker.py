@@ -1,7 +1,7 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from functools import cached_property
 from logging import Logger
 from math import prod
@@ -32,7 +32,6 @@ from furax import (
     MaskOperator,
     OperatorTag,
     SymmetricBandToeplitzOperator,
-    symmetric,
 )
 from furax.core import BlockDiagonalOperator, BlockRowOperator, CompositionOperator, IndexOperator
 from furax.interfaces.lineax import as_lineax_operator
@@ -52,7 +51,7 @@ from ._logger import logger as furax_logger
 from ._model import ObservationModel, pad_model
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
-from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
+from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator, ScanBlockRowOperator
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
 from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
@@ -332,9 +331,15 @@ class MultiObservationMapMaker(Generic[T]):
     def get_system_operator(
         self, model: ObservationModel, *, diag: bool = False
     ) -> AbstractLinearOperator:
-        return _DistributedScanOperator(
-            model, diag=diag, mesh=self.mesh, n_total=self.n_per_device * jax.device_count()
-        )
+        n_total = self.n_per_device * jax.device_count()
+        H = ScanBlockColumnOperator(model.H, n_total)
+        M = ScanBlockDiagonalOperator(model.masker, n_total)
+        weight = model.diag_W() if diag else model.W
+        W = ScanBlockDiagonalOperator(weight, n_total)
+        # H.T = ScanBlockRow; carry the output-sharding hint through reduction so the
+        # final ScanAddition forces an all-reduce of the per-device partial sums.
+        HT = ScanBlockRowOperator(model.H.T, n_total, NamedSharding(self.mesh, P()))
+        return (HT @ M @ W @ M @ H).reduce()
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -392,39 +397,6 @@ def _accumulate_rhs(
 
     rhs, _ = jax.lax.scan(step, furax.tree.zeros_like(model.map_structure), (model, read_indices))
     return jax.lax.with_sharding_constraint(rhs, sharding)  # type: ignore[no-any-return]
-
-
-@symmetric
-class _DistributedScanOperator(AbstractLinearOperator):
-    """ScanBlock composition with replicated output sharding constraint."""
-
-    models: ObservationModel
-    diag: bool = field(metadata={'static': True})
-    mesh: Mesh = field(metadata={'static': True})
-    n_total: int = field(metadata={'static': True})
-
-    def __init__(
-        self,
-        models: ObservationModel,
-        *,
-        diag: bool = False,
-        mesh: Mesh,
-        n_total: int,
-    ) -> None:
-        object.__setattr__(self, 'models', models)
-        object.__setattr__(self, 'diag', diag)
-        object.__setattr__(self, 'mesh', mesh)
-        object.__setattr__(self, 'n_total', n_total)
-        object.__setattr__(self, 'in_structure', models.map_structure)
-
-    def mv(self, x: PyTree) -> PyTree:
-        H = ScanBlockColumnOperator(self.models.H, self.n_total)
-        M = ScanBlockDiagonalOperator(self.models.masker, self.n_total)
-        weight = self.models.diag_W() if self.diag else self.models.W
-        W = ScanBlockDiagonalOperator(weight, self.n_total)
-        A = (H.T @ M @ W @ M @ H).reduce()  # -> ScanAdditionOperator
-        # ScanAddition sums the 'obs' leading axis; constraint triggers cross-device all-reduce.
-        return jax.lax.with_sharding_constraint(A(x), NamedSharding(self.mesh, P()))
 
 
 def get_obs_distribution_to_process(

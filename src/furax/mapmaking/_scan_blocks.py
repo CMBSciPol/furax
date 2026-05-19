@@ -3,6 +3,7 @@ from dataclasses import field
 
 import jax
 from jax import Array
+from jax.sharding import NamedSharding
 from jaxtyping import Inexact, PyTree
 
 from furax import AbstractLinearOperator, tree
@@ -77,10 +78,22 @@ class ScanBlockRowOperator(AbstractScanBlockOperator):
     """Block-row across the batch axis: stacked → single, sum over slices.
 
     Mirrors :class:`BlockRowOperator` but iterates via ``jax.lax.scan``.
+
+    An optional ``output_sharding`` triggers a ``with_sharding_constraint`` on
+    the (post-reduction) output — useful under distributed execution where the
+    summed-axis output should be replicated across devices.
     """
 
-    def __init__(self, blocks: AbstractLinearOperator, n_blocks: int) -> None:
+    output_sharding: NamedSharding | None = field(metadata={'static': True}, default=None)
+
+    def __init__(
+        self,
+        blocks: AbstractLinearOperator,
+        n_blocks: int,
+        output_sharding: NamedSharding | None = None,
+    ) -> None:
         in_structure = _prepend_axis(blocks.in_structure, n_blocks)
+        object.__setattr__(self, 'output_sharding', output_sharding)
         super().__init__(blocks, n_blocks, in_structure=in_structure)
 
     @property
@@ -96,14 +109,34 @@ class ScanBlockRowOperator(AbstractScanBlockOperator):
             return tree.add(carry, op.mv(x_i)), None
 
         out, _ = jax.lax.scan(step, init, (self.blocks, x))
+        if self.output_sharding is not None:
+            out = jax.lax.with_sharding_constraint(out, self.output_sharding)
         return out
 
     def transpose(self) -> AbstractLinearOperator:
         return ScanBlockColumnOperator(self.blocks.T, self.n_blocks)
 
+    def reduce(self) -> AbstractLinearOperator:
+        return ScanBlockRowOperator(self.blocks.reduce(), self.n_blocks, self.output_sharding)
+
 
 class ScanAdditionOperator(AbstractScanBlockOperator):
-    def __init__(self, blocks: AbstractLinearOperator, n_blocks: int) -> None:
+    """Sums per-block outputs into a single output (no leading batch axis).
+
+    An optional ``output_sharding`` triggers a ``with_sharding_constraint`` on
+    the summed result — useful under distributed execution where the reduction
+    output should be replicated across devices.
+    """
+
+    output_sharding: NamedSharding | None = field(metadata={'static': True}, default=None)
+
+    def __init__(
+        self,
+        blocks: AbstractLinearOperator,
+        n_blocks: int,
+        output_sharding: NamedSharding | None = None,
+    ) -> None:
+        object.__setattr__(self, 'output_sharding', output_sharding)
         super().__init__(blocks, n_blocks, in_structure=blocks.in_structure)
 
     @property
@@ -117,10 +150,15 @@ class ScanAdditionOperator(AbstractScanBlockOperator):
             return tree.add(carry, op.mv(x)), None
 
         out, _ = jax.lax.scan(step, init, self.blocks)
+        if self.output_sharding is not None:
+            out = jax.lax.with_sharding_constraint(out, self.output_sharding)
         return out
 
     def transpose(self) -> AbstractLinearOperator:
-        return ScanAdditionOperator(self.blocks.T, self.n_blocks)
+        return ScanAdditionOperator(self.blocks.T, self.n_blocks, self.output_sharding)
+
+    def reduce(self) -> AbstractLinearOperator:
+        return ScanAdditionOperator(self.blocks.reduce(), self.n_blocks, self.output_sharding)
 
 
 class AbstractScanFusionRule(AbstractBinaryRule):
@@ -158,10 +196,26 @@ class ScanBlockRowScanBlockDiagonalRule(AbstractScanFusionRule):
     right_operator_class = ScanBlockDiagonalOperator
     reduced_class = ScanBlockRowOperator
 
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        assert isinstance(left, ScanBlockRowOperator)  # mypy
+        assert isinstance(right, ScanBlockDiagonalOperator)  # mypy
+        composed = (left.blocks @ right.blocks).reduce()
+        return [ScanBlockRowOperator(composed, left.n_blocks, left.output_sharding)]
+
 
 class ScanBlockRowScanBlockColumnRule(AbstractScanFusionRule):
-    """``ScanBlockRow @ ScanBlockColumn = _ScanSumOperator``."""
+    """``ScanBlockRow @ ScanBlockColumn = ScanAddition``."""
 
     left_operator_class = ScanBlockRowOperator
     right_operator_class = ScanBlockColumnOperator
     reduced_class = ScanAdditionOperator
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        assert isinstance(left, ScanBlockRowOperator)  # mypy
+        assert isinstance(right, ScanBlockColumnOperator)  # mypy
+        composed = (left.blocks @ right.blocks).reduce()
+        return [ScanAdditionOperator(composed, left.n_blocks, left.output_sharding)]

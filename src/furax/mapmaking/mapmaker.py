@@ -19,7 +19,6 @@ from jax import ShapeDtypeStruct
 from jaxtyping import Array, Bool, DTypeLike, Float, Integer
 
 import furax.linalg
-import furax.tree as tree
 from furax import (
     AbstractLinearOperator,
     Config,
@@ -153,20 +152,21 @@ class MultiObservationMapMaker(Generic[T]):
         """Computes the mapmaker results (maps and other products)."""
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
 
-        # Build system matrix from stacked ObservationModel
+        # Build stacked ObservationModel
         model = self.build_model()
-        A = model.get_system_operator()
         logger_info('Created system operator')
 
         hits = model.accumulate_hits().block_until_ready()
         logger_info('Computed hit map')
 
-        rhs = self.accumulate_rhs(model)
+        reader = self.get_reader(['metadata', 'sample_data'])
+        rhs = jax.block_until_ready(model.accumulate_rhs(reader, self.config))
         logger_info('Accumulated RHS vector')
 
-        # Preconditioning
-        sysdiag = A if self.config.binned else model.get_system_operator(diag=True)
-        BJ = BJPreconditioner.create(sysdiag)
+        # System operator (full/diagonal)
+        A = model.get_system_operator()
+        diag_A = A if self.config.binned else model.get_system_operator(diag=True)
+        BJ = BJPreconditioner.create(diag_A)
         icov = BJ.get_blocks().block_until_ready()
         logger_info('Computed white noise inverse covariance')
 
@@ -235,20 +235,6 @@ class MultiObservationMapMaker(Generic[T]):
 
         _, model = jax.lax.scan(build_one, None, jnp.arange(reader.count))
         return model  # type: ignore[no-any-return]
-
-    def accumulate_rhs(self, models: ObservationModel) -> StokesPyTreeType:
-        """Accumulate the RHS vector across all observations"""
-        reader = self.get_reader(['metadata', 'sample_data'])
-
-        def acc(carry, args):  # type: ignore[no-untyped-def]
-            i, model = args
-            data, _ = reader.read(i)
-            carry = carry + model.rhs(data, self.config)
-            return carry, None
-
-        init = tree.zeros_like(models.map_structure)
-        total, _ = jax.lax.scan(acc, init, (jnp.arange(reader.count), models))
-        return total  # type: ignore[no-any-return]
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']

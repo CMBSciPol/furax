@@ -12,6 +12,7 @@ from furax.obs.landscapes import StokesLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesPyTreeType
 
+from ._reader import ObservationReader
 from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
 from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig, Methods
@@ -94,7 +95,9 @@ class ObservationModel:
         W = ScanBlockDiagonalOperator(weight, n)
         return (H.T @ M @ W @ M @ H).reduce()
 
+    @jax.jit
     def accumulate_hits(self) -> Int64[Array, ' pixels']:
+        """Accumulate hit counts across all observations."""
         n = self.n_observations
         assert isinstance(self.H, CompositionOperator)  # mypy assert
         # pointing operator is the last operand of the acquisition chain (see unit test)
@@ -106,6 +109,44 @@ class ObservationModel:
         masked_i = jax.tree.leaves(M(ones))[0]
         return jnp.int64(P.T(StokesI(masked_i)).i)  # type: ignore[no-any-return]
 
+    @jax.jit(static_argnames=('config',))
+    def accumulate_rhs(self, reader: ObservationReader[Any], config: MapMakingConfig) -> Stokes:
+        """Accumulate RHS vector across all observations."""
+
+        def prepare_tod(model, data):  # type: ignore[no-untyped-def]
+            tod = data['sample_data']
+            if not config.gaps.fill or config.binned:
+                return tod
+
+            # FIXME: check with demodulated data
+            N = _noise_operator(
+                model.noise_model,
+                model.tod_structure,
+                model.sample_rate,
+                config.noise.correlation_length,
+                inverse=False,
+            )
+            return GapFillingOperator(
+                N,  # type: ignore[arg-type]
+                model._get_indexer(),
+                data['metadata'],
+                model.W,
+                rate=model.sample_rate,
+                max_cg_steps=config.gaps.fill_options.max_steps,
+                rtol=config.gaps.fill_options.rtol,
+            )(jax.random.key(config.gaps.fill_options.seed), tod)
+
+        def step(carry, args):  # type: ignore[no-untyped-def]
+            i, model = args
+            data, _ = reader.read(i)
+            tod = prepare_tod(model, data)
+            rhs = (model.H.T @ model.masker @ model.W)(tod)
+            return carry + rhs, None
+
+        init = tree.zeros_like(self.map_structure)
+        total, _ = jax.lax.scan(step, init, (jnp.arange(reader.count), self))
+        return total  # type: ignore[no-any-return]
+
     def diag_W(self) -> AbstractLinearOperator:
         """Build the inverse white noise covariance operator."""
         operator_tree = jax.tree.map(
@@ -115,35 +156,6 @@ class ObservationModel:
             is_leaf=lambda nm: isinstance(nm, NoiseModel),
         )
         return BlockDiagonalOperator(operator_tree)
-
-    def rhs(self, data: Any, config: MapMakingConfig) -> Stokes:
-        """Accumulates data into the r.h.s. of the mapmaking equation.
-
-        Also performs gap-filling on the data before projecting into map domain.
-        """
-        tod = data['sample_data']
-        if config.gaps.fill and not config.binned:
-            # FIXME: check with demodulated data
-            N = _noise_operator(
-                self.noise_model,
-                self.tod_structure,
-                self.sample_rate,
-                config.noise.correlation_length,
-                inverse=False,
-            )
-            gapfill = GapFillingOperator(
-                N,  # type: ignore[arg-type]
-                self._get_indexer(),
-                data['metadata'],
-                self.W,  # type: ignore[arg-type]
-                rate=self.sample_rate,
-                max_cg_steps=config.gaps.fill_options.max_steps,
-                rtol=config.gaps.fill_options.rtol,
-            )
-            key = jax.random.key(config.gaps.fill_options.seed)
-            tod = gapfill(key, tod)
-        rhs: Stokes = (self.H.T @ self.masker @ self.W)(tod)
-        return rhs
 
     def _get_indexer(self) -> IndexOperator:
         """Get the IndexOperator for gap-filling"""

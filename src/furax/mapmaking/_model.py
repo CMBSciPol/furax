@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -10,13 +10,11 @@ from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.core import BlockDiagonalOperator, CompositionOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import Stokes, StokesI, StokesPyTreeType
+from furax.obs.stokes import Stokes, StokesI
 
-from ._reader import ObservationReader
 from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
 from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig, Methods
-from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .templates import ATOPProjectionOperator
 
@@ -109,43 +107,21 @@ class ObservationModel:
         masked_i = jax.tree.leaves(M(ones))[0]
         return jnp.int64(P.T(StokesI(masked_i)).i)  # type: ignore[no-any-return]
 
-    @jax.jit(static_argnames=('config',))
-    def accumulate_rhs(self, reader: ObservationReader[Any], config: MapMakingConfig) -> Stokes:
-        """Accumulate RHS vector across all observations."""
+    def rhs(self, tod: PyTree[Array]) -> Stokes:
+        """Project tod into map domain: H^T M W tod."""
+        return (self.H.T @ self.masker @ self.W)(tod)  # type: ignore[no-any-return]
 
-        def prepare_tod(model, data):  # type: ignore[no-untyped-def]
-            tod = data['sample_data']
-            if not config.gaps.fill or config.binned:
-                return tod
-
-            # FIXME: check with demodulated data
-            N = _noise_operator(
-                model.noise_model,
-                model.tod_structure,
-                model.sample_rate,
-                config.noise.correlation_length,
-                inverse=False,
-            )
-            return GapFillingOperator(
-                N,  # type: ignore[arg-type]
-                model._get_indexer(),
-                data['metadata'],
-                model.W,
-                rate=model.sample_rate,
-                max_cg_steps=config.gaps.fill_options.max_steps,
-                rtol=config.gaps.fill_options.rtol,
-            )(jax.random.key(config.gaps.fill_options.seed), tod)
-
-        def step(carry, args):  # type: ignore[no-untyped-def]
-            i, model = args
-            data, _ = reader.read(i)
-            tod = prepare_tod(model, data)
-            rhs = (model.H.T @ model.masker @ model.W)(tod)
-            return carry + rhs, None
-
-        init = tree.zeros_like(self.map_structure)
-        total, _ = jax.lax.scan(step, init, (jnp.arange(reader.count), self))
-        return total  # type: ignore[no-any-return]
+    def noise_operator(
+        self, correlation_length: int, *, inverse: bool = True
+    ) -> AbstractLinearOperator:
+        """Build the (inverse) noise covariance operator."""
+        return _noise_operator(
+            self.noise_model,
+            self.tod_structure,
+            self.sample_rate,
+            correlation_length,
+            inverse=inverse,
+        )
 
     def diag_W(self) -> AbstractLinearOperator:
         """Build the inverse white noise covariance operator."""
@@ -166,9 +142,6 @@ class ObservationModel:
         else:
             raise NotImplementedError
         return IndexOperator(mask, in_structure=self.tod_structure)
-
-
-_StokesPyTree = TypeVar('_StokesPyTree', bound=StokesPyTreeType)
 
 
 def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel], Array]:

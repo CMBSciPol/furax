@@ -19,6 +19,7 @@ from jax import ShapeDtypeStruct
 from jaxtyping import Array, Bool, DTypeLike, Float, Integer
 
 import furax.linalg
+import furax.tree as tree
 from furax import (
     AbstractLinearOperator,
     Config,
@@ -47,6 +48,7 @@ from ._model import ObservationModel
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
+from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
@@ -162,8 +164,7 @@ class MultiObservationMapMaker(Generic[T]):
         hits = model.accumulate_hits().block_until_ready()
         logger_info('Computed hit map')
 
-        reader = self.get_reader(['metadata', 'sample_data'])
-        rhs = jax.block_until_ready(model.accumulate_rhs(reader, self.config))
+        rhs = jax.block_until_ready(self.accumulate_rhs(model))
         logger_info('Accumulated RHS vector')
 
         # System operator (full/diagonal)
@@ -239,6 +240,11 @@ class MultiObservationMapMaker(Generic[T]):
         _, model = jax.lax.scan(build_one, None, jnp.arange(reader.count))
         return model  # type: ignore[no-any-return]
 
+    def accumulate_rhs(self, model: ObservationModel) -> StokesPyTreeType:
+        """Accumulate the RHS vector across all observations."""
+        reader = self.get_reader(['metadata', 'sample_data'])
+        return _accumulate_rhs(model, reader, self.config)  # type: ignore[no-any-return]
+
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
     ) -> Bool[Array, ' pixels']:
@@ -255,6 +261,37 @@ class MultiObservationMapMaker(Generic[T]):
             )
 
         return valid
+
+
+@jax.jit(static_argnames=('config',))
+def _accumulate_rhs(
+    model: ObservationModel,
+    reader: ObservationReader[Any],
+    config: MapMakingConfig,
+) -> StokesPyTreeType:
+    """Accumulate H^T M W tod over all observations, with optional gap-filling."""
+
+    def acc(carry, args):  # type: ignore[no-untyped-def]
+        i, obs = args
+        data, _ = reader.read(i)
+        tod = data['sample_data']
+        if config.gaps.fill and not config.binned:
+            # FIXME: check with demodulated data
+            N = obs.noise_operator(config.noise.correlation_length, inverse=False)
+            tod = GapFillingOperator(
+                N,
+                obs._get_indexer(),
+                data['metadata'],
+                obs.W,
+                rate=obs.sample_rate,
+                max_cg_steps=config.gaps.fill_options.max_steps,
+                rtol=config.gaps.fill_options.rtol,
+            )(jax.random.key(config.gaps.fill_options.seed), tod)
+        return carry + obs.rhs(tod), None
+
+    init = tree.zeros_like(model.map_structure)
+    total, _ = jax.lax.scan(acc, init, (jnp.arange(reader.count), model))
+    return total  # type: ignore[no-any-return]
 
 
 def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape | None:

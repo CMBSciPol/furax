@@ -115,16 +115,16 @@ class TestMultiObsMapMaker:
         observations = _observations(name, demodulated)
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        blocks = maker.build_model()
-        rhs = maker.accumulate_rhs(blocks)
+        model = maker.build_model()
+        rhs = maker.accumulate_rhs(model)
         assert rhs.shape == maker.landscape.shape
 
     def test_hits_are_nonnegative(self, name, demodulated, stokes, landscape_type):
         observations = _observations(name, demodulated)
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        blocks = maker.build_model()
-        hits = maker.accumulate_hits(blocks)
+        model = maker.build_model()
+        hits = model.accumulate_hits()
         assert hits.shape == maker.landscape.shape
         assert jnp.all(hits >= 0)
 

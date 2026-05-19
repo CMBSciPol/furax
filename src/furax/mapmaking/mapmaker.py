@@ -18,7 +18,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils as mhu
-from jax.sharding import Mesh, NamedSharding
+from jax.sharding import AxisType, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
@@ -102,7 +102,9 @@ class MultiObservationMapMaker(Generic[T]):
 
     @cached_property
     def mesh(self) -> Mesh:
-        return jax.make_mesh((jax.device_count(),), ('obs',))
+        # Auto axis types: lets GSPMD handle collectives so jax.lax.scan can iterate
+        # over a sharded leading axis (rejected under Explicit/Shardy mode).
+        return jax.make_mesh((jax.device_count(),), ('obs',), axis_types=(AxisType.Auto,))
 
     @property
     def sharding(self) -> NamedSharding:
@@ -217,7 +219,7 @@ class MultiObservationMapMaker(Generic[T]):
             f'Rank {rank}: owns obs[{start}:{start + n_owned}] ({n_owned} real + {n_pad} padding)'
         )
 
-        model = self.distribute(self.build_model())
+        model = self.distribute(pad_model(self.build_model(), n_pad))
         read_indices = self.distribute(self.get_padded_read_indices())
         logger_info('Created system operators')
 
@@ -278,8 +280,9 @@ class MultiObservationMapMaker(Generic[T]):
     def build_model(self) -> ObservationModel:
         """Build the local ObservationModel for this process.
 
-        Each process reads its owned observations and pads up to the uniform
-        per-process count.
+        Each process reads its owned observations. The returned model has
+        ``n_owned`` entries along the leading axis (no padding). Padding to the
+        uniform per-process count is applied by the caller before sharding.
         """
         required_fields = [
             'boresight_quaternions',
@@ -306,9 +309,7 @@ class MultiObservationMapMaker(Generic[T]):
             return None, ObservationModel.create(data, padding, self.config, self.landscape)
 
         _, model = jax.lax.scan(build_one, None, self.get_read_indices())
-
-        _, _, n_pad = self.obs_distribution
-        return pad_model(model, n_pad)
+        return model  # type: ignore[no-any-return]
 
     @property
     def n_per_device(self) -> int:
@@ -317,23 +318,18 @@ class MultiObservationMapMaker(Generic[T]):
         return (n_owned + n_pad) // jax.local_device_count()
 
     def accumulate_hits(self, models: ObservationModel) -> Int64[Array, ' pixels']:
-        """Accumulate hit map across all observations using shard_map + ScanBlock operators."""
-        n_local = self.n_per_device
-
-        # check_vma=False: furax operator chain inside the body lacks manual-axis annotations.
-        @jax.shard_map(mesh=self.mesh, in_specs=P('obs'), out_specs=P(), check_vma=False)
-        def local_hits(local_models: ObservationModel) -> Int64[Array, ' pixels']:
-            assert isinstance(local_models.H, CompositionOperator)  # mypy assert
-            pointing = local_models.H.operands[-1]
-            assert isinstance(pointing, PointingOperator)  # mypy assert
-            P_op = ScanBlockColumnOperator(pointing.as_stokes_i(interpolate=False), n_local)
-            M_op = ScanBlockDiagonalOperator(local_models.masker, n_local)
-            ones = furax.tree.ones_like(M_op.in_structure)
-            masked_i = jax.tree.leaves(M_op(ones))[0]
-            hits = jnp.int64(P_op.T(StokesI(masked_i)).i)
-            return jax.lax.psum(hits, axis_name='obs')  # type: ignore[no-any-return]
-
-        return local_hits(models)
+        """Accumulate hit map across all observations via ScanBlock ops under jit+in_shardings."""
+        n_total = self.n_per_device * jax.device_count()
+        assert isinstance(models.H, CompositionOperator)  # mypy assert
+        pointing = models.H.operands[-1]
+        assert isinstance(pointing, PointingOperator)  # mypy assert
+        P_op = ScanBlockColumnOperator(pointing.as_stokes_i(interpolate=False), n_total)
+        M_op = ScanBlockDiagonalOperator(models.masker, n_total)
+        ones = furax.tree.ones_like(M_op.in_structure)
+        masked_i = jax.tree.leaves(M_op(ones))[0]
+        hits = jnp.int64(P_op.T(StokesI(masked_i)).i)
+        # P_op.T = ScanBlockRow: leading axis summed -> output replicated across 'obs' axis.
+        return jax.lax.with_sharding_constraint(hits, NamedSharding(self.mesh, P()))  # type: ignore[no-any-return]
 
     def accumulate_rhs(
         self,
@@ -343,10 +339,12 @@ class MultiObservationMapMaker(Generic[T]):
     ) -> StokesPyTreeType:
         """Accumulate the RHS vector across all observations.
 
-        Uses shard_map + scan with psum for multi-device execution. ``read_indices``
-        must be sharded along the same 'obs' axis as ``models`` (see
-        :meth:`distribute`). ``reader`` is passed in (rather than built here)
-        so this method stays jit-friendly — building the reader triggers an
+        Runs a sharded ``lax.scan`` over the global 'obs' axis under
+        ``jit + in_shardings``: XLA inserts the cross-device all-reduce when the
+        replicated output is requested via ``with_sharding_constraint``.
+        ``read_indices`` must be sharded along the same 'obs' axis as ``models``
+        (see :meth:`distribute`). ``reader`` is passed in (not built here) so
+        this method stays jit-friendly — building the reader triggers an
         all-gather that must run outside ``jax.jit``.
         """
         config = self.config
@@ -369,20 +367,17 @@ class MultiObservationMapMaker(Generic[T]):
                 )(jax.random.key(config.gaps.fill_options.seed), tod)
             return furax.tree.add(carry, obs.H.T(obs.masker(obs.W(tod)))), None
 
-        # check_vma=False: furax operator chain inside the body lacks manual-axis annotations.
-        @jax.shard_map(
-            mesh=self.mesh, in_specs=(P('obs'), P('obs')), out_specs=P(), check_vma=False
-        )
-        def local_rhs(local_models: ObservationModel, local_indices: Any) -> StokesPyTreeType:
-            rhs, _ = jax.lax.scan(step, landscape.zeros(), (local_models, local_indices))
-            return jax.lax.psum(rhs, axis_name='obs')  # type: ignore[no-any-return]
-
-        return local_rhs(models, read_indices)
+        rhs, _ = jax.lax.scan(step, landscape.zeros(), (models, read_indices))
+        # Carry has no 'obs' axis; sharded inputs yield per-device partial sums.
+        # Annotation forces GSPMD to all-reduce across the mesh.
+        return jax.lax.with_sharding_constraint(rhs, NamedSharding(self.mesh, P()))  # type: ignore[no-any-return]
 
     def get_system_operator(
         self, model: ObservationModel, *, diag: bool = False
     ) -> AbstractLinearOperator:
-        return _DistributedScanOperator(model, diag=diag, mesh=self.mesh, n_local=self.n_per_device)
+        return _DistributedScanOperator(
+            model, diag=diag, mesh=self.mesh, n_total=self.n_per_device * jax.device_count()
+        )
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -402,24 +397,14 @@ class MultiObservationMapMaker(Generic[T]):
         return valid
 
 
-def _scan_system_mv(models: ObservationModel, n_local: int, diag: bool, x: PyTree) -> PyTree:
-    H = ScanBlockColumnOperator(models.H, n_local)
-    M = ScanBlockDiagonalOperator(models.masker, n_local)
-    weight = models.diag_W() if diag else models.W
-    W = ScanBlockDiagonalOperator(weight, n_local)
-    # Use sequential application to avoid @-based structure compatibility checks,
-    # which fail inside shard_map due to sharding annotations on operator structures.
-    return H.T(M(W(M(H(x)))))
-
-
 @symmetric
 class _DistributedScanOperator(AbstractLinearOperator):
-    """Distributed system operator using ScanBlock* composition inside shard_map."""
+    """ScanBlock composition with replicated output sharding constraint."""
 
     models: ObservationModel
     diag: bool = field(metadata={'static': True})
     mesh: Mesh = field(metadata={'static': True})
-    n_local: int = field(metadata={'static': True})
+    n_total: int = field(metadata={'static': True})
 
     def __init__(
         self,
@@ -427,25 +412,22 @@ class _DistributedScanOperator(AbstractLinearOperator):
         *,
         diag: bool = False,
         mesh: Mesh,
-        n_local: int,
+        n_total: int,
     ) -> None:
         object.__setattr__(self, 'models', models)
         object.__setattr__(self, 'diag', diag)
         object.__setattr__(self, 'mesh', mesh)
-        object.__setattr__(self, 'n_local', n_local)
+        object.__setattr__(self, 'n_total', n_total)
         object.__setattr__(self, 'in_structure', models.map_structure)
 
     def mv(self, x: PyTree) -> PyTree:
-        n_local = self.n_local
-        diag = self.diag
-
-        # check_vma=False: furax operator chain inside the body lacks manual-axis annotations.
-        @jax.shard_map(mesh=self.mesh, in_specs=(P('obs'), P()), out_specs=P(), check_vma=False)
-        def f(local_models: ObservationModel, local_x: PyTree) -> PyTree:
-            result = _scan_system_mv(local_models, n_local, diag, local_x)
-            return jax.lax.psum(result, axis_name='obs')
-
-        return f(self.models, x)
+        H = ScanBlockColumnOperator(self.models.H, self.n_total)
+        M = ScanBlockDiagonalOperator(self.models.masker, self.n_total)
+        weight = self.models.diag_W() if self.diag else self.models.W
+        W = ScanBlockDiagonalOperator(weight, self.n_total)
+        A = (H.T @ M @ W @ M @ H).reduce()  # -> ScanAdditionOperator
+        # ScanAddition sums the 'obs' leading axis; constraint triggers cross-device all-reduce.
+        return jax.lax.with_sharding_constraint(A(x), NamedSharding(self.mesh, P()))
 
 
 def get_obs_distribution_to_process(

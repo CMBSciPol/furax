@@ -13,6 +13,7 @@ from furax.mapmaking import (
     MultiObservationMapMaker,
     ObservationReader,
 )
+from furax.mapmaking._model import pad_model
 from furax.mapmaking.config import (
     HealpixConfig,
     LandscapeConfig,
@@ -177,7 +178,8 @@ class TestMultiObsMapMaker:
         observations = _observations(name, demodulated)
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        model = maker.distribute(maker.build_model())
+        n_pad = maker.obs_distribution[2]
+        model = maker.distribute(pad_model(maker.build_model(), n_pad))
         indices = maker.distribute(maker.get_padded_read_indices())
         reader = maker.get_reader(['metadata', 'sample_data'])
         rhs = maker.accumulate_rhs(model, indices, reader)
@@ -187,7 +189,8 @@ class TestMultiObsMapMaker:
         observations = _observations(name, demodulated)
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        blocks = maker.distribute(maker.build_model())
+        n_pad = maker.obs_distribution[2]
+        blocks = maker.distribute(pad_model(maker.build_model(), n_pad))
         hits = maker.accumulate_hits(blocks)
         assert hits.shape == maker.landscape.shape
         assert jnp.all(hits >= 0)

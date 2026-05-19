@@ -7,14 +7,14 @@ from ._likelihoods import (
 )
 from .operators import (
     AbstractSEDOperator,
+    BeamOperator,
+    BeamOperatorIQU,
     CMBOperator,
     DustOperator,
     HWPOperator,
     LinearPolarizerOperator,
     QURotationOperator,
     SynchrotronOperator,
-    BeamOperator,
-    BeamOperatorIQU,
 )
 from .pointing import PointingOperator
 

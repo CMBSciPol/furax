@@ -1,3 +1,4 @@
+from ._beam_operator import BeamOperator, BeamOperatorIQU
 from ._hwp import HWPOperator
 from ._polarizers import LinearPolarizerOperator
 from ._qu_rotations import QURotationOperator
@@ -9,7 +10,6 @@ from ._seds import (
     NoiseDiagonalOperator,
     SynchrotronOperator,
 )
-from ._beam_operator import BeamOperator, BeamOperatorIQU
 
 __all__ = [
     # _hwp

@@ -29,7 +29,7 @@ class Map2Alm(AbstractLinearOperator):
 
     Each leaf of the input PyTree must be a 2-D array of shape
     ``(nfreq, npix)``.  A 1-D leaf is silently promoted to ``(1, npix)`` via
-    ``jnp.atleast_2d``.  The transform are applied to all frequency rows, 
+    ``jnp.atleast_2d``.  The transform are applied to all frequency rows,
     via ``jhp.map2alm`` producing an output leaf of shape
     ``(nfreq, lmax+1, 2*lmax+1)``.
 
@@ -94,7 +94,7 @@ class Alm2Map(AbstractLinearOperator):
     Each leaf of the input PyTree must be a 2-D array of shape
     ``(nfreq, lmax+1, 2*lmax+1)``.  A 2-D leaf ``(lmax+1, 2*lmax+1)`` is
     silently reshaped to ``(1, lmax+1, 2*lmax+1)`` via ``reshape(-1, ...)``,
-    handling the single-frequency case without branching.  The transform are applied 
+    handling the single-frequency case without branching.  The transform are applied
     to all frequency rows, via ``jhp.alm2map`` producing an output leaf of shape
     ``(nfreq, npix)`` where ``npix = 12 * nside ** 2``.
 

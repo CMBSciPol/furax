@@ -161,6 +161,31 @@ class TestBeamOperator:
         """Inverse operator must carry the same lmax."""
         assert beam_op.I.lmax == beam_op.lmax
 
+    def test_1d_input_preserves_rank(self):
+        """A 1-D (npix,) leaf in_structure must yield a 1-D output leaf.
+
+        The operator is tagged @symmetric, which requires
+        out_structure == in_structure. Internally mv round-trips through
+        Map2Alm/Alm2Map which promote rank-1 to rank-2, so we must squeeze
+        the leading axis to honour the symmetry contract.
+        """
+        structure_1d = StokesIQU.structure_for((NPIX,), jnp.float64)
+        beam_fl = jnp.ones(LMAX + 1)
+        op = BeamOperator(lmax=LMAX, beam_fl=beam_fl, in_structure=structure_1d)
+        key = jax.random.PRNGKey(0)
+        x = StokesIQU(
+            i=jax.random.normal(key, (NPIX,)),
+            q=jax.random.normal(jax.random.fold_in(key, 1), (NPIX,)),
+            u=jax.random.normal(jax.random.fold_in(key, 2), (NPIX,)),
+        )
+        out = op(x)
+        for leaf in jax.tree.leaves(out):
+            assert leaf.shape == (NPIX,)
+        # @symmetric demands out_structure == in_structure; that requires
+        # mv to preserve rank, which we now verify by reading the traced
+        # output shape too.
+        assert op.out_structure == op.in_structure
+
 
 class TestBeamOperatorIQU:
     """Tests for BeamOperatorIQU."""
@@ -214,6 +239,23 @@ class TestBeamOperatorIQU:
     def test_inverse_returns_beam_operatoriqu(self, beam_iqu_op):
         """BeamOperatorIQU.I must return a BeamOperatorIQU instance."""
         assert isinstance(beam_iqu_op.I, BeamOperatorIQU)
+
+    def test_1d_input_preserves_rank(self):
+        """A 1-D (npix,) leaf in_structure must yield a 1-D output leaf."""
+        structure_1d = StokesIQU.structure_for((NPIX,), jnp.float64)
+        fl = jnp.ones((1, LMAX + 1))
+        beam_fl = StokesIQU(i=fl, q=fl, u=fl)
+        op = BeamOperatorIQU(lmax=LMAX, beam_fl=beam_fl, in_structure=structure_1d)
+        key = jax.random.PRNGKey(0)
+        x = StokesIQU(
+            i=jax.random.normal(key, (NPIX,)),
+            q=jax.random.normal(jax.random.fold_in(key, 1), (NPIX,)),
+            u=jax.random.normal(jax.random.fold_in(key, 2), (NPIX,)),
+        )
+        out = op(x)
+        for leaf in jax.tree.leaves(out):
+            assert leaf.shape == (NPIX,)
+        assert op.out_structure == op.in_structure
 
     def test_agrees_with_beam_operator_when_beams_are_equal(
         self, map_structure, random_maps, flat_beam_fl

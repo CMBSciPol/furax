@@ -87,18 +87,20 @@ class BeamOperator(AbstractLinearOperator):
     """
 
     lmax: int
-    beam_fl: Float[Array, 'ab']
+    beam_fl: Float[Array, '...']
 
     def mv(self, x: PyTree[Inexact[Array, 'nfreq npix']]) -> PyTree[Inexact[Array, 'nfreq npix']]:
         """Apply the beam to input sky maps.
 
         Args:
-            x: Input PyTree whose leaves have shape ``(nfreq, npix)``.
+            x: Input PyTree whose leaves have shape ``(nfreq, npix)`` or ``(npix,)``
+                for a single-frequency input.
 
         Returns:
             Beam-smoothed PyTree with the same structure and leaf shapes as *x*.
         """
         first_leaf = jax.tree_util.tree_leaves(x)[0]
+        input_is_1d = first_leaf.ndim == 1
         first_leaf = jnp.atleast_2d(first_leaf)  # (nfreq, npix)
         nside = jhp.npix2nside(first_leaf.shape[-1])
 
@@ -109,7 +111,10 @@ class BeamOperator(AbstractLinearOperator):
         fl = jnp.broadcast_to(jnp.atleast_2d(self.beam_fl), (nfreq, self.lmax + 1))
         alm_beam = jax.tree.map(lambda alm_leaf: _apply_fl_to_alm_leaf(alm_leaf, fl), alm)
 
-        return Alm2Map(lmax=self.lmax, nside=nside, in_structure=map2alm.out_structure).mv(alm_beam)
+        out = Alm2Map(lmax=self.lmax, nside=nside, in_structure=map2alm.out_structure).mv(alm_beam)
+        if input_is_1d:
+            out = jax.tree.map(lambda leaf: jnp.squeeze(leaf, axis=0), out)
+        return out
 
     def inverse(self) -> 'BeamOperator':
         """Return a :class:`BeamOperator` with the reciprocal transfer function.
@@ -157,19 +162,21 @@ class BeamOperatorIQU(AbstractLinearOperator):
     """
 
     lmax: int
-    beam_fl: PyTree[Float[Array, 'ab']]
+    beam_fl: PyTree[Float[Array, 'nfreq lp1']]
 
     def mv(self, x: PyTree[Inexact[Array, 'nfreq npix']]) -> PyTree[Inexact[Array, 'nfreq npix']]:
         """Apply per-Stokes beams to input sky maps.
 
         Args:
-            x: Input PyTree whose leaves have shape ``(nfreq, npix)``.  The
-                PyTree structure must match that of ``self.beam_fl``.
+            x: Input PyTree whose leaves have shape ``(nfreq, npix)`` or ``(npix,)``
+                for a single-frequency input. The PyTree structure must match that
+                of ``self.beam_fl``.
 
         Returns:
             Beam-smoothed PyTree with the same structure and leaf shapes as *x*.
         """
         first_leaf = jax.tree_util.tree_leaves(x)[0]
+        input_is_1d = first_leaf.ndim == 1
         first_leaf = jnp.atleast_2d(first_leaf)  # (nfreq, npix)
         nside = jhp.npix2nside(first_leaf.shape[-1])
 
@@ -177,7 +184,10 @@ class BeamOperatorIQU(AbstractLinearOperator):
         alm = map2alm.mv(x)
 
         alm_beam = jax.tree.map(_apply_fl_to_alm_leaf, alm, self.beam_fl)
-        return Alm2Map(lmax=self.lmax, nside=nside, in_structure=map2alm.out_structure).mv(alm_beam)
+        out = Alm2Map(lmax=self.lmax, nside=nside, in_structure=map2alm.out_structure).mv(alm_beam)
+        if input_is_1d:
+            out = jax.tree.map(lambda leaf: jnp.squeeze(leaf, axis=0), out)
+        return out
 
     def inverse(self) -> 'BeamOperatorIQU':
         """Return a :class:`BeamOperatorIQU` with per-Stokes reciprocal transfer functions.

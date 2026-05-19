@@ -358,16 +358,19 @@ def accumulate_hits(model: ObservationModel, mesh: Mesh) -> Int64[Array, '...']:
     assert isinstance(model.H, CompositionOperator)  # mypy
     pointing = model.H.operands[-1]
     assert isinstance(pointing, PointingOperator)  # mypy
-    n_total = jax.tree.leaves(model.masker)[0].shape[0]
     pointing_i = pointing.as_stokes_i(interpolate=False)
-    out_sharding = NamedSharding(mesh, P())  # output of computation should be replicated
-    P_op_T = ScanBlockRowOperator(pointing_i.T, n_total, out_sharding)
-    M_op = ScanBlockDiagonalOperator(model.masker, n_total)
-    # sharded vector of ones
-    ones = furax.tree.ones_like(M_op.in_structure)
-    ones = jax.lax.with_sharding_constraint(ones, NamedSharding(mesh, P('obs')))
-    masked_i = jax.tree.leaves(M_op(ones))[0]
-    return jnp.int64(P_op_T(StokesI(masked_i)).i)  # type: ignore[no-any-return]
+    # per-obs ones: small (n_det, n_samp), no full (n_total, ...) buffer created
+    per_obs_ones = furax.tree.ones_like(model.masker.in_structure)
+
+    def step(carry, args):  # type: ignore[no-untyped-def]
+        p_i, m_i = args
+        masked_i = jax.tree.leaves(m_i(per_obs_ones))[0]
+        return carry + jnp.int64(p_i.T(StokesI(masked_i)).i), None
+
+    map_shape = jax.tree.leaves(pointing_i.in_structure)[0].shape
+    hits, _ = jax.lax.scan(step, jnp.zeros(map_shape, jnp.int64), (pointing_i, model.masker))
+    # each device accumulates its local obs; all-reduce to replicated global hits
+    return jax.lax.with_sharding_constraint(hits, NamedSharding(mesh, P()))  # type: ignore[no-any-return]
 
 
 @jax.jit(static_argnames=('config', 'mesh'))

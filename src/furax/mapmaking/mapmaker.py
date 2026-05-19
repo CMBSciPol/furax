@@ -18,7 +18,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils as mhu
-from jax.sharding import AxisType, Mesh, NamedSharding
+from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
@@ -101,7 +101,7 @@ class MultiObservationMapMaker(Generic[T]):
 
     @cached_property
     def mesh(self) -> Mesh:
-        return jax.make_mesh((jax.device_count(),), ('obs',), axis_types=(AxisType.Auto,))
+        return jax.make_mesh((jax.device_count(),), ('obs',))
 
     @property
     def sharding(self) -> NamedSharding:
@@ -234,36 +234,38 @@ class MultiObservationMapMaker(Generic[T]):
         icov = BJ.get_blocks().block_until_ready()
         logger_info('Computed white noise inverse covariance')
 
-        # Pixel selection
-        valid_pixels = self.pixel_selection(hits, icov)
-        selector = IndexOperator(jnp.where(valid_pixels), in_structure=model.map_structure)
-        n_selected = jnp.sum(valid_pixels)
-        n_observed = jnp.sum(hits > 0)
-        n_total = valid_pixels.size
-        logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
+        # Pixel selection and solve: eager ops on sharded arrays need mesh context.
+        # init in ScanBlock operators created inside shard_map to avoid closure issues.
+        with jax.set_mesh(self.mesh):
+            valid_pixels = self.pixel_selection(hits, icov)
+            selector = IndexOperator(jnp.where(valid_pixels), in_structure=model.map_structure)
+            n_selected = jnp.sum(valid_pixels)
+            n_observed = jnp.sum(hits > 0)
+            n_total = valid_pixels.size
+            logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
 
-        hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
-        icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
+            hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
+            icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
-        # Solve the mapmaking system
-        solver = lineax.CG(**asdict(self.config.solver))
-        spd = OperatorTag.POSITIVE_SEMIDEFINITE
-        lx_system = as_lineax_operator(selector @ A @ selector.T, spd)
-        M = (selector @ BJ.I @ selector.T).reduce()  # preconditioner
-        lx_precond = as_lineax_operator(M, spd)
-        rhs_reduced = selector(rhs)
-        y0 = M(rhs_reduced)
+            # Solve the mapmaking system
+            solver = lineax.CG(**asdict(self.config.solver))
+            spd = OperatorTag.POSITIVE_SEMIDEFINITE
+            lx_system = as_lineax_operator(selector @ A @ selector.T, spd)
+            M = (selector @ BJ.I @ selector.T).reduce()  # preconditioner
+            lx_precond = as_lineax_operator(M, spd)
+            rhs_reduced = selector(rhs)
+            y0 = M(rhs_reduced)
 
-        solution = lineax.linear_solve(
-            lx_system,
-            rhs_reduced,
-            solver=solver,
-            options={'preconditioner': lx_precond, 'y0': y0},
-            throw=False,
-        )
-        estimate = selector.T(solution.value)
-        num_steps = solution.stats['num_steps']
-        logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
+            solution = lineax.linear_solve(
+                lx_system,
+                rhs_reduced,
+                solver=solver,
+                options={'preconditioner': lx_precond, 'y0': y0},
+                throw=False,
+            )
+            estimate = selector.T(solution.value)
+            num_steps = solution.stats['num_steps']
+            logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
         return MapMakingResults(
             map=estimate,
             icov=icov,
@@ -359,18 +361,28 @@ def accumulate_hits(model: ObservationModel, mesh: Mesh) -> Int64[Array, '...']:
     pointing = model.H.operands[-1]
     assert isinstance(pointing, PointingOperator)  # mypy
     pointing_i = pointing.as_stokes_i(interpolate=False)
-    # per-obs ones: small (n_det, n_samp), no full (n_total, ...) buffer created
-    per_obs_ones = furax.tree.ones_like(model.masker.in_structure)
 
-    def step(carry, args):  # type: ignore[no-untyped-def]
-        p_i, m_i = args
-        masked_i = jax.tree.leaves(m_i(per_obs_ones))[0]
-        return carry + jnp.int64(p_i.T(StokesI(masked_i)).i), None
+    obs_sharding = NamedSharding(mesh, P('obs'))
+    pointing_i = jax.tree.map(lambda a: jax.reshard(a, obs_sharding), pointing_i)
+    masker = jax.tree.map(lambda a: jax.reshard(a, obs_sharding), model.masker)
 
-    map_shape = jax.tree.leaves(pointing_i.in_structure)[0].shape
-    hits, _ = jax.lax.scan(step, jnp.zeros(map_shape, jnp.int64), (pointing_i, model.masker))
-    # each device accumulates its local obs; all-reduce to replicated global hits
-    return jax.lax.with_sharding_constraint(hits, NamedSharding(mesh, P()))  # type: ignore[no-any-return]
+    @jax.shard_map(mesh=mesh, in_specs=(P('obs'), P('obs')), out_specs=P(), check_vma=False)
+    def hits_kernel(
+        pointing_i: PointingOperator, masker: AbstractLinearOperator
+    ) -> Int64[Array, '...']:
+        map_shape = jax.tree.leaves(pointing_i.in_structure)[0].shape
+        init = jnp.zeros(map_shape, jnp.int64)
+        per_obs_ones = furax.tree.ones_like(masker.in_structure)
+
+        def step(carry, args):  # type: ignore[no-untyped-def]
+            p_i, m_i = args
+            masked_i = jax.tree.leaves(m_i(per_obs_ones))[0]
+            return carry + jnp.int64(p_i.T(StokesI(masked_i)).i), None
+
+        hits, _ = jax.lax.scan(step, init, (pointing_i, masker))
+        return jax.lax.psum(hits, axis_name='obs')  # type: ignore[no-any-return]
+
+    return hits_kernel(pointing_i, masker)
 
 
 @jax.jit(static_argnames=('config', 'mesh'))
@@ -381,26 +393,35 @@ def accumulate_rhs(
     config: MapMakingConfig,
     mesh: Mesh,
 ) -> StokesPyTreeType:
+    obs_sharding = NamedSharding(mesh, P('obs'))
+    model = jax.tree.map(lambda a: jax.reshard(a, obs_sharding), model)
+    read_indices = jax.reshard(read_indices, obs_sharding)
 
-    def step(carry: StokesPyTreeType, args: Any) -> tuple[StokesPyTreeType, None]:
-        obs, i = args
-        data, _ = reader.read(i)
-        tod = data['sample_data']
-        if config.gaps.fill and not config.binned:
-            N = obs.noise_operator(config.noise.correlation_length, inverse=False)
-            tod = GapFillingOperator(
-                N,
-                obs._get_indexer(),
-                data['metadata'],
-                obs.W,
-                rate=obs.sample_rate,
-                max_cg_steps=config.gaps.fill_options.max_steps,
-                rtol=config.gaps.fill_options.rtol,
-            )(jax.random.key(config.gaps.fill_options.seed), tod)
-        return furax.tree.add(carry, obs.H.T(obs.masker(obs.W(tod)))), None
+    @jax.shard_map(mesh=mesh, in_specs=(P('obs'), P('obs')), out_specs=P(), check_vma=False)
+    def rhs_kernel(model: ObservationModel, indices: Array) -> StokesPyTreeType:
+        init = furax.tree.zeros_like(model.map_structure)
 
-    rhs, _ = jax.lax.scan(step, furax.tree.zeros_like(model.map_structure), (model, read_indices))
-    return jax.lax.with_sharding_constraint(rhs, NamedSharding(mesh, P()))  # type: ignore[no-any-return]
+        def step(carry: StokesPyTreeType, args: Any) -> tuple[StokesPyTreeType, None]:
+            obs, i = args
+            data, _ = reader.read(i)
+            tod = data['sample_data']
+            if config.gaps.fill and not config.binned:
+                N = obs.noise_operator(config.noise.correlation_length, inverse=False)
+                tod = GapFillingOperator(
+                    N,
+                    obs._get_indexer(),
+                    data['metadata'],
+                    obs.W,
+                    rate=obs.sample_rate,
+                    max_cg_steps=config.gaps.fill_options.max_steps,
+                    rtol=config.gaps.fill_options.rtol,
+                )(jax.random.key(config.gaps.fill_options.seed), tod)
+            return furax.tree.add(carry, obs.H.T(obs.masker(obs.W(tod)))), None
+
+        rhs, _ = jax.lax.scan(step, init, (model, indices))
+        return jax.lax.psum(rhs, axis_name='obs')  # type: ignore[no-any-return]
+
+    return rhs_kernel(model, read_indices)
 
 
 def get_obs_distribution_to_process(

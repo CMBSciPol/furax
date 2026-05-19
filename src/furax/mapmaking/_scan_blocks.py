@@ -4,6 +4,7 @@ from dataclasses import field
 import jax
 from jax import Array
 from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Inexact, PyTree
 
 from furax import AbstractLinearOperator, tree
@@ -102,16 +103,35 @@ class ScanBlockRowOperator(AbstractScanBlockOperator):
         return self.blocks.out_structure
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
-        init = tree.zeros_like(self.blocks.out_structure)
+        out_structure = self.blocks.out_structure
 
-        def step(carry, args):  # type: ignore[no-untyped-def]
-            op, x_i = args
-            return tree.add(carry, op.mv(x_i)), None
+        if self.output_sharding is None:
+            init = tree.zeros_like(out_structure)
 
-        out, _ = jax.lax.scan(step, init, (self.blocks, x))
-        if self.output_sharding is not None:
-            out = jax.lax.with_sharding_constraint(out, self.output_sharding)
-        return out
+            def step(carry, args):  # type: ignore[no-untyped-def]
+                op, x_i = args
+                return tree.add(carry, op.mv(x_i)), None
+
+            out, _ = jax.lax.scan(step, init, (self.blocks, x))
+            return out
+
+        mesh = self.output_sharding.mesh
+        obs_sharding = NamedSharding(mesh, P('obs'))
+        blocks = jax.tree.map(lambda a: jax.reshard(a, obs_sharding), self.blocks)
+        x = jax.tree.map(lambda a: jax.reshard(a, obs_sharding), x)
+
+        @jax.shard_map(mesh=mesh, in_specs=(P('obs'), P('obs')), out_specs=P(), check_vma=False)
+        def local_mv(local_blocks: AbstractLinearOperator, local_x: PyTree) -> PyTree:
+            init = tree.zeros_like(out_structure)
+
+            def step(carry, args):  # type: ignore[no-untyped-def]
+                op, x_i = args
+                return tree.add(carry, op.mv(x_i)), None
+
+            out, _ = jax.lax.scan(step, init, (local_blocks, local_x))
+            return jax.lax.psum(out, axis_name='obs')
+
+        return local_mv(blocks, x)
 
     def transpose(self) -> AbstractLinearOperator:
         return ScanBlockColumnOperator(self.blocks.T, self.n_blocks)
@@ -144,15 +164,32 @@ class ScanAdditionOperator(AbstractScanBlockOperator):
         return self.blocks.out_structure
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
-        init = tree.zeros_like(self.blocks.out_structure)
+        out_structure = self.blocks.out_structure
 
-        def step(carry, op):  # type: ignore[no-untyped-def]
-            return tree.add(carry, op.mv(x)), None
+        if self.output_sharding is None:
+            init = tree.zeros_like(out_structure)
 
-        out, _ = jax.lax.scan(step, init, self.blocks)
-        if self.output_sharding is not None:
-            out = jax.lax.with_sharding_constraint(out, self.output_sharding)
-        return out
+            def step(carry, op):  # type: ignore[no-untyped-def]
+                return tree.add(carry, op.mv(x)), None
+
+            out, _ = jax.lax.scan(step, init, self.blocks)
+            return out
+
+        mesh = self.output_sharding.mesh
+        obs_sharding = NamedSharding(mesh, P('obs'))
+        blocks = jax.tree.map(lambda a: jax.reshard(a, obs_sharding), self.blocks)
+
+        @jax.shard_map(mesh=mesh, in_specs=(P('obs'), P()), out_specs=P(), check_vma=False)
+        def local_mv(local_blocks: AbstractLinearOperator, local_x: PyTree) -> PyTree:
+            init = tree.zeros_like(out_structure)
+
+            def step(carry, op):  # type: ignore[no-untyped-def]
+                return tree.add(carry, op.mv(local_x)), None
+
+            out, _ = jax.lax.scan(step, init, local_blocks)
+            return jax.lax.psum(out, axis_name='obs')
+
+        return local_mv(blocks, x)
 
     def transpose(self) -> AbstractLinearOperator:
         return ScanAdditionOperator(self.blocks.T, self.n_blocks, self.output_sharding)

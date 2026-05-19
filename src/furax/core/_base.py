@@ -484,8 +484,8 @@ class CompositionOperator(AbstractLinearOperator):
         if self.out_structure != other.in_structure:
             msg = (
                 f'Incompatible linear operator structures: '
-                f'self.in_structure={self.in_structure}, '
-                f'other.out_structure={other.out_structure}'
+                f'self.out_structure={self.out_structure}, '
+                f'other.in_structure={other.in_structure}'
             )
             raise ValueError(msg)
         return CompositionOperator([other] + self.operands)

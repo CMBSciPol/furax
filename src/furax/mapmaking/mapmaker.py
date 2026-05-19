@@ -160,7 +160,7 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Build stacked ObservationModel
         model = self.build_model()
-        logger_info('Created system operator')
+        logger_info('Created system operators')
 
         hits = self.accumulate_hits(model).block_until_ready()
         logger_info('Computed hit map')

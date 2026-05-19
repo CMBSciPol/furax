@@ -1,11 +1,12 @@
 from collections.abc import Sequence
 from hashlib import sha1
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Self, TypeVar
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from jax.experimental import multihost_utils as mhu
 from jax.tree_util import register_static
 from jaxtyping import PyTree, UInt32
 
@@ -44,35 +45,98 @@ class ObservationReader(AbstractReader, Generic[T]):
 
     def __init__(
         self,
+        *args: Sequence[Any],
+        demodulated: bool,
+        stokes: ValidStokesType,
+        common_keywords: dict[str, Any] | None = None,
+        structures: list[PyTree[jax.ShapeDtypeStruct]] | None = None,
+        **keywords: Sequence[Any],
+    ) -> None:
+        # Set before super().__init__ so _read_structure_impure can use them
+        self.demodulated = demodulated
+        self.stokes = stokes
+        super().__init__(*args, common_keywords=common_keywords, structures=structures, **keywords)
+
+    @classmethod
+    def from_observations(
+        cls,
         observations: Sequence[AbstractLazyObservation[T]],
         *,
-        requested_fields: list[str] | None = None,
+        read_indices: Sequence[int] | None = None,
+        requested_fields: Sequence[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
-    ) -> None:
-        """Initializes the reader with a list of filenames and optional list of field names.
+    ) -> Self:
+        """Create a reader, performing I/O to infer data structures.
 
         Args:
-            filenames: A list of filenames. Each filename can be a string or a Path object.
+            observations: Full list of lazy observations.
+            subset_indices: Optional indices into ``observations``; when set, only
+                those are opened on this process to infer shapes, and shapes are
+                synchronised across processes (distributed-mode shortcut).
             requested_fields: Optional list of fields to load. If None, read all non-optional fields.
             demodulated: Whether to read demodulated TODs.
             stokes: Stokes components to read when demodulated.
         """
-        self.demodulated = demodulated
-        self.stokes = stokes
+        fields = cls._resolve_fields(observations, requested_fields)
+        common_keywords = {'data_field_names': fields}
+        if read_indices is None:
+            # Default path: AbstractReader.__init__ will call _read_structures(),
+            # opening every observation on this process to infer its structure.
+            return cls(
+                list(observations),
+                common_keywords=common_keywords,
+                demodulated=demodulated,
+                stokes=stokes,
+            )
+
+        # Distributed-mode shortcut. Each process opens only its subset; an
+        # all-gather then makes every rank agree on the full structures list so
+        # padding / out_structure / etc. are consistent. Bypasses the superclass's
+        # per-item I/O by passing the assembled `structures` directly.
+        def _shape(idx: int) -> tuple[int, int, int]:
+            data = observations[idx].get_data([])
+            return idx, data.n_detectors, data.n_samples
+
+        local_shapes = np.array([_shape(idx) for idx in read_indices], dtype=np.int64)
+
+        # All-gather → (n_procs * n_local, 3). Padding (see ``get_padded_indices``,
+        # which uses ``np.pad(..., mode='edge')``) makes some indices repeat across
+        # ranks; keep only one entry per obs index.
+        all_shapes = mhu.process_allgather(local_shapes).reshape(-1, 3)
+        by_idx = {int(idx): (int(n_det), int(n_samp)) for idx, n_det, n_samp in all_shapes}
+
+        def _struct_for(n_det: int, n_samp: int) -> PyTree[jax.ShapeDtypeStruct]:
+            field_struct = cls._get_data_field_structures_for(
+                n_det, n_samp, demodulated=demodulated, stokes=stokes
+            )
+            return {field: field_struct[field] for field in fields}
+
+        structures = [_struct_for(*by_idx[idx]) for idx in sorted(by_idx)]
+        return cls(
+            list(observations),
+            common_keywords=common_keywords,
+            demodulated=demodulated,
+            stokes=stokes,
+            structures=structures,
+        )
+
+    @staticmethod
+    def _resolve_fields(
+        observations: Sequence[AbstractLazyObservation[T]],
+        requested_fields: Sequence[str] | None,
+    ) -> list[str]:
         interface = observations[0].interface_class
         available = set(interface.AVAILABLE_READER_FIELDS)
         optional = set(interface.OPTIONAL_READER_FIELDS)
         if requested_fields is None:
-            fields = available - optional
-        else:
-            fields = set(requested_fields)
-            unsupported = fields - available
-            if len(unsupported) > 0:
-                msg = f'Requested data fields {unsupported} are not supported by the interface.'
-                raise ValueError(msg)
-
-        super().__init__(observations, common_keywords={'data_field_names': list(fields)})
+            return sorted(available - optional)
+        unsupported = set(requested_fields) - available
+        if unsupported:
+            raise ValueError(
+                f'Requested data fields {unsupported} are not supported by the interface.'
+            )
+        return list(requested_fields)
 
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
         """Reads one ground observation from the list of filenames specified in the reader.
@@ -152,12 +216,14 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         return data, padding
 
+    @staticmethod
     def _get_data_field_structures_for(
-        self, n_detectors: int, n_samples: int
+        n_detectors: int,
+        n_samples: int,
+        *,
+        demodulated: bool,
+        stokes: ValidStokesType,
     ) -> PyTree[jax.ShapeDtypeStruct]:
-        demodulated = self.demodulated
-        stokes = self.stokes
-
         tod_shape = (n_detectors, n_samples)
         sample_data_structure = (
             Stokes.class_for(stokes).structure_for(tod_shape, jnp.float64)
@@ -230,13 +296,11 @@ class ObservationReader(AbstractReader, Generic[T]):
         # request an empty list
         # this loads sufficient info to determine the structure
         data = observation.get_data([])
-
-        # find the data shape
-        n_detectors = data.n_detectors
-        n_samples = data.n_samples
-
         field_structure = self._get_data_field_structures_for(
-            n_detectors=n_detectors, n_samples=n_samples
+            data.n_detectors,
+            data.n_samples,
+            demodulated=self.demodulated,
+            stokes=self.stokes,
         )
         return {field: field_structure[field] for field in data_field_names}
 

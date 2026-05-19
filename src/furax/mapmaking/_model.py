@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 import jax
 import jax.numpy as jnp
@@ -44,7 +44,7 @@ class ObservationModel:
     @classmethod
     def create(
         cls, data: Any, padding: Any, config: MapMakingConfig, landscape: StokesLandscape
-    ) -> 'ObservationModel':
+    ) -> Self:
         H = build_acquisition_operator(
             landscape,
             data['boresight_quaternions'],
@@ -108,6 +108,26 @@ class ObservationModel:
         else:
             raise NotImplementedError
         return IndexOperator(mask, in_structure=self.tod_structure)
+
+
+def pad_model(models: ObservationModel, n_pad: int) -> ObservationModel:
+    """Pad models with n_pad dummy observations that contribute nothing to sums.
+
+    The dummy observations are copies of the last real observation with their
+    masker array leaves zeroed out, so masker(x) = 0 for any x.
+    """
+    if n_pad == 0:
+        return models
+    last = jax.tree.map(lambda a: jnp.repeat(a[-1:], n_pad, axis=0), models)
+    zero_masker = jax.tree.map(jnp.zeros_like, last.masker)
+    padded = ObservationModel(
+        H=last.H,
+        W=last.W,
+        masker=zero_masker,
+        noise_model=last.noise_model,
+        sample_rate=last.sample_rate,
+    )
+    return jax.tree.map(lambda a, b: jnp.concatenate([a, b], axis=0), models, padded)  # type: ignore[no-any-return]
 
 
 def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel], Array]:

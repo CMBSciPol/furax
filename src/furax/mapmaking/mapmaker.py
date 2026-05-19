@@ -1,7 +1,8 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
+from functools import cached_property
 from logging import Logger
 from math import prod
 from pathlib import Path
@@ -16,10 +17,13 @@ import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer
+from jax.experimental import multihost_utils as mhu
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
+from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
 import furax.linalg
-import furax.tree as tree
+import furax.tree
 from furax import (
     AbstractLinearOperator,
     Config,
@@ -28,6 +32,7 @@ from furax import (
     MaskOperator,
     OperatorTag,
     SymmetricBandToeplitzOperator,
+    symmetric,
 )
 from furax.core import BlockDiagonalOperator, BlockRowOperator, CompositionOperator, IndexOperator
 from furax.interfaces.lineax import as_lineax_operator
@@ -44,7 +49,7 @@ from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesPyTreeType, Valid
 from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel
+from ._model import ObservationModel, pad_model
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
@@ -95,6 +100,43 @@ class MultiObservationMapMaker(Generic[T]):
                     landscape=replace(self.config.landscape, stokes='QU'),
                 )
 
+    @cached_property
+    def mesh(self) -> Mesh:
+        return jax.make_mesh((jax.device_count(),), ('obs',))
+
+    @property
+    def sharding(self) -> NamedSharding:
+        return NamedSharding(self.mesh, P('obs'))
+
+    def distribute(self, x: PyTree) -> PyTree:
+        """Shard a pytree of process-local arrays along the leading 'obs' axis."""
+        return jax.tree.map(lambda a: jax.make_array_from_process_local_data(self.sharding, a), x)
+
+    @property
+    def obs_distribution(self) -> tuple[int, int, int]:
+        """``(start, n_owned, n_pad)`` for this process."""
+        return get_obs_distribution_to_process(self.n_observations)
+
+    def get_read_indices(self) -> np.ndarray:
+        start, n_owned, _ = self.obs_distribution
+        return np.arange(start, start + n_owned)
+
+    def get_padded_read_indices(self) -> np.ndarray:
+        _, _, n_pad = self.obs_distribution
+        return np.pad(self.get_read_indices(), (0, n_pad), mode='edge')
+
+    def get_reader(self, required_fields: Sequence[str]) -> ObservationReader[T]:
+        """Build an ObservationReader for this process's local observations."""
+        # Pass padded indices: process_allgather inside from_observations needs every
+        # rank to send the same shape, so all ranks must report the same obs count.
+        return ObservationReader.from_observations(
+            self.observations,
+            read_indices=tuple(self.get_padded_read_indices()),
+            requested_fields=required_fields,
+            demodulated=self.config.demodulated,
+            stokes=self.config.landscape.stokes,
+        )
+
     def _scan_wcs_footprint(self) -> WCSLandscape:
         """Scan observations to determine the combined WCS footprint and build a WCSLandscape.
 
@@ -135,37 +177,55 @@ class MultiObservationMapMaker(Generic[T]):
         """Runs the mapmaker and return results after saving them to the given directory."""
         results = self.make_maps()
 
-        # Save outputs
-        if out_dir is not None:
+        # Save outputs on process 0 only (all processes hold the same replicated result)
+        if out_dir is not None and jax.process_index() == 0:
             out_dir = Path(out_dir)
             results.save(out_dir)
             self.logger.info(f'saved results to {out_dir}')
             self.config.dump_yaml(out_dir / 'mapmaking_config.yaml')
             self.logger.info('saved mapmaking configuration to file')
 
+        # Barrier so other ranks don't race ahead while rank 0 is still writing.
+        mhu.sync_global_devices('mapmaker.run.save_done')
+
         return results
 
-    def get_reader(self, data_field_names: list[str]) -> ObservationReader[T]:
-        """Returns a reader for a list of requested fields."""
-        return ObservationReader(
-            self.observations,
-            requested_fields=data_field_names,
-            demodulated=self.config.demodulated,
-            stokes=self.config.landscape.stokes,
-        )
+    @property
+    def n_observations(self) -> int:
+        """Total number of observations across all processes."""
+        return len(self.observations)
 
     def make_maps(self) -> MapMakingResults:
         """Computes the mapmaker results (maps and other products)."""
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
 
-        # Build stacked ObservationModel
-        model = self.build_model()
+        n_processes = jax.process_count()
+        rank = jax.process_index()
+        n_local_devices = jax.local_device_count()
+        n_devices = jax.device_count()
+        start, n_owned, n_pad = self.obs_distribution
+        n_per_proc = n_owned + n_pad
+        n_per_dev = n_per_proc // n_local_devices
+        logger_info(
+            f'Layout: {n_processes} process(es) x {n_local_devices} local device(s) = {n_devices} total'
+        )
+        logger_info(
+            f'Observations: {self.n_observations} real, {n_per_proc * n_processes} after padding '
+            f'({n_per_proc} per process, {n_per_dev} per device)'
+        )
+        logger_info(
+            f'Rank {rank}: owns obs[{start}:{start + n_owned}] ({n_owned} real + {n_pad} padding)'
+        )
+
+        model = self.distribute(self.build_model())
+        read_indices = self.distribute(self.get_padded_read_indices())
         logger_info('Created system operators')
 
-        hits = self.accumulate_hits(model).block_until_ready()
+        hits = jax.jit(self.accumulate_hits)(model).block_until_ready()
         logger_info('Computed hit map')
 
-        rhs = jax.block_until_ready(self.accumulate_rhs(model))
+        rhs_reader = self.get_reader(['metadata', 'sample_data'])
+        rhs = jax.block_until_ready(jax.jit(self.accumulate_rhs)(model, read_indices, rhs_reader))
         logger_info('Accumulated RHS vector')
 
         # System operator (full/diagonal)
@@ -175,16 +235,18 @@ class MultiObservationMapMaker(Generic[T]):
         icov = BJ.get_blocks().block_until_ready()
         logger_info('Computed white noise inverse covariance')
 
-        # Pixel selection
-        valid_pixels = self.pixel_selection(hits, icov)
-        selector = IndexOperator(jnp.where(valid_pixels), in_structure=model.map_structure)
-        n_selected = jnp.sum(valid_pixels)
-        n_observed = jnp.sum(hits > 0)
-        n_total = valid_pixels.size
-        logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
+        # Pixel selection (post-processing under the mesh so eager ops on
+        # explicit-sharded arrays can dispatch in multi-process runs).
+        with jax.set_mesh(self.mesh):
+            valid_pixels = self.pixel_selection(hits, icov)
+            selector = IndexOperator(jnp.where(valid_pixels), in_structure=model.map_structure)
+            n_selected = jnp.sum(valid_pixels)
+            n_observed = jnp.sum(hits > 0)
+            n_total = valid_pixels.size
+            logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
 
-        hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
-        icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
+            hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
+            icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
         # Solve the mapmaking system
         solver = lineax.CG(**asdict(self.config.solver))
@@ -214,7 +276,11 @@ class MultiObservationMapMaker(Generic[T]):
         )
 
     def build_model(self) -> ObservationModel:
-        # Only read necessary fields
+        """Build the local ObservationModel for this process.
+
+        Each process reads its owned observations and pads up to the uniform
+        per-process count.
+        """
         required_fields = [
             'boresight_quaternions',
             'detector_quaternions',
@@ -232,40 +298,91 @@ class MultiObservationMapMaker(Generic[T]):
             required_fields.append('noise_model_fits')
         if self.config.gaps.fill and not self.config.binned:
             required_fields.append('metadata')
+
         reader = self.get_reader(required_fields)
 
         def build_one(_, i):  # type: ignore[no-untyped-def]
             data, padding = reader.read(i)
             return None, ObservationModel.create(data, padding, self.config, self.landscape)
 
-        _, model = jax.lax.scan(build_one, None, jnp.arange(reader.count))
-        return model  # type: ignore[no-any-return]
+        _, model = jax.lax.scan(build_one, None, self.get_read_indices())
 
-    def accumulate_hits(self, model: ObservationModel) -> Int64[Array, ' pixels']:
-        """Accumulate hit counts across all observations."""
-        n = len(self.observations)
-        assert isinstance(model.H, CompositionOperator)  # mypy assert
-        # pointing operator is the last operand of the acquisition chain (see unit test)
-        pointing = model.H.operands[-1]
-        assert isinstance(pointing, PointingOperator)  # mypy assert
-        P = ScanBlockColumnOperator(pointing.as_stokes_i(interpolate=False), n)
-        M = ScanBlockDiagonalOperator(model.masker, n)
-        return _accumulate_hits(P, M)  # type: ignore[no-any-return]
+        _, _, n_pad = self.obs_distribution
+        return pad_model(model, n_pad)
 
-    def accumulate_rhs(self, model: ObservationModel) -> StokesPyTreeType:
-        """Accumulate the RHS vector across all observations."""
-        reader = self.get_reader(['metadata', 'sample_data'])
-        return _accumulate_rhs(model, reader, self.config)  # type: ignore[no-any-return]
+    @property
+    def n_per_device(self) -> int:
+        """Number of (real + padded) observations per device."""
+        _, n_owned, n_pad = self.obs_distribution
+        return (n_owned + n_pad) // jax.local_device_count()
+
+    def accumulate_hits(self, models: ObservationModel) -> Int64[Array, ' pixels']:
+        """Accumulate hit map across all observations using shard_map + ScanBlock operators."""
+        n_local = self.n_per_device
+
+        # check_vma=False: furax operator chain inside the body lacks manual-axis annotations.
+        @jax.shard_map(mesh=self.mesh, in_specs=P('obs'), out_specs=P(), check_vma=False)
+        def local_hits(local_models: ObservationModel) -> Int64[Array, ' pixels']:
+            assert isinstance(local_models.H, CompositionOperator)  # mypy assert
+            pointing = local_models.H.operands[-1]
+            assert isinstance(pointing, PointingOperator)  # mypy assert
+            P_op = ScanBlockColumnOperator(pointing.as_stokes_i(interpolate=False), n_local)
+            M_op = ScanBlockDiagonalOperator(local_models.masker, n_local)
+            ones = furax.tree.ones_like(M_op.in_structure)
+            masked_i = jax.tree.leaves(M_op(ones))[0]
+            hits = jnp.int64(P_op.T(StokesI(masked_i)).i)
+            return jax.lax.psum(hits, axis_name='obs')  # type: ignore[no-any-return]
+
+        return local_hits(models)
+
+    def accumulate_rhs(
+        self,
+        models: ObservationModel,
+        read_indices: Array,
+        reader: ObservationReader[T],
+    ) -> StokesPyTreeType:
+        """Accumulate the RHS vector across all observations.
+
+        Uses shard_map + scan with psum for multi-device execution. ``read_indices``
+        must be sharded along the same 'obs' axis as ``models`` (see
+        :meth:`distribute`). ``reader`` is passed in (rather than built here)
+        so this method stays jit-friendly — building the reader triggers an
+        all-gather that must run outside ``jax.jit``.
+        """
+        config = self.config
+        landscape = self.landscape
+
+        def step(carry: StokesPyTreeType, args: Any) -> tuple[StokesPyTreeType, None]:
+            obs, i = args
+            data, _ = reader.read(i)
+            tod = data['sample_data']
+            if config.gaps.fill and not config.binned:
+                N = obs.noise_operator(config.noise.correlation_length, inverse=False)
+                tod = GapFillingOperator(
+                    N,
+                    obs._get_indexer(),
+                    data['metadata'],
+                    obs.W,
+                    rate=obs.sample_rate,
+                    max_cg_steps=config.gaps.fill_options.max_steps,
+                    rtol=config.gaps.fill_options.rtol,
+                )(jax.random.key(config.gaps.fill_options.seed), tod)
+            return furax.tree.add(carry, obs.H.T(obs.masker(obs.W(tod)))), None
+
+        # check_vma=False: furax operator chain inside the body lacks manual-axis annotations.
+        @jax.shard_map(
+            mesh=self.mesh, in_specs=(P('obs'), P('obs')), out_specs=P(), check_vma=False
+        )
+        def local_rhs(local_models: ObservationModel, local_indices: Any) -> StokesPyTreeType:
+            rhs, _ = jax.lax.scan(step, landscape.zeros(), (local_models, local_indices))
+            return jax.lax.psum(rhs, axis_name='obs')  # type: ignore[no-any-return]
+
+        return local_rhs(models, read_indices)
 
     def get_system_operator(
         self, model: ObservationModel, *, diag: bool = False
     ) -> AbstractLinearOperator:
-        n = len(self.observations)
-        H = ScanBlockColumnOperator(model.H, n)
-        M = ScanBlockDiagonalOperator(model.masker, n)
-        weight = model.diag_W() if diag else model.W
-        W = ScanBlockDiagonalOperator(weight, n)
-        return (H.T @ M @ W @ M @ H).reduce()
+        return _DistributedScanOperator(model, diag=diag, mesh=self.mesh, n_local=self.n_per_device)
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -285,45 +402,104 @@ class MultiObservationMapMaker(Generic[T]):
         return valid
 
 
-@jax.jit
-def _accumulate_hits(
-    pointing: AbstractLinearOperator, mask: AbstractLinearOperator
-) -> Int64[Array, ' pixels']:
-    ones = tree.ones_like(mask.in_structure)
-    masked_i = jax.tree.leaves(mask(ones))[0]
-    return jnp.int64(pointing.T(StokesI(masked_i)).i)  # type: ignore[no-any-return]
+def _scan_system_mv(models: ObservationModel, n_local: int, diag: bool, x: PyTree) -> PyTree:
+    H = ScanBlockColumnOperator(models.H, n_local)
+    M = ScanBlockDiagonalOperator(models.masker, n_local)
+    weight = models.diag_W() if diag else models.W
+    W = ScanBlockDiagonalOperator(weight, n_local)
+    # Use sequential application to avoid @-based structure compatibility checks,
+    # which fail inside shard_map due to sharding annotations on operator structures.
+    return H.T(M(W(M(H(x)))))
 
 
-@jax.jit(static_argnames=('config',))
-def _accumulate_rhs(
-    model: ObservationModel,
-    reader: ObservationReader[Any],
-    config: MapMakingConfig,
-) -> StokesPyTreeType:
-    """Accumulate H^T M W tod over all observations, with optional gap-filling."""
+@symmetric
+class _DistributedScanOperator(AbstractLinearOperator):
+    """Distributed system operator using ScanBlock* composition inside shard_map."""
 
-    def step(carry, args):  # type: ignore[no-untyped-def]
-        i, model = args
-        data, _ = reader.read(i)
-        tod = data['sample_data']
-        if config.gaps.fill and not config.binned:
-            # FIXME: check with demodulated data
-            N = model.noise_operator(config.noise.correlation_length, inverse=False)
-            tod = GapFillingOperator(
-                N,
-                model._get_indexer(),
-                data['metadata'],
-                model.W,
-                rate=model.sample_rate,
-                max_cg_steps=config.gaps.fill_options.max_steps,
-                rtol=config.gaps.fill_options.rtol,
-            )(jax.random.key(config.gaps.fill_options.seed), tod)
-        rhs_contribution = (model.H.T @ model.masker @ model.W)(tod)
-        return carry + rhs_contribution, None
+    models: ObservationModel
+    diag: bool = field(metadata={'static': True})
+    mesh: Mesh = field(metadata={'static': True})
+    n_local: int = field(metadata={'static': True})
 
-    init = tree.zeros_like(model.map_structure)
-    total, _ = jax.lax.scan(step, init, (jnp.arange(reader.count), model))
-    return total  # type: ignore[no-any-return]
+    def __init__(
+        self,
+        models: ObservationModel,
+        *,
+        diag: bool = False,
+        mesh: Mesh,
+        n_local: int,
+    ) -> None:
+        object.__setattr__(self, 'models', models)
+        object.__setattr__(self, 'diag', diag)
+        object.__setattr__(self, 'mesh', mesh)
+        object.__setattr__(self, 'n_local', n_local)
+        object.__setattr__(self, 'in_structure', models.map_structure)
+
+    def mv(self, x: PyTree) -> PyTree:
+        n_local = self.n_local
+        diag = self.diag
+
+        # check_vma=False: furax operator chain inside the body lacks manual-axis annotations.
+        @jax.shard_map(mesh=self.mesh, in_specs=(P('obs'), P()), out_specs=P(), check_vma=False)
+        def f(local_models: ObservationModel, local_x: PyTree) -> PyTree:
+            result = _scan_system_mv(local_models, n_local, diag, local_x)
+            return jax.lax.psum(result, axis_name='obs')
+
+        return f(self.models, x)
+
+
+def get_obs_distribution_to_process(
+    n_obs: int,
+    rank: int | None = None,
+    n_proc: int | None = None,
+    n_local: int | None = None,
+) -> tuple[int, int, int]:
+    """Compute this process's slice for distributed mapmaking.
+
+    Distributes ``n_obs`` observations across processes as evenly as possible
+    (first ``n_obs % n_proc`` processes get one extra), then pads each process's
+    share to the next multiple of ``n_local`` so every device has a uniform
+    workload.  All processes end up with the same number of total slots
+    (``n_owned + n_pad``), which is required for multi-process sharding.
+
+    Args:
+        n_obs: Total number of observations across all processes.
+        rank: Process index. Defaults to ``jax.process_index()``.
+        n_proc: Process count. Defaults to ``jax.process_count()``.
+        n_local: Local device count. Defaults to ``jax.local_device_count()``.
+
+    Returns:
+        A tuple ``(start, n_owned, n_pad)`` where ``start`` is the index of the
+        first real observation owned by this process, ``n_owned`` is the number
+        of real observations, and ``n_pad`` is the number of padding slots so that
+        ``n_owned + n_pad`` is a multiple of ``n_local``.
+
+    Raises:
+        ValueError: If ``n_obs < n_proc``.
+    """
+    if rank is None:
+        rank = jax.process_index()
+    if n_proc is None:
+        n_proc = jax.process_count()
+    if n_local is None:
+        n_local = jax.local_device_count()
+
+    if n_obs < n_proc:
+        raise ValueError(
+            f'Not enough observations ({n_obs}) for {n_proc} processes. '
+            f'Provide more observations or run with fewer processes.'
+        )
+
+    base = n_obs // n_proc
+    remainder = n_obs % n_proc
+    max_owned = base + (1 if remainder > 0 else 0)
+    n_per_proc = max_owned + (-max_owned) % n_local  # ceil to next multiple of n_local
+
+    n_owned = base + (1 if rank < remainder else 0)
+    start = rank * base + min(rank, remainder)
+    n_pad = n_per_proc - n_owned
+
+    return start, n_owned, n_pad
 
 
 def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape | None:

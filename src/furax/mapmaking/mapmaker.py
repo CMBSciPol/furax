@@ -101,8 +101,6 @@ class MultiObservationMapMaker(Generic[T]):
 
     @cached_property
     def mesh(self) -> Mesh:
-        # Auto axis types: lets GSPMD handle collectives so jax.lax.scan can iterate
-        # over a sharded leading axis (rejected under Explicit/Shardy mode).
         return jax.make_mesh((jax.device_count(),), ('obs',), axis_types=(AxisType.Auto,))
 
     @property

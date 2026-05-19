@@ -9,7 +9,6 @@ from jaxtyping import Array, Float, PyTree
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.core import BlockDiagonalOperator, CompositionOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.stokes import Stokes
 
 from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig, Methods
@@ -77,10 +76,6 @@ class ObservationModel:
     @property
     def map_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.H.in_structure
-
-    def rhs(self, tod: PyTree[Array]) -> Stokes:
-        """Project tod into map domain: H^T M W tod."""
-        return (self.H.T @ self.masker @ self.W)(tod)  # type: ignore[no-any-return]
 
     def noise_operator(
         self, correlation_length: int, *, inverse: bool = True

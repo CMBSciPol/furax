@@ -302,26 +302,27 @@ def _accumulate_rhs(
 ) -> StokesPyTreeType:
     """Accumulate H^T M W tod over all observations, with optional gap-filling."""
 
-    def acc(carry, args):  # type: ignore[no-untyped-def]
-        i, obs = args
+    def step(carry, args):  # type: ignore[no-untyped-def]
+        i, model = args
         data, _ = reader.read(i)
         tod = data['sample_data']
         if config.gaps.fill and not config.binned:
             # FIXME: check with demodulated data
-            N = obs.noise_operator(config.noise.correlation_length, inverse=False)
+            N = model.noise_operator(config.noise.correlation_length, inverse=False)
             tod = GapFillingOperator(
                 N,
-                obs._get_indexer(),
+                model._get_indexer(),
                 data['metadata'],
-                obs.W,
-                rate=obs.sample_rate,
+                model.W,
+                rate=model.sample_rate,
                 max_cg_steps=config.gaps.fill_options.max_steps,
                 rtol=config.gaps.fill_options.rtol,
             )(jax.random.key(config.gaps.fill_options.seed), tod)
-        return carry + obs.rhs(tod), None
+        rhs_contribution = (model.H.T @ model.masker @ model.W)(tod)
+        return carry + rhs_contribution, None
 
     init = tree.zeros_like(model.map_structure)
-    total, _ = jax.lax.scan(acc, init, (jnp.arange(reader.count), model))
+    total, _ = jax.lax.scan(step, init, (jnp.arange(reader.count), model))
     return total  # type: ignore[no-any-return]
 
 

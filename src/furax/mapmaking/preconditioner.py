@@ -8,6 +8,10 @@ from furax import AbstractLinearOperator, TreeOperator, symmetric
 from furax.obs.stokes import Stokes
 from furax.tree import _get_outer_treedef, _tree_to_dense, zeros_like
 
+# Pass op as an explicit argument so JAX traces its arrays as inputs rather than
+# capturing them as XLA constants (which would happen with jit(op.mv) or jit(op)).
+_apply = jax.jit(lambda op, x: op(x))
+
 
 @symmetric
 class BJPreconditioner(TreeOperator):
@@ -64,7 +68,7 @@ class BJPreconditioner(TreeOperator):
                 for i, leaf in enumerate(basis_leaves)
             ]
             probe = jax.tree.unflatten(treedef, probe_leaves)
-            result = op(probe)
+            result = _apply(op, probe)
             out_leaves.append(jax.tree.leaves(result))
 
         tree = tree_cls(

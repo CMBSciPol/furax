@@ -1,8 +1,7 @@
 import operator
-import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal, cast, get_args, overload
+from typing import Any, ClassVar, Literal, Self, cast, get_args, overload
 
 import jax
 import numpy as np
@@ -11,11 +10,6 @@ from jax import Array
 from jax.tree_util import register_dataclass
 from jax.typing import ArrayLike
 from jaxtyping import DTypeLike, Float, Integer, Key, PyTree, ScalarLike
-
-if sys.version_info < (3, 11):
-    from typing_extensions import Self
-else:
-    from typing import Self
 
 from furax.exceptions import StructureError
 from furax.tree import (

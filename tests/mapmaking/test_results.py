@@ -1,4 +1,6 @@
+import dataclasses
 import importlib.util
+import json
 
 import healpy as hp
 import jax.numpy as jnp
@@ -40,6 +42,16 @@ def healpix_results() -> MapMakingResults:
     hit_map = jnp.array(rng.integers(1, 100, NPIX))
     icov = jnp.array(rng.standard_normal((3, 3, NPIX)))
     return MapMakingResults(map=sky, landscape=landscape, hit_map=hit_map, icov=icov)
+
+
+@pytest.fixture
+def healpix_results_with_extras(healpix_results) -> MapMakingResults:
+    rng = np.random.default_rng(42)
+    return dataclasses.replace(
+        healpix_results,
+        solver_stats={'num_steps': np.int32(7), 'converged': True, 'residual': np.float64(1e-8)},
+        noise_fits=jnp.array(rng.standard_normal(NPIX)),
+    )
 
 
 @pytest.fixture
@@ -108,130 +120,85 @@ def unknown_landscape_results() -> MapMakingResults:
     return MapMakingResults(map=sky, landscape=landscape, hit_map=hit_map, icov=icov)
 
 
-# --- HEALPix ---
+# --- save() ---
 
 
-def test_healpix_save_produces_fits(healpix_results, tmp_path):
+def test_healpix_save(healpix_results, tmp_path):
     healpix_results.save(tmp_path)
+
     assert (tmp_path / 'map.fits').exists()
     assert (tmp_path / 'hit_map.fits').exists()
     assert (tmp_path / 'icov.fits').exists()
 
-
-def test_healpix_map_roundtrip(healpix_results, tmp_path):
-    healpix_results.save(tmp_path)
     i_read, q_read, u_read = hp.read_map(tmp_path / 'map.fits', field=[0, 1, 2])
     assert_array_almost_equal(i_read, healpix_results.map.i)
     assert_array_almost_equal(q_read, healpix_results.map.q)
     assert_array_almost_equal(u_read, healpix_results.map.u)
 
+    with fits.open(tmp_path / 'map.fits') as hdul:
+        assert hdul[1].header['ORDERING'] == 'RING'
+    with fits.open(tmp_path / 'hit_map.fits') as hdul:
+        assert hdul[1].columns[0].name == 'HITS'
+    with fits.open(tmp_path / 'icov.fits') as hdul:
+        assert [c.name for c in hdul[1].columns] == ['II', 'IQ', 'IU', 'QQ', 'QU', 'UU']
 
-def test_healpix_hit_map_roundtrip(healpix_results, tmp_path):
-    healpix_results.save(tmp_path)
-    hit_map_read = hp.read_map(tmp_path / 'hit_map.fits')
-    assert_array_equal(hit_map_read, healpix_results.hit_map)
-
-
-def test_healpix_icov_column_names(healpix_results, tmp_path):
-    healpix_results.save(tmp_path)
-    from astropy.io import fits as _fits
-
-    with _fits.open(tmp_path / 'icov.fits') as hdul:
-        names = [c.name for c in hdul[1].columns]
-    assert names == ['II', 'IQ', 'IU', 'QQ', 'QU', 'UU']
-
-
-def test_healpix_icov_roundtrip(healpix_results, tmp_path):
-    healpix_results.save(tmp_path)
-    # icov is stored as upper triangle: (n_upper, npix) with n_upper=6 for IQU
     icov_read = np.array(hp.read_map(tmp_path / 'icov.fits', field=list(range(6))))
     icov = np.array(healpix_results.icov)
     upper = [(i, j) for i in range(3) for j in range(i, 3)]
-    expected = np.stack([icov[i, j] for i, j in upper])
-    assert_array_almost_equal(icov_read, expected)
+    assert_array_almost_equal(icov_read, np.stack([icov[i, j] for i, j in upper]))
 
 
-def test_healpix_hit_map_column_name(healpix_results, tmp_path):
-    healpix_results.save(tmp_path)
-    with fits.open(tmp_path / 'hit_map.fits') as hdul:
-        assert hdul[1].columns[0].name == 'HITS'
-
-
-def test_healpix_ordering(healpix_results, tmp_path):
-    healpix_results.save(tmp_path)
-    expected = 'NESTED' if healpix_results.landscape.nested else 'RING'
-    with fits.open(tmp_path / 'map.fits') as hdul:
-        assert hdul[1].header['ORDERING'] == expected
-
-
-# --- WCS (CAR) ---
-
-
-def test_wcs_save_produces_fits(car_results, tmp_path):
+def test_wcs_save(car_results, tmp_path):
     car_results.save(tmp_path)
-    assert (tmp_path / 'map.fits').exists()
-    assert (tmp_path / 'hit_map.fits').exists()
-    assert (tmp_path / 'icov.fits').exists()
 
-
-def test_wcs_map_has_wcs_header(car_results, tmp_path):
-    car_results.save(tmp_path)
     header = fits.open(tmp_path / 'map.fits')[0].header
-    assert 'CTYPE1' in header
-    assert 'CRVAL1' in header
-    assert 'CRPIX1' in header
-    assert 'CDELT1' in header
+    for key in ('CTYPE1', 'CRVAL1', 'CRPIX1', 'CDELT1'):
+        assert key in header
 
-
-def test_wcs_map_roundtrip(car_results, tmp_path):
-    car_results.save(tmp_path)
-    data = fits.open(tmp_path / 'map.fits')[0].data  # shape (3, ny, nx)
+    data = fits.open(tmp_path / 'map.fits')[0].data
     assert_array_almost_equal(data[0], car_results.map.i)
     assert_array_almost_equal(data[1], car_results.map.q)
     assert_array_almost_equal(data[2], car_results.map.u)
 
-
-def test_wcs_hit_map_roundtrip(car_results, tmp_path):
-    car_results.save(tmp_path)
-    data = fits.open(tmp_path / 'hit_map.fits')[0].data
-    assert_array_equal(data, car_results.hit_map)
-
-
-def test_wcs_icov_roundtrip(car_results, tmp_path):
-    car_results.save(tmp_path)
-    # icov is stored as upper triangle: (n_upper, ny, nx)
-    data = fits.open(tmp_path / 'icov.fits')[0].data
+    icov_data = fits.open(tmp_path / 'icov.fits')[0].data
     icov = np.array(car_results.icov)
     upper = [(i, j) for i in range(3) for j in range(i, 3)]
-    expected = np.stack([icov[i, j] for i, j in upper])
-    assert_array_almost_equal(data, expected)
+    assert_array_almost_equal(icov_data, np.stack([icov[i, j] for i, j in upper]))
 
 
-# --- AstropyWCS ---
-
-
-def test_astropy_wcs_save_produces_fits(astropy_wcs_results, tmp_path):
-    astropy_wcs_results.save(tmp_path)
-    assert (tmp_path / 'map.fits').exists()
-    assert (tmp_path / 'hit_map.fits').exists()
-    assert (tmp_path / 'icov.fits').exists()
-
-
-def test_astropy_wcs_map_has_wcs_header(astropy_wcs_results, tmp_path):
+def test_astropy_wcs_embeds_wcs_header(astropy_wcs_results, tmp_path):
     astropy_wcs_results.save(tmp_path)
     header = fits.open(tmp_path / 'map.fits')[0].header
-    assert 'CTYPE1' in header
-    assert 'CRVAL1' in header
-    assert 'CRPIX1' in header
-    assert 'CDELT1' in header
+    for key in ('CTYPE1', 'CRVAL1', 'CRPIX1', 'CDELT1'):
+        assert key in header
 
 
-def test_astropy_wcs_map_roundtrip(astropy_wcs_results, tmp_path):
-    astropy_wcs_results.save(tmp_path)
-    data = fits.open(tmp_path / 'map.fits')[0].data
-    assert_array_almost_equal(data[0], astropy_wcs_results.map.i)
-    assert_array_almost_equal(data[1], astropy_wcs_results.map.q)
-    assert_array_almost_equal(data[2], astropy_wcs_results.map.u)
+def test_unknown_landscape_save(unknown_landscape_results, tmp_path):
+    unknown_landscape_results.save(tmp_path)
+    assert (tmp_path / 'map.npy').exists()
+    assert (tmp_path / 'hit_map.npy').exists()
+    assert (tmp_path / 'icov.npy').exists()
+    data = np.load(tmp_path / 'map.npy')
+    assert_array_almost_equal(data[0], unknown_landscape_results.map.i)
+    assert_array_almost_equal(data[1], unknown_landscape_results.map.q)
+    assert_array_almost_equal(data[2], unknown_landscape_results.map.u)
+
+
+def test_save_solver_stats(healpix_results, tmp_path):
+    results = dataclasses.replace(
+        healpix_results,
+        solver_stats={'num_steps': np.int32(3), 'converged': True, 'loss': np.float32(0.5)},
+    )
+    results.save(tmp_path)
+    assert (tmp_path / 'solver_stats.json').exists()
+    with open(tmp_path / 'solver_stats.json') as f:
+        stats = json.load(f)
+    assert stats == {'num_steps': 3, 'converged': True, 'loss': pytest.approx(0.5, abs=1e-6)}
+
+
+def test_save_no_solver_stats_file_when_none(healpix_results, tmp_path):
+    healpix_results.save(tmp_path)
+    assert not (tmp_path / 'solver_stats.json').exists()
 
 
 # --- pixell loading ---
@@ -239,7 +206,7 @@ def test_astropy_wcs_map_roundtrip(astropy_wcs_results, tmp_path):
 
 @pytest.mark.skipif(not pixell_installed, reason='pixell not installed')
 class TestPixellLoading:
-    def test_wcs_map(self, car_results, tmp_path):
+    def test_wcs_map_roundtrip(self, car_results, tmp_path):
         from pixell import enmap
 
         car_results.save(tmp_path)
@@ -247,49 +214,6 @@ class TestPixellLoading:
         assert_array_almost_equal(m[0], car_results.map.i)
         assert_array_almost_equal(m[1], car_results.map.q)
         assert_array_almost_equal(m[2], car_results.map.u)
-
-    def test_wcs_hit_map(self, car_results, tmp_path):
-        from pixell import enmap
-
-        car_results.save(tmp_path)
-        m = enmap.read_map(str(tmp_path / 'hit_map.fits'))
-        assert_array_equal(np.array(m), car_results.hit_map)
-
-    def test_wcs_icov(self, car_results, tmp_path):
-        from pixell import enmap
-
-        car_results.save(tmp_path)
-        m = enmap.read_map(str(tmp_path / 'icov.fits'))
-        icov = np.array(car_results.icov)
-        upper = [(i, j) for i in range(3) for j in range(i, 3)]
-        expected = np.stack([icov[i, j] for i, j in upper])
-        assert_array_almost_equal(np.array(m), expected)
-
-    def test_astropy_wcs_map(self, astropy_wcs_results, tmp_path):
-        from pixell import enmap
-
-        astropy_wcs_results.save(tmp_path)
-        m = enmap.read_map(str(tmp_path / 'map.fits'))
-        assert_array_almost_equal(m[0], astropy_wcs_results.map.i)
-        assert_array_almost_equal(m[1], astropy_wcs_results.map.q)
-        assert_array_almost_equal(m[2], astropy_wcs_results.map.u)
-
-    def test_astropy_wcs_hit_map(self, astropy_wcs_results, tmp_path):
-        from pixell import enmap
-
-        astropy_wcs_results.save(tmp_path)
-        m = enmap.read_map(str(tmp_path / 'hit_map.fits'))
-        assert_array_equal(np.array(m), astropy_wcs_results.hit_map)
-
-    def test_astropy_wcs_icov(self, astropy_wcs_results, tmp_path):
-        from pixell import enmap
-
-        astropy_wcs_results.save(tmp_path)
-        m = enmap.read_map(str(tmp_path / 'icov.fits'))
-        icov = np.array(astropy_wcs_results.icov)
-        upper = [(i, j) for i in range(3) for j in range(i, 3)]
-        expected = np.stack([icov[i, j] for i, j in upper])
-        assert_array_almost_equal(np.array(m), expected)
 
     def test_wcs_header_consistency(self, car_results, tmp_path):
         from pixell import enmap
@@ -302,31 +226,94 @@ class TestPixellLoading:
         np.testing.assert_allclose(m.wcs.wcs.crpix, wcs.wcs.crpix)
         np.testing.assert_allclose(m.wcs.wcs.cdelt, wcs.wcs.cdelt)
 
-    def test_astropy_wcs_header_consistency(self, astropy_wcs_results, tmp_path):
-        from pixell import enmap
 
-        astropy_wcs_results.save(tmp_path)
-        m = enmap.read_map(str(tmp_path / 'map.fits'))
-        wcs = astropy_wcs_results.landscape.wcs
-        assert list(m.wcs.wcs.ctype) == list(wcs.wcs.ctype)
-        np.testing.assert_allclose(m.wcs.wcs.crval, wcs.wcs.crval)
-        np.testing.assert_allclose(m.wcs.wcs.crpix, wcs.wcs.crpix)
-        np.testing.assert_allclose(m.wcs.wcs.cdelt, wcs.wcs.cdelt)
+# --- load() ---
 
 
-# --- Unknown landscape ---
+def test_healpix_load_roundtrip(healpix_results_with_extras, tmp_path):
+    r = healpix_results_with_extras
+    r.save(tmp_path)
+    loaded = MapMakingResults.load(tmp_path, r.landscape)
+
+    assert_array_almost_equal(loaded.map.i, r.map.i)
+    assert_array_almost_equal(loaded.map.q, r.map.q)
+    assert_array_almost_equal(loaded.map.u, r.map.u)
+    assert_array_equal(loaded.hit_map, r.hit_map)
+
+    upper = [(i, j) for i in range(3) for j in range(i, 3)]
+    for i, j in upper:
+        assert_array_almost_equal(loaded.icov[i, j], r.icov[i, j])
+    icov = np.array(loaded.icov)
+    assert_array_equal(icov, icov.transpose(1, 0, 2))  # symmetric
+
+    assert loaded.solver_stats == {'num_steps': 7, 'converged': True, 'residual': 1e-8}
+    assert_array_almost_equal(loaded.noise_fits, r.noise_fits)
 
 
-def test_unknown_landscape_saves_as_npy(unknown_landscape_results, tmp_path):
+def test_healpix_load_missing_optionals_are_none(healpix_results, tmp_path):
+    healpix_results.save(tmp_path)
+    loaded = MapMakingResults.load(tmp_path, healpix_results.landscape)
+    assert loaded.solver_stats is None
+    assert loaded.noise_fits is None
+
+
+def test_wcs_load_roundtrip(car_results, tmp_path):
+    car_results.save(tmp_path)
+    loaded = MapMakingResults.load(tmp_path, car_results.landscape)
+
+    assert_array_almost_equal(loaded.map.i, car_results.map.i)
+    assert_array_almost_equal(loaded.map.q, car_results.map.q)
+    assert_array_almost_equal(loaded.map.u, car_results.map.u)
+    assert_array_equal(loaded.hit_map, car_results.hit_map)
+
+    icov = np.array(loaded.icov)
+    assert_array_equal(icov, icov.transpose(1, 0, 2, 3))  # symmetric
+
+
+def test_unknown_landscape_load_roundtrip(unknown_landscape_results, tmp_path):
     unknown_landscape_results.save(tmp_path)
-    assert (tmp_path / 'map.npy').exists()
-    assert (tmp_path / 'hit_map.npy').exists()
-    assert (tmp_path / 'icov.npy').exists()
+    loaded = MapMakingResults.load(tmp_path, unknown_landscape_results.landscape)
+    assert_array_almost_equal(loaded.map.i, unknown_landscape_results.map.i)
+    assert_array_almost_equal(loaded.map.q, unknown_landscape_results.map.q)
+    assert_array_almost_equal(loaded.map.u, unknown_landscape_results.map.u)
+    assert_array_equal(loaded.hit_map, unknown_landscape_results.hit_map)
 
 
-def test_unknown_landscape_map_roundtrip(unknown_landscape_results, tmp_path):
-    unknown_landscape_results.save(tmp_path)
-    data = np.load(tmp_path / 'map.npy')
-    assert_array_almost_equal(data[0], unknown_landscape_results.map.i)
-    assert_array_almost_equal(data[1], unknown_landscape_results.map.q)
-    assert_array_almost_equal(data[2], unknown_landscape_results.map.u)
+# --- load() field selection and errors ---
+
+
+def test_load_subset_fields_skips_optionals(healpix_results_with_extras, tmp_path):
+    healpix_results_with_extras.save(tmp_path)
+    loaded = MapMakingResults.load(
+        tmp_path, healpix_results_with_extras.landscape, fields={'map', 'hit_map', 'icov'}
+    )
+    assert loaded.solver_stats is None
+    assert loaded.noise_fits is None
+    assert_array_almost_equal(loaded.map.i, healpix_results_with_extras.map.i)
+
+
+def test_load_invalid_field_raises(healpix_results, tmp_path):
+    healpix_results.save(tmp_path)
+    with pytest.raises(ValueError, match='Unknown fields'):
+        MapMakingResults.load(
+            tmp_path, healpix_results.landscape, fields={'map', 'hit_map', 'icov', 'bad_field'}
+        )
+
+
+def test_load_missing_required_field_raises(healpix_results, tmp_path):
+    healpix_results.save(tmp_path)
+    with pytest.raises(ValueError, match='Required fields cannot be excluded'):
+        MapMakingResults.load(tmp_path, healpix_results.landscape, fields={'map', 'hit_map'})
+
+
+def test_load_missing_directory_raises(tmp_path):
+    landscape = HealpixLandscape(NSIDE, stokes='IQU')
+    with pytest.raises(FileNotFoundError, match='Output directory not found'):
+        MapMakingResults.load(tmp_path / 'nonexistent', landscape)
+
+
+def test_load_missing_required_file_raises(healpix_results, tmp_path):
+    healpix_results.save(tmp_path)
+    (tmp_path / 'map.fits').unlink()
+    with pytest.raises(FileNotFoundError, match='Expected file not found'):
+        MapMakingResults.load(tmp_path, healpix_results.landscape)

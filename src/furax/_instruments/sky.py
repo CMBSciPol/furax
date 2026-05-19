@@ -1,6 +1,6 @@
-import sys
-from typing import Any
+from typing import Any, Self
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -12,14 +12,6 @@ from numpy.typing import NDArray
 
 from ..obs.landscapes import FrequencyLandscape
 from ..obs.stokes import Stokes, ValidStokesType
-
-if sys.version_info < (3, 11):
-    from typing_extensions import Self
-else:
-    from typing import Self
-import sys
-
-import equinox as eqx
 
 
 class FGBusterInstrument(eqx.Module):

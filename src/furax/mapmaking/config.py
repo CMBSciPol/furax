@@ -361,6 +361,73 @@ class MapMakingConfig:
     sotodlib: SotodlibConfig | None = None
 
     @classmethod
+    def for_method(cls, method: 'Methods | str') -> 'MapMakingConfig':
+        """Return a default MapMakingConfig pre-configured for the given method.
+
+        Args:
+            method: A ``Methods`` enum value or its string name (e.g. ``'binned'``,
+                ``'ml'``, ``'twostep'``, ``'atop'``), case-insensitive.
+        """
+        if isinstance(method, str):
+            upper = method.upper()
+            try:
+                method = Methods[upper]
+            except KeyError:
+                # Fall back to matching by value (e.g. 'ML' → Methods.MAXL)
+                matched = next((m for m in Methods if m.value.upper() == upper), None)
+                if matched is None:
+                    raise KeyError(method)
+                method = matched
+
+        if method == Methods.BINNED:
+            return cls(
+                method=Methods.BINNED,
+                noise=NoiseConfig(white=True),
+                templates=None,
+            )
+        elif method == Methods.MAXL:
+            return cls(
+                method=Methods.MAXL,
+                noise=NoiseConfig(
+                    white=False,
+                    correlation_length=1_000,
+                ),
+                solver=SolverConfig(
+                    rtol=1e-6,
+                    atol=0,
+                    max_steps=1_000,
+                ),
+                templates=None,
+            )
+        elif method == Methods.TWOSTEP:
+            return cls(
+                method=Methods.TWOSTEP,
+                noise=NoiseConfig(white=True),
+                solver=SolverConfig(
+                    rtol=1e-6,
+                    atol=0,
+                    max_steps=1_000,
+                ),
+                templates=TemplatesConfig(
+                    polynomial=_PolyTemplateConfig(),
+                ),
+            )
+        elif method == Methods.ATOP:
+            return cls(
+                method=Methods.ATOP,
+                noise=NoiseConfig(white=True),
+                solver=SolverConfig(
+                    rtol=1e-6,
+                    atol=0,
+                    max_steps=100,
+                ),
+                atop_tau=37,
+                templates=None,
+            )
+        else:
+            raise ValueError(f'Unknown method: {method}')
+
+    @classmethod
     def full_defaults(cls) -> 'MapMakingConfig':
         """Create a config with default values for all fields including optional ones."""
         return cls(templates=TemplatesConfig.full_defaults())

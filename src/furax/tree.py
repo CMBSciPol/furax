@@ -206,16 +206,16 @@ def apply(
 
     a_leaves, treedef = jax.tree.flatten(a)
     try:
-        b_leaves = treedef.flatten_up_to(b)
+        b_leaves = treedef.flatten_up_to(b)  # type: ignore[attr-defined]
         func = func_a_treedef
     except ValueError:
         b_leaves, treedef = jax.tree.flatten(b)
         try:
-            a_leaves = treedef.flatten_up_to(a)
+            a_leaves = treedef.flatten_up_to(a)  # type: ignore[attr-defined]
         except ValueError as exc:
             raise StructureError(str(exc))
         func = func_b_treedef
-    return treedef.unflatten(func(*xs) for xs in zip(a_leaves, b_leaves))
+    return treedef.unflatten(func(*xs) for xs in zip(a_leaves, b_leaves))  # type: ignore[attr-defined]
 
 
 def add(a: PyTree[Array], b: PyTree[Array]) -> PyTree[Array]:
@@ -419,7 +419,7 @@ def _get_outer_treedef(inner_treedef: PyTreeDef | PyTree[Any], tree: PyTree[Arra
         inner_treedef = jax.tree.structure(inner_treedef)
 
     def is_inner(node: Any) -> bool:
-        return jax.tree.structure(node) == inner_treedef
+        return jax.tree.structure(node) == inner_treedef  # type: ignore[no-any-return]
 
     outer_tree = jax.tree.map(lambda x: 0, tree, is_leaf=is_inner)
     return jax.tree.structure(outer_tree)

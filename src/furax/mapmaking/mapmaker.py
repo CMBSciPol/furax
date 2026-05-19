@@ -1,7 +1,7 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from logging import Logger
 from math import prod
 from pathlib import Path
@@ -87,7 +87,10 @@ class MultiObservationMapMaker(Generic[T]):
                     "Received stokes='IQU', but ATOP does not support intensity map reconstruction."
                     " Falling back to stokes='QU' instead."
                 )
-                self.config.landscape.stokes = 'QU'
+                self.config = replace(
+                    self.config,
+                    landscape=replace(self.config.landscape, stokes='QU'),
+                )
 
     def _scan_wcs_footprint(self) -> WCSLandscape:
         """Scan observations to determine the combined WCS footprint and build a WCSLandscape.

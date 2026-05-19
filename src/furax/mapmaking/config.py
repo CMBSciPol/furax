@@ -25,14 +25,14 @@ class Methods(Enum):
     ATOP = 'ATOP'
 
 
-@dataclass
+@dataclass(frozen=True)
 class SolverConfig:
     rtol: float = 1e-6
     atol: float = 0
     max_steps: int = 1_000
 
 
-@dataclass
+@dataclass(frozen=True)
 class NoiseFitConfig:
     nperseg: int = 2_048
     """Welch window length in samples for PSD estimation."""
@@ -68,7 +68,7 @@ class NoiseFitConfig:
     """PTC frequency [Hz] used for masking (if used)"""
 
 
-@dataclass
+@dataclass(frozen=True)
 class NoiseConfig:
     """Configuration for noise modelling.
 
@@ -95,7 +95,7 @@ class NoiseConfig:
     """Options controlling PSD estimation and model fitting."""
 
 
-@dataclass
+@dataclass(frozen=True)
 class HealpixConfig:
     """Configuration for a HEALPix output map.
 
@@ -114,7 +114,7 @@ class HealpixConfig:
             raise ValueError('NESTED ordering not supported')
 
 
-@dataclass
+@dataclass(frozen=True)
 class SkyPatch:
     """Explicit rectangular sky patch for WCS map construction.
 
@@ -137,7 +137,7 @@ class SkyPatch:
     """Height in degrees."""
 
 
-@dataclass
+@dataclass(frozen=True)
 class WCSConfig:
     """Configuration for a WCS-projected output map.
 
@@ -192,7 +192,7 @@ class WCSConfig:
         return self.geometry_file is not None or self.patch is not None
 
 
-@dataclass
+@dataclass(frozen=True)
 class LandscapeConfig:
     stokes: ValidStokesType = 'IQU'
     healpix: HealpixConfig | None = None
@@ -203,30 +203,30 @@ class LandscapeConfig:
             raise ValueError('exactly one of healpix or wcs must be set.')
 
 
-@dataclass
+@dataclass(frozen=True)
 class _PolyTemplateConfig:
     max_poly_order: int = 3
 
 
-@dataclass
+@dataclass(frozen=True)
 class _ScanSynchronousTemplateConfig:
     min_poly_order: int = 3
     max_poly_order: int = 7
 
 
-@dataclass
+@dataclass(frozen=True)
 class _HWPSynchronousTemplateConfig:
     n_harmonics: int = 3
 
 
-@dataclass
+@dataclass(frozen=True)
 class _AzimuthHWPSynchronousTemplateConfig:
     n_polynomials: int = 4
     n_harmonics: int = 4
     split_scans: bool = False
 
 
-@dataclass
+@dataclass(frozen=True)
 class _BinAzimuthHWPSynchronousTemplateConfig:
     n_azimuth_bins: int = 4
     n_harmonics: int = 4
@@ -234,13 +234,13 @@ class _BinAzimuthHWPSynchronousTemplateConfig:
     smooth_interpolation: bool = False
 
 
-@dataclass
+@dataclass(frozen=True)
 class _GroundTemplateConfig:
     azimuth_resolution: float = 0.05  # ~3 deg
     elevation_resolution: float = 0.05  # ~3 deg
 
 
-@dataclass
+@dataclass(frozen=True)
 class TemplatesConfig:
     polynomial: _PolyTemplateConfig | None = None
     scan_synchronous: _ScanSynchronousTemplateConfig | None = None
@@ -267,7 +267,7 @@ class TemplatesConfig:
         return all(getattr(self, f.name) is None for f in fields(self))
 
 
-@dataclass
+@dataclass(frozen=True)
 class GapFillingConfig:
     """Specific gap-filling options"""
 
@@ -281,7 +281,7 @@ class GapFillingConfig:
     """The relative tolerance of the solver for the gap-filling solve"""
 
 
-@dataclass
+@dataclass(frozen=True)
 class GapsConfig:
     """Configuration options related to the treatment of gaps"""
 
@@ -295,7 +295,7 @@ class GapsConfig:
     """Use the nested PCG method for gap treatment"""
 
 
-@dataclass
+@dataclass(frozen=True)
 class PointingConfig:
     """Configuration options for pointing computation.
 
@@ -315,7 +315,7 @@ class PointingConfig:
     """Pixel interpolation scheme used when sampling the sky map."""
 
 
-@dataclass
+@dataclass(frozen=True)
 class SotodlibConfig:
     """Configuration options specific to the sotodlib interface."""
 
@@ -340,7 +340,7 @@ class SotodlibConfig:
     """
 
 
-@dataclass
+@dataclass(frozen=True)
 class MapMakingConfig:
     method: Methods = Methods.BINNED
     scanning_mask: bool = False

@@ -236,18 +236,16 @@ class MultiObservationMapMaker(Generic[T]):
         icov = BJ.get_blocks().block_until_ready()
         logger_info('Computed white noise inverse covariance')
 
-        # Pixel selection (post-processing under the mesh so eager ops on
-        # explicit-sharded arrays can dispatch in multi-process runs).
-        with jax.set_mesh(self.mesh):
-            valid_pixels = self.pixel_selection(hits, icov)
-            selector = IndexOperator(jnp.where(valid_pixels), in_structure=model.map_structure)
-            n_selected = jnp.sum(valid_pixels)
-            n_observed = jnp.sum(hits > 0)
-            n_total = valid_pixels.size
-            logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
+        # Pixel selection
+        valid_pixels = self.pixel_selection(hits, icov)
+        selector = IndexOperator(jnp.where(valid_pixels), in_structure=model.map_structure)
+        n_selected = jnp.sum(valid_pixels)
+        n_observed = jnp.sum(hits > 0)
+        n_total = valid_pixels.size
+        logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
 
-            hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
-            icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
+        hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
+        icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
         # Solve the mapmaking system
         solver = lineax.CG(**asdict(self.config.solver))

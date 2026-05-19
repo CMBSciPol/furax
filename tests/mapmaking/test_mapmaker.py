@@ -180,9 +180,8 @@ class TestMultiObsMapMaker:
         maker = MultiObservationMapMaker(observations, config=config)
         n_pad = maker.obs_distribution[2]
         model = maker.distribute(pad_model(maker.build_model(), n_pad))
-        indices = maker.distribute(maker.get_padded_read_indices())
-        reader = maker.get_reader(['metadata', 'sample_data'])
-        rhs = maker.accumulate_rhs(model, indices, reader)
+        read_indices = maker.distribute(maker.get_padded_read_indices())
+        rhs = maker.accumulate_rhs(model, read_indices)
         assert rhs.shape == maker.landscape.shape
 
     def test_hits_are_nonnegative(self, name, demodulated, stokes, landscape_type):

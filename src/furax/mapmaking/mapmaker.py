@@ -223,11 +223,10 @@ class MultiObservationMapMaker(Generic[T]):
         read_indices = self.distribute(self.get_padded_read_indices())
         logger_info('Created system operators')
 
-        hits = jax.jit(self.accumulate_hits)(model).block_until_ready()
+        hits = jax.block_until_ready(self.accumulate_hits(model))
         logger_info('Computed hit map')
 
-        rhs_reader = self.get_reader(['metadata', 'sample_data'])
-        rhs = jax.block_until_ready(jax.jit(self.accumulate_rhs)(model, read_indices, rhs_reader))
+        rhs = jax.block_until_ready(self.accumulate_rhs(model, read_indices))
         logger_info('Accumulated RHS vector')
 
         # System operator (full/diagonal)
@@ -317,60 +316,20 @@ class MultiObservationMapMaker(Generic[T]):
         _, n_owned, n_pad = self.obs_distribution
         return (n_owned + n_pad) // jax.local_device_count()
 
-    def accumulate_hits(self, models: ObservationModel) -> Int64[Array, ' pixels']:
-        """Accumulate hit map across all observations via ScanBlock ops under jit+in_shardings."""
+    def accumulate_hits(self, model: ObservationModel) -> Int64[Array, '...']:
+        """Accumulate hit map across all observations."""
         n_total = self.n_per_device * jax.device_count()
-        assert isinstance(models.H, CompositionOperator)  # mypy assert
-        pointing = models.H.operands[-1]
+        assert isinstance(model.H, CompositionOperator)  # mypy assert
+        pointing = model.H.operands[-1]
         assert isinstance(pointing, PointingOperator)  # mypy assert
         P_op = ScanBlockColumnOperator(pointing.as_stokes_i(interpolate=False), n_total)
-        M_op = ScanBlockDiagonalOperator(models.masker, n_total)
-        ones = furax.tree.ones_like(M_op.in_structure)
-        masked_i = jax.tree.leaves(M_op(ones))[0]
-        hits = jnp.int64(P_op.T(StokesI(masked_i)).i)
-        # P_op.T = ScanBlockRow: leading axis summed -> output replicated across 'obs' axis.
-        return jax.lax.with_sharding_constraint(hits, NamedSharding(self.mesh, P()))  # type: ignore[no-any-return]
+        M_op = ScanBlockDiagonalOperator(model.masker, n_total)
+        return _accumulate_hits(P_op, M_op, self.sharding)  # type: ignore[no-any-return]
 
-    def accumulate_rhs(
-        self,
-        models: ObservationModel,
-        read_indices: Array,
-        reader: ObservationReader[T],
-    ) -> StokesPyTreeType:
-        """Accumulate the RHS vector across all observations.
-
-        Runs a sharded ``lax.scan`` over the global 'obs' axis under
-        ``jit + in_shardings``: XLA inserts the cross-device all-reduce when the
-        replicated output is requested via ``with_sharding_constraint``.
-        ``read_indices`` must be sharded along the same 'obs' axis as ``models``
-        (see :meth:`distribute`). ``reader`` is passed in (not built here) so
-        this method stays jit-friendly — building the reader triggers an
-        all-gather that must run outside ``jax.jit``.
-        """
-        config = self.config
-        landscape = self.landscape
-
-        def step(carry: StokesPyTreeType, args: Any) -> tuple[StokesPyTreeType, None]:
-            obs, i = args
-            data, _ = reader.read(i)
-            tod = data['sample_data']
-            if config.gaps.fill and not config.binned:
-                N = obs.noise_operator(config.noise.correlation_length, inverse=False)
-                tod = GapFillingOperator(
-                    N,
-                    obs._get_indexer(),
-                    data['metadata'],
-                    obs.W,
-                    rate=obs.sample_rate,
-                    max_cg_steps=config.gaps.fill_options.max_steps,
-                    rtol=config.gaps.fill_options.rtol,
-                )(jax.random.key(config.gaps.fill_options.seed), tod)
-            return furax.tree.add(carry, obs.H.T(obs.masker(obs.W(tod)))), None
-
-        rhs, _ = jax.lax.scan(step, landscape.zeros(), (models, read_indices))
-        # Carry has no 'obs' axis; sharded inputs yield per-device partial sums.
-        # Annotation forces GSPMD to all-reduce across the mesh.
-        return jax.lax.with_sharding_constraint(rhs, NamedSharding(self.mesh, P()))  # type: ignore[no-any-return]
+    def accumulate_rhs(self, model: ObservationModel, read_indices: Array) -> StokesPyTreeType:
+        """Accumulate the RHS vector across all observations."""
+        reader = self.get_reader(['metadata', 'sample_data'])
+        return _accumulate_rhs(model, read_indices, reader, self.config, self.sharding)  # type: ignore[no-any-return]
 
     def get_system_operator(
         self, model: ObservationModel, *, diag: bool = False
@@ -395,6 +354,46 @@ class MultiObservationMapMaker(Generic[T]):
             )
 
         return valid
+
+
+@jax.jit(static_argnames=('sharding',))
+def _accumulate_hits(
+    pointing: AbstractLinearOperator, mask: AbstractLinearOperator, sharding: NamedSharding
+) -> Int64[Array, '...']:
+    ones = furax.tree.ones_like(mask.in_structure)
+    masked_i = jax.tree.leaves(mask(ones))[0]
+    hits = jnp.int64(pointing.T(StokesI(masked_i)).i)
+    return jax.lax.with_sharding_constraint(hits, sharding)  # type: ignore[no-any-return]
+
+
+@jax.jit(static_argnames=('config', 'sharding'))
+def _accumulate_rhs(
+    model: ObservationModel,
+    read_indices: Array,
+    reader: ObservationReader[T],
+    config: MapMakingConfig,
+    sharding: NamedSharding,
+) -> StokesPyTreeType:
+
+    def step(carry: StokesPyTreeType, args: Any) -> tuple[StokesPyTreeType, None]:
+        obs, i = args
+        data, _ = reader.read(i)
+        tod = data['sample_data']
+        if config.gaps.fill and not config.binned:
+            N = obs.noise_operator(config.noise.correlation_length, inverse=False)
+            tod = GapFillingOperator(
+                N,
+                obs._get_indexer(),
+                data['metadata'],
+                obs.W,
+                rate=obs.sample_rate,
+                max_cg_steps=config.gaps.fill_options.max_steps,
+                rtol=config.gaps.fill_options.rtol,
+            )(jax.random.key(config.gaps.fill_options.seed), tod)
+        return furax.tree.add(carry, obs.H.T(obs.masker(obs.W(tod)))), None
+
+    rhs, _ = jax.lax.scan(step, furax.tree.zeros_like(model.map_structure), (model, read_indices))
+    return jax.lax.with_sharding_constraint(rhs, sharding)  # type: ignore[no-any-return]
 
 
 @symmetric

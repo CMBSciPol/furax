@@ -4,15 +4,13 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, Float, Int64, PyTree
+from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.core import BlockDiagonalOperator, CompositionOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import Stokes, StokesI
+from furax.obs.stokes import Stokes
 
-from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
 from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig, Methods
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
@@ -79,33 +77,6 @@ class ObservationModel:
     @property
     def map_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.H.in_structure
-
-    @property
-    def n_observations(self) -> int:
-        # assuming stacked pytree
-        return jax.tree.leaves(self.H)[0].shape[0]  # type: ignore[no-any-return]
-
-    def get_system_operator(self, *, diag: bool = False) -> AbstractLinearOperator:
-        n = self.n_observations
-        H = ScanBlockColumnOperator(self.H, n)
-        M = ScanBlockDiagonalOperator(self.masker, n)
-        weight = self.diag_W() if diag else self.W
-        W = ScanBlockDiagonalOperator(weight, n)
-        return (H.T @ M @ W @ M @ H).reduce()
-
-    @jax.jit
-    def accumulate_hits(self) -> Int64[Array, ' pixels']:
-        """Accumulate hit counts across all observations."""
-        n = self.n_observations
-        assert isinstance(self.H, CompositionOperator)  # mypy assert
-        # pointing operator is the last operand of the acquisition chain (see unit test)
-        pointing = self.H.operands[-1]
-        assert isinstance(pointing, PointingOperator)  # mypy assert
-        P = ScanBlockColumnOperator(pointing.as_stokes_i(interpolate=False), n)
-        M = ScanBlockDiagonalOperator(self.masker, n)
-        ones = tree.ones_like(M.in_structure)
-        masked_i = jax.tree.leaves(M(ones))[0]
-        return jnp.int64(P.T(StokesI(masked_i)).i)  # type: ignore[no-any-return]
 
     def rhs(self, tod: PyTree[Array]) -> Stokes:
         """Project tod into map domain: H^T M W tod."""

@@ -16,7 +16,7 @@ import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, Bool, DTypeLike, Float, Integer
+from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer
 
 import furax.linalg
 import furax.tree as tree
@@ -29,7 +29,7 @@ from furax import (
     OperatorTag,
     SymmetricBandToeplitzOperator,
 )
-from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
+from furax.core import BlockDiagonalOperator, BlockRowOperator, CompositionOperator, IndexOperator
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -39,7 +39,7 @@ from furax.obs.landscapes import (
 )
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import Stokes, StokesIQU, StokesPyTreeType, ValidStokesType
+from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesPyTreeType, ValidStokesType
 
 from . import templates
 from ._geometry import minimum_enclosing_arc
@@ -47,6 +47,7 @@ from ._logger import logger as furax_logger
 from ._model import ObservationModel
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
+from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
 from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
 from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
@@ -161,15 +162,15 @@ class MultiObservationMapMaker(Generic[T]):
         model = self.build_model()
         logger_info('Created system operator')
 
-        hits = model.accumulate_hits().block_until_ready()
+        hits = self.accumulate_hits(model).block_until_ready()
         logger_info('Computed hit map')
 
         rhs = jax.block_until_ready(self.accumulate_rhs(model))
         logger_info('Accumulated RHS vector')
 
         # System operator (full/diagonal)
-        A = model.get_system_operator()
-        diag_A = A if self.config.binned else model.get_system_operator(diag=True)
+        A = self.get_system_operator(model)
+        diag_A = A if self.config.binned else self.get_system_operator(model, diag=True)
         BJ = BJPreconditioner.create(diag_A)
         icov = BJ.get_blocks().block_until_ready()
         logger_info('Computed white noise inverse covariance')
@@ -240,10 +241,31 @@ class MultiObservationMapMaker(Generic[T]):
         _, model = jax.lax.scan(build_one, None, jnp.arange(reader.count))
         return model  # type: ignore[no-any-return]
 
+    def accumulate_hits(self, model: ObservationModel) -> Int64[Array, ' pixels']:
+        """Accumulate hit counts across all observations."""
+        n = len(self.observations)
+        assert isinstance(model.H, CompositionOperator)  # mypy assert
+        # pointing operator is the last operand of the acquisition chain (see unit test)
+        pointing = model.H.operands[-1]
+        assert isinstance(pointing, PointingOperator)  # mypy assert
+        P = ScanBlockColumnOperator(pointing.as_stokes_i(interpolate=False), n)
+        M = ScanBlockDiagonalOperator(model.masker, n)
+        return _accumulate_hits(P, M)  # type: ignore[no-any-return]
+
     def accumulate_rhs(self, model: ObservationModel) -> StokesPyTreeType:
         """Accumulate the RHS vector across all observations."""
         reader = self.get_reader(['metadata', 'sample_data'])
         return _accumulate_rhs(model, reader, self.config)  # type: ignore[no-any-return]
+
+    def get_system_operator(
+        self, model: ObservationModel, *, diag: bool = False
+    ) -> AbstractLinearOperator:
+        n = len(self.observations)
+        H = ScanBlockColumnOperator(model.H, n)
+        M = ScanBlockDiagonalOperator(model.masker, n)
+        weight = model.diag_W() if diag else model.W
+        W = ScanBlockDiagonalOperator(weight, n)
+        return (H.T @ M @ W @ M @ H).reduce()
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -261,6 +283,15 @@ class MultiObservationMapMaker(Generic[T]):
             )
 
         return valid
+
+
+@jax.jit
+def _accumulate_hits(
+    pointing: AbstractLinearOperator, mask: AbstractLinearOperator
+) -> Int64[Array, ' pixels']:
+    ones = tree.ones_like(mask.in_structure)
+    masked_i = jax.tree.leaves(mask(ones))[0]
+    return jnp.int64(pointing.T(StokesI(masked_i)).i)  # type: ignore[no-any-return]
 
 
 @jax.jit(static_argnames=('config',))

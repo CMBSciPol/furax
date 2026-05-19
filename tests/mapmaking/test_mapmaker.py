@@ -124,7 +124,7 @@ class TestMultiObsMapMaker:
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         model = maker.build_model()
-        hits = model.accumulate_hits()
+        hits = maker.accumulate_hits(model)
         assert hits.shape == maker.landscape.shape
         assert jnp.all(hits >= 0)
 

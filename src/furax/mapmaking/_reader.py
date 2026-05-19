@@ -71,7 +71,7 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         Args:
             observations: Full list of lazy observations.
-            subset_indices: Optional indices into ``observations``; when set, only
+            read_indices: Optional indices into ``observations``; when set, only
                 those are opened on this process to infer shapes, and shapes are
                 synchronised across processes (distributed-mode shortcut).
             requested_fields: Optional list of fields to load. If None, read all non-optional fields.

@@ -47,7 +47,10 @@ jobs:
         run: uv venv
 
       - name: Install dependencies
-        run: uv pip install .[dev,mapmaking,so,toast]
+        run: |
+          uv pip install git+https://github.com/ArtemBasyrov/s2fft.git
+          uv pip install git+https://github.com/CMBSciPol/jax-healpy.git@implement-alm2map
+          uv pip install .[dev,mapmaking,so,toast]
 
       - name: Run tests
         run: .venv/bin/python -m pytest -vv -m "not slow"

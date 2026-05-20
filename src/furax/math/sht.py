@@ -90,9 +90,10 @@ class Map2Alm(AbstractLinearOperator):
 
         def func(value: jax.Array) -> jax.Array:
             value = jnp.atleast_2d(value)  # (nfreq, npix)
-            return jhp.map2alm(
+            alm: jax.Array = jhp.map2alm(
                 value, iter=self.iter, lmax=self.lmax, pol=self.pol
             )  # (nfreq, lmax+1, 2*lmax+1)
+            return alm
 
         return jax.tree.map(func, x)
 

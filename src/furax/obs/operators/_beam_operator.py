@@ -24,34 +24,6 @@ from furax.core.rules import AbstractBinaryRule, NoReduction
 from furax.math.sht import Alm2Map, Map2Alm
 
 
-def _apply_fl_to_alm_leaf(
-    alm_leaf: Float[Array, 'nfreq lp1 alm_cols'],
-    fl: Float[Array, 'nfreq lp1'],
-) -> Float[Array, 'nfreq lp1 alm_cols']:
-    """Apply a per-frequency beam transfer function to a single alm leaf.
-
-    Iterates over the frequency axis with :func:`jax.lax.scan`, calling
-    :func:`jax_healpy.almxfl` on each ``(lmax+1, 2*lmax+1)`` slice independently.
-    The shared ``nfreq`` and ``lp1`` dimensions are validated by jaxtyping at call
-    time, ensuring the frequency and multipole axes of *alm_leaf* and *fl* agree.
-
-    Args:
-        alm_leaf: Spherical harmonic coefficients for a single Stokes component,
-            shape ``(nfreq, lmax+1, 2*lmax+1)`` (jax-healpy 2-D alm layout).
-        fl: Beam transfer function values at each multipole for each frequency,
-            shape ``(nfreq, lmax+1)``.
-
-    Returns:
-        Beam-filtered alm coefficients with the same shape as *alm_leaf*.
-    """
-
-    def scan_fn(_, pair: tuple) -> tuple:
-        alm_i, fl_i = pair
-        return None, jhp.almxfl(alm_i, fl_i, healpy_ordering=False)
-
-    return jax.lax.scan(scan_fn, None, (alm_leaf, fl))[1]
-
-
 @symmetric
 class BeamOperator(AbstractLinearOperator):
     """Beam operator with a single transfer function shared across all Stokes components.
@@ -109,7 +81,9 @@ class BeamOperator(AbstractLinearOperator):
 
         nfreq = first_leaf.shape[0]
         fl = jnp.broadcast_to(jnp.atleast_2d(self.beam_fl), (nfreq, self.lmax + 1))
-        alm_beam = jax.tree.map(lambda alm_leaf: _apply_fl_to_alm_leaf(alm_leaf, fl), alm)
+        alm_beam = jax.tree.map(
+            lambda alm_leaf: jhp.almxfl(alm_leaf, fl, healpy_ordering=False), alm
+        )
 
         out = Alm2Map(lmax=self.lmax, nside=nside, in_structure=map2alm.out_structure).mv(alm_beam)
         if input_is_1d:
@@ -183,7 +157,11 @@ class BeamOperatorIQU(AbstractLinearOperator):
         map2alm = Map2Alm(lmax=self.lmax, nside=nside, in_structure=self.in_structure)
         alm = map2alm.mv(x)
 
-        alm_beam = jax.tree.map(_apply_fl_to_alm_leaf, alm, self.beam_fl)
+        alm_beam = jax.tree.map(
+            lambda alm_leaf, fl: jhp.almxfl(alm_leaf, fl, healpy_ordering=False),
+            alm,
+            self.beam_fl,
+        )
         out = Alm2Map(lmax=self.lmax, nside=nside, in_structure=map2alm.out_structure).mv(alm_beam)
         if input_is_1d:
             out = jax.tree.map(lambda leaf: jnp.squeeze(leaf, axis=0), out)

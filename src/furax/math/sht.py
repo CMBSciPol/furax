@@ -33,6 +33,10 @@ class Map2Alm(AbstractLinearOperator):
     via ``jhp.map2alm`` producing an output leaf of shape
     ``(nfreq, lmax+1, 2*lmax+1)``.
 
+    Construction is guarded by a ``hasattr`` check against ``jax_healpy``:
+    if ``jhp.map2alm`` is missing (e.g. on an older ``jax-healpy`` release),
+    instantiation raises :class:`ImportError`.
+
     Attributes:
         lmax: Maximum spherical harmonic degree.
         nside: HEALPix resolution parameter, carried so that
@@ -41,6 +45,9 @@ class Map2Alm(AbstractLinearOperator):
         iter: Number of iterations for the map2alm solver; more iterations,
             which are more expensive, yield more accurate alm coefficients.
             (default is 3)
+        pol: Reserved for the polarization-aware SHT.  Routed to
+            ``jhp.map2alm`` but only ``False`` is supported today; passing
+            ``True`` raises :class:`NotImplementedError` at construction.
 
     Example:
         >>> import jax.numpy as jnp
@@ -55,6 +62,19 @@ class Map2Alm(AbstractLinearOperator):
     lmax: int
     nside: int
     iter: int = 3
+    pol: bool = False
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.pol:
+            raise NotImplementedError(
+                'Polarization-aware SHT (pol=True) is not yet supported; pass pol=False.'
+            )
+        if not hasattr(jhp, 'map2alm'):
+            raise ImportError(
+                'jax_healpy.map2alm is unavailable; upgrade jax-healpy to a version '
+                'that ships map2alm.'
+            )
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         """Apply the analysis SHT to every leaf of *x*.
@@ -71,7 +91,7 @@ class Map2Alm(AbstractLinearOperator):
         def func(value: jax.Array) -> jax.Array:
             value = jnp.atleast_2d(value)  # (nfreq, npix)
             return jhp.map2alm(
-                value, iter=self.iter, lmax=self.lmax, pol=False
+                value, iter=self.iter, lmax=self.lmax, pol=self.pol
             )  # (nfreq, lmax+1, 2*lmax+1)
 
         return jax.tree.map(func, x)
@@ -84,7 +104,11 @@ class Map2Alm(AbstractLinearOperator):
             structure of this operator (i.e. alm space).
         """
         return Alm2Map(
-            lmax=self.lmax, nside=self.nside, iter=self.iter, in_structure=self.out_structure
+            lmax=self.lmax,
+            nside=self.nside,
+            iter=self.iter,
+            in_structure=self.out_structure,
+            pol=self.pol,
         )
 
 
@@ -98,11 +122,18 @@ class Alm2Map(AbstractLinearOperator):
     to all frequency rows, via ``jhp.alm2map`` producing an output leaf of shape
     ``(nfreq, npix)`` where ``npix = 12 * nside ** 2``.
 
+    Construction is guarded by a ``hasattr`` check against ``jax_healpy``:
+    if ``jhp.alm2map`` is missing (e.g. on an older ``jax-healpy`` release),
+    instantiation raises :class:`ImportError`.
+
     Attributes:
         lmax: Maximum spherical harmonic degree.
         nside: HEALPix resolution parameter used by the synthesis step.
         iter: Number of iterations for the map2alm solver used by
             the inverse. (Default is 3)
+        pol: Reserved for the polarization-aware SHT.  Routed to
+            ``jhp.alm2map`` but only ``False`` is supported today; passing
+            ``True`` raises :class:`NotImplementedError` at construction.
 
     Example:
         >>> import jax.numpy as jnp
@@ -116,6 +147,19 @@ class Alm2Map(AbstractLinearOperator):
     lmax: int
     nside: int
     iter: int = 3
+    pol: bool = False
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.pol:
+            raise NotImplementedError(
+                'Polarization-aware SHT (pol=True) is not yet supported; pass pol=False.'
+            )
+        if not hasattr(jhp, 'alm2map'):
+            raise ImportError(
+                'jax_healpy.alm2map is unavailable; upgrade jax-healpy to a version '
+                'that ships alm2map.'
+            )
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         """Apply the synthesis SHT to every leaf of *x*.
@@ -131,7 +175,7 @@ class Alm2Map(AbstractLinearOperator):
 
         def func(value: jax.Array) -> jax.Array:
             value = value.reshape(-1, *value.shape[-2:])  # (nfreq, lmax+1, 2*lmax+1)
-            return jnp.real(jhp.alm2map(value, nside=self.nside, lmax=self.lmax, pol=False))
+            return jnp.real(jhp.alm2map(value, nside=self.nside, lmax=self.lmax, pol=self.pol))
 
         return jax.tree.map(func, x)
 
@@ -143,7 +187,11 @@ class Alm2Map(AbstractLinearOperator):
             structure of this operator (i.e. map space).
         """
         return Map2Alm(
-            lmax=self.lmax, nside=self.nside, iter=self.iter, in_structure=self.out_structure
+            lmax=self.lmax,
+            nside=self.nside,
+            iter=self.iter,
+            in_structure=self.out_structure,
+            pol=self.pol,
         )
 
 

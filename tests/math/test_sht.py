@@ -2,6 +2,7 @@
 
 import jax
 import jax.numpy as jnp
+import jax_healpy as jhp
 import pytest
 
 from furax import IdentityOperator
@@ -54,6 +55,31 @@ def random_maps():
     )
 
 
+def _random_alms(seed: int) -> StokesIQU:
+    """Random complex StokesIQU alms with shape (NFREQ, NALM_ROWS, NALM_COLS)."""
+    key = jax.random.PRNGKey(seed)
+    shape = (NFREQ, NALM_ROWS, NALM_COLS)
+    return StokesIQU(
+        **{
+            name: jax.random.normal(jax.random.fold_in(key, i), shape)
+            + 1j * jax.random.normal(jax.random.fold_in(key, i + 100), shape)
+            for i, name in enumerate(('i', 'q', 'u'))
+        }
+    )
+
+
+def _real_inner(u: StokesIQU, v: StokesIQU) -> jax.Array:
+    """Real-bilinear inner product over a PyTree, matching jax.linear_transpose convention.
+
+    JAX's linear_transpose uses the plain bilinear pairing sum(u * v) (no
+    conjugation); the adjoint identity then holds on its real part.
+    """
+    return sum(
+        jnp.sum(jnp.real(u_leaf * v_leaf))
+        for u_leaf, v_leaf in zip(jax.tree.leaves(u), jax.tree.leaves(v))
+    )
+
+
 class TestMap2Alm:
     """Tests for Map2Alm analysis operator."""
 
@@ -83,14 +109,6 @@ class TestMap2Alm:
         for leaf in jax.tree.leaves(alms):
             assert leaf.shape == (1, NALM_ROWS, NALM_COLS)
 
-    def test_transpose_returns_alm2map(self, map2alm):
-        """Transpose of Map2Alm should return an Alm2Map instance."""
-        assert isinstance(map2alm.T, Alm2Map)
-
-    def test_transpose_in_structure_matches_out_structure(self, map2alm):
-        """Transpose operator's in_structure must equal Map2Alm's out_structure."""
-        assert map2alm.T.in_structure == map2alm.out_structure
-
     def test_inverse_returns_alm2map(self, map2alm):
         """Inverse of Map2Alm should return an Alm2Map instance."""
         assert isinstance(map2alm.I, Alm2Map)
@@ -98,6 +116,34 @@ class TestMap2Alm:
     def test_inverse_in_structure_matches_out_structure(self, map2alm):
         """Inverse operator's in_structure must equal Map2Alm's out_structure."""
         assert map2alm.I.in_structure == map2alm.out_structure
+
+    def test_transpose_satisfies_adjoint_identity(self, map2alm, random_maps):
+        """<A x, y> must equal <x, A^T y> for A = Map2Alm.
+
+        Real-bilinear inner product over the PyTree, matching the convention
+        used by jax.linear_transpose (which backs TransposeOperator).
+        """
+        x = random_maps
+        y = _random_alms(seed=1)
+        lhs = _real_inner(map2alm(x), y)
+        rhs = _real_inner(x, map2alm.T(y))
+        assert jnp.allclose(lhs, rhs, rtol=1e-10)
+
+    def test_pol_true_raises(self, map_structure):
+        """pol=True is routed but gated until the polarisation-aware path lands."""
+        with pytest.raises(NotImplementedError):
+            Map2Alm(lmax=LMAX, nside=NSIDE, in_structure=map_structure, pol=True)
+
+    def test_matches_jax_healpy_map2alm(self, map2alm, random_maps):
+        """Per-leaf output must equal a direct jhp.map2alm call with the same args.
+
+        Regression guard: catches any drift in the wrapping logic (iter, lmax,
+        pol routing, reshaping) by comparing against the upstream reference.
+        """
+        out = map2alm(random_maps)
+        for leaf_in, leaf_out in zip(jax.tree.leaves(random_maps), jax.tree.leaves(out)):
+            expected = jhp.map2alm(leaf_in, iter=map2alm.iter, lmax=LMAX, pol=False)
+            assert jnp.array_equal(leaf_out, expected)
 
 
 class TestAlm2Map:
@@ -131,14 +177,6 @@ class TestAlm2Map:
         for leaf in jax.tree.leaves(maps):
             assert leaf.shape == (1, NPIX)
 
-    def test_transpose_returns_map2alm(self, alm2map):
-        """Transpose of Alm2Map should return a Map2Alm instance."""
-        assert isinstance(alm2map.T, Map2Alm)
-
-    def test_transpose_in_structure_matches_out_structure(self, alm2map):
-        """Transpose operator's in_structure must equal Alm2Map's out_structure."""
-        assert alm2map.T.in_structure == alm2map.out_structure
-
     def test_inverse_returns_map2alm(self, alm2map):
         """Inverse of Alm2Map should return a Map2Alm instance."""
         assert isinstance(alm2map.I, Map2Alm)
@@ -146,6 +184,35 @@ class TestAlm2Map:
     def test_inverse_in_structure_matches_out_structure(self, alm2map):
         """Inverse operator's in_structure must equal Alm2Map's out_structure."""
         assert alm2map.I.in_structure == alm2map.out_structure
+
+    def test_transpose_satisfies_adjoint_identity(self, alm2map, random_maps):
+        """<A x, y> must equal <x, A^T y> for A = Alm2Map.
+
+        Real-bilinear inner product over the PyTree, matching the convention
+        used by jax.linear_transpose (which backs TransposeOperator).
+        """
+        x = _random_alms(seed=2)
+        y = random_maps
+        lhs = _real_inner(alm2map(x), y)
+        rhs = _real_inner(x, alm2map.T(y))
+        assert jnp.allclose(lhs, rhs, rtol=1e-10)
+
+    def test_pol_true_raises(self, alm_structure):
+        """pol=True is routed but gated until the polarisation-aware path lands."""
+        with pytest.raises(NotImplementedError):
+            Alm2Map(lmax=LMAX, nside=NSIDE, in_structure=alm_structure, pol=True)
+
+    def test_matches_jax_healpy_alm2map(self, alm2map, map2alm, random_maps):
+        """Per-leaf output must equal Re(jhp.alm2map(...)) with the same args.
+
+        Regression guard: catches drift in the wrapping logic (reshape, dtype,
+        pol routing) by comparing against the upstream reference.
+        """
+        alms = map2alm(random_maps)
+        out = alm2map(alms)
+        for leaf_in, leaf_out in zip(jax.tree.leaves(alms), jax.tree.leaves(out)):
+            expected = jnp.real(jhp.alm2map(leaf_in, nside=NSIDE, lmax=LMAX, pol=False))
+            assert jnp.array_equal(leaf_out, expected)
 
 
 class TestSHTRule:

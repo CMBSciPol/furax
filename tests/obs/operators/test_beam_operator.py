@@ -69,6 +69,24 @@ def random_maps():
 
 
 @pytest.fixture(scope='module')
+def random_maps_dual():
+    """Independent random StokesIQU map for the adjoint test's y vector."""
+    key = jax.random.PRNGKey(43)
+    return StokesIQU(
+        i=jax.random.normal(key, (NFREQ, NPIX)),
+        q=jax.random.normal(jax.random.fold_in(key, 1), (NFREQ, NPIX)),
+        u=jax.random.normal(jax.random.fold_in(key, 2), (NFREQ, NPIX)),
+    )
+
+
+def _real_inner(u: StokesIQU, v: StokesIQU) -> jax.Array:
+    """Sum of leaf-wise products. Real-valued PyTrees → standard L2 pairing."""
+    return sum(
+        jnp.sum(u_leaf * v_leaf) for u_leaf, v_leaf in zip(jax.tree.leaves(u), jax.tree.leaves(v))
+    )
+
+
+@pytest.fixture(scope='module')
 def sht_roundtrip_maps(map_structure, random_maps):
     """Maps projected through Map2Alm → Alm2Map (band-limited version of random_maps).
 
@@ -134,6 +152,19 @@ class TestBeamOperator:
                 beam_op.T(x),
             )
         )
+
+    def test_adjoint_identity(self, half_beam_op, random_maps, random_maps_dual):
+        """<B x, y> must equal <x, B y> for a non-trivial beam.
+
+        @symmetric makes B.T return self, so the adjoint identity collapses
+        to <B x, y> = <x, B y>; this verifies B truly is self-adjoint as
+        tagged, rather than just exercising the tag.  half_beam_op (fl=0.5)
+        is used to exclude the trivial fl=1 case.
+        """
+        x, y = random_maps, random_maps_dual
+        lhs = _real_inner(half_beam_op(x), y)
+        rhs = _real_inner(x, half_beam_op(y))
+        assert jnp.allclose(lhs, rhs, rtol=1e-10)
 
     def test_inverse_beam_fl_is_reciprocal(self, half_beam_fl, map_structure):
         """Inverse operator must have beam_fl equal to 1 / original beam_fl."""
@@ -223,6 +254,22 @@ class TestBeamOperatorIQU:
                 beam_iqu_op.T(x),
             )
         )
+
+    def test_adjoint_identity(self, map_structure, random_maps, random_maps_dual):
+        """<B x, y> must equal <x, B y> for distinct per-Stokes beams.
+
+        @symmetric makes B.T return self, so the adjoint identity collapses
+        to <B x, y> = <x, B y>; this verifies B truly is self-adjoint as
+        tagged. Uses different fl per Stokes component to rule out symmetry
+        accidentally induced by identical leaves.
+        """
+        fl = jnp.full((NFREQ, LMAX + 1), 0.5)
+        beam_fl = StokesIQU(i=fl, q=fl * 0.7, u=fl * 1.3)
+        op = BeamOperatorIQU(lmax=LMAX, beam_fl=beam_fl, in_structure=map_structure)
+        x, y = random_maps, random_maps_dual
+        lhs = _real_inner(op(x), y)
+        rhs = _real_inner(x, op(y))
+        assert jnp.allclose(lhs, rhs, rtol=1e-10)
 
     def test_inverse_beam_fl_is_reciprocal(self, map_structure):
         """Inverse operator must have per-Stokes beam_fl leaves equal to 1 / originals."""

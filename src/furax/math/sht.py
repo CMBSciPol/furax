@@ -15,6 +15,8 @@ without special-casing.
 :class:`~furax.IdentityOperator` at operator-construction time.
 """
 
+from dataclasses import field
+
 import jax
 import jax.numpy as jnp
 import jax_healpy as jhp
@@ -59,10 +61,10 @@ class Map2Alm(AbstractLinearOperator):
         >>> op = Map2Alm(lmax=lmax, nside=nside, in_structure=structure)
     """
 
-    lmax: int
-    nside: int
-    iter: int = 3
-    pol: bool = False
+    lmax: int = field(metadata={'static': True})
+    nside: int = field(metadata={'static': True})
+    iter: int = field(default=3, metadata={'static': True})
+    pol: bool = field(default=False, metadata={'static': True})
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -145,10 +147,10 @@ class Alm2Map(AbstractLinearOperator):
         >>> op = Alm2Map(lmax=lmax, nside=nside, in_structure=structure)
     """
 
-    lmax: int
-    nside: int
-    iter: int = 3
-    pol: bool = False
+    lmax: int = field(metadata={'static': True})
+    nside: int = field(metadata={'static': True})
+    iter: int = field(default=3, metadata={'static': True})
+    pol: bool = field(default=False, metadata={'static': True})
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -212,13 +214,13 @@ class SHTRule(AbstractBinaryRule):
     right_operator_class = Alm2Map
 
     def apply(
-        self, op1: AbstractLinearOperator, op2: AbstractLinearOperator
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        """Reduce ``op1 @ op2`` to an identity when the pair is Map2Alm/Alm2Map.
+        """Reduce ``left @ right`` to an identity when the pair is Map2Alm/Alm2Map.
 
         Args:
-            op1: Left operator in the composition (must be :class:`Map2Alm`).
-            op2: Right operator in the composition (must be :class:`Alm2Map`).
+            left: Left operator in the composition (must be :class:`Map2Alm`).
+            right: Right operator in the composition (must be :class:`Alm2Map`).
 
         Returns:
             A single-element list containing an
@@ -228,8 +230,8 @@ class SHTRule(AbstractBinaryRule):
             NoReduction: If the operator pair does not match the expected types
             or if the transforms use different ``lmax`` values.
         """
-        if isinstance(op1, Map2Alm) and isinstance(op2, Alm2Map):
-            if op1.lmax != op2.lmax:
+        if isinstance(left, Map2Alm) and isinstance(right, Alm2Map):
+            if left.lmax != right.lmax:
                 raise NoReduction
-            return [IdentityOperator(in_structure=op2.in_structure)]
+            return [IdentityOperator(in_structure=right.in_structure)]
         raise NoReduction

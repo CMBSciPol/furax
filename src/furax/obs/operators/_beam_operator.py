@@ -19,6 +19,7 @@ import jax.numpy as jnp
 import jax_healpy as jhp
 from jaxtyping import Array, Float, Inexact, PyTree
 
+import furax.tree as fxtree
 from furax import AbstractLinearOperator, symmetric
 from furax.core.rules import AbstractBinaryRule, NoReduction
 from furax.math.sht import Alm2Map, Map2Alm
@@ -260,7 +261,7 @@ class BeamIQURule(AbstractBinaryRule):
             raise NoReduction
         if left.lmax != right.lmax:
             raise NoReduction
-        combined_beam = jax.tree.map(jnp.multiply, left.beam_fl, right.beam_fl)
+        combined_beam = fxtree.mul(left.beam_fl, right.beam_fl)
         return [
             BeamOperatorIQU(
                 lmax=left.lmax,

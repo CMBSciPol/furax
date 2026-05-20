@@ -1,9 +1,11 @@
 """Tests for BeamOperator, BeamOperatorIQU, BeamRule, and BeamIQURule."""
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
 
+import furax.tree as fxtree
 from furax.core._base import CompositionOperator
 from furax.math.sht import Alm2Map, Map2Alm
 from furax.obs.operators._beam_operator import BeamOperator, BeamOperatorIQU
@@ -60,30 +62,13 @@ def beam_iqu_op(flat_beam_fl, map_structure):
 @pytest.fixture(scope='module')
 def random_maps():
     """Random StokesIQU map with shape (NFREQ, NPIX)."""
-    key = jax.random.PRNGKey(42)
-    return StokesIQU(
-        i=jax.random.normal(key, (NFREQ, NPIX)),
-        q=jax.random.normal(jax.random.fold_in(key, 1), (NFREQ, NPIX)),
-        u=jax.random.normal(jax.random.fold_in(key, 2), (NFREQ, NPIX)),
-    )
+    return StokesIQU.normal(jax.random.PRNGKey(42), (NFREQ, NPIX))
 
 
 @pytest.fixture(scope='module')
 def random_maps_dual():
     """Independent random StokesIQU map for the adjoint test's y vector."""
-    key = jax.random.PRNGKey(43)
-    return StokesIQU(
-        i=jax.random.normal(key, (NFREQ, NPIX)),
-        q=jax.random.normal(jax.random.fold_in(key, 1), (NFREQ, NPIX)),
-        u=jax.random.normal(jax.random.fold_in(key, 2), (NFREQ, NPIX)),
-    )
-
-
-def _real_inner(u: StokesIQU, v: StokesIQU) -> jax.Array:
-    """Sum of leaf-wise products. Real-valued PyTrees → standard L2 pairing."""
-    return sum(
-        jnp.sum(u_leaf * v_leaf) for u_leaf, v_leaf in zip(jax.tree.leaves(u), jax.tree.leaves(v))
-    )
+    return StokesIQU.normal(jax.random.PRNGKey(43), (NFREQ, NPIX))
 
 
 @pytest.fixture(scope='module')
@@ -145,13 +130,7 @@ class TestBeamOperator:
     def test_symmetric_operator_is_self_adjoint(self, beam_op, random_maps):
         """BeamOperator is symmetric, so B and B.T must produce identical outputs."""
         x = random_maps
-        assert jax.tree.all(
-            jax.tree.map(
-                lambda a, b: jnp.allclose(a, b, atol=1e-12),
-                beam_op(x),
-                beam_op.T(x),
-            )
-        )
+        assert eqx.tree_equal(beam_op(x), beam_op.T(x), atol=1e-12)
 
     def test_adjoint_identity(self, half_beam_op, random_maps, random_maps_dual):
         """<B x, y> must equal <x, B y> for a non-trivial beam.
@@ -162,8 +141,8 @@ class TestBeamOperator:
         is used to exclude the trivial fl=1 case.
         """
         x, y = random_maps, random_maps_dual
-        lhs = _real_inner(half_beam_op(x), y)
-        rhs = _real_inner(x, half_beam_op(y))
+        lhs = fxtree.dot(half_beam_op(x), y)
+        rhs = fxtree.dot(x, half_beam_op(y))
         assert jnp.allclose(lhs, rhs, rtol=1e-10)
 
     def test_inverse_beam_fl_is_reciprocal(self, half_beam_fl, map_structure):
@@ -203,12 +182,7 @@ class TestBeamOperator:
         structure_1d = StokesIQU.structure_for((NPIX,), jnp.float64)
         beam_fl = jnp.ones(LMAX + 1)
         op = BeamOperator(lmax=LMAX, beam_fl=beam_fl, in_structure=structure_1d)
-        key = jax.random.PRNGKey(0)
-        x = StokesIQU(
-            i=jax.random.normal(key, (NPIX,)),
-            q=jax.random.normal(jax.random.fold_in(key, 1), (NPIX,)),
-            u=jax.random.normal(jax.random.fold_in(key, 2), (NPIX,)),
-        )
+        x = StokesIQU.normal(jax.random.PRNGKey(0), (NPIX,))
         out = op(x)
         for leaf in jax.tree.leaves(out):
             assert leaf.shape == (NPIX,)
@@ -247,13 +221,7 @@ class TestBeamOperatorIQU:
     def test_symmetric_operator_is_self_adjoint(self, beam_iqu_op, random_maps):
         """BeamOperatorIQU is symmetric, so B and B.T must produce identical outputs."""
         x = random_maps
-        assert jax.tree.all(
-            jax.tree.map(
-                lambda a, b: jnp.allclose(a, b, atol=1e-12),
-                beam_iqu_op(x),
-                beam_iqu_op.T(x),
-            )
-        )
+        assert eqx.tree_equal(beam_iqu_op(x), beam_iqu_op.T(x), atol=1e-12)
 
     def test_adjoint_identity(self, map_structure, random_maps, random_maps_dual):
         """<B x, y> must equal <x, B y> for distinct per-Stokes beams.
@@ -267,8 +235,8 @@ class TestBeamOperatorIQU:
         beam_fl = StokesIQU(i=fl, q=fl * 0.7, u=fl * 1.3)
         op = BeamOperatorIQU(lmax=LMAX, beam_fl=beam_fl, in_structure=map_structure)
         x, y = random_maps, random_maps_dual
-        lhs = _real_inner(op(x), y)
-        rhs = _real_inner(x, op(y))
+        lhs = fxtree.dot(op(x), y)
+        rhs = fxtree.dot(x, op(y))
         assert jnp.allclose(lhs, rhs, rtol=1e-10)
 
     def test_inverse_beam_fl_is_reciprocal(self, map_structure):
@@ -293,12 +261,7 @@ class TestBeamOperatorIQU:
         fl = jnp.ones((1, LMAX + 1))
         beam_fl = StokesIQU(i=fl, q=fl, u=fl)
         op = BeamOperatorIQU(lmax=LMAX, beam_fl=beam_fl, in_structure=structure_1d)
-        key = jax.random.PRNGKey(0)
-        x = StokesIQU(
-            i=jax.random.normal(key, (NPIX,)),
-            q=jax.random.normal(jax.random.fold_in(key, 1), (NPIX,)),
-            u=jax.random.normal(jax.random.fold_in(key, 2), (NPIX,)),
-        )
+        x = StokesIQU.normal(jax.random.PRNGKey(0), (NPIX,))
         out = op(x)
         for leaf in jax.tree.leaves(out):
             assert leaf.shape == (NPIX,)

@@ -3,7 +3,7 @@ from typing import Self
 
 import jax
 from jax import Array
-from jax.sharding import AbstractMesh, NamedSharding
+from jax.sharding import AbstractMesh, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Inexact, PyTree
 
@@ -23,7 +23,7 @@ class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
         return cls(blocks, in_structure=in_structure)
 
     @property
-    def _mesh(self) -> AbstractMesh | None:
+    def _mesh(self) -> Mesh | AbstractMesh | None:
         s = jax.tree.leaves(self.in_structure)[0].sharding
         return s.mesh if isinstance(s, NamedSharding) else None
 

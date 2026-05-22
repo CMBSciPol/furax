@@ -227,18 +227,16 @@ class MultiObservationMapMaker(Generic[T]):
         jax.block_until_ready(rhs)
         logger_info('Accumulated RHS vector')
 
-        # System operator (full/diagonal)
-        A = self.get_system_operator(model)
-        diag_A = A if self.config.binned else self.get_system_operator(model, diag=True)
-        BJ = BJPreconditioner.create(diag_A)
-        icov = BJ.get_blocks().block_until_ready()
-        logger_info('Computed white noise inverse covariance')
-
-        # Pixel selection and solve: eager ops on sharded arrays need mesh context.
-        # init in ScanBlock operators created inside shard_map to avoid closure issues.
         with jax.set_mesh(self.mesh):
+            # System operator (full/diagonal)
+            A = self.get_system_operator(model)
+            diag_A = A if self.config.binned else self.get_system_operator(model, diag=True)
+            BJ = BJPreconditioner.create(diag_A)
+            icov = BJ.get_blocks().block_until_ready()
+            logger_info('Computed white noise inverse covariance')
+
             valid_pixels = self.pixel_selection(hits, icov)
-            selector = IndexOperator(jnp.where(valid_pixels), in_structure=model.map_structure)
+            selector = IndexOperator(jnp.where(valid_pixels), in_structure=A.out_structure)
             n_selected = jnp.sum(valid_pixels)
             n_observed = jnp.sum(hits > 0)
             n_total = valid_pixels.size
@@ -266,6 +264,7 @@ class MultiObservationMapMaker(Generic[T]):
             estimate = selector.T(solution.value)
             num_steps = solution.stats['num_steps']
             logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
+
         return MapMakingResults(
             map=estimate,
             icov=icov,
@@ -359,12 +358,12 @@ def accumulate_hits(model: ObservationModel, mesh: Mesh) -> Int64[Array, '...']:
     pointing_i = pointing.as_stokes_i(interpolate=False)
 
     map_shape = jax.tree.leaves(pointing_i.in_structure)[0].shape
-    zeros = jnp.zeros(map_shape, jnp.int64)
 
     in_sharding = NamedSharding(mesh, P('obs'))
     pointing_i = jax.tree.map(lambda a: jax.reshard(a, in_sharding), pointing_i)
     masker = jax.tree.map(lambda a: jax.reshard(a, in_sharding), model.masker)
 
+    @jax.shard_map(mesh=mesh, out_specs=P(), check_vma=False)
     def hits_kernel(
         pointing_i: PointingOperator, masker: AbstractLinearOperator
     ) -> Int64[Array, '...']:
@@ -375,11 +374,11 @@ def accumulate_hits(model: ObservationModel, mesh: Mesh) -> Int64[Array, '...']:
             masked_i = jax.tree.leaves(m_i(per_obs_ones))[0]
             return carry + jnp.int64(p_i.T(StokesI(masked_i)).i), None
 
-        init = jax.lax.pcast(zeros, mesh.axis_names, to='varying')
+        init = jax.lax.pcast(jnp.zeros(map_shape, jnp.int64), mesh.axis_names, to='varying')
         hits, _ = jax.lax.scan(step, init, (pointing_i, masker))
         return jax.lax.psum(hits, axis_name=mesh.axis_names)  # type: ignore[no-any-return]
 
-    return jax.shard_map(hits_kernel, mesh=mesh, out_specs=P())(pointing_i, masker)
+    return hits_kernel(pointing_i, masker)
 
 
 @jax.jit(static_argnames=('config', 'mesh'))
@@ -394,8 +393,9 @@ def accumulate_rhs(
     model = jax.tree.map(lambda a: jax.reshard(a, in_sharding), model)
     read_indices = jax.reshard(read_indices, in_sharding)
 
-    zeros = furax.tree.zeros_like(model.map_structure)
+    map_structure = model.map_structure
 
+    @jax.shard_map(mesh=mesh, out_specs=P(), check_vma=False)
     def rhs_kernel(model: ObservationModel, indices: Array) -> StokesPyTreeType:
         def step(carry: StokesPyTreeType, args: Any) -> tuple[StokesPyTreeType, None]:
             obs, i = args
@@ -414,11 +414,11 @@ def accumulate_rhs(
                 )(jax.random.key(config.gaps.fill_options.seed), tod)
             return furax.tree.add(carry, obs.H.T(obs.masker(obs.W(tod)))), None
 
-        init = jax.lax.pcast(zeros, mesh.axis_names, to='varying')
+        init = jax.lax.pcast(furax.tree.zeros_like(map_structure), mesh.axis_names, to='varying')
         rhs, _ = jax.lax.scan(step, init, (model, indices))
         return jax.lax.psum(rhs, axis_name=mesh.axis_names)  # type: ignore[no-any-return]
 
-    return jax.shard_map(rhs_kernel, mesh=mesh, out_specs=P())(model, read_indices)
+    return rhs_kernel(model, read_indices)
 
 
 def get_obs_distribution_to_process(

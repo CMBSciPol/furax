@@ -191,10 +191,14 @@ class SystemOperator(AbstractLinearOperator):
 
 def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel], Array]:
     """Compute the noise model and sample rate for a single observation block."""
-    fs = _sample_rate(data['timestamps'])
+    # Timestamps and HWP angles are kept in float64 by the reader for precision.
+    # Downcast the derived scalars to ``config.dtype`` so the noise-fit pipeline
+    # (welch -> fit_psd_model -> WhiteNoiseModel.W) doesn't silently promote
+    # the entire operator chain back to float64.
+    fs = _sample_rate(data['timestamps']).astype(config.dtype)
     if config.noise.fit_from_data:
         noise_model_class = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
-        fhwp = _hwp_frequency(data['timestamps'], data['hwp_angles'])
+        fhwp = _hwp_frequency(data['timestamps'], data['hwp_angles']).astype(config.dtype)
 
         def _compute_Pxx_and_fit(tod):  # type: ignore[no-untyped-def]
             f, Pxx = jax.scipy.signal.welch(tod, fs=fs, nperseg=config.noise.fitting.nperseg)

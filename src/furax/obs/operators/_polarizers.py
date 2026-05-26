@@ -1,10 +1,8 @@
-import jax.numpy as jnp
 import numpy as np
 from jax.typing import DTypeLike
 from jaxtyping import Array, Float
 
 from furax import AbstractLinearOperator
-from furax.core._base import _AbstractLazyDualOperator
 from furax.core.rules import AbstractBinaryRule
 
 from ..stokes import (
@@ -53,19 +51,6 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         if isinstance(x, StokesQU):
             return 0.5 * x.q
         return 0.5 * (x.i + x.q)
-
-    def transpose(self) -> AbstractLinearOperator:
-        return LinearPolarizerTransposeOperator(operator=self)
-
-
-class LinearPolarizerTransposeOperator(_AbstractLazyDualOperator):
-    operator: LinearPolarizerOperator
-
-    def mv(self, x: Float[Array, '...']) -> StokesPyTreeType:
-        cls = type(self.operator.in_structure)
-        half = 0.5 * x
-        zero = jnp.zeros_like(x)
-        return cls.from_iquv(half, half, zero, zero)  # type: ignore[no-any-return]
 
 
 class LinearPolarizerHWPRule(AbstractBinaryRule):

@@ -102,7 +102,7 @@ class ScanBlockDiagonalOperator(AbstractScanBlockOperator):
         def kernel(operator, x):  # type: ignore[no-untyped-def]
             def step(_, args):  # type: ignore[no-untyped-def]
                 op, x_i = args
-                return None, op.mv(x_i)
+                return None, op(x_i)
 
             _, out = jax.lax.scan(step, None, (operator, x))
             return out
@@ -142,7 +142,7 @@ class ScanBlockColumnOperator(AbstractScanBlockOperator):
         @jax.shard_map(out_specs=P(axis), check_vma=False)
         def kernel(operator, x):  # type: ignore[no-untyped-def]
             def step(_, op):  # type: ignore[no-untyped-def]
-                return None, op.mv(x)
+                return None, op(x)
 
             _, out = jax.lax.scan(step, None, operator)
             return out
@@ -184,7 +184,7 @@ class ScanBlockRowOperator(AbstractScanBlockOperator):
         def kernel(operator, x):  # type: ignore[no-untyped-def]
             def step(carry, args):  # type: ignore[no-untyped-def]
                 op, x_i = args
-                return tree.add(carry, op.mv(x_i)), None
+                return tree.add(carry, op(x_i)), None
 
             # pcast makes the replicated zeros match the varying carry type inside shard_map
             init = jax.lax.pcast(tree.zeros_like(out_structure), axis, to='varying')
@@ -229,7 +229,7 @@ class ScanAdditionOperator(AbstractScanBlockOperator):
         @jax.shard_map(out_specs=P(), check_vma=False)
         def kernel(operator, x):  # type: ignore[no-untyped-def]
             def step(carry, op):  # type: ignore[no-untyped-def]
-                return tree.add(carry, op.mv(x)), None
+                return tree.add(carry, op(x)), None
 
             # pcast makes the replicated zeros match the varying carry type inside shard_map
             init = jax.lax.pcast(tree.zeros_like(out_structure), axis, to='varying')

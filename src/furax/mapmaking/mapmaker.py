@@ -1,7 +1,7 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from functools import cached_property
 from logging import Logger
 from math import prod
@@ -94,10 +94,7 @@ class MultiObservationMapMaker(Generic[T]):
                     "Received stokes='IQU', but ATOP does not support intensity map reconstruction."
                     " Falling back to stokes='QU' instead."
                 )
-                self.config = replace(
-                    self.config,
-                    landscape=replace(self.config.landscape, stokes='QU'),
-                )
+                self.config.landscape.stokes = 'QU'
 
     @cached_property
     def mesh(self) -> Mesh:

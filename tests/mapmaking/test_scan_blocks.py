@@ -60,9 +60,10 @@ def mesh():
     return jax.make_mesh((jax.device_count(),), ('obs',))
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(scope='module', autouse=True)
 def set_mesh(mesh):
-    jax.set_mesh(mesh)
+    with jax.set_mesh(mesh):
+        yield
 
 
 def _make_blocks(sharding=None, *, n_in: int = N_IN) -> _TestOp:

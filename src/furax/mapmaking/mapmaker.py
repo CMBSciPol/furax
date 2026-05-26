@@ -366,8 +366,6 @@ def accumulate_hits(model: ObservationModel) -> Int64[Array, '...']:
 
     mesh = jax.sharding.get_abstract_mesh()
     axis = mesh.axis_names[0]
-    pointing_i = jax.tree.map(lambda a: jax.reshard(a, P(axis)), pointing_i)
-    masker = jax.tree.map(lambda a: jax.reshard(a, P(axis)), model.masker)
 
     @jax.shard_map(out_specs=P(), check_vma=False)
     def hits_kernel(pointing_i, masker):  # type: ignore[no-untyped-def]
@@ -382,7 +380,7 @@ def accumulate_hits(model: ObservationModel) -> Int64[Array, '...']:
         hits, _ = jax.lax.scan(step, init, (pointing_i, masker))
         return jax.lax.psum(hits, axis_name=axis)
 
-    return hits_kernel(pointing_i, masker)  # type: ignore[no-any-return]
+    return hits_kernel(pointing_i, model.masker)  # type: ignore[no-any-return]
 
 
 @jax.jit(static_argnames=('fill_gaps', 'correlation_length', 'gap_filling_params'))
@@ -397,8 +395,6 @@ def accumulate_rhs(
 ) -> StokesPyTreeType:
     mesh = jax.sharding.get_abstract_mesh()
     axis = mesh.axis_names[0]
-    model = jax.tree.map(lambda a: jax.reshard(a, P(axis)), model)
-    read_indices = jax.reshard(read_indices, P(axis))
 
     map_structure = model.map_structure
 

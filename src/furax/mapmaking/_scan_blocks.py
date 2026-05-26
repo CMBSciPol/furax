@@ -107,11 +107,7 @@ class ScanBlockDiagonalOperator(AbstractScanBlockOperator):
             _, out = jax.lax.scan(step, None, (operator, x))
             return out
 
-        # shard_map validates in_specs against actual array sharding; reshard sets it
-        # explicitly so the check passes even when sharding is lost inside a JIT trace
-        operator = jax.tree.map(lambda a: jax.reshard(a, P(axis)), self.operator)
-        x = jax.tree.map(lambda a: jax.reshard(a, P(axis)), x)
-        return kernel(operator, x)
+        return kernel(self.operator, x)
 
     def transpose(self) -> AbstractLinearOperator:
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
@@ -151,8 +147,7 @@ class ScanBlockColumnOperator(AbstractScanBlockOperator):
             _, out = jax.lax.scan(step, None, operator)
             return out
 
-        operator = jax.tree.map(lambda leaf: jax.reshard(leaf, P(axis)), self.operator)
-        return kernel(operator, x)
+        return kernel(self.operator, x)
 
     def transpose(self) -> AbstractLinearOperator:
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
@@ -196,9 +191,7 @@ class ScanBlockRowOperator(AbstractScanBlockOperator):
             out, _ = jax.lax.scan(step, init, (operator, x))
             return jax.lax.psum(out, axis_name=axis)
 
-        operator = jax.tree.map(lambda a: jax.reshard(a, P(axis)), self.operator)
-        x = jax.tree.map(lambda a: jax.reshard(a, P(axis)), x)
-        return kernel(operator, x)
+        return kernel(self.operator, x)
 
     def transpose(self) -> AbstractLinearOperator:
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
@@ -243,8 +236,7 @@ class ScanAdditionOperator(AbstractScanBlockOperator):
             out, _ = jax.lax.scan(step, init, operator)
             return jax.lax.psum(out, axis_name=axis)
 
-        operator = jax.tree.map(lambda leaf: jax.reshard(leaf, P(axis)), self.operator)
-        return kernel(operator, x)
+        return kernel(self.operator, x)
 
     def transpose(self) -> AbstractLinearOperator:
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):

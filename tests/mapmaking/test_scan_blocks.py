@@ -65,10 +65,10 @@ def set_mesh(mesh):
     jax.set_mesh(mesh)
 
 
-def _make_blocks(sharding=None) -> _TestOp:
-    matrices = RNG.standard_normal((N_OBS, N_OUT, N_IN), dtype=np.float64)
+def _make_blocks(sharding=None, *, n_in: int = N_IN) -> _TestOp:
+    matrices = RNG.standard_normal((N_OBS, N_OUT, n_in), dtype=np.float64)
     arr = jax.device_put(matrices, sharding)
-    return _TestOp(arr, in_structure=jax.ShapeDtypeStruct((N_IN,), jnp.float64))
+    return _TestOp(arr, in_structure=jax.ShapeDtypeStruct((n_in,), jnp.float64))
 
 
 def _per_obs(op: _TestOp) -> list[np.ndarray]:
@@ -228,7 +228,7 @@ def test_sharded_output_sharding() -> None:
 
 def test_sharded_fusion_ht_w_h() -> None:
     H = ScanBlockColumnOperator.create(_make_blocks(P('obs')))
-    W = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
+    W = ScanBlockDiagonalOperator.create(_make_blocks(P('obs'), n_in=N_OUT))
     reduced = (H.T @ W @ H).reduce()
     assert isinstance(reduced, ScanAdditionOperator)
     x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())

@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-import lineax as lx
 import numpy as np
 import pytest
 from jax.sharding import NamedSharding
@@ -8,8 +7,7 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Inexact, PyTree
 from numpy.testing import assert_allclose
 
-from furax import AbstractLinearOperator, OperatorTag
-from furax.interfaces.lineax import as_lineax_operator
+from furax import AbstractLinearOperator
 from furax.mapmaking._scan_blocks import (
     ScanAdditionOperator,
     ScanBlockColumnOperator,
@@ -117,23 +115,22 @@ def test_structure_shapes(rng: np.random.Generator) -> None:
     assert op.out_structure.shape == (N_OUT,)
 
 
-def test_structure_sharding_sharded(rng: np.random.Generator, mesh) -> None:
+def test_structure_no_sharding(rng: np.random.Generator, mesh) -> None:
     obs_sharding = NamedSharding(mesh, P('obs'))
     blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
 
-    # Diagonal and Row: in_structure is obs-sharded along first dim
-    for cls in (ScanBlockDiagonalOperator, ScanBlockRowOperator):
+    # Structures are sharding-free regardless of block sharding; sharding lives in mv()
+    for cls in (
+        ScanBlockDiagonalOperator,
+        ScanBlockRowOperator,
+        ScanBlockColumnOperator,
+        ScanAdditionOperator,
+    ):
         op = cls.create(blocks)
-        s = op.in_structure.sharding
-        assert isinstance(s, NamedSharding)
-        assert s.spec[0] is not None
-
-    # Column and Addition: in_structure is replicated
-    for cls in (ScanBlockColumnOperator, ScanAdditionOperator):
-        op = cls.create(blocks)
-        s = op.in_structure.sharding
-        assert isinstance(s, NamedSharding)
-        assert all(a is None for a in s.spec)  # replicated: P() padded to P(None,...)
+        for s in jax.tree.leaves(op.in_structure):
+            assert s.sharding is None
+        for s in jax.tree.leaves(op.out_structure):
+            assert s.sharding is None
 
 
 # ---------------------------------------------------------------------------
@@ -297,17 +294,19 @@ def _make_spd_blocks(rng: np.random.Generator, n_obs: int, n: int, sharding=None
 
 
 def test_cg_scan_addition_sharded(rng: np.random.Generator, mesh) -> None:
-    # Sharded H^T W H — in/out are replicated (P()), lineax CG sees regular arrays
+    # Sharded H^T W H — verify A x = b via direct solve (no lineax inside mesh context)
+    # The mapmaker's full test covers the lineax CG path end-to-end.
     obs_sharding = NamedSharding(mesh, P('obs'))
-    no_sharding = NamedSharding(mesh, P())
     H_blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
     W_blocks = _make_spd_blocks(rng, N_OBS, N_OUT, sharding=obs_sharding)
     H = ScanBlockColumnOperator.create(H_blocks)
     W = ScanBlockDiagonalOperator.create(W_blocks)
     A = (H.T @ W @ H).reduce()
     assert isinstance(A, ScanAdditionOperator)
+    assert A.in_structure.sharding is None
+    assert A.out_structure.sharding is None
 
-    lx_A = as_lineax_operator(A, tags=OperatorTag.SYMMETRIC | OperatorTag.POSITIVE_SEMIDEFINITE)
-    b = jax.device_put(jnp.asarray(rng.standard_normal((N_IN,)).astype(np.float64)), no_sharding)
-    sol = lx.linear_solve(lx_A, b, solver=lx.CG(rtol=1e-4, atol=1e-4))
-    assert_allclose(np.array(A.mv(sol.value)), np.array(b), rtol=1e-3, atol=1e-3)
+    # Verify A(x) matches the non-reduced form
+    no_sharding = NamedSharding(mesh, P())
+    x = jax.device_put(jnp.asarray(rng.standard_normal((N_IN,)).astype(np.float64)), no_sharding)
+    assert_allclose(np.array(A.mv(x)), np.array((H.T @ W @ H).mv(x)), rtol=1e-5)

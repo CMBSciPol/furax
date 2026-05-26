@@ -3,12 +3,17 @@ from typing import Self
 
 import jax
 from jax import Array
-from jax.sharding import AbstractMesh, NamedSharding
+from jax.sharding import AbstractMesh
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Inexact, PyTree
 
 from furax import AbstractLinearOperator, tree
 from furax.core.rules import AbstractBinaryRule
+
+# jax.eval_shape inside a jax.set_mesh context annotates outputs with sharding information,
+# which breaks operator compatibility checks. Wrapping inner transpose/reduction calls with
+# use_abstract_mesh(_EMPTY_MESH) clears the active mesh so those structs stay sharding-free.
+_EMPTY_MESH = jax.sharding.AbstractMesh((), ())
 
 
 def _get_mesh() -> AbstractMesh:
@@ -35,21 +40,19 @@ class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
         """Returns sharding-aware in_structure"""
 
     def reduce(self) -> AbstractLinearOperator:
-        return type(self)(self.blocks.reduce(), in_structure=self.in_structure)
+        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
+            reduced_blocks = self.blocks.reduce()
+        return type(self)(reduced_blocks, in_structure=self.in_structure)
 
 
-def _augment_structure(
+def _prepend_axis(
     structure: PyTree[jax.ShapeDtypeStruct],
     *,
-    spec: P,
     axis_size: int | None = None,
 ) -> PyTree[jax.ShapeDtypeStruct]:
-    mesh = _get_mesh()
-
     def transform(s: jax.ShapeDtypeStruct) -> jax.ShapeDtypeStruct:
         shape = (axis_size, *s.shape) if axis_size is not None else s.shape
-        padded = P(*spec, *((None,) * (len(shape) - len(spec))))
-        return jax.ShapeDtypeStruct(shape, s.dtype, sharding=NamedSharding(mesh, padded))
+        return jax.ShapeDtypeStruct(shape, s.dtype)
 
     return jax.tree.map(transform, structure)
 
@@ -58,8 +61,12 @@ class ScanBlockDiagonalOperator(AbstractScanBlockOperator):
     @classmethod
     def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
         axis_size = jax.eval_shape(lambda: jax.tree.leaves(blocks)[0]).shape[0]
-        spec = P(_get_mesh().axis_names[0])
-        return _augment_structure(blocks.in_structure, axis_size=axis_size, spec=spec)
+        return _prepend_axis(blocks.in_structure, axis_size=axis_size)
+
+    @property
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        n = jax.tree.leaves(self.in_structure)[0].shape[0]
+        return _prepend_axis(self.blocks.out_structure, axis_size=n)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
@@ -80,13 +87,20 @@ class ScanBlockDiagonalOperator(AbstractScanBlockOperator):
         return kernel(blocks, x)
 
     def transpose(self) -> AbstractLinearOperator:
-        return ScanBlockDiagonalOperator(self.blocks.T, in_structure=self.out_structure)
+        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
+            blocks_T = self.blocks.T
+        return ScanBlockDiagonalOperator(blocks_T, in_structure=self.out_structure)
 
 
 class ScanBlockColumnOperator(AbstractScanBlockOperator):
     @classmethod
     def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
-        return _augment_structure(blocks.in_structure, spec=P())
+        return blocks.in_structure
+
+    @property
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        n = jax.tree.leaves(self.blocks)[0].shape[0]
+        return _prepend_axis(self.blocks.out_structure, axis_size=n)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
@@ -103,15 +117,20 @@ class ScanBlockColumnOperator(AbstractScanBlockOperator):
         return kernel(blocks, x)
 
     def transpose(self) -> AbstractLinearOperator:
-        return ScanBlockRowOperator(self.blocks.T, in_structure=self.out_structure)
+        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
+            blocks_T = self.blocks.T
+        return ScanBlockRowOperator(blocks_T, in_structure=self.out_structure)
 
 
 class ScanBlockRowOperator(AbstractScanBlockOperator):
     @classmethod
     def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
         axis_size = jax.eval_shape(lambda: jax.tree.leaves(blocks)[0]).shape[0]
-        spec = P(_get_mesh().axis_names[0])
-        return _augment_structure(blocks.in_structure, axis_size=axis_size, spec=spec)
+        return _prepend_axis(blocks.in_structure, axis_size=axis_size)
+
+    @property
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.blocks.out_structure
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
@@ -133,13 +152,19 @@ class ScanBlockRowOperator(AbstractScanBlockOperator):
         return kernel(blocks, x)
 
     def transpose(self) -> AbstractLinearOperator:
-        return ScanBlockColumnOperator(self.blocks.T, in_structure=self.out_structure)
+        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
+            blocks_T = self.blocks.T
+        return ScanBlockColumnOperator(blocks_T, in_structure=self.out_structure)
 
 
 class ScanAdditionOperator(AbstractScanBlockOperator):
     @classmethod
     def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
-        return _augment_structure(blocks.in_structure, spec=P())
+        return blocks.in_structure
+
+    @property
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.blocks.out_structure
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
@@ -159,7 +184,9 @@ class ScanAdditionOperator(AbstractScanBlockOperator):
         return kernel(blocks, x)
 
     def transpose(self) -> AbstractLinearOperator:
-        return ScanAdditionOperator(self.blocks.T, in_structure=self.out_structure)
+        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
+            blocks_T = self.blocks.T
+        return ScanAdditionOperator(blocks_T, in_structure=self.out_structure)
 
 
 class AbstractScanFusionRule(AbstractBinaryRule):
@@ -170,7 +197,8 @@ class AbstractScanFusionRule(AbstractBinaryRule):
     ) -> list[AbstractLinearOperator]:
         assert isinstance(left, AbstractScanBlockOperator)  # mypy
         assert isinstance(right, AbstractScanBlockOperator)  # mypy
-        composed = (left.blocks @ right.blocks).reduce()
+        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
+            composed = (left.blocks @ right.blocks).reduce()
         return [self.reduced_class.create(composed)]
 
 

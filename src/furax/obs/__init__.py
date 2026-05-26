@@ -7,6 +7,8 @@ from ._likelihoods import (
 )
 from .operators import (
     AbstractSEDOperator,
+    BeamOperator,
+    BeamOperatorIQU,
     CMBOperator,
     DustOperator,
     HWPOperator,
@@ -30,4 +32,6 @@ __all__ = [
     'spectral_cmb_variance',
     'sky_signal',
     'preconditionner',
+    'BeamOperator',
+    'BeamOperatorIQU',
 ]

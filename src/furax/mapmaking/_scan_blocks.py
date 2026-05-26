@@ -24,6 +24,18 @@ def _get_mesh() -> AbstractMesh:
 
 
 class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
+    """Base class for operators built from N stacked blocks.
+
+    ``blocks`` is an operator whose leaves carry a leading axis of size ``N`` obtained by
+    stacking N individual operators into a single pytree beforehand (e.g. with
+    ``jax.tree.map(jnp.stack, list_of_ops)``).  ``blocks`` itself is not expected to handle
+    that leading axis: ``mv`` uses ``jax.lax.scan`` to peel off one slice at a time and feed
+    it to the underlying operator logic, inside a ``shard_map`` kernel that distributes the
+    work across devices along the first mesh axis.
+
+    An active mesh context is required when calling ``mv``; use ``jax.set_mesh`` beforehand.
+    """
+
     blocks: AbstractLinearOperator
 
     @classmethod
@@ -58,6 +70,20 @@ def _prepend_axis(
 
 
 class ScanBlockDiagonalOperator(AbstractScanBlockOperator):
+    """Block-diagonal operator: each block acts independently on its own slice of the input.
+
+    If ``blocks`` maps ``(N_in,) -> (N_out,)`` with leading axis ``N``, this operator
+    maps ``(N, N_in) -> (N, N_out)``.
+
+    Transpose is another ``ScanBlockDiagonalOperator`` over the transposed blocks.
+
+    Example — per-observation noise weighting (square blocks, ``N_in == N_out``):
+
+        >>> with jax.set_mesh(jax.make_mesh((4,), ('obs',))):
+        ...     W = ScanBlockDiagonalOperator.create(noise_blocks)  # blocks: (N_obs, N, N)
+        ...     weighted = W(samples)                               # (N_obs, N) -> (N_obs, N)
+    """
+
     @classmethod
     def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
         axis_size = jax.eval_shape(lambda: jax.tree.leaves(blocks)[0]).shape[0]
@@ -93,6 +119,20 @@ class ScanBlockDiagonalOperator(AbstractScanBlockOperator):
 
 
 class ScanBlockColumnOperator(AbstractScanBlockOperator):
+    """Column operator: applies all blocks to the same input and stacks the results.
+
+    If ``blocks`` maps ``(N_in,) -> (N_out,)`` with leading axis ``N``, this operator
+    maps ``(N_in,) -> (N, N_out)``.
+
+    Transpose is a ``ScanBlockRowOperator`` that sums contributions across blocks.
+
+    Example — pointing matrix from pixel map to time-ordered data:
+
+        >>> with jax.set_mesh(jax.make_mesh((4,), ('obs',))):
+        ...     H = ScanBlockColumnOperator.create(pointing_blocks)  # blocks: (N_obs, N_tod, N_pix)
+        ...     tod = H(pixel_map)                                   # (N_pix,) -> (N_obs, N_tod)
+    """
+
     @classmethod
     def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
         return blocks.in_structure
@@ -123,6 +163,20 @@ class ScanBlockColumnOperator(AbstractScanBlockOperator):
 
 
 class ScanBlockRowOperator(AbstractScanBlockOperator):
+    """Row operator: applies each block to its own input slice and sums the results.
+
+    If ``blocks`` maps ``(N_in,) -> (N_out,)`` with leading axis ``N``, this operator
+    maps ``(N, N_in) -> (N_out,)``.
+
+    This is the transpose of ``ScanBlockColumnOperator``.
+
+    Example — co-addition of time-ordered data back to a pixel map:
+
+        >>> with jax.set_mesh(jax.make_mesh((4,), ('obs',))):
+        ...     HT = ScanBlockRowOperator.create(pointing_blocks_T)  # blocks: (N_obs, N_pix, N_tod)
+        ...     pixel_map = HT(tod)                                  # (N_obs, N_tod) -> (N_pix,)
+    """
+
     @classmethod
     def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
         axis_size = jax.eval_shape(lambda: jax.tree.leaves(blocks)[0]).shape[0]
@@ -158,6 +212,21 @@ class ScanBlockRowOperator(AbstractScanBlockOperator):
 
 
 class ScanAdditionOperator(AbstractScanBlockOperator):
+    """Addition operator: applies all blocks to the same input and sums the results.
+
+    If ``blocks`` maps ``(N_in,) -> (N_out,)`` with leading axis ``N``, this operator
+    maps ``(N_in,) -> (N_out,)``.
+
+    This arises naturally as the reduction of ``ScanBlockRowOperator @ ScanBlockColumnOperator``,
+    e.g. the normal equations operator ``H.T @ W @ H`` in mapmaking.
+
+    Example — normal equations from a pointing and weighting operator:
+
+        >>> with jax.set_mesh(jax.make_mesh((4,), ('obs',))):
+        ...     A = (H.T @ W @ H).reduce()  # reduces to ScanAdditionOperator
+        ...     rhs = A(pixel_map)          # (N_pix,) -> (N_pix,)
+    """
+
     @classmethod
     def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
         return blocks.in_structure

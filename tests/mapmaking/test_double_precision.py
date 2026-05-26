@@ -26,7 +26,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import jax
 import jax.numpy as jnp
 import pytest
 from jaxtyping import Array, Bool, Float
@@ -43,9 +42,7 @@ from furax.mapmaking.config import (
     MapMakingConfig,
     Methods,
     NoiseConfig,
-    NoiseFitConfig,
     PointingConfig,
-    SolverConfig,
 )
 from furax.mapmaking.noise import NoiseModel
 from furax.obs.landscapes import ProjectionType, StokesLandscape
@@ -69,7 +66,7 @@ class _FakeSatelliteObservation(AbstractSatelliteObservation[None]):
         pass
 
     @classmethod
-    def from_file(cls, filename, requested_fields=None) -> '_FakeSatelliteObservation':
+    def from_file(cls, filename, requested_fields=None) -> _FakeSatelliteObservation:
         return cls()
 
     @property

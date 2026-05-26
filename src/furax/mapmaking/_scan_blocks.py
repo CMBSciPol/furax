@@ -24,37 +24,41 @@ def _get_mesh() -> AbstractMesh:
 
 
 class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
-    """Base class for operators built from N stacked blocks.
+    """Base class for operators that apply a batched pytree operator slice-by-slice via scan.
 
-    ``blocks`` is an operator whose leaves carry a leading axis of size ``N`` obtained by
-    stacking N individual operators into a single pytree beforehand (e.g. with
-    ``jax.tree.map(jnp.stack, list_of_ops)``).  ``blocks`` itself is not expected to handle
-    that leading axis: ``mv`` uses ``jax.lax.scan`` to peel off one slice at a time and feed
-    it to the underlying operator logic, inside a ``shard_map`` kernel that distributes the
-    work across devices along the first mesh axis.
+    ``operator`` is an operator whose leaves carry a leading axis of size ``N`` obtained by
+    stacking N individual operators into a single pytree beforehand.  ``operator`` itself is
+    not expected to handle that leading axis: ``mv`` uses ``jax.lax.scan`` to peel off one
+    slice at a time and feed it to the underlying operator logic, inside a ``shard_map`` kernel
+    that distributes the work across devices along the first mesh axis.
+
+    The "block" denomination refers to how each slice appears in the global operator matrix:
+    subclasses arrange the N per-slice operators as blocks of a larger matrix (diagonal,
+    column, or row layout), giving rise to block-diagonal, block-column, and block-row
+    structures respectively.
 
     An active mesh context is required when calling ``mv``; use ``jax.set_mesh`` beforehand.
     """
 
-    blocks: AbstractLinearOperator
+    operator: AbstractLinearOperator
 
     @classmethod
-    def create(cls, blocks: AbstractLinearOperator) -> Self:
-        if len(jax.tree.leaves(blocks)) == 0:
-            msg = 'unable to infer structures from blocks with no leaf'
+    def create(cls, operator: AbstractLinearOperator) -> Self:
+        if len(jax.tree.leaves(operator)) == 0:
+            msg = 'unable to infer structures from operator with no leaf'
             raise RuntimeError(msg)
-        in_structure = cls._infer_in_structure(blocks)
-        return cls(blocks, in_structure=in_structure)
+        in_structure = cls._infer_in_structure(operator)
+        return cls(operator, in_structure=in_structure)
 
     @classmethod
     @abstractmethod
-    def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
+    def _infer_in_structure(cls, operator: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
         """Returns sharding-aware in_structure"""
 
     def reduce(self) -> AbstractLinearOperator:
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            reduced_blocks = self.blocks.reduce()
-        return type(self)(reduced_blocks, in_structure=self.in_structure)
+            reduced_operator = self.operator.reduce()
+        return type(self)(reduced_operator, in_structure=self.in_structure)
 
 
 def _prepend_axis(
@@ -72,190 +76,180 @@ def _prepend_axis(
 class ScanBlockDiagonalOperator(AbstractScanBlockOperator):
     """Block-diagonal operator: each block acts independently on its own slice of the input.
 
-    If ``blocks`` maps ``(N_in,) -> (N_out,)`` with leading axis ``N``, this operator
-    maps ``(N, N_in) -> (N, N_out)``.
+    Given ``operator: (*in,) -> (*out,)`` with ``N`` slices, maps ``(N, *in) -> (N, *out)``.
 
-    Transpose is another ``ScanBlockDiagonalOperator`` over the transposed blocks.
-
-    Example — per-observation noise weighting (square blocks, ``N_in == N_out``):
+    Example — per-observation noise weighting (square blocks, ``*in == *out``):
 
         >>> with jax.set_mesh(jax.make_mesh((4,), ('obs',))):
-        ...     W = ScanBlockDiagonalOperator.create(noise_blocks)  # blocks: (N_obs, N, N)
-        ...     weighted = W(samples)                               # (N_obs, N) -> (N_obs, N)
+        ...     W = ScanBlockDiagonalOperator.create(noise_op)  # leaves: (N, *in)
+        ...     weighted = W(samples)                           # (N, *in) -> (N, *out)
     """
 
     @classmethod
-    def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
-        axis_size = jax.eval_shape(lambda: jax.tree.leaves(blocks)[0]).shape[0]
-        return _prepend_axis(blocks.in_structure, axis_size=axis_size)
+    def _infer_in_structure(cls, operator: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
+        axis_size = jax.eval_shape(lambda: jax.tree.leaves(operator)[0]).shape[0]
+        return _prepend_axis(operator.in_structure, axis_size=axis_size)
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         n = jax.tree.leaves(self.in_structure)[0].shape[0]
-        return _prepend_axis(self.blocks.out_structure, axis_size=n)
+        return _prepend_axis(self.operator.out_structure, axis_size=n)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
 
         @jax.shard_map(out_specs=P(axis), check_vma=False)
-        def kernel(blocks, x):  # type: ignore[no-untyped-def]
+        def kernel(operator, x):  # type: ignore[no-untyped-def]
             def step(_, args):  # type: ignore[no-untyped-def]
                 op, x_i = args
                 return None, op.mv(x_i)
 
-            _, out = jax.lax.scan(step, None, (blocks, x))
+            _, out = jax.lax.scan(step, None, (operator, x))
             return out
 
         # shard_map validates in_specs against actual array sharding; reshard sets it
         # explicitly so the check passes even when sharding is lost inside a JIT trace
-        blocks = jax.tree.map(lambda a: jax.reshard(a, P(axis)), self.blocks)
+        operator = jax.tree.map(lambda a: jax.reshard(a, P(axis)), self.operator)
         x = jax.tree.map(lambda a: jax.reshard(a, P(axis)), x)
-        return kernel(blocks, x)
+        return kernel(operator, x)
 
     def transpose(self) -> AbstractLinearOperator:
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            blocks_T = self.blocks.T
-        return ScanBlockDiagonalOperator(blocks_T, in_structure=self.out_structure)
+            operator_T = self.operator.T
+        return ScanBlockDiagonalOperator(operator_T, in_structure=self.out_structure)
 
 
 class ScanBlockColumnOperator(AbstractScanBlockOperator):
     """Column operator: applies all blocks to the same input and stacks the results.
 
-    If ``blocks`` maps ``(N_in,) -> (N_out,)`` with leading axis ``N``, this operator
-    maps ``(N_in,) -> (N, N_out)``.
-
-    Transpose is a ``ScanBlockRowOperator`` that sums contributions across blocks.
+    Given ``operator: (*in,) -> (*out,)`` with ``N`` slices, maps ``(*in,) -> (N, *out)``.
 
     Example — pointing matrix from pixel map to time-ordered data:
 
         >>> with jax.set_mesh(jax.make_mesh((4,), ('obs',))):
-        ...     H = ScanBlockColumnOperator.create(pointing_blocks)  # blocks: (N_obs, N_tod, N_pix)
-        ...     tod = H(pixel_map)                                   # (N_pix,) -> (N_obs, N_tod)
+        ...     H = ScanBlockColumnOperator.create(pointing_op)  # leaves: (N, *out)
+        ...     tod = H(pixel_map)                               # (*in,) -> (N, *out)
     """
 
     @classmethod
-    def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
-        return blocks.in_structure
+    def _infer_in_structure(cls, operator: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
+        return operator.in_structure
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        n = jax.tree.leaves(self.blocks)[0].shape[0]
-        return _prepend_axis(self.blocks.out_structure, axis_size=n)
+        n = jax.tree.leaves(self.operator)[0].shape[0]
+        return _prepend_axis(self.operator.out_structure, axis_size=n)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
 
         @jax.shard_map(out_specs=P(axis), check_vma=False)
-        def kernel(blocks, x):  # type: ignore[no-untyped-def]
+        def kernel(operator, x):  # type: ignore[no-untyped-def]
             def step(_, op):  # type: ignore[no-untyped-def]
                 return None, op.mv(x)
 
-            _, out = jax.lax.scan(step, None, blocks)
+            _, out = jax.lax.scan(step, None, operator)
             return out
 
-        blocks = jax.tree.map(lambda leaf: jax.reshard(leaf, P(axis)), self.blocks)
-        return kernel(blocks, x)
+        operator = jax.tree.map(lambda leaf: jax.reshard(leaf, P(axis)), self.operator)
+        return kernel(operator, x)
 
     def transpose(self) -> AbstractLinearOperator:
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            blocks_T = self.blocks.T
-        return ScanBlockRowOperator(blocks_T, in_structure=self.out_structure)
+            operator_T = self.operator.T
+        return ScanBlockRowOperator(operator_T, in_structure=self.out_structure)
 
 
 class ScanBlockRowOperator(AbstractScanBlockOperator):
     """Row operator: applies each block to its own input slice and sums the results.
 
-    If ``blocks`` maps ``(N_in,) -> (N_out,)`` with leading axis ``N``, this operator
-    maps ``(N, N_in) -> (N_out,)``.
-
-    This is the transpose of ``ScanBlockColumnOperator``.
+    Given ``operator: (*in,) -> (*out,)`` with ``N`` slices, maps ``(N, *in) -> (*out,)``.
 
     Example — co-addition of time-ordered data back to a pixel map:
 
         >>> with jax.set_mesh(jax.make_mesh((4,), ('obs',))):
-        ...     HT = ScanBlockRowOperator.create(pointing_blocks_T)  # blocks: (N_obs, N_pix, N_tod)
-        ...     pixel_map = HT(tod)                                  # (N_obs, N_tod) -> (N_pix,)
+        ...     HT = ScanBlockRowOperator.create(pointing_op_T)  # leaves: (N, *in)
+        ...     pixel_map = HT(tod)                              # (N, *in) -> (*out,)
     """
 
     @classmethod
-    def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
-        axis_size = jax.eval_shape(lambda: jax.tree.leaves(blocks)[0]).shape[0]
-        return _prepend_axis(blocks.in_structure, axis_size=axis_size)
+    def _infer_in_structure(cls, operator: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
+        axis_size = jax.eval_shape(lambda: jax.tree.leaves(operator)[0]).shape[0]
+        return _prepend_axis(operator.in_structure, axis_size=axis_size)
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.blocks.out_structure
+        return self.operator.out_structure
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
-        out_structure = self.blocks.out_structure
+        out_structure = self.operator.out_structure
 
         @jax.shard_map(out_specs=P(), check_vma=False)
-        def kernel(blocks, x):  # type: ignore[no-untyped-def]
+        def kernel(operator, x):  # type: ignore[no-untyped-def]
             def step(carry, args):  # type: ignore[no-untyped-def]
                 op, x_i = args
                 return tree.add(carry, op.mv(x_i)), None
 
             # pcast makes the replicated zeros match the varying carry type inside shard_map
             init = jax.lax.pcast(tree.zeros_like(out_structure), axis, to='varying')
-            out, _ = jax.lax.scan(step, init, (blocks, x))
+            out, _ = jax.lax.scan(step, init, (operator, x))
             return jax.lax.psum(out, axis_name=axis)
 
-        blocks = jax.tree.map(lambda a: jax.reshard(a, P(axis)), self.blocks)
+        operator = jax.tree.map(lambda a: jax.reshard(a, P(axis)), self.operator)
         x = jax.tree.map(lambda a: jax.reshard(a, P(axis)), x)
-        return kernel(blocks, x)
+        return kernel(operator, x)
 
     def transpose(self) -> AbstractLinearOperator:
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            blocks_T = self.blocks.T
-        return ScanBlockColumnOperator(blocks_T, in_structure=self.out_structure)
+            operator_T = self.operator.T
+        return ScanBlockColumnOperator(operator_T, in_structure=self.out_structure)
 
 
 class ScanAdditionOperator(AbstractScanBlockOperator):
     """Addition operator: applies all blocks to the same input and sums the results.
 
-    If ``blocks`` maps ``(N_in,) -> (N_out,)`` with leading axis ``N``, this operator
-    maps ``(N_in,) -> (N_out,)``.
+    Given ``operator: (*in,) -> (*out,)`` with ``N`` slices, maps ``(*in,) -> (*out,)``.
 
-    This arises naturally as the reduction of ``ScanBlockRowOperator @ ScanBlockColumnOperator``,
+    Arises naturally as the reduction of ``ScanBlockRowOperator @ ScanBlockColumnOperator``,
     e.g. the normal equations operator ``H.T @ W @ H`` in mapmaking.
 
     Example — normal equations from a pointing and weighting operator:
 
         >>> with jax.set_mesh(jax.make_mesh((4,), ('obs',))):
         ...     A = (H.T @ W @ H).reduce()  # reduces to ScanAdditionOperator
-        ...     rhs = A(pixel_map)          # (N_pix,) -> (N_pix,)
+        ...     rhs = A(pixel_map)          # (*in,) -> (*out,)
     """
 
     @classmethod
-    def _infer_in_structure(cls, blocks: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
-        return blocks.in_structure
+    def _infer_in_structure(cls, operator: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
+        return operator.in_structure
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.blocks.out_structure
+        return self.operator.out_structure
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
-        out_structure = self.blocks.out_structure
+        out_structure = self.operator.out_structure
 
         @jax.shard_map(out_specs=P(), check_vma=False)
-        def kernel(blocks, x):  # type: ignore[no-untyped-def]
+        def kernel(operator, x):  # type: ignore[no-untyped-def]
             def step(carry, op):  # type: ignore[no-untyped-def]
                 return tree.add(carry, op.mv(x)), None
 
             # pcast makes the replicated zeros match the varying carry type inside shard_map
             init = jax.lax.pcast(tree.zeros_like(out_structure), axis, to='varying')
-            out, _ = jax.lax.scan(step, init, blocks)
+            out, _ = jax.lax.scan(step, init, operator)
             return jax.lax.psum(out, axis_name=axis)
 
-        blocks = jax.tree.map(lambda leaf: jax.reshard(leaf, P(axis)), self.blocks)
-        return kernel(blocks, x)
+        operator = jax.tree.map(lambda leaf: jax.reshard(leaf, P(axis)), self.operator)
+        return kernel(operator, x)
 
     def transpose(self) -> AbstractLinearOperator:
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            blocks_T = self.blocks.T
-        return ScanAdditionOperator(blocks_T, in_structure=self.out_structure)
+            operator_T = self.operator.T
+        return ScanAdditionOperator(operator_T, in_structure=self.out_structure)
 
 
 class AbstractScanFusionRule(AbstractBinaryRule):
@@ -267,7 +261,7 @@ class AbstractScanFusionRule(AbstractBinaryRule):
         assert isinstance(left, AbstractScanBlockOperator)  # mypy
         assert isinstance(right, AbstractScanBlockOperator)  # mypy
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            composed = (left.blocks @ right.blocks).reduce()
+            composed = (left.operator @ right.operator).reduce()
         return [self.reduced_class.create(composed)]
 
 

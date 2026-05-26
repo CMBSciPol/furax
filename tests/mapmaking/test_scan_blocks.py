@@ -2,7 +2,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Inexact, PyTree
 from numpy.testing import assert_allclose
@@ -53,10 +52,7 @@ N_OBS = 4
 N_IN = 3
 N_OUT = 5
 
-
-@pytest.fixture
-def rng() -> np.random.Generator:
-    return np.random.default_rng(seed=0)
+RNG = np.random.default_rng(seed=0)
 
 
 @pytest.fixture(scope='module')
@@ -69,20 +65,10 @@ def set_mesh(mesh):
     jax.set_mesh(mesh)
 
 
-def _make_blocks(
-    rng: np.random.Generator,
-    n_obs: int,
-    n_out: int,
-    n_in: int,
-    sharding=None,
-) -> _TestOp:
-    matrices = rng.standard_normal((n_obs, n_out, n_in)).astype(np.float64)
-    arr = (
-        jax.device_put(jnp.asarray(matrices), sharding)
-        if sharding is not None
-        else jnp.asarray(matrices)
-    )
-    return _TestOp(arr, in_structure=jax.ShapeDtypeStruct((n_in,), jnp.float64))
+def _make_blocks(sharding=None) -> _TestOp:
+    matrices = RNG.standard_normal((N_OBS, N_OUT, N_IN), dtype=np.float64)
+    arr = jax.device_put(matrices, sharding)
+    return _TestOp(arr, in_structure=jax.ShapeDtypeStruct((N_IN,), jnp.float64))
 
 
 def _per_obs(op: _TestOp) -> list[np.ndarray]:
@@ -95,8 +81,8 @@ def _per_obs(op: _TestOp) -> list[np.ndarray]:
 # ---------------------------------------------------------------------------
 
 
-def test_structure_shapes(rng: np.random.Generator) -> None:
-    blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN)
+def test_structure_shapes() -> None:
+    blocks = _make_blocks()
 
     op = ScanBlockDiagonalOperator.create(blocks)
     assert op.in_structure.shape == (N_OBS, N_IN)
@@ -115,9 +101,8 @@ def test_structure_shapes(rng: np.random.Generator) -> None:
     assert op.out_structure.shape == (N_OUT,)
 
 
-def test_structure_no_sharding(rng: np.random.Generator, mesh) -> None:
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
+def test_structure_no_sharding() -> None:
+    blocks = _make_blocks(P('obs'))
 
     # Structures are sharding-free regardless of block sharding; sharding lives in mv()
     for cls in (
@@ -138,48 +123,38 @@ def test_structure_no_sharding(rng: np.random.Generator, mesh) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sharded_diagonal_mv(rng: np.random.Generator, mesh) -> None:
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
+def test_sharded_diagonal_mv() -> None:
+    blocks = _make_blocks(P('obs'))
     op = ScanBlockDiagonalOperator.create(blocks)
-    x = jax.device_put(
-        jnp.asarray(rng.standard_normal((N_OBS, N_IN)).astype(np.float64)), obs_sharding
-    )
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
     x_np = np.array(jax.device_get(x))
     expected = np.stack([m @ x_np[i] for i, m in enumerate(_per_obs(blocks))])
-    assert_allclose(np.array(op.mv(x)), expected, rtol=1e-5)
+    assert_allclose(op.mv(x), expected, rtol=1e-10)
 
 
-def test_sharded_column_mv(rng: np.random.Generator, mesh) -> None:
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    no_sharding = NamedSharding(mesh, P())
-    blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
+def test_sharded_column_mv() -> None:
+    blocks = _make_blocks(P('obs'))
     op = ScanBlockColumnOperator.create(blocks)
-    x = jax.device_put(jnp.asarray(rng.standard_normal((N_IN,)).astype(np.float64)), no_sharding)
+    x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
     expected = np.stack([m @ np.array(x) for m in _per_obs(blocks)])
-    assert_allclose(np.array(op.mv(x)), expected, rtol=1e-5)
+    assert_allclose(op.mv(x), expected, rtol=1e-10)
 
 
-def test_sharded_row_mv(rng: np.random.Generator, mesh) -> None:
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
+def test_sharded_row_mv() -> None:
+    blocks = _make_blocks(P('obs'))
     op = ScanBlockRowOperator.create(blocks)
-    x = jax.device_put(
-        jnp.asarray(rng.standard_normal((N_OBS, N_IN)).astype(np.float64)), obs_sharding
-    )
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
     x_np = np.array(jax.device_get(x))
     expected = sum(m @ x_np[i] for i, m in enumerate(_per_obs(blocks)))
-    assert_allclose(np.array(op.mv(x)), expected, rtol=1e-5)
+    assert_allclose(op.mv(x), expected, rtol=1e-10)
 
 
-def test_sharded_addition_mv(rng: np.random.Generator, mesh) -> None:
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    no_sharding = NamedSharding(mesh, P())
-    blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
+def test_sharded_addition_mv() -> None:
+    blocks = _make_blocks(P('obs'))
     op = ScanAdditionOperator.create(blocks)
-    x = jax.device_put(jnp.asarray(rng.standard_normal((N_IN,)).astype(np.float64)), no_sharding)
+    x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
     expected = sum(m @ np.array(x) for m in _per_obs(blocks))
-    assert_allclose(np.array(op.mv(x)), expected, rtol=1e-5)
+    assert_allclose(op.mv(x), expected, rtol=1e-10)
 
 
 # ---------------------------------------------------------------------------
@@ -187,52 +162,42 @@ def test_sharded_addition_mv(rng: np.random.Generator, mesh) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sharded_diagonal_transpose(rng: np.random.Generator, mesh) -> None:
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
+def test_sharded_diagonal_transpose() -> None:
+    blocks = _make_blocks(P('obs'))
     op_T = ScanBlockDiagonalOperator.create(blocks).T
     assert isinstance(op_T, ScanBlockDiagonalOperator)
-    y = jax.device_put(
-        jnp.asarray(rng.standard_normal((N_OBS, N_OUT)).astype(np.float64)), obs_sharding
-    )
+    y = jax.device_put(RNG.standard_normal((N_OBS, N_OUT), dtype=np.float64), P('obs'))
     y_np = np.array(jax.device_get(y))
     expected = np.stack([m.T @ y_np[i] for i, m in enumerate(_per_obs(blocks))])
-    assert_allclose(np.array(op_T.mv(y)), expected, rtol=1e-5)
+    assert_allclose(op_T.mv(y), expected, rtol=1e-10)
 
 
-def test_sharded_column_transpose_is_row(rng: np.random.Generator, mesh) -> None:
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
+def test_sharded_column_transpose_is_row() -> None:
+    blocks = _make_blocks(P('obs'))
     op_T = ScanBlockColumnOperator.create(blocks).T
     assert isinstance(op_T, ScanBlockRowOperator)
-    y = jax.device_put(
-        jnp.asarray(rng.standard_normal((N_OBS, N_OUT)).astype(np.float64)), obs_sharding
-    )
+    y = jax.device_put(RNG.standard_normal((N_OBS, N_OUT), dtype=np.float64), P('obs'))
     y_np = np.array(jax.device_get(y))
     expected = sum(m.T @ y_np[i] for i, m in enumerate(_per_obs(blocks)))
-    assert_allclose(np.array(op_T.mv(y)), expected, rtol=1e-5)
+    assert_allclose(op_T.mv(y), expected, rtol=1e-10)
 
 
-def test_sharded_row_transpose_is_column(rng: np.random.Generator, mesh) -> None:
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    no_sharding = NamedSharding(mesh, P())
-    blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
+def test_sharded_row_transpose_is_column() -> None:
+    blocks = _make_blocks(P('obs'))
     op_T = ScanBlockRowOperator.create(blocks).T
     assert isinstance(op_T, ScanBlockColumnOperator)
-    y = jax.device_put(jnp.asarray(rng.standard_normal((N_OUT,)).astype(np.float64)), no_sharding)
+    y = jax.device_put(RNG.standard_normal((N_OUT,), dtype=np.float64), P())
     expected = np.stack([m.T @ np.array(y) for m in _per_obs(blocks)])
-    assert_allclose(np.array(op_T.mv(y)), expected, rtol=1e-5)
+    assert_allclose(op_T.mv(y), expected, rtol=1e-10)
 
 
-def test_sharded_addition_transpose(rng: np.random.Generator, mesh) -> None:
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    no_sharding = NamedSharding(mesh, P())
-    blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
+def test_sharded_addition_transpose() -> None:
+    blocks = _make_blocks(P('obs'))
     op_T = ScanAdditionOperator.create(blocks).T
     assert isinstance(op_T, ScanAdditionOperator)
-    y = jax.device_put(jnp.asarray(rng.standard_normal((N_OUT,)).astype(np.float64)), no_sharding)
+    y = jax.device_put(RNG.standard_normal((N_OUT,), dtype=np.float64), P())
     expected = sum(m.T @ np.array(y) for m in _per_obs(blocks))
-    assert_allclose(np.array(op_T.mv(y)), expected, rtol=1e-5)
+    assert_allclose(op_T.mv(y), expected, rtol=1e-10)
 
 
 # ---------------------------------------------------------------------------
@@ -240,26 +205,20 @@ def test_sharded_addition_transpose(rng: np.random.Generator, mesh) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sharded_output_sharding(rng: np.random.Generator, mesh) -> None:
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    no_sharding = NamedSharding(mesh, P())
-    blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
+def test_sharded_output_sharding() -> None:
+    blocks = _make_blocks(P('obs'))
 
     cases = [
-        (
-            ScanBlockDiagonalOperator,
-            jnp.ones((N_OBS, N_IN), jnp.float64),
-            obs_sharding,
-            obs_sharding,
-        ),
-        (ScanBlockColumnOperator, jnp.ones((N_IN,), jnp.float64), no_sharding, obs_sharding),
-        (ScanBlockRowOperator, jnp.ones((N_OBS, N_IN), jnp.float64), obs_sharding, no_sharding),
-        (ScanAdditionOperator, jnp.ones((N_IN,), jnp.float64), no_sharding, no_sharding),
+        (ScanBlockDiagonalOperator, (N_OBS, N_IN), P('obs', None), P('obs', None)),
+        (ScanBlockColumnOperator, (N_IN,), P(None), P('obs', None)),
+        (ScanBlockRowOperator, (N_OBS, N_IN), P('obs', None), P(None)),
+        (ScanAdditionOperator, (N_IN,), P(None), P(None)),
     ]
-    for cls, x, x_sharding, expected_out_sharding in cases:
+    for cls, shape, x_spec, expected_spec in cases:
         op = cls.create(blocks)
-        y = op.mv(jax.device_put(x, x_sharding))
-        assert y.sharding == expected_out_sharding
+        x_struct = jax.ShapeDtypeStruct(shape, jnp.float64, sharding=x_spec)
+        y = jax.eval_shape(op.mv, x_struct)
+        assert y.sharding.spec == expected_spec
 
 
 # ---------------------------------------------------------------------------
@@ -267,46 +226,10 @@ def test_sharded_output_sharding(rng: np.random.Generator, mesh) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sharded_fusion_ht_w_h(rng: np.random.Generator, mesh) -> None:
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    no_sharding = NamedSharding(mesh, P())
-    H = ScanBlockColumnOperator.create(_make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding))
-    W = ScanBlockDiagonalOperator.create(
-        _make_blocks(rng, N_OBS, N_OUT, N_OUT, sharding=obs_sharding)
-    )
+def test_sharded_fusion_ht_w_h() -> None:
+    H = ScanBlockColumnOperator.create(_make_blocks(P('obs')))
+    W = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
     reduced = (H.T @ W @ H).reduce()
     assert isinstance(reduced, ScanAdditionOperator)
-    x = jax.device_put(jnp.asarray(rng.standard_normal((N_IN,)).astype(np.float64)), no_sharding)
-    assert_allclose(np.array(reduced.mv(x)), np.array((H.T @ W @ H).mv(x)), rtol=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# Lineax CG integration
-# ---------------------------------------------------------------------------
-
-
-def _make_spd_blocks(rng: np.random.Generator, n_obs: int, n: int, sharding=None) -> _TestOp:
-    """Each block is M @ M.T + I — guaranteed SPD."""
-    m = rng.standard_normal((n_obs, n, n)).astype(np.float64)
-    spd = m @ m.swapaxes(-1, -2) + np.eye(n)
-    arr = jax.device_put(jnp.asarray(spd), sharding) if sharding is not None else jnp.asarray(spd)
-    return _TestOp(arr, in_structure=jax.ShapeDtypeStruct((n,), jnp.float64))
-
-
-def test_cg_scan_addition_sharded(rng: np.random.Generator, mesh) -> None:
-    # Sharded H^T W H — verify A x = b via direct solve (no lineax inside mesh context)
-    # The mapmaker's full test covers the lineax CG path end-to-end.
-    obs_sharding = NamedSharding(mesh, P('obs'))
-    H_blocks = _make_blocks(rng, N_OBS, N_OUT, N_IN, sharding=obs_sharding)
-    W_blocks = _make_spd_blocks(rng, N_OBS, N_OUT, sharding=obs_sharding)
-    H = ScanBlockColumnOperator.create(H_blocks)
-    W = ScanBlockDiagonalOperator.create(W_blocks)
-    A = (H.T @ W @ H).reduce()
-    assert isinstance(A, ScanAdditionOperator)
-    assert A.in_structure.sharding is None
-    assert A.out_structure.sharding is None
-
-    # Verify A(x) matches the non-reduced form
-    no_sharding = NamedSharding(mesh, P())
-    x = jax.device_put(jnp.asarray(rng.standard_normal((N_IN,)).astype(np.float64)), no_sharding)
-    assert_allclose(np.array(A.mv(x)), np.array((H.T @ W @ H).mv(x)), rtol=1e-5)
+    x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
+    assert_allclose(reduced.mv(x), (H.T @ W @ H).mv(x), rtol=1e-10)

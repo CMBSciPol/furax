@@ -52,7 +52,7 @@ from ._model import ObservationModel, pad_model
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
-from .config import LandscapeConfig, MapMakingConfig, Methods, WCSConfig
+from .config import GapFillingConfig, LandscapeConfig, MapMakingConfig, Methods, WCSConfig
 from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
@@ -317,7 +317,16 @@ class MultiObservationMapMaker(Generic[T]):
         """Accumulate the RHS vector across all observations."""
         reader = self.get_reader(['metadata', 'sample_data'])
         read_indices = self.distribute(self.get_padded_read_indices())
-        return accumulate_rhs(model, read_indices, reader, self.config)  # type: ignore[no-any-return]
+        config = self.config
+        fill_gaps = config.gaps.fill and not config.binned
+        return accumulate_rhs(  # type: ignore[no-any-return]
+            model,
+            read_indices,
+            reader,
+            fill_gaps=fill_gaps,
+            correlation_length=config.noise.correlation_length if fill_gaps else None,
+            gap_filling_params=config.gaps.fill_options if fill_gaps else None,
+        )
 
     def get_system_operator(
         self, model: ObservationModel, *, diag: bool = False
@@ -376,12 +385,15 @@ def accumulate_hits(model: ObservationModel) -> Int64[Array, '...']:
     return hits_kernel(pointing_i, masker)  # type: ignore[no-any-return]
 
 
-@jax.jit(static_argnames=('config',))
+@jax.jit(static_argnames=('fill_gaps', 'correlation_length', 'gap_filling_params'))
 def accumulate_rhs(
     model: ObservationModel,
     read_indices: Array,
     reader: ObservationReader[T],
-    config: MapMakingConfig,
+    *,
+    fill_gaps: bool,
+    correlation_length: int | None = None,
+    gap_filling_params: GapFillingConfig | None = None,
 ) -> StokesPyTreeType:
     mesh = jax.sharding.get_abstract_mesh()
     axis = mesh.axis_names[0]
@@ -396,17 +408,23 @@ def accumulate_rhs(
             obs, i = args
             data, _ = reader.read(i)
             tod = data['sample_data']
-            if config.gaps.fill and not config.binned:
-                N = obs.noise_operator(config.noise.correlation_length, inverse=False)
-                tod = GapFillingOperator(
+            if fill_gaps:
+                if correlation_length is None or gap_filling_params is None:
+                    raise ValueError(
+                        'fill_gaps=True requires correlation_length and gap_filling_params'
+                    )
+                N = obs.noise_operator(correlation_length, inverse=False)
+                gap_fill = GapFillingOperator(
                     N,
                     obs._get_indexer(),
                     data['metadata'],
                     obs.W,
                     rate=obs.sample_rate,
-                    max_cg_steps=config.gaps.fill_options.max_steps,
-                    rtol=config.gaps.fill_options.rtol,
-                )(jax.random.key(config.gaps.fill_options.seed), tod)
+                    max_cg_steps=gap_filling_params.max_steps,
+                    rtol=gap_filling_params.rtol,
+                )
+                key = jax.random.key(gap_filling_params.seed)
+                tod = gap_fill(key, tod)
             return furax.tree.add(carry, obs.H.T(obs.masker(obs.W(tod)))), None
 
         init = jax.lax.pcast(furax.tree.zeros_like(map_structure), axis, to='varying')

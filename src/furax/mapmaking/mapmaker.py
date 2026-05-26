@@ -219,15 +219,14 @@ class MultiObservationMapMaker(Generic[T]):
         model = self.distribute(pad_model(self.build_model(), n_pad))
         logger_info('Created system operators')
 
-        hits = accumulate_hits(model, self.mesh)
-        jax.block_until_ready(hits)
-        logger_info('Computed hit map')
-
-        rhs = self.accumulate_rhs(model)
-        jax.block_until_ready(rhs)
-        logger_info('Accumulated RHS vector')
-
         with jax.set_mesh(self.mesh):
+            hits = accumulate_hits(model)
+            jax.block_until_ready(hits)
+            logger_info('Computed hit map')
+
+            rhs = self.accumulate_rhs(model)
+            jax.block_until_ready(rhs)
+            logger_info('Accumulated RHS vector')
             # System operator (full/diagonal)
             A = self.get_system_operator(model)
             diag_A = A if self.config.binned else self.get_system_operator(model, diag=True)
@@ -315,13 +314,13 @@ class MultiObservationMapMaker(Generic[T]):
 
     def accumulate_hits(self, model: ObservationModel) -> Int64[Array, '...']:
         """Accumulate hit count map across all observations."""
-        return accumulate_hits(model, self.mesh)  # type: ignore[no-any-return]
+        return accumulate_hits(model)  # type: ignore[no-any-return]
 
     def accumulate_rhs(self, model: ObservationModel) -> StokesPyTreeType:
         """Accumulate the RHS vector across all observations."""
         reader = self.get_reader(['metadata', 'sample_data'])
         read_indices = self.distribute(self.get_padded_read_indices())
-        return accumulate_rhs(model, read_indices, reader, self.config, self.mesh)  # type: ignore[no-any-return]
+        return accumulate_rhs(model, read_indices, reader, self.config)  # type: ignore[no-any-return]
 
     def get_system_operator(
         self, model: ObservationModel, *, diag: bool = False
@@ -350,8 +349,8 @@ class MultiObservationMapMaker(Generic[T]):
         return valid
 
 
-@jax.jit(static_argnames=('mesh',))
-def accumulate_hits(model: ObservationModel, mesh: Mesh) -> Int64[Array, '...']:
+@jax.jit
+def accumulate_hits(model: ObservationModel) -> Int64[Array, '...']:
     assert isinstance(model.H, CompositionOperator)  # mypy
     pointing = model.H.operands[-1]
     assert isinstance(pointing, PointingOperator)  # mypy
@@ -359,14 +358,13 @@ def accumulate_hits(model: ObservationModel, mesh: Mesh) -> Int64[Array, '...']:
 
     map_shape = jax.tree.leaves(pointing_i.in_structure)[0].shape
 
-    in_sharding = NamedSharding(mesh, P('obs'))
-    pointing_i = jax.tree.map(lambda a: jax.reshard(a, in_sharding), pointing_i)
-    masker = jax.tree.map(lambda a: jax.reshard(a, in_sharding), model.masker)
+    mesh = jax.sharding.get_abstract_mesh()
+    axis = mesh.axis_names[0]
+    pointing_i = jax.tree.map(lambda a: jax.reshard(a, P(axis)), pointing_i)
+    masker = jax.tree.map(lambda a: jax.reshard(a, P(axis)), model.masker)
 
-    @jax.shard_map(mesh=mesh, out_specs=P(), check_vma=False)
-    def hits_kernel(
-        pointing_i: PointingOperator, masker: AbstractLinearOperator
-    ) -> Int64[Array, '...']:
+    @jax.shard_map(out_specs=P(), check_vma=False)
+    def hits_kernel(pointing_i, masker):  # type: ignore[no-untyped-def]
         per_obs_ones = furax.tree.ones_like(masker.in_structure)
 
         def step(carry, args):  # type: ignore[no-untyped-def]
@@ -374,28 +372,28 @@ def accumulate_hits(model: ObservationModel, mesh: Mesh) -> Int64[Array, '...']:
             masked_i = jax.tree.leaves(m_i(per_obs_ones))[0]
             return carry + jnp.int64(p_i.T(StokesI(masked_i)).i), None
 
-        init = jax.lax.pcast(jnp.zeros(map_shape, jnp.int64), mesh.axis_names, to='varying')
+        init = jax.lax.pcast(jnp.zeros(map_shape, jnp.int64), axis, to='varying')
         hits, _ = jax.lax.scan(step, init, (pointing_i, masker))
-        return jax.lax.psum(hits, axis_name=mesh.axis_names)  # type: ignore[no-any-return]
+        return jax.lax.psum(hits, axis_name=axis)
 
-    return hits_kernel(pointing_i, masker)
+    return hits_kernel(pointing_i, masker)  # type: ignore[no-any-return]
 
 
-@jax.jit(static_argnames=('config', 'mesh'))
+@jax.jit(static_argnames=('config',))
 def accumulate_rhs(
     model: ObservationModel,
     read_indices: Array,
     reader: ObservationReader[T],
     config: MapMakingConfig,
-    mesh: Mesh,
 ) -> StokesPyTreeType:
-    in_sharding = NamedSharding(mesh, P('obs'))
-    model = jax.tree.map(lambda a: jax.reshard(a, in_sharding), model)
-    read_indices = jax.reshard(read_indices, in_sharding)
+    mesh = jax.sharding.get_abstract_mesh()
+    axis = mesh.axis_names[0]
+    model = jax.tree.map(lambda a: jax.reshard(a, P(axis)), model)
+    read_indices = jax.reshard(read_indices, P(axis))
 
     map_structure = model.map_structure
 
-    @jax.shard_map(mesh=mesh, out_specs=P(), check_vma=False)
+    @jax.shard_map(out_specs=P(), check_vma=False)
     def rhs_kernel(model: ObservationModel, indices: Array) -> StokesPyTreeType:
         def step(carry: StokesPyTreeType, args: Any) -> tuple[StokesPyTreeType, None]:
             obs, i = args
@@ -414,9 +412,9 @@ def accumulate_rhs(
                 )(jax.random.key(config.gaps.fill_options.seed), tod)
             return furax.tree.add(carry, obs.H.T(obs.masker(obs.W(tod)))), None
 
-        init = jax.lax.pcast(furax.tree.zeros_like(map_structure), mesh.axis_names, to='varying')
+        init = jax.lax.pcast(furax.tree.zeros_like(map_structure), axis, to='varying')
         rhs, _ = jax.lax.scan(step, init, (model, indices))
-        return jax.lax.psum(rhs, axis_name=mesh.axis_names)  # type: ignore[no-any-return]
+        return jax.lax.psum(rhs, axis_name=axis)  # type: ignore[no-any-return]
 
     return rhs_kernel(model, read_indices)
 

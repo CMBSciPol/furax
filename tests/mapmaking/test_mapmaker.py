@@ -180,7 +180,8 @@ class TestMultiObsMapMaker:
         maker = MultiObservationMapMaker(observations, config=config)
         n_pad = maker.obs_distribution[2]
         model = maker.distribute(pad_model(maker.build_model(), n_pad))
-        rhs = maker.accumulate_rhs(model)
+        with jax.set_mesh(maker.mesh):
+            rhs = maker.accumulate_rhs(model)
         assert rhs.shape == maker.landscape.shape
 
     def test_hits_are_nonnegative(self, name, demodulated, stokes, landscape_type):
@@ -189,7 +190,8 @@ class TestMultiObsMapMaker:
         maker = MultiObservationMapMaker(observations, config=config)
         n_pad = maker.obs_distribution[2]
         blocks = maker.distribute(pad_model(maker.build_model(), n_pad))
-        hits = maker.accumulate_hits(blocks)
+        with jax.set_mesh(maker.mesh):
+            hits = maker.accumulate_hits(blocks)
         assert hits.shape == maker.landscape.shape
         assert jnp.all(hits >= 0)
 

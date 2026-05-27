@@ -32,7 +32,7 @@ def low_rank(
     rank: int,
     key: PRNGKeyArray,
     *,
-    method: LowRankMethod = 'lanczos',
+    method: LowRankMethod = 'lanczos_tr',
     **kwargs: Any,
 ) -> LowRankTerms:
     """Compute a low-rank approximation of a Hermitian operator.
@@ -40,13 +40,21 @@ def low_rank(
     The approximation is of the form A ≈ U @ diag(S) @ U^T, where U contains
     the k eigenvectors and S contains the corresponding eigenvalues.
 
+    Two solvers are available via ``method``:
+
+    - 'lanczos': single-shot m-step Lanczos. Builds one Krylov subspace and returns the k
+      best-converged Ritz pairs by residual norm.
+      Extra kwargs: ``m``.
+    - 'lanczos_tr' (default): thick-restart Lanczos. Restarts until convergence and targets
+      specific eigenpairs via ``which`` ('LM', 'SM', 'LA', 'SA', 'BE'; default 'LM').
+      Extra kwargs: ``m``, ``which``, ``max_restarts``, ``tol``.
+
     Args:
         A: A Hermitian linear operator.
         rank: Number of eigenvalues/eigenvectors to compute.
         key: Random key for initialization of the eigenvalue solver.
-        method: Eigenvalue solver to use: 'lanczos' or 'lanczos_tr'.
-        **kwargs: Additional keyword arguments passed to the solver
-            (e.g., m, max_restarts, tol for lanczos_tr).
+        method: Eigenvalue solver to use (see above). Defaults to 'lanczos_tr'.
+        **kwargs: Additional keyword arguments passed to the selected solver.
 
     Returns:
         LowRankTerms containing eigenvalues and eigenvectors.
@@ -59,8 +67,8 @@ def low_rank(
         >>> d = jnp.array([1., 2., 3., 4., 5.])
         >>> A = DiagonalOperator(d, in_structure=as_structure(d))
         >>> terms = low_rank(A, rank=2, key=jax.random.PRNGKey(0), method='lanczos_tr')
-        >>> terms.eigenvalues  # Should be approximately [1, 2]
-        Array([1., 2.], dtype=float32)
+        >>> terms.eigenvalues  # Should be approximately [4, 5] (which='LM' by default)
+        Array([4., 5.], dtype=float32)
     """
     solvers = {'lanczos': lanczos_eigh, 'lanczos_tr': lanczos_tr}
     if method not in solvers:

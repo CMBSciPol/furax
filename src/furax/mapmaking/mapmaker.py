@@ -303,12 +303,6 @@ class MultiObservationMapMaker(Generic[T]):
         _, model = jax.lax.scan(build_one, None, self.get_read_indices())
         return model  # type: ignore[no-any-return]
 
-    @property
-    def n_per_device(self) -> int:
-        """Number of (real + padded) observations per device."""
-        _, n_owned, n_pad = self.obs_distribution
-        return (n_owned + n_pad) // jax.local_device_count()
-
     def accumulate_hits(self, model: ObservationModel) -> Int64[Array, '...']:
         """Accumulate hit count map across all observations."""
         return accumulate_hits(model)  # type: ignore[no-any-return]

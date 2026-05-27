@@ -83,22 +83,22 @@ def _lanczos_loop(
     def body_fn(j, carry):  # type: ignore[no-untyped-def]
         V_m, alpha, beta, v, v_prev, beta_prev = carry
 
-        w = A(v)
-        alpha_j = jnp.real(tree.dot(v, w))
+        w = A(v)  # w = A v_j
+        alpha_j = jnp.real(tree.dot(v, w))  # α_j = <v_j, w>
         alpha = alpha.at[j].set(alpha_j)
 
-        w = tree.add(tree.mul(-alpha_j, v), w)
-        w = tree.add(tree.mul(-beta_prev, v_prev), w)
+        w = tree.add(tree.mul(-alpha_j, v), w)  # w -= α_j v_j
+        w = tree.add(tree.mul(-beta_prev, v_prev), w)  # w -= β_{j-1} v_{j-1}
 
         def reorth_step(k, w):  # type: ignore[no-untyped-def]
             v_k = jax.tree.map(lambda V_leaf: V_leaf[k], V_m)
             coeff = tree.dot(v_k, w)
-            return tree.add(tree.mul(-coeff, v_k), w)
+            return tree.add(tree.mul(-coeff, v_k), w)  # w -= <v_k, w> v_k
 
-        w = jax.lax.fori_loop(0, j + 1, reorth_step, w)
+        w = jax.lax.fori_loop(0, j + 1, reorth_step, w)  # full reorthogonalization
 
-        beta_j = jnp.real(tree.norm(w))
-        # Invariant subspace reached when beta_j is near zero; leave w unscaled so the
+        beta_j = jnp.real(tree.norm(w))  # β_j = ||w||
+        # β_j ≈ 0 means invariant subspace; leave w unscaled (already ~0) so the
         # arbitrary direction is not amplified. Caller should check beta_last.
         eps = jnp.finfo(beta_j.dtype).eps
         v_next = jax.lax.cond(beta_j < eps, lambda: w, lambda: tree.mul(1.0 / beta_j, w))
@@ -232,10 +232,9 @@ def lanczos_eigh(
     alpha, beta, V, beta_last, _ = lanczos_tridiag(A, v0, m)
     ritz_values, ritz_vectors = jax.scipy.linalg.eigh_tridiagonal(alpha, beta, eigvals_only=False)
 
-    # Compute eigenvectors: linear combination of Lanczos vectors
-    eigenvectors = _vecmat(V, ritz_vectors)
+    eigenvectors = _vecmat(V, ritz_vectors)  # y_i = V s_i
 
-    # Cheap residual norms via Lanczos relation: ||r_i|| = |beta_last| * |s_i[-1]|
+    # ||A y_i - θ_i y_i|| ≈ |β_m| |s_i[-1]|
     residual_norms = jnp.abs(beta_last) * jnp.abs(ritz_vectors[-1, :])
 
     # Select the k best Ritz pairs by residual norm, then sort by eigenvalue ascending
@@ -419,7 +418,11 @@ def lanczos_tr(
         return sorted_idx[:k]
 
     def _check_converged(beta_last, S, wanted_idx):  # type: ignore[no-untyped-def]
-        ritz_res = jnp.abs(beta_last) * jnp.abs(S[-1, wanted_idx])
+        # Lanczos residual bound: ||A y_i - θ_i y_i|| ≤ |β_m| |s_i[-1]|
+        # S[-1, i] is the last component of the i-th eigenvector of H (tridiagonal or
+        # bordered tridiagonal after restart). Non-convergence after max_restarts is
+        # detectable by the caller via result.residual_norms >= tol.
+        ritz_res = jnp.abs(beta_last) * jnp.abs(S[-1, wanted_idx])  # |β_m| |s_i[-1]|
         return jnp.all(ritz_res < tol)
 
     # Initial m-step factorization
@@ -435,17 +438,14 @@ def lanczos_tr(
     def body_fn(state):  # type: ignore[no-untyped-def]
         V, beta_last, v_last, iteration, _converged, theta, S, wanted_idx = state
 
-        # thick-restart: rotate basis to Ritz vectors
-        V_k = _vecmat(V, S[:, wanted_idx])
-        theta_k = theta[wanted_idx]
-        h = beta_last * S[-1, wanted_idx]
+        V_k = _vecmat(V, S[:, wanted_idx])  # U_k = V S[:,wanted]  (Ritz vectors)
+        theta_k = theta[wanted_idx]  # θ_k
+        h = beta_last * S[-1, wanted_idx]  # h_i = β_m s_i[-1]  (coupling)
 
-        # Extend k-step factorization to m steps
         alpha_ext, beta_ext, V, beta_last, v_last = _tr_extend(A, V_k, v_last, k, m)
 
-        # Build bordered tridiagonal H and solve dense eigenvalue problem
         H = _build_bordered_tridiag(theta_k, h, alpha_ext, beta_ext, k, m)
-        theta, S = jnp.linalg.eigh(H)
+        theta, S = jnp.linalg.eigh(H)  # H S = S diag(θ)
 
         wanted_idx = _select_wanted(theta, beta_last, S)
         converged = _check_converged(beta_last, S, wanted_idx)
@@ -460,9 +460,8 @@ def lanczos_tr(
     # Sort selected pairs by eigenvalue ascending
     wanted_idx = wanted_idx[jnp.argsort(theta[wanted_idx])]
     eigenvalues = theta[wanted_idx]
-    eigenvectors = _vecmat(V, S[:, wanted_idx])
-    # Cheap Lanczos residual bound (same as lanczos_eigh and the convergence check)
-    residual_norms = jnp.abs(beta_last) * jnp.abs(S[-1, wanted_idx])
+    eigenvectors = _vecmat(V, S[:, wanted_idx])  # y_i = V s_i
+    residual_norms = jnp.abs(beta_last) * jnp.abs(S[-1, wanted_idx])  # |β_m| |s_i[-1]|
 
     return LanczosResult(
         eigenvalues=eigenvalues,

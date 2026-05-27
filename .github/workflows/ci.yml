@@ -36,15 +36,13 @@ jobs:
       - name: Checkout project
         uses: actions/checkout@v6
 
-      - name: Install uv and set the Python version
+      - name: Install uv and set up environment
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.10.9"
           enable-cache: true
           python-version: ${{ matrix.python-version }}
-
-      - name: Create virtual environment
-        run: uv venv
+          activate-environment: true
 
       - name: Install dependencies
         run: |
@@ -53,4 +51,4 @@ jobs:
           uv pip install .[dev,mapmaking,so,toast]
 
       - name: Run tests
-        run: .venv/bin/python -m pytest -vv -m "not slow"
+        run: pytest -vv -m "not slow"

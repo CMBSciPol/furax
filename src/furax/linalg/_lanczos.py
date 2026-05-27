@@ -1,5 +1,6 @@
 """Lanczos eigenvalue solver for PyTree-aware linear operators."""
 
+from functools import reduce
 from typing import NamedTuple
 
 import jax
@@ -280,10 +281,7 @@ def _build_bordered_tridiag(
     Returns:
         H: Symmetric bordered tridiagonal matrix (m, m).
     """
-    dtype = jnp.promote_types(
-        jnp.promote_types(theta_k.dtype, h.dtype),
-        jnp.promote_types(alpha_ext.dtype, beta_ext.dtype),
-    )
+    dtype = reduce(jnp.promote_types, (theta_k.dtype, h.dtype, alpha_ext.dtype, beta_ext.dtype))
     H = jnp.zeros((m, m), dtype=dtype)
     H = H.at[:k, :k].set(jnp.diag(theta_k))
     H = H.at[k, :k].set(h)

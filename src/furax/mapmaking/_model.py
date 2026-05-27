@@ -119,7 +119,15 @@ def pad_model(models: ObservationModel, n_pad: int) -> ObservationModel:
     if n_pad == 0:
         return models
     last = jax.tree.map(lambda a: jnp.repeat(a[-1:], n_pad, axis=0), models)
-    zero_masker = jax.tree.map(jnp.zeros_like, last.masker)
+    if len(jax.tree.leaves(last.masker)) == 0:
+        # Leaf-free masker (e.g. IdentityOperator): jax.tree.map produces no zeros.
+        # Build an explicit all-False MaskOperator so padding obs contribute nothing.
+        structure = last.masker.in_structure
+        first_leaf = jax.tree.leaves(structure)[0]
+        zero_mask = jnp.zeros((n_pad, *first_leaf.shape), dtype=bool)
+        zero_masker = MaskOperator.from_boolean_mask(zero_mask, in_structure=structure)
+    else:
+        zero_masker = jax.tree.map(jnp.zeros_like, last.masker)
     padded = ObservationModel(
         H=last.H,
         W=last.W,

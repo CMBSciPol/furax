@@ -104,10 +104,10 @@ def _lanczos_loop(
         v_next = jax.lax.cond(beta_j < eps, lambda: w, lambda: tree.mul(1.0 / beta_j, w))
 
         beta = jnp.where(j < m - 1, beta.at[j].set(beta_j), beta)
-        V_m = jax.lax.cond(
-            j < m - 1,
-            lambda: jax.tree.map(lambda V_leaf, v_leaf: V_leaf.at[j + 1].set(v_leaf), V_m, v_next),
-            lambda: V_m,
+        V_m = jax.tree.map(
+            lambda V_leaf, v_leaf: jnp.where(j < m - 1, V_leaf.at[j + 1].set(v_leaf), V_leaf),
+            V_m,
+            v_next,
         )
 
         return V_m, alpha, beta, v_next, v, beta_j

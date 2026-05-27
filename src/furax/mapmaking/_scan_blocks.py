@@ -87,7 +87,7 @@ class ScanBlockDiagonalOperator(AbstractScanBlockOperator):
 
     @classmethod
     def _infer_in_structure(cls, operator: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
-        axis_size = jax.eval_shape(lambda: jax.tree.leaves(operator)[0]).shape[0]
+        axis_size = jax.tree.leaves(operator)[0].shape[0]
         return _prepend_axis(operator.in_structure, axis_size=axis_size)
 
     @property
@@ -169,7 +169,7 @@ class ScanBlockRowOperator(AbstractScanBlockOperator):
 
     @classmethod
     def _infer_in_structure(cls, operator: AbstractLinearOperator) -> PyTree[jax.ShapeDtypeStruct]:
-        axis_size = jax.eval_shape(lambda: jax.tree.leaves(operator)[0]).shape[0]
+        axis_size = jax.tree.leaves(operator)[0].shape[0]
         return _prepend_axis(operator.in_structure, axis_size=axis_size)
 
     @property

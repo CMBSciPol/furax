@@ -7,6 +7,7 @@ def setup_logger(loglevel: str, log_path: Path | None, process_index: int = 0) -
     logger = logging.getLogger('furax.mapmaker')
     logger.setLevel(level)
     logger.propagate = False
+    logger.handlers.clear()
     formatter = logging.Formatter(
         f'%(asctime)s - [rank {process_index}] - %(levelname)s - %(message)s'
     )

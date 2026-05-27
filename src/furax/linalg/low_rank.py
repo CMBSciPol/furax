@@ -97,20 +97,10 @@ def low_rank_mv(terms: LowRankTerms, x: PyTree[Num[Array, '...']]) -> PyTree[Num
         >>> y = low_rank_mv(terms, x)
         >>> # Should be close to A @ x = [1, 0, 0, 0, 0]
     """
-
-    # Compute coeffs = U^T @ x (shape: (k,))
-    coeffs = jax.vmap(dot, (0, None), 0)(terms.eigenvectors, x)
-
-    # Scale by eigenvalues: S * coeffs
-    scaled = terms.eigenvalues * coeffs  # (k,)
-
-    # Compute U @ scaled_coeffs = sum_i scaled[i] * u_i
-    def compute_result(u_leaf: Array) -> Array:
-        # u_leaf: (k, ...), scaled: (k,)
-        # Result: sum over k of scaled[i] * u_leaf[i]
-        return jnp.tensordot(scaled, u_leaf, axes=(0, 0))
-
-    return jax.tree.map(compute_result, terms.eigenvectors)
+    U = terms.eigenvectors
+    coeffs = jax.vmap(dot, (0, None), 0)(U, x)  # U^T x
+    scaled = terms.eigenvalues * coeffs  # S (U^T x)
+    return jax.tree.map(lambda a: jnp.einsum('k,k...->...', scaled, a), U)  # U (S U^T x)
 
 
 @symmetric

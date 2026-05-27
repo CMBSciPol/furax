@@ -1,7 +1,7 @@
 """Lanczos eigenvalue solver for PyTree-aware linear operators."""
 
 from functools import reduce
-from typing import NamedTuple
+from typing import Literal, NamedTuple, TypeAlias, get_args
 
 import jax
 import jax.numpy as jnp
@@ -10,6 +10,8 @@ from jaxtyping import Float, Num, PyTree
 
 from furax import tree
 from furax.core import AbstractLinearOperator
+
+LanczosWhich: TypeAlias = Literal['LM', 'SM', 'LA', 'SA', 'BE']
 
 
 def _block_zeros_like(x: PyTree, k: int) -> PyTree:
@@ -353,7 +355,7 @@ def lanczos_tr(
     *,
     k: int = 20,
     m: int | None = None,
-    which: str = 'smallest',
+    which: LanczosWhich = 'LM',
     max_restarts: int = 300,
     tol: float = 1e-10,
 ) -> LanczosResult:
@@ -370,6 +372,19 @@ def lanczos_tr(
     Uses full reorthogonalization throughout.  No locking: all k pairs are
     recomputed at every restart regardless of convergence status.
 
+    Note:
+        ``residual_norms`` is the cheap bound, not the true residual.  Exactly
+        ``0`` means "converged below the detectable coupling", not zero error.
+
+    Note:
+        Lanczos converges fastest to *extremal* eigenvalues; interior ones
+        (near the middle of the spectrum) converge slowly.  This makes ``which``
+        targets that select interior pairs hard: ``'SM'`` for an indefinite
+        operator picks eigenvalues closest to zero, which are interior, and
+        restarts alone will not converge them unless ``m`` is a large fraction
+        of ``n`` (no shift-invert is implemented).  ``'LM'``, ``'LA'``, ``'SA'``
+        and the two ends of ``'BE'`` are extremal and converge with small ``m``.
+
     Args:
         A: A Hermitian linear operator.
         v0: Initial vector for the Krylov subspace.
@@ -377,9 +392,12 @@ def lanczos_tr(
         m: Size of the Krylov subspace.  Must be > k.
             Defaults to min(2*k, n).
         which: Which k eigenpairs to target.  One of:
-            - 'smallest' (default): k smallest eigenvalues.
-            - 'largest': k largest eigenvalues.
-            - 'best': k Ritz pairs with the smallest residual norms.
+            - 'LM' (default): k largest magnitude (|λ|).
+            - 'SM': k smallest magnitude (|λ|).
+            - 'LA': k largest algebraic.
+            - 'SA': k smallest algebraic.
+            - 'BE': half (k//2) from each end of the spectrum; for odd k the
+              extra pair comes from the high (largest algebraic) end.
         max_restarts: Maximum number of restart cycles.
         tol: Convergence tolerance on Lanczos residual bounds.
 
@@ -395,24 +413,30 @@ def lanczos_tr(
         >>> d = jnp.array([1., 2., 3., 4., 5.])
         >>> A = DiagonalOperator(d, in_structure=as_structure(d))
         >>> v0 = normal_like(as_structure(d), jax.random.PRNGKey(0))
-        >>> result = lanczos_tr(A, v0, k=2, which='smallest')
+        >>> result = lanczos_tr(A, v0, k=2, which='SA')
         >>> result.eigenvalues  # Should be approximately [1, 2]
         Array([1., 2.], dtype=float32)
     """
-    if which not in ('smallest', 'largest', 'best'):
-        raise ValueError(f"which must be 'smallest', 'largest', or 'best', got {which!r}")
+    if which not in get_args(LanczosWhich):
+        raise ValueError(f'which must be one of {get_args(LanczosWhich)}, got {which!r}')
     m = m or _default_m(A, k)
     if m <= k:
         raise ValueError(f'm ({m}) must be > k ({k})')
 
-    def _select_wanted(theta, beta_last, S):  # type: ignore[no-untyped-def]
-        if which == 'smallest':
-            sorted_idx = jnp.argsort(theta)
-        elif which == 'largest':
+    def _select_wanted(theta):  # type: ignore[no-untyped-def]
+        if which == 'LM':  # largest magnitude
+            sorted_idx = jnp.argsort(-jnp.abs(theta))
+        elif which == 'SM':  # smallest magnitude
+            sorted_idx = jnp.argsort(jnp.abs(theta))
+        elif which == 'LA':  # largest algebraic
             sorted_idx = jnp.argsort(-theta)
-        else:  # 'best'
-            ritz_res = jnp.abs(beta_last) * jnp.abs(S[-1, :])
-            sorted_idx = jnp.argsort(ritz_res)
+        elif which == 'SA':  # smallest algebraic
+            sorted_idx = jnp.argsort(theta)
+        else:  # 'BE': half from each end of the spectrum
+            sorted_idx = jnp.argsort(theta)
+            n_low = k // 2
+            n_high = k - n_low
+            return jnp.concatenate([sorted_idx[:n_low], sorted_idx[-n_high:]])
         return sorted_idx[:k]
 
     def _check_converged(beta_last, S, wanted_idx):  # type: ignore[no-untyped-def]
@@ -426,7 +450,7 @@ def lanczos_tr(
     # Initial m-step factorization
     alpha, beta, V, beta_last, v_last = lanczos_tridiag(A, v0, m)
     theta, S = jax.scipy.linalg.eigh_tridiagonal(alpha, beta, eigvals_only=False)
-    wanted_idx = _select_wanted(theta, beta_last, S)
+    wanted_idx = _select_wanted(theta)
     init_converged = _check_converged(beta_last, S, wanted_idx)
 
     def cond_fn(state):  # type: ignore[no-untyped-def]
@@ -445,7 +469,7 @@ def lanczos_tr(
         H = _build_bordered_tridiag(theta_k, h, alpha_ext, beta_ext, k, m)
         theta, S = jnp.linalg.eigh(H)  # H S = S diag(θ)
 
-        wanted_idx = _select_wanted(theta, beta_last, S)
+        wanted_idx = _select_wanted(theta)
         converged = _check_converged(beta_last, S, wanted_idx)
 
         return V, beta_last, v_last, iteration + 1, converged, theta, S, wanted_idx

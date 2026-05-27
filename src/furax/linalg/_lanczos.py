@@ -154,7 +154,7 @@ def lanczos_tridiag(
     V = _block_zeros_like(v0, m)
     V = jax.tree.map(lambda V_leaf, v_leaf: V_leaf.at[0].set(v_leaf), V, v)
     alpha = jnp.zeros(m)
-    beta = jnp.zeros(m - 1) if m > 1 else jnp.array([])
+    beta = jnp.zeros(m - 1)
 
     V, alpha, beta, beta_last, v_last = _lanczos_loop(
         A, V, alpha, beta, v, tree.zeros_like(v), jnp.array(0.0), 0, m
@@ -419,7 +419,7 @@ def lanczos_tr(
         return sorted_idx[:k]
 
     def _check_converged(beta_last, S, wanted_idx):  # type: ignore[no-untyped-def]
-        ritz_res = jnp.abs(beta_last) * jnp.abs(S[m - 1, wanted_idx])
+        ritz_res = jnp.abs(beta_last) * jnp.abs(S[-1, wanted_idx])
         return jnp.all(ritz_res < tol)
 
     # Initial m-step factorization
@@ -438,7 +438,7 @@ def lanczos_tr(
         # thick-restart: rotate basis to Ritz vectors
         V_k = _vecmat(V, S[:, wanted_idx])
         theta_k = theta[wanted_idx]
-        h = beta_last * S[m - 1, wanted_idx]
+        h = beta_last * S[-1, wanted_idx]
 
         # Extend k-step factorization to m steps
         alpha_ext, beta_ext, V, beta_last, v_last = _tr_extend(A, V_k, v_last, k, m)
@@ -462,7 +462,7 @@ def lanczos_tr(
     eigenvalues = theta[wanted_idx]
     eigenvectors = _vecmat(V, S[:, wanted_idx])
     # Cheap Lanczos residual bound (same as lanczos_eigh and the convergence check)
-    residual_norms = jnp.abs(beta_last) * jnp.abs(S[m - 1, wanted_idx])
+    residual_norms = jnp.abs(beta_last) * jnp.abs(S[-1, wanted_idx])
 
     return LanczosResult(
         eigenvalues=eigenvalues,

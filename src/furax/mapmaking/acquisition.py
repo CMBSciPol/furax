@@ -74,14 +74,10 @@ def build_acquisition_operator(
         return 0.5 * rot.T @ pointing
 
     # In the general case, we include polarizer and HWP
-    assert hwp_angles is not None  # mypy assert
-
-    # Pad hwp_angles to rank 2 so that, when stacked across observations, the
-    # QURotation fusion rule can broadcast against the per-detector gamma angles.
     hwp = HWPOperator.create(
         shape=data_shape,
         dtype=dtype,
         stokes=landscape.stokes,
-        angles=hwp_angles[None, :],
+        angles=hwp_angles,
     )
     return polarizer @ rot @ hwp @ pointing

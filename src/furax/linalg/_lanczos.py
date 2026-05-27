@@ -98,9 +98,10 @@ def _lanczos_loop(
         w = jax.lax.fori_loop(0, j + 1, reorth_step, w)
 
         beta_j = jnp.real(tree.norm(w))
-        # Invariant subspace reached when beta_j == 0; leave w unscaled (already zero)
-        # so the arbitrary direction is not amplified. Caller should check beta_last.
-        v_next = jax.lax.cond(beta_j == 0, lambda: w, lambda: tree.mul(1.0 / beta_j, w))
+        # Invariant subspace reached when beta_j is near zero; leave w unscaled so the
+        # arbitrary direction is not amplified. Caller should check beta_last.
+        eps = jnp.finfo(beta_j.dtype).eps
+        v_next = jax.lax.cond(beta_j < eps, lambda: w, lambda: tree.mul(1.0 / beta_j, w))
 
         beta = jnp.where(j < m - 1, beta.at[j].set(beta_j), beta)
         V_m = jax.lax.cond(

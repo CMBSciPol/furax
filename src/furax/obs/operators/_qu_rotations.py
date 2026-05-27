@@ -16,6 +16,8 @@ which encodes successively (from right to left):
 - the rotation back to the original frame.
 """
 
+from dataclasses import field
+
 import jax
 import numpy as np
 from jax import Array
@@ -97,9 +99,12 @@ class QURotationOperator(AbstractLinearOperator):
 
     Attributes:
         angles: Rotation angles in radians.
+        atomic: If True, prevents this operator from being merged with adjacent
+            QU rotation operators during algebraic reduction.
     """
 
     angles: Float[Array, '...']
+    atomic: bool = field(kw_only=True, default=False, metadata={'static': True})
 
     @classmethod
     def create(
@@ -109,9 +114,10 @@ class QURotationOperator(AbstractLinearOperator):
         stokes: ValidStokesType = 'IQU',
         *,
         angles: Float[Array, '...'],
+        atomic: bool = False,
     ) -> AbstractLinearOperator:
         structure = Stokes.class_for(stokes).structure_for(shape, dtype)
-        return cls(angles=angles, in_structure=structure)
+        return cls(angles=angles, atomic=atomic, in_structure=structure)
 
     def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
         return rotate_qu(x, self.angles)  # type: ignore[no-any-return]
@@ -136,19 +142,20 @@ class QURotationRule(AbstractBinaryRule):
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        if isinstance(left, QURotationOperator):
-            if isinstance(right, QURotationOperator):
+        if isinstance(left, QURotationOperator) and not left.atomic:
+            if isinstance(right, QURotationOperator) and not right.atomic:
                 angles = left.angles + right.angles
-            elif isinstance(right, QURotationTransposeOperator):
+            elif isinstance(right, QURotationTransposeOperator) and not right.operator.atomic:
                 angles = left.angles - right.operator.angles
             else:
                 raise NoReduction
-        else:
-            assert isinstance(left, QURotationTransposeOperator)  # mypy assert
-            if isinstance(right, QURotationOperator):
+        elif isinstance(left, QURotationTransposeOperator) and not left.operator.atomic:
+            if isinstance(right, QURotationOperator) and not right.atomic:
                 angles = right.angles - left.operator.angles
-            elif isinstance(right, QURotationTransposeOperator):
+            elif isinstance(right, QURotationTransposeOperator) and not right.operator.atomic:
                 angles = -left.operator.angles - right.operator.angles
             else:
                 raise NoReduction
+        else:
+            raise NoReduction
         return [QURotationOperator(angles=angles, in_structure=right.in_structure)]

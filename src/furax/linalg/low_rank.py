@@ -7,8 +7,7 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Float, Num, PRNGKeyArray, PyTree
 
-from furax.core import AbstractLinearOperator
-from furax.core._base import symmetric
+from furax import AbstractLinearOperator, symmetric
 from furax.tree import dot, normal_like
 
 from ._lanczos import lanczos_eigh, lanczos_tr

@@ -65,7 +65,7 @@ class ObservationModel:
             data.get('valid_scanning_masks'),
             structure=H.out_structure,
         )
-        noise_model, sample_rate = _noise_model(data, config)
+        noise_model, sample_rate = _noise_model(data, config, tod_structure=H.out_structure)
         W = _noise_operator(
             noise_model, H.out_structure, sample_rate, config.noise.correlation_length, inverse=True
         )
@@ -189,9 +189,17 @@ class SystemOperator(AbstractLinearOperator):
         return _system_scan(self.models, x, diag=self.diag)  # type: ignore[no-any-return]
 
 
-def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel], Array]:
+def _noise_model(
+    data: Any, config: MapMakingConfig, tod_structure: Any = None
+) -> tuple[PyTree[NoiseModel], Array]:
     """Compute the noise model and sample rate for a single observation block."""
     fs = _sample_rate(data['timestamps'])
+    if config.noise.identity:
+        noise_model = jax.tree.map(
+            lambda s: WhiteNoiseModel(sigma=jnp.ones(s.shape[0], dtype=s.dtype)),
+            tod_structure,
+        )
+        return noise_model, fs
     if config.noise.fit_from_data:
         noise_model_class = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
         fhwp = _hwp_frequency(data['timestamps'], data['hwp_angles'])

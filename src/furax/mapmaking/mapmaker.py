@@ -221,10 +221,11 @@ class MultiObservationMapMaker(Generic[T]):
             required_fields.append('hwp_angles')
         if self.config.scanning_mask:
             required_fields.append('valid_scanning_masks')
-        if self.config.noise.fit_from_data:
-            required_fields.extend(['sample_data', 'hwp_angles'])
-        else:
-            required_fields.append('noise_model_fits')
+        if not self.config.noise.identity:
+            if self.config.noise.fit_from_data:
+                required_fields.extend(['sample_data', 'hwp_angles'])
+            else:
+                required_fields.append('noise_model_fits')
         if self.config.gaps.fill and not self.config.binned:
             required_fields.append('metadata')
         reader = self.get_reader(required_fields)
@@ -534,6 +535,10 @@ class MapMaker:
         but otherwise fits a model to the data.
         """
         config = self.config
+
+        if config.noise.identity:
+            return WhiteNoiseModel(sigma=jnp.ones(observation.n_detectors, dtype=config.dtype))
+
         Model = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
 
         if not config.noise.fit_from_data:
@@ -762,7 +767,7 @@ class BinnedMapMaker(MapMaker):
             output['wcs'] = landscape.to_wcs()
         elif isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
-        if config.noise.fit_from_data:
+        if config.noise.fit_from_data and not config.noise.identity:
             output['noise_fit'] = noise_model.to_array()  # type: ignore[assignment]
         if config.debug:
             proj_map = (masker.T @ acquisition)(res)
@@ -821,10 +826,14 @@ class MLMapmaker(MapMaker):
         logger_info('Created noise and inverse noise covariance operators')
 
         # Approximate system matrix with diagonal noise covariance and full map pixels
-        if not isinstance(inv_noise, SymmetricBandToeplitzOperator):
+        if config.noise.identity:
+            diag_inv_noise = inv_noise
+        elif isinstance(inv_noise, SymmetricBandToeplitzOperator):
+            diag_inv_noise = DiagonalOperator(
+                inv_noise.band_values[..., [0]], in_structure=data_struct
+            )
+        else:
             raise NotImplementedError
-
-        diag_inv_noise = DiagonalOperator(inv_noise.band_values[..., [0]], in_structure=data_struct)
         diag_system = BJPreconditioner.create(acquisition.T @ diag_inv_noise @ masker @ acquisition)
         logger_info('Created approximate system matrix')
 
@@ -954,7 +963,7 @@ class MLMapmaker(MapMaker):
             output['wcs'] = landscape.to_wcs()
         elif isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
-        if config.noise.fit_from_data:
+        if config.noise.fit_from_data and not config.noise.identity:
             output['noise_fit'] = noise_model.to_array()
         if config.use_templates:
             for key in tmpl_ampl.keys():
@@ -1074,7 +1083,7 @@ class TwoStepMapmaker(MapMaker):
             output['wcs'] = landscape.to_wcs()
         elif isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
-        if config.noise.fit_from_data:
+        if config.noise.fit_from_data and not config.noise.identity:
             output['noise_fit'] = noise_model.to_array()
         if config.debug:
             proj_map = (mp @ acquisition)(result_map)
@@ -1194,7 +1203,7 @@ class ATOPMapMaker(MapMaker):
         output = {'map': final_map, 'weights': blocks}
         if isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
-        if config.noise.fit_from_data:
+        if config.noise.fit_from_data and not config.noise.identity:
             output['noise_fit'] = noise_model.to_array()
         if config.debug:
             proj_map = (mp @ acquisition)(result_map)

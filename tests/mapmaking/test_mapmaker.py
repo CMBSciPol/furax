@@ -161,6 +161,34 @@ class TestMultiObsMapMaker:
         assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
 
 
+@pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
+@pytest.mark.parametrize('stokes', STOKES_TYPES)
+@pytest.mark.parametrize('name,demodulated', PARAMS)
+class TestIdentityNoise:
+    """Test that identity noise mode works end-to-end."""
+
+    def test_identity_noise_builds_model(self, name, demodulated, stokes, landscape_type):
+        observations = _observations(name, demodulated)
+        config = _config(landscape_type, stokes, demodulated, identity_noise=True)
+        maker = MultiObservationMapMaker(observations, config=config)
+        model = maker.build_model()
+        noise_leaves = jax.tree.leaves(
+            model.noise_model, is_leaf=lambda x: isinstance(x, WhiteNoiseModel)
+        )
+        for nm in noise_leaves:
+            assert isinstance(nm, WhiteNoiseModel)
+            assert jnp.allclose(nm.sigma, 1.0)
+
+    def test_identity_noise_full_mapmaker(self, name, demodulated, stokes, landscape_type):
+        observations = _observations(name, demodulated)
+        config = _config(landscape_type, stokes, demodulated, identity_noise=True)
+        maker = MultiObservationMapMaker(observations, config=config)
+        results = maker.run()
+        n_stokes = len(stokes)
+        assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
+        assert results.solver_stats is not None
+
+
 ATOP_PARAMS = [
     pytest.param(
         'sotodlib',
@@ -240,6 +268,7 @@ def _config(
     interpolation: Literal['nearest', 'bilinear'] = 'nearest',
     method: Methods = Methods.BINNED,
     atop_tau: int = 0,
+    identity_noise: bool = False,
 ) -> MapMakingConfig:
     if landscape_type == 'healpix':
         lc = LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16))
@@ -256,7 +285,11 @@ def _config(
         method=method,
         pointing=PointingConfig(on_the_fly=True, interpolation=interpolation),
         landscape=lc,
-        noise=NoiseConfig(fit_from_data=fit_noise_model, fitting=NoiseFitConfig(nperseg=512)),
+        noise=NoiseConfig(
+            identity=identity_noise,
+            fit_from_data=fit_noise_model,
+            fitting=NoiseFitConfig(nperseg=512),
+        ),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
         atop_tau=atop_tau,
     )

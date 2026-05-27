@@ -108,6 +108,9 @@ class WhiteNoiseModel(NoiseModel):
         inv_var = jnp.where(self.sigma > 0, 1.0 / (self.sigma**2), 0.0)
         return DiagonalOperator(inv_var[:, None], in_structure=in_structure)
 
+    def to_white_noise_model(self) -> 'WhiteNoiseModel':
+        return self
+
     @classmethod
     def fit_psd_model(
         cls,

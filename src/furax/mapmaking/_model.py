@@ -1,21 +1,17 @@
-import functools
-from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from dataclasses import dataclass
+from typing import Any, Self
 
 import jax
 import jax.numpy as jnp
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, Float, Int64, PyTree
+from jaxtyping import Array, Float, PyTree
 
-from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, symmetric, tree
+from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.core import BlockDiagonalOperator, CompositionOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import Stokes, StokesI, StokesPyTreeType
 
 from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig, Methods
-from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .templates import ATOPProjectionOperator
 
@@ -48,7 +44,7 @@ class ObservationModel:
     @classmethod
     def create(
         cls, data: Any, padding: Any, config: MapMakingConfig, landscape: StokesLandscape
-    ) -> 'ObservationModel':
+    ) -> Self:
         H = build_acquisition_operator(
             landscape,
             data['boresight_quaternions'],
@@ -81,20 +77,19 @@ class ObservationModel:
     def map_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.H.in_structure
 
-    def hits(self) -> Int64[Array, ' pixels']:
-        assert isinstance(self.H, CompositionOperator)  # mypy assert
-        # the pointing operator should be the first in the acquisition chain, so the last operand...
-        # there is a unit test for that
-        pointing = self.H.operands[-1]
-        assert isinstance(pointing, PointingOperator)  # mypy assert
-        pointing_i = pointing.as_stokes_i(interpolate=False)
-        ones = tree.ones_like(self.tod_structure)
-        # the masker could be acting on a Stokes pytree or an Array
-        masked_ones = jax.tree.leaves(self.masker(ones))[0]
-        hits_stokes = pointing_i.T(StokesI(masked_ones))
-        return jnp.int64(hits_stokes.i)  # type: ignore[no-any-return]
+    def noise_operator(
+        self, correlation_length: int, *, inverse: bool = True
+    ) -> AbstractLinearOperator:
+        """Build the (inverse) noise covariance operator."""
+        return _noise_operator(
+            self.noise_model,
+            self.tod_structure,
+            self.sample_rate,
+            correlation_length,
+            inverse=inverse,
+        )
 
-    def white_noise_W(self) -> AbstractLinearOperator:
+    def diag_W(self) -> AbstractLinearOperator:
         """Build the inverse white noise covariance operator."""
         operator_tree = jax.tree.map(
             lambda noise, s: noise.to_white_noise_model().inverse_operator(s),
@@ -103,42 +98,6 @@ class ObservationModel:
             is_leaf=lambda nm: isinstance(nm, NoiseModel),
         )
         return BlockDiagonalOperator(operator_tree)
-
-    def apply_system(self, x: Stokes, *, white_noise: bool = False) -> Stokes:
-        """Applies H.T @ W @ H (+ TOD masking) to x for this observation."""
-        weight = self.white_noise_W() if white_noise else self.W
-        y = self.masker(self.H(x))
-        y = weight(y)
-        return self.H.T(self.masker.T(y))  # type: ignore[no-any-return]
-
-    def rhs(self, data: Any, config: MapMakingConfig) -> Stokes:
-        """Accumulates data into the r.h.s. of the mapmaking equation.
-
-        Also performs gap-filling on the data before projecting into map domain.
-        """
-        tod = data['sample_data']
-        if config.gaps.fill and not config.binned:
-            # FIXME: check with demodulated data
-            N = _noise_operator(
-                self.noise_model,
-                self.tod_structure,
-                self.sample_rate,
-                config.noise.correlation_length,
-                inverse=False,
-            )
-            gapfill = GapFillingOperator(
-                N,  # type: ignore[arg-type]
-                self._get_indexer(),
-                data['metadata'],
-                self.W,  # type: ignore[arg-type]
-                rate=self.sample_rate,
-                max_cg_steps=config.gaps.fill_options.max_steps,
-                rtol=config.gaps.fill_options.rtol,
-            )
-            key = jax.random.key(config.gaps.fill_options.seed)
-            tod = gapfill(key, tod)
-        rhs: Stokes = (self.H.T @ self.masker @ self.W)(tod)
-        return rhs
 
     def _get_indexer(self) -> IndexOperator:
         """Get the IndexOperator for gap-filling"""
@@ -151,42 +110,32 @@ class ObservationModel:
         return IndexOperator(mask, in_structure=self.tod_structure)
 
 
-_StokesPyTree = TypeVar('_StokesPyTree', bound=StokesPyTreeType)
+def pad_model(models: ObservationModel, n_pad: int) -> ObservationModel:
+    """Pad models with n_pad dummy observations that contribute nothing to sums.
 
-
-@functools.partial(jax.jit, static_argnames=['diag'])
-def _system_scan(model: ObservationModel, x: _StokesPyTree, *, diag: bool = False) -> _StokesPyTree:
-    """Apply H^T W H to x, summed over the batch of observations in model.
-
-    `model` is an explicit JIT argument so it is never captured as an XLA constant.
-
-    Args:
-        model: Stacked ObservationModel with a leading batch dimension over observations.
-        x: Input sky map pytree.
-        diag: If True, use the diagonal white-noise approximation for W.
+    The dummy observations are copies of the last real observation with their
+    masker array leaves zeroed out, so masker(x) = 0 for any x.
     """
-
-    def accumulate(lhs, obs):  # type: ignore[no-untyped-def]
-        return tree.add(lhs, obs.apply_system(x, white_noise=diag)), None
-
-    lhs, _ = jax.lax.scan(accumulate, tree.zeros_like(x), model)
-    return lhs
-
-
-@symmetric
-class SystemOperator(AbstractLinearOperator):
-    """System operator for multiple observations: `A = Σ_i H_i^T W_i H_i`."""
-
-    models: ObservationModel
-    diag: bool = field(metadata={'static': True})
-
-    def __init__(self, models: ObservationModel, *, diag: bool = False):
-        object.__setattr__(self, 'models', models)
-        object.__setattr__(self, 'diag', diag)
-        object.__setattr__(self, 'in_structure', models.map_structure)
-
-    def mv(self, x: _StokesPyTree) -> _StokesPyTree:
-        return _system_scan(self.models, x, diag=self.diag)  # type: ignore[no-any-return]
+    if n_pad == 0:
+        return models
+    last = jax.tree.map(lambda a: jnp.repeat(a[-1:], n_pad, axis=0), models)
+    if len(jax.tree.leaves(last.masker)) == 0:
+        # Leaf-free masker (e.g. IdentityOperator): jax.tree.map produces no zeros.
+        # Build an explicit all-False MaskOperator so padding obs contribute nothing.
+        structure = last.masker.in_structure
+        first_leaf = jax.tree.leaves(structure)[0]
+        zero_mask = jnp.zeros((n_pad, *first_leaf.shape), dtype=bool)
+        zero_masker = MaskOperator.from_boolean_mask(zero_mask, in_structure=structure)
+    else:
+        zero_masker = jax.tree.map(jnp.zeros_like, last.masker)
+    padded = ObservationModel(
+        H=last.H,
+        W=last.W,
+        masker=zero_masker,
+        noise_model=last.noise_model,
+        sample_rate=last.sample_rate,
+    )
+    return jax.tree.map(lambda a, b: jnp.concatenate([a, b], axis=0), models, padded)  # type: ignore[no-any-return]
 
 
 def _noise_model(data: Any, config: MapMakingConfig) -> tuple[PyTree[NoiseModel], Array]:

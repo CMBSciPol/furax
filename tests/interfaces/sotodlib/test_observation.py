@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from numpy.testing import assert_allclose
 
-from furax.interfaces.sotodlib import SOTODLibObservation
+from furax.interfaces.sotodlib.observation import SOTODLibObservation
 
 FOLDER = Path(__file__).parents[2] / 'data/sotodlib'
 FILE = FOLDER / 'test_obs.h5'

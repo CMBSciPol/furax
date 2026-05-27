@@ -109,6 +109,11 @@ class MultiObservationMapMaker(Generic[T]):
         return jax.tree.map(lambda a: jax.make_array_from_process_local_data(self.sharding, a), x)
 
     @property
+    def n_observations(self) -> int:
+        """Total number of observations across all processes."""
+        return len(self.observations)
+
+    @property
     def obs_distribution(self) -> tuple[int, int, int]:
         """``(start, n_owned, n_pad)`` for this process."""
         return get_obs_distribution_to_process(self.n_observations)
@@ -133,42 +138,6 @@ class MultiObservationMapMaker(Generic[T]):
             stokes=self.config.landscape.stokes,
         )
 
-    def _scan_wcs_footprint(self) -> WCSLandscape:
-        """Scan observations to determine the combined WCS footprint and build a WCSLandscape.
-
-        Performs a preliminary pass over all observations, loading the pointing data needed
-        to compute each observation's sky coverage, then combines them into a unified footprint.
-        """
-        lc = self.config.landscape
-        if lc.wcs is None:
-            raise ValueError('WCS landscape config is required for auto footprint scanning.')
-        wcs_config = lc.wcs
-        res = wcs_config.resolution * pixell.utils.arcmin
-        proj = wcs_config.projection.name.lower()
-        pointing_fields = ['boresight_quaternions', 'detector_quaternions']
-
-        n = len(self.observations)
-        corners_rad = np.empty((2, 2, n))  # [bottom-left, top-right] corners per observation
-        for i, lazy_obs in enumerate(self.observations):
-            obs = lazy_obs.get_data(pointing_fields)
-            shape, wcs = obs.get_wcs_shape_and_kernel(
-                resolution_arcmin=wcs_config.resolution, projection=wcs_config.projection
-            )
-            # RA _decreases_ left-to-right (increases toward the East)
-            # so each corner pair is technically [[dec_lo, ra_hi], [dec_hi, ra_lo]]
-            corners_rad[..., i] = pixell.enmap.corners(shape, wcs, corner=True)
-
-        # find the corners of the smallest box covering all the individual patches
-        dec_lo = corners_rad[0, 0].min()
-        dec_hi = corners_rad[1, 0].max()
-        # minimum_enclosing_arc expects [lo, hi] intervals with shape (2, n)
-        ra_lo, ra_hi = minimum_enclosing_arc(corners_rad[::-1, 1].T)
-        union_box = np.array([[dec_lo, ra_hi], [dec_hi, ra_lo]])
-
-        # create the final shape and WCS objects for this covering box
-        shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
-        return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
-
     def run(self, out_dir: str | Path | None = None) -> MapMakingResults:
         """Runs the mapmaker and return results after saving them to the given directory."""
         results = self.make_maps()
@@ -185,11 +154,6 @@ class MultiObservationMapMaker(Generic[T]):
         mhu.sync_global_devices('mapmaker.run.save_done')
 
         return results
-
-    @property
-    def n_observations(self) -> int:
-        """Total number of observations across all processes."""
-        return len(self.observations)
 
     def make_maps(self) -> MapMakingResults:
         """Computes the mapmaker results (maps and other products)."""
@@ -347,6 +311,42 @@ class MultiObservationMapMaker(Generic[T]):
             )
 
         return valid
+
+    def _scan_wcs_footprint(self) -> WCSLandscape:
+        """Scan observations to determine the combined WCS footprint and build a WCSLandscape.
+
+        Performs a preliminary pass over all observations, loading the pointing data needed
+        to compute each observation's sky coverage, then combines them into a unified footprint.
+        """
+        lc = self.config.landscape
+        if lc.wcs is None:
+            raise ValueError('WCS landscape config is required for auto footprint scanning.')
+        wcs_config = lc.wcs
+        res = wcs_config.resolution * pixell.utils.arcmin
+        proj = wcs_config.projection.name.lower()
+        pointing_fields = ['boresight_quaternions', 'detector_quaternions']
+
+        n = len(self.observations)
+        corners_rad = np.empty((2, 2, n))  # [bottom-left, top-right] corners per observation
+        for i, lazy_obs in enumerate(self.observations):
+            obs = lazy_obs.get_data(pointing_fields)
+            shape, wcs = obs.get_wcs_shape_and_kernel(
+                resolution_arcmin=wcs_config.resolution, projection=wcs_config.projection
+            )
+            # RA _decreases_ left-to-right (increases toward the East)
+            # so each corner pair is technically [[dec_lo, ra_hi], [dec_hi, ra_lo]]
+            corners_rad[..., i] = pixell.enmap.corners(shape, wcs, corner=True)
+
+        # find the corners of the smallest box covering all the individual patches
+        dec_lo = corners_rad[0, 0].min()
+        dec_hi = corners_rad[1, 0].max()
+        # minimum_enclosing_arc expects [lo, hi] intervals with shape (2, n)
+        ra_lo, ra_hi = minimum_enclosing_arc(corners_rad[::-1, 1].T)
+        union_box = np.array([[dec_lo, ra_hi], [dec_hi, ra_lo]])
+
+        # create the final shape and WCS objects for this covering box
+        shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
+        return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
 
 
 @jax.jit

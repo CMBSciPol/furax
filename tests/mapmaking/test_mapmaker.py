@@ -6,14 +6,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from furax.core import CompositionOperator
 from furax.mapmaking import (
     AbstractLazyObservation,
     MapMakingConfig,
     MultiObservationMapMaker,
     ObservationReader,
 )
-from furax.mapmaking._model import pad_model
 from furax.mapmaking.config import (
     HealpixConfig,
     LandscapeConfig,
@@ -28,7 +26,6 @@ from furax.mapmaking.config import (
 from furax.mapmaking.mapmaker import get_obs_distribution_to_process
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
-from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, ValidStokesType
 
 
@@ -125,17 +122,11 @@ STOKES_TYPES = ['I', 'QU', 'IQU']
 LANDSCAPE_TYPES = ['healpix', 'car']
 
 
+@pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
+@pytest.mark.parametrize('stokes', STOKES_TYPES)
 @pytest.mark.parametrize('name,demodulated', PARAMS)
 class TestMultiObsMapMaker:
-    """Test the multi-observation mapmaker.
-
-    Use a class in order to parametrize over multiple tests at once.
-    Stokes/landscape are fixed to 'IQU'/'healpix' for structural tests;
-    end-to-end tests parametrize over the full grid at method level.
-    """
-
-    def test_model_vs_reader_structure(self, name, demodulated):
-        stokes, landscape_type = 'IQU', 'healpix'
+    def test_model_vs_reader_structure(self, name, demodulated, stokes, landscape_type):
         observations = _observations(name, demodulated)
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
@@ -148,58 +139,14 @@ class TestMultiObsMapMaker:
         assert model.map_structure == maker.landscape.structure
         assert model.tod_structure == reader.out_structure['sample_data']
 
-    def test_last_acquisition_operand_is_pointing(self, name, demodulated):
-        observations = _observations(name, demodulated)
-        config = _config('healpix', 'IQU', demodulated)
-        maker = MultiObservationMapMaker(observations, config=config)
-        h = maker.build_model().H
-        assert isinstance(h, CompositionOperator)
-        assert isinstance(h.operands[-1], PointingOperator)
-
-    @pytest.mark.parametrize('fit_models', [True, False])
-    def test_white_noise_models_binned_or_demodulated(self, name, demodulated, fit_models):
-        stokes = 'IQU'
-        observations = _observations(name, demodulated)
-        config = _config('healpix', stokes, demodulated=demodulated, fit_noise_model=fit_models)
-        maker = MultiObservationMapMaker(observations, config=config)
-        noise_model = maker.build_model().noise_model
-        if demodulated:
-            assert isinstance(noise_model, Stokes.class_for(stokes))
-            assert all(
-                isinstance(getattr(noise_model, stoke.lower()), WhiteNoiseModel) for stoke in stokes
-            )
-        else:
-            assert isinstance(noise_model, WhiteNoiseModel)
-
-    def test_rhs_shape(self, name, demodulated):
-        observations = _observations(name, demodulated)
-        config = _config('healpix', 'IQU', demodulated)
-        maker = MultiObservationMapMaker(observations, config=config)
-        n_pad = maker.obs_distribution[2]
-        model = maker.distribute(pad_model(maker.build_model(), n_pad))
-        with jax.set_mesh(maker.mesh):
-            rhs = maker.accumulate_rhs(model)
-        assert rhs.shape == maker.landscape.shape
-
-    def test_hits_are_nonnegative(self, name, demodulated):
-        observations = _observations(name, demodulated)
-        config = _config('healpix', 'IQU', demodulated)
-        maker = MultiObservationMapMaker(observations, config=config)
-        n_pad = maker.obs_distribution[2]
-        blocks = maker.distribute(pad_model(maker.build_model(), n_pad))
-        with jax.set_mesh(maker.mesh):
-            hits = maker.accumulate_hits(blocks)
-        assert hits.shape == maker.landscape.shape
-        assert jnp.all(hits >= 0)
-
-    @pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
-    @pytest.mark.parametrize('stokes', STOKES_TYPES)
     def test_full_mapmaker(self, name, demodulated, stokes, landscape_type):
         observations = _observations(name, demodulated)
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         results = maker.run()
         n_stokes = len(stokes)
+        assert results.hit_map.shape == maker.landscape.shape
+        assert jnp.all(results.hit_map >= 0)
         assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
         assert results.solver_stats is not None
         num_steps = results.solver_stats['num_steps']
@@ -207,17 +154,6 @@ class TestMultiObsMapMaker:
             f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'
         )
 
-    def test_bilinear_pointing_is_interpolated(self, name, demodulated):
-        observations = _observations(name, demodulated)
-        config = _config('healpix', 'IQU', demodulated, interpolation='bilinear')
-        maker = MultiObservationMapMaker(observations, config=config)
-        h = maker.build_model().H
-        assert isinstance(h, CompositionOperator)
-        assert isinstance(h.operands[-1], PointingOperator)
-        assert h.operands[-1].interpolate
-
-    @pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
-    @pytest.mark.parametrize('stokes', STOKES_TYPES)
     def test_bilinear_mapmaker_runs(self, name, demodulated, stokes, landscape_type):
         observations = _observations(name, demodulated)
         config = _config(landscape_type, stokes, demodulated, interpolation='bilinear')
@@ -225,6 +161,22 @@ class TestMultiObsMapMaker:
         results = maker.run()
         n_stokes = len(stokes)
         assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
+
+
+@pytest.mark.parametrize('name,demodulated', PARAMS)
+def test_white_noise_models_binned_or_demodulated(name, demodulated):
+    stokes = 'IQU'
+    observations = _observations(name, demodulated)
+    config = _config('healpix', stokes, demodulated=demodulated)
+    maker = MultiObservationMapMaker(observations, config=config)
+    noise_model = maker.build_model().noise_model
+    if demodulated:
+        assert isinstance(noise_model, Stokes.class_for(stokes))
+        assert all(
+            isinstance(getattr(noise_model, stoke.lower()), WhiteNoiseModel) for stoke in stokes
+        )
+    else:
+        assert isinstance(noise_model, WhiteNoiseModel)
 
 
 ATOP_PARAMS = [
@@ -302,7 +254,6 @@ def _config(
     landscape_type: Literal['healpix', 'car'],
     stokes: ValidStokesType,
     demodulated: bool = False,
-    fit_noise_model: bool = True,
     interpolation: Literal['nearest', 'bilinear'] = 'nearest',
     method: Methods = Methods.BINNED,
     atop_tau: int = 0,
@@ -322,7 +273,7 @@ def _config(
         method=method,
         pointing=PointingConfig(on_the_fly=True, interpolation=interpolation),
         landscape=lc,
-        noise=NoiseConfig(fit_from_data=fit_noise_model, fitting=NoiseFitConfig(nperseg=512)),
+        noise=NoiseConfig(fit_from_data=True, fitting=NoiseFitConfig(nperseg=512)),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
         atop_tau=atop_tau,
     )

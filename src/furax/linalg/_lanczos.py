@@ -366,8 +366,14 @@ def lanczos_tr(
         A V_m = V_m H + beta_last * v_last * e_{m-1}^T
 
     where H is a bordered tridiagonal inner matrix.
-    The residual bound ``||A y_i - theta_i y_i|| ≤ |beta_last| * |S[m-1, i]|``
-    is used to check convergence.
+
+    A pair is converged when the cheap Lanczos residual bound (ARPACK criterion)
+
+        ``|beta_last| * |S[m-1, i]| ≤ tol * max(|theta_i|, eps * ||A||)``
+
+    where ``S`` is the eigenvector matrix of the m×m inner matrix H, so
+    ``S[m-1, i]`` is the last component of the i-th eigenvector of H, and
+    ``max|theta|`` is used as an estimate of ``||A||``.
 
     Uses full reorthogonalization throughout.  No locking: all k pairs are
     recomputed at every restart regardless of convergence status.
@@ -399,7 +405,7 @@ def lanczos_tr(
             - 'BE': half (k//2) from each end of the spectrum; for odd k the
               extra pair comes from the high (largest algebraic) end.
         max_restarts: Maximum number of restart cycles.
-        tol: Convergence tolerance on Lanczos residual bounds.
+        tol: Convergence tolerance; see criterion above.
 
     Returns:
         LanczosResult containing eigenvalues, eigenvectors, and residual norms,
@@ -439,19 +445,19 @@ def lanczos_tr(
             return jnp.concatenate([sorted_idx[:n_low], sorted_idx[-n_high:]])
         return sorted_idx[:k]
 
-    def _check_converged(beta_last, S, wanted_idx):  # type: ignore[no-untyped-def]
-        # Lanczos residual bound: ||A y_i - θ_i y_i|| ≤ |β_m| |s_i[-1]|
-        # S[-1, i] is the last component of the i-th eigenvector of H (tridiagonal or
-        # bordered tridiagonal after restart). Non-convergence after max_restarts is
-        # detectable by the caller via result.residual_norms >= tol.
+    def _check_converged(theta, beta_last, S, wanted_idx):  # type: ignore[no-untyped-def]
+        # ARPACK criterion: |β_m| |s_i[-1]| ≤ tol * max(|θ_i|, eps*||A||)
+        # Floor prevents stall when θ_i ≈ 0; max|θ| estimates ||A||.
         ritz_res = jnp.abs(beta_last) * jnp.abs(S[-1, wanted_idx])  # |β_m| |s_i[-1]|
-        return jnp.all(ritz_res < tol)
+        eps = jnp.finfo(theta.dtype).eps
+        scale = jnp.maximum(jnp.abs(theta[wanted_idx]), eps * jnp.max(jnp.abs(theta)))
+        return jnp.all(ritz_res <= tol * scale)
 
     # Initial m-step factorization
     alpha, beta, V, beta_last, v_last = lanczos_tridiag(A, v0, m)
     theta, S = jax.scipy.linalg.eigh_tridiagonal(alpha, beta, eigvals_only=False)
     wanted_idx = _select_wanted(theta)
-    init_converged = _check_converged(beta_last, S, wanted_idx)
+    init_converged = _check_converged(theta, beta_last, S, wanted_idx)
 
     def cond_fn(state):  # type: ignore[no-untyped-def]
         *_, iteration, converged, _theta, _S, _wanted_idx = state
@@ -470,7 +476,7 @@ def lanczos_tr(
         theta, S = jnp.linalg.eigh(H)  # H S = S diag(θ)
 
         wanted_idx = _select_wanted(theta)
-        converged = _check_converged(beta_last, S, wanted_idx)
+        converged = _check_converged(theta, beta_last, S, wanted_idx)
 
         return V, beta_last, v_last, iteration + 1, converged, theta, S, wanted_idx
 

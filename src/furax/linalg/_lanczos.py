@@ -366,8 +366,14 @@ def lanczos_tr(
         A V_m = V_m H + beta_last * v_last * e_{m-1}^T
 
     where H is a bordered tridiagonal inner matrix.
-    A pair is converged when its relative residual bound satisfies
-    ``||A y_i - theta_i y_i|| ≤ |beta_last| * |S[m-1, i]| ≤ tol * |theta_i|``.
+
+    A pair is converged when the cheap Lanczos residual bound (ARPACK criterion)
+
+        ``|beta_last| * |S[m-1, i]| ≤ tol * max(|theta_i|, eps * ||A||)``
+
+    where ``S`` is the eigenvector matrix of the m×m inner matrix H, so
+    ``S[m-1, i]`` is the last component of the i-th eigenvector of H, and
+    ``max|theta|`` is used as an estimate of ``||A||``.
 
     Uses full reorthogonalization throughout.  No locking: all k pairs are
     recomputed at every restart regardless of convergence status.
@@ -399,9 +405,7 @@ def lanczos_tr(
             - 'BE': half (k//2) from each end of the spectrum; for odd k the
               extra pair comes from the high (largest algebraic) end.
         max_restarts: Maximum number of restart cycles.
-        tol: Relative convergence tolerance: a pair converges when its residual
-            bound is below ``tol * |theta_i|`` (floored at ``tol * eps * ||A||``
-            so eigenvalues near zero do not stall the loop).
+        tol: Convergence tolerance; see criterion above.
 
     Returns:
         LanczosResult containing eigenvalues, eigenvectors, and residual norms,
@@ -442,13 +446,8 @@ def lanczos_tr(
         return sorted_idx[:k]
 
     def _check_converged(theta, beta_last, S, wanted_idx):  # type: ignore[no-untyped-def]
-        # Relative Lanczos residual bound: a pair is converged when
-        #   ||A y_i - θ_i y_i|| ≈ |β_m| |s_i[-1]| ≤ tol * |θ_i|.
-        # S[-1, i] is the last component of the i-th eigenvector of H (tridiagonal or
-        # bordered tridiagonal after restart). The per-pair scale |θ_i| is floored at
-        # eps*||A|| (using max|θ| as the ||A|| estimate) so eigenvalues near zero do not
-        # stall the loop. Non-convergence after max_restarts is detectable by the caller
-        # via result.residual_norms vs. tol*|eigenvalues|.
+        # ARPACK criterion: |β_m| |s_i[-1]| ≤ tol * max(|θ_i|, eps*||A||)
+        # Floor prevents stall when θ_i ≈ 0; max|θ| estimates ||A||.
         ritz_res = jnp.abs(beta_last) * jnp.abs(S[-1, wanted_idx])  # |β_m| |s_i[-1]|
         eps = jnp.finfo(theta.dtype).eps
         scale = jnp.maximum(jnp.abs(theta[wanted_idx]), eps * jnp.max(jnp.abs(theta)))

@@ -34,11 +34,11 @@ class ConfigState:
     solver_options: dict[str, Any] = field(default_factory=dict)
     solver_callback: Callable[[lx.Solution], None] = default_solver_callback
 
-    def tree_flatten(self):  # type: ignore[no-untyped-def]
+    def tree_flatten(self):
         return (), asdict(self)
 
     @classmethod
-    def tree_unflatten(cls, aux_data, children):  # type: ignore[no-untyped-def]
+    def tree_unflatten(cls, aux_data, children):
         return cls(**aux_data)
 
 

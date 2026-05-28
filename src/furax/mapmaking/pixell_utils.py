@@ -2,7 +2,6 @@ from typing import Any
 
 import healpy as hp
 import jax
-import matplotlib.axes
 import matplotlib.pyplot as plt
 import numpy as np
 import pixell.enmap
@@ -30,9 +29,9 @@ def plot_ndmap(
     vmin: float | None = None,
     cmap: str = 'RdBu_r',
     scale: float = 1.0,
-    fig: matplotlib.figure.Figure | None = None,
-    ax: matplotlib.axes._axes.Axes | None = None,
-) -> tuple[matplotlib.figure.Figure, matplotlib.axes._axes.Axes]:
+    fig=None,
+    ax=None,
+):
     """Visualisation function for ndmap that replaces pixell.enplot.eshow for now.
 
     Inputs:
@@ -53,7 +52,7 @@ def plot_ndmap(
         vmax = scale * np.max(np.abs(data))
         vmin = -vmax
 
-    wcs = data.wcs.wcs
+    wcs = data.wcs.wcs  # ty: ignore[unresolved-attribute]
     # Note that the data has axes [Dec, RA], unlike the wcs object's [RA, Dec]
     ra = wcs.crval[0] + wcs.cdelt[0] * (np.arange(data.shape[1] + 1) - wcs.crpix[0] - 0.5)
     dec = wcs.crval[1] + wcs.cdelt[1] * (np.arange(data.shape[0] + 1) - wcs.crpix[1] - 0.5)
@@ -85,9 +84,9 @@ def plot_cartview(
     vmins: list[float] | list[None] | None = None,
     vmax_quantile: float = 0.999,
     nside: int | None = None,
-    fig: matplotlib.figure.Figure | None = None,
-    axs: matplotlib.axes._axes.Axes | None = None,
-) -> tuple[matplotlib.figure.Figure, NDArray[matplotlib.axes.Axes]]:
+    fig=None,
+    axs=None,
+):
     """Visualisation function for CAR projection of healpix maps.
 
     Unlike healpy.cartview, this function returns matplotlib Axes object, and one can have

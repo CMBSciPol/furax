@@ -111,27 +111,16 @@ skip_covered = true
 [tool.hatch.version]
 source = 'vcs'
 
-[[tool.mypy.overrides]]
-module = [
-    'astropy.*',
-    'cadre',
-    'cyclopts',
-    'fastquat',
-    'healpy',
-    'jax_healpy',
-    'lineax',
-    'matplotlib.*',
-    'mpl_toolkits.*',
+[tool.ty.analysis]
+replace-imports-with-any = [
     'litebird_sim',
-    'pixell.*',
-    'pysm3.*',
-    'scipy.*',
-    'so3g.*',
-    'sotodlib.*',
-    'toast.*',
-    'wadler_lindig',
+    'litebird_sim.**',
+    'toast',
+    'toast.**',
 ]
-ignore_missing_imports = true
+
+[tool.ty.src]
+include = ["src/furax"]
 
 [tool.pytest]
 # addopts includes jaxtyping option for type-checking tests:

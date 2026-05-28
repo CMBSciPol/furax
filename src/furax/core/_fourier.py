@@ -102,7 +102,7 @@ class FourierOperator(AbstractLinearOperator):
         """
         kernel = self.get_kernel()
         func = jnp.vectorize(self._apply, signature='(n),(m)->(n)')
-        return func(x, kernel)  # type: ignore[no-any-return]
+        return func(x, kernel)
 
     def get_kernel(self) -> Inexact[Array, '...']:
         freqs = jnp.fft.rfftfreq(self.fft_size, d=1 / self.sample_rate)
@@ -203,7 +203,7 @@ class FourierOperator(AbstractLinearOperator):
         # Create filter kernel based on filter_type
         if filter_type == 'square':
 
-            def kernel_func(freqs):  # type: ignore[no-untyped-def]
+            def kernel_func(freqs):
                 # Sharp cutoff (ideal brick-wall filter)
                 mask = (freqs >= f_low) & (freqs <= f_high)
                 return mask.astype(jnp.complex128)
@@ -211,7 +211,7 @@ class FourierOperator(AbstractLinearOperator):
         elif filter_type == 'butter4':
             import scipy.signal
 
-            def kernel_func(freqs):  # type: ignore[no-untyped-def]
+            def kernel_func(freqs):
                 # 4th-order Butterworth bandpass filter using scipy
 
                 # Design Butterworth bandpass filter
@@ -245,7 +245,7 @@ class FourierOperator(AbstractLinearOperator):
 
         elif filter_type == 'cos2':
 
-            def kernel_func(freqs):  # type: ignore[no-untyped-def]
+            def kernel_func(freqs):
                 # Cosine-squared transition outside the passband
                 # Define transition width (10% of bandwidth on each side, outside the band)
                 bandwidth = f_high - f_low

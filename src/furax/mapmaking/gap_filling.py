@@ -231,7 +231,7 @@ def _draw_block(
         raise ValueError(msg)
 
     @partial(jnp.vectorize, signature='(),(k)->(n)')
-    def _draw(subkey, psd):  # type: ignore[no-untyped-def]
+    def _draw(subkey, psd):
         # Gaussian Re/Im random numbers
         rngdata = jax.random.normal(subkey, shape=(fft_size,))
 
@@ -255,4 +255,4 @@ def _draw_block(
         xi = tdata[offset : offset + n]
         return xi - jnp.mean(xi)
 
-    return _draw(subkeys, psd)  # type: ignore[no-any-return]
+    return _draw(subkeys, psd)

@@ -7,7 +7,7 @@ from ._seds import (
     CMBOperator,
     DustOperator,
     MixingMatrixOperator,
-    NoiseDiagonalOperator,
+    NoiseDiagonalOperator,  # ty: ignore[deprecated]
     SynchrotronOperator,
 )
 from ._transfer_matrix import (

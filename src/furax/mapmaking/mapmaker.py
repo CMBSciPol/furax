@@ -568,8 +568,8 @@ class MultiObservationMapMaker[T]:
         is_real = self.distribute(bucket.is_real[local])
         axis = jax.sharding.get_abstract_mesh().axis_names[0]
 
-        def kernel(items, is_real):  # type: ignore[no-untyped-def]
-            def step(carry, args):  # type: ignore[no-untyped-def]
+        def kernel(items, is_real):
+            def step(carry, args):
                 hits_acc, rhs_acc = carry
                 i, real = args
 
@@ -598,7 +598,7 @@ class MultiObservationMapMaker[T]:
                 hits_i = jnp.int64(hit_pointing.T(StokesI(masked)).i)
 
                 # RHS contribution (optionally gap-filled).
-                def func_gapfill(tod):  # type: ignore[no-untyped-def]
+                def func_gapfill(tod):
                     # Only reached under GapTreatment.FILL, where W is the plain inner-mask weight.
                     assert isinstance(obs.W, WeightOperator)
                     # Optional M_b N M_b preconditioner (covariance from the noise model).
@@ -659,7 +659,7 @@ class MultiObservationMapMaker[T]:
         in_specs = (P(axis), P(axis))
         out_specs = (P(), P(), P(axis))
         skernel = jax.shard_map(in_specs=in_specs, out_specs=out_specs, check_vma=False)(kernel)
-        return skernel(items, is_real)  # type: ignore[no-any-return]
+        return skernel(items, is_real)
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -764,7 +764,7 @@ def _wcs_landscape_from_geometry(
     if wcs_config.geometry_file is not None:
         shape, wcs = pixell.enmap.read_map_geometry(wcs_config.geometry_file)
     else:
-        assert wcs_config.patch is not None  # mypy: has_geometry guarantees patch is set here
+        assert wcs_config.patch is not None  # ty assert: has_geometry guarantees patch is set here
         res = wcs_config.resolution * pixell.utils.arcmin
         half_w = np.radians(wcs_config.patch.width / 2)
         half_h = np.radians(wcs_config.patch.height / 2)
@@ -850,9 +850,9 @@ class MapMaker:
         }[config.method]
 
         if logger is None:
-            return maker(config)  # type: ignore[abstract]
+            return maker(config)
         else:
-            return maker(config, logger=logger)  # type: ignore[abstract]
+            return maker(config, logger=logger)
 
     @classmethod
     def from_yaml(cls, path: str | Path, logger: Logger | None = None) -> 'MapMaker':
@@ -863,7 +863,7 @@ class MapMaker:
         lc = self.config.landscape
         if (landscape := _static_landscape(lc, self.config.dtype)) is not None:
             return landscape
-        assert lc.wcs is not None  # mypy: _static_landscape returns None only for auto WCS
+        assert lc.wcs is not None  # ty assert: _static_landscape returns None only for auto WCS
         wcs_shape, wcs_kernel = observation.get_wcs_shape_and_kernel(
             resolution_arcmin=lc.wcs.resolution, projection=lc.wcs.projection
         )
@@ -919,19 +919,21 @@ class MapMaker:
         if self.config.demodulated:
             return pointing
         else:
-            meta = {
-                'shape': (observation.n_detectors, observation.n_samples),
-                'stokes': landscape.stokes,
-                'dtype': self.config.dtype,
-            }
+            shape = (observation.n_detectors, observation.n_samples)
+            stokes = landscape.stokes
+            dtype = self.config.dtype
             polarizer = LinearPolarizerOperator.create(
-                **meta,  # type: ignore[arg-type]
+                shape,
+                stokes=stokes,
+                dtype=dtype,
                 angles=jnp.asarray(
                     observation.get_detector_offset_angles().astype(self.config.dtype)[:, None]
                 ),
             )
             hwp = HWPOperator.create(
-                **meta,  # type: ignore[arg-type]
+                shape,
+                stokes=stokes,
+                dtype=dtype,
                 angles=jnp.asarray(observation.get_hwp_angles().astype(self.config.dtype)),
             )
 
@@ -1108,7 +1110,7 @@ class BinnedMapMaker(MapMaker):
         mapmaking_operator = system.inverse() @ binner
 
         @jax.jit
-        def process(d):  # type: ignore[no-untyped-def]
+        def process(d):
             return mapmaking_operator.reduce()(d)
 
         logger_info('Set up mapmaking operator')
@@ -1126,7 +1128,7 @@ class BinnedMapMaker(MapMaker):
         final_map = np.array([res.i, res.q, res.u])
         weights = np.array(system.blocks)
 
-        output = {'map': final_map, 'weights': weights}
+        output: dict[str, Any] = {'map': final_map, 'weights': weights}
         if isinstance(landscape, WCSLandscape):
             output['wcs'] = landscape.to_wcs()
         elif isinstance(landscape, AstropyWCSLandscape):
@@ -1135,7 +1137,7 @@ class BinnedMapMaker(MapMaker):
             config.weighting.source == NoiseSource.FIT
             and config.weighting.mode != WeightingMode.IDENTITY
         ):
-            output['noise_fit'] = noise_model.to_array()  # type: ignore[assignment]
+            output['noise_fit'] = noise_model.to_array()
         if config.debug:
             proj_map = (masker.T @ acquisition)(res)
             output['proj_map'] = proj_map
@@ -1221,11 +1223,10 @@ class MLMapmaker(MapMaker):
         # Adjust the sample mask according to the new pixel selection
         positive_sample_hits = (
             (masker @ acquisition @ selector.T)(
-                StokesIQU.from_iquv(
-                    i=jnp.ones(selector.out_structure.shape, dtype=data.dtype),
-                    q=jnp.zeros(selector.out_structure.shape, dtype=data.dtype),
-                    u=jnp.zeros(selector.out_structure.shape, dtype=data.dtype),
-                    v=None,  # type: ignore[arg-type]
+                StokesIQU.from_stokes(
+                    jnp.ones(selector.out_structure.shape, dtype=data.dtype),
+                    jnp.zeros(selector.out_structure.shape, dtype=data.dtype),
+                    jnp.zeros(selector.out_structure.shape, dtype=data.dtype),
                 )
             )
             > 0
@@ -1261,7 +1262,7 @@ class MLMapmaker(MapMaker):
         mapmaking_operator = (h.T @ M @ h).I(**options) @ h.T @ M
 
         @jax.jit
-        def process(d):  # type: ignore[no-untyped-def]
+        def process(d):
             return mapmaking_operator.reduce()(d)
 
         logger_info('Completed setting up the solver')
@@ -1281,7 +1282,7 @@ class MLMapmaker(MapMaker):
         # Format output and compute auxiliary data
         final_map = np.array([result_map.i, result_map.q, result_map.u])
 
-        output = {'map': final_map, 'weights': weights, 'weights_uncut': blocks}
+        output: dict[str, Any] = {'map': final_map, 'weights': weights, 'weights_uncut': blocks}
         if isinstance(landscape, WCSLandscape):
             output['wcs'] = landscape.to_wcs()
         elif isinstance(landscape, AstropyWCSLandscape):
@@ -1397,7 +1398,7 @@ class ATOPMapMaker(MapMaker):
         # Format output and compute auxiliary data
         final_map = np.array([result_map.q, result_map.u])
 
-        output = {'map': final_map, 'weights': blocks}
+        output: dict[str, Any] = {'map': final_map, 'weights': blocks}
         if isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
         if (

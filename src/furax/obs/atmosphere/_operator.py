@@ -106,7 +106,7 @@ class AtmospherePointingOperator(PointingOperator):
         if not self.elevation_modulation:
             return tod
         sin_el = qdet_full.rotate_vector(ZAXIS)[..., 2]  # (det, samp)
-        return tree.truediv(tod, sin_el)  # type: ignore[no-any-return]
+        return tree.truediv(tod, sin_el)
 
     def _quat2index(self, qdet_full: Quaternion) -> Array:
         x, y = self._wind_xy(qdet_full)

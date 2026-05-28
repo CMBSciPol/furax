@@ -63,7 +63,7 @@ def _get_lineax_tags(operator: AbstractLinearOperator, tags: OperatorTag) -> fro
     return frozenset(lineax_tags)
 
 
-class _FuraxLinearOperator(lx.AbstractLinearOperator):  # type: ignore[misc]
+class _FuraxLinearOperator(lx.AbstractLinearOperator):
     """Lineax-compatible wrapper around a furax AbstractLinearOperator.
 
     Unlike lx.FunctionLinearOperator, this stores the furax operator as a
@@ -97,13 +97,13 @@ def _materialise(operator: _FuraxLinearOperator) -> lx.AbstractLinearOperator:
 
 
 def _diagonal(operator: _FuraxLinearOperator) -> Shaped[Array, ' size']:
-    return lx.diagonal(_to_function_linear_operator(operator))  # type: ignore[no-any-return]
+    return lx.diagonal(_to_function_linear_operator(operator))
 
 
 def _tridiagonal(
     operator: _FuraxLinearOperator,
 ) -> tuple[Shaped[Array, ' size'], Shaped[Array, ' size-1'], Shaped[Array, ' size-1']]:
-    return lx.tridiagonal(_to_function_linear_operator(operator))  # type: ignore[no-any-return]
+    return lx.tridiagonal(_to_function_linear_operator(operator))
 
 
 def _to_function_linear_operator(

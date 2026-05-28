@@ -12,8 +12,8 @@ from .util import detector_selection, resolve_obsids, setup_logger
 app = App(help='Run the mapmaker on SO observations, loaded straight from the preproc db.')
 
 
-@app.default  # type: ignore[untyped-decorator]
-def run(  # type: ignore[no-untyped-def]
+@app.default
+def run(
     init_config: Path | None = None,
     proc_config: Path | None = None,
     obsid: list[str] | None = None,

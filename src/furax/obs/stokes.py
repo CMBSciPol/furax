@@ -108,7 +108,7 @@ class Stokes(ABC):
             raise ValueError(msg)
         # Bypass __init__ to avoid device transfer
         instance = object.__new__(cls)
-        instance.data = array  # type: ignore[assignment]
+        instance.data = array  # ty: ignore[invalid-assignment]
         return instance
 
     def __pdoc__(self, **kwargs: Any) -> wl.AbstractDoc:
@@ -116,7 +116,7 @@ class Stokes(ABC):
         return wl.ConcatDoc(wl.TextDoc(f'{type(self).__name__}('), inner, wl.TextDoc(')'))
 
     def __repr__(self) -> str:
-        return wl.pformat(self, width=80)  # type: ignore[no-any-return]
+        return wl.pformat(self, width=80)
 
     # ---- component access -----------------------------------------------------------------------
     def _component(self, letter: str) -> Array:
@@ -196,7 +196,7 @@ class Stokes(ABC):
         if rhs is NotImplemented:
             # mypy's exemption for returning NotImplemented only applies inside a method
             # literally named as a dunder (e.g. __add__), not this shared helper.
-            return NotImplemented  # type: ignore[no-any-return]
+            return NotImplemented
         return self.from_array(fn(rhs, self.data) if reflected else fn(self.data, rhs))
 
     def __add__(self, other: Any) -> Self:

@@ -99,7 +99,7 @@ class BandedCholeskyOperator(AbstractLinearOperator):
         sizes = [prod(leaf.shape[batch_ndim:]) for leaf in leaves]
         chunks = jnp.split(yf, np.cumsum(sizes)[:-1], axis=-1)
         out = [c.reshape(leaf.shape) for c, leaf in zip(chunks, leaves, strict=True)]
-        return treedef.unflatten(out)  # type: ignore[attr-defined]
+        return treedef.unflatten(out)
 
 
 def banded_cholesky(
@@ -159,7 +159,7 @@ def banded_cholesky(
         scale = jnp.mean(diag, axis=-1)[..., None, None]  # (*batch, n, 1, 1)
         ridge = regularization * scale * jnp.eye(k, dtype=bands.dtype)
         bands = bands.at[..., 0, :, :].add(ridge)
-    return _block_banded_cholesky(bands)  # type: ignore[no-any-return]
+    return _block_banded_cholesky(bands)
 
 
 @partial(jnp.vectorize, signature='(n,w1,k,k)->(n,w1,k,k)')
@@ -178,10 +178,10 @@ def _block_banded_cholesky(bands: Float[Array, 'n w1 k k']) -> Float[Array, 'n w
     n, w1, k, _ = bands.shape
     w = w1 - 1
 
-    def read(arr: Array, idx: Array):  # type: ignore[no-untyped-def]
+    def read(arr: Array, idx: Array):
         return jax.lax.dynamic_index_in_dim(arr, jnp.clip(idx, 0, n - 1), axis=0, keepdims=False)
 
-    def row(i: Array, lb: Array):  # type: ignore[no-untyped-def]
+    def row(i: Array, lb: Array):
         cur = jnp.zeros((w1, k, k), bands.dtype)  # this row's blocks lb[i, :]
         # columns j = i - d0, processed high d0 (far) to low (diagonal last).
         for d0 in range(w, -1, -1):
@@ -228,10 +228,10 @@ def banded_cholesky_solve(
     n, w1, k, _ = lb.shape
     w = w1 - 1
 
-    def read(arr: Array, idx: Array):  # type: ignore[no-untyped-def]
+    def read(arr: Array, idx: Array):
         return jax.lax.dynamic_index_in_dim(arr, jnp.clip(idx, 0, n - 1), axis=0, keepdims=False)
 
-    def fwd(i: Array, y: Array):  # type: ignore[no-untyped-def]  # forward: L y = b
+    def fwd(i: Array, y: Array):  # forward: L y = b
         rhs = read(b, i)
         lb_i = read(lb, i)
         for d in range(1, w + 1):
@@ -241,7 +241,7 @@ def banded_cholesky_solve(
 
     y = jax.lax.fori_loop(0, n, fwd, jnp.zeros((n, k), b.dtype))
 
-    def bwd(step: Array, x: Array):  # type: ignore[no-untyped-def]  # backward: Lᵀ x = y
+    def bwd(step: Array, x: Array):  # backward: Lᵀ x = y
         i = n - 1 - step
         rhs = read(y, i)
         for d in range(1, w + 1):  # L[i+d, i] = lb[i+d, d]

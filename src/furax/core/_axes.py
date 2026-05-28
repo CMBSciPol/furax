@@ -82,8 +82,8 @@ class MoveAxisInverseRule(AbstractCompositionRule):
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        assert isinstance(left, MoveAxisOperator)  # mypy assert
-        assert isinstance(right, MoveAxisOperator)  # mypy assert
+        assert isinstance(left, MoveAxisOperator)  # ty assert
+        assert isinstance(right, MoveAxisOperator)  # ty assert
         if left.source != right.destination or left.destination != right.source:
             raise NoReduction
         return []
@@ -100,7 +100,7 @@ class AbstractRavelOrReshapeOperator(AbstractLinearOperator):
         return jnp.eye(self.in_size, dtype=self.out_promoted_dtype)
 
     def transpose(self) -> AbstractLinearOperator:
-        return ReshapeTransposeOperator(self)  # type: ignore[arg-type]
+        return ReshapeTransposeOperator(self)  # ty: ignore[invalid-argument-type]
 
     def reduce(self) -> AbstractLinearOperator:
         if self.out_structure == self.in_structure:

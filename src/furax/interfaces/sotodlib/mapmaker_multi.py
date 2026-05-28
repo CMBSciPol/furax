@@ -81,24 +81,25 @@ def main(
     if isinstance(preprocess_config, str):
         with open(preprocess_config) as f:
             preprocess_config = yaml.safe_load(f)
-    logger.info('Preprocessing config loaded from file')
+        logger.info('Preprocessing config loaded from file')
 
     for obs_id in obs_ids:
         # First check if we need to load this obs or not
-        completed = True
-        for mapmaking_config in mapmaking_configs:
-            output_dir = get_output_dir(
-                root_dir=output_path,  # type: ignore[arg-type]
-                mapmaking_config=mapmaking_config,
-                obs_id=obs_id,
-                det_select=det_select,
+        if output_path is not None:
+            completed = all(
+                os.path.exists(
+                    get_output_dir(
+                        root_dir=output_path,
+                        mapmaking_config=mapmaking_config,
+                        obs_id=obs_id,
+                        det_select=det_select,
+                    )
+                )
+                for mapmaking_config in mapmaking_configs
             )
-            if not os.path.exists(output_dir):
-                completed = False
-                break
-        if completed:
-            logger.info(f'Skipping {obs_id}...')
-            continue
+            if completed:
+                logger.info(f'Skipping {obs_id}...')
+                continue
 
         # Load obs
         try:
@@ -113,7 +114,7 @@ def main(
             # First check if we need to do mapmaking or not
             mm_name = os.path.basename(mapmaking_config)
             output_dir = get_output_dir(
-                root_dir=output_path,  # type: ignore[arg-type]
+                root_dir=output_path,
                 mapmaking_config=mapmaking_config,
                 obs_id=obs_id,
                 det_select=det_select,
@@ -146,7 +147,10 @@ def main(
 
 
 def get_output_dir(
-    root_dir: str, mapmaking_config: str, obs_id: str, det_select: dict[str, Any] | None = None
+    root_dir: str | None,
+    mapmaking_config: str,
+    obs_id: str,
+    det_select: dict[str, Any] | None = None,
 ) -> str:
     name = Path(mapmaking_config).stem
     output_dir = f'{root_dir}/{name}/{obs_id}'

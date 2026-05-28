@@ -408,5 +408,5 @@ class SlotLayout:
         for bucket, values in zip(self.buckets, per_bucket, strict=True):
             real = values[: bucket.n_real]
             region = (bucket.observations, *(slice(0, n) for n in real.shape[1:]))
-            out[region] = real  # type: ignore[index]
+            out[region] = real
         return out

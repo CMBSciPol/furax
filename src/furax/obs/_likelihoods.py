@@ -142,7 +142,7 @@ def preconditionner(
     dust_nu0: float,
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
-) -> MixingMatrixOperator:  # type: ignore[valid-type]
+) -> AbstractLinearOperator:
     """Constructs the MixingMatrixOperator for preconditioning purposes.
 
     This function builds the mixing matrix operator based on the provided spectral parameters

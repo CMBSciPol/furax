@@ -262,9 +262,9 @@ class AbstractCompositionRule(AbstractBinaryRule):
     def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
         self._check_operands(left, right)
         # In addition to checking operands, handle the case of TransposeOperator
-        if self.left_operator_class is TransposeOperator and left.operator is not right:  # type: ignore[attr-defined]
+        if self.left_operator_class is TransposeOperator and left.operator is not right:  # ty: ignore[unresolved-attribute]
             raise NoReduction
-        if self.right_operator_class is TransposeOperator and right.operator is not left:  # type: ignore[attr-defined]
+        if self.right_operator_class is TransposeOperator and right.operator is not left:  # ty: ignore[unresolved-attribute]
             raise NoReduction
 
 
@@ -279,7 +279,7 @@ class InverseBinaryRule(AbstractCompositionRule):
             if left.operator is not right:
                 raise NoReduction
         else:
-            assert isinstance(right, self.operator_class)  # mypy assert
+            assert isinstance(right, self.operator_class)  # ty assert
             if right.operator is not left:
                 raise NoReduction
 
@@ -323,6 +323,6 @@ class HomothetyAdditionRule(AbstractAdditionRule):
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        assert isinstance(left, HomothetyOperator)  # mypy
-        assert isinstance(right, HomothetyOperator)  # mypy
+        assert isinstance(left, HomothetyOperator)  # ty assert
+        assert isinstance(right, HomothetyOperator)  # ty assert
         return [HomothetyOperator(left.value + right.value, in_structure=left.in_structure)]

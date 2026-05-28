@@ -276,7 +276,7 @@ def padding_aware_welch(
         fs=fs,
         nperseg=nperseg,
         noverlap=noverlap,
-        detrend='constant',  # type: ignore[arg-type]
+        detrend='constant',  # ty: ignore[invalid-argument-type]
         boundary=None,
         padded=False,
     )

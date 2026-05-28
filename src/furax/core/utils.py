@@ -1,8 +1,11 @@
 import dataclasses
 from collections.abc import Iterable
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from jax._src.tree_util import GetAttrKey, register_pytree_with_keys
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 T = TypeVar('T')
 
@@ -23,13 +26,13 @@ class DefaultIdentityDict(dict[T, T]):
             return key
 
 
-def register_dataclass_with_keys[T](cls: type[T]) -> type[T]:
+def register_dataclass_with_keys[T: DataclassInstance](cls: type[T]) -> type[T]:
     """Register a dataclass as a pytree node, bypassing __init__ during unflatten.
 
     The motivation to reimplement jax.tree_util.register_dataclass comes from the fact that it does not handle
     dataclasses with an __init__ constructor that does not match the fields of the dataclass.
     """
-    fields = dataclasses.fields(cls)  # type: ignore[arg-type]
+    fields = dataclasses.fields(cls)
     data_fields = tuple(f.name for f in fields if not f.metadata.get('static', False))
     meta_fields = tuple(f.name for f in fields if f.metadata.get('static', False))
 

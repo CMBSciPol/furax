@@ -4,7 +4,7 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking._model import _noise_model, _noise_operator, _sample_mask
-from furax.mapmaking.config import MapMakingConfig, Methods, NoiseConfig
+from furax.mapmaking.config import MapMakingConfig, Methods, WeightingConfig, WeightingMode
 from furax.mapmaking.noise import WhiteNoiseModel
 
 
@@ -34,7 +34,7 @@ class TestIdentityNoise:
 
     @pytest.fixture
     def identity_config(self):
-        return MapMakingConfig(noise=NoiseConfig(identity=True))
+        return MapMakingConfig(weighting=WeightingConfig(mode=WeightingMode.IDENTITY))
 
     def test_noise_model_creates_unit_white_noise(self, identity_config, tod_structure):
         data = {'timestamps': jnp.linspace(0, 1, 200)}
@@ -58,12 +58,12 @@ class TestIdentityNoise:
             _noise_model(data, identity_config, tod_structure=None)
 
     def test_identity_config_yaml_round_trip(self):
-        config = MapMakingConfig(noise=NoiseConfig(identity=True))
+        config = MapMakingConfig(weighting=WeightingConfig(mode=WeightingMode.IDENTITY))
         yaml_str = config._to_yaml()
-        assert 'identity: true' in yaml_str
-        loaded = MapMakingConfig.load_dict({'noise': {'identity': True}})
-        assert loaded.noise.identity is True
+        assert 'mode: identity' in yaml_str
+        loaded = MapMakingConfig.load_dict({'weighting': {'mode': 'identity'}})
+        assert loaded.weighting.mode is WeightingMode.IDENTITY
 
-    def test_identity_false_by_default(self):
-        config = NoiseConfig()
-        assert config.identity is False
+    def test_diagonal_by_default(self):
+        config = WeightingConfig()
+        assert config.mode is WeightingMode.DIAGONAL

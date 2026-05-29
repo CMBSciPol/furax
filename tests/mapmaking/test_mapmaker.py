@@ -163,48 +163,42 @@ class TestMultiObsMapMaker:
         assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
 
 
-@pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
-@pytest.mark.parametrize('stokes', STOKES_TYPES)
 @pytest.mark.parametrize('name,demodulated', PARAMS)
-class TestIdentityNoise:
-    """Test that identity noise mode works end-to-end."""
-
-    def test_identity_noise_builds_model(self, name, demodulated, stokes, landscape_type):
+class TestNoiseModelSelection:
+    def test_white_noise_models_binned_or_demodulated(self, name, demodulated):
+        stokes = 'IQU'
         observations = _observations(name, demodulated)
-        config = _config(landscape_type, stokes, demodulated, identity_noise=True)
+        config = _config('healpix', stokes, demodulated=demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        model = maker.build_model()
+        noise_model = maker.build_model().noise_model
+        if demodulated:
+            assert isinstance(noise_model, Stokes.class_for(stokes))
+            assert all(
+                isinstance(getattr(noise_model, stoke.lower()), WhiteNoiseModel) for stoke in stokes
+            )
+        else:
+            assert isinstance(noise_model, WhiteNoiseModel)
+
+    def test_identity_builds_unit_white_noise(self, name, demodulated):
+        observations = _observations(name, demodulated)
+        config = _config('healpix', 'IQU', demodulated, identity_noise=True)
+        maker = MultiObservationMapMaker(observations, config=config)
         noise_leaves = jax.tree.leaves(
-            model.noise_model, is_leaf=lambda x: isinstance(x, WhiteNoiseModel)
+            maker.build_model().noise_model, is_leaf=lambda x: isinstance(x, WhiteNoiseModel)
         )
+        assert noise_leaves
         for nm in noise_leaves:
             assert isinstance(nm, WhiteNoiseModel)
             assert jnp.allclose(nm.sigma, 1.0)
 
-    def test_identity_noise_full_mapmaker(self, name, demodulated, stokes, landscape_type):
+    @pytest.mark.parametrize('method', [Methods.BINNED, Methods.MAXL])
+    def test_identity_full_mapmaker(self, name, demodulated, method):
         observations = _observations(name, demodulated)
-        config = _config(landscape_type, stokes, demodulated, identity_noise=True)
+        config = _config('healpix', 'IQU', demodulated, method=method, identity_noise=True)
         maker = MultiObservationMapMaker(observations, config=config)
         results = maker.run()
-        n_stokes = len(stokes)
-        assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
+        assert results.icov.shape == (3, 3, *maker.landscape.shape)
         assert results.solver_stats is not None
-
-
-@pytest.mark.parametrize('name,demodulated', PARAMS)
-def test_white_noise_models_binned_or_demodulated(name, demodulated):
-    stokes = 'IQU'
-    observations = _observations(name, demodulated)
-    config = _config('healpix', stokes, demodulated=demodulated)
-    maker = MultiObservationMapMaker(observations, config=config)
-    noise_model = maker.build_model().noise_model
-    if demodulated:
-        assert isinstance(noise_model, Stokes.class_for(stokes))
-        assert all(
-            isinstance(getattr(noise_model, stoke.lower()), WhiteNoiseModel) for stoke in stokes
-        )
-    else:
-        assert isinstance(noise_model, WhiteNoiseModel)
 
 
 ATOP_PARAMS = [

@@ -76,13 +76,6 @@ class TestWhiteNoiseModel:
         model = WhiteNoiseModel(sigma=jnp.array([1.0, 2.0]))
         assert model.to_white_noise_model() is model
 
-    def test_identity_noise_operators_act_as_identity(self):
-        model = WhiteNoiseModel(sigma=jnp.ones(3))
-        struct = jax.ShapeDtypeStruct((3, 100), jnp.float64)
-        x = jax.random.normal(jax.random.key(0), (3, 100))
-        assert_allclose(model.operator(struct)(x), x, rtol=1e-12)
-        assert_allclose(model.inverse_operator(struct)(x), x, rtol=1e-12)
-
 
 # ---------------------------------------------------------------------------
 # AtmosphericNoiseModel

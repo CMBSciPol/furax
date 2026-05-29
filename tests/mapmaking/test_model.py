@@ -38,9 +38,10 @@ class TestIdentityNoise:
 
     def test_noise_model_creates_unit_white_noise(self, identity_config, tod_structure):
         data = {'timestamps': jnp.linspace(0, 1, 200)}
-        noise_model, fs = _noise_model(data, identity_config, tod_structure=tod_structure)
+        noise_model, _ = _noise_model(data, identity_config, tod_structure=tod_structure)
         assert isinstance(noise_model, WhiteNoiseModel)
         assert_allclose(noise_model.sigma, jnp.ones(4))
+        assert noise_model.sigma.dtype == tod_structure.dtype
 
     def test_noise_operator_acts_as_identity(self, identity_config, tod_structure):
         data = {'timestamps': jnp.linspace(0, 1, 200)}
@@ -51,10 +52,10 @@ class TestIdentityNoise:
         assert_allclose(inv_op(x), x, rtol=1e-12)
         assert_allclose(fwd_op(x), x, rtol=1e-12)
 
-    def test_identity_skips_noise_data_fields(self, identity_config, tod_structure):
+    def test_identity_requires_tod_structure(self, identity_config):
         data = {'timestamps': jnp.linspace(0, 1, 200)}
-        noise_model, _ = _noise_model(data, identity_config, tod_structure=tod_structure)
-        assert isinstance(noise_model, WhiteNoiseModel)
+        with pytest.raises(ValueError, match='tod_structure is required'):
+            _noise_model(data, identity_config, tod_structure=None)
 
     def test_identity_config_yaml_round_trip(self):
         config = MapMakingConfig(noise=NoiseConfig(identity=True))

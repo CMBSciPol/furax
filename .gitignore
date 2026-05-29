@@ -5,6 +5,7 @@ dist
 _site
 htmlcov
 __pycache__
+CLAUDE.md
 *.egg-info
 /venv*/
 /.vscode/

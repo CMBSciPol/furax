@@ -85,6 +85,9 @@ class NoiseConfig:
     white: bool = True
     """Use a white (diagonal) noise model.  Set to False for the atmospheric (1/f) model."""
 
+    identity: bool = False
+    """Use an identity inverse-noise matrix (no noise weighting)."""
+
     fit_from_data: bool = True
     """Fit the noise model from the TOD PSD (True) or load it from the data pipeline (False)."""
 

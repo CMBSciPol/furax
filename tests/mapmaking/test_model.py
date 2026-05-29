@@ -1,9 +1,11 @@
+import jax
 import jax.numpy as jnp
 import pytest
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.mapmaking._model import _sample_mask
-from furax.mapmaking.config import MapMakingConfig, Methods
+from furax.mapmaking._model import _noise_model, _noise_operator, _sample_mask
+from furax.mapmaking.config import MapMakingConfig, Methods, NoiseConfig
+from furax.mapmaking.noise import WhiteNoiseModel
 
 
 class TestSampleMask:
@@ -23,3 +25,45 @@ class TestSampleMask:
         result = _sample_mask({'valid_sample_masks': mask}, config)
 
         assert_array_equal(result[0, 2 * tau :], jnp.zeros(n_samp - 2 * tau, dtype=jnp.bool_))
+
+
+class TestIdentityNoise:
+    @pytest.fixture
+    def tod_structure(self):
+        return jax.ShapeDtypeStruct((4, 200), jnp.float64)
+
+    @pytest.fixture
+    def identity_config(self):
+        return MapMakingConfig(noise=NoiseConfig(identity=True))
+
+    def test_noise_model_creates_unit_white_noise(self, identity_config, tod_structure):
+        data = {'timestamps': jnp.linspace(0, 1, 200)}
+        noise_model, _ = _noise_model(data, identity_config, tod_structure=tod_structure)
+        assert isinstance(noise_model, WhiteNoiseModel)
+        assert_allclose(noise_model.sigma, jnp.ones(4))
+        assert noise_model.sigma.dtype == tod_structure.dtype
+
+    def test_noise_operator_acts_as_identity(self, identity_config, tod_structure):
+        data = {'timestamps': jnp.linspace(0, 1, 200)}
+        noise_model, fs = _noise_model(data, identity_config, tod_structure=tod_structure)
+        inv_op = _noise_operator(noise_model, tod_structure, fs, 100, inverse=True)
+        fwd_op = _noise_operator(noise_model, tod_structure, fs, 100, inverse=False)
+        x = jax.random.normal(jax.random.key(1), (4, 200))
+        assert_allclose(inv_op(x), x, rtol=1e-12)
+        assert_allclose(fwd_op(x), x, rtol=1e-12)
+
+    def test_identity_requires_tod_structure(self, identity_config):
+        data = {'timestamps': jnp.linspace(0, 1, 200)}
+        with pytest.raises(ValueError, match='tod_structure is required'):
+            _noise_model(data, identity_config, tod_structure=None)
+
+    def test_identity_config_yaml_round_trip(self):
+        config = MapMakingConfig(noise=NoiseConfig(identity=True))
+        yaml_str = config._to_yaml()
+        assert 'identity: true' in yaml_str
+        loaded = MapMakingConfig.load_dict({'noise': {'identity': True}})
+        assert loaded.noise.identity is True
+
+    def test_identity_false_by_default(self):
+        config = NoiseConfig()
+        assert config.identity is False

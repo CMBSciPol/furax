@@ -48,6 +48,9 @@ class NoiseModel(ABC):
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
     ) -> AbstractLinearOperator: ...
 
+    @abstractmethod
+    def to_white_noise_model(self) -> 'WhiteNoiseModel': ...
+
     def to_operator_fourier(
         self,
         in_structure: PyTree[jax.ShapeDtypeStruct],

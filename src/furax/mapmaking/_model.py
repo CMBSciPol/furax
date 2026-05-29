@@ -139,11 +139,15 @@ def pad_model(models: ObservationModel, n_pad: int) -> ObservationModel:
 
 
 def _noise_model(
-    data: Any, config: MapMakingConfig, tod_structure: Any = None
+    data: Any,
+    config: MapMakingConfig,
+    tod_structure: jax.ShapeDtypeStruct | None = None,
 ) -> tuple[PyTree[NoiseModel], Array]:
     """Compute the noise model and sample rate for a single observation block."""
     fs = _sample_rate(data['timestamps'])
     if config.noise.identity:
+        if tod_structure is None:
+            raise ValueError('tod_structure is required when config.noise.identity is True')
         noise_model = jax.tree.map(
             lambda s: WhiteNoiseModel(sigma=jnp.ones(s.shape[0], dtype=s.dtype)),
             tod_structure,

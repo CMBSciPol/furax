@@ -270,7 +270,7 @@ class TemplatesConfig:
         return all(getattr(self, f.name) is None for f in fields(self))
 
 
-@dataclass
+@dataclass(frozen=True)
 class GapFillingConfig:
     """Specific gap-filling options"""
 

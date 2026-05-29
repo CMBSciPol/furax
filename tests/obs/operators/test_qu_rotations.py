@@ -4,6 +4,7 @@ import pytest
 
 import furax as fx
 from furax import IdentityOperator
+from furax.core import CompositionOperator
 from furax.obs import QURotationOperator
 from furax.obs.stokes import Stokes, StokesI, StokesIQU, ValidStokesType
 
@@ -68,3 +69,38 @@ def test_rules(stokes: ValidStokesType, transpose_left, transpose_right, expecte
 
     assert isinstance(reduced_op, QURotationOperator)
     assert reduced_op.angles == expected_value
+
+
+@pytest.mark.parametrize(
+    'atomic_left, atomic_right',
+    [(True, False), (False, True), (True, True)],
+)
+@pytest.mark.parametrize(
+    'transpose_left, transpose_right',
+    [(False, False), (False, True), (True, False), (True, True)],
+)
+def test_atomic_prevents_reduction(
+    stokes: ValidStokesType,
+    atomic_left: bool,
+    atomic_right: bool,
+    transpose_left: bool,
+    transpose_right: bool,
+) -> None:
+    structure = Stokes.class_for(stokes).structure_for(())
+    left = QURotationOperator(1, atomic=atomic_left, in_structure=structure)
+    if transpose_left:
+        left = left.T
+    right = QURotationOperator(2, atomic=atomic_right, in_structure=structure)
+    if transpose_right:
+        right = right.T
+    reduced_op = (left @ right).reduce()
+
+    assert isinstance(reduced_op, CompositionOperator) and len(reduced_op.operands) == 2
+
+
+def test_atomic_identity_still_reduces(stokes: ValidStokesType) -> None:
+    structure = Stokes.class_for(stokes).structure_for(())
+    op = QURotationOperator(1.1, atomic=True, in_structure=structure)
+
+    assert isinstance((op @ op.T).reduce(), IdentityOperator)
+    assert isinstance((op.T @ op).reduce(), IdentityOperator)

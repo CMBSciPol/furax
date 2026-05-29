@@ -25,7 +25,7 @@ def observations():
 
 def test_reader_all_fields(observations) -> None:
     """Test consistency for all available fields."""
-    reader = ObservationReader(
+    reader = ObservationReader.from_observations(
         observations, requested_fields=AbstractGroundObservation.AVAILABLE_READER_FIELDS
     )
     ndet_max, nsample_max = max(OBS_NDET), max(OBS_NSAMPLE)
@@ -74,11 +74,13 @@ def test_reader_invalid_data_field_name(observations) -> None:
     with pytest.raises(
         ValueError, match="Requested data fields {'invalid_field'} are not supported"
     ):
-        ObservationReader(observations, requested_fields=['invalid_field'])
+        ObservationReader.from_observations(observations, requested_fields=['invalid_field'])
 
     # Test with mix of valid and invalid field names
     with pytest.raises(ValueError, match="Requested data fields {'bad_field'} are not supported"):
-        ObservationReader(observations, requested_fields=['sample_data', 'bad_field'])
+        ObservationReader.from_observations(
+            observations, requested_fields=['sample_data', 'bad_field']
+        )
 
 
 @pytest.mark.parametrize(
@@ -99,5 +101,5 @@ def test_reader_invalid_data_field_name(observations) -> None:
 )
 def test_reader_subset_of_data_fields(observations, requested_fields: list[str]) -> None:
     """Test that passing a subset of data fields loads only those fields."""
-    reader = ObservationReader(observations, requested_fields=requested_fields)
+    reader = ObservationReader.from_observations(observations, requested_fields=requested_fields)
     assert set(reader.out_structure.keys()) == set(requested_fields)

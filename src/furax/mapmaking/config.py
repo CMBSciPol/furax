@@ -23,6 +23,7 @@ class Methods(Enum):
     MAXL = 'ML'
     TWOSTEP = 'TwoStep'
     ATOP = 'ATOP'
+    POMME_SPLINE = 'pomme_spline' # new
 
 
 @dataclass
@@ -266,6 +267,12 @@ class TemplatesConfig:
     def empty(self) -> bool:
         return all(getattr(self, f.name) is None for f in fields(self))
 
+@dataclass
+class SplineConfig:
+    n_knots: int = 100
+    harmonic: int = 4                # harmonic h (default 4 for 4f)
+    lambda_reg: float = 0.0          # regularisation strength (0 = no ridge)
+    bc_type: Literal['natural', 'not-a-knot', 'clamped'] = 'clamped'
 
 @dataclass
 class GapFillingConfig:
@@ -358,6 +365,7 @@ class MapMakingConfig:
     )
     templates: TemplatesConfig | None = None
     atop_tau: int = 0
+    spline: SplineConfig | None = None # New configuration for cubic spline template
     sotodlib: SotodlibConfig | None = None
 
     @classmethod
@@ -422,6 +430,18 @@ class MapMakingConfig:
                     max_steps=100,
                 ),
                 atop_tau=37,
+                templates=None,
+            )
+        elif method == Methods.POMME_SPLINE:
+            return cls(
+                method=Methods.POMME_SPLINE,
+                noise=NoiseConfig(white=True),
+                solver=SolverConfig(
+                    rtol=1e-6,
+                    atol=0,
+                    max_steps=100,
+                ),
+                spline=SplineConfig(),
                 templates=None,
             )
         else:

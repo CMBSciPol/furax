@@ -59,7 +59,7 @@ class TemplateOperator(AbstractLinearOperator):
             return PolynomialTemplateOperator.create(
                 max_poly_order=max_poly_order,
                 intervals=observation.get_scanning_intervals(),
-                times=observation.get_elapsed_times(),
+                times=jnp.asarray(observation.get_elapsed_times()),
                 n_dets=n_dets,
                 dtype=config.get('dtype', jnp.float64),
             )
@@ -70,7 +70,7 @@ class TemplateOperator(AbstractLinearOperator):
             return ScanSynchronousTemplateOperator.create(
                 min_poly_order=min_poly_order,
                 max_poly_order=max_poly_order,
-                azimuth=observation.get_azimuth(),
+                azimuth=jnp.asarray(observation.get_azimuth()),
                 n_dets=n_dets,
                 dtype=config.get('dtype', jnp.float64),
             )
@@ -79,7 +79,7 @@ class TemplateOperator(AbstractLinearOperator):
             n_harmonics: int = config.get('n_harmonics', 0)
             return HWPSynchronousTemplateOperator.create(
                 n_harmonics=n_harmonics,
-                hwp_angles=observation.get_hwp_angles(),
+                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
                 n_dets=n_dets,
                 dtype=config.get('dtype', jnp.float64),
             )

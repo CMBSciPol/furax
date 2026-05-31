@@ -1,5 +1,4 @@
 from collections.abc import Sequence
-from hashlib import sha1
 from typing import Any, Generic, Self, TypeVar
 
 import jax
@@ -8,14 +7,13 @@ import numpy as np
 from jax import Array
 from jax.experimental import multihost_utils as mhu
 from jax.tree_util import register_static
-from jaxtyping import PyTree, UInt32
+from jaxtyping import PyTree
 
 from furax.io.readers import AbstractReader
 from furax.obs.stokes import Stokes, ValidStokesType
 
 from ._observation import (
     AbstractLazyObservation,
-    AbstractObservation,
     HashedObservationMetadata,
 )
 
@@ -232,11 +230,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         )
 
         return {
-            'metadata': HashedObservationMetadata(
-                uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
-                telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
-                detector_uids=jax.ShapeDtypeStruct((n_detectors,), dtype=jnp.uint32),  # type: ignore[arg-type]
-            ),
+            'metadata': HashedObservationMetadata.structure_for(n_detectors),
             'sample_data': sample_data_structure,
             'valid_sample_masks': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.bool),
             'valid_scanning_masks': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
@@ -257,26 +251,14 @@ class ObservationReader(AbstractReader, Generic[T]):
                 raise ValueError('Data field not available')
             return x
 
-        def get_metadata(obs: AbstractObservation[T]) -> HashedObservationMetadata:
-            return HashedObservationMetadata(
-                uid=jnp.asarray(_names_to_uids(obs.name)),
-                telescope_uid=jnp.asarray(_names_to_uids(obs.telescope)),
-                detector_uids=jnp.asarray(_names_to_uids(obs.detectors)),
-            )
-
         demodulated = self.demodulated
         stokes = self.stokes
 
-        def get_sample_data(obs: AbstractObservation[T]) -> Any:
-            if demodulated:
-                tods = obs.get_demodulated_tods(stokes=stokes)
-            else:
-                tods = obs.get_tods()
-            return jax.tree.map(lambda x: x.astype(jnp.float64), tods)
-
         return {
-            'metadata': lambda obs: get_metadata(obs),
-            'sample_data': get_sample_data,
+            'metadata': lambda obs: HashedObservationMetadata.from_observation(obs),
+            'sample_data': lambda obs: (
+                obs.get_demodulated_tods(stokes=stokes) if demodulated else obs.get_tods()
+            ),
             'valid_sample_masks': lambda obs: obs.get_sample_mask(),
             'valid_scanning_masks': lambda obs: obs.get_scanning_mask(),
             'timestamps': lambda obs: obs.get_timestamps(),
@@ -310,13 +292,3 @@ class ObservationReader(AbstractReader, Generic[T]):
         data = observation.get_data(data_field_names)
         field_reader = self._get_data_field_readers()
         return {field: field_reader[field](data) for field in data_field_names}
-
-
-def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[Array, '...']:
-    """Converts names to unsigned 32-bit integers using hashing.
-
-    This is typically used to generate deterministic uids for detectors based on their names.
-    """
-    # hashing + converting to int + keeping only 7 bytes
-    name_to_int = np.vectorize(lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0xEFFFFFFF)
-    return jnp.asarray(name_to_int(names), dtype=jnp.uint32)

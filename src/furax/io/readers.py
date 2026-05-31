@@ -3,7 +3,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import jax
-import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jax.experimental import io_callback
 from jax.tree_util import register_static
@@ -168,17 +168,19 @@ class AbstractReader(ABC):
             padding. The structure of the data is the same as the structure of the padding.
         """
 
-        def callback(i: int) -> PyTree[Array]:
+        def callback(i: int) -> PyTree[np.ndarray]:
             args = self.args[i]
             keywords = self.keywords[i]
             padding = self.paddings[i]
             data = self._read_data_impure(*args, **keywords, **self.common_keywords)
-            device_data = jax.tree.map(
-                lambda leaf, pad: jnp.pad(leaf, [(0, p) for p in pad]) if len(pad) > 0 else leaf,
+            host_data = jax.tree.map(
+                lambda leaf, pad: (
+                    np.pad(leaf, [(0, p) for p in pad]) if len(pad) > 0 else np.asarray(leaf)
+                ),
                 data,
                 padding,
             )
-            return device_data
+            return host_data
 
         data = jax.lax.switch(
             data_index,

@@ -55,23 +55,23 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
     def sample_rate(self) -> float:
         return self.data.sampling_rate_hz  # type: ignore[no-any-return]
 
-    def get_tods(self) -> Array:
-        tods = jnp.array(self.data.tod, dtype=jnp.float64)
-        return jnp.atleast_2d(tods)
+    def get_tods(self) -> Float[np.ndarray, 'dets samps']:
+        tods = np.asarray(self.data.tod, dtype=np.float64)
+        return np.atleast_2d(tods)
 
-    def get_detector_offset_angles(self) -> Array:
-        return jnp.array(self.data.pol_angle_rad, dtype=jnp.float64)
+    def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
+        return np.asarray(self.data.pol_angle_rad, dtype=np.float64)
 
-    def get_hwp_angles(self) -> Array:
-        return jnp.array(self.data.get_hwp_angle(), dtype=jnp.float64)
+    def get_hwp_angles(self) -> Float[np.ndarray, ' a']:
+        return np.asarray(self.data.get_hwp_angle(), dtype=np.float64)
 
-    def get_sample_mask(self) -> Bool[Array, 'dets samps']:
+    def get_sample_mask(self) -> Bool[np.ndarray, 'dets samps']:
         # TODO: take into account global and local flags
-        return jnp.ones((self.n_detectors, self.n_samples), dtype=bool)
+        return np.ones((self.n_detectors, self.n_samples), dtype=bool)
 
-    def get_timestamps(self) -> Float[Array, ' a']:
-        return jnp.array(
-            self.data.get_times(normalize=False, astropy_times=False), dtype=jnp.float64
+    def get_timestamps(self) -> Float[np.ndarray, ' a']:
+        return np.asarray(
+            self.data.get_times(normalize=False, astropy_times=False), dtype=np.float64
         )
 
     def get_wcs_shape_and_kernel(
@@ -101,16 +101,16 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
             f0=jnp.array(self.data.fmin_hz),
         )
 
-    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+    def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
         # TODO: coordinate system
         #
         # interpolate to the actual sampling rate
         qbore = self.data.pointing_provider.bore2ecliptic_quats
         qbore_full = qbore.slerp(self.data.start_time, self.sample_rate, self.n_samples)
-        return jnp.array(qbore_full, dtype=jnp.float64)
+        return np.asarray(qbore_full, dtype=np.float64)
 
-    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
-        return jnp.concatenate([q.quats for q in self.data.quat], dtype=jnp.float64)
+    def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
+        return np.concatenate([q.quats for q in self.data.quat], dtype=np.float64)
 
 
 class LazyLBSObservation(AbstractLazyObservation[lbs.Observation]):

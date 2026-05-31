@@ -146,11 +146,11 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         """Returns the sampling rate (in Hz) of the data."""
         return self._focal_plane.sample_rate.to_value(u.Hz)  # type: ignore[no-any-return]
 
-    def get_tods(self) -> Array:
+    def get_tods(self) -> Float[np.ndarray, 'dets samps']:
         """Returns the timestream data."""
         # furax's LinearPolarizerOperator assumes power, TOAST assumes temperature
-        tods = 0.5 * jnp.array(self.data.detdata[self._det_data][self.detectors, :])
-        return jnp.atleast_2d(tods)
+        tods = 0.5 * np.asarray(self.data.detdata[self._det_data][self.detectors, :])
+        return np.atleast_2d(tods)
 
     def _get_detector_angles(self) -> Array:
         """Returns the detector angles on the sky."""
@@ -159,16 +159,16 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         angles = jnp.array(get_local_meridian_angle(quats))
         return jnp.atleast_2d(angles)
 
-    def get_detector_offset_angles(self) -> Array:
+    def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
         """Returns the detector offset angles."""
         fp = self._focal_plane
-        return jnp.array([fp[det]['gamma'].to_value(u.rad) for det in self.detectors])
+        return np.array([fp[det]['gamma'].to_value(u.rad) for det in self.detectors])
 
-    def get_hwp_angles(self) -> Array:
+    def get_hwp_angles(self) -> Float[np.ndarray, ' a']:
         """Returns the HWP angles."""
         if self._hwp_angle is None or self._hwp_angle not in self.data.shared:
             raise ValueError('HWP angle field not provided.')
-        return jnp.array(self.data.shared[self._hwp_angle].data)
+        return np.asarray(self.data.shared[self._hwp_angle].data)
 
     def _get_psd_model(self) -> tuple[Array, Array]:
         """Returns frequencies and PSD values of the noise model."""
@@ -189,48 +189,48 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         intervals = self.data.intervals['scanning']
         return np.array(intervals[['first', 'last']].tolist())
 
-    def get_sample_mask(self) -> Bool[Array, 'dets samps']:
-        return jnp.array(self.data.detdata['flags'].data == 0, dtype=bool)
+    def get_sample_mask(self) -> Bool[np.ndarray, 'dets samps']:
+        return np.asarray(self.data.detdata['flags'].data == 0, dtype=bool)
 
-    def get_left_scan_mask(self) -> Bool[Array, ' samps']:
+    def get_left_scan_mask(self) -> Bool[np.ndarray, ' samps']:
         if not hasattr(self.data, 'intervals'):
             # Scanning information missing, first compute the intervals
             toast.ops.AzimuthIntervals().apply(self._toast_data)
 
         # Left scan means scanning FROM right TO left
         intervals_list = self.data.intervals['scan_rightleft'][['first', 'last']].tolist()
-        mask = jnp.zeros(self.n_samples, dtype=bool)
+        mask = np.zeros(self.n_samples, dtype=bool)
         for start, stop in intervals_list:
             mask[start:stop] = True
         return mask
 
-    def get_right_scan_mask(self) -> Bool[Array, ' samps']:
+    def get_right_scan_mask(self) -> Bool[np.ndarray, ' samps']:
         if not hasattr(self.data, 'intervals'):
             # Scanning information missing, first compute the intervals
             toast.ops.AzimuthIntervals().apply(self._toast_data)
 
         # Right scan means scanning FROM left TO right
         intervals_list = self.data.intervals['scan_leftright'][['first', 'last']].tolist()
-        mask = jnp.zeros(self.n_samples, dtype=bool)
+        mask = np.zeros(self.n_samples, dtype=bool)
         for start, stop in intervals_list:
             mask[start:stop] = True
         return mask
 
-    def get_azimuth(self) -> Float[Array, ' a']:
+    def get_azimuth(self) -> Float[np.ndarray, ' a']:
         """Returns the azimuth of the boresight for each sample"""
         if self._azimuth not in self.data.shared:
             raise ValueError('Azimuth field not provided.')
-        return jnp.array(self.data.shared[self._azimuth].data)
+        return np.asarray(self.data.shared[self._azimuth].data)
 
-    def get_elevation(self) -> Float[Array, ' a']:
+    def get_elevation(self) -> Float[np.ndarray, ' a']:
         """Returns the elevation of the boresight for each sample"""
         if self._elevation not in self.data.shared:
             raise ValueError('Elevation field not provided.')
-        return jnp.array(self.data.shared[self._elevation].data)
+        return np.asarray(self.data.shared[self._elevation].data)
 
-    def get_timestamps(self) -> Float[Array, ' a']:
+    def get_timestamps(self) -> Float[np.ndarray, ' a']:
         """Returns timestamps (sec) of the samples"""
-        return jnp.array(self.data.shared['times'].data)
+        return np.asarray(self.data.shared['times'].data)
 
     def get_wcs_shape_and_kernel(
         self,
@@ -323,16 +323,16 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         )
         return noise_model
 
-    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+    def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
         if self._boresight not in self.data.shared:
             raise ValueError('Boresight field not provided.')
-        quats = jnp.array(self.data.shared[self._boresight].data)
-        return jnp.roll(quats, 1, axis=-1)
+        quats = np.asarray(self.data.shared[self._boresight].data)
+        return np.roll(quats, 1, axis=-1)
 
-    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
-        quats = jnp.array([self._focal_plane[d]['quat'] for d in self.detectors])
-        quats = jnp.roll(quats, 1, axis=-1)
-        return jnp.atleast_2d(quats)
+    def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
+        quats = np.array([self._focal_plane[d]['quat'] for d in self.detectors])
+        quats = np.roll(quats, 1, axis=-1)
+        return np.atleast_2d(quats)
 
     def _get_expanded_quats(self) -> Array:
         """Returns expanded pointing quaternions.

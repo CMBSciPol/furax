@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typing
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from astropy import units as u
 from astropy.wcs import WCS
 from jaxtyping import Array, Bool, Float
 from numpy.typing import NDArray
+from toast import qarray as qa
 from toast.observation import default_values as defaults
 from toast.ops.load_hdf5 import LoadHDF5
 
@@ -22,8 +24,6 @@ from furax.obs.landscapes import (
     ProjectionType,
     StokesLandscape,
 )
-
-from .utils import get_local_meridian_angle
 
 
 class ToastObservation(AbstractGroundObservation[toast.Data]):
@@ -156,7 +156,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         """Returns the detector angles on the sky."""
         # stick to the TOAST storage convention because get_local_meridian_angle expects it
         quats = self._get_expanded_quats()
-        angles = jnp.array(get_local_meridian_angle(quats))
+        angles = get_local_meridian_angle(quats)
         return jnp.atleast_2d(angles)
 
     def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
@@ -348,3 +348,49 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
 class LazyToastObservation(AbstractLazyObservation[toast.Data]):
     interface_class = ToastObservation
+
+
+@partial(np.vectorize, signature='(4)->()')
+def get_local_meridian_angle(quat):  # type: ignore[no-untyped-def]
+    """
+    Compute angle between local meridian and orientation vector from quaternions.
+
+    Assumes that the quaternions encode the rotation between the celestial frame
+    and some other frame (e.g. detector or boresight frame). The "orientation vector"
+    is the unit vector of the latter frame obtained by rotating the X axis of the
+    celestial frame. For a detector this will be the polarization sensitive direction.
+    The local meridian vector is obtained by projecting the -Z axis of the celestial
+    frame onto the plane orthogonal to the pointing direction.
+
+    taken from
+    https://github.com/hpc4cmb/toast/blob/toast3/src/toast/ops/stokes_weights/kernels_numpy.py#L12
+    """
+    zaxis = np.array([0, 0, 1], dtype=np.float64)
+    xaxis = np.array([1, 0, 0], dtype=np.float64)
+
+    vd = qa.rotate(quat, zaxis)
+    vo = qa.rotate(quat, xaxis)
+
+    # The vector orthogonal to the line of sight that is parallel
+    # to the local meridian.
+    dir_ang = np.arctan2(vd[1], vd[0])
+    dir_r = np.sqrt(1.0 - vd[2] * vd[2])
+    vm_z = -dir_r
+    vm_x = vd[2] * np.cos(dir_ang)
+    vm_y = vd[2] * np.sin(dir_ang)
+
+    # Compute the rotation angle from the meridian vector to the
+    # orientation vector.  The direction vector is normal to the plane
+    # containing these two vectors, so the rotation angle is:
+    #
+    # angle = atan2((v_m x v_o) . v_d, v_m . v_o)
+    #
+    alpha_y = (
+        vd[0] * (vm_y * vo[2] - vm_z * vo[1])
+        - vd[1] * (vm_x * vo[2] - vm_z * vo[0])
+        + vd[2] * (vm_x * vo[1] - vm_y * vo[0])
+    )
+    alpha_x = vm_x * vo[0] + vm_y * vo[1] + vm_z * vo[2]
+
+    alpha = np.arctan2(alpha_y, alpha_x)
+    return alpha

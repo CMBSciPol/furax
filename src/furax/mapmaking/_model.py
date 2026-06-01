@@ -164,6 +164,8 @@ def _noise_model(
 
         def _compute_Pxx_and_fit(tod):  # type: ignore[no-untyped-def]
             f, Pxx = jax.scipy.signal.welch(tod, fs=fs, nperseg=fit_config.nperseg)
+            f = f.astype(config.dtype)
+            Pxx = Pxx.astype(config.dtype)
             return noise_model_class.fit_psd_model(
                 f,
                 Pxx,

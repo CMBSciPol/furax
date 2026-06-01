@@ -766,7 +766,7 @@ class MapMaker:
         # Otherwise, fit the noise model from data
         self.logger.info('Fitting noise model from data')
         f, Pxx = jax.scipy.signal.welch(
-            observation.get_tods(),
+            observation.get_tods().astype(config.dtype),
             fs=observation.sample_rate,
             nperseg=config.weighting.fitting.nperseg,
         )
@@ -899,7 +899,9 @@ class MapMaker:
                 landscape=self._ground_landscape,
                 chunk_size=config.pointing.chunk_size,
             )
-            ones_tod = jnp.ones((observation.n_detectors, observation.n_samples), dtype=jnp.float64)
+            ones_tod = jnp.ones(
+                (observation.n_detectors, observation.n_samples), dtype=config.dtype
+            )
             self._ground_coverage = ground_op.T(ones_tod)
             nonzero_hits = jnp.argwhere(self._ground_coverage.i > 0)
             indexer = IndexOperator(

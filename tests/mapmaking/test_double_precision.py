@@ -26,7 +26,9 @@ import sys
 import textwrap
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jaxtyping import Array, Bool, Float
 
@@ -41,7 +43,9 @@ from furax.mapmaking.config import (
     LandscapeConfig,
     MapMakingConfig,
     Methods,
+    NoiseFitConfig,
     PointingConfig,
+    SolverConfig,
     WeightingConfig,
 )
 from furax.mapmaking.noise import NoiseModel
@@ -90,13 +94,18 @@ class _FakeSatelliteObservation(AbstractSatelliteObservation[None]):
         return SAMPLE_RATE
 
     def get_tods(self) -> Array:
-        return jnp.zeros((N_DETS, N_SAMPS), dtype=jnp.float32)
+        # Non-zero data so the white-noise PSD fit yields a finite sigma.
+        return jnp.asarray(
+            np.random.default_rng(0).normal(size=(N_DETS, N_SAMPS)).astype(np.float32)
+        )
 
     def get_detector_offset_angles(self) -> Array:
         return jnp.zeros(N_DETS, dtype=jnp.float64)
 
     def get_hwp_angles(self) -> Array:
-        return jnp.zeros(N_SAMPS, dtype=jnp.float64)
+        # Sweeping HWP angle at 2 Hz, wrapped to [0, 2pi).
+        t = np.arange(N_SAMPS) / SAMPLE_RATE
+        return jnp.asarray((2 * np.pi * 2.0 * t) % (2 * np.pi), dtype=jnp.float64)
 
     def get_sample_mask(self) -> Bool[Array, 'dets samps']:
         return jnp.ones((N_DETS, N_SAMPS), dtype=bool)
@@ -114,8 +123,12 @@ class _FakeSatelliteObservation(AbstractSatelliteObservation[None]):
         return None
 
     def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
-        q = jnp.zeros((N_SAMPS, 4), dtype=jnp.float64)
-        return q.at[:, 0].set(1.0)
+        # Sweep the boresight so samples hit a range of sky pixels.
+        phi = np.linspace(0.0, np.pi / 4, N_SAMPS)
+        q = np.zeros((N_SAMPS, 4))
+        q[:, 0] = np.cos(phi / 2)
+        q[:, 3] = np.sin(phi / 2)
+        return jnp.asarray(q, dtype=jnp.float64)
 
     def get_detector_quaternions(self) -> Float[Array, 'det 4']:
         q = jnp.zeros((N_DETS, 4), dtype=jnp.float64)
@@ -213,6 +226,46 @@ class TestMapMakerForwardsDtype:
         assert reader.dtype == expected_dtype
         for field in REQUIRED_FIELDS:
             assert reader.out_structure[field].dtype == expected_dtype
+
+
+class TestMapMakerRunsX64OnDoublePrecisionFalse:
+    """End-to-end run with ``jax_enable_x64=True`` but ``double_precision=False``.
+
+    This is the in-process counterpart to the subprocess test: rather than
+    turning x64 *off*, it keeps the session-wide x64 *on* (as enforced by the
+    ``enable_x64`` autouse fixture in ``tests/conftest.py``) and asks for a
+    float32 pipeline via ``double_precision=False``. This is the combination
+    JAX does *not* protect us from — float64 arrays are perfectly legal, so a
+    stray un-downcast geometry/noise field would silently produce a float64
+    result or raise a dtype-mismatch instead of being coerced to float32. The
+    test asserts the run completes and every output is float32.
+    """
+
+    def test_run_produces_float32_outputs(self) -> None:
+        assert jax.config.read('jax_enable_x64'), (
+            'this test must run with x64 enabled (the session default)'
+        )
+
+        config = MapMakingConfig(
+            method=Methods.BINNED,
+            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
+            weighting=WeightingConfig(
+                fitting=NoiseFitConfig(nperseg=256, mask_hwp_harmonics=False),
+            ),
+            pointing=PointingConfig(on_the_fly=True),
+            double_precision=False,
+            scanning_mask=False,
+            sample_mask=False,
+            hits_cut=0.0,
+            cond_cut=0.0,
+            solver=SolverConfig(rtol=1e-6, atol=0, max_steps=10),
+        )
+        maker = MultiObservationMapMaker([_FakeLazyObservation()], config=config)
+        results = maker.run()
+
+        map_dtype = jax.tree.leaves(results.map)[0].dtype
+        assert map_dtype == jnp.float32, f'expected float32 map, got {map_dtype}'
+        assert results.icov.dtype == jnp.float32, f'expected float32 icov, got {results.icov.dtype}'
 
 
 # ----------------------------------------------------------------------------

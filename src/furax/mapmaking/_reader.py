@@ -202,11 +202,12 @@ class ObservationReader(AbstractReader, Generic[T]):
             ) % (2 * jnp.pi)
         if 'detector_quaternions' in data_field_names:
             # Pad with (1, 0, 0, 0), corresponding to xi=eta=gamma=0.
-            zero_padded = jnp.linalg.norm(data['detector_quaternions'], axis=-1) == 0.0
+            quaternions = data['detector_quaternions']
+            zero_padded = jnp.linalg.norm(quaternions, axis=-1) == 0.0
             data['detector_quaternions'] = jnp.where(
                 zero_padded[:, None],
-                jnp.array([[1.0, 0.0, 0.0, 0.0]]),
-                data['detector_quaternions'],
+                jnp.array([[1.0, 0.0, 0.0, 0.0]], dtype=quaternions.dtype),
+                quaternions,
             )
         if 'boresight_quaternions' in data_field_names:
             # Pad with the last non-zero quaternion provided.
@@ -217,9 +218,9 @@ class ObservationReader(AbstractReader, Generic[T]):
                 zero_padded[:, None], last_quaternion[None, :], data['boresight_quaternions']
             )
         if 'noise_model_fits' in data_field_names:
-            default = jnp.array([[0.0, 0.0, 1.0, 0.1]])
 
             def _pad_noise_fits(arr: Array) -> Array:
+                default = jnp.array([[0.0, 0.0, 1.0, 0.1]], dtype=arr.dtype)
                 zero_padded = arr[:, 0] == 0.0
                 return jnp.where(zero_padded[:, None], default, arr)
 

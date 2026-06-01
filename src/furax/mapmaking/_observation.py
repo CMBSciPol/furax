@@ -51,7 +51,7 @@ class HashedObservationMetadata:
 
 def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[np.ndarray, ...]:
     """Converts names to unsigned 32-bit integers using hashing."""
-    # hashing + converting to int + keeping only 7 bytes
+    # SHA-1 hash truncated to a non-negative 32-bit integer
     to_int = lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0xEFFFFFFF
     return np.vectorize(to_int, otypes=[np.uint32])(names)  # type: ignore[no-any-return]
 

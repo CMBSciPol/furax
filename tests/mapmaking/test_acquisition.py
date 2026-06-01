@@ -2,9 +2,11 @@ import jax
 import jax.numpy as jnp
 from numpy.testing import assert_allclose
 
+from furax.core import CompositionOperator
 from furax.mapmaking.acquisition import build_acquisition_operator
 from furax.math.quaternion import qmul, to_gamma_angles, to_polarization_angle
 from furax.obs.landscapes import HealpixLandscape
+from furax.obs.pointing import PointingOperator
 
 NSIDE = 4
 NDET, NSAMP = 3, 10
@@ -141,3 +143,14 @@ def test_hwp_acquisition_transpose_formula() -> None:
     assert_allclose(sky.i, expected_I, rtol=1e-10)
     assert_allclose(sky.q, expected_Q, rtol=1e-10)
     assert_allclose(sky.u, expected_U, rtol=1e-10)
+
+
+def test_last_acquisition_operand_is_pointing() -> None:
+    landscape = HealpixLandscape(NSIDE, 'IQU')
+    key = jax.random.PRNGKey(0)
+    k1, k2 = jax.random.split(key)
+    qbore = _random_unit_quats(k1, (NSAMP,))
+    qdet = _random_unit_quats(k2, (NDET,))
+    acq = build_acquisition_operator(landscape, qbore, qdet)
+    assert isinstance(acq, CompositionOperator)
+    assert isinstance(acq.operands[-1], PointingOperator)

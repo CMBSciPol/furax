@@ -10,7 +10,7 @@ repos:
     - --all
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.12
+  rev: v0.15.14
   hooks:
     - id: ruff
       name: ruff linting
@@ -35,7 +35,7 @@ repos:
   - id: check-merge-conflict
 
 - repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v1.20.2
+  rev: v2.1.0
   hooks:
   - id: mypy
     additional_dependencies:
@@ -54,6 +54,7 @@ repos:
     - --show-error-codes
     - --enable-error-code=ignore-without-code
     - --allow-untyped-calls
+    - --num-workers=4
     files: ^src/furax/
 
 exclude: '^slurms/'

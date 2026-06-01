@@ -32,21 +32,37 @@ class AbstractReader(ABC):
         self,
         *args: Sequence[Any],
         common_keywords: Mapping[str, Any] | None = None,
+        structures: list[PyTree[jax.ShapeDtypeStruct]] | None = None,
         **keywords: Sequence[Any],
     ) -> None:
+        """
+        Args:
+            *args: One list per positional argument to the read function, one element per data item.
+            common_keywords: Keyword arguments shared by all data items.
+            structures: Pre-computed per-item output structures.
+                When provided, constructor skips all I/O and uses them directly.
+            **keywords: One list per keyword argument to the read function, one element per data item.
+        """
         self.args, self.keywords = self._normalize_args_keywords(args, keywords)
         self.count = len(self.args)
-        if common_keywords is None:
-            common_keywords = {}
-        self.common_keywords = common_keywords
-        structures = self._read_structures()
+        self.common_keywords = common_keywords or {}
+        if structures is None:
+            structures = self._read_structures()
+        elif len(structures) != self.count:
+            raise ValueError(
+                f'structures length {len(structures)} does not match data count {self.count}'
+            )
+        self._infer_structure_and_paddings(structures)
+
+    def _infer_structure_and_paddings(self, structures: list[PyTree[jax.ShapeDtypeStruct]]) -> None:
         self.out_structure = self._get_common_structure(structures)
         self.paddings: list[PyTree[tuple[int, ...]]] = [
             self._get_padding(structures[i]) for i in range(self.count)
         ]
 
+    @staticmethod
     def _normalize_args_keywords(
-        self, args: Sequence[Any], keywords: dict[str, Sequence[Any]]
+        args: Sequence[Any], keywords: dict[str, Sequence[Any]]
     ) -> tuple[list[Any], list[dict[str, Any]]]:
         """Normalize the arguments and keywords to ensure they are lists of the same length."""
         invalid_args = [i for i, v in enumerate(args) if not isinstance(v, Sequence)]

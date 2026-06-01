@@ -72,6 +72,10 @@ class TestWhiteNoiseModel:
         x = jnp.ones((2, 50))
         assert_allclose(model.inverse_operator(struct)(model.operator(struct)(x)), x, rtol=1e-5)
 
+    def test_to_white_noise_model_returns_self(self):
+        model = WhiteNoiseModel(sigma=jnp.array([1.0, 2.0]))
+        assert model.to_white_noise_model() is model
+
 
 # ---------------------------------------------------------------------------
 # AtmosphericNoiseModel

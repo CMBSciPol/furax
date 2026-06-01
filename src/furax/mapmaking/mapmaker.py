@@ -52,7 +52,15 @@ from ._model import ObservationModel, pad_model
 from ._observation import AbstractGroundObservation, AbstractLazyObservation
 from ._reader import ObservationReader
 from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
-from .config import GapFillingConfig, LandscapeConfig, MapMakingConfig, Methods, WCSConfig
+from .config import (
+    GapFillingConfig,
+    LandscapeConfig,
+    MapMakingConfig,
+    Methods,
+    NoiseSource,
+    WCSConfig,
+    WeightingMode,
+)
 from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
@@ -83,7 +91,7 @@ class MultiObservationMapMaker(Generic[T]):
         """Validate and adjust config for method-specific compatibility."""
         if self.config.method == Methods.ATOP:
             if not self.config.binned:
-                raise ValueError('ATOP requires a white noise model (noise.white=True).')
+                raise ValueError('ATOP requires diagonal weighting (weighting.mode=DIAGONAL).')
             if 'I' in (stokes := self.config.landscape.stokes):
                 if stokes != 'IQU':
                     raise ValueError(
@@ -251,8 +259,8 @@ class MultiObservationMapMaker(Generic[T]):
             required_fields.append('hwp_angles')
         if self.config.scanning_mask:
             required_fields.append('valid_scanning_masks')
-        if not self.config.noise.identity:
-            if self.config.noise.fit_from_data:
+        if self.config.weighting.mode != WeightingMode.IDENTITY:
+            if self.config.weighting.source == NoiseSource.FIT:
                 required_fields.extend(['sample_data', 'hwp_angles'])
             else:
                 required_fields.append('noise_model_fits')
@@ -283,7 +291,7 @@ class MultiObservationMapMaker(Generic[T]):
             read_indices,
             reader,
             fill_gaps=fill_gaps,
-            correlation_length=config.noise.correlation_length if fill_gaps else None,
+            correlation_length=config.weighting.correlation_length if fill_gaps else None,
             gap_filling_params=config.gaps.fill_options if fill_gaps else None,
         )
 
@@ -738,12 +746,12 @@ class MapMaker:
         """
         config = self.config
 
-        if config.noise.identity:
+        if config.weighting.mode == WeightingMode.IDENTITY:
             return WhiteNoiseModel(sigma=jnp.ones(observation.n_detectors, dtype=config.dtype))
 
         Model = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
 
-        if not config.noise.fit_from_data:
+        if config.weighting.source == NoiseSource.PRECOMPUTED:
             # Load the noise model from data if available
             noise_model = observation.get_noise_model()
             if noise_model:
@@ -757,7 +765,9 @@ class MapMaker:
         # Otherwise, fit the noise model from data
         self.logger.info('Fitting noise model from data')
         f, Pxx = jax.scipy.signal.welch(
-            observation.get_tods(), fs=observation.sample_rate, nperseg=config.noise.fitting.nperseg
+            observation.get_tods(),
+            fs=observation.sample_rate,
+            nperseg=config.weighting.fitting.nperseg,
         )
         hwp_frequency = observation.get_hwp_frequency()
         return Model.fit_psd_model(
@@ -765,7 +775,7 @@ class MapMaker:
             Pxx,
             sample_rate=jnp.array(observation.sample_rate),
             hwp_frequency=hwp_frequency,
-            config=config.noise.fitting,
+            config=config.weighting.fitting,
         )
 
     def get_pixel_selector(
@@ -969,7 +979,10 @@ class BinnedMapMaker(MapMaker):
             output['wcs'] = landscape.to_wcs()
         elif isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
-        if config.noise.fit_from_data and not config.noise.identity:
+        if (
+            config.weighting.source == NoiseSource.FIT
+            and config.weighting.mode != WeightingMode.IDENTITY
+        ):
             output['noise_fit'] = noise_model.to_array()  # type: ignore[assignment]
         if config.debug:
             proj_map = (masker.T @ acquisition)(res)
@@ -1018,17 +1031,17 @@ class MLMapmaker(MapMaker):
         inv_noise = noise_model.inverse_operator(
             data_struct,
             sample_rate=observation.sample_rate,
-            correlation_length=config.noise.correlation_length,
+            correlation_length=config.weighting.correlation_length,
         )
         noise = noise_model.operator(
             data_struct,
             sample_rate=observation.sample_rate,
-            correlation_length=config.noise.correlation_length,
+            correlation_length=config.weighting.correlation_length,
         )
         logger_info('Created noise and inverse noise covariance operators')
 
         # Approximate system matrix with diagonal noise covariance and full map pixels
-        if config.noise.identity:
+        if config.weighting.mode == WeightingMode.IDENTITY:
             diag_inv_noise = inv_noise
         elif isinstance(inv_noise, SymmetricBandToeplitzOperator):
             diag_inv_noise = DiagonalOperator(
@@ -1165,7 +1178,10 @@ class MLMapmaker(MapMaker):
             output['wcs'] = landscape.to_wcs()
         elif isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
-        if config.noise.fit_from_data and not config.noise.identity:
+        if (
+            config.weighting.source == NoiseSource.FIT
+            and config.weighting.mode != WeightingMode.IDENTITY
+        ):
             output['noise_fit'] = noise_model.to_array()
         if config.use_templates:
             for key in tmpl_ampl.keys():
@@ -1285,7 +1301,10 @@ class TwoStepMapmaker(MapMaker):
             output['wcs'] = landscape.to_wcs()
         elif isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
-        if config.noise.fit_from_data and not config.noise.identity:
+        if (
+            config.weighting.source == NoiseSource.FIT
+            and config.weighting.mode != WeightingMode.IDENTITY
+        ):
             output['noise_fit'] = noise_model.to_array()
         if config.debug:
             proj_map = (mp @ acquisition)(result_map)
@@ -1405,7 +1424,10 @@ class ATOPMapMaker(MapMaker):
         output = {'map': final_map, 'weights': blocks}
         if isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
-        if config.noise.fit_from_data and not config.noise.identity:
+        if (
+            config.weighting.source == NoiseSource.FIT
+            and config.weighting.mode != WeightingMode.IDENTITY
+        ):
             output['noise_fit'] = noise_model.to_array()
         if config.debug:
             proj_map = (mp @ acquisition)(result_map)

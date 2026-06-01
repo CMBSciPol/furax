@@ -16,12 +16,13 @@ from furax.mapmaking.config import (
     HealpixConfig,
     LandscapeConfig,
     Methods,
-    NoiseConfig,
     NoiseFitConfig,
     PointingConfig,
     SkyPatch,
     SotodlibConfig,
     WCSConfig,
+    WeightingConfig,
+    WeightingMode,
 )
 from furax.mapmaking.mapmaker import get_obs_distribution_to_process
 from furax.mapmaking.noise import WhiteNoiseModel
@@ -296,9 +297,8 @@ def _config(
         method=method,
         pointing=PointingConfig(on_the_fly=True, interpolation=interpolation),
         landscape=lc,
-        noise=NoiseConfig(
-            identity=identity_noise,
-            fit_from_data=True,
+        weighting=WeightingConfig(
+            mode=WeightingMode.IDENTITY if identity_noise else WeightingMode.DIAGONAL,
             fitting=NoiseFitConfig(nperseg=512),
         ),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,

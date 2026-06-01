@@ -25,6 +25,17 @@ class Methods(Enum):
     ATOP = 'ATOP'
 
 
+class WeightingMode(Enum):
+    IDENTITY = 'identity'  # identity inverse-noise, no weighting
+    DIAGONAL = 'diagonal'  # white (diagonal) weighting
+    TOEPLITZ = 'toeplitz'  # atmospheric 1/f, banded Toeplitz weighting
+
+
+class NoiseSource(Enum):
+    FIT = 'fit'  # fit the noise model from the TOD PSD
+    PRECOMPUTED = 'precomputed'  # read precomputed noise parameters from the data pipeline
+
+
 @dataclass
 class SolverConfig:
     rtol: float = 1e-6
@@ -69,33 +80,39 @@ class NoiseFitConfig:
 
 
 @dataclass
-class NoiseConfig:
-    """Configuration for noise modelling.
+class WeightingConfig:
+    """Configuration for the inverse-noise / weighting matrix used in mapmaking.
 
-    ``fit_from_data`` controls where the noise model comes from:
+    ``mode`` selects the structure of the inverse-noise matrix:
 
-    - ``True`` (default): fit a noise model directly from the TOD power spectral density.
-    - ``False``: load precomputed noise parameters from the data pipeline.
+    - ``IDENTITY``: identity matrix (no weighting).
+    - ``DIAGONAL``: diagonal white-noise weighting (default).
+    - ``TOEPLITZ``: banded Toeplitz weighting for atmospheric (1/f) noise.
+
+    ``source`` selects where the noise model comes from: ``FIT`` (default) fits it from the
+    TOD power spectral density using ``fitting``; ``PRECOMPUTED`` reads noise parameters from
+    the data pipeline (``fitting`` is then ignored).
 
     ``correlation_length`` sets the Toeplitz bandwidth (in samples) of the inverse-noise
-    operator.  It is only used by the atmospheric (1/f) noise model and is ignored when
-    ``white`` is True.
+    operator.  It is only used in ``TOEPLITZ`` mode and is ignored otherwise.
     """
 
-    white: bool = True
-    """Use a white (diagonal) noise model.  Set to False for the atmospheric (1/f) model."""
+    mode: WeightingMode = WeightingMode.DIAGONAL
+    """Inverse-noise weighting matrix structure."""
 
-    identity: bool = False
-    """Use an identity inverse-noise matrix (no noise weighting)."""
-
-    fit_from_data: bool = True
-    """Fit the noise model from the TOD PSD (True) or load it from the data pipeline (False)."""
+    source: NoiseSource = NoiseSource.FIT
+    """Where the noise model comes from: fit from the TOD PSD or read precomputed parameters."""
 
     correlation_length: int = 1_000
-    """Toeplitz bandwidth in samples.  Only relevant for the atmospheric (1/f) noise model."""
+    """Toeplitz bandwidth in samples.  Only relevant in ``TOEPLITZ`` mode."""
 
     fitting: NoiseFitConfig = field(default_factory=NoiseFitConfig)
-    """Options controlling PSD estimation and model fitting."""
+    """Options for fitting the noise PSD to the data.  Ignored when ``source`` is PRECOMPUTED."""
+
+    @property
+    def diagonal_matrix(self) -> bool:
+        """True when the inverse-noise matrix is diagonal (identity or white)."""
+        return self.mode != WeightingMode.TOEPLITZ
 
 
 @dataclass
@@ -352,7 +369,7 @@ class MapMakingConfig:
     cond_cut: float = 1e-2
     double_precision: bool = True
     pointing: PointingConfig = field(default_factory=PointingConfig)
-    noise: NoiseConfig = field(default_factory=NoiseConfig)
+    weighting: WeightingConfig = field(default_factory=WeightingConfig)
     debug: bool = True
     solver: SolverConfig = field(default_factory=SolverConfig)
     gaps: GapsConfig = field(default_factory=GapsConfig)
@@ -385,14 +402,14 @@ class MapMakingConfig:
         if method == Methods.BINNED:
             return cls(
                 method=Methods.BINNED,
-                noise=NoiseConfig(white=True),
+                weighting=WeightingConfig(),
                 templates=None,
             )
         elif method == Methods.MAXL:
             return cls(
                 method=Methods.MAXL,
-                noise=NoiseConfig(
-                    white=False,
+                weighting=WeightingConfig(
+                    mode=WeightingMode.TOEPLITZ,
                     correlation_length=1_000,
                 ),
                 solver=SolverConfig(
@@ -405,7 +422,7 @@ class MapMakingConfig:
         elif method == Methods.TWOSTEP:
             return cls(
                 method=Methods.TWOSTEP,
-                noise=NoiseConfig(white=True),
+                weighting=WeightingConfig(),
                 solver=SolverConfig(
                     rtol=1e-6,
                     atol=0,
@@ -418,7 +435,7 @@ class MapMakingConfig:
         elif method == Methods.ATOP:
             return cls(
                 method=Methods.ATOP,
-                noise=NoiseConfig(white=True),
+                weighting=WeightingConfig(),
                 solver=SolverConfig(
                     rtol=1e-6,
                     atol=0,
@@ -462,7 +479,7 @@ class MapMakingConfig:
 
     @property
     def binned(self) -> bool:
-        return self.noise.white
+        return self.weighting.diagonal_matrix
 
     @property
     def demodulated(self) -> bool:

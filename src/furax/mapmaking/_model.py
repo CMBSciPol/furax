@@ -11,7 +11,7 @@ from furax.core import BlockDiagonalOperator, CompositionOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
 
 from .acquisition import build_acquisition_operator
-from .config import MapMakingConfig, Methods
+from .config import MapMakingConfig, Methods, NoiseSource, WeightingMode
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .templates import ATOPProjectionOperator
 
@@ -63,7 +63,11 @@ class ObservationModel:
         )
         noise_model, sample_rate = _noise_model(data, config, tod_structure=H.out_structure)
         W = _noise_operator(
-            noise_model, H.out_structure, sample_rate, config.noise.correlation_length, inverse=True
+            noise_model,
+            H.out_structure,
+            sample_rate,
+            config.weighting.correlation_length,
+            inverse=True,
         )
         if F_T := _template_deprojector(config, H.out_structure):
             W = W @ F_T
@@ -145,26 +149,27 @@ def _noise_model(
 ) -> tuple[PyTree[NoiseModel], Array]:
     """Compute the noise model and sample rate for a single observation block."""
     fs = _sample_rate(data['timestamps'])
-    if config.noise.identity:
+    if config.weighting.mode == WeightingMode.IDENTITY:
         if tod_structure is None:
-            raise ValueError('tod_structure is required when config.noise.identity is True')
+            raise ValueError('tod_structure is required when config.weighting.mode is IDENTITY')
         noise_model = jax.tree.map(
             lambda s: WhiteNoiseModel(sigma=jnp.ones(s.shape[0], dtype=s.dtype)),
             tod_structure,
         )
         return noise_model, fs
-    if config.noise.fit_from_data:
+    if config.weighting.source == NoiseSource.FIT:
+        fit_config = config.weighting.fitting
         noise_model_class = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
         fhwp = _hwp_frequency(data['timestamps'], data['hwp_angles'])
 
         def _compute_Pxx_and_fit(tod):  # type: ignore[no-untyped-def]
-            f, Pxx = jax.scipy.signal.welch(tod, fs=fs, nperseg=config.noise.fitting.nperseg)
+            f, Pxx = jax.scipy.signal.welch(tod, fs=fs, nperseg=fit_config.nperseg)
             return noise_model_class.fit_psd_model(
                 f,
                 Pxx,
                 sample_rate=fs,
                 hwp_frequency=fhwp,
-                config=config.noise.fitting,
+                config=fit_config,
             )
 
         noise_model = jax.tree.map(_compute_Pxx_and_fit, data['sample_data'])

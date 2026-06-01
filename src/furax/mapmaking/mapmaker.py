@@ -618,8 +618,8 @@ class MapMaker:
         if self.config.pointing.on_the_fly:
             pointing = PointingOperator.create(
                 landscape,
-                observation.get_boresight_quaternions(),
-                observation.get_detector_quaternions(),
+                jnp.asarray(observation.get_boresight_quaternions()),
+                jnp.asarray(observation.get_detector_quaternions()),
                 chunk_size=self.config.pointing.chunk_size,
                 interpolate=self.config.pointing.interpolation == 'bilinear',
             )
@@ -665,11 +665,13 @@ class MapMaker:
             }
             polarizer = LinearPolarizerOperator.create(
                 **meta,  # type: ignore[arg-type]
-                angles=observation.get_detector_offset_angles().astype(self.config.dtype)[:, None],
+                angles=jnp.asarray(
+                    observation.get_detector_offset_angles().astype(self.config.dtype)[:, None]
+                ),
             )
             hwp = HWPOperator.create(
                 **meta,  # type: ignore[arg-type]
-                angles=observation.get_hwp_angles().astype(self.config.dtype),
+                angles=jnp.asarray(observation.get_hwp_angles().astype(self.config.dtype)),
             )
 
             return (polarizer @ hwp @ pointing).reduce()
@@ -765,11 +767,11 @@ class MapMaker:
         # Otherwise, fit the noise model from data
         self.logger.info('Fitting noise model from data')
         f, Pxx = jax.scipy.signal.welch(
-            observation.get_tods(),
+            jnp.asarray(observation.get_tods()),
             fs=observation.sample_rate,
             nperseg=config.weighting.fitting.nperseg,
         )
-        hwp_frequency = observation.get_hwp_frequency()
+        hwp_frequency = jnp.asarray(observation.get_hwp_frequency())
         return Model.fit_psd_model(
             f,
             Pxx,
@@ -808,7 +810,7 @@ class MapMaker:
             blocks['polynomial'] = templates.PolynomialTemplateOperator.create(
                 max_poly_order=poly.max_poly_order,
                 intervals=observation.get_scanning_intervals(),
-                times=observation.get_elapsed_times(),
+                times=jnp.asarray(observation.get_elapsed_times()),
                 n_dets=observation.n_detectors,
                 dtype=config.dtype,
             )
@@ -816,39 +818,41 @@ class MapMaker:
             blocks['scan_synchronous'] = templates.ScanSynchronousTemplateOperator.create(
                 min_poly_order=sss.min_poly_order,
                 max_poly_order=sss.max_poly_order,
-                azimuth=jnp.array(observation.get_azimuth()),
+                azimuth=jnp.asarray(observation.get_azimuth()),
                 n_dets=observation.n_detectors,
                 dtype=config.dtype,
             )
         if hwpss := config.templates.hwp_synchronous:
             blocks['hwp_synchronous'] = templates.HWPSynchronousTemplateOperator.create(
                 n_harmonics=hwpss.n_harmonics,
-                hwp_angles=observation.get_hwp_angles(),
+                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
                 n_dets=observation.n_detectors,
                 dtype=config.dtype,
             )
         if azhwpss := config.templates.azhwp_synchronous:
+            azimuth = jnp.asarray(observation.get_azimuth())
+            hwp_angles = jnp.asarray(observation.get_hwp_angles())
             if azhwpss.split_scans:
                 blocks['azhwp_synchronous_left'] = (
                     templates.AzimuthHWPSynchronousTemplateOperator.create(
                         n_polynomials=azhwpss.n_polynomials,
                         n_harmonics=azhwpss.n_harmonics,
-                        azimuth=observation.get_azimuth(),
-                        hwp_angles=observation.get_hwp_angles(),
+                        azimuth=azimuth,
+                        hwp_angles=hwp_angles,
                         n_dets=observation.n_detectors,
                         dtype=config.dtype,
-                        scan_mask=observation.get_left_scan_mask(),
+                        scan_mask=jnp.asarray(observation.get_left_scan_mask()),
                     )
                 )
                 blocks['azhwp_synchronous_right'] = (
                     templates.AzimuthHWPSynchronousTemplateOperator.create(
                         n_polynomials=azhwpss.n_polynomials,
                         n_harmonics=azhwpss.n_harmonics,
-                        azimuth=observation.get_azimuth(),
-                        hwp_angles=observation.get_hwp_angles(),
+                        azimuth=azimuth,
+                        hwp_angles=hwp_angles,
                         n_dets=observation.n_detectors,
                         dtype=config.dtype,
-                        scan_mask=observation.get_right_scan_mask(),
+                        scan_mask=jnp.asarray(observation.get_right_scan_mask()),
                     )
                 )
             else:
@@ -856,8 +860,8 @@ class MapMaker:
                     templates.AzimuthHWPSynchronousTemplateOperator.create(
                         n_polynomials=azhwpss.n_polynomials,
                         n_harmonics=azhwpss.n_harmonics,
-                        azimuth=observation.get_azimuth(),
-                        hwp_angles=observation.get_hwp_angles(),
+                        azimuth=azimuth,
+                        hwp_angles=hwp_angles,
                         n_dets=observation.n_detectors,
                         dtype=config.dtype,
                     )
@@ -869,30 +873,33 @@ class MapMaker:
                     n_harmonics=binazhwpss.n_harmonics,
                     interpolate_azimuth=binazhwpss.interpolate_azimuth,
                     smooth_interpolation=binazhwpss.smooth_interpolation,
-                    azimuth=observation.get_azimuth(),
-                    hwp_angles=observation.get_hwp_angles(),
+                    azimuth=jnp.asarray(observation.get_azimuth()),
+                    hwp_angles=jnp.asarray(observation.get_hwp_angles()),
                     n_dets=observation.n_detectors,
                     dtype=config.dtype,
                 )
             )
         if ground := config.templates.ground:
+            azimuth = jnp.asarray(observation.get_azimuth())
+            elevation = jnp.asarray(observation.get_elevation())
+            detector_quaternions = jnp.asarray(observation.get_detector_quaternions())
             self._ground_landscape = templates.GroundTemplateOperator.get_landscape(
                 azimuth_resolution=ground.azimuth_resolution,
                 elevation_resolution=ground.elevation_resolution,
-                boresight_azimuth=observation.get_azimuth(),
-                boresight_elevation=observation.get_elevation(),
-                detector_quaternions=observation.get_detector_quaternions(),
+                boresight_azimuth=azimuth,
+                boresight_elevation=elevation,
+                detector_quaternions=detector_quaternions,
                 stokes='IQU',
                 dtype=config.dtype,
             )
             ground_op = templates.GroundTemplateOperator.create(
                 azimuth_resolution=ground.azimuth_resolution,
                 elevation_resolution=ground.elevation_resolution,
-                boresight_azimuth=observation.get_azimuth(),
-                boresight_elevation=observation.get_elevation(),
-                boresight_rotation=jnp.zeros_like(observation.get_azimuth()),
-                detector_quaternions=observation.get_detector_quaternions(),
-                hwp_angles=observation.get_hwp_angles(),
+                boresight_azimuth=azimuth,
+                boresight_elevation=elevation,
+                boresight_rotation=jnp.zeros_like(azimuth),
+                detector_quaternions=detector_quaternions,
+                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
                 stokes='IQU',
                 dtype=config.dtype,
                 landscape=self._ground_landscape,
@@ -928,7 +935,7 @@ class BinnedMapMaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'Binned Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation)
 
@@ -1008,7 +1015,7 @@ class MLMapmaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'ML Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation)
 
@@ -1230,7 +1237,7 @@ class TwoStepMapmaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'Two-Step Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation)
 
@@ -1339,7 +1346,7 @@ class ATOPMapMaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'ATOP Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation)
 

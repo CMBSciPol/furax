@@ -935,7 +935,7 @@ class BinnedMapMaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'Binned Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation)
 
@@ -1015,7 +1015,7 @@ class MLMapmaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'ML Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation)
 
@@ -1237,7 +1237,7 @@ class TwoStepMapmaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'Two-Step Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation)
 
@@ -1346,7 +1346,7 @@ class ATOPMapMaker(MapMaker):
         logger_info = lambda msg: self.logger.info(f'ATOP Mapmaker: {msg}')
 
         # Data and landscape
-        data = observation.get_tods().astype(config.dtype)
+        data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
         data_struct = ShapeDtypeStruct(data.shape, data.dtype)
         landscape = self.get_landscape(observation)
 

@@ -379,7 +379,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
         """Returns the quaternion offsets of the detectors"""
-        # Use so3g's CPU implementation so the result stays on host.
+        # Use so3g's CPU implementation so the result stays on host
+        # quaternion convention is the same ordering (1,i,j,k)
         fp = self.data.focal_plane
         quats = so3g.proj.quat.rotation_xieta(fp.xi, fp.eta, fp.gamma)
         return np.atleast_2d(np.asarray(quats, dtype=np.float64))

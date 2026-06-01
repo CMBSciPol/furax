@@ -49,6 +49,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         *args: Sequence[Any],
         demodulated: bool,
         stokes: ValidStokesType,
+        dtype: DTypeLike = jnp.float64,
         common_keywords: dict[str, Any] | None = None,
         structures: list[PyTree[jax.ShapeDtypeStruct]] | None = None,
         **keywords: Sequence[Any],
@@ -56,6 +57,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         # Set before super().__init__ so _read_structure_impure can use them
         self.demodulated = demodulated
         self.stokes = stokes
+        self.dtype = dtype
         super().__init__(*args, common_keywords=common_keywords, structures=structures, **keywords)
 
     @classmethod
@@ -67,6 +69,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         requested_fields: Sequence[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
+        dtype: DTypeLike = jnp.float64,
     ) -> Self:
         """Create a reader, performing I/O to infer data structures.
 
@@ -94,6 +97,7 @@ class ObservationReader(AbstractReader, Generic[T]):
                 common_keywords=common_keywords,
                 demodulated=demodulated,
                 stokes=stokes,
+                dtype=dtype,
             )
 
         # Distributed-mode shortcut. Each process opens only its subset; an
@@ -114,7 +118,7 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         def _struct_for(n_det: int, n_samp: int) -> PyTree[jax.ShapeDtypeStruct]:
             field_struct = cls._get_data_field_structures_for(
-                n_det, n_samp, demodulated=demodulated, stokes=stokes
+                n_det, n_samp, demodulated=demodulated, stokes=stokes, dtype=dtype
             )
             return {field: field_struct[field] for field in fields}
 
@@ -124,6 +128,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             common_keywords=common_keywords,
             demodulated=demodulated,
             stokes=stokes,
+            dtype=dtype,
             structures=structures,
         )
 
@@ -229,12 +234,13 @@ class ObservationReader(AbstractReader, Generic[T]):
         *,
         demodulated: bool,
         stokes: ValidStokesType,
+        dtype: DTypeLike = jnp.float64,
     ) -> PyTree[jax.ShapeDtypeStruct]:
         tod_shape = (n_detectors, n_samples)
         sample_data_structure = (
-            Stokes.class_for(stokes).structure_for(tod_shape, self.dtype)
+            Stokes.class_for(stokes).structure_for(tod_shape, dtype)
             if demodulated
-            else jax.ShapeDtypeStruct(tod_shape, self.dtype)
+            else jax.ShapeDtypeStruct(tod_shape, dtype)
         )
 
         return {
@@ -246,14 +252,14 @@ class ObservationReader(AbstractReader, Generic[T]):
             'sample_data': sample_data_structure,
             'valid_sample_masks': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.bool),
             'valid_scanning_masks': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
-            'timestamps': jax.ShapeDtypeStruct((n_samples,), self.dtype),
-            'hwp_angles': jax.ShapeDtypeStruct((n_samples,), self.dtype),
-            'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), self.dtype),
-            'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), self.dtype),
+            'timestamps': jax.ShapeDtypeStruct((n_samples,), dtype),
+            'hwp_angles': jax.ShapeDtypeStruct((n_samples,), dtype),
+            'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), dtype),
+            'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), dtype),
             'noise_model_fits': (
-                Stokes.class_for(stokes).structure_for((n_detectors, 4), self.dtype)
+                Stokes.class_for(stokes).structure_for((n_detectors, 4), dtype)
                 if demodulated
-                else jax.ShapeDtypeStruct((n_detectors, 4), self.dtype)
+                else jax.ShapeDtypeStruct((n_detectors, 4), dtype)
             ),
         }
 
@@ -313,6 +319,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             data.n_samples,
             demodulated=self.demodulated,
             stokes=self.stokes,
+            dtype=self.dtype,
         )
         return {field: field_structure[field] for field in data_field_names}
 

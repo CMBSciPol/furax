@@ -41,8 +41,8 @@ from furax.mapmaking.config import (
     LandscapeConfig,
     MapMakingConfig,
     Methods,
-    NoiseConfig,
     PointingConfig,
+    WeightingConfig,
 )
 from furax.mapmaking.noise import NoiseModel
 from furax.obs.landscapes import ProjectionType, StokesLandscape
@@ -156,7 +156,9 @@ class TestObservationReaderDtype:
         via MultiObservationMapMaker) must continue to see float64, otherwise
         we would silently break the historical contract.
         """
-        reader = ObservationReader([_FakeLazyObservation()], requested_fields=REQUIRED_FIELDS)
+        reader = ObservationReader.from_observations(
+            [_FakeLazyObservation()], requested_fields=REQUIRED_FIELDS
+        )
         assert reader.dtype == jnp.float64
         for field in REQUIRED_FIELDS:
             assert reader.out_structure[field].dtype == jnp.float64, (
@@ -170,7 +172,7 @@ class TestObservationReaderDtype:
         ``jax_enable_x64=False`` JAX rejects any float64 ShapeDtypeStruct,
         so timestamps/HWP/quaternions/noise_model_fits must also be float32.
         """
-        reader = ObservationReader(
+        reader = ObservationReader.from_observations(
             [_FakeLazyObservation()],
             requested_fields=REQUIRED_FIELDS,
             dtype=jnp.float32,
@@ -183,7 +185,7 @@ class TestObservationReaderDtype:
 
     def test_bool_masks_remain_bool(self) -> None:
         """Sanity check: changing ``dtype`` must not affect boolean masks."""
-        reader = ObservationReader(
+        reader = ObservationReader.from_observations(
             [_FakeLazyObservation()],
             requested_fields=['valid_sample_masks', 'sample_data'],
             dtype=jnp.float32,
@@ -202,7 +204,7 @@ class TestMapMakerForwardsDtype:
         config = MapMakingConfig(
             method=Methods.BINNED,
             landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
-            noise=NoiseConfig(white=True, fit_from_data=True),
+            weighting=WeightingConfig(),
             pointing=PointingConfig(on_the_fly=True),
             double_precision=double_precision,
         )
@@ -239,7 +241,7 @@ _SUBPROCESS_SCRIPT = textwrap.dedent("""\
     )
     from furax.mapmaking.config import (
         HealpixConfig, LandscapeConfig, MapMakingConfig, Methods,
-        NoiseConfig, NoiseFitConfig, PointingConfig, SolverConfig,
+        NoiseFitConfig, PointingConfig, SolverConfig, WeightingConfig,
     )
     from furax.obs.landscapes import ProjectionType, StokesLandscape
     from furax.mapmaking.noise import NoiseModel
@@ -293,8 +295,7 @@ _SUBPROCESS_SCRIPT = textwrap.dedent("""\
     config = MapMakingConfig(
         method=Methods.BINNED,
         landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
-        noise=NoiseConfig(
-            white=True, fit_from_data=True,
+        weighting=WeightingConfig(
             fitting=NoiseFitConfig(nperseg=256, mask_hwp_harmonics=False),
         ),
         pointing=PointingConfig(on_the_fly=True, chunk_size=32, interpolation='nearest'),

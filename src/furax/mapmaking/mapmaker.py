@@ -144,6 +144,7 @@ class MultiObservationMapMaker(Generic[T]):
             requested_fields=required_fields,
             demodulated=self.config.demodulated,
             stokes=self.config.landscape.stokes,
+            dtype=self.config.dtype,
         )
 
     def run(self, out_dir: str | Path | None = None) -> MapMakingResults:

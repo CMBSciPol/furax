@@ -160,35 +160,19 @@ class ObservationReader(AbstractReader, Generic[T]):
         data_field_names = self.common_keywords['data_field_names']
         if 'timestamps' in data_field_names:
             # Extrapolate in the padded region for constant sample rate
-            timestamps = data['timestamps']
-            pad_size = padding['timestamps'][0]  # Padded length along samples axis
-            data_size = timestamps.size - pad_size  # Unpadded length
-            dt = (timestamps[data_size - 1] - timestamps[0]) / (data_size - 1)  # Mean time spacing
-            extrapolated = (
-                timestamps[data_size - 1]
-                + (np.arange(timestamps.size, dtype=timestamps.dtype) - (data_size - 1)) * dt
-            )  # Extrapolate from the last non-zero data entry
-            data['timestamps'] = np.where(
-                np.arange(timestamps.size) < data_size,
-                timestamps,
-                extrapolated,
+            pad_size = padding['timestamps'][0]
+            valid = data['timestamps'][: data['timestamps'].size - pad_size]
+            dt = (valid[-1] - valid[0]) / (valid.size - 1)  # Mean time spacing
+            data['timestamps'] = np.pad(
+                valid, (0, pad_size), mode='linear_ramp', end_values=valid[-1] + dt * pad_size
             )
         if 'hwp_angles' in data_field_names:
-            # Extrapolate in the padded region for constant hwp roation frequency
-            hwp_angles = data['hwp_angles']
-            pad_size = padding['hwp_angles'][0]  # Padded length along samples axis
-            data_size = hwp_angles.size - pad_size  # Unpadded length
-            dphi = (np.unwrap(hwp_angles)[data_size - 1] - hwp_angles[0]) / (
-                data_size - 1
-            )  # Mean angle spacing
-            extrapolated = (
-                hwp_angles[data_size - 1]
-                + (np.arange(hwp_angles.size, dtype=hwp_angles.dtype) - (data_size - 1)) * dphi
-            )  # Extrapolate from the last non-zero data entry
-            data['hwp_angles'] = np.where(
-                np.arange(hwp_angles.size) < data_size,
-                hwp_angles,
-                extrapolated,
+            # Extrapolate in the padded region for constant hwp rotation frequency
+            pad_size = padding['hwp_angles'][0]
+            valid = data['hwp_angles'][: data['hwp_angles'].size - pad_size]
+            dphi = (np.unwrap(valid)[-1] - valid[0]) / (valid.size - 1)  # Mean angle spacing
+            data['hwp_angles'] = np.pad(
+                valid, (0, pad_size), mode='linear_ramp', end_values=valid[-1] + dphi * pad_size
             ) % (2 * np.pi)
         if 'detector_quaternions' in data_field_names:
             # Pad with (1, 0, 0, 0), corresponding to xi=eta=gamma=0.

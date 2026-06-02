@@ -136,8 +136,11 @@ class ObservationReader(AbstractReader, Generic[T]):
             )
         return list(requested_fields)
 
-    def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
-        """Reads one ground observation from the list of filenames specified in the reader.
+    def _pad(
+        self, data: PyTree[np.ndarray], padding: PyTree[tuple[int, ...]]
+    ) -> PyTree[np.ndarray]:
+        """Pads one ground observation to the common structure, on the host (numpy).
+
         The data is padded differently depending on the key:
             - sample_data: padded with 0.0 outside the valid samples
             - timestamps, hwp_angles: extrapolated in the padded region so that
@@ -150,8 +153,8 @@ class ObservationReader(AbstractReader, Generic[T]):
                 the telescoped stopped moving since then.
             - noise_model_fits: padded with (sigma, alpha, fknee, f0) = (0., 0., 1., 0.1)
         """
-        # First, read them and pad them with 0 by default
-        data, padding = super().read(data_index)
+        # First, pad them with 0 by default
+        data = super()._pad(data, padding)
 
         # Handle fields with non-zero padding
         data_field_names = self.common_keywords['data_field_names']
@@ -163,10 +166,10 @@ class ObservationReader(AbstractReader, Generic[T]):
             dt = (timestamps[data_size - 1] - timestamps[0]) / (data_size - 1)  # Mean time spacing
             extrapolated = (
                 timestamps[data_size - 1]
-                + (jnp.arange(timestamps.size, dtype=timestamps.dtype) - (data_size - 1)) * dt
+                + (np.arange(timestamps.size, dtype=timestamps.dtype) - (data_size - 1)) * dt
             )  # Extrapolate from the last non-zero data entry
-            data['timestamps'] = jnp.where(
-                jnp.arange(timestamps.size) < data_size,
+            data['timestamps'] = np.where(
+                np.arange(timestamps.size) < data_size,
                 timestamps,
                 extrapolated,
             )
@@ -175,44 +178,44 @@ class ObservationReader(AbstractReader, Generic[T]):
             hwp_angles = data['hwp_angles']
             pad_size = padding['hwp_angles'][0]  # Padded length along samples axis
             data_size = hwp_angles.size - pad_size  # Unpadded length
-            dphi = (jnp.unwrap(hwp_angles)[data_size - 1] - hwp_angles[0]) / (
+            dphi = (np.unwrap(hwp_angles)[data_size - 1] - hwp_angles[0]) / (
                 data_size - 1
             )  # Mean angle spacing
             extrapolated = (
                 hwp_angles[data_size - 1]
-                + (jnp.arange(hwp_angles.size, dtype=hwp_angles.dtype) - (data_size - 1)) * dphi
+                + (np.arange(hwp_angles.size, dtype=hwp_angles.dtype) - (data_size - 1)) * dphi
             )  # Extrapolate from the last non-zero data entry
-            data['hwp_angles'] = jnp.where(
-                jnp.arange(hwp_angles.size) < data_size,
+            data['hwp_angles'] = np.where(
+                np.arange(hwp_angles.size) < data_size,
                 hwp_angles,
                 extrapolated,
-            ) % (2 * jnp.pi)
+            ) % (2 * np.pi)
         if 'detector_quaternions' in data_field_names:
             # Pad with (1, 0, 0, 0), corresponding to xi=eta=gamma=0.
-            zero_padded = jnp.linalg.norm(data['detector_quaternions'], axis=-1) == 0.0
-            data['detector_quaternions'] = jnp.where(
+            zero_padded = np.linalg.norm(data['detector_quaternions'], axis=-1) == 0.0
+            data['detector_quaternions'] = np.where(
                 zero_padded[:, None],
-                jnp.array([[1.0, 0.0, 0.0, 0.0]]),
+                np.array([[1.0, 0.0, 0.0, 0.0]]),
                 data['detector_quaternions'],
             )
         if 'boresight_quaternions' in data_field_names:
             # Pad with the last non-zero quaternion provided.
             pad_size = padding['boresight_quaternions'][0]  # samples axis
             last_quaternion = data['boresight_quaternions'][-pad_size - 1, :]
-            zero_padded = jnp.linalg.norm(data['boresight_quaternions'], axis=-1) == 0.0
-            data['boresight_quaternions'] = jnp.where(
+            zero_padded = np.linalg.norm(data['boresight_quaternions'], axis=-1) == 0.0
+            data['boresight_quaternions'] = np.where(
                 zero_padded[:, None], last_quaternion[None, :], data['boresight_quaternions']
             )
         if 'noise_model_fits' in data_field_names:
-            default = jnp.array([[0.0, 0.0, 1.0, 0.1]])
+            default = np.array([[0.0, 0.0, 1.0, 0.1]])
 
-            def _pad_noise_fits(arr: Array) -> Array:
+            def _pad_noise_fits(arr: np.ndarray) -> np.ndarray:
                 zero_padded = arr[:, 0] == 0.0
-                return jnp.where(zero_padded[:, None], default, arr)
+                return np.where(zero_padded[:, None], default, arr)
 
             data['noise_model_fits'] = jax.tree.map(_pad_noise_fits, data['noise_model_fits'])
 
-        return data, padding
+        return data
 
     @staticmethod
     def _get_data_field_structures_for(

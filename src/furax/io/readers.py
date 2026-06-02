@@ -173,14 +173,7 @@ class AbstractReader(ABC):
             keywords = self.keywords[i]
             padding = self.paddings[i]
             data = self._read_data_impure(*args, **keywords, **self.common_keywords)
-            host_data = jax.tree.map(
-                lambda leaf, pad: (
-                    np.pad(leaf, [(0, p) for p in pad]) if len(pad) > 0 else np.asarray(leaf)
-                ),
-                data,
-                padding,
-            )
-            return host_data
+            return self._pad(data, padding)
 
         data = jax.lax.switch(
             data_index,
@@ -190,6 +183,20 @@ class AbstractReader(ABC):
             data_index, [lambda i=i: self.paddings[i] for i in range(self.count)]
         )
         return data, padding
+
+    def _pad(self, data: PyTree[Any], padding: PyTree[tuple[int, ...]]) -> PyTree[np.ndarray]:
+        """Pad the host (numpy) data to the common structure.
+
+        Runs on the host inside the read callback, so it must use numpy. Pads with 0 by default;
+        subclasses may override to apply field-specific padding.
+        """
+        return jax.tree.map(
+            lambda leaf, pad: (
+                np.pad(leaf, [(0, p) for p in pad]) if len(pad) > 0 else np.asarray(leaf)
+            ),
+            data,
+            padding,
+        )
 
     @abstractmethod
     def _read_data_impure(self, *args: Any, **keywords: Any) -> PyTree[Any]: ...

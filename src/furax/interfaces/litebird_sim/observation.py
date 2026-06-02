@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -16,7 +17,7 @@ from furax.obs.landscapes import HealpixLandscape, ProjectionType, StokesLandsca
 class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
     @classmethod
     def from_file(
-        cls, filename: str | Path, requested_fields: list[str] | None = None
+        cls, filename: str | Path, requested_fields: Collection[str] | None = None
     ) -> LBSObservation:
         # check that file exists
         file = Path(filename)

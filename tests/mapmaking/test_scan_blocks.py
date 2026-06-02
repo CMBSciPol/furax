@@ -250,3 +250,73 @@ def test_sharded_fusion_ht_w_h() -> None:
     assert isinstance(reduced, ScanAdditionOperator)
     x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
     assert_allclose(reduced.mv(x), (H.T @ W @ H).mv(x), rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# (A) heterogeneous leaf batching: static scalar leaves ride alongside the scan
+# ---------------------------------------------------------------------------
+
+
+def test_static_scalar_leaf_diagonal() -> None:
+    # ``(-2) * blocks`` wraps the stacked operator in a HomothetyOperator whose scalar value is a
+    # shape-() leaf with no observation axis; the scan must broadcast it, not slice it.
+    blocks = _make_blocks(P('obs'))
+    op = ScanBlockDiagonalOperator.create((-2.0) * blocks)
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
+    x_np = np.array(jax.device_get(x))
+    expected = np.stack([-2.0 * (m @ x_np[i]) for i, m in enumerate(_per_obs(blocks))])
+    assert_allclose(op.mv(x), expected, rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# (B) addition fusion: sum of two scan blocks collapses to one scan block
+# ---------------------------------------------------------------------------
+
+
+def test_addition_fusion_diagonal() -> None:
+    A = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
+    B = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
+    reduced = (A + B).reduce()
+    assert isinstance(reduced, ScanBlockDiagonalOperator)
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
+    assert_allclose(reduced.mv(x), jax.tree.map(jnp.add, A.mv(x), B.mv(x)), rtol=1e-10)
+
+
+def test_subtraction_fusion_diagonal() -> None:
+    # exercises (B) addition fusion + Homothety folding + (A) static leaf in one shot:
+    # ``A - B`` -> ``A + (-1) @ B`` -> ScanBlockDiagonal(A_inner - B_inner), whose fused inner
+    # operator carries the ``-1`` as a static scalar leaf.
+    A = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
+    B = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
+    reduced = (A - B).reduce()
+    assert isinstance(reduced, ScanBlockDiagonalOperator)
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
+    assert_allclose(reduced.mv(x), jax.tree.map(jnp.subtract, A.mv(x), B.mv(x)), rtol=1e-10)
+
+
+def test_addition_fusion_row() -> None:
+    A = ScanBlockRowOperator.create(_make_blocks(P('obs')))
+    B = ScanBlockRowOperator.create(_make_blocks(P('obs')))
+    reduced = (A + B).reduce()
+    assert isinstance(reduced, ScanBlockRowOperator)
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
+    assert_allclose(reduced.mv(x), jax.tree.map(jnp.add, A.mv(x), B.mv(x)), rtol=1e-10)
+
+
+def test_marginal_weight_fusion() -> None:
+    # the marginalisation shape ``W - W T G T.T W`` reduces to a single ScanBlockDiagonal.
+    # W: per-obs (N_OUT, N_OUT); T: per-obs (N_OUT, N_IN) amplitudes->tod; G: per-obs (N_IN, N_IN).
+    W = ScanBlockDiagonalOperator.create(_make_blocks(P('obs'), n_in=N_OUT))
+    T = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))  # in (N_IN,) -> out (N_OUT,)
+    G = ScanBlockDiagonalOperator.create(
+        _TestOp(
+            jnp.broadcast_to(jnp.eye(N_IN), (N_OBS, N_IN, N_IN)),
+            in_structure=jax.ShapeDtypeStruct((N_IN,), jnp.float64),
+        )
+    )
+    chain = W @ T @ G @ T.T @ W
+    Wm = (W - chain).reduce()
+    assert isinstance(Wm, ScanBlockDiagonalOperator)
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_OUT), dtype=np.float64), P('obs'))
+    expected = jax.tree.map(jnp.subtract, W.mv(x), chain.mv(x))
+    assert_allclose(Wm.mv(x), expected, rtol=1e-10)

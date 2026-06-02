@@ -14,7 +14,7 @@ def run(  # type: ignore[no-untyped-def]
     obsids_file: Path | None = None,
     outdir: Path | None = None,
     mapmaking_config: Path | None = None,
-    loglevel: str = 'info',
+    loglevel: str | None = None,
     log_path: Path | None = None,
 ):
     """Run the mapmaker on prepared binary observation files.
@@ -25,9 +25,14 @@ def run(  # type: ignore[no-untyped-def]
         obsids_file: Text file with one obsid per line.
         outdir: Output directory for maps.
         mapmaking_config: Mapmaking config file.
-        loglevel: Logging level (debug, info, warning, error).
+        loglevel: Logging level (debug, info, warning, error). Defaults to the LOGLEVEL
+            environment variable, or 'info' if unset.
         log_path: Log output path.
     """
+    import os
+
+    loglevel = loglevel or os.getenv('LOGLEVEL', 'info')
+
     # Defer JAX (and the mapmaker stack it pulls in) to call time so that
     # merely importing this module stays cheap and backend-free.
     import jax

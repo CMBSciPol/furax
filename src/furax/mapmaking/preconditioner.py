@@ -1,16 +1,50 @@
+from dataclasses import field
 from typing import Any
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, PyTree
+from jaxtyping import Array, Inexact, PyTree
 
+import furax.linalg
 from furax import AbstractLinearOperator, TreeOperator, symmetric
+from furax.core import AbstractLazyInverseOperator
 from furax.obs.stokes import Stokes
 from furax.tree import _dense_to_tree, _get_outer_treedef, _tree_to_dense, zeros_like
 
 # Pass op as an explicit argument so JAX traces its arrays as inputs rather than
 # capturing them as XLA constants (which would happen with jit(op.mv) or jit(op)).
 _apply = jax.jit(lambda op, x: op(x))
+
+
+@symmetric
+class CGInverseOperator(AbstractLazyInverseOperator):
+    """Lazy ``A⁻¹`` realised by furax preconditioned conjugate gradient.
+
+    Unlike :class:`furax.core.InverseOperator` (which solves via lineax
+    ``linear_solve``), this uses :func:`furax.linalg.cg`, which is sharding-aware
+    (works on map/TOD vectors distributed across observations) and records the
+    per-iteration residual norm. ``A`` (``operator``) is assumed symmetric positive
+    definite, so ``A⁻¹`` is symmetric — hence the ``@symmetric`` tag.
+
+    Apply it like any operator (``A_inv(x)`` solves ``A y = x``). The optional
+    ``preconditioner`` ``M ≈ A⁻¹`` (e.g. a block-Jacobi inverse) is passed straight
+    to the CG solver.
+    """
+
+    preconditioner: AbstractLinearOperator | None = field(default=None, kw_only=True)
+    rtol: float = field(default=1e-6, kw_only=True, metadata={'static': True})
+    atol: float = field(default=0.0, kw_only=True, metadata={'static': True})
+    max_steps: int = field(default=1_000, kw_only=True, metadata={'static': True})
+
+    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
+        return furax.linalg.cg(
+            self.operator,
+            x,
+            preconditioner=self.preconditioner,
+            rtol=self.rtol,
+            atol=self.atol,
+            max_steps=self.max_steps,
+        ).solution
 
 
 @symmetric

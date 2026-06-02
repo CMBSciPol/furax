@@ -2,24 +2,37 @@ import logging
 from pathlib import Path
 
 
-def setup_logger(loglevel: str, log_path: Path | None, process_index: int = 0) -> logging.Logger:
-    level = logging.getLevelName(loglevel.upper())
-    logger = logging.getLogger('furax.mapmaker')
-    logger.setLevel(level)
-    logger.propagate = False
-    logger.handlers.clear()
+def setup_logger(
+    loglevel: str | None, log_path: Path | None, process_index: int = 0
+) -> logging.Logger:
+    """Layer CLI options onto the shared 'furax-mapmaking' logger.
+
+    The base console handler, formatter and per-rank stamping are owned by
+    ``furax.mapmaking._logger`` (configured when the mapmaker is imported). This only adds the
+    CLI-specific bits: an explicit level override when given on the command line, and a per-rank
+    file handler when ``log_path`` is set. The logger is fetched by name so this stays jax-free
+    for the ``prepare`` CLI; that path never imports the furax mapmaker, so a matching console
+    handler is added as a fallback when the base config is absent.
+    """
+    logger = logging.getLogger('furax-mapmaking')
+    if loglevel is not None:
+        logger.setLevel(logging.getLevelName(loglevel.upper()))
+
     formatter = logging.Formatter(
         f'%(asctime)s - [rank {process_index}] - %(levelname)s - %(message)s'
     )
-    ch = logging.StreamHandler()
-    ch.setLevel(level)
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+
+    if not logger.handlers:
+        # prepare path: furax._logger never ran, so stand up a console handler here.
+        logger.propagate = False
+        ch = logging.StreamHandler()
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+
     if log_path is not None:
         log_path = log_path.with_stem(f'{log_path.stem}.rank{process_index}')
         log_path.parent.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(log_path)
-        fh.setLevel(logging.DEBUG)
         fh.setFormatter(formatter)
         logger.addHandler(fh)
     return logger

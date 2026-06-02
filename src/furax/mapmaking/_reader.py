@@ -1,4 +1,5 @@
-from collections.abc import Sequence
+import time
+from collections.abc import Collection, Sequence
 from typing import Any, Generic, Self, TypeVar
 
 import jax
@@ -12,6 +13,7 @@ from jaxtyping import PyTree
 from furax.io.readers import AbstractReader
 from furax.obs.stokes import Stokes, ValidStokesType
 
+from ._logger import logger
 from ._observation import (
     AbstractLazyObservation,
     HashedObservationMetadata,
@@ -61,7 +63,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         observations: Sequence[AbstractLazyObservation[T]],
         *,
         read_indices: Sequence[int] | None = None,
-        requested_fields: Sequence[str] | None = None,
+        requested_fields: Collection[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
     ) -> Self:
@@ -92,21 +94,29 @@ class ObservationReader(AbstractReader, Generic[T]):
         # all-gather then makes every rank agree on the full structures list so
         # padding / out_structure / etc. are consistent. Bypasses the superclass's
         # per-item I/O by passing the assembled `structures` directly.
-        def _shape(idx: int) -> tuple[int, int, int]:
-            data = observations[idx].get_data([])
-            return idx, data.n_detectors, data.n_samples
+        needs_intervals = 'scanning_intervals' in fields
+        probe_fields = ['scanning_intervals'] if needs_intervals else []
+
+        def _shape(idx: int) -> tuple[int, int, int, int]:
+            data = observations[idx].get_data(probe_fields)
+            # scanning_intervals is ground-only; requested only for ground observations
+            n_int = data.get_scanning_intervals().shape[0] if needs_intervals else 0  # type: ignore[attr-defined]
+            return idx, data.n_detectors, data.n_samples, n_int
 
         local_shapes = np.array([_shape(idx) for idx in read_indices], dtype=np.int64)
 
-        # All-gather → (n_procs * n_local, 3). Padding (see ``get_padded_indices``,
+        # All-gather → (n_procs * n_local, 4). Padding (see ``get_padded_indices``,
         # which uses ``np.pad(..., mode='edge')``) makes some indices repeat across
         # ranks; keep only one entry per obs index.
-        all_shapes = mhu.process_allgather(local_shapes).reshape(-1, 3)
-        by_idx = {int(idx): (int(n_det), int(n_samp)) for idx, n_det, n_samp in all_shapes}
+        all_shapes = mhu.process_allgather(local_shapes).reshape(-1, 4)
+        by_idx = {
+            int(idx): (int(n_det), int(n_samp), int(n_int))
+            for idx, n_det, n_samp, n_int in all_shapes
+        }
 
-        def _struct_for(n_det: int, n_samp: int) -> PyTree[jax.ShapeDtypeStruct]:
+        def _struct_for(n_det: int, n_samp: int, n_int: int) -> PyTree[jax.ShapeDtypeStruct]:
             field_struct = cls._get_data_field_structures_for(
-                n_det, n_samp, demodulated=demodulated, stokes=stokes
+                n_det, n_samp, demodulated=demodulated, stokes=stokes, n_intervals=n_int
             )
             return {field: field_struct[field] for field in fields}
 
@@ -122,19 +132,20 @@ class ObservationReader(AbstractReader, Generic[T]):
     @staticmethod
     def _resolve_fields(
         observations: Sequence[AbstractLazyObservation[T]],
-        requested_fields: Sequence[str] | None,
-    ) -> list[str]:
+        requested_fields: Collection[str] | None,
+    ) -> set[str]:
         interface = observations[0].interface_class
         available = set(interface.AVAILABLE_READER_FIELDS)
         optional = set(interface.OPTIONAL_READER_FIELDS)
         if requested_fields is None:
-            return sorted(available - optional)
-        unsupported = set(requested_fields) - available
+            return available - optional
+        fields = set(requested_fields)
+        unsupported = fields - available
         if unsupported:
             raise ValueError(
                 f'Requested data fields {unsupported} are not supported by the interface.'
             )
-        return list(requested_fields)
+        return fields
 
     def _pad(
         self, data: PyTree[np.ndarray], padding: PyTree[tuple[int, ...]]
@@ -145,8 +156,11 @@ class ObservationReader(AbstractReader, Generic[T]):
             - sample_data: padded with 0.0 outside the valid samples
             - timestamps, hwp_angles: extrapolated in the padded region so that
                 the sample rate and the hwp rotation frequency remain consistent
-            - valid_sample_masks, valid_scanning_masks : padded with 0 (False) outside
-                the valid samples
+            - valid_sample_masks, valid_scanning_masks, left_scan_mask, right_scan_mask :
+                padded with 0 (False) outside the valid samples
+            - azimuth: held at the last valid value, as if the telescope stopped moving.
+                Constant padding keeps the min/peak-to-peak range (used for basis
+                normalisation) equal to that of the real scan.
             - detector_quaternions: padded with (1, 0, 0, 0) for invalid detectors, as if they
                 are located at the centre of the focal plane.
             - boresight_quaternions: padded with the last valid sample's quaternion, as if
@@ -174,6 +188,12 @@ class ObservationReader(AbstractReader, Generic[T]):
             data['hwp_angles'] = np.pad(
                 valid, (0, pad_size), mode='linear_ramp', end_values=valid[-1] + dphi * pad_size
             ) % (2 * np.pi)
+        if 'azimuth' in data_field_names:
+            # Hold the last valid azimuth in the padded region (telescope stopped moving).
+            # Keeps min(azimuth)/ptp(azimuth) unchanged, so basis normalisation is unaffected.
+            pad_size = padding['azimuth'][0]
+            valid = data['azimuth'][: data['azimuth'].size - pad_size]
+            data['azimuth'] = np.pad(valid, (0, pad_size), mode='edge')
         if 'detector_quaternions' in data_field_names:
             # Pad with (1, 0, 0, 0), corresponding to xi=eta=gamma=0.
             zero_padded = np.linalg.norm(data['detector_quaternions'], axis=-1) == 0.0
@@ -208,6 +228,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         *,
         demodulated: bool,
         stokes: ValidStokesType,
+        n_intervals: int = 0,
     ) -> PyTree[jax.ShapeDtypeStruct]:
         tod_shape = (n_detectors, n_samples)
         sample_data_structure = (
@@ -230,6 +251,11 @@ class ObservationReader(AbstractReader, Generic[T]):
                 if demodulated
                 else jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64)
             ),
+            'azimuth': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
+            'elevation': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
+            'left_scan_mask': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
+            'right_scan_mask': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
+            'scanning_intervals': jax.ShapeDtypeStruct((n_intervals, 2), jnp.int64),
         }
 
     def _get_data_field_readers(self):  # type: ignore[no-untyped-def]
@@ -257,25 +283,51 @@ class ObservationReader(AbstractReader, Generic[T]):
                 if demodulated
                 else (lambda obs: if_none_raise_error(obs.get_noise_model()).to_array())
             ),
+            'azimuth': lambda obs: obs.get_azimuth(),
+            'elevation': lambda obs: obs.get_elevation(),
+            'left_scan_mask': lambda obs: obs.get_left_scan_mask(),
+            'right_scan_mask': lambda obs: obs.get_right_scan_mask(),
+            'scanning_intervals': lambda obs: np.asarray(
+                obs.get_scanning_intervals(), dtype=np.int64
+            ),
         }
 
     def _read_structure_impure(
-        self, observation: AbstractLazyObservation[T], data_field_names: list[str]
+        self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]
     ) -> PyTree[jax.ShapeDtypeStruct]:
-        # request an empty list
-        # this loads sufficient info to determine the structure
-        data = observation.get_data([])
+        # Request the minimum needed to determine buffer shapes. ``scanning_intervals``
+        # has a variable leading dimension (the per-observation interval count), so when
+        # it is requested we must read it here to size the padded buffer.
+        needs_intervals = 'scanning_intervals' in data_field_names
+        probe_fields = ['scanning_intervals'] if needs_intervals else []
+        data = observation.get_data(probe_fields)
+        # scanning_intervals is ground-only; requested only for ground observations
+        n_intervals = data.get_scanning_intervals().shape[0] if needs_intervals else 0  # type: ignore[attr-defined]
         field_structure = self._get_data_field_structures_for(
             data.n_detectors,
             data.n_samples,
             demodulated=self.demodulated,
             stokes=self.stokes,
+            n_intervals=n_intervals,
         )
         return {field: field_structure[field] for field in data_field_names}
 
     def _read_data_impure(
-        self, observation: AbstractLazyObservation[T], data_field_names: list[str]
+        self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]
     ) -> PyTree[Array]:
+        t0 = time.perf_counter()
         data = observation.get_data(data_field_names)
         field_reader = self._get_data_field_readers()
-        return {field: field_reader[field](data) for field in data_field_names}
+        result = {field: field_reader[field](data) for field in data_field_names}
+        dt = time.perf_counter() - t0
+        nbytes = sum(np.asarray(v).nbytes for v in result.values())
+        mbps = nbytes / 1e6 / dt if dt > 0 else float('nan')
+        logger.debug(
+            'read timing: rank=%d obs=%s read=%.3fs bytes=%.1fMB rate=%.1fMB/s',
+            jax.process_index(),
+            observation.file.stem,
+            dt,
+            nbytes / 1e6,
+            mbps,
+        )
+        return result

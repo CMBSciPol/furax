@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typing
+from collections.abc import Collection
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -82,7 +83,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
     @classmethod
     def from_file(
-        cls, filename: str | Path, requested_fields: list[str] | None = None
+        cls, filename: str | Path, requested_fields: Collection[str] | None = None
     ) -> ToastObservation:
         # check that file exists
         if not Path(filename).exists():

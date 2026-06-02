@@ -13,13 +13,22 @@ from furax.mapmaking import (
     ObservationReader,
 )
 from furax.mapmaking.config import (
+    AzimuthHWPSynchronousConfig,
+    BinAzimuthHWPSynchronousConfig,
+    BinAzSynchronousConfig,
+    BinsConfig,
     HealpixConfig,
+    HWPSynchronousConfig,
     LandscapeConfig,
+    LegendreOrders,
     Methods,
     NoiseFitConfig,
     PointingConfig,
+    PolyConfig,
+    ScanSynchronousConfig,
     SkyPatch,
     SotodlibConfig,
+    TemplatesConfig,
     WCSConfig,
     WeightingConfig,
     WeightingMode,
@@ -27,7 +36,7 @@ from furax.mapmaking.config import (
 from furax.mapmaking.mapmaker import get_obs_distribution_to_process
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
-from furax.obs.stokes import Stokes, ValidStokesType
+from furax.obs.stokes import Stokes, StokesIQU, ValidStokesType
 
 
 class TestObsDistribution:
@@ -238,6 +247,237 @@ class TestATOPMapMaker:
         assert maker.config.landscape.stokes == 'QU'
 
 
+TWOSTEP_PARAMS = ATOP_PARAMS
+
+# Template families exercised by the two-step mapmaker, with the amplitude block
+# key(s) each one produces. ``hwp_synchronous`` needs only ``hwp_angles``; the
+# others also pull ``azimuth`` (and scan masks when splitting) from the reader.
+# Templates are marked ``explicit=True`` so their amplitudes are solved in the two-step CG
+# and returned (the default ``explicit=False`` would marginalise them into the weight, leaving
+# no amplitudes to assert on — that path is covered by the marginalisation tests below).
+TEMPLATE_PARAMS = [
+    pytest.param(
+        TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(n_harmonics=2, explicit=True)),
+        ['hwp_synchronous'],
+        id='hwp',
+    ),
+    pytest.param(
+        TemplatesConfig(polynomial=PolyConfig(legendre=LegendreOrders(0, 3), explicit=True)),
+        ['polynomial'],
+        id='poly',
+    ),
+    pytest.param(
+        TemplatesConfig(
+            scan_synchronous=ScanSynchronousConfig(legendre=LegendreOrders(0, 3), explicit=True)
+        ),
+        ['scan_synchronous'],
+        id='scan',
+    ),
+    pytest.param(
+        TemplatesConfig(
+            binaz_synchronous=BinAzSynchronousConfig(bins=BinsConfig(n_bins=4), explicit=True)
+        ),
+        ['binaz_synchronous'],
+        id='binaz',
+    ),
+    pytest.param(
+        TemplatesConfig(
+            azhwp_synchronous=AzimuthHWPSynchronousConfig(
+                legendre=LegendreOrders(0, 2), n_harmonics=2, explicit=True
+            )
+        ),
+        ['azhwp_synchronous'],
+        id='azhwp',
+    ),
+    # NOTE: ``split_scans=True`` (blocks azhwp_synchronous_left/right) is wired but not
+    # exercised here — the bundled sotodlib fixtures carry no left/right scan flags.
+    pytest.param(
+        TemplatesConfig(
+            binazhwp_synchronous=BinAzimuthHWPSynchronousConfig(
+                bins=BinsConfig(n_bins=4), n_harmonics=2, explicit=True
+            )
+        ),
+        ['binazhwp_synchronous'],
+        id='binazhwp',
+    ),
+]
+
+
+# Template families requiring azimuth — directly (scan/binaz/azhwp), or via
+# azimuth-derived scanning intervals (polynomial). The bundled toast fixtures carry
+# no azimuth, so only ``hwp_synchronous`` is exercisable on toast.
+_NEEDS_AZIMUTH = {
+    'scan_synchronous',
+    'binaz_synchronous',
+    'azhwp_synchronous',
+    'binazhwp_synchronous',
+    'polynomial',
+}
+
+
+@pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
+@pytest.mark.parametrize('stokes', STOKES_TYPES)
+@pytest.mark.parametrize('templates, amplitude_keys', TEMPLATE_PARAMS)
+@pytest.mark.parametrize('name', TWOSTEP_PARAMS)
+def test_twostep_full_mapmaker(name, templates, amplitude_keys, stokes, landscape_type):
+    if name == 'toast' and set(amplitude_keys) & _NEEDS_AZIMUTH:
+        pytest.xfail('toast fixtures provide no azimuth required by this template family')
+    observations = _observations(name)
+    config = _config(
+        landscape_type,
+        stokes=stokes,
+        method=Methods.TWOSTEP,
+        templates=templates,
+    )
+    maker = MultiObservationMapMaker(observations, config=config)
+    results = maker.run()
+    n_stokes = len(stokes)
+    assert results.hit_map.shape == maker.landscape.shape
+    assert jnp.all(results.hit_map >= 0)
+    assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
+    assert results.solver_stats is not None
+    assert 'amplitude' in results.solver_stats
+    assert 'map' in results.solver_stats
+    assert results.template_amplitudes is not None
+    for key in amplitude_keys:
+        assert key in results.template_amplitudes
+
+
+# Demodulated two-step: HWP-free templates act per Stokes leg (StokesIQU amplitudes).
+DEMOD_TEMPLATE_PARAMS = [
+    pytest.param(
+        TemplatesConfig(
+            scan_synchronous=ScanSynchronousConfig(legendre=LegendreOrders(3, 7), explicit=True)
+        ),
+        'scan_synchronous',
+        id='scan',
+    ),
+    pytest.param(
+        TemplatesConfig(
+            binaz_synchronous=BinAzSynchronousConfig(bins=BinsConfig(n_bins=4), explicit=True)
+        ),
+        'binaz_synchronous',
+        id='binaz',
+    ),
+    # Per-Stokes polynomial order: degree 3 for I (dsT), degree 1 for Q/U (demodQ/U).
+    pytest.param(
+        TemplatesConfig(
+            polynomial=PolyConfig(
+                legendre=LegendreOrders(0, 3), legendre_qu=LegendreOrders(0, 1), explicit=True
+            )
+        ),
+        'polynomial',
+        id='poly',
+    ),
+]
+
+
+@pytest.mark.skipif(not sotodlib_installed, reason='sotodlib is not installed')
+@pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
+@pytest.mark.parametrize('templates, amplitude_key', DEMOD_TEMPLATE_PARAMS)
+def test_twostep_demodulated_mapmaker(templates, amplitude_key, landscape_type):
+    """Two-step on demodulated data: templates act per Stokes leg, yielding StokesIQU
+    amplitudes."""
+    observations = _observations('sotodlib', demodulated=True)
+    config = _config(
+        landscape_type,
+        stokes='IQU',
+        demodulated=True,
+        method=Methods.TWOSTEP,
+        templates=templates,
+    )
+    maker = MultiObservationMapMaker(observations, config=config)
+    results = maker.run()
+    assert results.icov.shape == (3, 3, *maker.landscape.shape)
+    assert results.template_amplitudes is not None
+    amps = results.template_amplitudes[amplitude_key]
+    # Per-Stokes amplitudes: one independent block per (I, Q, U) leg.
+    assert isinstance(amps, StokesIQU)
+
+
+@pytest.mark.skipif(not sotodlib_installed, reason='sotodlib is not installed')
+def test_marginalization_matches_explicit():
+    """Marginalising a template (explicit=False) yields the same map as solving it explicitly
+    and discarding the amplitudes — the template-marginalisation equivalence.
+
+    Projection-agnostic, so healpix (nside=16) suffices: the sim footprint covers a handful of
+    pixels there. The shared CAR fixture (60' / 20deg patch) catches a single hit pixel, which a
+    4-order Legendre template makes degenerate — explicit A⁻¹ and marginalised PCG then resolve
+    the null space differently, so the maps need not agree. Equivalence itself is independent of
+    the map basis.
+    """
+    observations = _observations('sotodlib')
+
+    def run_map(explicit: bool):
+        templates = TemplatesConfig(
+            polynomial=PolyConfig(legendre=LegendreOrders(0, 3), explicit=explicit)
+        )
+        config = _config('healpix', stokes='IQU', method=Methods.TWOSTEP, templates=templates)
+        return MultiObservationMapMaker(observations, config=config).run()
+
+    explicit_res = run_map(True)
+    marginal_res = run_map(False)
+
+    # explicit path returns amplitudes; marginalised path folds them into the weight
+    assert explicit_res.template_amplitudes is not None
+    assert marginal_res.template_amplitudes is None
+
+    # identical map up to the solvers' tolerances (explicit: direct A⁻¹ + amplitude CG;
+    # marginalised: PCG on the marginalised system)
+    expl = jnp.concatenate([jnp.ravel(x) for x in jax.tree.leaves(explicit_res.map)])
+    marg = jnp.concatenate([jnp.ravel(x) for x in jax.tree.leaves(marginal_res.map)])
+    rel = jnp.linalg.norm(marg - expl) / jnp.linalg.norm(expl)
+    assert float(rel) < 1e-3, f'relative map difference {float(rel):.2e}'
+
+
+@pytest.mark.skipif(not sotodlib_installed, reason='sotodlib is not installed')
+def test_marginalized_only_is_filter_bin():
+    """With every template marginalised there are no explicit amplitudes: the amplitude CG is
+    skipped (filter+bin) and a map is still produced."""
+    observations = _observations('sotodlib')
+    templates = TemplatesConfig(
+        polynomial=PolyConfig(legendre=LegendreOrders(0, 3))
+    )  # explicit=False
+    config = _config('healpix', stokes='IQU', method=Methods.TWOSTEP, templates=templates)
+    maker = MultiObservationMapMaker(observations, config=config)
+    results = maker.run()
+    assert results.template_amplitudes is None
+    assert results.solver_stats['amplitude']['num_steps'] == 0
+    assert results.hit_map.shape == maker.landscape.shape  # map produced
+    assert jnp.all(
+        jnp.isfinite(jnp.concatenate([jnp.ravel(x) for x in jax.tree.leaves(results.map)]))
+    )
+
+
+class TestTwoStepValidation:
+    """Test that invalid configurations raise errors when using TwoStep."""
+
+    def _base(self, **overrides) -> MapMakingConfig:
+        kw: dict = dict(
+            method=Methods.TWOSTEP,
+            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=16)),
+            templates=TemplatesConfig(hwp_synchronous=HWPSynchronousConfig()),
+        )
+        kw.update(overrides)
+        return MapMakingConfig(**kw)
+
+    def test_requires_binned(self):
+        with pytest.raises(ValueError, match='TwoStep requires a white noise model'):
+            MultiObservationMapMaker(
+                [], config=self._base(weighting=WeightingConfig(mode=WeightingMode.TOEPLITZ))
+            )
+
+    def test_rejects_hwp_templates_when_demodulated(self):
+        # demodulated two-step is supported, but HWP-coupled templates are not (the HWP
+        # signal is demodulated out); this is rejected at config construction.
+        with pytest.raises(ValueError, match='HWP-coupled templates'):
+            self._base(sotodlib=SotodlibConfig(demodulated=True))
+
+    def test_requires_templates(self):
+        with pytest.raises(ValueError, match='TwoStep requires at least one active template'):
+            MultiObservationMapMaker([], config=self._base(templates=None))
+
+
 class TestATOPStokesValidation:
     """Test that invalid Stokes configurations raise errors when using ATOP."""
 
@@ -280,6 +520,7 @@ def _config(
     interpolation: Literal['nearest', 'bilinear'] = 'nearest',
     method: Methods = Methods.BINNED,
     atop_tau: int = 0,
+    templates: TemplatesConfig | None = None,
     identity_noise: bool = False,
 ) -> MapMakingConfig:
     if landscape_type == 'healpix':
@@ -303,4 +544,5 @@ def _config(
         ),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
         atop_tau=atop_tau,
+        templates=templates,
     )

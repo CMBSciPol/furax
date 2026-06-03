@@ -146,7 +146,7 @@ def split_key(
     return subkeys  # type: ignore[no-any-return]
 
 
-@partial(jax.jit, static_argnames=('metadata'))
+@jax.jit
 def generate_noise_realization(
     key: PRNGKeyArray,
     cov: FourierOperator | SymmetricBandToeplitzOperator,

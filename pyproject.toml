@@ -78,7 +78,8 @@ repository = 'https://github.com/CMBSciPol/furax'
 
 [project.scripts]
 furax-so-atomic-map = 'furax.interfaces.sotodlib.mapmaker:main_cli'
-furax-so-multi-map = 'furax.interfaces.sotodlib.multi_observation.__main__:app'
+furax-so-prepare = 'so_mapmaking.prepare:app'
+furax-so-map = 'so_mapmaking.run:app'
 
 [tool.coverage.report]
 exclude_lines = [
@@ -116,8 +117,8 @@ addopts = '-s -ra --color=yes -m "not slow"'
 testpaths = ['tests']
 markers = ["slow: mark test as slow."]
 
-#[tool.setuptools]
-#packages = ['src/furax']
+[tool.setuptools.packages.find]
+where = ['src']
 
 [tool.setuptools_scm]
 version_scheme = 'post-release'

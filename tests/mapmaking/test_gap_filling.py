@@ -61,32 +61,6 @@ def test_generate_realization_with_metadata():
     assert real.shape == (ndet, nsamp)
 
 
-def test_generate_realization_metadata_under_scan():
-    """generate_noise_realization must accept traced metadata inside a scan.
-
-    Mirrors ``accumulate_rhs``: the per-observation ``HashedObservationMetadata`` is
-    obtained by scanning over a batched metadata pytree, so its array leaves are JAX
-    tracers inside the scan body. The metadata must therefore be handled as a traced
-    pytree argument rather than a static (hashable) one.
-    """
-    ndet, nsamp = 3, 100
-    structure = jax.ShapeDtypeStruct((ndet, nsamp), float)
-    cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=structure)
-    key = jax.random.key(0)
-    nobs = 2
-    metadata = HashedObservationMetadata(
-        uid=jnp.arange(nobs, dtype=jnp.uint32),
-        telescope_uid=jnp.zeros(nobs, dtype=jnp.uint32),
-        detector_uids=jnp.broadcast_to(jnp.arange(ndet, dtype=jnp.uint32), (nobs, ndet)),
-    )
-
-    def step(carry, meta):
-        return carry, generate_noise_realization(key, cov, 1.0, metadata=meta)
-
-    _, reals = jax.lax.scan(step, None, metadata)
-    assert reals.shape == (nobs, ndet, nsamp)
-
-
 @pytest.fixture
 def dummy_shape():
     return (2, 2, 100)

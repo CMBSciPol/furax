@@ -34,6 +34,11 @@ repos:
   - id: check-yaml
   - id: check-merge-conflict
 
+- repo: https://github.com/astral-sh/uv-pre-commit
+  rev: 0.11.19
+  hooks:
+  - id: uv-lock
+
 - repo: https://github.com/pre-commit/mirrors-mypy
   rev: v2.1.0
   hooks:

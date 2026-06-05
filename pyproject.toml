@@ -32,7 +32,7 @@ dependencies = [
     'healpy>=1.19.0',
     'jax>=0.10.0',
     'jaxtyping>=0.3.9',
-    'jax-healpy[recommended]>=0.5',
+    'jax-healpy>=0.5',
     'lineax>=0.1.1',
     'numpy>=2.0',
     'scipy>=1.14',
@@ -60,6 +60,10 @@ toast = [
 ]
 lbs = [
     'litebird_sim>=0.16.1',
+]
+sht = [
+    'jax-healpy[recommended]>=0.5',
+    's2fft',  # TODO: remove; needed for now since uv sources overrides don't apply to transitive deps
 ]
 interfaces = ["furax[so,toast,lbs]"]
 

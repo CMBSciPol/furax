@@ -26,6 +26,11 @@ repos:
     - id: nbqa-ruff-format
       name: nbqa ruff formatting
 
+- repo: https://github.com/crate-ci/typos
+  rev: v1.47.2
+  hooks:
+    - id: typos
+
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0
   hooks:
@@ -56,5 +61,3 @@ repos:
     - --allow-untyped-calls
     - --num-workers=4
     files: ^src/furax/
-
-exclude: '^slurms/'

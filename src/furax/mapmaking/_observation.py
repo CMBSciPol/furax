@@ -352,6 +352,6 @@ class AbstractLazyObservation(ABC, Generic[T]):
             requested_fields: List of data fields needed.
                 If None, the entire file is loaded into memory.
                 If `[]` (empty list), loads only what's needed to determine buffer shapes.
-                Otherwise, loads whatever is needed to satistfy the request.
+                Otherwise, loads whatever is needed to satisfy the request.
         """
         return self.interface_class.from_file(self.file, requested_fields)

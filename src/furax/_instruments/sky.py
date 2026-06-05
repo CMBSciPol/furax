@@ -289,13 +289,13 @@ def get_observation(
         case _:
             raise ValueError(f'Invalid Stokes type {stokes_type}')
 
-    for freq_indx, freq in enumerate(instrument.frequency):
+    for freq_index, freq in enumerate(instrument.frequency):
         emission = pysm_sky.get_emission(freq * u.GHz)
 
         emission = emission.to(getattr(u, unit), equivalencies=u.cmb_equivalencies(freq * u.GHz))
         emission = emission.value[stoke_slice]
 
-        stoke_arrays[freq_indx] = emission
+        stoke_arrays[freq_index] = emission
 
     # From numpy array to Py²Tree
     stokes_array = stoke_arrays.transpose(1, 0, 2)

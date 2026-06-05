@@ -323,7 +323,7 @@ def fit_atmospheric_psd_model(
         A dictionary containing following keys:
             fit: Array of fitted parameters [sigma, alpha, f_knee, f_min].
                 Shape: (n_detectors, 4)
-            loss: Array contaning loss function values (-2logL) evaluated at the fitted parameters.
+            loss: Array containing loss function values (-2logL) evaluated at the fitted parameters.
                 Shape: (n_detectors,)
             num_iter: Array containing number of iterations spent to obtain the fit.
                 Shape: (n_detectors,)

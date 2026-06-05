@@ -1175,7 +1175,7 @@ class MLMapmaker(MapMaker):
             blocks[selector.indices + (slice(None), slice(None))]
         )
 
-        # Format output and compute auxilary data
+        # Format output and compute auxiliary data
         final_map = np.array([result_map.i, result_map.q, result_map.u])
 
         output = {'map': final_map, 'weights': weights, 'weights_uncut': blocks}
@@ -1296,7 +1296,7 @@ class TwoStepMapmaker(MapMaker):
         result_map.i.block_until_ready()
         logger_info('Finished mapmaking computation')
 
-        # Format output and compute auxilary data
+        # Format output and compute auxiliary data
         final_map = np.array([result_map.i, result_map.q, result_map.u])
 
         output = {'map': final_map, 'weights': blocks}
@@ -1423,7 +1423,7 @@ class ATOPMapMaker(MapMaker):
         num_steps = solution.stats['num_steps']
         logger_info(f'Finished mapmaking computation. Number of PCG steps: {num_steps}')
 
-        # Format output and compute auxilary data
+        # Format output and compute auxiliary data
         final_map = np.array([result_map.q, result_map.u])
 
         output = {'map': final_map, 'weights': blocks}

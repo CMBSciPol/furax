@@ -242,7 +242,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         # Assembly containing the focal plane and boresight information
         assembly = P._get_asm()
 
-        # Get the pixel indicies as before, but also obtain
+        # Get the pixel indices as before, but also obtain
         # the spin projection factors of size (n_samps,n_comps) for each detector,
         # which have 1, cos(2*p), sin(2*p) where p is the parallactic angle
         pixel_inds, spin_proj = proj.get_pointing_matrix(assembly)
@@ -341,7 +341,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_white_noise_fit(self) -> NDArray[np.float64]:
         """Returns fitted values of the white noise,
-        obtained as a reult of a 1/f + white noise model fitting.
+        obtained as a result of a 1/f + white noise model fitting.
         Uses either the fitted parameters from the preprocessing,
         or fitting the model directly.
         """

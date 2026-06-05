@@ -49,7 +49,7 @@ jobs:
         run: |
           uv pip install git+https://github.com/astro-informatics/s2fft.git
           uv pip install git+https://github.com/CMBSciPol/jax-healpy.git@implement-alm2map
-          uv pip install .[dev,mapmaking,so,toast]
+          uv pip install --group dev .[mapmaking,so,toast]
 
       - name: Run tests
         run: pytest -vv -m "not slow"

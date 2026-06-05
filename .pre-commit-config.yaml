@@ -60,4 +60,4 @@ repos:
     - --enable-error-code=ignore-without-code
     - --allow-untyped-calls
     - --num-workers=4
-    files: ^src/furax/
+    files: ^src/

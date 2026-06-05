@@ -7,7 +7,7 @@ from .util import resolve_obsids, setup_logger
 app = App(help='Run the mapmaker on prepared binary observation files.')
 
 
-@app.default
+@app.default  # type: ignore[untyped-decorator]
 def run(  # type: ignore[no-untyped-def]
     obsdir: Path,
     obsid: list[str] | None = None,

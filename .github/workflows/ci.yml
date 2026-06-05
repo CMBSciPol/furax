@@ -40,16 +40,11 @@ jobs:
       - name: Install uv and set up environment
         uses: astral-sh/setup-uv@v8.1.0
         with:
-          version: "0.11.16"
           enable-cache: true
           python-version: ${{ matrix.python-version }}
-          activate-environment: true
 
       - name: Install dependencies
-        run: |
-          uv pip install git+https://github.com/astro-informatics/s2fft.git
-          uv pip install git+https://github.com/CMBSciPol/jax-healpy.git@implement-alm2map
-          uv pip install --group dev .[mapmaking,so,toast]
+        run: uv sync --locked --all-extras
 
       - name: Run tests
-        run: pytest -vv -m "not slow"
+        run: uv run pytest -vv -m "not slow"

@@ -141,6 +141,11 @@ markers = ["slow: mark test as slow."]
 log_level = "INFO"
 xfail_strict = true
 
+[tool.uv.sources]
+litebird-sim = { git = "https://github.com/litebird/litebird_sim" }
+jax-healpy = { git = "https://github.com/CMBSciPol/jax-healpy", branch = "implement-alm2map" }
+s2fft = { git = "https://github.com/astro-informatics/s2fft" }
+
 [tool.ruff]
 line-length = 100
 fix = true           # autofix issues

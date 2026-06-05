@@ -1096,9 +1096,7 @@ class MLMapmaker(MapMaker):
             for tmpl, tmpl_op in template_op.blocks.items():
                 tmpl_sys = (tmpl_op.T @ diag_inv_noise @ masker @ tmpl_op).reduce()
                 # Approximation to the diagonal of the matrix
-                norm_sys = jnp.abs(
-                    jax.jit(lambda x: tmpl_sys(x))(furax.tree.ones_like(tmpl_op.in_structure))
-                )
+                norm_sys = jnp.abs(jax.jit(tmpl_sys)(furax.tree.ones_like(tmpl_op.in_structure)))
                 # Regualrisation value is REGVAL times the smallest non-zero eigenvalue
                 regs[tmpl] = REGVAL * jnp.min(norm_sys[norm_sys > 0])
                 tmpl_inv_sys[tmpl] = DiagonalOperator(
@@ -1177,7 +1175,7 @@ class MLMapmaker(MapMaker):
             blocks[selector.indices + (slice(None), slice(None))]
         )
 
-        # Format output and compute auxilary data
+        # Format output and compute auxiliary data
         final_map = np.array([result_map.i, result_map.q, result_map.u])
 
         output = {'map': final_map, 'weights': weights, 'weights_uncut': blocks}
@@ -1298,7 +1296,7 @@ class TwoStepMapmaker(MapMaker):
         result_map.i.block_until_ready()
         logger_info('Finished mapmaking computation')
 
-        # Format output and compute auxilary data
+        # Format output and compute auxiliary data
         final_map = np.array([result_map.i, result_map.q, result_map.u])
 
         output = {'map': final_map, 'weights': blocks}
@@ -1425,7 +1423,7 @@ class ATOPMapMaker(MapMaker):
         num_steps = solution.stats['num_steps']
         logger_info(f'Finished mapmaking computation. Number of PCG steps: {num_steps}')
 
-        # Format output and compute auxilary data
+        # Format output and compute auxiliary data
         final_map = np.array([result_map.q, result_map.u])
 
         output = {'map': final_map, 'weights': blocks}

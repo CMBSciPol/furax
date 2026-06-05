@@ -10,9 +10,9 @@ repos:
     - --all
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.14
+  rev: v0.15.16
   hooks:
-    - id: ruff
+    - id: ruff-check
       name: ruff linting
     - id: ruff-format
       name: ruff formatting
@@ -33,6 +33,11 @@ repos:
   - id: end-of-file-fixer
   - id: check-yaml
   - id: check-merge-conflict
+
+- repo: https://github.com/astral-sh/uv-pre-commit
+  rev: 0.11.19
+  hooks:
+  - id: uv-lock
 
 - repo: https://github.com/pre-commit/mirrors-mypy
   rev: v2.1.0
@@ -55,6 +60,4 @@ repos:
     - --enable-error-code=ignore-without-code
     - --allow-untyped-calls
     - --num-workers=4
-    files: ^src/furax/
-
-exclude: '^slurms/'
+    files: ^src/

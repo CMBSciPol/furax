@@ -121,11 +121,15 @@ class WhiteNoiseModel(NoiseModel):
         Pxx: Float[Array, 'dets freq'],
         sample_rate: Array,
         hwp_frequency: Array,
-        config: NoiseFitConfig = NoiseFitConfig(),
+        config: NoiseFitConfig | None = None,
     ) -> 'WhiteNoiseModel':
         """Fit a white noise model to data"""
         sigma = fit_white_noise_model(
-            f, Pxx, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
+            f,
+            Pxx,
+            sample_rate=sample_rate,
+            hwp_frequency=hwp_frequency,
+            config=config or NoiseFitConfig(),
         )['fit']
         return cls(sigma)
 
@@ -212,11 +216,15 @@ class AtmosphericNoiseModel(NoiseModel):
         Pxx: Float[Array, 'dets freq'],
         sample_rate: Array,
         hwp_frequency: Array,
-        config: NoiseFitConfig = NoiseFitConfig(),
+        config: NoiseFitConfig | None = None,
     ) -> 'AtmosphericNoiseModel':
         """Fit a atmospheric (1/f) noise model to data"""
         result = fit_atmospheric_psd_model(
-            f, Pxx, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
+            f,
+            Pxx,
+            sample_rate=sample_rate,
+            hwp_frequency=hwp_frequency,
+            config=config or NoiseFitConfig(),
         )
         return cls(*result['fit'].T)
 
@@ -242,7 +250,7 @@ def fit_white_noise_model(
     Pxx: Float[Array, 'dets freqs'],
     sample_rate: Array,
     hwp_frequency: Array,
-    config: NoiseFitConfig = NoiseFitConfig(),
+    config: NoiseFitConfig | None = None,
 ) -> dict[str, Any]:
     """Fit a white noise model to the periodogram in log space.
 
@@ -264,6 +272,7 @@ def fit_white_noise_model(
                 Shape: (n_detectors, 1)
 
     """
+    config = config or NoiseFitConfig()
     mask = _create_frequency_mask_from_config(
         f, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
     )
@@ -290,7 +299,7 @@ def fit_atmospheric_psd_model(
     Pxx: Float[Array, 'dets freqs'],
     sample_rate: Array,
     hwp_frequency: Array,
-    config: NoiseFitConfig = NoiseFitConfig(),
+    config: NoiseFitConfig | None = None,
 ) -> dict[str, Any]:
     """Fit a 1/f PSD model to the periodogram in log space.
 
@@ -314,7 +323,7 @@ def fit_atmospheric_psd_model(
         A dictionary containing following keys:
             fit: Array of fitted parameters [sigma, alpha, f_knee, f_min].
                 Shape: (n_detectors, 4)
-            loss: Array contaning loss function values (-2logL) evaluated at the fitted parameters.
+            loss: Array containing loss function values (-2logL) evaluated at the fitted parameters.
                 Shape: (n_detectors,)
             num_iter: Array containing number of iterations spent to obtain the fit.
                 Shape: (n_detectors,)
@@ -322,6 +331,7 @@ def fit_atmospheric_psd_model(
                 Shape: (n_detectors, 4, 4)
 
     """
+    config = config or NoiseFitConfig()
     mask = _create_frequency_mask_from_config(
         f, sample_rate=sample_rate, hwp_frequency=hwp_frequency, config=config
     )
@@ -447,9 +457,10 @@ def _create_frequency_mask_from_config(
     f: Float[Array, ' a'],
     sample_rate: Array,
     hwp_frequency: Array,
-    config: NoiseFitConfig = NoiseFitConfig(),
+    config: NoiseFitConfig | None = None,
 ) -> Float[Array, ' a']:
     """Create a float mask for frequency selection and interval masking from a NoiseFitConfig."""
+    config = config or NoiseFitConfig()
 
     hwp_freq = jnp.abs(hwp_frequency)
     ptc_freq = config.ptc_freq

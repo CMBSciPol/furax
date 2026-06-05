@@ -80,9 +80,9 @@ def _check_and_pack(
     """Check shape compatibility and pack a boolean mask."""
     try:
         _ = jnp.broadcast_shapes(boolean_mask.shape, struct_leaf.shape)
-    except ValueError:
+    except ValueError as exc:
         msg = 'Boolean mask shape must be broadcastable to leaf shape'
-        raise ValueError(msg)
+        raise ValueError(msg) from exc
     return jnp.packbits(boolean_mask, axis=-1)
 
 

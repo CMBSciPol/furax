@@ -214,7 +214,7 @@ class ProjectionType(IntEnum):
 @register_static
 @dataclass
 class WCSProjection:
-    """Class that holds basic WCS projection paramters."""
+    """Class that holds basic WCS projection parameters."""
 
     crpix: tuple[float, float]
     """Reference pixel ``(crpix_x, crpix_y)`` in 1-indexed FITS convention."""

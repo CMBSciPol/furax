@@ -76,8 +76,8 @@ def plot_ndmap(
 def plot_cartview(
     input_maps: NDArray[Any],
     titles: list[str] | str | None = None,
-    lonra: list[float] = [-180, 180],
-    latra: list[float] = [-90, 90],
+    lonra: tuple[float, float] = (-180, 180),
+    latra: tuple[float, float] = (-90, 90),
     xsize: int = 800,
     cmap: str = 'RdBu',
     vmaxs: list[float] | list[None] | None = None,

@@ -214,7 +214,7 @@ def get_observation(
     nside: int,
     tag: str = 'c1d0s0',
     noise_ratio: float = 0.0,
-    key: PRNGKeyArray = jax.random.PRNGKey(0),
+    key: PRNGKeyArray | None = None,
     stokes_type: ValidStokesType = 'IQU',
     dtype: DTypeLike = np.float64,
     unit: str = 'uK_CMB',
@@ -262,6 +262,8 @@ def get_observation(
               ... nside, stokes_type=stokes_type , add_noise=False)
     """
     pysm_sky = get_sky(nside, tag)
+    if key is None:
+        key = jax.random.PRNGKey(0)
 
     landscapes = FrequencyLandscape(
         nside, jnp.asarray(instrument.frequency), stokes_type, dtype=dtype
@@ -287,13 +289,13 @@ def get_observation(
         case _:
             raise ValueError(f'Invalid Stokes type {stokes_type}')
 
-    for freq_indx, freq in enumerate(instrument.frequency):
+    for freq_index, freq in enumerate(instrument.frequency):
         emission = pysm_sky.get_emission(freq * u.GHz)
 
         emission = emission.to(getattr(u, unit), equivalencies=u.cmb_equivalencies(freq * u.GHz))
         emission = emission.value[stoke_slice]
 
-        stoke_arrays[freq_indx] = emission
+        stoke_arrays[freq_index] = emission
 
     # From numpy array to Py²Tree
     stokes_array = stoke_arrays.transpose(1, 0, 2)

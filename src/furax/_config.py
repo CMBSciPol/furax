@@ -38,7 +38,7 @@ class ConfigState:
         return cls(**aux_data)
 
 
-_config_var = contextvars.ContextVar('config', default=ConfigState())
+_config_var = contextvars.ContextVar('config', default=ConfigState())  # noqa: B039 (ConfigState is frozen)
 
 
 class Config:

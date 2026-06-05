@@ -208,7 +208,7 @@ class AbstractLinearOperator(ABC):
             def body(index, carry):  # type: ignore[no-untyped-def]
                 matrix, jcounter = carry
                 zeros = in_leaves_ref.copy()
-                zeros[ileaf] = leaf.ravel().at[index].set(1).reshape(leaf.shape)
+                zeros[ileaf] = leaf.ravel().at[index].set(1).reshape(leaf.shape)  # noqa: B023 (`body` consumed immediately, no deferred call)
                 in_pytree = jax.tree.unflatten(in_treedef, zeros)
                 out_pytree = self.mv(in_pytree)
                 out_leaves = [leaf.ravel() for leaf in jax.tree.leaves(out_pytree)]

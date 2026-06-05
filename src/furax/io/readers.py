@@ -79,7 +79,9 @@ class AbstractReader(ABC):
         try:
             list_of_args = list(zip(*args, strict=True))
         except ValueError:
-            raise ValueError('Values in positional arguments must be lists of the same length.')
+            raise ValueError(
+                'Values in positional arguments must be lists of the same length.'
+            ) from None
 
         # transform a dict of lists to a list of dicts
         try:
@@ -88,7 +90,7 @@ class AbstractReader(ABC):
                 for values in zip(*keywords.values(), strict=True)
             ]
         except ValueError:
-            raise ValueError('Values in keywords must be lists of the same length.')
+            raise ValueError('Values in keywords must be lists of the same length.') from None
 
         count_args = len(list_of_args)
         count_keywords = len(list_of_keywords)

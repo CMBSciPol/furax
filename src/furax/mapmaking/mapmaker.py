@@ -1096,9 +1096,7 @@ class MLMapmaker(MapMaker):
             for tmpl, tmpl_op in template_op.blocks.items():
                 tmpl_sys = (tmpl_op.T @ diag_inv_noise @ masker @ tmpl_op).reduce()
                 # Approximation to the diagonal of the matrix
-                norm_sys = jnp.abs(
-                    jax.jit(lambda x: tmpl_sys(x))(furax.tree.ones_like(tmpl_op.in_structure))
-                )
+                norm_sys = jnp.abs(jax.jit(tmpl_sys)(furax.tree.ones_like(tmpl_op.in_structure)))
                 # Regualrisation value is REGVAL times the smallest non-zero eigenvalue
                 regs[tmpl] = REGVAL * jnp.min(norm_sys[norm_sys > 0])
                 tmpl_inv_sys[tmpl] = DiagonalOperator(

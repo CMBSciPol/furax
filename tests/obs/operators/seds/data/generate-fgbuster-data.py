@@ -7,10 +7,10 @@ from furax.obs.stokes import Stokes
 
 try:
     from fgbuster import CMB, Dust, Synchrotron, get_instrument, get_observation
-except ImportError:
+except ImportError as e:
     raise ImportError(
         'fgbuster is not installed. Please install it using `pip install git+https://github.com/fgbuster/fgbuster`'
-    )
+    ) from e
 
 
 def write_fgbuster_data():

@@ -396,7 +396,7 @@ class MapMakingConfig:
                 # Fall back to matching by value (e.g. 'ML' → Methods.MAXL)
                 matched = next((m for m in Methods if m.value.upper() == upper), None)
                 if matched is None:
-                    raise KeyError(method)
+                    raise ValueError(f'Unknown method: {method!r}') from None
                 method = matched
 
         if method == Methods.BINNED:

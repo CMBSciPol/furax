@@ -185,20 +185,20 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     def get_sample_mask(self) -> Bool[np.ndarray, 'dets samps']:
         try:
             return np.asarray((~self.data.flags.glitch_flags).mask(), dtype=bool)
-        except KeyError:
-            raise KeyError('Glitch flags unavailable in the observation')
+        except KeyError as e:
+            raise RuntimeError('Glitch flags unavailable in the observation') from e
 
     def get_left_scan_mask(self) -> Bool[np.ndarray, ' samps']:
         try:
             return np.asarray(self.data.flags.left_scan.mask(), dtype=bool)
-        except KeyError:
-            raise KeyError('Scan mask unavailable in the observation')
+        except KeyError as e:
+            raise RuntimeError('Scan mask unavailable in the observation') from e
 
     def get_right_scan_mask(self) -> Bool[np.ndarray, ' samps']:
         try:
             return np.asarray(self.data.flags.right_scan.mask(), dtype=bool)
-        except KeyError:
-            raise KeyError('Scan mask unavailable in the observation')
+        except KeyError as e:
+            raise RuntimeError('Scan mask unavailable in the observation') from e
 
     def get_azimuth(self) -> Float[np.ndarray, ' a']:
         """Returns the azimuth of the boresight for each sample"""

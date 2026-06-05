@@ -213,7 +213,7 @@ def apply(
         try:
             a_leaves = treedef.flatten_up_to(a)  # type: ignore[attr-defined]
         except ValueError as exc:
-            raise StructureError(str(exc))
+            raise StructureError(str(exc)) from exc
         func = func_b_treedef
     return treedef.unflatten(func(*xs) for xs in zip(a_leaves, b_leaves))  # type: ignore[attr-defined]
 

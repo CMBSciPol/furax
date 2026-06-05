@@ -214,7 +214,7 @@ def get_observation(
     nside: int,
     tag: str = 'c1d0s0',
     noise_ratio: float = 0.0,
-    key: PRNGKeyArray = jax.random.PRNGKey(0),
+    key: PRNGKeyArray | None = None,
     stokes_type: ValidStokesType = 'IQU',
     dtype: DTypeLike = np.float64,
     unit: str = 'uK_CMB',
@@ -262,6 +262,8 @@ def get_observation(
               ... nside, stokes_type=stokes_type , add_noise=False)
     """
     pysm_sky = get_sky(nside, tag)
+    if key is None:
+        key = jax.random.PRNGKey(0)
 
     landscapes = FrequencyLandscape(
         nside, jnp.asarray(instrument.frequency), stokes_type, dtype=dtype

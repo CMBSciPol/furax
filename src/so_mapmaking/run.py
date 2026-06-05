@@ -12,7 +12,7 @@ def run(  # type: ignore[no-untyped-def]
     obsdir: Path,
     obsid: list[str] | None = None,
     obsids_file: Path | None = None,
-    outdir: Path = Path.cwd(),
+    outdir: Path | None = None,
     mapmaking_config: Path | None = None,
     loglevel: str = 'info',
     log_path: Path | None = None,
@@ -57,6 +57,7 @@ def run(  # type: ignore[no-untyped-def]
         logger.warning('no observations to map')
         return
 
+    outdir = outdir or Path.cwd()
     with open(outdir / 'mapped_obsids.txt', 'w') as f:
         for obsfile in obsfiles:
             f.write(f'{obsfile.stem}\n')

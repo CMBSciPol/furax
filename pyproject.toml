@@ -163,10 +163,3 @@ ignore = [
 
 [tool.ruff.format]
 quote-style = 'single'
-
-[tool.typos.default.extend-words]
-arange = "arange"
-pixell = "pixell"
-
-[tool.typos.files]
-extend-exclude = ["tests/data/**/*.fits"]

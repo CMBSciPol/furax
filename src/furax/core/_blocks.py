@@ -12,7 +12,7 @@ from jaxtyping import Inexact, PyTree
 
 from ..tree import add
 from ._base import AbstractLinearOperator, AdditionOperator, IdentityOperator
-from .rules import AbstractBinaryRule
+from .rules import AbstractCompositionRule
 
 
 class AbstractBlockOperator(AbstractLinearOperator, ABC):
@@ -244,7 +244,7 @@ class BlockColumnOperator(AbstractBlockOperator):
         return jnp.vstack([op.as_matrix() for op in self.block_leaves])
 
 
-class AbstractBlockDiagonalRule(AbstractBinaryRule):
+class AbstractBlockDiagonalRule(AbstractCompositionRule):
     reduced_class: type[AbstractBlockOperator] | type[AdditionOperator]
 
     def apply(

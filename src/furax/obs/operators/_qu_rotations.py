@@ -27,7 +27,7 @@ from jaxtyping import Float
 
 from furax import AbstractLinearOperator, orthogonal
 from furax.core import AbstractLazyInverseOrthogonalOperator
-from furax.core.rules import AbstractBinaryRule, NoReduction
+from furax.core.rules import AbstractCompositionRule, NoReduction
 
 from ..stokes import (
     Stokes,
@@ -133,7 +133,7 @@ class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
         return rotate_qu(x, -self.operator.angles)  # type: ignore[no-any-return]
 
 
-class QURotationRule(AbstractBinaryRule):
+class QURotationRule(AbstractCompositionRule):
     """Adds or subtracts QU rotation angles."""
 
     left_operator_class = (QURotationOperator, QURotationTransposeOperator)

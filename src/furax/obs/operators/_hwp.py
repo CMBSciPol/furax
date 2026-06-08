@@ -4,7 +4,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Float
 
 from furax import AbstractLinearOperator, diagonal
-from furax.core.rules import AbstractBinaryRule
+from furax.core.rules import AbstractCompositionRule
 
 from ..stokes import (
     Stokes,
@@ -60,7 +60,7 @@ class HWPOperator(AbstractLinearOperator):
         raise NotImplementedError
 
 
-class QURotationHWPRule(AbstractBinaryRule):
+class QURotationHWPRule(AbstractCompositionRule):
     """Binary rule for R(theta) @ HWP = HWP @ R(-theta)`."""
 
     left_operator_class = (QURotationOperator, QURotationTransposeOperator)

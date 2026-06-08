@@ -8,7 +8,7 @@ import yaml
 from sotodlib.preprocess.preprocess_util import init_logger, load_and_preprocess
 from sotodlib.site_pipeline.utils.pipeline import main_launcher
 
-from furax.interfaces.sotodlib.observation import SOTODLibObservation
+from furax.interfaces.sotodlib import SOTODLibObservation
 from furax.mapmaking.config import MapMakingConfig
 from furax.mapmaking.mapmaker import MapMaker
 

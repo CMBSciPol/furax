@@ -19,7 +19,6 @@ from sotodlib.preprocess.preprocess_util import load_and_preprocess
 from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
 from furax.mapmaking.config import SotodlibConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
-from furax.math import quaternion
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
@@ -145,11 +144,11 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         duration: float = self.data.timestamps[-1] - self.data.timestamps[0]
         return (self.n_samples - 1) / duration
 
-    def get_tods(self) -> Array:
+    def get_tods(self) -> Float[np.ndarray, 'dets samps']:
         """Returns the timestream data."""
         # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
-        tods = jnp.array(self.data.signal, dtype=jnp.float64)
-        return 0.5 * jnp.atleast_2d(tods)
+        tods = np.asarray(self.data.signal, dtype=np.float64)
+        return 0.5 * np.atleast_2d(tods)
 
     def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> StokesPyTreeType:
         """Returns the demodulated timestream data as a Stokes pytree.
@@ -162,18 +161,18 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         tods = tuple(self._get_demodulated_tod(s) for s in stokes)  # type: ignore[arg-type]
         return kls.from_stokes(*tods)
 
-    def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> Array:
+    def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> NDArray[np.float64]:
         attr = {'I': 'dsT', 'Q': 'demodQ', 'U': 'demodU'}[stoke]
-        tod = jnp.array(getattr(self.data, attr), dtype=jnp.float64)
-        return 0.5 * jnp.atleast_2d(tod)
+        tod = np.asarray(getattr(self.data, attr), dtype=np.float64)
+        return 0.5 * np.atleast_2d(tod)
 
-    def get_detector_offset_angles(self) -> Array:
+    def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
         """Returns the detector offset angles."""
-        return jnp.array(self.data.focal_plane['gamma'])
+        return np.asarray(self.data.focal_plane['gamma'])
 
-    def get_hwp_angles(self) -> Array:
+    def get_hwp_angles(self) -> Float[np.ndarray, ' a']:
         """Returns the HWP angles."""
-        return jnp.array(self.data.hwp_angle)
+        return np.asarray(self.data.hwp_angle)
 
     def get_scanning_intervals(self, det_ind: int = 0) -> NDArray[Any]:
         """Returns scanning intervals of the chosen detector.
@@ -183,31 +182,31 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             self.data.preprocess.turnaround_flags.turnarounds.ranges[det_ind].complement().ranges()
         )
 
-    def get_sample_mask(self) -> Bool[Array, 'dets samps']:
+    def get_sample_mask(self) -> Bool[np.ndarray, 'dets samps']:
         try:
-            return jnp.array((~self.data.flags.glitch_flags).mask(), dtype=bool)
-        except KeyError:
-            raise KeyError('Glitch flags unavailable in the observation')
+            return np.asarray((~self.data.flags.glitch_flags).mask(), dtype=bool)
+        except KeyError as e:
+            raise RuntimeError('Glitch flags unavailable in the observation') from e
 
-    def get_left_scan_mask(self) -> Bool[Array, ' samps']:
+    def get_left_scan_mask(self) -> Bool[np.ndarray, ' samps']:
         try:
-            return jnp.array(self.data.flags.left_scan.mask(), dtype=bool)
-        except KeyError:
-            raise KeyError('Scan mask unavailable in the observation')
+            return np.asarray(self.data.flags.left_scan.mask(), dtype=bool)
+        except KeyError as e:
+            raise RuntimeError('Scan mask unavailable in the observation') from e
 
-    def get_right_scan_mask(self) -> Bool[Array, ' samps']:
+    def get_right_scan_mask(self) -> Bool[np.ndarray, ' samps']:
         try:
-            return jnp.array(self.data.flags.right_scan.mask(), dtype=bool)
-        except KeyError:
-            raise KeyError('Scan mask unavailable in the observation')
+            return np.asarray(self.data.flags.right_scan.mask(), dtype=bool)
+        except KeyError as e:
+            raise RuntimeError('Scan mask unavailable in the observation') from e
 
-    def get_azimuth(self) -> Float[Array, ' a']:
+    def get_azimuth(self) -> Float[np.ndarray, ' a']:
         """Returns the azimuth of the boresight for each sample"""
-        return jnp.array(self.data.boresight.az)
+        return np.asarray(self.data.boresight.az)
 
-    def get_elevation(self) -> Float[Array, ' a']:
+    def get_elevation(self) -> Float[np.ndarray, ' a']:
         """Returns the elevation of the boresight for each sample"""
-        return jnp.array(self.data.boresight.el)
+        return np.asarray(self.data.boresight.el)
 
     def get_wcs_shape_and_kernel(
         self,
@@ -243,7 +242,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         # Assembly containing the focal plane and boresight information
         assembly = P._get_asm()
 
-        # Get the pixel indicies as before, but also obtain
+        # Get the pixel indices as before, but also obtain
         # the spin projection factors of size (n_samps,n_comps) for each detector,
         # which have 1, cos(2*p), sin(2*p) where p is the parallactic angle
         pixel_inds, spin_proj = proj.get_pointing_matrix(assembly)
@@ -256,13 +255,13 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
         return pixel_inds, spin_ang  # type: ignore[return-value]
 
-    def get_timestamps(self) -> Float[Array, ' a']:
+    def get_timestamps(self) -> Float[np.ndarray, ' a']:
         """Returns timestamps (sec) of the samples"""
-        return jnp.array(self.data.timestamps)
+        return np.asarray(self.data.timestamps)
 
-    def get_scanning_mask(self) -> Bool[Array, ' samp']:
+    def get_scanning_mask(self) -> Bool[np.ndarray, ' samp']:
         # Assume that all detectors have the same scanning intervals
-        return jnp.array(
+        return np.asarray(
             self.data.preprocess.turnaround_flags.turnarounds.ranges[0].complement().mask(),
             dtype=bool,
         )
@@ -342,7 +341,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_white_noise_fit(self) -> NDArray[np.float64]:
         """Returns fitted values of the white noise,
-        obtained as a reult of a 1/f + white noise model fitting.
+        obtained as a result of a 1/f + white noise model fitting.
         Uses either the fitted parameters from the preprocessing,
         or fitting the model directly.
         """
@@ -358,7 +357,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return fit[:, 1]  # type: ignore[no-any-return]
     '''
 
-    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+    def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
         """Returns the boresight quaternions at each time sample"""
         site = self._sotodlib_config.site
         weather = self._sotodlib_config.weather
@@ -376,16 +375,15 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 site=site,
                 weather=weather,
             )
-        return jnp.array(csl.Q, dtype=jnp.float64)
+        return np.asarray(csl.Q, dtype=np.float64)
 
-    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
+    def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
         """Returns the quaternion offsets of the detectors"""
-        quats = quaternion.from_xieta_angles(
-            jnp.array(self.data.focal_plane.xi, dtype=jnp.float64),
-            jnp.array(self.data.focal_plane.eta, dtype=jnp.float64),
-            jnp.array(self.data.focal_plane.gamma, dtype=jnp.float64),
-        )
-        return jnp.atleast_2d(quats)
+        # Use so3g's CPU implementation so the result stays on host
+        # quaternion convention is the same ordering (1,i,j,k)
+        fp = self.data.focal_plane
+        quats = so3g.proj.quat.rotation_xieta(fp.xi, fp.eta, fp.gamma)
+        return np.atleast_2d(np.asarray(quats, dtype=np.float64))
 
 
 class LazySOTODLibObservation(AbstractLazyObservation[AxisManager]):

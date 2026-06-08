@@ -40,7 +40,7 @@ def create_projection_operator(
 
 
 def get_rotation_matrix(samplings: Sampling) -> Float[Array, '...']:
-    """Returns the rotation matrices associtated to the samplings.
+    """Returns the rotation matrices associated to the samplings.
 
     See: https://en.wikipedia.org/wiki/Euler_angles Convention Z1-Y2-Z3.
     Rotations along Z1 (alpha=phi), Y2 (beta=theta) and Z3 (gamma=pa).

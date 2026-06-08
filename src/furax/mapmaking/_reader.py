@@ -1,5 +1,4 @@
 from collections.abc import Sequence
-from hashlib import sha1
 from typing import Any, Generic, Self, TypeVar
 
 import jax
@@ -9,7 +8,7 @@ from jax import Array
 from jax.experimental import multihost_utils as mhu
 from jax.tree_util import register_static
 from jax.typing import DTypeLike
-from jaxtyping import PyTree, UInt32
+from jaxtyping import PyTree
 
 from furax.io.readers import AbstractReader
 from furax.obs.stokes import Stokes, ValidStokesType
@@ -149,8 +148,11 @@ class ObservationReader(AbstractReader, Generic[T]):
             )
         return list(requested_fields)
 
-    def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:  # type: ignore[override]
-        """Reads one ground observation from the list of filenames specified in the reader.
+    def _pad(
+        self, data: PyTree[np.ndarray], padding: PyTree[tuple[int, ...]]
+    ) -> PyTree[np.ndarray]:
+        """Pads one ground observation to the common structure, on the host (numpy).
+
         The data is padded differently depending on the key:
             - sample_data: padded with 0.0 outside the valid samples
             - timestamps, hwp_angles: extrapolated in the padded region so that
@@ -163,43 +165,27 @@ class ObservationReader(AbstractReader, Generic[T]):
                 the telescoped stopped moving since then.
             - noise_model_fits: padded with (sigma, alpha, fknee, f0) = (0., 0., 1., 0.1)
         """
-        # First, read them and pad them with 0 by default
-        data, padding = super().read(data_index)
+        # First, pad them with 0 by default
+        data = super()._pad(data, padding)
 
         # Handle fields with non-zero padding
         data_field_names = self.common_keywords['data_field_names']
         if 'timestamps' in data_field_names:
             # Extrapolate in the padded region for constant sample rate
-            timestamps = data['timestamps']
-            pad_size = padding['timestamps'][0]  # Padded length along samples axis
-            data_size = timestamps.size - pad_size  # Unpadded length
-            dt = (timestamps[data_size - 1] - timestamps[0]) / (data_size - 1)  # Mean time spacing
-            extrapolated = (
-                timestamps[data_size - 1]
-                + (jnp.arange(timestamps.size, dtype=timestamps.dtype) - (data_size - 1)) * dt
-            )  # Extrapolate from the last non-zero data entry
-            data['timestamps'] = jnp.where(
-                jnp.arange(timestamps.size) < data_size,
-                timestamps,
-                extrapolated,
+            pad_size = padding['timestamps'][0]
+            valid = data['timestamps'][: data['timestamps'].size - pad_size]
+            dt = (valid[-1] - valid[0]) / (valid.size - 1)  # Mean time spacing
+            data['timestamps'] = np.pad(
+                valid, (0, pad_size), mode='linear_ramp', end_values=valid[-1] + dt * pad_size
             )
         if 'hwp_angles' in data_field_names:
-            # Extrapolate in the padded region for constant hwp roation frequency
-            hwp_angles = data['hwp_angles']
-            pad_size = padding['hwp_angles'][0]  # Padded length along samples axis
-            data_size = hwp_angles.size - pad_size  # Unpadded length
-            dphi = (jnp.unwrap(hwp_angles)[data_size - 1] - hwp_angles[0]) / (
-                data_size - 1
-            )  # Mean angle spacing
-            extrapolated = (
-                hwp_angles[data_size - 1]
-                + (jnp.arange(hwp_angles.size, dtype=hwp_angles.dtype) - (data_size - 1)) * dphi
-            )  # Extrapolate from the last non-zero data entry
-            data['hwp_angles'] = jnp.where(
-                jnp.arange(hwp_angles.size) < data_size,
-                hwp_angles,
-                extrapolated,
-            ) % (2 * jnp.pi)
+            # Extrapolate in the padded region for constant hwp rotation frequency
+            pad_size = padding['hwp_angles'][0]
+            valid = data['hwp_angles'][: data['hwp_angles'].size - pad_size]
+            dphi = (np.unwrap(valid)[-1] - valid[0]) / (valid.size - 1)  # Mean angle spacing
+            data['hwp_angles'] = np.pad(
+                valid, (0, pad_size), mode='linear_ramp', end_values=valid[-1] + dphi * pad_size
+            ) % (2 * np.pi)
         if 'detector_quaternions' in data_field_names:
             # Pad with (1, 0, 0, 0), corresponding to xi=eta=gamma=0.
             quaternions = data['detector_quaternions']
@@ -213,8 +199,8 @@ class ObservationReader(AbstractReader, Generic[T]):
             # Pad with the last non-zero quaternion provided.
             pad_size = padding['boresight_quaternions'][0]  # samples axis
             last_quaternion = data['boresight_quaternions'][-pad_size - 1, :]
-            zero_padded = jnp.linalg.norm(data['boresight_quaternions'], axis=-1) == 0.0
-            data['boresight_quaternions'] = jnp.where(
+            zero_padded = np.linalg.norm(data['boresight_quaternions'], axis=-1) == 0.0
+            data['boresight_quaternions'] = np.where(
                 zero_padded[:, None], last_quaternion[None, :], data['boresight_quaternions']
             )
         if 'noise_model_fits' in data_field_names:
@@ -222,11 +208,11 @@ class ObservationReader(AbstractReader, Generic[T]):
             def _pad_noise_fits(arr: Array) -> Array:
                 default = jnp.array([[0.0, 0.0, 1.0, 0.1]], dtype=arr.dtype)
                 zero_padded = arr[:, 0] == 0.0
-                return jnp.where(zero_padded[:, None], default, arr)
+                return np.where(zero_padded[:, None], default, arr)
 
             data['noise_model_fits'] = jax.tree.map(_pad_noise_fits, data['noise_model_fits'])
 
-        return data, padding
+        return data
 
     @staticmethod
     def _get_data_field_structures_for(
@@ -245,11 +231,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         )
 
         return {
-            'metadata': HashedObservationMetadata(
-                uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
-                telescope_uid=jax.ShapeDtypeStruct((), dtype=jnp.uint32),  # type: ignore[arg-type]
-                detector_uids=jax.ShapeDtypeStruct((n_detectors,), dtype=jnp.uint32),  # type: ignore[arg-type]
-            ),
+            'metadata': HashedObservationMetadata.structure_for(n_detectors),
             'sample_data': sample_data_structure,
             'valid_sample_masks': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.bool),
             'valid_scanning_masks': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
@@ -270,13 +252,6 @@ class ObservationReader(AbstractReader, Generic[T]):
                 raise ValueError('Data field not available')
             return x
 
-        def get_metadata(obs: AbstractObservation[T]) -> HashedObservationMetadata:
-            return HashedObservationMetadata(
-                uid=jnp.asarray(_names_to_uids(obs.name)),
-                telescope_uid=jnp.asarray(_names_to_uids(obs.telescope)),
-                detector_uids=jnp.asarray(_names_to_uids(obs.detectors)),
-            )
-
         demodulated = self.demodulated
         stokes = self.stokes
         target_dtype = self.dtype
@@ -296,7 +271,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             return jax.tree.map(lambda x: x.astype(target_dtype), fits)
 
         return {
-            'metadata': lambda obs: get_metadata(obs),
+            'metadata': lambda obs: HashedObservationMetadata.from_observation(obs),
             'sample_data': get_sample_data,
             'valid_sample_masks': lambda obs: obs.get_sample_mask(),
             'valid_scanning_masks': lambda obs: obs.get_scanning_mask(),
@@ -330,13 +305,3 @@ class ObservationReader(AbstractReader, Generic[T]):
         data = observation.get_data(data_field_names)
         field_reader = self._get_data_field_readers()
         return {field: field_reader[field](data) for field in data_field_names}
-
-
-def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[Array, '...']:
-    """Converts names to unsigned 32-bit integers using hashing.
-
-    This is typically used to generate deterministic uids for detectors based on their names.
-    """
-    # hashing + converting to int + keeping only 7 bytes
-    name_to_int = np.vectorize(lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0xEFFFFFFF)
-    return jnp.asarray(name_to_int(names), dtype=jnp.uint32)

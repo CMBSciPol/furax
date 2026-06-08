@@ -6,6 +6,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax import IndexOperator, SymmetricBandToeplitzOperator
 from furax.mapmaking import GapFillingOperator
+from furax.mapmaking._observation import HashedObservationMetadata
 from furax.mapmaking.gap_filling import _folded_psd, _get_kernel, generate_noise_realization
 
 
@@ -39,6 +40,25 @@ def test_generate_realization_shape(shape: tuple[int, ...]):
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=structure)
     real = generate_noise_realization(key, cov, 1.0)
     assert real.shape == shape
+
+
+def test_generate_realization_with_metadata():
+    """generate_noise_realization must accept a populated HashedObservationMetadata.
+
+    The metadata is a JAX-registered dataclass whose fields are array leaves and are
+    folded into the random key (a traced operation). Passing it must not require the
+    metadata to be hashable.
+    """
+    ndet, nsamp = 3, 100
+    structure = jax.ShapeDtypeStruct((ndet, nsamp), float)
+    cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=structure)
+    metadata = HashedObservationMetadata(
+        uid=jnp.uint32(1),
+        telescope_uid=jnp.uint32(2),
+        detector_uids=jnp.arange(ndet, dtype=jnp.uint32),
+    )
+    real = generate_noise_realization(jax.random.key(0), cov, 1.0, metadata=metadata)
+    assert real.shape == (ndet, nsamp)
 
 
 @pytest.fixture

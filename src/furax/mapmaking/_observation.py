@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from hashlib import sha1
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, Self, TypeVar
 
+import jax
 import jax.numpy as jnp
+import numpy as np
 from astropy.wcs import WCS
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Bool, Float, UInt32
@@ -17,18 +20,40 @@ from furax.obs.stokes import ValidStokesType
 
 from .noise import NoiseModel
 
+T = TypeVar('T')
+
 
 @register_dataclass
 @dataclass
 class HashedObservationMetadata:
     """Hashed version of some metadata fields for JAX compatibility."""
 
-    uid: UInt32[Array, '']
-    telescope_uid: UInt32[Array, '']
-    detector_uids: UInt32[Array, '*#dets']
+    uid: UInt32[np.ndarray | Array, '']
+    telescope_uid: UInt32[np.ndarray | Array, '']
+    detector_uids: UInt32[np.ndarray | Array, '*#dets']
+
+    @classmethod
+    def from_observation(cls, obs: AbstractObservation[T]) -> Self:
+        return cls(
+            uid=_names_to_uids(obs.name),
+            telescope_uid=_names_to_uids(obs.telescope),
+            detector_uids=_names_to_uids(obs.detectors),
+        )
+
+    @classmethod
+    def structure_for(cls, n_dets: int) -> Self:
+        return cls(
+            uid=jax.ShapeDtypeStruct((), dtype=np.uint32),  # type: ignore[arg-type]
+            telescope_uid=jax.ShapeDtypeStruct((), dtype=np.uint32),  # type: ignore[arg-type]
+            detector_uids=jax.ShapeDtypeStruct((n_dets,), dtype=np.uint32),  # type: ignore[arg-type]
+        )
 
 
-T = TypeVar('T')
+def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[np.ndarray, ...]:
+    """Converts names to unsigned 32-bit integers using hashing."""
+    # SHA-1 hash truncated to a non-negative 32-bit integer
+    to_int = lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0x7FFFFFFF
+    return np.vectorize(to_int, otypes=[np.uint32])(names)  # type: ignore[no-any-return]
 
 
 class AbstractObservation(ABC, Generic[T]):
@@ -104,8 +129,13 @@ class AbstractObservation(ABC, Generic[T]):
         """Returns the sampling rate (in Hz) of the data."""
 
     @abstractmethod
-    def get_tods(self) -> Array:
-        """Returns the timestream data."""
+    def get_tods(self) -> Float[np.ndarray, 'dets samps']:
+        """Returns the timestream data.
+
+        Returns a host (numpy) array: getters feed the reader's io_callback, which
+        performs a single host->device transfer. Returning a device (jax) array would
+        force a wasteful device->host->device round trip at the callback boundary.
+        """
 
     def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> Any:
         """Returns demodulated timestream data as a Stokes pytree.
@@ -124,31 +154,33 @@ class AbstractObservation(ABC, Generic[T]):
         )
 
     @abstractmethod
-    def get_detector_offset_angles(self) -> Array:
+    def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
         """Returns the detector offset angles ('gamma')."""
 
     @abstractmethod
-    def get_hwp_angles(self) -> Array:
+    def get_hwp_angles(self) -> Float[np.ndarray, ' a']:
         """Returns the HWP angles."""
 
-    def get_hwp_frequency(self) -> Float[Array, '']:
+    def get_hwp_frequency(self) -> Float[np.ndarray, '']:
         """Returns the average HWP rotation frequency in Hz."""
         hwp_angles = self.get_hwp_angles()
         timestamps = self.get_timestamps()
-        return (jnp.unwrap(hwp_angles)[-1] - hwp_angles[0]) / jnp.ptp(timestamps) / (2 * jnp.pi)
+        return np.asarray(
+            (np.unwrap(hwp_angles)[-1] - hwp_angles[0]) / np.ptp(timestamps) / (2 * np.pi)
+        )
 
     @abstractmethod
-    def get_sample_mask(self) -> Bool[Array, 'dets samps']:
+    def get_sample_mask(self) -> Bool[np.ndarray, 'dets samps']:
         """Returns boolean sample mask (True=valid) of the TOD."""
 
     @abstractmethod
-    def get_timestamps(self) -> Float[Array, ' a']:
+    def get_timestamps(self) -> Float[np.ndarray, ' a']:
         """Returns timestamps (sec) of the samples"""
 
-    def get_elapsed_times(self) -> Float[Array, ' a']:
+    def get_elapsed_times(self) -> Float[np.ndarray, ' a']:
         """Returns time (sec) of the samples since the observation began"""
         timestamps = self.get_timestamps()
-        return timestamps - timestamps[0]
+        return timestamps - timestamps[0]  # type: ignore[no-any-return]
 
     @abstractmethod
     def get_wcs_shape_and_kernel(
@@ -169,11 +201,11 @@ class AbstractObservation(ABC, Generic[T]):
         """Load a pre-computed noise model from the data, if present. Otherwise, return None"""
 
     @abstractmethod
-    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+    def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
         """Returns the boresight quaternions at each time sample"""
 
     @abstractmethod
-    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
+    def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
         """Returns the quaternion offsets of the detectors"""
 
 
@@ -197,27 +229,27 @@ class AbstractGroundObservation(AbstractObservation[T]):
         """
 
     @abstractmethod
-    def get_left_scan_mask(self) -> Bool[Array, ' samps']:
+    def get_left_scan_mask(self) -> Bool[np.ndarray, ' samps']:
         """Returns boolean mask (True=valid) for selection of left-going scans"""
 
     @abstractmethod
-    def get_right_scan_mask(self) -> Bool[Array, ' samps']:
+    def get_right_scan_mask(self) -> Bool[np.ndarray, ' samps']:
         """Returns boolean mask (True=valid) for selection of right-going scans"""
 
     @abstractmethod
-    def get_azimuth(self) -> Float[Array, ' a']:
+    def get_azimuth(self) -> Float[np.ndarray, ' a']:
         """Returns the azimuth of the boresight for each sample"""
 
     @abstractmethod
-    def get_elevation(self) -> Float[Array, ' a']:
+    def get_elevation(self) -> Float[np.ndarray, ' a']:
         """Returns the elevation of the boresight for each sample"""
 
-    def get_scanning_mask(self) -> Bool[Array, ' samp']:
+    def get_scanning_mask(self) -> Bool[np.ndarray, ' samp']:
         """Returns a boolean sample mask from scanning intervals (True=scanning)."""
         intervals = self.get_scanning_intervals()
-        mask = jnp.zeros(self.n_samples, dtype=bool)
+        mask = np.zeros(self.n_samples, dtype=bool)
         for l, u in intervals:
-            mask = mask.at[l:u].set(True)
+            mask[l:u] = True
 
         return mask
 
@@ -320,6 +352,6 @@ class AbstractLazyObservation(ABC, Generic[T]):
             requested_fields: List of data fields needed.
                 If None, the entire file is loaded into memory.
                 If `[]` (empty list), loads only what's needed to determine buffer shapes.
-                Otherwise, loads whatever is needed to satistfy the request.
+                Otherwise, loads whatever is needed to satisfy the request.
         """
         return self.interface_class.from_file(self.file, requested_fields)

@@ -1,18 +1,18 @@
 from pathlib import Path
 
-import jax
-
-from furax.interfaces.sotodlib.observation import LazySOTODLibObservation
-from furax.mapmaking import MapMakingConfig, MultiObservationMapMaker
+from cyclopts import App
 
 from .util import resolve_obsids, setup_logger
 
+app = App(help='Run the mapmaker on prepared binary observation files.')
 
+
+@app.default  # type: ignore[untyped-decorator]
 def run(  # type: ignore[no-untyped-def]
     obsdir: Path,
     obsid: list[str] | None = None,
     obsids_file: Path | None = None,
-    outdir: Path = Path.cwd(),
+    outdir: Path | None = None,
     mapmaking_config: Path | None = None,
     loglevel: str = 'info',
     log_path: Path | None = None,
@@ -28,6 +28,17 @@ def run(  # type: ignore[no-untyped-def]
         loglevel: Logging level (debug, info, warning, error).
         log_path: Log output path.
     """
+    # Defer JAX (and the mapmaker stack it pulls in) to call time so that
+    # merely importing this module stays cheap and backend-free.
+    import jax
+
+    from furax.distributed import maybe_init
+
+    maybe_init()  # must run before the JAX backend is touched
+
+    from furax.interfaces.sotodlib import LazySOTODLibObservation
+    from furax.mapmaking import MapMakingConfig, MultiObservationMapMaker
+
     logger = setup_logger(loglevel, log_path, process_index=jax.process_index())
 
     obsids = resolve_obsids(obsid, obsids_file)
@@ -46,6 +57,7 @@ def run(  # type: ignore[no-untyped-def]
         logger.warning('no observations to map')
         return
 
+    outdir = outdir or Path.cwd()
     with open(outdir / 'mapped_obsids.txt', 'w') as f:
         for obsfile in obsfiles:
             f.write(f'{obsfile.stem}\n')
@@ -70,3 +82,7 @@ def run(  # type: ignore[no-untyped-def]
     except Exception as e:
         logger.exception('mapmaking failed', exc_info=e)
         return 1
+
+
+if __name__ == '__main__':
+    app()

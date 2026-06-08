@@ -208,7 +208,7 @@ class AbstractLinearOperator(ABC):
             def body(index, carry):  # type: ignore[no-untyped-def]
                 matrix, jcounter = carry
                 zeros = in_leaves_ref.copy()
-                zeros[ileaf] = leaf.ravel().at[index].set(1).reshape(leaf.shape)
+                zeros[ileaf] = leaf.ravel().at[index].set(1).reshape(leaf.shape)  # noqa: B023 (`body` consumed immediately, no deferred call)
                 in_pytree = jax.tree.unflatten(in_treedef, zeros)
                 out_pytree = self.mv(in_pytree)
                 out_leaves = [leaf.ravel() for leaf in jax.tree.leaves(out_pytree)]
@@ -408,13 +408,12 @@ class AdditionOperator(AbstractLinearOperator):
         return functools.reduce(jnp.add, (operand.as_matrix() for operand in self.operand_leaves))
 
     def reduce(self) -> AbstractLinearOperator:
-        operands = self._tree_map(lambda operand: operand.reduce())
-        operand_leaves = jax.tree.leaves(
-            operands, is_leaf=lambda leaf: isinstance(leaf, AbstractLinearOperator)
-        )
-        if len(operand_leaves) == 1:
-            leaf: AbstractLinearOperator = operand_leaves[0]
-            return leaf
+        from .rules import AdditiveReductionRule
+
+        operands = [operand.reduce() for operand in self.operand_leaves]
+        operands = AdditiveReductionRule().apply(operands)
+        if len(operands) == 1:
+            return operands[0]
         return AdditionOperator(operands)
 
     @property

@@ -8,7 +8,7 @@ from jax import numpy as jnp
 from jaxtyping import Inexact, PyTree
 
 from ._base import AbstractLinearOperator, IdentityOperator, TransposeOperator
-from .rules import AbstractBinaryRule, NoReduction
+from .rules import AbstractCompositionRule, NoReduction
 
 __all__ = [
     'MoveAxisOperator',
@@ -68,7 +68,7 @@ class MoveAxisOperator(AbstractLinearOperator):
     inverse = transpose
 
 
-class MoveAxisInverseRule(AbstractBinaryRule):
+class MoveAxisInverseRule(AbstractCompositionRule):
     """Binary rule for move_axis.T @ move_axis = I`.
 
     Note:
@@ -177,7 +177,7 @@ class RavelOperator(AbstractRavelOrReshapeOperator):
             first_axis = leaf.ndim + self.first_axis if self.first_axis < 0 else self.first_axis
             last_axis = leaf.ndim + self.last_axis if self.last_axis < 0 else self.last_axis
             if first_axis > last_axis:
-                assert False, 'unreachable'
+                assert False, 'unreachable'  # noqa: B011
             if first_axis == last_axis:
                 return leaf
             new_shape = leaf.shape[:first_axis] + (-1,) + leaf.shape[last_axis + 1 :]
@@ -237,7 +237,7 @@ class ReshapeTransposeOperator(TransposeOperator):
         )
 
 
-class ReshapeInverseRule(AbstractBinaryRule):
+class ReshapeInverseRule(AbstractCompositionRule):
     """Binary rule for reshape.T @ reshape = I and reshape @ reshape.T = I`.
 
     Note:
@@ -264,4 +264,4 @@ class ReshapeInverseRule(AbstractBinaryRule):
                 raise NoReduction
             return []
         else:
-            assert False, 'unreachable'
+            assert False, 'unreachable'  # noqa: B011

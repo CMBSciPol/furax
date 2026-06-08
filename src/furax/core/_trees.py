@@ -9,7 +9,7 @@ from jaxtyping import Inexact, PyTree
 
 from ..tree import _dense_to_tree, _get_outer_treedef, _tree_to_dense, matmat, matvec
 from ._base import AbstractLinearOperator
-from .rules import AbstractBinaryRule
+from .rules import AbstractCompositionRule
 
 
 class TreeOperator(AbstractLinearOperator):
@@ -91,7 +91,7 @@ class TreeOperator(AbstractLinearOperator):
         return TreeOperator(tree, in_structure=self.out_structure)
 
 
-class TreeMultiplicationRule(AbstractBinaryRule):
+class TreeMultiplicationRule(AbstractCompositionRule):
     """Binary rule for `tree_left @ tree_right."""
 
     left_operator_class = TreeOperator

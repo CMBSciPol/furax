@@ -8,7 +8,7 @@ from jaxtyping import Bool, Inexact, Integer, PyTree
 
 from ._base import AbstractLinearOperator, IdentityOperator, TransposeOperator
 from ._diagonal import DiagonalOperator
-from .rules import AbstractBinaryRule, NoReduction
+from .rules import AbstractCompositionRule, NoReduction
 
 __all__ = ['IndexOperator']
 
@@ -156,7 +156,7 @@ class IndexOperator(AbstractLinearOperator):
         return axes
 
 
-class IndexTransposeRule(AbstractBinaryRule):
+class IndexTransposeRule(AbstractCompositionRule):
     """Binary rule for `index @ index.T = I`."""
 
     left_operator_class = IndexOperator
@@ -171,7 +171,7 @@ class IndexTransposeRule(AbstractBinaryRule):
         return []
 
 
-class TransposeIndexRule(AbstractBinaryRule):
+class TransposeIndexRule(AbstractCompositionRule):
     """Binary rule for `index.T @ index = I`."""
 
     left_operator_class = TransposeOperator

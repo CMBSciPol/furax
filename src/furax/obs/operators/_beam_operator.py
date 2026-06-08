@@ -21,7 +21,7 @@ from jaxtyping import Array, Float, Inexact, PyTree
 
 import furax.tree as fxtree
 from furax import AbstractLinearOperator, symmetric
-from furax.core.rules import AbstractBinaryRule, NoReduction
+from furax.core.rules import AbstractCompositionRule, NoReduction
 from furax.math.sht import Alm2Map, Map2Alm
 
 
@@ -179,7 +179,7 @@ class BeamOperatorIQU(AbstractLinearOperator):
         return BeamOperatorIQU(lmax=self.lmax, beam_fl=inv_beam, in_structure=self.in_structure)
 
 
-class BeamRule(AbstractBinaryRule):
+class BeamRule(AbstractCompositionRule):
     """Algebraic rule reducing ``BeamOperator @ BeamOperator`` to a single operator.
 
     When two :class:`BeamOperator` instances with the same ``lmax`` are composed,
@@ -224,7 +224,7 @@ class BeamRule(AbstractBinaryRule):
         ]
 
 
-class BeamIQURule(AbstractBinaryRule):
+class BeamIQURule(AbstractCompositionRule):
     """Algebraic rule reducing ``BeamOperatorIQU @ BeamOperatorIQU`` to a single operator.
 
     When two :class:`BeamOperatorIQU` instances with the same ``lmax`` are

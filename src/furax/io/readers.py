@@ -3,7 +3,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import jax
-import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jax.experimental import io_callback
 from jax.tree_util import register_static
@@ -79,7 +79,9 @@ class AbstractReader(ABC):
         try:
             list_of_args = list(zip(*args, strict=True))
         except ValueError:
-            raise ValueError('Values in positional arguments must be lists of the same length.')
+            raise ValueError(
+                'Values in positional arguments must be lists of the same length.'
+            ) from None
 
         # transform a dict of lists to a list of dicts
         try:
@@ -88,7 +90,7 @@ class AbstractReader(ABC):
                 for values in zip(*keywords.values(), strict=True)
             ]
         except ValueError:
-            raise ValueError('Values in keywords must be lists of the same length.')
+            raise ValueError('Values in keywords must be lists of the same length.') from None
 
         count_args = len(list_of_args)
         count_keywords = len(list_of_keywords)
@@ -168,17 +170,12 @@ class AbstractReader(ABC):
             padding. The structure of the data is the same as the structure of the padding.
         """
 
-        def callback(i: int) -> PyTree[Array]:
+        def callback(i: int) -> PyTree[np.ndarray]:
             args = self.args[i]
             keywords = self.keywords[i]
             padding = self.paddings[i]
             data = self._read_data_impure(*args, **keywords, **self.common_keywords)
-            device_data = jax.tree.map(
-                lambda leaf, pad: jnp.pad(leaf, [(0, p) for p in pad]) if len(pad) > 0 else leaf,
-                data,
-                padding,
-            )
-            return device_data
+            return self._pad(data, padding)
 
         data = jax.lax.switch(
             data_index,
@@ -188,6 +185,20 @@ class AbstractReader(ABC):
             data_index, [lambda i=i: self.paddings[i] for i in range(self.count)]
         )
         return data, padding
+
+    def _pad(self, data: PyTree[Any], padding: PyTree[tuple[int, ...]]) -> PyTree[np.ndarray]:
+        """Pad the host (numpy) data to the common structure.
+
+        Runs on the host inside the read callback, so it must use numpy. Pads with 0 by default;
+        subclasses may override to apply field-specific padding.
+        """
+        return jax.tree.map(
+            lambda leaf, pad: (
+                np.pad(leaf, [(0, p) for p in pad]) if len(pad) > 0 else np.asarray(leaf)
+            ),
+            data,
+            padding,
+        )
 
     @abstractmethod
     def _read_data_impure(self, *args: Any, **keywords: Any) -> PyTree[Any]: ...

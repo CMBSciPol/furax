@@ -59,7 +59,7 @@ class TemplateOperator(AbstractLinearOperator):
             return PolynomialTemplateOperator.create(
                 max_poly_order=max_poly_order,
                 intervals=observation.get_scanning_intervals(),
-                times=observation.get_elapsed_times(),
+                times=jnp.asarray(observation.get_elapsed_times()),
                 n_dets=n_dets,
                 dtype=config.get('dtype', jnp.float64),
             )
@@ -70,7 +70,7 @@ class TemplateOperator(AbstractLinearOperator):
             return ScanSynchronousTemplateOperator.create(
                 min_poly_order=min_poly_order,
                 max_poly_order=max_poly_order,
-                azimuth=observation.get_azimuth(),
+                azimuth=jnp.asarray(observation.get_azimuth()),
                 n_dets=n_dets,
                 dtype=config.get('dtype', jnp.float64),
             )
@@ -79,7 +79,7 @@ class TemplateOperator(AbstractLinearOperator):
             n_harmonics: int = config.get('n_harmonics', 0)
             return HWPSynchronousTemplateOperator.create(
                 n_harmonics=n_harmonics,
-                hwp_angles=observation.get_hwp_angles(),
+                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
                 n_dets=n_dets,
                 dtype=config.get('dtype', jnp.float64),
             )
@@ -116,7 +116,7 @@ class PolynomialTemplateOperator(TemplateOperator):
     during which the polynomial coefficients are fixed for each detector.
 
     Stores legendre polynomial evaluations in 'blocks', a list of matrices
-    with varying sizes, that addes up to (n_samps, max_poly_order+1)
+    with varying sizes, that adds up to (n_samps, max_poly_order+1)
     """
 
     max_poly_order: int = field(metadata={'static': True})
@@ -168,7 +168,7 @@ class PolynomialTemplateOperator(TemplateOperator):
             t = times[scan_start:scan_end]
             x = -1.0 + 2 * (t - t[0]) / (t[-1] - t[0])
 
-            # This funtion computes a lot more than what we need,
+            # This function computes a lot more than what we need,
             # but shouldn't be too expensive for low polynomial orders
             evals = jax.scipy.special.lpmn_values(
                 max_poly_order, max_poly_order, x, is_normalized=False
@@ -231,9 +231,9 @@ class PolynomialTemplateTransposeOperator(TransposeOperator):
         # parameter[det,ord] = data[det,samp] * template[ord,samp]
 
         # This slicing works as block_slice_indices is a static list
-        datas = jnp.array_split(x, self.operator.block_slice_indices, axis=1)
+        data = jnp.array_split(x, self.operator.block_slice_indices, axis=1)
         block_mvs = [
-            jnp.einsum('ij,kj->ik', data, block) for data, block in zip(datas, self.operator.blocks)
+            jnp.einsum('ij,kj->ik', data, block) for data, block in zip(data, self.operator.blocks)
         ]
 
         return jnp.concatenate([b.ravel() for b in block_mvs])
@@ -281,7 +281,7 @@ class ScanSynchronousTemplateOperator(TemplateOperator):
         min_az = jnp.min(azimuth)
         x = -1.0 + 2.0 * (azimuth - min_az) / (max_az - min_az)
 
-        # This funtion computes a lot more than what we need,
+        # This function computes a lot more than what we need,
         # but shouldn't be too expensive for low polynomial orders
         templates = jax.scipy.special.lpmn_values(
             max_poly_order, max_poly_order, x, is_normalized=False
@@ -540,7 +540,7 @@ class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
         max_az = jnp.max(azimuth)
         x = -1.0 + 2.0 * (azimuth - min_az) / (max_az - min_az)
 
-        # This funtion computes (n_polynomials)-times more than what we need,
+        # This function computes (n_polynomials)-times more than what we need,
         # but this shouldn't be too expensive for low polynomial orders
         poly_templates = jax.scipy.special.lpmn_values(
             n_polynomials - 1, n_polynomials - 1, x, is_normalized=False

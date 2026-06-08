@@ -2,7 +2,7 @@ from jax import Array
 from jaxtyping import Bool, PyTree
 
 from ._base import AbstractLinearOperator, TransposeOperator
-from .rules import AbstractBinaryRule
+from .rules import AbstractCompositionRule
 
 
 class PackOperator(AbstractLinearOperator):
@@ -20,7 +20,7 @@ class PackOperator(AbstractLinearOperator):
         return x[self.mask]
 
 
-class PackUnpackRule(AbstractBinaryRule):
+class PackUnpackRule(AbstractCompositionRule):
     """Binary rule for `pack @ pack.T = I`."""
 
     left_operator_class = PackOperator

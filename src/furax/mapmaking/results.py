@@ -24,7 +24,7 @@ __all__ = [
     'MapMakingResults',
 ]
 
-_VALID_FIELDS = frozenset({'map', 'hit_map', 'icov', 'noise_fits', 'solver_stats'})
+_VALID_FIELDS = frozenset({'map', 'hit_map', 'icov', 'noise_fits', 'solver_stats', 'cg_residuals'})
 _REQUIRED_FIELDS = frozenset({'map', 'hit_map', 'icov'})
 
 
@@ -57,6 +57,13 @@ class MapMakingResults:
     noise_fits: Float[Array, '...'] | None = None
     """The fitted noise PSD parameters"""
 
+    template_amplitudes: dict[str, Any] | None = None
+    """Estimated template amplitudes (two-step only). Per family: a numpy array, or a
+    StokesIQU of numpy arrays for demodulated data (independent per-Stokes amplitudes)."""
+
+    cg_residuals: Float[Array, '...'] | None = None
+    """Per-iteration CG residual norms, shape (max_iter,)"""
+
     def save(self, out_dir: str | Path) -> None:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +73,8 @@ class MapMakingResults:
         self._save_icov(np.array(self.icov), out_dir)
         if self.noise_fits is not None:
             np.save(out_dir / 'noise_fits', np.array(self.noise_fits))
+        if self.cg_residuals is not None:
+            np.save(out_dir / 'cg_residuals', self.cg_residuals)
         if self.solver_stats is not None:
             with open(out_dir / 'solver_stats.json', 'w') as f:
                 json.dump(self.solver_stats, f, indent=2, cls=_JsonEncoder)
@@ -108,6 +117,7 @@ class MapMakingResults:
 
         noise_fits = cls._load_noise_fits(out_dir) if 'noise_fits' in fields_to_load else None
         solver_stats = cls._load_solver_stats(out_dir) if 'solver_stats' in fields_to_load else None
+        cg_residuals = cls._load_cg_residuals(out_dir) if 'cg_residuals' in fields_to_load else None
 
         return cls(
             map=sky_map,
@@ -116,6 +126,7 @@ class MapMakingResults:
             icov=icov,
             solver_stats=solver_stats,
             noise_fits=noise_fits,
+            cg_residuals=cg_residuals,
         )
 
     @staticmethod
@@ -200,6 +211,13 @@ class MapMakingResults:
     @staticmethod
     def _load_noise_fits(out_dir: Path) -> Array | None:
         path = out_dir / 'noise_fits.npy'
+        if not path.exists():
+            return None
+        return jnp.array(np.load(path))
+
+    @staticmethod
+    def _load_cg_residuals(out_dir: Path) -> Array | None:
+        path = out_dir / 'cg_residuals.npy'
         if not path.exists():
             return None
         return jnp.array(np.load(path))

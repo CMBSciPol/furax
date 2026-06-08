@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field, fields
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import jax.numpy as jnp
 import yaml
@@ -223,63 +223,166 @@ class LandscapeConfig:
             raise ValueError('exactly one of healpix or wcs must be set.')
 
 
-@dataclass
-class _PolyTemplateConfig:
-    max_poly_order: int = 3
+class LegendreOrders(NamedTuple):
+    """A Legendre-polynomial order range, inclusive."""
+
+    min_order: int = 0
+    max_order: int = 3
 
 
 @dataclass
-class _ScanSynchronousTemplateConfig:
-    min_poly_order: int = 3
-    max_poly_order: int = 7
+class BinsConfig:
+    """A piecewise basis that bins a variable into ``n_bins`` intervals.
+
+    With ``interpolate = False`` each sample is hard-assigned to its bin. With
+    ``interpolate = True`` samples are spread over neighbouring bin centres using
+    triangular (or, if ``smooth``, sin^2) weights.
+    """
+
+    n_bins: int = 4
+    interpolate: bool = False
+    smooth: bool = False
 
 
 @dataclass
-class _HWPSynchronousTemplateConfig:
+class PolyConfig:
+    legendre: LegendreOrders = LegendreOrders(0, 3)
+    """Legendre orders for the polynomial drift template (the I/T leg when demodulated)."""
+
+    legendre_qu: LegendreOrders | None = None
+    """Per-Stokes Q/U Legendre orders, used only for demodulated data; the Q and U legs
+    use these orders while I uses ``legendre``. Falls back to ``legendre`` when ``None``."""
+
+    explicit: bool = False
+    """Keep the amplitudes in the two-step CG (recoverable a posteriori) instead of
+    marginalising them implicitly into the weighting ``W_m``. See :class:`TemplatesConfig`."""
+
+
+@dataclass
+class ScanSynchronousConfig:
+    """Scan-synchronous (azimuth-only) signal on a global Legendre basis.
+
+    For constant-elevation scans the pickup is a function of azimuth only.
+    See `BinAzSynchronousConfig` for the binned (sotodlib azss) variant.
+    """
+
+    legendre: LegendreOrders = LegendreOrders(3, 7)
+
+    explicit: bool = False
+    """Keep amplitudes in the two-step CG instead of marginalising. See :class:`TemplatesConfig`."""
+
+
+@dataclass
+class BinAzSynchronousConfig:
+    """Binned azimuth-synchronous signal, no HWP coupling.
+
+    The binned counterpart of `ScanSynchronousConfig`.
+    """
+
+    bins: BinsConfig = field(default_factory=BinsConfig)
+
+    explicit: bool = False
+    """Keep amplitudes in the two-step CG instead of marginalising. See :class:`TemplatesConfig`."""
+
+
+@dataclass
+class HWPSynchronousConfig:
     n_harmonics: int = 3
 
+    explicit: bool = False
+    """Keep amplitudes in the two-step CG instead of marginalising. See :class:`TemplatesConfig`."""
+
 
 @dataclass
-class _AzimuthHWPSynchronousTemplateConfig:
-    n_polynomials: int = 4
+class AzimuthHWPSynchronousConfig:
+    legendre: LegendreOrders = LegendreOrders(0, 3)
     n_harmonics: int = 4
     split_scans: bool = False
 
+    explicit: bool = False
+    """Keep amplitudes in the two-step CG instead of marginalising. See :class:`TemplatesConfig`."""
+
 
 @dataclass
-class _BinAzimuthHWPSynchronousTemplateConfig:
-    n_azimuth_bins: int = 4
+class BinAzimuthHWPSynchronousConfig:
+    bins: BinsConfig = field(default_factory=BinsConfig)
     n_harmonics: int = 4
-    interpolate_azimuth: bool = False
-    smooth_interpolation: bool = False
+
+    explicit: bool = False
+    """Keep amplitudes in the two-step CG instead of marginalising. See :class:`TemplatesConfig`."""
 
 
 @dataclass
-class _GroundTemplateConfig:
+class GroundConfig:
     azimuth_resolution: float = 0.05  # ~3 deg
     elevation_resolution: float = 0.05  # ~3 deg
+
+    explicit: bool = False
+    """Keep amplitudes in the two-step CG instead of marginalising. See :class:`TemplatesConfig`."""
+
+
+@dataclass
+class T2PConfig:
+    """Temperature-to-polarization leakage template (demodulated data only).
+
+    Fits a per-detector scaled copy of the temperature (the demodulated ``I`` leg) out
+    of ``Q``/``U``. ``fit_band=(f0, f1)`` restricts the template to that Fourier band
+    (Hz); ``None`` uses the broadband temperature.
+
+    ``decimate=q`` (q > 1) stores the temperature basis on a ``q``-times coarser sample
+    grid (block-averaged), synthesising back to full resolution by hold-interpolation.
+    Cuts the t2p basis memory ~``q``x at the cost of band-limiting the fitted leakage
+    above the decimated Nyquist (``sample_rate / 2q``). ``decimate=1`` keeps full
+    resolution.
+    """
+
+    fit_band: tuple[float, float] | None = None
+    decimate: int = 1
+
+    explicit: bool = False
+    """Keep the per-detector leakage coefficients in the two-step CG (recoverable a
+    posteriori) instead of marginalising them into ``W_m``. See :class:`TemplatesConfig`."""
 
 
 @dataclass
 class TemplatesConfig:
-    polynomial: _PolyTemplateConfig | None = None
-    scan_synchronous: _ScanSynchronousTemplateConfig | None = None
-    hwp_synchronous: _HWPSynchronousTemplateConfig | None = None
-    azhwp_synchronous: _AzimuthHWPSynchronousTemplateConfig | None = None
-    binazhwp_synchronous: _BinAzimuthHWPSynchronousTemplateConfig | None = None
-    ground: _GroundTemplateConfig | None = None
+    """Template families to fit, each split by its ``explicit`` flag.
+
+    Each active family is either *explicit* (``explicit=True``: its amplitudes are solved
+    in the two-step CG and returned) or *marginalised* (``explicit=False``, the default:
+    folded into a modified weighting ``W_m = W − W T_m (T_mᵀ W T_m)⁻¹ T_mᵀ W`` and never
+    explicitly solved). Marginalising and explicitly solving-then-discarding give identical
+    map and explicit-amplitude estimates, but marginalisation removes those degrees of
+    freedom from the CG — turning a 10⁷-parameter solve into the handful you actually want.
+
+    The marginalised Gram ``T_mᵀ W T_m`` must be cheaply invertible. Currently at most one
+    family may be marginalised (its per-detector/per-interval block-diagonal Gram is inverted
+    in closed form); marginalising several coupled families jointly is not yet supported.
+    """
+
+    polynomial: PolyConfig | None = None
+    scan_synchronous: ScanSynchronousConfig | None = None
+    binaz_synchronous: BinAzSynchronousConfig | None = None
+    hwp_synchronous: HWPSynchronousConfig | None = None
+    azhwp_synchronous: AzimuthHWPSynchronousConfig | None = None
+    binazhwp_synchronous: BinAzimuthHWPSynchronousConfig | None = None
+    ground: GroundConfig | None = None
+    t2p: T2PConfig | None = None
     regularization: float = 0.0
+    solver: SolverConfig = field(default_factory=SolverConfig)
+    """Solver for the template amplitude system ``(Tᵀ Z T) x = r``."""
 
     @classmethod
     def full_defaults(cls) -> 'TemplatesConfig':
         """Create a template config with default values for all templates."""
         return cls(
-            polynomial=_PolyTemplateConfig(),
-            scan_synchronous=_ScanSynchronousTemplateConfig(),
-            hwp_synchronous=_HWPSynchronousTemplateConfig(),
-            azhwp_synchronous=_AzimuthHWPSynchronousTemplateConfig(),
-            binazhwp_synchronous=_BinAzimuthHWPSynchronousTemplateConfig(),
-            ground=_GroundTemplateConfig(),
+            polynomial=PolyConfig(),
+            scan_synchronous=ScanSynchronousConfig(),
+            binaz_synchronous=BinAzSynchronousConfig(),
+            hwp_synchronous=HWPSynchronousConfig(),
+            azhwp_synchronous=AzimuthHWPSynchronousConfig(),
+            binazhwp_synchronous=BinAzimuthHWPSynchronousConfig(),
+            ground=GroundConfig(),
         )
 
     @property
@@ -380,6 +483,25 @@ class MapMakingConfig:
     atop_tau: int = 0
     sotodlib: SotodlibConfig | None = None
 
+    def __post_init__(self) -> None:
+        if self.demodulated and self.templates is not None:
+            # The HWP signal is demodulated out, so HWP-coupled templates are meaningless.
+            hwp_templates = [
+                name
+                for name in ('hwp_synchronous', 'azhwp_synchronous', 'binazhwp_synchronous')
+                if getattr(self.templates, name) is not None
+            ]
+            if hwp_templates:
+                raise ValueError(
+                    f'HWP-coupled templates {hwp_templates} are not applicable to '
+                    'demodulated data (the HWP signal is demodulated out).'
+                )
+        if self.templates is not None and self.templates.t2p is not None and not self.demodulated:
+            raise ValueError(
+                'The t2p template fits leakage out of the demodulated Q/U legs and '
+                'requires demodulated data (sotodlib.demodulated=True).'
+            )
+
     @classmethod
     def for_method(cls, method: 'Methods | str') -> 'MapMakingConfig':
         """Return a default MapMakingConfig pre-configured for the given method.
@@ -429,7 +551,7 @@ class MapMakingConfig:
                     max_steps=1_000,
                 ),
                 templates=TemplatesConfig(
-                    polynomial=_PolyTemplateConfig(),
+                    polynomial=PolyConfig(),
                 ),
             )
         elif method == Methods.ATOP:

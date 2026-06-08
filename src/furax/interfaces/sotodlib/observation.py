@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any, Literal
 
@@ -39,7 +40,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     def from_file(
         cls,
         filename: str | Path,
-        requested_fields: list[str] | None = None,
+        requested_fields: Collection[str] | None = None,
         sotodlib_config: SotodlibConfig | None = None,
     ) -> SOTODLibObservation:
         # check that file exists
@@ -66,6 +67,9 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 fields.append('flags.glitch_flags')
             if 'valid_scanning_masks' in requested_fields:
                 fields.append('preprocess.turnaround_flags')
+            if 'scanning_intervals' in requested_fields:
+                if 'preprocess.turnaround_flags' not in fields:
+                    fields.append('preprocess.turnaround_flags')
             if 'timestamps' in requested_fields:
                 fields.append('timestamps')
             if 'hwp_angles' in requested_fields:
@@ -393,7 +397,7 @@ class LazySOTODLibObservation(AbstractLazyObservation[AxisManager]):
         super().__init__(filename)
         self._sotodlib_config = sotodlib_config
 
-    def get_data(self, requested_fields: list[str] | None = None) -> SOTODLibObservation:
+    def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
         return SOTODLibObservation.from_file(
             self.file, requested_fields, sotodlib_config=self._sotodlib_config
         )

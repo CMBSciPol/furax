@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from dataclasses import dataclass
 from hashlib import sha1
 from pathlib import Path
@@ -64,21 +65,25 @@ class AbstractObservation(ABC, Generic[T]):
     ``Observation``, sotodlib's ``AxisManager``, litebird_sim's ``Observation``, etc.)
     """
 
-    AVAILABLE_READER_FIELDS: ClassVar[list[str]] = [
-        'metadata',
-        'sample_data',
-        'valid_sample_masks',
-        'timestamps',
-        'hwp_angles',
-        'detector_quaternions',
-        'boresight_quaternions',
-        'noise_model_fits',
-    ]
+    AVAILABLE_READER_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            'metadata',
+            'sample_data',
+            'valid_sample_masks',
+            'timestamps',
+            'hwp_angles',
+            'detector_quaternions',
+            'boresight_quaternions',
+            'noise_model_fits',
+        }
+    )
     """Supported data field names for all observations"""
 
-    OPTIONAL_READER_FIELDS: ClassVar[list[str]] = [
-        'noise_model_fits',
-    ]
+    OPTIONAL_READER_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            'noise_model_fits',
+        }
+    )
     """Optional data field names"""
 
     def __init__(self, data: T) -> None:
@@ -87,7 +92,7 @@ class AbstractObservation(ABC, Generic[T]):
     @classmethod
     @abstractmethod
     def from_file(
-        cls, filename: str | Path, requested_fields: list[str] | None = None
+        cls, filename: str | Path, requested_fields: Collection[str] | None = None
     ) -> AbstractObservation[T]:
         """Loads the observation from a binary file.
 
@@ -218,9 +223,23 @@ class AbstractSatelliteObservation(AbstractObservation[T]):
 class AbstractGroundObservation(AbstractObservation[T]):
     """Class for interfacing with ground-based observation data."""
 
-    AVAILABLE_READER_FIELDS: ClassVar[list[str]] = AbstractObservation.AVAILABLE_READER_FIELDS + [
-        'valid_scanning_masks',
-    ]
+    AVAILABLE_READER_FIELDS: ClassVar[frozenset[str]] = (
+        AbstractObservation.AVAILABLE_READER_FIELDS
+        | {
+            'valid_scanning_masks',
+            'azimuth',
+            'left_scan_mask',
+            'right_scan_mask',
+            'scanning_intervals',
+        }
+    )
+
+    OPTIONAL_READER_FIELDS: ClassVar[frozenset[str]] = (
+        AbstractObservation.OPTIONAL_READER_FIELDS
+        | {
+            'scanning_intervals',
+        }
+    )
 
     @abstractmethod
     def get_scanning_intervals(self) -> NDArray[Any]:
@@ -345,7 +364,7 @@ class AbstractLazyObservation(ABC, Generic[T]):
         if not self.file.exists():
             raise FileNotFoundError(f'Observation file {self.file} does not exist')
 
-    def get_data(self, requested_fields: list[str] | None = None) -> AbstractObservation[T]:
+    def get_data(self, requested_fields: Collection[str] | None = None) -> AbstractObservation[T]:
         """Loads observation data from the underlying file.
 
         Args:

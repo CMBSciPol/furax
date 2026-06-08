@@ -23,7 +23,7 @@ import jax_healpy as jhp
 from jaxtyping import Array, Inexact, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator
-from furax.core.rules import AbstractBinaryRule, NoReduction
+from furax.core.rules import AbstractCompositionRule, NoReduction
 
 
 class Map2Alm(AbstractLinearOperator):
@@ -198,7 +198,7 @@ class Alm2Map(AbstractLinearOperator):
         )
 
 
-class SHTRule(AbstractBinaryRule):
+class SHTRule(AbstractCompositionRule):
     """Algebraic rule reducing ``Map2Alm @ Alm2Map`` to an identity.
 
     The composition *analysis after synthesis* (``Map2Alm @ Alm2Map``) is

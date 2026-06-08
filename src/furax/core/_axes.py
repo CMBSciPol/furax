@@ -8,7 +8,7 @@ from jax import numpy as jnp
 from jaxtyping import Inexact, PyTree
 
 from ._base import AbstractLinearOperator, IdentityOperator, TransposeOperator
-from .rules import AbstractBinaryRule, NoReduction
+from .rules import AbstractCompositionRule, NoReduction
 
 __all__ = [
     'MoveAxisOperator',
@@ -68,7 +68,7 @@ class MoveAxisOperator(AbstractLinearOperator):
     inverse = transpose
 
 
-class MoveAxisInverseRule(AbstractBinaryRule):
+class MoveAxisInverseRule(AbstractCompositionRule):
     """Binary rule for move_axis.T @ move_axis = I`.
 
     Note:
@@ -237,7 +237,7 @@ class ReshapeTransposeOperator(TransposeOperator):
         )
 
 
-class ReshapeInverseRule(AbstractBinaryRule):
+class ReshapeInverseRule(AbstractCompositionRule):
     """Binary rule for reshape.T @ reshape = I and reshape @ reshape.T = I`.
 
     Note:

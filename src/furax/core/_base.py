@@ -408,13 +408,12 @@ class AdditionOperator(AbstractLinearOperator):
         return functools.reduce(jnp.add, (operand.as_matrix() for operand in self.operand_leaves))
 
     def reduce(self) -> AbstractLinearOperator:
-        operands = self._tree_map(lambda operand: operand.reduce())
-        operand_leaves = jax.tree.leaves(
-            operands, is_leaf=lambda leaf: isinstance(leaf, AbstractLinearOperator)
-        )
-        if len(operand_leaves) == 1:
-            leaf: AbstractLinearOperator = operand_leaves[0]
-            return leaf
+        from .rules import AdditiveReductionRule
+
+        operands = [operand.reduce() for operand in self.operand_leaves]
+        operands = AdditiveReductionRule().apply(operands)
+        if len(operands) == 1:
+            return operands[0]
         return AdditionOperator(operands)
 
     @property

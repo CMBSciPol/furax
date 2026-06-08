@@ -3,7 +3,7 @@ from jax.typing import DTypeLike
 from jaxtyping import Array, Float
 
 from furax import AbstractLinearOperator
-from furax.core.rules import AbstractBinaryRule
+from furax.core.rules import AbstractCompositionRule
 
 from ..stokes import (
     Stokes,
@@ -53,7 +53,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         return 0.5 * (x.i + x.q)
 
 
-class LinearPolarizerHWPRule(AbstractBinaryRule):
+class LinearPolarizerHWPRule(AbstractCompositionRule):
     """Binary rule for LinPol @ HWP = LinPol`."""
 
     left_operator_class = LinearPolarizerOperator

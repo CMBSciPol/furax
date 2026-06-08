@@ -76,7 +76,7 @@ class AlgebraicReductionRule(AbstractNaryRule):
         while index < len(operands) - 1:
             left, right = operands[index], operands[index + 1]
 
-            for rule in BINARY_RULE_REGISTRY:
+            for rule in COMPOSITION_RULE_REGISTRY:
                 try:
                     rule.check(left, right)
                     new_ops = rule.apply(left, right)
@@ -148,8 +148,49 @@ class IdentityRule(AbstractNaryRule):
         return [_ for _ in operands if not isinstance(_, IdentityOperator)]
 
 
+class AdditiveReductionRule(AbstractNaryRule):
+    """Pairwise reduction of the operands of an ``AdditionOperator``."""
+
+    def apply(self, operands: list[AbstractLinearOperator]) -> list[AbstractLinearOperator]:
+        # Addition is commutative and associative, so the operands are reduced by repeatedly
+        # fusing any pair for which an `AbstractAdditionRule` applies (trying both orders),
+        # until a fixed point is reached. Operands left unfused are returned as-is.
+        operands = list(operands)
+        changed = True
+        while changed and len(operands) > 1:
+            changed = False
+            for a in range(len(operands)):
+                for b in range(a + 1, len(operands)):
+                    fused = self._fuse(operands[a], operands[b])
+                    if fused is not None:
+                        operands = operands[:a] + fused + operands[a + 1 : b] + operands[b + 1 :]
+                        changed = True
+                        break
+                if changed:
+                    break
+        return operands
+
+    @staticmethod
+    def _fuse(
+        left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator] | None:
+        for rule in ADDITION_RULE_REGISTRY:
+            for first, second in ((left, right), (right, left)):
+                try:
+                    rule.check(first, second)
+                    return rule.apply(first, second)
+                except NoReduction:
+                    continue
+        return None
+
+
 class AbstractBinaryRule(AbstractRule, ABC):
-    """A binary algebraic rule to reduce `op1 @ op2`."""
+    """A binary algebraic rule to reduce two operators.
+
+    Subclasses implement different flavours of reduction, e.g. `op1 @ op2` or `op1 + op2`.
+    """
+
+    registry: 'RuleRegistry[AbstractBinaryRule]'  # set by the flavour subclass
 
     operator_class: (
         type[AbstractLinearOperator] | tuple[type[AbstractLinearOperator], ...] | None
@@ -169,7 +210,7 @@ class AbstractBinaryRule(AbstractRule, ABC):
     def __init_subclass__(cls) -> None:
         if cls.__name__.startswith('Abstract'):
             return
-        BINARY_RULE_REGISTRY.register(cls())
+        cls.registry.register(cls())
         if (
             cls.operator_class is None
             and cls.left_operator_class is None
@@ -183,7 +224,8 @@ class AbstractBinaryRule(AbstractRule, ABC):
                     'specified in the binary rule.'
                 )
 
-    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+    def _check_operands(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        """Shared operand-class matching: raises :class:`NoReduction` if the rule does not apply."""
         if self.operator_class is not None:
             if not isinstance(left, self.operator_class) and not isinstance(
                 right, self.operator_class
@@ -197,22 +239,38 @@ class AbstractBinaryRule(AbstractRule, ABC):
             right, self.right_operator_class
         ):
             raise NoReduction
-        if self.left_operator_class is TransposeOperator and left.operator is not right:  # type: ignore[attr-defined]
-            raise NoReduction
-        if self.right_operator_class is TransposeOperator and right.operator is not left:  # type: ignore[attr-defined]
-            raise NoReduction
+
+    @abstractmethod
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        """Raises :class:`NoReduction` if the rule does not apply to ``(left, right)``."""
 
     @abstractmethod
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        """Applies the algebraic rule to reduce the composition left @ right."""
+        """Applies the algebraic rule to reduce the binary combination of left and right."""
 
 
-BINARY_RULE_REGISTRY = RuleRegistry[AbstractBinaryRule]()
+# Registries of binary reduction rules
+COMPOSITION_RULE_REGISTRY = RuleRegistry[AbstractBinaryRule]()
+ADDITION_RULE_REGISTRY = RuleRegistry[AbstractBinaryRule]()
 
 
-class InverseBinaryRule(AbstractBinaryRule):
+class AbstractCompositionRule(AbstractBinaryRule):
+    """A binary rule to reduce a composition ``op1 @ op2``."""
+
+    registry = COMPOSITION_RULE_REGISTRY
+
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        self._check_operands(left, right)
+        # In addition to checking operands, handle the case of TransposeOperator
+        if self.left_operator_class is TransposeOperator and left.operator is not right:  # type: ignore[attr-defined]
+            raise NoReduction
+        if self.right_operator_class is TransposeOperator and right.operator is not left:  # type: ignore[attr-defined]
+            raise NoReduction
+
+
+class InverseBinaryRule(AbstractCompositionRule):
     """Binary rule for `op.I @ op = I` and `op.I @ op = I`."""
 
     operator_class = AbstractLazyInverseOperator
@@ -231,3 +289,12 @@ class InverseBinaryRule(AbstractBinaryRule):
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         return []
+
+
+class AbstractAdditionRule(AbstractBinaryRule):
+    """A binary rule to reduce a sum ``op1 + op2``."""
+
+    registry = ADDITION_RULE_REGISTRY
+
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        self._check_operands(left, right)

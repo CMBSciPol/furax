@@ -3,7 +3,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Bool, Inexact, PyTree, UInt8
 
 from ._base import AbstractLinearOperator, symmetric
-from .rules import AbstractBinaryRule
+from .rules import AbstractCompositionRule
 
 
 @symmetric
@@ -86,7 +86,7 @@ def _check_and_pack(
     return jnp.packbits(boolean_mask, axis=-1)
 
 
-class InverseBinaryRule(AbstractBinaryRule):
+class InverseBinaryRule(AbstractCompositionRule):
     """Binary rule for composition of MaskOperator's."""
 
     left_operator_class = MaskOperator

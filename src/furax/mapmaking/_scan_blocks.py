@@ -8,7 +8,7 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Inexact, PyTree
 
 from furax import AbstractLinearOperator, tree
-from furax.core.rules import AbstractBinaryRule
+from furax.core.rules import AbstractCompositionRule
 
 # jax.eval_shape inside a jax.set_mesh context annotates outputs with sharding information,
 # which breaks operator compatibility checks. Wrapping inner transpose/reduction calls with
@@ -250,7 +250,7 @@ class ScanAdditionOperator(AbstractScanBlockOperator):
         return ScanAdditionOperator(operator_T, in_structure=self.out_structure)
 
 
-class AbstractScanFusionRule(AbstractBinaryRule):
+class AbstractScanFusionRule(AbstractCompositionRule):
     reduced_class: type[AbstractScanBlockOperator]
 
     def apply(

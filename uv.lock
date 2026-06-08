@@ -1763,8 +1763,8 @@ wheels = [
 
 [[package]]
 name = "jax-healpy"
-version = "0.6.post33+g12101d4"
-source = { git = "https://github.com/CMBSciPol/jax-healpy?branch=implement-alm2map#12101d4afdcfffeceedc39c501bf44bdb8f9e626" }
+version = "0.6.post42+g0d31046"
+source = { git = "https://github.com/CMBSciPol/jax-healpy?branch=implement-alm2map#0d31046a49475291c6c2a872d0400a857e0f279f" }
 dependencies = [
     { name = "jax" },
     { name = "jaxtyping" },

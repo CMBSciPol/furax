@@ -7,6 +7,7 @@ import numpy as np
 from jax import Array
 from jax.experimental import multihost_utils as mhu
 from jax.tree_util import register_static
+from jax.typing import DTypeLike
 from jaxtyping import PyTree
 
 from furax.io.readers import AbstractReader
@@ -14,6 +15,7 @@ from furax.obs.stokes import Stokes, ValidStokesType
 
 from ._observation import (
     AbstractLazyObservation,
+    AbstractObservation,
     HashedObservationMetadata,
 )
 
@@ -46,6 +48,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         *args: Sequence[Any],
         demodulated: bool,
         stokes: ValidStokesType,
+        dtype: DTypeLike = jnp.float64,
         common_keywords: dict[str, Any] | None = None,
         structures: list[PyTree[jax.ShapeDtypeStruct]] | None = None,
         **keywords: Sequence[Any],
@@ -53,6 +56,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         # Set before super().__init__ so _read_structure_impure can use them
         self.demodulated = demodulated
         self.stokes = stokes
+        self.dtype = dtype
         super().__init__(*args, common_keywords=common_keywords, structures=structures, **keywords)
 
     @classmethod
@@ -64,6 +68,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         requested_fields: Sequence[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
+        dtype: DTypeLike = jnp.float64,
     ) -> Self:
         """Create a reader, performing I/O to infer data structures.
 
@@ -75,6 +80,12 @@ class ObservationReader(AbstractReader, Generic[T]):
             requested_fields: Optional list of fields to load. If None, read all non-optional fields.
             demodulated: Whether to read demodulated TODs.
             stokes: Stokes components to read when demodulated.
+            dtype: Floating-point dtype applied to every floating-point field the reader
+                returns: sample data, noise model fits and the geometry (timestamps, HWP
+                angles, quaternions). Use jnp.float32 to run a float32 mapmaking pipeline
+                (MapMakingConfig.double_precision=False). Casting the geometry is also
+                required there: under jax_enable_x64=False a float64 array is illegal, so
+                no field may stay float64.
         """
         fields = cls._resolve_fields(observations, requested_fields)
         common_keywords = {'data_field_names': fields}
@@ -86,6 +97,7 @@ class ObservationReader(AbstractReader, Generic[T]):
                 common_keywords=common_keywords,
                 demodulated=demodulated,
                 stokes=stokes,
+                dtype=dtype,
             )
 
         # Distributed-mode shortcut. Each process opens only its subset; an
@@ -106,7 +118,7 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         def _struct_for(n_det: int, n_samp: int) -> PyTree[jax.ShapeDtypeStruct]:
             field_struct = cls._get_data_field_structures_for(
-                n_det, n_samp, demodulated=demodulated, stokes=stokes
+                n_det, n_samp, demodulated=demodulated, stokes=stokes, dtype=dtype
             )
             return {field: field_struct[field] for field in fields}
 
@@ -116,6 +128,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             common_keywords=common_keywords,
             demodulated=demodulated,
             stokes=stokes,
+            dtype=dtype,
             structures=structures,
         )
 
@@ -179,7 +192,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             zero_padded = np.linalg.norm(data['detector_quaternions'], axis=-1) == 0.0
             data['detector_quaternions'] = np.where(
                 zero_padded[:, None],
-                np.array([[1.0, 0.0, 0.0, 0.0]]),
+                np.array([[1.0, 0.0, 0.0, 0.0]], dtype=data['detector_quaternions'].dtype),
                 data['detector_quaternions'],
             )
         if 'boresight_quaternions' in data_field_names:
@@ -191,9 +204,9 @@ class ObservationReader(AbstractReader, Generic[T]):
                 zero_padded[:, None], last_quaternion[None, :], data['boresight_quaternions']
             )
         if 'noise_model_fits' in data_field_names:
-            default = np.array([[0.0, 0.0, 1.0, 0.1]])
 
             def _pad_noise_fits(arr: np.ndarray) -> np.ndarray:
+                default = np.array([[0.0, 0.0, 1.0, 0.1]], dtype=arr.dtype)
                 zero_padded = arr[:, 0] == 0.0
                 return np.where(zero_padded[:, None], default, arr)
 
@@ -208,12 +221,13 @@ class ObservationReader(AbstractReader, Generic[T]):
         *,
         demodulated: bool,
         stokes: ValidStokesType,
+        dtype: DTypeLike = jnp.float64,
     ) -> PyTree[jax.ShapeDtypeStruct]:
         tod_shape = (n_detectors, n_samples)
         sample_data_structure = (
-            Stokes.class_for(stokes).structure_for(tod_shape, jnp.float64)
+            Stokes.class_for(stokes).structure_for(tod_shape, dtype)
             if demodulated
-            else jax.ShapeDtypeStruct(tod_shape, jnp.float64)
+            else jax.ShapeDtypeStruct(tod_shape, dtype)
         )
 
         return {
@@ -221,14 +235,14 @@ class ObservationReader(AbstractReader, Generic[T]):
             'sample_data': sample_data_structure,
             'valid_sample_masks': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.bool),
             'valid_scanning_masks': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
-            'timestamps': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
-            'hwp_angles': jax.ShapeDtypeStruct((n_samples,), jnp.float64),
-            'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64),
-            'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), jnp.float64),
+            'timestamps': jax.ShapeDtypeStruct((n_samples,), dtype),
+            'hwp_angles': jax.ShapeDtypeStruct((n_samples,), dtype),
+            'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), dtype),
+            'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), dtype),
             'noise_model_fits': (
-                Stokes.class_for(stokes).structure_for((n_detectors, 4), jnp.float64)
+                Stokes.class_for(stokes).structure_for((n_detectors, 4), dtype)
                 if demodulated
-                else jax.ShapeDtypeStruct((n_detectors, 4), jnp.float64)
+                else jax.ShapeDtypeStruct((n_detectors, 4), dtype)
             ),
         }
 
@@ -240,23 +254,34 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         demodulated = self.demodulated
         stokes = self.stokes
+        target_dtype = self.dtype
+
+        def get_sample_data(obs: AbstractObservation[T]) -> Any:
+            if demodulated:
+                tods = obs.get_demodulated_tods(stokes=stokes)
+            else:
+                tods = obs.get_tods()
+            return jax.tree.map(lambda x: x.astype(target_dtype), tods)
+
+        def get_noise_model_fits(obs: AbstractObservation[T]) -> Any:
+            if demodulated:
+                fits = obs.get_demodulated_noise_models(stokes=stokes)
+            else:
+                fits = if_none_raise_error(obs.get_noise_model()).to_array()
+            return jax.tree.map(lambda x: x.astype(target_dtype), fits)
 
         return {
             'metadata': lambda obs: HashedObservationMetadata.from_observation(obs),
-            'sample_data': lambda obs: (
-                obs.get_demodulated_tods(stokes=stokes) if demodulated else obs.get_tods()
-            ),
+            'sample_data': get_sample_data,
             'valid_sample_masks': lambda obs: obs.get_sample_mask(),
             'valid_scanning_masks': lambda obs: obs.get_scanning_mask(),
-            'timestamps': lambda obs: obs.get_timestamps(),
-            'hwp_angles': lambda obs: obs.get_hwp_angles(),
-            'detector_quaternions': lambda obs: obs.get_detector_quaternions(),
-            'boresight_quaternions': lambda obs: obs.get_boresight_quaternions(),
-            'noise_model_fits': (
-                (lambda obs: obs.get_demodulated_noise_models(stokes=stokes))
-                if demodulated
-                else (lambda obs: if_none_raise_error(obs.get_noise_model()).to_array())
+            'timestamps': lambda obs: obs.get_timestamps().astype(target_dtype),
+            'hwp_angles': lambda obs: obs.get_hwp_angles().astype(target_dtype),
+            'detector_quaternions': lambda obs: obs.get_detector_quaternions().astype(target_dtype),
+            'boresight_quaternions': lambda obs: obs.get_boresight_quaternions().astype(
+                target_dtype
             ),
+            'noise_model_fits': get_noise_model_fits,
         }
 
     def _read_structure_impure(
@@ -270,6 +295,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             data.n_samples,
             demodulated=self.demodulated,
             stokes=self.stokes,
+            dtype=self.dtype,
         )
         return {field: field_structure[field] for field in data_field_names}
 

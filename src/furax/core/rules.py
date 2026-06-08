@@ -298,3 +298,17 @@ class AbstractAdditionRule(AbstractBinaryRule):
 
     def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
         self._check_operands(left, right)
+
+
+class HomothetyAdditionRule(AbstractAdditionRule):
+    """Additive rule ``H(a) + H(b) = H(a + b)`` (the additive analog of :class:`HomothetyRule`)."""
+
+    left_operator_class = HomothetyOperator
+    right_operator_class = HomothetyOperator
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        assert isinstance(left, HomothetyOperator)  # mypy
+        assert isinstance(right, HomothetyOperator)  # mypy
+        return [HomothetyOperator(left.value + right.value, in_structure=left.in_structure)]

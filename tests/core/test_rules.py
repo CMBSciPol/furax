@@ -103,6 +103,24 @@ def test_homothety1() -> None:
     assert composed_op.value == 12
 
 
+def test_homothety_addition() -> None:
+    op1 = HomothetyOperator(2.0, in_structure=jax.ShapeDtypeStruct((2,), np.float32))
+    op2 = HomothetyOperator(6.0, in_structure=jax.ShapeDtypeStruct((2,), np.float32))
+    reduced_op = (op1 + op2).reduce()
+    assert isinstance(reduced_op, HomothetyOperator)
+    assert reduced_op.value == 8
+
+
+def test_homothety_addition_multiple() -> None:
+    ops = [
+        HomothetyOperator(v, in_structure=jax.ShapeDtypeStruct((2,), np.float32))
+        for v in (1.0, 2.0, 3.0)
+    ]
+    reduced_op = (ops[0] + ops[1] + ops[2]).reduce()
+    assert isinstance(reduced_op, HomothetyOperator)
+    assert reduced_op.value == 6
+
+
 def test_homothety2() -> None:
     op1 = HomothetyOperator(2.0, in_structure=jax.ShapeDtypeStruct((2,), np.float32))
     op2 = HomothetyOperator(6.0, in_structure=jax.ShapeDtypeStruct((2,), np.float32))

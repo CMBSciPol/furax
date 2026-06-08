@@ -160,12 +160,10 @@ def _noise_model(
     if config.weighting.source == NoiseSource.FIT:
         fit_config = config.weighting.fitting
         noise_model_class = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
-        fhwp = _hwp_frequency(data['timestamps'], data['hwp_angles']).astype(config.dtype)
+        fhwp = _hwp_frequency(data['timestamps'], data['hwp_angles'])
 
         def _compute_Pxx_and_fit(tod):  # type: ignore[no-untyped-def]
             f, Pxx = jax.scipy.signal.welch(tod, fs=fs, nperseg=fit_config.nperseg)
-            f = f.astype(config.dtype)
-            Pxx = Pxx.astype(config.dtype)
             return noise_model_class.fit_psd_model(
                 f,
                 Pxx,

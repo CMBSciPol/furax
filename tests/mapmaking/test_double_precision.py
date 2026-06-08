@@ -7,30 +7,23 @@ Two layers of coverage:
    forwards ``config.dtype``. These run under the normal session-wide
    ``jax_enable_x64=True`` because they only inspect declared structures.
 
-2. **Subprocess end-to-end run**: spawns a fresh Python process with
-   ``JAX_ENABLE_X64=0`` (the configuration a real float32 user would use),
-   reproduces a tiny mapmaker run under ``double_precision=False``, and
-   asserts it completes with float32 outputs. The subprocess is required
-   because ``tests/conftest.py`` installs a session-autouse fixture that
-   forces ``jax_enable_x64=True`` for the whole pytest session; toggling
-   that flag mid-session would also disturb every other test that depends
-   on it.
-
-See ``BUG_REPORT_double_precision_false.md`` for the underlying bug.
+2. **End-to-end run with x64 off**: an ``insubprocess`` test that flips
+   ``jax_enable_x64`` off (the configuration a real float32 user would use),
+   runs a tiny mapmaker under ``double_precision=False``, and asserts it
+   completes with float32 outputs. The ``insubprocess`` marker isolates it in
+   its own process so the flag flip neither fights the session-autouse
+   ``enable_x64`` fixture in ``tests/conftest.py`` nor leaks into other tests.
 """
 
 from __future__ import annotations
 
-import subprocess
-import sys
-import textwrap
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jaxtyping import Array, Bool, Float
+from jaxtyping import Bool, Float
 
 from furax.mapmaking import (
     AbstractLazyObservation,
@@ -59,9 +52,9 @@ SAMPLE_RATE = 100.0
 class _FakeSatelliteObservation(AbstractSatelliteObservation[None]):
     """Self-contained synthetic observation used by the in-process tests.
 
-    Returns arbitrary small arrays of whatever dtype the observation naturally
-    produces (typically float64). The reader's ``dtype`` parameter is what
-    decides the final dtype that flows into the operator chain.
+    Like the real interfaces, the getters return host (numpy) arrays; the reader
+    moves them to device through ``io_callback`` and the reader's ``dtype``
+    parameter is what decides the final dtype that flows into the operator chain.
     """
 
     def __init__(self) -> None:  # type: ignore[override]
@@ -93,25 +86,23 @@ class _FakeSatelliteObservation(AbstractSatelliteObservation[None]):
     def sample_rate(self) -> float:
         return SAMPLE_RATE
 
-    def get_tods(self) -> Array:
+    def get_tods(self) -> Float[np.ndarray, 'dets samps']:
         # Non-zero data so the white-noise PSD fit yields a finite sigma.
-        return jnp.asarray(
-            np.random.default_rng(0).normal(size=(N_DETS, N_SAMPS)).astype(np.float32)
-        )
+        return np.random.default_rng(0).normal(size=(N_DETS, N_SAMPS)).astype(np.float32)
 
-    def get_detector_offset_angles(self) -> Array:
-        return jnp.zeros(N_DETS, dtype=jnp.float64)
+    def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
+        return np.zeros(N_DETS, dtype=np.float64)
 
-    def get_hwp_angles(self) -> Array:
+    def get_hwp_angles(self) -> Float[np.ndarray, ' a']:
         # Sweeping HWP angle at 2 Hz, wrapped to [0, 2pi).
         t = np.arange(N_SAMPS) / SAMPLE_RATE
-        return jnp.asarray((2 * np.pi * 2.0 * t) % (2 * np.pi), dtype=jnp.float64)
+        return np.asarray((2 * np.pi * 2.0 * t) % (2 * np.pi), dtype=np.float64)
 
-    def get_sample_mask(self) -> Bool[Array, 'dets samps']:
-        return jnp.ones((N_DETS, N_SAMPS), dtype=bool)
+    def get_sample_mask(self) -> Bool[np.ndarray, 'dets samps']:
+        return np.ones((N_DETS, N_SAMPS), dtype=bool)
 
-    def get_timestamps(self) -> Float[Array, ' a']:
-        return jnp.asarray(1.7e9 + jnp.arange(N_SAMPS) / SAMPLE_RATE, dtype=jnp.float64)
+    def get_timestamps(self) -> Float[np.ndarray, ' a']:
+        return np.asarray(1.7e9 + np.arange(N_SAMPS) / SAMPLE_RATE, dtype=np.float64)
 
     def get_wcs_shape_and_kernel(self, resolution_arcmin, projection=ProjectionType.CAR):
         raise NotImplementedError
@@ -122,17 +113,18 @@ class _FakeSatelliteObservation(AbstractSatelliteObservation[None]):
     def get_noise_model(self) -> None | NoiseModel:
         return None
 
-    def get_boresight_quaternions(self) -> Float[Array, 'samp 4']:
+    def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
         # Sweep the boresight so samples hit a range of sky pixels.
         phi = np.linspace(0.0, np.pi / 4, N_SAMPS)
-        q = np.zeros((N_SAMPS, 4))
+        q = np.zeros((N_SAMPS, 4), dtype=np.float64)
         q[:, 0] = np.cos(phi / 2)
         q[:, 3] = np.sin(phi / 2)
-        return jnp.asarray(q, dtype=jnp.float64)
+        return q
 
-    def get_detector_quaternions(self) -> Float[Array, 'det 4']:
-        q = jnp.zeros((N_DETS, 4), dtype=jnp.float64)
-        return q.at[:, 0].set(1.0)
+    def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
+        q = np.zeros((N_DETS, 4), dtype=np.float64)
+        q[:, 0] = 1.0
+        return q
 
 
 class _FakeLazyObservation(AbstractLazyObservation[None]):
@@ -269,81 +261,22 @@ class TestMapMakerRunsX64OnDoublePrecisionFalse:
 
 
 # ----------------------------------------------------------------------------
-# Subprocess end-to-end test
+# End-to-end run with x64 off (the configuration a real float32 user uses)
 # ----------------------------------------------------------------------------
 
 
-_SUBPROCESS_SCRIPT = textwrap.dedent("""\
-    import os, sys
-    # Sanity check: JAX_ENABLE_X64 must be set BEFORE importing jax.
-    assert os.environ.get('JAX_ENABLE_X64') == '0'
+@pytest.mark.slow
+@pytest.mark.insubprocess
+def test_mapmaker_runs_under_double_precision_false_and_x64_off() -> None:
+    """End-to-end regression test for the float32 pipeline bug.
 
-    import jax
-    # jax_healpy.__init__ unconditionally flips x64 back to True on import.
-    # We therefore must reset it AFTER all furax-side imports finish.
-    jax.config.update('jax_enable_x64', False)
-
-    import jax.numpy as jnp
-    from pathlib import Path
-    import numpy as np
-    from jaxtyping import Array, Bool, Float
-
-    from furax.mapmaking import (
-        AbstractLazyObservation, AbstractSatelliteObservation,
-        MultiObservationMapMaker,
-    )
-    from furax.mapmaking.config import (
-        HealpixConfig, LandscapeConfig, MapMakingConfig, Methods,
-        NoiseFitConfig, PointingConfig, SolverConfig, WeightingConfig,
-    )
-    from furax.obs.landscapes import ProjectionType, StokesLandscape
-    from furax.mapmaking.noise import NoiseModel
-
-    # Flip back to False (jax_healpy turned it on during furax imports).
+    Marked ``insubprocess`` so it can flip ``jax_enable_x64`` off -- the
+    configuration a real float32 user runs with -- without fighting the
+    session-autouse ``enable_x64`` fixture in ``tests/conftest.py`` or
+    leaking the flag into the rest of the suite.
+    """
     jax.config.update('jax_enable_x64', False)
     assert not jax.config.read('jax_enable_x64'), 'x64 must be OFF for this test'
-
-    N_DETS, N_SAMPS, SAMPLE_RATE = 1, 1024, 100.0
-
-    class _Obs(AbstractSatelliteObservation):
-        def __init__(self): pass
-        @classmethod
-        def from_file(cls, *a, **kw): return cls()
-        @property
-        def name(self): return 'fake'
-        @property
-        def telescope(self): return 'fake'
-        @property
-        def n_samples(self): return N_SAMPS
-        @property
-        def detectors(self): return ['d0']
-        @property
-        def sample_rate(self): return SAMPLE_RATE
-        def get_tods(self):
-            return jnp.asarray(np.random.default_rng(0).normal(size=(N_DETS, N_SAMPS)).astype(np.float32))
-        def get_detector_offset_angles(self): return jnp.zeros(N_DETS)
-        def get_hwp_angles(self):
-            t = np.arange(N_SAMPS) / SAMPLE_RATE
-            return jnp.asarray((2*np.pi*2.0*t) % (2*np.pi))
-        def get_sample_mask(self): return jnp.ones((N_DETS, N_SAMPS), dtype=bool)
-        def get_timestamps(self):
-            return jnp.asarray(1.7e9 + np.arange(N_SAMPS) / SAMPLE_RATE)
-        def get_wcs_shape_and_kernel(self, *a, **kw): raise NotImplementedError
-        def get_pointing_and_spin_angles(self, *a, **kw): raise NotImplementedError
-        def get_noise_model(self): return None
-        def get_boresight_quaternions(self):
-            phi = np.linspace(0.0, np.pi/4, N_SAMPS)
-            q = np.zeros((N_SAMPS, 4))
-            q[:, 0] = np.cos(phi/2); q[:, 3] = np.sin(phi/2)
-            return jnp.asarray(q)
-        def get_detector_quaternions(self):
-            q = np.zeros((N_DETS, 4)); q[:, 0] = 1.0
-            return jnp.asarray(q)
-
-    class _Lazy(AbstractLazyObservation):
-        interface_class = _Obs
-        def __init__(self): self.file = Path('<x>')
-        def get_data(self, *a, **kw): return _Obs()
 
     config = MapMakingConfig(
         method=Methods.BINNED,
@@ -351,46 +284,17 @@ _SUBPROCESS_SCRIPT = textwrap.dedent("""\
         weighting=WeightingConfig(
             fitting=NoiseFitConfig(nperseg=256, mask_hwp_harmonics=False),
         ),
-        pointing=PointingConfig(on_the_fly=True, chunk_size=32, interpolation='nearest'),
+        pointing=PointingConfig(on_the_fly=True),
         double_precision=False,
-        scanning_mask=False, sample_mask=False, hits_cut=0.0, cond_cut=0.0,
+        scanning_mask=False,
+        sample_mask=False,
+        hits_cut=0.0,
+        cond_cut=0.0,
         solver=SolverConfig(rtol=1e-6, atol=0, max_steps=10),
     )
-    maker = MultiObservationMapMaker([_Lazy()], config=config)
+    maker = MultiObservationMapMaker([_FakeLazyObservation()], config=config)
     results = maker.run()
 
-    # Acceptance checks: ran without raising AND outputs are float32.
     map_dtype = jax.tree.leaves(results.map)[0].dtype
-    icov_dtype = results.icov.dtype
-    print(f'OK map={map_dtype} icov={icov_dtype}')
     assert map_dtype == jnp.float32, f'expected float32 map, got {map_dtype}'
-    assert icov_dtype == jnp.float32, f'expected float32 icov, got {icov_dtype}'
-""")
-
-
-@pytest.mark.slow
-def test_mapmaker_runs_under_double_precision_false_and_x64_off() -> None:
-    """End-to-end regression test for the bug.
-
-    Runs in a subprocess so it can have ``jax_enable_x64=False`` without
-    fighting the session-autouse ``enable_x64`` fixture in
-    ``tests/conftest.py``.
-    """
-    env = {**__import__('os').environ, 'JAX_ENABLE_X64': '0'}
-    result = subprocess.run(
-        [sys.executable, '-c', _SUBPROCESS_SCRIPT],
-        capture_output=True,
-        text=True,
-        timeout=180,
-        env=env,
-    )
-    assert result.returncode == 0, (
-        f'subprocess failed with code {result.returncode}.\n'
-        f'--- stdout ---\n{result.stdout}\n'
-        f'--- stderr ---\n{result.stderr}'
-    )
-    assert 'OK map=float32 icov=float32' in result.stdout, (
-        f'subprocess did not print the expected acceptance line.\n'
-        f'--- stdout ---\n{result.stdout}\n'
-        f'--- stderr ---\n{result.stderr}'
-    )
+    assert results.icov.dtype == jnp.float32, f'expected float32 icov, got {results.icov.dtype}'

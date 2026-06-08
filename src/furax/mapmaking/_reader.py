@@ -80,11 +80,12 @@ class ObservationReader(AbstractReader, Generic[T]):
             requested_fields: Optional list of fields to load. If None, read all non-optional fields.
             demodulated: Whether to read demodulated TODs.
             stokes: Stokes components to read when demodulated.
-            dtype: Floating-point dtype for sample data and noise model fits. Defaults to
-                ``jnp.float64`` to preserve historical behaviour. Set to ``jnp.float32`` to
-                run a float32 mapmaking pipeline (e.g. ``MapMakingConfig.double_precision=False``).
-                Raw geometry fields (timestamps, HWP angles, quaternions) remain float64 to
-                preserve precision; downcasting is done at the point of use.
+            dtype: Floating-point dtype applied to every floating-point field the reader
+                returns: sample data, noise model fits and the geometry (timestamps, HWP
+                angles, quaternions). Use jnp.float32 to run a float32 mapmaking pipeline
+                (MapMakingConfig.double_precision=False). Casting the geometry is also
+                required there: under jax_enable_x64=False a float64 array is illegal, so
+                no field may stay float64.
         """
         fields = cls._resolve_fields(observations, requested_fields)
         common_keywords = {'data_field_names': fields}

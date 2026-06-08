@@ -768,7 +768,7 @@ class MapMaker:
         # Otherwise, fit the noise model from data
         self.logger.info('Fitting noise model from data')
         f, Pxx = jax.scipy.signal.welch(
-            observation.get_tods().astype(config.dtype),
+            jnp.asarray(observation.get_tods()).astype(config.dtype),
             fs=observation.sample_rate,
             nperseg=config.weighting.fitting.nperseg,
         )

@@ -208,7 +208,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             def _pad_noise_fits(arr: Array) -> Array:
                 default = jnp.array([[0.0, 0.0, 1.0, 0.1]], dtype=arr.dtype)
                 zero_padded = arr[:, 0] == 0.0
-                return np.where(zero_padded[:, None], default, arr)
+                return jnp.where(zero_padded[:, None], default, arr)
 
             data['noise_model_fits'] = jax.tree.map(_pad_noise_fits, data['noise_model_fits'])
 

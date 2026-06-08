@@ -7,7 +7,11 @@ import pytest
 from jaxtyping import PyTree
 
 from furax import AbstractLinearOperator, HomothetyOperator, IdentityOperator, orthogonal, square
-from furax.core._base import AbstractLazyInverseOrthogonalOperator, CompositionOperator
+from furax.core._base import (
+    AbstractLazyInverseOrthogonalOperator,
+    AdditionOperator,
+    CompositionOperator,
+)
 
 
 class Op(AbstractLinearOperator):
@@ -119,6 +123,28 @@ def test_homothety_addition_multiple() -> None:
     reduced_op = (ops[0] + ops[1] + ops[2]).reduce()
     assert isinstance(reduced_op, HomothetyOperator)
     assert reduced_op.value == 6
+
+
+def test_addition_partial_fusion() -> None:
+    # the two homotheties fuse across the intervening op; the op is returned unchanged.
+    h1 = HomothetyOperator(2.0, in_structure=_scalar_struct)
+    op = Op1(in_structure=_scalar_struct)
+    h2 = HomothetyOperator(6.0, in_structure=_scalar_struct)
+    reduced_op = (h1 + op + h2).reduce()
+    assert isinstance(reduced_op, AdditionOperator)
+    leaves = reduced_op.operand_leaves
+    assert len(leaves) == 2
+    (hom,) = [o for o in leaves if isinstance(o, HomothetyOperator)]
+    assert hom.value == 8
+    assert any(o is op for o in leaves)
+
+
+def test_addition_no_fusion() -> None:
+    h = HomothetyOperator(2.0, in_structure=_scalar_struct)
+    op = Op1(in_structure=_scalar_struct)
+    reduced_op = (h + op).reduce()
+    assert isinstance(reduced_op, AdditionOperator)
+    assert len(reduced_op.operand_leaves) == 2
 
 
 def test_homothety2() -> None:

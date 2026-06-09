@@ -2,8 +2,11 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from equinox import tree_equal
+from jax.sharding import AxisType, NamedSharding
+from jax.sharding import PartitionSpec as P
 from numpy.testing import assert_allclose
 
 from furax import BlockDiagonalOperator, DiagonalOperator, IdentityOperator
@@ -220,3 +223,69 @@ class TestCGGrad:
 
         with pytest.raises(ValueError, match='Reverse-mode differentiation'):
             jax.grad(f)(b)
+
+
+_AXIS_TYPES = {'explicit': AxisType.Explicit, 'auto': AxisType.Auto}
+
+
+def _sharded_layout(ndim: int) -> tuple[tuple[int, ...], tuple[str, ...], P]:
+    """Mesh shape, axis names and partition spec sharding the leading axes over all devices."""
+    n = jax.device_count()
+    if ndim == 1:
+        return (n,), ('i',), P('i', None)
+    if ndim == 2:
+        assert n % 2 == 0, n
+        return (2, n // 2), ('i', 'j'), P('i', 'j', None)
+    raise ValueError(ndim)
+
+
+@pytest.mark.distributed
+class TestCGDistributed:
+    """Multi-device CG over a vector sharded along its contracting axis.
+
+    ``furax.tree.dot`` contracts via a reduction, so the all-reduce is inserted automatically where
+    ``jnp.vdot`` would raise ``ShardingTypeError`` under explicit-axis sharding. Run with
+    ``pytest -m distributed`` (the conftest provisions the devices); skipped otherwise.
+    """
+
+    K = 3  # replicated trailing dimension (amplitudes per block)
+
+    @pytest.mark.parametrize('ndim', [1, 2], ids=['mesh1d', 'mesh2d'])
+    @pytest.mark.parametrize('axis_type', ['explicit', 'auto'])
+    def test_solves_vector_sharded_on_contracting_axis(self, axis_type: str, ndim: int) -> None:
+        axis = _AXIS_TYPES[axis_type]
+        mesh_shape, axis_names, spec = _sharded_layout(ndim)
+
+        # SPD diagonal system over a vector of shape (*mesh_shape, K).
+        vec_shape = (*mesh_shape, self.K)
+        size = int(np.prod(vec_shape))
+        diag = (1.0 + jnp.arange(size, dtype=float)).reshape(vec_shape)
+        b = jnp.ones(vec_shape)
+        x_true = b / diag
+
+        # Single-device reference (no mesh): plain replicated solve.
+        reference = cg(
+            DiagonalOperator(diag, in_structure=as_structure(b)), b, max_steps=50, rtol=1e-10
+        )
+        assert_allclose(np.asarray(reference.solution), x_true, rtol=1e-9)
+
+        mesh = jax.make_mesh(mesh_shape, axis_names, axis_types=(axis,) * ndim)
+        with jax.set_mesh(mesh):
+            shard = NamedSharding(mesh, spec)
+            b_s = jax.device_put(b, shard)
+            diag_s = jax.device_put(diag, shard)
+            A = DiagonalOperator(diag_s, in_structure=as_structure(b_s))
+            M = DiagonalOperator(1.0 / diag_s, in_structure=as_structure(b_s))
+
+            plain = jax.jit(lambda b: cg(A, b, max_steps=50, rtol=1e-10))(b_s)
+            # preconditioner exercises M(r) under sharding; exact M -> converges in one step.
+            precond = jax.jit(lambda b: cg(A, b, max_steps=50, rtol=1e-10, preconditioner=M))(b_s)
+
+        for result in (plain, precond):
+            assert_allclose(np.asarray(result.solution), x_true, rtol=1e-9)
+        assert int(precond.num_steps) == 1, int(precond.num_steps)
+
+        # Under explicit axes the sharding is part of the type and propagates to the solution;
+        # under auto axes JAX is free to choose, so only assert the spec in the explicit case.
+        if axis is AxisType.Explicit:
+            assert plain.solution.sharding.spec == spec, plain.solution.sharding.spec

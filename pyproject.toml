@@ -142,7 +142,10 @@ addopts = [
 ]
 minversion = "9"
 testpaths = ['tests']
-markers = ["slow: mark test as slow."]
+markers = [
+    "slow: mark test as slow.",
+    "distributed: multi-device test; run in its own session via `pytest -m distributed`.",
+]
 log_level = "INFO"
 xfail_strict = true
 

@@ -12,21 +12,17 @@ Python, JAX, linear operator framework, CMB mapmaking.
 - `uv run pytest path/to/test.py::TestClass::test_method -v`: Run a single test
 - `uvx prek run`: Run pre-commit hooks (staged files)
 - `uvx prek run -a`: Run pre-commit hooks (all files)
-- `uvx prek ruff-check --files <files>`: Lint these files
-- `uvx prek ruff-format --files <files>`: Format these files
-- `uvx prek mypy --files <files>`: Type-check these files
-- `uv run ruff check src tests`: Lint the whole tree
-- `uv run ruff format src tests`: Format the whole tree (single-quote strings, 100-char lines)
-- `uv run mypy src/furax`: Type-check (optional; no mypy config beyond ignores)
-- Use `uvx prek …` on changed files while editing; run the whole-tree `uv run ruff`/`mypy` before pushing.
+- `uvx prek ruff-check`: Run linting hook
+- `uvx prek ruff-format`: Run formatting hook
+- `uvx prek mypy`: Run type-checking hook
 
 ## Guidelines
 
+- Before adding a new operator or test, read an existing one in the same module and mirror its patterns.
+- Always run `uvx prek --files <files>` after writing or editing files.
 - Naming: `PascalCase` for classes/operators (e.g. `BeamOperator`), `snake_case` for functions/variables. Single-quote strings, 100-char lines (enforced by ruff).
 - Write Google-style docstrings.
-- Before adding a new operator or test, read an existing one in the same module and mirror its patterns.
 - Use comments purposefully. Do not narrate code. Explain invariants and unusual patterns.
-- Always format and check Python files after writing or editing them.
 - Imports at top of file. Valid exceptions: circular imports, lazy loading.
 - Use jaxtyping annotations, e.g. `Inexact[jax.Array, 'dim1 dim2']`
   - for uni-dimensional arrays, prepend a space to the start of the shape (e.g. `Float32[jax.Array, ' x']`) to turn Ruff F821 error (undefined name) into F722 (syntax error in forward annotation, ignored)
@@ -63,7 +59,7 @@ Python, JAX, linear operator framework, CMB mapmaking.
 `AbstractLinearOperator` (a frozen dataclass ABC) is the base class for all linear operators. Key features:
 
 - Automatic PyTree dataclass: subclasses get `@dataclass(frozen=True)` and registered as JAX PyTree nodes via `__init_subclass__`
-- Dataclass fields can be dynamic (JAX arrays, traced) or static (shapes, metadata, etc.). Mask static fields with `axis: int = field(metadata={'static': True})`
+- Dataclass fields can be dynamic (JAX arrays, traced) or static (shapes, metadata, etc.). Mark static fields with `axis: int = field(metadata={'static': True})`
 - Subclasses must implement at least `mv(x)` (matrix-vector product)
 - Operators are directly callable: `op(x) = op.mv(x)`
 - Properties: `.T` (transpose), `.I` (inverse), `in_structure`/`out_structure` (`PyTree[jax.ShapeDtypeStruct]`, static)
@@ -71,7 +67,7 @@ Python, JAX, linear operator framework, CMB mapmaking.
 - Composite operators:
   - `op1 @ op2 = CompositionOperator(op1, op2)`
   - `op1 + op2 = AdditionOperator(op1, op2)`
-- Composite operators can be simplified (`op.reduce()`) using algebraic rules from `COMPOSITION_RULE_REGISTRY` and `ADDITION_RULE_REGISTRY` (e.g. `A @ A.I -> I`)
+  - Composite operators can be simplified (`op.reduce()`) using algebraic rules from `COMPOSITION_RULE_REGISTRY` and `ADDITION_RULE_REGISTRY` (e.g. `A @ A.I -> I`)
 
 ### Observation operators (`/src/furax/obs`)
 

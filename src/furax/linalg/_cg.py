@@ -3,8 +3,6 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from jax.sharding import NamedSharding
-from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Num, PyTree
 
 from furax import AbstractLinearOperator, tree
@@ -22,38 +20,6 @@ class CGResult(NamedTuple):
     solution: PyTree[Num[Array, '...']]
     residuals: Float[Array, ' max_steps']
     num_steps: Array
-
-
-def _replicated_sharding() -> NamedSharding | None:
-    """Return a fully-replicated NamedSharding for the active mesh, or None."""
-    mesh = jax.sharding.get_abstract_mesh()
-    if mesh.empty:
-        return None
-    return NamedSharding(mesh, P())
-
-
-def _sharded_dot(x: PyTree[Num[Array, '...']], y: PyTree[Num[Array, '...']]) -> Num[Array, '']:
-    """Sharding-aware scalar product of two PyTrees.
-
-    Equivalent to ``furax.tree.dot`` but tolerates inputs sharded along their
-    contracting dimensions: leaf reductions are constrained to fully-replicated
-    output sharding, which makes JAX insert an all-reduce instead of erroring.
-    """
-    replicated = _replicated_sharding()
-
-    def leaf_dot(a: Array, b: Array) -> Array:
-        prod = jnp.conj(a) * b
-        if replicated is None:
-            return jnp.sum(prod)
-        return jax.lax.with_sharding_constraint(jnp.sum(prod), replicated)  # type: ignore[no-any-return]
-
-    parts = jax.tree.map(leaf_dot, x, y)
-    return sum(jax.tree.leaves(parts), start=jnp.array(0))
-
-
-def _sharded_norm(x: PyTree[Num[Array, '...']]) -> Num[Array, '']:
-    """Sharding-aware Euclidean norm of a PyTree, mirroring ``_sharded_dot``."""
-    return jnp.sqrt(jnp.real(_sharded_dot(x, x)))
 
 
 def cg(
@@ -121,7 +87,7 @@ def cg(
         x0 = tree.zeros_like(b)
 
     has_scale = atol > 0 or rtol > 0
-    norm_b = _sharded_norm(b)
+    norm_b = tree.norm(b)
     abs_tol = atol + rtol * norm_b
 
     def _converged(r_norm: Array) -> Array:
@@ -141,9 +107,9 @@ def cg(
     z = M(r)
 
     p = z
-    rz = _sharded_dot(r, z)  # r^T z (or r^T M^{-1} r)
+    rz = tree.dot(r, z)  # r^T z (or r^T M^{-1} r)
 
-    r0_norm = _sharded_norm(r)
+    r0_norm = tree.norm(r)
     # residuals[0] = initial residual; residuals[i+1] = residual after step i.
     # If i+1 >= max_steps (loop ran to completion), the last write is dropped by JAX.
     residuals = jnp.zeros(max_steps).at[0].set(r0_norm)
@@ -156,7 +122,7 @@ def cg(
         x, r, p, rz, _, i, residuals = carry
 
         Ap = A(p)
-        pAp = _sharded_dot(p, Ap)
+        pAp = tree.dot(p, Ap)
 
         safe_pAp = jnp.where(pAp == 0, 1.0, pAp)
         alpha = rz / safe_pAp
@@ -173,14 +139,14 @@ def cg(
         else:
             r = _cheap_r(r, alpha, Ap)
 
-        r_norm = _sharded_norm(r)
+        r_norm = tree.norm(r)
 
         if iteration_callback is not None:
             # `ordered = True` would error in distributed mode
             jax.debug.callback(iteration_callback, i, r_norm)
 
         z = M(r)
-        rz_new = _sharded_dot(r, z)
+        rz_new = tree.dot(r, z)
         safe_rz = jnp.where(rz == 0, 1.0, rz)
         beta = rz_new / safe_rz
 

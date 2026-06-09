@@ -125,7 +125,7 @@ def full_like(x: P, fill_value: ScalarLike) -> P:
         ...          'b': jax.ShapeDtypeStruct((), jnp.float32)}, 3)
         {'a': Array([3, 3], dtype=int32), 'b': Array(3., dtype=float32)}
     """
-    result: P = jax.tree.map(lambda leaf: jnp.full(leaf.shape, fill_value, leaf.dtype), x)
+    result: P = jax.tree.map(lambda leaf: jnp.full_like(leaf, fill_value), x)
     return result
 
 

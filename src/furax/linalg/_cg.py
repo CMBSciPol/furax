@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from typing import NamedTuple
 
+import equinox.internal as eqxi
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Num, PyTree
@@ -37,8 +38,10 @@ def cg(
     """Conjugate Gradient solver for symmetric positive definite systems Ax = b.
 
     Unlike lineax's CG solver, this implementation records the residual norm at
-    every iteration so you can monitor convergence, and tolerates inputs
-    sharded along their contracting dimensions via sharding-aware reductions.
+    every iteration so you can monitor convergence, tolerates inputs sharded
+    along their contracting dimensions via sharding-aware reductions, and is both
+    forward- and reverse-mode differentiable (it loops with a bounded
+    ``equinox.internal.while_loop``).
 
     Convergence is declared when ``||r|| <= atol + rtol * ||b||``.
 
@@ -159,6 +162,16 @@ def cg(
 
     already_converged = _converged(r0_norm)
     init_carry = (x0, r, p, rz, already_converged, jnp.int32(0), residuals)
-    x, _, _, _, _, num_steps, residuals = jax.lax.while_loop(cond_fn, body_fn, init_carry)
+    # `residuals` is only ever written (`.at[i].set`) inside the loop, never read, so mark it a
+    # buffer. `kind='bounded'` makes the loop both forward- and reverse-mode differentiable (lax's
+    # while_loop is forward-only); it unrolls up to `max_steps` with logarithmic checkpointing.
+    x, _, _, _, _, num_steps, residuals = eqxi.while_loop(
+        cond_fn,
+        body_fn,
+        init_carry,
+        max_steps=max_steps,
+        buffers=lambda carry: carry[-1],
+        kind='bounded',
+    )
 
     return CGResult(solution=x, residuals=residuals, num_steps=num_steps)

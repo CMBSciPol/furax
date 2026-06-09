@@ -160,8 +160,8 @@ class TestCGJit:
 class TestCGGrad:
     """Gradient tests for the CG solver.
 
-    The CG solver uses jax.lax.while_loop, which supports forward-mode AD
-    (jvp/jacfwd) but not reverse-mode AD (grad/vjp).
+    The CG solver uses eqxi.while_loop(kind='bounded'), which supports both
+    forward-mode (jvp/jacfwd) and reverse-mode (grad/vjp) autodiff.
 
     For f(b) = h(cg(A, b).solution), the Jacobian is A^{-1}: each column of
     jacfwd(solve)(b) is A^{-1} applied to the corresponding standard basis
@@ -211,9 +211,8 @@ class TestCGGrad:
         expected = v / d
         assert_allclose(jvp_val, expected, rtol=1e-4)
 
-    def test_grad_raises_for_while_loop(self):
-        """Reverse-mode AD through while_loop is not supported."""
-
+    def test_grad_wrt_b(self):
+        """Reverse-mode AD through the bounded while_loop: grad sum(A^{-1} b) = A^{-T} 1 = 1/d."""
         d = jnp.arange(1.0, 6.0)
         A = DiagonalOperator(d, in_structure=as_structure(d))
         b = jnp.ones(5)
@@ -221,8 +220,20 @@ class TestCGGrad:
         def f(b):
             return jnp.sum(cg(A, b, max_steps=20).solution)
 
-        with pytest.raises(ValueError, match='Reverse-mode differentiation'):
-            jax.grad(f)(b)
+        grad = jax.grad(f)(b)
+        assert_allclose(grad, 1.0 / d, rtol=1e-4)
+
+    def test_jacrev_wrt_b_equals_inverse(self):
+        """Full reverse-mode Jacobian of the solution w.r.t. b is A^{-1}."""
+        d = jnp.arange(1.0, 6.0)
+        A = DiagonalOperator(d, in_structure=as_structure(d))
+        b = jnp.ones(5)
+
+        def solve(b):
+            return cg(A, b, max_steps=20).solution
+
+        jac = jax.jacrev(solve)(b)
+        assert_allclose(jac, jnp.diag(1.0 / d), atol=1e-4)
 
 
 _AXIS_TYPES = {'explicit': AxisType.Explicit, 'auto': AxisType.Auto}
@@ -241,12 +252,7 @@ def _sharded_layout(ndim: int) -> tuple[tuple[int, ...], tuple[str, ...], P]:
 
 @pytest.mark.distributed
 class TestCGDistributed:
-    """Multi-device CG over a vector sharded along its contracting axis.
-
-    ``furax.tree.dot`` contracts via a reduction, so the all-reduce is inserted automatically where
-    ``jnp.vdot`` would raise ``ShardingTypeError`` under explicit-axis sharding. Run with
-    ``pytest -m distributed`` (the conftest provisions the devices); skipped otherwise.
-    """
+    """Multi-device CG over a vector sharded along its contracting axis."""
 
     K = 3  # replicated trailing dimension (amplitudes per block)
 

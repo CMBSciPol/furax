@@ -94,6 +94,7 @@ docs = [
     'nbsphinx>=0.8',
     'ipykernel>=6.0',
 ]
+cuda = ['jax[cuda13]>=0.10.0']
 
 [tool.coverage.report]
 exclude_also = [

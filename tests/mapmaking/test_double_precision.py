@@ -265,7 +265,6 @@ class TestMapMakerRunsX64OnDoublePrecisionFalse:
 # ----------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 @pytest.mark.insubprocess
 def test_mapmaker_runs_under_double_precision_false_and_x64_off() -> None:
     """End-to-end regression test for the float32 pipeline bug.

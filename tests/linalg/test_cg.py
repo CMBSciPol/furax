@@ -160,8 +160,8 @@ class TestCGJit:
 class TestCGGrad:
     """Gradient tests for the CG solver.
 
-    The CG solver uses eqxi.while_loop(kind='bounded'), which supports both
-    forward-mode (jvp/jacfwd) and reverse-mode (grad/vjp) autodiff.
+    Forward-mode (jvp/jacfwd) works with the default loop; reverse-mode (grad/vjp)
+    needs loop_kind='bounded'.
 
     For f(b) = h(cg(A, b).solution), the Jacobian is A^{-1}: each column of
     jacfwd(solve)(b) is A^{-1} applied to the corresponding standard basis
@@ -212,13 +212,13 @@ class TestCGGrad:
         assert_allclose(jvp_val, expected, rtol=1e-4)
 
     def test_grad_wrt_b(self):
-        """Reverse-mode AD through the bounded while_loop: grad sum(A^{-1} b) = A^{-T} 1 = 1/d."""
+        """Reverse-mode AD with loop_kind='bounded': grad sum(A^{-1} b) = A^{-T} 1 = 1/d."""
         d = jnp.arange(1.0, 6.0)
         A = DiagonalOperator(d, in_structure=as_structure(d))
         b = jnp.ones(5)
 
         def f(b):
-            return jnp.sum(cg(A, b, max_steps=20).solution)
+            return jnp.sum(cg(A, b, max_steps=20, loop_kind='bounded').solution)
 
         grad = jax.grad(f)(b)
         assert_allclose(grad, 1.0 / d, rtol=1e-4)
@@ -230,21 +230,41 @@ class TestCGGrad:
         b = jnp.ones(5)
 
         def solve(b):
-            return cg(A, b, max_steps=20).solution
+            return cg(A, b, max_steps=20, loop_kind='bounded').solution
 
         jac = jax.jacrev(solve)(b)
         assert_allclose(jac, jnp.diag(1.0 / d), atol=1e-4)
+
+    def test_grad_raises_with_default_lax_loop(self):
+        """The default loop_kind='lax' is forward-mode only; reverse-mode raises."""
+        d = jnp.arange(1.0, 6.0)
+        A = DiagonalOperator(d, in_structure=as_structure(d))
+        b = jnp.ones(5)
+
+        def f(b):
+            return jnp.sum(cg(A, b, max_steps=20).solution)
+
+        with pytest.raises(ValueError, match='[Rr]everse-mode'):
+            jax.grad(f)(b)
 
 
 class TestCGCurvature:
     """Negative curvature p^T A p < 0, which a positive definite A never produces."""
 
-    def test_raises_on_negative_curvature(self):
+    def test_no_check_by_default(self):
+        # Default assumes A positive definite and does not check; negative curvature is silent.
+        d = jnp.arange(1.0, 6.0)
+        A = DiagonalOperator(-d, in_structure=as_structure(d))  # negative definite
+        b = jnp.ones(5)
+        result = jax.block_until_ready(cg(A, b, max_steps=20))
+        assert result.solution.shape == b.shape
+
+    def test_check_curvature_raises(self):
         d = jnp.arange(1.0, 6.0)
         A = DiagonalOperator(-d, in_structure=as_structure(d))  # negative definite
         b = jnp.ones(5)
         with pytest.raises(Exception, match='negative curvature'):
-            jax.block_until_ready(cg(A, b, max_steps=20))
+            jax.block_until_ready(cg(A, b, max_steps=20, check_curvature=True))
 
     def test_truncate_stops_instead_of_raising(self):
         d = jnp.arange(1.0, 6.0)

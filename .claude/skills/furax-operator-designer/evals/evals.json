@@ -1,0 +1,50 @@
+{
+  "skill_name": "furax-operator-designer",
+  "evals": [
+    {
+      "id": 0,
+      "name": "compose-pointing-and-weighting",
+      "prompt": "I'm working in the furax repo. I have a sky map m of length n_pix, and a pointing that samples it onto a detector timestream of length n_samp: (P m)_t = m_{pix[t]}, where pix is an integer index array. Then I apply per-sample inverse-variance noise weights: (N^{-1} d)_t = w_t d_t. Build me the furax operator W = N^{-1} P (sky map -> weighted timestream), with the design doc and an example notebook.",
+      "expected_output": "A researcher bundle. The operator is a COMPOSITION of existing furax blocks (IndexOperator for the pointing, DiagonalOperator for the weights) via @, not a hand-rolled gather/multiply. design.md maps the math to the code with a LaTeX matrix sketch and embeds figs/structure.png (spy-plot of the real as_matrix()). example.ipynb is executed with real outputs. A verify.py compares as_matrix() to an independently built reference and passes.",
+      "files": [],
+      "assertions": [
+        {"text": "Produces an operator module (.py) defining W = N^{-1} P over sky map -> timestream"},
+        {"text": "The operator is built by composing IndexOperator (pointing) and DiagonalOperator (weights) with @, rather than reimplementing gather/weighting from scratch"},
+        {"text": "design.md exists, contains a LaTeX matrix sketch, and embeds figs/structure.png"},
+        {"text": "figs/structure.png exists and is a non-empty image"},
+        {"text": "example.ipynb exists and has executed code cells with outputs (no error outputs, no all-empty outputs)"},
+        {"text": "A verification (verify.py or notebook cell) compares as_matrix() to a reference built independently from the math, and passes when run with uv"}
+      ]
+    },
+    {
+      "id": 1,
+      "name": "finite-difference-hand-transpose",
+      "prompt": "Here is a short note (diff_operator.md) describing a first-difference regularization operator I want implemented in furax. Please implement it as a furax operator, hand-write the transpose explicitly (as the note specifies) rather than relying on autodiff, and show me it matches the math. Include a design doc and an example notebook.",
+      "expected_output": "A fresh AbstractLinearOperator subclass whose mv computes the forward difference x[1:]-x[:-1] (maps length n -> n-1), with an overridden transpose() implementing the D^T from the note. Because transpose is hand-written, the verification SHOULD include the adjoint check (op.T.as_matrix().T == op.as_matrix()) and it passes. as_matrix() matches the bidiagonal -1/+1 reference. design.md and an executed example.ipynb are produced.",
+      "files": ["files/diff_operator.md"],
+      "assertions": [
+        {"text": "Defines a fresh AbstractLinearOperator subclass with mv computing the forward difference (output length n-1 for input length n)"},
+        {"text": "transpose() is explicitly overridden (hand-written), matching the piecewise D^T in the note, not left to the autodiff default"},
+        {"text": "as_matrix() on a small instance equals the bidiagonal matrix with -1 on the diagonal and +1 on the superdiagonal"},
+        {"text": "Verification includes the adjoint check AND it is justified here (transpose is hand-written), and the check passes"},
+        {"text": "design.md maps each piece of the math to the code and embeds the spy-plot figs/structure.png"},
+        {"text": "example.ipynb exists and is executed with real (non-error) outputs"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "qu-rotation-orthogonal-property",
+      "prompt": "Implement a furax operator that rotates CMB linear polarization (Q, U) by an angle psi that varies per pixel. The action per pixel is the rotation:\n\n$$ \\begin{pmatrix} Q' \\\\ U' \\end{pmatrix} = \\begin{pmatrix} \\cos 2\\psi & -\\sin 2\\psi \\\\ \\sin 2\\psi & \\cos 2\\psi \\end{pmatrix} \\begin{pmatrix} Q \\\\ U \\end{pmatrix}. $$\n\nThe input is a {'Q': array, 'U': array} pytree over pixels. Since this is a rotation it should be tagged orthogonal. Give me the operator, a design doc showing the per-pixel 2x2 block structure, and an example notebook.",
+      "expected_output": "An operator acting on a {'Q','U'} pytree implementing the rotation, tagged @orthogonal (so .I == .T). Verification asserts M @ M.T == I to prove the orthogonal tag is earned, and does NOT apply tags it cannot guarantee (e.g. it is not symmetric). design.md shows the 2x2 per-pixel block structure with a LaTeX sketch and embeds the spy-plot. example.ipynb executed.",
+      "files": [],
+      "assertions": [
+        {"text": "Operator acts on a {'Q','U'} pytree and computes Q' = cos2psi*Q - sin2psi*U, U' = sin2psi*Q + cos2psi*U"},
+        {"text": "Tagged orthogonal (@orthogonal or equivalent) so that .I resolves to .T"},
+        {"text": "Verification asserts M @ M.T == I (and/or M.T @ M == I) on a small instance, validating the orthogonal tag, and passes"},
+        {"text": "Does not incorrectly tag properties it cannot guarantee (e.g. it is NOT tagged symmetric)"},
+        {"text": "design.md shows the per-pixel 2x2 rotation block (LaTeX) and embeds figs/structure.png"},
+        {"text": "example.ipynb exists and is executed with real (non-error) outputs"}
+      ]
+    }
+  ]
+}

@@ -56,3 +56,32 @@ Python, JAX, linear operator framework, CMB mapmaking.
   - `op1 @ op2 = CompositionOperator(op1, op2)`
   - `op1 + op2 = AdditionOperator(op1, op2)`
 - Composite operators can be simplified (`op.reduce()`) using algebraic rules from `COMPOSITION_RULE_REGISTRY` and `ADDITION_RULE_REGISTRY` (e.g. `A @ A.I -> I`)
+
+## Designing operators from math
+
+The repo-local **furax-operator-designer** skill (`.claude/skills/furax-operator-designer/`) turns a
+mathematical description (LaTeX, PDF, or Markdown) into a verified furax operator, a design doc with
+matrix sketches, and an executed example notebook. Reach for it when implementing an operator from
+equations.
+
+Minimal example — from the LaTeX of a forward-difference operator $D:\mathbb{R}^n\to\mathbb{R}^{n-1}$:
+
+$$ (D x)_i = x_{i+1} - x_i $$
+
+it writes the operator
+
+```python
+class ForwardDifferenceOperator(AbstractLinearOperator):
+    def mv(self, x):
+        return x[1:] - x[:-1]
+```
+
+and verifies it against the math via `as_matrix()` (shown for $n = 3$ — note the bidiagonal
+$-1/+1$ structure matches the equation):
+
+```python
+>>> op = ForwardDifferenceOperator(in_structure=jax.ShapeDtypeStruct((3,), jnp.float64))
+>>> op.as_matrix()
+Array([[-1.,  1.,  0.],
+       [ 0., -1.,  1.]], dtype=float64)
+```

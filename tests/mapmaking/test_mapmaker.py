@@ -28,6 +28,7 @@ from furax.mapmaking.mapmaker import get_obs_distribution_to_process
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import Stokes, ValidStokesType
+from tests.helpers import make_fake_lazy_observation
 
 
 class TestObsDistribution:
@@ -164,11 +165,64 @@ class TestMultiObsMapMaker:
         assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
 
 
-@pytest.mark.parametrize('name,demodulated', PARAMS)
+@pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])
+@pytest.mark.parametrize('stokes', STOKES_TYPES)
+class TestFakeObsMapMaker:
+    """Interface-agnostic pipeline coverage backed by the synthetic observation.
+
+    Unlike the classes above, these are *not* gated on sotodlib/toast being
+    installed and need no committed ``.h5`` fixtures: they exercise the binned
+    mapmaker end-to-end (both the modulated and demodulated paths) in a minimal
+    install (``[dev,mapmaking]`` only), where every interface-parametrized test
+    is skipped. The fake observation only supports the on-the-fly + healpix
+    path, so coverage is limited to that.
+    """
+
+    def test_model_vs_reader_structure(self, stokes, demodulated):
+        observations = [make_fake_lazy_observation()]
+        config = _config('healpix', stokes, demodulated=demodulated)
+        maker = MultiObservationMapMaker(observations, config=config)
+        reader = ObservationReader.from_observations(
+            observations, demodulated=demodulated, stokes=stokes
+        )
+        model = maker.build_model()
+        n_obs = jax.tree.leaves(model)[0].shape[0]
+        assert n_obs == len(observations) == reader.count
+        assert model.map_structure == maker.landscape.structure
+        assert model.tod_structure == reader.out_structure['sample_data']
+
+    def test_full_binned_mapmaker_multi_obs(self, stokes, demodulated):
+        # Two observations (distinct noise seeds) so the multi-observation
+        # accumulation path is exercised without any interface or data file.
+        observations = [make_fake_lazy_observation(seed=i) for i in range(2)]
+        config = _config('healpix', stokes, demodulated=demodulated)
+        maker = MultiObservationMapMaker(observations, config=config)
+        results = maker.run()
+        n_stokes = len(stokes)
+        assert results.hit_map.shape == maker.landscape.shape
+        assert jnp.all(results.hit_map >= 0)
+        assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
+        assert results.solver_stats is not None
+        num_steps = results.solver_stats['num_steps']
+        assert num_steps == 1, (
+            f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'
+        )
+
+
+@pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])
 class TestNoiseModelSelection:
-    def test_white_noise_models_binned_or_demodulated(self, name, demodulated):
+    """Noise-model *selection* logic. This is generic mapmaker behaviour that
+    does not depend on the specific interface or sample values, so it is backed
+    by the synthetic observation -- no sotodlib/toast install or ``.h5`` fixture
+    required.
+    """
+
+    def _observations(self):
+        return [make_fake_lazy_observation(seed=i) for i in range(2)]
+
+    def test_white_noise_models_binned_or_demodulated(self, demodulated):
         stokes = 'IQU'
-        observations = _observations(name, demodulated)
+        observations = self._observations()
         config = _config('healpix', stokes, demodulated=demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         noise_model = maker.build_model().noise_model
@@ -180,8 +234,8 @@ class TestNoiseModelSelection:
         else:
             assert isinstance(noise_model, WhiteNoiseModel)
 
-    def test_identity_builds_unit_white_noise(self, name, demodulated):
-        observations = _observations(name, demodulated)
+    def test_identity_builds_unit_white_noise(self, demodulated):
+        observations = self._observations()
         config = _config('healpix', 'IQU', demodulated, identity_noise=True)
         maker = MultiObservationMapMaker(observations, config=config)
         noise_leaves = jax.tree.leaves(
@@ -193,8 +247,8 @@ class TestNoiseModelSelection:
             assert jnp.allclose(nm.sigma, 1.0)
 
     @pytest.mark.parametrize('method', [Methods.BINNED, Methods.MAXL])
-    def test_identity_full_mapmaker(self, name, demodulated, method):
-        observations = _observations(name, demodulated)
+    def test_identity_full_mapmaker(self, demodulated, method):
+        observations = self._observations()
         config = _config('healpix', 'IQU', demodulated, method=method, identity_noise=True)
         maker = MultiObservationMapMaker(observations, config=config)
         results = maker.run()
@@ -230,16 +284,12 @@ class TestATOPMapMaker:
         results = maker.run()
         assert results.icov.shape == (2, 2, *maker.landscape.shape)
 
-    def test_atop_iqu_stokes_falls_back_to_qu(self, name, landscape_type):
-        """stokes='IQU' with ATOP is converted to 'QU'."""
-        observations = _observations(name)
-        config = _config(landscape_type, stokes='IQU', method=Methods.ATOP, atop_tau=ATOP_TAU)
-        maker = MultiObservationMapMaker(observations, config=config)
-        assert maker.config.landscape.stokes == 'QU'
-
 
 class TestATOPStokesValidation:
-    """Test that invalid Stokes configurations raise errors when using ATOP."""
+    """ATOP Stokes-config normalisation/validation. Pure construction-time logic
+    that never reads sample data, so it is backed by the synthetic observation
+    (or an empty list) rather than an interface or ``.h5`` fixture.
+    """
 
     def _base_config(self, stokes: ValidStokesType) -> MapMakingConfig:
         return MapMakingConfig(
@@ -247,6 +297,13 @@ class TestATOPStokesValidation:
             atop_tau=ATOP_TAU,
             landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16)),
         )
+
+    def test_iqu_stokes_falls_back_to_qu(self):
+        """stokes='IQU' with ATOP is converted to 'QU'."""
+        maker = MultiObservationMapMaker(
+            [make_fake_lazy_observation()], config=self._base_config('IQU')
+        )
+        assert maker.config.landscape.stokes == 'QU'
 
     def test_i_stokes_raises(self):
         with pytest.raises(ValueError, match='cannot be reduced to a supported type'):

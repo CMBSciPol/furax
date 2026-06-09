@@ -17,17 +17,11 @@ Two layers of coverage:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
-from jaxtyping import Bool, Float
 
 from furax.mapmaking import (
-    AbstractLazyObservation,
-    AbstractSatelliteObservation,
     MultiObservationMapMaker,
     ObservationReader,
 )
@@ -41,101 +35,7 @@ from furax.mapmaking.config import (
     SolverConfig,
     WeightingConfig,
 )
-from furax.mapmaking.noise import NoiseModel
-from furax.obs.landscapes import ProjectionType, StokesLandscape
-
-N_DETS = 1
-N_SAMPS = 1024
-SAMPLE_RATE = 100.0
-
-
-class _FakeSatelliteObservation(AbstractSatelliteObservation[None]):
-    """Self-contained synthetic observation used by the in-process tests.
-
-    Like the real interfaces, the getters return host (numpy) arrays; the reader
-    moves them to device through ``io_callback`` and the reader's ``dtype``
-    parameter is what decides the final dtype that flows into the operator chain.
-    """
-
-    def __init__(self) -> None:  # type: ignore[override]
-        # bypass AbstractObservation.__init__ — we don't need an underlying
-        # ``data`` container for these tests.
-        pass
-
-    @classmethod
-    def from_file(cls, filename, requested_fields=None) -> _FakeSatelliteObservation:
-        return cls()
-
-    @property
-    def name(self) -> str:
-        return 'fake_obs'
-
-    @property
-    def telescope(self) -> str:
-        return 'fake_telescope'
-
-    @property
-    def n_samples(self) -> int:
-        return N_SAMPS
-
-    @property
-    def detectors(self) -> list[str]:
-        return [f'det{i:02d}' for i in range(N_DETS)]
-
-    @property
-    def sample_rate(self) -> float:
-        return SAMPLE_RATE
-
-    def get_tods(self) -> Float[np.ndarray, 'dets samps']:
-        # Non-zero data so the white-noise PSD fit yields a finite sigma.
-        return np.random.default_rng(0).normal(size=(N_DETS, N_SAMPS)).astype(np.float32)
-
-    def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
-        return np.zeros(N_DETS, dtype=np.float64)
-
-    def get_hwp_angles(self) -> Float[np.ndarray, ' a']:
-        # Sweeping HWP angle at 2 Hz, wrapped to [0, 2pi).
-        t = np.arange(N_SAMPS) / SAMPLE_RATE
-        return np.asarray((2 * np.pi * 2.0 * t) % (2 * np.pi), dtype=np.float64)
-
-    def get_sample_mask(self) -> Bool[np.ndarray, 'dets samps']:
-        return np.ones((N_DETS, N_SAMPS), dtype=bool)
-
-    def get_timestamps(self) -> Float[np.ndarray, ' a']:
-        return np.asarray(1.7e9 + np.arange(N_SAMPS) / SAMPLE_RATE, dtype=np.float64)
-
-    def get_wcs_shape_and_kernel(self, resolution_arcmin, projection=ProjectionType.CAR):
-        raise NotImplementedError
-
-    def get_pointing_and_spin_angles(self, landscape: StokesLandscape):
-        raise NotImplementedError
-
-    def get_noise_model(self) -> None | NoiseModel:
-        return None
-
-    def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
-        # Sweep the boresight so samples hit a range of sky pixels.
-        phi = np.linspace(0.0, np.pi / 4, N_SAMPS)
-        q = np.zeros((N_SAMPS, 4), dtype=np.float64)
-        q[:, 0] = np.cos(phi / 2)
-        q[:, 3] = np.sin(phi / 2)
-        return q
-
-    def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
-        q = np.zeros((N_DETS, 4), dtype=np.float64)
-        q[:, 0] = 1.0
-        return q
-
-
-class _FakeLazyObservation(AbstractLazyObservation[None]):
-    interface_class = _FakeSatelliteObservation
-
-    def __init__(self) -> None:  # type: ignore[override]
-        self.file = Path('<synthetic>')
-
-    def get_data(self, requested_fields=None) -> _FakeSatelliteObservation:
-        return _FakeSatelliteObservation()
-
+from tests.helpers import make_fake_lazy_observation
 
 # ----------------------------------------------------------------------------
 # In-process dtype plumbing tests
@@ -162,7 +62,7 @@ class TestObservationReaderDtype:
         we would silently break the historical contract.
         """
         reader = ObservationReader.from_observations(
-            [_FakeLazyObservation()], requested_fields=REQUIRED_FIELDS
+            [make_fake_lazy_observation()], requested_fields=REQUIRED_FIELDS
         )
         assert reader.dtype == jnp.float64
         for field in REQUIRED_FIELDS:
@@ -178,7 +78,7 @@ class TestObservationReaderDtype:
         so timestamps/HWP/quaternions/noise_model_fits must also be float32.
         """
         reader = ObservationReader.from_observations(
-            [_FakeLazyObservation()],
+            [make_fake_lazy_observation()],
             requested_fields=REQUIRED_FIELDS,
             dtype=jnp.float32,
         )
@@ -191,7 +91,7 @@ class TestObservationReaderDtype:
     def test_bool_masks_remain_bool(self) -> None:
         """Sanity check: changing ``dtype`` must not affect boolean masks."""
         reader = ObservationReader.from_observations(
-            [_FakeLazyObservation()],
+            [make_fake_lazy_observation()],
             requested_fields=['valid_sample_masks', 'sample_data'],
             dtype=jnp.float32,
         )
@@ -213,7 +113,7 @@ class TestMapMakerForwardsDtype:
             pointing=PointingConfig(on_the_fly=True),
             double_precision=double_precision,
         )
-        maker = MultiObservationMapMaker([_FakeLazyObservation()], config=config)
+        maker = MultiObservationMapMaker([make_fake_lazy_observation()], config=config)
         reader = maker.get_reader(REQUIRED_FIELDS)
         assert reader.dtype == expected_dtype
         for field in REQUIRED_FIELDS:
@@ -252,7 +152,7 @@ class TestMapMakerRunsX64OnDoublePrecisionFalse:
             cond_cut=0.0,
             solver=SolverConfig(rtol=1e-6, atol=0, max_steps=10),
         )
-        maker = MultiObservationMapMaker([_FakeLazyObservation()], config=config)
+        maker = MultiObservationMapMaker([make_fake_lazy_observation()], config=config)
         results = maker.run()
 
         map_dtype = jax.tree.leaves(results.map)[0].dtype
@@ -292,7 +192,7 @@ def test_mapmaker_runs_under_double_precision_false_and_x64_off() -> None:
         cond_cut=0.0,
         solver=SolverConfig(rtol=1e-6, atol=0, max_steps=10),
     )
-    maker = MultiObservationMapMaker([_FakeLazyObservation()], config=config)
+    maker = MultiObservationMapMaker([make_fake_lazy_observation()], config=config)
     results = maker.run()
 
     map_dtype = jax.tree.leaves(results.map)[0].dtype

@@ -22,18 +22,37 @@ Python, JAX, linear operator framework, CMB mapmaking.
 - Use comments purposefully. Do not narrate code. Explain invariants and unusual patterns.
 - Always format and check Python files after writing or editing them.
 - Imports at top of file. Valid exceptions: circular imports, lazy loading.
+- Use jaxtyping annotations, e.g. `Inexact[jax.Array, 'dim1 dim2']`
+  - for uni-dimensional arrays, prepend a space to the start of the shape (e.g. `Float32[jax.Array, ' x']`) to turn Ruff F821 error (undefined name) into F722 (syntax error in forward annotation, ignored)
 
 ## Testing
 
 - Add tests for new behaviour: cover success, failure, and edge cases.
 - Use `@pytest.mark.parametrize` for multiple similar inputs: consolidate tests that only differ in input/expected values into a single parametrized test.
+- Use `@pytest.mark.slow` for expensive tests (excluded from default test runs)
 - Top-level `tests/conftest.py` contains an session-scope autouse fixture that sets `jax_enable_x64=True` for all tests.
 
 ## Architecture
 
 - /src/furax.................Furax source code
 - /src/furax/core............Linear operator algebra
+- /src/furax/tree.py.........PyTree utilities
 - /src/furax/mapmaking.......Mapmaking-specific code
 - /src/furax/interfaces......Mapmaking interfaces with sotodlib/toast/litebird_sim
 - /src/so_mapmaking..........CLI for multi-observation mapmaking with Simons Observatory data
 - /tests.....................Tests (mirror /src structure)
+
+### AbstractLinearOperator (`/src/furax/core/_base.py`)
+
+`AbstractLinearOperator` (a frozen dataclass ABC) is the base class for all linear operators. Key features:
+
+- Automatic PyTree dataclass: subclasses get `@dataclass(frozen=True)` and registered as JAX PyTree nodes via `__init_subclass__`
+- Dataclass fields can be dynamic (JAX arrays, traced) or static (shapes, metadata, etc.). Mask static fields with `axis: int = field(metadata={'static': True})`
+- Subclasses must implement at least `mv(x)` (matrix-vector product)
+- Operators are directly callable: `op(x) = op.mv(x)`
+- Properties: `.T` (transpose), `.I` (inverse), `in_structure`/`out_structure` (`PyTree[jax.ShapeDtypeStruct]`, static)
+- Tag system: `OperatorTag` IntFlag marks algebraic properties, applied via decorators: `@square`, `@symmetric`, `@orthogonal`, `@diagonal`, etc.
+- Composite operators:
+  - `op1 @ op2 = CompositionOperator(op1, op2)`
+  - `op1 + op2 = AdditionOperator(op1, op2)`
+- Composite operators can be simplified (`op.reduce()`) using algebraic rules from `COMPOSITION_RULE_REGISTRY` and `ADDITION_RULE_REGISTRY` (e.g. `A @ A.I -> I`)

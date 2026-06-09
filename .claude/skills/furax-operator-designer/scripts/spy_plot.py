@@ -22,7 +22,7 @@ from typing import Any
 
 import matplotlib
 
-matplotlib.use("Agg")  # headless: doc generation has no display
+matplotlib.use('Agg')  # headless: doc generation has no display
 
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
@@ -34,9 +34,9 @@ def spy(
     *,
     title: str | None = None,
     ax: Any = None,
-    annotate: bool | str = "auto",
+    annotate: bool | str = 'auto',
     annotate_limit: int = 12,
-    cmap: str = "RdBu_r",
+    cmap: str = 'RdBu_r',
     dpi: int = 130,
 ) -> Any:
     """Draw the structure of a 2-D matrix and optionally save it.
@@ -57,7 +57,7 @@ def spy(
     """
     m = np.asarray(matrix)
     if m.ndim != 2:
-        raise ValueError(f"spy expects a 2-D matrix, got shape {m.shape}.")
+        raise ValueError(f'spy expects a 2-D matrix, got shape {m.shape}.')
     m = m.astype(float)
     n_rows, n_cols = m.shape
 
@@ -74,11 +74,11 @@ def spy(
         fig = ax.figure
 
     cmap_obj = plt.get_cmap(cmap).copy()
-    cmap_obj.set_bad(color="white")  # zeros -> blank
-    im = ax.imshow(masked, cmap=cmap_obj, vmin=-vmax, vmax=vmax, aspect="equal")
+    cmap_obj.set_bad(color='white')  # zeros -> blank
+    im = ax.imshow(masked, cmap=cmap_obj, vmin=-vmax, vmax=vmax, aspect='equal')
 
     do_annot = annotate is True or (
-        annotate == "auto" and n_rows <= annotate_limit and n_cols <= annotate_limit
+        annotate == 'auto' and n_rows <= annotate_limit and n_cols <= annotate_limit
     )
     if do_annot:
         for i in range(n_rows):
@@ -89,43 +89,43 @@ def spy(
                 ax.text(
                     j,
                     i,
-                    f"{v:g}",
-                    ha="center",
-                    va="center",
+                    f'{v:g}',
+                    ha='center',
+                    va='center',
                     fontsize=8,
-                    color="black" if abs(v) < 0.6 * vmax else "white",
+                    color='black' if abs(v) < 0.6 * vmax else 'white',
                 )
 
     if max(n_rows, n_cols) <= 40:  # cell gridlines only stay legible when small
         ax.set_xticks(np.arange(-0.5, n_cols, 1), minor=True)
         ax.set_yticks(np.arange(-0.5, n_rows, 1), minor=True)
-        ax.grid(which="minor", color="0.85", linewidth=0.5)
-        ax.tick_params(which="minor", length=0)
+        ax.grid(which='minor', color='0.85', linewidth=0.5)
+        ax.tick_params(which='minor', length=0)
 
-    ax.set_xlabel("input index (column)")
-    ax.set_ylabel("output index (row)")
+    ax.set_xlabel('input index (column)')
+    ax.set_ylabel('output index (row)')
     if title:
         ax.set_title(title)
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="entry value")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label='entry value')
 
     if path is not None and created:
         fig.tight_layout()
-        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        fig.savefig(path, dpi=dpi, bbox_inches='tight')
         plt.close(fig)
     return ax
 
 
 def _main() -> None:
-    p = argparse.ArgumentParser(description="Render a dense matrix (.npy) as a structure plot.")
-    p.add_argument("matrix", help="Path to a .npy file holding a 2-D array.")
-    p.add_argument("output", help="Output image path (e.g. figs/structure.png).")
-    p.add_argument("--title", default=None)
-    p.add_argument("--annotate", choices=["auto", "always", "never"], default="auto")
+    p = argparse.ArgumentParser(description='Render a dense matrix (.npy) as a structure plot.')
+    p.add_argument('matrix', help='Path to a .npy file holding a 2-D array.')
+    p.add_argument('output', help='Output image path (e.g. figs/structure.png).')
+    p.add_argument('--title', default=None)
+    p.add_argument('--annotate', choices=['auto', 'always', 'never'], default='auto')
     args = p.parse_args()
-    annotate: bool | str = {"auto": "auto", "always": True, "never": False}[args.annotate]
+    annotate: bool | str = {'auto': 'auto', 'always': True, 'never': False}[args.annotate]
     spy(np.load(args.matrix), args.output, title=args.title, annotate=annotate)
-    print(f"wrote {args.output}")
+    print(f'wrote {args.output}')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     _main()

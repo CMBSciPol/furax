@@ -28,7 +28,7 @@ class _CGCarry(NamedTuple):
     """Loop-carried state for the CG iteration.
 
     ``residuals`` is kept last and write-only so it can be passed as the ``eqxi.while_loop``
-    buffer. ``truncated`` ends the loop early on negative curvature (``truncate=True``).
+    buffer. ``truncated`` ends the loop early on negative curvature (``negative_curvature='truncate'``).
     """
 
     x: PyTree[Num[Array, '...']]
@@ -51,8 +51,7 @@ def cg(
     atol: float = 0.0,
     rtol: float = 1e-5,
     stabilise_every: int = 10,
-    truncate: bool = False,
-    check_curvature: bool = False,
+    negative_curvature: Literal['ignore', 'error', 'truncate'] = 'ignore',
     loop_kind: Literal['lax', 'checkpointed', 'bounded'] = 'lax',
     iteration_callback: Callable[[Array, Array], None] | None = None,
 ) -> CGResult:
@@ -66,8 +65,8 @@ def cg(
     Convergence is declared when ``||r|| <= atol + rtol * ||b||``. With ``atol``
     and ``rtol`` both 0 the criterion is never met and the solver runs for exactly
     ``max_steps`` steps; otherwise it stops early once the residual is small enough,
-    and ``max_steps`` is only a ceiling. ``A`` is assumed positive definite and its
-    curvature is not checked unless ``truncate`` or ``check_curvature`` is set.
+    and ``max_steps`` is only a ceiling. ``A`` is assumed positive definite; negative
+    curvature is handled per ``negative_curvature``.
 
     Args:
         A: A symmetric positive definite linear operator.
@@ -82,15 +81,16 @@ def cg(
             the true residual ``b - A x`` every N iterations (after steps
             N, 2N, 3N, ...). This counters floating-point drift at the cost of
             one extra matvec per stabilisation.
-        truncate: If True, stop on negative curvature ``p^T A p < 0`` and return
-            the last iterate before the bad direction (truncated CG, as used by
-            Newton-CG on indefinite Hessians). A positive definite ``A`` never
-            produces negative curvature, so this is a no-op for well-posed solves.
-        check_curvature: If True, raise as soon as negative curvature ``p^T A p < 0``
-            is encountered (a debugging aid for verifying ``A`` is positive definite;
-            configurable via Equinox's ``EQX_ON_ERROR``, see ``equinox.error_if``).
-            Off by default: the per-iteration check has a real runtime cost. Ignored
-            when ``truncate`` is set.
+        negative_curvature: How to handle negative curvature ``p^T A p < 0``, which a
+            positive definite ``A`` never produces. One of:
+
+            - ``'ignore'`` (default): assume ``A`` is positive definite and do not
+                check. Fastest; the other modes add a per-iteration check.
+            - ``'error'``: raise as soon as negative curvature is encountered (a
+                debugging aid for verifying ``A``; configurable via Equinox's
+                ``EQX_ON_ERROR``, see ``equinox.error_if``).
+            - ``'truncate'``: stop and return the last iterate before the bad
+                direction (truncated CG, as used by Newton-CG on indefinite Hessians).
         loop_kind: Lowering for the iteration loop (``equinox.internal.while_loop``).
             ``'lax'`` (default) is fastest and forward-mode differentiable only.
             ``'bounded'`` adds reverse-mode AD but its cost scales with ``max_steps``
@@ -116,6 +116,13 @@ def cg(
         >>> bool(jnp.allclose(result.solution, expected, atol=1e-4))
         True
     """
+    if negative_curvature not in ('ignore', 'error', 'truncate'):
+        raise ValueError(
+            f'negative_curvature must be ignore/error/truncate, got {negative_curvature!r}'
+        )
+    truncate = negative_curvature == 'truncate'
+    check_curvature = negative_curvature == 'error'
+
     if x0 is None:
         x0 = tree.zeros_like(b)
 

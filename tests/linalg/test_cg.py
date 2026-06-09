@@ -259,26 +259,31 @@ class TestCGCurvature:
         result = jax.block_until_ready(cg(A, b, max_steps=20))
         assert result.solution.shape == b.shape
 
-    def test_check_curvature_raises(self):
+    def test_error_mode_raises(self):
         d = jnp.arange(1.0, 6.0)
         A = DiagonalOperator(-d, in_structure=as_structure(d))  # negative definite
         b = jnp.ones(5)
         with pytest.raises(Exception, match='negative curvature'):
-            jax.block_until_ready(cg(A, b, max_steps=20, check_curvature=True))
+            jax.block_until_ready(cg(A, b, max_steps=20, negative_curvature='error'))
 
     def test_truncate_stops_instead_of_raising(self):
         d = jnp.arange(1.0, 6.0)
         A = DiagonalOperator(-d, in_structure=as_structure(d))  # negative definite
         b = jnp.ones(5)
         # Bad curvature hits on the first direction: no step taken, solution stays at x0 (zeros).
-        result = cg(A, b, max_steps=20, truncate=True)
+        result = cg(A, b, max_steps=20, negative_curvature='truncate')
         assert int(result.num_steps) == 1
         assert_allclose(result.solution, jnp.zeros(5), atol=0.0)
 
     def test_truncate_matches_default_when_positive_definite(self):
         A, b, x_true = _diagonal_system()
-        result = cg(A, b, max_steps=20, truncate=True)
+        result = cg(A, b, max_steps=20, negative_curvature='truncate')
         assert_allclose(result.solution, x_true, rtol=1e-4)
+
+    def test_invalid_negative_curvature_raises(self):
+        A, b, _ = _diagonal_system()
+        with pytest.raises(ValueError, match='negative_curvature'):
+            cg(A, b, max_steps=20, negative_curvature='nope')
 
 
 _AXIS_TYPES = {'explicit': AxisType.Explicit, 'auto': AxisType.Auto}

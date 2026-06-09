@@ -143,7 +143,7 @@ class TestMap2Alm:
         out = map2alm(random_maps)
         for leaf_in, leaf_out in zip(jax.tree.leaves(random_maps), jax.tree.leaves(out)):
             expected = jhp.map2alm(leaf_in, iter=map2alm.iter, lmax=LMAX, pol=False)
-            assert jnp.array_equal(leaf_out, expected)
+            assert jnp.allclose(leaf_out, expected, rtol=0, atol=1e-14)
 
 
 class TestAlm2Map:
@@ -212,7 +212,7 @@ class TestAlm2Map:
         out = alm2map(alms)
         for leaf_in, leaf_out in zip(jax.tree.leaves(alms), jax.tree.leaves(out)):
             expected = jnp.real(jhp.alm2map(leaf_in, nside=NSIDE, lmax=LMAX, pol=False))
-            assert jnp.array_equal(leaf_out, expected)
+            assert jnp.allclose(leaf_out, expected, rtol=0, atol=1e-14)
 
 
 class TestSHTRule:

@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import get_args
 
 import healpy as hp
@@ -9,6 +10,10 @@ from jaxtyping import Array, Float
 
 from furax.obs.stokes import StokesIQU, ValidStokesType
 from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT
+
+# Disable JAX GPU memory pre-allocation so the allocator can free memory between
+# tests instead of holding 75% of GPU memory for the entire session.
+os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 
 
 @pytest.fixture(scope='session', autouse=True)

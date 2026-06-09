@@ -19,7 +19,7 @@ Python, JAX, linear operator framework, CMB mapmaking.
 ## Guidelines
 
 - Before adding a new operator or test, read an existing one in the same module and mirror its patterns.
-- Always run `uvx prek --files <files>` after writing or editing files.
+- Always run `uvx prek --files <files>` when you are done with your task, and address errors.
 - Naming: `PascalCase` for classes/operators (e.g. `BeamOperator`), `snake_case` for functions/variables. Single-quote strings, 100-char lines (enforced by ruff).
 - Write Google-style docstrings.
 - Use comments purposefully. Do not narrate code. Explain invariants and unusual patterns.

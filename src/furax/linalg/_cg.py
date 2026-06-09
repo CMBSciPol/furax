@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from typing import NamedTuple
 
+import equinox as eqx
 import equinox.internal as eqxi
 import jax
 import jax.numpy as jnp
@@ -33,24 +34,20 @@ def cg(
     atol: float = 0.0,
     rtol: float = 1e-5,
     stabilise_every: int = 10,
+    truncate: bool = False,
     iteration_callback: Callable[[Array, Array], None] | None = None,
 ) -> CGResult:
     """Conjugate Gradient solver for symmetric positive definite systems Ax = b.
 
-    Unlike lineax's CG solver, this implementation records the residual norm at
-    every iteration so you can monitor convergence, tolerates inputs sharded
-    along their contracting dimensions via sharding-aware reductions, and is both
-    forward- and reverse-mode differentiable (it loops with a bounded
-    ``equinox.internal.while_loop``).
+    The residual norm is recorded at every iteration (see ``CGResult.residuals``)
+    so convergence can be monitored. Inputs may be sharded along their contracting
+    dimensions, and the solve is both forward- and reverse-mode differentiable.
 
-    Convergence is declared when ``||r|| <= atol + rtol * ||b||``.
-
-    Memory: the loop carry holds three vectors the size of the solution -- the
-    iterate ``x``, the residual ``r`` and the search direction ``p``. The
-    preconditioned residual ``z = M(r)`` and the matvec result ``A(p)`` are
-    transient within each iteration and not carried across steps. So peak working
-    set is roughly five solution-sized vectors plus whatever ``A`` and ``M`` need
-    internally for a single matvec.
+    Convergence is declared when ``||r|| <= atol + rtol * ||b||``. With ``atol``
+    and ``rtol`` both 0 the criterion is never met and the solver runs for exactly
+    ``max_steps`` steps; otherwise it stops early once the residual is small enough,
+    and ``max_steps`` is only a ceiling. Negative curvature (a non positive definite
+    ``A``) is handled per ``truncate``.
 
     Args:
         A: A symmetric positive definite linear operator.
@@ -61,12 +58,15 @@ def cg(
         max_steps: Maximum number of iteration steps.
         atol: Absolute tolerance on the residual norm.
         rtol: Relative tolerance on the residual norm (scaled by ``||b||``).
-            When both ``atol`` and ``rtol`` are 0, convergence is never
-            declared and the solver runs for exactly ``max_steps`` steps.
         stabilise_every: If set, replace the recursively-updated residual with
             the true residual ``b - A x`` every N iterations (after steps
             N, 2N, 3N, ...). This counters floating-point drift at the cost of
             one extra matvec per stabilisation.
+        truncate: How to handle negative curvature ``p^T A p < 0``, which a
+            positive definite ``A`` never produces. If False (default), raise a
+            runtime error (configurable via Equinox's ``EQX_ON_ERROR``; see
+            ``equinox.error_if``). If True, stop iterating and return the last
+            iterate before the bad direction (truncated CG).
         iteration_callback: Optional host callback called after each step with
             ``(step, r_norm)`` as 0-d JAX arrays.  Runs via
             ``jax.debug.callback`` so it is JIT-compatible and ordered.
@@ -83,8 +83,9 @@ def cg(
         >>> A = DiagonalOperator(d, in_structure=as_structure(d))
         >>> b = jnp.ones(5)
         >>> result = cg(A, b, max_steps=20)
-        >>> result.solution
-        Array([1.  , 0.5 , 0.333..., 0.25 , 0.2 ], dtype=float32)
+        >>> expected = jnp.array([1.0, 0.5, 1 / 3, 0.25, 0.2])
+        >>> bool(jnp.allclose(result.solution, expected, atol=1e-4))
+        True
     """
     if x0 is None:
         x0 = tree.zeros_like(b)
@@ -118,17 +119,27 @@ def cg(
     residuals = jnp.zeros(max_steps).at[0].set(r0_norm)
 
     def cond_fn(carry):  # type: ignore[no-untyped-def]
-        *_, converged, i, _ = carry
-        return ~converged & (i < max_steps)
+        _, _, _, _, converged, truncated, i, _ = carry
+        return ~converged & ~truncated & (i < max_steps)
 
     def body_fn(carry):  # type: ignore[no-untyped-def]
-        x, r, p, rz, _, i, residuals = carry
+        x, r, p, rz, _, _, i, residuals = carry
 
         Ap = A(p)
         pAp = tree.dot(p, Ap)
 
-        safe_pAp = jnp.where(pAp == 0, 1.0, pAp)
-        alpha = rz / safe_pAp
+        # `pAp == 0` only at convergence (p -> 0), handled by `safe_pAp`
+        # `pAp < 0` is genuine negative curvature, which a positive definite A should never produce
+        if truncate:
+            # Negative curvature: take no step this iteration and flag the loop to stop.
+            truncated = pAp < 0
+            safe_pAp = jnp.where(pAp == 0, 1.0, pAp)
+            alpha = jnp.where(truncated, 0.0, rz / safe_pAp)
+        else:
+            pAp = eqx.error_if(pAp, pAp < 0, 'cg: negative curvature detected p^T A p < 0')
+            truncated = jnp.array(False)
+            safe_pAp = jnp.where(pAp == 0, 1.0, pAp)
+            alpha = rz / safe_pAp
 
         x = tree.add(x, tree.mul(alpha, p))
 
@@ -158,14 +169,14 @@ def cg(
         converged = _converged(r_norm)
         residuals = residuals.at[i + 1].set(r_norm)
 
-        return x, r, p, rz_new, converged, i + 1, residuals
+        return x, r, p, rz_new, converged, truncated, i + 1, residuals
 
     already_converged = _converged(r0_norm)
-    init_carry = (x0, r, p, rz, already_converged, jnp.int32(0), residuals)
+    init_carry = (x0, r, p, rz, already_converged, jnp.array(False), jnp.int32(0), residuals)
     # `residuals` is only ever written (`.at[i].set`) inside the loop, never read, so mark it a
     # buffer. `kind='bounded'` makes the loop both forward- and reverse-mode differentiable (lax's
     # while_loop is forward-only); it unrolls up to `max_steps` with logarithmic checkpointing.
-    x, _, _, _, _, num_steps, residuals = eqxi.while_loop(
+    x, _, _, _, _, _, num_steps, residuals = eqxi.while_loop(
         cond_fn,
         body_fn,
         init_carry,

@@ -22,47 +22,31 @@ This framework provides building blocks for solving inverse problems, in particu
 Furax is available as [`furax`](https://pypi.org/project/furax/) on PyPI, and can be installed with:
 
 ```bash
-pip install furax
-```
-
-### Development version
-
-Clone the repository, and navigate to the root directory of the project.
-For example:
-
-```bash
-git clone git@github.com:CMBSciPol/furax.git
-cd furax
-```
-
-Then, install the package with:
-
-```bash
-pip install .
+uv add furax       # uv, recommended
+pip install furax  # pip, alternative
 ```
 
 ## Developing Furax
 
-After cloning, install in editable mode and with development dependencies:
+We strongly recommend using [`uv`](https://docs.astral.sh/uv) to work on Furax.
 
 ```bash
-pip install -e .[dev]
+uv sync                  # automatic editable install with `dev` dependency group
+uv sync --extra <extra>  # same with additional, optional dependencies
 ```
 
 We use [pytest](https://docs.pytest.org/en/stable/) for testing.
 You can run the tests with:
 
 ```bash
-pytest
+uv run pytest
 ```
 
-To ensure that your code passes the quality checks,
-you can use our [pre-commit](https://pre-commit.com/) configuration:
-
-1. Install the pre-commit hooks with
+To ensure that your code passes the quality checks, you can use our [pre-commit](https://pre-commit.com/) configuration.
+We recommend using [`prek`](https://prek.j178.dev/) to run the pre-commit hooks.
 
 ```bash
-pre-commit install
+uvx prek install  # install pre-commit hooks; every commit will trigger them
+uvx prek run      # run hooks on demand (staged files)
+uvx prek run -a   # run hooks (all files)
 ```
-
-2. That's it! Every commit will trigger the code quality checks.

@@ -12,8 +12,8 @@ from furax.tree import as_structure
 
 FOLDER = Path(__file__).parents[2] / 'data/sotodlib'
 FILES = ['test_obs.h5', 'test_obs_2.h5']
-OBS_NDET = [2, 14]
-OBS_NSAMPLE = [1_000, 10_000]
+OBS_NDET = [2, 4]
+OBS_NSAMPLE = [1_000, 3_000]
 
 
 @pytest.fixture

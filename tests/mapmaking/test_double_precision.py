@@ -35,7 +35,7 @@ from furax.mapmaking.config import (
     SolverConfig,
     WeightingConfig,
 )
-from tests.helpers import make_fake_lazy_observation
+from tests.mapmaking.helpers import FakeLazyObservation
 
 # ----------------------------------------------------------------------------
 # In-process dtype plumbing tests
@@ -62,7 +62,7 @@ class TestObservationReaderDtype:
         we would silently break the historical contract.
         """
         reader = ObservationReader.from_observations(
-            [make_fake_lazy_observation()], requested_fields=REQUIRED_FIELDS
+            [FakeLazyObservation()], requested_fields=REQUIRED_FIELDS
         )
         assert reader.dtype == jnp.float64
         for field in REQUIRED_FIELDS:
@@ -78,7 +78,7 @@ class TestObservationReaderDtype:
         so timestamps/HWP/quaternions/noise_model_fits must also be float32.
         """
         reader = ObservationReader.from_observations(
-            [make_fake_lazy_observation()],
+            [FakeLazyObservation()],
             requested_fields=REQUIRED_FIELDS,
             dtype=jnp.float32,
         )
@@ -91,7 +91,7 @@ class TestObservationReaderDtype:
     def test_bool_masks_remain_bool(self) -> None:
         """Sanity check: changing ``dtype`` must not affect boolean masks."""
         reader = ObservationReader.from_observations(
-            [make_fake_lazy_observation()],
+            [FakeLazyObservation()],
             requested_fields=['valid_sample_masks', 'sample_data'],
             dtype=jnp.float32,
         )
@@ -113,7 +113,7 @@ class TestMapMakerForwardsDtype:
             pointing=PointingConfig(on_the_fly=True),
             double_precision=double_precision,
         )
-        maker = MultiObservationMapMaker([make_fake_lazy_observation()], config=config)
+        maker = MultiObservationMapMaker([FakeLazyObservation()], config=config)
         reader = maker.get_reader(REQUIRED_FIELDS)
         assert reader.dtype == expected_dtype
         for field in REQUIRED_FIELDS:
@@ -152,7 +152,7 @@ class TestMapMakerRunsX64OnDoublePrecisionFalse:
             cond_cut=0.0,
             solver=SolverConfig(rtol=1e-6, atol=0, max_steps=10),
         )
-        maker = MultiObservationMapMaker([make_fake_lazy_observation()], config=config)
+        maker = MultiObservationMapMaker([FakeLazyObservation()], config=config)
         results = maker.run()
 
         map_dtype = jax.tree.leaves(results.map)[0].dtype
@@ -191,7 +191,7 @@ def test_mapmaker_runs_under_double_precision_false_and_x64_off() -> None:
         cond_cut=0.0,
         solver=SolverConfig(rtol=1e-6, atol=0, max_steps=10),
     )
-    maker = MultiObservationMapMaker([make_fake_lazy_observation()], config=config)
+    maker = MultiObservationMapMaker([FakeLazyObservation()], config=config)
     results = maker.run()
 
     map_dtype = jax.tree.leaves(results.map)[0].dtype

@@ -28,7 +28,7 @@ from furax.mapmaking.mapmaker import get_obs_distribution_to_process
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import Stokes, ValidStokesType
-from tests.helpers import make_fake_lazy_observation
+from tests.mapmaking.helpers import FakeLazyObservation
 
 
 class TestObsDistribution:
@@ -179,7 +179,7 @@ class TestFakeObsMapMaker:
     """
 
     def test_model_vs_reader_structure(self, stokes, demodulated):
-        observations = [make_fake_lazy_observation()]
+        observations = [FakeLazyObservation()]
         config = _config('healpix', stokes, demodulated=demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         reader = ObservationReader.from_observations(
@@ -194,7 +194,7 @@ class TestFakeObsMapMaker:
     def test_full_binned_mapmaker_multi_obs(self, stokes, demodulated):
         # Two observations (distinct noise seeds) so the multi-observation
         # accumulation path is exercised without any interface or data file.
-        observations = [make_fake_lazy_observation(seed=i) for i in range(2)]
+        observations = [FakeLazyObservation(seed=i) for i in range(2)]
         config = _config('healpix', stokes, demodulated=demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         results = maker.run()
@@ -218,7 +218,7 @@ class TestNoiseModelSelection:
     """
 
     def _observations(self):
-        return [make_fake_lazy_observation(seed=i) for i in range(2)]
+        return [FakeLazyObservation(seed=i) for i in range(2)]
 
     def test_white_noise_models_binned_or_demodulated(self, demodulated):
         stokes = 'IQU'
@@ -300,9 +300,7 @@ class TestATOPStokesValidation:
 
     def test_iqu_stokes_falls_back_to_qu(self):
         """stokes='IQU' with ATOP is converted to 'QU'."""
-        maker = MultiObservationMapMaker(
-            [make_fake_lazy_observation()], config=self._base_config('IQU')
-        )
+        maker = MultiObservationMapMaker([FakeLazyObservation()], config=self._base_config('IQU'))
         assert maker.config.landscape.stokes == 'QU'
 
     def test_i_stokes_raises(self):

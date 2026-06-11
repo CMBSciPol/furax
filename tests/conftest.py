@@ -1,65 +1,54 @@
 import logging
 import os
-from typing import get_args
 
-import healpy as hp
-import jax
-import numpy as np
 import pytest
-from jaxtyping import Array, Float
-
-from furax.obs.stokes import StokesIQU, ValidStokesType
-from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT
 
 # Disable JAX GPU memory pre-allocation so the allocator can free memory between
 # tests instead of holding 75% of GPU memory for the entire session.
 os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 
+# Do not import JAX here (directly or transitively): `JAX_PLATFORMS` and the device
+# count are snapshotted at `import jax`, which must happen after pytest_configure has
+# set them. Hence JAX-touching imports are deferred into fixtures and test modules.
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Provision several CPU devices for a ``-m distributed`` selection.
+
+    Must run before any ``import jax``: the platform and device count are fixed at backend init.
+    """
+    markexpr = str(getattr(config.option, 'markexpr', '') or '')
+    running_distributed = 'distributed' in markexpr and 'not distributed' not in markexpr
+    if not running_distributed:
+        return
+    if 'SLURM_JOB_ID' in os.environ:
+        import jax
+
+        jax.distributed.initialize()
+    else:
+        os.environ.setdefault('JAX_PLATFORMS', 'cpu')
+        os.environ.setdefault('XLA_FLAGS', '--xla_force_host_platform_device_count=8')
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Skip ``distributed``-marked tests unless several devices are available."""
+    import jax
+
+    if jax.device_count() >= 2:
+        return
+    skip = pytest.mark.skip(reason='distributed test; run with `pytest -m distributed`')
+    for item in items:
+        if item.get_closest_marker('distributed'):
+            item.add_marker(skip)
+
 
 @pytest.fixture(scope='session', autouse=True)
 def enable_x64() -> None:
+    import jax
+
     jax.config.update('jax_enable_x64', True)
 
 
 @pytest.fixture(scope='session', autouse=True)
 def silence_furax_logger() -> None:
     logging.getLogger('furax-mapmaking').setLevel(logging.WARNING)
-
-
-def load_planck(nside: int) -> np.ndarray:
-    PLANCK_URL = 'https://irsa.ipac.caltech.edu/data/Planck/release_3/all-sky-maps/maps/HFI_SkyMap_143_2048_R3.01_full.fits'
-    map_2048 = hp.read_map(PLANCK_URL, field=['I_STOKES', 'Q_STOKES', 'U_STOKES'])
-    return hp.ud_grade(map_2048, nside)
-
-
-@pytest.fixture(scope='session')
-def planck_iqu_256() -> StokesIQU:
-    nside = 256
-    path = TEST_DATA_PLANCK / f'HFI_SkyMap_143_{nside}_R3.01_full_IQU.fits'
-    if path.exists():
-        maps = hp.read_map(path, field=[0, 1, 2])
-    else:
-        maps = load_planck(nside)
-        TEST_DATA_PLANCK.mkdir(parents=True, exist_ok=True)
-        hp.write_map(path, maps)
-    i, q, u = maps.astype(float)
-    return StokesIQU(
-        i=jax.device_put(i),
-        q=jax.device_put(q),
-        u=jax.device_put(u),
-    )
-
-
-@pytest.fixture(scope='session')
-def sat_nhits() -> Float[Array, '...']:
-    nhits = hp.read_map(TEST_DATA_SAT / 'norm_nHits_SA_35FOV_G_nside512.fits').astype('<f8')
-    npixel = nhits.size
-    nhits[: npixel // 2] = 0
-    nhits /= np.sum(nhits)
-    return jax.device_put(nhits)
-
-
-@pytest.fixture(params=get_args(ValidStokesType))
-def stokes(request: pytest.FixtureRequest) -> ValidStokesType:
-    """Parametrized fixture for I, QU, IQU and IQUV."""
-    return request.param

@@ -1821,8 +1821,8 @@ with-cuda = [
 
 [[package]]
 name = "jax-healpy"
-version = "0.6.post42+g0d31046"
-source = { git = "https://github.com/CMBSciPol/jax-healpy?branch=implement-alm2map#0d31046a49475291c6c2a872d0400a857e0f279f" }
+version = "0.7.dev46+gdc35463cf"
+source = { git = "https://github.com/CMBSciPol/jax-healpy?branch=implement-alm2map#dc35463cf2b3336445c71162f11039829f58918b" }
 dependencies = [
     { name = "jax" },
     { name = "jaxtyping" },

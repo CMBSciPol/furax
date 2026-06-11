@@ -125,7 +125,7 @@ def full_like(x: P, fill_value: ScalarLike) -> P:
         ...          'b': jax.ShapeDtypeStruct((), jnp.float32)}, 3)
         {'a': Array([3, 3], dtype=int32), 'b': Array(3., dtype=float32)}
     """
-    result: P = jax.tree.map(lambda leaf: jnp.full(leaf.shape, fill_value, leaf.dtype), x)
+    result: P = jax.tree.map(lambda leaf: jnp.full_like(leaf, fill_value), x)
     return result
 
 
@@ -254,7 +254,15 @@ def dot(x: PyTree[Num[Array, '...']], y: PyTree[Num[Array, '...']]) -> Num[Array
         >>> fx.tree.dot(x, y)
         Array(5., dtype=float32)
     """
-    xy = jax.tree.map(jnp.vdot, x, y)
+    # No `jnp.vdot`: it lowers to `dot_general`, which under explicit-axis sharding refuses
+    # to pick an output sharding when the contracting axis is sharded (raises ShardingTypeError).
+    #
+    # Instead, simply use the reduction `sum(conj(x) * y)` for which JAX auto-inserts the
+    # all-reduce,so the dot is well-defined when sharded.
+    #
+    # Trade-off: we lose `dot_general`'s fused high-precision accumulation (vdot can pass
+    # `precision=HIGHEST`); a plain `jnp.sum` accumulates in the leaf dtype.
+    xy = jax.tree.map(lambda a, b: jnp.sum(jnp.conj(a) * b), x, y)
     return sum(jax.tree.leaves(xy), start=jnp.array(0))
 
 
@@ -272,7 +280,9 @@ def norm(x: PyTree[Num[Array, '...']]) -> Num[Array, '']:
         >>> fx.tree.norm(x)
         Array(5., dtype=float32)
     """
-    return jnp.sqrt(dot(x, x))
+    # `dot(x, x) = sum(|x|^2)` is already real-valued
+    # explicit `.real` keeps the result real-dtyped for complex inputs
+    return jnp.sqrt(dot(x, x).real)
 
 
 def matvec(

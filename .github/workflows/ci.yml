@@ -48,4 +48,7 @@ jobs:
         run: uv sync --locked --all-extras
 
       - name: Run tests
-        run: uv run pytest -vv -m "not slow"
+        run: uv run pytest -vv
+
+      - name: Run distributed tests
+        run: uv run pytest -vv -m distributed

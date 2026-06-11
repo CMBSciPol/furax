@@ -1,10 +1,12 @@
 import time
 
+import healpy as hp
 import jax
 import jax.numpy as jnp
 import lineax as lx
 import numpy as np
 import pytest
+from jaxtyping import Array, Float
 from numpy.random import PCG64, Generator
 
 from furax import Config, DiagonalOperator, OperatorTag
@@ -17,7 +19,42 @@ from furax._instruments.sat import (
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs._samplings import create_random_sampling
 from furax.obs.landscapes import HealpixLandscape
+from furax.obs.stokes import StokesIQU
 from furax.tree import as_structure
+from tests.helpers import TEST_DATA_PLANCK, TEST_DATA_SAT
+
+
+def load_planck(nside: int) -> np.ndarray:
+    PLANCK_URL = 'https://irsa.ipac.caltech.edu/data/Planck/release_3/all-sky-maps/maps/HFI_SkyMap_143_2048_R3.01_full.fits'
+    map_2048 = hp.read_map(PLANCK_URL, field=['I_STOKES', 'Q_STOKES', 'U_STOKES'])
+    return hp.ud_grade(map_2048, nside)
+
+
+@pytest.fixture(scope='module')
+def planck_iqu_256() -> StokesIQU:
+    nside = 256
+    path = TEST_DATA_PLANCK / f'HFI_SkyMap_143_{nside}_R3.01_full_IQU.fits'
+    if path.exists():
+        maps = hp.read_map(path, field=[0, 1, 2])
+    else:
+        maps = load_planck(nside)
+        TEST_DATA_PLANCK.mkdir(parents=True, exist_ok=True)
+        hp.write_map(path, maps)
+    i, q, u = maps.astype(float)
+    return StokesIQU(
+        i=jax.device_put(i),
+        q=jax.device_put(q),
+        u=jax.device_put(u),
+    )
+
+
+@pytest.fixture(scope='module')
+def sat_nhits() -> Float[Array, ' ...']:
+    nhits = hp.read_map(TEST_DATA_SAT / 'norm_nHits_SA_35FOV_G_nside512.fits').astype('<f8')
+    npixel = nhits.size
+    nhits[: npixel // 2] = 0
+    nhits /= np.sum(nhits)
+    return jax.device_put(nhits)
 
 
 def get_random_generator(seed: int) -> np.random.Generator:

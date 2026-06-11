@@ -328,7 +328,7 @@ def test_marginal_weight_fusion() -> None:
 def test_create_carries_explicit_obs_size() -> None:
     # n is declared, not re-inferred from leaf shapes downstream; create starts with trivial maps.
     W = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
-    assert W.n == N_OBS
+    assert W.n_lead == N_OBS
     assert W.scanned.matrix.shape[0] == N_OBS
     assert isinstance(W.pre, IdentityOperator)
     assert isinstance(W.post, IdentityOperator)
@@ -341,7 +341,7 @@ def test_non_scalar_static_post_is_applied() -> None:
     d = jax.device_put(RNG.standard_normal((N_OUT,), dtype=np.float64), P())
     post = DiagonalOperator(d, in_structure=jax.ShapeDtypeStruct((N_OUT,), jnp.float64))
     pre = IdentityOperator(in_structure=blocks.in_structure)
-    op = ScanBlockDiagonalOperator._build(blocks, pre, post, n=N_OBS)  # must not raise
+    op = ScanBlockDiagonalOperator._build(blocks, pre, post, n_lead=N_OBS)  # must not raise
     x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
     x_np = np.array(jax.device_get(x))
     d_np = np.array(jax.device_get(d))
@@ -384,4 +384,4 @@ def test_check_scanned_rejects_non_obs_body_leaf() -> None:
     pre = IdentityOperator(in_structure=bad.in_structure)
     post = IdentityOperator(in_structure=bad.out_structure)
     with pytest.raises(ValueError, match='observation axis'):
-        ScanBlockDiagonalOperator._build(bad, pre, post, n=N_OBS + 1)
+        ScanBlockDiagonalOperator._build(bad, pre, post, n_lead=N_OBS + 1)

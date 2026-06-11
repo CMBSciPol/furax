@@ -27,7 +27,8 @@ Python, JAX, linear operator framework, CMB mapmaking.
 - Use jaxtyping annotations, e.g. `Inexact[jax.Array, 'dim1 dim2']`
   - for uni-dimensional arrays, prepend a space to the start of the shape (e.g. `Float32[jax.Array, ' x']`) to turn Ruff F821 error (undefined name) into F722 (syntax error in forward annotation, ignored)
   - Enable runtime checks with beartype: `uv run pytest --jaxtyping-packages=furax,beartype.beartype(...)` (commented config in `pyproject.toml`)
-- Prefer `furax.tree` utilities over `jax.tree_util` for Stokes/PyTree map structures.
+- Prefer `furax.tree` over `jax.tree` and `jax.tree_util`. In particular use the elementwise helpers (`tree.add`, `tree.sub`, `tree.mul`, `tree.dot`, `tree.zeros_like` etc.) instead `jax.tree.map(jnp.add, ...)` and friends.
+- Call operators directly (`op(x)`), not `op.mv(x)`. Reserve `mv` for the method definition in an operator subclass.
 
 ## When to ask first
 
@@ -94,7 +95,6 @@ Python, JAX, linear operator framework, CMB mapmaking.
 ### Mapmaking conventions
 
 - `double_precision=False` → float32 on every float field, including geometry (timestamps, HWP angles, quaternions); the pipeline then runs under `jax_enable_x64=False`, where float64 arrays are illegal. (Float32 timestamps ~1.7e9 lose sub-second resolution — accepted.)
-
 
 ## Designing operators from math
 

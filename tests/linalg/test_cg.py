@@ -28,7 +28,7 @@ class TestCGBasic:
         A, b, x_true = _diagonal_system()
         result = cg(A, b, max_steps=20)
         assert isinstance(result, CGResult)
-        assert_allclose(result.solution, x_true, rtol=1e-4)
+        assert_allclose(result.solution, x_true, rtol=1e-10)
 
     def test_residuals(self):
         A, b, _ = _diagonal_system(n=20)
@@ -41,7 +41,7 @@ class TestCGBasic:
         x0 = jax.random.normal(jax.random.key(0), b.shape, dtype=b.dtype)
         result_default = cg(A, b, max_steps=20)
         result_x0 = cg(A, b, x0, max_steps=20)
-        assert_allclose(result_x0.solution, result_default.solution, rtol=1e-5)
+        assert_allclose(result_x0.solution, result_default.solution, rtol=1e-10)
 
     def test_iterations_count_when_x0_is_solution(self):
         A, b, x_true = _diagonal_system(n=5)
@@ -88,7 +88,7 @@ class TestCGPyTree:
         x_true = {'a': jnp.array([1.0, 0.5]), 'b': jnp.array([1.0 / 3, 0.25])}
 
         result = cg(A, b, max_steps=20)
-        assert tree_equal(result.solution, x_true, rtol=1e-4)
+        assert tree_equal(result.solution, x_true, rtol=1e-10)
 
 
 class TestCGJit:
@@ -100,7 +100,7 @@ class TestCGJit:
             return cg(A, b, max_steps=20)
 
         result = solve(b)
-        assert_allclose(result.solution, x_true, rtol=1e-4)
+        assert_allclose(result.solution, x_true, rtol=1e-10)
 
     def test_jit_with_preconditioner(self):
         d = jnp.arange(1.0, 6.0)
@@ -114,7 +114,7 @@ class TestCGJit:
             return cg(A, b, max_steps=20, preconditioner=M)
 
         result = solve(b)
-        assert_allclose(result.solution, x_true, rtol=1e-4)
+        assert_allclose(result.solution, x_true, rtol=1e-10)
 
     def test_jit_with_stabilise(self):
         A, b, x_true = _diagonal_system(n=10)
@@ -124,7 +124,7 @@ class TestCGJit:
             return cg(A, b, max_steps=30, stabilise_every=3)
 
         result = solve(b)
-        assert_allclose(result.solution, x_true, rtol=1e-4)
+        assert_allclose(result.solution, x_true, rtol=1e-10)
 
     def test_jit_residuals_shape_preserved(self):
         A, b, _ = _diagonal_system()
@@ -154,7 +154,7 @@ class TestCGJit:
 
         result = solve(b)
         x_true = {'a': jnp.array([1.0, 0.5]), 'b': jnp.array([1.0 / 3, 0.25])}
-        assert tree_equal(result.solution, x_true, rtol=1e-4)
+        assert tree_equal(result.solution, x_true, rtol=1e-10)
 
 
 class TestCGGrad:
@@ -181,7 +181,7 @@ class TestCGGrad:
         _, jvp_val = jax.jvp(solve, (b,), (v,))
         # d(A^{-1} b)/db · v = A^{-1} v = v / d
         expected = v / d
-        assert_allclose(jvp_val, expected, rtol=1e-4)
+        assert_allclose(jvp_val, expected, rtol=1e-10)
 
     def test_jacfwd_wrt_b_equals_inverse(self):
         """Full Jacobian of the solution w.r.t. b is A^{-1}."""
@@ -194,7 +194,7 @@ class TestCGGrad:
 
         jac = jax.jacfwd(solve)(b)
         expected = jnp.diag(1.0 / d)
-        assert_allclose(jac, expected, atol=1e-4)
+        assert_allclose(jac, expected, atol=1e-10)
 
     def test_jvp_with_preconditioner(self):
         """JVP still equals A^{-1} v when using a preconditioner."""
@@ -209,7 +209,7 @@ class TestCGGrad:
 
         _, jvp_val = jax.jvp(solve, (b,), (v,))
         expected = v / d
-        assert_allclose(jvp_val, expected, rtol=1e-4)
+        assert_allclose(jvp_val, expected, rtol=1e-10)
 
     def test_grad_wrt_b(self):
         """Reverse-mode AD with loop_kind='bounded': grad sum(A^{-1} b) = A^{-T} 1 = 1/d."""
@@ -221,7 +221,7 @@ class TestCGGrad:
             return jnp.sum(cg(A, b, max_steps=20, loop_kind='bounded').solution)
 
         grad = jax.grad(f)(b)
-        assert_allclose(grad, 1.0 / d, rtol=1e-4)
+        assert_allclose(grad, 1.0 / d, rtol=1e-10)
 
     def test_jacrev_wrt_b_equals_inverse(self):
         """Full reverse-mode Jacobian of the solution w.r.t. b is A^{-1}."""
@@ -233,7 +233,7 @@ class TestCGGrad:
             return cg(A, b, max_steps=20, loop_kind='bounded').solution
 
         jac = jax.jacrev(solve)(b)
-        assert_allclose(jac, jnp.diag(1.0 / d), atol=1e-4)
+        assert_allclose(jac, jnp.diag(1.0 / d), atol=1e-10)
 
     def test_grad_raises_with_default_lax_loop(self):
         """The default loop_kind='lax' is forward-mode only; reverse-mode raises."""
@@ -278,7 +278,7 @@ class TestCGCurvature:
     def test_truncate_matches_default_when_positive_definite(self):
         A, b, x_true = _diagonal_system()
         result = cg(A, b, max_steps=20, negative_curvature='truncate')
-        assert_allclose(result.solution, x_true, rtol=1e-4)
+        assert_allclose(result.solution, x_true, rtol=1e-10)
 
     def test_invalid_negative_curvature_raises(self):
         A, b, _ = _diagonal_system()

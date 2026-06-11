@@ -6,14 +6,14 @@ from typing import Any
 import numpy as np
 from jaxtyping import Bool, Float
 
-from furax.mapmaking import AbstractLazyObservation, AbstractSatelliteObservation
+from furax.mapmaking import AbstractLazyObservation, AbstractObservation
 from furax.mapmaking.noise import NoiseModel
 from furax.obs.landscapes import ProjectionType, StokesLandscape
 from furax.obs.stokes import Stokes
 
 
-class FakeSatelliteObservation(AbstractSatelliteObservation[None]):
-    """Self-contained, file-free synthetic satellite observation.
+class FakeObservation(AbstractObservation[None]):
+    """Self-contained, file-free synthetic telescope observation.
 
     Like the real interfaces, the getters return host (numpy) arrays; the
     reader moves them to device through ``io_callback`` and the reader's
@@ -51,7 +51,7 @@ class FakeSatelliteObservation(AbstractSatelliteObservation[None]):
         self._seed = seed
 
     @classmethod
-    def from_file(cls, filename, requested_fields=None) -> FakeSatelliteObservation:
+    def from_file(cls, filename, requested_fields=None) -> FakeObservation:
         return cls()
 
     @property
@@ -142,15 +142,15 @@ class FakeLazyObservation(AbstractLazyObservation[None]):
     ``MultiObservationMapMaker([...])`` or
     ``ObservationReader.from_observations([...])``). Only the on-the-fly pointing
     path with a healpix landscape is supported. ``kwargs`` are forwarded to
-    :class:`FakeSatelliteObservation` (``n_dets``, ``n_samples``,
+    :class:`FakeObservation` (``n_dets``, ``n_samples``,
     ``sample_rate``, ``hwp_frequency``, ``seed``).
     """
 
-    interface_class = FakeSatelliteObservation
+    interface_class = FakeObservation
 
     def __init__(self, **kwargs: Any) -> None:  # type: ignore[override]
         self.file = Path('<synthetic>')
         self._kwargs = kwargs
 
-    def get_data(self, requested_fields=None) -> FakeSatelliteObservation:
-        return FakeSatelliteObservation(**self._kwargs)
+    def get_data(self, requested_fields=None) -> FakeObservation:
+        return FakeObservation(**self._kwargs)

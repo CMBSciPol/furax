@@ -7,6 +7,7 @@ from jaxtyping import Array, Inexact, PyTree
 from numpy.testing import assert_allclose
 
 from furax import AbstractLinearOperator
+from furax.core import DiagonalOperator, HomothetyOperator, IdentityOperator
 from furax.mapmaking._scan_blocks import (
     ScanAdditionOperator,
     ScanBlockColumnOperator,
@@ -250,3 +251,137 @@ def test_sharded_fusion_ht_w_h() -> None:
     assert isinstance(reduced, ScanAdditionOperator)
     x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
     assert_allclose(reduced.mv(x), (H.T @ W @ H).mv(x), rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# (A) heterogeneous leaf batching: static scalar leaves ride alongside the scan
+# ---------------------------------------------------------------------------
+
+
+def test_homothety_on_block_lands_in_closed_over_map() -> None:
+    # ``(-2) * block`` folds the scalar into a closed-over map (here the input-side ``pre``, since
+    # ``c * op`` puts the scalar on the input side), leaving the scanned body strictly obs-stacked.
+    blocks = _make_blocks(P('obs'))
+    op = ((-2.0) * ScanBlockDiagonalOperator.create(blocks)).reduce()
+    assert isinstance(op, ScanBlockDiagonalOperator)
+    assert isinstance(op.pre, HomothetyOperator)
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
+    x_np = np.array(jax.device_get(x))
+    expected = np.stack([-2.0 * (m @ x_np[i]) for i, m in enumerate(_per_obs(blocks))])
+    assert_allclose(op.mv(x), expected, rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# (B) addition fusion: sum of two scan blocks collapses to one scan block
+# ---------------------------------------------------------------------------
+
+
+def test_addition_fusion_diagonal() -> None:
+    A = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
+    B = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
+    reduced = (A + B).reduce()
+    assert isinstance(reduced, ScanBlockDiagonalOperator)
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
+    assert_allclose(reduced.mv(x), jax.tree.map(jnp.add, A.mv(x), B.mv(x)), rtol=1e-10)
+
+
+def test_subtraction_fusion_diagonal() -> None:
+    # exercises (B) addition fusion + Homothety folding + (A) static leaf in one shot:
+    # ``A - B`` -> ``A + (-1) @ B`` -> ScanBlockDiagonal(A_inner - B_inner), whose fused inner
+    # operator carries the ``-1`` as a static scalar leaf.
+    A = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
+    B = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
+    reduced = (A - B).reduce()
+    assert isinstance(reduced, ScanBlockDiagonalOperator)
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
+    assert_allclose(reduced.mv(x), jax.tree.map(jnp.subtract, A.mv(x), B.mv(x)), rtol=1e-10)
+
+
+def test_addition_fusion_row() -> None:
+    A = ScanBlockRowOperator.create(_make_blocks(P('obs')))
+    B = ScanBlockRowOperator.create(_make_blocks(P('obs')))
+    reduced = (A + B).reduce()
+    assert isinstance(reduced, ScanBlockRowOperator)
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
+    assert_allclose(reduced.mv(x), jax.tree.map(jnp.add, A.mv(x), B.mv(x)), rtol=1e-10)
+
+
+def test_marginal_weight_fusion() -> None:
+    # the marginalisation shape ``W - W T G T.T W`` reduces to a single ScanBlockDiagonal.
+    # W: per-obs (N_OUT, N_OUT); T: per-obs (N_OUT, N_IN) amplitudes->tod; G: per-obs (N_IN, N_IN).
+    W = ScanBlockDiagonalOperator.create(_make_blocks(P('obs'), n_in=N_OUT))
+    T = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))  # in (N_IN,) -> out (N_OUT,)
+    G = ScanBlockDiagonalOperator.create(
+        _TestOp(
+            jnp.broadcast_to(jnp.eye(N_IN), (N_OBS, N_IN, N_IN)),
+            in_structure=jax.ShapeDtypeStruct((N_IN,), jnp.float64),
+        )
+    )
+    chain = W @ T @ G @ T.T @ W
+    Wm = (W - chain).reduce()
+    assert isinstance(Wm, ScanBlockDiagonalOperator)
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_OUT), dtype=np.float64), P('obs'))
+    expected = jax.tree.map(jnp.subtract, W.mv(x), chain.mv(x))
+    assert_allclose(Wm.mv(x), expected, rtol=1e-10)
+
+
+def test_create_carries_explicit_obs_size() -> None:
+    # n is declared, not re-inferred from leaf shapes downstream; create starts with trivial maps.
+    W = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
+    assert W.n == N_OBS
+    assert W.scanned.matrix.shape[0] == N_OBS
+    assert isinstance(W.pre, IdentityOperator)
+    assert isinstance(W.post, IdentityOperator)
+
+
+def test_non_scalar_static_post_is_applied() -> None:
+    # a NON-scalar closed-over map (a shared-across-observation diagonal, leaf shape (N_OUT,) with no
+    # obs axis) is a valid post map: it must be accepted (no scalar requirement) and applied.
+    blocks = _make_blocks(P('obs'))  # per-obs (N_OUT, N_IN)
+    d = jax.device_put(RNG.standard_normal((N_OUT,), dtype=np.float64), P())
+    post = DiagonalOperator(d, in_structure=jax.ShapeDtypeStruct((N_OUT,), jnp.float64))
+    pre = IdentityOperator(in_structure=blocks.in_structure)
+    op = ScanBlockDiagonalOperator._build(blocks, pre, post, n=N_OBS)  # must not raise
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
+    x_np = np.array(jax.device_get(x))
+    d_np = np.array(jax.device_get(d))
+    expected = np.stack([d_np * (m @ x_np[i]) for i, m in enumerate(_per_obs(blocks))])
+    assert_allclose(op.mv(x), expected, rtol=1e-10)
+
+
+def test_transpose_roundtrips_static() -> None:
+    # an output-side (post) map moves to the input side (pre) under transpose, symmetrically.
+    blocks = _make_blocks(P('obs'))
+    op = ((-3.0) * ScanBlockDiagonalOperator.create(blocks)).reduce()
+    assert isinstance(op.pre, HomothetyOperator)
+    op_T = op.T
+    assert isinstance(op_T, ScanBlockDiagonalOperator)
+    assert isinstance(op_T.post, HomothetyOperator)
+    y = jax.device_put(RNG.standard_normal((N_OBS, N_OUT), dtype=np.float64), P('obs'))
+    y_np = np.array(jax.device_get(y))
+    expected = np.stack([-3.0 * (m.T @ y_np[i]) for i, m in enumerate(_per_obs(blocks))])
+    assert_allclose(op_T.mv(y), expected, rtol=1e-10)
+
+
+def test_addition_fusion_defers_on_obs_size_mismatch() -> None:
+    # ScanAddition structures are per-observation, so summing blocks with different obs sizes is
+    # legal algebra; fusion must defer (stay unreduced) rather than crash on mis-stacked bodies.
+    A = ScanAdditionOperator.create(_make_blocks(P('obs')))
+    matrices = RNG.standard_normal((2 * N_OBS, N_OUT, N_IN), dtype=np.float64)
+    bigger = _TestOp(
+        jax.device_put(matrices, P('obs')), in_structure=jax.ShapeDtypeStruct((N_IN,), jnp.float64)
+    )
+    B = ScanAdditionOperator.create(bigger)
+    reduced = (A + B).reduce()
+    assert not isinstance(reduced, ScanAdditionOperator)
+    x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
+    assert_allclose(reduced.mv(x), jax.tree.map(jnp.add, A.mv(x), B.mv(x)), rtol=1e-10)
+
+
+def test_check_scanned_rejects_non_obs_body_leaf() -> None:
+    # a scanned body leaf that does not lead with the obs axis is a mis-stacked operator: raise.
+    bad = _make_blocks()  # leaves lead with N_OBS
+    pre = IdentityOperator(in_structure=bad.in_structure)
+    post = IdentityOperator(in_structure=bad.out_structure)
+    with pytest.raises(ValueError, match='observation axis'):
+        ScanBlockDiagonalOperator._build(bad, pre, post, n=N_OBS + 1)

@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field, fields
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import jax.numpy as jnp
 import yaml
@@ -221,6 +221,32 @@ class LandscapeConfig:
     def __post_init__(self) -> None:
         if (self.healpix is None) == (self.wcs is None):
             raise ValueError('exactly one of healpix or wcs must be set.')
+
+
+class LegendreOrders(NamedTuple):
+    """A Legendre-polynomial order range, inclusive."""
+
+    min_order: int = 0
+    max_order: int = 3
+
+    @property
+    def n_orders(self) -> int:
+        """Number of orders in the inclusive range."""
+        return self.max_order - self.min_order + 1
+
+
+@dataclass
+class BinsConfig:
+    """A piecewise basis that bins a variable into ``n_bins`` intervals.
+
+    With ``interpolate = False`` each sample is hard-assigned to its bin. With
+    ``interpolate = True`` samples are spread over neighbouring bin centres using
+    triangular (or, if ``smooth``, sin^2) weights.
+    """
+
+    n_bins: int = 4
+    interpolate: bool = False
+    smooth: bool = False
 
 
 @dataclass

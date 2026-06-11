@@ -1,0 +1,567 @@
+import jax
+import jax.numpy as jnp
+import jax.random as jr
+import numpy as np
+import pytest
+from jax import Array
+from jaxtyping import Float
+from numpy.testing import assert_allclose
+
+from furax.mapmaking.basis_templates import (
+    DecimatedTensorBasis,
+    KroneckerBasis,
+    PerDetectorTemplate,
+    SegmentedBasis,
+    TensorBasis,
+    _bin_weights,
+    _harmonics,
+    _legendre,
+)
+from furax.mapmaking.config import BinsConfig, LegendreOrders
+from furax.tree import as_structure
+
+# float64 everywhere: structural/adjoint residuals run ~1e-14, so one tight tolerance fits all.
+TOL = 1e-12
+
+
+def _adjoint_residual(basis, coeffs: Array, signal: Array) -> float:
+    """|<expand(coeffs), signal> - <coeffs, project(signal)>|."""
+    lhs = jnp.vdot(basis.expand(coeffs), signal)
+    rhs = jnp.vdot(coeffs, basis.project(signal))
+    return float(jnp.abs(lhs - rhs))
+
+
+def _dense_from_factors(factors: tuple[Array, ...]) -> Array:
+    """values[k_0,...,k_{N-1}, s] = prod_i factors[i][k_i, s], built by broadcasting."""
+    n = len(factors)
+    n_points = factors[0].shape[-1]
+    shape = tuple(f.shape[0] for f in factors)
+    dense = jnp.ones((*shape, n_points), dtype=factors[0].dtype)
+    for i, f in enumerate(factors):
+        bshape = (1,) * i + (shape[i],) + (1,) * (n - 1 - i) + (n_points,)
+        dense = dense * f.reshape(bshape)
+    return dense
+
+
+# ---------------------------------------------------------------------------
+# TensorBasis
+# ---------------------------------------------------------------------------
+
+
+class TestTensorBasis:
+    @pytest.mark.parametrize('shape', [(4,), (3, 5), (2, 3, 4)])
+    def test_create_structure(self, shape: tuple[int, ...]) -> None:
+        n_points = 7
+        values = jr.normal(jr.key(0), (*shape, n_points))
+        basis = TensorBasis.create(values)
+        assert basis.shape == shape
+        assert basis.size == np.prod(shape)
+        assert basis.n_points == n_points
+        assert basis.in_structure == jax.ShapeDtypeStruct(shape, values.dtype)
+        assert basis.out_structure == jax.ShapeDtypeStruct((n_points,), values.dtype)
+
+    @pytest.mark.parametrize('shape', [(4,), (3, 5), (2, 3, 4)])
+    def test_expand_matches_einsum(self, shape: tuple[int, ...]) -> None:
+        n_points = 6
+        values = jr.normal(jr.key(1), (*shape, n_points))
+        coeffs = jr.normal(jr.key(2), shape)
+        basis = TensorBasis.create(values)
+
+        axes = 'abcdefg'[: len(shape)]
+        expected = jnp.einsum(f'{axes},{axes}s->s', coeffs, values)
+        assert_allclose(basis.expand(coeffs), expected, rtol=TOL)
+        # mv is bound to expand
+        assert_allclose(basis(coeffs), expected, rtol=TOL)
+
+    @pytest.mark.parametrize('shape', [(4,), (3, 5), (2, 3, 4)])
+    def test_project_matches_einsum(self, shape: tuple[int, ...]) -> None:
+        n_points = 6
+        values = jr.normal(jr.key(3), (*shape, n_points))
+        signal = jr.normal(jr.key(4), (n_points,))
+        basis = TensorBasis.create(values)
+
+        axes = 'abcdefg'[: len(shape)]
+        expected = jnp.einsum(f'{axes}s,s->{axes}', values, signal)
+        assert_allclose(basis.project(signal), expected, rtol=TOL)
+        # transpose mv is bound to project
+        assert_allclose(basis.T(signal), expected, rtol=TOL)
+
+    @pytest.mark.parametrize('shape', [(4,), (3, 5), (2, 3, 4)])
+    def test_expand_project_adjoint(self, shape: tuple[int, ...]) -> None:
+        n_points = 6
+        values = jr.normal(jr.key(5), (*shape, n_points))
+        coeffs = jr.normal(jr.key(6), shape)
+        signal = jr.normal(jr.key(7), (n_points,))
+        basis = TensorBasis.create(values)
+        assert _adjoint_residual(basis, coeffs, signal) < TOL
+
+    @pytest.mark.parametrize('shape', [(4,), (3, 5)])
+    def test_transpose_as_matrix(self, shape: tuple[int, ...]) -> None:
+        n_points = 5
+        values = jr.normal(jr.key(8), (*shape, n_points))
+        basis = TensorBasis.create(values)
+        assert_allclose(basis.T.as_matrix().T, basis.as_matrix(), rtol=TOL)
+
+    def test_out_structure_roundtrip(self) -> None:
+        values = jr.normal(jr.key(9), (3, 5))
+        basis = TensorBasis.create(values)
+        coeffs = jr.normal(jr.key(10), (3,))
+        assert as_structure(basis.expand(coeffs)) == basis.out_structure
+
+
+# ---------------------------------------------------------------------------
+# KroneckerBasis
+# ---------------------------------------------------------------------------
+
+
+def _factors(shape: tuple[int, ...], n_points: int, seed: int) -> tuple[Float[Array, 'd n'], ...]:
+    return tuple(jr.normal(jr.key(seed + i), (d, n_points)) for i, d in enumerate(shape))
+
+
+class TestKroneckerBasis:
+    @pytest.mark.parametrize('shape', [(4,), (3, 5), (2, 3, 4)])
+    def test_create_structure(self, shape: tuple[int, ...]) -> None:
+        n_points = 7
+        factors = _factors(shape, n_points, 100)
+        basis = KroneckerBasis.create(factors)
+        assert basis.shape == shape
+        assert basis.n_points == n_points
+        assert basis.in_structure == jax.ShapeDtypeStruct(shape, factors[0].dtype)
+        assert basis.out_structure == jax.ShapeDtypeStruct((n_points,), factors[0].dtype)
+
+    @pytest.mark.parametrize('shape', [(4,), (3, 5), (2, 3, 4)])
+    def test_equivalent_to_dense_tensor_basis(self, shape: tuple[int, ...]) -> None:
+        """KroneckerBasis == TensorBasis whose values are the outer product of factors."""
+        n_points = 6
+        factors = _factors(shape, n_points, 200)
+        kron = KroneckerBasis.create(factors)
+        dense = TensorBasis.create(_dense_from_factors(factors))
+
+        coeffs = jr.normal(jr.key(210), shape)
+        signal = jr.normal(jr.key(211), (n_points,))
+        assert_allclose(kron.expand(coeffs), dense.expand(coeffs), rtol=TOL)
+        assert_allclose(kron.project(signal), dense.project(signal), rtol=TOL)
+
+    @pytest.mark.parametrize('shape', [(4,), (3, 5), (2, 3, 4)])
+    def test_expand_project_adjoint(self, shape: tuple[int, ...]) -> None:
+        n_points = 6
+        factors = _factors(shape, n_points, 300)
+        basis = KroneckerBasis.create(factors)
+        coeffs = jr.normal(jr.key(310), shape)
+        signal = jr.normal(jr.key(311), (n_points,))
+        assert _adjoint_residual(basis, coeffs, signal) < TOL
+
+    @pytest.mark.parametrize('shape', [(4,), (3, 5)])
+    def test_transpose_as_matrix(self, shape: tuple[int, ...]) -> None:
+        n_points = 5
+        factors = _factors(shape, n_points, 400)
+        basis = KroneckerBasis.create(factors)
+        assert_allclose(basis.T.as_matrix().T, basis.as_matrix(), rtol=TOL)
+
+
+# ---------------------------------------------------------------------------
+# DecimatedTensorBasis
+# ---------------------------------------------------------------------------
+
+
+def _decimated(shape: tuple[int, ...], n_dec: int, q: int, n_full: int, seed: int):
+    values = jr.normal(jr.key(seed), (*shape, n_dec))
+    return DecimatedTensorBasis(
+        values=values,
+        q=q,
+        n_full=n_full,
+        in_structure=jax.ShapeDtypeStruct(shape, values.dtype),
+    )
+
+
+class TestDecimatedTensorBasis:
+    @pytest.mark.parametrize('shape', [(4,), (2, 3)])
+    def test_structure(self, shape: tuple[int, ...]) -> None:
+        n_dec, q, n_full = 5, 4, 18
+        basis = _decimated(shape, n_dec, q, n_full, 500)
+        assert basis.shape == shape
+        assert basis.n_dec == n_dec
+        assert basis.n_points == n_full
+        assert basis.out_structure == jax.ShapeDtypeStruct((n_full,), basis.dtype)
+
+    def test_expand_holds_each_coarse_value_over_its_block(self) -> None:
+        # synthesis = einsum on coarse grid, then repeat each value q times, trimmed.
+        shape, n_dec, q, n_full = (4,), 5, 4, 18  # 5*4 = 20 > 18 -> trailing block trimmed
+        basis = _decimated(shape, n_dec, q, n_full, 501)
+        coeffs = jr.normal(jr.key(502), shape)
+        coarse = jnp.einsum('k,kd->d', coeffs, basis.values)
+        expected = jnp.repeat(coarse, q)[:n_full]
+        assert_allclose(basis.expand(coeffs), expected, rtol=TOL)
+
+    def test_project_sums_each_block(self) -> None:
+        # analysis downsamples by block-summing, then einsum back to coefficients.
+        shape, n_dec, q, n_full = (4,), 5, 4, 18
+        basis = _decimated(shape, n_dec, q, n_full, 503)
+        signal = jr.normal(jr.key(504), (n_full,))
+        pad = n_dec * q - n_full
+        block_sum = jnp.pad(signal, (0, pad)).reshape(n_dec, q).sum(axis=-1)
+        expected = jnp.einsum('kd,d->k', basis.values, block_sum)
+        assert_allclose(basis.project(signal), expected, rtol=TOL)
+
+    @pytest.mark.parametrize('shape', [(4,), (2, 3)])
+    def test_expand_project_adjoint(self, shape: tuple[int, ...]) -> None:
+        n_dec, q, n_full = 5, 4, 18
+        basis = _decimated(shape, n_dec, q, n_full, 505)
+        coeffs = jr.normal(jr.key(506), shape)
+        signal = jr.normal(jr.key(507), (n_full,))
+        assert _adjoint_residual(basis, coeffs, signal) < TOL
+
+    def test_transpose_as_matrix(self) -> None:
+        basis = _decimated((4,), 5, 4, 18, 508)
+        assert_allclose(basis.T.as_matrix().T, basis.as_matrix(), rtol=TOL)
+
+
+# ---------------------------------------------------------------------------
+# SegmentedBasis
+# ---------------------------------------------------------------------------
+
+
+def _segmented(n_segments: int, k: int, n_points: int, seed: int):
+    segment = jr.randint(jr.key(seed), (n_points,), 0, n_segments)
+    values = jr.normal(jr.key(seed + 1), (k, n_points))
+    return SegmentedBasis.create(segment.astype(jnp.int32), values, n_segments), segment, values
+
+
+class TestSegmentedBasis:
+    def test_structure(self) -> None:
+        basis, _, _ = _segmented(3, 4, 50, 600)
+        assert basis.shape == (3, 4)
+        assert basis.n_points == 50
+        assert basis.out_structure == jax.ShapeDtypeStruct((50,), basis.dtype)
+
+    def test_equivalent_to_dense_tensor_basis(self) -> None:
+        # dense[j, k, s] = (segment[s] == j) * values[k, s]
+        n_seg, k, n_points = 3, 4, 50
+        basis, segment, values = _segmented(n_seg, k, n_points, 610)
+        onehot = (segment[None, :] == jnp.arange(n_seg)[:, None]).astype(values.dtype)
+        dense = TensorBasis.create(onehot[:, None, :] * values[None, :, :])
+        coeffs = jr.normal(jr.key(611), (n_seg, k))
+        signal = jr.normal(jr.key(612), (n_points,))
+        assert_allclose(basis.expand(coeffs), dense.expand(coeffs), rtol=TOL)
+        assert_allclose(basis.project(signal), dense.project(signal), rtol=TOL)
+
+    def test_expand_project_adjoint(self) -> None:
+        basis, _, _ = _segmented(3, 4, 50, 620)
+        coeffs = jr.normal(jr.key(621), basis.shape)
+        signal = jr.normal(jr.key(622), (50,))
+        assert _adjoint_residual(basis, coeffs, signal) < TOL
+
+    def test_each_sample_only_sees_its_own_segment(self) -> None:
+        # perturbing one segment's amplitudes only changes samples in that segment.
+        n_seg, k, n_points = 3, 4, 50
+        basis, segment, _ = _segmented(n_seg, k, n_points, 630)
+        coeffs = jr.normal(jr.key(631), (n_seg, k))
+        bumped = coeffs.at[0].add(1.0)
+        diff = basis.expand(bumped) - basis.expand(coeffs)
+        assert_allclose(diff[segment != 0], 0.0, atol=TOL)
+        assert jnp.max(jnp.abs(diff[segment == 0])) > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Basis-building helpers (_bin_weights, _legendre, _harmonics)
+# ---------------------------------------------------------------------------
+
+
+class TestBinWeights:
+    def test_hard_assignment_is_one_hot(self) -> None:
+        x = jr.normal(jr.key(700), (200,))
+        w = _bin_weights(x, n_bins=4, interpolate=False, smooth=False, dtype=jnp.float64)
+        assert w.shape == (4, 200)
+        # exactly one bin per sample, weight 1
+        assert_allclose(jnp.sum(w, axis=0), 1.0, atol=TOL)
+        assert_allclose(jnp.sum(w == 1.0, axis=0), 1.0, atol=TOL)
+
+    @pytest.mark.parametrize('smooth', [False, True])
+    def test_interpolated_weights_form_a_partition_of_unity(self, smooth: bool) -> None:
+        x = jnp.linspace(-2.0, 3.0, 200)
+        w = _bin_weights(x, n_bins=5, interpolate=True, smooth=smooth, dtype=jnp.float64)
+        assert_allclose(jnp.sum(w, axis=0), 1.0, atol=TOL)
+        assert jnp.all(w >= 0.0)
+
+
+class TestLegendreAndHarmonics:
+    def test_legendre_order_zero_is_constant_one(self) -> None:
+        x = jnp.linspace(0.0, 10.0, 64)
+        legs = _legendre(x, 0, 3, jnp.float64)
+        assert legs.shape == (4, 64)
+        assert_allclose(legs[0], 1.0, atol=TOL)  # P_0 == 1
+        # P_1(u) == u, the rescaled coordinate spanning [-1, 1]
+        u = -1.0 + 2.0 * (x - jnp.min(x)) / jnp.ptp(x)
+        assert_allclose(legs[1], u, atol=TOL)
+
+    @pytest.mark.parametrize('dc', [False, True])
+    def test_harmonics_rows_and_dc(self, dc: bool) -> None:
+        angles = jnp.linspace(0.0, 4.0, 128)
+        n_harm = 3
+        h = _harmonics(angles, n_harm, jnp.float64, dc=dc)
+        assert h.shape == (2 * n_harm + int(dc), 128)
+        if dc:
+            assert_allclose(h[0], 1.0, atol=TOL)  # leading constant row
+        # first non-DC row is the fundamental sine
+        assert_allclose(h[int(dc)], jnp.sin(angles), atol=TOL)
+
+
+# ---------------------------------------------------------------------------
+# PerDetectorTemplate wrapper (shared vs per-detector basis, transpose)
+# ---------------------------------------------------------------------------
+
+
+class TestPerDetectorTemplate:
+    def test_shared_basis_applies_same_basis_to_every_detector(self) -> None:
+        n_dets, k, n_points = 3, 4, 30
+        values = jr.normal(jr.key(800), (k, n_points))
+        op = PerDetectorTemplate.from_basis(TensorBasis.create(values), n_dets, shared=True)
+        assert op.in_structure.shape == (n_dets, k)
+        assert op.out_structure.shape == (n_dets, n_points)
+        coeffs = jr.normal(jr.key(801), (n_dets, k))
+        assert_allclose(op(coeffs), coeffs @ values, rtol=TOL)
+
+    def test_transpose_is_a_per_detector_template_and_is_adjoint(self) -> None:
+        n_dets, k, n_points = 3, 4, 30
+        values = jr.normal(jr.key(810), (k, n_points))
+        op = PerDetectorTemplate.from_basis(TensorBasis.create(values), n_dets, shared=True)
+        assert isinstance(op.T, PerDetectorTemplate)
+        coeffs = jr.normal(jr.key(811), op.in_structure.shape)
+        signal = jr.normal(jr.key(812), op.out_structure.shape)
+        assert_allclose(jnp.vdot(op(coeffs), signal), jnp.vdot(coeffs, op.T(signal)), rtol=TOL)
+
+
+# ---------------------------------------------------------------------------
+# Synchronous templates (factory constructors)
+# ---------------------------------------------------------------------------
+
+
+def _geometry(n_samps: int):
+    azimuth = jnp.linspace(0.0, 10.0, n_samps)
+    hwp = jnp.linspace(0.0, 40.0, n_samps)
+    return azimuth, hwp
+
+
+class TestSynchronousTemplates:
+    def test_scan_synchronous_is_shared_legendre(self) -> None:
+        n_dets, n_samps = 3, 200
+        azimuth, _ = _geometry(n_samps)
+        legendre = LegendreOrders(0, 3)
+        op = PerDetectorTemplate.scan_synchronous(legendre, azimuth, n_dets, jnp.float64)
+        assert op.shared_basis
+        assert op.in_structure.shape == (n_dets, legendre.n_orders)
+        coeffs = jr.normal(jr.key(901), op.in_structure.shape)
+        legs = _legendre(azimuth, legendre.min_order, legendre.max_order, jnp.float64)
+        assert_allclose(op(coeffs), coeffs @ legs, rtol=TOL)
+
+    def test_binaz_synchronous_one_amplitude_per_bin(self) -> None:
+        n_dets, n_samps = 3, 200
+        azimuth, _ = _geometry(n_samps)
+        bins = BinsConfig(n_bins=6, interpolate=False, smooth=False)
+        op = PerDetectorTemplate.binaz_synchronous(bins, azimuth, n_dets, jnp.float64)
+        assert op.in_structure.shape == (n_dets, bins.n_bins)
+        coeffs = jr.normal(jr.key(911), op.in_structure.shape)
+        signal = jr.normal(jr.key(912), op.out_structure.shape)
+        assert_allclose(jnp.vdot(op(coeffs), signal), jnp.vdot(coeffs, op.T(signal)), rtol=TOL)
+
+    def test_hwp_synchronous_has_two_rows_per_harmonic(self) -> None:
+        n_dets, n_samps, n_harm = 3, 200, 4
+        _, hwp = _geometry(n_samps)
+        op = PerDetectorTemplate.hwp_synchronous(n_harm, hwp, n_dets, jnp.float64)
+        assert op.in_structure.shape == (n_dets, 2 * n_harm)  # no DC row
+        coeffs = jr.normal(jr.key(921), op.in_structure.shape)
+        matrix = _harmonics(hwp, n_harm, jnp.float64, dc=False)
+        assert_allclose(op(coeffs), coeffs @ matrix, rtol=TOL)
+
+    def test_azhwp_synchronous_is_kronecker_shaped(self) -> None:
+        n_dets, n_samps, n_harm = 2, 200, 3
+        azimuth, hwp = _geometry(n_samps)
+        legendre = LegendreOrders(0, 2)
+        op = PerDetectorTemplate.azhwp_synchronous(
+            legendre, n_harm, azimuth, hwp, n_dets, jnp.float64
+        )
+        # azimuth Legendre orders x HWP harmonics with DC (2*n_harm + 1)
+        assert op.in_structure.shape == (n_dets, legendre.n_orders, 2 * n_harm + 1)
+        coeffs = jr.normal(jr.key(931), op.in_structure.shape)
+        signal = jr.normal(jr.key(932), op.out_structure.shape)
+        assert_allclose(jnp.vdot(op(coeffs), signal), jnp.vdot(coeffs, op.T(signal)), rtol=TOL)
+
+    def test_azhwp_scan_mask_zeroes_flagged_samples(self) -> None:
+        # zeroing the azimuth leg kills every basis function there -> zero synthesis.
+        n_dets, n_samps, n_harm = 2, 200, 3
+        azimuth, hwp = _geometry(n_samps)
+        scan_mask = (jnp.arange(n_samps) % 3 != 0).astype(jnp.float64)
+        op = PerDetectorTemplate.azhwp_synchronous(
+            LegendreOrders(0, 2), n_harm, azimuth, hwp, n_dets, jnp.float64, scan_mask=scan_mask
+        )
+        coeffs = jr.normal(jr.key(941), op.in_structure.shape)
+        out = op(coeffs)
+        assert_allclose(out[:, scan_mask == 0], 0.0, atol=TOL)
+
+    def test_binazhwp_synchronous_is_kronecker_shaped(self) -> None:
+        n_dets, n_samps, n_harm = 2, 200, 3
+        azimuth, hwp = _geometry(n_samps)
+        bins = BinsConfig(n_bins=5, interpolate=False, smooth=False)
+        op = PerDetectorTemplate.binazhwp_synchronous(
+            bins, n_harm, azimuth, hwp, n_dets, jnp.float64
+        )
+        assert op.in_structure.shape == (n_dets, bins.n_bins, 2 * n_harm + 1)
+        coeffs = jr.normal(jr.key(951), op.in_structure.shape)
+        signal = jr.normal(jr.key(952), op.out_structure.shape)
+        assert_allclose(jnp.vdot(op(coeffs), signal), jnp.vdot(coeffs, op.T(signal)), rtol=TOL)
+
+
+# ---------------------------------------------------------------------------
+# PerDetectorTemplate.polynomial (structure, gaps)
+# ---------------------------------------------------------------------------
+
+
+class TestPolynomialStructure:
+    def test_amplitude_shape_is_dets_intervals_orders(self) -> None:
+        n_samps, n_dets, order = 200, 3, 3
+        intervals = jnp.array([[0, 100], [100, 200]])
+        times = jnp.arange(n_samps, dtype=jnp.float64)
+        op = PerDetectorTemplate.polynomial(order, intervals, times, n_dets, jnp.float64)
+        # one polynomial (orders 0..order) per interval per detector
+        assert op.in_structure.shape == (n_dets, 2, order + 1)
+        assert op.out_structure.shape == (n_dets, n_samps)
+
+    def test_samples_in_gaps_carry_no_signal(self) -> None:
+        # a gap between intervals: those samples sit in no segment -> zero column.
+        n_samps, n_dets, order = 200, 2, 3
+        intervals = jnp.array([[0, 80], [120, 200]])  # 80..120 is a gap
+        times = jnp.arange(n_samps, dtype=jnp.float64)
+        op = PerDetectorTemplate.polynomial(order, intervals, times, n_dets, jnp.float64)
+        coeffs = jr.normal(jr.key(960), op.in_structure.shape)
+        out = op(coeffs)
+        gap = (jnp.arange(n_samps) >= 80) & (jnp.arange(n_samps) < 120)
+        assert_allclose(out[:, gap], 0.0, atol=TOL)
+
+
+# ---------------------------------------------------------------------------
+# PerDetectorTemplate.polynomial (masking)
+# ---------------------------------------------------------------------------
+
+
+class TestPolynomialMask:
+    n_samps = 200
+    n_dets = 3
+    max_poly_order = 3
+
+    def _setup(self, valid_mask):
+        half = self.n_samps // 2
+        intervals = jnp.array([[0, half], [half, self.n_samps]])
+        times = jnp.arange(self.n_samps, dtype=jnp.float64)
+        return PerDetectorTemplate.polynomial(
+            max_poly_order=self.max_poly_order,
+            intervals=intervals,
+            times=times,
+            n_dets=self.n_dets,
+            dtype=jnp.float64,
+            valid_mask=valid_mask,
+        )
+
+    def _valid_mask(self) -> Float[Array, ' samp']:
+        # flag every 5th sample
+        return (jnp.arange(self.n_samps) % 5 != 0).astype(jnp.float64)
+
+    def test_mask_zeros_template_at_flagged_samples(self) -> None:
+        valid = self._valid_mask()
+        op = self._setup(valid)
+        coeffs = jr.normal(jr.key(20), op.in_structure.shape)
+        out = op(coeffs)
+        # flagged samples carry no template signal
+        assert_allclose(out[:, valid == 0], 0.0, atol=TOL)
+
+    def test_mask_drops_flagged_from_projection(self) -> None:
+        valid = self._valid_mask()
+        op = self._setup(valid)
+        signal = jr.normal(jr.key(21), op.out_structure.shape)
+        # corrupting flagged samples must not change the projected coefficients
+        corrupt = signal.at[:, valid == 0].add(1e3)
+        assert_allclose(op.T(signal), op.T(corrupt), atol=TOL)
+
+    def test_no_mask_matches_explicit_ones(self) -> None:
+        op_none = self._setup(None)
+        op_ones = self._setup(jnp.ones(self.n_samps, dtype=jnp.float64))
+        coeffs = jr.normal(jr.key(22), op_none.in_structure.shape)
+        assert_allclose(op_none(coeffs), op_ones(coeffs), rtol=TOL)
+
+
+# ---------------------------------------------------------------------------
+# PerDetectorTemplate per-detector basis (T2P leakage template)
+# ---------------------------------------------------------------------------
+
+
+class TestTemperatureTemplate:
+    def test_synthesis_is_per_detector_scaled_template(self) -> None:
+        # each detector's basis is its own temperature stream -> mv(lambda) = lambda * T_d
+        n_dets, n_samps = 4, 200
+        T = jr.normal(jr.key(40), (n_dets, n_samps))
+        op = PerDetectorTemplate.temperature(T, jnp.float64)
+        assert op.in_structure.shape == (n_dets, 1)  # one amplitude per detector
+        lam = jr.normal(jr.key(41), op.in_structure.shape)
+        assert_allclose(op(lam), lam * T, rtol=TOL)
+
+    def test_projection_is_per_detector_inner_product(self) -> None:
+        n_dets, n_samps = 4, 200
+        T = jr.normal(jr.key(42), (n_dets, n_samps))
+        op = PerDetectorTemplate.temperature(T, jnp.float64)
+        x = jr.normal(jr.key(43), op.out_structure.shape)
+        assert_allclose(op.T(x), jnp.sum(T * x, axis=-1)[:, None], rtol=TOL)
+
+    def test_adjoint(self) -> None:
+        n_dets, n_samps = 4, 200
+        T = jr.normal(jr.key(44), (n_dets, n_samps))
+        op = PerDetectorTemplate.temperature(T, jnp.float64)
+        lam = jr.normal(jr.key(45), op.in_structure.shape)
+        x = jr.normal(jr.key(46), op.out_structure.shape)
+        assert_allclose(jnp.vdot(op(lam), x), jnp.vdot(lam, op.T(x)), rtol=TOL)
+
+    def test_scan_stacking_over_observations(self) -> None:
+        # the per-detector basis values gain an obs axis under lax.scan; one program
+        n_obs, n_dets, n_samps = 3, 4, 200
+        Ts = jr.normal(jr.key(47), (n_obs, n_dets, n_samps))
+        _, stack = jax.lax.scan(
+            lambda _, Ti: (None, PerDetectorTemplate.temperature(Ti, jnp.float64)), None, Ts
+        )
+        op0 = jax.tree.map(lambda leaf: leaf[0], stack)
+        lam = jr.normal(jr.key(48), op0.in_structure.shape)
+        assert_allclose(op0(lam), lam * Ts[0], rtol=TOL)
+
+    def test_fit_band_limits_the_basis_to_the_band(self) -> None:
+        # fit_band band-passes the temperature basis: synthesis lives only in (f0, f1)
+        n_dets, n_samps, fs = 2, 1024, 10.0
+        f0, f1 = 0.5, 2.0
+        T = jr.normal(jr.key(49), (n_dets, n_samps))
+        op = PerDetectorTemplate.temperature(T, jnp.float64, fit_band=(f0, f1), sample_rate=fs)
+        lam = jnp.ones((n_dets, 1))
+        out = op(lam)  # = bandpass(T) since lambda = 1
+        spec = jnp.abs(jnp.fft.rfft(out, axis=-1))
+        freqs = jnp.fft.rfftfreq(n_samps, d=1.0 / fs)
+        out_of_band = (freqs <= f0) | (freqs >= f1)
+        assert jnp.max(spec[:, out_of_band]) < TOL  # power confined to the band
+
+    def test_none_leg_has_no_amplitudes_and_zero_output(self) -> None:
+        n_dets, n_samps = 4, 200
+        empty = PerDetectorTemplate.none(n_dets, n_samps, jnp.float64)
+        assert empty.in_structure.shape == (n_dets, 0)  # no amplitudes to fit
+        out = empty(jnp.zeros(empty.in_structure.shape))
+        assert out.shape == (n_dets, n_samps)
+        assert_allclose(out, 0.0, atol=0.0)
+
+    def test_decimated_synthesis_is_block_averaged_and_held(self) -> None:
+        # decimate=q stores T on a q-coarser grid; lambda = 1 -> synthesis is the
+        # block-averaged temperature, held over each block.
+        n_dets, n_samps, q = 2, 60, 4
+        T = jr.normal(jr.key(970), (n_dets, n_samps))
+        op = PerDetectorTemplate.temperature(T, jnp.float64, decimate=q)
+        assert op.in_structure.shape == (n_dets, 1)
+        out = op(jnp.ones((n_dets, 1)))
+        assert out.shape == (n_dets, n_samps)
+
+        n_dec = -(-n_samps // q)
+        pad = n_dec * q - n_samps
+        avg = jnp.pad(T, [(0, 0), (0, pad)]).reshape(n_dets, n_dec, q).mean(axis=-1)
+        held = jnp.repeat(avg, q, axis=-1)[:, :n_samps]
+        assert_allclose(out, held, rtol=TOL)

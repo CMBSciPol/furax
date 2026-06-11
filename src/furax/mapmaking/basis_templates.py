@@ -1,0 +1,594 @@
+"""Template operators for fitting structured nuisance signals out of the data.
+
+A template turns a small set of per-detector amplitudes into a time stream, so
+the mapmaker can fit and remove unwanted but predictable signals (slow drifts,
+scan-synchronous pickup, HWP-synchronous lines, T-to-P leakage).
+
+The building block is a `Basis`: a small set of functions of time (Legendre
+polynomials, HWP harmonics, ...). Going from amplitudes to a signal is `expand`;
+the reverse is `project`. A `PerDetectorTemplate` then gives every detector its
+own copy (or its own basis), so each detector fits its own amplitudes.
+
+A few `Basis` flavours trade memory for structure:
+- `TensorBasis`: stores every basis function value directly, as a dense array.
+- `KroneckerBasis`: a product of independent factors (e.g. azimuth x HWP), stored
+  factored to save memory.
+- `SegmentedBasis`: each sample belongs to one segment (e.g. one scan interval),
+  stored sparsely instead of as a mostly-zero dense array.
+
+Build several templates and combine them by wrapping each in a
+`PerDetectorTemplate` and stacking with `BlockRowOperator`.
+"""
+
+from abc import abstractmethod
+from dataclasses import field
+from itertools import chain
+from math import prod
+from typing import Any, Self
+
+import jax
+from jax import Array, ShapeDtypeStruct
+from jax import numpy as jnp
+from jaxtyping import DTypeLike, Float, Int
+
+from furax import AbstractLinearOperator
+from furax.core import TransposeOperator
+
+from .config import BinsConfig, LegendreOrders
+
+
+class Basis(AbstractLinearOperator):
+    """A set of template functions of time used to model a structured signal.
+
+    The basis functions `b_k` are each evaluated at the same `n_points` time samples.
+    Conceptually, we can think of them as columns of a matrix `B`. The modelled signal
+    is then a linear combination `s = B a`, i.e. `s(t) = Σ_k a_k b_k(t)` where each
+    `a_k` is the amplitude of the template function `b_k`. The index `k` may be multi
+    dimensional.
+
+    Two main operations:
+
+    - `expand` (synthesis, amplitudes to signal): `s = B(a)`.
+    - `project` (analysis, signal to amplitudes): `a = B.T(s)`.
+    """
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """Shape of the basis index."""
+        return self.in_structure.shape  # type: ignore[no-any-return]
+
+    @property
+    @abstractmethod
+    def n_points(self) -> int:
+        """Number of sample points at which basis functions are evaluated."""
+
+    @property
+    def size(self) -> int:
+        """Total number of basis functions (product of `shape`)."""
+        return prod(self.shape)
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return self.in_structure.dtype  # type: ignore[no-any-return]
+
+    @property
+    def out_structure(self) -> jax.ShapeDtypeStruct:
+        return jax.ShapeDtypeStruct((self.n_points,), self.dtype)
+
+    @abstractmethod
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        """Synthesize signal from coefficients."""
+
+    @abstractmethod
+    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        """Project signal onto basis."""
+
+    def mv(self, x: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        return self.expand(x)
+
+    def transpose(self) -> AbstractLinearOperator:
+        return _BasisTranspose(self)
+
+
+class _BasisTranspose(TransposeOperator):
+    operator: Basis
+
+    def mv(self, x: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        return self.operator.project(x)
+
+
+class TensorBasis(Basis):
+    """Dense basis: the matrix `B` is stored explicitly.
+
+    Holds `values[k, t] = b_k(t)` as a single dense array, with no assumed structure.
+    When `B` factorises over independent variables, `KroneckerBasis`
+    represents the same map with less memory; when each sample belongs to one interval,
+    `SegmentedBasis` avoids storing the mostly-zero per-interval blocks.
+    """
+
+    values: Float[Array, '*shape samp']
+
+    @classmethod
+    def create(cls, values: Float[Array, '*shape samp']) -> Self:
+        shape = values.shape[:-1]
+        return cls(
+            values=values,
+            in_structure=ShapeDtypeStruct(shape, values.dtype),
+        )
+
+    @property
+    def n_points(self) -> int:
+        return self.values.shape[-1]
+
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        # integer axis labels. Index axes are 0..n-1, sample axis is n.
+        n = len(self.shape)
+        idx = tuple(range(n))
+        return jnp.einsum(coeffs, idx, self.values, (*idx, n), (n,))
+
+    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        n = len(self.shape)
+        idx = tuple(range(n))
+        return jnp.einsum(self.values, (*idx, n), signal, (n,), idx)
+
+
+class DecimatedTensorBasis(Basis):
+    """Dense basis stored on a coarser time grid to save memory.
+
+    Holds `b_k` on every `q`-th sample. Synthesis (`expand`) holds each coarse value
+    over its block of `q` samples; analysis (`project`) sums each block back down. The
+    two are exact transposes, so the operator stays self-consistent.
+
+    Hold/block-sum is a zeroth-order resampler, exact only for content well below the
+    coarse-grid Nyquist frequency `sample_rate / 2q`. Choose `q` so this stays above the
+    template's band edge.
+
+    `values` is expected pre-averaged onto the coarse grid by the builder.
+    """
+
+    values: Float[Array, '*shape samp_dec']
+    q: int = field(metadata={'static': True})
+    n_full: int = field(metadata={'static': True})
+
+    @property
+    def n_points(self) -> int:
+        return self.n_full
+
+    @property
+    def n_dec(self) -> int:
+        return self.values.shape[-1]
+
+    def _upsample(self, x: Float[Array, '... dec']) -> Float[Array, '... full']:
+        # hold-interpolation: repeat each coarse sample q times, trim the padding tail.
+        return jnp.repeat(x, self.q, axis=-1)[..., : self.n_full]
+
+    def _downsample(self, s: Float[Array, '... full']) -> Float[Array, '... dec']:
+        # adjoint of _upsample: sum each q-sample block. Pad the tail to a full block.
+        pad = self.n_dec * self.q - self.n_full
+        s = jnp.pad(s, [(0, 0)] * (s.ndim - 1) + [(0, pad)])
+        return s.reshape(*s.shape[:-1], self.n_dec, self.q).sum(axis=-1)
+
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        n = len(self.shape)
+        idx = tuple(range(n))
+        dec = jnp.einsum(coeffs, idx, self.values, (*idx, n), (n,))
+        return self._upsample(dec)
+
+    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        n = len(self.shape)
+        idx = tuple(range(n))
+        dec = self._downsample(signal)
+        return jnp.einsum(self.values, (*idx, n), dec, (n,), idx)
+
+
+class KroneckerBasis(Basis):
+    """Basis whose functions factorise over independent variables.
+
+    Built from factor matrices `F_i` (e.g. an azimuth-polynomial set and an HWP-harmonic
+    set), whose rows are the factor's functions of time. The basis function for
+    multi-index `k = (k_0, ...)` is the elementwise product `b_k(t) = Π_i F_i[k_i, t]`.
+    Equivalent to a `TensorBasis` holding the full outer product, but kept factored:
+    memory scales as `Σ_i d_i` rather than `Π_i d_i` columns of length `n_points`.
+
+    Use when the basis cleanly separates over independent variables.
+    """
+
+    factors: tuple[Float[Array, 'd samp'], ...]
+
+    @classmethod
+    def create(cls, factors: tuple[Float[Array, 'd samp'], ...]) -> Self:
+        shape = tuple(f.shape[0] for f in factors)
+        dtype = factors[0].dtype
+        return cls(
+            factors=factors,
+            in_structure=ShapeDtypeStruct(shape, dtype),
+        )
+
+    @property
+    def n_points(self) -> int:
+        return self.factors[0].shape[-1]
+
+    def _factor_operands(self) -> list[Any]:
+        # interleaved einsum operands: factor i carries index axis i and the
+        # shared sample axis n. e.g. F0,(0,n), F1,(1,n), ...
+        n = len(self.shape)
+        return list(chain.from_iterable((f, (i, n)) for i, f in enumerate(self.factors)))
+
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        # explicit output (n,): sample axis n repeats across factors, name as output to keep it.
+        n = len(self.shape)
+        return jnp.einsum(coeffs, tuple(range(n)), *self._factor_operands(), (n,))
+
+    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        # implicit output: repeated sample axis n is summed; index axes 0..n-1
+        # each appear once and become the (sorted) output.
+        n = len(self.shape)
+        return jnp.einsum(*self._factor_operands(), signal, (n,))
+
+
+class SegmentedBasis(Basis):
+    """Basis partitioned into segments, each sample belonging to exactly one.
+
+    The amplitude index is `(j, k)` = segment `j` × shared sub-basis function `k`, with
+    `b_{j,k}(t) = [segment(t) = j] · v_k(t)`. Since every sample lies in a single
+    segment, only that segment's amplitudes contribute to it.
+
+    Stored sparsely as one segment id per sample plus one shared table `v_k(t)`, instead
+    of the equivalent dense per-segment array (segments × functions × samples) that would
+    be almost all zeros. The right choice when the segments form a partition (e.g. per-scan-interval
+    Legendre polynomials); `KroneckerBasis` does not help here, as it assumes every
+    factor is dense at every sample.
+
+    Samples in no segment must have their `values` column pre-zeroed by the builder;
+    their segment id is then irrelevant.
+    """
+
+    segment: Int[Array, ' samp']
+    values: Float[Array, 'k samp']
+
+    @classmethod
+    def create(
+        cls,
+        segment: Int[Array, ' samp'],
+        values: Float[Array, 'k samp'],
+        n_segments: int,
+    ) -> Self:
+        k = values.shape[0]
+        return cls(
+            segment=segment,
+            values=values,
+            in_structure=ShapeDtypeStruct((n_segments, k), values.dtype),
+        )
+
+    @property
+    def n_points(self) -> int:
+        return self.values.shape[-1]
+
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        # gather each sample's segment coefficients, then contract over the
+        # sub-basis index against the shared per-sample values.
+        picked = coeffs[self.segment]  # (n_points, k)
+        return jnp.einsum('sk,ks->s', picked, self.values)
+
+    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        # adjoint of expand: per-sample contribution scatter-added into its segment.
+        contrib = self.values * signal[None, :]  # (k, n_points)
+        zeros = jnp.zeros(self.shape, self.dtype)
+        return zeros.at[self.segment].add(contrib.T)
+
+
+def _bin_weights(
+    x: Float[Array, ' samp'],
+    n_bins: int,
+    interpolate: bool,
+    smooth: bool,
+    dtype: DTypeLike,
+) -> Float[Array, '{n_bins} samp']:
+    """Assign each sample to a bin of `x`.
+
+    Splits the range of `x` into `n_bins` equal bins. Entry `[j, s]` is how much sample
+    `s` belongs to bin `j`. With `interpolate=False` this is one-hot: 1 for the bin the
+    sample falls in, 0 elsewhere. With `interpolate=True` a sample near a bin edge is
+    shared with its neighbour (triangular weights, or sin² hats if `smooth`), each
+    sample's weights summing to 1.
+
+    Each row is then one basis function of a binned template (a bin's time profile).
+    """
+    n_samps = x.size
+    lo = jnp.min(x)
+    hi = jnp.max(x) + 1e-8  # nudge so the global max falls in the last bin
+    edges = jnp.linspace(lo, hi, n_bins + 1)
+
+    if not interpolate:
+        # Hard assignment: each sample contributes 1.0 to exactly its bin.
+        sample_bin = jnp.digitize(x, edges[1:])
+        bins = jnp.zeros((n_bins, n_samps)).at[sample_bin, jnp.arange(n_samps)].set(1.0)
+        return bins.astype(dtype)
+
+    # Soft assignment: triangular weights peaking at each bin centre, falling
+    # linearly to zero one bin-width (``delta``) away. Shape (n_bins, n_samps).
+    centres = 0.5 * (edges[:-1] + edges[1:])
+    delta = (hi - lo) / n_bins
+    triangular = jnp.clip(1 - jnp.abs(x[None, :] - centres[:, None]) / delta, min=0)
+
+    if smooth:
+        # sin^2 reshaping of the triangle, renormalised so weights sum to 1 per sample.
+        bins = jnp.sin((jnp.pi / 2) * triangular) ** 2
+        bins /= jnp.sum(bins, axis=0)[None, :]
+    else:
+        # Linear interpolation; clamp samples beyond the end centres to the edge bins.
+        bins = triangular.at[0, x < centres[0]].set(1.0).at[-1, x > centres[-1]].set(1.0)
+
+    return bins.astype(dtype)
+
+
+def _legendre_values(
+    u: Float[Array, ' samp'],
+    min_order: int,
+    max_order: int,
+    dtype: DTypeLike,
+) -> Float[Array, '{max_order-min_order+1} samp']:
+    """Legendre polynomials of orders `min_order..max_order` (inclusive), evaluated on
+    `u` already rescaled to `[-1, 1]`."""
+    legs = jax.scipy.special.lpmn_values(max_order, max_order, u, is_normalized=False)
+    return legs[0, min_order:, :].astype(dtype)
+
+
+def _legendre(
+    x: Float[Array, ' samp'],
+    min_order: int,
+    max_order: int,
+    dtype: DTypeLike,
+) -> Float[Array, '{max_order-min_order+1} samp']:
+    """Legendre polynomials of orders `min_order..max_order` (inclusive), evaluated on
+    `x` rescaled to `[-1, 1]` over its global range."""
+    u = -1.0 + 2.0 * (x - jnp.min(x)) / jnp.ptp(x)
+    return _legendre_values(u, min_order, max_order, dtype)
+
+
+def _harmonics(
+    angles: Float[Array, ' samp'],
+    n_harmonics: int,
+    dtype: DTypeLike,
+    *,
+    dc: bool,
+) -> Float[Array, '{2*n_harmonics+dc} samp']:
+    """Harmonic basis `sin(k·angle), cos(k·angle)` for `k = 1..n_harmonics`, optionally
+    prepended with a constant (DC) row when `dc` is set."""
+    h = jnp.arange(1, n_harmonics + 1)
+    sines = jnp.sin(h[:, None] * angles[None, :])
+    cosines = jnp.cos(h[:, None] * angles[None, :])
+    parts = ([jnp.ones((1, angles.size), dtype=dtype)] if dc else []) + [sines, cosines]
+    return jnp.concatenate(parts, axis=0).astype(dtype)
+
+
+class PerDetectorTemplate(AbstractLinearOperator):
+    """Turn a single-detector `Basis` into a per-detector template operator.
+
+    Each detector is an independent block fitting its own amplitudes. Two modes:
+
+    - `shared_basis=True` (default): all detectors use the same basis. Used by templates
+      whose basis depends only on shared quantities (azimuth, HWP angle): polynomial,
+      scan- and HWP-synchronous.
+    - `shared_basis=False`: each detector has its own basis. Used by the T2P leakage
+      template, where detector `d`'s basis is its own temperature stream.
+    """
+
+    operator: AbstractLinearOperator
+    shared_basis: bool = field(default=True, metadata={'static': True})
+
+    @classmethod
+    def from_basis(cls, basis: Basis, n_dets: int, *, shared: bool = True) -> Self:
+        """Build the per-detector operator over `n_dets` detectors from a single `basis`.
+
+        `shared=True` uses one basis for all detectors; `shared=False` expects a
+        per-detector basis, one per detector (see the class docstring).
+        """
+        return cls(
+            operator=basis,
+            shared_basis=shared,
+            in_structure=jax.ShapeDtypeStruct((n_dets, *basis.shape), basis.dtype),
+        )
+
+    @property
+    def out_structure(self) -> jax.ShapeDtypeStruct:
+        n_dets = self.in_structure.shape[0]
+        out = self.operator.out_structure
+        return jax.ShapeDtypeStruct((n_dets, *out.shape), out.dtype)
+
+    def mv(self, x: Float[Array, ' det *shape']) -> Float[Array, 'det samp']:
+        if self.shared_basis:
+            # broadcast the shared operator across detectors.
+            return jax.vmap(self.operator.mv)(x)  # type: ignore[no-any-return]
+        # slice the basis values on the detector axis in lockstep with x
+        return jax.vmap(lambda op, xi: op.mv(xi), in_axes=(0, 0))(self.operator, x)  # type: ignore[no-any-return]
+
+    def transpose(self) -> AbstractLinearOperator:
+        return PerDetectorTemplate(
+            self.operator.T, shared_basis=self.shared_basis, in_structure=self.out_structure
+        )
+
+    @classmethod
+    def scan_synchronous(
+        cls,
+        legendre: LegendreOrders,
+        azimuth: Float[Array, ' samp'],
+        n_dets: int,
+        dtype: DTypeLike,
+    ) -> Self:
+        """Scan-synchronous (azimuth-only) template on a global Legendre basis."""
+        legs = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)
+        return cls.from_basis(TensorBasis.create(legs), n_dets=n_dets)
+
+    @classmethod
+    def binaz_synchronous(
+        cls,
+        bins: BinsConfig,
+        azimuth: Float[Array, ' samp'],
+        n_dets: int,
+        dtype: DTypeLike,
+    ) -> Self:
+        """Binned azimuth-synchronous template, no HWP coupling.
+
+        One amplitude per azimuth bin per detector.
+        """
+        weights = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
+        return cls.from_basis(TensorBasis.create(weights), n_dets=n_dets)
+
+    @classmethod
+    def hwp_synchronous(
+        cls,
+        n_harmonics: int,
+        hwp_angles: Float[Array, ' samp'],
+        n_dets: int,
+        dtype: DTypeLike,
+    ) -> Self:
+        """HWP-synchronous template: harmonics of the HWP angle, `k = 1..n_harmonics`."""
+        matrix = _harmonics(hwp_angles, n_harmonics, dtype, dc=False)
+        return cls.from_basis(TensorBasis.create(matrix), n_dets=n_dets)
+
+    @classmethod
+    def azhwp_synchronous(
+        cls,
+        legendre: LegendreOrders,
+        n_harmonics: int,
+        azimuth: Float[Array, ' samp'],
+        hwp_angles: Float[Array, ' samp'],
+        n_dets: int,
+        dtype: DTypeLike,
+        scan_mask: Float[Array, ' samp'] | None = None,
+    ) -> Self:
+        """Azimuth-Legendre × HWP-harmonic template (Kronecker product of the two).
+
+        `scan_mask` optionally zeroes the azimuth leg on flagged samples (e.g. to fit
+        separate amplitudes per scan direction).
+        """
+        poly = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)
+        if scan_mask is not None:
+            poly = scan_mask[None, :] * poly
+        harm = _harmonics(hwp_angles, n_harmonics, dtype, dc=True)
+        return cls.from_basis(KroneckerBasis.create((poly, harm)), n_dets=n_dets)
+
+    @classmethod
+    def binazhwp_synchronous(
+        cls,
+        bins: BinsConfig,
+        n_harmonics: int,
+        azimuth: Float[Array, ' samp'],
+        hwp_angles: Float[Array, ' samp'],
+        n_dets: int,
+        dtype: DTypeLike,
+    ) -> Self:
+        """Azimuth-binned × HWP-harmonic template (azimuth is always binned)."""
+        bin_basis = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
+        harm = _harmonics(hwp_angles, n_harmonics, dtype, dc=True)
+        return cls.from_basis(KroneckerBasis.create((bin_basis, harm)), n_dets=n_dets)
+
+    @classmethod
+    def polynomial(
+        cls,
+        max_poly_order: int,
+        intervals: Float[Array, 'n_intervals 2'],
+        times: Float[Array, ' samp'],
+        n_dets: int,
+        dtype: DTypeLike,
+        valid_mask: Float[Array, ' samp'] | None = None,
+    ) -> Self:
+        """A polynomial drift template, one polynomial per scanning interval.
+
+        Each sample belongs to one interval and is fitted with Legendre orders
+        `0..max_poly_order` over that interval.
+
+        Assumes `intervals` are sorted, non-overlapping `[start, end)` rows. Samples in
+        gaps or past the last interval get a zero basis column. `valid_mask` optionally
+        zeroes flagged samples (1 = keep, 0 = drop) so they neither carry template
+        signal nor constrain the fitted amplitudes.
+        """
+        n_samps = times.size
+        n_intervals = intervals.shape[0]
+        starts = intervals[:, 0]
+        ends = intervals[:, 1]
+
+        s = jnp.arange(n_samps)
+        # interval id per sample: last interval whose start <= s (intervals sorted),
+        # clamped into range. Gaps/out-of-range are caught by ``in_range`` below.
+        segment = jnp.clip(jnp.searchsorted(starts, s, side='right') - 1, 0, n_intervals - 1)
+        seg_start = starts[segment]
+        seg_end = ends[segment]
+        in_range = (s >= seg_start) & (s < seg_end)
+
+        t0 = times[seg_start]
+        span = jnp.where(seg_end > seg_start + 1, times[seg_end - 1] - t0, 1.0)
+        # rescale each sample to [-1, 1] within its own interval; out-of-range
+        # samples sit at 0 and are zeroed by ``in_range`` below.
+        u = jnp.where(in_range, -1.0 + 2.0 * (times - t0) / span, 0.0)
+        legs = _legendre_values(u, 0, max_poly_order, dtype)  # (k, n_samps)
+        legs = legs * in_range[None, :]
+        if valid_mask is not None:
+            legs = legs * valid_mask[None, :].astype(dtype)
+
+        basis = SegmentedBasis.create(segment.astype(jnp.int32), legs, n_intervals)
+        return cls.from_basis(basis, n_dets=n_dets)
+
+    @classmethod
+    def temperature(
+        cls,
+        temperature: Float[Array, 'det samp'],
+        dtype: DTypeLike,
+        fit_band: tuple[float, float] | None = None,
+        sample_rate: Float[Array, ''] | float = 1.0,
+        decimate: int = 1,
+    ) -> Self:
+        """Temperature-to-polarization leakage template.
+
+        Each detector's basis is just its own temperature stream, so fitting one
+        amplitude per detector estimates how much temperature leaks into its
+        polarization.
+
+        `fit_band=(f0, f1)` restricts the temperature basis to that frequency band (Hz),
+        so the leakage is both estimated and removed only there, keeping the template a
+        clean linear operator.
+
+        `decimate=q` stores the basis on a `q`-times coarser grid to cut memory; the
+        coarse-grid Nyquist frequency `sample_rate / 2q` must stay above `f1`. As a rule
+        of thumb keep it at a few times `f1` (`q ≲ sample_rate / 6·f1`): the fractional
+        error on the fitted amplitude grows like `(f1 / (sample_rate / 2q))²`.
+
+        Assumes `temperature` is already deglitched/gap-filled upstream: a glitch left in
+        it would smear across the band and bias the fitted amplitude.
+        """
+        t = temperature
+        if fit_band is not None:
+            f0, f1 = fit_band
+            freqs = jnp.fft.rfftfreq(t.shape[-1], d=1.0 / sample_rate)
+            band = (freqs > f0) & (freqs < f1)
+            t = jnp.fft.irfft(jnp.fft.rfft(t, axis=-1) * band, n=t.shape[-1], axis=-1)
+        n_dets, n_full = t.shape
+        if decimate > 1:
+            # Block-average onto a q-times coarser grid: pad the tail to a whole block,
+            # reshape (..., n_dec, q) and mean. ``DecimatedTensorBasis`` hold-upsamples
+            # back to ``n_full`` in synthesis (band-limits above sample_rate / 2q).
+            n_dec = -(-n_full // decimate)  # ceil
+            pad = n_dec * decimate - n_full
+            tp = jnp.pad(t, [(0, 0), (0, pad)])
+            t_dec = tp.reshape(n_dets, n_dec, decimate).mean(axis=-1)
+            values = t_dec[:, None, :].astype(dtype)  # (det, k=1, dec)
+            basis: Basis = DecimatedTensorBasis(
+                values=values,
+                q=decimate,
+                n_full=n_full,
+                in_structure=ShapeDtypeStruct((1,), dtype),
+            )
+        else:
+            values = t[:, None, :].astype(dtype)  # (det, k=1, samp)
+            basis = TensorBasis(values=values, in_structure=ShapeDtypeStruct((1,), dtype))
+        return cls.from_basis(basis, n_dets=n_dets, shared=False)
+
+    @classmethod
+    def none(cls, n_dets: int, n_samps: int, dtype: DTypeLike) -> Self:
+        """Empty template: no amplitudes, zero output. Used to leave a Stokes leg
+        untouched in a per-leg block (e.g. the I leg of the T2P template, which acts
+        on Q/U only)."""
+        values = jnp.zeros((n_dets, 0, n_samps), dtype)
+        basis = TensorBasis(values=values, in_structure=ShapeDtypeStruct((0,), dtype))
+        return cls.from_basis(basis, n_dets=n_dets, shared=False)

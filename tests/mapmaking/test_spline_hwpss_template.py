@@ -1,35 +1,36 @@
+# ruff: noqa: F821
 import jax.numpy as jnp
+from jax import Array
 
 from furax.mapmaking.spline_hwpss_template import (
     cubic_bspline,
-    spline_basis,
     spline_4f_hwpss_basis,
-    build_spline_4f_basis,
     spline_4f_template,
+    spline_basis,
 )
 
 
-def test_cubic_bspline_support():
-    u = jnp.linspace(-1, 5, 100)
+def test_cubic_bspline_support() -> None:
+    u: Array = jnp.linspace(-1, 5, 100)
 
-    y = cubic_bspline(u)
+    y: Array = cubic_bspline(u)
 
     # support is [0,4)
-    assert jnp.all(y[(u < 0) | (u >= 4)] == 0.0)
-    assert jnp.all(y >= 0)
+    assert jnp.allclose(y[u < 0], 0.0)
+    assert jnp.allclose(y[u >= 4], 0.0)
 
 
-def test_spline_basis_shape():
-    t = jnp.linspace(0, 10, 200)
+def test_spline_basis_shape() -> None:
+    t: Array = jnp.linspace(0, 10, 200)
 
-    B = spline_basis(t, n_knots=5)
+    B: Array = spline_basis(t, n_knots=5)
 
     # K = n_knots + 2
     assert B.shape[0] == 7
     assert B.shape[1] == t.size
 
 
-def test_4f_basis_structure():
+def test_4f_basis_structure() -> None:
     t = jnp.linspace(0, 10, 100)
     hwp = jnp.linspace(0, 2 * jnp.pi, 100)
 
@@ -42,7 +43,7 @@ def test_4f_basis_structure():
     assert B.shape[1] == 100
 
 
-def test_4f_modulation_nonzero():
+def test_4f_modulation_nonzero() -> None:
     t = jnp.linspace(0, 10, 100)
     hwp = jnp.linspace(0, 2 * jnp.pi, 100)
 
@@ -55,7 +56,7 @@ def test_4f_modulation_nonzero():
     assert not jnp.allclose(cos_part, sin_part)
 
 
-def test_template_build():
+def test_template_build() -> None:
     t = jnp.linspace(0, 10, 100)
     hwp = jnp.linspace(0, 2 * jnp.pi, 100)
 
@@ -73,7 +74,7 @@ def test_template_build():
     assert y.shape == (2, 100)
 
 
-def test_linearity():
+def test_linearity() -> None:
     t = jnp.linspace(0, 10, 100)
     hwp = jnp.linspace(0, 2 * jnp.pi, 100)
 

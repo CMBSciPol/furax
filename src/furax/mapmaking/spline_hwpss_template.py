@@ -1,3 +1,4 @@
+# ruff: noqa: F821
 """
 Spline-based 4f HWP synchronous template for time-domain systematics modelling.
 
@@ -36,11 +37,13 @@ which is linear in the coefficients and suitable for mapmaking and projection
 frameworks.
 """
 
+from typing import Any
+
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Float
-from .templates import TensorBasis
-from .templates import PerDetectorTemplate
+
+from .templates import PerDetectorTemplate, TensorBasis
 
 
 def cubic_bspline(u: Float[Array, 'n']) -> Float[Array, 'n']:
@@ -57,9 +60,9 @@ def cubic_bspline(u: Float[Array, 'n']) -> Float[Array, 'n']:
 
 
 def spline_basis(
-    times: Array,
+    times: Float[Array, 'N'],
     n_knots: int,
-):
+) -> Float[Array, 'K N']:
     """
     Returns:
         B: (K, N) spline basis matrix
@@ -81,10 +84,10 @@ def spline_basis(
 
 
 def spline_4f_hwpss_basis(
-    times: Array,
-    hwp_angles: Array,
+    times: Float[Array, 'N'],
+    hwp_angles: Float[Array, 'N'],
     n_knots: int,
-):
+) -> Float[Array, '2K N']:
     """
     Returns:
         B: (2K, N) basis matrix
@@ -104,11 +107,11 @@ def spline_4f_hwpss_basis(
 
 
 def build_spline_4f_basis(
-    times,
-    hwp_angles,
-    n_knots,
-    dtype=jnp.float32,
-):
+    times: Float[Array, 'N'],
+    hwp_angles: Float[Array, 'N'],
+    n_knots: int,
+    dtype: Any = jnp.float32,
+) -> TensorBasis:
     B = spline_4f_hwpss_basis(times, hwp_angles, n_knots)
     # B shape: (2K, N)
 
@@ -116,12 +119,12 @@ def build_spline_4f_basis(
 
 
 def spline_4f_template(
-    times,
-    hwp_angles,
-    n_dets,
-    n_knots=20,
-    dtype=jnp.float32,
-):
+    times: Float[Array, 'N'],
+    hwp_angles: Float[Array, 'N'],
+    n_dets: int,
+    n_knots: int = 20,
+    dtype: Any = jnp.float32,
+) -> PerDetectorTemplate:
     basis = build_spline_4f_basis(times, hwp_angles, n_knots, dtype)
 
     return PerDetectorTemplate.from_basis(

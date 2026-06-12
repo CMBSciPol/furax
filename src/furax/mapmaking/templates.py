@@ -667,7 +667,7 @@ class PerDetectorTemplate(AbstractLinearOperator):
         times: Float[Array, ' samp'],
         hwp_angles: Float[Array, ' samp'],
         n_dets: int,
-        n_knots: int = 20,
+        n_knots: int = 100,
         dtype: Any = jnp.float32,
     ) -> Self:
         """Spline-based 4f HWP synchronous template.

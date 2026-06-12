@@ -295,8 +295,8 @@ class BinAzHWPSynchronousConfig:
 
 @dataclass
 class SplineHWPSSConfig:
-    n_knots: int = 20
-    """Number of spline knots.  Defaults to 20."""
+    n_knots: int = 100
+    """Number of spline knots.  Defaults to 100."""
 
 
 @dataclass

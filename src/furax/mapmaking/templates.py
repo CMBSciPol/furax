@@ -16,6 +16,8 @@ A few `Basis` flavours trade memory for structure:
   factored to save memory.
 - `SegmentedBasis`: each sample belongs to one segment (e.g. one scan interval),
   stored sparsely instead of as a mostly-zero dense array.
+- `WindowedBasis`: each sample reads a fixed window of overlapping blocks, the
+  overlapping generalisation of `SegmentedBasis`.
 
 Build several templates and combine them by wrapping each in a
 `PerDetectorTemplate` and stacking with `BlockRowOperator`.
@@ -35,7 +37,7 @@ from jaxtyping import DTypeLike, Float, Int, PyTree
 
 from furax import AbstractLinearOperator, square
 from furax.core import TransposeOperator
-from furax.math import quaternion
+from furax.math import bspline, quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
 from furax.obs.landscapes import HorizonLandscape
 from furax.obs.pointing import PointingOperator
@@ -278,6 +280,74 @@ class SegmentedBasis(Basis):
         contrib = self.values * signal[None, :]  # (k, n_points)
         zeros = jnp.zeros(self.shape, self.dtype)
         return zeros.at[self.segment].add(contrib.T)
+
+
+class WindowedBasis(Basis):
+    """Basis of overlapping blocks, each sample reading a fixed-width window of them.
+
+    The amplitude index is a pair (block, sub-basis function). Every sample falls under a fixed
+    number of consecutive blocks, weighting each by how far the sample sits inside it and each
+    sub-basis function by its value there. The typical case is a cubic B-spline, where every
+    sample lies under four consecutive knots.
+
+    Stored sparsely as, per sample, the index of its first block, the window weights, and the
+    shared sub-basis values, instead of the equivalent dense `TensorBasis` whose columns would
+    be almost all zeros. The right choice when blocks overlap by a fixed amount;
+    `SegmentedBasis` is the non-overlapping single-block-per-sample special case, kept separate
+    to avoid storing its trivial unit window.
+
+    The builder must keep every window inside the block range, pre-zeroing the weights of any
+    sample whose window overhangs the ends.
+    """
+
+    offset: Int[Array, ' samp']
+    block_weights: Float[Array, 'O samp']
+    sub_values: Float[Array, 'k samp']
+
+    @classmethod
+    def create(
+        cls,
+        offset: Int[Array, ' samp'],
+        block_weights: Float[Array, 'O samp'],
+        sub_values: Float[Array, 'k samp'],
+        n_blocks: int,
+    ) -> Self:
+        n_window, n_points = block_weights.shape
+        k = sub_values.shape[0]
+        if offset.shape != (n_points,) or sub_values.shape[1] != n_points:
+            raise ValueError(
+                f'sample axes disagree: offset {offset.shape}, block_weights {block_weights.shape}'
+                f', sub_values {sub_values.shape}'
+            )
+        if n_window > n_blocks:
+            raise ValueError(f'window ({n_window}) wider than block count ({n_blocks})')
+        return cls(
+            offset=offset,
+            block_weights=block_weights,
+            sub_values=sub_values,
+            in_structure=ShapeDtypeStruct((n_blocks, k), sub_values.dtype),
+        )
+
+    @property
+    def n_points(self) -> int:
+        return self.offset.shape[0]
+
+    def _block_indices(self) -> Int[Array, 'samp O']:
+        # each sample's window: O consecutive block ids starting at its offset.
+        n_window = self.block_weights.shape[0]
+        return self.offset[:, None] + jnp.arange(n_window)
+
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        # gather each sample's window of block coefficients, contract over the sub-basis
+        # index against the shared values and over the window against its taper.
+        gathered = coeffs[self._block_indices()]  # (samp, O, k)
+        return jnp.einsum('soj,os,js->s', gathered, self.block_weights, self.sub_values)
+
+    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        # adjoint of expand: per-sample rank-one contribution scatter-added into its window.
+        contrib = jnp.einsum('os,js,s->soj', self.block_weights, self.sub_values, signal)
+        zeros = jnp.zeros(self.shape, self.dtype)
+        return zeros.at[self._block_indices()].add(contrib)
 
 
 def _bin_weights(
@@ -600,6 +670,28 @@ class PerDetectorTemplate(AbstractLinearOperator):
             values=values, n_full=n_samps, in_structure=ShapeDtypeStruct((0,), dtype)
         )
         return cls.from_basis(basis, n_dets=n_dets, shared=False)
+
+    @classmethod
+    def spline_hwpss(
+        cls,
+        times: Float[Array, ' samp'],
+        hwp_angles: Float[Array, ' samp'],
+        n_dets: int,
+        n_knots: int = 100,
+        dtype: Any = jnp.float32,
+    ) -> Self:
+        """Spline-based 4f HWP synchronous template.
+
+        A cubic B-spline models the slowly time-varying amplitude of the 4f HWP-synchronous
+        signal: knot `j` carries a `(sin 4χ, cos 4χ)` pair, so the amplitudes have shape
+        `(K, 2)` with `K = n_knots + 2`.
+        """
+        offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
+        sub_values = _harmonics(4.0 * hwp_angles, 1, dtype, dc=False)  # [sin 4χ, cos 4χ]
+        basis = WindowedBasis.create(
+            offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2
+        )
+        return cls.from_basis(basis, n_dets=n_dets, shared=True)
 
 
 class GroundTemplateOperator(AbstractLinearOperator):

@@ -18,9 +18,29 @@ from furax.mapmaking.templates import (
     _bin_weights,
     _harmonics,
     _legendre,
-    spline_4f_hwpss_basis,
 )
+from furax.math import bspline
 from furax.tree import as_structure
+
+
+def spline_4f_hwpss_basis(
+    times: Float[Array, ' samp'],
+    hwp_angles: Float[Array, ' samp'],
+    n_knots: int,
+) -> Float[Array, '2k samp']:
+    """Dense reference for `PerDetectorTemplate.spline_hwpss`'s `WindowedBasis`.
+
+    Returns:
+        B: (2K, N) basis matrix, interleaved rows [phi_j sin(4χ), phi_j cos(4χ)].
+    """
+    phi = bspline.spline_basis(times, n_knots)  # (K, N)
+    sin4 = jnp.sin(4.0 * hwp_angles)
+    cos4 = jnp.cos(4.0 * hwp_angles)
+    B = jnp.empty((2 * phi.shape[0], phi.shape[1]), dtype=phi.dtype)
+    B = B.at[0::2].set(phi * sin4)
+    B = B.at[1::2].set(phi * cos4)
+    return B
+
 
 # float64 everywhere: structural/adjoint residuals run ~1e-14, so one tight tolerance fits all.
 TOL = 1e-12

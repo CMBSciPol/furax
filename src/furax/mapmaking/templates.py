@@ -312,7 +312,15 @@ class WindowedBasis(Basis):
         sub_values: Float[Array, 'k samp'],
         n_blocks: int,
     ) -> Self:
+        n_window, n_points = block_weights.shape
         k = sub_values.shape[0]
+        if offset.shape != (n_points,) or sub_values.shape[1] != n_points:
+            raise ValueError(
+                f'sample axes disagree: offset {offset.shape}, block_weights {block_weights.shape}'
+                f', sub_values {sub_values.shape}'
+            )
+        if n_window > n_blocks:
+            raise ValueError(f'window ({n_window}) wider than block count ({n_blocks})')
         return cls(
             offset=offset,
             block_weights=block_weights,
@@ -425,26 +433,6 @@ def _harmonics(
     cosines = jnp.cos(h[:, None] * angles[None, :])
     parts = ([jnp.ones((1, angles.size), dtype=dtype)] if dc else []) + [sines, cosines]
     return jnp.concatenate(parts, axis=0).astype(dtype)
-
-
-def spline_4f_hwpss_basis(
-    times: Float[Array, ' samp'],
-    hwp_angles: Float[Array, ' samp'],
-    n_knots: int,
-) -> Float[Array, '2k samp']:
-    """
-    Returns:
-        B: (2K, N) basis matrix, interleaved rows [phi_j sin(4χ), phi_j cos(4χ)].
-    """
-    phi = bspline.spline_basis(times, n_knots)  # (K, N)
-
-    sin4 = jnp.sin(4.0 * hwp_angles)
-    cos4 = jnp.cos(4.0 * hwp_angles)
-
-    B = jnp.empty((2 * phi.shape[0], phi.shape[1]), dtype=phi.dtype)
-    B = B.at[0::2].set(phi * sin4)
-    B = B.at[1::2].set(phi * cos4)
-    return B
 
 
 class PerDetectorTemplate(AbstractLinearOperator):

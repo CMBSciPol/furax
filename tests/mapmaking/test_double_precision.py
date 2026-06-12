@@ -25,6 +25,7 @@ from furax.mapmaking import (
     MultiObservationMapMaker,
     ObservationReader,
 )
+from furax.mapmaking._model import _sample_rate
 from furax.mapmaking.config import (
     HealpixConfig,
     LandscapeConfig,
@@ -35,7 +36,7 @@ from furax.mapmaking.config import (
     SolverConfig,
     WeightingConfig,
 )
-from tests.mapmaking.helpers import FakeLazyObservation
+from tests.mapmaking.helpers import FakeLazyObservation, FakeObservation
 
 # ----------------------------------------------------------------------------
 # In-process dtype plumbing tests
@@ -96,6 +97,48 @@ class TestObservationReaderDtype:
             dtype=jnp.float32,
         )
         assert reader.out_structure['valid_sample_masks'].dtype == jnp.bool
+
+
+class TestObservationReaderRebasesTimestamps:
+    """Reader rebases timestamps to a zero origin before the float32 cast.
+
+    ``FakeObservation`` timestamps carry an absolute POSIX epoch whose float32 ULP
+    is coarser than the (short) observation: without rebasing, every sample rounds
+    to the same value once cast to float32.
+    """
+
+    def test_reader_rebases_and_keeps_samples_resolved(self) -> None:
+        obs = FakeObservation()
+        reader = ObservationReader.from_observations(
+            [FakeLazyObservation()],
+            requested_fields=['timestamps'],
+            dtype=jnp.float32,
+        )
+        data, _ = reader.read(0)
+        timestamps = data['timestamps']
+
+        assert timestamps.dtype == jnp.float32
+        # Starts at zero, and the samples stay distinct: strictly increasing, all
+        # present, spanning the full (n_samples - 1) / sample_rate duration.
+        assert timestamps[0] == 0.0
+        assert jnp.all(jnp.diff(timestamps) > 0)
+        assert jnp.unique(timestamps).size == obs.n_samples
+        expected_span = (obs.n_samples - 1) / obs.sample_rate
+        assert jnp.ptp(timestamps) == pytest.approx(expected_span, rel=1e-5)
+
+    def test_derived_sample_rate_is_finite(self) -> None:
+        # _sample_rate is (n_samples - 1) / ptp(timestamps): a collapsed axis (ptp=0)
+        # makes it diverge, so check it stays finite and recovers the true rate.
+        obs = FakeObservation()
+        reader = ObservationReader.from_observations(
+            [FakeLazyObservation()],
+            requested_fields=['timestamps'],
+            dtype=jnp.float32,
+        )
+        data, _ = reader.read(0)
+        fs = _sample_rate(data['timestamps'])
+        assert jnp.isfinite(fs)
+        assert fs == pytest.approx(obs.sample_rate, rel=1e-4)
 
 
 class TestMapMakerForwardsDtype:

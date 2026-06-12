@@ -17,18 +17,20 @@ from furax.mapmaking.config import (
     LandscapeConfig,
     Methods,
     NoiseFitConfig,
+    NoiseSource,
     PointingConfig,
     SkyPatch,
     SotodlibConfig,
+    TemplatesConfig,
     WCSConfig,
     WeightingConfig,
     WeightingMode,
 )
-from furax.mapmaking.mapmaker import get_obs_distribution_to_process
+from furax.mapmaking.mapmaker import MLMapmaker, get_obs_distribution_to_process
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import Stokes, ValidStokesType
-from tests.mapmaking.helpers import FakeLazyObservation
+from tests.mapmaking.helpers import FakeGroundObservation, FakeLazyObservation
 
 
 class TestObsDistribution:
@@ -359,3 +361,30 @@ def _config(
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
         atop_tau=atop_tau,
     )
+
+
+class TestSingleObsTemplates:
+    """End-to-end coverage of the single-observation template path (MapMaker.make_map)."""
+
+    def test_ml_mapmaker_runs_with_templates(self) -> None:
+        # Regression: the template preconditioner build jits the template system operator;
+        # a composite furax operator carries unhashable leaves, so it must be wrapped in a
+        # lambda (mapmaker.py). Also locks the structured (n_dets, *shape) amplitude layout.
+        n_dets = 4
+        obs = FakeGroundObservation(n_dets=n_dets, n_samples=1024, sample_rate=100.0)
+
+        cfg = MapMakingConfig.for_method('ml')
+        cfg.weighting.source = NoiseSource.PRECOMPUTED  # use the obs noise model (finite)
+        cfg.landscape = LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8))
+        cfg.templates = TemplatesConfig.full_defaults()
+        cfg.templates.ground = None  # ground template needs pointing/landscape, out of scope here
+
+        res = MLMapmaker(config=cfg).make_map(obs)
+
+        assert bool(jnp.all(jnp.isfinite(res['map'])))
+        # amplitudes are structured (n_dets, *basis_shape), not flat
+        assert res['template_polynomial'].shape == (n_dets, 2, 4)  # intervals x (orders 0..3)
+        assert res['template_azhwp_synchronous'].shape == (n_dets, 4, 9)  # orders x (DC+2*4)
+        for key, value in res.items():
+            if key.startswith('template_') and not key.startswith('template_reg'):
+                assert bool(jnp.all(jnp.isfinite(value))), key

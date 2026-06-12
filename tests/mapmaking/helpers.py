@@ -3,11 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Bool, Float
 
-from furax.mapmaking import AbstractLazyObservation, AbstractObservation
-from furax.mapmaking.noise import NoiseModel
+from furax.mapmaking import (
+    AbstractGroundObservation,
+    AbstractLazyObservation,
+    AbstractObservation,
+)
+from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import ProjectionType, StokesLandscape
 from furax.obs.stokes import Stokes
 
@@ -154,3 +159,41 @@ class FakeLazyObservation(AbstractLazyObservation[None]):
 
     def get_data(self, requested_fields=None) -> FakeObservation:
         return FakeObservation(**self._kwargs)
+
+
+class FakeGroundObservation(FakeObservation, AbstractGroundObservation[None]):
+    """``FakeObservation`` extended with the ground getters the single-observation
+    ``MapMaker`` template path needs (azimuth/elevation, scanning intervals, scan masks),
+    plus a finite precomputed noise model.
+
+    The precomputed ``AtmosphericNoiseModel`` sidesteps fitting a 1/f model to the synthetic
+    white TODs (which yields NaN); use ``weighting.source = PRECOMPUTED``.
+    """
+
+    def get_scanning_intervals(self) -> Float[np.ndarray, 'n 2']:
+        half = self._n_samples // 2
+        return np.array([[0, half], [half, self._n_samples]])
+
+    def get_elapsed_times(self) -> Float[np.ndarray, ' a']:
+        return np.arange(self._n_samples, dtype=np.float64) / self._sample_rate
+
+    def get_azimuth(self) -> Float[np.ndarray, ' a']:
+        return np.linspace(0.0, 10.0, self._n_samples).astype(np.float64)
+
+    def get_elevation(self) -> Float[np.ndarray, ' a']:
+        return np.full(self._n_samples, 0.8, dtype=np.float64)
+
+    def get_left_scan_mask(self) -> Float[np.ndarray, ' a']:
+        return (np.arange(self._n_samples) % 2 == 0).astype(np.float64)
+
+    def get_right_scan_mask(self) -> Float[np.ndarray, ' a']:
+        return (np.arange(self._n_samples) % 2 == 1).astype(np.float64)
+
+    def get_noise_model(self) -> NoiseModel:
+        n = self._n_dets
+        return AtmosphericNoiseModel(
+            sigma=jnp.ones(n),
+            alpha=-jnp.ones(n),
+            fk=0.1 * jnp.ones(n),
+            f0=1e-3 * jnp.ones(n),
+        )

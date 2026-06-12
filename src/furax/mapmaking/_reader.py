@@ -85,7 +85,10 @@ class ObservationReader(AbstractReader, Generic[T]):
                 angles, quaternions). Use jnp.float32 to run a float32 mapmaking pipeline
                 (MapMakingConfig.double_precision=False). Casting the geometry is also
                 required there: under jax_enable_x64=False a float64 array is illegal, so
-                no field may stay float64.
+                no field may stay float64. Timestamps are rebased to a per-observation
+                zero origin (in float64, before the downcast) so the float32 cast does not
+                collapse the absolute POSIX epoch onto a single value; see the timestamps
+                reader in ``_get_data_field_readers``.
         """
         fields = cls._resolve_fields(observations, requested_fields)
         common_keywords = {'data_field_names': fields}
@@ -270,12 +273,19 @@ class ObservationReader(AbstractReader, Generic[T]):
                 fits = if_none_raise_error(obs.get_noise_model()).to_array()
             return jax.tree.map(lambda x: x.astype(target_dtype), fits)
 
+        def get_timestamps(obs: AbstractObservation[T]) -> Any:
+            # The pipeline uses only time differences, so anchor each observation at its
+            # own start. Subtracting in float64 keeps the samples resolved when cast to
+            # float32; the absolute epoch is read from the interface where needed.
+            timestamps = np.asarray(obs.get_timestamps(), dtype=np.float64)
+            return (timestamps - timestamps[0]).astype(target_dtype)
+
         return {
             'metadata': lambda obs: HashedObservationMetadata.from_observation(obs),
             'sample_data': get_sample_data,
             'valid_sample_masks': lambda obs: obs.get_sample_mask(),
             'valid_scanning_masks': lambda obs: obs.get_scanning_mask(),
-            'timestamps': lambda obs: obs.get_timestamps().astype(target_dtype),
+            'timestamps': get_timestamps,
             'hwp_angles': lambda obs: obs.get_hwp_angles().astype(target_dtype),
             'detector_quaternions': lambda obs: obs.get_detector_quaternions().astype(target_dtype),
             'boresight_quaternions': lambda obs: obs.get_boresight_quaternions().astype(

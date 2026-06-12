@@ -95,7 +95,7 @@ Python, JAX, linear operator framework, CMB mapmaking.
 
 ### Mapmaking conventions
 
-- `double_precision=False` → float32 on every float field, including geometry (timestamps, HWP angles, quaternions); the pipeline then runs under `jax_enable_x64=False`, where float64 arrays are illegal. (Float32 timestamps ~1.7e9 lose sub-second resolution — accepted.)
+- `double_precision=False` → float32 on every float field, including geometry (timestamps, HWP angles, quaternions); the pipeline then runs under `jax_enable_x64=False`, where float64 arrays are illegal. Timestamps are an exception in form only: the reader rebases them to a per-observation zero origin (in float64, before the downcast) so the absolute POSIX epoch does not exhaust the float32 range. The pipeline uses only time differences, so this is exact; absolute UTC is still read from the interface where needed (e.g. pointing).
 
 ## Designing operators from math
 

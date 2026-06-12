@@ -1,6 +1,6 @@
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import Float
+from jaxtyping import Float, Int
 
 
 def cubic_bspline(u: Float[Array, ' samp']) -> Float[Array, ' samp']:
@@ -16,25 +16,44 @@ def cubic_bspline(u: Float[Array, ' samp']) -> Float[Array, ' samp']:
     return out
 
 
-def spline_basis(
-    times: Float[Array, ' samp'],
-    n_knots: int,
-) -> Float[Array, 'k samp']:
-    """
-    Returns:
-        B: (K, N) spline basis matrix
-    """
+def _spline_position(times: Float[Array, ' samp'], n_knots: int) -> Float[Array, ' samp']:
+    """Sample positions on the knot grid: times rescaled so knot ``j`` sits at ``j``."""
     t_min = jnp.min(times)
     t_max = jnp.max(times)
-    t = (times - t_min) / (t_max - t_min + 1e-12)
+    t = (times - t_min) / (t_max - t_min + 1e-12)  # to [0, 1]
+    return t * (n_knots + 1)  # to [0, n_knots + 1], i.e. knot spacing 1
 
+
+def spline_basis(times: Float[Array, ' samp'], n_knots: int) -> Float[Array, 'k samp']:
+    """Dense cubic B-spline basis on ``K = n_knots + 2`` uniform knots.
+
+    Returns:
+        B: (K, N) basis matrix, ``B[j] = cubic_bspline(position - j + 1)``.
+    """
+    p = _spline_position(times, n_knots)
     K = n_knots + 2
-    spacing = 1.0 / (n_knots + 1)
+    # knot j peaks at p = j (u = 2); evaluate all knots at once against every sample.
+    u = p[None, :] - jnp.arange(K)[:, None] + 1.0
+    return cubic_bspline(u)
 
-    basis = []
-    for j in range(K):
-        center = (j + 1) * spacing
-        u = (t - center) / spacing + 2.0
-        basis.append(cubic_bspline(u))
 
-    return jnp.stack(basis, axis=0)
+def spline_window(
+    times: Float[Array, ' samp'], n_knots: int
+) -> tuple[Int[Array, ' samp'], Float[Array, 'samp 4']]:
+    """Banded form of `spline_basis`: the 4 nonzero knots under each sample.
+
+    A cubic B-spline reaches only 4 consecutive knots, so each sample's column of
+    `spline_basis` has just 4 nonzero entries. This returns those directly, avoiding the
+    mostly-zero ``(K, N)`` matrix (see `furax.mapmaking.templates.WindowedBasis`).
+
+    Returns:
+        offset: (N,) index of the first of the 4 knots, clamped to ``[0, K - 4]``.
+        weights: (N, 4) the B-spline values at knots ``offset + 0..3``; weights of knots
+            whose support misses the sample (at the time-range edges) are exactly zero.
+    """
+    p = _spline_position(times, n_knots)
+    K = n_knots + 2
+    offset = jnp.clip(jnp.floor(p).astype(jnp.int32) - 2, 0, K - 4)
+    # knot offset+o contributes cubic_bspline(p - (offset+o) + 1); out-of-support -> 0.
+    u = p[:, None] - (offset[:, None] + jnp.arange(4)) + 1.0
+    return offset, cubic_bspline(u)

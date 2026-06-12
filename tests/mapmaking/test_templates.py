@@ -14,6 +14,7 @@ from furax.mapmaking.templates import (
     PerDetectorTemplate,
     SegmentedBasis,
     TensorBasis,
+    WindowedBasis,
     _bin_weights,
     _harmonics,
     _legendre,
@@ -275,6 +276,88 @@ class TestSegmentedBasis:
         diff = basis.expand(bumped) - basis.expand(coeffs)
         assert_allclose(diff[segment != 0], 0.0, atol=TOL)
         assert jnp.max(jnp.abs(diff[segment == 0])) > 0.0
+
+
+# ---------------------------------------------------------------------------
+# WindowedBasis
+# ---------------------------------------------------------------------------
+
+
+def _windowed(n_blocks: int, n_window: int, k: int, n_points: int, seed: int):
+    # offset kept in [0, n_blocks - n_window] so every window stays in range.
+    offset = jr.randint(jr.key(seed), (n_points,), 0, n_blocks - n_window + 1)
+    block_weights = jr.normal(jr.key(seed + 1), (n_window, n_points))
+    sub_values = jr.normal(jr.key(seed + 2), (k, n_points))
+    basis = WindowedBasis.create(offset.astype(jnp.int32), block_weights, sub_values, n_blocks)
+    return basis, offset, block_weights, sub_values
+
+
+def _windowed_dense_values(offset, block_weights, sub_values, n_blocks):
+    # dense[b, j, s] = block_weights[b - offset[s], s] * sub_values[j, s] inside the window.
+    n_window, n_points = block_weights.shape
+    rel = jnp.arange(n_blocks)[:, None] - offset[None, :]  # (n_blocks, n_points)
+    in_window = (rel >= 0) & (rel < n_window)
+    taper = jnp.where(
+        in_window, block_weights[jnp.clip(rel, 0, n_window - 1), jnp.arange(n_points)], 0.0
+    )
+    return taper[:, None, :] * sub_values[None, :, :]  # (n_blocks, k, n_points)
+
+
+class TestWindowedBasis:
+    def test_structure(self) -> None:
+        basis, *_ = _windowed(n_blocks=6, n_window=4, k=3, n_points=50, seed=800)
+        assert basis.shape == (6, 3)
+        assert basis.n_points == 50
+        assert basis.out_structure == jax.ShapeDtypeStruct((50,), basis.dtype)
+
+    @pytest.mark.parametrize(('n_window', 'k'), [(4, 1), (4, 3), (1, 5), (3, 2)])
+    def test_equivalent_to_dense_tensor_basis(self, n_window: int, k: int) -> None:
+        n_blocks, n_points = 6, 50
+        basis, offset, bw, sv = _windowed(n_blocks, n_window, k, n_points, 810)
+        dense = TensorBasis.create(_windowed_dense_values(offset, bw, sv, n_blocks))
+        coeffs = jr.normal(jr.key(811), (n_blocks, k))
+        signal = jr.normal(jr.key(812), (n_points,))
+        assert_allclose(basis.expand(coeffs), dense.expand(coeffs), rtol=TOL)
+        assert_allclose(basis.project(signal), dense.project(signal), rtol=TOL)
+
+    def test_reduces_to_segmented_when_window_is_one(self) -> None:
+        # O=1 with unit weights is exactly SegmentedBasis (offset == segment id).
+        n_seg, k, n_points = 4, 3, 50
+        segment = jr.randint(jr.key(820), (n_points,), 0, n_seg)
+        values = jr.normal(jr.key(821), (k, n_points))
+        segmented = SegmentedBasis.create(segment.astype(jnp.int32), values, n_seg)
+        windowed = WindowedBasis.create(
+            segment.astype(jnp.int32),
+            jnp.ones((1, n_points), values.dtype),
+            values,
+            n_seg,
+        )
+        coeffs = jr.normal(jr.key(822), (n_seg, k))
+        signal = jr.normal(jr.key(823), (n_points,))
+        assert_allclose(windowed.expand(coeffs), segmented.expand(coeffs), rtol=TOL)
+        assert_allclose(windowed.project(signal), segmented.project(signal), rtol=TOL)
+
+    @pytest.mark.parametrize(('n_window', 'k'), [(4, 1), (4, 3), (1, 5)])
+    def test_expand_project_adjoint(self, n_window: int, k: int) -> None:
+        basis, *_ = _windowed(6, n_window, k, 50, 830)
+        coeffs = jr.normal(jr.key(831), basis.shape)
+        signal = jr.normal(jr.key(832), (50,))
+        assert _adjoint_residual(basis, coeffs, signal) < TOL
+
+    def test_transpose_as_matrix(self) -> None:
+        basis, *_ = _windowed(6, 4, 3, 40, 840)
+        assert_allclose(basis.T.as_matrix().T, basis.as_matrix(), rtol=TOL)
+
+    def test_each_sample_only_sees_its_window(self) -> None:
+        # perturbing one block's amplitudes only changes samples whose window covers it.
+        n_blocks, n_window, k, n_points = 6, 4, 2, 50
+        basis, offset, *_ = _windowed(n_blocks, n_window, k, n_points, 850)
+        coeffs = jr.normal(jr.key(851), (n_blocks, k))
+        target = 2
+        bumped = coeffs.at[target].add(1.0)
+        diff = basis.expand(bumped) - basis.expand(coeffs)
+        covers = (offset <= target) & (target < offset + n_window)
+        assert_allclose(diff[~covers], 0.0, atol=TOL)
 
 
 # ---------------------------------------------------------------------------
@@ -664,10 +747,10 @@ class TestSplineHWPSSTemplate:
         t = jnp.linspace(0, 10, 100)
         hwp = jnp.linspace(0, 2 * jnp.pi, 100)
         B = spline_4f_hwpss_basis(t, hwp, n_knots=3)
-        cos_part = B[0]
-        sin_part = B[1]
+        sin_part = B[0]
+        cos_part = B[1]
         # should not be identical
-        assert not jnp.allclose(cos_part, sin_part)
+        assert not jnp.allclose(sin_part, cos_part)
 
     def test_template_structure(self) -> None:
         n_dets, n_samps, n_knots = 2, 100, 3
@@ -676,8 +759,22 @@ class TestSplineHWPSSTemplate:
         op = PerDetectorTemplate.spline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
 
         K = n_knots + 2
-        assert op.in_structure.shape == (n_dets, 2 * K)
+        # WindowedBasis amplitudes: (K knots, 2 = cos/sin) per detector
+        assert op.in_structure.shape == (n_dets, K, 2)
         assert op.out_structure.shape == (n_dets, n_samps)
+
+    def test_equivalent_to_dense_4f_basis(self) -> None:
+        # WindowedBasis spline_hwpss reproduces the dense (2K, N) interleaved basis.
+        n_dets, n_samps, n_knots = 1, 120, 5
+        t = jnp.linspace(0, 10, n_samps)
+        hwp = jnp.linspace(0, 6 * jnp.pi, n_samps)
+        op = PerDetectorTemplate.spline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
+        dense = TensorBasis.create(spline_4f_hwpss_basis(t, hwp, n_knots))  # rows 2j=sin, 2j+1=cos
+
+        K = n_knots + 2
+        a = jr.normal(jr.key(1010), (K, 2))  # WindowedBasis amplitudes a[j] = (sin amp, cos amp)
+        # dense uses the same interleaved order [sin_0, cos_0, sin_1, cos_1, ...]
+        assert_allclose(op.operator.expand(a), dense.expand(a.reshape(-1)), rtol=TOL)
 
     def test_adjoint(self) -> None:
         n_dets, n_samps, n_knots = 2, 100, 3

@@ -365,6 +365,66 @@ def _harmonics(
     return jnp.concatenate(parts, axis=0).astype(dtype)
 
 
+def cubic_bspline(u: Float[Array, ' samp']) -> Float[Array, ' samp']:
+    """Cubic cardinal B-spline, support [0,4)."""
+    u = jnp.asarray(u)
+    out = jnp.zeros_like(u)
+
+    out = jnp.where((u >= 0) & (u < 1), (1 / 6) * u**3, out)
+    out = jnp.where((u >= 1) & (u < 2), (1 / 6) * (-3 * u**3 + 12 * u**2 - 12 * u + 4), out)
+    out = jnp.where((u >= 2) & (u < 3), (1 / 6) * (3 * u**3 - 24 * u**2 + 60 * u - 44), out)
+    out = jnp.where((u >= 3) & (u < 4), (1 / 6) * (4 - u) ** 3, out)
+
+    return out
+
+
+def spline_basis(
+    times: Float[Array, ' samp'],
+    n_knots: int,
+) -> Float[Array, 'k samp']:
+    """
+    Returns:
+        B: (K, N) spline basis matrix
+    """
+    t_min = jnp.min(times)
+    t_max = jnp.max(times)
+    t = (times - t_min) / (t_max - t_min + 1e-12)
+
+    K = n_knots + 2
+    spacing = 1.0 / (n_knots + 1)
+
+    basis = []
+    for j in range(K):
+        center = (j + 1) * spacing
+        u = (t - center) / spacing + 2.0
+        basis.append(cubic_bspline(u))
+
+    return jnp.stack(basis, axis=0)
+
+
+def spline_4f_hwpss_basis(
+    times: Float[Array, ' samp'],
+    hwp_angles: Float[Array, ' samp'],
+    n_knots: int,
+) -> Float[Array, '2k samp']:
+    """
+    Returns:
+        B: (2K, N) basis matrix
+            [phi_j cos(4χ), phi_j sin(4χ)]
+    """
+    phi = spline_basis(times, n_knots)  # (K, N)
+
+    cos4 = jnp.cos(4.0 * hwp_angles)
+    sin4 = jnp.sin(4.0 * hwp_angles)
+
+    cols = []
+    for j in range(phi.shape[0]):
+        cols.append(phi[j] * cos4)
+        cols.append(phi[j] * sin4)
+
+    return jnp.stack(cols, axis=0)
+
+
 class PerDetectorTemplate(AbstractLinearOperator):
     """Turn a single-detector `Basis` into a per-detector template operator.
 
@@ -600,6 +660,28 @@ class PerDetectorTemplate(AbstractLinearOperator):
             values=values, n_full=n_samps, in_structure=ShapeDtypeStruct((0,), dtype)
         )
         return cls.from_basis(basis, n_dets=n_dets, shared=False)
+
+    @classmethod
+    def spline_hwpss(
+        cls,
+        times: Float[Array, ' samp'],
+        hwp_angles: Float[Array, ' samp'],
+        n_dets: int,
+        n_knots: int = 20,
+        dtype: Any = jnp.float32,
+    ) -> Self:
+        """Spline-based 4f HWP synchronous template.
+
+        This model uses a cubic B-spline basis to model the time-varying
+        amplitudes of the 4f HWP synchronous signal.
+        """
+        B = spline_4f_hwpss_basis(times, hwp_angles, n_knots)
+        basis = TensorBasis.create(B.astype(dtype))
+        return cls.from_basis(
+            basis,
+            n_dets=n_dets,
+            shared=True,
+        )
 
 
 class GroundTemplateOperator(AbstractLinearOperator):

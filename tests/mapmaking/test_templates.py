@@ -17,6 +17,9 @@ from furax.mapmaking.templates import (
     _bin_weights,
     _harmonics,
     _legendre,
+    cubic_bspline,
+    spline_4f_hwpss_basis,
+    spline_basis,
 )
 from furax.tree import as_structure
 
@@ -642,3 +645,66 @@ class TestATOPProjectionOperator:
         x = jax.random.normal(jax.random.PRNGKey(2), (n_det, n_samp))
         y = self.make_op(n_det, n_samp, tau=n_samp)(x)
         assert_allclose(y.sum(axis=-1), jnp.zeros(n_det), atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# SplineHWPSS basis functions and template
+# ---------------------------------------------------------------------------
+
+
+class TestSplineBasis:
+    def test_cubic_bspline_support(self) -> None:
+        u: Array = jnp.linspace(-1, 5, 100)
+        y: Array = cubic_bspline(u)
+        # support is [0,4)
+        assert jnp.all(y[u < 0] == 0.0)
+        assert jnp.all(y[u >= 4] == 0.0)
+        assert jnp.all(y[(u >= 0) & (u < 4)] >= 0.0)
+
+    def test_spline_basis_shape(self) -> None:
+        t: Array = jnp.linspace(0, 10, 200)
+        n_knots = 5
+        B: Array = spline_basis(t, n_knots=n_knots)
+        # K = n_knots + 2
+        assert B.shape == (n_knots + 2, t.size)
+
+    def test_4f_basis_structure(self) -> None:
+        t = jnp.linspace(0, 10, 100)
+        hwp = jnp.linspace(0, 2 * jnp.pi, 100)
+        n_knots = 3
+        B = spline_4f_hwpss_basis(t, hwp, n_knots=n_knots)
+        K = n_knots + 2
+        # 2K because cos and sin blocks
+        assert B.shape == (2 * K, 100)
+
+    def test_4f_modulation_nonzero(self) -> None:
+        t = jnp.linspace(0, 10, 100)
+        hwp = jnp.linspace(0, 2 * jnp.pi, 100)
+        B = spline_4f_hwpss_basis(t, hwp, n_knots=3)
+        cos_part = B[0]
+        sin_part = B[1]
+        # should not be identical
+        assert not jnp.allclose(cos_part, sin_part)
+
+
+class TestSplineHWPSSTemplate:
+    def test_template_structure(self) -> None:
+        n_dets, n_samps, n_knots = 2, 100, 3
+        t = jnp.linspace(0, 10, n_samps)
+        hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
+        op = PerDetectorTemplate.spline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
+
+        K = n_knots + 2
+        assert op.in_structure.shape == (n_dets, 2 * K)
+        assert op.out_structure.shape == (n_dets, n_samps)
+
+    def test_adjoint(self) -> None:
+        n_dets, n_samps, n_knots = 2, 100, 3
+        t = jnp.linspace(0, 10, n_samps)
+        hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
+        op = PerDetectorTemplate.spline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
+
+        coeffs = jr.normal(jr.key(1001), op.in_structure.shape)
+        signal = jr.normal(jr.key(1002), op.out_structure.shape)
+        assert _adjoint_residual(op.operator, coeffs[0], signal[0]) < TOL
+        assert_allclose(jnp.vdot(op(coeffs), signal), jnp.vdot(coeffs, op.T(signal)), rtol=TOL)

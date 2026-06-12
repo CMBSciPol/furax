@@ -294,6 +294,12 @@ class BinAzHWPSynchronousConfig:
 
 
 @dataclass
+class SplineHWPSSConfig:
+    n_knots: int = 20
+    """Number of spline knots.  Defaults to 20."""
+
+
+@dataclass
 class GroundConfig:
     azimuth_resolution: float = 0.05  # ~3 deg
     elevation_resolution: float = 0.05  # ~3 deg
@@ -307,6 +313,7 @@ class TemplatesConfig:
     hwp_synchronous: HWPSynchronousConfig | None = None
     azhwp_synchronous: AzHWPSynchronousConfig | None = None
     binazhwp_synchronous: BinAzHWPSynchronousConfig | None = None
+    spline_hwpss: SplineHWPSSConfig | None = None
     ground: GroundConfig | None = None
     regularization: float = 0.0
 
@@ -320,6 +327,7 @@ class TemplatesConfig:
             hwp_synchronous=HWPSynchronousConfig(),
             azhwp_synchronous=AzHWPSynchronousConfig(),
             binazhwp_synchronous=BinAzHWPSynchronousConfig(),
+            spline_hwpss=SplineHWPSSConfig(),
             ground=GroundConfig(),
         )
 

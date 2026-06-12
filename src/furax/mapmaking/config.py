@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field, fields
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import jax.numpy as jnp
 import yaml
@@ -223,63 +223,104 @@ class LandscapeConfig:
             raise ValueError('exactly one of healpix or wcs must be set.')
 
 
-@dataclass
-class _PolyTemplateConfig:
-    max_poly_order: int = 3
+class PolynomialOrders(NamedTuple):
+    """A polynomial order range, inclusive."""
+
+    min_order: int = 0
+    max_order: int = 3
+
+    @property
+    def n_orders(self) -> int:
+        """Number of orders in the inclusive range."""
+        return self.max_order - self.min_order + 1
 
 
 @dataclass
-class _ScanSynchronousTemplateConfig:
-    min_poly_order: int = 3
-    max_poly_order: int = 7
+class BinsConfig:
+    """A piecewise basis that bins a variable into ``n_bins`` intervals.
+
+    With ``interpolate = False`` each sample is hard-assigned to its bin. With
+    ``interpolate = True`` samples are spread over neighbouring bin centres using
+    triangular (or, if ``smooth``, sin^2) weights.
+    """
+
+    n_bins: int = 4
+    interpolate: bool = False
+    smooth: bool = False
 
 
 @dataclass
-class _HWPSynchronousTemplateConfig:
+class PolynomialConfig:
+    legendre: PolynomialOrders = PolynomialOrders(0, 3)
+    """Legendre orders for the polynomial drift template."""
+
+
+@dataclass
+class ScanSynchronousConfig:
+    """Scan-synchronous signal on a global Legendre basis.
+
+    Represents signals that depend only on the telescope's azimuth.
+    """
+
+    legendre: PolynomialOrders = PolynomialOrders(3, 7)
+
+
+@dataclass
+class BinAzSynchronousConfig:
+    """Binned azimuth-synchronous signal, no HWP coupling.
+
+    The binned counterpart of `ScanSynchronousConfig`.
+    """
+
+    bins: BinsConfig = field(default_factory=BinsConfig)
+
+
+@dataclass
+class HWPSynchronousConfig:
     n_harmonics: int = 3
 
 
 @dataclass
-class _AzimuthHWPSynchronousTemplateConfig:
-    n_polynomials: int = 4
+class AzHWPSynchronousConfig:
+    legendre: PolynomialOrders = PolynomialOrders(0, 3)
     n_harmonics: int = 4
     split_scans: bool = False
 
 
 @dataclass
-class _BinAzimuthHWPSynchronousTemplateConfig:
-    n_azimuth_bins: int = 4
+class BinAzHWPSynchronousConfig:
+    bins: BinsConfig = field(default_factory=BinsConfig)
     n_harmonics: int = 4
-    interpolate_azimuth: bool = False
-    smooth_interpolation: bool = False
 
 
 @dataclass
-class _GroundTemplateConfig:
+class GroundConfig:
     azimuth_resolution: float = 0.05  # ~3 deg
     elevation_resolution: float = 0.05  # ~3 deg
 
 
 @dataclass
 class TemplatesConfig:
-    polynomial: _PolyTemplateConfig | None = None
-    scan_synchronous: _ScanSynchronousTemplateConfig | None = None
-    hwp_synchronous: _HWPSynchronousTemplateConfig | None = None
-    azhwp_synchronous: _AzimuthHWPSynchronousTemplateConfig | None = None
-    binazhwp_synchronous: _BinAzimuthHWPSynchronousTemplateConfig | None = None
-    ground: _GroundTemplateConfig | None = None
+    polynomial: PolynomialConfig | None = None
+    scan_synchronous: ScanSynchronousConfig | None = None
+    binaz_synchronous: BinAzSynchronousConfig | None = None
+    hwp_synchronous: HWPSynchronousConfig | None = None
+    azhwp_synchronous: AzHWPSynchronousConfig | None = None
+    binazhwp_synchronous: BinAzHWPSynchronousConfig | None = None
+    ground: GroundConfig | None = None
     regularization: float = 0.0
 
     @classmethod
     def full_defaults(cls) -> 'TemplatesConfig':
         """Create a template config with default values for all templates."""
         return cls(
-            polynomial=_PolyTemplateConfig(),
-            scan_synchronous=_ScanSynchronousTemplateConfig(),
-            hwp_synchronous=_HWPSynchronousTemplateConfig(),
-            azhwp_synchronous=_AzimuthHWPSynchronousTemplateConfig(),
-            binazhwp_synchronous=_BinAzimuthHWPSynchronousTemplateConfig(),
-            ground=_GroundTemplateConfig(),
+            polynomial=PolynomialConfig(),
+            scan_synchronous=ScanSynchronousConfig(),
+            binaz_synchronous=BinAzSynchronousConfig(),
+            hwp_synchronous=HWPSynchronousConfig(),
+            azhwp_synchronous=AzHWPSynchronousConfig(),
+            binazhwp_synchronous=BinAzHWPSynchronousConfig(),
+            ground=GroundConfig(),
         )
 
     @property
@@ -429,7 +470,7 @@ class MapMakingConfig:
                     max_steps=1_000,
                 ),
                 templates=TemplatesConfig(
-                    polynomial=_PolyTemplateConfig(),
+                    polynomial=PolynomialConfig(),
                 ),
             )
         elif method == Methods.ATOP:

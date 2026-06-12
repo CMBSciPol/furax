@@ -29,6 +29,7 @@ Python, JAX, linear operator framework, CMB mapmaking.
   - Enable runtime checks with beartype: `uv run pytest --jaxtyping-packages=furax,beartype.beartype(...)` (commented config in `pyproject.toml`)
 - Prefer `furax.tree` over `jax.tree` and `jax.tree_util`. In particular use the elementwise helpers (`tree.add`, `tree.sub`, `tree.mul`, `tree.dot`, `tree.zeros_like` etc.) instead `jax.tree.map(jnp.add, ...)` and friends.
 - Call operators directly (`op(x)`), not `op.mv(x)`. Reserve `mv` for the method definition in an operator subclass.
+- Use new-style typed key arrays `jax.random.key()` instead of legacy uint32 `jax.random.PRNGKey()`.
 
 ## When to ask first
 

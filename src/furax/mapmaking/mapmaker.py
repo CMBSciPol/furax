@@ -65,6 +65,7 @@ from .gap_filling import GapFillingOperator
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
+from .templates import PerDetectorTemplate
 
 T = TypeVar('T')
 
@@ -808,23 +809,29 @@ class MapMaker:
         blocks: dict[str, AbstractLinearOperator] = {}
 
         if poly := config.templates.polynomial:
-            blocks['polynomial'] = templates.PolynomialTemplateOperator.create(
-                max_poly_order=poly.max_poly_order,
-                intervals=observation.get_scanning_intervals(),
+            blocks['polynomial'] = PerDetectorTemplate.polynomial(
+                max_poly_order=poly.legendre.max_order,
+                intervals=jnp.asarray(observation.get_scanning_intervals()),
                 times=jnp.asarray(observation.get_elapsed_times()),
                 n_dets=observation.n_detectors,
                 dtype=config.dtype,
             )
         if sss := config.templates.scan_synchronous:
-            blocks['scan_synchronous'] = templates.ScanSynchronousTemplateOperator.create(
-                min_poly_order=sss.min_poly_order,
-                max_poly_order=sss.max_poly_order,
+            blocks['scan_synchronous'] = PerDetectorTemplate.scan_synchronous(
+                legendre=sss.legendre,
+                azimuth=jnp.asarray(observation.get_azimuth()),
+                n_dets=observation.n_detectors,
+                dtype=config.dtype,
+            )
+        if baz := config.templates.binaz_synchronous:
+            blocks['binaz_synchronous'] = PerDetectorTemplate.binaz_synchronous(
+                bins=baz.bins,
                 azimuth=jnp.asarray(observation.get_azimuth()),
                 n_dets=observation.n_detectors,
                 dtype=config.dtype,
             )
         if hwpss := config.templates.hwp_synchronous:
-            blocks['hwp_synchronous'] = templates.HWPSynchronousTemplateOperator.create(
+            blocks['hwp_synchronous'] = PerDetectorTemplate.hwp_synchronous(
                 n_harmonics=hwpss.n_harmonics,
                 hwp_angles=jnp.asarray(observation.get_hwp_angles()),
                 n_dets=observation.n_detectors,
@@ -834,51 +841,41 @@ class MapMaker:
             azimuth = jnp.asarray(observation.get_azimuth())
             hwp_angles = jnp.asarray(observation.get_hwp_angles())
             if azhwpss.split_scans:
-                blocks['azhwp_synchronous_left'] = (
-                    templates.AzimuthHWPSynchronousTemplateOperator.create(
-                        n_polynomials=azhwpss.n_polynomials,
-                        n_harmonics=azhwpss.n_harmonics,
-                        azimuth=azimuth,
-                        hwp_angles=hwp_angles,
-                        n_dets=observation.n_detectors,
-                        dtype=config.dtype,
-                        scan_mask=jnp.asarray(observation.get_left_scan_mask()),
-                    )
+                blocks['azhwp_synchronous_left'] = PerDetectorTemplate.azhwp_synchronous(
+                    legendre=azhwpss.legendre,
+                    n_harmonics=azhwpss.n_harmonics,
+                    azimuth=azimuth,
+                    hwp_angles=hwp_angles,
+                    n_dets=observation.n_detectors,
+                    dtype=config.dtype,
+                    scan_mask=jnp.asarray(observation.get_left_scan_mask()),
                 )
-                blocks['azhwp_synchronous_right'] = (
-                    templates.AzimuthHWPSynchronousTemplateOperator.create(
-                        n_polynomials=azhwpss.n_polynomials,
-                        n_harmonics=azhwpss.n_harmonics,
-                        azimuth=azimuth,
-                        hwp_angles=hwp_angles,
-                        n_dets=observation.n_detectors,
-                        dtype=config.dtype,
-                        scan_mask=jnp.asarray(observation.get_right_scan_mask()),
-                    )
+                blocks['azhwp_synchronous_right'] = PerDetectorTemplate.azhwp_synchronous(
+                    legendre=azhwpss.legendre,
+                    n_harmonics=azhwpss.n_harmonics,
+                    azimuth=azimuth,
+                    hwp_angles=hwp_angles,
+                    n_dets=observation.n_detectors,
+                    dtype=config.dtype,
+                    scan_mask=jnp.asarray(observation.get_right_scan_mask()),
                 )
             else:
-                blocks['azhwp_synchronous'] = (
-                    templates.AzimuthHWPSynchronousTemplateOperator.create(
-                        n_polynomials=azhwpss.n_polynomials,
-                        n_harmonics=azhwpss.n_harmonics,
-                        azimuth=azimuth,
-                        hwp_angles=hwp_angles,
-                        n_dets=observation.n_detectors,
-                        dtype=config.dtype,
-                    )
-                )
-        if binazhwpss := config.templates.binazhwp_synchronous:
-            blocks['binazhwp_synchronous'] = (
-                templates.BinAzimuthHWPSynchronousTemplateOperator.create(
-                    n_azimuth_bins=binazhwpss.n_azimuth_bins,
-                    n_harmonics=binazhwpss.n_harmonics,
-                    interpolate_azimuth=binazhwpss.interpolate_azimuth,
-                    smooth_interpolation=binazhwpss.smooth_interpolation,
-                    azimuth=jnp.asarray(observation.get_azimuth()),
-                    hwp_angles=jnp.asarray(observation.get_hwp_angles()),
+                blocks['azhwp_synchronous'] = PerDetectorTemplate.azhwp_synchronous(
+                    legendre=azhwpss.legendre,
+                    n_harmonics=azhwpss.n_harmonics,
+                    azimuth=azimuth,
+                    hwp_angles=hwp_angles,
                     n_dets=observation.n_detectors,
                     dtype=config.dtype,
                 )
+        if binazhwpss := config.templates.binazhwp_synchronous:
+            blocks['binazhwp_synchronous'] = PerDetectorTemplate.binazhwp_synchronous(
+                bins=binazhwpss.bins,
+                n_harmonics=binazhwpss.n_harmonics,
+                azimuth=jnp.asarray(observation.get_azimuth()),
+                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
+                n_dets=observation.n_detectors,
+                dtype=config.dtype,
             )
         if ground := config.templates.ground:
             azimuth = jnp.asarray(observation.get_azimuth())
@@ -915,7 +912,10 @@ class MapMaker:
                 (nonzero_hits[:, 0], nonzero_hits[:, 1]),
                 in_structure=furax.tree.as_structure(self._ground_coverage),
             )
-            flattener = templates.StokesIQUFlattenOperator(in_structure=indexer.out_structure)
+            flattener = furax.asoperator(
+                lambda s: jnp.concatenate([s.i, s.q, s.u]),
+                in_structure=indexer.out_structure,
+            )
             self._ground_selector = flattener @ indexer
 
             blocks['ground'] = ground_op @ self._ground_selector.T
@@ -1096,10 +1096,13 @@ class MLMapmaker(MapMaker):
             REGVAL = config.templates.regularization  # type: ignore[union-attr]
             tmpl_inv_sys = {}
             regs = {}
+            # Pass the operator as an explicit argument so JAX traces its arrays as inputs
+            # rather than hashing it as the jit fun (operators carry unhashable leaves).
+            apply = jax.jit(lambda op, v: op(v))
             for tmpl, tmpl_op in template_op.blocks.items():
                 tmpl_sys = (tmpl_op.T @ diag_inv_noise @ masker @ tmpl_op).reduce()
                 # Approximation to the diagonal of the matrix
-                norm_sys = jnp.abs(jax.jit(tmpl_sys)(furax.tree.ones_like(tmpl_op.in_structure)))
+                norm_sys = jnp.abs(apply(tmpl_sys, furax.tree.ones_like(tmpl_op.in_structure)))
                 # Regualrisation value is REGVAL times the smallest non-zero eigenvalue
                 regs[tmpl] = REGVAL * jnp.min(norm_sys[norm_sys > 0])
                 tmpl_inv_sys[tmpl] = DiagonalOperator(
@@ -1195,9 +1198,6 @@ class MLMapmaker(MapMaker):
             for key in tmpl_ampl.keys():
                 output[f'template_{key}'] = tmpl_ampl[key]
                 output[f'template_reg_{key}'] = np.array(regs[key])
-                aux_data = template_op.blocks[key].compute_auxiliary_data(tmpl_ampl[key])
-                for aux_key in aux_data.keys():
-                    output[f'template_{key}_{aux_key}'] = aux_data[aux_key]
             if 'ground' in tmpl_ampl.keys():
                 output['ground_landscape'] = self._ground_landscape
                 output['ground_coverage'] = self._ground_coverage

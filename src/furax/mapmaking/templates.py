@@ -1,13 +1,37 @@
+"""Template operators for fitting structured nuisance signals out of the data.
+
+A template turns a small set of per-detector amplitudes into a time stream, so
+the mapmaker can fit and remove unwanted but predictable signals (slow drifts,
+scan-synchronous pickup, HWP-synchronous lines, T-to-P leakage).
+
+The building block is a `Basis`: a small set of functions of time (Legendre
+polynomials, HWP harmonics, ...). Going from amplitudes to a signal is `expand`;
+the reverse is `project`. A `PerDetectorTemplate` then gives every detector its
+own copy (or its own basis), so each detector fits its own amplitudes.
+
+A few `Basis` flavours trade memory for structure:
+- `TensorBasis`: stores every basis function value directly, as a dense array
+  (optionally on a coarser time grid, `q > 1`, to trade resolution for memory).
+- `KroneckerBasis`: a product of independent factors (e.g. azimuth x HWP), stored
+  factored to save memory.
+- `SegmentedBasis`: each sample belongs to one segment (e.g. one scan interval),
+  stored sparsely instead of as a mostly-zero dense array.
+
+Build several templates and combine them by wrapping each in a
+`PerDetectorTemplate` and stacking with `BlockRowOperator`.
+"""
+
 from abc import abstractmethod
 from dataclasses import field
-from typing import Any
+from itertools import chain
+from math import prod
+from typing import Any, Self
 
 import jax
 import numpy as np
-from jax import Array
+from jax import Array, ShapeDtypeStruct
 from jax import numpy as jnp
-from jaxtyping import DTypeLike, Float, Inexact, Int, PyTree
-from numpy.typing import NDArray
+from jaxtyping import DTypeLike, Float, Int, PyTree
 
 from furax import AbstractLinearOperator, square
 from furax.core import TransposeOperator
@@ -17,773 +41,568 @@ from furax.obs.landscapes import HorizonLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import ValidStokesType
 
-from ._observation import AbstractGroundObservation
+from .config import BinsConfig, PolynomialOrders
 
 
-class TemplateOperator(AbstractLinearOperator):
-    """Operator for time-ordered-data templates used for mapmaking.
-    The input and output structures are fixed.
+class Basis(AbstractLinearOperator):
+    """A set of template functions of time used to model a structured signal.
+
+    The basis functions `b_k` are each evaluated at the same `n_points` time samples.
+    Conceptually, we can think of them as columns of a matrix `B`. The modelled signal
+    is then a linear combination `s = B a`, i.e. `s(t) = Σ_k a_k b_k(t)` where each
+    `a_k` is the amplitude of the template function `b_k`. The index `k` may be multi
+    dimensional.
+
+    Two main operations:
+
+    - `expand` (synthesis, amplitudes to signal): `s = B(a)`.
+    - `project` (analysis, signal to amplitudes): `a = B.T(s)`.
     """
 
-    n_params: int = field(metadata={'static': True})  # Number of template parameters
-    n_dets: int = field(metadata={'static': True})  # Number of detecotrs
-    n_samps: int = field(metadata={'static': True})  # Number of samples
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """Shape of the basis index."""
+        return self.in_structure.shape  # type: ignore[no-any-return]
 
-    def __init__(
-        self,
-        n_params: int,
-        n_dets: int,  # Number of detectors
-        n_samps: int,  # Number of samples
-        dtype: DTypeLike,
-    ) -> None:
-        object.__setattr__(self, 'n_params', n_params)
-        object.__setattr__(self, 'n_dets', n_dets)
-        object.__setattr__(self, 'n_samps', n_samps)
-        super().__init__(in_structure=jax.ShapeDtypeStruct((n_params,), dtype))
+    @property
+    @abstractmethod
+    def n_points(self) -> int:
+        """Number of sample points at which basis functions are evaluated."""
+
+    @property
+    def size(self) -> int:
+        """Total number of basis functions (product of `shape`)."""
+        return prod(self.shape)
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return self.in_structure.dtype  # type: ignore[no-any-return]
 
     @property
     def out_structure(self) -> jax.ShapeDtypeStruct:
-        return jax.ShapeDtypeStruct((self.n_dets, self.n_samps), self.in_structure.dtype)
-
-    @classmethod
-    def from_dict(
-        cls, name: str, config: dict[str, Any], observation: AbstractGroundObservation[Any]
-    ) -> 'TemplateOperator':
-        """Create and return a template operator corresponding to the
-        name and configuration provided.
-        """
-        n_dets = len(observation.detectors)
-
-        if name == 'polynomial':
-            max_poly_order: int = config.get('max_poly_order', 0)
-            return PolynomialTemplateOperator.create(
-                max_poly_order=max_poly_order,
-                intervals=observation.get_scanning_intervals(),
-                times=jnp.asarray(observation.get_elapsed_times()),
-                n_dets=n_dets,
-                dtype=config.get('dtype', jnp.float64),
-            )
-
-        elif name == 'scan_synchronous':
-            min_poly_order: int = config.get('min_poly_order', 0)
-            max_poly_order: int = config.get('max_poly_order', 0)  # type: ignore[no-redef]
-            return ScanSynchronousTemplateOperator.create(
-                min_poly_order=min_poly_order,
-                max_poly_order=max_poly_order,
-                azimuth=jnp.asarray(observation.get_azimuth()),
-                n_dets=n_dets,
-                dtype=config.get('dtype', jnp.float64),
-            )
-
-        elif name == 'hwp_synchronous':
-            n_harmonics: int = config.get('n_harmonics', 0)
-            return HWPSynchronousTemplateOperator.create(
-                n_harmonics=n_harmonics,
-                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
-                n_dets=n_dets,
-                dtype=config.get('dtype', jnp.float64),
-            )
-
-        """
-        elif name == 'common_mode':
-            # Assumes that the cross power spectral density is precomputed
-            # and stored as '_cross_psd'
-            assert observation_data._cross_psd is not None
-            freq, csd = observation_data._cross_psd
-            freq_threshold: float = config.get('freq_threshold', 0.0)
-            n_modes: int = config.get('n_modes', 0)
-
-            return CommonModeTemplateOperator.create(
-                freq_threshold=freq_threshold,
-                n_modes=n_modes,
-                freq=freq,
-                csd=csd,
-                tods=observation_data.get_tods(),
-            )
-        """
-
-        raise NotImplementedError(f'Template {name} is not implemented')
+        return jax.ShapeDtypeStruct((self.n_points,), self.dtype)
 
     @abstractmethod
-    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
-        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
-        ...
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        """Synthesize signal from coefficients."""
 
+    @abstractmethod
+    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        """Project signal onto basis."""
 
-class PolynomialTemplateOperator(TemplateOperator):
-    """Operator for polynomial trends up to a certain order.
-    The template consists of blocks which spans scanning intervals,
-    during which the polynomial coefficients are fixed for each detector.
-
-    Stores legendre polynomial evaluations in 'blocks', a list of matrices
-    with varying sizes, that adds up to (n_samps, max_poly_order+1)
-    """
-
-    max_poly_order: int = field(metadata={'static': True})
-    n_intervals: int = field(metadata={'static': True})
-    blocks: PyTree[Float[Array, '...']] = field(metadata={'static': True})
-    block_slice_indices: PyTree[int] = field(metadata={'static': True})
-
-    def __init__(
-        self,
-        n_params: int,
-        n_dets: int,
-        n_samps: int,
-        dtype: DTypeLike,
-        max_poly_order: int,
-        blocks: PyTree[Float[Array, '...']],
-        block_slice_indices: PyTree[int],
-    ) -> None:
-        # TODO: add checks
-        super().__init__(n_params, n_dets, n_samps, dtype)
-        object.__setattr__(self, 'max_poly_order', max_poly_order)
-        object.__setattr__(self, 'n_intervals', len(blocks))
-        object.__setattr__(self, 'blocks', blocks)
-        object.__setattr__(self, 'block_slice_indices', block_slice_indices)
-
-    @classmethod
-    def create(
-        cls,
-        max_poly_order: int,
-        intervals: Int[Array, 'a 2'] | NDArray[np.int_],
-        times: Float[Array, ' samps'],
-        n_dets: int,
-        dtype: DTypeLike,
-    ) -> TemplateOperator:
-        n_intervals = intervals.shape[0]
-        n_params = n_intervals * n_dets * (max_poly_order + 1)
-        n_samps = len(times)
-
-        # Set blocks' starting and ending indices, so that
-        # their union covers the entire sample
-        block_starts = jnp.concatenate([jnp.array([0], dtype=int), intervals[1:, 0]])
-        block_ends = jnp.concatenate([intervals[1:, 0], jnp.array([n_samps], dtype=int)])
-
-        # This has to be a static list of integers
-        block_slice_indices = [ind for ind in intervals[1:, 0]]
-
-        def eval_legs_block(block_start, block_end, scan_start, scan_end) -> Float[Array, '...']:  # type: ignore[no-untyped-def]
-            # Evaluates the Legendre polynomials of given orders on a block,
-            # setting all values outside the scan range to zero.
-            t = times[scan_start:scan_end]
-            x = -1.0 + 2 * (t - t[0]) / (t[-1] - t[0])
-
-            # This function computes a lot more than what we need,
-            # but shouldn't be too expensive for low polynomial orders
-            evals = jax.scipy.special.lpmn_values(
-                max_poly_order, max_poly_order, x, is_normalized=False
-            )[0, :, :].astype(dtype)
-
-            res = jnp.concatenate(
-                [
-                    jnp.zeros((evals.shape[0], scan_start - block_start), dtype=dtype),
-                    evals,
-                    jnp.zeros((evals.shape[0], block_end - scan_end), dtype=dtype),
-                ],
-                axis=1,
-            )
-            return res
-
-        # Unfortunately no vectorisation here since the block sizes vary dynamically
-        blocks = [
-            eval_legs_block(block_starts[i], block_ends[i], intervals[i, 0], intervals[i, 1])
-            for i in range(n_intervals)
-        ]
-
-        return cls(
-            n_params=n_params,
-            n_dets=n_dets,
-            n_samps=n_samps,
-            dtype=dtype,
-            max_poly_order=max_poly_order,
-            blocks=blocks,
-            block_slice_indices=block_slice_indices,
-        )
-
-    def mv(self, x: Float[Array, ' a']) -> Array:
-        # At each block,
-        # data[det,samp] = parameter[det,ord] * template[ord,samp]
-
-        params = x.reshape(self.n_intervals, self.n_dets, self.max_poly_order + 1)
-
-        block_mvs = [
-            jnp.einsum('ij,jk->ik', param, block) for param, block in zip(params, self.blocks)
-        ]
-
-        # Again, we can't run below due to varying block sizes
-        # block_mvs = jnp.einsum('ijk,ikl->ijl', params, self.blocks)
-
-        return jnp.concatenate(block_mvs, axis=1)
+    def mv(self, x: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        return self.expand(x)
 
     def transpose(self) -> AbstractLinearOperator:
-        return PolynomialTemplateTransposeOperator(self)
-
-    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
-        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
-        return {}
+        return _BasisTranspose(self)
 
 
-class PolynomialTemplateTransposeOperator(TransposeOperator):
-    operator: PolynomialTemplateOperator
+class _BasisTranspose(TransposeOperator):
+    operator: Basis
 
-    def mv(self, x: Float[Array, 'a b']) -> Float[Array, '...']:
-        # At each block,
-        # parameter[det,ord] = data[det,samp] * template[ord,samp]
-
-        # This slicing works as block_slice_indices is a static list
-        data = jnp.array_split(x, self.operator.block_slice_indices, axis=1)
-        block_mvs = [
-            jnp.einsum('ij,kj->ik', data, block) for data, block in zip(data, self.operator.blocks)
-        ]
-
-        return jnp.concatenate([b.ravel() for b in block_mvs])
+    def mv(self, x: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        return self.operator.project(x)
 
 
-class ScanSynchronousTemplateOperator(TemplateOperator):
-    """Operator for scan-synchronous signal templates.
-    The template is a legendre polynomial of the scan azimuth,
-    with individual polynomial coefficients for each detector.
+class TensorBasis(Basis):
+    """Dense basis: the matrix `B` is stored explicitly.
+
+    Holds `values[k, t] = b_k(t)` as a single dense array, with no assumed structure.
+    When `B` factorises over independent variables, `KroneckerBasis`
+    represents the same map with less memory; when each sample belongs to one interval,
+    `SegmentedBasis` avoids storing the mostly-zero per-interval blocks.
+
+    With `q > 1` the values are stored on a `q`-times coarser time grid to save memory:
+    synthesis (`expand`) holds each coarse value over its block of `q` samples and analysis
+    (`project`) sums each block back down. The two are exact transposes. Hold/block-sum is a
+    zeroth-order resampler, exact only for content well below the coarse-grid Nyquist
+    frequency `sample_rate / 2q`, so choose `q` to keep that above the template's band edge.
+    The default `q = 1` is the plain dense basis with no resampling.
     """
 
-    min_poly_order: int = field(metadata={'static': True})
-    max_poly_order: int = field(metadata={'static': True})
-    templates: Float[Array, 'ord samp'] = field(metadata={'static': True})
+    values: Float[Array, '*shape samp_dec']
+    q: int = field(metadata={'static': True}, default=1)
+    n_full: int = field(metadata={'static': True}, default=0)
 
-    def __init__(
-        self,
-        n_params: int,
-        n_dets: int,
-        n_samps: int,
-        dtype: DTypeLike,
-        min_poly_order: int,
-        max_poly_order: int,
-        templates: Float[Array, 'ord samp'],
-    ):
-        # TODO: add checks
-        super().__init__(n_params, n_dets, n_samps, dtype)
-        object.__setattr__(self, 'min_poly_order', min_poly_order)
-        object.__setattr__(self, 'max_poly_order', max_poly_order)
-        object.__setattr__(self, 'templates', templates)
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.q < 1:
+            raise ValueError(f'q must be >= 1, got {self.q}.')
+        n_dec = self.values.shape[-1]
+        # the coarse grid must be the q-block count covering n_full, i.e. n_dec = ceil(n_full / q).
+        if not (n_dec - 1) * self.q < self.n_full <= n_dec * self.q:
+            raise ValueError(f'n_dec={n_dec} inconsistent with n_full={self.n_full}, q={self.q}.')
 
     @classmethod
     def create(
         cls,
-        min_poly_order: int,
-        max_poly_order: int,
-        azimuth: Float[Array, ' n_samps'],
-        n_dets: int,
-        dtype: DTypeLike,
-    ) -> TemplateOperator:
-        n_samps = len(azimuth)
-        n_params: int = n_dets * (max_poly_order - min_poly_order + 1)
-
-        max_az = jnp.max(azimuth)
-        min_az = jnp.min(azimuth)
-        x = -1.0 + 2.0 * (azimuth - min_az) / (max_az - min_az)
-
-        # This function computes a lot more than what we need,
-        # but shouldn't be too expensive for low polynomial orders
-        templates = jax.scipy.special.lpmn_values(
-            max_poly_order, max_poly_order, x, is_normalized=False
-        )[0, min_poly_order:, :].astype(dtype)
-
+        values: Float[Array, '*shape samp_dec'],
+        q: int = 1,
+        n_full: int | None = None,
+    ) -> Self:
+        shape = values.shape[:-1]
+        if n_full is None:
+            # q == 1: the stored grid is already the full grid.
+            n_full = values.shape[-1]
         return cls(
-            n_params=n_params,
-            n_dets=n_dets,
-            n_samps=n_samps,
-            dtype=dtype,
-            min_poly_order=min_poly_order,
-            max_poly_order=max_poly_order,
-            templates=templates,
+            values=values,
+            q=q,
+            n_full=n_full,
+            in_structure=ShapeDtypeStruct(shape, values.dtype),
         )
 
-    def mv(self, x: Float[Array, ' a']) -> Float[Array, '...']:
-        n_poly: int = self.max_poly_order - self.min_poly_order + 1
-        params = x.reshape(self.n_dets, n_poly)
+    @property
+    def n_points(self) -> int:
+        return self.n_full
 
-        # data[det,samp] = parameter[det,ord] * template[ord,samp]
-        return params @ self.templates
+    @property
+    def n_dec(self) -> int:
+        return self.values.shape[-1]
 
-    def transpose(self) -> AbstractLinearOperator:
-        return ScanSynchronousTemplateTransposeOperator(self)
+    def _upsample(self, x: Float[Array, '... dec']) -> Float[Array, '... full']:
+        # hold-interpolation: repeat each coarse sample q times, trim the padding tail.
+        return jnp.repeat(x, self.q, axis=-1)[..., : self.n_full]
 
-    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
-        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
-        return {}
+    def _downsample(self, s: Float[Array, '... full']) -> Float[Array, '... dec']:
+        # adjoint of _upsample: sum each q-sample block. Pad the tail to a full block.
+        pad = self.n_dec * self.q - self.n_full
+        s = jnp.pad(s, [(0, 0)] * (s.ndim - 1) + [(0, pad)])
+        return s.reshape(*s.shape[:-1], self.n_dec, self.q).sum(axis=-1)
+
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        # integer axis labels. Index axes are 0..n-1, sample axis is n.
+        n = len(self.shape)
+        idx = tuple(range(n))
+        out = jnp.einsum(coeffs, idx, self.values, (*idx, n), (n,))
+        return out if self.q == 1 else self._upsample(out)
+
+    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        n = len(self.shape)
+        idx = tuple(range(n))
+        if self.q != 1:
+            signal = self._downsample(signal)
+        return jnp.einsum(self.values, (*idx, n), signal, (n,), idx)
 
 
-class ScanSynchronousTemplateTransposeOperator(TransposeOperator):
-    operator: ScanSynchronousTemplateOperator
+class KroneckerBasis(Basis):
+    """Basis whose functions factorise over independent variables.
 
-    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det ord']:
-        # parameter[det,ord] = data[det,samp] * template[ord,samp]
+    Built from factor matrices `F_i` (e.g. an azimuth-polynomial set and an HWP-harmonic
+    set), whose rows are the factor's functions of time. The basis function for
+    multi-index `k = (k_0, ...)` is the elementwise product `b_k(t) = Π_i F_i[k_i, t]`.
+    Equivalent to a `TensorBasis` holding the full outer product, but kept factored:
+    memory scales as `Σ_i d_i` rather than `Π_i d_i` columns of length `n_points`.
 
-        params = jnp.einsum('ij,kj->ik', x, self.operator.templates)
-        return params.ravel()
-
-
-class HWPSynchronousTemplateOperator(TemplateOperator):
-    """Operator for HWP-synchronous signal templates.
-    The template consists of harmonics of form exp[i*k*phi],
-    where k = 1,..,n_harmonics, and phi is the HWP angle.
-    The harmonic coefficients are unique per detector and
-    are assumed to be constant throughout the scan.
+    Use when the basis cleanly separates over independent variables.
     """
 
-    n_harmonics: int = field(metadata={'static': True})
-    templates: Float[Array, 'harm samp'] = field(metadata={'static': True})
-
-    def __init__(
-        self,
-        n_params: int,
-        n_dets: int,
-        n_samps: int,
-        dtype: DTypeLike,
-        n_harmonics: int,
-        templates: Float[Array, 'harm samp'],
-    ):
-        # TODO: add checks
-        super().__init__(n_params, n_dets, n_samps, dtype)
-        object.__setattr__(self, 'n_harmonics', n_harmonics)
-        object.__setattr__(self, 'templates', templates)
+    factors: tuple[Float[Array, 'd samp'], ...]
 
     @classmethod
-    def create(
-        cls,
-        n_harmonics: int,
-        hwp_angles: Float[Array, ' samps'],
-        n_dets: int,
-        dtype: DTypeLike,
-    ) -> TemplateOperator:
-        # 2 real components per harmonics
-        n_samps = len(hwp_angles)
-        n_params: int = n_dets * 2 * n_harmonics
-
-        harmonics = jnp.arange(1, n_harmonics + 1)
-        sines = jnp.sin(harmonics[:, None] * hwp_angles[None, :])
-        cosines = jnp.cos(harmonics[:, None] * hwp_angles[None, :])
-
-        templates = jnp.concatenate([sines, cosines], axis=0).astype(dtype)
-
+    def create(cls, factors: tuple[Float[Array, 'd samp'], ...]) -> Self:
+        shape = tuple(f.shape[0] for f in factors)
+        dtype = factors[0].dtype
         return cls(
-            n_params=n_params,
-            n_dets=n_dets,
-            n_samps=n_samps,
-            dtype=dtype,
-            n_harmonics=n_harmonics,
-            templates=templates,
+            factors=factors,
+            in_structure=ShapeDtypeStruct(shape, dtype),
         )
 
-    def mv(self, x: Float[Array, ' a']) -> Float[Array, '...']:
-        params = x.reshape(self.n_dets, 2 * self.n_harmonics)
+    @property
+    def n_points(self) -> int:
+        return self.factors[0].shape[-1]
 
-        # data[det,samp] = parameter[det,harm] * template[harm,samp]
-        return params @ self.templates
+    def _factor_operands(self) -> list[Any]:
+        # interleaved einsum operands: factor i carries index axis i and the
+        # shared sample axis n. e.g. F0,(0,n), F1,(1,n), ...
+        n = len(self.shape)
+        return list(chain.from_iterable((f, (i, n)) for i, f in enumerate(self.factors)))
 
-    def transpose(self) -> AbstractLinearOperator:
-        return HWPSynchronousTemplateTransposeOperator(self)
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        # explicit output (n,): sample axis n repeats across factors, name as output to keep it.
+        n = len(self.shape)
+        return jnp.einsum(coeffs, tuple(range(n)), *self._factor_operands(), (n,))
 
-    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
-        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
-        return {}
-
-
-class HWPSynchronousTemplateTransposeOperator(TransposeOperator):
-    operator: HWPSynchronousTemplateOperator
-
-    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det harm']:
-        # parameter[det,harm] = data[det,samp] * template[harm,samp]
-
-        params = jnp.einsum('ij,kj->ik', x, self.operator.templates)
-        return params.ravel()
+    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        # implicit output: repeated sample axis n is summed; index axes 0..n-1
+        # each appear once and become the (sorted) output.
+        n = len(self.shape)
+        return jnp.einsum(*self._factor_operands(), signal, (n,))
 
 
-class CommonModeTemplateOperator(TemplateOperator):
-    """Operator for common modes templates obtained by, e.g., PCA.
-    The template consists of harmonics of form exp[i*k*phi],
-    where k = 1,..,n_harmonics, and phi is the HWP angle.
-    The harmonic coefficients are unique per detector and
-    are assumed to be constant throughout the scan.
+class SegmentedBasis(Basis):
+    """Basis partitioned into segments, each sample belonging to exactly one.
+
+    The amplitude index is `(j, k)` = segment `j` × shared sub-basis function `k`, with
+    `b_{j,k}(t) = [segment(t) = j] · v_k(t)`. Since every sample lies in a single
+    segment, only that segment's amplitudes contribute to it.
+
+    Stored sparsely as one segment id per sample plus one shared table `v_k(t)`, instead
+    of the equivalent dense per-segment array (segments × functions × samples) that would
+    be almost all zeros. The right choice when the segments form a partition (e.g. per-scan-interval
+    Legendre polynomials); `KroneckerBasis` does not help here, as it assumes every
+    factor is dense at every sample.
+
+    Samples in no segment must have their `values` column pre-zeroed by the builder;
+    their segment id is then irrelevant.
     """
 
-    n_modes: int = field(metadata={'static': True})
-    templates: Float[Array, 'mode samp'] = field(metadata={'static': True})
-
-    def __init__(
-        self,
-        n_params: int,
-        n_dets: int,
-        n_samps: int,
-        dtype: DTypeLike,
-        n_modes: int,
-        templates: Float[Array, 'mode samp'],
-    ):
-        # TODO: add checks
-        super().__init__(n_params, n_dets, n_samps, dtype)
-        object.__setattr__(self, 'n_modes', n_modes)
-        object.__setattr__(self, 'templates', templates)
+    segment: Int[Array, ' samp']
+    values: Float[Array, 'k samp']
 
     @classmethod
     def create(
         cls,
-        freq_threshold: float,
-        n_modes: int,
-        freq: Float[Array, ' freq'],
-        csd: Float[Array, 'det det freq'],
-        tods: Float[Array, 'det samps'],
-        dtype: DTypeLike,
-    ) -> TemplateOperator:
-        n_dets, n_samps = tods.shape
-        n_params: int = n_dets * n_modes
-
-        # Take low frequencies excluding zero
-        f_slice = jnp.logical_and(freq < freq_threshold, freq > 0)
-        low_pass_csd = jnp.sum(jnp.where(f_slice, csd, 0.0), axis=-1)
-
-        # Eigen decomposition
-        _, evecs = jnp.linalg.eigh(low_pass_csd)
-
-        # Select eigenvectors with largest eigenvalues
-        W = evecs[:, -n_modes:]
-
-        # Compute the template
-        templates = (W.T @ tods).astype(dtype)
-
+        segment: Int[Array, ' samp'],
+        values: Float[Array, 'k samp'],
+        n_segments: int,
+    ) -> Self:
+        k = values.shape[0]
         return cls(
-            n_params=n_params,
-            n_dets=n_dets,
-            n_samps=n_samps,
-            dtype=dtype,
-            n_modes=n_modes,
-            templates=templates,
+            segment=segment,
+            values=values,
+            in_structure=ShapeDtypeStruct((n_segments, k), values.dtype),
         )
 
-    def mv(self, x: Float[Array, ' a']) -> Float[Array, '...']:
-        params = x.reshape(self.n_dets, self.n_modes)
+    @property
+    def n_points(self) -> int:
+        return self.values.shape[-1]
 
-        # data[det,samp] = parameter[det,mode] * template[mode,samp]
-        return params @ self.templates
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        # gather each sample's segment coefficients, then contract over the
+        # sub-basis index against the shared per-sample values.
+        picked = coeffs[self.segment]  # (n_points, k)
+        return jnp.einsum('sk,ks->s', picked, self.values)
 
-    def transpose(self) -> AbstractLinearOperator:
-        return CommonModeTemplateTransposeOperator(self)
-
-    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
-        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
-        return {}
-
-
-class CommonModeTemplateTransposeOperator(TransposeOperator):
-    operator: CommonModeTemplateOperator
-
-    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det mode']:
-        # parameter[det,mode] = data[det,samp] * template[mode,samp]
-
-        params = jnp.einsum('ij,kj->ik', x, self.operator.templates)
-        return params.ravel()
+    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
+        # adjoint of expand: per-sample contribution scatter-added into its segment.
+        contrib = self.values * signal[None, :]  # (k, n_points)
+        zeros = jnp.zeros(self.shape, self.dtype)
+        return zeros.at[self.segment].add(contrib.T)
 
 
-class AzimuthHWPSynchronousTemplateOperator(TemplateOperator):
-    """Operator for azimuth and HWP-synchronous signal templates.
-    The template includes both azimuth and HWP-synchronous signals,
-    as well as some azimuth-dependent HWP harmonics.
-    Tx = sum_n P_n(az)(x_n + sum_m (y_nm cos(m phi) + z_nm sin(m phi))),
-    where n = 0, ..., n_polynomials-1, m = 1,..,n_harmonics,
-    az is the azimuth angle, and phi is the HWP angle.
-    The coefficients are unique per detector.
+def _bin_weights(
+    x: Float[Array, ' samp'],
+    n_bins: int,
+    interpolate: bool,
+    smooth: bool,
+    dtype: DTypeLike,
+) -> Float[Array, '{n_bins} samp']:
+    """Assign each sample to a bin of `x`.
+
+    Splits the range of `x` into `n_bins` equal bins. Entry `[j, s]` is how much sample
+    `s` belongs to bin `j`. With `interpolate=False` this is one-hot: 1 for the bin the
+    sample falls in, 0 elsewhere. With `interpolate=True` a sample near a bin edge is
+    shared with its neighbour (triangular weights, or sin² hats if `smooth`), each
+    sample's weights summing to 1.
+
+    Each row is then one basis function of a binned template (a bin's time profile).
+    """
+    n_samps = x.size
+    lo = jnp.min(x)
+    hi = jnp.max(x) + 1e-8  # nudge so the global max falls in the last bin
+    edges = jnp.linspace(lo, hi, n_bins + 1)
+
+    if not interpolate:
+        # Hard assignment: each sample contributes 1.0 to exactly its bin.
+        sample_bin = jnp.digitize(x, edges[1:])
+        bins = jnp.zeros((n_bins, n_samps)).at[sample_bin, jnp.arange(n_samps)].set(1.0)
+        return bins.astype(dtype)
+
+    # Soft assignment: triangular weights peaking at each bin centre, falling
+    # linearly to zero one bin-width (``delta``) away. Shape (n_bins, n_samps).
+    centres = 0.5 * (edges[:-1] + edges[1:])
+    delta = (hi - lo) / n_bins
+    triangular = jnp.clip(1 - jnp.abs(x[None, :] - centres[:, None]) / delta, min=0)
+
+    if smooth:
+        # sin^2 reshaping of the triangle, renormalised so weights sum to 1 per sample.
+        bins = jnp.sin((jnp.pi / 2) * triangular) ** 2
+        bins /= jnp.sum(bins, axis=0)[None, :]
+    else:
+        # Linear interpolation; clamp samples beyond the end centres to the edge bins.
+        bins = triangular.at[0, x < centres[0]].set(1.0).at[-1, x > centres[-1]].set(1.0)
+
+    return bins.astype(dtype)
+
+
+def _legendre_values(
+    u: Float[Array, ' samp'],
+    min_order: int,
+    max_order: int,
+    dtype: DTypeLike,
+) -> Float[Array, '{max_order-min_order+1} samp']:
+    """Legendre polynomials of orders `min_order..max_order` (inclusive), evaluated on
+    `u` already rescaled to `[-1, 1]`."""
+    legs = jax.scipy.special.lpmn_values(max_order, max_order, u, is_normalized=False)
+    return legs[0, min_order:, :].astype(dtype)
+
+
+def _legendre(
+    x: Float[Array, ' samp'],
+    min_order: int,
+    max_order: int,
+    dtype: DTypeLike,
+) -> Float[Array, '{max_order-min_order+1} samp']:
+    """Legendre polynomials of orders `min_order..max_order` (inclusive), evaluated on
+    `x` rescaled to `[-1, 1]` over its global range."""
+    u = -1.0 + 2.0 * (x - jnp.min(x)) / jnp.ptp(x)
+    return _legendre_values(u, min_order, max_order, dtype)
+
+
+def _harmonics(
+    angles: Float[Array, ' samp'],
+    n_harmonics: int,
+    dtype: DTypeLike,
+    *,
+    dc: bool,
+) -> Float[Array, '{2*n_harmonics+dc} samp']:
+    """Harmonic basis `sin(k·angle), cos(k·angle)` for `k = 1..n_harmonics`, optionally
+    prepended with a constant (DC) row when `dc` is set."""
+    h = jnp.arange(1, n_harmonics + 1)
+    sines = jnp.sin(h[:, None] * angles[None, :])
+    cosines = jnp.cos(h[:, None] * angles[None, :])
+    parts = ([jnp.ones((1, angles.size), dtype=dtype)] if dc else []) + [sines, cosines]
+    return jnp.concatenate(parts, axis=0).astype(dtype)
+
+
+class PerDetectorTemplate(AbstractLinearOperator):
+    """Turn a single-detector `Basis` into a per-detector template operator.
+
+    Each detector is an independent block fitting its own amplitudes. Two modes:
+
+    - `shared_basis=True` (default): all detectors use the same basis. Used by templates
+      whose basis depends only on shared quantities (azimuth, HWP angle): polynomial,
+      scan- and HWP-synchronous.
+    - `shared_basis=False`: each detector has its own basis. Used by the T2P leakage
+      template, where detector `d`'s basis is its own temperature stream.
     """
 
-    n_polynomials: int = field(metadata={'static': True})
-    n_harmonics: int = field(metadata={'static': True})
-    poly_templates: Float[Array, 'poly samp']
-    harm_templates: Float[Array, 'harm samp']
-    min_azimuth: Float[Array, '']
-    max_azimuth: Float[Array, '']
-
-    def __init__(
-        self,
-        n_params: int,
-        n_dets: int,
-        n_samps: int,
-        dtype: DTypeLike,
-        n_polynomials: int,
-        n_harmonics: int,
-        poly_templates: Float[Array, 'poly samp'],
-        harm_templates: Float[Array, 'harm samp'],
-        min_azimuth: Float[Array, ''],
-        max_azimuth: Float[Array, ''],
-    ):
-        # TODO: add checks
-        super().__init__(n_params, n_dets, n_samps, dtype)
-        object.__setattr__(self, 'n_polynomials', n_polynomials)
-        object.__setattr__(self, 'n_harmonics', n_harmonics)
-        object.__setattr__(self, 'poly_templates', poly_templates)
-        object.__setattr__(self, 'harm_templates', harm_templates)
-        object.__setattr__(self, 'min_azimuth', min_azimuth)
-        object.__setattr__(self, 'max_azimuth', max_azimuth)
+    operator: AbstractLinearOperator
+    shared_basis: bool = field(default=True, metadata={'static': True})
 
     @classmethod
-    def create(
+    def from_basis(cls, basis: Basis, n_dets: int, *, shared: bool = True) -> Self:
+        """Build the per-detector operator over `n_dets` detectors from a single `basis`.
+
+        `shared=True` uses one basis for all detectors; `shared=False` expects a
+        per-detector basis, one per detector (see the class docstring).
+        """
+        return cls(
+            operator=basis,
+            shared_basis=shared,
+            in_structure=jax.ShapeDtypeStruct((n_dets, *basis.shape), basis.dtype),
+        )
+
+    @property
+    def out_structure(self) -> jax.ShapeDtypeStruct:
+        n_dets = self.in_structure.shape[0]
+        out = self.operator.out_structure
+        return jax.ShapeDtypeStruct((n_dets, *out.shape), out.dtype)
+
+    def mv(self, x: Float[Array, ' det *shape']) -> Float[Array, 'det samp']:
+        if self.shared_basis:
+            # broadcast the shared operator across detectors.
+            return jax.vmap(self.operator.mv)(x)  # type: ignore[no-any-return]
+        # slice the basis values on the detector axis in lockstep with x
+        return jax.vmap(lambda op, xi: op.mv(xi), in_axes=(0, 0))(self.operator, x)  # type: ignore[no-any-return]
+
+    def transpose(self) -> AbstractLinearOperator:
+        return PerDetectorTemplate(
+            self.operator.T, shared_basis=self.shared_basis, in_structure=self.out_structure
+        )
+
+    @classmethod
+    def scan_synchronous(
         cls,
-        n_polynomials: int,
-        n_harmonics: int,
-        azimuth: Float[Array, ' samps'],
-        hwp_angles: Float[Array, ' samps'],
+        legendre: PolynomialOrders,
+        azimuth: Float[Array, ' samp'],
         n_dets: int,
         dtype: DTypeLike,
-        scan_mask: Float[Array, ' samps'] | None = None,
-    ) -> TemplateOperator:
-        n_samps: int = azimuth.size
-        n_params: int = n_dets * n_polynomials * (1 + 2 * n_harmonics)
+    ) -> Self:
+        """Scan-synchronous (azimuth-only) template on a global Legendre basis."""
+        legs = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)
+        return cls.from_basis(TensorBasis.create(legs), n_dets=n_dets)
 
-        # Create azimuth templates
-        min_az = jnp.min(azimuth)
-        max_az = jnp.max(azimuth)
-        x = -1.0 + 2.0 * (azimuth - min_az) / (max_az - min_az)
+    @classmethod
+    def binaz_synchronous(
+        cls,
+        bins: BinsConfig,
+        azimuth: Float[Array, ' samp'],
+        n_dets: int,
+        dtype: DTypeLike,
+    ) -> Self:
+        """Binned azimuth-synchronous template, no HWP coupling.
 
-        # This function computes (n_polynomials)-times more than what we need,
-        # but this shouldn't be too expensive for low polynomial orders
-        poly_templates = jax.scipy.special.lpmn_values(
-            n_polynomials - 1, n_polynomials - 1, x, is_normalized=False
-        )[0, :, :].astype(dtype)
+        One amplitude per azimuth bin per detector.
+        """
+        weights = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
+        return cls.from_basis(TensorBasis.create(weights), n_dets=n_dets)
 
+    @classmethod
+    def hwp_synchronous(
+        cls,
+        n_harmonics: int,
+        hwp_angles: Float[Array, ' samp'],
+        n_dets: int,
+        dtype: DTypeLike,
+    ) -> Self:
+        """HWP-synchronous template: harmonics of the HWP angle, `k = 1..n_harmonics`."""
+        matrix = _harmonics(hwp_angles, n_harmonics, dtype, dc=False)
+        return cls.from_basis(TensorBasis.create(matrix), n_dets=n_dets)
+
+    @classmethod
+    def azhwp_synchronous(
+        cls,
+        legendre: PolynomialOrders,
+        n_harmonics: int,
+        azimuth: Float[Array, ' samp'],
+        hwp_angles: Float[Array, ' samp'],
+        n_dets: int,
+        dtype: DTypeLike,
+        scan_mask: Float[Array, ' samp'] | None = None,
+    ) -> Self:
+        """Azimuth-Legendre × HWP-harmonic template (Kronecker product of the two).
+
+        `scan_mask` optionally zeroes the azimuth leg on flagged samples (e.g. to fit
+        separate amplitudes per scan direction).
+        """
+        poly = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)
         if scan_mask is not None:
-            poly_templates = scan_mask[None, :] * poly_templates
-
-        # Create harmonic templates
-        harmonics = jnp.arange(1, n_harmonics + 1)
-        ones = jnp.ones((1, n_samps), dtype=dtype)
-        sines = jnp.sin(harmonics[:, None] * hwp_angles[None, :])
-        cosines = jnp.cos(harmonics[:, None] * hwp_angles[None, :])
-        harm_templates = jnp.concatenate([ones, sines, cosines], axis=0)
-
-        return cls(
-            n_params=n_params,
-            n_dets=n_dets,
-            n_samps=n_samps,
-            dtype=dtype,
-            n_polynomials=n_polynomials,
-            n_harmonics=n_harmonics,
-            poly_templates=poly_templates,
-            harm_templates=harm_templates,
-            min_azimuth=min_az,
-            max_azimuth=max_az,
-        )
-
-    def mv(self, x: Float[Array, ' a']) -> Float[Array, '...']:
-        # Params are ordered as [det,poly,[x, y/z[harm]]]
-        # So for a single detector, the ordering goes
-        # x_0, y_01, ... y_0M, z_01, ... z_0M, x_1, y_11, ..., z_(N-1)M
-        x = x.reshape(self.n_dets, self.n_polynomials, 1 + 2 * self.n_harmonics)
-
-        # data[det_samp] = poly_tmpl[poly,samp] * param[det,poly,harm] * harm_tmpl[harm,samp]
-        return jnp.sum((x @ self.harm_templates) * self.poly_templates[None, :, :], axis=1)
-
-    def transpose(self) -> AbstractLinearOperator:
-        return AzimuthHWPSynchronousTemplateTransposeOperator(self)
-
-    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
-        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
-        # Create azimuth grid to sample from
-        max_az = self.max_azimuth
-        min_az = self.min_azimuth
-        N = 1000
-        azimuth = jnp.linspace(min_az, max_az, N)
-        x = -1.0 + 2.0 * (azimuth - min_az) / (max_az - min_az)
-
-        # Compute polynomials for the grid
-        poly_tmpl = jax.scipy.special.lpmn_values(
-            self.n_polynomials - 1, self.n_polynomials - 1, x, is_normalized=False
-        )[0, :, :].astype(template_amplitude.dtype)
-
-        # Compute
-        # data[det,harm,samp] = ampl[det,poly,harm] * poly_tmpl[poly,samp] (sum over poly)
-        az_fit = jnp.einsum(
-            'dph,ps->dhs',
-            template_amplitude.reshape(self.n_dets, self.n_polynomials, 1 + 2 * self.n_harmonics),
-            poly_tmpl,
-        )
-        return {'azimuth_grid': azimuth, 'fit_at_azimuth_grid': az_fit}
-
-
-class AzimuthHWPSynchronousTemplateTransposeOperator(TransposeOperator):
-    operator: AzimuthHWPSynchronousTemplateOperator
-
-    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, ' param']:
-        # param[det,poly,harm] = poly_tmpl[poly,samp] * harm_tmpl[harm,samp] * data[det,samp]
-        """
-        # Slower but more memory efficient
-        return jnp.array([
-                jnp.sum((self.operator.poly_templates[:,None,:]
-                        * self.operator.harm_templates[None,:,:]
-                        * x[idet,None,None,:]), axis=-1).ravel()
-                        for idet in range(self.operator.n_dets)])
-        """
-        # Faster but less memory efficient
-        return jnp.sum(
-            (
-                self.operator.poly_templates[None, :, None, :]
-                * self.operator.harm_templates[None, None, :, :]
-                * x[:, None, None, :]
-            ),
-            axis=-1,
-        ).ravel()
-
-
-class BinAzimuthHWPSynchronousTemplateOperator(TemplateOperator):
-    """Operator for azimuth and HWP-synchronous signal templates.
-    The template includes both azimuth and HWP-synchronous signals,
-    as well as some azimuth-dependent HWP harmonics.
-    Tx = sum_n B_n(az)(x_n + sum_m (y_nm cos(m phi) + z_nm sin(m phi))),
-    where n = 0, ..., n_az_bins-1, m = 1,..,n_harmonics,
-    az is the azimuth angle, and phi is the HWP angle.
-    Unlike AzimuthHWPSynchronousTemplateOperator, azimuth are binned.
-    The coefficients are unique per detector.
-    """
-
-    n_azimuth_bins: int = field(metadata={'static': True})
-    n_harmonics: int = field(metadata={'static': True})
-    bin_templates: Float[Array, 'bin samp']
-    harm_templates: Float[Array, 'harm samp']
-
-    def __init__(
-        self,
-        n_params: int,
-        n_dets: int,
-        n_samps: int,
-        dtype: DTypeLike,
-        n_azimuth_bins: int,
-        n_harmonics: int,
-        bin_templates: Float[Array, 'poly samp'],
-        harm_templates: Float[Array, 'harm samp'],
-    ):
-        # TODO: add checks
-        super().__init__(n_params, n_dets, n_samps, dtype)
-        object.__setattr__(self, 'n_azimuth_bins', n_azimuth_bins)
-        object.__setattr__(self, 'n_harmonics', n_harmonics)
-        object.__setattr__(self, 'bin_templates', bin_templates)
-        object.__setattr__(self, 'harm_templates', harm_templates)
+            poly = scan_mask[None, :] * poly
+        harm = _harmonics(hwp_angles, n_harmonics, dtype, dc=True)
+        return cls.from_basis(KroneckerBasis.create((poly, harm)), n_dets=n_dets)
 
     @classmethod
-    def create(
+    def binazhwp_synchronous(
         cls,
-        n_azimuth_bins: int,
+        bins: BinsConfig,
         n_harmonics: int,
-        interpolate_azimuth: bool,
-        smooth_interpolation: bool,
-        azimuth: Float[Array, ' samps'],
-        hwp_angles: Float[Array, ' samps'],
+        azimuth: Float[Array, ' samp'],
+        hwp_angles: Float[Array, ' samp'],
         n_dets: int,
         dtype: DTypeLike,
-    ) -> TemplateOperator:
-        n_samps: int = azimuth.size
-        n_params: int = n_dets * n_azimuth_bins * (1 + 2 * n_harmonics)
+    ) -> Self:
+        """Azimuth-binned × HWP-harmonic template (azimuth is always binned)."""
+        bin_basis = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
+        harm = _harmonics(hwp_angles, n_harmonics, dtype, dc=True)
+        return cls.from_basis(KroneckerBasis.create((bin_basis, harm)), n_dets=n_dets)
 
-        # Create azimuth templates
-        max_az = jnp.max(azimuth)
-        min_az = jnp.min(azimuth)
-        max_az += 1e-8  # Allow max_az to be included in the last bin
+    @classmethod
+    def polynomial(
+        cls,
+        max_poly_order: int,
+        intervals: Float[Array, 'n_intervals 2'],
+        times: Float[Array, ' samp'],
+        n_dets: int,
+        dtype: DTypeLike,
+        valid_mask: Float[Array, ' samp'] | None = None,
+    ) -> Self:
+        """A polynomial drift template, one polynomial per scanning interval.
 
-        az_bin_edges = jnp.linspace(min_az, max_az, n_azimuth_bins + 1)
-        bin_inds = jnp.digitize(azimuth, az_bin_edges[1:])
+        Each sample belongs to one interval and is fitted with Legendre orders
+        `0..max_poly_order` over that interval.
 
-        if interpolate_azimuth:
-            az_bin_centres = 0.5 * (az_bin_edges[:-1] + az_bin_edges[1:])
-            delta_bin = (max_az - min_az) / n_azimuth_bins
+        Assumes `intervals` are sorted, non-overlapping `[start, end)` rows. Samples in
+        gaps or past the last interval get a zero basis column. `valid_mask` optionally
+        zeroes flagged samples (1 = keep, 0 = drop) so they neither carry template
+        signal nor constrain the fitted amplitudes.
+        """
+        n_samps = times.size
+        n_intervals = intervals.shape[0]
+        starts = intervals[:, 0]
+        ends = intervals[:, 1]
 
-            if smooth_interpolation:
-                # Sin^2 interpolation
-                bin_templates = (
-                    jnp.sin(
-                        (jnp.pi / 2)
-                        * (
-                            jnp.clip(
-                                1 - jnp.abs(azimuth[None, :] - az_bin_centres[:, None]) / delta_bin,
-                                min=0,
-                            )
-                        )
-                    )
-                    ** 2
-                )
-                bin_templates /= jnp.sum(bin_templates, axis=0)[None, :]
-            else:
-                # Linear interpolation
-                bin_templates = (
-                    jnp.clip(
-                        1 - jnp.abs(azimuth[None, :] - az_bin_centres[:, None]) / delta_bin, min=0
-                    )
-                    .at[0, azimuth < az_bin_centres[0]]
-                    .set(1.0)
-                    .at[-1, azimuth > az_bin_centres[-1]]
-                    .set(1.0)
-                )
-        else:
-            # Binned weights (0 or 1)
-            bin_templates = (
-                jnp.zeros((n_azimuth_bins, n_samps), dtype=dtype)
-                .at[bin_inds, jnp.arange(n_samps)]
-                .set(1.0)
+        s = jnp.arange(n_samps)
+        # interval id per sample: last interval whose start <= s (intervals sorted),
+        # clamped into range. Gaps/out-of-range are caught by ``in_range`` below.
+        segment = jnp.clip(jnp.searchsorted(starts, s, side='right') - 1, 0, n_intervals - 1)
+        seg_start = starts[segment]
+        seg_end = ends[segment]
+        in_range = (s >= seg_start) & (s < seg_end)
+
+        t0 = times[seg_start]
+        span = jnp.where(seg_end > seg_start + 1, times[seg_end - 1] - t0, 1.0)
+        # rescale each sample to [-1, 1] within its own interval; out-of-range
+        # samples sit at 0 and are zeroed by ``in_range`` below.
+        u = jnp.where(in_range, -1.0 + 2.0 * (times - t0) / span, 0.0)
+        legs = _legendre_values(u, 0, max_poly_order, dtype)  # (k, n_samps)
+        legs = legs * in_range[None, :]
+        if valid_mask is not None:
+            legs = legs * valid_mask[None, :].astype(dtype)
+
+        basis = SegmentedBasis.create(segment.astype(jnp.int32), legs, n_intervals)
+        return cls.from_basis(basis, n_dets=n_dets)
+
+    @classmethod
+    def temperature(
+        cls,
+        temperature: Float[Array, 'det samp'],
+        dtype: DTypeLike,
+        fit_band: tuple[float, float] | None = None,
+        sample_rate: Float[Array, ''] | float = 1.0,
+        decimation_factor: int = 1,
+    ) -> Self:
+        """Temperature-to-polarization leakage template.
+
+        Each detector's basis is just its own temperature stream, so fitting one
+        amplitude per detector estimates how much temperature leaks into its
+        polarization.
+
+        `fit_band=(f0, f1)` restricts the temperature basis to that frequency band (Hz),
+        so the leakage is both estimated and removed only there, keeping the template a
+        clean linear operator.
+
+        `decimation_factor=q` stores the basis on a `q`-times coarser grid to cut memory; the
+        coarse-grid Nyquist frequency `sample_rate / 2q` must stay above `f1`. As a rule
+        of thumb keep it at a few times `f1` (`q ≲ sample_rate / 6·f1`): the fractional
+        error on the fitted amplitude grows like `(f1 / (sample_rate / 2q))²`.
+
+        Assumes `temperature` is already deglitched/gap-filled upstream: a glitch left in
+        it would smear across the band and bias the fitted amplitude.
+        """
+        t = temperature
+        if fit_band is not None:
+            f0, f1 = fit_band
+            freqs = jnp.fft.rfftfreq(t.shape[-1], d=1.0 / sample_rate)
+            band = (freqs > f0) & (freqs < f1)
+            t = jnp.fft.irfft(jnp.fft.rfft(t, axis=-1) * band, n=t.shape[-1], axis=-1)
+        n_dets, n_full = t.shape
+        q = decimation_factor
+        if q > 1:
+            # Block-average onto a q-times coarser grid: pad the tail to a whole block,
+            # reshape (..., n_dec, q) and mean. ``TensorBasis`` hold-upsamples back to
+            # ``n_full`` in synthesis (band-limits above sample_rate / 2q).
+            n_dec = -(-n_full // q)  # ceil
+            pad = n_dec * q - n_full
+            tp = jnp.pad(t, [(0, 0), (0, pad)])
+            t_dec = tp.reshape(n_dets, n_dec, q).mean(axis=-1)
+            values = t_dec[:, None, :].astype(dtype)  # (det, k=1, dec)
+            # per-detector basis: values carry a leading det axis sliced by ``from_basis``,
+            # so ``in_structure`` is the single-detector shape (k=1,).
+            basis = TensorBasis(
+                values=values, q=q, n_full=n_full, in_structure=ShapeDtypeStruct((1,), dtype)
             )
+        else:
+            values = t[:, None, :].astype(dtype)  # (det, k=1, samp)
+            basis = TensorBasis(
+                values=values, n_full=n_full, in_structure=ShapeDtypeStruct((1,), dtype)
+            )
+        return cls.from_basis(basis, n_dets=n_dets, shared=False)
 
-        # Create harmonic templates
-        harmonics = jnp.arange(1, n_harmonics + 1)
-        ones = jnp.ones((1, n_samps), dtype=dtype)
-        sines = jnp.sin(harmonics[:, None] * hwp_angles[None, :])
-        cosines = jnp.cos(harmonics[:, None] * hwp_angles[None, :])
-        harm_templates = jnp.concatenate([ones, sines, cosines], axis=0)
-
-        return cls(
-            n_params=n_params,
-            n_dets=n_dets,
-            n_samps=n_samps,
-            dtype=dtype,
-            n_azimuth_bins=n_azimuth_bins,
-            n_harmonics=n_harmonics,
-            bin_templates=bin_templates,
-            harm_templates=harm_templates,
+    @classmethod
+    def none(cls, n_dets: int, n_samps: int, dtype: DTypeLike) -> Self:
+        """Empty template: no amplitudes, zero output. Used to leave a Stokes leg
+        untouched in a per-leg block (e.g. the I leg of the T2P template, which acts
+        on Q/U only)."""
+        # k-axis is 0, so this is a zero-size array; n_samps only sizes the einsum output.
+        values = jnp.zeros((n_dets, 0, n_samps), dtype)
+        basis = TensorBasis(
+            values=values, n_full=n_samps, in_structure=ShapeDtypeStruct((0,), dtype)
         )
-
-    def mv(self, x: Float[Array, ' a']) -> Float[Array, '...']:
-        # Params are ordered as [det,poly,[x, y/z[harm]]]
-        # So for a single detector, the ordering goes
-        # x_0, y_01, ... y_0M, z_01, ... z_0M, x_1, y_11, ..., z_(N-1)M
-        x = x.reshape(self.n_dets, self.n_azimuth_bins, 1 + 2 * self.n_harmonics)
-
-        # data[det_samp] = bin_tmpl[bin,samp] * param[det,bin,harm] * harm_tmpl[harm,samp]
-        return jnp.sum((x @ self.harm_templates) * self.bin_templates[None, :, :], axis=1)
-
-    def transpose(self) -> AbstractLinearOperator:
-        return BinAzimuthHWPSynchronousTemplateTransposeOperator(self)
-
-    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
-        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
-        return {}
+        return cls.from_basis(basis, n_dets=n_dets, shared=False)
 
 
-class BinAzimuthHWPSynchronousTemplateTransposeOperator(TransposeOperator):
-    operator: BinAzimuthHWPSynchronousTemplateOperator
-
-    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, ' param']:
-        # param[det,bin,harm] = bin_tmpl[bin,samp] * harm_tmpl[harm,samp] * data[det,samp]
-        """
-        # Slower but more memory efficient
-        return jnp.array([
-                jnp.sum((self.operator.bin_templates[:,None,:]
-                        * self.operator.harm_templates[None,:,:]
-                        * x[idet,None,None,:]), axis=-1).ravel()
-                        for idet in range(self.operator.n_dets)])
-        """
-        # Faster but less memory efficient
-        return jnp.sum(
-            (
-                self.operator.bin_templates[None, :, None, :]
-                * self.operator.harm_templates[None, None, :, :]
-                * x[:, None, None, :]
-            ),
-            axis=-1,
-        ).ravel()
-
-
-class GroundTemplateOperator(TemplateOperator):
+class GroundTemplateOperator(AbstractLinearOperator):
     """Operator for ground signal templates. The template amplitudes
     form a two-dimensional (elevation, azimuth) IQU map of the ground
     observed that is shared across detectors for the observation range.
@@ -901,15 +720,6 @@ class GroundTemplateOperator(TemplateOperator):
         )
 
         return landscape
-
-    def compute_auxiliary_data(self, template_amplitude: Float[Array, '...']) -> dict[str, Any]:
-        """Compute optional data to be computed at the end for the best-fit template amplitudes."""
-        return {}
-
-
-class StokesIQUFlattenOperator(AbstractLinearOperator):
-    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> Inexact[Array, ' _b']:
-        return jnp.concatenate([x.i, x.q, x.u])
 
 
 @square

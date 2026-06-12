@@ -47,7 +47,7 @@ repos:
     - apischema
     - astropy
     - healpy
-    - jax==0.10.0
+    - jax==0.10.1
     - jaxtyping
     - jax-healpy
     - lineax

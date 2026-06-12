@@ -223,8 +223,8 @@ class LandscapeConfig:
             raise ValueError('exactly one of healpix or wcs must be set.')
 
 
-class LegendreOrders(NamedTuple):
-    """A Legendre-polynomial order range, inclusive."""
+class PolynomialOrders(NamedTuple):
+    """A polynomial order range, inclusive."""
 
     min_order: int = 0
     max_order: int = 3
@@ -251,19 +251,18 @@ class BinsConfig:
 
 @dataclass
 class PolynomialConfig:
-    legendre: LegendreOrders = LegendreOrders(0, 3)
+    legendre: PolynomialOrders = PolynomialOrders(0, 3)
     """Legendre orders for the polynomial drift template."""
 
 
 @dataclass
 class ScanSynchronousConfig:
-    """Scan-synchronous (azimuth-only) signal on a global Legendre basis.
+    """Scan-synchronous signal on a global Legendre basis.
 
-    For constant-elevation scans the pickup is a function of azimuth only.
-    See `BinAzSynchronousConfig` for the binned (sotodlib azss) variant.
+    Represents signals that depend only on the telescope's azimuth.
     """
 
-    legendre: LegendreOrders = LegendreOrders(3, 7)
+    legendre: PolynomialOrders = PolynomialOrders(3, 7)
 
 
 @dataclass
@@ -283,7 +282,7 @@ class HWPSynchronousConfig:
 
 @dataclass
 class AzHWPSynchronousConfig:
-    legendre: LegendreOrders = LegendreOrders(0, 3)
+    legendre: PolynomialOrders = PolynomialOrders(0, 3)
     n_harmonics: int = 4
     split_scans: bool = False
 

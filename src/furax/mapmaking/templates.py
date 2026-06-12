@@ -10,7 +10,8 @@ the reverse is `project`. A `PerDetectorTemplate` then gives every detector its
 own copy (or its own basis), so each detector fits its own amplitudes.
 
 A few `Basis` flavours trade memory for structure:
-- `TensorBasis`: stores every basis function value directly, as a dense array.
+- `TensorBasis`: stores every basis function value directly, as a dense array
+  (optionally on a coarser time grid, `q > 1`, to trade resolution for memory).
 - `KroneckerBasis`: a product of independent factors (e.g. azimuth x HWP), stored
   factored to save memory.
 - `SegmentedBasis`: each sample belongs to one segment (e.g. one scan interval),
@@ -40,7 +41,7 @@ from furax.obs.landscapes import HorizonLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import ValidStokesType
 
-from .config import BinsConfig, LegendreOrders
+from .config import BinsConfig, PolynomialOrders
 
 
 class Basis(AbstractLinearOperator):
@@ -110,51 +111,45 @@ class TensorBasis(Basis):
     When `B` factorises over independent variables, `KroneckerBasis`
     represents the same map with less memory; when each sample belongs to one interval,
     `SegmentedBasis` avoids storing the mostly-zero per-interval blocks.
-    """
 
-    values: Float[Array, '*shape samp']
-
-    @classmethod
-    def create(cls, values: Float[Array, '*shape samp']) -> Self:
-        shape = values.shape[:-1]
-        return cls(
-            values=values,
-            in_structure=ShapeDtypeStruct(shape, values.dtype),
-        )
-
-    @property
-    def n_points(self) -> int:
-        return self.values.shape[-1]
-
-    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
-        # integer axis labels. Index axes are 0..n-1, sample axis is n.
-        n = len(self.shape)
-        idx = tuple(range(n))
-        return jnp.einsum(coeffs, idx, self.values, (*idx, n), (n,))
-
-    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
-        n = len(self.shape)
-        idx = tuple(range(n))
-        return jnp.einsum(self.values, (*idx, n), signal, (n,), idx)
-
-
-class DecimatedTensorBasis(Basis):
-    """Dense basis stored on a coarser time grid to save memory.
-
-    Holds `b_k` on every `q`-th sample. Synthesis (`expand`) holds each coarse value
-    over its block of `q` samples; analysis (`project`) sums each block back down. The
-    two are exact transposes, so the operator stays self-consistent.
-
-    Hold/block-sum is a zeroth-order resampler, exact only for content well below the
-    coarse-grid Nyquist frequency `sample_rate / 2q`. Choose `q` so this stays above the
-    template's band edge.
-
-    `values` is expected pre-averaged onto the coarse grid by the builder.
+    With `q > 1` the values are stored on a `q`-times coarser time grid to save memory:
+    synthesis (`expand`) holds each coarse value over its block of `q` samples and analysis
+    (`project`) sums each block back down. The two are exact transposes. Hold/block-sum is a
+    zeroth-order resampler, exact only for content well below the coarse-grid Nyquist
+    frequency `sample_rate / 2q`, so choose `q` to keep that above the template's band edge.
+    The default `q = 1` is the plain dense basis with no resampling.
     """
 
     values: Float[Array, '*shape samp_dec']
-    q: int = field(metadata={'static': True})
-    n_full: int = field(metadata={'static': True})
+    q: int = field(metadata={'static': True}, default=1)
+    n_full: int = field(metadata={'static': True}, default=0)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.q < 1:
+            raise ValueError(f'q must be >= 1, got {self.q}.')
+        n_dec = self.values.shape[-1]
+        # the coarse grid must be the q-block count covering n_full, i.e. n_dec = ceil(n_full / q).
+        if not (n_dec - 1) * self.q < self.n_full <= n_dec * self.q:
+            raise ValueError(f'n_dec={n_dec} inconsistent with n_full={self.n_full}, q={self.q}.')
+
+    @classmethod
+    def create(
+        cls,
+        values: Float[Array, '*shape samp_dec'],
+        q: int = 1,
+        n_full: int | None = None,
+    ) -> Self:
+        shape = values.shape[:-1]
+        if n_full is None:
+            # q == 1: the stored grid is already the full grid.
+            n_full = values.shape[-1]
+        return cls(
+            values=values,
+            q=q,
+            n_full=n_full,
+            in_structure=ShapeDtypeStruct(shape, values.dtype),
+        )
 
     @property
     def n_points(self) -> int:
@@ -175,16 +170,18 @@ class DecimatedTensorBasis(Basis):
         return s.reshape(*s.shape[:-1], self.n_dec, self.q).sum(axis=-1)
 
     def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        # integer axis labels. Index axes are 0..n-1, sample axis is n.
         n = len(self.shape)
         idx = tuple(range(n))
-        dec = jnp.einsum(coeffs, idx, self.values, (*idx, n), (n,))
-        return self._upsample(dec)
+        out = jnp.einsum(coeffs, idx, self.values, (*idx, n), (n,))
+        return out if self.q == 1 else self._upsample(out)
 
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
         n = len(self.shape)
         idx = tuple(range(n))
-        dec = self._downsample(signal)
-        return jnp.einsum(self.values, (*idx, n), dec, (n,), idx)
+        if self.q != 1:
+            signal = self._downsample(signal)
+        return jnp.einsum(self.values, (*idx, n), signal, (n,), idx)
 
 
 class KroneckerBasis(Basis):
@@ -417,7 +414,7 @@ class PerDetectorTemplate(AbstractLinearOperator):
     @classmethod
     def scan_synchronous(
         cls,
-        legendre: LegendreOrders,
+        legendre: PolynomialOrders,
         azimuth: Float[Array, ' samp'],
         n_dets: int,
         dtype: DTypeLike,
@@ -456,7 +453,7 @@ class PerDetectorTemplate(AbstractLinearOperator):
     @classmethod
     def azhwp_synchronous(
         cls,
-        legendre: LegendreOrders,
+        legendre: PolynomialOrders,
         n_harmonics: int,
         azimuth: Float[Array, ' samp'],
         hwp_angles: Float[Array, ' samp'],
@@ -543,7 +540,7 @@ class PerDetectorTemplate(AbstractLinearOperator):
         dtype: DTypeLike,
         fit_band: tuple[float, float] | None = None,
         sample_rate: Float[Array, ''] | float = 1.0,
-        decimate: int = 1,
+        decimation_factor: int = 1,
     ) -> Self:
         """Temperature-to-polarization leakage template.
 
@@ -555,7 +552,7 @@ class PerDetectorTemplate(AbstractLinearOperator):
         so the leakage is both estimated and removed only there, keeping the template a
         clean linear operator.
 
-        `decimate=q` stores the basis on a `q`-times coarser grid to cut memory; the
+        `decimation_factor=q` stores the basis on a `q`-times coarser grid to cut memory; the
         coarse-grid Nyquist frequency `sample_rate / 2q` must stay above `f1`. As a rule
         of thumb keep it at a few times `f1` (`q ≲ sample_rate / 6·f1`): the fractional
         error on the fitted amplitude grows like `(f1 / (sample_rate / 2q))²`.
@@ -570,24 +567,26 @@ class PerDetectorTemplate(AbstractLinearOperator):
             band = (freqs > f0) & (freqs < f1)
             t = jnp.fft.irfft(jnp.fft.rfft(t, axis=-1) * band, n=t.shape[-1], axis=-1)
         n_dets, n_full = t.shape
-        if decimate > 1:
+        q = decimation_factor
+        if q > 1:
             # Block-average onto a q-times coarser grid: pad the tail to a whole block,
-            # reshape (..., n_dec, q) and mean. ``DecimatedTensorBasis`` hold-upsamples
-            # back to ``n_full`` in synthesis (band-limits above sample_rate / 2q).
-            n_dec = -(-n_full // decimate)  # ceil
-            pad = n_dec * decimate - n_full
+            # reshape (..., n_dec, q) and mean. ``TensorBasis`` hold-upsamples back to
+            # ``n_full`` in synthesis (band-limits above sample_rate / 2q).
+            n_dec = -(-n_full // q)  # ceil
+            pad = n_dec * q - n_full
             tp = jnp.pad(t, [(0, 0), (0, pad)])
-            t_dec = tp.reshape(n_dets, n_dec, decimate).mean(axis=-1)
+            t_dec = tp.reshape(n_dets, n_dec, q).mean(axis=-1)
             values = t_dec[:, None, :].astype(dtype)  # (det, k=1, dec)
-            basis: Basis = DecimatedTensorBasis(
-                values=values,
-                q=decimate,
-                n_full=n_full,
-                in_structure=ShapeDtypeStruct((1,), dtype),
+            # per-detector basis: values carry a leading det axis sliced by ``from_basis``,
+            # so ``in_structure`` is the single-detector shape (k=1,).
+            basis = TensorBasis(
+                values=values, q=q, n_full=n_full, in_structure=ShapeDtypeStruct((1,), dtype)
             )
         else:
             values = t[:, None, :].astype(dtype)  # (det, k=1, samp)
-            basis = TensorBasis(values=values, in_structure=ShapeDtypeStruct((1,), dtype))
+            basis = TensorBasis(
+                values=values, n_full=n_full, in_structure=ShapeDtypeStruct((1,), dtype)
+            )
         return cls.from_basis(basis, n_dets=n_dets, shared=False)
 
     @classmethod
@@ -595,8 +594,11 @@ class PerDetectorTemplate(AbstractLinearOperator):
         """Empty template: no amplitudes, zero output. Used to leave a Stokes leg
         untouched in a per-leg block (e.g. the I leg of the T2P template, which acts
         on Q/U only)."""
+        # k-axis is 0, so this is a zero-size array; n_samps only sizes the einsum output.
         values = jnp.zeros((n_dets, 0, n_samps), dtype)
-        basis = TensorBasis(values=values, in_structure=ShapeDtypeStruct((0,), dtype))
+        basis = TensorBasis(
+            values=values, n_full=n_samps, in_structure=ShapeDtypeStruct((0,), dtype)
+        )
         return cls.from_basis(basis, n_dets=n_dets, shared=False)
 
 

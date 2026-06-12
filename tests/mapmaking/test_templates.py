@@ -7,10 +7,9 @@ from jax import Array
 from jaxtyping import Float
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.mapmaking.config import BinsConfig, LegendreOrders
+from furax.mapmaking.config import BinsConfig, PolynomialOrders
 from furax.mapmaking.templates import (
     ATOPProjectionOperator,
-    DecimatedTensorBasis,
     KroneckerBasis,
     PerDetectorTemplate,
     SegmentedBasis,
@@ -161,18 +160,13 @@ class TestKroneckerBasis:
 
 
 # ---------------------------------------------------------------------------
-# DecimatedTensorBasis
+# TensorBasis (decimated: q > 1)
 # ---------------------------------------------------------------------------
 
 
 def _decimated(shape: tuple[int, ...], n_dec: int, q: int, n_full: int, seed: int):
     values = jr.normal(jr.key(seed), (*shape, n_dec))
-    return DecimatedTensorBasis(
-        values=values,
-        q=q,
-        n_full=n_full,
-        in_structure=jax.ShapeDtypeStruct(shape, values.dtype),
-    )
+    return TensorBasis.create(values, q=q, n_full=n_full)
 
 
 class TestDecimatedTensorBasis:
@@ -215,6 +209,25 @@ class TestDecimatedTensorBasis:
     def test_transpose_as_matrix(self) -> None:
         basis = _decimated((4,), 5, 4, 18, 508)
         assert_allclose(basis.T.as_matrix().T, basis.as_matrix(), rtol=TOL)
+
+    def test_q_one_matches_plain_dense_basis(self) -> None:
+        # q=1 stores the full grid: decimation collapses to the plain dense basis.
+        values = jr.normal(jr.key(509), (4, 18))
+        decimated = TensorBasis.create(values, q=1, n_full=18)
+        plain = TensorBasis.create(values)
+        coeffs = jr.normal(jr.key(510), (4,))
+        signal = jr.normal(jr.key(511), (18,))
+        assert_allclose(decimated.expand(coeffs), plain.expand(coeffs), rtol=TOL)
+        assert_allclose(decimated.project(signal), plain.project(signal), rtol=TOL)
+
+    def test_create_rejects_bad_q(self) -> None:
+        with pytest.raises(ValueError, match='q must be >= 1'):
+            TensorBasis.create(jr.normal(jr.key(512), (4, 5)), q=0)
+
+    @pytest.mark.parametrize('n_full', [4, 21])  # 5*4=20: n_full must be in (16, 20]
+    def test_create_rejects_inconsistent_n_full(self, n_full: int) -> None:
+        with pytest.raises(ValueError, match='inconsistent'):
+            TensorBasis.create(jr.normal(jr.key(513), (4, 5)), q=4, n_full=n_full)
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +360,7 @@ class TestSynchronousTemplates:
     def test_scan_synchronous_is_shared_legendre(self) -> None:
         n_dets, n_samps = 3, 200
         azimuth, _ = _geometry(n_samps)
-        legendre = LegendreOrders(0, 3)
+        legendre = PolynomialOrders(0, 3)
         op = PerDetectorTemplate.scan_synchronous(legendre, azimuth, n_dets, jnp.float64)
         assert op.shared_basis
         assert op.in_structure.shape == (n_dets, legendre.n_orders)
@@ -377,7 +390,7 @@ class TestSynchronousTemplates:
     def test_azhwp_synchronous_is_kronecker_shaped(self) -> None:
         n_dets, n_samps, n_harm = 2, 200, 3
         azimuth, hwp = _geometry(n_samps)
-        legendre = LegendreOrders(0, 2)
+        legendre = PolynomialOrders(0, 2)
         op = PerDetectorTemplate.azhwp_synchronous(
             legendre, n_harm, azimuth, hwp, n_dets, jnp.float64
         )
@@ -393,7 +406,7 @@ class TestSynchronousTemplates:
         azimuth, hwp = _geometry(n_samps)
         scan_mask = (jnp.arange(n_samps) % 3 != 0).astype(jnp.float64)
         op = PerDetectorTemplate.azhwp_synchronous(
-            LegendreOrders(0, 2), n_harm, azimuth, hwp, n_dets, jnp.float64, scan_mask=scan_mask
+            PolynomialOrders(0, 2), n_harm, azimuth, hwp, n_dets, jnp.float64, scan_mask=scan_mask
         )
         coeffs = jr.normal(jr.key(941), op.in_structure.shape)
         out = op(coeffs)
@@ -552,11 +565,11 @@ class TestTemperatureTemplate:
         assert_allclose(out, 0.0, atol=0.0)
 
     def test_decimated_synthesis_is_block_averaged_and_held(self) -> None:
-        # decimate=q stores T on a q-coarser grid; lambda = 1 -> synthesis is the
+        # decimation_factor=q stores T on a q-coarser grid; lambda = 1 -> synthesis is the
         # block-averaged temperature, held over each block.
         n_dets, n_samps, q = 2, 60, 4
         T = jr.normal(jr.key(970), (n_dets, n_samps))
-        op = PerDetectorTemplate.temperature(T, jnp.float64, decimate=q)
+        op = PerDetectorTemplate.temperature(T, jnp.float64, decimation_factor=q)
         assert op.in_structure.shape == (n_dets, 1)
         out = op(jnp.ones((n_dets, 1)))
         assert out.shape == (n_dets, n_samps)

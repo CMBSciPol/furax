@@ -120,11 +120,11 @@ class TestObservationReaderRebasesTimestamps:
         assert timestamps.dtype == jnp.float32
         # Starts at zero, and the samples stay distinct: strictly increasing, all
         # present, spanning the full (n_samples - 1) / sample_rate duration.
-        assert float(timestamps[0]) == 0.0
-        assert bool(jnp.all(jnp.diff(timestamps) > 0))
+        assert timestamps[0] == 0.0
+        assert jnp.all(jnp.diff(timestamps) > 0)
         assert jnp.unique(timestamps).size == obs.n_samples
         expected_span = (obs.n_samples - 1) / obs.sample_rate
-        assert float(jnp.ptp(timestamps)) == pytest.approx(expected_span, rel=1e-5)
+        assert jnp.ptp(timestamps) == pytest.approx(expected_span, rel=1e-5)
 
     def test_derived_sample_rate_is_finite(self) -> None:
         # _sample_rate is (n_samples - 1) / ptp(timestamps): a collapsed axis (ptp=0)
@@ -137,8 +137,8 @@ class TestObservationReaderRebasesTimestamps:
         )
         data, _ = reader.read(0)
         fs = _sample_rate(data['timestamps'])
-        assert bool(jnp.isfinite(fs))
-        assert float(fs) == pytest.approx(obs.sample_rate, rel=1e-4)
+        assert jnp.isfinite(fs)
+        assert fs == pytest.approx(obs.sample_rate, rel=1e-4)
 
 
 class TestMapMakerForwardsDtype:

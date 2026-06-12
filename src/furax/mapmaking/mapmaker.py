@@ -1130,7 +1130,6 @@ class MLMapmaker(MapMaker):
                 ]
             )
             logger_info('Built template regularizer')
-            print(f'Template operator input structure: {template_op.in_structure}')
 
         # Mapmaking operator
         p: AbstractLinearOperator

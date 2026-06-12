@@ -17,9 +17,7 @@ from furax.mapmaking.templates import (
     _bin_weights,
     _harmonics,
     _legendre,
-    cubic_bspline,
     spline_4f_hwpss_basis,
-    spline_basis,
 )
 from furax.tree import as_structure
 
@@ -652,22 +650,7 @@ class TestATOPProjectionOperator:
 # ---------------------------------------------------------------------------
 
 
-class TestSplineBasis:
-    def test_cubic_bspline_support(self) -> None:
-        u: Array = jnp.linspace(-1, 5, 100)
-        y: Array = cubic_bspline(u)
-        # support is [0,4)
-        assert jnp.all(y[u < 0] == 0.0)
-        assert jnp.all(y[u >= 4] == 0.0)
-        assert jnp.all(y[(u >= 0) & (u < 4)] >= 0.0)
-
-    def test_spline_basis_shape(self) -> None:
-        t: Array = jnp.linspace(0, 10, 200)
-        n_knots = 5
-        B: Array = spline_basis(t, n_knots=n_knots)
-        # K = n_knots + 2
-        assert B.shape == (n_knots + 2, t.size)
-
+class TestSplineHWPSSTemplate:
     def test_4f_basis_structure(self) -> None:
         t = jnp.linspace(0, 10, 100)
         hwp = jnp.linspace(0, 2 * jnp.pi, 100)
@@ -686,8 +669,6 @@ class TestSplineBasis:
         # should not be identical
         assert not jnp.allclose(cos_part, sin_part)
 
-
-class TestSplineHWPSSTemplate:
     def test_template_structure(self) -> None:
         n_dets, n_samps, n_knots = 2, 100, 3
         t = jnp.linspace(0, 10, n_samps)

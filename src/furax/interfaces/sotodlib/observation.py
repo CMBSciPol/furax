@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,7 +17,7 @@ from sotodlib.coords.helpers import get_deflected_sightline
 from sotodlib.core import AxisManager
 from sotodlib.preprocess.preprocess_util import load_and_preprocess
 
-from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
+from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation, ReaderField
 from furax.mapmaking.config import SotodlibConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import (
@@ -39,7 +40,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     def from_file(
         cls,
         filename: str | Path,
-        requested_fields: list[str] | None = None,
+        requested_fields: Collection[str] | None = None,
         sotodlib_config: SotodlibConfig | None = None,
     ) -> SOTODLibObservation:
         # check that file exists
@@ -55,30 +56,30 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             # minimum information needed to determine buffer shapes
             fields = ['dets', 'samp']
             # translate request to sotodlib subfield names
-            if 'metadata' in requested_fields:
+            if ReaderField.METADATA in requested_fields:
                 fields.append('obs_info')
-            if 'sample_data' in requested_fields:
+            if ReaderField.SAMPLE_DATA in requested_fields:
                 if config.demodulated:
                     fields.extend(['dsT', 'demodQ', 'demodU'])
                 else:
                     fields.append('signal')
-            if 'valid_sample_masks' in requested_fields:
+            if ReaderField.VALID_SAMPLE_MASKS in requested_fields:
                 fields.append('flags.glitch_flags')
-            if 'valid_scanning_masks' in requested_fields:
+            if ReaderField.VALID_SCANNING_MASKS in requested_fields:
                 fields.append('preprocess.turnaround_flags')
-            if 'timestamps' in requested_fields:
+            if ReaderField.TIMESTAMPS in requested_fields:
                 fields.append('timestamps')
-            if 'hwp_angles' in requested_fields:
+            if ReaderField.HWP_ANGLES in requested_fields:
                 fields.append('hwp_angle')
-            if 'boresight_quaternions' in requested_fields:
+            if ReaderField.BORESIGHT_QUATERNIONS in requested_fields:
                 fields.append('boresight')
                 if 'timestamps' not in fields:
                     fields.append('timestamps')
                 if config.wobble_correction:
                     fields.extend(['wobble_params', 'det_info', 'hwp_angle'])
-            if 'detector_quaternions' in requested_fields:
+            if ReaderField.DETECTOR_QUATERNIONS in requested_fields:
                 fields.append('focal_plane')
-            if 'noise_model_fits' in requested_fields:
+            if ReaderField.NOISE_MODEL_FITS in requested_fields:
                 if config.noise_source == 'mapmaking':
                     fields.append('preprocess.noiseQ_mapmaking')
                 else:
@@ -393,7 +394,7 @@ class LazySOTODLibObservation(AbstractLazyObservation[AxisManager]):
         super().__init__(filename)
         self._sotodlib_config = sotodlib_config
 
-    def get_data(self, requested_fields: list[str] | None = None) -> SOTODLibObservation:
+    def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
         return SOTODLibObservation.from_file(
             self.file, requested_fields, sotodlib_config=self._sotodlib_config
         )

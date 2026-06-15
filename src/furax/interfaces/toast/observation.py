@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typing
+from collections.abc import Collection
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ from toast import qarray as qa
 from toast.observation import default_values as defaults
 from toast.ops.load_hdf5 import LoadHDF5
 
-from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation
+from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation, ReaderField
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -82,7 +83,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
     @classmethod
     def from_file(
-        cls, filename: str | Path, requested_fields: list[str] | None = None
+        cls, filename: str | Path, requested_fields: Collection[str] | None = None
     ) -> ToastObservation:
         # check that file exists
         if not Path(filename).exists():
@@ -95,19 +96,19 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         if requested_fields is not None:
             # translate request to sotodlib subfield names
             detdata = []
-            if 'sample_data' in requested_fields:
+            if ReaderField.SAMPLE_DATA in requested_fields:
                 detdata.append(defaults.det_data)
-            if 'valid_sample_masks' in requested_fields:
+            if ReaderField.VALID_SAMPLE_MASKS in requested_fields:
                 detdata.append(defaults.det_flags)
 
             shared = [defaults.times]  # Always need to load timestamps
-            if 'hwp_angles' in requested_fields:
+            if ReaderField.HWP_ANGLES in requested_fields:
                 shared.append(defaults.hwp_angle)
-            if 'boresight_quaternions' in requested_fields:
+            if ReaderField.BORESIGHT_QUATERNIONS in requested_fields:
                 shared.append(defaults.boresight_radec)
 
             intervals = ['']  # Toast loads all intervals if the list is empty
-            if 'valid_scanning_masks' in requested_fields:
+            if ReaderField.VALID_SCANNING_MASKS in requested_fields:
                 intervals.append(defaults.scanning_interval)
 
             loader.detdata = detdata

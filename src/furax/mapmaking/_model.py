@@ -10,6 +10,7 @@ from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.core import BlockDiagonalOperator, CompositionOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
 
+from ._observation import ReaderField
 from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig, Methods, NoiseSource, WeightingMode
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
@@ -47,9 +48,9 @@ class ObservationModel:
     ) -> Self:
         H = build_acquisition_operator(
             landscape,
-            data['boresight_quaternions'],
-            data['detector_quaternions'],
-            data.get('hwp_angles'),
+            data[ReaderField.BORESIGHT_QUATERNIONS],
+            data[ReaderField.DETECTOR_QUATERNIONS],
+            data.get(ReaderField.HWP_ANGLES),
             demodulated=config.demodulated,
             pointing_chunk_size=config.pointing.chunk_size,
             pointing_on_the_fly=config.pointing.on_the_fly,
@@ -58,7 +59,7 @@ class ObservationModel:
         )
         masker = _mask_projector(
             _sample_mask(data, config),
-            data.get('valid_scanning_masks'),
+            data.get(ReaderField.VALID_SCANNING_MASKS),
             structure=H.out_structure,
         )
         noise_model, sample_rate = _noise_model(data, config, tod_structure=H.out_structure)
@@ -72,6 +73,29 @@ class ObservationModel:
         if F_T := _template_deprojector(config, H.out_structure):
             W = W @ F_T
         return cls(H, W, masker, noise_model, sample_rate)
+
+    @staticmethod
+    def required_reader_fields(config: MapMakingConfig) -> set[str]:
+        """Reader fields needed to build an :class:`ObservationModel` via :meth:`create`."""
+        fields: set[str] = {
+            ReaderField.BORESIGHT_QUATERNIONS,
+            ReaderField.DETECTOR_QUATERNIONS,
+            ReaderField.VALID_SAMPLE_MASKS,
+            ReaderField.TIMESTAMPS,
+        }
+        if not config.demodulated:
+            # FIXME: this does not handle the case of a telescope without HWP
+            fields.add(ReaderField.HWP_ANGLES)
+        if config.scanning_mask:
+            fields.add(ReaderField.VALID_SCANNING_MASKS)
+        if config.weighting.mode != WeightingMode.IDENTITY:
+            if config.weighting.source == NoiseSource.FIT:
+                fields.update({ReaderField.SAMPLE_DATA, ReaderField.HWP_ANGLES})
+            else:
+                fields.add(ReaderField.NOISE_MODEL_FITS)
+        if config.gaps.fill and not config.binned:
+            fields.add(ReaderField.METADATA)
+        return fields
 
     @property
     def tod_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -148,7 +172,7 @@ def _noise_model(
     tod_structure: jax.ShapeDtypeStruct | None = None,
 ) -> tuple[PyTree[NoiseModel], Array]:
     """Compute the noise model and sample rate for a single observation block."""
-    fs = _sample_rate(data['timestamps'])
+    fs = _sample_rate(data[ReaderField.TIMESTAMPS])
     if config.weighting.mode == WeightingMode.IDENTITY:
         if tod_structure is None:
             raise ValueError('tod_structure is required when config.weighting.mode is IDENTITY')
@@ -160,7 +184,7 @@ def _noise_model(
     if config.weighting.source == NoiseSource.FIT:
         fit_config = config.weighting.fitting
         noise_model_class = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
-        fhwp = _hwp_frequency(data['timestamps'], data['hwp_angles'])
+        fhwp = _hwp_frequency(data[ReaderField.TIMESTAMPS], data[ReaderField.HWP_ANGLES])
 
         def _compute_Pxx_and_fit(tod):  # type: ignore[no-untyped-def]
             f, Pxx = jax.scipy.signal.welch(tod, fs=fs, nperseg=fit_config.nperseg)
@@ -172,9 +196,11 @@ def _noise_model(
                 config=fit_config,
             )
 
-        noise_model = jax.tree.map(_compute_Pxx_and_fit, data['sample_data'])
+        noise_model = jax.tree.map(_compute_Pxx_and_fit, data[ReaderField.SAMPLE_DATA])
     else:
-        noise_model = jax.tree.map(lambda x: AtmosphericNoiseModel(*x.T), data['noise_model_fits'])
+        noise_model = jax.tree.map(
+            lambda x: AtmosphericNoiseModel(*x.T), data[ReaderField.NOISE_MODEL_FITS]
+        )
         if config.binned:
             noise_model = jax.tree.map(
                 lambda m: m.to_white_noise_model(),
@@ -190,7 +216,7 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
     For ATOP mapmaker, extra pixels may be masked depending on atop_tau.
     """
 
-    mask = data['valid_sample_masks']
+    mask = data[ReaderField.VALID_SAMPLE_MASKS]
 
     if config.method == Methods.ATOP:
         tau = config.atop_tau

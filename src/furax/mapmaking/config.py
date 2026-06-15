@@ -299,8 +299,8 @@ class SplineHWPSSConfig:
     """Number of spline knots. If set, overrides samples_per_knot."""
     samples_per_knot: int | None = 4000
     """Number of samples per knot. Defaults to 4000."""
-    harmonics: list[int] = field(default_factory=lambda: [4])
-    """List of HWP harmonics to fit with splines. Defaults to [4]."""
+    harmonics: tuple[int, ...] = (4,)
+    """HWP harmonics to fit with splines. Defaults to (4,)."""
 
 
 @dataclass

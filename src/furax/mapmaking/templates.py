@@ -422,14 +422,18 @@ def _legendre(
 
 def _harmonics(
     angles: Float[Array, ' samp'],
-    n_harmonics: int,
+    harmonics: int | Sequence[int],
     dtype: DTypeLike,
     *,
     dc: bool,
-) -> Float[Array, '{2*n_harmonics+dc} samp']:
-    """Harmonic basis `sin(k·angle), cos(k·angle)` for `k = 1..n_harmonics`, optionally
-    prepended with a constant (DC) row when `dc` is set."""
-    h = jnp.arange(1, n_harmonics + 1)
+) -> Float[Array, ' rows samp']:
+    """Harmonic basis `sin(k·angle), cos(k·angle)` for each harmonic `k`, optionally
+    prepended with a constant (DC) row when `dc` is set.
+
+    `harmonics` is either an int `n` (the harmonics `1..n`) or an explicit sequence of
+    harmonic orders.
+    """
+    h = jnp.arange(1, harmonics + 1) if isinstance(harmonics, int) else jnp.asarray(harmonics)
     sines = jnp.sin(h[:, None] * angles[None, :])
     cosines = jnp.cos(h[:, None] * angles[None, :])
     parts = ([jnp.ones((1, angles.size), dtype=dtype)] if dc else []) + [sines, cosines]
@@ -680,26 +684,30 @@ class PerDetectorTemplate(AbstractLinearOperator):
         n_dets: int,
         n_knots: int | None = None,
         samples_per_knot: int | None = 4000,
-        harmonics: int | Sequence[int] = 4,
+        harmonics: int | Sequence[int] = (4,),
         dtype: Any = jnp.float32,
     ) -> Self:
         """Spline-based HWP synchronous template.
 
         A cubic B-spline models the slowly time-varying amplitude of the HWP-synchronous
-        signal: knot `j` carries a `(sin kχ, cos kχ)` pair for each harmonic `k` in
-        `harmonics`, so the amplitudes have shape `(K, 2*len(harmonics))` with
-        `K = n_knots + 2`.
+        signal: knot `j` carries a `(sin kχ, cos kχ)` pair for each harmonic `k`, so the
+        amplitudes have shape `(K, 2*n_harmonics)` with `K = n_knots + 2`.
+
+        Args:
+            times: Per-sample timestamps used to place the spline knots.
+            hwp_angles: Per-sample HWP angle `χ` (radians).
+            n_dets: Number of detectors; each fits its own amplitudes.
+            n_knots: Number of interior spline knots. If `None`, derived from
+                `samples_per_knot` and the number of samples.
+            samples_per_knot: Target samples between knots, used to derive `n_knots`
+                when it is not given.
+            harmonics: HWP harmonics to model, either an int `n` (the harmonics `1..n`)
+                or an explicit sequence of orders.
+            dtype: Floating dtype of the basis values.
         """
         n_knots = bspline.resolve_n_knots(n_knots, samples_per_knot, times.size)
         offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
-
-        h = jnp.asarray(harmonics)
-        if h.ndim == 0:
-            h = h[None]
-        sines = jnp.sin(h[:, None] * hwp_angles[None, :])
-        cosines = jnp.cos(h[:, None] * hwp_angles[None, :])
-        sub_values = jnp.concatenate([sines, cosines], axis=0).astype(dtype)
-
+        sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False)
         basis = WindowedBasis.create(
             offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2
         )

@@ -325,6 +325,20 @@ def test_marginal_weight_fusion() -> None:
     assert_allclose(Wm(x), expected, rtol=1e-10)
 
 
+def test_fused_block_composes_with_sharded_block() -> None:
+    # Regression: a fused block must carry the obs-axis sharding in its public structure so it
+    # still composes with other sharded scan blocks. `A - B` exercises both the homothety rule
+    # (the −1 folds into a closed-over map) and the addition-fusion rule; before the fix their
+    # final `_build` ran under the empty mesh, leaving an unsharded structure that raised when
+    # composed. Square blocks so the product is well-defined.
+    A = ScanBlockDiagonalOperator.create(_make_blocks(P('obs'), n_in=N_OUT))
+    B = ScanBlockDiagonalOperator.create(_make_blocks(P('obs'), n_in=N_OUT))
+    fused = (A - B).reduce()
+    composed = (A @ fused).reduce()  # must not raise on the structure check
+    x = jax.device_put(RNG.standard_normal((N_OBS, N_OUT), dtype=np.float64), P('obs'))
+    assert_allclose(composed(x), A(tree.sub(A(x), B(x))), rtol=1e-10)
+
+
 def test_create_carries_explicit_obs_size() -> None:
     # n is declared, not re-inferred from leaf shapes downstream; create starts with trivial maps.
     W = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))

@@ -878,12 +878,12 @@ class MapMaker:
                 dtype=config.dtype,
             )
         if shwpss := config.templates.spline_hwpss:
+            times = jnp.asarray(observation.get_elapsed_times())
             blocks['spline_hwpss'] = PerDetectorTemplate.bspline_hwpss(
-                times=jnp.asarray(observation.get_elapsed_times()),
+                times=times,
                 hwp_angles=jnp.asarray(observation.get_hwp_angles()),
                 n_dets=observation.n_detectors,
-                n_knots=shwpss.n_knots,
-                samples_per_knot=shwpss.samples_per_knot,
+                n_knots=shwpss.resolve_n_knots(times.size),
                 harmonics=shwpss.harmonics,
                 dtype=config.dtype,
             )

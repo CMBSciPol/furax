@@ -682,8 +682,7 @@ class PerDetectorTemplate(AbstractLinearOperator):
         times: Float[Array, ' samp'],
         hwp_angles: Float[Array, ' samp'],
         n_dets: int,
-        n_knots: int | None = None,
-        samples_per_knot: int | None = 4000,
+        n_knots: int,
         harmonics: int | Sequence[int] = (4,),
         dtype: Any = jnp.float32,
     ) -> Self:
@@ -697,15 +696,11 @@ class PerDetectorTemplate(AbstractLinearOperator):
             times: Per-sample timestamps used to place the spline knots.
             hwp_angles: Per-sample HWP angle `χ` (radians).
             n_dets: Number of detectors; each fits its own amplitudes.
-            n_knots: Number of interior spline knots. If `None`, derived from
-                `samples_per_knot` and the number of samples.
-            samples_per_knot: Target samples between knots, used to derive `n_knots`
-                when it is not given.
+            n_knots: Number of interior spline knots (see `SplineHWPSSConfig.resolve_n_knots`).
             harmonics: HWP harmonics to model, either an int `n` (the harmonics `1..n`)
                 or an explicit sequence of orders.
             dtype: Floating dtype of the basis values.
         """
-        n_knots = bspline.resolve_n_knots(n_knots, samples_per_knot, times.size)
         offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
         sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False)
         basis = WindowedBasis.create(

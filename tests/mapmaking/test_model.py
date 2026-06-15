@@ -4,8 +4,36 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking._model import _noise_model, _noise_operator, _sample_mask
-from furax.mapmaking.config import MapMakingConfig, Methods, WeightingConfig, WeightingMode
+from furax.mapmaking.config import (
+    MapMakingConfig,
+    Methods,
+    SplineHWPSSConfig,
+    WeightingConfig,
+    WeightingMode,
+)
 from furax.mapmaking.noise import WhiteNoiseModel
+
+
+class TestSplineHWPSSConfig:
+    @pytest.mark.parametrize(
+        ('n_knots', 'samples_per_knot', 'expected'),
+        [
+            (10, None, 10),
+            (None, 20, 5),
+            (10, 20, 10),  # n_knots takes precedence
+            (1, None, 2),  # at least 2 knots
+            (None, 4000, 2),  # at least 2 knots
+        ],
+    )
+    def test_resolve_n_knots(
+        self, n_knots: int | None, samples_per_knot: int | None, expected: int
+    ) -> None:
+        config = SplineHWPSSConfig(n_knots=n_knots, samples_per_knot=samples_per_knot)
+        assert config.resolve_n_knots(100) == expected
+
+    def test_requires_one_of_n_knots_or_samples_per_knot(self) -> None:
+        with pytest.raises(ValueError, match='one of'):
+            SplineHWPSSConfig(n_knots=None, samples_per_knot=None)
 
 
 class TestSampleMask:

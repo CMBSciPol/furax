@@ -812,10 +812,7 @@ class TestSplineHWPSSTemplate:
         t = jnp.linspace(0, 10, n_samps)
         hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
         harmonics = [2, 4]
-        samples_per_knot = 25  # 100 // 25 = 4 knots
-        op = PerDetectorTemplate.bspline_hwpss(
-            t, hwp, n_dets, samples_per_knot=samples_per_knot, harmonics=harmonics
-        )
+        op = PerDetectorTemplate.bspline_hwpss(t, hwp, n_dets, n_knots=4, harmonics=harmonics)
         # amplitudes: (det, K, 2 * n_harm)
         # K = n_knots + 2 = 4 + 2 = 6
         # 2 * n_harm = 2 * 2 = 4
@@ -826,6 +823,6 @@ class TestSplineHWPSSTemplate:
         n_dets, n_samps = 2, 100
         t = jnp.linspace(0, 10, n_samps)
         hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
-        op = PerDetectorTemplate.bspline_hwpss(t, hwp, n_dets, samples_per_knot=25, harmonics=3)
+        op = PerDetectorTemplate.bspline_hwpss(t, hwp, n_dets, n_knots=4, harmonics=3)
         # 1..3 -> 3 harmonics -> 2 * 3 = 6 columns; K = 4 + 2 = 6
         assert op.in_structure.shape == (n_dets, 6, 6)

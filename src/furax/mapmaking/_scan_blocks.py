@@ -417,14 +417,17 @@ class HomothetyScanBlockRule(AbstractCompositionRule):
         split = self._split(left, right)
         assert split is not None  # mypy
         homo, block, on_output_side = split
+        # Reduce the closed-over maps under the empty mesh (they carry no obs axis), but build the
+        # result under the caller's real mesh so `_augment_structure` shards the public structure.
+        # Otherwise the fused block would be unsharded and fail to compose with sharded blocks.
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
             if on_output_side:
                 scalar = HomothetyOperator(homo.value, in_structure=block.post.out_structure)
-                post = (scalar @ block.post).reduce()
-                return [type(block)._build(block.scanned, block.pre, post, n_lead=block.n_lead)]
-            scalar = HomothetyOperator(homo.value, in_structure=block.pre.in_structure)
-            pre = (block.pre @ scalar).reduce()
-            return [type(block)._build(block.scanned, pre, block.post, n_lead=block.n_lead)]
+                pre, post = block.pre, (scalar @ block.post).reduce()
+            else:
+                scalar = HomothetyOperator(homo.value, in_structure=block.pre.in_structure)
+                pre, post = (block.pre @ scalar).reduce(), block.post
+        return [type(block)._build(block.scanned, pre, post, n_lead=block.n_lead)]
 
 
 class AbstractScanAdditionFusionRule(AbstractAdditionRule):
@@ -458,14 +461,19 @@ class AbstractScanAdditionFusionRule(AbstractAdditionRule):
         trivial = all(
             isinstance(op, IdentityOperator) for op in (left.pre, left.post, right.pre, right.post)
         )
+        # Assemble the bodies under the empty mesh, but build the result under
+        # the caller's real mesh so `_augment_structure` shards the public structure.
+        # Otherwise the fused block would be unsharded and fail to compose with sharded blocks.
         with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
             if trivial:
                 bodies = (left.scanned + right.scanned).reduce()
-                return [self.reduced_class.create(bodies, n_lead=left.n_lead)]
-            pre = BlockColumnOperator([left.pre, right.pre])
-            scanned = BlockDiagonalOperator([left.scanned, right.scanned])
-            post = BlockRowOperator([left.post, right.post])
-            return [self.reduced_class._build(scanned, pre, post, n_lead=left.n_lead)]
+            else:
+                pre = BlockColumnOperator([left.pre, right.pre])
+                scanned = BlockDiagonalOperator([left.scanned, right.scanned])
+                post = BlockRowOperator([left.post, right.post])
+        if trivial:
+            return [self.reduced_class.create(bodies, n_lead=left.n_lead)]
+        return [self.reduced_class._build(scanned, pre, post, n_lead=left.n_lead)]
 
 
 class ScanBlockDiagonalAdditionRule(AbstractScanAdditionFusionRule):

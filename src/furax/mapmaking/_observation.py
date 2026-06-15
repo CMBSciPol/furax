@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from dataclasses import dataclass
+from enum import StrEnum
 from hashlib import sha1
 from pathlib import Path
 from typing import Any, ClassVar, Generic, Self, TypeVar
@@ -21,6 +23,25 @@ from furax.obs.stokes import ValidStokesType
 from .noise import NoiseModel
 
 T = TypeVar('T')
+
+
+class ReaderField(StrEnum):
+    """Canonical names of the data fields an observation reader can load.
+
+    Members are plain strings (``StrEnum``), so they interoperate with string keys in
+    field dictionaries and set membership tests. Using members instead of bare literals
+    makes typos a name-resolution error caught by linting/type-checking.
+    """
+
+    METADATA = 'metadata'
+    SAMPLE_DATA = 'sample_data'
+    VALID_SAMPLE_MASKS = 'valid_sample_masks'
+    VALID_SCANNING_MASKS = 'valid_scanning_masks'
+    TIMESTAMPS = 'timestamps'
+    HWP_ANGLES = 'hwp_angles'
+    DETECTOR_QUATERNIONS = 'detector_quaternions'
+    BORESIGHT_QUATERNIONS = 'boresight_quaternions'
+    NOISE_MODEL_FITS = 'noise_model_fits'
 
 
 @register_dataclass
@@ -64,21 +85,21 @@ class AbstractObservation(ABC, Generic[T]):
     ``Observation``, sotodlib's ``AxisManager``, litebird_sim's ``Observation``, etc.)
     """
 
-    AVAILABLE_READER_FIELDS: ClassVar[list[str]] = [
-        'metadata',
-        'sample_data',
-        'valid_sample_masks',
-        'timestamps',
-        'hwp_angles',
-        'detector_quaternions',
-        'boresight_quaternions',
-        'noise_model_fits',
-    ]
+    AVAILABLE_READER_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            ReaderField.METADATA,
+            ReaderField.SAMPLE_DATA,
+            ReaderField.VALID_SAMPLE_MASKS,
+            ReaderField.TIMESTAMPS,
+            ReaderField.HWP_ANGLES,
+            ReaderField.DETECTOR_QUATERNIONS,
+            ReaderField.BORESIGHT_QUATERNIONS,
+            ReaderField.NOISE_MODEL_FITS,
+        }
+    )
     """Supported data field names for all observations"""
 
-    OPTIONAL_READER_FIELDS: ClassVar[list[str]] = [
-        'noise_model_fits',
-    ]
+    OPTIONAL_READER_FIELDS: ClassVar[frozenset[str]] = frozenset({ReaderField.NOISE_MODEL_FITS})
     """Optional data field names"""
 
     def __init__(self, data: T) -> None:
@@ -87,7 +108,7 @@ class AbstractObservation(ABC, Generic[T]):
     @classmethod
     @abstractmethod
     def from_file(
-        cls, filename: str | Path, requested_fields: list[str] | None = None
+        cls, filename: str | Path, requested_fields: Collection[str] | None = None
     ) -> AbstractObservation[T]:
         """Loads the observation from a binary file.
 
@@ -218,9 +239,12 @@ class AbstractSatelliteObservation(AbstractObservation[T]):
 class AbstractGroundObservation(AbstractObservation[T]):
     """Class for interfacing with ground-based observation data."""
 
-    AVAILABLE_READER_FIELDS: ClassVar[list[str]] = AbstractObservation.AVAILABLE_READER_FIELDS + [
-        'valid_scanning_masks',
-    ]
+    AVAILABLE_READER_FIELDS: ClassVar[frozenset[str]] = (
+        AbstractObservation.AVAILABLE_READER_FIELDS
+        | {
+            ReaderField.VALID_SCANNING_MASKS,
+        }
+    )
 
     @abstractmethod
     def get_scanning_intervals(self) -> NDArray[Any]:
@@ -345,7 +369,7 @@ class AbstractLazyObservation(ABC, Generic[T]):
         if not self.file.exists():
             raise FileNotFoundError(f'Observation file {self.file} does not exist')
 
-    def get_data(self, requested_fields: list[str] | None = None) -> AbstractObservation[T]:
+    def get_data(self, requested_fields: Collection[str] | None = None) -> AbstractObservation[T]:
         """Loads observation data from the underlying file.
 
         Args:

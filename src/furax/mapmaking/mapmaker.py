@@ -1,6 +1,6 @@
 import pickle
 from abc import abstractmethod
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import asdict, dataclass
 from functools import cached_property
 from logging import Logger
@@ -49,7 +49,7 @@ from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
 from ._model import ObservationModel, pad_model
-from ._observation import AbstractGroundObservation, AbstractLazyObservation
+from ._observation import AbstractGroundObservation, AbstractLazyObservation, ReaderField
 from ._reader import ObservationReader
 from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
 from .config import (
@@ -135,7 +135,7 @@ class MultiObservationMapMaker(Generic[T]):
         _, _, n_pad = self.obs_distribution
         return np.pad(self.get_read_indices(), (0, n_pad), mode='edge')
 
-    def get_reader(self, required_fields: Sequence[str]) -> ObservationReader[T]:
+    def get_reader(self, required_fields: Collection[str]) -> ObservationReader[T]:
         """Build an ObservationReader for this process's local observations."""
         # Pass padded indices: process_allgather inside from_observations needs every
         # rank to send the same shape, so all ranks must report the same obs count.
@@ -250,25 +250,7 @@ class MultiObservationMapMaker(Generic[T]):
         ``n_owned`` entries along the leading axis (no padding). Padding to the
         uniform per-process count is applied by the caller before sharding.
         """
-        required_fields = [
-            'boresight_quaternions',
-            'detector_quaternions',
-            'valid_sample_masks',
-            'timestamps',
-        ]
-        if not self.config.demodulated:
-            # FIXME: this does not handle the case of a telescope without HWP
-            required_fields.append('hwp_angles')
-        if self.config.scanning_mask:
-            required_fields.append('valid_scanning_masks')
-        if self.config.weighting.mode != WeightingMode.IDENTITY:
-            if self.config.weighting.source == NoiseSource.FIT:
-                required_fields.extend(['sample_data', 'hwp_angles'])
-            else:
-                required_fields.append('noise_model_fits')
-        if self.config.gaps.fill and not self.config.binned:
-            required_fields.append('metadata')
-
+        required_fields = ObservationModel.required_reader_fields(self.config)
         reader = self.get_reader(required_fields)
 
         def build_one(_, i):  # type: ignore[no-untyped-def]
@@ -284,7 +266,7 @@ class MultiObservationMapMaker(Generic[T]):
 
     def accumulate_rhs(self, model: ObservationModel) -> StokesPyTreeType:
         """Accumulate the RHS vector across all observations."""
-        reader = self.get_reader(['metadata', 'sample_data'])
+        reader = self.get_reader([ReaderField.METADATA, ReaderField.SAMPLE_DATA])
         read_indices = self.distribute(self.get_padded_read_indices())
         config = self.config
         fill_gaps = config.gaps.fill and not config.binned
@@ -335,7 +317,7 @@ class MultiObservationMapMaker(Generic[T]):
         wcs_config = lc.wcs
         res = wcs_config.resolution * pixell.utils.arcmin
         proj = wcs_config.projection.name.lower()
-        pointing_fields = ['boresight_quaternions', 'detector_quaternions']
+        pointing_fields = [ReaderField.BORESIGHT_QUATERNIONS, ReaderField.DETECTOR_QUATERNIONS]
 
         n = len(self.observations)
         corners_rad = np.empty((2, 2, n))  # [bottom-left, top-right] corners per observation
@@ -408,7 +390,7 @@ def accumulate_rhs(
         def step(carry: StokesPyTreeType, args: Any) -> tuple[StokesPyTreeType, None]:
             obs, i = args
             data, _ = reader.read(i)
-            tod = data['sample_data']
+            tod = data[ReaderField.SAMPLE_DATA]
             if fill_gaps:
                 if correlation_length is None or gap_filling_params is None:
                     raise ValueError(
@@ -418,7 +400,7 @@ def accumulate_rhs(
                 gap_fill = GapFillingOperator(
                     N,
                     obs._get_indexer(),
-                    data['metadata'],
+                    data[ReaderField.METADATA],
                     obs.W,
                     rate=obs.sample_rate,
                     max_cg_steps=gap_filling_params.max_steps,

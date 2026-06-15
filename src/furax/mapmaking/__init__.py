@@ -5,6 +5,7 @@ from ._observation import (
     AbstractObservation,
     AbstractSatelliteObservation,
     HashedObservationMetadata,
+    ReaderField,
 )
 from ._reader import ObservationReader
 from .config import MapMakingConfig
@@ -22,6 +23,7 @@ __all__ = [
     'GapFillingOperator',
     'HashedObservationMetadata',
     'ObservationReader',
+    'ReaderField',
     'MapMakingConfig',
     'MapMakingResults',
     'MultiObservationMapMaker',

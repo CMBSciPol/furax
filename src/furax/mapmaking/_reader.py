@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Any, Generic, Self, TypeVar
 
 import jax
@@ -17,6 +17,7 @@ from ._observation import (
     AbstractLazyObservation,
     AbstractObservation,
     HashedObservationMetadata,
+    ReaderField,
 )
 
 T = TypeVar('T')
@@ -65,7 +66,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         observations: Sequence[AbstractLazyObservation[T]],
         *,
         read_indices: Sequence[int] | None = None,
-        requested_fields: Sequence[str] | None = None,
+        requested_fields: Collection[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesType = 'IQU',
         dtype: DTypeLike = jnp.float64,
@@ -138,19 +139,20 @@ class ObservationReader(AbstractReader, Generic[T]):
     @staticmethod
     def _resolve_fields(
         observations: Sequence[AbstractLazyObservation[T]],
-        requested_fields: Sequence[str] | None,
-    ) -> list[str]:
+        requested_fields: Collection[str] | None,
+    ) -> set[str]:
         interface = observations[0].interface_class
         available = set(interface.AVAILABLE_READER_FIELDS)
         optional = set(interface.OPTIONAL_READER_FIELDS)
         if requested_fields is None:
-            return sorted(available - optional)
-        unsupported = set(requested_fields) - available
+            return available - optional
+        fields = set(requested_fields)
+        unsupported = fields - available
         if unsupported:
             raise ValueError(
                 f'Requested data fields {unsupported} are not supported by the interface.'
             )
-        return list(requested_fields)
+        return fields
 
     def _pad(
         self, data: PyTree[np.ndarray], padding: PyTree[tuple[int, ...]]
@@ -174,46 +176,50 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         # Handle fields with non-zero padding
         data_field_names = self.common_keywords['data_field_names']
-        if 'timestamps' in data_field_names:
+        if ReaderField.TIMESTAMPS in data_field_names:
             # Extrapolate in the padded region for constant sample rate
-            pad_size = padding['timestamps'][0]
-            valid = data['timestamps'][: data['timestamps'].size - pad_size]
+            pad_size = padding[ReaderField.TIMESTAMPS][0]
+            valid = data[ReaderField.TIMESTAMPS][: data[ReaderField.TIMESTAMPS].size - pad_size]
             dt = (valid[-1] - valid[0]) / (valid.size - 1)  # Mean time spacing
-            data['timestamps'] = np.pad(
+            data[ReaderField.TIMESTAMPS] = np.pad(
                 valid, (0, pad_size), mode='linear_ramp', end_values=valid[-1] + dt * pad_size
             )
-        if 'hwp_angles' in data_field_names:
+        if ReaderField.HWP_ANGLES in data_field_names:
             # Extrapolate in the padded region for constant hwp rotation frequency
-            pad_size = padding['hwp_angles'][0]
-            valid = data['hwp_angles'][: data['hwp_angles'].size - pad_size]
+            pad_size = padding[ReaderField.HWP_ANGLES][0]
+            valid = data[ReaderField.HWP_ANGLES][: data[ReaderField.HWP_ANGLES].size - pad_size]
             dphi = (np.unwrap(valid)[-1] - valid[0]) / (valid.size - 1)  # Mean angle spacing
-            data['hwp_angles'] = np.pad(
+            data[ReaderField.HWP_ANGLES] = np.pad(
                 valid, (0, pad_size), mode='linear_ramp', end_values=valid[-1] + dphi * pad_size
             ) % (2 * np.pi)
-        if 'detector_quaternions' in data_field_names:
+        if ReaderField.DETECTOR_QUATERNIONS in data_field_names:
             # Pad with (1, 0, 0, 0), corresponding to xi=eta=gamma=0.
-            zero_padded = np.linalg.norm(data['detector_quaternions'], axis=-1) == 0.0
-            data['detector_quaternions'] = np.where(
+            quats = data[ReaderField.DETECTOR_QUATERNIONS]
+            zero_padded = np.linalg.norm(quats, axis=-1) == 0.0
+            data[ReaderField.DETECTOR_QUATERNIONS] = np.where(
                 zero_padded[:, None],
-                np.array([[1.0, 0.0, 0.0, 0.0]], dtype=data['detector_quaternions'].dtype),
-                data['detector_quaternions'],
+                np.array([[1.0, 0.0, 0.0, 0.0]], dtype=quats.dtype),
+                quats,
             )
-        if 'boresight_quaternions' in data_field_names:
+        if ReaderField.BORESIGHT_QUATERNIONS in data_field_names:
             # Pad with the last non-zero quaternion provided.
-            pad_size = padding['boresight_quaternions'][0]  # samples axis
-            last_quaternion = data['boresight_quaternions'][-pad_size - 1, :]
-            zero_padded = np.linalg.norm(data['boresight_quaternions'], axis=-1) == 0.0
-            data['boresight_quaternions'] = np.where(
-                zero_padded[:, None], last_quaternion[None, :], data['boresight_quaternions']
+            quats = data[ReaderField.BORESIGHT_QUATERNIONS]
+            pad_size = padding[ReaderField.BORESIGHT_QUATERNIONS][0]  # samples axis
+            last_quaternion = quats[-pad_size - 1, :]
+            zero_padded = np.linalg.norm(quats, axis=-1) == 0.0
+            data[ReaderField.BORESIGHT_QUATERNIONS] = np.where(
+                zero_padded[:, None], last_quaternion[None, :], quats
             )
-        if 'noise_model_fits' in data_field_names:
+        if ReaderField.NOISE_MODEL_FITS in data_field_names:
 
             def _pad_noise_fits(arr: np.ndarray) -> np.ndarray:
                 default = np.array([[0.0, 0.0, 1.0, 0.1]], dtype=arr.dtype)
                 zero_padded = arr[:, 0] == 0.0
                 return np.where(zero_padded[:, None], default, arr)
 
-            data['noise_model_fits'] = jax.tree.map(_pad_noise_fits, data['noise_model_fits'])
+            data[ReaderField.NOISE_MODEL_FITS] = jax.tree.map(
+                _pad_noise_fits, data[ReaderField.NOISE_MODEL_FITS]
+            )
 
         return data
 
@@ -234,15 +240,17 @@ class ObservationReader(AbstractReader, Generic[T]):
         )
 
         return {
-            'metadata': HashedObservationMetadata.structure_for(n_detectors),
-            'sample_data': sample_data_structure,
-            'valid_sample_masks': jax.ShapeDtypeStruct((n_detectors, n_samples), jnp.bool),
-            'valid_scanning_masks': jax.ShapeDtypeStruct((n_samples,), jnp.bool),
-            'timestamps': jax.ShapeDtypeStruct((n_samples,), dtype),
-            'hwp_angles': jax.ShapeDtypeStruct((n_samples,), dtype),
-            'detector_quaternions': jax.ShapeDtypeStruct((n_detectors, 4), dtype),
-            'boresight_quaternions': jax.ShapeDtypeStruct((n_samples, 4), dtype),
-            'noise_model_fits': (
+            ReaderField.METADATA: HashedObservationMetadata.structure_for(n_detectors),
+            ReaderField.SAMPLE_DATA: sample_data_structure,
+            ReaderField.VALID_SAMPLE_MASKS: jax.ShapeDtypeStruct(
+                (n_detectors, n_samples), jnp.bool
+            ),
+            ReaderField.VALID_SCANNING_MASKS: jax.ShapeDtypeStruct((n_samples,), jnp.bool),
+            ReaderField.TIMESTAMPS: jax.ShapeDtypeStruct((n_samples,), dtype),
+            ReaderField.HWP_ANGLES: jax.ShapeDtypeStruct((n_samples,), dtype),
+            ReaderField.DETECTOR_QUATERNIONS: jax.ShapeDtypeStruct((n_detectors, 4), dtype),
+            ReaderField.BORESIGHT_QUATERNIONS: jax.ShapeDtypeStruct((n_samples, 4), dtype),
+            ReaderField.NOISE_MODEL_FITS: (
                 Stokes.class_for(stokes).structure_for((n_detectors, 4), dtype)
                 if demodulated
                 else jax.ShapeDtypeStruct((n_detectors, 4), dtype)
@@ -281,21 +289,23 @@ class ObservationReader(AbstractReader, Generic[T]):
             return (timestamps - timestamps[0]).astype(target_dtype)
 
         return {
-            'metadata': lambda obs: HashedObservationMetadata.from_observation(obs),
-            'sample_data': get_sample_data,
-            'valid_sample_masks': lambda obs: obs.get_sample_mask(),
-            'valid_scanning_masks': lambda obs: obs.get_scanning_mask(),
-            'timestamps': get_timestamps,
-            'hwp_angles': lambda obs: obs.get_hwp_angles().astype(target_dtype),
-            'detector_quaternions': lambda obs: obs.get_detector_quaternions().astype(target_dtype),
-            'boresight_quaternions': lambda obs: obs.get_boresight_quaternions().astype(
+            ReaderField.METADATA: lambda obs: HashedObservationMetadata.from_observation(obs),
+            ReaderField.SAMPLE_DATA: get_sample_data,
+            ReaderField.VALID_SAMPLE_MASKS: lambda obs: obs.get_sample_mask(),
+            ReaderField.VALID_SCANNING_MASKS: lambda obs: obs.get_scanning_mask(),
+            ReaderField.TIMESTAMPS: get_timestamps,
+            ReaderField.HWP_ANGLES: lambda obs: obs.get_hwp_angles().astype(target_dtype),
+            ReaderField.DETECTOR_QUATERNIONS: lambda obs: obs.get_detector_quaternions().astype(
                 target_dtype
             ),
-            'noise_model_fits': get_noise_model_fits,
+            ReaderField.BORESIGHT_QUATERNIONS: lambda obs: obs.get_boresight_quaternions().astype(
+                target_dtype
+            ),
+            ReaderField.NOISE_MODEL_FITS: get_noise_model_fits,
         }
 
     def _read_structure_impure(
-        self, observation: AbstractLazyObservation[T], data_field_names: list[str]
+        self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]
     ) -> PyTree[jax.ShapeDtypeStruct]:
         # request an empty list
         # this loads sufficient info to determine the structure
@@ -310,7 +320,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         return {field: field_structure[field] for field in data_field_names}
 
     def _read_data_impure(
-        self, observation: AbstractLazyObservation[T], data_field_names: list[str]
+        self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]
     ) -> PyTree[Array]:
         data = observation.get_data(data_field_names)
         field_reader = self._get_data_field_readers()

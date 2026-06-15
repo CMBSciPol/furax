@@ -776,7 +776,7 @@ class TestSplineHWPSSTemplate:
         n_dets, n_samps, n_knots = 2, 100, 3
         t = jnp.linspace(0, 10, n_samps)
         hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
-        op = PerDetectorTemplate.spline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
+        op = PerDetectorTemplate.bspline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
 
         K = n_knots + 2
         # WindowedBasis amplitudes: (K knots, 2 = cos/sin) per detector
@@ -788,7 +788,7 @@ class TestSplineHWPSSTemplate:
         n_dets, n_samps, n_knots = 1, 120, 5
         t = jnp.linspace(0, 10, n_samps)
         hwp = jnp.linspace(0, 6 * jnp.pi, n_samps)
-        op = PerDetectorTemplate.spline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
+        op = PerDetectorTemplate.bspline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
         dense = TensorBasis.create(spline_4f_hwpss_basis(t, hwp, n_knots))  # rows 2j=sin, 2j+1=cos
 
         K = n_knots + 2
@@ -800,7 +800,7 @@ class TestSplineHWPSSTemplate:
         n_dets, n_samps, n_knots = 2, 100, 3
         t = jnp.linspace(0, 10, n_samps)
         hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
-        op = PerDetectorTemplate.spline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
+        op = PerDetectorTemplate.bspline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
 
         coeffs = jr.normal(jr.key(1001), op.in_structure.shape)
         signal = jr.normal(jr.key(1002), op.out_structure.shape)
@@ -813,7 +813,7 @@ class TestSplineHWPSSTemplate:
         hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
         harmonics = [2, 4]
         samples_per_knot = 25  # 100 // 25 = 4 knots
-        op = PerDetectorTemplate.spline_hwpss(
+        op = PerDetectorTemplate.bspline_hwpss(
             t, hwp, n_dets, samples_per_knot=samples_per_knot, harmonics=harmonics
         )
         # amplitudes: (det, K, 2 * n_harm)

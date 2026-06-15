@@ -673,7 +673,7 @@ class PerDetectorTemplate(AbstractLinearOperator):
         return cls.from_basis(basis, n_dets=n_dets, shared=False)
 
     @classmethod
-    def spline_hwpss(
+    def bspline_hwpss(
         cls,
         times: Float[Array, ' samp'],
         hwp_angles: Float[Array, ' samp'],

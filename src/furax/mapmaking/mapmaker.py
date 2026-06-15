@@ -878,7 +878,7 @@ class MapMaker:
                 dtype=config.dtype,
             )
         if shwpss := config.templates.spline_hwpss:
-            blocks['spline_hwpss'] = PerDetectorTemplate.spline_hwpss(
+            blocks['spline_hwpss'] = PerDetectorTemplate.bspline_hwpss(
                 times=jnp.asarray(observation.get_elapsed_times()),
                 hwp_angles=jnp.asarray(observation.get_hwp_angles()),
                 n_dets=observation.n_detectors,

@@ -877,6 +877,16 @@ class MapMaker:
                 n_dets=observation.n_detectors,
                 dtype=config.dtype,
             )
+        if shwpss := config.templates.spline_hwpss:
+            times = jnp.asarray(observation.get_elapsed_times())
+            blocks['spline_hwpss'] = PerDetectorTemplate.bspline_hwpss(
+                times=times,
+                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
+                n_dets=observation.n_detectors,
+                n_knots=shwpss.resolve_n_knots(times.size),
+                harmonics=shwpss.harmonics,
+                dtype=config.dtype,
+            )
         if ground := config.templates.ground:
             azimuth = jnp.asarray(observation.get_azimuth())
             elevation = jnp.asarray(observation.get_elevation())
@@ -1122,7 +1132,7 @@ class MLMapmaker(MapMaker):
                 ]
             )
             logger_info('Built template regularizer')
-            print(f'Template operator input structure: {template_op.in_structure}')
+            logger_info(f'Template operator input structure: {template_op.in_structure}')
 
         # Mapmaking operator
         p: AbstractLinearOperator

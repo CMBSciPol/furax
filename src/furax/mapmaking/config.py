@@ -294,6 +294,30 @@ class BinAzHWPSynchronousConfig:
 
 
 @dataclass
+class SplineHWPSSConfig:
+    n_knots: int | None = None
+    """Number of spline knots. If set, takes precedence over samples_per_knot."""
+    samples_per_knot: int | None = 4000
+    """Number of samples per knot. Defaults to 4000."""
+    harmonics: tuple[int, ...] = (4,)
+    """HWP harmonics to fit with splines. Defaults to (4,)."""
+
+    def __post_init__(self) -> None:
+        if self.n_knots is None and self.samples_per_knot is None:
+            raise ValueError("one of 'n_knots' or 'samples_per_knot' must be provided")
+
+    def resolve_n_knots(self, n_samples: int) -> int:
+        """Number of spline knots for `n_samples` samples (at least 2).
+
+        Uses `n_knots` directly when set, otherwise derives it from `samples_per_knot`.
+        """
+        if self.n_knots is not None:
+            return max(2, self.n_knots)
+        assert self.samples_per_knot is not None  # guaranteed by __post_init__
+        return max(2, n_samples // self.samples_per_knot)
+
+
+@dataclass
 class GroundConfig:
     azimuth_resolution: float = 0.05  # ~3 deg
     elevation_resolution: float = 0.05  # ~3 deg
@@ -307,6 +331,7 @@ class TemplatesConfig:
     hwp_synchronous: HWPSynchronousConfig | None = None
     azhwp_synchronous: AzHWPSynchronousConfig | None = None
     binazhwp_synchronous: BinAzHWPSynchronousConfig | None = None
+    spline_hwpss: SplineHWPSSConfig | None = None
     ground: GroundConfig | None = None
     regularization: float = 0.0
 
@@ -320,6 +345,7 @@ class TemplatesConfig:
             hwp_synchronous=HWPSynchronousConfig(),
             azhwp_synchronous=AzHWPSynchronousConfig(),
             binazhwp_synchronous=BinAzHWPSynchronousConfig(),
+            spline_hwpss=SplineHWPSSConfig(),
             ground=GroundConfig(),
         )
 

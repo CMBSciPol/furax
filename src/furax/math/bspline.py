@@ -32,12 +32,25 @@ def _spline_position(times: Float[Array, ' samp'], n_grid_knots: int) -> Float[A
     return 2.0 + t * (n_grid_knots - 4)  # to [2, K - 2], knot spacing 1
 
 
-def spline_basis(times: Float[Array, ' samp'], n_knots: int) -> Float[Array, 'k samp']:
+def resolve_n_knots(n_knots: int | None, samples_per_knot: int | None, n_samples: int) -> int:
+    if n_knots is not None:
+        return max(2, n_knots)
+    if samples_per_knot is not None:
+        return max(2, n_samples // samples_per_knot)
+    raise ValueError("One of 'n_knots' or 'samples_per_knot' must be provided.")
+
+
+def spline_basis(
+    times: Float[Array, ' samp'],
+    n_knots: int | None = None,
+    samples_per_knot: int | None = None,
+) -> Float[Array, 'k samp']:
     """Dense cubic B-spline basis on ``K = n_knots + 2`` uniform knots.
 
     Returns:
         B: (K, N) basis matrix, ``B[j] = cubic_bspline(position - j + 1)``.
     """
+    n_knots = resolve_n_knots(n_knots, samples_per_knot, times.size)
     K = _n_grid_knots(n_knots)
     p = _spline_position(times, K)
     # knot j peaks at p = j + 1 (where u = 2); evaluate all knots at once against every sample.
@@ -46,19 +59,22 @@ def spline_basis(times: Float[Array, ' samp'], n_knots: int) -> Float[Array, 'k 
 
 
 def spline_window(
-    times: Float[Array, ' samp'], n_knots: int
+    times: Float[Array, ' samp'],
+    n_knots: int | None = None,
+    samples_per_knot: int | None = None,
 ) -> tuple[Int[Array, ' samp'], Float[Array, 'samp 4']]:
     """Banded form of `spline_basis`: the 4 nonzero knots under each sample.
 
     A cubic B-spline reaches only 4 consecutive knots, so each sample's column of
     `spline_basis` has just 4 nonzero entries. This returns those directly, avoiding the
-    mostly-zero ``(K, N)`` matrix (see `furax.mapmaking.templates.WindowedBasis`).
+    mostly-zero ``(K, N) matrix (see `furax.mapmaking.templates.WindowedBasis`).
 
     Returns:
         offset: (N,) index of the first of the 4 knots, clamped to ``[0, K - 4]``.
         weights: (N, 4) the B-spline values at knots ``offset + 0..3``; weights of knots
             whose support misses the sample (at the time-range edges) are exactly zero.
     """
+    n_knots = resolve_n_knots(n_knots, samples_per_knot, times.size)
     K = _n_grid_knots(n_knots)
     p = _spline_position(times, K)
     offset = jnp.clip(jnp.floor(p).astype(jnp.int32) - 2, 0, K - 4)

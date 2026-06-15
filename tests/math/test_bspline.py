@@ -37,11 +37,27 @@ def test_spline_window_rebuilds_dense_basis(n_knots: int) -> None:
     assert_allclose(rebuilt, dense, atol=1e-12)
 
 
-def test_spline_window_offset_in_range() -> None:
+def test_resolve_n_knots() -> None:
+    assert bspline.resolve_n_knots(10, None, 100) == 10
+    assert bspline.resolve_n_knots(None, 20, 100) == 5
+    assert bspline.resolve_n_knots(10, 20, 100) == 10  # n_knots takes precedence
+    with pytest.raises(ValueError, match='One of'):
+        bspline.resolve_n_knots(None, None, 100)
+
+
+def test_spline_basis_samples_per_knot() -> None:
     t = jnp.linspace(0, 10, 200)
-    n_knots = 8
-    offset, weights = bspline.spline_window(t, n_knots)
-    K = n_knots + 2
-    assert jnp.all(offset >= 0)
-    assert jnp.all(offset <= K - 4)  # window stays inside the knot range
+    samples_per_knot = 20
+    # 200 // 20 = 10 knots
+    B = bspline.spline_basis(t, samples_per_knot=samples_per_knot)
+    assert B.shape == (10 + 2, t.size)
+
+
+def test_spline_window_samples_per_knot() -> None:
+    t = jnp.linspace(0, 10, 200)
+    samples_per_knot = 40
+    # 200 // 40 = 5 knots
+    offset, weights = bspline.spline_window(t, samples_per_knot=samples_per_knot)
+    K = 5 + 2
+    assert jnp.all(offset <= K - 4)
     assert weights.shape == (t.size, 4)

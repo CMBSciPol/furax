@@ -24,6 +24,7 @@ Build several templates and combine them by wrapping each in a
 """
 
 from abc import abstractmethod
+from collections.abc import Sequence
 from dataclasses import field
 from itertools import chain
 from math import prod
@@ -677,17 +678,28 @@ class PerDetectorTemplate(AbstractLinearOperator):
         times: Float[Array, ' samp'],
         hwp_angles: Float[Array, ' samp'],
         n_dets: int,
-        n_knots: int = 100,
+        n_knots: int | None = None,
+        samples_per_knot: int | None = 4000,
+        harmonics: int | Sequence[int] = 4,
         dtype: Any = jnp.float32,
     ) -> Self:
-        """Spline-based 4f HWP synchronous template.
+        """Spline-based HWP synchronous template.
 
-        A cubic B-spline models the slowly time-varying amplitude of the 4f HWP-synchronous
-        signal: knot `j` carries a `(sin 4χ, cos 4χ)` pair, so the amplitudes have shape
-        `(K, 2)` with `K = n_knots + 2`.
+        A cubic B-spline models the slowly time-varying amplitude of the HWP-synchronous
+        signal: knot `j` carries a `(sin kχ, cos kχ)` pair for each harmonic `k` in
+        `harmonics`, so the amplitudes have shape `(K, 2*len(harmonics))` with
+        `K = n_knots + 2`.
         """
+        n_knots = bspline.resolve_n_knots(n_knots, samples_per_knot, times.size)
         offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
-        sub_values = _harmonics(4.0 * hwp_angles, 1, dtype, dc=False)  # [sin 4χ, cos 4χ]
+
+        h = jnp.asarray(harmonics)
+        if h.ndim == 0:
+            h = h[None]
+        sines = jnp.sin(h[:, None] * hwp_angles[None, :])
+        cosines = jnp.cos(h[:, None] * hwp_angles[None, :])
+        sub_values = jnp.concatenate([sines, cosines], axis=0).astype(dtype)
+
         basis = WindowedBasis.create(
             offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2
         )

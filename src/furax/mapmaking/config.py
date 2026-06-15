@@ -295,8 +295,12 @@ class BinAzHWPSynchronousConfig:
 
 @dataclass
 class SplineHWPSSConfig:
-    n_knots: int = 100
-    """Number of spline knots.  Defaults to 100."""
+    n_knots: int | None = None
+    """Number of spline knots. If set, overrides samples_per_knot."""
+    samples_per_knot: int | None = 4000
+    """Number of samples per knot. Defaults to 4000."""
+    harmonics: list[int] = field(default_factory=lambda: [4])
+    """List of HWP harmonics to fit with splines. Defaults to [4]."""
 
 
 @dataclass

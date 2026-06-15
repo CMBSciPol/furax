@@ -883,6 +883,8 @@ class MapMaker:
                 hwp_angles=jnp.asarray(observation.get_hwp_angles()),
                 n_dets=observation.n_detectors,
                 n_knots=shwpss.n_knots,
+                samples_per_knot=shwpss.samples_per_knot,
+                harmonics=shwpss.harmonics,
                 dtype=config.dtype,
             )
         if ground := config.templates.ground:
@@ -1130,6 +1132,7 @@ class MLMapmaker(MapMaker):
                 ]
             )
             logger_info('Built template regularizer')
+            logger_info(f'Template operator input structure: {template_op.in_structure}')
 
         # Mapmaking operator
         p: AbstractLinearOperator

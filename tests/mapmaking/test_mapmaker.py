@@ -378,6 +378,7 @@ class TestSingleObsTemplates:
         cfg.landscape = LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8))
         cfg.templates = TemplatesConfig.full_defaults()
         cfg.templates.ground = None  # ground template needs pointing/landscape, out of scope here
+        cfg.templates.spline_hwpss.samples_per_knot = 256  # 1024 // 256 -> n_knots=4
 
         res = MLMapmaker(config=cfg).make_map(obs)
 
@@ -385,8 +386,7 @@ class TestSingleObsTemplates:
         # amplitudes are structured (n_dets, *basis_shape), not flat
         assert res['template_polynomial'].shape == (n_dets, 2, 4)  # intervals x (orders 0..3)
         assert res['template_azhwp_synchronous'].shape == (n_dets, 4, 9)  # orders x (DC+2*4)
-        # 1024 samples // 4000 samples_per_knot -> n_knots=2; K = n_knots + 2 = 4
-        assert res['template_spline_hwpss'].shape == (n_dets, 4, 2)  # (n_knots + 2) x cos/sin
+        assert res['template_spline_hwpss'].shape == (n_dets, 6, 2)  # (n_knots + 2) x cos/sin
         for key, value in res.items():
             if key.startswith('template_') and not key.startswith('template_reg'):
                 assert bool(jnp.all(jnp.isfinite(value))), key

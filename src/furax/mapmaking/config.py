@@ -265,6 +265,8 @@ class BinsConfig:
 class PolynomialConfig:
     legendre: PolynomialOrders = PolynomialOrders(0, 3)
     """Legendre orders for the polynomial drift template."""
+    explicit: bool = True
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -275,6 +277,8 @@ class ScanSynchronousConfig:
     """
 
     legendre: PolynomialOrders = PolynomialOrders(3, 7)
+    explicit: bool = True
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -285,11 +289,15 @@ class BinAzSynchronousConfig:
     """
 
     bins: BinsConfig = field(default_factory=BinsConfig)
+    explicit: bool = True
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
 class HWPSynchronousConfig:
     n_harmonics: int = 3
+    explicit: bool = True
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -297,12 +305,16 @@ class AzHWPSynchronousConfig:
     legendre: PolynomialOrders = PolynomialOrders(0, 3)
     n_harmonics: int = 4
     split_scans: bool = False
+    explicit: bool = True
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
 class BinAzHWPSynchronousConfig:
     bins: BinsConfig = field(default_factory=BinsConfig)
     n_harmonics: int = 4
+    explicit: bool = True
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -313,6 +325,8 @@ class SplineHWPSSConfig:
     """Number of samples per knot. Defaults to 4000."""
     harmonics: tuple[int, ...] = (4,)
     """HWP harmonics to fit with splines. Defaults to (4,)."""
+    explicit: bool = True
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
     def __post_init__(self) -> None:
         if self.n_knots is None and self.samples_per_knot is None:
@@ -333,6 +347,8 @@ class SplineHWPSSConfig:
 class GroundConfig:
     azimuth_resolution: float = 0.05  # ~3 deg
     elevation_resolution: float = 0.05  # ~3 deg
+    explicit: bool = True
+    """Ground templates are always solved explicitly; deprojection is not supported."""
 
 
 @dataclass

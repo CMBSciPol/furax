@@ -146,7 +146,7 @@ class TestMultiObsMapMaker:
             observations, demodulated=demodulated, stokes=stokes
         )
         with jax.set_mesh(maker.mesh):
-            model, _, _ = maker.build_model_and_accumulate()
+            model, *_ = maker.build_model_and_accumulate()
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
@@ -198,7 +198,7 @@ class TestFakeObsMapMaker:
             observations, demodulated=demodulated, stokes=stokes
         )
         with jax.set_mesh(maker.mesh):
-            model, _, _ = maker.build_model_and_accumulate()
+            model, *_ = maker.build_model_and_accumulate()
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
@@ -271,7 +271,7 @@ class TestNoiseModelSelection:
         config = _config('healpix', 'IQU', demodulated, identity_noise=True)
         maker = MultiObservationMapMaker(observations, config=config)
         with jax.set_mesh(maker.mesh):
-            model, _, _ = maker.build_model_and_accumulate()
+            model, *_ = maker.build_model_and_accumulate()
         noise_leaves = jax.tree.leaves(
             model.noise_model,
             is_leaf=lambda x: isinstance(x, WhiteNoiseModel),

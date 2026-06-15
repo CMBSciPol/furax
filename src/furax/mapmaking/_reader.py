@@ -391,8 +391,10 @@ class ObservationReader(AbstractReader, Generic[T]):
             return np.zeros(s.shape, s.dtype)
 
         def fill(field: str, struct: PyTree[jax.ShapeDtypeStruct]) -> Any:
-            if field == ReaderField.TIMESTAMPS:
-                return np.arange(struct.shape[0], dtype=struct.dtype)  # strictly increasing
+            if field in (ReaderField.TIMESTAMPS, ReaderField.AZIMUTH, ReaderField.ELEVATION):
+                # strictly increasing: non-zero range so Legendre/bin normalisation of azimuth (and
+                # the time axis) stays finite when template operators are built from this filler
+                return np.arange(struct.shape[0], dtype=struct.dtype)
             if field in (ReaderField.DETECTOR_QUATERNIONS, ReaderField.BORESIGHT_QUATERNIONS):
                 return identity_quaternions(struct)
             if field == ReaderField.SAMPLE_DATA:

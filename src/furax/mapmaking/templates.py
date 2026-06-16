@@ -36,7 +36,7 @@ from jax import Array, ShapeDtypeStruct
 from jax import numpy as jnp
 from jaxtyping import DTypeLike, Float, Int, PyTree
 
-from furax import AbstractLinearOperator, square
+from furax import AbstractLinearOperator, symmetric
 from furax.core import TransposeOperator
 from furax.math import bspline, quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
@@ -829,8 +829,15 @@ class GroundTemplateOperator(AbstractLinearOperator):
         return landscape
 
 
-@square
+@symmetric
 class ATOPProjectionOperator(AbstractLinearOperator):
+    """Projection operator for the ATOP mapmaker.
+
+    Subtracts the mean of blocks of length `tau` from each detector's timestream.
+    This is a symmetric and idempotent operator: A = I - P, where P is the
+    block-averaging operator.
+    """
+
     tau: int = field(metadata={'static': True})
 
     def __init__(

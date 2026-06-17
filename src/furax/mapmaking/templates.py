@@ -28,7 +28,7 @@ from collections.abc import Sequence
 from dataclasses import field
 from itertools import chain
 from math import prod
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import jax
 import numpy as np
@@ -831,8 +831,8 @@ class GroundTemplateOperator(AbstractLinearOperator):
 
 
 @symmetric
-class ATOPProjectionOperator(AbstractLinearOperator):
-    """Projection operator for the ATOP mapmaker.
+class POMMEProjectionOperator(AbstractLinearOperator):
+    """Projection operator for the POMME mapmaker.
 
     Subtracts the mean of blocks of length `tau` from each detector's timestream.
     This is a symmetric and idempotent operator: A = I - P, where P is the
@@ -864,16 +864,16 @@ class ATOPProjectionOperator(AbstractLinearOperator):
         return self
 
 
-class ATOPProjectionRule(AbstractCompositionRule):
-    """Rule for ATOPProjectionOperator @ ATOPProjectionOperator = ATOPProjectionOperator."""
+class POMMEProjectionRule(AbstractCompositionRule):
+    """Rule for POMMEProjectionOperator @ POMMEProjectionOperator = POMMEProjectionOperator."""
 
-    left_operator_class = ATOPProjectionOperator
-    right_operator_class = ATOPProjectionOperator
+    left_operator_class = POMMEProjectionOperator
+    right_operator_class = POMMEProjectionOperator
 
     def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
         super().check(left, right)
-        assert isinstance(left, ATOPProjectionOperator) and isinstance(
-            right, ATOPProjectionOperator
+        assert isinstance(left, POMMEProjectionOperator) and isinstance(
+            right, POMMEProjectionOperator
         )
         if left.tau != right.tau:
             raise NoReduction
@@ -882,3 +882,76 @@ class ATOPProjectionRule(AbstractCompositionRule):
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         return [left]
+
+
+@symmetric
+class SplineHWPSSProjectionOperator(AbstractLinearOperator):
+    """Sequential POMME-style deprojection for spline HWPSS templates.
+
+    Applies D3 = I - tilde_T3 (tilde_T3^T tilde_T3)^(-1) tilde_T3^T, where
+    tilde_T3 = D1 @ T3 is the orthogonalized template.
+
+    This operator removes the components of the TOD that are well-modeled by
+    the spline HWPSS template, *after* the POMME (block-averaging) components
+    have been removed.
+    """
+
+    tilde_T3: AbstractLinearOperator
+    gram_inv: Array
+
+    def __init__(self, tilde_T3: AbstractLinearOperator) -> None:
+        """
+        Args:
+            tilde_T3: The orthogonalized template operator (e.g., POMME @ SplineHWPSS).
+                Expected to map (n_det, k, m) -> (n_det, n_samp).
+        """
+        object.__setattr__(self, 'tilde_T3', tilde_T3)
+        object.__setattr__(self, 'in_structure', tilde_T3.out_structure)
+
+        # Compute the Gram matrix M = tilde_T3^T @ tilde_T3
+        # Since tilde_T3 is block-diagonal across detectors, M is also block-diagonal.
+        # Each block is (K, K) where K is the total number of amplitudes per detector.
+        in_struct = tilde_T3.in_structure
+        assert len(in_struct.shape) >= 2
+        n_det = in_struct.shape[0]
+        K_total = prod(in_struct.shape[1:])
+
+        def apply_gram(basis_vector_flat: Float[Array, ' K']) -> Float[Array, 'det K']:
+            # basis_vector_flat: (K,)
+            basis_vector = basis_vector_flat.reshape(in_struct.shape[1:])
+            # Broadcast to all detectors
+            bv_expanded = jnp.broadcast_to(basis_vector, in_struct.shape)
+
+            res = cast(
+                Float[Array, 'det k m'],
+                tilde_T3.T(tilde_T3(bv_expanded)),
+            )
+
+            return res.reshape(n_det, K_total)
+
+        # Compute the full Gram matrix blocks: (n_det, K, K)
+        # vmap over the K unit vectors in the amplitude space.
+        # This takes K * (apply + apply_transpose) calls.
+        gram = jax.vmap(apply_gram)(jnp.eye(K_total))  # (K, n_det, K)
+        gram = jnp.transpose(gram, (1, 2, 0))  # (n_det, K, K)
+
+        # Invert the Gram matrix per detector.
+        # We use pinv to handle cases where some knots might have no samples (e.g., gaps).
+        object.__setattr__(self, 'gram_inv', jnp.linalg.pinv(gram))
+
+    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
+        # Project x onto the tilde_T3 space: p = tilde_T3 (tilde_T3^T tilde_T3)^-1 tilde_T3^T x
+        b = cast(
+            Float[Array, 'det k m'],
+            self.tilde_T3.T(x),
+        )
+
+        b_flat = b.reshape(b.shape[0], -1)
+        # a = M^-1 b
+        a_flat = jnp.einsum('dij,dj->di', self.gram_inv, b_flat)
+        a = a_flat.reshape(b.shape)
+        # D3 x = x - tilde_T3 a
+        return cast(
+            Float[Array, 'det samp'],
+            x - self.tilde_T3(a),
+        )

@@ -10,7 +10,7 @@ from furax.mapmaking.noise import WhiteNoiseModel
 
 class TestSampleMask:
     @pytest.mark.parametrize('tail_value', [True, False])
-    def test_atop_tail_always_masked(self, tail_value: bool):
+    def test_pomme_tail_always_masked(self, tail_value: bool):
         """_sample_mask zeros the tail regardless of whether tail samples are valid.
 
         True tail:  |F(mask)| = 1 > 0.5/tau → interval_mask False → masked out.
@@ -21,7 +21,7 @@ class TestSampleMask:
         if not tail_value:
             mask = mask.at[0, 2 * tau :].set(False)
 
-        config = MapMakingConfig(method=Methods.ATOP, atop_tau=tau)
+        config = MapMakingConfig(method=Methods.POMME, pomme_tau=tau)
         result = _sample_mask({'valid_sample_masks': mask}, config)
 
         assert_array_equal(result[0, 2 * tau :], jnp.zeros(n_samp - 2 * tau, dtype=bool))

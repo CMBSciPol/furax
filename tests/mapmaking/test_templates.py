@@ -9,10 +9,11 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking.config import BinsConfig, PolynomialOrders, SplineHWPSSConfig
 from furax.mapmaking.templates import (
-    ATOPProjectionOperator,
     KroneckerBasis,
     PerDetectorTemplate,
+    POMMEProjectionOperator,
     SegmentedBasis,
+    SplineHWPSSProjectionOperator,
     TensorBasis,
     WindowedBasis,
     _bin_weights,
@@ -686,13 +687,13 @@ class TestTemperatureTemplate:
 
 
 # ---------------------------------------------------------------------------
-# ATOPProjectionOperator
+# POMMEProjectionOperator
 # ---------------------------------------------------------------------------
 
 
-class TestATOPProjectionOperator:
-    def make_op(self, n_det: int, n_samp: int, tau: int) -> ATOPProjectionOperator:
-        return ATOPProjectionOperator(
+class TestPOMMEProjectionOperator:
+    def make_op(self, n_det: int, n_samp: int, tau: int) -> POMMEProjectionOperator:
+        return POMMEProjectionOperator(
             tau, in_structure=jax.ShapeDtypeStruct((n_det, n_samp), jnp.float64)
         )
 
@@ -848,3 +849,62 @@ class TestSplineHWPSSTemplate:
         op = PerDetectorTemplate.bspline_hwpss(t, hwp, n_dets, n_knots=4, harmonics=3)
         # 1..3 -> 3 harmonics -> 2 * 3 = 6 columns; K = 4 + 2 = 6
         assert op.in_structure.shape == (n_dets, 6, 6)
+
+
+# ---------------------------------------------------------------------------
+# SplineHWPSSProjectionOperator
+# ---------------------------------------------------------------------------
+
+
+class TestSplineHWPSSProjectionOperator:
+    def test_properties(self) -> None:
+        n_dets, n_samps, n_knots = 1, 400, 5
+        tau = 10
+        t = jnp.linspace(0, 10, n_samps)
+        hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
+
+        # POMME operator D1
+        d1 = POMMEProjectionOperator(
+            tau, in_structure=jax.ShapeDtypeStruct((n_dets, n_samps), jnp.float64)
+        )
+        # Spline template T3
+        t3 = PerDetectorTemplate.bspline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
+
+        # Orthogonalized template tilde_T3 = D1 @ T3
+        tilde_t3 = (d1 @ t3).reduce()
+
+        # Sequential projector D3
+        d3 = SplineHWPSSProjectionOperator(tilde_t3)
+
+        # 1. Symmetry
+        x = jr.normal(jr.key(2000), (n_dets, n_samps))
+        y = jr.normal(jr.key(2001), (n_dets, n_samps))
+        assert_allclose(jnp.vdot(d3(x), y), jnp.vdot(x, d3(y)), rtol=TOL)
+
+        # 2. Idempotency: D3 @ D3 = D3
+        assert_allclose(d3(d3(x)), d3(x), atol=1e-10)
+
+        # 3. Orthogonality: D3 @ tilde_T3 = 0
+        a = jr.normal(jr.key(2002), tilde_t3.in_structure.shape)
+        assert_allclose(d3(tilde_t3(a)), 0.0, atol=1e-10)
+
+        # 4. Sequential deprojection: D = D3 @ D1
+        # Any signal in Range(T1) or Range(tilde_T3) should be removed.
+        # Signal in Range(T1) where D1 = I - T1 (T1^T T1)^-1 T1^T
+        # T1 is the block-averaging basis.
+        t1_signal = jnp.repeat(jr.normal(jr.key(2003), (n_dets, n_samps // tau)), tau, axis=1)
+        if n_samps % tau != 0:
+            t1_signal = jnp.pad(t1_signal, ((0, 0), (0, n_samps % tau)))
+
+        # D1(t1_signal) should be 0 (mostly, except for the tail)
+        # For POMME, the tail is not demeaned, so we check the full intervals.
+        full_slice = slice(None, (n_samps // tau) * tau)
+        assert_allclose(d1(t1_signal)[:, full_slice], 0.0, atol=TOL)
+
+        # D3 @ D1 @ t1_signal should be 0
+        assert_allclose(d3(d1(t1_signal))[:, full_slice], 0.0, atol=TOL)
+
+        # Signal in Range(T3)
+        t3_signal = t3(a)
+        # D3 @ D1 @ t3_signal = D3 @ tilde_t3(a) = 0
+        assert_allclose(d3(d1(t3_signal)), 0.0, atol=1e-10)

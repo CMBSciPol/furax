@@ -62,7 +62,7 @@ class BJPreconditioner(TreeOperator):
         tree_cls = Stokes.class_for(stokes)
 
         # Vectorized probing of the operator
-        eye = jnp.eye(n)
+        eye = jnp.eye(n, dtype=jax.tree.leaves(in_struct)[0].dtype)
 
         def make_probe(row: Array) -> Stokes:
             return cast(

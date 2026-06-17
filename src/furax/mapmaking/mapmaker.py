@@ -103,17 +103,17 @@ class MultiObservationMapMaker(Generic[T]):
 
     def _check_config(self) -> None:
         """Validate and adjust config for method-specific compatibility."""
-        if self.config.method == Methods.ATOP:
+        if self.config.method == Methods.POMME:
             if not self.config.binned:
-                raise ValueError('ATOP requires diagonal weighting (weighting.mode=DIAGONAL).')
+                raise ValueError('POMME requires diagonal weighting (weighting.mode=DIAGONAL).')
             if 'I' in (stokes := self.config.landscape.stokes):
                 if stokes != 'IQU':
                     raise ValueError(
-                        f'ATOP does not support intensity map reconstruction and {stokes=!r}'
+                        f'POMME does not support intensity map reconstruction and {stokes=!r}'
                         " cannot be reduced to a supported type. Use stokes='QU' instead."
                     )
                 self.logger.info(
-                    "Received stokes='IQU', but ATOP does not support intensity map reconstruction."
+                    "Received stokes='IQU', but POMME does not support intensity map reconstruction."
                     " Falling back to stokes='QU' instead."
                 )
                 self.config.landscape.stokes = 'QU'
@@ -606,7 +606,7 @@ class MapMaker:
             Methods.BINNED: BinnedMapMaker,
             Methods.MAXL: MLMapmaker,
             Methods.TWOSTEP: TwoStepMapmaker,
-            Methods.ATOP: ATOPMapMaker,
+            Methods.POMME: POMMEMapMaker,
         }[config.method]
 
         if logger is None:
@@ -1357,23 +1357,23 @@ class TwoStepMapmaker(MapMaker):
         return output
 
 
-class ATOPMapMaker(MapMaker):
-    """Class for ATOP mapmaking with diagonal noise covariance."""
+class POMMEMapMaker(MapMaker):
+    """Class for POMME mapmaking with diagonal noise covariance."""
 
     def __post_init__(self) -> None:
         super().__post_init__()
 
         # Validation on config
         if not self.config.binned:
-            raise ValueError('ATOP Mapmaker is currently incompatible with binned=False')
-        if self.config.atop_tau < 2:
-            raise ValueError('ATOP tau should be at least 2')
+            raise ValueError('POMME Mapmaker is currently incompatible with binned=False')
+        if self.config.pomme_tau < 2:
+            raise ValueError('POMME tau should be at least 2')
         if self.config.landscape.stokes != 'QU':
-            raise ValueError('ATOP only compatible with stokes=QU')
+            raise ValueError('POMME only compatible with stokes=QU')
 
     def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]:
         config = self.config
-        logger_info = lambda msg: self.logger.info(f'ATOP Mapmaker: {msg}')
+        logger_info = lambda msg: self.logger.info(f'POMME Mapmaker: {msg}')
 
         # Data and landscape
         data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
@@ -1384,10 +1384,30 @@ class ATOPMapMaker(MapMaker):
         acquisition = self.get_acquisition(observation, landscape=landscape)
         logger_info('Created acquisition operator')
 
-        # ATOP projector
-        atop_projector = templates.ATOPProjectionOperator(
-            self.config.atop_tau, in_structure=data_struct
+        # POMME projector (D1)
+        pomme_projector = templates.POMMEProjectionOperator(
+            self.config.pomme_tau, in_structure=data_struct
         )
+        projector: AbstractLinearOperator = pomme_projector
+
+        # Spline HWPSS sequential deprojection (D3 @ D1)
+        if config.templates and (shwpss := config.templates.spline_hwpss):
+            times = jnp.asarray(observation.get_elapsed_times())
+            t3 = PerDetectorTemplate.bspline_hwpss(
+                times=times,
+                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
+                n_dets=observation.n_detectors,
+                n_knots=shwpss.resolve_n_knots(times.size),
+                harmonics=shwpss.harmonics,
+                dtype=config.dtype,
+            )
+            # tilde_T3 = D1 @ T3
+            tilde_t3 = (pomme_projector @ t3).reduce()
+            # D3 = I - tilde_T3 (tilde_T3^T tilde_T3)^-1 tilde_T3^T
+            d3 = templates.SplineHWPSSProjectionOperator(tilde_t3)
+            # D = D3 @ D1
+            projector = (d3 @ pomme_projector).reduce()
+            logger_info('Created sequential SplineHWPSS deprojection operator')
 
         # Optional mask for scanning
         masker = self.get_mask_projector(observation)
@@ -1400,7 +1420,7 @@ class ATOPMapMaker(MapMaker):
         logger_info(f'Valid sample fraction: {valid_sample_fraction:.4f}')
 
         # Additionally, mask all tau-intervals with any masked samples
-        tau_mask = jnp.abs(atop_projector(masker(jnp.ones_like(data)))) < 0.5 / config.atop_tau
+        tau_mask = jnp.abs(pomme_projector(masker(jnp.ones_like(data)))) < 0.5 / config.pomme_tau
         masker @= MaskOperator.from_boolean_mask(tau_mask, in_structure=data_struct)
         valid_sample_fraction = float(jnp.mean(masker(jnp.ones(data.shape, data.dtype))))
         logger_info(f'Updated valid sample fraction: {valid_sample_fraction:.4f}')
@@ -1430,7 +1450,7 @@ class ATOPMapMaker(MapMaker):
         # Mapmaking operators
         h = acquisition @ selector.T
         mp = masker
-        ap = inv_noise @ atop_projector
+        ap = inv_noise @ projector
         lhs = (h.T @ mp @ ap @ mp @ h).reduce()
         rhs_op = jax.jit(lambda d: (h.T @ mp @ ap @ mp).reduce()(d))
 

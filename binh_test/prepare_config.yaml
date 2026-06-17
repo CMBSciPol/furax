@@ -1,0 +1,19 @@
+# prepare_config.yaml
+
+init_config: /pscratch/sd/b/binguyen/so-sat/contexts/preprocessing_config_20251216_init_nersc.yaml
+
+obsids_file: binh_test/obs_list/listv4.txt
+
+outdir: /pscratch/sd/b/binguyen/so-sat/preprocessed_v4
+
+# will be overwritten by slurm
+wafer: ws0
+band: f090
+
+downsample: 1
+nproc: 8
+
+overwrite: false
+dry_run: false
+
+loglevel: info

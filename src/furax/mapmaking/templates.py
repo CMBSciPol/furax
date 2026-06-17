@@ -38,6 +38,7 @@ from jaxtyping import DTypeLike, Float, Int, PyTree
 
 from furax import AbstractLinearOperator, symmetric
 from furax.core import TransposeOperator
+from furax.core.rules import AbstractCompositionRule, NoReduction
 from furax.math import bspline, quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
 from furax.obs.landscapes import HorizonLandscape
@@ -858,3 +859,26 @@ class ATOPProjectionOperator(AbstractLinearOperator):
         if n_rem == 0:
             return y
         return jnp.concatenate([y, x[:, -n_rem:]], axis=1)
+
+    def reduce(self) -> AbstractLinearOperator:
+        return self
+
+
+class ATOPProjectionRule(AbstractCompositionRule):
+    """Rule for ATOPProjectionOperator @ ATOPProjectionOperator = ATOPProjectionOperator."""
+
+    left_operator_class = ATOPProjectionOperator
+    right_operator_class = ATOPProjectionOperator
+
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        super().check(left, right)
+        assert isinstance(left, ATOPProjectionOperator) and isinstance(
+            right, ATOPProjectionOperator
+        )
+        if left.tau != right.tau:
+            raise NoReduction
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        return [left]

@@ -1431,7 +1431,7 @@ class ATOPMapMaker(MapMaker):
         h = acquisition @ selector.T
         mp = masker
         ap = inv_noise @ atop_projector
-        lhs = h.T @ mp @ ap @ mp @ h
+        lhs = (h.T @ mp @ ap @ mp @ h).reduce()
         rhs_op = jax.jit(lambda d: (h.T @ mp @ ap @ mp).reduce()(d))
 
         solver = lineax.CG(**asdict(self.config.solver))
@@ -1442,7 +1442,7 @@ class ATOPMapMaker(MapMaker):
 
         # Run mapmaking
         rhs = rhs_op(data)
-        y0 = preconditioner(rhs)
+        y0 = (preconditioner.reduce())(rhs)
         solution = lineax.linear_solve(
             lx_system,
             rhs,

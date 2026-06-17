@@ -58,7 +58,7 @@ class PointingOperator(AbstractLinearOperator):
         boresight_quaternions: Float[Array, 'samp 4'],
         detector_quaternions: Float[Array, 'det 4'],
         *,
-        chunk_size: int = 16,
+        chunk_size: int = 64,
         frame: Literal['boresight', 'detector'] = 'boresight',
         interpolate: bool = False,
     ) -> 'PointingOperator':

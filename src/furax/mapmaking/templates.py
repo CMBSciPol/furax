@@ -37,7 +37,7 @@ from jax import numpy as jnp
 from jaxtyping import DTypeLike, Float, Int, PyTree
 
 from furax import AbstractLinearOperator, symmetric
-from furax.core import TransposeOperator
+from furax.core import CompositionOperator, TransposeOperator
 from furax.core.rules import AbstractCompositionRule, NoReduction
 from furax.math import bspline, quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
@@ -894,6 +894,10 @@ class SplineHWPSSProjectionOperator(AbstractLinearOperator):
     This operator removes the components of the TOD that are well-modeled by
     the spline HWPSS template, *after* the POMME (block-averaging) components
     have been removed.
+
+    It exploits detector-invariance (identical spline basis and POMME deprojection
+    across detectors) to store only a single shared Gram matrix inverse block,
+    drastically reducing memory usage for large detector counts.
     """
 
     tilde_T3: AbstractLinearOperator
@@ -908,36 +912,56 @@ class SplineHWPSSProjectionOperator(AbstractLinearOperator):
         object.__setattr__(self, 'tilde_T3', tilde_T3)
         object.__setattr__(self, 'in_structure', tilde_T3.out_structure)
 
-        # Compute the Gram matrix M = tilde_T3^T @ tilde_T3
-        # Since tilde_T3 is block-diagonal across detectors, M is also block-diagonal.
-        # Each block is (K, K) where K is the total number of amplitudes per detector.
-        in_struct = tilde_T3.in_structure
-        assert len(in_struct.shape) >= 2
-        n_det = in_struct.shape[0]
-        K_total = prod(in_struct.shape[1:])
+        # To avoid massive memory consumption when building the Gram matrix
+        # (especially with large detector counts), we extract a single-detector version
+        # of the composed orthogonalized template operator.
+        def make_single_det_op(op: AbstractLinearOperator) -> AbstractLinearOperator:
+            if isinstance(op, CompositionOperator):
+                return CompositionOperator([make_single_det_op(o) for o in op.operands])
+            elif isinstance(op, PerDetectorTemplate):
+                basis = cast(Basis, op.operator)
+                return PerDetectorTemplate(
+                    basis,
+                    shared_basis=op.shared_basis,
+                    in_structure=ShapeDtypeStruct((1, *basis.shape), basis.dtype),
+                )
+            elif isinstance(op, POMMEProjectionOperator):
+                n_samp = op.in_structure.shape[1]
+                return POMMEProjectionOperator(
+                    op.tau,
+                    in_structure=ShapeDtypeStruct((1, n_samp), op.in_structure.dtype),
+                )
+            elif isinstance(op, TransposeOperator):
+                return TransposeOperator(make_single_det_op(op.operator))
+            else:
+                return op
 
-        def apply_gram(basis_vector_flat: Float[Array, ' K']) -> Float[Array, 'det K']:
-            # basis_vector_flat: (K,)
-            basis_vector = basis_vector_flat.reshape(in_struct.shape[1:])
-            # Broadcast to all detectors
-            bv_expanded = jnp.broadcast_to(basis_vector, in_struct.shape)
+        tilde_T3_single = make_single_det_op(tilde_T3)
+        in_struct_single = tilde_T3_single.in_structure
+        K_total = prod(in_struct_single.shape[1:])
+
+        def apply_gram_shared(basis_vector_flat: Float[Array, ' K']) -> Float[Array, ' K']:
+            basis_vector = basis_vector_flat.reshape(in_struct_single.shape[1:])
+
+            # Compute only for the single detector.
+            bv_expanded = jnp.zeros(in_struct_single.shape, dtype=in_struct_single.dtype)
+            bv_expanded = bv_expanded.at[0].set(basis_vector)
 
             res = cast(
                 Float[Array, 'det k m'],
-                tilde_T3.T(tilde_T3(bv_expanded)),
+                tilde_T3_single.T(tilde_T3_single(bv_expanded)),
             )
 
-            return res.reshape(n_det, K_total)
+            # Return only the relevant detector's response.
+            return res[0].reshape(K_total)
 
-        # Compute the full Gram matrix blocks: (n_det, K, K)
+        # Compute the single shared Gram matrix block: (K, K)
         # vmap over the K unit vectors in the amplitude space.
-        # This takes K * (apply + apply_transpose) calls.
-        gram = jax.vmap(apply_gram)(jnp.eye(K_total))  # (K, n_det, K)
-        gram = jnp.transpose(gram, (1, 2, 0))  # (n_det, K, K)
+        gram_single = jax.vmap(apply_gram_shared)(jnp.eye(K_total))
 
-        # Invert the Gram matrix per detector.
+        # Invert the Gram matrix.
         # We use pinv to handle cases where some knots might have no samples (e.g., gaps).
-        object.__setattr__(self, 'gram_inv', jnp.linalg.pinv(gram))
+        object.__setattr__(self, 'gram_inv', jnp.linalg.pinv(gram_single))
 
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
         # Project x onto the tilde_T3 space: p = tilde_T3 (tilde_T3^T tilde_T3)^-1 tilde_T3^T x
@@ -947,9 +971,12 @@ class SplineHWPSSProjectionOperator(AbstractLinearOperator):
         )
 
         b_flat = b.reshape(b.shape[0], -1)
+
         # a = M^-1 b
-        a_flat = jnp.einsum('dij,dj->di', self.gram_inv, b_flat)
+        # Contract the shared (K, K) inverse with the (n_det, K) projection result.
+        a_flat = jnp.einsum('ij,dj->di', self.gram_inv, b_flat)
         a = a_flat.reshape(b.shape)
+
         # D3 x = x - tilde_T3 a
         return cast(
             Float[Array, 'det samp'],

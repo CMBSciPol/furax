@@ -9,7 +9,13 @@ from cyclopts import App
 
 from .util import detector_selection, resolve_obsids, setup_logger, standard_obsdir
 
-app = App(help='Preprocess SO observations and dump them to binary files.')
+app = App(
+    help=(
+        'DEPRECATED: preprocess SO observations and dump them to binary files. '
+        'Prefer `furax-so-map` with --init-config, which streams observations straight '
+        'from the preproc db and needs no on-disk copies. Kept only as an optional cache.'
+    )
+)
 
 
 @dataclass(frozen=True)

@@ -15,9 +15,18 @@ from numpy.typing import NDArray
 from sotodlib import coords
 from sotodlib.coords.helpers import get_deflected_sightline
 from sotodlib.core import AxisManager
-from sotodlib.preprocess.preprocess_util import load_and_preprocess
+from sotodlib.mapmaking.utils import downsample_obs
+from sotodlib.preprocess.preprocess_util import (
+    load_and_preprocess,
+    multilayer_load_and_preprocess,
+)
 
-from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation, ReaderField
+from furax.mapmaking import (
+    AbstractGroundObservation,
+    AbstractLazyObservation,
+    FileBackedLazyObservation,
+    ReaderField,
+)
 from furax.mapmaking.config import SotodlibConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import (
@@ -118,6 +127,64 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
         data = load_and_preprocess(observation_id, config, dets=detector_selection)
         return cls(data, sotodlib_config)
+
+    @classmethod
+    def from_preproc_group(
+        cls,
+        observation_id: str,
+        init_config: str | Path,
+        proc_config: str | Path | None = None,
+        detector_selection: dict[str, str] | None = None,
+        downsample: int = 1,
+        no_signal: bool = False,
+        sotodlib_config: SotodlibConfig | None = None,
+    ) -> SOTODLibObservation:
+        """Loads a (already preprocessed) observation directly from the preprocessing db.
+
+        This reads the saved preprocessing products from the archive and re-applies the
+        process pipeline, without writing any intermediate file. It mirrors the load path
+        of ``preproc_or_load_group`` (as used by the ``furax-so-prepare`` tool) but skips
+        the archive/proc-aman saving, so the result is identical to mapping a binary file
+        produced by that tool.
+
+        Args:
+            observation_id: Observation id (e.g. 'obs_1714550584_satp3_1111111').
+            init_config: Base-layer preprocessing config (path or posix string).
+            proc_config: Optional second-layer preprocessing config. If given, the
+                two-layer (init+proc) load path is used.
+            detector_selection: Optional detector restriction
+                (e.g. {'wafer_slot': 'ws0', 'wafer.bandpass': 'f150'}).
+            downsample: Integer downsampling factor applied after preprocessing.
+            no_signal: If True, skip reading the detector timestreams. Used by the
+                cheap shape probe; the returned observation has axes/metadata but no TOD.
+            sotodlib_config: Optional sotodlib-specific configuration.
+
+        Returns:
+            An instance of SOTODLibObservation.
+
+        Raises:
+            RuntimeError: If no detectors remain after cuts (nothing to load).
+        """
+        init_config = Path(init_config).as_posix()
+        if proc_config is not None:
+            aman = multilayer_load_and_preprocess(
+                observation_id,
+                init_config,
+                Path(proc_config).as_posix(),
+                dets=detector_selection,
+                no_signal=no_signal,
+            )
+        else:
+            # load_and_preprocess returns (aman, full_aman); we only need the restricted one
+            result = load_and_preprocess(
+                observation_id, init_config, dets=detector_selection, no_signal=no_signal
+            )
+            aman = result[0] if isinstance(result, tuple) else result
+        if aman is None:
+            raise RuntimeError(f'no detectors left after cuts for {observation_id}')
+        if downsample > 1:
+            aman = downsample_obs(aman, downsample, skip_signal=no_signal)
+        return cls(aman, sotodlib_config)
 
     @property
     def name(self) -> str:
@@ -387,7 +454,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return np.atleast_2d(np.asarray(quats, dtype=np.float64))
 
 
-class LazySOTODLibObservation(AbstractLazyObservation[AxisManager]):
+class LazySOTODLibObservation(FileBackedLazyObservation[AxisManager]):
     interface_class = SOTODLibObservation
 
     def __init__(self, filename: str | Path, sotodlib_config: SotodlibConfig | None = None) -> None:
@@ -397,4 +464,53 @@ class LazySOTODLibObservation(AbstractLazyObservation[AxisManager]):
     def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
         return SOTODLibObservation.from_file(
             self.file, requested_fields, sotodlib_config=self._sotodlib_config
+        )
+
+
+class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
+    """Lazy observation backed by the preprocessing database (no intermediate file).
+
+    Loads on demand via ``SOTODLibObservation.from_preproc_group``, so observations are
+    streamed straight from the preproc archive at mapmaking time and never copied to disk.
+    """
+
+    interface_class = SOTODLibObservation
+
+    def __init__(
+        self,
+        observation_id: str,
+        init_config: str | Path,
+        proc_config: str | Path | None = None,
+        detector_selection: dict[str, str] | None = None,
+        downsample: int = 1,
+        sotodlib_config: SotodlibConfig | None = None,
+    ) -> None:
+        self.observation_id = observation_id
+        # resolve now: get_data may run inside an io_callback after the process has chdir'd
+        self.init_config = Path(init_config).resolve().as_posix()
+        self.proc_config = Path(proc_config).resolve().as_posix() if proc_config else None
+        self.detector_selection = detector_selection
+        self.downsample = downsample
+        self._sotodlib_config = sotodlib_config
+
+    def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
+        # A preproc load cannot be field-subset: the full observation is always returned,
+        # which satisfies any requested fields. The cheap shape path lives in probe_shape.
+        return self._load(no_signal=False)
+
+    def probe_shape(self) -> tuple[int, int]:
+        # Run the pipeline without reading the timestreams: this yields the exact
+        # post-process (n_detectors, n_samples) the data load would, minus the heavy TOD I/O.
+        obs = self._load(no_signal=True)
+        return obs.n_detectors, obs.n_samples
+
+    def _load(self, *, no_signal: bool) -> SOTODLibObservation:
+        return SOTODLibObservation.from_preproc_group(
+            self.observation_id,
+            self.init_config,
+            self.proc_config,
+            self.detector_selection,
+            downsample=self.downsample,
+            no_signal=no_signal,
+            sotodlib_config=self._sotodlib_config,
         )

@@ -9,7 +9,7 @@ import numpy as np
 from astropy import wcs
 from jaxtyping import Array, Bool, Float
 
-from furax.mapmaking import AbstractLazyObservation, AbstractSatelliteObservation
+from furax.mapmaking import AbstractSatelliteObservation, FileBackedLazyObservation
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import HealpixLandscape, ProjectionType, StokesLandscape
 
@@ -114,5 +114,5 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
         return np.concatenate([q.quats for q in self.data.quat], dtype=np.float64)
 
 
-class LazyLBSObservation(AbstractLazyObservation[lbs.Observation]):
+class LazyLBSObservation(FileBackedLazyObservation[lbs.Observation]):
     interface_class = LBSObservation

@@ -109,8 +109,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         # padding / out_structure / etc. are consistent. Bypasses the superclass's
         # per-item I/O by passing the assembled `structures` directly.
         def _shape(idx: int) -> tuple[int, int, int]:
-            data = observations[idx].get_data([])
-            return idx, data.n_detectors, data.n_samples
+            return idx, *observations[idx].probe_shape()
 
         local_shapes = np.array([_shape(idx) for idx in read_indices], dtype=np.int64)
 
@@ -307,12 +306,10 @@ class ObservationReader(AbstractReader, Generic[T]):
     def _read_structure_impure(
         self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]
     ) -> PyTree[jax.ShapeDtypeStruct]:
-        # request an empty list
-        # this loads sufficient info to determine the structure
-        data = observation.get_data([])
+        n_detectors, n_samples = observation.probe_shape()
         field_structure = self._get_data_field_structures_for(
-            data.n_detectors,
-            data.n_samples,
+            n_detectors,
+            n_samples,
             demodulated=self.demodulated,
             stokes=self.stokes,
             dtype=self.dtype,

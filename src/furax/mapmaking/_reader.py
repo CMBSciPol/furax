@@ -45,6 +45,9 @@ class ObservationReader(AbstractReader, Generic[T]):
         - detector_quaternions: the detector quaternions.
         - boresight_quaternions: the boresight quaternions.
         - noise_model_fits: the fitted parameters for the noise model (1/f noise by default).
+        - azimuth, elevation: the boresight scan angles (ground observations).
+        - left_scan_mask, right_scan_mask: per-sample masks splitting left/right-going scans.
+        - scanning_intervals: per-scan [start, end) sample-index pairs (ground observations).
     """
 
     def __init__(
@@ -115,7 +118,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         shapes = None
         known_failures = None
         if read_indices is not None:
-            shapes, known_failures = cls._gather_shapes(observations, read_indices)
+            shapes, known_failures = cls._gather_shapes(observations, read_indices, fields)
         return cls(
             observations,
             common_keywords={'data_field_names': fields},
@@ -148,6 +151,7 @@ class ObservationReader(AbstractReader, Generic[T]):
     def _gather_shapes(
         observations: Sequence[AbstractLazyObservation[T]],
         read_indices: Sequence[int],
+        fields: Collection[str],
     ) -> tuple[list[tuple[int, ...]], list[int]]:
         """Gather every observation's ``probe_shape()`` tuple in distributed mode.
 
@@ -166,11 +170,11 @@ class ObservationReader(AbstractReader, Generic[T]):
         def probe(idx: int) -> tuple[int, tuple[int, ...]]:
             try:
                 # retain observation index so we can dedup after gathering
-                return idx, observations[idx].probe_shape()
+                return idx, observations[idx].probe_shape(fields)
             except Exception:
                 logger.exception('probe of observation %d failed', idx)
                 failed.append(idx)
-                return idx, (1, 1)
+                return idx, (1, 1, 0)
 
         local = [probe(idx) for idx in read_indices]
         width = 1 + len(local[0][1])  # each row is (idx, *shape)
@@ -222,6 +226,13 @@ class ObservationReader(AbstractReader, Generic[T]):
             data[ReaderField.HWP_ANGLES] = np.pad(
                 valid, (0, pad_size), mode='linear_ramp', end_values=valid[-1] + dphi * pad_size
             ) % (2 * np.pi)
+        for angle_field in (ReaderField.AZIMUTH, ReaderField.ELEVATION):
+            if angle_field in data_field_names:
+                # Hold the last valid value (telescope stopped moving). Keeps min/ptp of the
+                # scan unchanged, so Legendre/bin basis normalisation is unaffected.
+                pad_size = padding[angle_field][0]
+                valid = data[angle_field][: data[angle_field].size - pad_size]
+                data[angle_field] = np.pad(valid, (0, pad_size), mode='edge')
         if ReaderField.DETECTOR_QUATERNIONS in data_field_names:
             # Pad with (1, 0, 0, 0), corresponding to xi=eta=gamma=0.
             quats = data[ReaderField.DETECTOR_QUATERNIONS]
@@ -262,7 +273,7 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         Restricted to ``fields`` when given, else returns every supported field.
         """
-        n_detectors, n_samples = shape
+        n_detectors, n_samples, n_intervals = shape
         demodulated = self.demodulated
         stokes = self.stokes
         dtype = self.dtype
@@ -289,6 +300,11 @@ class ObservationReader(AbstractReader, Generic[T]):
                 if demodulated
                 else jax.ShapeDtypeStruct((n_detectors, 4), dtype)
             ),
+            ReaderField.AZIMUTH: jax.ShapeDtypeStruct((n_samples,), dtype),
+            ReaderField.ELEVATION: jax.ShapeDtypeStruct((n_samples,), dtype),
+            ReaderField.LEFT_SCAN_MASK: jax.ShapeDtypeStruct((n_samples,), jnp.bool),
+            ReaderField.RIGHT_SCAN_MASK: jax.ShapeDtypeStruct((n_samples,), jnp.bool),
+            ReaderField.SCANNING_INTERVALS: jax.ShapeDtypeStruct((n_intervals, 2), jnp.int64),
         }
         if fields is None:
             return structures
@@ -339,6 +355,13 @@ class ObservationReader(AbstractReader, Generic[T]):
                 target_dtype
             ),
             ReaderField.NOISE_MODEL_FITS: get_noise_model_fits,
+            ReaderField.AZIMUTH: lambda obs: obs.get_azimuth().astype(target_dtype),
+            ReaderField.ELEVATION: lambda obs: obs.get_elevation().astype(target_dtype),
+            ReaderField.LEFT_SCAN_MASK: lambda obs: obs.get_left_scan_mask().astype(bool),
+            ReaderField.RIGHT_SCAN_MASK: lambda obs: obs.get_right_scan_mask().astype(bool),
+            ReaderField.SCANNING_INTERVALS: lambda obs: np.asarray(
+                obs.get_scanning_intervals(), dtype=np.int64
+            ),
         }
 
     def _failure_filler(self) -> dict[str, Any]:
@@ -385,7 +408,9 @@ class ObservationReader(AbstractReader, Generic[T]):
     def _read_structure_impure(
         self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]
     ) -> PyTree[jax.ShapeDtypeStruct]:
-        return self._get_data_field_structures_for(observation.probe_shape(), data_field_names)
+        return self._get_data_field_structures_for(
+            observation.probe_shape(data_field_names), data_field_names
+        )
 
     def _read_data_impure(
         self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]

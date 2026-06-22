@@ -172,9 +172,10 @@ class FailingLazyObservation(FakeLazyObservation):
     def name(self) -> str:
         return 'failing_obs'
 
-    def probe_shape(self) -> tuple[int, int]:
+    def probe_shape(self, fields: Any = None) -> tuple[int, ...]:
+        # get_data raises, so build the shape directly. Non-ground obs -> no scanning intervals.
         obs = FakeObservation(**self._kwargs)
-        return len(obs.detectors), obs.n_samples
+        return obs.n_detectors, obs.n_samples, 0
 
     def get_data(self, requested_fields=None) -> FakeObservation:
         raise RuntimeError('simulated preprocessing failure')
@@ -229,10 +230,6 @@ class GappyLazyGroundObservation(FakeLazyObservation):
 
     def get_data(self, requested_fields=None) -> GappyGroundObservation:
         return GappyGroundObservation(**self._kwargs)
-
-    def probe_shape(self) -> tuple[int, int]:
-        obs = GappyGroundObservation(**self._kwargs)
-        return len(obs.detectors), obs.n_samples
 
 
 class FakeGroundObservation(FakeObservation, AbstractGroundObservation[None]):

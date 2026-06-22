@@ -42,6 +42,11 @@ class ReaderField(StrEnum):
     DETECTOR_QUATERNIONS = 'detector_quaternions'
     BORESIGHT_QUATERNIONS = 'boresight_quaternions'
     NOISE_MODEL_FITS = 'noise_model_fits'
+    AZIMUTH = 'azimuth'
+    ELEVATION = 'elevation'
+    LEFT_SCAN_MASK = 'left_scan_mask'
+    RIGHT_SCAN_MASK = 'right_scan_mask'
+    SCANNING_INTERVALS = 'scanning_intervals'
 
 
 @register_dataclass
@@ -247,6 +252,23 @@ class AbstractGroundObservation(AbstractObservation[T]):
         AbstractObservation.AVAILABLE_READER_FIELDS
         | {
             ReaderField.VALID_SCANNING_MASKS,
+            ReaderField.AZIMUTH,
+            ReaderField.ELEVATION,
+            ReaderField.LEFT_SCAN_MASK,
+            ReaderField.RIGHT_SCAN_MASK,
+            ReaderField.SCANNING_INTERVALS,
+        }
+    )
+
+    OPTIONAL_READER_FIELDS: ClassVar[frozenset[str]] = (
+        AbstractObservation.OPTIONAL_READER_FIELDS
+        | {
+            ReaderField.VALID_SCANNING_MASKS,
+            ReaderField.AZIMUTH,
+            ReaderField.ELEVATION,
+            ReaderField.LEFT_SCAN_MASK,
+            ReaderField.RIGHT_SCAN_MASK,
+            ReaderField.SCANNING_INTERVALS,
         }
     )
 
@@ -390,14 +412,18 @@ class AbstractLazyObservation(ABC, Generic[T]):
         """Human-readable identifier, used e.g. to report observations that failed to load."""
         return type(self).__name__
 
-    def probe_shape(self) -> tuple[int, int]:
-        """Returns ``(n_detectors, n_samples)`` to size the padded buffers.
+    def probe_shape(self, fields: Collection[str]) -> tuple[int, ...]:
+        """Returns the variable padded-buffer dimensions for ``fields``.
 
-        The default opens the observation with the minimal field set; subclasses may
-        override with a cheaper query.
+        The tuple is ``(n_detectors, n_samples, n_intervals)``, where ``n_intervals`` is the
+        leading dimension of ``scanning_intervals`` (0 unless that field is requested). The
+        default opens the observation with the minimal field set; subclasses may override with
+        a cheaper query.
         """
-        data = self.get_data([])
-        return data.n_detectors, data.n_samples
+        needs_intervals = ReaderField.SCANNING_INTERVALS in fields
+        data = self.get_data([ReaderField.SCANNING_INTERVALS] if needs_intervals else [])
+        n_intervals = data.get_scanning_intervals().shape[0] if needs_intervals else 0  # type: ignore[attr-defined]
+        return data.n_detectors, data.n_samples, n_intervals
 
 
 class FileBackedLazyObservation(AbstractLazyObservation[T]):

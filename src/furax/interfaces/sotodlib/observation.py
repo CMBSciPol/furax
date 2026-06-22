@@ -101,42 +101,47 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             filename = filename.as_posix()
 
         # default is to load everything
-        fields = None
+        fields: set[str] | None = None
         config = sotodlib_config or SotodlibConfig()
         if requested_fields is not None:
+            requested = set(requested_fields)
             # minimum information needed to determine buffer shapes
-            fields = ['dets', 'samp']
-            # translate request to sotodlib subfield names
-            if ReaderField.METADATA in requested_fields:
-                fields.append('obs_info')
-            if ReaderField.SAMPLE_DATA in requested_fields:
+            fields = {'dets', 'samp'}
+            # translate request to sotodlib subfield names (sets dedup overlapping requests)
+            if ReaderField.METADATA in requested:
+                fields.add('obs_info')
+            if ReaderField.SAMPLE_DATA in requested:
                 if config.demodulated:
-                    fields.extend(['dsT', 'demodQ', 'demodU'])
+                    fields |= {'dsT', 'demodQ', 'demodU'}
                 else:
-                    fields.append('signal')
-            if ReaderField.VALID_SAMPLE_MASKS in requested_fields:
-                fields.append('flags.glitch_flags')
-            if ReaderField.VALID_SCANNING_MASKS in requested_fields:
-                fields.append('preprocess.turnaround_flags')
-            if ReaderField.TIMESTAMPS in requested_fields:
-                fields.append('timestamps')
-            if ReaderField.HWP_ANGLES in requested_fields:
-                fields.append('hwp_angle')
-            if ReaderField.BORESIGHT_QUATERNIONS in requested_fields:
-                fields.append('boresight')
-                if 'timestamps' not in fields:
-                    fields.append('timestamps')
+                    fields.add('signal')
+            if ReaderField.VALID_SAMPLE_MASKS in requested:
+                fields.add('flags.glitch_flags')
+            if {ReaderField.VALID_SCANNING_MASKS, ReaderField.SCANNING_INTERVALS} & requested:
+                fields.add('preprocess.turnaround_flags')
+            if ReaderField.LEFT_SCAN_MASK in requested:
+                fields.add('flags.left_scan')
+            if ReaderField.RIGHT_SCAN_MASK in requested:
+                fields.add('flags.right_scan')
+            if {ReaderField.AZIMUTH, ReaderField.ELEVATION} & requested:
+                fields.add('boresight')
+            if ReaderField.TIMESTAMPS in requested:
+                fields.add('timestamps')
+            if ReaderField.HWP_ANGLES in requested:
+                fields.add('hwp_angle')
+            if ReaderField.BORESIGHT_QUATERNIONS in requested:
+                fields |= {'boresight', 'timestamps'}
                 if config.wobble_correction:
-                    fields.extend(['wobble_params', 'det_info', 'hwp_angle'])
-            if ReaderField.DETECTOR_QUATERNIONS in requested_fields:
-                fields.append('focal_plane')
-            if ReaderField.NOISE_MODEL_FITS in requested_fields:
+                    fields |= {'wobble_params', 'det_info', 'hwp_angle'}
+            if ReaderField.DETECTOR_QUATERNIONS in requested:
+                fields.add('focal_plane')
+            if ReaderField.NOISE_MODEL_FITS in requested:
                 if config.noise_source == 'mapmaking':
-                    fields.append('preprocess.noiseQ_mapmaking')
+                    fields.add('preprocess.noiseQ_mapmaking')
                 else:
-                    fields.extend(['preprocess.noiseT', 'preprocess.noiseQ', 'preprocess.noiseU'])
+                    fields |= {'preprocess.noiseT', 'preprocess.noiseQ', 'preprocess.noiseU'}
 
-        data = AxisManager.load(filename, fields=fields)
+        data = AxisManager.load(filename, fields=None if fields is None else list(fields))
         return cls(data, config)
 
     @classmethod
@@ -295,13 +300,15 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_left_scan_mask(self) -> Bool[np.ndarray, ' samps']:
         try:
-            return np.asarray(self.data.flags.left_scan.mask(), dtype=bool)
+            # Stored per-detector (RangesMatrix), but scan direction is shared across the
+            # focal plane; collapse to the boresight 1D mask (cf. get_scanning_intervals).
+            return np.asarray(self.data.flags.left_scan.mask()[0], dtype=bool)
         except KeyError as e:
             raise RuntimeError('Scan mask unavailable in the observation') from e
 
     def get_right_scan_mask(self) -> Bool[np.ndarray, ' samps']:
         try:
-            return np.asarray(self.data.flags.right_scan.mask(), dtype=bool)
+            return np.asarray(self.data.flags.right_scan.mask()[0], dtype=bool)
         except KeyError as e:
             raise RuntimeError('Scan mask unavailable in the observation') from e
 
@@ -545,11 +552,12 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             sotodlib_config=self._sotodlib_config,
         )
 
-    def probe_shape(self) -> tuple[int, int]:
-        """Returns an upper bound on ``(n_detectors, n_samples)`` to size the padded buffers.
+    def probe_shape(self, fields: Collection[str]) -> tuple[int, ...]:
+        """Returns an upper bound on the variable padded-buffer dimensions for ``fields``.
 
-        Read from the init preprocess metadata via ``context.get_meta``: no TOD I/O and, crucially,
-        no process pipeline run (the pipeline mutates the signal and crashes when it is absent).
+        ``(n_detectors, n_samples)`` are read from the init preprocess metadata via
+        ``context.get_meta``: no TOD I/O and, crucially, no process pipeline run (the pipeline
+        mutates the signal and crashes when it is absent).
 
         The value is only an *upper bound*, not the exact post-pipeline shape:
 
@@ -557,6 +565,10 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
           but before the process pipeline, which only ever restricts detectors further.
         - ``n_samples`` is ``ceil(meta.samps.count / downsample)``. The process pipeline only trims
           samples (e.g. edge cuts) before downsampling, so this bounds the actual samps count.
+
+        ``n_intervals`` is the leading dimension of ``scanning_intervals`` (0 unless that field is
+        requested). It cannot be read from metadata alone, so when requested the observation is
+        loaded to count the scanning intervals.
         """
         _enable_preproc_context_cache()
         # call get_preprocess_context through the module so the cached get_preprocess_context is used
@@ -564,4 +576,6 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         _, context = pu.get_preprocess_context(self.init_config.as_posix())
         meta = context.get_meta(self.observation_id, dets=self.detector_selection)
         n_samps_ub = -(-meta.samps.count // self.downsample)  # ceil, matches downsample_obs
-        return meta.dets.count, n_samps_ub
+        needs_intervals = ReaderField.SCANNING_INTERVALS in fields
+        n_intervals = self.get_data().get_scanning_intervals().shape[0] if needs_intervals else 0
+        return meta.dets.count, n_samps_ub, n_intervals

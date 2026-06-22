@@ -31,6 +31,7 @@ FILES = ['test_obs.h5', 'test_obs_2.h5']
 OBS_IDS = ['obs_12345_sometel', 'obs_54321_someothertel']
 OBS_NDET = [2, 4]
 OBS_NSAMPLE = [1_000, 3_000]
+OBS_NINTERVAL = [8, 3]
 
 
 @pytest.fixture
@@ -49,7 +50,7 @@ def test_reader_all_fields(observations) -> None:
     reader = ObservationReader.from_observations(
         observations, requested_fields=AbstractGroundObservation.AVAILABLE_READER_FIELDS
     )
-    ndet_max, nsample_max = max(OBS_NDET), max(OBS_NSAMPLE)
+    ndet_max, nsample_max, nint_max = max(OBS_NDET), max(OBS_NSAMPLE), max(OBS_NINTERVAL)
 
     # check output structure is as expected
     assert reader.out_structure == {
@@ -66,6 +67,11 @@ def test_reader_all_fields(observations) -> None:
         'detector_quaternions': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
         'boresight_quaternions': jax.ShapeDtypeStruct((nsample_max, 4), dtype=jnp.float64),
         'noise_model_fits': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
+        'azimuth': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
+        'elevation': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
+        'left_scan_mask': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.bool),
+        'right_scan_mask': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.bool),
+        'scanning_intervals': jax.ShapeDtypeStruct((nint_max, 2), dtype=jnp.int64),
     }
 
     for i in range(len(FILES)):
@@ -75,7 +81,7 @@ def test_reader_all_fields(observations) -> None:
         assert as_structure(datum) == reader.out_structure
 
         # check padding consistency
-        ndet, nsample = OBS_NDET[i], OBS_NSAMPLE[i]
+        ndet, nsample, nint = OBS_NDET[i], OBS_NSAMPLE[i], OBS_NINTERVAL[i]
         assert tuple(padding['metadata'].uid) == ()
         assert tuple(padding['metadata'].telescope_uid) == ()
         assert tuple(padding['metadata'].detector_uids) == (ndet_max - ndet,)
@@ -87,12 +93,23 @@ def test_reader_all_fields(observations) -> None:
         assert tuple(padding['detector_quaternions']) == (ndet_max - ndet, 0)
         assert tuple(padding['boresight_quaternions']) == (nsample_max - nsample, 0)
         assert tuple(padding['noise_model_fits']) == (ndet_max - ndet, 0)
+        assert tuple(padding['azimuth']) == (nsample_max - nsample,)
+        assert tuple(padding['elevation']) == (nsample_max - nsample,)
+        assert tuple(padding['left_scan_mask']) == (nsample_max - nsample,)
+        assert tuple(padding['right_scan_mask']) == (nsample_max - nsample,)
+        assert tuple(padding['scanning_intervals']) == (nint_max - nint, 0)
 
 
 def test_probe_shape(observations) -> None:
     """The lazy observation sizes its buffers without (necessarily) a full load."""
     for i, obs in enumerate(observations):
-        assert obs.probe_shape() == (OBS_NDET[i], OBS_NSAMPLE[i])
+        # n_intervals stays 0 unless scanning_intervals is requested
+        assert obs.probe_shape([]) == (OBS_NDET[i], OBS_NSAMPLE[i], 0)
+        assert obs.probe_shape(['scanning_intervals']) == (
+            OBS_NDET[i],
+            OBS_NSAMPLE[i],
+            OBS_NINTERVAL[i],
+        )
 
 
 def test_lazy_preproc_observation(tmp_path) -> None:
@@ -107,8 +124,14 @@ def test_lazy_preproc_observation(tmp_path) -> None:
     assert data.get_tods().shape == (OBS_NDET[0], OBS_NSAMPLE[0])
 
     # probe_shape reads an upper bound straight from the archive metadata (no pipeline run);
-    # here the no-op pipeline neither cuts nor trims, so the bound matches the load exactly
-    assert lazy.probe_shape() == (OBS_NDET[0], OBS_NSAMPLE[0])
+    # here the no-op pipeline neither cuts nor trims, so the bound matches the load exactly.
+    # n_intervals is only populated (via a load) when scanning_intervals is requested.
+    assert lazy.probe_shape([]) == (OBS_NDET[0], OBS_NSAMPLE[0], 0)
+    assert lazy.probe_shape(['scanning_intervals']) == (
+        OBS_NDET[0],
+        OBS_NSAMPLE[0],
+        OBS_NINTERVAL[0],
+    )
 
 
 def test_lazy_preproc_probe_shape_downsample(tmp_path) -> None:
@@ -118,7 +141,7 @@ def test_lazy_preproc_probe_shape_downsample(tmp_path) -> None:
 
     # ceil(1000 / 3) == 334, the same count downsample_obs produces in the real load
     expected_nsamp = -(-OBS_NSAMPLE[0] // 3)
-    assert lazy.probe_shape() == (OBS_NDET[0], expected_nsamp)
+    assert lazy.probe_shape([]) == (OBS_NDET[0], expected_nsamp, 0)
     assert lazy.get_data().n_samples == expected_nsamp
 
 
@@ -155,8 +178,8 @@ def test_preproc_context_cache(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(Context, '__init__', counting_init)
 
     lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config)
-    lazy.probe_shape()
-    lazy.probe_shape()
+    lazy.probe_shape([])
+    lazy.probe_shape([])
     lazy.get_data()
     # three loads on this thread, but the Context (and its obsdb/obsfiledb opens) is built once
     assert n_builds == 1
@@ -257,7 +280,7 @@ def test_reader_all_fields_demod(demod_observations) -> None:
         demodulated=True,
         stokes=stokes,
     )
-    ndet_max, nsample_max = max(OBS_NDET), max(OBS_NSAMPLE)
+    ndet_max, nsample_max, nint_max = max(OBS_NDET), max(OBS_NSAMPLE), max(OBS_NINTERVAL)
     kls = Stokes.class_for(stokes)
 
     assert reader.out_structure == {
@@ -274,6 +297,11 @@ def test_reader_all_fields_demod(demod_observations) -> None:
         'detector_quaternions': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
         'boresight_quaternions': jax.ShapeDtypeStruct((nsample_max, 4), dtype=jnp.float64),
         'noise_model_fits': kls.structure_for((ndet_max, 4), jnp.float64),
+        'azimuth': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
+        'elevation': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
+        'left_scan_mask': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.bool),
+        'right_scan_mask': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.bool),
+        'scanning_intervals': jax.ShapeDtypeStruct((nint_max, 2), dtype=jnp.int64),
     }
 
     for i in range(len(FILES)):
@@ -281,7 +309,7 @@ def test_reader_all_fields_demod(demod_observations) -> None:
 
         assert as_structure(datum) == reader.out_structure
 
-        ndet, nsample = OBS_NDET[i], OBS_NSAMPLE[i]
+        ndet, nsample, nint = OBS_NDET[i], OBS_NSAMPLE[i], OBS_NINTERVAL[i]
         assert tuple(padding['metadata'].uid) == ()
         assert tuple(padding['metadata'].telescope_uid) == ()
         assert tuple(padding['metadata'].detector_uids) == (ndet_max - ndet,)
@@ -299,6 +327,11 @@ def test_reader_all_fields_demod(demod_observations) -> None:
             tuple(getattr(padding['noise_model_fits'], s)) == (ndet_max - ndet, 0)
             for s in stokes.lower()
         )
+        assert tuple(padding['azimuth']) == (nsample_max - nsample,)
+        assert tuple(padding['elevation']) == (nsample_max - nsample,)
+        assert tuple(padding['left_scan_mask']) == (nsample_max - nsample,)
+        assert tuple(padding['right_scan_mask']) == (nsample_max - nsample,)
+        assert tuple(padding['scanning_intervals']) == (nint_max - nint, 0)
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import functools
+import threading
 from collections.abc import Collection
 from pathlib import Path
 from typing import Any, Literal
@@ -36,6 +38,50 @@ from furax.obs.landscapes import (
     StokesLandscape,
 )
 from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
+
+# Per-process cache of (configs, context) from sotodlib's get_preprocess_context, keyed by
+# (config-file path, thread id). See _enable_preproc_context_cache.
+_PREPROC_CONTEXT_CACHE: dict[tuple[str, int], tuple[Any, Any]] = {}
+
+
+def _enable_preproc_context_cache() -> None:
+    """Memoize sotodlib's ``get_preprocess_context`` per process and thread.
+
+    ``multilayer_load_and_preprocess`` rebuilds the ``core.Context`` on every call and exposes
+    no hook to inject a prebuilt one, so each observation load reopens the obsdb/obsfiledb sqlite
+    indices. Wrapping ``get_preprocess_context`` with a cache builds the Context (and opens those
+    indices) once per config layer; ``multilayer`` calls it by module-global name, so the patch
+    takes effect without reimplementing the loader.
+
+    The cache is keyed by thread id as well as config path: sotodlib's sqlite connections are
+    thread-affine, and the reader runs the data load inside a ``jax.io_callback`` thread distinct
+    from the shape-probe phase. A shared Context would raise "SQLite objects created in a thread
+    can only be used in that same thread".
+    """
+    import sotodlib.preprocess.preprocess_util as pu
+
+    if getattr(pu.get_preprocess_context, '_furax_cached', False):
+        return
+    original = pu.get_preprocess_context
+
+    @functools.wraps(original)
+    def cached(configs: Any, context: Any = None) -> tuple[Any, Any]:
+        # Only memoize the hot path: a config given by path with no caller-supplied context.
+        # Keyed by config path (not context_file) so init/proc layers stay distinct even when
+        # they share a context — each keeps its own appended preprocess archive.
+        if context is not None or not isinstance(configs, str):
+            return original(configs, context)  # type: ignore[no-any-return]
+        key = (configs, threading.get_ident())
+        if key not in _PREPROC_CONTEXT_CACHE:
+            _PREPROC_CONTEXT_CACHE[key] = original(configs, context)
+        return _PREPROC_CONTEXT_CACHE[key]
+
+    cached._furax_cached = True  # type: ignore[attr-defined]
+    # Relies on sotodlib calling get_preprocess_context by its module-global name (which
+    # load_and_preprocess / multilayer_load_and_preprocess do): reassigning the module attribute
+    # is what makes the cache take effect. A future sotodlib that imports it as a local alias, or
+    # builds core.Context directly, would bypass this.
+    pu.get_preprocess_context = cached
 
 
 class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
@@ -165,6 +211,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         Raises:
             RuntimeError: If no detectors remain after cuts (nothing to load).
         """
+        _enable_preproc_context_cache()
         init_config = Path(init_config).as_posix()
         if proc_config is not None:
             aman = multilayer_load_and_preprocess(

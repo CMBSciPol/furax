@@ -126,6 +126,30 @@ def test_reader_with_preproc_observations(tmp_path) -> None:
         assert as_structure(datum) == reader.out_structure
 
 
+def test_preproc_context_cache(tmp_path, monkeypatch) -> None:
+    """Repeated loads on one thread build the sotodlib Context once (not per load)."""
+    from sotodlib.core import Context
+
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
+
+    n_builds = 0
+    original_init = Context.__init__
+
+    def counting_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal n_builds
+        n_builds += 1
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(Context, '__init__', counting_init)
+
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config)
+    lazy.probe_shape()
+    lazy.probe_shape()
+    lazy.get_data()
+    # three loads on this thread, but the Context (and its obsdb/obsfiledb opens) is built once
+    assert n_builds == 1
+
+
 def test_binned_mapmaker_over_preproc_db(tmp_path) -> None:
     """Bin a map straight from the preproc db, exercising the full streaming pipeline."""
     config_path = build_preproc_db(tmp_path, [FOLDER / f for f in FILES])

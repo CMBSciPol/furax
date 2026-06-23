@@ -68,6 +68,9 @@ def run(  # type: ignore[no-untyped-def]
     else:
         config = MapMakingConfig.load_yaml(mapmaking_config)
 
+    if config.double_precision:
+        jax.config.update('jax_enable_x64', True)
+
     observations = [LazySOTODLibObservation(f, sotodlib_config=config.sotodlib) for f in obsfiles]
     logger.info(f'found {len(observations)} observations')
 

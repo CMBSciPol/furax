@@ -41,15 +41,15 @@ def test_init(reader: FakeFileReader) -> None:
 
 
 def test_read(reader: FakeFileReader) -> None:
-    actual_data, padding = reader.read(0)
+    actual_data, padding, _ = reader.read(0)
     assert_array_equal(actual_data, jnp.array([1, 1, 0, 0, 0, 0, 0, 0], np.float32))
     assert_array_equal(padding, jnp.array(6, jnp.int64))
 
-    actual_data, padding = reader.read(1)
+    actual_data, padding, _ = reader.read(1)
     assert_array_equal(actual_data, jnp.array([2, 2, 2, 2, 0, 0, 0, 0], np.float32))
     assert_array_equal(padding, jnp.array(4, jnp.int64))
 
-    actual_data, padding = reader.read(2)
+    actual_data, padding, _ = reader.read(2)
     assert_array_equal(actual_data, jnp.array([5, 5, 5, 5, 5, 5, 5, 5], np.float32))
     assert_array_equal(padding, jnp.array(0, jnp.int64))
 
@@ -74,10 +74,10 @@ def test_read_pads_from_actual_shape() -> None:
     reader = OverProbeReader([4, 6], [2, 5])
     assert reader.out_structure == jax.ShapeDtypeStruct((6,), jnp.float32)
 
-    data, _ = reader.read(0)
+    data, _, _ = reader.read(0)
     assert_array_equal(data, jnp.array([1, 1, 0, 0, 0, 0], np.float32))
 
-    data, _ = reader.read(1)
+    data, _, _ = reader.read(1)
     assert_array_equal(data, jnp.array([1, 1, 1, 1, 1, 0], np.float32))
 
 
@@ -86,6 +86,42 @@ def test_read_raises_when_probe_under_estimates() -> None:
     reader = OverProbeReader([2, 3], [5, 1])
     with pytest.raises(Exception, match='under-estimated'):
         reader.read(0)
+
+
+@register_static
+class FillerReader(AbstractReader):
+    """Reader that raises on flagged items and substitutes finite filler."""
+
+    def _read_structure_impure(self, size: int, fail: bool) -> jax.ShapeDtypeStruct:
+        return jax.ShapeDtypeStruct((size,), jnp.float32)
+
+    def _read_data_impure(self, size: int, fail: bool) -> Any:
+        if fail:
+            raise RuntimeError('boom')
+        return np.full(size, 1.0, jnp.float32)
+
+    def _failure_filler(self) -> Any:
+        return np.full(self.out_structure.shape, -1.0, jnp.float32)
+
+
+def test_read_returns_valid_flag_and_filler_on_failure() -> None:
+    reader = FillerReader([4, 4], [False, True])
+
+    data, _, valid = reader.read(0)
+    assert bool(valid) is True
+    assert_array_equal(data, jnp.ones(4, np.float32))
+    assert reader.failed_indices == []
+
+    data, _, valid = reader.read(1)
+    assert bool(valid) is False
+    assert_array_equal(data, jnp.full(4, -1.0, np.float32))  # filler
+    assert reader.failed_indices == [1]
+
+
+def test_default_reader_has_no_filler() -> None:
+    # Readers that do not override _failure_filler keep the original crash-on-failure behavior.
+    reader = OverProbeReader([4], [4])
+    assert reader._failure_filler() is None
 
 
 def test_buffers() -> None:

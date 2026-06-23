@@ -530,6 +530,10 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         self.downsample = downsample
         self._sotodlib_config = sotodlib_config
 
+    @property
+    def name(self) -> str:
+        return self.observation_id
+
     def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
         # A preproc load cannot be field-subset: the full observation is always returned,
         # which satisfies any requested fields. The cheap shape path lives in probe_shape.

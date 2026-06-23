@@ -57,6 +57,9 @@ class MapMakingResults:
     noise_fits: Float[Array, '...'] | None = None
     """The fitted noise PSD parameters"""
 
+    failed_observations: list[str] | None = None
+    """Names of observations that failed to load and were excluded from the maps"""
+
     def save(self, out_dir: str | Path) -> None:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -69,6 +72,9 @@ class MapMakingResults:
         if self.solver_stats is not None:
             with open(out_dir / 'solver_stats.json', 'w') as f:
                 json.dump(self.solver_stats, f, indent=2, cls=_JsonEncoder)
+        if self.failed_observations:
+            with open(out_dir / 'failed_observations.json', 'w') as f:
+                json.dump(self.failed_observations, f, indent=2)
 
     @classmethod
     def load(

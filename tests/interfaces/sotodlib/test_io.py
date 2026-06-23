@@ -69,7 +69,7 @@ def test_reader_all_fields(observations) -> None:
     }
 
     for i in range(len(FILES)):
-        datum, padding = reader.read(i)
+        datum, padding, _ = reader.read(i)
 
         # check structure
         assert as_structure(datum) == reader.out_structure
@@ -134,7 +134,7 @@ def test_reader_with_preproc_observations(tmp_path) -> None:
     assert reader.out_structure['sample_data'].shape == (ndet_max, nsample_max)
 
     for i in range(len(FILES)):
-        datum, _ = reader.read(i)
+        datum, _, _ = reader.read(i)
         assert as_structure(datum) == reader.out_structure
 
 
@@ -277,7 +277,7 @@ def test_reader_all_fields_demod(demod_observations) -> None:
     }
 
     for i in range(len(FILES)):
-        datum, padding = reader.read(i)
+        datum, padding, _ = reader.read(i)
 
         assert as_structure(datum) == reader.out_structure
 

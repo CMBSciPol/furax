@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 from typing import Literal
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
@@ -31,7 +32,11 @@ from furax.mapmaking.mapmaker import MLMapmaker, get_obs_distribution_to_process
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import Stokes, ValidStokesType
-from tests.mapmaking.helpers import FakeGroundObservation, FakeLazyObservation
+from tests.mapmaking.helpers import (
+    FailingLazyObservation,
+    FakeGroundObservation,
+    FakeLazyObservation,
+)
 
 
 class TestObsDistribution:
@@ -214,6 +219,23 @@ class TestFakeObsMapMaker:
         assert num_steps == 1, (
             f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'
         )
+
+    def test_failed_observation_excluded(self, stokes, demodulated):
+        # One good observation + one whose load fails: the run must complete, exclude the failed
+        # observation (contributing nothing, no NaN), and report it.
+        config = _config('healpix', stokes, demodulated=demodulated)
+        mixed = [FakeLazyObservation(seed=0), FailingLazyObservation(seed=1)]
+        results = MultiObservationMapMaker(mixed, config=config).run()
+
+        assert results.failed_observations == ['failing_obs']
+        assert all(jnp.all(jnp.isfinite(x)) for x in jax.tree.leaves(results.map))
+        assert jnp.all(jnp.isfinite(results.icov))
+
+        # the failed observation contributes nothing -> identical to mapping only the good one
+        good_only = [FakeLazyObservation(seed=0)]
+        expected = MultiObservationMapMaker(good_only, config=config).run()
+        assert eqx.tree_equal(results.hit_map, expected.hit_map)
+        assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 
 
 @pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])

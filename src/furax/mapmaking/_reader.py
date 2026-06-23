@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Collection, Sequence
 from typing import Any, Generic, Self, TypeVar
 
@@ -19,6 +20,8 @@ from ._observation import (
     HashedObservationMetadata,
     ReaderField,
 )
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 
@@ -52,6 +55,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         dtype: DTypeLike = jnp.float64,
         common_keywords: dict[str, Any] | None = None,
         shapes: list[tuple[int, ...]] | None = None,
+        known_failures: Sequence[int] | None = None,
         **keywords: Sequence[Any],
     ) -> None:
         # Set before super().__init__ so the structure/reader builders can use them
@@ -65,7 +69,13 @@ class ObservationReader(AbstractReader, Generic[T]):
         if shapes is not None:
             fields = (common_keywords or {})['data_field_names']
             structures = [self._get_data_field_structures_for(shape, fields) for shape in shapes]
-        super().__init__(*args, common_keywords=common_keywords, structures=structures, **keywords)
+        super().__init__(
+            *args,
+            common_keywords=common_keywords,
+            structures=structures,
+            known_failures=known_failures,
+            **keywords,
+        )
 
     @classmethod
     def from_observations(
@@ -103,8 +113,9 @@ class ObservationReader(AbstractReader, Generic[T]):
         # observation on this process to infer its structure. In distributed mode, gather the
         # per-observation shapes from the local subset and all-gather them (see ``_gather_shapes``).
         shapes = None
+        known_failures = None
         if read_indices is not None:
-            shapes = cls._gather_shapes(observations, read_indices)
+            shapes, known_failures = cls._gather_shapes(observations, read_indices)
         return cls(
             observations,
             common_keywords={'data_field_names': fields},
@@ -112,6 +123,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             stokes=stokes,
             dtype=dtype,
             shapes=shapes,
+            known_failures=known_failures,
         )
 
     @staticmethod
@@ -136,16 +148,29 @@ class ObservationReader(AbstractReader, Generic[T]):
     def _gather_shapes(
         observations: Sequence[AbstractLazyObservation[T]],
         read_indices: Sequence[int],
-    ) -> list[tuple[int, ...]]:
+    ) -> tuple[list[tuple[int, ...]], list[int]]:
         """Gather every observation's ``probe_shape()`` tuple in distributed mode.
 
         Each process probes only its ``read_indices`` subset; an all-gather then makes every rank
         agree on the full shape list, so padding / out_structure / etc. stay consistent.
+
+        A probe that raises must not crash the rank (it would deadlock the others at the all-gather):
+        the observation is given a dummy ``(1, 1)`` shape so it is excluded from the buffer-sizing
+        max, and its (local) index is returned so the reader skips loading it and gates it out.
+
+        Returns ``(shapes, failed_indices)`` where ``failed_indices`` are this process's
+        probe-failed observation indices.
         """
+        failed: list[int] = []
 
         def probe(idx: int) -> tuple[int, tuple[int, ...]]:
-            # retain observation index so we can dedup after gathering
-            return idx, observations[idx].probe_shape()
+            try:
+                # retain observation index so we can dedup after gathering
+                return idx, observations[idx].probe_shape()
+            except Exception:
+                logger.exception('probe of observation %d failed', idx)
+                failed.append(idx)
+                return idx, (1, 1)
 
         local = [probe(idx) for idx in read_indices]
         width = 1 + len(local[0][1])  # each row is (idx, *shape)
@@ -153,7 +178,8 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         # Drop potential duplicates (from padding) and sort by obs index
         all_rows = mhu.process_allgather(local_rows).reshape(-1, width)
-        return [tuple(row[1:]) for row in np.unique(all_rows, axis=0)]
+        shapes = [tuple(row[1:]) for row in np.unique(all_rows, axis=0)]
+        return shapes, failed
 
     def _pad(
         self, data: PyTree[np.ndarray], padding: PyTree[tuple[int, ...]]
@@ -311,6 +337,47 @@ class ObservationReader(AbstractReader, Generic[T]):
             ),
             ReaderField.NOISE_MODEL_FITS: get_noise_model_fits,
         }
+
+    def _failure_filler(self) -> dict[str, Any]:
+        """Finite, ``out_structure``-shaped data for an observation that could not be read.
+
+        The values are finite and non-degenerate (identity quaternions, a strictly increasing time
+        vector, a broadband signal, unit white-noise fits) so every operator built from this
+        observation stays finite. The observation is gated out (all-False masker), so these values
+        never enter the maps; finiteness only matters so the gated contribution is ``0`` and not
+        ``NaN``.
+        """
+        rng = np.random.default_rng(0)
+
+        def identity_quaternions(s: jax.ShapeDtypeStruct) -> np.ndarray:
+            quats = np.zeros(s.shape, s.dtype)
+            quats[..., 0] = 1.0  # (1, 0, 0, 0)
+            return quats
+
+        def unit_noise_fit(s: jax.ShapeDtypeStruct) -> np.ndarray:
+            fit = np.zeros(s.shape, s.dtype)  # columns: white_noise, alpha, fknee, f0
+            fit[..., 0] = 1.0  # unit white noise so the inverse noise covariance stays finite
+            fit[..., 2] = 1.0
+            fit[..., 3] = 0.1
+            return fit
+
+        def zeros(s: jax.ShapeDtypeStruct) -> np.ndarray:
+            return np.zeros(s.shape, s.dtype)
+
+        def fill(field: str, struct: PyTree[jax.ShapeDtypeStruct]) -> Any:
+            if field == ReaderField.TIMESTAMPS:
+                return np.arange(struct.shape[0], dtype=struct.dtype)  # strictly increasing
+            if field in (ReaderField.DETECTOR_QUATERNIONS, ReaderField.BORESIGHT_QUATERNIONS):
+                return identity_quaternions(struct)
+            if field == ReaderField.SAMPLE_DATA:
+                # broadband so a fitted noise model has non-zero white-noise level
+                return jax.tree.map(lambda s: rng.standard_normal(s.shape).astype(s.dtype), struct)
+            if field == ReaderField.NOISE_MODEL_FITS:
+                return jax.tree.map(unit_noise_fit, struct)
+            # metadata, masks (all-False), hwp angles: plain zeros per leaf
+            return jax.tree.map(zeros, struct)
+
+        return {field: fill(field, struct) for field, struct in self.out_structure.items()}
 
     def _read_structure_impure(
         self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]

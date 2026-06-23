@@ -161,6 +161,25 @@ class FakeLazyObservation(AbstractLazyObservation[None]):
         return FakeObservation(**self._kwargs)
 
 
+class FailingLazyObservation(FakeLazyObservation):
+    """Lazy obs whose ``get_data`` always raises (a deterministic preprocessing failure).
+
+    The shape probe still succeeds (failures are mainly in the full load), so the mapmaker sizes
+    its buffers normally and must gate this observation out at read time.
+    """
+
+    @property
+    def name(self) -> str:
+        return 'failing_obs'
+
+    def probe_shape(self) -> tuple[int, int]:
+        obs = FakeObservation(**self._kwargs)
+        return len(obs.detectors), obs.n_samples
+
+    def get_data(self, requested_fields=None) -> FakeObservation:
+        raise RuntimeError('simulated preprocessing failure')
+
+
 class FakeGroundObservation(FakeObservation, AbstractGroundObservation[None]):
     """``FakeObservation`` extended with the ground getters the single-observation
     ``MapMaker`` template path needs (azimuth/elevation, scanning intervals, scan masks),

@@ -47,7 +47,7 @@ def test_reader_all_fields(observations) -> None:
     }
 
     for i in range(len(FILES)):
-        datum, padding = reader.read(i)
+        datum, padding, _ = reader.read(i)
 
         # check structure
         assert as_structure(datum) == reader.out_structure

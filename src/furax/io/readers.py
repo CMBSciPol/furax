@@ -1,3 +1,4 @@
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -8,6 +9,8 @@ from jax import Array
 from jax.experimental import io_callback
 from jax.tree_util import register_static
 from jaxtyping import PyTree
+
+logger = logging.getLogger(__name__)
 
 
 @register_static
@@ -33,6 +36,7 @@ class AbstractReader(ABC):
         *args: Sequence[Any],
         common_keywords: Mapping[str, Any] | None = None,
         structures: list[PyTree[jax.ShapeDtypeStruct]] | None = None,
+        known_failures: Sequence[int] | None = None,
         **keywords: Sequence[Any],
     ) -> None:
         """
@@ -41,11 +45,15 @@ class AbstractReader(ABC):
             common_keywords: Keyword arguments shared by all data items.
             structures: Pre-computed per-item output structures.
                 When provided, constructor skips all I/O and uses them directly.
+            known_failures: Item indices known to be unreadable up front (e.g. their shape probe
+                failed); :meth:`read` returns filler for them without attempting a load.
             **keywords: One list per keyword argument to the read function, one element per data item.
         """
         self.args, self.keywords = self._normalize_args_keywords(args, keywords)
         self.count = len(self.args)
         self.common_keywords = common_keywords or {}
+        self.known_failures = set(known_failures or ())
+        self.failed_indices = sorted(self.known_failures)
         if structures is None:
             structures = self._read_structures()
         elif len(structures) != self.count:
@@ -178,36 +186,56 @@ class AbstractReader(ABC):
 
         return jax.tree.map(leaf_padding, self.out_structure, data)
 
+    def _failure_filler(self) -> PyTree[np.ndarray] | None:
+        """Finite, ``out_structure``-shaped data to substitute when a read fails.
+
+        Subclasses override to return finite filler so a failing item degrades to a valid-shaped
+        result flagged invalid, instead of crashing.
+        """
+        return None
+
     @jax.jit
-    def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:
+    def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array], Array]:
         """Read the data at the given index.
 
-        Args:
-            data_index: The index of the data to read.
-
         Returns:
-            A pair of PyTrees, the first one containing the data and the second one containing the
-            padding. The structure of the data is the same as the structure of the padding.
+            A triple ``(data, padding, valid)``: the padded data pytree (matching
+            ``out_structure``), the padding pytree, and a scalar boolean that is ``False`` when the
+            read failed.
         """
 
-        def callback(i: int) -> PyTree[np.ndarray]:
-            args = self.args[i]
-            keywords = self.keywords[i]
-            data = self._read_data_impure(*args, **keywords, **self.common_keywords)
+        def callback(i_arr: Array) -> tuple[PyTree[np.ndarray], np.ndarray]:
+            i = int(i_arr)  # io_callback passes the index as a (host) array
+            if i in self.known_failures:
+                # skip load entirely
+                return self._failure_filler(), np.array(False)
+            try:
+                data = self._read_data_impure(
+                    *self.args[i], **self.keywords[i], **self.common_keywords
+                )
+            except Exception:
+                filler = self._failure_filler()
+                if filler is None:
+                    # no filler override -> crash
+                    raise
+                if i not in self.failed_indices:
+                    self.failed_indices.append(i)
+                logger.exception('read of item %d failed; substituting filler data', i)
+                return filler, np.array(False)
             # Pad from the actual loaded shape (not the precomputed, probe-based padding): the
             # io_callback contract requires the result to match ``out_structure`` exactly, and
             # ``probe_shape`` is only an upper bound, so the load may be smaller than probed.
-            padding = self._actual_padding(data)
-            return self._pad(data, padding)
+            return self._pad(data, self._actual_padding(data)), np.array(True)
 
-        data = jax.lax.switch(
+        result_shape = (self.out_structure, jax.ShapeDtypeStruct((), bool))
+        data, valid = jax.lax.switch(
             data_index,
-            [lambda i=i: io_callback(callback, self.out_structure, i) for i in range(self.count)],
+            [lambda i=i: io_callback(callback, result_shape, i) for i in range(self.count)],
         )
         padding = jax.lax.switch(
             data_index, [lambda i=i: self.paddings[i] for i in range(self.count)]
         )
-        return data, padding
+        return data, padding, valid
 
     def _pad(self, data: PyTree[Any], padding: PyTree[tuple[int, ...]]) -> PyTree[np.ndarray]:
         """Pad the host (numpy) data to the common structure.

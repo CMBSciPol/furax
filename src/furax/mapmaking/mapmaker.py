@@ -1,7 +1,7 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Collection, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from functools import cached_property
 from logging import Logger
 from math import prod
@@ -33,7 +33,12 @@ from furax import (
     OperatorTag,
     SymmetricBandToeplitzOperator,
 )
-from furax.core import BlockDiagonalOperator, BlockRowOperator, CompositionOperator, IndexOperator
+from furax.core import (
+    BlockDiagonalOperator,
+    BlockRowOperator,
+    CompositionOperator,
+    IndexOperator,
+)
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -86,6 +91,10 @@ class MultiObservationMapMaker(Generic[T]):
             _static_landscape(self.config.landscape, self.config.dtype)
             or self._scan_wcs_footprint()
         )
+        # Build the reader once, up front: it only probes shapes (no mesh context needed)
+        rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
+        model_fields = ObservationModel.required_reader_fields(self.config)
+        self.reader = self.get_reader(model_fields | rhs_fields)
 
     def _check_config(self) -> None:
         """Validate and adjust config for method-specific compatibility."""
@@ -194,6 +203,13 @@ class MultiObservationMapMaker(Generic[T]):
             jax.block_until_ready((hits, rhs))
             logger_info('Accumulated hit map and RHS vector')
 
+            failed_observations = self._collect_failed_observations()
+            if failed_observations:
+                logger_info(
+                    f'{len(failed_observations)} observation(s) failed to and were excluded:\n'
+                    f'{failed_observations}'
+                )
+
             # System operator (full/diagonal)
             A = self.get_system_operator(model)
             diag_A = A if self.config.binned else self.get_system_operator(model, diag=True)
@@ -237,7 +253,21 @@ class MultiObservationMapMaker(Generic[T]):
             hit_map=hits,
             solver_stats=solution.stats,
             landscape=self.landscape,
+            failed_observations=failed_observations,
         )
+
+    def _collect_failed_observations(self) -> list[str]:
+        """Names of observations that failed to load, gathered across all processes.
+
+        Each process records the local indices it could not read (``reader.failed_indices``); a
+        boolean mask over all observations is all-gathered and OR-reduced so every process reports
+        the same global set.
+        """
+        local = np.zeros(self.n_observations, dtype=bool)
+        local[self.reader.failed_indices] = True
+        gathered = np.asarray(mhu.process_allgather(local)).reshape(-1, self.n_observations)
+        failed = np.flatnonzero(gathered.any(axis=0))
+        return [self.observations[int(i)].name for i in failed]
 
     def build_model_and_accumulate(
         self,
@@ -250,9 +280,11 @@ class MultiObservationMapMaker(Generic[T]):
         accumulate the RHS). The hit map and RHS are reduced across all processes with ``psum``
         inside the kernel.
 
-        Padding observations (added so every device carries the same workload) contribute nothing:
-        their hit/RHS contributions are gated out by ``is_real``, and their masker is zeroed in the
-        returned model so they drop out of the CG system operator.
+        Observations that contribute nothing -- padding (added so every device carries the same
+        workload) and failed loads (the preprocessing pipeline raised) -- are gated out by zeroing
+        their masker inside the kernel, so they drop out of the hit map, the RHS, and the CG system
+        operator alike. Failed loads are reported afterwards from ``self.reader.failed_indices``
+        (see ``make_maps``).
 
         Must run under ``jax.set_mesh(self.mesh)``.
 
@@ -261,10 +293,7 @@ class MultiObservationMapMaker(Generic[T]):
         """
         config = self.config
         landscape = self.landscape
-        # One reader for the union of every field the model build and the RHS need
-        data_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
-        fields = ObservationModel.required_reader_fields(config) | data_fields
-        reader = self.get_reader(fields)
+        reader = self.reader
         fill_gaps = config.gaps.fill and not config.binned
         correlation_length = config.weighting.correlation_length if fill_gaps else None
         gap_filling_params = config.gaps.fill_options if fill_gaps else None
@@ -278,19 +307,27 @@ class MultiObservationMapMaker(Generic[T]):
             def step(carry, args):  # type: ignore[no-untyped-def]
                 hits_acc, rhs_acc = carry
                 i, real = args
-                data, padding = reader.read(i)
+                data, padding, valid = reader.read(i)
                 obs = ObservationModel.create(data, padding, config, landscape)
 
-                # Hit map contribution (gated to zero for padding observations).
+                # Gate the masker once: padding (`real` False) and failed loads (`valid` False) get
+                # an all-False mask, so the observation contributes nothing to the hit map, the RHS,
+                # or the system operator A.
+                Z = obs.masker
+                effective = real & valid
+                gated_mask = jax.tree.map(lambda m: m & effective, Z.to_boolean_mask())
+                obs.masker = MaskOperator.from_boolean_mask(gated_mask, in_structure=Z.in_structure)
+
+                # Hit map contribution.
                 assert isinstance(obs.H, CompositionOperator)  # mypy
                 pointing = obs.H.operands[-1]
                 assert isinstance(pointing, PointingOperator)  # mypy
                 pointing_i = pointing.as_stokes_i(interpolate=False)
                 ones = furax.tree.ones_like(obs.masker.in_structure)
                 masked = jax.tree.leaves(obs.masker(ones))[0]
-                hits_i = real * jnp.int64(pointing_i.T(StokesI(masked)).i)
+                hits_i = jnp.int64(pointing_i.T(StokesI(masked)).i)
 
-                # RHS contribution (optionally gap-filled, gated to zero for padding).
+                # RHS contribution (optionally gap-filled).
                 tod = data[ReaderField.SAMPLE_DATA]
                 if fill_gaps:
                     if correlation_length is None or gap_filling_params is None:
@@ -307,7 +344,7 @@ class MultiObservationMapMaker(Generic[T]):
                         rtol=gap_filling_params.rtol,
                     )
                     tod = gap_fill(jax.random.key(gap_filling_params.seed), tod)
-                rhs_i = jax.tree.map(lambda x: real * x, obs.H.T(obs.masker(obs.W(tod))))
+                rhs_i = obs.H.T(obs.masker(obs.W(tod)))
 
                 return (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i)), obs
 
@@ -317,8 +354,6 @@ class MultiObservationMapMaker(Generic[T]):
             return model, jax.lax.psum(hits, axis), jax.lax.psum(rhs, axis)
 
         model, hits, rhs = kernel(indices, is_real)
-        # Drop padding observations from the system operator by zeroing their masker.
-        model = _mask_out_padding(model, is_real)
         return model, hits, rhs
 
     def _real_observation_mask(self) -> np.ndarray:
@@ -387,23 +422,6 @@ class MultiObservationMapMaker(Generic[T]):
         # create the final shape and WCS objects for this covering box
         shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
         return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
-
-
-def _mask_out_padding(model: ObservationModel, is_real: Array) -> ObservationModel:
-    """Zero the masker of padding observations so they contribute nothing to the system operator.
-
-    ``is_real`` is a per-observation boolean (True for real observations, False for padding):
-    real observations keep their existing mask, padding observations get an all-False mask.
-    """
-
-    def gate(mask: Array) -> Array:
-        # each mask leaf is (obs, *tod); reshape is_real to (obs, 1, ...) so & broadcasts
-        return mask & is_real.reshape((-1,) + (1,) * (mask.ndim - 1))
-
-    Z = model.masker
-    new_mask = jax.tree.map(gate, Z.to_boolean_mask())
-    new_Z = MaskOperator.from_boolean_mask(new_mask, in_structure=Z.in_structure)
-    return replace(model, masker=new_Z)
 
 
 def get_obs_distribution_to_process(

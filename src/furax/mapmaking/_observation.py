@@ -381,6 +381,11 @@ class AbstractLazyObservation(ABC, Generic[T]):
                 Otherwise, loads whatever is needed to satisfy the request.
         """
 
+    @property
+    def name(self) -> str:
+        """Human-readable identifier, used e.g. to report observations that failed to load."""
+        return type(self).__name__
+
     def probe_shape(self) -> tuple[int, int]:
         """Returns ``(n_detectors, n_samples)`` to size the padded buffers.
 
@@ -398,6 +403,10 @@ class FileBackedLazyObservation(AbstractLazyObservation[T]):
         self.file = Path(filename)
         if not self.file.exists():
             raise FileNotFoundError(f'Observation file {self.file} does not exist')
+
+    @property
+    def name(self) -> str:
+        return self.file.stem
 
     def get_data(self, requested_fields: Collection[str] | None = None) -> AbstractObservation[T]:
         return self.interface_class.from_file(self.file, requested_fields)

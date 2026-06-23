@@ -26,6 +26,23 @@ from furax.tree import zeros_like
 from .utils import register_dataclass_with_keys
 
 
+def structure_equal(a: PyTree[jax.ShapeDtypeStruct], b: PyTree[jax.ShapeDtypeStruct]) -> bool:
+    """Compare operator structures by tree shape, array shape and dtype, ignoring sharding.
+
+    Sharding is a runtime data-layout concern, not part of an operator's logical structure.
+    """
+    a_leaves, a_treedef = jax.tree.flatten(a)
+    b_leaves, b_treedef = jax.tree.flatten(b)
+    # equal treedefs guarantee equal leaf counts, so the zip below is aligned
+    return (
+        a_treedef == b_treedef  # type: ignore[operator]
+        and all(
+            x.shape == y.shape and x.dtype == y.dtype
+            for x, y in zip(a_leaves, b_leaves, strict=True)
+        )
+    )
+
+
 class OperatorTag(IntFlag):
     """Flags representing properties of linear operators."""
 
@@ -124,7 +141,7 @@ class AbstractLinearOperator(ABC):
     def __matmul__(self, other: Any) -> 'AbstractLinearOperator':
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
-        if self.in_structure != other.out_structure:
+        if not structure_equal(self.in_structure, other.out_structure):
             msg = (
                 f'Incompatible linear operator structures: '
                 f'self.in_structure={self.in_structure}, '
@@ -142,9 +159,9 @@ class AbstractLinearOperator(ABC):
     def __add__(self, other: Any) -> 'AbstractLinearOperator':
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
-        if self.in_structure != other.in_structure:
+        if not structure_equal(self.in_structure, other.in_structure):
             raise ValueError('Incompatible linear operator input structures')
-        if self.out_structure != other.out_structure:
+        if not structure_equal(self.out_structure, other.out_structure):
             raise ValueError('Incompatible linear operator output structures')
         if isinstance(other, AdditionOperator):
             return NotImplemented
@@ -154,9 +171,9 @@ class AbstractLinearOperator(ABC):
     def __sub__(self, other: Any) -> 'AbstractLinearOperator':
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
-        if self.in_structure != other.in_structure:
+        if not structure_equal(self.in_structure, other.in_structure):
             raise ValueError('Incompatible linear operator input structures')
-        if self.out_structure != other.out_structure:
+        if not structure_equal(self.out_structure, other.out_structure):
             raise ValueError('Incompatible linear operator output structures')
 
         result: AbstractLinearOperator = self + (-other)
@@ -378,9 +395,9 @@ class AdditionOperator(AbstractLinearOperator):
     def __add__(self, other: AbstractLinearOperator) -> 'AdditionOperator':
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
-        if self.in_structure != other.in_structure:
+        if not structure_equal(self.in_structure, other.in_structure):
             raise ValueError('Incompatible linear operator input structures')
-        if self.out_structure != other.out_structure:
+        if not structure_equal(self.out_structure, other.out_structure):
             raise ValueError('Incompatible linear operator output structures')
         if isinstance(other, AdditionOperator):
             operands = other.operand_leaves
@@ -391,9 +408,9 @@ class AdditionOperator(AbstractLinearOperator):
     def __radd__(self, other: AbstractLinearOperator) -> 'AdditionOperator':
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
-        if self.in_structure != other.in_structure:
+        if not structure_equal(self.in_structure, other.in_structure):
             raise ValueError('Incompatible linear operator input structures')
-        if self.out_structure != other.out_structure:
+        if not structure_equal(self.out_structure, other.out_structure):
             raise ValueError('Incompatible linear operator output structures')
         return AdditionOperator([other] + self.operand_leaves)
 
@@ -444,8 +461,8 @@ class CompositionOperator(AbstractLinearOperator):
     # Tag propagation properties
     @property
     def is_square(self) -> bool:
-        result: bool = super().is_square or (
-            self.operands[0].out_structure == self.operands[-1].in_structure
+        result: bool = super().is_square or structure_equal(
+            self.operands[0].out_structure, self.operands[-1].in_structure
         )
         return result
 
@@ -464,7 +481,7 @@ class CompositionOperator(AbstractLinearOperator):
     def __matmul__(self, other: AbstractLinearOperator) -> 'CompositionOperator':
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
-        if self.in_structure != other.out_structure:
+        if not structure_equal(self.in_structure, other.out_structure):
             msg = (
                 f'Incompatible linear operator structures: '
                 f'self.in_structure={self.in_structure}, '
@@ -480,7 +497,7 @@ class CompositionOperator(AbstractLinearOperator):
     def __rmatmul__(self, other: AbstractLinearOperator) -> 'CompositionOperator':
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
-        if self.out_structure != other.in_structure:
+        if not structure_equal(self.out_structure, other.in_structure):
             msg = (
                 f'Incompatible linear operator structures: '
                 f'self.out_structure={self.out_structure}, '
@@ -568,7 +585,7 @@ class InverseOperator(AbstractLazyInverseOperator):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.operator.in_structure != self.operator.out_structure:
+        if not structure_equal(self.operator.in_structure, self.operator.out_structure):
             raise ValueError('Only square operators can be inverted.')
         object.__setattr__(self, 'operator', self.operator.reduce())
 

@@ -11,7 +11,12 @@ from jax.tree_util import PyTreeDef
 from jaxtyping import Inexact, PyTree
 
 from ..tree import add
-from ._base import AbstractLinearOperator, AdditionOperator, IdentityOperator
+from ._base import (
+    AbstractLinearOperator,
+    AdditionOperator,
+    IdentityOperator,
+    structure_equal,
+)
 from .rules import AbstractCompositionRule
 
 
@@ -80,7 +85,7 @@ class BlockRowOperator(AbstractBlockOperator):
         invalid_structures = [
             structure
             for operator in operators[1:]
-            if (structure := operator.out_structure) != ref_structure
+            if not structure_equal((structure := operator.out_structure), ref_structure)
         ]
         if len(invalid_structures) > 0:
             structures_as_str = '\n - '.join(str(structure) for structure in invalid_structures)
@@ -162,7 +167,9 @@ class BlockDiagonalOperator(AbstractBlockOperator):
 
     def inverse(self) -> AbstractLinearOperator:
         # if some of the blocks are not square, let's defer to the default inverse method
-        if not jax.tree.all(self._tree_map(lambda op: op.in_structure == op.out_structure)):
+        if not jax.tree.all(
+            self._tree_map(lambda op: structure_equal(op.in_structure, op.out_structure))
+        ):
             return super().inverse()
         return BlockDiagonalOperator(self._tree_map(lambda op: op.I))
 
@@ -224,7 +231,7 @@ class BlockColumnOperator(AbstractBlockOperator):
         invalid_structures = [
             structure
             for operator in operators[1:]
-            if (structure := operator.in_structure) != ref_structure
+            if not structure_equal((structure := operator.in_structure), ref_structure)
         ]
         if len(invalid_structures) > 0:
             structures_as_str = '\n - '.join(str(structure) for structure in invalid_structures)

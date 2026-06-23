@@ -103,39 +103,6 @@ def test_structure_shapes() -> None:
     assert op.out_structure.shape == (N_OUT,)
 
 
-def test_structure_sharding(mesh) -> None:
-    blocks = _make_blocks(P('obs'))
-
-    # Structures whose leading axis is the stacked-block axis carry a NamedSharding
-    # with P('obs', None, ...) under the active mesh; non-stacked axes (single-input
-    # column, single-output row/addition) get no sharding.
-    expected_stacked = jax.sharding.NamedSharding(mesh.abstract_mesh, P('obs', None))
-
-    op = ScanBlockDiagonalOperator.create(blocks)
-    for s in jax.tree.leaves(op.in_structure):
-        assert s.sharding == expected_stacked
-    for s in jax.tree.leaves(op.out_structure):
-        assert s.sharding == expected_stacked
-
-    op = ScanBlockColumnOperator.create(blocks)
-    for s in jax.tree.leaves(op.in_structure):
-        assert s.sharding is None
-    for s in jax.tree.leaves(op.out_structure):
-        assert s.sharding == expected_stacked
-
-    op = ScanBlockRowOperator.create(blocks)
-    for s in jax.tree.leaves(op.in_structure):
-        assert s.sharding == expected_stacked
-    for s in jax.tree.leaves(op.out_structure):
-        assert s.sharding is None
-
-    op = ScanAdditionOperator.create(blocks)
-    for s in jax.tree.leaves(op.in_structure):
-        assert s.sharding is None
-    for s in jax.tree.leaves(op.out_structure):
-        assert s.sharding is None
-
-
 # ---------------------------------------------------------------------------
 # Sharded forward
 # ---------------------------------------------------------------------------

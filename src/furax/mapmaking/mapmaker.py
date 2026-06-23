@@ -392,24 +392,18 @@ class MultiObservationMapMaker(Generic[T]):
 def _mask_out_padding(model: ObservationModel, is_real: Array) -> ObservationModel:
     """Zero the masker of padding observations so they contribute nothing to the system operator.
 
-    ``is_real`` is a per-observation boolean (True for real observations, False for padding).
-    Real observations keep their existing masker; padding observations get an all-False mask. An
-    ``IdentityOperator`` masker (no masks configured) becomes an all-True/all-False MaskOperator.
+    ``is_real`` is a per-observation boolean (True for real observations, False for padding):
+    real observations keep their existing mask, padding observations get an all-False mask.
     """
-    masker = model.masker
-    structure = masker.in_structure
 
-    def gate_leaf(leaf: jax.ShapeDtypeStruct) -> Array:
-        index = (slice(None),) + (None,) * len(leaf.shape)
-        return jnp.broadcast_to(is_real[index], (is_real.shape[0], *leaf.shape))
+    def gate(mask: Array) -> Array:
+        # each mask leaf is (obs, *tod); reshape is_real to (obs, 1, ...) so & broadcasts
+        return mask & is_real.reshape((-1,) + (1,) * (mask.ndim - 1))
 
-    gate = jax.tree.map(gate_leaf, structure)
-    if isinstance(masker, MaskOperator):
-        new_mask = jax.tree.map(lambda m, g: m & g, masker.to_boolean_mask(), gate)
-    else:
-        new_mask = gate
-    new_masker = MaskOperator.from_boolean_mask(new_mask, in_structure=structure)
-    return replace(model, masker=new_masker)
+    Z = model.masker
+    new_mask = jax.tree.map(gate, Z.to_boolean_mask())
+    new_Z = MaskOperator.from_boolean_mask(new_mask, in_structure=Z.in_structure)
+    return replace(model, masker=new_Z)
 
 
 def get_obs_distribution_to_process(

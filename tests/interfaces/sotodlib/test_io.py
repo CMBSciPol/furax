@@ -184,6 +184,33 @@ def test_binned_mapmaker_over_preproc_db(tmp_path) -> None:
     assert results.solver_stats['num_steps'] == 1
 
 
+def test_mapmaker_reads_each_observation_once(tmp_path, monkeypatch) -> None:
+    """A full run loads (and preprocesses) each observation exactly once, not twice."""
+    from furax.interfaces.sotodlib.observation import SOTODLibObservation
+
+    config_path = build_preproc_db(tmp_path, [FOLDER / f for f in FILES])
+    observations = [LazyPreprocSOTODLibObservation(obs_id, config_path) for obs_id in OBS_IDS]
+
+    n_loads = 0
+    original = SOTODLibObservation.from_preproc_group.__func__
+
+    def counting(cls, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal n_loads
+        n_loads += 1
+        return original(cls, *args, **kwargs)
+
+    monkeypatch.setattr(SOTODLibObservation, 'from_preproc_group', classmethod(counting))
+
+    config = MapMakingConfig(
+        pointing=PointingConfig(on_the_fly=True),
+        landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=16)),
+    )
+    MultiObservationMapMaker(observations, config=config).run()
+
+    # one load per observation (the fused build/accumulate pass), not two
+    assert n_loads == len(observations)
+
+
 def test_reader_invalid_data_field_name(observations) -> None:
     """Test that passing an invalid data field name raises a ValueError."""
     # Test with single invalid field name

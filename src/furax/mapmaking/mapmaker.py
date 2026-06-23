@@ -1,7 +1,7 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Collection, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import cached_property
 from logging import Logger
 from math import prod
@@ -48,12 +48,11 @@ from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesPyTreeType, Valid
 from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel, pad_model
+from ._model import ObservationModel
 from ._observation import AbstractGroundObservation, AbstractLazyObservation, ReaderField
 from ._reader import ObservationReader
 from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
 from .config import (
-    GapFillingConfig,
     LandscapeConfig,
     MapMakingConfig,
     Methods,
@@ -187,17 +186,14 @@ class MultiObservationMapMaker(Generic[T]):
             f'Rank {rank}: owns obs[{start}:{start + n_owned}] ({n_owned} real + {n_pad} padding)'
         )
 
-        model = self.distribute(pad_model(self.build_model(), n_pad))
-        logger_info('Created system operators')
-
         with jax.set_mesh(self.mesh):
-            hits = accumulate_hits(model)
-            jax.block_until_ready(hits)
-            logger_info('Computed hit map')
+            # Single read pass (sharded over observations): build the model and accumulate the
+            # hit map + RHS together, so each observation is read/preprocessed exactly once. The
+            # cross-process reduction of hits/rhs happens via psum inside the kernel.
+            model, hits, rhs = self.build_model_and_accumulate()
+            jax.block_until_ready((hits, rhs))
+            logger_info('Accumulated hit map and RHS vector')
 
-            rhs = self.accumulate_rhs(model)
-            jax.block_until_ready(rhs)
-            logger_info('Accumulated RHS vector')
             # System operator (full/diagonal)
             A = self.get_system_operator(model)
             diag_A = A if self.config.binned else self.get_system_operator(model, diag=True)
@@ -243,41 +239,92 @@ class MultiObservationMapMaker(Generic[T]):
             landscape=self.landscape,
         )
 
-    def build_model(self) -> ObservationModel:
-        """Build the local ObservationModel for this process.
+    def build_model_and_accumulate(
+        self,
+    ) -> tuple[ObservationModel, Int64[Array, '...'], StokesPyTreeType]:
+        """Build the model and accumulate the hit map and RHS in a single, sharded read pass.
 
-        Each process reads its owned observations. The returned model has
-        ``n_owned`` entries along the leading axis (no padding). Padding to the
-        uniform per-process count is applied by the caller before sharding.
+        Sharded over observations: each observation is read (and, for preproc-backed observations,
+        preprocessed) exactly once, and contributes to the model, the hit map and the RHS from that
+        single read. This avoids reading every observation twice (once to build the model, once to
+        accumulate the RHS). The hit map and RHS are reduced across all processes with ``psum``
+        inside the kernel.
+
+        Padding observations (added so every device carries the same workload) contribute nothing:
+        their hit/RHS contributions are gated out by ``is_real``, and their masker is zeroed in the
+        returned model so they drop out of the CG system operator.
+
+        Must run under ``jax.set_mesh(self.mesh)``.
+
+        Returns ``(model, hits, rhs)`` with the model sharded along the observation axis and the
+        hit map / RHS replicated (already reduced across processes).
         """
-        required_fields = ObservationModel.required_reader_fields(self.config)
-        reader = self.get_reader(required_fields)
-
-        def build_one(_, i):  # type: ignore[no-untyped-def]
-            data, padding = reader.read(i)
-            return None, ObservationModel.create(data, padding, self.config, self.landscape)
-
-        _, model = jax.lax.scan(build_one, None, self.get_read_indices())
-        return model  # type: ignore[no-any-return]
-
-    def accumulate_hits(self, model: ObservationModel) -> Int64[Array, '...']:
-        """Accumulate hit count map across all observations."""
-        return accumulate_hits(model)  # type: ignore[no-any-return]
-
-    def accumulate_rhs(self, model: ObservationModel) -> StokesPyTreeType:
-        """Accumulate the RHS vector across all observations."""
-        reader = self.get_reader([ReaderField.METADATA, ReaderField.SAMPLE_DATA])
-        read_indices = self.distribute(self.get_padded_read_indices())
         config = self.config
+        landscape = self.landscape
+        # One reader for the union of every field the model build and the RHS need
+        data_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
+        fields = ObservationModel.required_reader_fields(config) | data_fields
+        reader = self.get_reader(fields)
         fill_gaps = config.gaps.fill and not config.binned
-        return accumulate_rhs(  # type: ignore[no-any-return]
-            model,
-            read_indices,
-            reader,
-            fill_gaps=fill_gaps,
-            correlation_length=config.weighting.correlation_length if fill_gaps else None,
-            gap_filling_params=config.gaps.fill_options if fill_gaps else None,
-        )
+        correlation_length = config.weighting.correlation_length if fill_gaps else None
+        gap_filling_params = config.gaps.fill_options if fill_gaps else None
+
+        indices = self.distribute(self.get_padded_read_indices())
+        is_real = self.distribute(self._real_observation_mask())
+        axis = jax.sharding.get_abstract_mesh().axis_names[0]
+
+        @jax.shard_map(out_specs=(P('obs'), P(), P()), check_vma=False)
+        def kernel(indices, is_real):  # type: ignore[no-untyped-def]
+            def step(carry, args):  # type: ignore[no-untyped-def]
+                hits_acc, rhs_acc = carry
+                i, real = args
+                data, padding = reader.read(i)
+                obs = ObservationModel.create(data, padding, config, landscape)
+
+                # Hit map contribution (gated to zero for padding observations).
+                assert isinstance(obs.H, CompositionOperator)  # mypy
+                pointing = obs.H.operands[-1]
+                assert isinstance(pointing, PointingOperator)  # mypy
+                pointing_i = pointing.as_stokes_i(interpolate=False)
+                ones = furax.tree.ones_like(obs.masker.in_structure)
+                masked = jax.tree.leaves(obs.masker(ones))[0]
+                hits_i = real * jnp.int64(pointing_i.T(StokesI(masked)).i)
+
+                # RHS contribution (optionally gap-filled, gated to zero for padding).
+                tod = data[ReaderField.SAMPLE_DATA]
+                if fill_gaps:
+                    if correlation_length is None or gap_filling_params is None:
+                        raise ValueError(
+                            'fill_gaps=True requires correlation_length and gap_filling_params'
+                        )
+                    gap_fill = GapFillingOperator(
+                        obs.noise_operator(correlation_length, inverse=False),  # type: ignore[arg-type]
+                        obs._get_indexer(),
+                        data[ReaderField.METADATA],
+                        obs.W,  # type: ignore[arg-type]
+                        rate=obs.sample_rate,
+                        max_cg_steps=gap_filling_params.max_steps,
+                        rtol=gap_filling_params.rtol,
+                    )
+                    tod = gap_fill(jax.random.key(gap_filling_params.seed), tod)
+                rhs_i = jax.tree.map(lambda x: real * x, obs.H.T(obs.masker(obs.W(tod))))
+
+                return (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i)), obs
+
+            init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')
+            init_rhs = jax.lax.pcast(landscape.zeros(), axis, to='varying')
+            (hits, rhs), model = jax.lax.scan(step, (init_hits, init_rhs), (indices, is_real))
+            return model, jax.lax.psum(hits, axis), jax.lax.psum(rhs, axis)
+
+        model, hits, rhs = kernel(indices, is_real)
+        # Drop padding observations from the system operator by zeroing their masker.
+        model = _mask_out_padding(model, is_real)
+        return model, hits, rhs
+
+    def _real_observation_mask(self) -> np.ndarray:
+        """Boolean flag per padded slot: True for real observations, False for padding."""
+        _, n_owned, n_pad = self.obs_distribution
+        return np.concatenate([np.ones(n_owned, dtype=bool), np.zeros(n_pad, dtype=bool)])
 
     def get_system_operator(
         self, model: ObservationModel, *, diag: bool = False
@@ -342,79 +389,27 @@ class MultiObservationMapMaker(Generic[T]):
         return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
 
 
-@jax.jit
-def accumulate_hits(model: ObservationModel) -> Int64[Array, '...']:
-    assert isinstance(model.H, CompositionOperator)  # mypy
-    pointing = model.H.operands[-1]
-    assert isinstance(pointing, PointingOperator)  # mypy
-    pointing_i = pointing.as_stokes_i(interpolate=False)
+def _mask_out_padding(model: ObservationModel, is_real: Array) -> ObservationModel:
+    """Zero the masker of padding observations so they contribute nothing to the system operator.
 
-    map_shape = jax.tree.leaves(pointing_i.in_structure)[0].shape
+    ``is_real`` is a per-observation boolean (True for real observations, False for padding).
+    Real observations keep their existing masker; padding observations get an all-False mask. An
+    ``IdentityOperator`` masker (no masks configured) becomes an all-True/all-False MaskOperator.
+    """
+    masker = model.masker
+    structure = masker.in_structure
 
-    mesh = jax.sharding.get_abstract_mesh()
-    axis = mesh.axis_names[0]
+    def gate_leaf(leaf: jax.ShapeDtypeStruct) -> Array:
+        index = (slice(None),) + (None,) * len(leaf.shape)
+        return jnp.broadcast_to(is_real[index], (is_real.shape[0], *leaf.shape))
 
-    @jax.shard_map(out_specs=P(), check_vma=False)
-    def hits_kernel(pointing_i, masker):  # type: ignore[no-untyped-def]
-        per_obs_ones = furax.tree.ones_like(masker.in_structure)
-
-        def step(carry, args):  # type: ignore[no-untyped-def]
-            p_i, m_i = args
-            masked_i = jax.tree.leaves(m_i(per_obs_ones))[0]
-            return carry + jnp.int64(p_i.T(StokesI(masked_i)).i), None
-
-        init = jax.lax.pcast(jnp.zeros(map_shape, jnp.int64), axis, to='varying')
-        hits, _ = jax.lax.scan(step, init, (pointing_i, masker))
-        return jax.lax.psum(hits, axis_name=axis)
-
-    return hits_kernel(pointing_i, model.masker)  # type: ignore[no-any-return]
-
-
-@jax.jit(static_argnames=('fill_gaps', 'correlation_length', 'gap_filling_params'))
-def accumulate_rhs(
-    model: ObservationModel,
-    read_indices: Array,
-    reader: ObservationReader[T],
-    *,
-    fill_gaps: bool,
-    correlation_length: int | None = None,
-    gap_filling_params: GapFillingConfig | None = None,
-) -> StokesPyTreeType:
-    mesh = jax.sharding.get_abstract_mesh()
-    axis = mesh.axis_names[0]
-
-    map_structure = model.map_structure
-
-    @jax.shard_map(out_specs=P(), check_vma=False)
-    def rhs_kernel(model: ObservationModel, indices: Array) -> StokesPyTreeType:
-        def step(carry: StokesPyTreeType, args: Any) -> tuple[StokesPyTreeType, None]:
-            obs, i = args
-            data, _ = reader.read(i)
-            tod = data[ReaderField.SAMPLE_DATA]
-            if fill_gaps:
-                if correlation_length is None or gap_filling_params is None:
-                    raise ValueError(
-                        'fill_gaps=True requires correlation_length and gap_filling_params'
-                    )
-                N = obs.noise_operator(correlation_length, inverse=False)
-                gap_fill = GapFillingOperator(
-                    N,
-                    obs._get_indexer(),
-                    data[ReaderField.METADATA],
-                    obs.W,
-                    rate=obs.sample_rate,
-                    max_cg_steps=gap_filling_params.max_steps,
-                    rtol=gap_filling_params.rtol,
-                )
-                key = jax.random.key(gap_filling_params.seed)
-                tod = gap_fill(key, tod)
-            return furax.tree.add(carry, obs.H.T(obs.masker(obs.W(tod)))), None
-
-        init = jax.lax.pcast(furax.tree.zeros_like(map_structure), axis, to='varying')
-        rhs, _ = jax.lax.scan(step, init, (model, indices))
-        return jax.lax.psum(rhs, axis_name=axis)  # type: ignore[no-any-return]
-
-    return rhs_kernel(model, read_indices)
+    gate = jax.tree.map(gate_leaf, structure)
+    if isinstance(masker, MaskOperator):
+        new_mask = jax.tree.map(lambda m, g: m & g, masker.to_boolean_mask(), gate)
+    else:
+        new_mask = gate
+    new_masker = MaskOperator.from_boolean_mask(new_mask, in_structure=structure)
+    return replace(model, masker=new_masker)
 
 
 def get_obs_distribution_to_process(

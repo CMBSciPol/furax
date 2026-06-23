@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from furax.core._base import structure_equal
 from furax.mapmaking import (
     AbstractLazyObservation,
     MapMakingConfig,
@@ -137,11 +138,13 @@ class TestMultiObsMapMaker:
         reader = ObservationReader.from_observations(
             observations, demodulated=demodulated, stokes=stokes
         )
-        model = maker.build_model()
+        with jax.set_mesh(maker.mesh):
+            model, _, _ = maker.build_model_and_accumulate()
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
-        assert model.map_structure == maker.landscape.structure
-        assert model.tod_structure == reader.out_structure['sample_data']
+        # structures compared ignoring sharding (the model is built sharded inside shard_map)
+        assert structure_equal(model.map_structure, maker.landscape.structure)
+        assert structure_equal(model.tod_structure, reader.out_structure['sample_data'])
 
     def test_full_mapmaker(self, name, demodulated, stokes, landscape_type):
         observations = _observations(name, demodulated)
@@ -187,11 +190,13 @@ class TestFakeObsMapMaker:
         reader = ObservationReader.from_observations(
             observations, demodulated=demodulated, stokes=stokes
         )
-        model = maker.build_model()
+        with jax.set_mesh(maker.mesh):
+            model, _, _ = maker.build_model_and_accumulate()
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
-        assert model.map_structure == maker.landscape.structure
-        assert model.tod_structure == reader.out_structure['sample_data']
+        # structures compared ignoring sharding (the model is built sharded inside shard_map)
+        assert structure_equal(model.map_structure, maker.landscape.structure)
+        assert structure_equal(model.tod_structure, reader.out_structure['sample_data'])
 
     def test_full_binned_mapmaker_multi_obs(self, stokes, demodulated):
         # Two observations (distinct noise seeds) so the multi-observation
@@ -227,7 +232,8 @@ class TestNoiseModelSelection:
         observations = self._observations()
         config = _config('healpix', stokes, demodulated=demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        noise_model = maker.build_model().noise_model
+        with jax.set_mesh(maker.mesh):
+            noise_model = maker.build_model_and_accumulate()[0].noise_model
         if demodulated:
             assert isinstance(noise_model, Stokes.class_for(stokes))
             assert all(
@@ -240,8 +246,11 @@ class TestNoiseModelSelection:
         observations = self._observations()
         config = _config('healpix', 'IQU', demodulated, identity_noise=True)
         maker = MultiObservationMapMaker(observations, config=config)
+        with jax.set_mesh(maker.mesh):
+            model, _, _ = maker.build_model_and_accumulate()
         noise_leaves = jax.tree.leaves(
-            maker.build_model().noise_model, is_leaf=lambda x: isinstance(x, WhiteNoiseModel)
+            model.noise_model,
+            is_leaf=lambda x: isinstance(x, WhiteNoiseModel),
         )
         assert noise_leaves
         for nm in noise_leaves:

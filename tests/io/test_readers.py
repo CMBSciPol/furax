@@ -54,6 +54,40 @@ def test_read(reader: FakeFileReader) -> None:
     assert_array_equal(padding, jnp.array(0, jnp.int64))
 
 
+@register_static
+class OverProbeReader(AbstractReader):
+    """Reader whose probe (structure) shape may exceed the actual loaded shape.
+
+    Mirrors an upper-bound ``probe_shape``: ``out_structure`` is sized from the (larger) probe,
+    while each load returns fewer samples and must be padded from its actual shape at read time.
+    """
+
+    def _read_structure_impure(self, probe: int, actual: int) -> jax.ShapeDtypeStruct:
+        return jax.ShapeDtypeStruct((probe,), jnp.float32)
+
+    def _read_data_impure(self, probe: int, actual: int) -> Any:
+        return np.full(actual, 1.0, jnp.float32)
+
+
+def test_read_pads_from_actual_shape() -> None:
+    # probes 4 and 6 -> common buffer of 6; loads are smaller and padded from their actual length
+    reader = OverProbeReader([4, 6], [2, 5])
+    assert reader.out_structure == jax.ShapeDtypeStruct((6,), jnp.float32)
+
+    data, _ = reader.read(0)
+    assert_array_equal(data, jnp.array([1, 1, 0, 0, 0, 0], np.float32))
+
+    data, _ = reader.read(1)
+    assert_array_equal(data, jnp.array([1, 1, 1, 1, 1, 0], np.float32))
+
+
+def test_read_raises_when_probe_under_estimates() -> None:
+    # common buffer is 3 (max probe), but obs 0 actually loads 5 samples -> negative pad
+    reader = OverProbeReader([2, 3], [5, 1])
+    with pytest.raises(Exception, match='under-estimated'):
+        reader.read(0)
+
+
 def test_buffers() -> None:
     reader1 = FakeFileReader(['1.npz', '2a.npz', '2b.npz', '3.npz', '5.npz'])
     reader2 = FakeFileReader(['2.npz', '5.npz'])

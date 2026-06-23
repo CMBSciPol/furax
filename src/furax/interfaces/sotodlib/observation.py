@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import pixell.utils
 import so3g.proj
+import sotodlib.preprocess.preprocess_util as pu
 import yaml
 from astropy.wcs import WCS
 from jaxtyping import Array, Bool, Float, Integer
@@ -18,10 +19,6 @@ from sotodlib import coords
 from sotodlib.coords.helpers import get_deflected_sightline
 from sotodlib.core import AxisManager
 from sotodlib.mapmaking.utils import downsample_obs
-from sotodlib.preprocess.preprocess_util import (
-    load_and_preprocess,
-    multilayer_load_and_preprocess,
-)
 
 from furax.mapmaking import (
     AbstractGroundObservation,
@@ -58,7 +55,6 @@ def _enable_preproc_context_cache() -> None:
     from the shape-probe phase. A shared Context would raise "SQLite objects created in a thread
     can only be used in that same thread".
     """
-    import sotodlib.preprocess.preprocess_util as pu
 
     if getattr(pu.get_preprocess_context, '_furax_cached', False):
         return
@@ -171,7 +167,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             with open(preprocess_config) as file:
                 config = yaml.safe_load(file)
 
-        data = load_and_preprocess(observation_id, config, dets=detector_selection)
+        data = pu.load_and_preprocess(observation_id, config, dets=detector_selection)
         return cls(data, sotodlib_config)
 
     @classmethod
@@ -182,7 +178,6 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         proc_config: str | Path | None = None,
         detector_selection: dict[str, str] | None = None,
         downsample: int = 1,
-        no_signal: bool = False,
         sotodlib_config: SotodlibConfig | None = None,
     ) -> SOTODLibObservation:
         """Loads a (already preprocessed) observation directly from the preprocessing db.
@@ -201,8 +196,6 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             detector_selection: Optional detector restriction
                 (e.g. {'wafer_slot': 'ws0', 'wafer.bandpass': 'f150'}).
             downsample: Integer downsampling factor applied after preprocessing.
-            no_signal: If True, skip reading the detector timestreams. Used by the
-                cheap shape probe; the returned observation has axes/metadata but no TOD.
             sotodlib_config: Optional sotodlib-specific configuration.
 
         Returns:
@@ -214,23 +207,20 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         _enable_preproc_context_cache()
         init_config = Path(init_config).as_posix()
         if proc_config is not None:
-            aman = multilayer_load_and_preprocess(
+            aman = pu.multilayer_load_and_preprocess(
                 observation_id,
                 init_config,
                 Path(proc_config).as_posix(),
                 dets=detector_selection,
-                no_signal=no_signal,
             )
         else:
             # load_and_preprocess returns (aman, full_aman); we only need the restricted one
-            result = load_and_preprocess(
-                observation_id, init_config, dets=detector_selection, no_signal=no_signal
-            )
+            result = pu.load_and_preprocess(observation_id, init_config, dets=detector_selection)
             aman = result[0] if isinstance(result, tuple) else result
         if aman is None:
             raise RuntimeError(f'no detectors left after cuts for {observation_id}')
         if downsample > 1:
-            aman = downsample_obs(aman, downsample, skip_signal=no_signal)
+            aman = downsample_obs(aman, downsample)
         return cls(aman, sotodlib_config)
 
     @property
@@ -543,21 +533,31 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
     def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
         # A preproc load cannot be field-subset: the full observation is always returned,
         # which satisfies any requested fields. The cheap shape path lives in probe_shape.
-        return self._load(no_signal=False)
-
-    def probe_shape(self) -> tuple[int, int]:
-        # Run the pipeline without reading the timestreams: this yields the exact
-        # post-process (n_detectors, n_samples) the data load would, minus the heavy TOD I/O.
-        obs = self._load(no_signal=True)
-        return obs.n_detectors, obs.n_samples
-
-    def _load(self, *, no_signal: bool) -> SOTODLibObservation:
         return SOTODLibObservation.from_preproc_group(
             self.observation_id,
             self.init_config,
             self.proc_config,
             self.detector_selection,
             downsample=self.downsample,
-            no_signal=no_signal,
             sotodlib_config=self._sotodlib_config,
         )
+
+    def probe_shape(self) -> tuple[int, int]:
+        """Returns an upper bound on ``(n_detectors, n_samples)`` to size the padded buffers.
+
+        Read from the init preprocess metadata via ``context.get_meta``: no TOD I/O and, crucially,
+        no process pipeline run (the pipeline mutates the signal and crashes when it is absent).
+
+        The value is only an *upper bound*, not the exact post-pipeline shape:
+
+        - ``n_detectors`` is the count after applying ``detector_selection`` (wafer slot / bandpass)
+          but before the process pipeline, which only ever restricts detectors further.
+        - ``n_samples`` is ``ceil(meta.samps.count / downsample)``. The process pipeline only trims
+          samples (e.g. edge cuts) before downsampling, so this bounds the actual samps count.
+        """
+        _enable_preproc_context_cache()
+        # call get_preprocess_context through the module so the cached get_preprocess_context is used
+        _, context = pu.get_preprocess_context(self.init_config)
+        meta = context.get_meta(self.observation_id, dets=self.detector_selection)
+        n_samps_ub = -(-meta.samps.count // self.downsample)  # ceil, matches downsample_obs
+        return meta.dets.count, n_samps_ub

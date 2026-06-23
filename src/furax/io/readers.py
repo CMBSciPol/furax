@@ -158,6 +158,26 @@ class AbstractReader(ABC):
         )
         return padding
 
+    def _actual_padding(self, data: PyTree[Any]) -> PyTree[tuple[int, ...]]:
+        """Per-leaf padding from the actual loaded shape to ``out_structure``.
+
+        Computed at read time inside the io_callback, since the loaded shape may be smaller than
+        the (upper-bound) probe shape used to size ``out_structure``. Raises if any loaded leaf
+        exceeds ``out_structure``: that means a ``probe_shape`` under-estimated, which would force a
+        negative pad and silently corrupt the buffers.
+        """
+
+        def leaf_padding(common_leaf: jax.ShapeDtypeStruct, leaf: Any) -> tuple[int, ...]:
+            padding = tuple(common_leaf.shape[i] - leaf.shape[i] for i in range(leaf.ndim))
+            if any(p < 0 for p in padding):
+                raise ValueError(
+                    f'loaded shape {leaf.shape} exceeds buffer shape {common_leaf.shape}: '
+                    'probe_shape under-estimated the observation size'
+                )
+            return padding
+
+        return jax.tree.map(leaf_padding, self.out_structure, data)
+
     @jax.jit
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array]]:
         """Read the data at the given index.
@@ -173,8 +193,11 @@ class AbstractReader(ABC):
         def callback(i: int) -> PyTree[np.ndarray]:
             args = self.args[i]
             keywords = self.keywords[i]
-            padding = self.paddings[i]
             data = self._read_data_impure(*args, **keywords, **self.common_keywords)
+            # Pad from the actual loaded shape (not the precomputed, probe-based padding): the
+            # io_callback contract requires the result to match ``out_structure`` exactly, and
+            # ``probe_shape`` is only an upper bound, so the load may be smaller than probed.
+            padding = self._actual_padding(data)
             return self._pad(data, padding)
 
         data = jax.lax.switch(

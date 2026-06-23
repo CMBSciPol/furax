@@ -106,8 +106,20 @@ def test_lazy_preproc_observation(tmp_path) -> None:
     assert data.n_samples == OBS_NSAMPLE[0]
     assert data.get_tods().shape == (OBS_NDET[0], OBS_NSAMPLE[0])
 
-    # probe_shape uses the signal-free load and matches the data shape exactly
+    # probe_shape reads an upper bound straight from the archive metadata (no pipeline run);
+    # here the no-op pipeline neither cuts nor trims, so the bound matches the load exactly
     assert lazy.probe_shape() == (OBS_NDET[0], OBS_NSAMPLE[0])
+
+
+def test_lazy_preproc_probe_shape_downsample(tmp_path) -> None:
+    """probe_shape ceils the sample bound by the downsample factor, matching downsample_obs."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config, downsample=3)
+
+    # ceil(1000 / 3) == 334, the same count downsample_obs produces in the real load
+    expected_nsamp = -(-OBS_NSAMPLE[0] // 3)
+    assert lazy.probe_shape() == (OBS_NDET[0], expected_nsamp)
+    assert lazy.get_data().n_samples == expected_nsamp
 
 
 def test_reader_with_preproc_observations(tmp_path) -> None:

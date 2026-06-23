@@ -89,6 +89,10 @@ def run(  # type: ignore[no-untyped-def]
     obsids = resolve_obsids(obsid, obsids_file)
     observations: list[AbstractLazyObservation[Any]]
 
+    # Resolve outdir against the launch directory now: the init-config branch chdir's to the
+    # preproc config root below, so a relative outdir would otherwise be written there instead.
+    outdir = (outdir or Path.cwd()).resolve()
+
     if init_config is not None:
         layers = [init_config] + ([proc_config] if proc_config else [])
         try:
@@ -134,21 +138,25 @@ def run(  # type: ignore[no-untyped-def]
 
     logger.info(f'found {len(observations)} observations')
 
-    outdir = outdir or Path.cwd()
     outdir.mkdir(parents=True, exist_ok=True)
-    with open(outdir / 'mapped_obsids.txt', 'w') as f:
-        for name in mapped:
-            f.write(f'{name}\n')
 
     maker = MultiObservationMapMaker(observations, config=config, logger=logger)
     logger.info('loaded config and set up mapmaker')
 
     try:
-        maker.run(outdir)
+        results = maker.run(outdir)
         logger.info('finished mapmaking')
     except Exception as e:
         logger.exception('mapmaking failed', exc_info=e)
         return 1
+
+    # Record the observations that actually made it into the maps (load/preproc failures excluded).
+    if jax.process_index() == 0:
+        failed = set(results.failed_observations or ())
+        with open(outdir / 'mapped_obsids.txt', 'w') as f:
+            for name in mapped:
+                if name not in failed:
+                    f.write(f'{name}\n')
 
 
 if __name__ == '__main__':

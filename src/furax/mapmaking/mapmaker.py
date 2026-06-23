@@ -162,7 +162,7 @@ class MultiObservationMapMaker(Generic[T]):
 
         # Save outputs on process 0 only (all processes hold the same replicated result)
         if out_dir is not None and jax.process_index() == 0:
-            out_dir = Path(out_dir)
+            out_dir = Path(out_dir).resolve()
             results.save(out_dir)
             self.logger.info(f'saved results to {out_dir}')
             self.config.dump_yaml(out_dir / 'mapmaking_config.yaml')

@@ -17,14 +17,14 @@ class TestSampleMask:
         False tail: |F(mask)| = 0 < 0.5/tau → interval_mask True, but mask & True = False.
         """
         tau, n_det, n_samp = 4, 1, 10  # 2 full intervals + tail of 2
-        mask = jnp.ones((n_det, n_samp), dtype=jnp.bool_)
+        mask = jnp.ones((n_det, n_samp), dtype=bool)
         if not tail_value:
             mask = mask.at[0, 2 * tau :].set(False)
 
         config = MapMakingConfig(method=Methods.ATOP, atop_tau=tau)
         result = _sample_mask({'valid_sample_masks': mask}, config)
 
-        assert_array_equal(result[0, 2 * tau :], jnp.zeros(n_samp - 2 * tau, dtype=jnp.bool_))
+        assert_array_equal(result[0, 2 * tau :], jnp.zeros(n_samp - 2 * tau, dtype=bool))
 
 
 class TestIdentityNoise:

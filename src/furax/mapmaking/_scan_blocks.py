@@ -5,7 +5,7 @@ from typing import ClassVar, Self
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jax.sharding import AbstractMesh, NamedSharding
+from jax.sharding import AbstractMesh
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Inexact, PyTree
 
@@ -18,11 +18,6 @@ from furax.core import (
     IdentityOperator,
 )
 from furax.core.rules import AbstractAdditionRule, AbstractCompositionRule, NoReduction
-
-# jax.eval_shape inside a jax.set_mesh context annotates outputs with sharding information,
-# which breaks operator compatibility checks. Wrapping inner transpose/reduction calls with
-# use_abstract_mesh(_EMPTY_MESH) clears the active mesh so those structs stay sharding-free.
-_EMPTY_MESH = jax.sharding.AbstractMesh((), ())
 
 
 def _get_mesh() -> AbstractMesh:
@@ -62,22 +57,11 @@ def _check_scanned(scanned: AbstractLinearOperator, n_lead: int) -> None:
             )
 
 
-def _augment_structure(
+def _prepend_axis(
     structure: PyTree[jax.ShapeDtypeStruct],
-    *,
-    axis_size: int | None = None,
+    axis_size: int,
 ) -> PyTree[jax.ShapeDtypeStruct]:
-    mesh = jax.sharding.get_abstract_mesh()
-    axis_name = mesh.axis_names[0] if not mesh.empty and axis_size is not None else None
-
-    def transform(s: jax.ShapeDtypeStruct) -> jax.ShapeDtypeStruct:
-        shape = (axis_size, *s.shape) if axis_size is not None else s.shape
-        if axis_name is None:
-            return jax.ShapeDtypeStruct(shape, s.dtype)
-        spec = P(axis_name, *([None] * len(s.shape)))
-        return jax.ShapeDtypeStruct(shape, s.dtype, sharding=NamedSharding(mesh, spec))
-
-    return jax.tree.map(transform, structure)
+    return jax.tree.map(lambda s: jax.ShapeDtypeStruct((axis_size, *s.shape), s.dtype), structure)
 
 
 class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
@@ -100,7 +84,7 @@ class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
 
     The "block" denomination refers to how each slice appears in the global operator matrix:
     subclasses arrange the N per-slice operators as blocks of a larger matrix (diagonal, column, or
-    row layout). The `_augment_in` / `_augment_out` class flags say whether the block prepends the
+    row layout). The `_prepend_in` / `_prepend_out` class flags say whether the block prepends the
     observation axis to its input / output structure.
 
     An active mesh context is required when calling `mv`; use `jax.set_mesh` beforehand.
@@ -111,8 +95,8 @@ class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
     post: AbstractLinearOperator
     n_lead: int = field(kw_only=True, metadata={'static': True})
 
-    _augment_in: ClassVar[bool]
-    _augment_out: ClassVar[bool]
+    _prepend_in: ClassVar[bool]
+    _prepend_out: ClassVar[bool]
 
     @classmethod
     def create(cls, operator: AbstractLinearOperator, *, n_lead: int | None = None) -> Self:
@@ -140,8 +124,8 @@ class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
     ) -> Self:
         _check_scanned(scanned, n_lead)
         per_obs_in = pre.in_structure
-        if cls._augment_in:
-            in_structure = _augment_structure(per_obs_in, axis_size=n_lead)
+        if cls._prepend_in:
+            in_structure = _prepend_axis(per_obs_in, axis_size=n_lead)
         else:
             in_structure = per_obs_in
         return cls(scanned, pre, post, n_lead=n_lead, in_structure=in_structure)
@@ -149,21 +133,19 @@ class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         per_obs_out = self.post.out_structure
-        if self._augment_out:
-            return _augment_structure(per_obs_out, axis_size=self.n_lead)
+        if self._prepend_out:
+            return _prepend_axis(per_obs_out, axis_size=self.n_lead)
         return per_obs_out
 
     @property
     def operator(self) -> AbstractLinearOperator:
         """Effective per-observation operator `post @ scanned @ pre` (for introspection)."""
-        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            return (self.post @ self.scanned @ self.pre).reduce()
+        return (self.post @ self.scanned @ self.pre).reduce()
 
     def reduce(self) -> AbstractLinearOperator:
-        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            scanned = self.scanned.reduce()
-            pre = self.pre.reduce()
-            post = self.post.reduce()
+        scanned = self.scanned.reduce()
+        pre = self.pre.reduce()
+        post = self.post.reduce()
         return type(self)._build(scanned, pre, post, n_lead=self.n_lead)
 
 
@@ -180,8 +162,8 @@ class ScanBlockDiagonalOperator(AbstractScanBlockOperator):
         ...     weighted = W(samples)                           # (N, *in) -> (N, *out)
     """
 
-    _augment_in = True
-    _augment_out = True
+    _prepend_in = True
+    _prepend_out = True
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
@@ -198,8 +180,7 @@ class ScanBlockDiagonalOperator(AbstractScanBlockOperator):
         return kernel(self.scanned, self.pre, self.post, x)
 
     def transpose(self) -> AbstractLinearOperator:
-        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            scanned_t, pre_t, post_t = self.scanned.T, self.post.T, self.pre.T
+        scanned_t, pre_t, post_t = self.scanned.T, self.post.T, self.pre.T
         return ScanBlockDiagonalOperator._build(scanned_t, pre_t, post_t, n_lead=self.n_lead)
 
 
@@ -216,8 +197,8 @@ class ScanBlockColumnOperator(AbstractScanBlockOperator):
         ...     tod = H(pixel_map)                               # (*in,) -> (N, *out)
     """
 
-    _augment_in = False
-    _augment_out = True
+    _prepend_in = False
+    _prepend_out = True
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
@@ -233,8 +214,7 @@ class ScanBlockColumnOperator(AbstractScanBlockOperator):
         return kernel(self.scanned, self.pre, self.post, x)
 
     def transpose(self) -> AbstractLinearOperator:
-        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            scanned_t, pre_t, post_t = self.scanned.T, self.post.T, self.pre.T
+        scanned_t, pre_t, post_t = self.scanned.T, self.post.T, self.pre.T
         return ScanBlockRowOperator._build(scanned_t, pre_t, post_t, n_lead=self.n_lead)
 
 
@@ -251,8 +231,8 @@ class ScanBlockRowOperator(AbstractScanBlockOperator):
         ...     pixel_map = HT(tod)                              # (N, *in) -> (*out,)
     """
 
-    _augment_in = True
-    _augment_out = False
+    _prepend_in = True
+    _prepend_out = False
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
@@ -272,8 +252,7 @@ class ScanBlockRowOperator(AbstractScanBlockOperator):
         return kernel(self.scanned, self.pre, self.post, x)
 
     def transpose(self) -> AbstractLinearOperator:
-        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            scanned_t, pre_t, post_t = self.scanned.T, self.post.T, self.pre.T
+        scanned_t, pre_t, post_t = self.scanned.T, self.post.T, self.pre.T
         return ScanBlockColumnOperator._build(scanned_t, pre_t, post_t, n_lead=self.n_lead)
 
 
@@ -293,8 +272,8 @@ class ScanAdditionOperator(AbstractScanBlockOperator):
         ...     rhs = A(pixel_map)          # (*in,) -> (*out,)
     """
 
-    _augment_in = False
-    _augment_out = False
+    _prepend_in = False
+    _prepend_out = False
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         axis = _get_mesh().axis_names[0]
@@ -313,8 +292,7 @@ class ScanAdditionOperator(AbstractScanBlockOperator):
         return kernel(self.scanned, self.pre, self.post, x)
 
     def transpose(self) -> AbstractLinearOperator:
-        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            scanned_t, pre_t, post_t = self.scanned.T, self.post.T, self.pre.T
+        scanned_t, pre_t, post_t = self.scanned.T, self.post.T, self.pre.T
         return ScanAdditionOperator._build(scanned_t, pre_t, post_t, n_lead=self.n_lead)
 
 
@@ -339,17 +317,15 @@ class AbstractScanFusionRule(AbstractCompositionRule):
         # raised from `apply` just as it does from `check`.
         assert isinstance(left, AbstractScanBlockOperator)  # mypy
         assert isinstance(right, AbstractScanBlockOperator)  # mypy
-        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            mid = (left.pre @ right.post).reduce()
+        mid = (left.pre @ right.post).reduce()
         if not isinstance(mid, (IdentityOperator, HomothetyOperator)):
             raise NoReduction
-        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            scanned = (left.scanned @ right.scanned).reduce()
-            if isinstance(mid, HomothetyOperator):
-                scalar = HomothetyOperator(mid.value, in_structure=left.post.out_structure)
-                post = (scalar @ left.post).reduce()
-            else:
-                post = left.post
+        scanned = (left.scanned @ right.scanned).reduce()
+        if isinstance(mid, HomothetyOperator):
+            scalar = HomothetyOperator(mid.value, in_structure=left.post.out_structure)
+            post = (scalar @ left.post).reduce()
+        else:
+            post = left.post
         return [self.reduced_class._build(scanned, right.pre, post, n_lead=left.n_lead)]
 
 
@@ -420,13 +396,12 @@ class HomothetyScanBlockRule(AbstractCompositionRule):
         # Reduce the closed-over maps under the empty mesh (they carry no obs axis), but build the
         # result under the caller's real mesh so `_augment_structure` shards the public structure.
         # Otherwise the fused block would be unsharded and fail to compose with sharded blocks.
-        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            if on_output_side:
-                scalar = HomothetyOperator(homo.value, in_structure=block.post.out_structure)
-                pre, post = block.pre, (scalar @ block.post).reduce()
-            else:
-                scalar = HomothetyOperator(homo.value, in_structure=block.pre.in_structure)
-                pre, post = (block.pre @ scalar).reduce(), block.post
+        if on_output_side:
+            scalar = HomothetyOperator(homo.value, in_structure=block.post.out_structure)
+            pre, post = block.pre, (scalar @ block.post).reduce()
+        else:
+            scalar = HomothetyOperator(homo.value, in_structure=block.pre.in_structure)
+            pre, post = (block.pre @ scalar).reduce(), block.post
         return [type(block)._build(block.scanned, pre, post, n_lead=block.n_lead)]
 
 
@@ -464,13 +439,12 @@ class AbstractScanAdditionFusionRule(AbstractAdditionRule):
         # Assemble the bodies under the empty mesh, but build the result under
         # the caller's real mesh so `_augment_structure` shards the public structure.
         # Otherwise the fused block would be unsharded and fail to compose with sharded blocks.
-        with jax.sharding.use_abstract_mesh(_EMPTY_MESH):
-            if trivial:
-                bodies = (left.scanned + right.scanned).reduce()
-            else:
-                pre = BlockColumnOperator([left.pre, right.pre])
-                scanned = BlockDiagonalOperator([left.scanned, right.scanned])
-                post = BlockRowOperator([left.post, right.post])
+        if trivial:
+            bodies = (left.scanned + right.scanned).reduce()
+        else:
+            pre = BlockColumnOperator([left.pre, right.pre])
+            scanned = BlockDiagonalOperator([left.scanned, right.scanned])
+            post = BlockRowOperator([left.post, right.post])
         if trivial:
             return [self.reduced_class.create(bodies, n_lead=left.n_lead)]
         return [self.reduced_class._build(scanned, pre, post, n_lead=left.n_lead)]

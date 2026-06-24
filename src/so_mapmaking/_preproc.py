@@ -14,7 +14,8 @@ them consistent. The convention:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import hashlib
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,18 @@ class ConfigPath:
 def config_root(config: str | Path) -> Path:
     """Return the root directory a preproc config's relative paths resolve against."""
     return Path(config).resolve().parents[PREPROC_ROOT_DEPTH]
+
+
+def shared_root(layers: Iterable[str | Path]) -> Path:
+    """Return the common root of all ``layers``, raising if they disagree.
+
+    Only callers that ``chdir`` to a single root (e.g. ``furax-so-prepare``) need this; the
+    map path normalises each layer independently and has no single-root constraint.
+    """
+    roots = {config_root(layer) for layer in layers}
+    if len(roots) > 1:
+        raise ValueError('all preproc configs must share the same root directory')
+    return roots.pop()
 
 
 def resolve(path: str, base: Path) -> Path:
@@ -121,6 +134,43 @@ def iter_config_paths(config_path: Path) -> Iterator[ConfigPath]:
     tags = ctx_doc.get('tags') or {}
     for token in collect_db_tokens(ctx_doc, ('obsfiledb', 'obsdb', 'detdb')):
         yield ConfigPath(token, resolve(expand_tags(token, tags), ctx_dir), 'context', 'db')
+
+
+def normalize_config(config_path: Path, out_dir: Path) -> Path:
+    """Write a copy of the preproc config with its cwd-sensitive paths made absolute.
+
+    sotodlib abspath's the config's ``context_file`` and ``archive.index`` against the process
+    cwd, so a relative config only loads from the right directory. Anchoring those two to the
+    config root frees the run from any ``chdir`` (and from the single-root constraint a chdir
+    imposes). The context's own db paths are left untouched: sotodlib resolves them relative to
+    the context file, which this still points at, so they stay correct regardless of cwd.
+
+    Returns the path of the normalised config written under ``out_dir`` (named with a hash of the
+    source directory so init/proc layers never collide).
+    """
+    config_path = config_path.resolve()
+    root = config_path.parents[PREPROC_ROOT_DEPTH]
+    doc = yaml.safe_load(config_path.read_text())
+
+    archive = doc.get('archive')
+    index = archive.get('index') if isinstance(archive, dict) else None
+    ctx = doc.get('context_file')
+
+    # Already-absolute configs (e.g. those emitted by furax-so-stage) need no rewriting; skip the
+    # copy and hand the file back as-is so cwd stays irrelevant either way.
+    cwd_sensitive = [p for p in (index, ctx) if isinstance(p, str)]
+    if all(Path(p).is_absolute() for p in cwd_sensitive):
+        return config_path
+
+    if isinstance(index, str):
+        archive['index'] = resolve(index, root).as_posix()
+    if isinstance(ctx, str):
+        doc['context_file'] = resolve(ctx, root).as_posix()
+
+    digest = hashlib.sha1(str(config_path.parent).encode()).hexdigest()[:8]
+    out = out_dir / f'{digest}_{config_path.name}'
+    out.write_text(yaml.safe_dump(doc))
+    return out
 
 
 def find_relative_paths(doc: Any) -> list[str]:

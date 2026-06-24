@@ -1,27 +1,15 @@
-import os
+import atexit
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from cyclopts import App
 
+from . import _preproc as pp
 from .util import detector_selection, resolve_obsids, setup_logger
 
 app = App(help='Run the mapmaker on SO observations, loaded straight from the preproc db.')
-
-
-def _chdir_to_config_root(layers: list[Path]) -> list[Path]:
-    """Resolve config paths against the launch dir, then chdir to the preproc config root.
-
-    Configs typically live in ``<root>/preprocessing/satpy/...``; the archive index they
-    reference is relative to ``<root>``. Returns the resolved (absolute) config paths so
-    callers can keep using them after the chdir. Mirrors ``furax-so-prepare``.
-    """
-    resolved = [layer.resolve() for layer in layers]
-    roots = {layer.parents[2] for layer in resolved}
-    if len(roots) > 1:
-        raise ValueError('all preproc configs must share the same root directory')
-    os.chdir(roots.pop())
-    return resolved
 
 
 @app.default  # type: ignore[untyped-decorator]
@@ -91,23 +79,19 @@ def run(  # type: ignore[no-untyped-def]
 
     obsids = resolve_obsids(obsid, obsids_file)
     observations: list[AbstractLazyObservation[Any]]
-
-    # Resolve outdir against the launch directory now: the init-config branch chdir's to the
-    # preproc config root below, so a relative outdir would otherwise be written there instead.
     outdir = (outdir or Path.cwd()).resolve()
 
     if init_config is not None:
-        layers = [init_config] + ([proc_config] if proc_config else [])
-        try:
-            resolved = _chdir_to_config_root(layers)
-        except ValueError as e:
-            logger.error(str(e))
-            return 1
-        init_config = resolved[0]
-        proc_config = resolved[1] if proc_config else None
         if not obsids:
             logger.warning('no observations to map')
             return
+        # Normalise the configs (cwd-sensitive paths -> absolute) instead of chdir'ing the whole
+        # process: sotodlib then loads them from anywhere, and init/proc may live under different
+        # roots. The temp copies must outlive every lazy read, so clean them up only at exit.
+        stage_dir = Path(tempfile.mkdtemp(prefix='furax-so-map-'))
+        atexit.register(shutil.rmtree, stage_dir, ignore_errors=True)
+        init_config = pp.normalize_config(init_config, stage_dir)
+        proc_config = pp.normalize_config(proc_config, stage_dir) if proc_config else None
         det_select = detector_selection(wafer, band)
         observations = [
             LazyPreprocSOTODLibObservation(

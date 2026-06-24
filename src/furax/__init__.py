@@ -22,6 +22,7 @@ from .core import (
     TreeOperator,
     asoperator,
     diagonal,
+    idempotent,
     lower_triangular,
     negative_semidefinite,
     orthogonal,
@@ -65,6 +66,7 @@ __all__ = [
     'upper_triangular',
     'positive_semidefinite',
     'negative_semidefinite',
+    'idempotent',
     # config
     'Config',
     # tree

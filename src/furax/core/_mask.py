@@ -2,11 +2,12 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, Inexact, PyTree, UInt8
 
-from ._base import AbstractLinearOperator, symmetric
+from ._base import AbstractLinearOperator, idempotent, symmetric
 from .rules import AbstractCompositionRule
 
 
 @symmetric
+@idempotent
 class MaskOperator(AbstractLinearOperator):
     """Operator that zeros out values according to a boolean mask: M(x) = x * mask.
 

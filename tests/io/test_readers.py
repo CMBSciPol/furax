@@ -22,6 +22,9 @@ class FakeFileReader(AbstractReader):
         length = int(filename[0]) + len(option1)
         return np.full(length, float(filename[0]), jnp.float32)
 
+    def _failure_filler(self):
+        return None
+
 
 @pytest.fixture
 def reader() -> FakeFileReader:
@@ -66,6 +69,9 @@ class OverProbeReader(AbstractReader):
 
     def _read_data_impure(self, probe: int, actual: int) -> Any:
         return np.full(actual, 1.0, jnp.float32)
+
+    def _failure_filler(self):
+        return None
 
 
 def test_read_pads_from_actual_shape() -> None:
@@ -126,12 +132,6 @@ def test_reset_failures_clears_runtime_failures_to_known_baseline() -> None:
 
     reader.reset_failures()
     assert reader.failed_indices == [0]  # back to the known-failure baseline
-
-
-def test_default_reader_has_no_filler() -> None:
-    # Readers that do not override _failure_filler keep the original crash-on-failure behavior.
-    reader = OverProbeReader([4], [4])
-    assert reader._failure_filler() is None
 
 
 def test_buffers() -> None:

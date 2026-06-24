@@ -118,7 +118,8 @@ def test_asoperator_inverse(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_asoperator_jit_cache(capsys: pytest.CaptureFixture[str]) -> None:
     """Tests that we can pass a non-jitted function to `asoperator` and that the jitted version
-    will be used for all subsequent calls to `asoperator` with the same function and structure."""
+    will be used for all subsequent calls to `asoperator` with the same function and structure.
+    """
 
     def func(x, y):
         print('tracing func')

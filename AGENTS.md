@@ -21,7 +21,6 @@ Python, JAX, linear operator framework, CMB mapmaking.
 - Before adding a new operator or test, read an existing one in the same module and mirror its patterns.
 - Always run `uvx prek --files <files>` when you are done with your task, and address errors.
 - Naming: `PascalCase` for classes/operators (e.g. `BeamOperator`), `snake_case` for functions/variables. Single-quote strings, 100-char lines (enforced by ruff).
-- Write Google-style docstrings.
 - Use comments purposefully. Do not narrate code. Explain invariants and unusual patterns.
 - Imports at top of file. Valid exceptions: circular imports, lazy loading.
 - Use jaxtyping annotations, e.g. `Inexact[jax.Array, 'dim1 dim2']`
@@ -30,6 +29,37 @@ Python, JAX, linear operator framework, CMB mapmaking.
 - Prefer `furax.tree` over `jax.tree` and `jax.tree_util`. In particular use the elementwise helpers (`tree.add`, `tree.sub`, `tree.mul`, `tree.dot`, `tree.zeros_like` etc.) instead `jax.tree.map(jnp.add, ...)` and friends.
 - Call operators directly (`op(x)`), not `op.mv(x)`. Reserve `mv` for the method definition in an operator subclass.
 - Use new-style typed key arrays `jax.random.key()` instead of legacy uint32 `jax.random.PRNGKey()`.
+
+### Docstrings
+
+Use Google-style docstrings. Docs site renders via mkdocstrings/griffe, so a few conventions matter:
+
+- Section bodies must be indented **under** the header (`Args:` at 4 → entries at 8). `name (type): description`.
+- Use `Examples:` (plural) for code examples. Singular `Example:` becomes an admonition with no `pycon` syntax highlighting.
+- A `>>>` console block must be preceded by a **blank line** when prose comes before it, but **not** directly after the section header (ruff `D412`).
+- Math: `$inline$` / `$$display$$`. Cross-reference symbols with autorefs: ``[`OtherClass`][]``.
+
+```python
+def foo(x: Float[jax.Array, ' n'], scale: float = 1.0) -> Float[jax.Array, ' n']:
+    r"""One-line summary ending with a period.
+
+    Longer description if needed. Math renders inline: $y = \text{scale} \cdot x$.
+    Reference another operator with [`DiagonalOperator`][].
+
+    Args:
+        x: Input vector.
+        scale: Multiplicative factor.
+
+    Returns:
+        The scaled vector.
+
+    Examples:
+        Some prose before the snippet.
+
+        >>> foo(jnp.ones(2), scale=2.0)
+        Array([2., 2.], dtype=float32)
+    """
+```
 
 ## When to ask first
 

@@ -1,0 +1,122 @@
+[project]
+site_name = "Furax documentation"
+site_description = "A Framework for Unified and Robust data Analysis with JAX."
+site_author = "Furax contributors"
+site_url = "https://furax.readthedocs.io/en"
+copyright = "&copy; 2024-2026 Furax contributors"
+repo_url = "https://github.com/CMBSciPol/furax"
+
+# https://zensical.org/docs/setup/navigation/
+nav = [
+  { "Home" = "index.md" },
+  { "User Guide" = [
+      "user_guide/getting_started.md",
+      "user_guide/data_structures.md",
+      "user_guide/operators.md",
+  ] },
+  { "Examples" = [
+      "examples/component_separation.md",
+      "examples/mapmaking.md",
+  ] },
+  { "API reference" = [
+      "api/furax.md",
+      "api/core.md",
+      "api/obs.md",
+      "api/mapmaking.md",
+      "api/math.md",
+      "api/linalg.md",
+      "api/io.md",
+      "api/interfaces.md",
+      "api/tree.md",
+      "api/distributed.md",
+      "api/exceptions.md",
+  ] },
+  { "Development" = [
+      "development/contributing.md",
+      "development/changelog.md",
+  ] },
+]
+
+# https://zensical.org/docs/authoring/math/
+extra_javascript = [
+    "javascripts/mathjax.js",
+    "https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"
+]
+
+# Enable API reference documentation
+# https://zensical.org/docs/setup/extensions/mkdocstrings/
+[project.plugins.mkdocstrings.handlers.python]
+inventories = [
+    "https://docs.python.org/3/objects.inv",
+    "https://numpy.org/doc/stable/objects.inv",
+    "https://jax.readthedocs.io/en/latest/objects.inv",
+    "https://healpy.readthedocs.io/en/latest/objects.inv",
+]
+paths = ["src"]
+options.docstring_style = "google"
+options.docstring_section_style = "list"
+options.show_root_members_full_path = true
+options.members_order = "source"
+options.relative_crossrefs = true
+options.show_if_no_docstring = true
+options.filters = "public"
+
+[project.markdown_extensions]
+admonition = {}
+pymdownx.details = {}
+pymdownx.superfences = {}
+pymdownx.highlight = { anchor_linenums = true, line_spans = "__span", pygments_lang_class = true }
+pymdownx.inlinehilite = {}
+pymdownx.snippets = {}
+pymdownx.tabbed = { alternate_style = true }
+footnotes = {}
+pymdownx.caret = {}
+pymdownx.keys = {}
+pymdownx.mark = {}
+pymdownx.tilde = {}
+pymdownx.arithmatex = { generic = true }
+pymdownx.magiclink = { repo_url_shorthand = true, user = "CMBSciPol", repo = "furax" }
+pymdownx.emoji = {}
+abbr = {}
+attr_list = {}
+def_list = {}
+pymdownx.tasklist = { custom_checkbox = true }
+
+[project.theme]
+language = "en"
+icon.repo = "fontawesome/brands/github"
+
+features = [
+    "announce.dismiss",
+    "content.code.annotate",
+    "content.code.copy",
+    "content.footnote.tooltips",
+    "content.tabs.link",
+    "content.tooltips",
+    "navigation.footer",
+    "navigation.indexes",
+    "navigation.instant",
+    "navigation.instant.prefetch",
+    "navigation.path",
+    "navigation.sections",
+    "navigation.top",
+    "navigation.tracking",
+    "search.highlight",
+]
+
+palette = [
+  {
+    media = "(prefers-color-scheme)",
+    toggle = { icon = "lucide/sun-moon", name = "Switch to light mode" }
+  },
+  {
+    media = "(prefers-color-scheme: light)",
+    scheme = "default",
+    toggle = { icon = "lucide/sun", name = "Switch to dark mode" }
+  },
+  {
+    media = "(prefers-color-scheme: dark)",
+    scheme = "slate",
+    toggle = { icon = "lucide/moon", name = "Switch to system preference" }
+  },
+]

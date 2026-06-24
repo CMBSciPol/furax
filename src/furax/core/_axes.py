@@ -26,7 +26,7 @@ class MoveAxisOperator(AbstractLinearOperator):
         source: The source axis or axes to move.
         destination: The destination axis or axes.
 
-    Example:
+    Examples:
         >>> in_structure = jax.ShapeDtypeStruct((2, 3), jnp.float32)
         >>> op = MoveAxisOperator(0, 1, in_structure=in_structure)
         >>> op(jnp.array([[1., 1, 1], [2, 2, 2]]))
@@ -120,7 +120,7 @@ class RavelOperator(AbstractRavelOrReshapeOperator):
         first_axis: The first axis to flatten (default: 0).
         last_axis: The last axis to flatten (default: -1).
 
-    Example:
+    Examples:
         To flatten the leaves of a pytree:
 
         >>> in_structure = jax.ShapeDtypeStruct((2, 3), jnp.float32)

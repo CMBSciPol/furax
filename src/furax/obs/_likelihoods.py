@@ -36,33 +36,29 @@ def _create_component(
     patch_indices: PyTree[Array],
     in_structure: Stokes,
 ) -> AbstractSEDOperator:
-    """
-    Create a linear operator component corresponding to the given astrophysical signal.
+    """Create a linear operator component corresponding to the given astrophysical signal.
 
-    Parameters
-    ----------
-    name : str
-        Name of the component ('cmb', 'dust', or 'synchrotron').
-    nu : Array
-        Array of frequencies at which the operator is evaluated.
-    frequency0 : float
-        Reference frequency. For dust, this is dust_nu0; for synchrotron, synchrotron_nu0.
-    params : PyTree[Array]
-        Dictionary containing the spectral parameters, e.g., 'temp_dust', 'beta_dust', or 'beta_pl'.
-    patch_indices : PyTree[Array]
-        Dictionary containing the patch indices for spatially varying parameters.
-    in_structure : Stokes
-        The input structure (e.g., a Stokes object) defining the shape and configuration.
+    Args:
+        name (str):
+            Name of the component ('cmb', 'dust', or 'synchrotron').
+        nu (Array):
+            Array of frequencies at which the operator is evaluated.
+        frequency0 (float):
+            Reference frequency. For dust, this is dust_nu0; for synchrotron, synchrotron_nu0.
+        params (PyTree[Array]):
+            Dictionary containing the spectral parameters, e.g., 'temp_dust', 'beta_dust', or 'beta_pl'.
+        patch_indices (PyTree[Array]):
+            Dictionary containing the patch indices for spatially varying parameters.
+        in_structure (Stokes):
+            The input structure (e.g., a Stokes object) defining the shape and configuration.
 
-    Returns
-    -------
-    AbstractLinearOperator
-        The corresponding linear operator for the specified component.
+    Returns:
+        AbstractLinearOperator
+            The corresponding linear operator for the specified component.
 
-    Raises
-    ------
-    ValueError
-        If the component name is not one of 'cmb', 'dust', or 'synchrotron'.
+    Raises:
+        ValueError
+            If the component name is not one of 'cmb', 'dust', or 'synchrotron'.
     """
     if name == 'cmb':
         return CMBOperator(nu, in_structure=in_structure)
@@ -89,25 +85,21 @@ def _create_component(
 
 
 def _get_available_components(params: PyTree[Array]) -> list[str]:
-    """
-    Determine the list of available astrophysical components based on the provided parameters.
+    """Determine the list of available astrophysical components based on the provided parameters.
 
-    Parameters
-    ----------
-    params : PyTree[Array]
-        Dictionary containing spectral parameters. Expected keys include 'temp_dust', 'beta_dust',
-        and/or 'beta_pl'.
+    Args:
+        params (PyTree[Array]):
+            Dictionary containing spectral parameters. Expected keys include 'temp_dust', 'beta_dust',
+            and/or 'beta_pl'.
 
-    Returns
-    -------
-    list[str]
-        List of available components. 'cmb' is always included; 'dust' is added if both
-        'temp_dust' and 'beta_dust' are provided; 'synchrotron' is added if 'beta_pl' is provided.
+    Returns:
+        list[str]
+            List of available components. 'cmb' is always included; 'dust' is added if both
+            'temp_dust' and 'beta_dust' are provided; 'synchrotron' is added if 'beta_pl' is provided.
 
-    Raises
-    ------
-    AssertionError
-        If only one of 'temp_dust' or 'beta_dust' is provided without the other.
+    Raises:
+        AssertionError
+            If only one of 'temp_dust' or 'beta_dust' is provided without the other.
     """
     available_components = ['cmb']
     if 'temp_dust' in params or 'beta_dust' in params:
@@ -151,8 +143,7 @@ def preconditionner(
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
 ) -> MixingMatrixOperator:  # type: ignore[valid-type]
-    """
-    Constructs the MixingMatrixOperator for preconditioning purposes.
+    """Constructs the MixingMatrixOperator for preconditioning purposes.
 
     This function builds the mixing matrix operator based on the provided spectral parameters
     and frequencies, without directly involving the observed data or noise operators.
@@ -170,7 +161,7 @@ def preconditionner(
     Returns:
         MixingMatrixOperator: The constructed mixing matrix operator suitable for preconditioning.
 
-    Example:
+    Examples:
         >>> from furax.obs import preconditionner
         >>> from furax.obs.stokes import Stokes
         >>> import jax.numpy as jnp
@@ -199,8 +190,7 @@ def _spectral_likelihood_core(
     op: AbstractLinearOperator | None,
     N_2: AbstractLinearOperator | None,
 ) -> tuple[ComponentParametersDict, ComponentParametersDict]:
-    """
-    Compute the base spectral log likelihood components used in spectral estimation.
+    r"""Compute the base spectral log likelihood components used in spectral estimation.
 
     This function computes two key quantities:
     - AND: The product A^T N^{-1} d
@@ -217,38 +207,35 @@ def _spectral_likelihood_core(
       - $N$ is the noise operator.
       - $d$ is the observed data in Stokes parameters.
 
-    Parameters
-    ----------
-    params : PyTree[Array]
-        Dictionary of spectral parameters.
-    patch_indices : PyTree[Array]
-        Dictionary of patch indices for spatially varying parameters.
-    nu : Array
-        Array of frequencies.
-    N : AbstractLinearOperator
-        Noise covariance operator.
-    d : Stokes
-        Data in Stokes parameter format.
-    dust_nu0 : float
-        Reference frequency for dust.
-    synchrotron_nu0 : float
-        Reference frequency for synchrotron.
-    op : AbstractLinearOperator or None
-        Optional operator to be applied; if None, the IdentityOperator is used.
-    N_2 : AbstractLinearOperator or None
-        Optional secondary noise operator; if None, it defaults to N.
+    Args:
+        params (PyTree[Array]):
+            Dictionary of spectral parameters.
+        patch_indices (PyTree[Array]):
+            Dictionary of patch indices for spatially varying parameters.
+        nu (Array):
+            Array of frequencies.
+        N (AbstractLinearOperator):
+            Noise covariance operator.
+        d (Stokes):
+            Data in Stokes parameter format.
+        dust_nu0 (float):
+            Reference frequency for dust.
+        synchrotron_nu0 (float):
+            Reference frequency for synchrotron.
+        op (AbstractLinearOperator or None):
+            Optional operator to be applied; if None, the IdentityOperator is used.
+        N_2 (AbstractLinearOperator or None):
+            Optional secondary noise operator; if None, it defaults to N.
 
-    Returns
-    -------
-    tuple[SpecParamType, SpecParamType]
-        A tuple containing:
-          - AND: The weighted data vector A^T N^{-1} d.
-          - s: The solution vector (A^T N^{-1} A)^{-1} (A^T N^{-1} d).
+    Returns:
+        tuple[SpecParamType, SpecParamType]
+            A tuple containing:
+              - AND: The weighted data vector A^T N^{-1} d.
+              - s: The solution vector (A^T N^{-1} A)^{-1} (A^T N^{-1} d).
 
-    Raises
-    ------
-    AssertionError
-        If provided keys in params or patch_indices are not within the valid sets.
+    Raises:
+        AssertionError
+            If provided keys in params or patch_indices are not within the valid sets.
     """
     in_structure = d.structure_for((d.shape[1],))
 
@@ -291,9 +278,7 @@ def _spectral_log_likelihood_analytical(
     op: AbstractLinearOperator | None = None,
     N_2: AbstractLinearOperator | None = None,
 ) -> Scalar:
-    """
-    Forward pass wrapper. This is the main entry point.
-    """
+    """Forward pass wrapper. This is the main entry point."""
     AND, s = _spectral_likelihood_core(
         params, patch_indices, nu, N, d, dust_nu0, synchrotron_nu0, op, N_2
     )
@@ -312,8 +297,8 @@ def _spectral_log_likelihood_fwd(
     op: AbstractLinearOperator | None,
     N_2: AbstractLinearOperator | None,
 ) -> Any:
-    """
-    The forward pass implementation for custom_vjp.
+    """The forward pass implementation for custom_vjp.
+
     Returns the likelihood (L) and the residuals needed for the backward pass.
     """
     if N_2 is None:
@@ -338,9 +323,7 @@ def _spectral_log_likelihood_fwd(
 def _spectral_log_likelihood_bwd(
     dust_nu0: float, synchrotron_nu0: float, res: Any, g: Scalar
 ) -> tuple[Any, ...]:
-    """
-    The backward pass implementation for custom_vjp.
-    """
+    """The backward pass implementation for custom_vjp."""
     (params, nu, N, d, s, op, N_2, _, _, patch_indices) = res
 
     # 1. Reconstruct the Mixing Matrix A from parameters
@@ -411,8 +394,7 @@ def spectral_log_likelihood(
     N_2: AbstractLinearOperator | None = None,
     analytical_gradient: bool = False,
 ) -> Scalar:
-    """
-    Compute the spectral log likelihood.
+    """Compute the spectral log likelihood.
 
     Args:
         params (PyTree[Array]): Dictionary of spectral parameters.
@@ -430,7 +412,7 @@ def spectral_log_likelihood(
     Returns:
         Scalar: The spectral log likelihood.
 
-    Example:
+    Examples:
         >>> from furax.obs import spectral_log_likelihood
         >>> from furax.obs.stokes import Stokes
         >>> from furax import HomothetyOperator
@@ -469,8 +451,8 @@ def _sky_signal_analytical(
     op: AbstractLinearOperator | None = None,
     N_2: AbstractLinearOperator | None = None,
 ) -> ComponentParametersDict:
-    """
-    Computes the estimated sky signal 's'.
+    """Computes the estimated sky signal 's'.
+
     Wrapped with custom_vjp to handle the implicit differentiation of the linear solve.
     """
     _, s = _spectral_likelihood_core(
@@ -511,8 +493,8 @@ def _sky_signal_fwd(
 def _sky_signal_bwd(
     dust_nu0: float, synchrotron_nu0: float, res: Any, g: Scalar
 ) -> tuple[Any, ...]:
-    """
-    Backward pass for sky_signal.
+    """Backward pass for sky_signal.
+
     'g' is the incoming gradient (cotangent) w.r.t the output 's'.
     """
     (params, nu, N, d, s, op, N_2, _, _, patch_indices) = res
@@ -588,8 +570,7 @@ def sky_signal(
     N_2: AbstractLinearOperator | None = None,
     analytical_gradient: bool = False,
 ) -> ComponentParametersDict:
-    """
-    Computes the estimated sky signal 's'.
+    """Computes the estimated sky signal 's'.
 
     Args:
         params (PyTree[Array]): Dictionary of spectral parameters.
@@ -607,7 +588,7 @@ def sky_signal(
     Returns:
         ComponentParametersDict: The estimated sky signal components (e.g., 'cmb', 'dust', 'synchrotron').
 
-    Example:
+    Examples:
         >>> from furax.obs import sky_signal
         >>> from furax.obs.stokes import Stokes
         >>> from furax import HomothetyOperator
@@ -646,8 +627,7 @@ def negative_log_likelihood(
     N_2: AbstractLinearOperator | None = None,
     analytical_gradient: bool = False,
 ) -> Scalar:
-    """
-    Compute the negative spectral log likelihood.
+    """Compute the negative spectral log likelihood.
 
     This function returns the negative of the spectral log likelihood, which is useful for
     optimization procedures where minimizing the negative log likelihood is equivalent to
@@ -669,7 +649,7 @@ def negative_log_likelihood(
     Returns:
         Scalar: The negative spectral log likelihood.
 
-    Example:
+    Examples:
         >>> from furax.obs import negative_log_likelihood
         >>> from furax.obs.stokes import Stokes
         >>> from furax import HomothetyOperator
@@ -712,8 +692,7 @@ def spectral_cmb_variance(
     N_2: AbstractLinearOperator | None = None,
     analytical_gradient: bool = False,
 ) -> Scalar:
-    """
-    Compute the variance of the CMB component from the spectral estimation.
+    """Compute the variance of the CMB component from the spectral estimation.
 
     This function calculates the variance of the CMB component from the estimated sky signal 's'.
 
@@ -733,7 +712,7 @@ def spectral_cmb_variance(
     Returns:
         Scalar: The variance of the CMB component.
 
-    Example:
+    Examples:
         >>> from furax.obs import spectral_cmb_variance
         >>> from furax.obs.stokes import Stokes
         >>> from furax import HomothetyOperator

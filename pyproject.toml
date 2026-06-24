@@ -87,12 +87,8 @@ dev = [
     'beartype',
 ]
 docs = [
-    'sphinx>=5.0',
-    'sphinx-book-theme>=1.0',
-    'sphinx-copybutton>=0.5',
-    'myst-parser>=1.0',
-    'nbsphinx>=0.8',
-    'ipykernel>=6.0',
+    'zensical>=0.0.46',
+    'mkdocstrings-python>=2.0.5',
 ]
 cuda = ['jax[cuda13]>=0.10.0']
 
@@ -163,6 +159,7 @@ force-exclude = true # useful with ruff-pre-commit plugin
 extend-select = [
     'ARG001', # flake8-unused-function-arguments
     'B',      # flake8-bugbear
+    'D',      # pydocstyle
     'I',      # isort
     'UP',     # pyupgrade
     'T10',    # flake8-debugger
@@ -172,7 +169,15 @@ ignore = [
     'E741', # ambiguous variable name
     'F722', # forward annotation syntax error; conflicts with jaxtyping Array annotations
     'B905', # zip() without `strict=` parameter
+    'D1',   # missing docstrings (not required)
+    'D415', # first line should end with period/question/exclamation
 ]
+
+[tool.ruff.lint.per-file-ignores]
+'tests/**' = ['D'] # docstring conventions only matter for the rendered API, not tests
+
+[tool.ruff.lint.pydocstyle]
+convention = 'google'
 
 [tool.ruff.format]
 quote-style = 'single'

@@ -76,7 +76,7 @@ class ObservationModel:
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
-        """Reader fields needed to build an :class:`ObservationModel` via :meth:`create`."""
+        """Reader fields needed to build an [`ObservationModel`][] via [`create`][]."""
         fields: set[str] = {
             ReaderField.BORESIGHT_QUATERNIONS,
             ReaderField.DETECTOR_QUATERNIONS,
@@ -128,7 +128,7 @@ class ObservationModel:
         return BlockDiagonalOperator(operator_tree)
 
     def _get_indexer(self) -> IndexOperator:
-        """Get the IndexOperator for gap-filling"""
+        """Get the IndexOperator for gap-filling."""
         if isinstance(self.masker, MaskOperator):
             mask = self.masker.to_boolean_mask()
         elif isinstance(self.masker, IdentityOperator):
@@ -215,7 +215,6 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
 
     For ATOP mapmaker, extra pixels may be masked depending on atop_tau.
     """
-
     mask = data[ReaderField.VALID_SAMPLE_MASKS]
 
     if config.method == Methods.ATOP:

@@ -35,13 +35,14 @@ class AbstractReader(ABC):
         structures: list[PyTree[jax.ShapeDtypeStruct]] | None = None,
         **keywords: Sequence[Any],
     ) -> None:
-        """
+        """Initialize the reader.
+
         Args:
-            *args: One list per positional argument to the read function, one element per data item.
+            *args: One list per positional argument to the read function, one element per item.
             common_keywords: Keyword arguments shared by all data items.
             structures: Pre-computed per-item output structures.
                 When provided, constructor skips all I/O and uses them directly.
-            **keywords: One list per keyword argument to the read function, one element per data item.
+            **keywords: One list per keyword argument to the read function, one element per item.
         """
         self.args, self.keywords = self._normalize_args_keywords(args, keywords)
         self.count = len(self.args)

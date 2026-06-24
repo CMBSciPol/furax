@@ -225,7 +225,7 @@ class AbstractBinaryRule(AbstractRule, ABC):
                 )
 
     def _check_operands(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
-        """Shared operand-class matching: raises :class:`NoReduction` if the rule does not apply."""
+        """Shared operand-class matching: raises [`NoReduction`][] if the rule does not apply."""
         if self.operator_class is not None:
             if not isinstance(left, self.operator_class) and not isinstance(
                 right, self.operator_class
@@ -242,7 +242,7 @@ class AbstractBinaryRule(AbstractRule, ABC):
 
     @abstractmethod
     def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
-        """Raises :class:`NoReduction` if the rule does not apply to ``(left, right)``."""
+        """Raises [`NoReduction`][] if the rule does not apply to ``(left, right)``."""
 
     @abstractmethod
     def apply(
@@ -317,7 +317,7 @@ class AbstractAdditionRule(AbstractBinaryRule):
 
 
 class HomothetyAdditionRule(AbstractAdditionRule):
-    """Additive rule ``H(a) + H(b) = H(a + b)`` (the additive analog of :class:`HomothetyRule`)."""
+    """Additive rule ``H(a) + H(b) = H(a + b)`` (the additive analog of [`HomothetyRule`][])."""
 
     left_operator_class = HomothetyOperator
     right_operator_class = HomothetyOperator

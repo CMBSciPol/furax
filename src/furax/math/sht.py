@@ -2,17 +2,17 @@
 
 The two core operators are:
 
-- :class:`Map2Alm`: analysis transform (pixel map → spherical harmonic coefficients).
-- :class:`Alm2Map`: synthesis transform (spherical harmonic coefficients → pixel map).
+- [`Map2Alm`][]: analysis transform (pixel map → spherical harmonic coefficients).
+- [`Alm2Map`][]: synthesis transform (spherical harmonic coefficients → pixel map).
 
 Both operators accept PyTree inputs whose leaves are 2-D arrays of shape
 ``(nfreq, npix)`` or ``(nfreq, lmax+1, 2*lmax+1)``.  A 1-D leaf is promoted to 2-D via
 ``jnp.atleast_2d`` before processing so that single-frequency inputs work
 without special-casing.
 
-:class:`SHTRule` registers an algebraic simplification so that the composition
+[`SHTRule`][] registers an algebraic simplification so that the composition
 ``Map2Alm @ Alm2Map`` (synthesis followed by analysis) is reduced to an
-:class:`~furax.IdentityOperator` at operator-construction time.
+[`IdentityOperator`][furax.IdentityOperator] at operator-construction time.
 """
 
 from dataclasses import field
@@ -37,21 +37,21 @@ class Map2Alm(AbstractLinearOperator):
 
     Construction is guarded by a ``hasattr`` check against ``jax_healpy``:
     if ``jhp.map2alm`` is missing (e.g. on an older ``jax-healpy`` release),
-    instantiation raises :class:`ImportError`.
+    instantiation raises [`ImportError`][].
 
     Attributes:
         lmax: Maximum spherical harmonic degree.
         nside: HEALPix resolution parameter, carried so that
-            :meth:`inverse` can construct
-            :class:`Alm2Map` with the correct resolution.
+            [`inverse`][] can construct
+            [`Alm2Map`][] with the correct resolution.
         iter: Number of iterations for the map2alm solver; more iterations,
             which are more expensive, yield more accurate alm coefficients.
             (default is 3)
         pol: Reserved for the polarization-aware SHT.  Routed to
             ``jhp.map2alm`` but only ``False`` is supported today; passing
-            ``True`` raises :class:`NotImplementedError` at construction.
+            ``True`` raises [`NotImplementedError`][] at construction.
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax.math.sht import Map2Alm
         >>> from furax.obs.stokes import StokesIQU
@@ -100,10 +100,10 @@ class Map2Alm(AbstractLinearOperator):
         return jax.tree.map(func, x)
 
     def inverse(self) -> 'Alm2Map':
-        """Return the pseudo-inverse operator :class:`Alm2Map`.
+        """Return the pseudo-inverse operator [`Alm2Map`][].
 
         Returns:
-            An :class:`Alm2Map` whose ``in_structure`` matches the output
+            An [`Alm2Map`][] whose ``in_structure`` matches the output
             structure of this operator (i.e. alm space).
         """
         return Alm2Map(
@@ -127,7 +127,7 @@ class Alm2Map(AbstractLinearOperator):
 
     Construction is guarded by a ``hasattr`` check against ``jax_healpy``:
     if ``jhp.alm2map`` is missing (e.g. on an older ``jax-healpy`` release),
-    instantiation raises :class:`ImportError`.
+    instantiation raises [`ImportError`][].
 
     Attributes:
         lmax: Maximum spherical harmonic degree.
@@ -136,9 +136,9 @@ class Alm2Map(AbstractLinearOperator):
             the inverse. (Default is 3)
         pol: Reserved for the polarization-aware SHT.  Routed to
             ``jhp.alm2map`` but only ``False`` is supported today; passing
-            ``True`` raises :class:`NotImplementedError` at construction.
+            ``True`` raises [`NotImplementedError`][] at construction.
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax.math.sht import Alm2Map
         >>> from furax.obs.stokes import StokesIQU
@@ -183,10 +183,10 @@ class Alm2Map(AbstractLinearOperator):
         return jax.tree.map(func, x)
 
     def inverse(self) -> 'Map2Alm':
-        """Return the pseudo-inverse operator :class:`Map2Alm`.
+        """Return the pseudo-inverse operator [`Map2Alm`][].
 
         Returns:
-            A :class:`Map2Alm` whose ``in_structure`` matches the output
+            A [`Map2Alm`][] whose ``in_structure`` matches the output
             structure of this operator (i.e. map space).
         """
         return Map2Alm(
@@ -204,7 +204,7 @@ class SHTRule(AbstractCompositionRule):
     The composition *analysis after synthesis* (``Map2Alm @ Alm2Map``) is
     exact when the band-limit ``lmax`` is consistent with the HEALPix
     resolution ``nside``, so the rule collapses it to an
-    :class:`~furax.IdentityOperator` on the alm input space.
+    [`IdentityOperator`][furax.IdentityOperator] on the alm input space.
 
     The reverse composition ``Alm2Map @ Map2Alm`` is a band-limited
     projection, **not** an identity, and is therefore not reduced.
@@ -219,12 +219,12 @@ class SHTRule(AbstractCompositionRule):
         """Reduce ``left @ right`` to an identity when the pair is Map2Alm/Alm2Map.
 
         Args:
-            left: Left operator in the composition (must be :class:`Map2Alm`).
-            right: Right operator in the composition (must be :class:`Alm2Map`).
+            left: Left operator in the composition (must be [`Map2Alm`][]).
+            right: Right operator in the composition (must be [`Alm2Map`][]).
 
         Returns:
             A single-element list containing an
-            :class:`~furax.IdentityOperator` on the alm input space.
+            [`IdentityOperator`][furax.IdentityOperator] on the alm input space.
 
         Raises:
             NoReduction: If the operator pair does not match the expected types

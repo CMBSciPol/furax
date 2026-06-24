@@ -31,38 +31,36 @@ def main(
 ) -> dict[str, Any]:
     """Mapmaking script for SO observation data.
 
-    Args
-    ----
-    preprocess_config : path or dict, or None
-        Preprocessing configuration dictionary or path to a yaml file
-    mapmaking_config : path or dict
-        Mapmaking configuration dictionary or path to a yaml file
-    obs_id : str
-        Observation id.
-        e.g., obs_1714550584_satp3_1111111.
-    det_select : dict, optional
-        If specified, select a subset of detectors
-        e.g. {'wafer_slot': 'ws0', 'wafer.bandpass': 'f150'}.
-    verbosity : int
-        verbosity level of logging.Logger
-    binary_filepath : path, optional
-        If specified, load the observation from a binary file instead.
-        Overrides preprocess_config, obs_id, det_select.
-    obs : AxisManager, optional
-        If specified, use the observation object passed.
-        Overrides preprocess_config, obs_id, det_select, binary_filepath.
-    output_path : path, optional
-        If specified, create directories leading to the path and
-        save the output map and configuration files.
+    Args:
+        preprocess_config (path or dict, or None):
+            Preprocessing configuration dictionary or path to a yaml file
+        mapmaking_config (path or dict):
+            Mapmaking configuration dictionary or path to a yaml file
+        obs_id (str):
+            Observation id.
+            e.g., obs_1714550584_satp3_1111111.
+        wafer (str, optional):
+            If specified, select a subset of detectors by wafer slot, e.g. 'ws0'.
+        band (str, optional):
+            If specified, select a subset of detectors by bandpass, e.g. 'f150'.
+        verbosity (int):
+            verbosity level of logging.Logger
+        binary_filepath (path, optional):
+            If specified, load the observation from a binary file instead.
+            Overrides preprocess_config, obs_id, wafer, band.
+        obs (AxisManager, optional):
+            If specified, use the observation object passed.
+            Overrides preprocess_config, obs_id, wafer, band, binary_filepath.
+        output_path (path, optional):
+            If specified, create directories leading to the path and
+            save the output map and configuration files.
 
-    Returns
-    -------
-    map_results : dict
-        Product of the mapmaking pipeline.
-        The contents vary depending on the mapmaker used.
-        See individual mapmakers for details on the outputs.
+    Returns:
+        map_results (dict):
+            Product of the mapmaking pipeline.
+            The contents vary depending on the mapmaker used.
+            See individual mapmakers for details on the outputs.
     """
-
     logger = init_logger('preprocess', verbosity=verbosity)
     logger.info('Initialised logger')
 
@@ -119,7 +117,6 @@ def main(
 
 def load_result(result_path: str | Path) -> dict[str, Any]:
     """Load results from a directory into a dictionary."""
-
     if not isinstance(result_path, Path):
         result_path = Path(result_path)
 

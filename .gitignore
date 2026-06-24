@@ -3,6 +3,8 @@ MANIFEST
 build
 dist
 _site
+/site/
+.cache/
 htmlcov
 __pycache__
 *.egg-info

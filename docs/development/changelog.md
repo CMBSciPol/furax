@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Initial documentation website with Sphinx and ReadTheDocs
 - Comprehensive user guide covering data structures and operators
 - Examples for CMB component separation and mapmaking
-- Complete API reference with autodoc
+- Complete API reference with mkdocstrings
 - Contributing guidelines and development setup
+
+### Changed
+
+- Migrated the documentation website from Sphinx to Zensical (Material for MkDocs)
 
 ## [0.1.0] - 2024-XX-XX
 

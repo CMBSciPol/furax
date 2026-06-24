@@ -55,17 +55,17 @@ def test_reader_all_fields(observations) -> None:
 
         # check padding consistency
         ndet, nsample = OBS_NDET[i], OBS_NSAMPLE[i]
-        assert padding['metadata'].uid == ()
-        assert padding['metadata'].telescope_uid == ()
-        assert padding['metadata'].detector_uids == (ndet_max - ndet,)
-        assert padding['sample_data'] == (ndet_max - ndet, nsample_max - nsample)
-        assert padding['valid_sample_masks'] == (ndet_max - ndet, nsample_max - nsample)
-        assert padding['valid_scanning_masks'] == (nsample_max - nsample,)
-        assert padding['timestamps'] == (nsample_max - nsample,)
-        assert padding['hwp_angles'] == (nsample_max - nsample,)
-        assert padding['detector_quaternions'] == (ndet_max - ndet, 0)
-        assert padding['boresight_quaternions'] == (nsample_max - nsample, 0)
-        assert padding['noise_model_fits'] == (ndet_max - ndet, 0)
+        assert tuple(padding['metadata'].uid) == ()
+        assert tuple(padding['metadata'].telescope_uid) == ()
+        assert tuple(padding['metadata'].detector_uids) == (ndet_max - ndet,)
+        assert tuple(padding['sample_data']) == (ndet_max - ndet, nsample_max - nsample)
+        assert tuple(padding['valid_sample_masks']) == (ndet_max - ndet, nsample_max - nsample)
+        assert tuple(padding['valid_scanning_masks']) == (nsample_max - nsample,)
+        assert tuple(padding['timestamps']) == (nsample_max - nsample,)
+        assert tuple(padding['hwp_angles']) == (nsample_max - nsample,)
+        assert tuple(padding['detector_quaternions']) == (ndet_max - ndet, 0)
+        assert tuple(padding['boresight_quaternions']) == (nsample_max - nsample, 0)
+        assert tuple(padding['noise_model_fits']) == (ndet_max - ndet, 0)
 
 
 def test_reader_invalid_data_field_name(observations) -> None:

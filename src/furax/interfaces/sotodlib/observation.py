@@ -560,7 +560,8 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         """
         _enable_preproc_context_cache()
         # call get_preprocess_context through the module so the cached get_preprocess_context is used
-        _, context = pu.get_preprocess_context(self.init_config)
+        # (str, not Path: sotodlib and the cache key expect a posix string)
+        _, context = pu.get_preprocess_context(self.init_config.as_posix())
         meta = context.get_meta(self.observation_id, dets=self.detector_selection)
         n_samps_ub = -(-meta.samps.count // self.downsample)  # ceil, matches downsample_obs
         return meta.dets.count, n_samps_ub

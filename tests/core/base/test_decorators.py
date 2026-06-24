@@ -7,6 +7,7 @@ import pytest
 from furax import (
     AbstractLinearOperator,
     diagonal,
+    idempotent,
     lower_triangular,
     negative_semidefinite,
     orthogonal,
@@ -48,6 +49,7 @@ def test_not_square(Op) -> None:
     assert not op.is_upper_triangular
     assert not op.is_negative_semidefinite
     assert not op.is_positive_semidefinite
+    assert not op.is_idempotent
 
     assert op.in_structure != op.out_structure
     assert op.T is not op
@@ -67,6 +69,7 @@ def test_not_square(Op) -> None:
         upper_triangular,
         negative_semidefinite,
         positive_semidefinite,
+        idempotent,
     ],
 )
 def test_square(decorator, Op) -> None:
@@ -125,6 +128,13 @@ def test_positive_semidefinite(Op) -> None:
     positive_semidefinite(Op)
     op = Op(in_structure=_in_struct)
     assert op.is_positive_semidefinite
+
+
+def test_idempotent(Op) -> None:
+    idempotent(Op)
+    op = Op(in_structure=_in_struct)
+    assert op.is_idempotent
+    assert op.is_square
 
 
 def test_subclass() -> None:

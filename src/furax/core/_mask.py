@@ -2,11 +2,12 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, Inexact, PyTree, UInt8
 
-from ._base import AbstractLinearOperator, symmetric
+from ._base import AbstractLinearOperator, idempotent, symmetric
 from .rules import AbstractCompositionRule
 
 
 @symmetric
+@idempotent
 class MaskOperator(AbstractLinearOperator):
     """Operator that zeros out values according to a boolean mask: M(x) = x * mask.
 
@@ -86,8 +87,8 @@ def _check_and_pack(
     return jnp.packbits(boolean_mask, axis=-1)
 
 
-class InverseBinaryRule(AbstractCompositionRule):
-    """Binary rule for composition of MaskOperator's."""
+class MaskFusionRule(AbstractCompositionRule):
+    """Binary rule fusing a composition of two MaskOperators into one via bitwise AND."""
 
     left_operator_class = MaskOperator
     right_operator_class = MaskOperator

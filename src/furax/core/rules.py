@@ -291,6 +291,22 @@ class InverseBinaryRule(AbstractCompositionRule):
         return []
 
 
+class IdempotentRule(AbstractCompositionRule):
+    """Binary rule for `P @ P = P` when `P` is idempotent."""
+
+    operator_class = AbstractLinearOperator
+
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        super().check(left, right)
+        if not (left.is_idempotent and left is right):
+            raise NoReduction
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        return [left]
+
+
 class AbstractAdditionRule(AbstractBinaryRule):
     """A binary rule to reduce a sum ``op1 + op2``."""
 

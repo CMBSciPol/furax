@@ -40,6 +40,15 @@ def test_mask_operator_non_broadcastable():
         _ = MaskOperator.from_boolean_mask(mask, in_structure=as_structure(x))
 
 
+def test_mask_operator_is_idempotent():
+    """MaskOperator carries the symmetric and idempotent tags."""
+    x = jnp.array([1.0, 2.0, 3.0, 4.0])
+    mask = jnp.array([True, False, True, True])
+    op = MaskOperator.from_boolean_mask(mask, in_structure=as_structure(x))
+    assert op.is_idempotent
+    assert op.is_symmetric
+
+
 def test_mask_operator_composition():
     """Test composition of mask operators."""
     x = jnp.array([1.0, 2.0, 3.0, 4.0])
@@ -56,6 +65,20 @@ def test_mask_operator_composition():
     expected = jnp.array([1.0, 0.0, 0.0, 4.0])
     result = composed_op(x)
     assert_array_equal(result, expected)
+
+
+def test_mask_operator_idempotent_same_instance():
+    """`op @ op` reduces via IdempotentRule, which fires before MaskFusionRule.
+
+    The identity-based IdempotentRule returns the exact same instance; MaskFusionRule
+    would instead build a fresh MaskOperator. Asserting `is op` proves IdempotentRule won.
+    """
+    x = jnp.array([1.0, 2.0, 3.0, 4.0])
+    mask = jnp.array([True, False, True, True])
+    op = MaskOperator.from_boolean_mask(mask, in_structure=as_structure(x))
+
+    reduced = (op @ op).reduce()
+    assert reduced is op
 
 
 def test_mask_operator_zero_preserving():

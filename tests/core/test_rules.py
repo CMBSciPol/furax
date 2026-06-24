@@ -6,7 +6,14 @@ import numpy as np
 import pytest
 from jaxtyping import PyTree
 
-from furax import AbstractLinearOperator, HomothetyOperator, IdentityOperator, orthogonal, square
+from furax import (
+    AbstractLinearOperator,
+    HomothetyOperator,
+    IdentityOperator,
+    idempotent,
+    orthogonal,
+    square,
+)
 from furax.core._base import (
     AbstractLazyInverseOrthogonalOperator,
     AdditionOperator,
@@ -48,6 +55,12 @@ class Op2(AbstractLinearOperator):
 class Op2T(AbstractLazyInverseOrthogonalOperator):
     def mv(self, x):
         return 3 * x
+
+
+@idempotent
+class OpIdem(AbstractLinearOperator):
+    def mv(self, x):
+        return x
 
 
 _scalar_struct = jax.ShapeDtypeStruct((), np.float32)
@@ -97,6 +110,27 @@ def test_inverse_2(op: AbstractLinearOperator, composed_op: CompositionOperator)
     assert isinstance(reduced_op, IdentityOperator)
     assert reduced_op.in_structure == op.in_structure
     assert reduced_op.out_structure == op.out_structure
+
+
+def test_idempotent_same_instance() -> None:
+    op = OpIdem(in_structure=_scalar_struct)
+    reduced_op = CompositionOperator([op, op]).reduce()
+    assert reduced_op is op
+
+
+def test_idempotent_triple_same_instance() -> None:
+    op = OpIdem(in_structure=_scalar_struct)
+    reduced_op = CompositionOperator([op, op, op]).reduce()
+    assert reduced_op is op
+
+
+def test_idempotent_distinct_instances_no_reduction() -> None:
+    # value-equal but distinct instances are left alone (identity-based rule).
+    op1 = OpIdem(in_structure=_scalar_struct)
+    op2 = OpIdem(in_structure=_scalar_struct)
+    reduced_op = CompositionOperator([op1, op2]).reduce()
+    assert isinstance(reduced_op, CompositionOperator)
+    assert len(reduced_op.operands) == 2
 
 
 def test_homothety1() -> None:

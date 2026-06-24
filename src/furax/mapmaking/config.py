@@ -119,7 +119,7 @@ class WeightingConfig:
 class HealpixConfig:
     """Configuration for a HEALPix output map.
 
-    Example:
+    Examples:
         In a YAML config file:
 
         healpix:
@@ -138,7 +138,7 @@ class HealpixConfig:
 class SkyPatch:
     """Explicit rectangular sky patch for WCS map construction.
 
-    Example:
+    Examples:
         In a YAML config file:
 
         patch:
@@ -356,7 +356,7 @@ class TemplatesConfig:
 
 @dataclass(frozen=True)
 class GapFillingConfig:
-    """Specific gap-filling options"""
+    """Specific gap-filling options."""
 
     seed: int = 286502183
     """An integer seed for the noise realization"""
@@ -370,7 +370,7 @@ class GapFillingConfig:
 
 @dataclass
 class GapsConfig:
-    """Configuration options related to the treatment of gaps"""
+    """Configuration options related to the treatment of gaps."""
 
     fill: bool = True
     """Fill data gaps with synthetic noise-like samples"""

@@ -51,7 +51,7 @@ class Map2Alm(AbstractLinearOperator):
             ``jhp.map2alm`` but only ``False`` is supported today; passing
             ``True`` raises [`NotImplementedError`][] at construction.
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax.math.sht import Map2Alm
         >>> from furax.obs.stokes import StokesIQU
@@ -138,7 +138,7 @@ class Alm2Map(AbstractLinearOperator):
             ``jhp.alm2map`` but only ``False`` is supported today; passing
             ``True`` raises [`NotImplementedError`][] at construction.
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax.math.sht import Alm2Map
         >>> from furax.obs.stokes import StokesIQU

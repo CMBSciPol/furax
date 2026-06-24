@@ -23,8 +23,8 @@ class GapFillingOperator:
     section II.C, page 6. It assumes that the noise is piece wise stationary and has Gaussian
     statistics, described by the covariance matrix ``cov``.
 
-    Example:
-    Gap-filling a single-detector timestream
+    Examples:
+        Gap-filling a single-detector timestream
 
         >>> key = jax.random.key(0)
         >>> key, subkey = jax.random.split(key)

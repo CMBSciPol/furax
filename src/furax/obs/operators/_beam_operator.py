@@ -48,7 +48,7 @@ class BeamOperator(AbstractLinearOperator):
             frequencies (promoted to 2-D via `jnp.atleast_2d` before
             broadcasting over frequencies).
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax.obs.stokes import StokesIQU
         >>> from furax.obs.operators import BeamOperator
@@ -124,7 +124,7 @@ class BeamOperatorIQU(AbstractLinearOperator):
             shape ``(nfreq, lmax+1)`` and carries the per-frequency beam transfer
             function for that Stokes component.
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax.obs.stokes import StokesIQU
         >>> from furax.obs.operators import BeamOperatorIQU

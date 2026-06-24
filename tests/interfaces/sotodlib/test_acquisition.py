@@ -32,7 +32,6 @@ def test_acquisition_no_hwp_vs_sotodlib():
 
     since sotodlib uses d = I + Q*cos(2φ) + U*sin(2φ) (no 0.5 factor).
     """
-
     lazy_obs = LazySOTODLibObservation(FOLDER / 'test_obs_2.h5')
     obs = lazy_obs.get_data()
     landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')

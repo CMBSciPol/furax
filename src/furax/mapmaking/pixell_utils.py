@@ -16,7 +16,7 @@ from furax.obs.stokes import StokesPyTreeType
 def ndmap_from_wcs_landscape(
     map: StokesPyTreeType, landscape: WCSLandscape | AstropyWCSLandscape
 ) -> pixell.enmap.ndmap:
-    """Convert a given Stokes pytree to pixell's ndmap"""
+    """Convert a given Stokes pytree to pixell's ndmap."""
     wcs = landscape.wcs if isinstance(landscape, AstropyWCSLandscape) else landscape.to_wcs()
     leaves = jax.tree.leaves(map)
     data = leaves[0] if len(leaves) == 1 else leaves
@@ -34,6 +34,7 @@ def plot_ndmap(
     ax: matplotlib.axes._axes.Axes | None = None,
 ) -> tuple[matplotlib.figure.Figure, matplotlib.axes._axes.Axes]:
     """Visualisation function for ndmap that replaces pixell.enplot.eshow for now.
+
     Inputs:
         title: title of the produced plot
         vmax: value above this are mapped to the colormap's upper end
@@ -88,6 +89,7 @@ def plot_cartview(
     axs: matplotlib.axes._axes.Axes | None = None,
 ) -> tuple[matplotlib.figure.Figure, NDArray[matplotlib.axes.Axes]]:
     """Visualisation function for CAR projection of healpix maps.
+
     Unlike healpy.cartview, this function returns matplotlib Axes object, and one can have
     more control of the plot elements such as grids and axes labels.
 
@@ -185,7 +187,7 @@ def get_healpix_lonlat_ranges(
         tuple: (lonra, latra) where lonra=[lon_min, lon_max] and latra=[lat_min, lat_max]
                Ranges are in degrees, suitable for use with plot_cartview()
 
-    Example:
+    Examples:
         >>> import healpy as hp
         >>> import numpy as np
         >>> # Create a small patch map

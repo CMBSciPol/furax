@@ -177,6 +177,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     def get_scanning_intervals(self, det_ind: int = 0) -> NDArray[Any]:
         """Returns scanning intervals of the chosen detector.
+
         The output is a list of the starting and ending sample indices
         """
         return np.array(
@@ -202,11 +203,11 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             raise RuntimeError('Scan mask unavailable in the observation') from e
 
     def get_azimuth(self) -> Float[np.ndarray, ' a']:
-        """Returns the azimuth of the boresight for each sample"""
+        """Returns the azimuth of the boresight for each sample."""
         return np.asarray(self.data.boresight.az)
 
     def get_elevation(self) -> Float[np.ndarray, ' a']:
-        """Returns the elevation of the boresight for each sample"""
+        """Returns the elevation of the boresight for each sample."""
         return np.asarray(self.data.boresight.el)
 
     def get_wcs_shape_and_kernel(
@@ -214,8 +215,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         resolution_arcmin: float,
         projection: ProjectionType = ProjectionType.CAR,
     ) -> tuple[tuple[int, int], WCS]:
-        """Returns astropy WCS kernel object corresponding to the observed sky"""
-
+        """Returns astropy WCS kernel object corresponding to the observed sky."""
         res = resolution_arcmin * pixell.utils.arcmin
         wcs_kernel_init = coords.get_wcs_kernel(projection.name.lower(), 0, 0, res=res)
         wcs_shape, wcs_kernel = coords.get_footprint(self.data, wcs_kernel_init)
@@ -225,8 +225,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     def get_pointing_and_spin_angles(
         self, landscape: StokesLandscape
     ) -> tuple[Integer[Array, 'dets samps 2'], Float[Array, 'dets samps']]:
-        """Obtain pointing information and spin angles from the observation"""
-
+        """Obtain pointing information and spin angles from the observation."""
         # Projection Matrix class instance for the observation
         if isinstance(landscape, AstropyWCSLandscape):
             # TODO: pass 'cuts' keyword here for time slices (glitches etc)?
@@ -257,7 +256,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return pixel_inds, spin_ang  # type: ignore[return-value]
 
     def get_timestamps(self) -> Float[np.ndarray, ' a']:
-        """Returns timestamps (sec) of the samples"""
+        """Returns timestamps (sec) of the samples."""
         return np.asarray(self.data.timestamps)
 
     def get_scanning_mask(self) -> Bool[np.ndarray, ' samp']:
@@ -268,7 +267,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         )
 
     def get_noise_model(self) -> None | NoiseModel:
-        """Load precomputed noise model from the data, if present. Otherwise, return None"""
+        """Load precomputed noise model from the data, if present. Otherwise, return None."""
         try:
             return self._get_noise_model_for_stoke('I')
         except ValueError:
@@ -359,7 +358,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     '''
 
     def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
-        """Returns the boresight quaternions at each time sample"""
+        """Returns the boresight quaternions at each time sample."""
         site = self._sotodlib_config.site
         weather = self._sotodlib_config.weather
         if self._sotodlib_config.wobble_correction:
@@ -379,7 +378,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return np.asarray(csl.Q, dtype=np.float64)
 
     def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
-        """Returns the quaternion offsets of the detectors"""
+        """Returns the quaternion offsets of the detectors."""
         # Use so3g's CPU implementation so the result stays on host
         # quaternion convention is the same ordering (1,i,j,k)
         fp = self.data.focal_plane

@@ -25,40 +25,36 @@ def main(
     output_path: str | None = None,
     log_path: str | None = None,
 ) -> None:
+    """Mapmaking script for SO observation data.
+
+    Args:
+        preprocess_config (str or dict):
+            Preprocessing configuration dictionary or path to a yaml file.
+        mapmaking_configs (list):
+            Paths to mapmaking configuration yaml files.
+        obs_ids (list):
+            Observation ids.
+            e.g., ['obs_1714550584_satp3_1111111']
+        wafer_slot (str or None):
+            If specified, select a subset of wafers
+            e.g. 'ws0'
+        wafer_bandpass (str or None):
+            If specified, select a subset of bandpasses
+            e.g. 'f150'
+        verbosity (int):
+            verboisity level of logging.Logger.
+        output_path (str or None):
+            If specified, create directories leading to the path and
+            save the output map and configuration files.
+        log_path (str or None):
+            If specified, save output logs in a file of the given path.
+
+    Returns:
+        map_results (dict):
+            Product of the mapmaking pipeline.
+            The contents vary depending on the mapmaker used.
+            See individual mapmakers for details on the outputs.
     """
-    Mapmaking script for SO observation data.
-
-    Args
-    ----
-    preprocess_config : str or dict
-        Preprocessing configuration dictionary or path to a yaml file.
-    mapmaking_configs : list
-        Paths to mapmaking configuration yaml files.
-    obs_ids : list
-        Observation ids.
-        e.g., ['obs_1714550584_satp3_1111111']
-    wafer_slot : str or None
-        If specified, select a subset of wafers
-        e.g. 'ws0'
-    wafer_bandpass : str or None
-        If specified, select a subset of bandpasses
-        e.g. 'f150'
-    verbosity : int
-        verboisity level of logging.Logger.
-    output_path : str or None
-        If specified, create directories leading to the path and
-        save the output map and configuration files.
-    log_path : str or None
-        If specified, save output logs in a file of the given path.
-
-    Returns
-    -------
-    map_results : dict
-        Product of the mapmaking pipeline.
-        The contents vary depending on the mapmaker used.
-        See individual mapmakers for details on the outputs.
-    """
-
     logger = init_logger('preprocess', verbosity=verbosity)
     logger.info('Initialised logger')
 

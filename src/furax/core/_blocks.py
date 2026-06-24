@@ -59,7 +59,7 @@ class BlockRowOperator(AbstractBlockOperator):
     Attributes:
         blocks: A pytree of operators (all with identical output structure).
 
-    Example:
+    Examples:
         >>> x = jnp.array([1, 2], jnp.float32)
         >>> I = IdentityOperator(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
         >>> op_list = BlockRowOperator([I, 2*I, 3*I])
@@ -126,7 +126,7 @@ class BlockDiagonalOperator(AbstractBlockOperator):
     Attributes:
         blocks: A pytree of operators.
 
-    Example:
+    Examples:
         >>> x = jnp.array([1, 2], jnp.float32)
         >>> H = DenseBlockDiagonalOperator(
         ...     jnp.array([[0, 1], [1, 0]]),
@@ -196,7 +196,7 @@ class BlockColumnOperator(AbstractBlockOperator):
     Attributes:
         blocks: A pytree of operators (all with identical input structure).
 
-    Example:
+    Examples:
         >>> x = jnp.array([1, 2], jnp.float32)
         >>> I = IdentityOperator(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
         >>> op_list = BlockColumnOperator([I, I, I])

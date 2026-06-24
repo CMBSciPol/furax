@@ -51,7 +51,7 @@ class Landscape(ABC):
 
 @register_static
 class StokesLandscape(Landscape):
-    """Class representing a multidimensional map of Stokes vectors.
+    r"""Class representing a multidimensional map of Stokes vectors.
 
     We assume that integer pixel values fall at the center of pixels (as in the FITS WCS standard,
     see Section 2.1.4 of Greisen et al., 2002, A&A 446, 747).
@@ -59,9 +59,9 @@ class StokesLandscape(Landscape):
     Attributes:
         shape: The shape of the array that stores the map values. The dimensions are in the reverse
             order of the FITS NAXIS* keywords. For a 2-dimensional map, the shape corresponds to
-            (NAXIS2, NAXIS1) or ($n_\\mathrm{row}$, $n_\\mathrm{col}$), i.e. ($n_y$, $n_x$).
+            (NAXIS2, NAXIS1) or ($n_\mathrm{row}$, $n_\mathrm{col}$), i.e. ($n_y$, $n_x$).
         pixel_shape: The shape in reversed order. For a 2-dimensional map, the shape corresponds to
-            (NAXIS1, NAXIS2) or ($n_\\mathrm{col}$, $n_\\mathrm{row}$), i.e. ($n_x$, $n_y$).
+            (NAXIS1, NAXIS2) or ($n_\mathrm{col}$, $n_\mathrm{row}$), i.e. ($n_x$, $n_y$).
         stokes: The identifier for the Stokes vectors (`I`, `QU`, `IQU` or `IQUV`)
         dtype: The data type for the values of the landscape.
     """
@@ -125,7 +125,7 @@ class StokesLandscape(Landscape):
     def world2pixel(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Float[Array, ' *dims'], ...]:
-        r"""Converts angles from WCS to pixel coordinates
+        r"""Converts angles from WCS to pixel coordinates.
 
         Args:
             theta (float): Spherical $\theta$ angle.
@@ -149,8 +149,8 @@ class StokesLandscape(Landscape):
         $(p_x, p_y)$ strictly inside a pixel centered on the integer coordinates
         $(i_x, i_y)$ verify
 
-            - $i_x - ½ < p_x < i_x + ½$
-            - $i_y - ½ < p_y < i_y + ½$
+        - $i_x - \frac{1}{2} < p_x < i_x + \frac{1}{2}$
+        - $i_y - \frac{1}{2} < p_y < i_y + \frac{1}{2}$
 
         The convention for pixels and indices is that the first one starts at zero.
 
@@ -512,6 +512,7 @@ class AstropyWCSLandscape(StokesLandscape):
 @register_static
 class HorizonLandscape(StokesLandscape):
     """Class representing a map of Stokes vectors in horizon (ground) coordinates.
+
     Contains two axes:
         AXIS1: altitude (elevation) in radians
         AXIS2: azimuth in radians

@@ -33,12 +33,13 @@ Ang: TypeAlias = Float[Array, '...']
 
 @partial(jit, static_argnums=(0,))
 def euler(axis: int, angle: Float[Array, '...']) -> Quat:
-    """The quaternion representing an Euler rotation.
+    r"""The quaternion representing an Euler rotation.
 
-    For example, if axis=2 the computed quaternion(s) will have
-    components:
+    For example, if axis=2 the computed quaternion(s) will have components:
 
-        q = (cos(angle/2), 0, 0, sin(angle/2))
+    $$
+    q = (\cos(\theta/2), 0, 0, \sin(\theta/2))
+    $$
 
     Args:
         axis: The index of the cartesian axis of the rotation (x, y, z).
@@ -169,6 +170,7 @@ def from_iso_angles(theta: Ang, phi: Ang, psi: Ang) -> Quat:
 @jit
 def to_lonlat_angles(q: Quat) -> tuple[Ang, Ang, Ang]:
     """Convert quaternions to the lonlat coordinate system angles (alpha, delta, psi).
+
     alpha (lon), delta (lat), psi = phi, pi/2-theta, psi
     """
     theta, phi, psi = to_iso_angles(q)
@@ -178,6 +180,7 @@ def to_lonlat_angles(q: Quat) -> tuple[Ang, Ang, Ang]:
 @jit
 def from_lonlat_angles(alpha: Ang, delta: Ang, psi: Ang) -> Quat:
     """Compute quaternions from the lonlat coordinate system angles (alpha, delta, psi).
+
     theta, phi, psi = pi/2-delta, alpha, psi
     """
     return from_iso_angles(jnp.pi / 2 - delta, alpha, psi)  # type: ignore[no-any-return]
@@ -206,8 +209,10 @@ def from_xieta_angles(xi: Ang, eta: Ang, gamma: Ang) -> Quat:
 @jit
 @partial(jnp.vectorize, signature='(4)->()')
 def to_gamma_angles(q: Quat) -> Ang:
-    """Convert quaternions to the xieta coordinate system angles (xi, eta, gamma),
-    but only computes and returns the gamma angle."""
+    """Convert quaternions to the xieta coordinate system angles (xi, eta, gamma).
+
+    Only the gamma angle is computed and returned.
+    """
     a, b, c, d = q
     gamma = jnp.atan2(2 * a * d, a**2 - d**2)
     return gamma

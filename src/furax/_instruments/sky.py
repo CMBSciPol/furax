@@ -15,8 +15,7 @@ from ..obs.stokes import Stokes, ValidStokesType
 
 
 class FGBusterInstrument(eqx.Module):
-    """
-    A PyTree-compatible class for representing an instrument as implemented in FGBuster framework.
+    """A PyTree-compatible class for representing an instrument as implemented in FGBuster framework.
 
     This class handles frequency, depth for intensity (depth_i),
     and depth for polarization (depth_p) for a given instrument.
@@ -38,11 +37,13 @@ class FGBusterInstrument(eqx.Module):
       from_params(): Directly creates an instrument from
                       given frequency, intensity depth, and polarization depth.
           depth_conversion(): Converts depths to a specified unit and dtype.
+
     Note:
         The class must be constructed with numpy arrays (not JAX arrays)
         in order to be pysm3 and astropy compatible.
         The arrays are static and always used as such.
         Since for a given problem the instrument parameters do not change,
+
     Examples:
         >>> # Create a default instrument
         >>> instrument = FGBusterInstrument.default_instrument()
@@ -93,9 +94,7 @@ class FGBusterInstrument(eqx.Module):
 
     @classmethod
     def default_instrument(cls: type['Self']) -> 'Self':
-        """
-        Returns a default instrument with predefined parameters.
-        """
+        """Returns a default instrument with predefined parameters."""
         frequency = np.arange(10.0, 300, 30.0)
         depth_p = (np.linspace(20, 40, 10) - 30) ** 2
         depth_i = (np.linspace(20, 40, 10) - 30) ** 2
@@ -103,34 +102,25 @@ class FGBusterInstrument(eqx.Module):
 
     @classmethod
     def from_depth_i(cls, frequency: Array, depth_i: Array) -> 'FGBusterInstrument':
-        """
-        Creates an instrument using intensity depth and derives polarization depth.
-        """
+        """Creates an instrument using intensity depth and derives polarization depth."""
         depth_p = depth_i * np.sqrt(2)
         return cls(frequency, depth_i, depth_p)
 
     @classmethod
     def from_depth_p(cls, frequency: Array, depth_p: Array) -> 'FGBusterInstrument':
-        """
-        Creates an instrument using polarization depth and derives intensity depth.
-        """
+        """Creates an instrument using polarization depth and derives intensity depth."""
         depth_i = depth_p / np.sqrt(2)
         return cls(frequency, depth_i, depth_p)
 
     @classmethod
     def from_params(cls, frequency: Array, depth_i: Array, depth_p: Array) -> 'FGBusterInstrument':
-        """
-        Directly creates an instrument from given
-        frequency, intensity depth, and polarization depth.
-        """
+        """Create an instrument from frequency, intensity depth, and polarization depth."""
         return cls(frequency, depth_i, depth_p)
 
     def depth_conversion(
         self, unit: str = 'uK_CMB', dtype: DTypeLike = jnp.float32
     ) -> 'FGBusterInstrument':
-        """
-        Converts depths to a specified unit and dtype.
-        """
+        """Converts depths to a specified unit and dtype."""
         # Because we used @property, self.depth_i and self.frequency act like normal numpy arrays here!
         depth_i = self.depth_i * u.arcmin * u.uK_CMB
         depth_p = self.depth_p * u.arcmin * u.uK_CMB
@@ -155,8 +145,7 @@ class FGBusterInstrument(eqx.Module):
 
 
 def get_sky(nside: int, tag: str = 'c1d0s0') -> pysm3.Sky:
-    """
-    Retrieves a sky model based on a specified resolution and component tag.
+    """Retrieves a sky model based on a specified resolution and component tag.
 
     This function creates a `pysm3.Sky` object with a given HEALPix resolution (`nside`)
     and a preset tag string (`tag`).
@@ -219,8 +208,7 @@ def get_observation(
     dtype: DTypeLike = np.float64,
     unit: str = 'uK_CMB',
 ) -> Stokes:
-    r"""
-    Generates a simulated sky observation using a given instrument and Sky model.
+    r"""Generates a simulated sky observation using a given instrument and Sky model.
 
     This function combines emission from a sky model and a Gaussian random sky to simulate
     observations at the frequencies defined by the input instrument. Optionally, noise can
@@ -241,6 +229,8 @@ def get_observation(
             the components of the sky model. Defaults to 'c1d0s0'.
         noise_ratio (float, optional): The ratio of noise to add to the observation.
             Defaults to 0.0.
+        key (PRNGKeyArray, optional): PRNG key for the Gaussian noise realization.
+            Required when noise_ratio > 0. Defaults to None.
         stokes_type (ValidStokesType, optional): The Stokes components
             to include ('I', 'QU', 'IQU'). Defaults to 'IQU'.
         dtype (DTypeLike, optional): The data type for the output.

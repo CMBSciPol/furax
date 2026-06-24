@@ -22,11 +22,13 @@ def as_lineax_operator(
 
     Args:
         operator: A furax AbstractLinearOperator instance
+        tags: Extra operator tags to attach to the wrapper, combined with those copied
+            from the furax operator.
 
     Returns:
         A lineax AbstractLinearOperator that wraps the furax operator
 
-    Example:
+    Examples:
         >>> import furax as fx
         >>> import lineax as lx
         >>> import jax.numpy as jnp

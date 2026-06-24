@@ -53,7 +53,7 @@ class AbstractReader(ABC):
         self.count = len(self.args)
         self.common_keywords = common_keywords or {}
         self.known_failures = set(known_failures or ())
-        self.failed_indices = sorted(self.known_failures)
+        self.reset_failures()
         if structures is None:
             structures = self._read_structures()
         elif len(structures) != self.count:
@@ -61,6 +61,15 @@ class AbstractReader(ABC):
                 f'structures length {len(structures)} does not match data count {self.count}'
             )
         self._infer_structure_and_paddings(structures)
+
+    def reset_failures(self) -> None:
+        """Reset runtime read failures to the known-failure baseline.
+
+        :meth:`read` records caught failures in ``failed_indices`` as a host side effect, so a
+        reused reader would otherwise carry failures across read passes. Call this before a fresh
+        pass to start from just the up-front ``known_failures``.
+        """
+        self.failed_indices = sorted(self.known_failures)
 
     def _infer_structure_and_paddings(self, structures: list[PyTree[jax.ShapeDtypeStruct]]) -> None:
         self.out_structure = self._get_common_structure(structures)

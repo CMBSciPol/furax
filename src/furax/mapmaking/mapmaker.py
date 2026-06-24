@@ -291,6 +291,7 @@ class MultiObservationMapMaker(Generic[T]):
         config = self.config
         landscape = self.landscape
         reader = self.reader
+        reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         fill_gaps = config.gaps.fill and not config.binned
         correlation_length = config.weighting.correlation_length if fill_gaps else None
         gap_filling_params = config.gaps.fill_options if fill_gaps else None

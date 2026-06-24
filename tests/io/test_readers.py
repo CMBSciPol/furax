@@ -118,6 +118,17 @@ def test_read_returns_valid_flag_and_filler_on_failure() -> None:
     assert reader.failed_indices == [1]
 
 
+def test_reset_failures_clears_runtime_failures_to_known_baseline() -> None:
+    reader = FillerReader([4, 4], [False, True], known_failures=[0])
+    assert reader.failed_indices == [0]  # baseline from known_failures
+
+    reader.read(1)  # runtime failure recorded as a host side effect
+    assert reader.failed_indices == [0, 1]
+
+    reader.reset_failures()
+    assert reader.failed_indices == [0]  # back to the known-failure baseline
+
+
 def test_default_reader_has_no_filler() -> None:
     # Readers that do not override _failure_filler keep the original crash-on-failure behavior.
     reader = OverProbeReader([4], [4])

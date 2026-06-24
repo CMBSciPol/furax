@@ -142,7 +142,7 @@ def run(  # type: ignore[no-untyped-def]
     # Record the observations that actually made it into the maps (load/preproc failures excluded).
     if jax.process_index() == 0:
         failed = set(results.failed_observations or ())
-        with open(outdir / 'mapped_obsids.txt', 'w') as f:
+        with open(outdir / 'mapped_observations.txt', 'w') as f:
             for name in mapped:
                 if name not in failed:
                     f.write(f'{name}\n')

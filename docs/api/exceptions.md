@@ -1,0 +1,3 @@
+# `furax.exceptions`
+
+::: furax.exceptions

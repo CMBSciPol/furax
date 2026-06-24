@@ -221,7 +221,7 @@ def to_polarization_angle_cos_sin(q: Quat) -> tuple[Ang, Ang]:
     Equivalent to ``(cos(pa), sin(pa))`` where ``pa = to_polarization_angle(q)``,
     but avoids transcendental functions by using quaternion algebra directly.
 
-    See :func:`to_polarization_angle` for the definition and convention.
+    See [`to_polarization_angle`][] for the definition and convention.
     """
     a, b, c, d = q
     cos_theta = a**2 - b**2 - c**2 + d**2

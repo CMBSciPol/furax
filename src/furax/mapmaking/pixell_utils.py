@@ -102,7 +102,8 @@ def plot_cartview(
         vmins: Minimum values for color scale (one per map)
         vmax_quantile: Quantile to use for automatic vmax determination
         nside: HEALPix nside parameter. If None, inferred from input_maps
-        fig, axs: matplotlib figure and axes
+        fig: matplotlib figure
+        axs: matplotlib axes
 
     Returns:
         tuple: (figure, axes) matplotlib objects

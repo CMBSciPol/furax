@@ -1,0 +1,3 @@
+# `furax.tree`
+
+::: furax.tree

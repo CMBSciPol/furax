@@ -76,7 +76,7 @@ class ObservationModel:
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
-        """Reader fields needed to build an :class:`ObservationModel` via :meth:`create`."""
+        """Reader fields needed to build an [`ObservationModel`][] via [`create`][]."""
         fields: set[str] = {
             ReaderField.BORESIGHT_QUATERNIONS,
             ReaderField.DETECTOR_QUATERNIONS,

@@ -29,12 +29,13 @@ __all__ = [
 
 
 def K_RK_2_K_CMB(nu: Array | float) -> Array:
-    """
+    r"""
     Convert Rayleigh-Jeans brightness temperature to CMB temperature.
 
-    .. math::
-        T_{CMB} = \frac{(e^{\frac{h \nu}{k T_{CMB}}} - 1)^2}{(e^{\frac{h \nu}{k T_{CMB}}})
-        \\left( \frac{h \nu}{k T_{CMB}} \right)^2}
+    $$
+    T_{CMB} = \frac{(e^{\frac{h \nu}{k T_{CMB}}} - 1)^2}{(e^{\frac{h \nu}{k T_{CMB}}})
+    \left( \frac{h \nu}{k T_{CMB}} \right)^2}
+    $$
 
     Args:
         nu (Array | float): Frequency in GHz.
@@ -375,7 +376,7 @@ class NoiseDiagonalOperator(AbstractLinearOperator):
     This operator applies a noise vector (in a PyTree structure) in an element‐wise
     multiplication to an input data PyTree.
 
-    Args:
+    Attributes:
         vector: PyTree of arrays representing the noise values.
         in_structure: Input structure (PyTree[jax.ShapeDtypeStruct]) specifying the shape and dtype.
 

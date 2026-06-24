@@ -219,7 +219,7 @@ def get_observation(
     dtype: DTypeLike = np.float64,
     unit: str = 'uK_CMB',
 ) -> Stokes:
-    """
+    r"""
     Generates a simulated sky observation using a given instrument and Sky model.
 
     This function combines emission from a sky model and a Gaussian random sky to simulate
@@ -228,9 +228,10 @@ def get_observation(
     The noise is added by multiplying the depth of
     the instrument and dividing by the resolution of the healpix map.
     The resolution is calculated using the formula
-    .. math::
 
-        sqrt(4 pi / (12 * nside^2)) * 180 / pi * 60.
+    $$
+    \sqrt{4 \pi / (12 \cdot \mathrm{nside}^2)} \cdot 180 / \pi \cdot 60.
+    $$
 
     Args:
         instrument (FGBusterInstrument): The instrument to use for the observation,

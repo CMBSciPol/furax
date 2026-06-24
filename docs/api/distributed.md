@@ -1,0 +1,3 @@
+# `furax.distributed`
+
+::: furax.distributed

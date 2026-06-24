@@ -19,8 +19,17 @@ nav = [
       "examples/mapmaking.md",
   ] },
   { "API reference" = [
-      "api/data_structures.md",
-      "api/operators.md",
+      "api/furax.md",
+      "api/core.md",
+      "api/obs.md",
+      "api/mapmaking.md",
+      "api/math.md",
+      "api/linalg.md",
+      "api/io.md",
+      "api/interfaces.md",
+      "api/tree.md",
+      "api/distributed.md",
+      "api/exceptions.md",
   ] },
   { "Development" = [
       "development/contributing.md",
@@ -48,6 +57,9 @@ options.docstring_style = "google"
 options.docstring_section_style = "list"
 options.show_root_members_full_path = true
 options.members_order = "source"
+options.relative_crossrefs = true
+options.show_if_no_docstring = true
+options.filters = "public"
 
 [project.markdown_extensions]
 admonition = {}

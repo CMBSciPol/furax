@@ -308,13 +308,8 @@ class MultiObservationMapMaker(Generic[T]):
                 data, padding, valid = reader.read(i)
                 obs = ObservationModel.create(data, padding, config, landscape)
 
-                # Gate the masker once: padding (`real` False) and failed loads (`valid` False) get
-                # an all-False mask, so the observation contributes nothing to the hit map, the RHS,
-                # or the system operator A.
-                Z = obs.masker
-                effective = real & valid
-                gated_mask = jax.tree.map(lambda m: m & effective, Z.to_boolean_mask())
-                obs.masker = MaskOperator.from_boolean_mask(gated_mask, in_structure=Z.in_structure)
+                # Padding/failed observations contribute nothing
+                obs.masker = obs.masker.restrict(real & valid)
 
                 # Hit map contribution.
                 assert isinstance(obs.H, CompositionOperator)  # mypy

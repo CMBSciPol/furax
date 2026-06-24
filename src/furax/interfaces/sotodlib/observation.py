@@ -523,9 +523,8 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         sotodlib_config: SotodlibConfig | None = None,
     ) -> None:
         self.observation_id = observation_id
-        # resolve now: get_data may run inside an io_callback after the process has chdir'd
-        self.init_config = Path(init_config).resolve().as_posix()
-        self.proc_config = Path(proc_config).resolve().as_posix() if proc_config else None
+        self.init_config = Path(init_config).resolve()
+        self.proc_config = Path(proc_config).resolve() if proc_config else None
         self.detector_selection = detector_selection
         self.downsample = downsample
         self._sotodlib_config = sotodlib_config

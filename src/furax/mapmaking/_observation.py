@@ -400,7 +400,7 @@ class FileBackedLazyObservation(AbstractLazyObservation[T]):
     """Lazy observation whose backing store is a single binary file."""
 
     def __init__(self, filename: str | Path):
-        self.file = Path(filename)
+        self.file = Path(filename).resolve()
         if not self.file.exists():
             raise FileNotFoundError(f'Observation file {self.file} does not exist')
 

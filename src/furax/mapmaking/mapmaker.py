@@ -205,10 +205,7 @@ class MultiObservationMapMaker(Generic[T]):
 
             failed_observations = self._collect_failed_observations()
             if failed_observations:
-                logger_info(
-                    f'{len(failed_observations)} observation(s) failed to and were excluded:\n'
-                    f'{failed_observations}'
-                )
+                logger_info(f'{len(failed_observations)} observation(s) failed and were excluded')
 
             # System operator (full/diagonal)
             A = self.get_system_operator(model)

@@ -73,8 +73,9 @@ class MapMakingResults:
             with open(out_dir / 'solver_stats.json', 'w') as f:
                 json.dump(self.solver_stats, f, indent=2, cls=_JsonEncoder)
         if self.failed_observations:
-            with open(out_dir / 'failed_observations.json', 'w') as f:
-                json.dump(self.failed_observations, f, indent=2)
+            with open(out_dir / 'failed_observations.txt', 'w') as f:
+                for name in self.failed_observations:
+                    f.write(f'{name}\n')
 
     @classmethod
     def load(

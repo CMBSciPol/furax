@@ -1,0 +1,11 @@
+init_config: /pscratch/sd/b/binguyen/so-sat/contexts/preprocessing_config_20251216_init_nersc.yaml
+
+task_file: binh_test/obs_list/tasks.txt
+
+outdir: /pscratch/sd/b/binguyen/so-sat/preprocessed_v4
+
+downsample: 1
+
+overwrite: false
+dry_run: false
+loglevel: info

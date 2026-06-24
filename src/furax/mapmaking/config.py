@@ -395,7 +395,7 @@ class PointingConfig:
     on_the_fly: bool = True
     """Compute pointing on the fly instead of pre-computing pixel indices."""
 
-    chunk_size: int = 64
+    chunk_size: int = 32
     """Number of detector chunks to process at a time when computing pointing on the fly."""
 
     interpolation: Literal['nearest', 'bilinear'] = 'nearest'

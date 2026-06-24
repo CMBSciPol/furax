@@ -63,6 +63,7 @@ pymdownx.keys = {}
 pymdownx.mark = {}
 pymdownx.tilde = {}
 pymdownx.arithmatex = { generic = true }
+pymdownx.magiclink = { repo_url_shorthand = true, user = "CMBSciPol", repo = "furax" }
 pymdownx.emoji = {}
 abbr = {}
 attr_list = {}

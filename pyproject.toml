@@ -75,6 +75,7 @@ repository = 'https://github.com/CMBSciPol/furax'
 furax-so-atomic-map = 'furax.interfaces.sotodlib.mapmaker:main_cli'
 furax-so-prepare = 'so_mapmaking.prepare:app'
 furax-so-map = 'so_mapmaking.run:app'
+furax-so-stage = 'so_mapmaking.stage:app'
 
 [dependency-groups]
 dev = [

@@ -9,16 +9,19 @@ from .util import detector_selection, resolve_obsids, setup_logger
 app = App(help='Run the mapmaker on SO observations, loaded straight from the preproc db.')
 
 
-def _chdir_to_config_root(layers: list[Path]) -> None:
-    """Enter the preproc config root so relative paths inside the configs resolve.
+def _chdir_to_config_root(layers: list[Path]) -> list[Path]:
+    """Resolve config paths against the launch dir, then chdir to the preproc config root.
 
     Configs typically live in ``<root>/preprocessing/satpy/...``; the archive index they
-    reference is relative to ``<root>``. Mirrors ``furax-so-prepare``.
+    reference is relative to ``<root>``. Returns the resolved (absolute) config paths so
+    callers can keep using them after the chdir. Mirrors ``furax-so-prepare``.
     """
-    roots = {layer.parent.resolve() for layer in layers}
+    resolved = [layer.resolve() for layer in layers]
+    roots = {layer.parents[2] for layer in resolved}
     if len(roots) > 1:
         raise ValueError('all preproc configs must share the same root directory')
-    os.chdir(layers[0].parents[2])
+    os.chdir(roots.pop())
+    return resolved
 
 
 @app.default  # type: ignore[untyped-decorator]
@@ -96,10 +99,12 @@ def run(  # type: ignore[no-untyped-def]
     if init_config is not None:
         layers = [init_config] + ([proc_config] if proc_config else [])
         try:
-            _chdir_to_config_root(layers)
+            resolved = _chdir_to_config_root(layers)
         except ValueError as e:
             logger.error(str(e))
             return 1
+        init_config = resolved[0]
+        proc_config = resolved[1] if proc_config else None
         if not obsids:
             logger.warning('no observations to map')
             return

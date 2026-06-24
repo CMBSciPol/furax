@@ -37,7 +37,6 @@ def test_init(reader: FakeFileReader) -> None:
     assert reader.keywords == [{'option1': 'a'}, {'option1': 'bb'}, {'option1': 'ccc'}]
     assert reader.common_keywords == {'option2': 1.5}
     assert reader.out_structure == jax.ShapeDtypeStruct((8,), jnp.float32)
-    assert reader.paddings == [(6,), (4,), (0,)]
 
 
 def test_read(reader: FakeFileReader) -> None:

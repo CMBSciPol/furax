@@ -10,6 +10,8 @@ from jax.experimental import io_callback
 from jax.tree_util import register_static
 from jaxtyping import PyTree
 
+from furax.tree import zeros_like
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,8 +29,6 @@ class AbstractReader(ABC):
             the read function.
         out_structure (PyTree[jax.ShapeDtypeStruct]): The structure of the data that is returned by
             the read function. The structure is the same for all data.
-        paddings (list[PyTree[tuple[int, ...]]): For each data, the padding that is applied to
-            the data that is returned by the read function.
     """
 
     def __init__(
@@ -60,7 +60,7 @@ class AbstractReader(ABC):
             raise ValueError(
                 f'structures length {len(structures)} does not match data count {self.count}'
             )
-        self._infer_structure_and_paddings(structures)
+        self.out_structure = self._get_common_structure(structures)
 
     def reset_failures(self) -> None:
         """Reset runtime read failures to the known-failure baseline.
@@ -70,12 +70,6 @@ class AbstractReader(ABC):
         pass to start from just the up-front ``known_failures``.
         """
         self.failed_indices = sorted(self.known_failures)
-
-    def _infer_structure_and_paddings(self, structures: list[PyTree[jax.ShapeDtypeStruct]]) -> None:
-        self.out_structure = self._get_common_structure(structures)
-        self.paddings: list[PyTree[tuple[int, ...]]] = [
-            self._get_padding(structures[i]) for i in range(self.count)
-        ]
 
     @staticmethod
     def _normalize_args_keywords(
@@ -163,18 +157,6 @@ class AbstractReader(ABC):
         )
         return structure
 
-    def _get_padding(
-        self, structure: PyTree[jax.ShapeDtypeStruct]
-    ) -> PyTree[tuple[int, ...] | None]:
-        padding = jax.tree.map(
-            lambda leaf, common_leaf: tuple(
-                common_leaf.shape[i] - leaf.shape[i] for i in range(leaf.ndim)
-            ),
-            structure,
-            self.out_structure,
-        )
-        return padding
-
     def _actual_padding(self, data: PyTree[Any]) -> PyTree[tuple[int, ...]]:
         """Per-leaf padding from the actual loaded shape to ``out_structure``.
 
@@ -212,12 +194,18 @@ class AbstractReader(ABC):
             ``out_structure``), the padding pytree, and a scalar boolean that is ``False`` when the
             read failed.
         """
+        # Per-leaf shape of the padding pytree: one ``int32`` entry per axis of each leaf.
+        padding_structure = jax.tree.map(
+            lambda leaf: jax.ShapeDtypeStruct((len(leaf.shape),), np.int32), self.out_structure
+        )
 
-        def callback(i_arr: Array) -> tuple[PyTree[np.ndarray], np.ndarray]:
+        def callback(
+            i_arr: Array,
+        ) -> tuple[PyTree[np.ndarray], PyTree[np.ndarray], np.ndarray]:
             i = int(i_arr)  # io_callback passes the index as a (host) array
             if i in self.known_failures:
                 # skip load entirely
-                return self._failure_filler(), np.array(False)
+                return self._failure_filler(), zeros_like(padding_structure), np.array(False)
             try:
                 data = self._read_data_impure(
                     *self.args[i], **self.keywords[i], **self.common_keywords
@@ -230,21 +218,36 @@ class AbstractReader(ABC):
                 if i not in self.failed_indices:
                     self.failed_indices.append(i)
                 logger.exception('read of item %d failed; substituting filler data', i)
-                return filler, np.array(False)
+                return filler, zeros_like(padding_structure), np.array(False)
             # Pad from the actual loaded shape (not the precomputed, probe-based padding): the
             # io_callback contract requires the result to match ``out_structure`` exactly, and
             # ``probe_shape`` is only an upper bound, so the load may be smaller than probed.
-            return self._pad(data, self._actual_padding(data)), np.array(True)
+            actual_padding = self._actual_padding(data)
+            return (
+                self._pad(data, actual_padding),
+                self._padding_to_arrays(actual_padding),
+                np.array(True),
+            )
 
-        result_shape = (self.out_structure, jax.ShapeDtypeStruct((), bool))
-        data, valid = jax.lax.switch(
+        result_shape = (
+            self.out_structure,
+            padding_structure,
+            jax.ShapeDtypeStruct((), bool),
+        )
+        data, padding, valid = jax.lax.switch(
             data_index,
             [lambda i=i: io_callback(callback, result_shape, i) for i in range(self.count)],
         )
-        padding = jax.lax.switch(
-            data_index, [lambda i=i: self.paddings[i] for i in range(self.count)]
-        )
         return data, padding, valid
+
+    @staticmethod
+    def _padding_to_arrays(padding: PyTree[tuple[int, ...]]) -> PyTree[np.ndarray]:
+        """Turn a pytree of per-axis padding tuples into one ``int32`` array per leaf."""
+        return jax.tree.map(
+            lambda pad: np.asarray(pad, dtype=np.int32),
+            padding,
+            is_leaf=lambda x: isinstance(x, tuple),
+        )
 
     def _pad(self, data: PyTree[Any], padding: PyTree[tuple[int, ...]]) -> PyTree[np.ndarray]:
         """Pad the host (numpy) data to the common structure.

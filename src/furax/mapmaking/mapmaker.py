@@ -298,8 +298,6 @@ class MultiObservationMapMaker(Generic[T]):
         reader = self.reader
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         fill_gaps = config.gaps.fill and not config.binned
-        correlation_length = config.weighting.correlation_length if fill_gaps else None
-        gap_filling_params = config.gaps.fill_options if fill_gaps else None
 
         indices = self.distribute(self.get_padded_read_indices())
         is_real = self.distribute(self._real_observation_mask())
@@ -334,24 +332,27 @@ class MultiObservationMapMaker(Generic[T]):
                 hits_i = jnp.int64(pointing_i.T(StokesI(masked)).i)
 
                 # RHS contribution (optionally gap-filled).
-                tod = data[ReaderField.SAMPLE_DATA]
-                if fill_gaps:
-                    if correlation_length is None or gap_filling_params is None:
-                        raise ValueError(
-                            'fill_gaps=True requires correlation_length and gap_filling_params'
-                        )
+                def func_gapfill(tod):  # type: ignore[no-untyped-def]
+                    N = obs.noise_operator(config.weighting.correlation_length, inverse=False)
                     gap_fill = GapFillingOperator(
-                        obs.noise_operator(correlation_length, inverse=False),  # type: ignore[arg-type]
+                        N,  # type: ignore[arg-type]
                         obs._get_indexer(),
-                        data[ReaderField.METADATA],
+                        tod,
                         obs.W,  # type: ignore[arg-type]
                         rate=obs.sample_rate,
-                        max_cg_steps=gap_filling_params.max_steps,
-                        rtol=gap_filling_params.rtol,
+                        max_cg_steps=config.gaps.fill_options.max_steps,
+                        rtol=config.gaps.fill_options.rtol,
                     )
-                    tod = gap_fill(jax.random.key(gap_filling_params.seed), tod)
-                rhs_i = obs.H.T(obs.masker(obs.W(tod)))
+                    return gap_fill(jax.random.key(config.gaps.fill_options.seed), tod)
 
+                tod = jax.lax.cond(
+                    fill_gaps & real & valid,
+                    func_gapfill,
+                    lambda _: _,  # return raw data as-is
+                    data[ReaderField.SAMPLE_DATA],
+                )
+
+                rhs_i = obs.H.T(obs.masker(obs.W(tod)))
                 return (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i)), obs
 
             init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')

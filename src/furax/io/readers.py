@@ -177,13 +177,15 @@ class AbstractReader(ABC):
 
         return jax.tree.map(leaf_padding, self.out_structure, data)
 
-    def _failure_filler(self) -> PyTree[np.ndarray] | None:
-        """Finite, ``out_structure``-shaped data to substitute when a read fails.
+    @abstractmethod
+    def _failure_filler(self) -> PyTree[np.ndarray]:
+        """Finite, ``out_structure``-shaped data to substitute when a read fails."""
 
-        Subclasses override to return finite filler so a failing item degrades to a valid-shaped
-        result flagged invalid, instead of crashing.
-        """
-        return None
+    def _padding_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        """Per-leaf shape of the padding pytree: one ``int32`` entry per axis of each leaf."""
+        return jax.tree.map(
+            lambda leaf: jax.ShapeDtypeStruct((len(leaf.shape),), np.int32), self.out_structure
+        )
 
     @jax.jit
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array], Array]:
@@ -194,10 +196,7 @@ class AbstractReader(ABC):
             ``out_structure``), the padding pytree, and a scalar boolean that is ``False`` when the
             read failed.
         """
-        # Per-leaf shape of the padding pytree: one ``int32`` entry per axis of each leaf.
-        padding_structure = jax.tree.map(
-            lambda leaf: jax.ShapeDtypeStruct((len(leaf.shape),), np.int32), self.out_structure
-        )
+        padding_structure = self._padding_structure()
 
         def callback(
             i_arr: Array,
@@ -212,9 +211,6 @@ class AbstractReader(ABC):
                 )
             except Exception:
                 filler = self._failure_filler()
-                if filler is None:
-                    # no filler override -> crash
-                    raise
                 if i not in self.failed_indices:
                     self.failed_indices.append(i)
                 logger.exception('read of item %d failed; substituting filler data', i)
@@ -239,6 +235,17 @@ class AbstractReader(ABC):
             [lambda i=i: io_callback(callback, result_shape, i) for i in range(self.count)],
         )
         return data, padding, valid
+
+    @jax.jit
+    def read_filler(self) -> tuple[PyTree[Array], PyTree[Array], Array]:
+        """Return finite filler data without touching any backing store."""
+        padding_structure = self._padding_structure()
+
+        def callback():  # type: ignore[no-untyped-def]
+            return self._failure_filler(), zeros_like(padding_structure), np.array(False)
+
+        result_shape = (self.out_structure, padding_structure, jax.ShapeDtypeStruct((), bool))
+        return io_callback(callback, result_shape)  # type: ignore[no-any-return]
 
     @staticmethod
     def _padding_to_arrays(padding: PyTree[tuple[int, ...]]) -> PyTree[np.ndarray]:

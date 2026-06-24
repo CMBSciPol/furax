@@ -310,7 +310,15 @@ class MultiObservationMapMaker(Generic[T]):
             def step(carry, args):  # type: ignore[no-untyped-def]
                 hits_acc, rhs_acc = carry
                 i, real = args
-                data, padding, valid = reader.read(i)
+
+                # Skip the load for padding slots: only the real branch hits the io_callback,
+                # so a padded observation is never read or preprocessed just to be masked away.
+                # (lax.cond evaluates a single branch at runtime)
+                data, padding, valid = jax.lax.cond(
+                    real,
+                    lambda: reader.read(i),
+                    lambda: reader.read_filler(),
+                )
                 obs = ObservationModel.create(data, padding, config, landscape)
 
                 # Padding/failed observations contribute nothing

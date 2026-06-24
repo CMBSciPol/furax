@@ -56,6 +56,7 @@ class OperatorTag(IntFlag):
     UPPER_TRIANGULAR = auto()
     POSITIVE_SEMIDEFINITE = auto()
     NEGATIVE_SEMIDEFINITE = auto()
+    IDEMPOTENT = auto()
 
 
 @register_dataclass_with_keys
@@ -120,6 +121,10 @@ class AbstractLinearOperator(ABC):
     @property
     def is_negative_semidefinite(self) -> bool:
         return bool(self.tags & OperatorTag.NEGATIVE_SEMIDEFINITE)
+
+    @property
+    def is_idempotent(self) -> bool:
+        return bool(self.tags & OperatorTag.IDEMPOTENT)
 
     @overload
     def __call__(
@@ -343,6 +348,13 @@ def negative_semidefinite(cls: type[T]) -> type[T]:
     """Mark an operator as negative semi-definite (implies square)."""
     square(cls)
     cls.class_tags |= OperatorTag.NEGATIVE_SEMIDEFINITE
+    return cls
+
+
+def idempotent(cls: type[T]) -> type[T]:
+    """Mark an operator as idempotent, i.e. P @ P = P (implies square)."""
+    square(cls)
+    cls.class_tags |= OperatorTag.IDEMPOTENT
     return cls
 
 
@@ -642,6 +654,7 @@ class AbstractLazyInverseOrthogonalOperator(TransposeOperator, AbstractLazyInver
 @orthogonal
 @diagonal
 @positive_semidefinite
+@idempotent
 class IdentityOperator(AbstractLinearOperator):
     """Operator that returns its input unchanged: I(x) = x.
 

@@ -132,22 +132,21 @@ def stage_config(stager: Stager, config_path: Path) -> Path:
 
 
 @app.default  # type: ignore[untyped-decorator]
-def stage(init_config: Path, proc_config: Path, dest: Path) -> None:
-    """Stage the init/proc preproc indices to ``dest`` and print the patched config paths.
+def stage(init_config: Path, dest: Path, proc_config: Path | None = None) -> None:
+    """Stage the init (and optional proc) preproc indices to ``dest`` and print the patched configs.
 
     Args:
         init_config: Base-layer preprocessing config file.
-        proc_config: Second-layer preprocessing config file.
         dest: Node-local staging directory (e.g. /dev/shm/...).
+        proc_config: Optional second-layer preprocessing config file.
     """
     dest.mkdir(parents=True, exist_ok=True)
     stager = Stager(dest)
-    init_out = stage_config(stager, init_config)
-    proc_out = stage_config(stager, proc_config)
+    layers = [init_config] + ([proc_config] if proc_config else [])
 
-    # stdout: the two patched config paths the launcher passes to furax-so-map
-    print(init_out.as_posix())
-    print(proc_out.as_posix())
+    # stdout: the patched config path(s) the launcher passes to furax-so-map, one per line
+    for layer in layers:
+        print(stage_config(stager, layer).as_posix())
 
 
 if __name__ == '__main__':

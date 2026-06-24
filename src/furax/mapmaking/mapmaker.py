@@ -54,7 +54,12 @@ from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
 from ._model import ObservationModel
-from ._observation import AbstractGroundObservation, AbstractLazyObservation, ReaderField
+from ._observation import (
+    AbstractGroundObservation,
+    AbstractLazyObservation,
+    FileBackedLazyObservation,
+    ReaderField,
+)
 from ._reader import ObservationReader
 from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
 from .config import (
@@ -385,7 +390,27 @@ class MultiObservationMapMaker(Generic[T]):
 
         Performs a preliminary pass over all observations, loading the pointing data needed
         to compute each observation's sky coverage, then combines them into a unified footprint.
+
+        Restricted to single-process runs over file-backed observations: the scan is an
+        unsharded loop calling ``get_data`` per observation. For file-backed observations that
+        cheaply loads only the requested pointing fields, but for sources that cannot subset
+        their fields (e.g. preproc-backed observations) it would run the full load/preprocess
+        pipeline on every observation, on every process. Pre-compute the footprint and pass an
+        explicit WCS landscape instead in those cases.
         """
+        if jax.process_count() > 1:
+            msg = (
+                'Automatic WCS footprint scanning is only supported on a single process. '
+                'Pre-compute the footprint and pass an explicit WCS landscape instead.'
+            )
+            raise RuntimeError(msg)
+        if any(not isinstance(obs, FileBackedLazyObservation) for obs in self.observations):
+            msg = (
+                'Automatic WCS footprint scanning requires file-backed observations '
+                '(get_data must cheaply subset pointing fields). Pre-compute the footprint'
+                'and pass an explicit WCS landscape instead.'
+            )
+            raise RuntimeError(msg)
         lc = self.config.landscape
         if lc.wcs is None:
             raise ValueError('WCS landscape config is required for auto footprint scanning.')

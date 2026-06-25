@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Collection, Sequence
 from typing import Any, Generic, Self, TypeVar
 
@@ -19,6 +20,8 @@ from ._observation import (
     HashedObservationMetadata,
     ReaderField,
 )
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 
@@ -51,14 +54,28 @@ class ObservationReader(AbstractReader, Generic[T]):
         stokes: ValidStokesType,
         dtype: DTypeLike = jnp.float64,
         common_keywords: dict[str, Any] | None = None,
-        structures: list[PyTree[jax.ShapeDtypeStruct]] | None = None,
+        shapes: list[tuple[int, ...]] | None = None,
+        known_failures: Sequence[int] | None = None,
         **keywords: Sequence[Any],
     ) -> None:
-        # Set before super().__init__ so _read_structure_impure can use them
+        # Set before super().__init__ so the structure/reader builders can use them
         self.demodulated = demodulated
         self.stokes = stokes
         self.dtype = dtype
-        super().__init__(*args, common_keywords=common_keywords, structures=structures, **keywords)
+        # Distributed mode passes pre-gathered (n_detectors, n_samples) shapes; turn them into
+        # structures here, now that self carries demodulated/stokes/dtype. Otherwise leave them
+        # unset and super() opens every observation via _read_structure_impure.
+        structures = None
+        if shapes is not None:
+            fields = (common_keywords or {})['data_field_names']
+            structures = [self._get_data_field_structures_for(shape, fields) for shape in shapes]
+        super().__init__(
+            *args,
+            common_keywords=common_keywords,
+            structures=structures,
+            known_failures=known_failures,
+            **keywords,
+        )
 
     @classmethod
     def from_observations(
@@ -92,48 +109,21 @@ class ObservationReader(AbstractReader, Generic[T]):
                 reader in ``_get_data_field_readers``.
         """
         fields = cls._resolve_fields(observations, requested_fields)
-        common_keywords = {'data_field_names': fields}
-        if read_indices is None:
-            # Default path: AbstractReader.__init__ will call _read_structures(),
-            # opening every observation on this process to infer its structure.
-            return cls(
-                list(observations),
-                common_keywords=common_keywords,
-                demodulated=demodulated,
-                stokes=stokes,
-                dtype=dtype,
-            )
-
-        # Distributed-mode shortcut. Each process opens only its subset; an
-        # all-gather then makes every rank agree on the full structures list so
-        # padding / out_structure / etc. are consistent. Bypasses the superclass's
-        # per-item I/O by passing the assembled `structures` directly.
-        def _shape(idx: int) -> tuple[int, int, int]:
-            data = observations[idx].get_data([])
-            return idx, data.n_detectors, data.n_samples
-
-        local_shapes = np.array([_shape(idx) for idx in read_indices], dtype=np.int64)
-
-        # All-gather → (n_procs * n_local, 3). Padding (see ``get_padded_indices``,
-        # which uses ``np.pad(..., mode='edge')``) makes some indices repeat across
-        # ranks; keep only one entry per obs index.
-        all_shapes = mhu.process_allgather(local_shapes).reshape(-1, 3)
-        by_idx = {int(idx): (int(n_det), int(n_samp)) for idx, n_det, n_samp in all_shapes}
-
-        def _struct_for(n_det: int, n_samp: int) -> PyTree[jax.ShapeDtypeStruct]:
-            field_struct = cls._get_data_field_structures_for(
-                n_det, n_samp, demodulated=demodulated, stokes=stokes, dtype=dtype
-            )
-            return {field: field_struct[field] for field in fields}
-
-        structures = [_struct_for(*by_idx[idx]) for idx in sorted(by_idx)]
+        # In the default path, leave ``shapes`` unset so AbstractReader.__init__ opens every
+        # observation on this process to infer its structure. In distributed mode, gather the
+        # per-observation shapes from the local subset and all-gather them (see ``_gather_shapes``).
+        shapes = None
+        known_failures = None
+        if read_indices is not None:
+            shapes, known_failures = cls._gather_shapes(observations, read_indices)
         return cls(
-            list(observations),
-            common_keywords=common_keywords,
+            observations,
+            common_keywords={'data_field_names': fields},
             demodulated=demodulated,
             stokes=stokes,
             dtype=dtype,
-            structures=structures,
+            shapes=shapes,
+            known_failures=known_failures,
         )
 
     @staticmethod
@@ -153,6 +143,46 @@ class ObservationReader(AbstractReader, Generic[T]):
                 f'Requested data fields {unsupported} are not supported by the interface.'
             )
         return fields
+
+    @staticmethod
+    def _gather_shapes(
+        observations: Sequence[AbstractLazyObservation[T]],
+        read_indices: Sequence[int],
+    ) -> tuple[list[tuple[int, ...]], list[int]]:
+        """Gather every observation's ``probe_shape()`` tuple in distributed mode.
+
+        Each process probes only its ``read_indices`` subset; an all-gather then makes every rank
+        agree on the full shape list, so padding / out_structure / etc. stay consistent.
+
+        A probe that raises must not crash the rank (it would deadlock the others at the all-gather):
+        the observation is given a dummy ``(1, 1)`` shape so it is excluded from the buffer-sizing
+        max, and its (local) index is returned so the reader skips loading it and gates it out.
+
+        Returns ``(shapes, failed_indices)`` where ``failed_indices`` are this process's
+        probe-failed observation indices.
+        """
+        failed: list[int] = []
+
+        def probe(idx: int) -> tuple[int, tuple[int, ...]]:
+            try:
+                # retain observation index so we can dedup after gathering
+                return idx, observations[idx].probe_shape()
+            except Exception:
+                logger.exception('probe of observation %d failed', idx)
+                failed.append(idx)
+                return idx, (1, 1)
+
+        local = [probe(idx) for idx in read_indices]
+        width = 1 + len(local[0][1])  # each row is (idx, *shape)
+        local_rows = np.array([(idx, *shape) for idx, shape in local], dtype=np.int64)
+
+        # Drop potential duplicates (from padding) and sort by obs index
+        all_rows = mhu.process_allgather(local_rows).reshape(-1, width)
+        shapes = [tuple(row[1:]) for row in np.unique(all_rows, axis=0)]
+        if not (ns := len(shapes)) == (no := len(observations)):
+            msg = f'inconsistent observation shapes after allgather: expected {no}, got {ns}'
+            raise RuntimeError(msg)
+        return shapes, failed
 
     def _pad(
         self, data: PyTree[np.ndarray], padding: PyTree[tuple[int, ...]]
@@ -223,15 +253,19 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         return data
 
-    @staticmethod
     def _get_data_field_structures_for(
-        n_detectors: int,
-        n_samples: int,
-        *,
-        demodulated: bool,
-        stokes: ValidStokesType,
-        dtype: DTypeLike = jnp.float64,
+        self,
+        shape: tuple[int, ...],
+        fields: Collection[str] | None = None,
     ) -> PyTree[jax.ShapeDtypeStruct]:
+        """Build the padded-buffer structures for one observation from its ``probe_shape()``.
+
+        Restricted to ``fields`` when given, else returns every supported field.
+        """
+        n_detectors, n_samples = shape
+        demodulated = self.demodulated
+        stokes = self.stokes
+        dtype = self.dtype
         tod_shape = (n_detectors, n_samples)
         sample_data_structure = (
             Stokes.class_for(stokes).structure_for(tod_shape, dtype)
@@ -239,7 +273,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             else jax.ShapeDtypeStruct(tod_shape, dtype)
         )
 
-        return {
+        structures: dict[str, PyTree[jax.ShapeDtypeStruct]] = {
             ReaderField.METADATA: HashedObservationMetadata.structure_for(n_detectors),
             ReaderField.SAMPLE_DATA: sample_data_structure,
             ReaderField.VALID_SAMPLE_MASKS: jax.ShapeDtypeStruct(
@@ -256,6 +290,9 @@ class ObservationReader(AbstractReader, Generic[T]):
                 else jax.ShapeDtypeStruct((n_detectors, 4), dtype)
             ),
         }
+        if fields is None:
+            return structures
+        return {field: structures[field] for field in fields}
 
     def _get_data_field_readers(self):  # type: ignore[no-untyped-def]
         def if_none_raise_error(x: Any) -> Any:
@@ -304,20 +341,51 @@ class ObservationReader(AbstractReader, Generic[T]):
             ReaderField.NOISE_MODEL_FITS: get_noise_model_fits,
         }
 
+    def _failure_filler(self) -> dict[str, Any]:
+        """Finite, ``out_structure``-shaped data for an observation that could not be read.
+
+        The values are finite and non-degenerate (identity quaternions, a strictly increasing time
+        vector, a broadband signal, unit white-noise fits) so every operator built from this
+        observation stays finite. The observation is gated out (all-False masker), so these values
+        never enter the maps; finiteness only matters so the gated contribution is ``0`` and not
+        ``NaN``.
+        """
+        rng = np.random.default_rng(0)
+
+        def identity_quaternions(s: jax.ShapeDtypeStruct) -> np.ndarray:
+            quats = np.zeros(s.shape, s.dtype)
+            quats[..., 0] = 1.0  # (1, 0, 0, 0)
+            return quats
+
+        def unit_noise_fit(s: jax.ShapeDtypeStruct) -> np.ndarray:
+            fit = np.zeros(s.shape, s.dtype)  # columns: white_noise, alpha, fknee, f0
+            fit[..., 0] = 1.0  # unit white noise so the inverse noise covariance stays finite
+            fit[..., 2] = 1.0
+            fit[..., 3] = 0.1
+            return fit
+
+        def zeros(s: jax.ShapeDtypeStruct) -> np.ndarray:
+            return np.zeros(s.shape, s.dtype)
+
+        def fill(field: str, struct: PyTree[jax.ShapeDtypeStruct]) -> Any:
+            if field == ReaderField.TIMESTAMPS:
+                return np.arange(struct.shape[0], dtype=struct.dtype)  # strictly increasing
+            if field in (ReaderField.DETECTOR_QUATERNIONS, ReaderField.BORESIGHT_QUATERNIONS):
+                return identity_quaternions(struct)
+            if field == ReaderField.SAMPLE_DATA:
+                # broadband so a fitted noise model has non-zero white-noise level
+                return jax.tree.map(lambda s: rng.standard_normal(s.shape).astype(s.dtype), struct)
+            if field == ReaderField.NOISE_MODEL_FITS:
+                return jax.tree.map(unit_noise_fit, struct)
+            # metadata, masks (all-False), hwp angles: plain zeros per leaf
+            return jax.tree.map(zeros, struct)
+
+        return {field: fill(field, struct) for field, struct in self.out_structure.items()}
+
     def _read_structure_impure(
         self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]
     ) -> PyTree[jax.ShapeDtypeStruct]:
-        # request an empty list
-        # this loads sufficient info to determine the structure
-        data = observation.get_data([])
-        field_structure = self._get_data_field_structures_for(
-            data.n_detectors,
-            data.n_samples,
-            demodulated=self.demodulated,
-            stokes=self.stokes,
-            dtype=self.dtype,
-        )
-        return {field: field_structure[field] for field in data_field_names}
+        return self._get_data_field_structures_for(observation.probe_shape(), data_field_names)
 
     def _read_data_impure(
         self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]

@@ -173,3 +173,19 @@ def test_mask_operator_pytree_to_boolean_mask():
     assert isinstance(recovered, dict)
     assert_array_equal(recovered['a'], jnp.array([True, False, True]))
     assert_array_equal(recovered['b'], jnp.array([False, True, False]))
+
+
+@pytest.mark.parametrize(
+    'condition, expected',
+    [
+        (jnp.array(True), [True, False, True, True]),  # scalar gate on: unchanged
+        (jnp.array(False), [False, False, False, False]),  # scalar gate off: all masked
+        (jnp.array([True, True, False, True]), [True, False, False, True]),  # AND per sample
+    ],
+)
+def test_mask_operator_restrict(condition, expected):
+    """restrict ANDs a condition into the mask (scalar gates the whole operator)."""
+    mask = jnp.array([True, False, True, True])
+    op = MaskOperator.from_boolean_mask(mask, in_structure=as_structure(jnp.zeros(4)))
+    restricted = op.restrict(condition)
+    assert_array_equal(restricted.to_boolean_mask(), jnp.array(expected))

@@ -4,14 +4,31 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from furax.interfaces.sotodlib import LazySOTODLibObservation
-from furax.mapmaking import AbstractGroundObservation, HashedObservationMetadata, ObservationReader
-from furax.mapmaking.config import SotodlibConfig
+from furax.interfaces.sotodlib import (
+    LazyPreprocSOTODLibObservation,
+    LazySOTODLibObservation,
+)
+from furax.mapmaking import (
+    AbstractGroundObservation,
+    HashedObservationMetadata,
+    MapMakingConfig,
+    MultiObservationMapMaker,
+    ObservationReader,
+)
+from furax.mapmaking.config import (
+    HealpixConfig,
+    LandscapeConfig,
+    PointingConfig,
+    SotodlibConfig,
+)
 from furax.obs.stokes import Stokes
 from furax.tree import as_structure
 
+from ._preproc_db import build_preproc_db
+
 FOLDER = Path(__file__).parents[2] / 'data/sotodlib'
 FILES = ['test_obs.h5', 'test_obs_2.h5']
+OBS_IDS = ['obs_12345_sometel', 'obs_54321_someothertel']
 OBS_NDET = [2, 4]
 OBS_NSAMPLE = [1_000, 3_000]
 
@@ -52,24 +69,146 @@ def test_reader_all_fields(observations) -> None:
     }
 
     for i in range(len(FILES)):
-        datum, padding = reader.read(i)
+        datum, padding, _ = reader.read(i)
 
         # check structure
         assert as_structure(datum) == reader.out_structure
 
         # check padding consistency
         ndet, nsample = OBS_NDET[i], OBS_NSAMPLE[i]
-        assert padding['metadata'].uid == ()
-        assert padding['metadata'].telescope_uid == ()
-        assert padding['metadata'].detector_uids == (ndet_max - ndet,)
-        assert padding['sample_data'] == (ndet_max - ndet, nsample_max - nsample)
-        assert padding['valid_sample_masks'] == (ndet_max - ndet, nsample_max - nsample)
-        assert padding['valid_scanning_masks'] == (nsample_max - nsample,)
-        assert padding['timestamps'] == (nsample_max - nsample,)
-        assert padding['hwp_angles'] == (nsample_max - nsample,)
-        assert padding['detector_quaternions'] == (ndet_max - ndet, 0)
-        assert padding['boresight_quaternions'] == (nsample_max - nsample, 0)
-        assert padding['noise_model_fits'] == (ndet_max - ndet, 0)
+        assert tuple(padding['metadata'].uid) == ()
+        assert tuple(padding['metadata'].telescope_uid) == ()
+        assert tuple(padding['metadata'].detector_uids) == (ndet_max - ndet,)
+        assert tuple(padding['sample_data']) == (ndet_max - ndet, nsample_max - nsample)
+        assert tuple(padding['valid_sample_masks']) == (ndet_max - ndet, nsample_max - nsample)
+        assert tuple(padding['valid_scanning_masks']) == (nsample_max - nsample,)
+        assert tuple(padding['timestamps']) == (nsample_max - nsample,)
+        assert tuple(padding['hwp_angles']) == (nsample_max - nsample,)
+        assert tuple(padding['detector_quaternions']) == (ndet_max - ndet, 0)
+        assert tuple(padding['boresight_quaternions']) == (nsample_max - nsample, 0)
+        assert tuple(padding['noise_model_fits']) == (ndet_max - ndet, 0)
+
+
+def test_probe_shape(observations) -> None:
+    """The lazy observation sizes its buffers without (necessarily) a full load."""
+    for i, obs in enumerate(observations):
+        assert obs.probe_shape() == (OBS_NDET[i], OBS_NSAMPLE[i])
+
+
+def test_lazy_preproc_observation(tmp_path) -> None:
+    """Preproc-backed lazy obs loads straight from a (minimal, real) preprocessing db."""
+    config = build_preproc_db(tmp_path, [FOLDER / f for f in FILES])
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config)
+
+    # get_data runs the full preproc load (with signal) through load_and_preprocess
+    data = lazy.get_data()
+    assert data.n_detectors == OBS_NDET[0]
+    assert data.n_samples == OBS_NSAMPLE[0]
+    assert data.get_tods().shape == (OBS_NDET[0], OBS_NSAMPLE[0])
+
+    # probe_shape reads an upper bound straight from the archive metadata (no pipeline run);
+    # here the no-op pipeline neither cuts nor trims, so the bound matches the load exactly
+    assert lazy.probe_shape() == (OBS_NDET[0], OBS_NSAMPLE[0])
+
+
+def test_lazy_preproc_probe_shape_downsample(tmp_path) -> None:
+    """probe_shape ceils the sample bound by the downsample factor, matching downsample_obs."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config, downsample=3)
+
+    # ceil(1000 / 3) == 334, the same count downsample_obs produces in the real load
+    expected_nsamp = -(-OBS_NSAMPLE[0] // 3)
+    assert lazy.probe_shape() == (OBS_NDET[0], expected_nsamp)
+    assert lazy.get_data().n_samples == expected_nsamp
+
+
+def test_reader_with_preproc_observations(tmp_path) -> None:
+    """The reader drives preproc-db-backed lazy observations through io_callback end to end."""
+    config = build_preproc_db(tmp_path, [FOLDER / f for f in FILES])
+    observations = [LazyPreprocSOTODLibObservation(obs_id, config) for obs_id in OBS_IDS]
+
+    reader = ObservationReader.from_observations(
+        observations, requested_fields=['sample_data', 'timestamps', 'valid_scanning_masks']
+    )
+    ndet_max, nsample_max = max(OBS_NDET), max(OBS_NSAMPLE)
+    assert reader.out_structure['sample_data'].shape == (ndet_max, nsample_max)
+
+    for i in range(len(FILES)):
+        datum, _, _ = reader.read(i)
+        assert as_structure(datum) == reader.out_structure
+
+
+def test_preproc_context_cache(tmp_path, monkeypatch) -> None:
+    """Repeated loads on one thread build the sotodlib Context once (not per load)."""
+    from sotodlib.core import Context
+
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
+
+    n_builds = 0
+    original_init = Context.__init__
+
+    def counting_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal n_builds
+        n_builds += 1
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(Context, '__init__', counting_init)
+
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config)
+    lazy.probe_shape()
+    lazy.probe_shape()
+    lazy.get_data()
+    # three loads on this thread, but the Context (and its obsdb/obsfiledb opens) is built once
+    assert n_builds == 1
+
+
+def test_binned_mapmaker_over_preproc_db(tmp_path) -> None:
+    """Bin a map straight from the preproc db, exercising the full streaming pipeline."""
+    config_path = build_preproc_db(tmp_path, [FOLDER / f for f in FILES])
+    observations = [LazyPreprocSOTODLibObservation(obs_id, config_path) for obs_id in OBS_IDS]
+
+    stokes = 'IQU'
+    config = MapMakingConfig(
+        pointing=PointingConfig(on_the_fly=True),
+        landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16)),
+    )
+    maker = MultiObservationMapMaker(observations, config=config)
+    results = maker.run()
+
+    n_stokes = len(stokes)
+    assert results.hit_map.shape == maker.landscape.shape
+    assert jnp.all(results.hit_map >= 0)
+    assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
+    # binned map: CG converges in a single iteration
+    assert results.solver_stats is not None
+    assert results.solver_stats['num_steps'] == 1
+
+
+def test_mapmaker_reads_each_observation_once(tmp_path, monkeypatch) -> None:
+    """A full run loads (and preprocesses) each observation exactly once, not twice."""
+    from furax.interfaces.sotodlib.observation import SOTODLibObservation
+
+    config_path = build_preproc_db(tmp_path, [FOLDER / f for f in FILES])
+    observations = [LazyPreprocSOTODLibObservation(obs_id, config_path) for obs_id in OBS_IDS]
+
+    n_loads = 0
+    original = SOTODLibObservation.from_preproc_group.__func__
+
+    def counting(cls, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal n_loads
+        n_loads += 1
+        return original(cls, *args, **kwargs)
+
+    monkeypatch.setattr(SOTODLibObservation, 'from_preproc_group', classmethod(counting))
+
+    config = MapMakingConfig(
+        pointing=PointingConfig(on_the_fly=True),
+        landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=16)),
+    )
+    MultiObservationMapMaker(observations, config=config).run()
+
+    # one load per observation (the fused build/accumulate pass), not two
+    assert n_loads == len(observations)
 
 
 def test_reader_invalid_data_field_name(observations) -> None:
@@ -138,26 +277,27 @@ def test_reader_all_fields_demod(demod_observations) -> None:
     }
 
     for i in range(len(FILES)):
-        datum, padding = reader.read(i)
+        datum, padding, _ = reader.read(i)
 
         assert as_structure(datum) == reader.out_structure
 
         ndet, nsample = OBS_NDET[i], OBS_NSAMPLE[i]
-        assert padding['metadata'].uid == ()
-        assert padding['metadata'].telescope_uid == ()
-        assert padding['metadata'].detector_uids == (ndet_max - ndet,)
+        assert tuple(padding['metadata'].uid) == ()
+        assert tuple(padding['metadata'].telescope_uid) == ()
+        assert tuple(padding['metadata'].detector_uids) == (ndet_max - ndet,)
         assert all(
-            getattr(padding['sample_data'], s) == (ndet_max - ndet, nsample_max - nsample)
+            tuple(getattr(padding['sample_data'], s)) == (ndet_max - ndet, nsample_max - nsample)
             for s in stokes.lower()
         )
-        assert padding['valid_sample_masks'] == (ndet_max - ndet, nsample_max - nsample)
-        assert padding['valid_scanning_masks'] == (nsample_max - nsample,)
-        assert padding['timestamps'] == (nsample_max - nsample,)
-        assert padding['hwp_angles'] == (nsample_max - nsample,)
-        assert padding['detector_quaternions'] == (ndet_max - ndet, 0)
-        assert padding['boresight_quaternions'] == (nsample_max - nsample, 0)
+        assert tuple(padding['valid_sample_masks']) == (ndet_max - ndet, nsample_max - nsample)
+        assert tuple(padding['valid_scanning_masks']) == (nsample_max - nsample,)
+        assert tuple(padding['timestamps']) == (nsample_max - nsample,)
+        assert tuple(padding['hwp_angles']) == (nsample_max - nsample,)
+        assert tuple(padding['detector_quaternions']) == (ndet_max - ndet, 0)
+        assert tuple(padding['boresight_quaternions']) == (nsample_max - nsample, 0)
         assert all(
-            getattr(padding['noise_model_fits'], s) == (ndet_max - ndet, 0) for s in stokes.lower()
+            tuple(getattr(padding['noise_model_fits'], s)) == (ndet_max - ndet, 0)
+            for s in stokes.lower()
         )
 
 

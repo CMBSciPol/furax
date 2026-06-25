@@ -17,7 +17,7 @@ from toast import qarray as qa
 from toast.observation import default_values as defaults
 from toast.ops.load_hdf5 import LoadHDF5
 
-from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation, ReaderField
+from furax.mapmaking import AbstractGroundObservation, FileBackedLazyObservation, ReaderField
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -347,7 +347,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         return jnp.moveaxis(jnp.atleast_3d(quats), -1, 0)
 
 
-class LazyToastObservation(AbstractLazyObservation[toast.Data]):
+class LazyToastObservation(FileBackedLazyObservation[toast.Data]):
     interface_class = ToastObservation
 
 

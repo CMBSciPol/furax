@@ -4,6 +4,7 @@ from ._observation import (
     AbstractLazyObservation,
     AbstractObservation,
     AbstractSatelliteObservation,
+    FileBackedLazyObservation,
     HashedObservationMetadata,
     ReaderField,
 )
@@ -20,6 +21,7 @@ __all__ = [
     'AbstractLazyObservation',
     'AbstractGroundObservation',
     'AbstractSatelliteObservation',
+    'FileBackedLazyObservation',
     'GapFillingOperator',
     'HashedObservationMetadata',
     'ObservationReader',

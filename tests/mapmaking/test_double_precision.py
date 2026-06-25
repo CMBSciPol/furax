@@ -114,7 +114,7 @@ class TestObservationReaderRebasesTimestamps:
             requested_fields=['timestamps'],
             dtype=jnp.float32,
         )
-        data, _ = reader.read(0)
+        data, _, _ = reader.read(0)
         timestamps = data['timestamps']
 
         assert timestamps.dtype == jnp.float32
@@ -135,7 +135,7 @@ class TestObservationReaderRebasesTimestamps:
             requested_fields=['timestamps'],
             dtype=jnp.float32,
         )
-        data, _ = reader.read(0)
+        data, _, _ = reader.read(0)
         fs = _sample_rate(data['timestamps'])
         assert jnp.isfinite(fs)
         assert fs == pytest.approx(obs.sample_rate, rel=1e-4)

@@ -7,9 +7,16 @@ from pathlib import Path
 import yaml
 from cyclopts import App
 
+from . import _preproc as pp
 from .util import detector_selection, resolve_obsids, setup_logger, standard_obsdir
 
-app = App(help='Preprocess SO observations and dump them to binary files.')
+app = App(
+    help=(
+        'DEPRECATED: preprocess SO observations and dump them to binary files. '
+        'Prefer `furax-so-map` with --init-config, which streams observations straight '
+        'from the preproc db and needs no on-disk copies. Kept only as an optional cache.'
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -108,14 +115,17 @@ def prepare(  # type: ignore[no-untyped-def]
 
     det_select = detector_selection(wafer, band)
 
-    # cd to where the preproc config is for relative paths to work
-    # config is typically in `vx/preprocessing/satpy/...`, need to be in `vx` directory
+    # cd to the preproc config root so the configs' relative paths resolve (config is typically in
+    # `vx/preprocessing/satpy/...`, need to be in `vx`). Resolve the config paths against the launch
+    # dir *before* chdir, so everything used afterwards (workers, layers) stays correct.
+    init_config = init_config.resolve()
+    proc_config = proc_config.resolve() if proc_config else None
     layers = [init_config] + ([proc_config] if proc_config else [])
-    roots = {layer.parent.resolve() for layer in layers}
-    if len(roots) > 1:
-        logger.error('all preproc configs must share the same root directory')
+    try:
+        os.chdir(pp.shared_root(layers))
+    except ValueError as e:
+        logger.error(str(e))
         return 1
-    os.chdir(init_config.parents[2])
 
     if outdir is None:
         # use last configuration layer to determine output directory
@@ -132,8 +142,8 @@ def prepare(  # type: ignore[no-untyped-def]
 
     ctx = _Context(
         obsdir=obsdir,
-        init_config=init_config.resolve().as_posix(),
-        proc_config=proc_config.resolve().as_posix() if proc_config else None,
+        init_config=init_config.as_posix(),
+        proc_config=proc_config.as_posix() if proc_config else None,
         det_select=det_select,
         downsample=downsample,
         overwrite=overwrite,

@@ -1,3 +1,4 @@
+import functools
 from dataclasses import dataclass
 from typing import Any, Self
 
@@ -6,8 +7,8 @@ import jax.numpy as jnp
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, PyTree
 
-from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
-from furax.core import BlockDiagonalOperator, CompositionOperator, IndexOperator
+from furax import AbstractLinearOperator, MaskOperator, tree
+from furax.core import BlockDiagonalOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
 
 from ._observation import ReaderField
@@ -33,7 +34,7 @@ class ObservationModel:
     W: AbstractLinearOperator
     """Weighting operator"""
 
-    masker: AbstractLinearOperator
+    masker: MaskOperator
     """Sample masking operator"""
 
     noise_model: PyTree[NoiseModel]
@@ -129,41 +130,7 @@ class ObservationModel:
 
     def _get_indexer(self) -> IndexOperator:
         """Get the IndexOperator for gap-filling"""
-        if isinstance(self.masker, MaskOperator):
-            mask = self.masker.to_boolean_mask()
-        elif isinstance(self.masker, IdentityOperator):
-            mask = tree.ones_like(self.tod_structure).astype(bool)
-        else:
-            raise NotImplementedError
-        return IndexOperator(mask, in_structure=self.tod_structure)
-
-
-def pad_model(models: ObservationModel, n_pad: int) -> ObservationModel:
-    """Pad models with n_pad dummy observations that contribute nothing to sums.
-
-    The dummy observations are copies of the last real observation with their
-    masker array leaves zeroed out, so masker(x) = 0 for any x.
-    """
-    if n_pad == 0:
-        return models
-    last = jax.tree.map(lambda a: jnp.repeat(a[-1:], n_pad, axis=0), models)
-    if len(jax.tree.leaves(last.masker)) == 0:
-        # Leaf-free masker (e.g. IdentityOperator): jax.tree.map produces no zeros.
-        # Build an explicit all-False MaskOperator so padding obs contribute nothing.
-        structure = last.masker.in_structure
-        first_leaf = jax.tree.leaves(structure)[0]
-        zero_mask = jnp.zeros((n_pad, *first_leaf.shape), dtype=bool)
-        zero_masker = MaskOperator.from_boolean_mask(zero_mask, in_structure=structure)
-    else:
-        zero_masker = jax.tree.map(jnp.zeros_like, last.masker)
-    padded = ObservationModel(
-        H=last.H,
-        W=last.W,
-        masker=zero_masker,
-        noise_model=last.noise_model,
-        sample_rate=last.sample_rate,
-    )
-    return jax.tree.map(lambda a, b: jnp.concatenate([a, b], axis=0), models, padded)  # type: ignore[no-any-return]
+        return IndexOperator(self.masker.to_boolean_mask(), in_structure=self.tod_structure)
 
 
 def _noise_model(
@@ -275,15 +242,8 @@ def _hwp_frequency(
     return (jnp.unwrap(hwp_angles)[-1] - hwp_angles[0]) / jnp.ptp(timestamps) / (2 * jnp.pi)
 
 
-def _mask_projector(
-    *valid_masks: Array | None, structure: jax.ShapeDtypeStruct
-) -> AbstractLinearOperator:
-    """Mask operator built from a series of boolean masks."""
-
-    def _masker(valid_mask: Array | None) -> AbstractLinearOperator:
-        if valid_mask is None:
-            return IdentityOperator(in_structure=structure)
-        return MaskOperator.from_boolean_mask(valid_mask, in_structure=structure)
-
-    combined_masker = CompositionOperator([_masker(valid_mask) for valid_mask in valid_masks])
-    return combined_masker.reduce()
+def _mask_projector(*valid_masks: Array | None, structure: jax.ShapeDtypeStruct) -> MaskOperator:
+    """Mask operator combining a series of boolean masks (logical AND)."""
+    masks = [mask for mask in valid_masks if mask is not None]
+    combined = functools.reduce(jnp.logical_and, masks) if masks else jnp.array(True)
+    return MaskOperator.from_boolean_mask(combined, in_structure=structure)

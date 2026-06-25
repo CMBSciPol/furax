@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import functools
+import threading
 from collections.abc import Collection
 from pathlib import Path
 from typing import Any, Literal
@@ -8,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import pixell.utils
 import so3g.proj
+import sotodlib.preprocess.preprocess_util as pu
 import yaml
 from astropy.wcs import WCS
 from jaxtyping import Array, Bool, Float, Integer
@@ -15,9 +18,14 @@ from numpy.typing import NDArray
 from sotodlib import coords
 from sotodlib.coords.helpers import get_deflected_sightline
 from sotodlib.core import AxisManager
-from sotodlib.preprocess.preprocess_util import load_and_preprocess
+from sotodlib.mapmaking.utils import downsample_obs
 
-from furax.mapmaking import AbstractGroundObservation, AbstractLazyObservation, ReaderField
+from furax.mapmaking import (
+    AbstractGroundObservation,
+    AbstractLazyObservation,
+    FileBackedLazyObservation,
+    ReaderField,
+)
 from furax.mapmaking.config import SotodlibConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import (
@@ -27,6 +35,49 @@ from furax.obs.landscapes import (
     StokesLandscape,
 )
 from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
+
+# Per-process cache of (configs, context) from sotodlib's get_preprocess_context, keyed by
+# (config-file path, thread id). See _enable_preproc_context_cache.
+_PREPROC_CONTEXT_CACHE: dict[tuple[str, int], tuple[Any, Any]] = {}
+
+
+def _enable_preproc_context_cache() -> None:
+    """Memoize sotodlib's ``get_preprocess_context`` per process and thread.
+
+    ``multilayer_load_and_preprocess`` rebuilds the ``core.Context`` on every call and exposes
+    no hook to inject a prebuilt one, so each observation load reopens the obsdb/obsfiledb sqlite
+    indices. Wrapping ``get_preprocess_context`` with a cache builds the Context (and opens those
+    indices) once per config layer; ``multilayer`` calls it by module-global name, so the patch
+    takes effect without reimplementing the loader.
+
+    The cache is keyed by thread id as well as config path: sotodlib's sqlite connections are
+    thread-affine, and the reader runs the data load inside a ``jax.io_callback`` thread distinct
+    from the shape-probe phase. A shared Context would raise "SQLite objects created in a thread
+    can only be used in that same thread".
+    """
+
+    if getattr(pu.get_preprocess_context, '_furax_cached', False):
+        return
+    original = pu.get_preprocess_context
+
+    @functools.wraps(original)
+    def cached(configs: Any, context: Any = None) -> tuple[Any, Any]:
+        # Only memoize the hot path: a config given by path with no caller-supplied context.
+        # Keyed by config path (not context_file) so init/proc layers stay distinct even when
+        # they share a context — each keeps its own appended preprocess archive.
+        if context is not None or not isinstance(configs, str):
+            return original(configs, context)  # type: ignore[no-any-return]
+        key = (configs, threading.get_ident())
+        if key not in _PREPROC_CONTEXT_CACHE:
+            _PREPROC_CONTEXT_CACHE[key] = original(configs, context)
+        return _PREPROC_CONTEXT_CACHE[key]
+
+    cached._furax_cached = True  # type: ignore[attr-defined]
+    # Relies on sotodlib calling get_preprocess_context by its module-global name (which
+    # load_and_preprocess / multilayer_load_and_preprocess do): reassigning the module attribute
+    # is what makes the cache take effect. A future sotodlib that imports it as a local alias, or
+    # builds core.Context directly, would bypass this.
+    pu.get_preprocess_context = cached
 
 
 class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
@@ -116,8 +167,61 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             with open(preprocess_config) as file:
                 config = yaml.safe_load(file)
 
-        data = load_and_preprocess(observation_id, config, dets=detector_selection)
+        data = pu.load_and_preprocess(observation_id, config, dets=detector_selection)
         return cls(data, sotodlib_config)
+
+    @classmethod
+    def from_preproc_group(
+        cls,
+        observation_id: str,
+        init_config: str | Path,
+        proc_config: str | Path | None = None,
+        detector_selection: dict[str, str] | None = None,
+        downsample: int = 1,
+        sotodlib_config: SotodlibConfig | None = None,
+    ) -> SOTODLibObservation:
+        """Loads a (already preprocessed) observation directly from the preprocessing db.
+
+        This reads the saved preprocessing products from the archive and re-applies the
+        process pipeline, without writing any intermediate file. It mirrors the load path
+        of ``preproc_or_load_group`` (as used by the ``furax-so-prepare`` tool) but skips
+        the archive/proc-aman saving, so the result is identical to mapping a binary file
+        produced by that tool.
+
+        Args:
+            observation_id: Observation id (e.g. 'obs_1714550584_satp3_1111111').
+            init_config: Base-layer preprocessing config (path or posix string).
+            proc_config: Optional second-layer preprocessing config. If given, the
+                two-layer (init+proc) load path is used.
+            detector_selection: Optional detector restriction
+                (e.g. {'wafer_slot': 'ws0', 'wafer.bandpass': 'f150'}).
+            downsample: Integer downsampling factor applied after preprocessing.
+            sotodlib_config: Optional sotodlib-specific configuration.
+
+        Returns:
+            An instance of SOTODLibObservation.
+
+        Raises:
+            RuntimeError: If no detectors remain after cuts (nothing to load).
+        """
+        _enable_preproc_context_cache()
+        init_config = Path(init_config).as_posix()
+        if proc_config is not None:
+            aman = pu.multilayer_load_and_preprocess(
+                observation_id,
+                init_config,
+                Path(proc_config).as_posix(),
+                dets=detector_selection,
+            )
+        else:
+            # load_and_preprocess returns (aman, full_aman); we only need the restricted one
+            result = pu.load_and_preprocess(observation_id, init_config, dets=detector_selection)
+            aman = result[0] if isinstance(result, tuple) else result
+        if aman is None:
+            raise RuntimeError(f'no detectors left after cuts for {observation_id}')
+        if downsample > 1:
+            aman = downsample_obs(aman, downsample)
+        return cls(aman, sotodlib_config)
 
     @property
     def name(self) -> str:
@@ -387,7 +491,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return np.atleast_2d(np.asarray(quats, dtype=np.float64))
 
 
-class LazySOTODLibObservation(AbstractLazyObservation[AxisManager]):
+class LazySOTODLibObservation(FileBackedLazyObservation[AxisManager]):
     interface_class = SOTODLibObservation
 
     def __init__(self, filename: str | Path, sotodlib_config: SotodlibConfig | None = None) -> None:
@@ -398,3 +502,66 @@ class LazySOTODLibObservation(AbstractLazyObservation[AxisManager]):
         return SOTODLibObservation.from_file(
             self.file, requested_fields, sotodlib_config=self._sotodlib_config
         )
+
+
+class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
+    """Lazy observation backed by the preprocessing database (no intermediate file).
+
+    Loads on demand via ``SOTODLibObservation.from_preproc_group``, so observations are
+    streamed straight from the preproc archive at mapmaking time and never copied to disk.
+    """
+
+    interface_class = SOTODLibObservation
+
+    def __init__(
+        self,
+        observation_id: str,
+        init_config: str | Path,
+        proc_config: str | Path | None = None,
+        detector_selection: dict[str, str] | None = None,
+        downsample: int = 1,
+        sotodlib_config: SotodlibConfig | None = None,
+    ) -> None:
+        self.observation_id = observation_id
+        self.init_config = Path(init_config).resolve()
+        self.proc_config = Path(proc_config).resolve() if proc_config else None
+        self.detector_selection = detector_selection
+        self.downsample = downsample
+        self._sotodlib_config = sotodlib_config
+
+    @property
+    def name(self) -> str:
+        return self.observation_id
+
+    def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
+        # A preproc load cannot be field-subset: the full observation is always returned,
+        # which satisfies any requested fields. The cheap shape path lives in probe_shape.
+        return SOTODLibObservation.from_preproc_group(
+            self.observation_id,
+            self.init_config,
+            self.proc_config,
+            self.detector_selection,
+            downsample=self.downsample,
+            sotodlib_config=self._sotodlib_config,
+        )
+
+    def probe_shape(self) -> tuple[int, int]:
+        """Returns an upper bound on ``(n_detectors, n_samples)`` to size the padded buffers.
+
+        Read from the init preprocess metadata via ``context.get_meta``: no TOD I/O and, crucially,
+        no process pipeline run (the pipeline mutates the signal and crashes when it is absent).
+
+        The value is only an *upper bound*, not the exact post-pipeline shape:
+
+        - ``n_detectors`` is the count after applying ``detector_selection`` (wafer slot / bandpass)
+          but before the process pipeline, which only ever restricts detectors further.
+        - ``n_samples`` is ``ceil(meta.samps.count / downsample)``. The process pipeline only trims
+          samples (e.g. edge cuts) before downsampling, so this bounds the actual samps count.
+        """
+        _enable_preproc_context_cache()
+        # call get_preprocess_context through the module so the cached get_preprocess_context is used
+        # (str, not Path: sotodlib and the cache key expect a posix string)
+        _, context = pu.get_preprocess_context(self.init_config.as_posix())
+        meta = context.get_meta(self.observation_id, dets=self.detector_selection)
+        n_samps_ub = -(-meta.samps.count // self.downsample)  # ceil, matches downsample_obs
+        return meta.dets.count, n_samps_ub

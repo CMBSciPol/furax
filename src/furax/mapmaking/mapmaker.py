@@ -345,12 +345,15 @@ class MultiObservationMapMaker(Generic[T]):
                     )
                     return gap_fill(jax.random.key(config.gaps.fill_options.seed), tod)
 
-                tod = jax.lax.cond(
-                    fill_gaps & real & valid,
-                    func_gapfill,
-                    lambda _: _,  # return raw data as-is
-                    data[ReaderField.SAMPLE_DATA],
-                )
+                # Use Python `if` for static `fill_gaps`, so gap-filling branch is not traced
+                tod = data[ReaderField.SAMPLE_DATA]
+                if fill_gaps:
+                    tod = jax.lax.cond(
+                        real & valid,
+                        func_gapfill,
+                        lambda _: _,  # return raw data as-is
+                        tod,
+                    )
 
                 rhs_i = obs.H.T(obs.masker(obs.W(tod)))
                 return (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i)), obs

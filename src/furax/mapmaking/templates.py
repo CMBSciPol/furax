@@ -38,7 +38,6 @@ from jaxtyping import DTypeLike, Float, Int, PyTree
 
 from furax import AbstractLinearOperator, symmetric
 from furax.core import CompositionOperator, TransposeOperator
-from furax.core.rules import AbstractCompositionRule, NoReduction
 from furax.math import bspline, quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
 from furax.obs.landscapes import HorizonLandscape
@@ -862,26 +861,6 @@ class POMMEProjectionOperator(AbstractLinearOperator):
 
     def reduce(self) -> AbstractLinearOperator:
         return self
-
-
-class POMMEProjectionRule(AbstractCompositionRule):
-    """Rule for POMMEProjectionOperator @ POMMEProjectionOperator = POMMEProjectionOperator."""
-
-    left_operator_class = POMMEProjectionOperator
-    right_operator_class = POMMEProjectionOperator
-
-    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
-        super().check(left, right)
-        assert isinstance(left, POMMEProjectionOperator) and isinstance(
-            right, POMMEProjectionOperator
-        )
-        if left.tau != right.tau:
-            raise NoReduction
-
-    def apply(
-        self, left: AbstractLinearOperator, right: AbstractLinearOperator
-    ) -> list[AbstractLinearOperator]:
-        return [left]
 
 
 @symmetric

@@ -36,7 +36,7 @@ from jax import Array, ShapeDtypeStruct
 from jax import numpy as jnp
 from jaxtyping import DTypeLike, Float, Int, PyTree
 
-from furax import AbstractLinearOperator, symmetric
+from furax import AbstractLinearOperator, idempotent, square, symmetric
 from furax.core import CompositionOperator, TransposeOperator
 from furax.math import bspline, quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
@@ -830,6 +830,7 @@ class GroundTemplateOperator(AbstractLinearOperator):
 
 
 @symmetric
+@idempotent
 class POMMEProjectionOperator(AbstractLinearOperator):
     """Projection operator for the POMME mapmaker.
 
@@ -863,7 +864,8 @@ class POMMEProjectionOperator(AbstractLinearOperator):
         return self
 
 
-@symmetric
+@square
+@idempotent
 class SplineHWPSSProjectionOperator(AbstractLinearOperator):
     """Sequential POMME-style deprojection for spline HWPSS templates.
 

@@ -266,7 +266,7 @@ class MultiObservationMapMaker(Generic[T]):
         the same global set.
         """
         local = np.zeros(self.n_observations, dtype=bool)
-        local[self.reader.failed_indices] = True
+        local[sorted(self.reader.failed_indices)] = True
         gathered = np.asarray(mhu.process_allgather(local)).reshape(-1, self.n_observations)
         failed = np.flatnonzero(gathered.any(axis=0))
         return [self.observations[int(i)].name for i in failed]

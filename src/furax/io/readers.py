@@ -68,8 +68,12 @@ class AbstractReader(ABC):
         :meth:`read` records caught failures in ``failed_indices`` as a host side effect, so a
         reused reader would otherwise carry failures across read passes. Call this before a fresh
         pass to start from just the up-front ``known_failures``.
+
+        ``failed_indices`` is a set: ``read`` runs inside ``io_callback``, which JAX may dispatch
+        on concurrent host threads, so two threads can record the same failing index at once.
+        ``set.add`` is idempotent, sidestepping the check-then-append race a list would need.
         """
-        self.failed_indices = sorted(self.known_failures)
+        self.failed_indices = set(self.known_failures)
 
     @staticmethod
     def _normalize_args_keywords(
@@ -211,8 +215,7 @@ class AbstractReader(ABC):
                 )
             except Exception:
                 filler = self._failure_filler()
-                if i not in self.failed_indices:
-                    self.failed_indices.append(i)
+                self.failed_indices.add(i)
                 logger.exception('read of item %d failed; substituting filler data', i)
                 return filler, zeros_like(padding_structure), np.array(False)
             # Pad from the actual loaded shape (not the precomputed, probe-based padding): the

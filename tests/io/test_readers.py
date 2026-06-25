@@ -115,23 +115,23 @@ def test_read_returns_valid_flag_and_filler_on_failure() -> None:
     data, _, valid = reader.read(0)
     assert bool(valid) is True
     assert_array_equal(data, jnp.ones(4, np.float32))
-    assert reader.failed_indices == []
+    assert reader.failed_indices == set()
 
     data, _, valid = reader.read(1)
     assert bool(valid) is False
     assert_array_equal(data, jnp.full(4, -1.0, np.float32))  # filler
-    assert reader.failed_indices == [1]
+    assert reader.failed_indices == {1}
 
 
 def test_reset_failures_clears_runtime_failures_to_known_baseline() -> None:
     reader = FillerReader([4, 4], [False, True], known_failures=[0])
-    assert reader.failed_indices == [0]  # baseline from known_failures
+    assert reader.failed_indices == {0}  # baseline from known_failures
 
     reader.read(1)  # runtime failure recorded as a host side effect
-    assert reader.failed_indices == [0, 1]
+    assert reader.failed_indices == {0, 1}
 
     reader.reset_failures()
-    assert reader.failed_indices == [0]  # back to the known-failure baseline
+    assert reader.failed_indices == {0}  # back to the known-failure baseline
 
 
 def test_buffers() -> None:

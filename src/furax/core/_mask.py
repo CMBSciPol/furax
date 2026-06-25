@@ -1,3 +1,5 @@
+from typing import Self
+
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, Inexact, PyTree, UInt8
@@ -38,7 +40,7 @@ class MaskOperator(AbstractLinearOperator):
         boolean_mask: PyTree[Bool[Array, '...']],
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
-    ) -> 'MaskOperator':
+    ) -> Self:
         """Create a MaskOperator from a boolean mask.
 
         Args:
@@ -69,6 +71,14 @@ class MaskOperator(AbstractLinearOperator):
             self.mask,
             self.in_structure,
         )
+
+    def restrict(self, condition: Bool[Array, '...']) -> 'MaskOperator':
+        """Return a new MaskOperator with samples additionally masked out where ``condition`` is False.
+
+        A scalar ``condition`` gates the whole operator on or off.
+        """
+        gated = jax.tree.map(lambda m: m & condition, self.to_boolean_mask())
+        return MaskOperator.from_boolean_mask(gated, in_structure=self.in_structure)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         boolean_mask = self.to_boolean_mask()

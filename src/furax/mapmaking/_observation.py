@@ -362,20 +362,51 @@ class AbstractGroundObservation(AbstractObservation[T]):
 
 
 class AbstractLazyObservation(ABC, Generic[T]):
+    """Deferred handle to an observation: opens its backing store only when read.
+
+    The default implementation is file-backed, but subclasses are free to back the
+    observation by any source (e.g. a preprocessing database) by overriding ``get_data``.
+    """
+
     interface_class: type[AbstractObservation[T]]
 
-    def __init__(self, filename: str | Path):
-        self.file = Path(filename)
-        if not self.file.exists():
-            raise FileNotFoundError(f'Observation file {self.file} does not exist')
-
+    @abstractmethod
     def get_data(self, requested_fields: Collection[str] | None = None) -> AbstractObservation[T]:
-        """Loads observation data from the underlying file.
+        """Loads observation data from the underlying source.
 
         Args:
             requested_fields: List of data fields needed.
-                If None, the entire file is loaded into memory.
+                If None, the entire observation is loaded into memory.
                 If `[]` (empty list), loads only what's needed to determine buffer shapes.
                 Otherwise, loads whatever is needed to satisfy the request.
         """
+
+    @property
+    def name(self) -> str:
+        """Human-readable identifier, used e.g. to report observations that failed to load."""
+        return type(self).__name__
+
+    def probe_shape(self) -> tuple[int, int]:
+        """Returns ``(n_detectors, n_samples)`` to size the padded buffers.
+
+        The default opens the observation with the minimal field set; subclasses may
+        override with a cheaper query.
+        """
+        data = self.get_data([])
+        return data.n_detectors, data.n_samples
+
+
+class FileBackedLazyObservation(AbstractLazyObservation[T]):
+    """Lazy observation whose backing store is a single binary file."""
+
+    def __init__(self, filename: str | Path):
+        self.file = Path(filename).resolve()
+        if not self.file.exists():
+            raise FileNotFoundError(f'Observation file {self.file} does not exist')
+
+    @property
+    def name(self) -> str:
+        return self.file.stem
+
+    def get_data(self, requested_fields: Collection[str] | None = None) -> AbstractObservation[T]:
         return self.interface_class.from_file(self.file, requested_fields)

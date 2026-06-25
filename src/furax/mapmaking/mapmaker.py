@@ -1391,18 +1391,12 @@ class POMMEMapMaker(MapMaker):
         projector: AbstractLinearOperator = pomme_projector
 
         # Spline HWPSS sequential deprojection (D3 @ D1)
-        if config.templates and (shwpss := config.templates.spline_hwpss):
-            times = jnp.asarray(observation.get_elapsed_times())
-            t3 = PerDetectorTemplate.bspline_hwpss(
-                times=times,
-                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
-                n_dets=observation.n_detectors,
-                n_knots=shwpss.resolve_n_knots(times.size),
-                harmonics=shwpss.harmonics,
-                dtype=config.dtype,
-            )
+        if config.templates and config.templates.spline_hwpss:
+            t3 = self.get_template_operator(observation).blocks['spline_hwpss']
+
             # tilde_T3 = D1 @ T3
             tilde_t3 = (pomme_projector @ t3).reduce()
+
             # D3 = I - tilde_T3 (tilde_T3^T tilde_T3)^-1 tilde_T3^T
             d3 = templates.SplineHWPSSProjectionOperator(tilde_t3)
             # D = D3 @ D1

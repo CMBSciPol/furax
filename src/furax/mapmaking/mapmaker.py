@@ -1452,7 +1452,7 @@ class POMMEMapMaker(MapMaker):
         solver = lineax.CG(**asdict(self.config.solver))
         spd = OperatorTag.POSITIVE_SEMIDEFINITE
         lx_system = as_lineax_operator(lhs, spd)
-        lx_precond = as_lineax_operator(preconditioner, spd)
+        lx_precond = as_lineax_operator(preconditioner.reduce(), spd)
         logger_info('Completed setting up the solver')
 
         # Run mapmaking

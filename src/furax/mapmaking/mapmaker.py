@@ -1457,7 +1457,7 @@ class POMMEMapMaker(MapMaker):
 
         # Run mapmaking
         rhs = rhs_op(data)
-        y0 = preconditioner(rhs)
+        y0 = preconditioner.reduce()(rhs)
         solution = lineax.linear_solve(
             lx_system,
             rhs,

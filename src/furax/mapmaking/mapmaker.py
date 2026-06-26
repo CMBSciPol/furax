@@ -1392,15 +1392,16 @@ class POMMEMapMaker(MapMaker):
 
         # Spline HWPSS sequential deprojection (D3 @ D1)
         if config.templates and config.templates.spline_hwpss:
-            t3 = self.get_template_operator(observation).blocks['spline_hwpss']
+            spline_template = self.get_template_operator(observation).blocks['spline_hwpss']
 
-            # tilde_T3 = D1 @ T3
-            tilde_t3 = pomme_projector @ t3
+            d3 = templates.SplineHWPSSProjectionOperator.create(
+                spline_template,
+                pomme_projector,
+            )
 
-            # D3 = I - tilde_T3 (tilde_T3^T tilde_T3)^-1 tilde_T3^T
-            d3 = templates.SplineHWPSSProjectionOperator(tilde_t3)
             # D = D3 @ D1
             projector = (d3 @ pomme_projector).reduce()
+
             logger_info('Created sequential SplineHWPSS deprojection operator')
 
         # Optional mask for scanning

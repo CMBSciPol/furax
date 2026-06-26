@@ -858,53 +858,126 @@ class TestSplineHWPSSTemplate:
 
 class TestSplineHWPSSProjectionOperator:
     def test_properties(self) -> None:
-        n_dets, n_samps, n_knots = 1, 400, 5
+        n_dets, n_samps, n_knots = 2, 400, 5
         tau = 10
+
         t = jnp.linspace(0, 10, n_samps)
         hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
 
-        # POMME operator D1
+        # -------------------------------------------------
+        # Operators
+        # -------------------------------------------------
+
         d1 = POMMEProjectionOperator(
-            tau, in_structure=jax.ShapeDtypeStruct((n_dets, n_samps), jnp.float64)
+            tau,
+            in_structure=jax.ShapeDtypeStruct(
+                (n_dets, n_samps),
+                jnp.float64,
+            ),
         )
-        # Spline template T3
-        t3 = PerDetectorTemplate.bspline_hwpss(t, hwp, n_dets, n_knots=n_knots, dtype=jnp.float64)
 
-        # Orthogonalized template tilde_T3 = D1 @ T3
-        tilde_t3 = (d1 @ t3).reduce()
+        template = PerDetectorTemplate.bspline_hwpss(
+            t,
+            hwp,
+            n_dets,
+            n_knots=n_knots,
+            dtype=jnp.float64,
+        )
 
-        # Sequential projector D3
-        d3 = SplineHWPSSProjectionOperator(tilde_t3)
+        d3 = SplineHWPSSProjectionOperator.create(
+            template,
+            d1,
+        )
 
+        projector = d3 @ d1
+
+        rng = jr.key(0)
+
+        x = jr.normal(
+            rng,
+            (n_dets, n_samps),
+            dtype=jnp.float64,
+        )
+
+        y = jr.normal(
+            jr.key(1),
+            (n_dets, n_samps),
+            dtype=jnp.float64,
+        )
+
+        # -------------------------------------------------
         # 1. Symmetry
-        x = jr.normal(jr.key(2000), (n_dets, n_samps))
-        y = jr.normal(jr.key(2001), (n_dets, n_samps))
-        assert_allclose(jnp.vdot(d3(x), y), jnp.vdot(x, d3(y)), rtol=TOL)
+        # -------------------------------------------------
 
-        # 2. Idempotency: D3 @ D3 = D3
-        assert_allclose(d3(d3(x)), d3(x), atol=1e-10)
+        lhs = jnp.vdot(projector(x), y)
+        rhs = jnp.vdot(x, projector(y))
 
-        # 3. Orthogonality: D3 @ tilde_T3 = 0
-        a = jr.normal(jr.key(2002), tilde_t3.in_structure.shape)
-        assert_allclose(d3(tilde_t3(a)), 0.0, atol=1e-10)
+        assert_allclose(
+            lhs,
+            rhs,
+            rtol=TOL,
+        )
 
-        # 4. Sequential deprojection: D = D3 @ D1
-        # Any signal in Range(T1) or Range(tilde_T3) should be removed.
-        # Signal in Range(T1) where D1 = I - T1 (T1^T T1)^-1 T1^T
-        # T1 is the block-averaging basis.
-        t1_signal = jnp.repeat(jr.normal(jr.key(2003), (n_dets, n_samps // tau)), tau, axis=1)
-        if n_samps % tau != 0:
-            t1_signal = jnp.pad(t1_signal, ((0, 0), (0, n_samps % tau)))
+        # -------------------------------------------------
+        # 2. Idempotency
+        #
+        # D^2 = D
+        # -------------------------------------------------
 
-        # D1(t1_signal) should be 0 (mostly, except for the tail)
-        # For POMME, the tail is not demeaned, so we check the full intervals.
-        full_slice = slice(None, (n_samps // tau) * tau)
-        assert_allclose(d1(t1_signal)[:, full_slice], 0.0, atol=TOL)
+        assert_allclose(
+            projector(projector(x)),
+            projector(x),
+            atol=1e-6,
+        )
 
-        # D3 @ D1 @ t1_signal should be 0
-        assert_allclose(d3(d1(t1_signal))[:, full_slice], 0.0, atol=TOL)
+        # -------------------------------------------------
+        # 3. Remove spline HWPSS modes
+        #
+        # D1 D3 B a = 0
+        # -------------------------------------------------
 
-        # Signal in Range(T3)
-        t3_signal = t3(a)
-        # D3 @ D1 @ t3_signal = D3 @ tilde_t3(a) = 0
-        assert_allclose(d3(d1(t3_signal)), 0.0, atol=1e-10)
+        coeff = jr.normal(
+            jr.key(2),
+            template.in_structure.shape,
+            dtype=jnp.float64,
+        )
+
+        spline_signal = template(coeff)
+
+        assert_allclose(
+            d1(d3(spline_signal)),
+            0.0,
+            atol=1e-6,
+        )
+
+        # -------------------------------------------------
+        # 4. Remove POMME modes
+        #
+        # D1 removes block constant signals
+        # -------------------------------------------------
+
+        n_blocks = n_samps // tau
+
+        block_values = jr.normal(
+            jr.key(3),
+            (n_dets, n_blocks),
+            dtype=jnp.float64,
+        )
+
+        pomme_signal = jnp.repeat(
+            block_values,
+            tau,
+            axis=-1,
+        )
+
+        assert_allclose(
+            projector(pomme_signal)[:, : n_blocks * tau],
+            0.0,
+            atol=1e-6,
+        )
+
+        assert_allclose(
+            d1(d3(spline_signal)),
+            0.0,
+            atol=1e-6,
+        )

@@ -1399,8 +1399,8 @@ class POMMEMapMaker(MapMaker):
                 pomme_projector,
             )
 
-            # D = D3 @ D1
-            projector = (d3 @ pomme_projector).reduce()
+            # D = D1 @ D3
+            projector = pomme_projector @ d3
 
             logger_info('Created sequential SplineHWPSS deprojection operator')
 
@@ -1446,18 +1446,18 @@ class POMMEMapMaker(MapMaker):
         h = acquisition @ selector.T
         mp = masker
         ap = inv_noise @ projector
-        lhs = (h.T @ mp @ ap @ mp @ h).reduce()
+        lhs = h.T @ mp @ ap @ mp @ h
         rhs_op = jax.jit(lambda d: (h.T @ mp @ ap @ mp).reduce()(d))
 
         solver = lineax.CG(**asdict(self.config.solver))
         spd = OperatorTag.POSITIVE_SEMIDEFINITE
         lx_system = as_lineax_operator(lhs, spd)
-        lx_precond = as_lineax_operator(preconditioner.reduce(), spd)
+        lx_precond = as_lineax_operator(preconditioner, spd)
         logger_info('Completed setting up the solver')
 
         # Run mapmaking
         rhs = rhs_op(data)
-        y0 = (preconditioner.reduce())(rhs)
+        y0 = preconditioner(rhs)
         solution = lineax.linear_solve(
             lx_system,
             rhs,

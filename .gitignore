@@ -11,12 +11,6 @@ __pycache__
 /.idea/
 /.zed/
 
-/tests/data/planck/
-/binh_notebooks
-/docs
-
-src/.DS_Store
-src/furax/.DS_Store
 .DS_Store
 
 # python

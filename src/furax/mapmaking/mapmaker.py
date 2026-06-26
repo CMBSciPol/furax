@@ -1445,7 +1445,7 @@ class POMMEMapMaker(MapMaker):
         h = acquisition @ selector.T
         mp = masker
         ap = inv_noise @ projector
-        lhs = (h.T @ ap.T @ mp @ ap @ mp @ h).reduce()
+        lhs = (h.T @ mp @ ap @ mp @ h).reduce()
         rhs_op = jax.jit(lambda d: (h.T @ mp @ ap @ mp).reduce()(d))
 
         solver = lineax.CG(**asdict(self.config.solver))

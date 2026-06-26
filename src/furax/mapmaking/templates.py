@@ -860,9 +860,6 @@ class POMMEProjectionOperator(AbstractLinearOperator):
             return y
         return jnp.concatenate([y, x[:, -n_rem:]], axis=1)
 
-    def reduce(self) -> AbstractLinearOperator:
-        return self
-
 
 @idempotent
 @symmetric

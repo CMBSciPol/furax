@@ -1395,7 +1395,7 @@ class POMMEMapMaker(MapMaker):
             t3 = self.get_template_operator(observation).blocks['spline_hwpss']
 
             # tilde_T3 = D1 @ T3
-            tilde_t3 = (pomme_projector @ t3).reduce()
+            tilde_t3 = pomme_projector @ t3
 
             # D3 = I - tilde_T3 (tilde_T3^T tilde_T3)^-1 tilde_T3^T
             d3 = templates.SplineHWPSSProjectionOperator(tilde_t3)

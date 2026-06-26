@@ -1,4 +1,4 @@
-from typing import Any, cast
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -61,24 +61,19 @@ class BJPreconditioner(TreeOperator):
         stokes = in_struct.stokes
         tree_cls = Stokes.class_for(stokes)
 
-        # Vectorized probing of the operator
-        eye = jnp.eye(n, dtype=jax.tree.leaves(in_struct)[0].dtype)
-
-        def make_probe(row: Array) -> Stokes:
-            return cast(
-                Stokes,
-                jax.tree.unflatten(
-                    treedef, [row[i] * jnp.ones_like(leaf) for i, leaf in enumerate(basis_leaves)]
-                ),
-            )
-
-        probes = jax.vmap(make_probe)(eye)
-        results = jax.vmap(lambda p: _apply(op, p))(probes)
-        results_leaves = jax.tree.leaves(results)
+        out_leaves = []
+        for j in range(n):
+            probe_leaves = [
+                jnp.ones_like(leaf) if i == j else jnp.zeros_like(leaf)
+                for i, leaf in enumerate(basis_leaves)
+            ]
+            probe = jax.tree.unflatten(treedef, probe_leaves)
+            result = _apply(op, probe)
+            out_leaves.append(jax.tree.leaves(result))
 
         tree = tree_cls(
             **{
-                stoke: jax.tree.unflatten(treedef, list(results_leaves[i]))
+                stoke: jax.tree.unflatten(treedef, [out_leaves[j][i] for j in range(n)])
                 for i, stoke in enumerate(stokes.lower())
             }
         )

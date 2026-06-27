@@ -686,6 +686,7 @@ class PerDetectorTemplate(AbstractLinearOperator):
         n_knots: int,
         harmonics: int | Sequence[int] = (4,),
         dtype: DTypeLike = jnp.float32,
+        scanning_mask: Float[Array, ' samp'] | None = None,
     ) -> Self:
         """Spline-based HWP synchronous template.
 
@@ -701,8 +702,13 @@ class PerDetectorTemplate(AbstractLinearOperator):
             harmonics: HWP harmonics to model, either an int `n` (the harmonics `1..n`)
                 or an explicit sequence of orders.
             dtype: Floating dtype of the basis values.
+            scanning_mask: Optional (N,) mask restricting basis to valid scanning intervals.
+                1 = valid scan, 0 = turnaround/gap. Basis functions are zeroed outside valid
+                regions, ensuring the template fits only over scanned data.
         """
-        offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
+        offset, weights = bspline.spline_window(
+            times, n_knots, scanning_mask=scanning_mask
+        )  # weights (samp, 4)
         sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False).astype(dtype)
         basis = WindowedBasis.create(
             offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2

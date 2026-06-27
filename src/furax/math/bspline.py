@@ -49,8 +49,7 @@ def spline_basis(
 
 
 def spline_window(
-    times: Float[Array, ' samp'],
-    n_knots: int,
+    times: Float[Array, ' samp'], n_knots: int, scanning_mask: Float[Array, ' samp'] | None = None
 ) -> tuple[Int[Array, ' samp'], Float[Array, 'samp 4']]:
     """Banded form of `spline_basis`: the 4 nonzero knots under each sample.
 
@@ -68,4 +67,10 @@ def spline_window(
     offset = jnp.clip(jnp.floor(p).astype(jnp.int32) - 2, 0, K - 4)
     # knot offset+o contributes cubic_bspline(p - (offset+o) + 1); out-of-support -> 0.
     u = p[:, None] - (offset[:, None] + jnp.arange(4)) + 1.0
-    return offset, cubic_bspline(u)
+    weights = cubic_bspline(u)
+
+    # Apply scanning mask if provided
+    if scanning_mask is not None:
+        weights = weights * scanning_mask[:, None].astype(weights.dtype)
+
+    return offset, weights

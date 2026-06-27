@@ -618,6 +618,30 @@ class MapMaker:
     def from_yaml(cls, path: str | Path, logger: Logger | None = None) -> 'MapMaker':
         return cls.from_config(MapMakingConfig.load_yaml(path), logger=logger)
 
+    @staticmethod
+    def _build_scanning_mask(
+        observation: AbstractGroundObservation[Any],
+        n_samps: int,
+    ) -> Float[Array, ' samp']:
+        """Build (N,) mask: 1 for samples in scanning intervals, 0 elsewhere.
+
+        Args:
+            observation: The observation to extract scanning intervals from.
+            n_samps: Total number of samples in the TOD.
+
+        Returns:
+            Mask array of shape (n_samps,), where 1.0 indicates valid scanning
+            and 0.0 indicates turnaround/gap regions.
+        """
+        mask = jnp.zeros(n_samps, dtype=jnp.float32)
+        intervals = jnp.asarray(observation.get_scanning_intervals(), dtype=jnp.int32)
+
+        # Mark all samples in scanning intervals
+        for start, end in intervals:
+            mask = mask.at[int(start) : int(end)].set(1.0)
+
+        return mask
+
     def get_landscape(self, observation: AbstractGroundObservation[Any]) -> StokesLandscape:
         """Landscape used for mapmaking with given observation"""
         lc = self.config.landscape
@@ -898,6 +922,8 @@ class MapMaker:
             )
         if shwpss := config.templates.spline_hwpss:
             times = jnp.asarray(observation.get_elapsed_times())
+            n_samps = observation.n_samples
+            scanning_mask = self._build_scanning_mask(observation, n_samps)
             blocks['spline_hwpss'] = PerDetectorTemplate.bspline_hwpss(
                 times=times,
                 hwp_angles=jnp.asarray(observation.get_hwp_angles()),
@@ -905,6 +931,7 @@ class MapMaker:
                 n_knots=shwpss.resolve_n_knots(times.size),
                 harmonics=shwpss.harmonics,
                 dtype=config.dtype,
+                scanning_mask=scanning_mask,
             )
         if ground := config.templates.ground:
             azimuth = jnp.asarray(observation.get_azimuth())

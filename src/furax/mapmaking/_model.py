@@ -15,7 +15,7 @@ from ._observation import ReaderField
 from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig, Methods, NoiseSource, WeightingMode
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
-from .templates import ATOPProjectionOperator
+from .templates import POMMEProjectionOperator
 
 
 @register_dataclass
@@ -180,18 +180,18 @@ def _noise_model(
 def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
     """Get the sample mask from data.
 
-    For ATOP mapmaker, extra pixels may be masked depending on atop_tau.
+    For POMME mapmaker, extra pixels may be masked depending on pomme_tau.
     """
 
     mask = data[ReaderField.VALID_SAMPLE_MASKS]
 
-    if config.method == Methods.ATOP:
-        tau = config.atop_tau
-        F = ATOPProjectionOperator(config.atop_tau, in_structure=tree.as_structure(mask))
+    if config.method == Methods.POMME:
+        tau = config.pomme_tau
+        F = POMMEProjectionOperator(config.pomme_tau, in_structure=tree.as_structure(mask))
         # Mask all tau-intervals that are partially masked
         interval_mask = jnp.abs(F(mask)) < 0.5 / tau
         mask = jnp.logical_and(mask, interval_mask)
-        # The partial interval at the end is unchanged by ATOP operator
+        # The partial interval at the end is unchanged by POMME operator
         # -> True samples get interval_mask = False (since 1 > 0.5/tau)
         # -> False samples have mask = False
         # in both cases the logical and eliminates the tail
@@ -224,8 +224,8 @@ def _template_deprojector(
     tod_structure: jax.ShapeDtypeStruct,
 ) -> AbstractLinearOperator | None:
     """Build the template deprojection operator."""
-    if config.method == Methods.ATOP:
-        return ATOPProjectionOperator(config.atop_tau, in_structure=tod_structure)
+    if config.method == Methods.POMME:
+        return POMMEProjectionOperator(config.pomme_tau, in_structure=tod_structure)
     else:
         return None
 

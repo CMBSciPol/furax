@@ -22,7 +22,7 @@ class Methods(Enum):
     BINNED = 'Binned'
     MAXL = 'ML'
     TWOSTEP = 'TwoStep'
-    ATOP = 'ATOP'
+    POMME = 'POMME'
 
 
 class WeightingMode(Enum):
@@ -444,7 +444,7 @@ class MapMakingConfig:
         default_factory=lambda: LandscapeConfig(healpix=HealpixConfig())
     )
     templates: TemplatesConfig | None = None
-    atop_tau: int = 0
+    pomme_tau: int = 0
     sotodlib: SotodlibConfig | None = None
 
     @classmethod
@@ -453,7 +453,7 @@ class MapMakingConfig:
 
         Args:
             method: A ``Methods`` enum value or its string name (e.g. ``'binned'``,
-                ``'ml'``, ``'twostep'``, ``'atop'``), case-insensitive.
+                ``'ml'``, ``'twostep'``, ``'pomme'``), case-insensitive.
         """
         if isinstance(method, str):
             upper = method.upper()
@@ -499,16 +499,16 @@ class MapMakingConfig:
                     polynomial=PolynomialConfig(),
                 ),
             )
-        elif method == Methods.ATOP:
+        elif method == Methods.POMME:
             return cls(
-                method=Methods.ATOP,
+                method=Methods.POMME,
                 weighting=WeightingConfig(),
                 solver=SolverConfig(
                     rtol=1e-6,
                     atol=0,
                     max_steps=100,
                 ),
-                atop_tau=37,
+                pomme_tau=37,
                 templates=None,
             )
         else:

@@ -12,6 +12,7 @@ __pycache__
 /.zed/
 
 /tests/data/planck/
+.DS_Store
 
 # python
 *.pyc

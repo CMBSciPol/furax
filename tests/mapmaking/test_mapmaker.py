@@ -23,6 +23,7 @@ from furax.mapmaking.config import (
     PointingConfig,
     SkyPatch,
     SotodlibConfig,
+    SplineHWPSSConfig,
     TemplatesConfig,
     WCSConfig,
     WeightingConfig,
@@ -289,7 +290,7 @@ class TestNoiseModelSelection:
         assert results.solver_stats is not None
 
 
-ATOP_PARAMS = [
+POMME_PARAMS = [
     pytest.param(
         'sotodlib',
         id='sotodlib',
@@ -301,38 +302,50 @@ ATOP_PARAMS = [
         marks=pytest.mark.skipif(not toast_installed, reason='toast is not installed'),
     ),
 ]
-ATOP_TAU = 10
+POMME_TAU = 10
 
 
 @pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
-@pytest.mark.parametrize('name', ATOP_PARAMS)
-class TestATOPMapMaker:
-    """Test ATOP support in MultiObservationMapMaker."""
+@pytest.mark.parametrize('name', POMME_PARAMS)
+class TestPOMMEMapMaker:
+    """Test POMME support in MultiObservationMapMaker."""
 
-    def test_atop_full_mapmaker(self, name, landscape_type):
-        """ATOP runs end-to-end and produces a QU map with the correct shape."""
+    def test_pomme_full_mapmaker(self, name, landscape_type):
+        """POMME runs end-to-end and produces a QU map with the correct shape."""
         observations = _observations(name)
-        config = _config(landscape_type, stokes='QU', method=Methods.ATOP, atop_tau=ATOP_TAU)
+        config = _config(landscape_type, stokes='QU', method=Methods.POMME, pomme_tau=POMME_TAU)
         maker = MultiObservationMapMaker(observations, config=config)
         results = maker.run()
         assert results.icov.shape == (2, 2, *maker.landscape.shape)
 
+    def test_pomme_with_spline_hwpss(self, name, landscape_type):
+        """POMME runs with sequential SplineHWPSS deprojection."""
+        observations = _observations(name)
+        config = _config(landscape_type, stokes='QU', method=Methods.POMME, pomme_tau=POMME_TAU)
+        config.templates = TemplatesConfig(
+            spline_hwpss=SplineHWPSSConfig(samples_per_knot=256),
+        )
+        maker = MultiObservationMapMaker(observations, config=config)
+        results = maker.run()
+        assert results.icov.shape == (2, 2, *maker.landscape.shape)
+        assert results.solver_stats is not None
 
-class TestATOPStokesValidation:
-    """ATOP Stokes-config normalisation/validation. Pure construction-time logic
+
+class TestPOMMEStokesValidation:
+    """POMME Stokes-config normalisation/validation. Pure construction-time logic
     that never reads sample data, so it is backed by the synthetic observation
     (or an empty list) rather than an interface or ``.h5`` fixture.
     """
 
     def _base_config(self, stokes: ValidStokesType) -> MapMakingConfig:
         return MapMakingConfig(
-            method=Methods.ATOP,
-            atop_tau=ATOP_TAU,
+            method=Methods.POMME,
+            pomme_tau=POMME_TAU,
             landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16)),
         )
 
     def test_iqu_stokes_falls_back_to_qu(self):
-        """stokes='IQU' with ATOP is converted to 'QU'."""
+        """stokes='IQU' with POMME is converted to 'QU'."""
         maker = MultiObservationMapMaker([FakeLazyObservation()], config=self._base_config('IQU'))
         assert maker.config.landscape.stokes == 'QU'
 
@@ -367,7 +380,7 @@ def _config(
     demodulated: bool = False,
     interpolation: Literal['nearest', 'bilinear'] = 'nearest',
     method: Methods = Methods.BINNED,
-    atop_tau: int = 0,
+    pomme_tau: int = 0,
     identity_noise: bool = False,
 ) -> MapMakingConfig:
     if landscape_type == 'healpix':
@@ -390,7 +403,7 @@ def _config(
             fitting=NoiseFitConfig(nperseg=512),
         ),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
-        atop_tau=atop_tau,
+        pomme_tau=pomme_tau,
     )
 
 

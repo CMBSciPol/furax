@@ -34,9 +34,10 @@ import jax
 import numpy as np
 from jax import Array, ShapeDtypeStruct
 from jax import numpy as jnp
+from jax.scipy.linalg import cho_solve
 from jaxtyping import DTypeLike, Float, Int, PyTree
 
-from furax import AbstractLinearOperator, square
+from furax import AbstractLinearOperator, idempotent, symmetric
 from furax.core import TransposeOperator
 from furax.math import bspline, quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
@@ -685,6 +686,7 @@ class PerDetectorTemplate(AbstractLinearOperator):
         n_knots: int,
         harmonics: int | Sequence[int] = (4,),
         dtype: DTypeLike = jnp.float32,
+        scanning_mask: Float[Array, ' samp'] | None = None,
     ) -> Self:
         """Spline-based HWP synchronous template.
 
@@ -700,8 +702,13 @@ class PerDetectorTemplate(AbstractLinearOperator):
             harmonics: HWP harmonics to model, either an int `n` (the harmonics `1..n`)
                 or an explicit sequence of orders.
             dtype: Floating dtype of the basis values.
+            scanning_mask: Optional (N,) mask restricting basis to valid scanning intervals.
+                1 = valid scan, 0 = turnaround/gap. Basis functions are zeroed outside valid
+                regions, ensuring the template fits only over scanned data.
         """
-        offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
+        offset, weights = bspline.spline_window(
+            times, n_knots, scanning_mask=scanning_mask
+        )  # weights (samp, 4)
         sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False).astype(dtype)
         basis = WindowedBasis.create(
             offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2
@@ -829,8 +836,16 @@ class GroundTemplateOperator(AbstractLinearOperator):
         return landscape
 
 
-@square
-class ATOPProjectionOperator(AbstractLinearOperator):
+@symmetric
+@idempotent
+class POMMEProjectionOperator(AbstractLinearOperator):
+    """Projection operator for the POMME mapmaker.
+
+    Subtracts the mean of blocks of length `tau` from each detector's timestream.
+    This is a symmetric and idempotent operator: A = I - P, where P is the
+    block-averaging operator.
+    """
+
     tau: int = field(metadata={'static': True})
 
     def __init__(
@@ -851,3 +866,214 @@ class ATOPProjectionOperator(AbstractLinearOperator):
         if n_rem == 0:
             return y
         return jnp.concatenate([y, x[:, -n_rem:]], axis=1)
+
+
+@idempotent
+@symmetric
+class SplineHWPSSProjectionOperator(AbstractLinearOperator):
+    """Sequential spline HWPSS deprojection.
+
+    Implements:
+
+        D3 = I - T (TᵀT)^(-1) Tᵀ
+
+    with:
+
+        T = D1 B
+
+    where B is the spline HWPSS template and D1 is the POMME projector.
+    """
+
+    basis: WindowedBasis
+    pomme: POMMEProjectionOperator
+    chol: Array
+    coeff_shape: tuple[int, ...] = field(metadata={'static': True})
+
+    @classmethod
+    def create(
+        cls,
+        template: PerDetectorTemplate,
+        pomme: POMMEProjectionOperator,
+    ) -> Self:
+
+        if not isinstance(template.operator, WindowedBasis):
+            raise TypeError('template.operator must be a WindowedBasis')
+
+        if not template.shared_basis:
+            raise ValueError('Spline HWPSS basis must be shared between detectors')
+
+        basis = template.operator
+
+        gram = cls._assemble_gram(
+            basis,
+            pomme,
+        )
+
+        # small regularisation for empty spline knots
+        eps = 1e-10 * jnp.mean(jnp.diag(gram))
+        gram = gram + eps * jnp.eye(
+            gram.shape[0],
+            dtype=gram.dtype,
+        )
+
+        chol = jnp.linalg.cholesky(gram)
+
+        return cls(
+            basis=basis,
+            pomme=pomme,
+            chol=chol,
+            coeff_shape=basis.shape,
+            in_structure=pomme.in_structure,
+        )
+
+    def mv(
+        self,
+        x: Float[Array, 'det samp'],
+    ) -> Float[Array, 'det samp']:
+
+        # T^T x = B^T D1 x
+        rhs = jax.vmap(
+            self.basis.project,
+            in_axes=0,
+        )(self.pomme(x))
+
+        det = rhs.shape[0]
+
+        rhs_flat = rhs.reshape(det, -1)
+
+        # solve:
+        #
+        # (B^T D1 B) a = B^T D1 x
+        #
+        coeff_flat = jax.vmap(
+            lambda r: cho_solve(
+                (self.chol, True),
+                r,
+            )
+        )(rhs_flat)
+
+        coeff = coeff_flat.reshape(
+            det,
+            *self.coeff_shape,
+        )
+
+        # T a = D1 B a
+        model = jax.vmap(
+            self.basis.expand,
+            in_axes=0,
+        )(coeff)
+
+        model = self.pomme(model)
+
+        return x - model  # type: ignore[no-any-return]
+
+    @staticmethod
+    def _assemble_gram(
+        basis: WindowedBasis,
+        pomme: POMMEProjectionOperator,
+    ) -> Array:
+        """Compute:
+
+        G = Bᵀ D1 B
+
+        """
+
+        n_blocks, n_harm = basis.shape
+        n_coeff = n_blocks * n_harm
+
+        n_samp = basis.n_points
+        tau = pomme.tau
+
+        O = basis.block_weights.shape[0]
+
+        offset = basis.offset
+        weights = basis.block_weights
+        harmonics = basis.sub_values
+
+        dtype = basis.dtype
+
+        gram = jnp.zeros(
+            (n_coeff, n_coeff),
+            dtype=dtype,
+        )
+
+        harm_index = jnp.arange(n_harm)
+
+        # --------------------------------------------------
+        # B^T B
+        # --------------------------------------------------
+
+        def add_sample(
+            s: int,
+            g: Array,
+        ) -> Array:
+
+            blocks = offset[s] + jnp.arange(O)
+
+            local = weights[:, s, None] * harmonics[:, s][None, :]
+
+            local = local.reshape(-1)
+
+            indices = (blocks[:, None] * n_harm + harm_index[None, :]).reshape(-1)
+
+            return g.at[indices[:, None], indices[None, :]].add(local[:, None] * local[None, :])
+
+        gram = jax.lax.fori_loop(
+            0,
+            n_samp,
+            add_sample,
+            gram,
+        )
+
+        # --------------------------------------------------
+        # subtract B^T P B
+        #
+        # P averages blocks of length tau
+        # --------------------------------------------------
+
+        n_blocks_tau = n_samp // tau
+
+        def subtract_block(
+            b: int,
+            g: Array,
+        ) -> Array:
+
+            start = b * tau
+
+            block_sum = jnp.zeros(
+                n_coeff,
+                dtype=dtype,
+            )
+
+            def add_inside(
+                i: int,
+                v: Array,
+            ) -> Array:
+
+                s = start + i
+
+                blocks = offset[s] + jnp.arange(O)
+
+                local = (weights[:, s, None] * harmonics[:, s][None, :]).reshape(-1)
+
+                indices = (blocks[:, None] * n_harm + harm_index[None, :]).reshape(-1)
+
+                return v.at[indices].add(local)
+
+            block_sum = jax.lax.fori_loop(
+                0,
+                tau,
+                add_inside,
+                block_sum,
+            )
+
+            return g - jnp.outer(block_sum, block_sum) / tau
+
+        gram = jax.lax.fori_loop(
+            0,
+            n_blocks_tau,
+            subtract_block,
+            gram,
+        )
+
+        return gram  # type: ignore[no-any-return]

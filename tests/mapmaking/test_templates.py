@@ -9,10 +9,11 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking.config import BinsConfig, PolynomialOrders, SplineHWPSSConfig
 from furax.mapmaking.templates import (
-    ATOPProjectionOperator,
     KroneckerBasis,
     PerDetectorTemplate,
+    POMMEProjectionOperator,
     SegmentedBasis,
+    SplineHWPSSProjectionOperator,
     TensorBasis,
     WindowedBasis,
     _bin_weights,
@@ -686,13 +687,13 @@ class TestTemperatureTemplate:
 
 
 # ---------------------------------------------------------------------------
-# ATOPProjectionOperator
+# POMMEProjectionOperator
 # ---------------------------------------------------------------------------
 
 
-class TestATOPProjectionOperator:
-    def make_op(self, n_det: int, n_samp: int, tau: int) -> ATOPProjectionOperator:
-        return ATOPProjectionOperator(
+class TestPOMMEProjectionOperator:
+    def make_op(self, n_det: int, n_samp: int, tau: int) -> POMMEProjectionOperator:
+        return POMMEProjectionOperator(
             tau, in_structure=jax.ShapeDtypeStruct((n_det, n_samp), jnp.float64)
         )
 
@@ -848,3 +849,135 @@ class TestSplineHWPSSTemplate:
         op = PerDetectorTemplate.bspline_hwpss(t, hwp, n_dets, n_knots=4, harmonics=3)
         # 1..3 -> 3 harmonics -> 2 * 3 = 6 columns; K = 4 + 2 = 6
         assert op.in_structure.shape == (n_dets, 6, 6)
+
+
+# ---------------------------------------------------------------------------
+# SplineHWPSSProjectionOperator
+# ---------------------------------------------------------------------------
+
+
+class TestSplineHWPSSProjectionOperator:
+    def test_properties(self) -> None:
+        n_dets, n_samps, n_knots = 2, 400, 5
+        tau = 10
+
+        t = jnp.linspace(0, 10, n_samps)
+        hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
+
+        # -------------------------------------------------
+        # Operators
+        # -------------------------------------------------
+
+        d1 = POMMEProjectionOperator(
+            tau,
+            in_structure=jax.ShapeDtypeStruct(
+                (n_dets, n_samps),
+                jnp.float64,
+            ),
+        )
+
+        template = PerDetectorTemplate.bspline_hwpss(
+            t,
+            hwp,
+            n_dets,
+            n_knots=n_knots,
+            dtype=jnp.float64,
+        )
+
+        d3 = SplineHWPSSProjectionOperator.create(
+            template,
+            d1,
+        )
+
+        projector = d3 @ d1
+
+        rng = jr.key(0)
+
+        x = jr.normal(
+            rng,
+            (n_dets, n_samps),
+            dtype=jnp.float64,
+        )
+
+        y = jr.normal(
+            jr.key(1),
+            (n_dets, n_samps),
+            dtype=jnp.float64,
+        )
+
+        # -------------------------------------------------
+        # 1. Symmetry
+        # -------------------------------------------------
+
+        lhs = jnp.vdot(projector(x), y)
+        rhs = jnp.vdot(x, projector(y))
+
+        assert_allclose(
+            lhs,
+            rhs,
+            rtol=TOL,
+        )
+
+        # -------------------------------------------------
+        # 2. Idempotency
+        #
+        # D^2 = D
+        # -------------------------------------------------
+
+        assert_allclose(
+            projector(projector(x)),
+            projector(x),
+            atol=1e-6,
+        )
+
+        # -------------------------------------------------
+        # 3. Remove spline HWPSS modes
+        #
+        # D1 D3 B a = 0
+        # -------------------------------------------------
+
+        coeff = jr.normal(
+            jr.key(2),
+            template.in_structure.shape,
+            dtype=jnp.float64,
+        )
+
+        spline_signal = template(coeff)
+
+        assert_allclose(
+            d1(d3(spline_signal)),
+            0.0,
+            atol=1e-6,
+        )
+
+        # -------------------------------------------------
+        # 4. Remove POMME modes
+        #
+        # D1 removes block constant signals
+        # -------------------------------------------------
+
+        n_blocks = n_samps // tau
+
+        block_values = jr.normal(
+            jr.key(3),
+            (n_dets, n_blocks),
+            dtype=jnp.float64,
+        )
+
+        pomme_signal = jnp.repeat(
+            block_values,
+            tau,
+            axis=-1,
+        )
+
+        assert_allclose(
+            projector(pomme_signal)[:, : n_blocks * tau],
+            0.0,
+            atol=1e-6,
+        )
+
+        assert_allclose(
+            d1(d3(spline_signal)),
+            0.0,
+            atol=1e-6,
+        )

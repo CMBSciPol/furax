@@ -619,28 +619,43 @@ class MapMaker:
         return cls.from_config(MapMakingConfig.load_yaml(path), logger=logger)
 
     @staticmethod
-    def _build_scanning_mask(
+    def _build_spline_mask(
         observation: AbstractGroundObservation[Any],
-        n_samps: int,
-    ) -> Float[Array, ' samp']:
-        """Build (N,) mask: 1 for samples in scanning intervals, 0 elsewhere.
+        times: Float[Array, ' samp'],
+        n_knots: int,
+        config: MapMakingConfig,
+    ) -> Float[Array, ' samp'] | None:
+        """Build a (N,) spline validity mask.
 
-        Args:
-            observation: The observation to extract scanning intervals from.
-            n_samps: Total number of samples in the TOD.
+        Zeros entire knot intervals containing any flagged sample (union across
+        detectors), mirroring POMME's tau-block masking logic.
 
-        Returns:
-            Mask array of shape (n_samps,), where 1.0 indicates valid scanning
-            and 0.0 indicates turnaround/gap regions.
+        Returns None if sample_mask is disabled (no masking needed).
         """
-        mask = jnp.zeros(n_samps, dtype=jnp.float32)
-        intervals = jnp.asarray(observation.get_scanning_intervals(), dtype=jnp.int32)
+        if not config.sample_mask:
+            return None
 
-        # Mark all samples in scanning intervals
-        for start, end in intervals:
-            mask = mask.at[int(start) : int(end)].set(1.0)
+        sample_mask = jnp.asarray(
+            observation.get_sample_mask(), dtype=jnp.float32
+        )  # (n_dets, n_samps)
 
-        return mask
+        # A sample is clean only if ALL detectors are valid there
+        mask = jnp.min(sample_mask, axis=0)  # (n_samps,)
+
+        # Zero entire knot intervals containing any masked sample
+        t_min, t_max = times[0], times[-1]
+        edges = jnp.linspace(t_min, t_max, n_knots + 2)  # n_knots+1 intervals
+
+        def zero_interval_if_any_masked(k: int, m: Array) -> Array:
+            in_interval = (times >= edges[k]) & (times < edges[k + 1])
+            interval_clean = jnp.all(m[in_interval] > 0.5)
+            return jnp.where(in_interval & ~interval_clean, 0.0, m)
+
+        result: Float[Array, ' samp'] = jax.lax.fori_loop(
+            0, n_knots + 1, zero_interval_if_any_masked, mask
+        )
+
+        return result
 
     def get_landscape(self, observation: AbstractGroundObservation[Any]) -> StokesLandscape:
         """Landscape used for mapmaking with given observation"""
@@ -922,16 +937,16 @@ class MapMaker:
             )
         if shwpss := config.templates.spline_hwpss:
             times = jnp.asarray(observation.get_elapsed_times())
-            n_samps = observation.n_samples
-            scanning_mask = self._build_scanning_mask(observation, n_samps)
+            n_knots = shwpss.resolve_n_knots(times.size)
+            spline_mask = self._build_spline_mask(observation, times, n_knots, config)
             blocks['spline_hwpss'] = PerDetectorTemplate.bspline_hwpss(
                 times=times,
                 hwp_angles=jnp.asarray(observation.get_hwp_angles()),
                 n_dets=observation.n_detectors,
-                n_knots=shwpss.resolve_n_knots(times.size),
+                n_knots=n_knots,
                 harmonics=shwpss.harmonics,
                 dtype=config.dtype,
-                scanning_mask=scanning_mask,
+                scanning_mask=spline_mask,
             )
         if ground := config.templates.ground:
             azimuth = jnp.asarray(observation.get_azimuth())
@@ -1445,7 +1460,23 @@ class POMMEMapMaker(MapMaker):
         tau_mask = jnp.abs(pomme_projector(masker(jnp.ones_like(data)))) < 0.5 / config.pomme_tau
         masker @= MaskOperator.from_boolean_mask(tau_mask, in_structure=data_struct)
         valid_sample_fraction = float(jnp.mean(masker(jnp.ones(data.shape, data.dtype))))
-        logger_info(f'Updated valid sample fraction: {valid_sample_fraction:.4f}')
+        logger_info(
+            f'Updated valid sample fraction after pomme masking: {valid_sample_fraction:.4f}'
+        )
+
+        if config.templates and config.templates.spline_hwpss:
+            times = jnp.asarray(observation.get_elapsed_times())
+            n_knots = config.templates.spline_hwpss.resolve_n_knots(times.size)
+            # This uses the same raw sample mask as the template internally
+            spline_mask = self._build_spline_mask(observation, times, n_knots, config)
+            if spline_mask is not None:
+                # Broadcast to all detectors: shape (1, n_samps)
+                valid = spline_mask.astype(bool)[None, :]
+                masker @= MaskOperator.from_boolean_mask(valid, in_structure=data_struct)
+                valid_sample_fraction = float(jnp.mean(masker(jnp.ones(data.shape, data.dtype))))
+                logger_info(
+                    f'Updated valid sample fraction after spline masking: {valid_sample_fraction:.4f}'
+                )
 
         # Noise
         noise_model = self.get_or_fit_noise_model(observation)

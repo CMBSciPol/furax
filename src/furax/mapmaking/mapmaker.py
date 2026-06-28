@@ -648,7 +648,7 @@ class MapMaker:
 
         def zero_interval_if_any_masked(k: int, m: Array) -> Array:
             in_interval = (times >= edges[k]) & (times < edges[k + 1])
-            interval_clean = jnp.all(m[in_interval] > 0.5)
+            interval_clean = jnp.all((~in_interval) | (m > 0.5))
             return jnp.where(in_interval & ~interval_clean, 0.0, m)
 
         result: Float[Array, ' samp'] = jax.lax.fori_loop(

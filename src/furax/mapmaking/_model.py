@@ -134,6 +134,16 @@ class ObservationModel:
     def rhs_operator(self) -> AbstractLinearOperator:
         return (self.H.T @ self.W @ self.F).reduce()
 
+    @property
+    def rhs_operator_prefilled(self) -> AbstractLinearOperator:
+        """RHS operator for gap-filled data: the data-side mask is dropped.
+
+        Gap-filling already replaced the flagged samples with a constrained realization so that
+        ``N⁻¹`` applies cleanly across the gaps; re-zeroing them with the inner mask of ``W`` would
+        defeat the fill. Keep the outer mask (applied after ``N⁻¹``) and skip the inner one.
+        """
+        return (self.H.T @ self.Z @ self.W.weight @ self.F).reduce()
+
     def noise_operator(
         self, correlation_length: int, *, inverse: bool = True
     ) -> AbstractLinearOperator:

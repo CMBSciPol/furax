@@ -351,8 +351,10 @@ class MultiObservationMapMaker(Generic[T]):
                         lambda _: _,  # return raw data as-is
                         tod,
                     )
-
-                rhs_i = obs.rhs_operator(tod)
+                    # Gaps filled: skip the data-side mask so the fill survives N⁻¹.
+                    rhs_i = obs.rhs_operator_prefilled(tod)
+                else:
+                    rhs_i = obs.rhs_operator(tod)
                 return (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i)), obs
 
             init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')

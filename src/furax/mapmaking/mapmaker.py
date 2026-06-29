@@ -140,13 +140,10 @@ class MultiObservationMapMaker(Generic[T]):
         """``(start, n_owned, n_pad)`` for this process."""
         return get_obs_distribution_to_process(self.n_observations)
 
-    def get_read_indices(self) -> np.ndarray:
-        start, n_owned, _ = self.obs_distribution
-        return np.arange(start, start + n_owned)
-
     def get_padded_read_indices(self) -> np.ndarray:
-        _, _, n_pad = self.obs_distribution
-        return np.pad(self.get_read_indices(), (0, n_pad), mode='edge')
+        start, n_owned, n_pad = self.obs_distribution
+        indices = np.arange(start, start + n_owned)
+        return np.pad(indices, (0, n_pad), mode='edge')
 
     def get_reader(self, required_fields: Collection[str]) -> ObservationReader[T]:
         """Build an ObservationReader for this process's local observations."""
@@ -334,12 +331,11 @@ class MultiObservationMapMaker(Generic[T]):
                 # RHS contribution (optionally gap-filled).
                 def func_gapfill(tod):  # type: ignore[no-untyped-def]
                     N = obs.noise_operator(config.weighting.correlation_length, inverse=False)
-                    Ninv = obs.noise_operator(config.weighting.correlation_length, inverse=True)
                     gap_fill = GapFillingOperator(
                         N,  # type: ignore[arg-type]
                         obs._get_indexer(),
                         tod,
-                        Ninv,  # type: ignore[arg-type]
+                        obs.W.weight,  # type: ignore[arg-type]
                         rate=obs.sample_rate,
                         max_cg_steps=config.gaps.fill_options.max_steps,
                         rtol=config.gaps.fill_options.rtol,
@@ -356,7 +352,7 @@ class MultiObservationMapMaker(Generic[T]):
                         tod,
                     )
 
-                rhs_i = obs.H.T(obs.W(tod))
+                rhs_i = obs.rhs_operator(tod)
                 return (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i)), obs
 
             init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')
@@ -378,9 +374,10 @@ class MultiObservationMapMaker(Generic[T]):
         H = ScanBlockColumnOperator.create(model.H)
         weight = model.diag_W() if diag else model.W
         W = ScanBlockDiagonalOperator.create(weight)
-        F = ScanBlockDiagonalOperator.create(model.F) if model.F is not None else None
-        system = H.T @ W @ H if F is None else H.T @ W @ F @ H
-        return system.reduce()
+        # specify leading axis dimension because F can be trivial
+        _, n_own, n_pad = self.obs_distribution
+        F = ScanBlockDiagonalOperator.create(model.F, n_lead=n_own + n_pad)
+        return (H.T @ W @ F @ H).reduce()
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']

@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, Inexact, PyTree
 
-from furax import AbstractLinearOperator, MaskOperator, symmetric, tree
+from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, symmetric, tree
 from furax.core import BlockDiagonalOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
 
@@ -49,7 +49,7 @@ class ObservationModel:
     W: WeightOperator
     """Weighting operator (noise weights + mask)"""
 
-    F: AbstractLinearOperator | None
+    F: AbstractLinearOperator
     """Deprojection operator"""
 
     noise_model: PyTree[NoiseModel]
@@ -129,6 +129,10 @@ class ObservationModel:
     def Z(self, mask: MaskOperator) -> None:
         # rebuild the weight around the new mask (W is the only holder of Z)
         self.W = WeightOperator.create(self.W.weight, mask)
+
+    @property
+    def rhs_operator(self) -> AbstractLinearOperator:
+        return (self.H.T @ self.W @ self.F).reduce()
 
     def noise_operator(
         self, correlation_length: int, *, inverse: bool = True
@@ -246,12 +250,11 @@ def _noise_operator(
 def _template_deprojector(
     config: MapMakingConfig,
     tod_structure: jax.ShapeDtypeStruct,
-) -> AbstractLinearOperator | None:
+) -> AbstractLinearOperator:
     """Build the template deprojection operator."""
     if config.method == Methods.ATOP:
         return ATOPProjectionOperator(config.atop_tau, in_structure=tod_structure)
-    else:
-        return None
+    return IdentityOperator(in_structure=tod_structure)
 
 
 def _sample_rate(timestamps: Float[Array, '...']) -> Float[Array, '']:

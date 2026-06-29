@@ -320,25 +320,26 @@ class MultiObservationMapMaker(Generic[T]):
                 obs = ObservationModel.create(data, padding, config, landscape)
 
                 # Padding/failed observations contribute nothing
-                obs.masker = obs.masker.restrict(real & valid)
+                obs.Z = obs.Z.restrict(real & valid)
 
                 # Hit map contribution.
                 assert isinstance(obs.H, CompositionOperator)  # mypy
                 pointing = obs.H.operands[-1]
                 assert isinstance(pointing, PointingOperator)  # mypy
                 pointing_i = pointing.as_stokes_i(interpolate=False)
-                ones = furax.tree.ones_like(obs.masker.in_structure)
-                masked = jax.tree.leaves(obs.masker(ones))[0]
+                ones = furax.tree.ones_like(obs.Z.in_structure)
+                masked = jax.tree.leaves(obs.Z(ones))[0]
                 hits_i = jnp.int64(pointing_i.T(StokesI(masked)).i)
 
                 # RHS contribution (optionally gap-filled).
                 def func_gapfill(tod):  # type: ignore[no-untyped-def]
                     N = obs.noise_operator(config.weighting.correlation_length, inverse=False)
+                    Ninv = obs.noise_operator(config.weighting.correlation_length, inverse=True)
                     gap_fill = GapFillingOperator(
                         N,  # type: ignore[arg-type]
                         obs._get_indexer(),
                         tod,
-                        obs.W,  # type: ignore[arg-type]
+                        Ninv,  # type: ignore[arg-type]
                         rate=obs.sample_rate,
                         max_cg_steps=config.gaps.fill_options.max_steps,
                         rtol=config.gaps.fill_options.rtol,
@@ -355,7 +356,7 @@ class MultiObservationMapMaker(Generic[T]):
                         tod,
                     )
 
-                rhs_i = obs.H.T(obs.masker(obs.W(tod)))
+                rhs_i = obs.H.T(obs.W(tod))
                 return (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i)), obs
 
             init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')
@@ -375,10 +376,11 @@ class MultiObservationMapMaker(Generic[T]):
         self, model: ObservationModel, *, diag: bool = False
     ) -> AbstractLinearOperator:
         H = ScanBlockColumnOperator.create(model.H)
-        M = ScanBlockDiagonalOperator.create(model.masker)
         weight = model.diag_W() if diag else model.W
         W = ScanBlockDiagonalOperator.create(weight)
-        return (H.T @ M @ W @ M @ H).reduce()
+        F = ScanBlockDiagonalOperator.create(model.F) if model.F is not None else None
+        system = H.T @ W @ H if F is None else H.T @ W @ F @ H
+        return system.reduce()
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']

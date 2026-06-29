@@ -63,6 +63,7 @@ from ._observation import (
 from ._reader import ObservationReader
 from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
 from .config import (
+    GapTreatment,
     LandscapeConfig,
     MapMakingConfig,
     Methods,
@@ -75,6 +76,7 @@ from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
 from .templates import PerDetectorTemplate
+from .weight import WeightOperator
 
 T = TypeVar('T')
 
@@ -294,7 +296,7 @@ class MultiObservationMapMaker(Generic[T]):
         landscape = self.landscape
         reader = self.reader
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
-        fill_gaps = config.gaps.fill and not config.binned
+        fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
 
         indices = self.distribute(self.get_padded_read_indices())
         is_real = self.distribute(self._real_observation_mask())
@@ -330,6 +332,8 @@ class MultiObservationMapMaker(Generic[T]):
 
                 # RHS contribution (optionally gap-filled).
                 def func_gapfill(tod):  # type: ignore[no-untyped-def]
+                    # Only reached under GapTreatment.FILL, where W is the plain inner-mask weight.
+                    assert isinstance(obs.W, WeightOperator)
                     return gap_fill(
                         jax.random.key(config.gaps.fill_options.seed),
                         tod,
@@ -1163,13 +1167,13 @@ class MLMapmaker(MapMaker):
             p = preconditioner
             h = acquisition @ selector.T
 
-        if not config.gaps.nested_pcg:
+        if config.gaps.treatment != GapTreatment.NESTED:
             M = masker @ inv_noise @ masker
         else:
             nested_solver = lineax.CG(
-                rtol=config.solver.rtol,
-                atol=config.solver.atol,
-                max_steps=30,
+                rtol=config.gaps.nested.rtol,
+                atol=config.gaps.nested.atol,
+                max_steps=config.gaps.nested.inner_steps,
             )
             M = (
                 masker

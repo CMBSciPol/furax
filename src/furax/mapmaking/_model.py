@@ -13,10 +13,10 @@ from furax.obs.landscapes import StokesLandscape
 
 from ._observation import ReaderField
 from .acquisition import build_acquisition_operator
-from .config import MapMakingConfig, Methods, NoiseSource, WeightingMode
+from .config import GapTreatment, MapMakingConfig, Methods, NoiseSource, WeightingMode
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .templates import ATOPProjectionOperator
-from .weight import WeightOperator
+from .weight import NestedWeightOperator, WeightOperator
 
 
 @register_dataclass
@@ -32,7 +32,7 @@ class ObservationModel:
     H: AbstractLinearOperator
     """Acquisition operator"""
 
-    W: WeightOperator
+    W: WeightOperator | NestedWeightOperator
     """Weighting operator (noise weights + mask)"""
 
     F: AbstractLinearOperator
@@ -72,7 +72,13 @@ class ObservationModel:
             config.weighting.correlation_length,
             inverse=True,
         )
-        W = WeightOperator.create(Ninv, M)  # M Ninv M
+        W: WeightOperator | NestedWeightOperator
+        if config.gaps.treatment == GapTreatment.NESTED and not config.binned:
+            # Minimum-variance correlated-noise weight using iterative solve
+            W = NestedWeightOperator.create(Ninv, M, config.gaps.nested)
+        else:
+            # Plain masked weights, only exact for diagonal W
+            W = WeightOperator.create(Ninv, M)
         F = _template_deprojector(config, H.out_structure)
         return cls(H, W, F, noise_model, sample_rate)
 
@@ -95,7 +101,7 @@ class ObservationModel:
                 fields.update({ReaderField.SAMPLE_DATA, ReaderField.HWP_ANGLES})
             else:
                 fields.add(ReaderField.NOISE_MODEL_FITS)
-        if config.gaps.fill and not config.binned:
+        if config.gaps.treatment == GapTreatment.FILL and not config.binned:
             fields.add(ReaderField.METADATA)
         return fields
 
@@ -127,7 +133,10 @@ class ObservationModel:
         Gap-filling already replaced the flagged samples with a constrained realization so that
         ``N⁻¹`` applies cleanly across the gaps; re-zeroing them with the inner mask of ``W`` would
         defeat the fill. Keep the outer mask (applied after ``N⁻¹``) and skip the inner one.
+
+        Only reached under ``GapTreatment.FILL``, where ``W`` is the plain inner-mask weight.
         """
+        assert isinstance(self.W, WeightOperator)
         return (self.H.T @ self.M @ self.W.weight @ self.F).reduce()
 
     def noise_operator(

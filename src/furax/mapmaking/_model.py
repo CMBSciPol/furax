@@ -72,7 +72,7 @@ class ObservationModel:
             config.weighting.correlation_length,
             inverse=True,
         )
-        W = WeightOperator.create(Ninv, M)  # MWM
+        W = WeightOperator.create(Ninv, M)  # M Ninv M
         F = _template_deprojector(config, H.out_structure)
         return cls(H, W, F, noise_model, sample_rate)
 

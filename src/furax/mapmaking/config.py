@@ -369,6 +369,23 @@ class GapFillingConfig:
 
 
 @dataclass
+class NestedConfig:
+    """Inner-solver options for the nested-inverse gap weight (`GapTreatment.NESTED`)."""
+
+    max_flag_fraction: float = 0.3
+    """Flagged-fraction budget; observations flagged above this fall back to INNER_MASK."""
+
+    inner_steps: int = 10
+    """Fixed number of inner CG iterations for the flagged-block solve."""
+
+    rtol: float = 0.0
+    """Relative tolerance of the inner solver (0 forces exactly ``inner_steps`` iterations)."""
+
+    atol: float = 0.0
+    """Absolute tolerance of the inner solver (0 forces exactly ``inner_steps`` iterations)."""
+
+
+@dataclass
 class GapsConfig:
     """Configuration options related to the treatment of gaps"""
 

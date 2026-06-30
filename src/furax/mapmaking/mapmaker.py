@@ -70,7 +70,7 @@ from .config import (
     WCSConfig,
     WeightingMode,
 )
-from .gap_filling import GapFillingOperator
+from .gap_filling import gap_fill
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
@@ -330,17 +330,15 @@ class MultiObservationMapMaker(Generic[T]):
 
                 # RHS contribution (optionally gap-filled).
                 def func_gapfill(tod):  # type: ignore[no-untyped-def]
-                    N = obs.noise_operator(config.weighting.correlation_length, inverse=False)
-                    gap_fill = GapFillingOperator(
-                        N,  # type: ignore[arg-type]
-                        obs._get_indexer(),
+                    return gap_fill(
+                        jax.random.key(config.gaps.fill_options.seed),
                         tod,
-                        obs.W.weight,  # type: ignore[arg-type]
+                        obs.W.weight,
+                        obs.M,
                         rate=obs.sample_rate,
                         max_cg_steps=config.gaps.fill_options.max_steps,
                         rtol=config.gaps.fill_options.rtol,
                     )
-                    return gap_fill(jax.random.key(config.gaps.fill_options.seed), tod)
 
                 # Use Python `if` for static `fill_gaps`, so gap-filling branch is not traced
                 tod = data[ReaderField.SAMPLE_DATA]

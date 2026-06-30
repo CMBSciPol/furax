@@ -4,8 +4,9 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax import IndexOperator, SymmetricBandToeplitzOperator
-from furax.mapmaking import GapFillingOperator
+from furax import MaskOperator, SymmetricBandToeplitzOperator
+from furax.core import BlockDiagonalOperator
+from furax.mapmaking import gap_fill
 from furax.mapmaking._observation import HashedObservationMetadata
 from furax.mapmaking.gap_filling import _folded_psd, _get_kernel, generate_noise_realization
 
@@ -78,31 +79,20 @@ def dummy_mask(dummy_shape):
     samples = dummy_shape[-1]
     gap_size = samples // 10
     left, right = (samples - gap_size) // 2, (samples + gap_size) // 2
-    return mask.at[:, left:right].set(False)
+    return mask.at[..., left:right].set(False)
+
+
+@pytest.fixture
+def dummy_ninv(dummy_x):
+    structure = jax.ShapeDtypeStruct(dummy_x.shape, dummy_x.dtype)
+    # Correlated inverse-noise (banded Toeplitz, diagonally dominant -> SPD).
+    return SymmetricBandToeplitzOperator(jnp.array([1.0, -0.2, 0.05]), in_structure=structure)
 
 
 @pytest.fixture
 def dummy_mask_op(dummy_x, dummy_mask):
     structure = jax.ShapeDtypeStruct(dummy_x.shape, dummy_x.dtype)
-    indices = jnp.where(dummy_mask)
-    mask_op = IndexOperator(indices, in_structure=structure)
-    return mask_op
-
-
-@pytest.fixture
-def dummy_cov(dummy_x):
-    structure = jax.ShapeDtypeStruct(dummy_x.shape, dummy_x.dtype)
-    return SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=structure)
-
-
-@pytest.fixture
-def dummy_gap_filling_operator(dummy_shape, dummy_mask):
-    x = jnp.ones(dummy_shape, dtype=float)
-    structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
-    cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=structure)
-    indices = jnp.where(dummy_mask)
-    mask_op = IndexOperator(indices, in_structure=structure)
-    return GapFillingOperator(cov, mask_op)
+    return MaskOperator.from_boolean_mask(dummy_mask, in_structure=structure)
 
 
 @pytest.mark.parametrize(
@@ -114,12 +104,66 @@ def test_get_psd_non_negative(n_tt, fft_size):
 
 
 @pytest.mark.parametrize('do_jit', [False, True])
-def test_valid_samples_and_no_nans(do_jit, dummy_x, dummy_gap_filling_operator):
-    op = dummy_gap_filling_operator
-    if do_jit:
-        func = jax.jit(lambda k, x: op(k, x))
-    else:
-        func = op
-    y = func(jax.random.key(1234), dummy_x)
-    assert_array_equal(op.pack(dummy_x), op.pack(y))
-    assert not np.any(np.isnan(y))
+def test_valid_samples_and_no_nans(do_jit, dummy_x, dummy_ninv, dummy_mask_op):
+    func = jax.jit(gap_fill) if do_jit else gap_fill
+    y = func(jax.random.key(1234), dummy_x, dummy_ninv, dummy_mask_op)
+    good = dummy_mask_op.to_boolean_mask()
+    assert_array_equal(y[good], dummy_x[good])  # good samples untouched
+    assert not jnp.any(jnp.isnan(y))
+
+
+def test_filled_gaps_have_zero_weighted_residual(dummy_x, dummy_ninv, dummy_mask_op):
+    """The defining constrained-realization condition: `(N⁻¹ (x_fill − ξ))` vanishes on the gaps.
+
+    Verifying it directly proves the fill is the inverse-noise-only solve -- no covariance `N`.
+    """
+    rate = 1.0
+    y = gap_fill(
+        jax.random.key(7),
+        dummy_x,
+        dummy_ninv,
+        dummy_mask_op,
+        rate=rate,
+        max_cg_steps=200,
+        rtol=1e-12,
+    )
+    xi = generate_noise_realization(jax.random.key(7), dummy_ninv, rate, inverse=True)
+    weighted_residual = dummy_ninv(y - xi)
+    bad = ~dummy_mask_op.to_boolean_mask()
+    assert jnp.any(bad)  # the test is vacuous without gaps
+    assert_allclose(weighted_residual[bad], 0.0, atol=1e-6)
+
+
+def test_gap_fill_pytree_tod():
+    """gap_fill handles a pytree TOD with a multi-block inverse-noise operator.
+
+    Each leaf is filled independently: good samples stay exact and the weighted residual
+    `(N⁻¹ (x_fill − ξ))` vanishes on that leaf's gaps.
+    """
+    sa = jax.ShapeDtypeStruct((2, 100), float)
+    sb = jax.ShapeDtypeStruct((3, 100), float)
+    blocks = {
+        'a': SymmetricBandToeplitzOperator(jnp.array([1.0, -0.2, 0.05]), in_structure=sa),
+        'b': SymmetricBandToeplitzOperator(jnp.array([1.0, -0.1]), in_structure=sb),
+    }
+    ninv = BlockDiagonalOperator(blocks)
+    x = {
+        'a': jax.random.normal(jax.random.key(1), (2, 100)),
+        'b': jax.random.normal(jax.random.key(2), (3, 100)),
+    }
+    good = {
+        'a': jnp.ones((2, 100), bool).at[:, 45:55].set(False),
+        'b': jnp.ones((3, 100), bool).at[:, 20:30].set(False),
+    }
+    mask = MaskOperator.from_boolean_mask(good, in_structure=ninv.in_structure)
+
+    rate = 1.0
+    y = gap_fill(jax.random.key(7), x, ninv, mask, rate=rate, max_cg_steps=200, rtol=1e-12)
+    xi = generate_noise_realization(jax.random.key(7), ninv, rate, inverse=True)
+    weighted_residual = ninv(jax.tree.map(jnp.subtract, y, xi))
+    boolean = mask.to_boolean_mask()
+    for leaf in ('a', 'b'):
+        assert_array_equal(y[leaf][boolean[leaf]], x[leaf][boolean[leaf]])  # good untouched
+        bad = ~boolean[leaf]
+        assert jnp.any(bad)
+        assert_allclose(weighted_residual[leaf][bad], 0.0, atol=1e-6)

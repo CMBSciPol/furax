@@ -19,7 +19,7 @@ class WeightOperator(AbstractLinearOperator):
 
     def with_mask(self, mask: MaskOperator) -> 'WeightOperator':
         """Rebuild the weight around a new mask."""
-        return WeightOperator(self.weight, mask)
+        return WeightOperator.create(self.weight, mask)
 
     def mv(self, x: PyTree[Inexact[jax.Array, '...']]) -> PyTree[Inexact[jax.Array, '...']]:
         W, M = self.weight, self.mask

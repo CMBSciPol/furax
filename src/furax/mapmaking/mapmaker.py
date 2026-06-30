@@ -317,15 +317,15 @@ class MultiObservationMapMaker(Generic[T]):
                 obs = ObservationModel.create(data, padding, config, landscape)
 
                 # Padding/failed observations contribute nothing
-                obs.Z = obs.Z.restrict(real & valid)
+                obs.M = obs.M.restrict(real & valid)
 
                 # Hit map contribution.
                 assert isinstance(obs.H, CompositionOperator)  # mypy
                 pointing = obs.H.operands[-1]
                 assert isinstance(pointing, PointingOperator)  # mypy
                 pointing_i = pointing.as_stokes_i(interpolate=False)
-                ones = furax.tree.ones_like(obs.Z.in_structure)
-                masked = jax.tree.leaves(obs.Z(ones))[0]
+                ones = furax.tree.ones_like(obs.M.in_structure)
+                masked = jax.tree.leaves(obs.M(ones))[0]
                 hits_i = jnp.int64(pointing_i.T(StokesI(masked)).i)
 
                 # RHS contribution (optionally gap-filled).

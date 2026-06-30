@@ -20,7 +20,7 @@ from .templates import ATOPProjectionOperator
 
 @symmetric
 class WeightOperator(AbstractLinearOperator):
-    """Masked noise weight `Z W Z` as a single operator."""
+    """Masked noise weight `M W M` as a single operator."""
 
     weight: AbstractLinearOperator  # symmetric
     mask: MaskOperator
@@ -73,7 +73,7 @@ class ObservationModel:
             pointing_interpolate=config.pointing.interpolation == 'bilinear',
             dtype=config.dtype,
         )
-        Z = _mask_projector(
+        M = _mask_projector(
             _sample_mask(data, config),
             data.get(ReaderField.VALID_SCANNING_MASKS),
             structure=H.out_structure,
@@ -86,7 +86,7 @@ class ObservationModel:
             config.weighting.correlation_length,
             inverse=True,
         )
-        W = WeightOperator.create(Ninv, Z)  # equivalent to Z @ Ninv @ Z
+        W = WeightOperator.create(Ninv, M)  # MWM
         F = _template_deprojector(config, H.out_structure)
         return cls(H, W, F, noise_model, sample_rate)
 
@@ -122,11 +122,11 @@ class ObservationModel:
         return self.H.in_structure
 
     @property
-    def Z(self) -> MaskOperator:
+    def M(self) -> MaskOperator:
         return self.W.mask
 
-    @Z.setter
-    def Z(self, mask: MaskOperator) -> None:
+    @M.setter
+    def M(self, mask: MaskOperator) -> None:
         # rebuild the weight around the new mask (W is the only holder of Z)
         self.W = WeightOperator.create(self.W.weight, mask)
 
@@ -142,7 +142,7 @@ class ObservationModel:
         ``N⁻¹`` applies cleanly across the gaps; re-zeroing them with the inner mask of ``W`` would
         defeat the fill. Keep the outer mask (applied after ``N⁻¹``) and skip the inner one.
         """
-        return (self.H.T @ self.Z @ self.W.weight @ self.F).reduce()
+        return (self.H.T @ self.M @ self.W.weight @ self.F).reduce()
 
     def noise_operator(
         self, correlation_length: int, *, inverse: bool = True
@@ -164,11 +164,11 @@ class ObservationModel:
             self.tod_structure,
             is_leaf=lambda nm: isinstance(nm, NoiseModel),
         )
-        return WeightOperator.create(BlockDiagonalOperator(operator_tree), self.Z)
+        return WeightOperator.create(BlockDiagonalOperator(operator_tree), self.M)
 
     def _get_indexer(self) -> IndexOperator:
         """Get the IndexOperator for gap-filling"""
-        return IndexOperator(self.Z.to_boolean_mask(), in_structure=self.tod_structure)
+        return IndexOperator(self.M.to_boolean_mask(), in_structure=self.tod_structure)
 
 
 def _noise_model(

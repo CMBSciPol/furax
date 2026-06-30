@@ -72,6 +72,16 @@ class MaskOperator(AbstractLinearOperator):
             self.in_structure,
         )
 
+    def complement(self) -> 'MaskOperator':
+        """Return the complementary mask: valid where this one is invalid, and vice versa.
+
+        Computed directly on the packed bytes via bitwise NOT (no unpack/repack). Padding bits in
+        the last byte are flipped too, but ``to_boolean_mask`` discards them (it truncates to the
+        sample count), so they never surface.
+        """
+        flipped = jax.tree.map(jnp.bitwise_not, self.mask)
+        return MaskOperator(flipped, in_structure=self.in_structure)
+
     def restrict(self, condition: Bool[Array, '...']) -> 'MaskOperator':
         """Return a new MaskOperator with samples additionally masked out where ``condition`` is False.
 

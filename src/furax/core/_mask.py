@@ -67,7 +67,7 @@ class MaskOperator(AbstractLinearOperator):
     def to_boolean_mask(self) -> PyTree[Bool[Array, '...']]:
         """Return the unpacked boolean mask as a pytree matching ``in_structure``."""
         return jax.tree.map(
-            lambda m, s: jnp.unpackbits(m, axis=-1, count=s.shape[-1]),
+            lambda m, s: jnp.unpackbits(m, axis=-1, count=s.shape[-1]).astype(bool),
             self.mask,
             self.in_structure,
         )

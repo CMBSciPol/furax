@@ -342,6 +342,7 @@ class MultiObservationMapMaker(Generic[T]):
                         rate=obs.sample_rate,
                         max_cg_steps=config.gaps.fill_options.max_steps,
                         rtol=config.gaps.fill_options.rtol,
+                        metadata=data[ReaderField.METADATA],
                     )
 
                 # Use Python `if` for static `fill_gaps`, so gap-filling branch is not traced

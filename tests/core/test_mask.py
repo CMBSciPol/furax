@@ -171,6 +171,7 @@ def test_mask_operator_pytree_to_boolean_mask():
 
     recovered = op.to_boolean_mask()
     assert isinstance(recovered, dict)
+    assert recovered['a'].dtype == jnp.bool_  # unpacked to bool, not uint8
     assert_array_equal(recovered['a'], jnp.array([True, False, True]))
     assert_array_equal(recovered['b'], jnp.array([False, True, False]))
 

@@ -5,9 +5,9 @@ from typing import Any, Self
 import jax
 import jax.numpy as jnp
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, Float, Inexact, PyTree
+from jaxtyping import Array, Float, PyTree
 
-from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, symmetric, tree
+from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.core import BlockDiagonalOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
 
@@ -16,21 +16,7 @@ from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig, Methods, NoiseSource, WeightingMode
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .templates import ATOPProjectionOperator
-
-
-@symmetric
-class WeightOperator(AbstractLinearOperator):
-    """Masked noise weight `M W M` as a single operator."""
-
-    weight: AbstractLinearOperator  # symmetric
-    mask: MaskOperator
-
-    @classmethod
-    def create(cls, weight: AbstractLinearOperator, mask: MaskOperator) -> Self:
-        return cls(weight, mask, in_structure=mask.in_structure)
-
-    def mv(self, x: PyTree[Inexact[jax.Array, '...']]) -> PyTree[Inexact[jax.Array, '...']]:
-        return self.mask(self.weight(self.mask(x)))
+from .weight import WeightOperator
 
 
 @register_dataclass
@@ -127,8 +113,8 @@ class ObservationModel:
 
     @M.setter
     def M(self, mask: MaskOperator) -> None:
-        # rebuild the weight around the new mask (W is the only holder of Z)
-        self.W = WeightOperator.create(self.W.weight, mask)
+        # rebuild the weight around the new mask (W is the only holder of M)
+        self.W = self.W.with_mask(mask)
 
     @property
     def rhs_operator(self) -> AbstractLinearOperator:

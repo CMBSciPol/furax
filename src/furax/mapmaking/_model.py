@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, PyTree
 
-from furax import AbstractLinearOperator, MaskOperator, tree
+from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.core import BlockDiagonalOperator, IndexOperator
 from furax.obs.landscapes import StokesLandscape
 
@@ -16,6 +16,7 @@ from .acquisition import build_acquisition_operator
 from .config import MapMakingConfig, Methods, NoiseSource, WeightingMode
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .templates import ATOPProjectionOperator
+from .weight import WeightOperator
 
 
 @register_dataclass
@@ -31,11 +32,11 @@ class ObservationModel:
     H: AbstractLinearOperator
     """Acquisition operator"""
 
-    W: AbstractLinearOperator
-    """Weighting operator"""
+    W: WeightOperator
+    """Weighting operator (noise weights + mask)"""
 
-    masker: MaskOperator
-    """Sample masking operator"""
+    F: AbstractLinearOperator
+    """Deprojection operator"""
 
     noise_model: PyTree[NoiseModel]
     """Noise model"""
@@ -58,22 +59,22 @@ class ObservationModel:
             pointing_interpolate=config.pointing.interpolation == 'bilinear',
             dtype=config.dtype,
         )
-        masker = _mask_projector(
+        M = _mask_projector(
             _sample_mask(data, config),
             data.get(ReaderField.VALID_SCANNING_MASKS),
             structure=H.out_structure,
         )
         noise_model, sample_rate = _noise_model(data, config, tod_structure=H.out_structure)
-        W = _noise_operator(
+        Ninv = _noise_operator(
             noise_model,
             H.out_structure,
             sample_rate,
             config.weighting.correlation_length,
             inverse=True,
         )
-        if F_T := _template_deprojector(config, H.out_structure):
-            W = W @ F_T
-        return cls(H, W, masker, noise_model, sample_rate)
+        W = WeightOperator.create(Ninv, M)  # M Ninv M
+        F = _template_deprojector(config, H.out_structure)
+        return cls(H, W, F, noise_model, sample_rate)
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
@@ -106,6 +107,29 @@ class ObservationModel:
     def map_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.H.in_structure
 
+    @property
+    def M(self) -> MaskOperator:
+        return self.W.mask
+
+    @M.setter
+    def M(self, mask: MaskOperator) -> None:
+        # rebuild the weight around the new mask (W is the only holder of M)
+        self.W = self.W.with_mask(mask)
+
+    @property
+    def rhs_operator(self) -> AbstractLinearOperator:
+        return (self.H.T @ self.W @ self.F).reduce()
+
+    @property
+    def rhs_operator_prefilled(self) -> AbstractLinearOperator:
+        """RHS operator for gap-filled data: the data-side mask is dropped.
+
+        Gap-filling already replaced the flagged samples with a constrained realization so that
+        ``N⁻¹`` applies cleanly across the gaps; re-zeroing them with the inner mask of ``W`` would
+        defeat the fill. Keep the outer mask (applied after ``N⁻¹``) and skip the inner one.
+        """
+        return (self.H.T @ self.M @ self.W.weight @ self.F).reduce()
+
     def noise_operator(
         self, correlation_length: int, *, inverse: bool = True
     ) -> AbstractLinearOperator:
@@ -118,7 +142,7 @@ class ObservationModel:
             inverse=inverse,
         )
 
-    def diag_W(self) -> AbstractLinearOperator:
+    def diag_W(self) -> WeightOperator:
         """Build the inverse white noise covariance operator."""
         operator_tree = jax.tree.map(
             lambda noise, s: noise.to_white_noise_model().inverse_operator(s),
@@ -126,11 +150,11 @@ class ObservationModel:
             self.tod_structure,
             is_leaf=lambda nm: isinstance(nm, NoiseModel),
         )
-        return BlockDiagonalOperator(operator_tree)
+        return WeightOperator.create(BlockDiagonalOperator(operator_tree), self.M)
 
     def _get_indexer(self) -> IndexOperator:
         """Get the IndexOperator for gap-filling"""
-        return IndexOperator(self.masker.to_boolean_mask(), in_structure=self.tod_structure)
+        return IndexOperator(self.M.to_boolean_mask(), in_structure=self.tod_structure)
 
 
 def _noise_model(
@@ -222,12 +246,11 @@ def _noise_operator(
 def _template_deprojector(
     config: MapMakingConfig,
     tod_structure: jax.ShapeDtypeStruct,
-) -> AbstractLinearOperator | None:
+) -> AbstractLinearOperator:
     """Build the template deprojection operator."""
     if config.method == Methods.ATOP:
         return ATOPProjectionOperator(config.atop_tau, in_structure=tod_structure)
-    else:
-        return None
+    return IdentityOperator(in_structure=tod_structure)
 
 
 def _sample_rate(timestamps: Float[Array, '...']) -> Float[Array, '']:

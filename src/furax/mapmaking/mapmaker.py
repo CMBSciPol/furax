@@ -140,13 +140,10 @@ class MultiObservationMapMaker(Generic[T]):
         """``(start, n_owned, n_pad)`` for this process."""
         return get_obs_distribution_to_process(self.n_observations)
 
-    def get_read_indices(self) -> np.ndarray:
-        start, n_owned, _ = self.obs_distribution
-        return np.arange(start, start + n_owned)
-
     def get_padded_read_indices(self) -> np.ndarray:
-        _, _, n_pad = self.obs_distribution
-        return np.pad(self.get_read_indices(), (0, n_pad), mode='edge')
+        start, n_owned, n_pad = self.obs_distribution
+        indices = np.arange(start, start + n_owned)
+        return np.pad(indices, (0, n_pad), mode='edge')
 
     def get_reader(self, required_fields: Collection[str]) -> ObservationReader[T]:
         """Build an ObservationReader for this process's local observations."""
@@ -320,15 +317,15 @@ class MultiObservationMapMaker(Generic[T]):
                 obs = ObservationModel.create(data, padding, config, landscape)
 
                 # Padding/failed observations contribute nothing
-                obs.masker = obs.masker.restrict(real & valid)
+                obs.M = obs.M.restrict(real & valid)
 
                 # Hit map contribution.
                 assert isinstance(obs.H, CompositionOperator)  # mypy
                 pointing = obs.H.operands[-1]
                 assert isinstance(pointing, PointingOperator)  # mypy
                 pointing_i = pointing.as_stokes_i(interpolate=False)
-                ones = furax.tree.ones_like(obs.masker.in_structure)
-                masked = jax.tree.leaves(obs.masker(ones))[0]
+                ones = furax.tree.ones_like(obs.M.in_structure)
+                masked = jax.tree.leaves(obs.M(ones))[0]
                 hits_i = jnp.int64(pointing_i.T(StokesI(masked)).i)
 
                 # RHS contribution (optionally gap-filled).
@@ -338,7 +335,7 @@ class MultiObservationMapMaker(Generic[T]):
                         N,  # type: ignore[arg-type]
                         obs._get_indexer(),
                         tod,
-                        obs.W,  # type: ignore[arg-type]
+                        obs.W.weight,  # type: ignore[arg-type]
                         rate=obs.sample_rate,
                         max_cg_steps=config.gaps.fill_options.max_steps,
                         rtol=config.gaps.fill_options.rtol,
@@ -354,8 +351,10 @@ class MultiObservationMapMaker(Generic[T]):
                         lambda _: _,  # return raw data as-is
                         tod,
                     )
-
-                rhs_i = obs.H.T(obs.masker(obs.W(tod)))
+                    # Gaps filled: skip the data-side mask so the fill survives N⁻¹.
+                    rhs_i = obs.rhs_operator_prefilled(tod)
+                else:
+                    rhs_i = obs.rhs_operator(tod)
                 return (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i)), obs
 
             init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')
@@ -375,10 +374,12 @@ class MultiObservationMapMaker(Generic[T]):
         self, model: ObservationModel, *, diag: bool = False
     ) -> AbstractLinearOperator:
         H = ScanBlockColumnOperator.create(model.H)
-        M = ScanBlockDiagonalOperator.create(model.masker)
         weight = model.diag_W() if diag else model.W
         W = ScanBlockDiagonalOperator.create(weight)
-        return (H.T @ M @ W @ M @ H).reduce()
+        # specify leading axis dimension because F can be trivial
+        _, n_own, n_pad = self.obs_distribution
+        F = ScanBlockDiagonalOperator.create(model.F, n_lead=n_own + n_pad)
+        return (H.T @ W @ F @ H).reduce()
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']

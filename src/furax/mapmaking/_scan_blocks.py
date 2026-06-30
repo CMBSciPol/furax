@@ -105,7 +105,7 @@ class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
         `n` is inferred from the leaves only here, at the stacking boundary (see `_leading_size`);
         operator-algebra rules carry it explicitly instead.
         """
-        if len(jax.tree.leaves(operator)) == 0:
+        if len(jax.tree.leaves(operator)) == 0 and n_lead is None:
             raise RuntimeError('unable to infer structures from operator with no leaf')
         if n_lead is None:
             n_lead = _leading_size(operator)

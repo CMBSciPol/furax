@@ -148,6 +148,10 @@ def cg(
 
     p = z
     rz = tree.dot(r, z)  # r^T z (or r^T M^{-1} r)
+    eps = jnp.finfo(rz.real.dtype).eps
+    # `rz` is a residual energy, so square the relative norm floor. The 100*eps
+    # margin catches roundoff-level residuals before stabilisation can amplify them.
+    rz_floor = (100 * eps) ** 2 * jnp.abs(rz)
 
     r0_norm = tree.norm(r)
     # residuals[0] = initial residual; residuals[i+1] = residual after step i.
@@ -162,20 +166,23 @@ def cg(
 
         Ap = A(p)
         pAp = tree.dot(p, Ap)
+        active = jnp.abs(rz) > rz_floor
 
         # `pAp == 0` only at convergence (p -> 0), handled by `safe_pAp`
         # `pAp < 0` is genuine negative curvature, which a positive definite A should never produce
         if truncate:
             # Negative curvature: take no step this iteration and flag the loop to stop.
-            truncated = pAp < 0
+            truncated = active & (pAp < 0)
             safe_pAp = jnp.where(pAp == 0, 1.0, pAp)
-            alpha = jnp.where(truncated, 0.0, rz / safe_pAp)
+            alpha = jnp.where(active & ~truncated, rz / safe_pAp, 0.0)
         else:
             truncated = c.truncated
             if check_curvature:
-                pAp = eqx.error_if(pAp, pAp < 0, 'cg: negative curvature detected p^T A p < 0')
+                pAp = eqx.error_if(
+                    pAp, active & (pAp < 0), 'cg: negative curvature detected p^T A p < 0'
+                )
             safe_pAp = jnp.where(pAp == 0, 1.0, pAp)
-            alpha = rz / safe_pAp
+            alpha = jnp.where(active, rz / safe_pAp, 0.0)
 
         x = tree.add(x, tree.mul(alpha, p))
 
@@ -197,8 +204,11 @@ def cg(
 
         z = M(r)
         rz_new = tree.dot(r, z)
-        safe_rz = jnp.where(rz == 0, 1.0, rz)
-        beta = rz_new / safe_rz
+        # Once the preconditioned residual energy reaches the floating-point floor,
+        # fixed-iteration CG should become inert. This avoids dividing true-residual
+        # roundoff by true-residual roundoff after stabilisation.
+        safe_rz = jnp.where(active, rz, 1.0)
+        beta = jnp.where(jnp.abs(rz_new) > rz_floor, rz_new / safe_rz, 0.0)
 
         p = tree.add(z, tree.mul(beta, p))
 

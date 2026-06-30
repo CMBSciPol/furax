@@ -9,7 +9,12 @@ from jax.sharding import AxisType, NamedSharding
 from jax.sharding import PartitionSpec as P
 from numpy.testing import assert_allclose
 
-from furax import BlockDiagonalOperator, DiagonalOperator, IdentityOperator
+from furax import (
+    BlockDiagonalOperator,
+    DenseBlockDiagonalOperator,
+    DiagonalOperator,
+    IdentityOperator,
+)
 from furax.linalg import CGResult, cg
 from furax.tree import as_structure
 
@@ -21,6 +26,19 @@ def _diagonal_system(n: int = 5):
     b = jnp.ones(n, dtype=float)
     x_true = b / d
     return A, b, x_true
+
+
+def _dense_spd_system(
+    n: int, condition: float, seed: int
+) -> tuple[DenseBlockDiagonalOperator, jax.Array, jax.Array, jax.Array]:
+    key = jax.random.key(seed)
+    q, _ = jnp.linalg.qr(jax.random.normal(key, (n, n), dtype=jnp.float64))
+    eigenvalues = jnp.geomspace(1.0 / condition, 1.0, n)
+    matrix = (q * eigenvalues) @ q.T
+    b = jax.random.normal(jax.random.key(seed + 1000), (n,), dtype=jnp.float64)
+    A = DenseBlockDiagonalOperator(matrix, in_structure=as_structure(b))
+    x_true = jnp.linalg.solve(matrix, b)
+    return A, matrix, b, x_true
 
 
 class TestCGBasic:
@@ -89,6 +107,33 @@ class TestCGPyTree:
 
         result = cg(A, b, max_steps=20)
         assert tree_equal(result.solution, x_true, rtol=1e-10)
+
+
+class TestCGStabilisation:
+    def test_over_iteration_with_stabilisation_is_inert_after_convergence(self):
+        A, _, b, x_true = _dense_spd_system(n=5, condition=1e3, seed=7)
+
+        result = cg(A, b, max_steps=1000, rtol=0.0, atol=0.0)
+
+        rel_error = jnp.linalg.norm(result.solution - x_true) / jnp.linalg.norm(x_true)
+        assert_allclose(rel_error, 0.0, atol=1e-12)
+
+    def test_stabilisation_still_tracks_true_residual_on_long_solve(self):
+        A, matrix, b, _ = _dense_spd_system(n=50, condition=1e3, seed=0)
+
+        recursive = cg(A, b, max_steps=200, rtol=0.0, atol=0.0, stabilise_every=0)
+        stabilised = cg(A, b, max_steps=200, rtol=0.0, atol=0.0)
+
+        norm_b = jnp.linalg.norm(b)
+        recursive_true = jnp.linalg.norm(b - matrix @ recursive.solution) / norm_b
+        stabilised_true = jnp.linalg.norm(b - matrix @ stabilised.solution) / norm_b
+        recursive_reported = recursive.residuals[-1] / norm_b
+        stabilised_reported = stabilised.residuals[-1] / norm_b
+
+        assert stabilised_true < recursive_true
+        assert jnp.abs(stabilised_reported - stabilised_true) < jnp.abs(
+            recursive_reported - recursive_true
+        )
 
 
 class TestCGJit:

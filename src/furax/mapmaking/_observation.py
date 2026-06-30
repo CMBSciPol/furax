@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 from astropy.wcs import WCS
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, Bool, Float, UInt32
+from jaxtyping import Array, Bool, Float, Key, UInt32
 from numpy.typing import NDArray
 
 from furax.math.quaternion import qmul, to_lonlat_angles
@@ -68,6 +68,10 @@ class HashedObservationMetadata:
             telescope_uid=jax.ShapeDtypeStruct((), dtype=np.uint32),  # type: ignore[arg-type]
             detector_uids=jax.ShapeDtypeStruct((n_dets,), dtype=np.uint32),  # type: ignore[arg-type]
         )
+
+    def split_key(self, key: Key[Array, '']) -> Key[Array, '*#dets']:
+        fold = jnp.vectorize(jax.random.fold_in, signature='(),()->()')
+        return fold(fold(fold(key, self.uid), self.telescope_uid), self.detector_uids)  # type: ignore[no-any-return]
 
 
 def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[np.ndarray, ...]:

@@ -162,14 +162,20 @@ class ObservationModel:
         )
 
     def diag_W(self) -> WeightOperator:
-        """Build the inverse white noise covariance operator."""
-        operator_tree = jax.tree.map(
-            lambda noise, s: noise.to_white_noise_model().inverse_operator(s),
+        """Build the inverse white-noise weight for a *single* observation.
+
+        Assumes ``self`` is a single-observation model (single-observation ``noise_model`` and
+        ``tod_structure``). The observation-stacked preconditioner is obtained by mapping this over
+        the observation axis in :meth:`MultiObservationMapMaker.get_system_operator`, mirroring how
+        ``W`` is stacked inside the accumulation scan.
+        """
+        white = jax.tree.map(
+            lambda nm: nm.to_white_noise_model(),
             self.noise_model,
-            self.tod_structure,
             is_leaf=lambda nm: isinstance(nm, NoiseModel),
         )
-        return WeightOperator.create(BlockDiagonalOperator(operator_tree), self.M)
+        inv = _noise_operator(white, self.tod_structure, self.sample_rate, inverse=True)
+        return WeightOperator.create(inv, self.M)
 
 
 def _noise_model(
@@ -242,11 +248,15 @@ def _noise_operator(
     noise_model: NoiseModel,
     tod_structure: jax.ShapeDtypeStruct,
     sample_rate: Array,
-    correlation_length: int,
+    correlation_length: int | None = None,
     *,
     inverse: bool = True,
 ) -> AbstractLinearOperator:
-    """Build the (inverse) noise covariance operator for this block."""
+    """Build the (inverse) noise covariance operator for this block.
+
+    ``correlation_length`` sets the Toeplitz band for correlated (atmospheric) models; it is unused
+    by white-noise models and may be omitted for them.
+    """
     operator_tree = jax.tree.map(
         lambda model, struct: (model.inverse_operator if inverse else model.operator)(
             struct, sample_rate=sample_rate, correlation_length=correlation_length

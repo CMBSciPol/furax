@@ -180,6 +180,61 @@ class FailingLazyObservation(FakeLazyObservation):
         raise RuntimeError('simulated preprocessing failure')
 
 
+class GappyGroundObservation(FakeObservation, AbstractGroundObservation[None]):
+    """Ground observation with flagged gaps in the sample mask and a finite 1/f noise model.
+
+    Use ``weighting.source = PRECOMPUTED`` to avoid fitting a 1/f model to synthetic white TODs.
+    """
+
+    def get_scanning_intervals(self) -> Float[np.ndarray, 'n 2']:
+        half = self._n_samples // 2
+        return np.array([[0, half], [half, self._n_samples]])
+
+    def get_elapsed_times(self) -> Float[np.ndarray, ' a']:
+        return np.arange(self._n_samples, dtype=np.float64) / self._sample_rate
+
+    def get_azimuth(self) -> Float[np.ndarray, ' a']:
+        return np.linspace(0.0, 10.0, self._n_samples).astype(np.float64)
+
+    def get_elevation(self) -> Float[np.ndarray, ' a']:
+        return np.full(self._n_samples, 0.8, dtype=np.float64)
+
+    def get_left_scan_mask(self) -> Float[np.ndarray, ' a']:
+        return (np.arange(self._n_samples) % 2 == 0).astype(np.float64)
+
+    def get_right_scan_mask(self) -> Float[np.ndarray, ' a']:
+        return (np.arange(self._n_samples) % 2 == 1).astype(np.float64)
+
+    def get_noise_model(self) -> NoiseModel:
+        n = self._n_dets
+        return AtmosphericNoiseModel(
+            sigma=jnp.ones(n),
+            alpha=-jnp.ones(n),
+            fk=0.1 * jnp.ones(n),
+            f0=1e-3 * jnp.ones(n),
+        )
+
+    def get_sample_mask(self) -> Bool[np.ndarray, 'dets samps']:
+        mask = np.ones((self._n_dets, self._n_samples), dtype=bool)
+        gap = max(2, self._n_samples // 20)
+        for centre in (self._n_samples // 4, self._n_samples // 2, 3 * self._n_samples // 4):
+            mask[:, centre - gap // 2 : centre + gap // 2] = False
+        return mask
+
+
+class GappyLazyGroundObservation(FakeLazyObservation):
+    """File-free lazy wrapper around :class:`GappyGroundObservation`."""
+
+    interface_class = GappyGroundObservation
+
+    def get_data(self, requested_fields=None) -> GappyGroundObservation:
+        return GappyGroundObservation(**self._kwargs)
+
+    def probe_shape(self) -> tuple[int, int]:
+        obs = GappyGroundObservation(**self._kwargs)
+        return len(obs.detectors), obs.n_samples
+
+
 class FakeGroundObservation(FakeObservation, AbstractGroundObservation[None]):
     """``FakeObservation`` extended with the ground getters the single-observation
     ``MapMaker`` template path needs (azimuth/elevation, scanning intervals, scan masks),

@@ -8,6 +8,7 @@ from math import prod
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import lineax
@@ -384,7 +385,8 @@ class MultiObservationMapMaker(Generic[T]):
         self, model: ObservationModel, *, diag: bool = False
     ) -> AbstractLinearOperator:
         H = ScanBlockColumnOperator.create(model.H)
-        weight = model.diag_W() if diag else model.W
+        # filter_vmap: array leaves mapped, static fields held
+        weight = eqx.filter_vmap(ObservationModel.diag_W)(model) if diag else model.W
         W = ScanBlockDiagonalOperator.create(weight)
         # specify leading axis dimension because F can be trivial
         _, n_own, n_pad = self.obs_distribution

@@ -395,7 +395,7 @@ class NestedConfig:
     max_flag_fraction: float = 0.3
     """Flagged-fraction budget; observations flagged above this fall back to INNER_MASK."""
 
-    inner_steps: int = 10
+    inner_steps: int = 20
     """Fixed number of inner CG iterations for the flagged-block solve."""
 
     rtol: float = 0.0

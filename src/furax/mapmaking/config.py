@@ -36,6 +36,18 @@ class NoiseSource(Enum):
     PRECOMPUTED = 'precomputed'  # read precomputed noise parameters from the data pipeline
 
 
+class GapTreatment(Enum):
+    """How flagged samples enter the correlated-noise GLS weighting.
+
+    For white/diagonal weights all three coincide (`M W M = M W` for mask `M`);
+    the distinction only matters in the correlated (Toeplitz/atmospheric) regime.
+    """
+
+    INNER_MASK = 'inner_mask'  # W = M N⁻¹ M (unbiased but suboptimal; cheap)
+    FILL = 'fill'  # gap-fill the RHS with a constrained noise realization (single-realization use)
+    NESTED = 'nested'  # W = M (M N M)⁻¹ M = W_exact (unbiased and minimum-variance)
+
+
 @dataclass
 class SolverConfig:
     rtol: float = 1e-6
@@ -367,19 +379,52 @@ class GapFillingConfig:
     rtol: float = 1e-4
     """The relative tolerance of the solver for the gap-filling solve"""
 
+    precondition: bool = False
+    """Precondition the flagged-subspace solve with the covariance from the noise model.
+
+    Off by default: it speeds up convergence only for few gaps wider than the correlation length, and
+    *slows* the common case of many short gaps (turnarounds/glitches) where the bare system is already
+    well-conditioned. Enable for observations dominated by a few wide gaps.
+    """
+
+
+@dataclass
+class NestedConfig:
+    """Inner-solver options for the nested-inverse gap weight (`GapTreatment.NESTED`)."""
+
+    max_flag_fraction: float = 0.3
+    """Flagged-fraction budget; observations flagged above this fall back to INNER_MASK."""
+
+    inner_steps: int = 20
+    """Fixed number of inner CG iterations for the flagged-block solve."""
+
+    rtol: float = 0.0
+    """Relative tolerance of the inner solver (0 forces exactly ``inner_steps`` iterations)."""
+
+    atol: float = 0.0
+    """Absolute tolerance of the inner solver (0 forces exactly ``inner_steps`` iterations)."""
+
+    precondition: bool = False
+    """Precondition the inner flagged-block CG with the covariance from the noise model.
+
+    Off by default: it helps only for few gaps wider than the correlation length, and *slows* the
+    common case of many short gaps (turnarounds/glitches) where the bare inner block is already
+    well-conditioned. Enable for observations dominated by a few wide gaps.
+    """
+
 
 @dataclass
 class GapsConfig:
     """Configuration options related to the treatment of gaps"""
 
-    fill: bool = True
-    """Fill data gaps with synthetic noise-like samples"""
+    treatment: GapTreatment = GapTreatment.FILL
+    """How flagged samples enter the weighting (see :class:`GapTreatment`)."""
 
     fill_options: GapFillingConfig = field(default_factory=GapFillingConfig)
-    """Options to pass to the gap-filling operator"""
+    """Options to pass to the gap-filling operator (used when ``treatment`` is ``FILL``)."""
 
-    nested_pcg: bool = False
-    """Use the nested PCG method for gap treatment"""
+    nested: NestedConfig = field(default_factory=NestedConfig)
+    """Inner-solver options (used when ``treatment`` is ``NESTED``)."""
 
 
 @dataclass

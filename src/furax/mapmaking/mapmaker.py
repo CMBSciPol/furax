@@ -8,6 +8,7 @@ from math import prod
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import lineax
@@ -63,6 +64,7 @@ from ._observation import (
 from ._reader import ObservationReader
 from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
 from .config import (
+    GapTreatment,
     LandscapeConfig,
     MapMakingConfig,
     Methods,
@@ -70,11 +72,12 @@ from .config import (
     WCSConfig,
     WeightingMode,
 )
-from .gap_filling import GapFillingOperator
+from .gap_filling import gap_fill
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
 from .templates import PerDetectorTemplate
+from .weight import WeightOperator
 
 T = TypeVar('T')
 
@@ -294,7 +297,7 @@ class MultiObservationMapMaker(Generic[T]):
         landscape = self.landscape
         reader = self.reader
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
-        fill_gaps = config.gaps.fill and not config.binned
+        fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
 
         indices = self.distribute(self.get_padded_read_indices())
         is_real = self.distribute(self._real_observation_mask())
@@ -330,17 +333,25 @@ class MultiObservationMapMaker(Generic[T]):
 
                 # RHS contribution (optionally gap-filled).
                 def func_gapfill(tod):  # type: ignore[no-untyped-def]
-                    N = obs.noise_operator(config.weighting.correlation_length, inverse=False)
-                    gap_fill = GapFillingOperator(
-                        N,  # type: ignore[arg-type]
-                        obs._get_indexer(),
+                    # Only reached under GapTreatment.FILL, where W is the plain inner-mask weight.
+                    assert isinstance(obs.W, WeightOperator)
+                    # Optional M_b N M_b preconditioner (covariance from the noise model).
+                    preconditioner = None
+                    if config.gaps.fill_options.precondition:
+                        cov = obs.noise_operator(config.weighting.correlation_length, inverse=False)
+                        m_bad = obs.M.complement()
+                        preconditioner = (m_bad @ cov @ m_bad).reduce()
+                    return gap_fill(
+                        jax.random.key(config.gaps.fill_options.seed),
                         tod,
-                        obs.W.weight,  # type: ignore[arg-type]
+                        obs.W.weight,
+                        obs.M,
                         rate=obs.sample_rate,
                         max_cg_steps=config.gaps.fill_options.max_steps,
                         rtol=config.gaps.fill_options.rtol,
+                        preconditioner=preconditioner,
+                        metadata=data[ReaderField.METADATA],
                     )
-                    return gap_fill(jax.random.key(config.gaps.fill_options.seed), tod)
 
                 # Use Python `if` for static `fill_gaps`, so gap-filling branch is not traced
                 tod = data[ReaderField.SAMPLE_DATA]
@@ -374,7 +385,8 @@ class MultiObservationMapMaker(Generic[T]):
         self, model: ObservationModel, *, diag: bool = False
     ) -> AbstractLinearOperator:
         H = ScanBlockColumnOperator.create(model.H)
-        weight = model.diag_W() if diag else model.W
+        # filter_vmap: array leaves mapped, static fields held
+        weight = eqx.filter_vmap(ObservationModel.diag_W)(model) if diag else model.W
         W = ScanBlockDiagonalOperator.create(weight)
         # specify leading axis dimension because F can be trivial
         _, n_own, n_pad = self.obs_distribution
@@ -1165,13 +1177,13 @@ class MLMapmaker(MapMaker):
             p = preconditioner
             h = acquisition @ selector.T
 
-        if not config.gaps.nested_pcg:
+        if config.gaps.treatment != GapTreatment.NESTED:
             M = masker @ inv_noise @ masker
         else:
             nested_solver = lineax.CG(
-                rtol=config.solver.rtol,
-                atol=config.solver.atol,
-                max_steps=30,
+                rtol=config.gaps.nested.rtol,
+                atol=config.gaps.nested.atol,
+                max_steps=config.gaps.nested.inner_steps,
             )
             M = (
                 masker

@@ -15,6 +15,7 @@ from furax.mapmaking import (
     ObservationReader,
 )
 from furax.mapmaking.config import (
+    GapTreatment,
     HealpixConfig,
     LandscapeConfig,
     Methods,
@@ -36,6 +37,7 @@ from tests.mapmaking.helpers import (
     FailingLazyObservation,
     FakeGroundObservation,
     FakeLazyObservation,
+    GappyLazyGroundObservation,
 )
 
 
@@ -421,3 +423,40 @@ class TestSingleObsTemplates:
         for key, value in res.items():
             if key.startswith('template_') and not key.startswith('template_reg'):
                 assert bool(jnp.all(jnp.isfinite(value))), key
+
+
+class TestGapTreatmentMapMaker:
+    """End-to-end multi-observation ML mapmaking with the correlated-noise gap treatments."""
+
+    def _config(self, treatment: GapTreatment) -> MapMakingConfig:
+        cfg = MapMakingConfig.for_method('ml')
+        cfg.weighting.source = NoiseSource.PRECOMPUTED  # use the obs 1/f model (finite)
+        cfg.weighting.correlation_length = 128  # < n_samples, keeps the Toeplitz solve small
+        cfg.landscape = LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8))
+        cfg.pointing = PointingConfig(on_the_fly=True, interpolation='nearest')
+        cfg.solver.max_steps = 30
+        cfg.gaps.treatment = treatment
+        return cfg
+
+    @pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])
+    def test_ml_mapmaker_with_gaps(self, treatment):
+        """The full solve completes and yields a finite map over gappy observations."""
+        observations = [GappyLazyGroundObservation(seed=i) for i in range(2)]
+        results = MultiObservationMapMaker(observations, config=self._config(treatment)).run()
+        assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(results.map))
+        assert bool(jnp.all(jnp.isfinite(results.icov)))
+        assert jnp.all(results.hit_map >= 0)
+        assert results.solver_stats is not None
+
+    def test_gap_fill_skips_failed_observation(self):
+        """The ``real & valid`` gate: a failed load is read as filler and never gap-filled."""
+        config = self._config(GapTreatment.FILL)
+        mixed = [GappyLazyGroundObservation(seed=0), FailingLazyObservation(seed=1)]
+        results = MultiObservationMapMaker(mixed, config=config).run()
+        assert results.failed_observations == ['failing_obs']
+        assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(results.map))
+
+        good_only = [GappyLazyGroundObservation(seed=0)]
+        expected = MultiObservationMapMaker(good_only, config=config).run()
+        assert eqx.tree_equal(results.hit_map, expected.hit_map)
+        assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)

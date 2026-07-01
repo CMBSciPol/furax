@@ -190,3 +190,12 @@ def test_mask_operator_restrict(condition, expected):
     op = MaskOperator.from_boolean_mask(mask, in_structure=as_structure(jnp.zeros(4)))
     restricted = op.restrict(condition)
     assert_array_equal(restricted.to_boolean_mask(), jnp.array(expected))
+
+
+def test_mask_operator_complement():
+    """complement flips valid/invalid; a double complement round-trips."""
+    mask = jnp.array([True, False, True, True])
+    op = MaskOperator.from_boolean_mask(mask, in_structure=as_structure(jnp.zeros(4)))
+    complement = op.complement()
+    assert_array_equal(complement.to_boolean_mask(), ~mask)
+    assert_array_equal(complement.complement().to_boolean_mask(), mask)

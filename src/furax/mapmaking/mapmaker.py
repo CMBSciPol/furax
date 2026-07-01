@@ -334,6 +334,10 @@ class MultiObservationMapMaker(Generic[T]):
                 def func_gapfill(tod):  # type: ignore[no-untyped-def]
                     # Only reached under GapTreatment.FILL, where W is the plain inner-mask weight.
                     assert isinstance(obs.W, WeightOperator)
+                    # Use covariance N (inverse=False) to precondition the flagged-subspace CG
+                    cov = obs.noise_operator(config.weighting.correlation_length, inverse=False)
+                    m_bad = obs.M.complement()
+                    preconditioner = (m_bad @ cov @ m_bad).reduce()
                     return gap_fill(
                         jax.random.key(config.gaps.fill_options.seed),
                         tod,
@@ -342,6 +346,7 @@ class MultiObservationMapMaker(Generic[T]):
                         rate=obs.sample_rate,
                         max_cg_steps=config.gaps.fill_options.max_steps,
                         rtol=config.gaps.fill_options.rtol,
+                        preconditioner=preconditioner,
                         metadata=data[ReaderField.METADATA],
                     )
 

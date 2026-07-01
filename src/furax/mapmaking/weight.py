@@ -67,6 +67,14 @@ class NestedWeightOperator(AbstractLinearOperator):
     identical on the RHS and on every system-operator apply. A tolerance-based inner solve would
     make `W` depend on its input, i.e. no longer linear. Assumes a single-leaf time-ordered
     structure (the SO TOD layout).
+
+    **Optional preconditioner.** The inner block `Q N⁻¹ Qᵀ` is ill-conditioned for correlated noise,
+    so passing the covariance `N` (``cov``, the banded/Fourier approximation from the noise model)
+    builds the flagged-block preconditioner `Q N Qᵀ`. Its product with the inner operator differs
+    from the identity only by a boundary term of rank ≈ 2×(correlation bandwidth)×(number of gap
+    edges) -- set by how many separate gaps there are, not their width -- and inner CG converges in
+    roughly that many steps: a few for a handful of gaps, more when the flags are fragmented, but
+    always far fewer than unpreconditioned. Without ``cov`` the inner solve is unpreconditioned.
     """
 
     ninv: AbstractLinearOperator  # N⁻¹, symmetric PSD
@@ -76,6 +84,7 @@ class NestedWeightOperator(AbstractLinearOperator):
     inner_steps: int = field(metadata={'static': True})
     rtol: float = field(metadata={'static': True})
     atol: float = field(metadata={'static': True})
+    cov: AbstractLinearOperator | None = None
 
     @classmethod
     def create(
@@ -83,6 +92,7 @@ class NestedWeightOperator(AbstractLinearOperator):
         ninv: AbstractLinearOperator,
         mask: MaskOperator,
         config: NestedConfig,
+        cov: AbstractLinearOperator | None = None,
     ) -> Self:
         return cls(
             ninv,
@@ -92,6 +102,7 @@ class NestedWeightOperator(AbstractLinearOperator):
             inner_steps=config.inner_steps,
             rtol=config.rtol,
             atol=config.atol,
+            cov=cov,
             in_structure=mask.in_structure,
         )
 
@@ -125,9 +136,20 @@ class NestedWeightOperator(AbstractLinearOperator):
         # Inner system A_in = V (Q N⁻¹ Qᵀ) V + (I − V): the real flagged block on valid slots,
         # the identity on padding (so padded slots solve to 0 and drop out of the correction).
         a_in = vop @ q @ ninv @ q.T @ vop + vcomp
+        # Preconditioner V (Q N Qᵀ) V + (I − V): the flagged block of the covariance N.
+        preconditioner = None
+        if self.cov is not None:
+            preconditioner = (vop @ q @ self.cov @ q.T @ vop + vcomp).reduce()
         nx = ninv(x)
         rhs = vop(q(nx))
-        y = cg(a_in, rhs, max_steps=self.inner_steps, rtol=self.rtol, atol=self.atol).solution
+        y = cg(
+            a_in,
+            rhs,
+            preconditioner=preconditioner,
+            max_steps=self.inner_steps,
+            rtol=self.rtol,
+            atol=self.atol,
+        ).solution
         correction = ninv(q.T(vop(y)))
         return tree.sub(nx, correction)
 

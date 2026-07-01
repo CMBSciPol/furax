@@ -1,8 +1,12 @@
+from dataclasses import field
+
 from jaxtyping import Array, Float
 
+from furax import tree
+from furax.math.quaternion import qrot_zaxis
 from furax.obs.landscapes import TangentialLandscape
 from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import StokesI
+from furax.obs.stokes import StokesI, StokesPyTreeType
 
 __all__ = [
     'AtmospherePointingOperator',
@@ -21,6 +25,9 @@ class AtmospherePointingOperator(PointingOperator):
     2. Adds the wind displacement ``(vx * t, vy * t)`` to obtain the atmosphere sample
        position.
     3. Samples the atmosphere map at that position (nearest-neighbour or bilinear).
+    4. Optionally weights the sample by the airmass loading modulation ``1 / sin(el)``
+       (enabled with ``elevation_modulation``), accounting for the longer line-of-sight
+       path through the layer at low elevation.
 
     The transpose accumulates TOD back into the atmosphere map (binning).
 
@@ -33,10 +40,12 @@ class AtmospherePointingOperator(PointingOperator):
             sample, shape ``(n_samples, 2)``.
         chunk_size: Number of detectors processed per chunk (memory/speed trade-off).
         interpolate: If ``True``, use bilinear interpolation; otherwise nearest-neighbour.
+        elevation_modulation: If ``True``, weight each sample by ``1 / sin(el)`` (airmass).
     """
 
     landscape: TangentialLandscape  # narrows PointingOperator.landscape
     wind_displacement: Float[Array, 'samp 2']
+    elevation_modulation: bool = field(metadata={'static': True})
 
     @classmethod
     def from_wind(
@@ -49,6 +58,7 @@ class AtmospherePointingOperator(PointingOperator):
         *,
         chunk_size: int = 16,
         interpolate: bool = True,
+        elevation_modulation: bool = False,
     ) -> 'AtmospherePointingOperator':
         """Create an AtmospherePointingOperator.
 
@@ -62,6 +72,7 @@ class AtmospherePointingOperator(PointingOperator):
             times: Elapsed time for each sample, shape ``(n_samples,)``.
             chunk_size: Number of detectors per chunk.
             interpolate: Use bilinear interpolation (default: nearest-neighbour).
+            elevation_modulation: Weight each sample by the airmass loading ``1 / sin(el)``.
         """
         ndet = detector_quaternions.shape[0]
         nsamp = boresight_quaternions.shape[0]
@@ -75,6 +86,7 @@ class AtmospherePointingOperator(PointingOperator):
             interpolate=interpolate,
             _out_structure=out_structure,
             wind_displacement=wind_displacement,
+            elevation_modulation=elevation_modulation,
             in_structure=landscape.structure,
         )
 
@@ -87,6 +99,15 @@ class AtmospherePointingOperator(PointingOperator):
             x + self.wind_displacement[None, :, 0],
             y + self.wind_displacement[None, :, 1],
         )
+
+    def _modulate(
+        self, tod: StokesPyTreeType, qdet_full: Float[Array, '*dims 4']
+    ) -> StokesPyTreeType:
+        """Weight each sample by the airmass loading ``1 / sin(el)`` when enabled."""
+        if not self.elevation_modulation:
+            return tod
+        sin_el = qrot_zaxis(qdet_full)[..., 2]  # (det, samp)
+        return tree.truediv(tod, sin_el)  # type: ignore[no-any-return]
 
     def _quat2index(self, qdet_full: Float[Array, '*dims 4']) -> Array:
         x, y = self._wind_xy(qdet_full)

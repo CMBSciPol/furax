@@ -379,6 +379,14 @@ class GapFillingConfig:
     rtol: float = 1e-4
     """The relative tolerance of the solver for the gap-filling solve"""
 
+    precondition: bool = False
+    """Precondition the flagged-subspace solve with the covariance from the noise model.
+
+    Off by default: it speeds up convergence only for few gaps wider than the correlation length, and
+    *slows* the common case of many short gaps (turnarounds/glitches) where the bare system is already
+    well-conditioned. Enable for observations dominated by a few wide gaps.
+    """
+
 
 @dataclass
 class NestedConfig:
@@ -395,6 +403,14 @@ class NestedConfig:
 
     atol: float = 0.0
     """Absolute tolerance of the inner solver (0 forces exactly ``inner_steps`` iterations)."""
+
+    precondition: bool = False
+    """Precondition the inner flagged-block CG with the covariance from the noise model.
+
+    Off by default: it helps only for few gaps wider than the correlation length, and *slows* the
+    common case of many short gaps (turnarounds/glitches) where the bare inner block is already
+    well-conditioned. Enable for observations dominated by a few wide gaps.
+    """
 
 
 @dataclass

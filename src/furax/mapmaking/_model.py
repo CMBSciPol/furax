@@ -75,15 +75,17 @@ class ObservationModel:
         W: WeightOperator | NestedWeightOperator
         if config.gaps.treatment == GapTreatment.NESTED and not config.binned:
             # Minimum-variance correlated-noise weight using iterative solve.
-            # The covariance N preconditions the inner flagged-subspace CG.
-            N = _noise_operator(
-                noise_model,
-                H.out_structure,
-                sample_rate,
-                config.weighting.correlation_length,
-                inverse=False,
-            )
-            W = NestedWeightOperator.create(Ninv, M, config.gaps.nested, cov=N)
+            cov = None
+            if config.gaps.nested.precondition:
+                # Precondition inner flagged-subspace CG using covariance N
+                cov = _noise_operator(
+                    noise_model,
+                    H.out_structure,
+                    sample_rate,
+                    config.weighting.correlation_length,
+                    inverse=False,
+                )
+            W = NestedWeightOperator.create(Ninv, M, config.gaps.nested, cov=cov)
         else:
             # Plain masked weights, only exact for diagonal W
             W = WeightOperator.create(Ninv, M)

@@ -68,13 +68,14 @@ class NestedWeightOperator(AbstractLinearOperator):
     make `W` depend on its input, i.e. no longer linear. Assumes a single-leaf time-ordered
     structure (the SO TOD layout).
 
-    **Optional preconditioner.** The inner block `Q N⁻¹ Qᵀ` is ill-conditioned for correlated noise,
-    so passing the covariance `N` (``cov``, the banded/Fourier approximation from the noise model)
-    builds the flagged-block preconditioner `Q N Qᵀ`. Its product with the inner operator differs
-    from the identity only by a boundary term of rank ≈ 2×(correlation bandwidth)×(number of gap
-    edges) -- set by how many separate gaps there are, not their width -- and inner CG converges in
-    roughly that many steps: a few for a handful of gaps, more when the flags are fragmented, but
-    always far fewer than unpreconditioned. Without ``cov`` the inner solve is unpreconditioned.
+    **Optional preconditioner.** When there are a few gaps wider than the correlation length the inner
+    block `Q N⁻¹ Qᵀ` is ill-conditioned; passing the covariance `N` (``cov``, the banded/Fourier
+    approximation from the noise model) builds the flagged-block preconditioner `Q N Qᵀ`, whose product
+    with the inner operator differs from the identity by a boundary term of rank ≈ 2×(correlation
+    bandwidth)×(number of gaps), so inner CG converges in roughly that many steps. This wins only when
+    that rank is below the bare inner-solve count. For the common case of many short gaps
+    (turnarounds/glitches) the bare block is already well-conditioned and preconditioning is a net
+    loss -- pass no ``cov`` there (the default). Without ``cov`` the inner solve is unpreconditioned.
     """
 
     ninv: AbstractLinearOperator  # N⁻¹, symmetric PSD

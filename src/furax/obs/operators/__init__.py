@@ -1,5 +1,5 @@
 from ._beam_operator import BeamOperator, BeamOperatorIQU
-from ._hwp import HWPOperator
+from ._hwp import HWPOperator, NonIdealHWPOperator, hwp_mueller_from_stack
 from ._polarizers import LinearPolarizerOperator
 from ._qu_rotations import QURotationOperator
 from ._seds import (
@@ -10,10 +10,13 @@ from ._seds import (
     NoiseDiagonalOperator,
     SynchrotronOperator,
 )
+from ._transfer_matrix import SO_HF_HWP_STACK, SO_MF_HWP_STACK, Material, Stack, mueller_matrix
 
 __all__ = [
     # _hwp
     'HWPOperator',
+    'NonIdealHWPOperator',
+    'hwp_mueller_from_stack',
     # _polarizers
     'LinearPolarizerOperator',
     # _qu_rotations
@@ -28,4 +31,10 @@ __all__ = [
     # _beam_operator
     'BeamOperator',
     'BeamOperatorIQU',
+    # _transfer_matrix
+    'Material',
+    'Stack',
+    'SO_MF_HWP_STACK',
+    'SO_HF_HWP_STACK',
+    'mueller_matrix',
 ]

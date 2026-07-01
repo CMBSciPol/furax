@@ -8,7 +8,7 @@ from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
-from furax.core import BlockDiagonalOperator, IndexOperator
+from furax.core import BlockDiagonalOperator
 from furax.obs.landscapes import StokesLandscape
 
 from ._observation import ReaderField
@@ -170,10 +170,6 @@ class ObservationModel:
             is_leaf=lambda nm: isinstance(nm, NoiseModel),
         )
         return WeightOperator.create(BlockDiagonalOperator(operator_tree), self.M)
-
-    def _get_indexer(self) -> IndexOperator:
-        """Get the IndexOperator for gap-filling"""
-        return IndexOperator(self.M.to_boolean_mask(), in_structure=self.tod_structure)
 
 
 def _noise_model(

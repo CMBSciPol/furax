@@ -102,6 +102,7 @@ class PointingOperator(AbstractLinearOperator):
             qdet_full = qmul(self.qbore, qdet[:, None, :])
 
             tod = self._sample(x.ravel(), qdet_full)
+            tod = self._modulate(tod, qdet_full)
 
             if isinstance(tod, StokesI):
                 # no rotation needed
@@ -202,6 +203,17 @@ class PointingOperator(AbstractLinearOperator):
         """
         return self.landscape.quat2interp(qdet_full)
 
+    def _modulate(
+        self, tod: StokesPyTreeType, qdet_full: Float[Array, '*dims 4']
+    ) -> StokesPyTreeType:
+        """Hook applied to the sampled TOD (identity in the base class).
+
+        Subclasses override this to inject a per-sample diagonal weighting. Because the
+        weighting is a symmetric diagonal, the same hook is applied in mv (after sampling)
+        and in the transpose (before binning), keeping the adjoint exact.
+        """
+        return tod
+
     def _sample(
         self, x_flat: StokesPyTreeType, qdet_full: Float[Array, '*dims 4']
     ) -> StokesPyTreeType:
@@ -267,6 +279,7 @@ class PointingTransposeOperator(TransposeOperator):
         def mv_inner(xchunk: StokesPyTreeType, qdet: Float[Array, 'det 4']) -> StokesPyTreeType:
             # Expand detector quaternions from boresight and offsets
             qdet_full = qmul(self.operator.qbore, qdet[:, None, :])
+            xchunk = self.operator._modulate(xchunk, qdet_full)
 
             if isinstance(xchunk, StokesI):
                 # no rotation needed

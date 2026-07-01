@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 from numpy.testing import assert_array_almost_equal
 
-from furax.math.quaternion import qmul
+from furax.math.quaternion import qmul, qrot_zaxis
 from furax.obs.atmosphere import AtmospherePointingOperator
 from furax.obs.landscapes import TangentialLandscape
 from furax.obs.stokes import StokesI
@@ -28,6 +28,7 @@ def _make_operator(
     nsamp=NSAMP,
     chunk_size=2,
     seed=0,
+    elevation_modulation=False,
 ) -> tuple[AtmospherePointingOperator, TangentialLandscape, StokesI]:
     """Return (operator, landscape, atm_map) for use in tests."""
     if wind_velocity is None:
@@ -62,6 +63,7 @@ def _make_operator(
         times,
         chunk_size=chunk_size,
         interpolate=False,
+        elevation_modulation=elevation_modulation,
     )
     return op, landscape, atm_map
 
@@ -104,6 +106,40 @@ class TestAtmosphereOperatorMv:
             idx = landscape.pixel2index(*landscape.xy2pixel(x_shifted, y_shifted))
             expected = flat.i[idx]
             assert_array_almost_equal(tod.i[d], expected)
+
+
+class TestAtmosphereElevationModulation:
+    def test_weights_samples_by_inverse_sin_el(self) -> None:
+        """With the flag on, each sample is the unmodulated value divided by sin(el)."""
+        op, _, atm = _make_operator()
+        op_mod, _, _ = _make_operator(elevation_modulation=True)
+
+        tod = op(atm)
+        tod_mod = op_mod(atm)
+
+        for d in range(NDET):
+            qdet_full = qmul(op.qbore, op.qdet[d : d + 1, None, :])  # (1, samp, 4)
+            sin_el = qrot_zaxis(qdet_full[0])[..., 2]  # (samp,)
+            assert_array_almost_equal(tod_mod.i[d], tod.i[d] / sin_el)
+
+    def test_off_matches_plain_operator(self) -> None:
+        """The default (flag off) is the identity hook: output unchanged."""
+        op, _, atm = _make_operator()
+        op_off, _, _ = _make_operator(elevation_modulation=False)
+        assert_array_almost_equal(op_off(atm).i, op(atm).i)
+
+    def test_adjoint(self) -> None:
+        """<A x, y> == <x, A^T y> with the modulation enabled."""
+        op, _, atm = _make_operator(elevation_modulation=True)
+        key = jax.random.PRNGKey(11)
+        tod_rand = StokesI(i=jax.random.normal(key, (NDET, NSAMP)))
+
+        tod = op(atm)
+        atm_back = op.T(tod_rand)
+
+        lhs = float(jnp.sum(tod.i * tod_rand.i))
+        rhs = float(jnp.sum(atm.i * atm_back.i))
+        assert abs(lhs - rhs) / (abs(lhs) + 1e-12) < 1e-10
 
 
 class TestAtmosphereTranspose:

@@ -284,14 +284,13 @@ class MultiObservationMapMaker(Generic[T]):
                 rhs_joint: Any = S(rhs)
             else:
                 reg = self.config.templates.regularization  # type: ignore[union-attr]
+                wf_stack = (model.W @ model.F).reduce()
 
                 # Fold implicit families into the system weight: W' = WF − WF Tᵢ G⁻¹ Tᵢᵀ WF
                 # (G = Tᵢᵀ WF Tᵢ), built from scan-block pieces so the algebra fuses it into a single
                 # ScanBlockDiagonalOperator. (The RHS already carries this correction.)
                 if templates.implicit is not None:
-                    ginv = stacked_gram_inverse(
-                        (model.W @ model.F).reduce(), templates.implicit, reg
-                    )
+                    ginv = stacked_gram_inverse(wf_stack, templates.implicit, reg)
                     Ti = ScanBlockDiagonalOperator.create(templates.implicit)
                     G = ScanBlockDiagonalOperator.create(ginv)
                     WF = (WF - WF @ Ti @ G @ Ti.T @ WF).reduce()
@@ -305,7 +304,8 @@ class MultiObservationMapMaker(Generic[T]):
                     joint = True
                     Te = ScanBlockDiagonalOperator.create(templates.explicit)
                     H = BlockRowOperator([H_sky, Te])
-                    M = BlockDiagonalOperator([M_sky, _amplitude_preconditioner(Te, WF, reg)])
+                    ginv_e = stacked_gram_inverse(wf_stack, templates.explicit, reg)
+                    M = BlockDiagonalOperator([M_sky, ScanBlockDiagonalOperator.create(ginv_e)])
                     rhs_joint = [S(rhs), amp_rhs]
 
             A = (H.T @ WF @ H).reduce()
@@ -577,53 +577,6 @@ class MultiObservationMapMaker(Generic[T]):
         # create the final shape and WCS objects for this covering box
         shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
         return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
-
-
-def _family_preconditioner(
-    d: PyTree[Array], struct: PyTree[jax.ShapeDtypeStruct], reg: float
-) -> AbstractLinearOperator:
-    """Diagonal preconditioner for one template family, plain-array or multi-leg (Stokes).
-
-    A demodulated multi-leg family (e.g. T2P, or a polynomial fit with ``legendre_qu``) has
-    per-leg amplitudes rather than a single array; the ridge mean is pooled across all its legs
-    so every leg is regularized on the same scale, then each leg gets its own ``DiagonalOperator``
-    assembled back into the family's own pytree shape (e.g. a `Stokes` instance).
-    """
-    leaves = jax.tree.leaves(d)
-    mean = sum(jnp.sum(leaf) for leaf in leaves) / sum(leaf.size for leaf in leaves)
-
-    def amp_inv(x: Array) -> Array:
-        denom = x + reg * mean
-        return jnp.where(denom > 0, 1.0 / denom, 0.0)
-
-    if isinstance(d, jax.Array):
-        return DiagonalOperator(amp_inv(d), in_structure=struct)
-    return BlockDiagonalOperator(
-        jax.tree.map(
-            lambda leaf_d, leaf_s: DiagonalOperator(amp_inv(leaf_d), in_structure=leaf_s), d, struct
-        )
-    )
-
-
-@jax.jit
-def _amplitude_preconditioner(
-    Te: AbstractLinearOperator,
-    W: AbstractLinearOperator,
-    reg: float,
-) -> AbstractLinearOperator:
-    """Per-family diagonal approximation of the explicit-amplitude Gram ``Tₑᵀ W Tₑ``.
-
-    ``W`` is the (mask-bundled) system weight. Uses ``|row sums|`` with a relative ridge
-    ``reg``; zero on null directions (empty or padding amplitudes) so they stay fixed at zero
-    in the solve.
-    """
-    amp_sys = (Te.T @ W @ Te).reduce()
-    amp_diag = jax.tree.map(jnp.abs, amp_sys(furax.tree.ones_like(amp_sys.in_structure)))
-    amp_struct = furax.tree.as_structure(amp_diag)
-
-    return BlockDiagonalOperator(
-        {name: _family_preconditioner(amp_diag[name], amp_struct[name], reg) for name in amp_diag}
-    )
 
 
 def get_obs_distribution_to_process(

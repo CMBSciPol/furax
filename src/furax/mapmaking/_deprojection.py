@@ -14,6 +14,31 @@ degrees of freedom never enter the joint conjugate-gradient solve.
 This is the "implicit" path; the "explicit" path keeps the amplitudes as unknowns and
 returns them. Both can be active at once (some families deprojected, others solved).
 
+Design note: Gaussian amplitude priors (not implemented)
+---------------------------------------------------------
+A Gaussian prior ``a ~ N(0, Σ_a)`` on the amplitudes would generalise the weight to
+
+    W' = W − W T (Tᵀ W T + Σ_a⁻¹)⁻¹ Tᵀ W = (N + T Σ_a Tᵀ)⁻¹   (Woodbury, W = N⁻¹),
+
+i.e. Wiener-filter the amplitudes instead of fitting them exactly; the current
+deprojection is the improper (flat-prior) limit. Since ``W' T = W T M⁻¹ Σ_a⁻¹`` with
+``M = Tᵀ W T + Σ_a⁻¹``, modes in ``ker(Σ_a⁻¹)`` stay *exactly* annihilated even when
+coupled to proper ones. Any prior that is block-diagonal per detector (diagonal or dense
+``K×K``) slots straight into the block inversion here. Cross-detector priors (e.g. HWPSS
+is strongly correlated across detectors) break the per-detector blocks; tractable routes:
+
+- low-rank detector correlation (common mode): Woodbury correction on top of the
+  per-detector inverses — one small ``rK×rK`` dense solve;
+- reparametrise the correlated part as a *shared* template family (one amplitude set
+  expanded to all detectors) plus per-detector residuals: Gram becomes arrow-shaped,
+  solved by Schur complement on the small shared block;
+- otherwise keep the family explicit and add ``Σ_a⁻¹`` to the amplitude block of the
+  joint CG system (one prior apply per iteration, no dense inverse).
+
+The ``regularization`` ridge is itself the MAP limit of an isotropic prior with
+data-adaptive precision ``λ·mean(diag G)``; it is kept as a numerical safeguard, not a
+statistical statement.
+
 Restrictions (kept deliberately simple)
 ---------------------------------------
 - ``W`` must be *diagonal* (white / ATOP weighting). The Gram ``G = Tᵀ W T`` is then
@@ -27,7 +52,7 @@ Restrictions (kept deliberately simple)
 """
 
 from math import prod
-from typing import Any
+from typing import Any, Self
 
 import jax
 import jax.numpy as jnp
@@ -36,9 +61,10 @@ from jax import Array
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Float, PyTree
 
-from furax import AbstractLinearOperator, symmetric
+from furax import AbstractLinearOperator, IdentityOperator, symmetric
 
 __all__ = [
+    'PerDetGramInverse',
     'deprojector',
     'marginal_weight',
     'stacked_gram_inverse',
@@ -46,7 +72,7 @@ __all__ = [
 
 
 @symmetric
-class _PerDetGramInverse(AbstractLinearOperator):
+class PerDetGramInverse(AbstractLinearOperator):
     """Apply the per-detector inverse Gram ``G_d⁻¹`` in template-amplitude space.
 
     Amplitudes are a PyTree whose leaves have shape ``(*batch, *coupled_f)`` (one leaf per
@@ -60,9 +86,65 @@ class _PerDetGramInverse(AbstractLinearOperator):
 
     inv: Float[Array, '*batch k k']
 
-    @property
-    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.in_structure
+    @classmethod
+    def from_gram(
+        cls,
+        gram: AbstractLinearOperator,
+        batch_ndim: int = 1,
+        regularization: float = 0.0,
+    ) -> Self:
+        """Probe ``G = Tᵀ W T`` to assemble and invert its block-diagonal Gram.
+
+        For diagonal ``W`` and per-detector templates, ``G`` is block-diagonal over the ``batch``
+        axes (detectors, plus an outer observation axis in the multi-observation path). Applying
+        ``G`` to the amplitude that is one on a single coupled index (broadcast over all batch
+        elements) and zero elsewhere returns that column of every block at once. The coupled
+        index is the concatenation of all families' coupled axes, so cross-family blocks are
+        captured. The probes run as a single traced ``lax.map`` iteration, so trace/compile
+        time stays constant in ``K`` and TOD-sized intermediates are never batched.
+
+        Args:
+            gram: The Gram operator ``Tᵀ W T`` acting on the amplitude PyTree
+                (leaves ``(*batch, *coupled_f)``).
+            batch_ndim: Number of leading block-diagonal axes (1 = detector, 2 = obs + detector).
+            regularization: Relative ridge added to each block diagonal before inversion.
+
+        Returns:
+            The block-diagonal inverse Gram operator.
+        """
+        amp_structure = gram.in_structure
+        leaves = jax.tree.leaves(amp_structure)
+        treedef = jax.tree.structure(amp_structure)
+        batch_shape = leaves[0].shape[:batch_ndim]
+        dtype = leaves[0].dtype
+        sizes = [int(prod(s.shape[batch_ndim:])) for s in leaves]
+        offsets = np.cumsum([0, *sizes])
+        n_basis = int(offsets[-1])
+
+        def probe(col: Array) -> Array:
+            # one-hot on the concatenated coupled index, split at the (static) family offsets
+            # and broadcast over the batch axes.
+            flat = jnp.zeros((n_basis,), dtype).at[col].set(1.0)
+            parts = [
+                jnp.broadcast_to(
+                    flat[offsets[k] : offsets[k + 1]].reshape(s.shape[batch_ndim:]), s.shape
+                )
+                for k, s in enumerate(leaves)
+            ]
+            response = gram(jax.tree.unflatten(treedef, parts))
+            flats = [leaf.reshape(*batch_shape, -1) for leaf in jax.tree.leaves(response)]
+            return jnp.concatenate(flats, axis=-1)  # (*batch, n_basis) = column `col`
+
+        cols = jax.lax.map(probe, jnp.arange(n_basis))  # (col, *batch, row)
+        block = jnp.moveaxis(cols, 0, -1)  # (*batch, row, col)
+
+        if regularization:
+            # relative ridge: scale by the mean block diagonal so it is dimensionally sound.
+            diag = jnp.diagonal(block, axis1=-2, axis2=-1)
+            scale = jnp.mean(diag, axis=-1)[..., None, None]
+            block = block + regularization * scale * jnp.eye(n_basis, dtype=dtype)
+
+        return cls(jnp.linalg.inv(block), in_structure=amp_structure)
 
     def mv(self, x: PyTree[Array]) -> PyTree[Array]:
         batch_ndim = self.inv.ndim - 2
@@ -78,71 +160,6 @@ class _PerDetGramInverse(AbstractLinearOperator):
             out.append(yf[..., offset : offset + c].reshape(leaf.shape))
             offset += c
         return jax.tree.unflatten(treedef, out)
-
-    def transpose(self) -> AbstractLinearOperator:
-        # G symmetric ⇒ G⁻¹ symmetric; transpose the dense block axes to be exact.
-        return _PerDetGramInverse(jnp.swapaxes(self.inv, -1, -2), in_structure=self.in_structure)
-
-
-def build_gram_inverse(
-    gram: AbstractLinearOperator,
-    amp_structure: PyTree[jax.ShapeDtypeStruct],
-    batch_ndim: int = 1,
-    regularization: float = 0.0,
-) -> _PerDetGramInverse:
-    """Probe ``G = Tᵀ W T`` to assemble and invert its block-diagonal Gram.
-
-    For diagonal ``W`` and per-detector templates, ``G`` is block-diagonal over the ``batch``
-    axes (detectors, plus an outer observation axis in the multi-observation path). Applying
-    ``G`` to the amplitude that is one on a single coupled index (broadcast over all batch
-    elements) and zero elsewhere returns that column of every block at once. The coupled
-    index is the concatenation of all families' coupled axes, so cross-family blocks are
-    captured.
-
-    Args:
-        gram: The Gram operator ``Tᵀ W T`` acting on the amplitude PyTree.
-        amp_structure: Structure of the amplitude PyTree (leaves ``(*batch, *coupled_f)``).
-        batch_ndim: Number of leading block-diagonal axes (1 = detector, 2 = obs + detector).
-        regularization: Relative ridge added to each block diagonal before inversion.
-
-    Returns:
-        The block-diagonal inverse Gram operator.
-    """
-    leaves = jax.tree.leaves(amp_structure)
-    treedef = jax.tree.structure(amp_structure)
-    batch_shape = leaves[0].shape[:batch_ndim]
-    dtype = leaves[0].dtype
-    sizes = [int(prod(s.shape[batch_ndim:])) for s in leaves]
-    offsets = np.cumsum([0, *sizes])
-    n_basis = int(offsets[-1])
-
-    def unit(global_col: int) -> PyTree[Array]:
-        leaf_idx = int(np.searchsorted(offsets[1:], global_col, side='right'))
-        local_col = global_col - int(offsets[leaf_idx])
-        parts = []
-        for k, s in enumerate(leaves):
-            z = jnp.zeros(s.shape, dtype)
-            if k == leaf_idx:
-                flat = z.reshape(*batch_shape, sizes[k]).at[..., local_col].set(1.0)
-                z = flat.reshape(s.shape)
-            parts.append(z)
-        return jax.tree.unflatten(treedef, parts)
-
-    cols = []
-    for j in range(n_basis):
-        response = gram(unit(j))
-        flat = [leaf.reshape(*batch_shape, -1) for leaf in jax.tree.leaves(response)]
-        cols.append(jnp.concatenate(flat, axis=-1))  # (*batch, n_basis) = column j
-    block = jnp.stack(cols, axis=-1)  # (*batch, row, col)
-
-    if regularization:
-        # relative ridge: scale by the mean block diagonal so it is dimensionally sound.
-        diag = jnp.diagonal(block, axis1=-2, axis2=-1)
-        scale = jnp.mean(diag, axis=-1)[..., None, None]
-        block = block + regularization * scale * jnp.eye(n_basis, dtype=dtype)
-
-    inv = jnp.linalg.inv(block)
-    return _PerDetGramInverse(inv, in_structure=amp_structure)
 
 
 def deprojector(
@@ -161,7 +178,7 @@ def deprojector(
     amplitude axes (1 = detector, 2 = observation + detector).
     """
     gram = (template.T @ weight @ template).reduce()
-    gram_inverse = build_gram_inverse(gram, template.in_structure, batch_ndim, regularization)
+    gram_inverse = PerDetGramInverse.from_gram(gram, batch_ndim, regularization)
     return (template @ gram_inverse @ template.T @ weight).reduce()
 
 
@@ -173,9 +190,11 @@ def marginal_weight(
 ) -> AbstractLinearOperator:
     """Deprojected weight ``W' = W − W T (Tᵀ W T)⁻¹ Tᵀ W`` for diagonal ``W``.
 
-    Returned as the reduced composition ``W − W @ P``. Symmetric (``W P`` is symmetric since
-    ``Pᵀ W = W P``) and annihilates the template (``W' T = 0``). For the multi-observation path
-    build ``W'`` from scan-block pieces — ``W − W @ T @ G⁻¹ @ Tᵀ @ W`` with each factor a
+    Returned as the reduced composition ``W @ (I − P)``, which applies the diagonal ``W`` one
+    time fewer per solve iteration than the expanded ``W − W @ P``. Symmetric (``W P`` is
+    symmetric since ``Pᵀ W = W P``) and annihilates the template (``W' T = 0``).
+    For the multi-observation path build ``W'`` from scan-block pieces —
+    ``W − W @ T @ G⁻¹ @ Tᵀ @ W`` with each factor a
     :class:`~furax.mapmaking._scan_blocks.ScanBlockDiagonalOperator` (see
     :func:`stacked_gram_inverse`) — so the scan-block algebra fuses it into one block and keeps
     the obs-axis sharding and the closed-over ``−1`` correct.
@@ -188,7 +207,8 @@ def marginal_weight(
         regularization: Relative ridge on the Gram blocks before inversion.
     """
     projector = deprojector(weight, template, batch_ndim, regularization)
-    return (weight - weight @ projector).reduce()
+    identity = IdentityOperator(in_structure=weight.in_structure)
+    return (weight @ (identity - projector)).reduce()
 
 
 def stacked_gram_inverse(
@@ -223,10 +243,10 @@ def stacked_gram_inverse(
         def step(_: None, args: Any) -> tuple[None, Array]:
             t, w = args
             gram = (t.T @ w @ t).reduce()
-            return None, build_gram_inverse(gram, t.in_structure, 1, regularization).inv
+            return None, PerDetGramInverse.from_gram(gram, 1, regularization).inv
 
         _, inv = jax.lax.scan(step, None, (template, weight))
         return inv  # (n_local_obs, *det_batch, K, K)
 
     inv = build_inv(template, weight)
-    return _PerDetGramInverse(inv, in_structure=template.in_structure)
+    return PerDetGramInverse(inv, in_structure=template.in_structure)

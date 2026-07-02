@@ -6,7 +6,7 @@ from numpy.testing import assert_allclose
 
 from furax import DiagonalOperator
 from furax.core import BlockRowOperator
-from furax.mapmaking._deprojection import build_gram_inverse, deprojector, marginal_weight
+from furax.mapmaking._deprojection import PerDetGramInverse, deprojector, marginal_weight
 from furax.mapmaking.templates import PerDetectorTemplate, TensorBasis
 
 N_DETS = 3
@@ -67,7 +67,7 @@ def test_marginal_weight_equals_explicit_fit_residual():
     d = jr.normal(kd, (N_DETS, N_SAMPS))
     # explicit GLS amplitude fit, per detector: a* = (TᵀWT)⁻¹ TᵀW d
     rhs = T.T(W(d))  # (n_dets, k)
-    gram_inverse = build_gram_inverse((T.T @ W @ T).reduce(), T.in_structure)
+    gram_inverse = PerDetGramInverse.from_gram((T.T @ W @ T).reduce())
     a_star = gram_inverse(rhs)
     expected = W(d - T(a_star))
     assert_allclose(Wm(d), expected, rtol=1e-6, atol=1e-9)

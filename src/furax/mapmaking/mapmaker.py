@@ -53,7 +53,7 @@ from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesPyTreeType, ValidStokesType
 
 from . import templates
-from ._deprojection import build_gram_inverse, stacked_gram_inverse
+from ._deprojection import PerDetGramInverse, stacked_gram_inverse
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
 from ._model import ObservationModel, ObservationTemplates
@@ -464,7 +464,7 @@ class MultiObservationMapMaker(Generic[T]):
                 if templates.implicit is not None:
                     Ti = templates.implicit
                     gram = (Ti.T @ Weff @ Ti).reduce()
-                    ginv = build_gram_inverse(gram, Ti.in_structure, regularization=reg)
+                    ginv = PerDetGramInverse.from_gram(gram, regularization=reg)
                     wd = wd - Weff(Ti(ginv(Ti.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
                 rhs_i = obs.H.T(wd)
                 amp_i = templates.explicit.T(wd) if templates.explicit is not None else None

@@ -60,6 +60,12 @@ class MapMakingResults:
     failed_observations: list[str] | None = None
     """Names of observations that failed to load and were excluded from the maps"""
 
+    template_amplitudes: dict[str, Any] | None = None
+    """Estimated amplitudes of the explicit template families, keyed by family name.
+
+    Each value is obs-stacked (leading observation axis). ``None`` when no explicit template
+    family is active (implicit families are deprojected into the weight and not returned)."""
+
     def save(self, out_dir: str | Path) -> None:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -69,6 +75,11 @@ class MapMakingResults:
         self._save_icov(np.array(self.icov), out_dir)
         if self.noise_fits is not None:
             np.save(out_dir / 'noise_fits', np.array(self.noise_fits))
+        if self.template_amplitudes is not None:
+            amp_dir = out_dir / 'template_amplitudes'
+            amp_dir.mkdir(exist_ok=True)
+            for name, value in self.template_amplitudes.items():
+                np.save(amp_dir / f'{name}.npy', np.array(value))
         if self.solver_stats is not None:
             with open(out_dir / 'solver_stats.json', 'w') as f:
                 json.dump(self.solver_stats, f, indent=2, cls=_JsonEncoder)

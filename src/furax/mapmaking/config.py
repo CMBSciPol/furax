@@ -265,6 +265,14 @@ class BinsConfig:
 class PolynomialConfig:
     legendre: PolynomialOrders = PolynomialOrders(0, 3)
     """Legendre orders for the polynomial drift template."""
+    legendre_qu: PolynomialOrders | None = None
+    """Legendre orders for the Q/U legs, demodulated data only.
+
+    Overrides ``legendre`` for the Q and U legs (fitted independently from each other and
+    from I). ``None`` reuses ``legendre`` for every leg. Requires ``demodulated=True``.
+    """
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -275,6 +283,8 @@ class ScanSynchronousConfig:
     """
 
     legendre: PolynomialOrders = PolynomialOrders(3, 7)
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -285,11 +295,15 @@ class BinAzSynchronousConfig:
     """
 
     bins: BinsConfig = field(default_factory=BinsConfig)
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
 class HWPSynchronousConfig:
     n_harmonics: int = 3
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -297,12 +311,16 @@ class AzHWPSynchronousConfig:
     legendre: PolynomialOrders = PolynomialOrders(0, 3)
     n_harmonics: int = 4
     split_scans: bool = False
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
 class BinAzHWPSynchronousConfig:
     bins: BinsConfig = field(default_factory=BinsConfig)
     n_harmonics: int = 4
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -313,6 +331,8 @@ class SplineHWPSSConfig:
     """Number of samples per knot. Defaults to 4000."""
     harmonics: tuple[int, ...] = (4,)
     """HWP harmonics to fit with splines. Defaults to (4,)."""
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
     def __post_init__(self) -> None:
         if self.n_knots is None and self.samples_per_knot is None:
@@ -330,9 +350,22 @@ class SplineHWPSSConfig:
 
 
 @dataclass
+class T2PConfig:
+    fit_band: tuple[float, float] | None = None
+    decimate: int = 1
+    explicit: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.explicit:
+            raise ValueError('T2P template filtering requires explicit=True')
+
+
+@dataclass
 class GroundConfig:
     azimuth_resolution: float = 0.05  # ~3 deg
     elevation_resolution: float = 0.05  # ~3 deg
+    explicit: bool = True
+    """Ground templates are always solved explicitly; deprojection is not supported."""
 
 
 @dataclass
@@ -344,6 +377,7 @@ class TemplatesConfig:
     azhwp_synchronous: AzHWPSynchronousConfig | None = None
     binazhwp_synchronous: BinAzHWPSynchronousConfig | None = None
     spline_hwpss: SplineHWPSSConfig | None = None
+    t2p: T2PConfig | None = None
     ground: GroundConfig | None = None
     regularization: float = 0.0
 
@@ -357,6 +391,7 @@ class TemplatesConfig:
             hwp_synchronous=HWPSynchronousConfig(),
             azhwp_synchronous=AzHWPSynchronousConfig(),
             binazhwp_synchronous=BinAzHWPSynchronousConfig(),
+            t2p=T2PConfig(),
             spline_hwpss=SplineHWPSSConfig(),
             ground=GroundConfig(),
         )

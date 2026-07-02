@@ -6,6 +6,7 @@ from ._observation import (
     AbstractSatelliteObservation,
     FileBackedLazyObservation,
     HashedObservationMetadata,
+    ObservationBufferShapes,
     ReaderField,
 )
 from ._reader import ObservationReader
@@ -29,5 +30,6 @@ __all__ = [
     'MapMakingConfig',
     'MapMakingResults',
     'MultiObservationMapMaker',
+    'ObservationBufferShapes',
     'logger',
 ]

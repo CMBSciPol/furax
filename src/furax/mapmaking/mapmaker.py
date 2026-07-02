@@ -6,7 +6,7 @@ from functools import cached_property
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, overload
 
 import equinox as eqx
 import jax
@@ -21,6 +21,7 @@ from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils as mhu
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
 import furax.linalg
@@ -52,9 +53,10 @@ from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesPyTreeType, ValidStokesType
 
 from . import templates
+from ._deprojection import PerDetGramInverse, stacked_gram_inverse
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel
+from ._model import ObservationModel, ObservationTemplates
 from ._observation import (
     AbstractGroundObservation,
     AbstractLazyObservation,
@@ -80,6 +82,7 @@ from .templates import PerDetectorTemplate
 from .weight import WeightOperator
 
 T = TypeVar('T')
+S = TypeVar('S')
 
 
 class MultiObservationMapMaker(Generic[T]):
@@ -102,7 +105,9 @@ class MultiObservationMapMaker(Generic[T]):
         # Build the reader once, up front: it only probes shapes (no mesh context needed)
         rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
         model_fields = ObservationModel.required_reader_fields(self.config)
-        self.reader = self.get_reader(model_fields | rhs_fields)
+        # Template families need extra fields (azimuth, scanning intervals, ...); empty otherwise.
+        template_fields = ObservationTemplates.required_reader_fields(self.config)
+        self.reader = self.get_reader(model_fields | rhs_fields | template_fields)
 
     def _check_config(self) -> None:
         """Validate and adjust config for method-specific compatibility."""
@@ -120,6 +125,17 @@ class MultiObservationMapMaker(Generic[T]):
                     " Falling back to stokes='QU' instead."
                 )
                 self.config.landscape.stokes = 'QU'
+        if self.config.use_templates and not self.config.binned:
+            raise NotImplementedError('Using templates requires diagonal weighting.')
+        if templates := self.config.templates:
+            if templates.t2p is not None and not self.config.demodulated:
+                raise ValueError('The T2P template requires demodulated=True.')
+            if (
+                templates.polynomial is not None
+                and templates.polynomial.legendre_qu is not None
+                and not self.config.demodulated
+            ):
+                raise ValueError('templates.polynomial.legendre_qu requires demodulated=True.')
 
     @cached_property
     def mesh(self) -> Mesh:
@@ -129,7 +145,11 @@ class MultiObservationMapMaker(Generic[T]):
     def sharding(self) -> NamedSharding:
         return NamedSharding(self.mesh, P('obs'))
 
-    def distribute(self, x: PyTree) -> PyTree:
+    @overload
+    def distribute(self, x: ArrayLike) -> Array: ...
+    @overload
+    def distribute(self, x: S) -> S: ...
+    def distribute(self, x: Any) -> Any:
         """Shard a pytree of process-local arrays along the leading 'obs' axis."""
         return jax.tree.map(lambda a: jax.make_array_from_process_local_data(self.sharding, a), x)
 
@@ -201,10 +221,12 @@ class MultiObservationMapMaker(Generic[T]):
         )
 
         with jax.set_mesh(self.mesh):
-            # Single read pass (sharded over observations): build the model and accumulate the
-            # hit map + RHS together, so each observation is read/preprocessed exactly once. The
-            # cross-process reduction of hits/rhs happens via psum inside the kernel.
-            model, hits, rhs = self.build_model_and_accumulate()
+            # Single read pass (sharded over observations): build the model, the per-observation
+            # template operators (when active) and accumulate the hit map + RHS together, so each
+            # observation is read/preprocessed exactly once. The cross-process reduction of
+            # hits/rhs happens via psum inside the kernel. ``rhs`` is the (deprojected, when
+            # templates are active) map RHS; ``amp_rhs`` is the explicit-template leg (or None).
+            model, templates, amp_rhs, hits, rhs = self.build_model_and_accumulate()
             jax.block_until_ready((hits, rhs))
             logger_info('Accumulated hit map and RHS vector')
 
@@ -212,15 +234,29 @@ class MultiObservationMapMaker(Generic[T]):
             if failed_observations:
                 logger_info(f'{len(failed_observations)} observation(s) failed and were excluded')
 
-            # System operator (full/diagonal)
-            A = self.get_system_operator(model)
-            diag_A = A if self.config.binned else self.get_system_operator(model, diag=True)
-            BJ = BJPreconditioner.create(diag_A)
+            # Diagonal pixel system for the block-Jacobi preconditioner
+            H_sky: AbstractLinearOperator = ScanBlockColumnOperator.create(model.H)
+            W: AbstractLinearOperator = ScanBlockDiagonalOperator.create(model.W)
+            # specify leading axis dimension because F can be trivial (no array leaves)
+            F = ScanBlockDiagonalOperator.create(model.F, n_lead=n_owned + n_pad)
+            W_diag = (
+                W
+                if self.config.binned
+                else ScanBlockDiagonalOperator.create(
+                    eqx.filter_vmap(ObservationModel.diag_W)(model)
+                )
+            )
+            A_diag = (H_sky.T @ W_diag @ F @ H_sky).reduce()
+            BJ = BJPreconditioner.create(A_diag)
             icov = BJ.get_blocks().block_until_ready()
             logger_info('Computed white noise inverse covariance')
 
+            # Pixel selection from the icov estimate
             valid_pixels = self.pixel_selection(hits, icov)
-            selector = IndexOperator(jnp.where(valid_pixels), in_structure=A.out_structure)
+            S = IndexOperator(jnp.where(valid_pixels), in_structure=H_sky.in_structure)
+            H_sky @= S.T
+            M_sky = (S @ BJ.I @ S.T).reduce()
+
             n_selected = jnp.sum(valid_pixels)
             n_observed = jnp.sum(hits > 0)
             n_total = valid_pixels.size
@@ -229,33 +265,67 @@ class MultiObservationMapMaker(Generic[T]):
             hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
-            # Solve the mapmaking system
-            solver = lineax.CG(**asdict(self.config.solver))
-            spd = OperatorTag.POSITIVE_SEMIDEFINITE
-            lx_system = as_lineax_operator(selector @ A @ selector.T, spd)
-            M = (selector @ BJ.I @ selector.T).reduce()  # preconditioner
-            lx_precond = as_lineax_operator(M, spd)
-            rhs_reduced = selector(rhs)
-            y0 = M(rhs_reduced)
+            # Unified GLS solve (Hᵀ W' H) x = Hᵀ W' d  (W already bundles the sample mask).
+            #
+            # H maps the unknowns to TOD:
+            # - no templates / implicit only: H = H_sky        (sky map only);
+            # - explicit families:           H = [H_sky | Tₑ] (sky map + template amplitudes).
+            #
+            # Implicit families fold into the weight (W → W', deprojection).
+            # The map RHS (``rhs``) and explicit-template RHS (``amp_rhs``) were already streamed in
+            # the read pass above -- including the implicit deprojection of the weight -- so only the
+            # system operator's weight needs the matching ``W'`` correction here (operator algebra,
+            # no further TOD reads).
+            WF = (W @ F).reduce()
+            joint = False
+            if templates is None:
+                H = H_sky
+                M = M_sky
+                rhs_joint: Any = S(rhs)
+            else:
+                reg = self.config.templates.regularization  # type: ignore[union-attr]
+                wf_stack = (model.W @ model.F).reduce()
 
-            solution = lineax.linear_solve(
-                lx_system,
-                rhs_reduced,
-                solver=solver,
-                options={'preconditioner': lx_precond, 'y0': y0},
-                throw=False,
-            )
-            estimate = selector.T(solution.value)
-            num_steps = solution.stats['num_steps']
-            logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
+                # Fold implicit families into the system weight: W' = WF − WF Tᵢ G⁻¹ Tᵢᵀ WF
+                # (G = Tᵢᵀ WF Tᵢ), built from scan-block pieces so the algebra fuses it into a single
+                # ScanBlockDiagonalOperator. (The RHS already carries this correction.)
+                if templates.implicit is not None:
+                    ginv = stacked_gram_inverse(wf_stack, templates.implicit, reg)
+                    Ti = ScanBlockDiagonalOperator.create(templates.implicit)
+                    G = ScanBlockDiagonalOperator.create(ginv)
+                    WF = (WF - WF @ Ti @ G @ Ti.T @ WF).reduce()
+                    logger_info('Deprojected implicit template families into the weight')
+
+                if templates.explicit is None:
+                    H = H_sky
+                    M = M_sky
+                    rhs_joint = S(rhs)
+                else:
+                    joint = True
+                    Te = ScanBlockDiagonalOperator.create(templates.explicit)
+                    H = BlockRowOperator([H_sky, Te])
+                    ginv_e = stacked_gram_inverse(wf_stack, templates.explicit, reg)
+                    M = BlockDiagonalOperator([M_sky, ScanBlockDiagonalOperator.create(ginv_e)])
+                    rhs_joint = [S(rhs), amp_rhs]
+
+            A = (H.T @ WF @ H).reduce()
+            result = furax.linalg.cg(A, rhs_joint, preconditioner=M, **asdict(self.config.solver))
+            logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
+
+            if joint:
+                sky_estimate, amplitudes = result.solution
+            else:
+                sky_estimate = result.solution
+                amplitudes = None
 
         return MapMakingResults(
-            map=estimate,
+            map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)
             icov=icov,
             hit_map=hits,
-            solver_stats=solution.stats,
+            solver_stats={'num_steps': int(result.num_steps)},
             landscape=self.landscape,
             failed_observations=failed_observations,
+            template_amplitudes=dict(amplitudes) if amplitudes is not None else None,
         )
 
     def _collect_failed_observations(self) -> list[str]:
@@ -273,37 +343,56 @@ class MultiObservationMapMaker(Generic[T]):
 
     def build_model_and_accumulate(
         self,
-    ) -> tuple[ObservationModel, Int64[Array, '...'], StokesPyTreeType]:
+    ) -> tuple[
+        ObservationModel,
+        ObservationTemplates | None,
+        PyTree[Array] | None,
+        Int64[Array, '...'],
+        StokesPyTreeType,
+    ]:
         """Build the model and accumulate the hit map and RHS in a single, sharded read pass.
 
         Sharded over observations: each observation is read (and, for preproc-backed observations,
         preprocessed) exactly once, and contributes to the model, the hit map and the RHS from that
-        single read. This avoids reading every observation twice (once to build the model, once to
-        accumulate the RHS). The hit map and RHS are reduced across all processes with ``psum``
-        inside the kernel.
+        single read. This avoids reading every observation more than once -- essential when
+        streaming from a preprocessing database. The hit map and (summed) map RHS are reduced
+        across all processes with ``psum`` inside the kernel.
+
+        When templates are active, the per-observation template operators are built from the same
+        read and stacked along the observation axis, and the RHS is the deprojected ``Hᵀ W' d``
+        (``W' = W − W Tᵢ G⁻¹ Tᵢᵀ W``, the implicit families' marginal weight, applied inline with
+        the per-observation Gram inverse ``G⁻¹``; ``W`` already bundles the sample mask, see
+        :class:`~furax.mapmaking.weight.WeightOperator`). The explicit-template leg ``Tₑᵀ W' d`` is
+        accumulated as a per-observation, obs-stacked ``amp_rhs`` (``None`` without explicit
+        families). Padding/failed slots are built from filler (non-degenerate for template fields
+        too, see ``_failure_filler``), so they stay finite; the model's zeroed mask gates them
+        out of the downstream solve.
 
         Observations that contribute nothing -- padding (added so every device carries the same
         workload) and failed loads (the preprocessing pipeline raised) -- are gated out by zeroing
-        their masker inside the kernel, so they drop out of the hit map, the RHS, and the CG system
+        their mask inside the kernel, so they drop out of the hit map, the RHS, and the CG system
         operator alike. Failed loads are reported afterwards from ``self.reader.failed_indices``
         (see ``make_maps``).
 
         Must run under ``jax.set_mesh(self.mesh)``.
 
-        Returns ``(model, hits, rhs)`` with the model sharded along the observation axis and the
-        hit map / RHS replicated (already reduced across processes).
+        Returns ``(model, templates, amp_rhs, hits, rhs)``: model and templates sharded along the
+        observation axis, ``amp_rhs`` obs-stacked, the hit map and map RHS replicated (already
+        reduced across processes). ``templates`` and ``amp_rhs`` are ``None`` unless the
+        corresponding families are configured.
         """
         config = self.config
         landscape = self.landscape
         reader = self.reader
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
+        build_templates = config.use_templates
+        reg = config.templates.regularization if config.templates is not None else 0.0
 
         indices = self.distribute(self.get_padded_read_indices())
         is_real = self.distribute(self._real_observation_mask())
         axis = jax.sharding.get_abstract_mesh().axis_names[0]
 
-        @jax.shard_map(out_specs=(P('obs'), P(), P()), check_vma=False)
         def kernel(indices, is_real):  # type: ignore[no-untyped-def]
             def step(carry, args):  # type: ignore[no-untyped-def]
                 hits_acc, rhs_acc = carry
@@ -353,7 +442,8 @@ class MultiObservationMapMaker(Generic[T]):
                         metadata=data[ReaderField.METADATA],
                     )
 
-                # Use Python `if` for static `fill_gaps`, so gap-filling branch is not traced
+                # Use Python `if` for static `fill_gaps`/`build_templates`, so the inactive
+                # branches are not traced.
                 tod = data[ReaderField.SAMPLE_DATA]
                 if fill_gaps:
                     tod = jax.lax.cond(
@@ -362,36 +452,58 @@ class MultiObservationMapMaker(Generic[T]):
                         lambda _: _,  # return raw data as-is
                         tod,
                     )
-                    # Gaps filled: skip the data-side mask so the fill survives N⁻¹.
-                    rhs_i = obs.rhs_operator_prefilled(tod)
-                else:
-                    rhs_i = obs.rhs_operator(tod)
-                return (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i)), obs
+
+                if not build_templates:
+                    if fill_gaps:
+                        # Gaps filled: skip the data-side mask so the fill survives N⁻¹.
+                        rhs_i = obs.rhs_operator_prefilled(tod)
+                    else:
+                        rhs_i = obs.rhs_operator(tod)
+                    carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
+                    return carry, obs
+
+                # Templates: build the per-observation operators from this same read and apply the
+                # deprojected weight inline (G⁻¹ is per-observation, so no second TOD pass). Templates
+                # require config.binned=True, so fill_gaps (which requires not config.binned) never
+                # applies here. ``Weff`` bundles the sample mask (via ``obs.W``) and the deprojection
+                # operator ``obs.F`` (e.g. ATOP tau-averaging; identity otherwise).
+                templates = ObservationTemplates.create(data, config, obs.tod_structure)
+                Weff = (obs.W @ obs.F).reduce()
+                wd = Weff(tod)
+                if templates.implicit is not None:
+                    Ti = templates.implicit
+                    gram = (Ti.T @ Weff @ Ti).reduce()
+                    ginv = PerDetGramInverse.from_gram(gram, regularization=reg)
+                    wd = wd - Weff(Ti(ginv(Ti.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
+                rhs_i = obs.H.T(wd)
+                amp_i = templates.explicit.T(wd) if templates.explicit is not None else None
+                carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
+                return carry, (obs, templates, amp_i)
 
             init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')
             init_rhs = jax.lax.pcast(landscape.zeros(), axis, to='varying')
-            (hits, rhs), model = jax.lax.scan(step, (init_hits, init_rhs), (indices, is_real))
-            return model, jax.lax.psum(hits, axis), jax.lax.psum(rhs, axis)
+            (hits, rhs), stacked = jax.lax.scan(step, (init_hits, init_rhs), (indices, is_real))
+            hits = jax.lax.psum(hits, axis)
+            rhs = jax.lax.psum(rhs, axis)
+            if build_templates:
+                model, templates, amp_rhs = stacked
+                return model, templates, amp_rhs, hits, rhs
+            return stacked, hits, rhs
 
+        if build_templates:
+            out_specs = (P('obs'), P('obs'), P('obs'), P(), P())
+            kernel = jax.shard_map(out_specs=out_specs, check_vma=False)(kernel)
+            model, templates, amp_rhs, hits, rhs = kernel(indices, is_real)
+            return model, templates, amp_rhs, hits, rhs
+
+        kernel = jax.shard_map(out_specs=(P('obs'), P(), P()), check_vma=False)(kernel)
         model, hits, rhs = kernel(indices, is_real)
-        return model, hits, rhs
+        return model, None, None, hits, rhs
 
     def _real_observation_mask(self) -> np.ndarray:
         """Boolean flag per padded slot: True for real observations, False for padding."""
         _, n_owned, n_pad = self.obs_distribution
         return np.concatenate([np.ones(n_owned, dtype=bool), np.zeros(n_pad, dtype=bool)])
-
-    def get_system_operator(
-        self, model: ObservationModel, *, diag: bool = False
-    ) -> AbstractLinearOperator:
-        H = ScanBlockColumnOperator.create(model.H)
-        # filter_vmap: array leaves mapped, static fields held
-        weight = eqx.filter_vmap(ObservationModel.diag_W)(model) if diag else model.W
-        W = ScanBlockDiagonalOperator.create(weight)
-        # specify leading axis dimension because F can be trivial
-        _, n_own, n_pad = self.obs_distribution
-        F = ScanBlockDiagonalOperator.create(model.F, n_lead=n_own + n_pad)
-        return (H.T @ W @ F @ H).reduce()
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']

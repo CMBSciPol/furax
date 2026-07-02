@@ -11,6 +11,7 @@ from furax.mapmaking import (
     AbstractGroundObservation,
     AbstractLazyObservation,
     AbstractObservation,
+    ObservationBufferShapes,
 )
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import ProjectionType, StokesLandscape
@@ -172,9 +173,11 @@ class FailingLazyObservation(FakeLazyObservation):
     def name(self) -> str:
         return 'failing_obs'
 
-    def probe_shape(self) -> tuple[int, int]:
+    def probe_shape(self, intervals: bool = False) -> ObservationBufferShapes:
+        # get_data raises, so build the shape directly. Non-ground obs -> no scanning intervals.
+        del intervals
         obs = FakeObservation(**self._kwargs)
-        return len(obs.detectors), obs.n_samples
+        return ObservationBufferShapes(obs.n_detectors, obs.n_samples, 0)
 
     def get_data(self, requested_fields=None) -> FakeObservation:
         raise RuntimeError('simulated preprocessing failure')
@@ -230,10 +233,6 @@ class GappyLazyGroundObservation(FakeLazyObservation):
     def get_data(self, requested_fields=None) -> GappyGroundObservation:
         return GappyGroundObservation(**self._kwargs)
 
-    def probe_shape(self) -> tuple[int, int]:
-        obs = GappyGroundObservation(**self._kwargs)
-        return len(obs.detectors), obs.n_samples
-
 
 class FakeGroundObservation(FakeObservation, AbstractGroundObservation[None]):
     """``FakeObservation`` extended with the ground getters the single-observation
@@ -271,3 +270,22 @@ class FakeGroundObservation(FakeObservation, AbstractGroundObservation[None]):
             fk=0.1 * jnp.ones(n),
             f0=1e-3 * jnp.ones(n),
         )
+
+
+class FakeLazyGroundObservation(AbstractLazyObservation[None]):
+    """File-free lazy synthetic *ground* observation.
+
+    Like :class:`FakeLazyObservation` but its ``interface_class`` is
+    :class:`FakeGroundObservation`, so the reader exposes the ground fields (azimuth,
+    elevation, scan masks, scanning intervals) needed by the azimuth/interval template
+    families. ``kwargs`` are forwarded to :class:`FakeGroundObservation`.
+    """
+
+    interface_class = FakeGroundObservation
+
+    def __init__(self, **kwargs: Any) -> None:  # type: ignore[override]
+        self.file = Path('<synthetic>')
+        self._kwargs = kwargs
+
+    def get_data(self, requested_fields: Any = None) -> FakeGroundObservation:
+        return FakeGroundObservation(**self._kwargs)

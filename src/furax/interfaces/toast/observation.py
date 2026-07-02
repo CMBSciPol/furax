@@ -94,26 +94,37 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         # Prepare TOAST loading operator
         loader = LoadHDF5(files=filename)
         if requested_fields is not None:
-            # translate request to sotodlib subfield names
-            detdata = []
-            if ReaderField.SAMPLE_DATA in requested_fields:
-                detdata.append(defaults.det_data)
-            if ReaderField.VALID_SAMPLE_MASKS in requested_fields:
-                detdata.append(defaults.det_flags)
+            requested = set(requested_fields)
+            # translate request to toast subfield names (sets dedup overlapping requests)
+            detdata: set[str] = set()
+            if ReaderField.SAMPLE_DATA in requested:
+                detdata.add(defaults.det_data)
+            if ReaderField.VALID_SAMPLE_MASKS in requested:
+                detdata.add(defaults.det_flags)
 
-            shared = [defaults.times]  # Always need to load timestamps
-            if ReaderField.HWP_ANGLES in requested_fields:
-                shared.append(defaults.hwp_angle)
-            if ReaderField.BORESIGHT_QUATERNIONS in requested_fields:
-                shared.append(defaults.boresight_radec)
+            shared = {defaults.times}  # Always need to load timestamps
+            if ReaderField.HWP_ANGLES in requested:
+                shared.add(defaults.hwp_angle)
+            if ReaderField.BORESIGHT_QUATERNIONS in requested:
+                shared.add(defaults.boresight_radec)
+            if ReaderField.AZIMUTH in requested:
+                shared.add(defaults.azimuth)
+            if ReaderField.ELEVATION in requested:
+                shared.add(defaults.elevation)
 
-            intervals = ['']  # Toast loads all intervals if the list is empty
-            if ReaderField.VALID_SCANNING_MASKS in requested_fields:
-                intervals.append(defaults.scanning_interval)
+            intervals = {''}  # Toast loads all intervals if the list is empty
+            # Load the precomputed scan intervals the getters read, so they need not recompute
+            # them via AzimuthIntervals (which would require the azimuth shared field).
+            if {ReaderField.VALID_SCANNING_MASKS, ReaderField.SCANNING_INTERVALS} & requested:
+                intervals.add(defaults.scanning_interval)
+            if ReaderField.LEFT_SCAN_MASK in requested:
+                intervals.add(defaults.scan_rightleft_interval)
+            if ReaderField.RIGHT_SCAN_MASK in requested:
+                intervals.add(defaults.scan_leftright_interval)
 
-            loader.detdata = detdata
-            loader.shared = shared
-            loader.intervals = intervals
+            loader.detdata = list(detdata)
+            loader.shared = list(shared)
+            loader.intervals = list(intervals)
 
         data = toast.Data()
         loader.apply(data)

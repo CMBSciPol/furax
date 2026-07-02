@@ -166,11 +166,12 @@ class ObservationReader(AbstractReader, Generic[T]):
         probe-failed observation indices.
         """
         failed: list[int] = []
+        need_intervals = ReaderField.SCANNING_INTERVALS in fields
 
         def probe(idx: int) -> tuple[int, tuple[int, ...]]:
             try:
                 # retain observation index so we can dedup after gathering
-                return idx, observations[idx].probe_shape(fields)
+                return idx, tuple(observations[idx].probe_shape(intervals=need_intervals))
             except Exception:
                 logger.exception('probe of observation %d failed', idx)
                 failed.append(idx)
@@ -411,7 +412,8 @@ class ObservationReader(AbstractReader, Generic[T]):
         self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]
     ) -> PyTree[jax.ShapeDtypeStruct]:
         return self._get_data_field_structures_for(
-            observation.probe_shape(data_field_names), data_field_names
+            observation.probe_shape(intervals=ReaderField.SCANNING_INTERVALS in data_field_names),
+            data_field_names,
         )
 
     def _read_data_impure(

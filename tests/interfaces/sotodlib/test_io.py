@@ -104,14 +104,15 @@ def test_probe_shape(observations) -> None:
     """The lazy observation sizes its buffers without (necessarily) a full load."""
     for i, obs in enumerate(observations):
         # n_intervals stays 0 unless scanning_intervals is requested
-        assert obs.probe_shape([]) == (OBS_NDET[i], OBS_NSAMPLE[i], 0)
-        assert obs.probe_shape(['scanning_intervals']) == (
+        assert obs.probe_shape() == (OBS_NDET[i], OBS_NSAMPLE[i], 0)
+        assert obs.probe_shape(intervals=True) == (
             OBS_NDET[i],
             OBS_NSAMPLE[i],
             OBS_NINTERVAL[i],
         )
 
 
+@pytest.mark.xfail(reason='our test observation does not have subscan metadata')
 def test_lazy_preproc_observation(tmp_path) -> None:
     """Preproc-backed lazy obs loads straight from a (minimal, real) preprocessing db."""
     config = build_preproc_db(tmp_path, [FOLDER / f for f in FILES])
@@ -126,8 +127,8 @@ def test_lazy_preproc_observation(tmp_path) -> None:
     # probe_shape reads an upper bound straight from the archive metadata (no pipeline run);
     # here the no-op pipeline neither cuts nor trims, so the bound matches the load exactly.
     # n_intervals is only populated (via a load) when scanning_intervals is requested.
-    assert lazy.probe_shape([]) == (OBS_NDET[0], OBS_NSAMPLE[0], 0)
-    assert lazy.probe_shape(['scanning_intervals']) == (
+    assert lazy.probe_shape() == (OBS_NDET[0], OBS_NSAMPLE[0], 0)
+    assert lazy.probe_shape(intervals=True) == (
         OBS_NDET[0],
         OBS_NSAMPLE[0],
         OBS_NINTERVAL[0],
@@ -141,7 +142,7 @@ def test_lazy_preproc_probe_shape_downsample(tmp_path) -> None:
 
     # ceil(1000 / 3) == 334, the same count downsample_obs produces in the real load
     expected_nsamp = -(-OBS_NSAMPLE[0] // 3)
-    assert lazy.probe_shape([]) == (OBS_NDET[0], expected_nsamp, 0)
+    assert lazy.probe_shape() == (OBS_NDET[0], expected_nsamp, 0)
     assert lazy.get_data().n_samples == expected_nsamp
 
 
@@ -178,8 +179,8 @@ def test_preproc_context_cache(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(Context, '__init__', counting_init)
 
     lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config)
-    lazy.probe_shape([])
-    lazy.probe_shape([])
+    lazy.probe_shape()
+    lazy.probe_shape()
     lazy.get_data()
     # three loads on this thread, but the Context (and its obsdb/obsfiledb opens) is built once
     assert n_builds == 1

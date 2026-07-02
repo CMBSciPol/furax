@@ -24,6 +24,7 @@ from furax.mapmaking import (
     AbstractGroundObservation,
     AbstractLazyObservation,
     FileBackedLazyObservation,
+    ObservationBufferShapes,
     ReaderField,
 )
 from furax.mapmaking.config import SotodlibConfig
@@ -552,12 +553,10 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             sotodlib_config=self._sotodlib_config,
         )
 
-    def probe_shape(self, fields: Collection[str]) -> tuple[int, ...]:
+    def probe_shape(self, intervals: bool = False) -> ObservationBufferShapes:
         """Returns an upper bound on the variable padded-buffer dimensions for ``fields``.
 
-        ``(n_detectors, n_samples)`` are read from the init preprocess metadata via
-        ``context.get_meta``: no TOD I/O and, crucially, no process pipeline run (the pipeline
-        mutates the signal and crashes when it is absent).
+        All values are read from the init preprocess metadata: no heavy I/O work is done.
 
         The value is only an *upper bound*, not the exact post-pipeline shape:
 
@@ -565,10 +564,6 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
           but before the process pipeline, which only ever restricts detectors further.
         - ``n_samples`` is ``ceil(meta.samps.count / downsample)``. The process pipeline only trims
           samples (e.g. edge cuts) before downsampling, so this bounds the actual samps count.
-
-        ``n_intervals`` is the leading dimension of ``scanning_intervals`` (0 unless that field is
-        requested). It cannot be read from metadata alone, so when requested the observation is
-        loaded to count the scanning intervals.
         """
         _enable_preproc_context_cache()
         # call get_preprocess_context through the module so the cached get_preprocess_context is used
@@ -576,6 +571,8 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         _, context = pu.get_preprocess_context(self.init_config.as_posix())
         meta = context.get_meta(self.observation_id, dets=self.detector_selection)
         n_samps_ub = -(-meta.samps.count // self.downsample)  # ceil, matches downsample_obs
-        needs_intervals = ReaderField.SCANNING_INTERVALS in fields
-        n_intervals = self.get_data().get_scanning_intervals().shape[0] if needs_intervals else 0
-        return meta.dets.count, n_samps_ub, n_intervals
+        return ObservationBufferShapes(
+            meta.dets.count,
+            n_samps_ub,
+            meta.subscans.count if intervals else 0,
+        )

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha1
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Self, TypeVar
+from typing import Any, ClassVar, Generic, NamedTuple, Self, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -387,6 +387,12 @@ class AbstractGroundObservation(AbstractObservation[T]):
         return alpha, delta
 
 
+class ObservationBufferShapes(NamedTuple):
+    detector_count: int
+    sample_count: int
+    interval_count: int = 0
+
+
 class AbstractLazyObservation(ABC, Generic[T]):
     """Deferred handle to an observation: opens its backing store only when read.
 
@@ -412,18 +418,22 @@ class AbstractLazyObservation(ABC, Generic[T]):
         """Human-readable identifier, used e.g. to report observations that failed to load."""
         return type(self).__name__
 
-    def probe_shape(self, fields: Collection[str]) -> tuple[int, ...]:
-        """Returns the variable padded-buffer dimensions for ``fields``.
+    def probe_shape(self, intervals: bool = False) -> ObservationBufferShapes:
+        """Returns the buffer dimensions for this observation.
 
-        The tuple is ``(n_detectors, n_samples, n_intervals)``, where ``n_intervals`` is the
-        leading dimension of ``scanning_intervals`` (0 unless that field is requested). The
-        default opens the observation with the minimal field set; subclasses may override with
-        a cheaper query.
+        The default opens the observation with a minimal field set request; subclasses may
+        override with a cheaper query (e.g., metadata only).
         """
-        needs_intervals = ReaderField.SCANNING_INTERVALS in fields
-        data = self.get_data([ReaderField.SCANNING_INTERVALS] if needs_intervals else [])
-        n_intervals = data.get_scanning_intervals().shape[0] if needs_intervals else 0  # type: ignore[attr-defined]
-        return data.n_detectors, data.n_samples, n_intervals
+        if intervals:
+            if ReaderField.SCANNING_INTERVALS not in self.interface_class.AVAILABLE_READER_FIELDS:
+                msg = 'observation does not support reading scanning intervals'
+                raise RuntimeError(msg)
+            data = self.get_data([ReaderField.SCANNING_INTERVALS])
+            n_intervals = data.get_scanning_intervals().shape[0]  # type: ignore[attr-defined]
+        else:
+            data = self.get_data([])
+            n_intervals = 0
+        return ObservationBufferShapes(data.n_detectors, data.n_samples, n_intervals)
 
 
 class FileBackedLazyObservation(AbstractLazyObservation[T]):

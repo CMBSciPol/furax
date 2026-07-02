@@ -351,7 +351,7 @@ class SplineHWPSSConfig:
 
 @dataclass
 class T2PConfig:
-    fit_band: tuple[int, int] | None = None
+    fit_band: tuple[float, float] | None = None
     decimate: int = 1
     explicit: bool = True
 

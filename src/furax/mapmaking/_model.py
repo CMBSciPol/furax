@@ -36,7 +36,7 @@ class ObservationModel:
     """Weighting operator (noise weights + mask)"""
 
     F: AbstractLinearOperator
-    """Deprojection operator"""
+    """ATOP filter/deprojector (identity when not enabled)"""
 
     noise_model: PyTree[NoiseModel]
     """Noise model"""
@@ -59,15 +59,16 @@ class ObservationModel:
             pointing_interpolate=config.pointing.interpolation == 'bilinear',
             dtype=config.dtype,
         )
+        tod_struct = H.out_structure
         M = _mask_projector(
             _sample_mask(data, config),
             data.get(ReaderField.VALID_SCANNING_MASKS),
-            structure=H.out_structure,
+            structure=tod_struct,
         )
-        noise_model, sample_rate = _noise_model(data, config, tod_structure=H.out_structure)
+        noise_model, sample_rate = _noise_model(data, config, tod_structure=tod_struct)
         Ninv = _noise_operator(
             noise_model,
-            H.out_structure,
+            tod_struct,
             sample_rate,
             config.weighting.correlation_length,
             inverse=True,
@@ -80,7 +81,7 @@ class ObservationModel:
                 # Precondition inner flagged-subspace CG using covariance N
                 cov = _noise_operator(
                     noise_model,
-                    H.out_structure,
+                    tod_struct,
                     sample_rate,
                     config.weighting.correlation_length,
                     inverse=False,
@@ -89,7 +90,11 @@ class ObservationModel:
         else:
             # Plain masked weights, only exact for diagonal W
             W = WeightOperator.create(Ninv, M)
-        F = _template_deprojector(config, H.out_structure)
+        F = (
+            ATOPProjectionOperator(config.atop_tau, in_structure=tod_struct)
+            if config.method == Methods.ATOP
+            else IdentityOperator(in_structure=tod_struct)
+        )
         return cls(H, W, F, noise_model, sample_rate)
 
     @staticmethod
@@ -266,16 +271,6 @@ def _noise_operator(
         is_leaf=lambda x: isinstance(x, NoiseModel),
     )
     return BlockDiagonalOperator(operator_tree)
-
-
-def _template_deprojector(
-    config: MapMakingConfig,
-    tod_structure: jax.ShapeDtypeStruct,
-) -> AbstractLinearOperator:
-    """Build the template deprojection operator."""
-    if config.method == Methods.ATOP:
-        return ATOPProjectionOperator(config.atop_tau, in_structure=tod_structure)
-    return IdentityOperator(in_structure=tod_structure)
 
 
 def _sample_rate(timestamps: Float[Array, '...']) -> Float[Array, '']:

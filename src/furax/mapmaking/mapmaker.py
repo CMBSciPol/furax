@@ -127,6 +127,15 @@ class MultiObservationMapMaker(Generic[T]):
                 self.config.landscape.stokes = 'QU'
         if self.config.use_templates and not self.config.binned:
             raise NotImplementedError('Using templates requires diagonal weighting.')
+        if templates := self.config.templates:
+            if templates.t2p is not None and not self.config.demodulated:
+                raise ValueError('The T2P template requires demodulated=True.')
+            if (
+                templates.polynomial is not None
+                and templates.polynomial.legendre_qu is not None
+                and not self.config.demodulated
+            ):
+                raise ValueError('templates.polynomial.legendre_qu requires demodulated=True.')
 
     @cached_property
     def mesh(self) -> Mesh:
@@ -570,6 +579,32 @@ class MultiObservationMapMaker(Generic[T]):
         return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
 
 
+def _family_preconditioner(
+    d: PyTree[Array], struct: PyTree[jax.ShapeDtypeStruct], reg: float
+) -> AbstractLinearOperator:
+    """Diagonal preconditioner for one template family, plain-array or multi-leg (Stokes).
+
+    A demodulated multi-leg family (e.g. T2P, or a polynomial fit with ``legendre_qu``) has
+    per-leg amplitudes rather than a single array; the ridge mean is pooled across all its legs
+    so every leg is regularized on the same scale, then each leg gets its own ``DiagonalOperator``
+    assembled back into the family's own pytree shape (e.g. a `Stokes` instance).
+    """
+    leaves = jax.tree.leaves(d)
+    mean = sum(jnp.sum(leaf) for leaf in leaves) / sum(leaf.size for leaf in leaves)
+
+    def amp_inv(x: Array) -> Array:
+        denom = x + reg * mean
+        return jnp.where(denom > 0, 1.0 / denom, 0.0)
+
+    if isinstance(d, jax.Array):
+        return DiagonalOperator(amp_inv(d), in_structure=struct)
+    return BlockDiagonalOperator(
+        jax.tree.map(
+            lambda leaf_d, leaf_s: DiagonalOperator(amp_inv(leaf_d), in_structure=leaf_s), d, struct
+        )
+    )
+
+
 @jax.jit
 def _amplitude_preconditioner(
     Te: AbstractLinearOperator,
@@ -586,15 +621,8 @@ def _amplitude_preconditioner(
     amp_diag = jax.tree.map(jnp.abs, amp_sys(furax.tree.ones_like(amp_sys.in_structure)))
     amp_struct = furax.tree.as_structure(amp_diag)
 
-    def amp_inv(d: Array) -> Array:
-        denom = d + reg * jnp.mean(d)
-        return jnp.where(denom > 0, 1.0 / denom, 0.0)
-
     return BlockDiagonalOperator(
-        {
-            name: DiagonalOperator(amp_inv(amp_diag[name]), in_structure=amp_struct[name])
-            for name in amp_diag
-        }
+        {name: _family_preconditioner(amp_diag[name], amp_struct[name], reg) for name in amp_diag}
     )
 
 

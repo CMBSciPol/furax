@@ -1,4 +1,5 @@
 import functools
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Self
 
@@ -10,6 +11,7 @@ from jaxtyping import Array, Float, PyTree
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.core import BlockDiagonalOperator, BlockRowOperator
 from furax.obs.landscapes import StokesLandscape
+from furax.obs.stokes import Stokes, ValidStokesType
 
 from ._observation import ReaderField
 from .acquisition import build_acquisition_operator
@@ -292,6 +294,25 @@ def _mask_projector(*valid_masks: Array | None, structure: jax.ShapeDtypeStruct)
     return MaskOperator.from_boolean_mask(combined, in_structure=structure)
 
 
+def _stokes_template(
+    stokes: ValidStokesType,
+    legs: Mapping[str, AbstractLinearOperator],
+    n_dets: int,
+    n_samps: int,
+    dtype: Any,
+) -> AbstractLinearOperator:
+    """Combine per-leg template operators into one operator matching a demodulated TOD.
+
+    Demodulated TOD is a `Stokes` pytree (one array per active leg), so a template family
+    active in that mode must produce the same pytree rather than a single array. `legs` maps
+    Stokes letters (lowercase, e.g. ``'q'``) to the operator fitting that leg; legs absent from
+    `legs` (e.g. the untouched I leg of the T2P template) get `PerDetectorTemplate.none`.
+    """
+    treedef = jax.tree.structure(Stokes.class_for(stokes).structure_for((1,), dtype))
+    ops = [legs.get(s.lower(), PerDetectorTemplate.none(n_dets, n_samps, dtype)) for s in stokes]
+    return BlockDiagonalOperator(jax.tree.unflatten(treedef, ops))
+
+
 @register_dataclass
 @dataclass
 class ObservationTemplates:
@@ -342,6 +363,8 @@ class ObservationTemplates:
             fields.update({ReaderField.AZIMUTH, ReaderField.HWP_ANGLES})
         if tcfg.spline_hwpss is not None:
             fields.update({ReaderField.TIMESTAMPS, ReaderField.HWP_ANGLES})
+        if tcfg.t2p is not None:
+            fields.update({ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS})
         if tcfg.ground is not None:
             raise NotImplementedError(
                 'Ground templates are not supported in the multi-observation path.'
@@ -363,14 +386,30 @@ class ObservationTemplates:
         explicit_flags: dict[str, bool] = {}
 
         if (poly := tcfg.polynomial) is not None:
-            blocks['polynomial'] = PerDetectorTemplate.polynomial(
-                max_poly_order=poly.legendre.max_order,
+            poly_kwargs = dict(
                 intervals=data[ReaderField.SCANNING_INTERVALS],
                 times=data[ReaderField.TIMESTAMPS],
                 n_dets=n_dets,
                 dtype=dtype,
                 valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
             )
+            if config.demodulated:
+                legendre_qu = poly.legendre_qu if poly.legendre_qu is not None else poly.legendre
+                legs = {
+                    s.lower(): PerDetectorTemplate.polynomial(
+                        max_poly_order=(poly.legendre if s == 'I' else legendre_qu).max_order,
+                        **poly_kwargs,
+                    )
+                    for s in config.landscape.stokes
+                }
+                n_samps = data[ReaderField.TIMESTAMPS].shape[0]
+                blocks['polynomial'] = _stokes_template(
+                    config.landscape.stokes, legs, n_dets, n_samps, dtype
+                )
+            else:
+                blocks['polynomial'] = PerDetectorTemplate.polynomial(
+                    max_poly_order=poly.legendre.max_order, **poly_kwargs
+                )
             explicit_flags['polynomial'] = poly.explicit
 
         if (sss := tcfg.scan_synchronous) is not None:
@@ -449,6 +488,25 @@ class ObservationTemplates:
                 dtype=dtype,
             )
             explicit_flags['spline_hwpss'] = shwpss.explicit
+
+        if (t2p := tcfg.t2p) is not None:
+            temperature = data[ReaderField.SAMPLE_DATA].i
+            sample_rate = _sample_rate(data[ReaderField.TIMESTAMPS])
+            # Q and U each fit their own leakage amplitude from the same temperature stream.
+            legs = {
+                s.lower(): PerDetectorTemplate.temperature(
+                    temperature,
+                    dtype,
+                    fit_band=t2p.fit_band,
+                    sample_rate=sample_rate,
+                    decimation_factor=t2p.decimate,
+                )
+                for s in config.landscape.stokes
+                if s in 'QU'
+            }
+            n_samps = data[ReaderField.TIMESTAMPS].shape[0]
+            blocks['t2p'] = _stokes_template(config.landscape.stokes, legs, n_dets, n_samps, dtype)
+            explicit_flags['t2p'] = t2p.explicit
 
         if tcfg.ground is not None:
             raise NotImplementedError(

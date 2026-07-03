@@ -28,6 +28,7 @@ from furax.mapmaking import (
 )
 from furax.mapmaking.config import SotodlibConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
+from furax.mapmaking.templates import deproject_hwpss_spline
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
@@ -250,10 +251,20 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return (self.n_samples - 1) / duration
 
     def get_tods(self) -> Float[np.ndarray, 'dets samps']:
-        """Returns the timestream data."""
-        # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
-        tods = np.asarray(self.data.signal, dtype=np.float64)
-        return 0.5 * np.atleast_2d(tods)
+        tods = 0.5 * np.atleast_2d(np.asarray(self.data.signal, dtype=np.float64))
+        cfg = self._sotodlib_config
+        if cfg.hwpss_deproject:
+            tods = np.asarray(
+                deproject_hwpss_spline(
+                    jnp.asarray(tods),
+                    jnp.asarray(self.get_timestamps()),
+                    jnp.asarray(self.get_hwp_angles()),
+                    cfg.hwpss_knot_spacing,
+                    cfg.hwpss_harmonics,
+                    ridge=cfg.hwpss_ridge,
+                )
+            )
+        return tods
 
     def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> StokesPyTreeType:
         """Returns the demodulated timestream data as a Stokes pytree.

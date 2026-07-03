@@ -471,6 +471,18 @@ class SotodlibConfig:
     'mapmaking': use the white noise estimate from noiseQ_mapmaking.
     """
 
+    hwpss_deproject: bool = False
+    """Fit and subtract an unmasked HWPSS b-spline template at TOD-read time."""
+
+    hwpss_knot_spacing: int = 4000
+    """Target number of samples between interior HWPSS b-spline knots."""
+
+    hwpss_harmonics: tuple[int, ...] = (1, 2, 3, 4)
+    """HWP harmonics modelled by the `hwpss_deproject` spline template."""
+
+    hwpss_ridge: float = 0.0
+    """Ridge regularisation added to the HWPSS Gram matrix before Cholesky solve."""
+
 
 @dataclass
 class MapMakingConfig:

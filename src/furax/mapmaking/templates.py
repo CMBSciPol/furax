@@ -28,7 +28,7 @@ from collections.abc import Sequence
 from dataclasses import field
 from itertools import chain
 from math import prod
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import jax
 import numpy as np
@@ -851,3 +851,49 @@ class ATOPProjectionOperator(AbstractLinearOperator):
         if n_rem == 0:
             return y
         return jnp.concatenate([y, x[:, -n_rem:]], axis=1)
+
+
+def resolve_hwpss_n_knots(n_samps: int, knot_spacing: int) -> int:
+    """Number of interior spline knots giving ~`knot_spacing` samples per knot."""
+    if knot_spacing < 1:
+        raise ValueError(f'knot_spacing must be >= 1, got {knot_spacing}.')
+    return max(1, -(-n_samps // knot_spacing))  # ceil, floor at 1 knot
+
+
+def deproject_hwpss_spline(
+    tods: Float[Array, 'det samp'],
+    times: Float[Array, ' samp'],
+    hwp_angles: Float[Array, ' samp'],
+    knot_spacing: int,
+    harmonics: int | Sequence[int] = (4,),
+    dtype: DTypeLike = jnp.float64,
+    ridge: float = 0.0,
+) -> Float[Array, 'det samp']:
+    n_dets, n_samps = tods.shape
+    n_knots = resolve_hwpss_n_knots(n_samps, knot_spacing)
+    template = PerDetectorTemplate.bspline_hwpss(
+        times, hwp_angles, n_dets, n_knots, harmonics, dtype
+    )
+
+    basis = cast(Basis, template.operator)
+    in_shape = basis.in_structure.shape  # (n_blocks, 2*n_harmonics)
+    n_amp = prod(in_shape)
+
+    def gram_matvec(flat_x: Float[Array, ' n_amp']) -> Float[Array, ' n_amp']:
+        x = flat_x.reshape(in_shape)
+        return basis.project(basis.expand(x)).reshape(-1)
+
+    G = jax.vmap(gram_matvec)(jnp.eye(n_amp, dtype=dtype))
+    if ridge:
+        G = G + ridge * jnp.eye(n_amp, dtype=dtype)
+
+    rhs = jax.vmap(basis.project)(tods.astype(dtype)).reshape(n_dets, n_amp)  # (det, n_amp)
+
+    c, lower = jax.scipy.linalg.cho_factor(G)
+    x_flat = jax.scipy.linalg.cho_solve(
+        (c, lower), rhs.T
+    ).T  # (det, n_amp) -- one factorisation, all dets
+    x = x_flat.reshape(n_dets, *in_shape)
+
+    model = jax.vmap(basis.expand)(x)  # (det, samp)
+    return (tods - model).astype(tods.dtype)

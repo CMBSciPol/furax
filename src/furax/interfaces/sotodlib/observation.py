@@ -34,7 +34,7 @@ from furax.obs.landscapes import (
     ProjectionType,
     StokesLandscape,
 )
-from furax.obs.stokes import Stokes, StokesPyTreeType, ValidStokesType
+from furax.obs.stokes import Stokes, StokesType, ValidStokesType
 
 # Per-process cache of (configs, context) from sotodlib's get_preprocess_context, keyed by
 # (config-file path, thread id). See _enable_preproc_context_cache.
@@ -255,7 +255,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         tods = np.asarray(self.data.signal, dtype=np.float64)
         return 0.5 * np.atleast_2d(tods)
 
-    def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> StokesPyTreeType:
+    def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> StokesType:
         """Returns the demodulated timestream data as a Stokes pytree.
 
         'IQUV' is not supported.
@@ -378,7 +378,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         except ValueError:
             return None
 
-    def get_demodulated_noise_models(self, stokes: ValidStokesType = 'IQU') -> StokesPyTreeType:
+    def get_demodulated_noise_models(self, stokes: ValidStokesType = 'IQU') -> StokesType:
         """Returns per-Stokes noise model fit arrays as a Stokes pytree."""
         if stokes == 'IQUV':
             raise NotImplementedError

@@ -101,15 +101,15 @@ class WhiteNoiseModel(NoiseModel):
     def operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
     ) -> AbstractLinearOperator:
-        assert in_structure.ndim == 2, 'Dimensions assumed to be (ndets, nsamps)'
-        return DiagonalOperator(self.sigma[:, None] ** 2, in_structure=in_structure)
+        # ``sigma`` covers all axes but the trailing sample axis (``(ndets,)`` modulated,
+        # ``(n_stokes, ndets)`` for a demodulated Stokes TOD); broadcast it over the samples.
+        return DiagonalOperator(self.sigma[..., None] ** 2, in_structure=in_structure)
 
     def inverse_operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
     ) -> AbstractLinearOperator:
-        assert in_structure.ndim == 2, 'Dimensions assumed to be (ndets, nsamps)'
         inv_var = jnp.where(self.sigma > 0, 1.0 / (self.sigma**2), 0.0)
-        return DiagonalOperator(inv_var[:, None], in_structure=in_structure)
+        return DiagonalOperator(inv_var[..., None], in_structure=in_structure)
 
     def to_white_noise_model(self) -> 'WhiteNoiseModel':
         return self

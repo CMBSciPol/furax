@@ -294,4 +294,10 @@ def _mask_projector(*valid_masks: Array | None, structure: jax.ShapeDtypeStruct)
     """Mask operator combining a series of boolean masks (logical AND)."""
     masks = [mask for mask in valid_masks if mask is not None]
     combined = functools.reduce(jnp.logical_and, masks) if masks else jnp.array(True)
+    # A demodulated TOD structure carries a trailing Stokes axis that the per-sample masks lack;
+    # append it and broadcast so the mask applies uniformly across Stokes components.
+    leaf = jax.tree.leaves(structure)[0]
+    extra = leaf.ndim - combined.ndim
+    if extra > 0:
+        combined = jnp.broadcast_to(combined.reshape(combined.shape + (1,) * extra), leaf.shape)
     return MaskOperator.from_boolean_mask(combined, in_structure=structure)

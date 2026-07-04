@@ -31,49 +31,26 @@ from furax.core.rules import AbstractCompositionRule, NoReduction
 
 from ..stokes import (
     Stokes,
-    StokesI,
-    StokesIQU,
-    StokesIQUV,
-    StokesPyTreeType,
-    StokesQU,
+    StokesType,
     ValidStokesType,
 )
 
 
-def _rotate_qu(
-    x: StokesPyTreeType,
-    cos_2angles: Float[Array, '...'],
-    sin_2angles: Float[Array, '...'],
-) -> StokesPyTreeType:
-    """Apply the QU rotation given precomputed cos(2a) and sin(2a)."""
-    if isinstance(x, StokesI):
-        return x
-    q = x.q * cos_2angles + x.u * sin_2angles
-    u = -x.q * sin_2angles + x.u * cos_2angles
-    if isinstance(x, StokesQU):
-        return StokesQU(q, u)
-    if isinstance(x, StokesIQU):
-        return StokesIQU(x.i, q, u)
-    if isinstance(x, StokesIQUV):
-        return StokesIQUV(x.i, q, u, x.v)
-    raise NotImplementedError
-
-
 @jax.jit
-def rotate_qu(x: StokesPyTreeType, angles: Float[Array, '...']) -> StokesPyTreeType:
+def rotate_qu(x: StokesType, angles: Float[Array, '...']) -> StokesType:
     """Rotate QU Stokes parameters by the given angles (in radians).
 
     The transpose rotation is obtained by passing ``-angles``.
     """
-    return _rotate_qu(x, jnp.cos(2 * angles), jnp.sin(2 * angles))
+    return x.rotate_qu(jnp.cos(2 * angles), jnp.sin(2 * angles))
 
 
 @jax.jit
 def rotate_qu_cs(
-    x: StokesPyTreeType,
+    x: StokesType,
     cos_angles: Float[Array, '...'],
     sin_angles: Float[Array, '...'],
-) -> StokesPyTreeType:
+) -> StokesType:
     """Rotate QU Stokes parameters given precomputed cos(a) and sin(a).
 
     The transpose rotation is obtained by negating ``sin_angles``.
@@ -81,7 +58,7 @@ def rotate_qu_cs(
     # double angle formulas
     cos_2angles = cos_angles**2 - sin_angles**2
     sin_2angles = 2 * cos_angles * sin_angles
-    return _rotate_qu(x, cos_2angles, sin_2angles)
+    return x.rotate_qu(cos_2angles, sin_2angles)
 
 
 @orthogonal
@@ -119,7 +96,7 @@ class QURotationOperator(AbstractLinearOperator):
         structure = Stokes.class_for(stokes).structure_for(shape, dtype)
         return cls(angles=angles, atomic=atomic, in_structure=structure)
 
-    def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
+    def mv(self, x: StokesType) -> StokesType:
         return rotate_qu(x, self.angles)  # type: ignore[no-any-return]
 
     def transpose(self) -> AbstractLinearOperator:
@@ -129,7 +106,7 @@ class QURotationOperator(AbstractLinearOperator):
 class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
     operator: QURotationOperator
 
-    def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
+    def mv(self, x: StokesType) -> StokesType:
         return rotate_qu(x, -self.operator.angles)  # type: ignore[no-any-return]
 
 

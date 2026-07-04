@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 import healpy as hp
-import jax
 import jax.numpy as jnp
 import numpy as np
 from astropy.io import fits
@@ -16,7 +15,7 @@ from furax.obs.landscapes import (
     StokesLandscape,
     WCSLandscape,
 )
-from furax.obs.stokes import Stokes, StokesPyTreeType
+from furax.obs.stokes import Stokes, StokesType
 
 from ._logger import logger as furax_logger
 
@@ -39,7 +38,7 @@ class _JsonEncoder(json.JSONEncoder):
 
 @dataclass
 class MapMakingResults:
-    map: StokesPyTreeType
+    map: StokesType
     """The estimated sky map"""
 
     landscape: StokesLandscape
@@ -63,8 +62,8 @@ class MapMakingResults:
     def save(self, out_dir: str | Path) -> None:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        leaves = [np.array(leaf) for leaf in jax.tree.leaves(self.map)]
-        self._save_array(np.array(leaves), 'map', out_dir)
+        # The backing array is already (n_stokes, *pixel_dims) — exactly the on-disk map layout.
+        self._save_array(np.array(self.map.array), 'map', out_dir)
         self._save_array(np.array(self.hit_map), 'hit_map', out_dir, column_names=['HITS'])
         self._save_icov(np.array(self.icov), out_dir)
         if self.noise_fits is not None:
@@ -161,7 +160,7 @@ class MapMakingResults:
             return np.load(path)  # type: ignore[no-any-return]
 
     @staticmethod
-    def _load_map(out_dir: Path, landscape: StokesLandscape) -> StokesPyTreeType:
+    def _load_map(out_dir: Path, landscape: StokesLandscape) -> StokesType:
         ns = len(landscape.stokes)
         arr = MapMakingResults._load_array('map', out_dir, landscape, ns)
         stokes_cls = Stokes.class_for(landscape.stokes)

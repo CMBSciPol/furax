@@ -11,8 +11,8 @@ from ..stokes import (
     StokesI,
     StokesIQU,
     StokesIQUV,
-    StokesPyTreeType,
     StokesQU,
+    StokesType,
     ValidStokesType,
 )
 from ._qu_rotations import QURotationOperator, QURotationTransposeOperator
@@ -48,7 +48,7 @@ class HWPOperator(AbstractLinearOperator):
         rotated_hwp: AbstractLinearOperator = rot.T @ hwp @ rot
         return rotated_hwp
 
-    def mv(self, x: StokesPyTreeType) -> Stokes:
+    def mv(self, x: StokesType) -> Stokes:
         if isinstance(x, StokesI):
             return x
         if isinstance(x, StokesQU):

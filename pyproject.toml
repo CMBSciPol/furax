@@ -37,6 +37,7 @@ dependencies = [
     'numpy>=2.0',
     'scipy>=1.14',
     'typing-extensions; python_version < "3.13"',
+    "wadler-lindig>=0.1.7",
 ]
 dynamic = ['version']
 

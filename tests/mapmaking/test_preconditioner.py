@@ -5,9 +5,7 @@ import jax.numpy as jnp
 import pytest
 from numpy.testing import assert_allclose
 
-from furax import asoperator
-from furax.core import BlockDiagonalOperator
-from furax.core._diagonal import DiagonalOperator
+from furax import AbstractLinearOperator, asoperator
 from furax.mapmaking.preconditioner import BJPreconditioner
 from furax.obs.stokes import StokesI, StokesIQU, StokesQU
 
@@ -19,35 +17,26 @@ N_PIX = 8
 # ---------------------------------------------------------------------------
 
 
-def _diagonal_op_i(weights: jax.Array) -> BlockDiagonalOperator:
+def _diagonal_op_i(weights: jax.Array) -> AbstractLinearOperator:
     """Diagonal operator on StokesI: scales the I map by weights."""
-    struct = jax.ShapeDtypeStruct(weights.shape, weights.dtype)
-    return BlockDiagonalOperator(StokesI(DiagonalOperator(weights, in_structure=struct)))
+    in_struct = StokesI.structure_for(weights.shape, weights.dtype)
+    return asoperator(lambda x: StokesI(weights * x.i), in_structure=in_struct)
 
 
-def _diagonal_op_qu(weights_q: jax.Array, weights_u: jax.Array) -> BlockDiagonalOperator:
+def _diagonal_op_qu(weights_q: jax.Array, weights_u: jax.Array) -> AbstractLinearOperator:
     """Diagonal operator on StokesQU: independently scales Q and U."""
-    struct_q = jax.ShapeDtypeStruct(weights_q.shape, weights_q.dtype)
-    struct_u = jax.ShapeDtypeStruct(weights_u.shape, weights_u.dtype)
-    return BlockDiagonalOperator(
-        StokesQU(
-            DiagonalOperator(weights_q, in_structure=struct_q),
-            DiagonalOperator(weights_u, in_structure=struct_u),
-        )
-    )
+    in_struct = StokesQU.structure_for(weights_q.shape, weights_q.dtype)
+    return asoperator(lambda x: StokesQU(weights_q * x.q, weights_u * x.u), in_structure=in_struct)
 
 
 def _diagonal_op_iqu(
     weights_i: jax.Array, weights_q: jax.Array, weights_u: jax.Array
-) -> BlockDiagonalOperator:
+) -> AbstractLinearOperator:
     """Diagonal operator on StokesIQU: independently scales I, Q, U."""
-    struct = lambda w: jax.ShapeDtypeStruct(w.shape, w.dtype)  # noqa: E731
-    return BlockDiagonalOperator(
-        StokesIQU(
-            DiagonalOperator(weights_i, in_structure=struct(weights_i)),
-            DiagonalOperator(weights_q, in_structure=struct(weights_q)),
-            DiagonalOperator(weights_u, in_structure=struct(weights_u)),
-        )
+    in_struct = StokesIQU.structure_for(weights_i.shape, weights_i.dtype)
+    return asoperator(
+        lambda x: StokesIQU(weights_i * x.i, weights_q * x.q, weights_u * x.u),
+        in_structure=in_struct,
     )
 
 

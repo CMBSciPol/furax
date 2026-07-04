@@ -1,12 +1,9 @@
-from typing import Any
-
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, PyTree
+from jaxtyping import Array, Float, PyTree
 
-from furax import AbstractLinearOperator, TreeOperator, symmetric
+from furax import AbstractLinearOperator, symmetric
 from furax.obs.stokes import Stokes
-from furax.tree import _dense_to_tree, _get_outer_treedef, _tree_to_dense, zeros_like
 
 # Pass op as an explicit argument so JAX traces its arrays as inputs rather than
 # capturing them as XLA constants (which would happen with jit(op.mv) or jit(op)).
@@ -14,80 +11,63 @@ _apply = jax.jit(lambda op, x: op(x))
 
 
 @symmetric
-class BJPreconditioner(TreeOperator):
-    """Class representing a block-diagonal Jacobi preconditioner."""
+class BJPreconditioner(AbstractLinearOperator):
+    """Block-diagonal (per-pixel) Jacobi preconditioner for Stokes sky maps.
+
+    Holds one dense ``(n, n)`` block per pixel (``n = len(stokes)``), coupling the Stokes
+    components at that pixel: ``blocks`` has shape ``(*sky, n, n)`` with ``blocks[..., i, j]`` the
+    response of output component ``i`` to input component ``j``. Applied by an einsum over the
+    Stokes axis of the map's backing array; symmetric (self-adjoint) for a symmetric operator.
+    """
+
+    blocks: Float[Array, '*sky n n']
 
     def __init__(
         self,
-        tree: PyTree[PyTree[Any]],
+        blocks: Float[Array, '*sky n n'],
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
-    ):
-
-        inner_treedef = jax.tree.structure(in_structure)
-        outer_treedef = _get_outer_treedef(in_structure, tree)
-        object.__setattr__(self, 'tree', tree)
-        object.__setattr__(self, 'in_structure', in_structure)
-        object.__setattr__(self, 'inner_treedef', inner_treedef)
-        object.__setattr__(self, 'outer_treedef', outer_treedef)
-
-        # Check that we have a (square) Stokes-pytree of Stokes-pytrees
-        pytree_is_stokes = isinstance(tree, Stokes)
-        subtrees_are_the_same_stokes = jax.tree.map(
-            lambda x: isinstance(x, type(tree)),
-            tree,
-            is_leaf=lambda x: x is not tree,
-        )
-        if not (pytree_is_stokes and subtrees_are_the_same_stokes):
-            raise ValueError('tree must be a square Stokes-pytree matrix')
+    ) -> None:
+        object.__setattr__(self, 'blocks', blocks)
+        super().__init__(in_structure=in_structure)
 
     @classmethod
     def create(cls, op: AbstractLinearOperator) -> 'BJPreconditioner':
-        """Creates the dense preconditioner from a symmetric operator acting on Stokes pytrees.
+        """Assemble the per-pixel blocks from a symmetric operator acting on Stokes sky maps.
 
-        The operator is assumed to be diagonal with respect with all dimensions of the pytree.
+        The operator is assumed diagonal over the pixel (map) axes. Each Stokes component is probed
+        with a unit map; the response is that column of every pixel's block at once.
         """
-        # Check the input and output structure of the operator
         in_struct = op.in_structure
         if not isinstance(in_struct, Stokes):
             raise ValueError('operator must act on Stokes pytrees (sky maps)')
         if not in_struct == op.out_structure:
             raise ValueError('operator must be square')
 
-        # Create the preconditioner by evaluating the operator
-        basis = zeros_like(in_struct)
-        basis_leaves, treedef = jax.tree.flatten(basis)
-        n = len(basis_leaves)
-        stokes = in_struct.stokes
-        tree_cls = Stokes.class_for(stokes)
+        stokes_cls = type(in_struct)
+        n = len(in_struct.stokes)
+        sky_shape = in_struct.shape
+        dtype = in_struct.dtype
 
-        out_leaves = []
+        columns = []
         for j in range(n):
-            probe_leaves = [
-                jnp.ones_like(leaf) if i == j else jnp.zeros_like(leaf)
-                for i, leaf in enumerate(basis_leaves)
-            ]
-            probe = jax.tree.unflatten(treedef, probe_leaves)
-            result = _apply(op, probe)
-            out_leaves.append(jax.tree.leaves(result))
+            # unit map on component j (one everywhere on that component, zero on the others);
+            # the backing array has the Stokes components on the leading axis.
+            probe = stokes_cls.from_array(jnp.zeros((n, *sky_shape), dtype).at[j].set(1.0))
+            resp = _apply(op, probe).array  # (n_i, *sky) = column j, indexed by output row i
+            columns.append(jnp.moveaxis(resp, 0, -1))  # (*sky, n_i)
+        blocks = jnp.stack(columns, axis=-1)  # (*sky, i, j)
+        return cls(blocks, in_structure=in_struct)
 
-        tree = tree_cls(
-            **{
-                stoke: jax.tree.unflatten(treedef, [out_leaves[j][i] for j in range(n)])
-                for i, stoke in enumerate(stokes.lower())
-            }
-        )
-        return cls(tree, in_structure=in_struct)
+    def mv(self, x: Stokes) -> Stokes:
+        xm = jnp.moveaxis(x.array, 0, -1)  # (*sky, j)
+        ym = jnp.einsum('...ij,...j->...i', self.blocks, xm)  # (*sky, i)
+        return type(x).from_array(jnp.moveaxis(ym, -1, 0))  # (i, *sky)
 
     def inverse(self) -> 'BJPreconditioner':
-        # Override the parent inverse so the result stays a BJPreconditioner and
-        # keeps the @symmetric tag; the generic TreeOperator inverse would
-        # downgrade to a plain operator.
-        dense = _tree_to_dense(self.outer_treedef, self.inner_treedef, self.tree)
-        dense_inv = jnp.linalg.inv(dense)
-        tree = _dense_to_tree(self.inner_treedef, self.outer_treedef, dense_inv)
-        return BJPreconditioner(tree, in_structure=self.in_structure)
+        # Per-pixel matrix inverse; stays a BJPreconditioner (keeps the @symmetric tag).
+        return BJPreconditioner(jnp.linalg.inv(self.blocks), in_structure=self.in_structure)
 
-    def get_blocks(self) -> Array:
-        """Convert the preconditioner blocks as a dense matrix."""
-        return _tree_to_dense(self.outer_treedef, self.inner_treedef, self.tree)
+    def get_blocks(self) -> Float[Array, '*sky n n']:
+        """Return the per-pixel Stokes blocks, shape ``(*sky, n, n)``."""
+        return self.blocks

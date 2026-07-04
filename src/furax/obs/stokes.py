@@ -1,28 +1,22 @@
-import operator
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from abc import ABC
 from typing import Any, ClassVar, Literal, Self, cast, get_args, overload
 
 import jax
+import jax.numpy as jnp
 import numpy as np
+import wadler_lindig as wl  # type: ignore[import-untyped]
 from equinox.internal._omega import _Metaω
 from jax import Array
-from jax.tree_util import register_dataclass
+from jax.tree_util import register_pytree_node_class
 from jax.typing import ArrayLike
 from jaxtyping import DTypeLike, Float, Integer, Key, PyTree, ScalarLike
 
-from furax.exceptions import StructureError
 from furax.tree import (
-    add,
     as_promoted_dtype,
     dot,
     full_like,
-    mul,
     normal_like,
     ones_like,
-    power,
-    sub,
-    truediv,
     uniform_like,
     zeros_like,
 )
@@ -32,26 +26,119 @@ __all__ = ['Stokes', 'StokesI', 'StokesQU', 'StokesIQU', 'StokesIQUV', 'ValidSto
 ValidStokesType = Literal['I', 'QU', 'IQU', 'IQUV']
 
 
-@register_dataclass
-@dataclass
 class Stokes(ABC):
+    """Stokes container backed by a single dense array with the components on the leading axis."""
+
     stokes: ClassVar[ValidStokesType]
+    array: Array
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        letters = self.stokes
+        if args and kwargs:
+            raise TypeError('Stokes components must be given positionally or by keyword, not both.')
+        if kwargs:
+            expected = {letter.lower() for letter in letters}
+            if set(kwargs) != expected:
+                raise TypeError(
+                    f'Expected Stokes components {sorted(expected)}, got {sorted(kwargs)}.'
+                )
+            components: tuple[Any, ...] = tuple(kwargs[letter.lower()] for letter in letters)
+        else:
+            components = args
+        if len(components) != len(letters):
+            raise TypeError(
+                f'{type(self).__name__} expects {len(letters)} Stokes component(s), '
+                f'got {len(components)}.'
+            )
+        self.array = self._stack(components)
+
+    @staticmethod
+    def _stack(components: tuple[Any, ...]) -> Array:
+        if isinstance(components[0], jax.ShapeDtypeStruct):
+            shape = components[0].shape
+            dtype = jnp.result_type(*[c.dtype for c in components])
+            return cast(Array, jax.ShapeDtypeStruct((len(components), *shape), dtype))
+        return jnp.stack(components, axis=0)
+
+    # ---- pytree (single backing array is the only child) ----------------------------------------
+    def tree_flatten(self) -> tuple[tuple[Any, ...], Any]:
+        return (self.array,), None
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children) -> Self:  # type: ignore[no-untyped-def]
+        # Create an instance directly without going through from_array to avoid tracer issues
+        instance = object.__new__(cls)
+        instance.array = children[0]
+        return instance
+
+    @classmethod
+    def from_array(cls, array: ArrayLike | jax.ShapeDtypeStruct) -> Self:
+        """Wrap a backing array of shape ``(len(stokes), *shape)``."""
+        arr = array if isinstance(array, jax.ShapeDtypeStruct) else jnp.asarray(array)
+        if arr.shape[0] != len(cls.stokes):
+            raise ValueError(
+                f'{cls.__name__} expects a leading axis of {len(cls.stokes)}, got shape {arr.shape}.'
+            )
+        instance = object.__new__(cls)
+        instance.array = cast(Array, arr)
+        return instance
+
+    def __pdoc__(self, **kwargs: Any) -> wl.AbstractDoc:
+        inner = wl.pdoc(self.array, **kwargs)
+        return wl.ConcatDoc(wl.TextDoc(f'{type(self).__name__}('), inner, wl.TextDoc(')'))
+
+    def __repr__(self) -> str:
+        return cast(str, wl.pformat(self, width=80))
+
+    # ---- component access -----------------------------------------------------------------------
+    def _component(self, letter: str) -> Array:
+        idx = self.stokes.find(letter)
+        if idx < 0:
+            raise AttributeError(f'{type(self).__name__} has no Stokes component {letter!r}.')
+        return self.array[idx]
+
+    @property
+    def i(self) -> Array:
+        return self._component('I')
+
+    @property
+    def q(self) -> Array:
+        return self._component('Q')
+
+    @property
+    def u(self) -> Array:
+        return self._component('U')
+
+    @property
+    def v(self) -> Array:
+        return self._component('V')
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return cast(tuple[int, ...], getattr(self, self.stokes[0].lower()).shape)
+        return self.array.shape[1:]
 
     @property
-    def dtype(self) -> DTypeLike:
-        return cast(DTypeLike, getattr(self, self.stokes[0].lower()).dtype)
+    def dtype(self) -> np.dtype:
+        return self.array.dtype
 
     @property
     def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.structure_for(self.shape, self.dtype)
 
     def __getitem__(self, index: Integer[Array, '...']) -> Self:
-        arrays = [getattr(self, stoke.lower())[index] for stoke in self.stokes]
-        return type(self)(*arrays)
+        # ``index`` addresses the data axes (from the first); the leading Stokes axis is preserved.
+        idx = index if isinstance(index, tuple) else (index,)
+        return self.from_array(self.array[(slice(None), *idx)])
+
+    def __eq__(self, other: object) -> Any:
+        # Same-type comparison of the backing array. For ``ShapeDtypeStruct`` backings (structures)
+        # this returns a bool (shape/dtype match); for concrete arrays it returns the elementwise
+        # array, matching the former dataclass semantics.
+        if not isinstance(other, Stokes) or self.stokes != other.stokes:
+            return NotImplemented
+        return self.array == other.array
+
+    # Defining __eq__ without __hash__ makes instances unhashable (as the former dataclass was).
 
     def __matmul__(self, other: Any) -> Any:
         """Scalar product between Stokes pytrees."""
@@ -60,95 +147,86 @@ class Stokes(ABC):
         return dot(self, other)
 
     def __abs__(self) -> Self:
-        result: Self = jax.tree.map(operator.abs, self)
-        return result
+        return self.from_array(jnp.abs(self.array))
 
     def __pos__(self) -> Self:
         return self
 
     def __neg__(self) -> Self:
-        result: Self = jax.tree.map(operator.neg, self)
-        return result
+        return self.from_array(-self.array)
+
+    def _operand(self, other: Any) -> Any:
+        if isinstance(other, Stokes):
+            return other.array if type(other) is type(self) else NotImplemented
+
+        try:
+            return jnp.asarray(other)
+        except TypeError:
+            return NotImplemented
 
     def __add__(self, other: Any) -> Self:
-        try:
-            result: Self = add(self, other)
-        except StructureError:
-            return NotImplemented
-        return result
+        rhs = self._operand(other)
+        return NotImplemented if rhs is NotImplemented else self.from_array(self.array + rhs)
 
     def __sub__(self, other: Any) -> Self:
-        try:
-            result: Self = sub(self, other)
-        except StructureError:
-            return NotImplemented
-        return result
+        rhs = self._operand(other)
+        return NotImplemented if rhs is NotImplemented else self.from_array(self.array - rhs)
 
     def __mul__(self, other: Any) -> Self:
-        try:
-            result: Self = mul(self, other)
-        except StructureError:
-            return NotImplemented
-        return result
+        rhs = self._operand(other)
+        return NotImplemented if rhs is NotImplemented else self.from_array(self.array * rhs)
 
     def __truediv__(self, other: Any) -> Self:
-        try:
-            result: Self = truediv(self, other)
-        except StructureError:
-            return NotImplemented
-        return result
+        rhs = self._operand(other)
+        return NotImplemented if rhs is NotImplemented else self.from_array(self.array / rhs)
 
     def __pow__(self, other: Any) -> Self:
         if isinstance(other, _Metaω):
             return NotImplemented
-        try:
-            result: Self = power(self, other)
-        except StructureError:
-            return NotImplemented
-        return result
+        rhs = self._operand(other)
+        return NotImplemented if rhs is NotImplemented else self.from_array(self.array**rhs)
 
     def __radd__(self, other: Any) -> Self:
-        try:
-            result: Self = add(self, other)
-        except StructureError:
-            return NotImplemented
-        return result
+        rhs = self._operand(other)
+        return NotImplemented if rhs is NotImplemented else self.from_array(rhs + self.array)
 
     def __rsub__(self, other: Any) -> Self:
-        try:
-            result: Self = sub(other, self)
-        except StructureError:
-            return NotImplemented
-        return result
+        rhs = self._operand(other)
+        return NotImplemented if rhs is NotImplemented else self.from_array(rhs - self.array)
 
     def __rmul__(self, other: Any) -> Self:
-        try:
-            result: Self = mul(self, other)
-        except StructureError:
-            return NotImplemented
-        return result
+        rhs = self._operand(other)
+        return NotImplemented if rhs is NotImplemented else self.from_array(rhs * self.array)
 
     def __rtruediv__(self, other: Any) -> Self:
-        try:
-            result: Self = truediv(other, self)
-        except StructureError:
-            return NotImplemented
-        return result
+        rhs = self._operand(other)
+        return NotImplemented if rhs is NotImplemented else self.from_array(rhs / self.array)
 
     def __rpow__(self, other: Any) -> Self:
-        try:
-            result: Self = power(other, self)
-        except StructureError:
-            return NotImplemented
-        return result
+        rhs = self._operand(other)
+        return NotImplemented if rhs is NotImplemented else self.from_array(rhs**self.array)
 
     def ravel(self) -> Self:
-        """Ravels each Stokes component."""
-        return jax.tree.map(lambda x: x.ravel(), self)  # type: ignore[no-any-return]
+        """Ravels the batch axes of each Stokes component."""
+        return self.from_array(self.array.reshape(self.array.shape[0], -1))
 
     def reshape(self, shape: tuple[int, ...]) -> Self:
-        """Reshape each Stokes component."""
-        return jax.tree.map(lambda x: x.reshape(shape), self)  # type: ignore[no-any-return]
+        """Reshape the batch axes of each Stokes component."""
+        return self.from_array(self.array.reshape(self.array.shape[0], *shape))
+
+    def rotate_qu(self, cos_2angles: Float[Array, '...'], sin_2angles: Float[Array, '...']) -> Self:
+        """Rotate the Q, U components by an angle whose double-angle cos/sin are given.
+
+        ``Q' = Q cos2a + U sin2a``, ``U' = -Q sin2a + U cos2a``; I and V are unchanged. Q and U are
+        adjacent rows on the leading Stokes axis, so this updates just those two rows in place.
+        A type without Q (``StokesI``) is returned unchanged.
+        """
+        qi = self.stokes.find('Q')
+        if qi < 0:
+            return self
+        q, u = self.array[qi], self.array[qi + 1]
+        rotated = jnp.stack([q * cos_2angles + u * sin_2angles, -q * sin_2angles + u * cos_2angles])
+        return self.from_array(self.array.at[qi : qi + 2].set(rotated))
 
     @classmethod
     @overload
@@ -167,7 +245,7 @@ class Stokes(ABC):
     def class_for(cls, stokes: Literal['IQUV']) -> type['StokesIQUV']: ...
 
     @classmethod
-    def class_for(cls, stokes: str) -> type['StokesPyTreeType']:
+    def class_for(cls, stokes: str) -> type['StokesType']:
         """Returns the StokesPyTree subclass associated to the specified Stokes types."""
         if stokes not in get_args(ValidStokesType):
             raise ValueError(f'Invalid Stokes parameters: {stokes!r}')
@@ -177,7 +255,7 @@ class Stokes(ABC):
             'IQU': StokesIQU,
             'IQUV': StokesIQUV,
         }[stokes]
-        return cast(type[StokesPyTreeType], requested_cls)
+        return cast(type[StokesType], requested_cls)
 
     @classmethod
     def structure_for(
@@ -185,8 +263,7 @@ class Stokes(ABC):
         shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
     ) -> Self:
-        stokes_arrays = len(cls.stokes) * [jax.ShapeDtypeStruct(shape, dtype)]
-        return cls(*stokes_arrays)
+        return cls.from_array(jax.ShapeDtypeStruct((len(cls.stokes), *shape), dtype))
 
     @classmethod
     @overload
@@ -269,7 +346,6 @@ class Stokes(ABC):
         raise TypeError(f'Unexpected number of Stokes parameters: {len(args)}.')
 
     @classmethod
-    @abstractmethod
     def from_iquv(
         cls,
         i: Float[Array, '...'],
@@ -277,7 +353,9 @@ class Stokes(ABC):
         u: Float[Array, '...'],
         v: Float[Array, '...'],
     ) -> Self:
-        """Returns a StokesPyTree ignoring the Stokes components not in the type."""
+        """Build this Stokes type from the full I, Q, U, V set, keeping only its own components."""
+        available = {'I': i, 'Q': q, 'U': u, 'V': v}
+        return cls(*(available[letter] for letter in cls.stokes))
 
     @classmethod
     def zeros(cls, shape: tuple[int, ...], dtype: DTypeLike = float) -> Self:
@@ -307,81 +385,24 @@ class Stokes(ABC):
         return uniform_like(cls.structure_for(shape, dtype), key, low, high)
 
 
-@register_dataclass
-@dataclass
+@register_pytree_node_class
 class StokesI(Stokes):
     stokes: ClassVar[ValidStokesType] = 'I'
-    i: Array
-
-    @classmethod
-    def from_iquv(
-        cls,
-        i: Float[Array, '...'],
-        q: Float[Array, '...'],
-        u: Float[Array, '...'],
-        v: Float[Array, '...'],
-    ) -> Self:
-        return cls(i)
 
 
-@register_dataclass
-@dataclass
+@register_pytree_node_class
 class StokesQU(Stokes):
     stokes: ClassVar[ValidStokesType] = 'QU'
-    q: Array
-    u: Array
-
-    @classmethod
-    def from_iquv(
-        cls,
-        i: Float[Array, '...'],
-        q: Float[Array, '...'],
-        u: Float[Array, '...'],
-        v: Float[Array, '...'],
-    ) -> Self:
-        q, u = as_promoted_dtype((q, u))
-        return cls(q, u)
 
 
-@register_dataclass
-@dataclass
+@register_pytree_node_class
 class StokesIQU(Stokes):
     stokes: ClassVar[ValidStokesType] = 'IQU'
-    i: Array
-    q: Array
-    u: Array
-
-    @classmethod
-    def from_iquv(
-        cls,
-        i: Float[Array, '...'],
-        q: Float[Array, '...'],
-        u: Float[Array, '...'],
-        v: Float[Array, '...'],
-    ) -> Self:
-        i, q, u = as_promoted_dtype((i, q, u))
-        return cls(i, q, u)
 
 
-@register_dataclass
-@dataclass
+@register_pytree_node_class
 class StokesIQUV(Stokes):
     stokes: ClassVar[ValidStokesType] = 'IQUV'
-    i: Array
-    q: Array
-    u: Array
-    v: Array
-
-    @classmethod
-    def from_iquv(
-        cls,
-        i: Float[Array, '...'],
-        q: Float[Array, '...'],
-        u: Float[Array, '...'],
-        v: Float[Array, '...'],
-    ) -> Self:
-        i, q, u, v = as_promoted_dtype((i, q, u, v))
-        return cls(i, q, u, v)
 
 
-StokesPyTreeType = StokesI | StokesQU | StokesIQU | StokesIQUV
+StokesType = StokesI | StokesQU | StokesIQU | StokesIQUV

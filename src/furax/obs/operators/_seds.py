@@ -78,10 +78,22 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
         input_shape = self._get_input_shape(in_structure)
-        frequencies = frequencies.reshape((len(frequencies),) + tuple(1 for _ in input_shape))
+        n_freq = len(frequencies)
+        # The operator scales a multi-frequency map: its input carries a frequency axis just before
+        # the trailing spatial axis. Insert it into the structure, and reshape `frequencies` to
+        # broadcast there while any leading batch axes (e.g. the leading Stokes axis of a
+        # single-array Stokes map) broadcast through.
+        n_batch = len(input_shape) - 1
+        freq_structure = jax.tree.map(
+            lambda leaf: jax.ShapeDtypeStruct(
+                leaf.shape[:-1] + (n_freq,) + leaf.shape[-1:], leaf.dtype
+            ),
+            in_structure,
+        )
+        frequencies = frequencies.reshape((1,) * n_batch + (n_freq, 1))
         object.__setattr__(self, 'frequencies', frequencies)
         object.__setattr__(self, 'frequency0', frequency0)
-        super().__init__(self.sed(), axis_destination=-1, in_structure=in_structure)
+        super().__init__(self.sed(), axis_destination=-1, in_structure=freq_structure)
 
     @staticmethod
     def _get_input_shape(in_structure: PyTree[jax.ShapeDtypeStruct]) -> tuple[int, ...]:
@@ -103,12 +115,12 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
         return input_shapes.pop()  # type: ignore[no-any-return]
 
     def _broadcast_over_maps(self, x: Any) -> Float[Array, '...']:
-        """Append trailing singleton axes so a per-frequency (or scalar) array broadcasts over the
-        input map axes, matching the reshaped :attr:`frequencies` (one axis per input map axis)."""
+        """Reshape a per-frequency (or scalar) array to broadcast like :attr:`frequencies`, i.e. its
+        frequency axis placed just before the trailing spatial axis, batch axes broadcasting."""
         arr = jnp.asarray(x)
         if arr.ndim == 0:
             return arr.reshape((1,) * self.frequencies.ndim)
-        return arr.reshape(arr.shape + (1,) * (self.frequencies.ndim - 1))
+        return arr.reshape(self.frequencies.shape)
 
     @abstractmethod
     def sed(self) -> Float[Array, '...']:

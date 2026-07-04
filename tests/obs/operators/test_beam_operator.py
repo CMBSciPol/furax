@@ -91,8 +91,7 @@ class TestBeamOperator:
         """Output leaves must have the same shape as the input leaves."""
         smoothed = beam_op(random_maps)
         assert isinstance(smoothed, StokesIQU)
-        for leaf in jax.tree.leaves(smoothed):
-            assert leaf.shape == (NFREQ, NPIX)
+        assert smoothed.shape == (NFREQ, NPIX)
 
     def test_output_dtype_is_float(self, beam_op, random_maps):
         """Output leaves must be real-valued (pixel maps are real)."""
@@ -184,8 +183,7 @@ class TestBeamOperator:
         op = BeamOperator(lmax=LMAX, beam_fl=beam_fl, in_structure=structure_1d)
         x = StokesIQU.normal(jax.random.PRNGKey(0), (NPIX,))
         out = op(x)
-        for leaf in jax.tree.leaves(out):
-            assert leaf.shape == (NPIX,)
+        assert out.shape == (NPIX,)
         # @symmetric demands out_structure == in_structure; that requires
         # mv to preserve rank, which we now verify by reading the traced
         # output shape too.
@@ -199,8 +197,7 @@ class TestBeamOperatorIQU:
         """Output leaves must have the same shape as the input leaves."""
         smoothed = beam_iqu_op(random_maps)
         assert isinstance(smoothed, StokesIQU)
-        for leaf in jax.tree.leaves(smoothed):
-            assert leaf.shape == (NFREQ, NPIX)
+        assert smoothed.shape == (NFREQ, NPIX)
 
     def test_output_dtype_is_float(self, beam_iqu_op, random_maps):
         """Output leaves must be real-valued."""
@@ -258,13 +255,12 @@ class TestBeamOperatorIQU:
     def test_1d_input_preserves_rank(self):
         """A 1-D (npix,) leaf in_structure must yield a 1-D output leaf."""
         structure_1d = StokesIQU.structure_for((NPIX,), jnp.float64)
-        fl = jnp.ones((1, LMAX + 1))
+        fl = jnp.ones(LMAX + 1)  # no frequency axis: the map has none
         beam_fl = StokesIQU(i=fl, q=fl, u=fl)
         op = BeamOperatorIQU(lmax=LMAX, beam_fl=beam_fl, in_structure=structure_1d)
         x = StokesIQU.normal(jax.random.PRNGKey(0), (NPIX,))
         out = op(x)
-        for leaf in jax.tree.leaves(out):
-            assert leaf.shape == (NPIX,)
+        assert out.shape == (NPIX,)
         assert op.out_structure == op.in_structure
 
     def test_agrees_with_beam_operator_when_beams_are_equal(

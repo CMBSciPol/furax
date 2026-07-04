@@ -32,7 +32,7 @@ dependencies = [
     'healpy>=1.19.0',
     'jax>=0.10.0',
     'jaxtyping>=0.3.9',
-    'jax-healpy>=0.5',
+    "jax-healpy[recommended]>=0.5",
     'lineax>=0.1.1',
     'numpy>=2.0',
     'scipy>=1.14',
@@ -153,8 +153,8 @@ xfail_strict = true
 
 [tool.uv.sources]
 litebird-sim = { git = "https://github.com/litebird/litebird_sim" }  # TODO: remove when 0.17.0 is released
-jax-healpy = { git = "https://github.com/CMBSciPol/jax-healpy", branch = "implement-alm2map" }  # TODO: remove when merged
 s2fft = { git = "https://github.com/astro-informatics/s2fft" }  # TODO: remove when next release is out
+jax-healpy = { git = "https://github.com/CMBSciPol/jax-healpy" }
 
 [tool.ruff]
 line-length = 100

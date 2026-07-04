@@ -1257,7 +1257,7 @@ dependencies = [
     { name = "equinox" },
     { name = "healpy" },
     { name = "jax" },
-    { name = "jax-healpy" },
+    { name = "jax-healpy", extra = ["recommended"] },
     { name = "jaxtyping" },
     { name = "lineax" },
     { name = "numpy" },
@@ -1339,8 +1339,8 @@ requires-dist = [
     { name = "healpy", specifier = ">=1.19.0" },
     { name = "jax", specifier = ">=0.10.0" },
     { name = "jax-cadre", marker = "extra == 'mapmaking'", specifier = ">=0.1.2" },
-    { name = "jax-healpy", git = "https://github.com/CMBSciPol/jax-healpy?branch=implement-alm2map" },
-    { name = "jax-healpy", extras = ["recommended"], marker = "extra == 'sht'", git = "https://github.com/CMBSciPol/jax-healpy?branch=implement-alm2map" },
+    { name = "jax-healpy", extras = ["recommended"], git = "https://github.com/CMBSciPol/jax-healpy" },
+    { name = "jax-healpy", extras = ["recommended"], marker = "extra == 'sht'", git = "https://github.com/CMBSciPol/jax-healpy" },
     { name = "jaxtyping", specifier = ">=0.3.9" },
     { name = "lineax", specifier = ">=0.1.1" },
     { name = "litebird-sim", marker = "extra == 'interfaces'", git = "https://github.com/litebird/litebird_sim" },
@@ -1823,8 +1823,8 @@ with-cuda = [
 
 [[package]]
 name = "jax-healpy"
-version = "0.7.dev46+gdc35463cf"
-source = { git = "https://github.com/CMBSciPol/jax-healpy?branch=implement-alm2map#dc35463cf2b3336445c71162f11039829f58918b" }
+version = "0.8.dev1+g24d530a8e"
+source = { git = "https://github.com/CMBSciPol/jax-healpy#24d530a8ee84ee8275f90ede85e7e08f67108f12" }
 dependencies = [
     { name = "jax" },
     { name = "jaxtyping" },

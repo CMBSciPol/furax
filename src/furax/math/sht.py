@@ -91,11 +91,13 @@ class Map2Alm(AbstractLinearOperator):
         """
 
         def func(value: jax.Array) -> jax.Array:
-            value = jnp.atleast_2d(value)  # (nfreq, npix)
+            value = jnp.atleast_2d(value)  # (*batch, npix)
+            batch = value.shape[:-1]
+            flat = value.reshape(-1, value.shape[-1])  # (prod(batch), npix)
             alm: jax.Array = jhp.map2alm(
-                value, iter=self.iter, lmax=self.lmax, pol=self.pol
-            )  # (nfreq, lmax+1, 2*lmax+1)
-            return alm
+                flat, iter=self.iter, lmax=self.lmax, pol=self.pol
+            )  # (prod(batch), lmax+1, 2*lmax+1)
+            return alm.reshape(*batch, *alm.shape[1:])
 
         return jax.tree.map(func, x)
 
@@ -177,8 +179,10 @@ class Alm2Map(AbstractLinearOperator):
         """
 
         def func(value: jax.Array) -> jax.Array:
-            value = value.reshape(-1, *value.shape[-2:])  # (nfreq, lmax+1, 2*lmax+1)
-            return jnp.real(jhp.alm2map(value, nside=self.nside, lmax=self.lmax, pol=self.pol))
+            batch = value.shape[:-2]
+            flat = value.reshape(-1, *value.shape[-2:])  # (prod(batch), lmax+1, 2*lmax+1)
+            out = jnp.real(jhp.alm2map(flat, nside=self.nside, lmax=self.lmax, pol=self.pol))
+            return out.reshape(*batch, out.shape[-1])  # (*batch, npix)
 
         return jax.tree.map(func, x)
 

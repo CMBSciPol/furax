@@ -102,6 +102,14 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
             raise ValueError(f'the leaves of the input do not have the same shape: {in_structure}')
         return input_shapes.pop()  # type: ignore[no-any-return]
 
+    def _broadcast_over_maps(self, x: Any) -> Float[Array, '...']:
+        """Append trailing singleton axes so a per-frequency (or scalar) array broadcasts over the
+        input map axes, matching the reshaped :attr:`frequencies` (one axis per input map axis)."""
+        arr = jnp.asarray(x)
+        if arr.ndim == 0:
+            return arr.reshape((1,) * self.frequencies.ndim)
+        return arr.reshape(arr.shape + (1,) * (self.frequencies.ndim - 1))
+
     @abstractmethod
     def sed(self) -> Float[Array, '...']:
         """
@@ -177,7 +185,7 @@ class CMBOperator(AbstractSEDOperator):
         Returns:
             Float[Array, '...']: The SED for the CMB.
         """
-        return jnp.ones_like(self.frequencies) / jnp.expand_dims(self.factor, axis=-1)
+        return jnp.ones_like(self.frequencies) / self._broadcast_over_maps(self.factor)
 
 
 class DustOperator(AbstractSEDOperator):
@@ -249,7 +257,7 @@ class DustOperator(AbstractSEDOperator):
         b = self._get_at(
             (self.frequencies / self.frequency0) ** (1 + self.beta), self.beta_patch_indices
         )
-        sed = (t * b) * jnp.expand_dims(self.factor, axis=-1)
+        sed = (t * b) * self._broadcast_over_maps(self.factor)
         return sed
 
 
@@ -324,7 +332,7 @@ class SynchrotronOperator(AbstractSEDOperator):
         sed = self._get_at(
             (self.frequencies / self.frequency0) ** self.beta_pl, self.beta_pl_patch_indices
         )
-        sed *= jnp.expand_dims(self.factor, axis=-1)
+        sed *= self._broadcast_over_maps(self.factor)
 
         return sed
 

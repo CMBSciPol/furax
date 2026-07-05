@@ -79,21 +79,28 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
     ) -> None:
         input_shape = self._get_input_shape(in_structure)
         n_freq = len(frequencies)
-        # The operator scales a multi-frequency map: its input carries a frequency axis just before
-        # the trailing spatial axis. Insert it into the structure, and reshape `frequencies` to
-        # broadcast there while any leading batch axes (e.g. the leading Stokes axis of a
-        # single-array Stokes map) broadcast through.
+        # The operator broadcasts a map (no frequency axis) to a multi-frequency output: the new
+        # frequency axis lands just before the trailing spatial axis, with any leading batch axes
+        # (e.g. the leading Stokes axis of a single-array Stokes map) broadcasting through.
         n_batch = len(input_shape) - 1
-        freq_structure = jax.tree.map(
-            lambda leaf: jax.ShapeDtypeStruct(
-                leaf.shape[:-1] + (n_freq,) + leaf.shape[-1:], leaf.dtype
-            ),
-            in_structure,
-        )
         frequencies = frequencies.reshape((1,) * n_batch + (n_freq, 1))
         object.__setattr__(self, 'frequencies', frequencies)
         object.__setattr__(self, 'frequency0', frequency0)
-        super().__init__(self.sed(), axis_destination=-1, in_structure=freq_structure)
+        super().__init__(self.sed(), axis_destination=-1, in_structure=in_structure)
+
+    def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
+        # BroadcastDiagonalOperator's axis_destination machinery can only grow the input at its
+        # outermost or innermost edge; it cannot insert a new axis strictly between two existing
+        # ones. Since the frequency axis must land between the leading batch axes (kept intact) and
+        # the trailing spatial axis, insert it explicitly rather than going through the parent's mv.
+        # A leaf may already carry the frequency axis (e.g. a genuine multi-frequency map passed in
+        # directly); only insert it when missing, so both call conventions keep working.
+        def func(leaf: Inexact[Array, '...']) -> Inexact[Array, '...']:
+            if leaf.ndim < self.frequencies.ndim:
+                leaf = jnp.expand_dims(leaf, axis=-2)
+            return self.sed() * leaf
+
+        return jax.tree.map(func, x)
 
     @staticmethod
     def _get_input_shape(in_structure: PyTree[jax.ShapeDtypeStruct]) -> tuple[int, ...]:

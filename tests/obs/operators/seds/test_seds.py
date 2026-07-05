@@ -127,3 +127,39 @@ def test_synchrotron_k_rj(fg_data):
     synch_furax = synch_operator(d)
 
     assert jax.tree.all(jax.tree.map(jnp.allclose, synch_furax, synch_fgbuster_tree))
+
+
+def test_broadcasts_sky_map_without_frequency_axis(fg_data):
+    """SED operators must broadcast a genuine (no-frequency) sky map to a multi-frequency cube.
+
+    Regression guard: ``AbstractSEDOperator.__init__`` used to declare an ``in_structure`` with
+    the frequency axis already baked in, making ``in_structure == out_structure`` and breaking
+    this exact call (component-separation's real usage, e.g. via ``MixingMatrixOperator``).
+    """
+    data, _, in_structure = fg_data
+    nu = data['frequencies']
+
+    cmb_operator = CMBOperator(nu, in_structure=in_structure, units='K_CMB')
+
+    # The declared in_structure must stay the plain sky map (no frequency axis).
+    assert cmb_operator.in_structure == in_structure
+    assert cmb_operator.out_structure.shape == (len(nu),) + in_structure.shape
+
+    x = Stokes.from_stokes(
+        I=jnp.arange(in_structure.shape[0], dtype=jnp.float64),
+        Q=jnp.ones(in_structure.shape),
+        U=-jnp.ones(in_structure.shape),
+    )
+    y = cmb_operator(x)
+
+    assert y.shape == cmb_operator.out_structure.shape
+    expected = cmb_operator.sed() * x.array[:, jnp.newaxis, :]
+    assert jnp.allclose(y.array, expected)
+
+    # Adjoint identity <Ax, z> == <x, A^T z>, guarding the custom mv() against a broken transpose.
+    z = Stokes.from_stokes(
+        *(jax.random.normal(jax.random.key(0), cmb_operator.out_structure.shape) for _ in range(3))
+    )
+    lhs = jnp.sum(y.array * z.array)
+    rhs = jnp.sum(x.array * cmb_operator.T(z).array)
+    assert jnp.allclose(lhs, rhs)

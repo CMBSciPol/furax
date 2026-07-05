@@ -169,11 +169,7 @@ class ObservationModel:
         the observation axis in :meth:`MultiObservationMapMaker.get_system_operator`, mirroring how
         ``W`` is stacked inside the accumulation scan.
         """
-        white = jax.tree.map(
-            lambda nm: nm.to_white_noise_model(),
-            self.noise_model,
-            is_leaf=lambda nm: isinstance(nm, NoiseModel),
-        )
+        white = self.noise_model.to_white_noise_model()
         inv = _noise_operator(white, self.tod_structure, self.sample_rate, inverse=True)
         return WeightOperator.create(inv, self.M)
 

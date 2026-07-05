@@ -15,6 +15,7 @@ without special-casing.
 :class:`~furax.IdentityOperator` at operator-construction time.
 """
 
+from collections.abc import Callable
 from dataclasses import field
 
 import jax
@@ -24,6 +25,20 @@ from jaxtyping import Array, Inexact, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator
 from furax.core.rules import AbstractCompositionRule, NoReduction
+
+
+def _batch_flatten_apply(
+    value: jax.Array, ndim: int, fn: Callable[[jax.Array], jax.Array]
+) -> jax.Array:
+    """Flatten every leading axis beyond the trailing ``ndim`` into one, apply, then restore.
+
+    ``jhp.map2alm``/``jhp.alm2map`` batch over exactly one leading axis; this lets ``value``
+    carry several (e.g. frequency and a leading Stokes axis) by flattening them together.
+    """
+    batch = value.shape[:-ndim]
+    flat = value.reshape(-1, *value.shape[-ndim:])
+    out = fn(flat)
+    return out.reshape(*batch, *out.shape[1:])
 
 
 class Map2Alm(AbstractLinearOperator):
@@ -92,12 +107,11 @@ class Map2Alm(AbstractLinearOperator):
 
         def func(value: jax.Array) -> jax.Array:
             value = jnp.atleast_2d(value)  # (*batch, npix)
-            batch = value.shape[:-1]
-            flat = value.reshape(-1, value.shape[-1])  # (prod(batch), npix)
-            alm: jax.Array = jhp.map2alm(
-                flat, iter=self.iter, lmax=self.lmax, pol=self.pol
-            )  # (prod(batch), lmax+1, 2*lmax+1)
-            return alm.reshape(*batch, *alm.shape[1:])
+            return _batch_flatten_apply(
+                value,
+                1,
+                lambda flat: jhp.map2alm(flat, iter=self.iter, lmax=self.lmax, pol=self.pol),
+            )
 
         return jax.tree.map(func, x)
 
@@ -179,10 +193,13 @@ class Alm2Map(AbstractLinearOperator):
         """
 
         def func(value: jax.Array) -> jax.Array:
-            batch = value.shape[:-2]
-            flat = value.reshape(-1, *value.shape[-2:])  # (prod(batch), lmax+1, 2*lmax+1)
-            out = jnp.real(jhp.alm2map(flat, nside=self.nside, lmax=self.lmax, pol=self.pol))
-            return out.reshape(*batch, out.shape[-1])  # (*batch, npix)
+            return _batch_flatten_apply(
+                value,
+                2,
+                lambda flat: jnp.real(
+                    jhp.alm2map(flat, nside=self.nside, lmax=self.lmax, pol=self.pol)
+                ),
+            )
 
         return jax.tree.map(func, x)
 

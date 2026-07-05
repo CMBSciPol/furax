@@ -1,4 +1,6 @@
+import operator
 from abc import ABC
+from collections.abc import Callable
 from typing import Any, ClassVar, Literal, Self, cast, get_args, overload
 
 import jax
@@ -164,47 +166,45 @@ class Stokes(ABC):
         except TypeError:
             return NotImplemented
 
-    def __add__(self, other: Any) -> Self:
+    def _binop(self, other: Any, fn: Callable[[Any, Any], Any], reflected: bool = False) -> Self:
         rhs = self._operand(other)
-        return NotImplemented if rhs is NotImplemented else self.from_array(self.array + rhs)
+        if rhs is NotImplemented:
+            # mypy's exemption for returning NotImplemented only applies inside a method
+            # literally named as a dunder (e.g. __add__), not this shared helper.
+            return NotImplemented  # type: ignore[no-any-return]
+        return self.from_array(fn(rhs, self.array) if reflected else fn(self.array, rhs))
+
+    def __add__(self, other: Any) -> Self:
+        return self._binop(other, operator.add)
 
     def __sub__(self, other: Any) -> Self:
-        rhs = self._operand(other)
-        return NotImplemented if rhs is NotImplemented else self.from_array(self.array - rhs)
+        return self._binop(other, operator.sub)
 
     def __mul__(self, other: Any) -> Self:
-        rhs = self._operand(other)
-        return NotImplemented if rhs is NotImplemented else self.from_array(self.array * rhs)
+        return self._binop(other, operator.mul)
 
     def __truediv__(self, other: Any) -> Self:
-        rhs = self._operand(other)
-        return NotImplemented if rhs is NotImplemented else self.from_array(self.array / rhs)
+        return self._binop(other, operator.truediv)
 
     def __pow__(self, other: Any) -> Self:
         if isinstance(other, _Metaω):
             return NotImplemented
-        rhs = self._operand(other)
-        return NotImplemented if rhs is NotImplemented else self.from_array(self.array**rhs)
+        return self._binop(other, operator.pow)
 
     def __radd__(self, other: Any) -> Self:
-        rhs = self._operand(other)
-        return NotImplemented if rhs is NotImplemented else self.from_array(rhs + self.array)
+        return self._binop(other, operator.add, reflected=True)
 
     def __rsub__(self, other: Any) -> Self:
-        rhs = self._operand(other)
-        return NotImplemented if rhs is NotImplemented else self.from_array(rhs - self.array)
+        return self._binop(other, operator.sub, reflected=True)
 
     def __rmul__(self, other: Any) -> Self:
-        rhs = self._operand(other)
-        return NotImplemented if rhs is NotImplemented else self.from_array(rhs * self.array)
+        return self._binop(other, operator.mul, reflected=True)
 
     def __rtruediv__(self, other: Any) -> Self:
-        rhs = self._operand(other)
-        return NotImplemented if rhs is NotImplemented else self.from_array(rhs / self.array)
+        return self._binop(other, operator.truediv, reflected=True)
 
     def __rpow__(self, other: Any) -> Self:
-        rhs = self._operand(other)
-        return NotImplemented if rhs is NotImplemented else self.from_array(rhs**self.array)
+        return self._binop(other, operator.pow, reflected=True)
 
     def ravel(self) -> Self:
         """Ravels the batch axes of each Stokes component."""

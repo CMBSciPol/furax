@@ -410,9 +410,7 @@ class NoiseDiagonalOperator(AbstractLinearOperator):
         >>> d = landscape.normal(jax.random.key(0))  # d
         >>> N = NoiseDiagonalOperator(noise_sample, in_structure=d.structure)
         >>> N.I(d).structure
-        StokesIQU(i=ShapeDtypeStruct(shape=(10, 49152), dtype=float64),
-                  q=ShapeDtypeStruct(shape=(10, 49152), dtype=float64),
-                  u=ShapeDtypeStruct(shape=(10, 49152), dtype=float64))
+        StokesIQU(ShapeDtypeStruct(shape=(3, 10, 49152), dtype=float64))
     """
 
     vector: PyTree[Inexact[Array, '...']]

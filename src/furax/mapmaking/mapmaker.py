@@ -332,11 +332,7 @@ class MultiObservationMapMaker(Generic[T]):
                 masked_tod = obs.M(ones)
                 # The sample mask is per-detector (identical across Stokes legs); take one leg so
                 # StokesI wraps a (ndet, nsamp) array rather than a whole demodulated Stokes backing.
-                masked = (
-                    masked_tod.array[0]
-                    if isinstance(masked_tod, Stokes)
-                    else jax.tree.leaves(masked_tod)[0]
-                )
+                masked = masked_tod.array[0] if isinstance(masked_tod, Stokes) else masked_tod
                 hits_i = jnp.int64(pointing_i.T(StokesI(masked)).i)
 
                 # RHS contribution (optionally gap-filled).

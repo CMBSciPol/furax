@@ -54,15 +54,15 @@ class BJPreconditioner(AbstractLinearOperator):
             # unit map on component j (one everywhere on that component, zero on the others);
             # the backing array has the Stokes components on the leading axis.
             probe = stokes_cls.from_array(jnp.zeros((n, *sky_shape), dtype).at[j].set(1.0))
-            resp = _apply(op, probe).array  # (n_i, *sky) = column j, indexed by output row i
-            columns.append(jnp.moveaxis(resp, 0, -1))  # (*sky, n_i)
-        blocks = jnp.stack(columns, axis=-1)  # (*sky, i, j)
+            columns.append(_apply(op, probe).array)  # (n_i, *sky) = column j, indexed by row i
+        stacked = jnp.stack(columns, axis=1)  # (i, j, *sky)
+        blocks = jnp.moveaxis(stacked, (0, 1), (-2, -1))  # (*sky, i, j)
         return cls(blocks, in_structure=in_struct)
 
     def mv(self, x: Stokes) -> Stokes:
-        xm = jnp.moveaxis(x.array, 0, -1)  # (*sky, j)
-        ym = jnp.einsum('...ij,...j->...i', self.blocks, xm)  # (*sky, i)
-        return type(x).from_array(jnp.moveaxis(ym, -1, 0))  # (i, *sky)
+        # einsum aligns the blocks' trailing (i, j) axes against x.array's leading Stokes axis
+        # directly, without physically transposing either array.
+        return type(x).from_array(jnp.einsum('...ij,j...->i...', self.blocks, x.array))
 
     def inverse(self) -> 'BJPreconditioner':
         # Per-pixel matrix inverse; stays a BJPreconditioner (keeps the @symmetric tag).

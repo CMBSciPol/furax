@@ -32,7 +32,7 @@ from furax.mapmaking.config import (
 from furax.mapmaking.mapmaker import MLMapmaker, get_obs_distribution_to_process
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
-from furax.obs.stokes import Stokes, ValidStokesType
+from furax.obs.stokes import ValidStokesType
 from tests.mapmaking.helpers import (
     FailingLazyObservation,
     FakeGroundObservation,
@@ -258,13 +258,12 @@ class TestNoiseModelSelection:
         maker = MultiObservationMapMaker(observations, config=config)
         with jax.set_mesh(maker.mesh):
             noise_model = maker.build_model_and_accumulate()[0].noise_model
+        # A single WhiteNoiseModel covers both paths. The demodulated TOD is a single-array Stokes,
+        # so its per-detector sigma carries the leading Stokes axis (here after the observation-stack
+        # axis added by the accumulation scan).
+        assert isinstance(noise_model, WhiteNoiseModel)
         if demodulated:
-            assert isinstance(noise_model, Stokes.class_for(stokes))
-            assert all(
-                isinstance(getattr(noise_model, stoke.lower()), WhiteNoiseModel) for stoke in stokes
-            )
-        else:
-            assert isinstance(noise_model, WhiteNoiseModel)
+            assert noise_model.sigma.shape[1] == len(stokes)
 
     def test_identity_builds_unit_white_noise(self, demodulated):
         observations = self._observations()

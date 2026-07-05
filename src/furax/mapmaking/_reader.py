@@ -305,6 +305,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         target_dtype = self.dtype
 
         def get_sample_data(obs: AbstractObservation[T]) -> Any:
+            tods: Stokes | np.ndarray
             if demodulated:
                 tods = obs.get_demodulated_tods(stokes=stokes)
             else:

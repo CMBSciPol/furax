@@ -4,7 +4,7 @@ import functools
 import threading
 from collections.abc import Collection
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, overload
 
 import jax.numpy as jnp
 import numpy as np
@@ -34,7 +34,15 @@ from furax.obs.landscapes import (
     ProjectionType,
     StokesLandscape,
 )
-from furax.obs.stokes import Stokes, StokesType, ValidStokesType
+from furax.obs.stokes import (
+    Stokes,
+    StokesI,
+    StokesIQU,
+    StokesIQUV,
+    StokesQU,
+    StokesType,
+    ValidStokesType,
+)
 
 # Per-process cache of (configs, context) from sotodlib's get_preprocess_context, keyed by
 # (config-file path, thread id). See _enable_preproc_context_cache.
@@ -255,6 +263,14 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         tods = np.asarray(self.data.signal, dtype=np.float64)
         return 0.5 * np.atleast_2d(tods)
 
+    @overload
+    def get_demodulated_tods(self, stokes: Literal['I']) -> StokesI: ...
+    @overload
+    def get_demodulated_tods(self, stokes: Literal['QU']) -> StokesQU: ...
+    @overload
+    def get_demodulated_tods(self, stokes: Literal['IQU']) -> StokesIQU: ...
+    @overload
+    def get_demodulated_tods(self, stokes: Literal['IQUV']) -> StokesIQUV: ...
     def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> StokesType:
         """Returns the demodulated timestream data as a Stokes pytree.
 

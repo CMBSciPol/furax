@@ -10,7 +10,6 @@ from jaxtyping import PyTree
 from numpy.testing import assert_array_equal
 
 import furax as fx
-from furax.obs.stokes import StokesIQU, StokesIQUV
 from furax.tree import _dense_to_tree, _get_outer_treedef, _tree_to_dense
 
 
@@ -205,15 +204,6 @@ def test_norm(x, expected_norm) -> None:
             {'i': 1, 'q': -1, 'u': 3},
             {'i': 2, 'q': 0, 'u': 3},
         ),
-        (
-            StokesIQU.structure_for((), jnp.int32),
-            #     [ 1 -1 0]
-            # a = [ 1  1 0]
-            #     [ 0  0 0]
-            StokesIQU(StokesIQU(1, -1, 0), StokesIQU(1, 1, 0), 0),
-            StokesIQU(1, -1, 3),
-            StokesIQU(2, 0, 0),
-        ),
     ],
 )
 def test_matvec(structure, a, x, expected_y) -> None:
@@ -245,15 +235,6 @@ def test_matvec(structure, a, x, expected_y) -> None:
             {'i': 1, 'q': -1, 'u': 3},
             {'i': 0, 'q': -2, 'u': 3},
         ),
-        (
-            StokesIQU.structure_for((), jnp.int32),
-            #     [ 1 -1 0]
-            # a = [ 1  1 0]
-            #     [ 0  0 0]
-            StokesIQU(StokesIQU(1, -1, 0), StokesIQU(1, 1, 0), StokesIQU(0, 0, 0)),
-            StokesIQU(1, -1, 3),
-            StokesIQU(0, -2, 0),
-        ),
     ],
 )
 def test_vecmat(structure, a, x, expected_y) -> None:
@@ -268,12 +249,12 @@ def test_vecmat(structure, a, x, expected_y) -> None:
             jax.tree.structure({'r1': 0, 'r2': 0}),
             # a = [ 1 -1  2 ]
             #     [ 0  2 -1 ]
-            {'r1': StokesIQU(1, -1, 2), 'r2': StokesIQU(0, 2, -1)},
-            StokesIQU.structure_for((), jnp.int32),
+            {'r1': {'i': 1, 'q': -1, 'u': 2}, 'r2': {'i': 0, 'q': 2, 'u': -1}},
+            jax.tree.structure({'i': 0, 'q': 0, 'u': 0}),
             #     [  1 -1 ]
             # b = [  3  0 ]
             #     [ -1  1 ]
-            StokesIQU({'c1': 1, 'c2': -1}, {'c1': 3, 'c2': 0}, {'c1': -1, 'c2': 1}),
+            {'i': {'c1': 1, 'c2': -1}, 'q': {'c1': 3, 'c2': 0}, 'u': {'c1': -1, 'c2': 1}},
             {'r1': {'c1': -4, 'c2': 1}, 'r2': {'c1': 7, 'c2': -1}},
         ),
     ],
@@ -288,8 +269,6 @@ def test_matmat(a_structure, a, b_structure, b, expected_mat) -> None:
     [
         (jax.tree.structure({'r1': 0, 'r2': 0}), jax.tree.structure({'c1': 0, 'c2': 0})),
         (jax.tree.structure([(0,)]), jax.tree.structure(([0],))),
-        (StokesIQU(0, 0, 0), StokesIQU(0, 0, 0)),
-        (StokesIQUV(0, 0, 0, 0), StokesIQU(0, 0, 0)),
     ],
 )
 def test_get_outer_treedef(outer_structure: PyTreeDef, inner_structure: PyTreeDef) -> None:
@@ -320,9 +299,13 @@ def test_get_outer_treedef(outer_structure: PyTreeDef, inner_structure: PyTreeDe
             jnp.array([[1, 2], [3, 0]]),
         ),
         (
-            StokesIQU(0, 0, 0),
-            StokesIQU(0, 0, 0),
-            StokesIQU(StokesIQU(1, 0, 0), StokesIQU(0, 2, 0), StokesIQU(0, 0, jnp.array([-1, 1]))),
+            jax.tree.structure({'i': 0, 'q': 0, 'u': 0}),
+            jax.tree.structure({'i': 0, 'q': 0, 'u': 0}),
+            {
+                'i': {'i': 1, 'q': 0, 'u': 0},
+                'q': {'i': 0, 'q': 2, 'u': 0},
+                'u': {'i': 0, 'q': 0, 'u': jnp.array([-1, 1])},
+            },
             jnp.array([[[1, 0, 0], [0, 2, 0], [0, 0, -1]], [[1, 0, 0], [0, 2, 0], [0, 0, 1]]]),
         ),
     ],
@@ -351,14 +334,26 @@ def test_tree_to_dense(
             },
         ),
         (
-            StokesIQU(0, 0, 0),
-            StokesIQU(0, 0, 0),
+            jax.tree.structure({'i': 0, 'q': 0, 'u': 0}),
+            jax.tree.structure({'i': 0, 'q': 0, 'u': 0}),
             jnp.array([[[1, 0, 0], [0, 2, 0], [0, 0, -1]], [[1, 0, 0], [0, 2, 0], [0, 0, 1]]]),
-            StokesIQU(
-                StokesIQU(jnp.array([1, 1]), jnp.array([0, 0]), jnp.array([0, 0])),
-                StokesIQU(jnp.array([0, 0]), jnp.array([2, 2]), jnp.array([0, 0])),
-                StokesIQU(jnp.array([0, 0]), jnp.array([0, 0]), jnp.array([-1, 1])),
-            ),
+            {
+                'i': {
+                    'i': jnp.array([1, 1]),
+                    'q': jnp.array([0, 0]),
+                    'u': jnp.array([0, 0]),
+                },
+                'q': {
+                    'i': jnp.array([0, 0]),
+                    'q': jnp.array([2, 2]),
+                    'u': jnp.array([0, 0]),
+                },
+                'u': {
+                    'i': jnp.array([0, 0]),
+                    'q': jnp.array([0, 0]),
+                    'u': jnp.array([-1, 1]),
+                },
+            },
         ),
     ],
 )

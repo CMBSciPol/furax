@@ -90,7 +90,9 @@ def test_read_raises_when_probe_under_estimates() -> None:
     # common buffer is 3 (max probe), but obs 0 actually loads 5 samples -> negative pad
     reader = OverProbeReader([2, 3], [5, 1])
     with pytest.raises(Exception, match='under-estimated'):
-        reader.read(0)
+        # jax.jit dispatch is async: the io_callback's error only surfaces once the result is
+        # materialized, not at the read() call itself.
+        jax.block_until_ready(reader.read(0))
 
 
 @register_static

@@ -285,20 +285,16 @@ def test_reader_all_fields_demod(demod_observations) -> None:
         assert tuple(padding['metadata'].uid) == ()
         assert tuple(padding['metadata'].telescope_uid) == ()
         assert tuple(padding['metadata'].detector_uids) == (ndet_max - ndet,)
-        assert all(
-            tuple(getattr(padding['sample_data'], s)) == (ndet_max - ndet, nsample_max - nsample)
-            for s in stokes.lower()
-        )
+        # single-array Stokes: one combined padding tuple (Stokes axis, ndet, nsample); the
+        # leading Stokes axis is never padded.
+        assert tuple(padding['sample_data'].array) == (0, ndet_max - ndet, nsample_max - nsample)
         assert tuple(padding['valid_sample_masks']) == (ndet_max - ndet, nsample_max - nsample)
         assert tuple(padding['valid_scanning_masks']) == (nsample_max - nsample,)
         assert tuple(padding['timestamps']) == (nsample_max - nsample,)
         assert tuple(padding['hwp_angles']) == (nsample_max - nsample,)
         assert tuple(padding['detector_quaternions']) == (ndet_max - ndet, 0)
         assert tuple(padding['boresight_quaternions']) == (nsample_max - nsample, 0)
-        assert all(
-            tuple(getattr(padding['noise_model_fits'], s)) == (ndet_max - ndet, 0)
-            for s in stokes.lower()
-        )
+        assert tuple(padding['noise_model_fits'].array) == (0, ndet_max - ndet, 0)
 
 
 @pytest.mark.parametrize(

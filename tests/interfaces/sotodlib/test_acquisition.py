@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
@@ -51,7 +50,7 @@ def test_acquisition_no_hwp_vs_sotodlib():
     sotodlib_map = pmap.to_map(tod=obs.data, signal=np.array(tods, dtype=np.float32))
 
     # Furax TODs assume power, so they are 2x smaller
-    for i, leaf in enumerate(jax.tree.leaves(furax_map)):
+    for i, leaf in enumerate(furax_map.array):
         assert_allclose(2 * leaf, sotodlib_map[i], rtol=1e-5, atol=0)
 
 
@@ -95,7 +94,7 @@ def test_demod_acquisition_vs_sotodlib():
     )
 
     # Furax TODs assume power, so they are 2x smaller
-    for i, leaf in enumerate(jax.tree.leaves(furax_map)):
+    for i, leaf in enumerate(furax_map.array):
         assert_allclose(2 * leaf, sotodlib_map[i], rtol=1e-5, atol=0)
 
 

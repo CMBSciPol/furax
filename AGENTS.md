@@ -77,7 +77,7 @@ Python, JAX, linear operator framework, CMB mapmaking.
 - `HWPOperator`, `LinearPolarizerOperator`, `QURotationOperator`: polarization modulation
 - `AbstractSEDOperator` → `DustOperator` / `SynchrotronOperator` / `CMBOperator`: SED operators for component separation
 - `StokesLandscape` (`landscapes.py`): Stokes-aware (I/Q/U) HEALPix sky pixelisation
-- `Stokes`, `StokesI` (`stokes.py`): PyTree containers for Stokes maps
+- `Stokes` and I/QU/IQU/IQUV variants (`stokes.py`): single-array Stokes containers (components stacked on the leading axis)
 
 ### Mapmaking pipeline (`/src/furax/mapmaking`)
 

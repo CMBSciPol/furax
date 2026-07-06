@@ -7,7 +7,7 @@ from typing import Any, ClassVar, Literal, Self, cast, get_args, overload
 import jax
 import jax.numpy as jnp
 import numpy as np
-import wadler_lindig as wl  # type: ignore[import-untyped]
+import wadler_lindig as wl
 from equinox.internal._omega import _Metaω
 from jax import Array
 from jax.typing import ArrayLike
@@ -134,6 +134,7 @@ class Stokes(ABC):
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Returns the common shape of the Stokes components."""
         return self.array.shape[1:]
 
     @property
@@ -150,15 +151,15 @@ class Stokes(ABC):
         return self.from_array(self.array[(slice(None), *idx)])
 
     def __eq__(self, other: object) -> Any:
-        # Same-type comparison of the backing array. For ``ShapeDtypeStruct`` backings (structures)
-        # this returns a bool (shape/dtype match); for concrete arrays it returns the elementwise
-        # array, matching the former dataclass semantics.
+        # Same-type comparison of the backing array.
+        # For ``ShapeDtypeStruct`` backings (structures) this returns a bool (shape/dtype match).
+        # For concrete arrays it returns the elementwise boolean array.
         if not isinstance(other, Stokes) or self.stokes != other.stokes:
             return NotImplemented
         return self.array == other.array
 
     def __matmul__(self, other: Any) -> Any:
-        """Scalar product between Stokes pytrees."""
+        """Returns the scalar product between Stokes maps."""
         if not isinstance(other, type(self)):
             return NotImplemented
         return jnp.sum(jnp.conj(self.array) * other.array)

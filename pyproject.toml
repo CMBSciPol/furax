@@ -128,6 +128,7 @@ module = [
     'so3g.*',
     'sotodlib.*',
     'toast.*',
+    'wadler_lindig',
 ]
 ignore_missing_imports = true
 

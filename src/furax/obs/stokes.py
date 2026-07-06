@@ -1,6 +1,7 @@
 import operator
 from abc import ABC
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, ClassVar, Literal, Self, cast, get_args, overload
 
 import jax
@@ -9,13 +10,12 @@ import numpy as np
 import wadler_lindig as wl  # type: ignore[import-untyped]
 from equinox.internal._omega import _Metaω
 from jax import Array
-from jax.tree_util import register_pytree_node_class
 from jax.typing import ArrayLike
 from jaxtyping import DTypeLike, Float, Integer, Key, PyTree, ScalarLike
 
+from furax.core.utils import register_dataclass_with_keys
 from furax.tree import (
     as_promoted_dtype,
-    dot,
     full_like,
     normal_like,
     ones_like,
@@ -28,8 +28,40 @@ __all__ = ['Stokes', 'StokesI', 'StokesQU', 'StokesIQU', 'StokesIQUV', 'ValidSto
 ValidStokesType = Literal['I', 'QU', 'IQU', 'IQUV']
 
 
+@dataclass(frozen=True)
 class Stokes(ABC):
-    """Stokes container backed by a single dense array with the components on the leading axis."""
+    """Stokes container backed by a single dense array with the components on the leading axis.
+
+    Concrete subclasses (`StokesI`, `StokesQU`, `StokesIQU`, `StokesIQUV`) each fix which Stokes
+    components (a subset of I, Q, U, V) they hold. The components are stacked on axis 0 of a single
+    array field, e.g. a ``StokesIQU`` over a ``(npix,)`` sky backs a ``(3, npix)`` array. Instances
+    are registered as pytrees with the array as the only leaf.
+
+    Examples:
+        Construct from separate components, positionally or by keyword. Components are promoted
+        to a common dtype and stacked, producing a jax-device array:
+
+        >>> import jax.numpy as jnp
+        >>> from furax.obs.stokes import Stokes, StokesIQU
+        >>> x = StokesIQU(jnp.ones(4), jnp.zeros(4), jnp.zeros(4))
+        >>> y = StokesIQU(i=jnp.ones(4), q=jnp.zeros(4), u=jnp.zeros(4))
+
+        ``from_stokes`` infers the concrete subclass from the number of components given:
+
+        >>> z = Stokes.from_stokes(jnp.ones(4), jnp.zeros(4), jnp.zeros(4))
+        >>> type(z) is StokesIQU
+        True
+
+        ``from_array`` wraps an already-stacked array (leading axis = number of components).
+        A plain ``numpy.ndarray`` is kept as-is, with no transfer to a jax device -- this is how
+        to build a host-only instance, e.g. inside a numpy-only I/O callback:
+
+        >>> import numpy as np
+        >>> host_array = np.zeros((3, 4))  # (n_stokes, npix)
+        >>> host_only = StokesIQU.from_array(host_array)
+        >>> isinstance(host_only.array, np.ndarray)
+        True
+    """
 
     stokes: ClassVar[ValidStokesType]
     array: Array
@@ -41,48 +73,33 @@ class Stokes(ABC):
         if kwargs:
             expected = {letter.lower() for letter in letters}
             if set(kwargs) != expected:
-                raise TypeError(
-                    f'Expected Stokes components {sorted(expected)}, got {sorted(kwargs)}.'
-                )
-            components: tuple[Any, ...] = tuple(kwargs[letter.lower()] for letter in letters)
+                msg = f'Expected Stokes components {sorted(expected)}, got {sorted(kwargs)}.'
+                raise TypeError(msg)
+            components = tuple(kwargs[letter.lower()] for letter in letters)
         else:
             components = args
         if len(components) != len(letters):
-            raise TypeError(
-                f'{type(self).__name__} expects {len(letters)} Stokes component(s), '
-                f'got {len(components)}.'
+            msg = (
+                f'{type(self).__name__} expects {len(letters)} component(s), got {len(components)}.'
             )
-        self.array = self._stack(components)
-
-    @staticmethod
-    def _stack(components: tuple[Any, ...]) -> Array:
-        if isinstance(components[0], jax.ShapeDtypeStruct):
-            shape = components[0].shape
-            dtype = jnp.result_type(*[c.dtype for c in components])
-            return cast(Array, jax.ShapeDtypeStruct((len(components), *shape), dtype))
-        return jnp.stack(components, axis=0)
-
-    # ---- pytree (single backing array is the only child) ----------------------------------------
-    def tree_flatten(self) -> tuple[tuple[Any, ...], Any]:
-        return (self.array,), None
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children) -> Self:  # type: ignore[no-untyped-def]
-        # Create an instance directly without going through from_array to avoid tracer issues
-        instance = object.__new__(cls)
-        instance.array = children[0]
-        return instance
+            raise TypeError(msg)
+        # Stack components on device; host (numpy) construction goes through `from_array`
+        object.__setattr__(self, 'array', jnp.stack(components, axis=0))
 
     @classmethod
     def from_array(cls, array: ArrayLike | jax.ShapeDtypeStruct) -> Self:
-        """Wrap a backing array of shape ``(len(stokes), *shape)``."""
-        arr = array if isinstance(array, jax.ShapeDtypeStruct) else jnp.asarray(array)
-        if arr.shape[0] != len(cls.stokes):
-            raise ValueError(
-                f'{cls.__name__} expects a leading axis of {len(cls.stokes)}, got shape {arr.shape}.'
-            )
+        """Wrap a backing array of shape ``(len(stokes), *shape)``.
+
+        A plain ``numpy.ndarray`` is kept as-is (no device transfer); anything else is
+        coerced through ``jnp.asarray``.
+        """
+        if not isinstance(array, (jax.ShapeDtypeStruct, np.ndarray)):
+            array = jnp.asarray(array)
+        if array.shape[0] != len(cls.stokes):
+            msg = f'{cls.__name__} expects a leading axis of {len(cls.stokes)}, got shape {array.shape}.'
+            raise ValueError(msg)
         instance = object.__new__(cls)
-        instance.array = cast(Array, arr)
+        object.__setattr__(instance, 'array', array)
         return instance
 
     def __pdoc__(self, **kwargs: Any) -> wl.AbstractDoc:
@@ -90,7 +107,7 @@ class Stokes(ABC):
         return wl.ConcatDoc(wl.TextDoc(f'{type(self).__name__}('), inner, wl.TextDoc(')'))
 
     def __repr__(self) -> str:
-        return cast(str, wl.pformat(self, width=80))
+        return wl.pformat(self, width=80)  # type: ignore[no-any-return]
 
     # ---- component access -----------------------------------------------------------------------
     def _component(self, letter: str) -> Array:
@@ -140,13 +157,11 @@ class Stokes(ABC):
             return NotImplemented
         return self.array == other.array
 
-    # Defining __eq__ without __hash__ makes instances unhashable (as the former dataclass was).
-
     def __matmul__(self, other: Any) -> Any:
         """Scalar product between Stokes pytrees."""
         if not isinstance(other, type(self)):
             return NotImplemented
-        return dot(self, other)
+        return jnp.sum(jnp.conj(self.array) * other.array)
 
     def __abs__(self) -> Self:
         return self.from_array(jnp.abs(self.array))
@@ -258,11 +273,7 @@ class Stokes(ABC):
         return cast(type[StokesType], requested_cls)
 
     @classmethod
-    def structure_for(
-        cls,
-        shape: tuple[int, ...],
-        dtype: DTypeLike = np.float64,
-    ) -> Self:
+    def structure_for(cls, shape: tuple[int, ...], dtype: DTypeLike = np.float64) -> Self:
         return cls.from_array(jax.ShapeDtypeStruct((len(cls.stokes), *shape), dtype))
 
     @classmethod
@@ -271,15 +282,7 @@ class Stokes(ABC):
 
     @classmethod
     @overload
-    def from_stokes(cls, i: jax.ShapeDtypeStruct) -> 'StokesI': ...
-
-    @classmethod
-    @overload
     def from_stokes(cls, q: ArrayLike, u: ArrayLike) -> 'StokesQU': ...
-
-    @classmethod
-    @overload
-    def from_stokes(cls, q: jax.ShapeDtypeStruct, u: jax.ShapeDtypeStruct) -> 'StokesQU': ...
 
     @classmethod
     @overload
@@ -288,23 +291,7 @@ class Stokes(ABC):
     @classmethod
     @overload
     def from_stokes(
-        cls, i: jax.ShapeDtypeStruct, q: jax.ShapeDtypeStruct, u: jax.ShapeDtypeStruct
-    ) -> 'StokesIQU': ...
-
-    @classmethod
-    @overload
-    def from_stokes(
         cls, i: ArrayLike, q: ArrayLike, u: ArrayLike, v: ArrayLike
-    ) -> 'StokesIQUV': ...
-
-    @classmethod
-    @overload
-    def from_stokes(
-        cls,
-        i: jax.ShapeDtypeStruct,
-        q: jax.ShapeDtypeStruct,
-        u: jax.ShapeDtypeStruct,
-        v: jax.ShapeDtypeStruct,
     ) -> 'StokesIQUV': ...
 
     @classmethod
@@ -385,22 +372,22 @@ class Stokes(ABC):
         return uniform_like(cls.structure_for(shape, dtype), key, low, high)
 
 
-@register_pytree_node_class
+@register_dataclass_with_keys
 class StokesI(Stokes):
     stokes: ClassVar[ValidStokesType] = 'I'
 
 
-@register_pytree_node_class
+@register_dataclass_with_keys
 class StokesQU(Stokes):
     stokes: ClassVar[ValidStokesType] = 'QU'
 
 
-@register_pytree_node_class
+@register_dataclass_with_keys
 class StokesIQU(Stokes):
     stokes: ClassVar[ValidStokesType] = 'IQU'
 
 
-@register_pytree_node_class
+@register_dataclass_with_keys
 class StokesIQUV(Stokes):
     stokes: ClassVar[ValidStokesType] = 'IQUV'
 

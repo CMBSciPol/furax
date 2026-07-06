@@ -101,8 +101,7 @@ def test_zeros(stokes: ValidStokesType, shape: tuple[int, ...], dtype, factory, 
 def test_structure(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> None:
     array = jnp.zeros(shape, dtype)
     pytree = Stokes.from_stokes(*[array for _ in stokes])
-    leaf_structure = jax.ShapeDtypeStruct(shape, dtype)
-    expected_pytree_structure = Stokes.from_stokes(*[leaf_structure for _ in stokes])
+    expected_pytree_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
 
     assert pytree.shape == shape
     assert pytree.dtype == dtype
@@ -242,3 +241,13 @@ def test_operation_incompatible_pytree(operation: Callable[[Any, Any], Any]) -> 
     b = Stokes.class_for('IQU').ones(())
     with pytest.raises(TypeError, match='unsupported operand type'):
         operation(a, b)
+
+
+def test_from_array_preserves_numpy(stokes: ValidStokesType) -> None:
+    cls = Stokes.class_for(stokes)
+    array = np.ones((len(stokes), 3), dtype=np.float32)
+    pytree = cls.from_array(array)
+    assert isinstance(pytree.array, np.ndarray)
+
+    jax_pytree = cls.from_array(jnp.ones((len(stokes), 3)))
+    assert isinstance(jax_pytree.array, jax.Array)

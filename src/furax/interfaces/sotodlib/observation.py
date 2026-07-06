@@ -279,8 +279,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if stokes == 'IQUV':
             raise NotImplementedError
         kls = Stokes.class_for(stokes)
-        tods = tuple(self._get_demodulated_tod(s) for s in stokes)  # type: ignore[arg-type]
-        return kls.from_stokes(*tods)
+        tods = [self._get_demodulated_tod(s) for s in stokes]  # type: ignore[arg-type]
+        return kls.from_array(np.stack(tods, axis=0))
 
     def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> NDArray[np.float64]:
         attr = {'I': 'dsT', 'Q': 'demodQ', 'U': 'demodU'}[stoke]
@@ -399,8 +399,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if stokes == 'IQUV':
             raise NotImplementedError
         kls = Stokes.class_for(stokes)
-        arrays = tuple(self._get_noise_model_for_stoke(s).to_array() for s in stokes)  # type: ignore[arg-type]
-        return kls.from_stokes(*arrays)
+        arrays = [self._get_noise_model_for_stoke(s).to_array() for s in stokes]  # type: ignore[arg-type]
+        return kls.from_array(np.stack(arrays, axis=0))
 
     def _get_noise_model_for_stoke(self, stoke: Literal['I', 'Q', 'U']) -> AtmosphericNoiseModel:
         preproc = self.data.get('preprocess')

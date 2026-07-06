@@ -1,4 +1,5 @@
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -208,25 +209,33 @@ class AbstractReader(ABC):
             i = int(i_arr)  # io_callback passes the index as a (host) array
             if i in self.known_failures:
                 # skip load entirely
+                logger.info('read item %d: skipped (known failure)', i)
                 return self._failure_filler(), zeros_like(padding_structure), np.array(False)
+            logger.info('read item %d: start', i)
+            start = time.perf_counter()
             try:
                 data = self._read_data_impure(
                     *self.args[i], **self.keywords[i], **self.common_keywords
                 )
             except Exception:
-                filler = self._failure_filler()
                 self.failed_indices.add(i)
-                logger.exception('read of item %d failed; substituting filler data', i)
-                return filler, zeros_like(padding_structure), np.array(False)
+                logger.exception(
+                    'read item %d: failed after %.1fs; substituting filler data',
+                    i,
+                    time.perf_counter() - start,
+                )
+                return self._failure_filler(), zeros_like(padding_structure), np.array(False)
             # Pad from the actual loaded shape (not the precomputed, probe-based padding): the
             # io_callback contract requires the result to match ``out_structure`` exactly, and
             # ``probe_shape`` is only an upper bound, so the load may be smaller than probed.
             actual_padding = self._actual_padding(data)
-            return (
+            result = (
                 self._pad(data, actual_padding),
                 self._padding_to_arrays(actual_padding),
                 np.array(True),
             )
+            logger.info('read item %d: ok (%.1fs)', i, time.perf_counter() - start)
+            return result
 
         result_shape = (
             self.out_structure,

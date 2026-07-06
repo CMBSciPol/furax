@@ -6,7 +6,7 @@ from functools import cached_property
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, NamedTuple, TypeVar, overload
 
 import equinox as eqx
 import jax
@@ -21,13 +21,13 @@ from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils as mhu
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
 import furax.linalg
 import furax.tree
 from furax import (
     AbstractLinearOperator,
-    Config,
     DiagonalOperator,
     IdentityOperator,
     MaskOperator,
@@ -35,6 +35,7 @@ from furax import (
     SymmetricBandToeplitzOperator,
 )
 from furax.core import (
+    BlockColumnOperator,
     BlockDiagonalOperator,
     BlockRowOperator,
     IndexOperator,
@@ -50,10 +51,9 @@ from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotation
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokesLiteral
 
-from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel
+from ._model import ObservationModel, ObservationTemplates
 from ._observation import (
     AbstractGroundObservation,
     AbstractLazyObservation,
@@ -71,14 +71,42 @@ from .config import (
     WeightingMode,
 )
 from .gap_filling import gap_fill
+from .gram import gram_inverse
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
 from .streaming import StreamColumnOperator, StreamDiagonalOperator
-from .templates import PerDetectorTemplate
+from .templates import ATOPProjectionOperator
 from .weight import WeightOperator
 
 T = TypeVar('T')
+S = TypeVar('S')
+
+
+class AccumulatedModel(NamedTuple):
+    """Result of [`MultiObservationMapMaker.build_model_and_accumulate`][].
+
+    Attributes:
+        model: Per-observation model, sharded over observations.
+        templates: Per-observation template operators, sharded over observations; ``None`` unless
+            templates are configured.
+        amplitude_rhs: Explicit-template RHS ``Tₑᵀ W' d``, obs-stacked; ``None`` without explicit
+            families.
+        implicit_gram_inverse: Implicit families' Gram inverse ``G⁻¹``, obs-stacked; ``None``
+            without implicit families.
+        explicit_gram_inverse: Explicit families' Gram inverse ``G⁻¹`` (used as a preconditioner
+            block, not for deprojection), obs-stacked; ``None`` without explicit families.
+        hit_map: Hit map, replicated (reduced across processes).
+        map_rhs: Map RHS, replicated (reduced across processes).
+    """
+
+    model: ObservationModel
+    templates: ObservationTemplates | None
+    amplitude_rhs: PyTree[Array] | None
+    implicit_gram_inverse: AbstractLinearOperator | None
+    explicit_gram_inverse: AbstractLinearOperator | None
+    hit_map: Int64[Array, '...']
+    map_rhs: StokesType
 
 
 class MultiObservationMapMaker(Generic[T]):
@@ -101,7 +129,9 @@ class MultiObservationMapMaker(Generic[T]):
         # Build the reader once, up front: it only probes shapes (no mesh context needed)
         rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
         model_fields = ObservationModel.required_reader_fields(self.config)
-        self.reader = self.get_reader(model_fields | rhs_fields)
+        # Template families need extra fields (azimuth, scanning intervals, ...); empty otherwise.
+        template_fields = ObservationTemplates.required_reader_fields(self.config)
+        self.reader = self.get_reader(model_fields | rhs_fields | template_fields)
 
     def _check_config(self) -> None:
         """Validate and adjust config for method-specific compatibility."""
@@ -119,6 +149,13 @@ class MultiObservationMapMaker(Generic[T]):
                     " Falling back to stokes='QU' instead."
                 )
                 self.config.landscape.stokes = 'QU'
+        if self.config.use_templates and not self.config.binned:
+            raise NotImplementedError('Using templates requires diagonal weighting.')
+        if self.config.use_templates and self.config.method == Methods.ATOP:
+            raise NotImplementedError(
+                'ATOP combined with templates is not yet supported: the template deprojection '
+                'Gram needs the banded FᵀWF treatment.'
+            )
 
     @cached_property
     def mesh(self) -> Mesh:
@@ -128,7 +165,11 @@ class MultiObservationMapMaker(Generic[T]):
     def sharding(self) -> NamedSharding:
         return NamedSharding(self.mesh, P('obs'))
 
-    def distribute(self, x: PyTree) -> PyTree:
+    @overload
+    def distribute(self, x: ArrayLike) -> Array: ...
+    @overload
+    def distribute(self, x: S) -> S: ...
+    def distribute(self, x: Any) -> Any:
         """Shard a pytree of process-local arrays along the leading 'obs' axis."""
         return jax.tree.map(lambda a: jax.make_array_from_process_local_data(self.sharding, a), x)
 
@@ -221,39 +262,92 @@ class MultiObservationMapMaker(Generic[T]):
         )
 
         with jax.set_mesh(self.mesh):
-            # Single read pass (sharded over observations): build the model and accumulate the
-            # hit map + RHS together, so each observation is read/preprocessed exactly once. The
-            # cross-process reduction of hits/rhs happens via psum inside the kernel.
-            model, hits, rhs = self.build_model_and_accumulate()
-            jax.block_until_ready((hits, rhs))
+            # Single read pass (sharded over observations): build the model, the per-observation
+            # template operators (when active) and accumulate the hit map + RHS together, so each
+            # observation is read/preprocessed exactly once.
+            acc = self.build_model_and_accumulate()
+            jax.block_until_ready(acc)
+            model, templates, amp_rhs, implicit_ginv, explicit_ginv, hit_map, map_rhs = acc
             logger_info('Accumulated hit map and RHS vector')
 
             failed_observations = self._collect_failed_observations()
             if failed_observations:
                 logger_info(f'{len(failed_observations)} observation(s) failed and were excluded')
 
-            # System operator (full/diagonal)
-            A = self.get_system_operator(model)
-            diag_A = A if self.config.binned else self.get_system_operator(model, diag=True)
-            BJ = BJPreconditioner.create(diag_A)
+            # Diagonal pixel system for the block-Jacobi preconditioner
+            H_sky: AbstractLinearOperator = StreamColumnOperator.create(model.H)
+            W: AbstractLinearOperator = StreamDiagonalOperator.create(model.W)
+            # Specify leading axis dimension because F can be trivial (no array leaves)
+            # Must be the *global* slot count to compose with the other operators
+            F = StreamDiagonalOperator.create(model.F, n_lead=n_slots_global)
+            W_diag = (
+                W
+                if self.config.binned
+                else StreamDiagonalOperator.create(eqx.filter_vmap(ObservationModel.diag_W)(model))
+            )
+            A_diag = (H_sky.T @ W_diag @ F @ H_sky).reduce()
+            BJ = BJPreconditioner.create(A_diag)
             icov = BJ.blocks.block_until_ready()
             logger_info('Computed white noise inverse covariance')
 
-            valid_pixels = self.pixel_selection(hits, icov)
+            # Pixel selection from the icov estimate
+            valid_pixels = self.pixel_selection(hit_map, icov)
             # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
-            selector = IndexOperator((..., *jnp.where(valid_pixels)), in_structure=A.out_structure)
+            S = IndexOperator((..., *jnp.where(valid_pixels)), in_structure=H_sky.in_structure)
+            H_sky @= S.T
+            M_sky = (S @ BJ.I @ S.T).reduce()
+
             n_selected = jnp.sum(valid_pixels)
-            n_observed = jnp.sum(hits > 0)
+            n_observed = jnp.sum(hit_map > 0)
             n_total = valid_pixels.size
             logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
 
-            hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
+            hit_map = hit_map.at[~valid_pixels].set(0)  # excluded pixels have zero hits
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
-            # Solve the mapmaking system
-            A_reduced = (selector @ A @ selector.T).reduce()
-            M = (selector @ BJ.I @ selector.T).reduce()  # preconditioner
-            rhs_reduced = selector(rhs)
+            # Unified GLS solve (Hᵀ W' H) x = Hᵀ W' d  (W already bundles the sample mask).
+            #
+            # H maps the unknowns to TOD:
+            # - no templates / implicit only: H = H_sky        (sky map only);
+            # - explicit families:           H = [H_sky | Tₑ] (sky map + template amplitudes).
+            #
+            # Implicit families fold into the weight (W → W', deprojection).
+            # The map RHS (``rhs``) and explicit-template RHS (``amp_rhs``) were already streamed in
+            # the read pass above -- including the implicit deprojection of the weight -- so only the
+            # system operator's weight needs the matching ``W'`` correction here (operator algebra,
+            # no further TOD reads).
+            WF = (W @ F).reduce()
+
+            # Fold implicit families into the system weight (marginal deprojection W').
+            if templates is not None and templates.implicit is not None:
+                assert implicit_ginv is not None  # set alongside templates.implicit in kernel
+                Ti = StreamDiagonalOperator.create(templates.implicit)
+                G = StreamDiagonalOperator.create(implicit_ginv)
+                WF = (WF - WF @ Ti @ G @ Ti.T @ WF).reduce()
+
+            joint = templates is not None and templates.explicit is not None
+            if not joint:
+                M = M_sky
+                rhs_joint: Any = S(map_rhs)
+                A = (H_sky.T @ WF @ H_sky).reduce()
+            else:
+                assert templates is not None and templates.explicit is not None  # mypy (joint)
+                Te = StreamDiagonalOperator.create(templates.explicit)
+                assert explicit_ginv is not None  # set alongside templates.explicit in kernel
+                G_e = StreamDiagonalOperator.create(explicit_ginv)
+                M = BlockDiagonalOperator([M_sky, G_e])
+                rhs_joint = [S(map_rhs), amp_rhs]
+
+                # Joint sky + explicit-amplitude system, assembled as a 2x2 block.
+                # Each block independently reduces to a streaming operator (Stream*Operator).
+                # TODO: fused mixed reduce+stack scan to share TOD computation.
+                A_ss = (H_sky.T @ WF @ H_sky).reduce()
+                A_sa = (H_sky.T @ WF @ Te).reduce()
+                A_as = (Te.T @ WF @ H_sky).reduce()
+                A_aa = (Te.T @ WF @ Te).reduce()
+                A = BlockColumnOperator(
+                    [BlockRowOperator([A_ss, A_sa]), BlockRowOperator([A_as, A_aa])]
+                )
 
             iteration_callback = None
             if self.config.solver.verbose:
@@ -263,23 +357,28 @@ class MultiObservationMapMaker(Generic[T]):
                         logger_info(f'CG step={int(step)} residual={float(r_norm):.6e}')
 
             result = furax.linalg.cg(
-                A_reduced,
-                rhs_reduced,
+                A,
+                rhs_joint,
                 preconditioner=M,
                 iteration_callback=iteration_callback,
                 **self.config.solver.options,
             )
-            estimate = selector.T(result.solution)
-            num_steps = result.num_steps
-            logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
+            logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
+
+            if joint:
+                sky_estimate, amplitudes = result.solution
+            else:
+                sky_estimate = result.solution
+                amplitudes = None
 
         return MapMakingResults(
-            map=estimate,
+            map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)
             icov=icov,
-            hit_map=hits,
-            solver_stats={'num_steps': num_steps},
+            hit_map=hit_map,
+            solver_stats={'num_steps': int(result.num_steps)},
             landscape=self.landscape,
             failed_observations=failed_observations,
+            template_amplitudes=dict(amplitudes) if amplitudes is not None else None,
         )
 
     def _collect_failed_observations(self) -> list[str]:
@@ -295,39 +394,38 @@ class MultiObservationMapMaker(Generic[T]):
         failed = np.flatnonzero(gathered.any(axis=0))
         return [self.observations[int(i)].name for i in failed]
 
-    def build_model_and_accumulate(
-        self,
-    ) -> tuple[ObservationModel, Int64[Array, '...'], StokesType]:
-        """Build the model and accumulate the hit map and RHS in a single, sharded read pass.
+    def build_model_and_accumulate(self) -> AccumulatedModel:
+        """Build the model and accumulate the hit map and map RHS in one sharded read pass.
 
-        Sharded over observations: each observation is read (and, for preproc-backed observations,
-        preprocessed) exactly once, and contributes to the model, the hit map and the RHS from that
-        single read. This avoids reading every observation twice (once to build the model, once to
-        accumulate the RHS). The hit map and RHS are reduced across all processes with ``psum``
-        inside the kernel.
+        Sharded over observations, each read (and preprocessed, when the backend requires it) exactly
+        once -- essential when reads are expensive. Padding and failed-load slots are gated out by
+        zeroing their mask, so they drop from the hit map, RHS and CG system alike; failed loads are
+        reported afterwards via ``self.reader.failed_indices``.
 
-        Observations that contribute nothing -- padding (added so every device carries the same
-        workload) and failed loads (the preprocessing pipeline raised) -- are gated out by zeroing
-        their masker inside the kernel, so they drop out of the hit map, the RHS, and the CG system
-        operator alike. Failed loads are reported afterwards from ``self.reader.failed_indices``
-        (see ``make_maps``).
+        With templates active, the per-observation template operators are built from the same read
+        and the RHS is deprojected ``Hᵀ W' d`` with ``W' = W − W Tᵢ G⁻¹ Tᵢᵀ W`` (implicit families'
+        marginal weight). The explicit leg ``Tₑᵀ W' d`` and the Gram inverse ``G⁻¹`` are accumulated
+        alongside for reuse in [`make_maps`][].
 
         Must run under ``jax.set_mesh(self.mesh)``.
 
-        Returns ``(model, hits, rhs)`` with the model sharded along the observation axis and the
-        hit map / RHS replicated (already reduced across processes).
+        Returns:
+            An [`AccumulatedModel`][]: ``model``/``templates`` sharded over observations,
+            ``amplitude_rhs``/``implicit_gram_inverse`` obs-stacked, ``hit_map``/``map_rhs``
+            replicated (reduced across processes).
         """
         config = self.config
         landscape = self.landscape
         reader = self.reader
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
+        build_templates = config.use_templates
+        reg = config.templates.regularization if config.templates is not None else 0.0
 
         indices = self.distribute(self.get_padded_read_indices())
         is_real = self.distribute(self._real_observation_mask())
         axis = jax.sharding.get_abstract_mesh().axis_names[0]
 
-        @jax.shard_map(out_specs=(P('obs'), P(), P()), check_vma=False)
         def kernel(indices, is_real):  # type: ignore[no-untyped-def]
             def step(carry, args):  # type: ignore[no-untyped-def]
                 hits_acc, rhs_acc = carry
@@ -335,7 +433,6 @@ class MultiObservationMapMaker(Generic[T]):
 
                 # Skip the load for padding slots: only the real branch hits the io_callback,
                 # so a padded observation is never read or preprocessed just to be masked away.
-                # (lax.cond evaluates a single branch at runtime)
                 data, padding, valid = jax.lax.cond(
                     real,
                     lambda: reader.read(i),
@@ -380,7 +477,8 @@ class MultiObservationMapMaker(Generic[T]):
                         metadata=data[ReaderField.METADATA],
                     )
 
-                # Use Python `if` for static `fill_gaps`, so gap-filling branch is not traced
+                # Use Python `if` for static `fill_gaps`/`build_templates`, so the inactive
+                # branches are not traced.
                 tod = data[ReaderField.SAMPLE_DATA]
                 if fill_gaps:
                     tod = jax.lax.cond(
@@ -389,36 +487,63 @@ class MultiObservationMapMaker(Generic[T]):
                         lambda _: _,  # return raw data as-is
                         tod,
                     )
-                    # Gaps filled: skip the data-side mask so the fill survives N⁻¹.
-                    rhs_i = obs.rhs_operator_prefilled(tod)
-                else:
-                    rhs_i = obs.rhs_operator(tod)
-                return (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i)), obs
+
+                if not build_templates:
+                    if fill_gaps:
+                        # Gaps filled: skip the data-side mask so the fill survives N⁻¹.
+                        rhs_i = obs.rhs_operator_prefilled(tod)
+                    else:
+                        rhs_i = obs.rhs_operator(tod)
+                    carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
+                    return carry, (obs, None, None, None, None)
+
+                # Templates: build the per-observation operators from this same read and apply the
+                # deprojected weight inline (G⁻¹ is per-observation, so no second TOD pass). Templates
+                # require config.binned=True, so fill_gaps (which requires not config.binned) never
+                # applies here. ``Weff`` bundles the sample mask (via ``obs.W``) and the deprojection
+                # operator ``obs.F`` (e.g. ATOP tau-averaging; identity otherwise).
+                templates = ObservationTemplates.create(data, config, obs.tod_structure)
+                Weff = (obs.W @ obs.F).reduce()
+                wd = Weff(tod)
+                ginv_i = None
+                if templates.implicit is not None:
+                    Ti = templates.implicit
+                    # ATOP + templates is rejected in _check_config, so F = I and Weff = W (diagonal)
+                    ginv_i = gram_inverse(Ti, obs.W, reg)
+                    wd = wd - Weff(Ti(ginv_i(Ti.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
+                rhs_i = obs.H.T(wd)
+                amp_i = None
+                ginv_e = None
+                if templates.explicit is not None:
+                    amp_i = templates.explicit.T(wd)
+                    # Explicit families are small-K in practice (T2P; config forces
+                    # explicit=True there), so the O(K) dense probe is cheap and, for a
+                    # per-detector (shared=False) basis, the only option. A large-K structured
+                    # explicit family (e.g. polynomial with explicit: true) still gets the fast
+                    # structured path automatically -- gram_inverse always tries it first.
+                    ginv_e = gram_inverse(templates.explicit, obs.W, reg, allow_dense_probe=True)
+                carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
+                return carry, (obs, templates, amp_i, ginv_i, ginv_e)
 
             init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')
             init_rhs = jax.lax.pcast(landscape.zeros(), axis, to='varying')
-            (hits, rhs), model = jax.lax.scan(step, (init_hits, init_rhs), (indices, is_real))
-            return model, jax.lax.psum(hits, axis), jax.lax.psum(rhs, axis)
+            (hits, rhs), stacked = jax.lax.scan(step, (init_hits, init_rhs), (indices, is_real))
+            hits = jax.lax.psum(hits, axis)
+            rhs = jax.lax.psum(rhs, axis)
+            model, templates, amp_rhs, implicit_ginv, explicit_ginv = stacked
+            return model, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs
 
-        model, hits, rhs = kernel(indices, is_real)
-        return model, hits, rhs
+        out_specs = (P('obs'), P('obs'), P('obs'), P('obs'), P('obs'), P(), P())
+        kernel = jax.shard_map(out_specs=out_specs, check_vma=False)(kernel)
+        model, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs = kernel(
+            indices, is_real
+        )
+        return AccumulatedModel(model, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs)
 
     def _real_observation_mask(self) -> np.ndarray:
         """Boolean flag per padded slot: True for real observations, False for padding."""
         _, n_owned, n_pad = self.obs_distribution
         return np.concatenate([np.ones(n_owned, dtype=bool), np.zeros(n_pad, dtype=bool)])
-
-    def get_system_operator(
-        self, model: ObservationModel, *, diag: bool = False
-    ) -> AbstractLinearOperator:
-        H = StreamColumnOperator.create(model.H)
-        # filter_vmap: array leaves mapped, static fields held
-        weight = eqx.filter_vmap(ObservationModel.diag_W)(model) if diag else model.W
-        W = StreamDiagonalOperator.create(weight)
-        # specify leading axis dimension because F can be trivial
-        _, n_own, n_pad = self.obs_distribution
-        F = StreamDiagonalOperator.create(model.F, n_lead=n_own + n_pad)
-        return (H.T @ W @ F @ H).reduce()
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -665,7 +790,6 @@ class MapMaker:
         maker = {
             Methods.BINNED: BinnedMapMaker,
             Methods.MAXL: MLMapmaker,
-            Methods.TWOSTEP: TwoStepMapmaker,
             Methods.ATOP: ATOPMapMaker,
         }[config.method]
 
@@ -884,138 +1008,6 @@ class MapMaker:
         )
         return IndexOperator((..., *jnp.where(valid)), in_structure=landscape.structure)
 
-    def get_template_operator(
-        self, observation: AbstractGroundObservation[Any]
-    ) -> BlockRowOperator:
-        """Create a template operator from the provided name and configuration."""
-        config = self.config
-        assert config.templates is not None
-        blocks: dict[str, AbstractLinearOperator] = {}
-
-        if poly := config.templates.polynomial:
-            blocks['polynomial'] = PerDetectorTemplate.polynomial(
-                max_poly_order=poly.legendre.max_order,
-                intervals=jnp.asarray(observation.get_scanning_intervals()),
-                times=jnp.asarray(observation.get_elapsed_times()),
-                n_dets=observation.n_detectors,
-                dtype=config.dtype,
-            )
-        if sss := config.templates.scan_synchronous:
-            blocks['scan_synchronous'] = PerDetectorTemplate.scan_synchronous(
-                legendre=sss.legendre,
-                azimuth=jnp.asarray(observation.get_azimuth()),
-                n_dets=observation.n_detectors,
-                dtype=config.dtype,
-            )
-        if baz := config.templates.binaz_synchronous:
-            blocks['binaz_synchronous'] = PerDetectorTemplate.binaz_synchronous(
-                bins=baz.bins,
-                azimuth=jnp.asarray(observation.get_azimuth()),
-                n_dets=observation.n_detectors,
-                dtype=config.dtype,
-            )
-        if hwpss := config.templates.hwp_synchronous:
-            blocks['hwp_synchronous'] = PerDetectorTemplate.hwp_synchronous(
-                n_harmonics=hwpss.n_harmonics,
-                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
-                n_dets=observation.n_detectors,
-                dtype=config.dtype,
-            )
-        if azhwpss := config.templates.azhwp_synchronous:
-            azimuth = jnp.asarray(observation.get_azimuth())
-            hwp_angles = jnp.asarray(observation.get_hwp_angles())
-            if azhwpss.split_scans:
-                blocks['azhwp_synchronous_left'] = PerDetectorTemplate.azhwp_synchronous(
-                    legendre=azhwpss.legendre,
-                    n_harmonics=azhwpss.n_harmonics,
-                    azimuth=azimuth,
-                    hwp_angles=hwp_angles,
-                    n_dets=observation.n_detectors,
-                    dtype=config.dtype,
-                    scan_mask=jnp.asarray(observation.get_left_scan_mask()),
-                )
-                blocks['azhwp_synchronous_right'] = PerDetectorTemplate.azhwp_synchronous(
-                    legendre=azhwpss.legendre,
-                    n_harmonics=azhwpss.n_harmonics,
-                    azimuth=azimuth,
-                    hwp_angles=hwp_angles,
-                    n_dets=observation.n_detectors,
-                    dtype=config.dtype,
-                    scan_mask=jnp.asarray(observation.get_right_scan_mask()),
-                )
-            else:
-                blocks['azhwp_synchronous'] = PerDetectorTemplate.azhwp_synchronous(
-                    legendre=azhwpss.legendre,
-                    n_harmonics=azhwpss.n_harmonics,
-                    azimuth=azimuth,
-                    hwp_angles=hwp_angles,
-                    n_dets=observation.n_detectors,
-                    dtype=config.dtype,
-                )
-        if binazhwpss := config.templates.binazhwp_synchronous:
-            blocks['binazhwp_synchronous'] = PerDetectorTemplate.binazhwp_synchronous(
-                bins=binazhwpss.bins,
-                n_harmonics=binazhwpss.n_harmonics,
-                azimuth=jnp.asarray(observation.get_azimuth()),
-                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
-                n_dets=observation.n_detectors,
-                dtype=config.dtype,
-            )
-        if shwpss := config.templates.spline_hwpss:
-            times = jnp.asarray(observation.get_elapsed_times())
-            blocks['spline_hwpss'] = PerDetectorTemplate.bspline_hwpss(
-                times=times,
-                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
-                n_dets=observation.n_detectors,
-                n_knots=shwpss.resolve_n_knots(times.size),
-                harmonics=shwpss.harmonics,
-                dtype=config.dtype,
-            )
-        if ground := config.templates.ground:
-            azimuth = jnp.asarray(observation.get_azimuth())
-            elevation = jnp.asarray(observation.get_elevation())
-            detector_quaternions = jnp.asarray(observation.get_detector_quaternions())
-            self._ground_landscape = templates.GroundTemplateOperator.get_landscape(
-                azimuth_resolution=ground.azimuth_resolution,
-                elevation_resolution=ground.elevation_resolution,
-                boresight_azimuth=azimuth,
-                boresight_elevation=elevation,
-                detector_quaternions=detector_quaternions,
-                stokes='IQU',
-                dtype=config.dtype,
-            )
-            ground_op = templates.GroundTemplateOperator.create(
-                azimuth_resolution=ground.azimuth_resolution,
-                elevation_resolution=ground.elevation_resolution,
-                boresight_azimuth=azimuth,
-                boresight_elevation=elevation,
-                boresight_rotation=jnp.zeros_like(azimuth),
-                detector_quaternions=detector_quaternions,
-                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
-                stokes='IQU',
-                dtype=config.dtype,
-                landscape=self._ground_landscape,
-                batch_size=config.pointing.batch_size,
-            )
-            ones_tod = jnp.ones(
-                (observation.n_detectors, observation.n_samples), dtype=config.dtype
-            )
-            self._ground_coverage = ground_op.T(ones_tod)
-            nonzero_hits = jnp.argwhere(self._ground_coverage.i > 0)
-            indexer = IndexOperator(
-                (..., nonzero_hits[:, 0], nonzero_hits[:, 1]),
-                in_structure=furax.tree.as_structure(self._ground_coverage),
-            )
-            flattener = furax.asoperator(
-                lambda s: jnp.concatenate([s.i, s.q, s.u]),
-                in_structure=indexer.out_structure,
-            )
-            self._ground_selector = flattener @ indexer
-
-            blocks['ground'] = ground_op @ self._ground_selector.T
-
-        return BlockRowOperator(blocks=blocks)
-
 
 class BinnedMapMaker(MapMaker):
     """Class for mapmaking with diagonal noise covariance."""
@@ -1107,6 +1099,11 @@ class MLMapmaker(MapMaker):
         # Validation on config
         if self.config.demodulated:
             raise ValueError('ML Mapmaker is incompatible with demodulated=True')
+        if self.config.use_templates:
+            raise NotImplementedError(
+                'single-observation mapmaking does not support templates; '
+                'use MultiObservationMapMaker instead.'
+            )
 
     def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]:
         config = self.config
@@ -1188,52 +1185,7 @@ class MLMapmaker(MapMaker):
         # Preconditioner
         # We use the approximate diagonal system matrix before the mask update
         preconditioner = selector @ diag_system.inverse() @ selector.T
-
-        # Templates (optional)
-        if config.use_templates:
-            template_op = self.get_template_operator(observation)
-            logger_info('Built template operators')
-            REGVAL = config.templates.regularization  # type: ignore[union-attr]
-            tmpl_inv_sys = {}
-            regs = {}
-            # Pass the operator as an explicit argument so JAX traces its arrays as inputs
-            # rather than hashing it as the jit fun (operators carry unhashable leaves).
-            apply = jax.jit(lambda op, v: op(v))
-            for tmpl, tmpl_op in template_op.blocks.items():
-                tmpl_sys = (tmpl_op.T @ diag_inv_noise @ masker @ tmpl_op).reduce()
-                # Approximation to the diagonal of the matrix
-                norm_sys = jnp.abs(apply(tmpl_sys, furax.tree.ones_like(tmpl_op.in_structure)))
-                # Regualrisation value is REGVAL times the smallest non-zero eigenvalue
-                regs[tmpl] = REGVAL * jnp.min(norm_sys[norm_sys > 0])
-                tmpl_inv_sys[tmpl] = DiagonalOperator(
-                    (norm_sys + regs[tmpl]),
-                    in_structure=tmpl_op.in_structure,
-                ).inverse()
-            template_preconditioner = BlockDiagonalOperator(tmpl_inv_sys)
-            logger_info('Built template preconditioner')
-            template_reg_op = BlockDiagonalOperator(
-                [
-                    DiagonalOperator(jnp.array([0.0]), in_structure=selector.out_structure),
-                    {
-                        tmpl: regs[tmpl]
-                        * IdentityOperator(in_structure=template_op.blocks[tmpl].in_structure)
-                        for tmpl in template_op.blocks.keys()
-                    },
-                ]
-            )
-            logger_info('Built template regularizer')
-            logger_info(f'Template operator input structure: {template_op.in_structure}')
-
-        # Mapmaking operator
-        p: AbstractLinearOperator
-        h: AbstractLinearOperator
-        if config.use_templates:
-            p = BlockDiagonalOperator([preconditioner, template_preconditioner])
-            h = BlockRowOperator([acquisition @ selector.T, template_op])
-            reg = template_reg_op
-        else:
-            p = preconditioner
-            h = acquisition @ selector.T
+        h = acquisition @ selector.T
 
         if config.gaps.treatment != GapTreatment.NESTED:
             M = masker @ inv_noise @ masker
@@ -1254,11 +1206,8 @@ class MLMapmaker(MapMaker):
             logger_info('Set up nested PCG for the noise inverse')
 
         solver = lineax.CG(**config.solver.options)
-        options = {'solver': solver, 'preconditioner': p}
-        if config.use_templates:
-            mapmaking_operator = (h.T @ M @ h + reg).I(**options) @ h.T @ M
-        else:
-            mapmaking_operator = (h.T @ M @ h).I(**options) @ h.T @ M
+        options = {'solver': solver, 'preconditioner': preconditioner}
+        mapmaking_operator = (h.T @ M @ h).I(**options) @ h.T @ M
 
         @jax.jit
         def process(d):  # type: ignore[no-untyped-def]
@@ -1267,10 +1216,7 @@ class MLMapmaker(MapMaker):
         logger_info('Completed setting up the solver')
 
         # Run mapmaking
-        if config.use_templates:
-            rec_map, tmpl_ampl = process(data)
-        else:
-            rec_map = process(data)
+        rec_map = process(data)
         result_map = selector.T(rec_map)
         result_map.i.block_until_ready()
         logger_info('Finished mapmaking computation')
@@ -1294,136 +1240,9 @@ class MLMapmaker(MapMaker):
             and config.weighting.mode != WeightingMode.IDENTITY
         ):
             output['noise_fit'] = noise_model.to_array()
-        if config.use_templates:
-            for key in tmpl_ampl.keys():
-                output[f'template_{key}'] = tmpl_ampl[key]
-                output[f'template_reg_{key}'] = np.array(regs[key])
-            if 'ground' in tmpl_ampl.keys():
-                output['ground_landscape'] = self._ground_landscape
-                output['ground_coverage'] = self._ground_coverage
-                output['ground_map'] = self._ground_selector.T(tmpl_ampl['ground'])
         if config.debug:
             proj_map = (masker @ acquisition)(result_map)
-            if config.use_templates:
-                projs = {
-                    'proj_map': proj_map,
-                    **{
-                        f'proj_{tmpl}': (masker @ template_op.blocks[tmpl])(tmpl_ampl[tmpl])
-                        for tmpl in tmpl_ampl
-                    },
-                }
-            else:
-                projs = {'proj_map': proj_map}
-            output['projs'] = projs
-
-        return output
-
-
-class TwoStepMapmaker(MapMaker):
-    """Class for binned mapmaking with templates, using the two-step estimation method."""
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-
-        # Validation on config
-        if not self.config.binned:
-            raise ValueError('Two-Step Mapmaker is incompatible with binned=False')
-        if self.config.demodulated:
-            raise ValueError('Two-Step Mapmaker is incompatible with demodulated=True')
-        if not self.config.use_templates:
-            raise ValueError('Two-Step Mapmaker is incompatible with no templates')
-
-    def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]:
-        config = self.config
-        logger_info = lambda msg: self.logger.info(f'Two-Step Mapmaker: {msg}')
-
-        # Data and landscape
-        data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
-        data_struct = ShapeDtypeStruct(data.shape, data.dtype)
-        landscape = self.get_landscape(observation)
-
-        # Acquisition (I, Q, U Maps -> TOD)
-        acquisition = self.get_acquisition(observation, landscape=landscape)
-        logger_info('Created acquisition operator')
-
-        # Optional mask for scanning
-        masker = self.get_scanning_mask_projector(observation)
-        logger_info('Created scanning mask operator')
-
-        # Noise
-        noise_model = self.get_or_fit_noise_model(observation)
-        inv_noise = noise_model.inverse_operator(data_struct)
-        logger_info('Created inverse noise covariance operator')
-
-        # System matrix
-        system = BJPreconditioner.create(acquisition.T @ masker @ inv_noise @ masker @ acquisition)
-        logger_info('Created system matrix')
-
-        # Map pixel selection
-        blocks = system.blocks
-        selector = self.get_pixel_selector(blocks, landscape)
-        logger_info(
-            f'Selected {prod(selector.out_structure.shape)}\
-                            /{prod(landscape.shape)} pixels'
-        )
-
-        # Templates
-        template_op = self.get_template_operator(observation)
-        logger_info('Built template operators')
-
-        # Define operators
-        system_inv = selector @ system.inverse() @ selector.T
-        A = acquisition @ selector.T
-        M = inv_noise
-        mp = masker
-        FA = M - M @ mp @ A @ system_inv @ A.T @ mp @ M
-
-        solver = lineax.CG(**config.solver.options)
-        with Config(solver=solver):
-            template_estimator = (
-                (template_op.T @ mp @ FA @ mp @ template_op).I @ template_op.T @ mp @ FA @ mp
-            )
-        map_estimator = system_inv @ A.T @ mp @ M @ mp
-
-        @jax.jit
-        def process(d):  # type: ignore[no-untyped-def]
-            x = template_estimator(d)  # Template amplitude estimates
-            s = map_estimator(d - template_op(x))  # Map estimates
-            return s, x
-
-        logger_info('Completed setting up the solver')
-
-        # Run mapmaking
-        rec_map, tmpl_ampl = process(data)
-        result_map = selector.T(rec_map)
-        result_map.i.block_until_ready()
-        logger_info('Finished mapmaking computation')
-
-        # Format output and compute auxiliary data
-        final_map = np.array([result_map.i, result_map.q, result_map.u])
-
-        output = {'map': final_map, 'weights': blocks}
-        for key in tmpl_ampl.keys():
-            output[f'template_{key}'] = tmpl_ampl[key]
-        if isinstance(landscape, WCSLandscape):
-            output['wcs'] = landscape.to_wcs()
-        elif isinstance(landscape, AstropyWCSLandscape):
-            output['wcs'] = landscape.wcs
-        if (
-            config.weighting.source == NoiseSource.FIT
-            and config.weighting.mode != WeightingMode.IDENTITY
-        ):
-            output['noise_fit'] = noise_model.to_array()
-        if config.debug:
-            proj_map = (mp @ acquisition)(result_map)
-            projs = {
-                'proj_map': proj_map,
-                **{
-                    f'proj_{tmpl}': (mp @ template_op.blocks[tmpl])(tmpl_ampl[tmpl])
-                    for tmpl in tmpl_ampl
-                },
-            }
-            output['projs'] = projs
+            output['projs'] = {'proj_map': proj_map}
 
         return output
 
@@ -1456,9 +1275,7 @@ class ATOPMapMaker(MapMaker):
         logger_info('Created acquisition operator')
 
         # ATOP projector
-        atop_projector = templates.ATOPProjectionOperator(
-            self.config.atop_tau, in_structure=data_struct
-        )
+        atop_projector = ATOPProjectionOperator(self.config.atop_tau, in_structure=data_struct)
 
         # Optional mask for scanning
         masker = self.get_mask_projector(observation)

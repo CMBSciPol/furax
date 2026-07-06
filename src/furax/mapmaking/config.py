@@ -47,6 +47,7 @@ __all__ = [
     'AzHWPSynchronousConfig',
     'BinAzHWPSynchronousConfig',
     'SplineHWPSSConfig',
+    'T2PConfig',
     'GroundConfig',
     'SotodlibConfig',
 ]
@@ -63,9 +64,6 @@ class Methods(Enum):
 
     MAXL = 'ML'
     """Classic maximum-likelihood mapmaking solve via conjugate gradient iteration."""
-
-    TWOSTEP = 'TwoStep'
-    """Two-step mapmaking (destriper-like)."""
 
     ATOP = 'ATOP'
     """Polarisation (QU only) estimator using deprojection of short baselines.
@@ -375,6 +373,14 @@ class PolynomialConfig:
 
     legendre: PolynomialOrders = PolynomialOrders(0, 3)
     """Legendre orders for the polynomial drift template."""
+    legendre_qu: PolynomialOrders | None = None
+    """Legendre orders for the Q/U legs, demodulated data only.
+
+    Overrides ``legendre`` for the Q and U legs (fitted independently from each other and
+    from I). ``None`` reuses ``legendre`` for every leg. Requires ``demodulated=True``.
+    """
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -387,6 +393,9 @@ class ScanSynchronousConfig:
     legendre: PolynomialOrders = PolynomialOrders(3, 7)
     """Legendre orders for the azimuth-dependent basis."""
 
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
+
 
 @dataclass
 class BinAzSynchronousConfig:
@@ -398,6 +407,9 @@ class BinAzSynchronousConfig:
     bins: BinsConfig = field(default_factory=BinsConfig)
     """Azimuth binning."""
 
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
+
 
 @dataclass
 class HWPSynchronousConfig:
@@ -405,6 +417,9 @@ class HWPSynchronousConfig:
 
     n_harmonics: int = 3
     """Number of HWP harmonics to fit."""
+
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -420,6 +435,9 @@ class AzHWPSynchronousConfig:
     split_scans: bool = False
     """Fit independent coefficients per subscan instead of shared ones."""
 
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
+
 
 @dataclass
 class BinAzHWPSynchronousConfig:
@@ -434,6 +452,9 @@ class BinAzHWPSynchronousConfig:
     n_harmonics: int = 4
     """Number of HWP harmonics to fit."""
 
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
+
 
 @dataclass
 class SplineHWPSSConfig:
@@ -445,6 +466,9 @@ class SplineHWPSSConfig:
     """Number of samples per knot."""
     harmonics: tuple[int, ...] = (4,)
     """HWP harmonics to fit with splines."""
+
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
     def __post_init__(self) -> None:
         if self.n_knots is None and self.samples_per_knot is None:
@@ -462,6 +486,24 @@ class SplineHWPSSConfig:
 
 
 @dataclass
+class T2PConfig:
+    """Temperature-to-polarization leakage template (demodulated data only)."""
+
+    fit_band: tuple[float, float] | None = None
+    """Frequency band (in Hz) used to fit the leakage coefficients. `None` uses the full band."""
+
+    decimate: int = 1
+    """Decimation factor applied to the I template before fitting."""
+
+    explicit: bool = True
+    """T2P templates are always solved explicitly; deprojection is not supported."""
+
+    def __post_init__(self) -> None:
+        if not self.explicit:
+            raise ValueError('T2P template filtering requires explicit=True')
+
+
+@dataclass
 class GroundConfig:
     """Ground pickup template: binned in (azimuth, elevation)."""
 
@@ -476,6 +518,13 @@ class GroundConfig:
 
     Defaults to 0.05 (~3 deg).
     """
+
+    explicit: bool = True
+    """Ground templates are always solved explicitly; deprojection is not supported."""
+
+    def __post_init__(self) -> None:
+        if not self.explicit:
+            raise ValueError('Ground template filtering requires explicit=True')
 
 
 @dataclass
@@ -518,6 +567,9 @@ class TemplatesConfig:
     spline_hwpss: SplineHWPSSConfig | None = None
     """HWP-synchronous template on a cubic B-spline basis in HWP angle."""
 
+    t2p: T2PConfig | None = None
+    """Temperature-to-polarization leakage template (demodulated data only)."""
+
     ground: GroundConfig | None = None
     """Ground pickup template, binned in (azimuth, elevation)."""
 
@@ -534,6 +586,7 @@ class TemplatesConfig:
             hwp_synchronous=HWPSynchronousConfig(),
             azhwp_synchronous=AzHWPSynchronousConfig(),
             binazhwp_synchronous=BinAzHWPSynchronousConfig(),
+            t2p=T2PConfig(),
             spline_hwpss=SplineHWPSSConfig(),
             ground=GroundConfig(),
         )
@@ -736,13 +789,31 @@ class MapMakingConfig:
     sotodlib: SotodlibConfig | None = None
     """Options specific to the sotodlib interface. `None` when not using sotodlib data."""
 
+    def __post_init__(self) -> None:
+        """Validate cross-field constraints that hold regardless of which mapmaker runs."""
+        if (templates := self.templates) is not None:
+            if templates.t2p is not None:
+                if not self.demodulated:
+                    raise ValueError('The T2P template requires demodulated=True.')
+                if 'I' not in self.landscape.stokes:
+                    raise ValueError(
+                        "The T2P template requires an 'I' leg in landscape.stokes (got "
+                        f'{self.landscape.stokes!r}).'
+                    )
+            if (
+                templates.polynomial is not None
+                and templates.polynomial.legendre_qu is not None
+                and not self.demodulated
+            ):
+                raise ValueError('templates.polynomial.legendre_qu requires demodulated=True.')
+
     @classmethod
     def for_method(cls, method: 'Methods | str') -> 'MapMakingConfig':
         """Return a default MapMakingConfig pre-configured for the given method.
 
         Args:
             method: A ``Methods`` enum value or its string name (e.g. ``'binned'``,
-                ``'ml'``, ``'twostep'``, ``'atop'``), case-insensitive.
+                ``'ml'``, ``'atop'``), case-insensitive.
         """
         if isinstance(method, str):
             upper = method.upper()
@@ -774,19 +845,6 @@ class MapMakingConfig:
                     max_steps=1_000,
                 ),
                 templates=None,
-            )
-        elif method == Methods.TWOSTEP:
-            return cls(
-                method=Methods.TWOSTEP,
-                weighting=WeightingConfig(),
-                solver=SolverConfig(
-                    rtol=1e-6,
-                    atol=0,
-                    max_steps=1_000,
-                ),
-                templates=TemplatesConfig(
-                    polynomial=PolynomialConfig(),
-                ),
             )
         elif method == Methods.ATOP:
             return cls(

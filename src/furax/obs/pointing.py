@@ -134,10 +134,10 @@ class PointingOperator(AbstractLinearOperator):
             tod_chunk = mv_inner(self.qdet[idet])
 
             # update the output map
-            return type(tod).from_array(tod.array.at[:, idet].set(tod_chunk.data))
+            return type(tod).from_array(tod.data.at[:, idet].set(tod_chunk.data))
 
         # Start from empty timestream
-        empty = jnp.empty_like(x.structure_for(shape=(ndet, nsamp), dtype=x.dtype).data)
+        empty = jnp.empty((len(x.stokes), ndet, nsamp), dtype=x.dtype)
         tod_out: StokesType = type(x).from_array(empty)
         tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
         return tod_out

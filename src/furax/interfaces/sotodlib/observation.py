@@ -394,8 +394,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         except ValueError:
             return None
 
-    def get_demodulated_noise_models(self, stokes: ValidStokesType = 'IQU') -> StokesType:
-        """Returns per-Stokes noise model fit arrays as a Stokes pytree."""
+    def get_demodulated_noise_model(self, stokes: ValidStokesType = 'IQU') -> StokesType:
+        """Returns noise model fit arrays as a Stokes container."""
         if stokes == 'IQUV':
             raise NotImplementedError
         kls = Stokes.class_for(stokes)

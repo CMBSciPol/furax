@@ -14,7 +14,7 @@ from furax.mapmaking import (
 )
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import ProjectionType, StokesLandscape
-from furax.obs.stokes import Stokes
+from furax.obs.stokes import Stokes, ValidStokesType
 
 
 class FakeObservation(AbstractObservation[None]):
@@ -84,7 +84,7 @@ class FakeObservation(AbstractObservation[None]):
         rng = np.random.default_rng(self._seed)
         return rng.normal(size=(self._n_dets, self._n_samples)).astype(np.float32)
 
-    def get_demodulated_tods(self, stokes: str = 'IQU') -> Any:
+    def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> Any:
         # One synthetic (dets, samps) stream per requested Stokes component.
         kls = Stokes.class_for(stokes)
         rng = np.random.default_rng(self._seed + 1)
@@ -93,7 +93,7 @@ class FakeObservation(AbstractObservation[None]):
         ]
         return kls.from_stokes(*streams)
 
-    def get_demodulated_noise_models(self, stokes: str = 'IQU') -> Any:
+    def get_demodulated_noise_model(self, stokes: ValidStokesType = 'IQU') -> Any:
         # One white-noise fit per Stokes component. Columns match
         # AtmosphericNoiseModel.to_array: (sigma, alpha, fk, f0).
         kls = Stokes.class_for(stokes)

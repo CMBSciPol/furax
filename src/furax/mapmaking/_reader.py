@@ -314,7 +314,7 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         def get_noise_model_fits(obs: AbstractObservation[T]) -> Any:
             if demodulated:
-                fits = obs.get_demodulated_noise_models(stokes=stokes)
+                fits = obs.get_demodulated_noise_model(stokes=stokes)
             else:
                 fits = if_none_raise_error(obs.get_noise_model()).to_array()
             return jax.tree.map(lambda x: x.astype(target_dtype), fits)

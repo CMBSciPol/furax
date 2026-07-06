@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from functools import partial
 from typing import Any, cast
 
 import cadre
@@ -30,10 +29,10 @@ class NoiseModel(ABC):
     def n_detectors(self) -> int: ...
 
     @abstractmethod
-    def psd(self, f: Float[Array, ' a']) -> Float[Array, 'dets a']: ...
+    def psd(self, f: Float[Array, ' a']) -> Float[Array, '... a']: ...
 
     @abstractmethod
-    def log_psd(self, f: Float[Array, ' a']) -> Float[Array, 'dets a']: ...
+    def log_psd(self, f: Float[Array, ' a']) -> Float[Array, '... a']: ...
 
     @abstractmethod
     def to_array(self) -> Float[Array, 'dets n']: ...
@@ -83,17 +82,17 @@ class WhiteNoiseModel(NoiseModel):
 
     @property
     def n_detectors(self) -> int:
-        return len(self.sigma)
+        return self.sigma.shape[-1]
 
     @jax.jit
-    @partial(jax.vmap, in_axes=(None, 0), out_axes=1)
-    def psd(self, f: Float[Array, '']) -> Float[Array, ' dets']:
-        return self.sigma**2
+    def psd(self, f: Float[Array, ' a']) -> Float[Array, '... a']:
+        return jnp.broadcast_to(self.sigma[..., None] ** 2, (*self.sigma.shape, f.shape[-1]))
 
     @jax.jit
-    @partial(jax.vmap, in_axes=(None, 0), out_axes=1)
-    def log_psd(self, f: Float[Array, '']) -> Float[Array, ' dets']:
-        return 2 * jnp.log10(self.sigma)
+    def log_psd(self, f: Float[Array, ' a']) -> Float[Array, '... a']:
+        return jnp.broadcast_to(
+            2 * jnp.log10(self.sigma)[..., None], (*self.sigma.shape, f.shape[-1])
+        )
 
     def to_array(self) -> Float[Array, 'dets n']:
         return self.sigma[:, None]
@@ -146,19 +145,21 @@ class AtmosphericNoiseModel(NoiseModel):
 
     @property
     def n_detectors(self) -> int:
-        return len(self.sigma)
+        return self.sigma.shape[-1]
 
     @jax.jit
-    @partial(jax.vmap, in_axes=(None, 0), out_axes=1)
-    def psd(self, f: Float[Array, '']) -> Float[Array, '']:
+    def psd(self, f: Float[Array, ' a']) -> Float[Array, '... a']:
+        ratio = (f + self.f0[..., None]) / self.fk[..., None]
         return jnp.where(
-            self.sigma > 0, self.sigma**2 * (1 + ((f + self.f0) / self.fk) ** self.alpha), 0
+            self.sigma[..., None] > 0,
+            self.sigma[..., None] ** 2 * (1 + ratio ** self.alpha[..., None]),
+            0,
         )
 
     @jax.jit
-    @partial(jax.vmap, in_axes=(None, 0), out_axes=1)
-    def log_psd(self, f: Float[Array, '']) -> Float[Array, '']:
-        return 2 * jnp.log10(self.sigma) + jnp.log10(1 + ((f + self.f0) / self.fk) ** self.alpha)
+    def log_psd(self, f: Float[Array, ' a']) -> Float[Array, '... a']:
+        ratio = (f + self.f0[..., None]) / self.fk[..., None]
+        return 2 * jnp.log10(self.sigma)[..., None] + jnp.log10(1 + ratio ** self.alpha[..., None])
 
     def to_array(self) -> Float[Array, 'dets n']:
         return jnp.stack([self.sigma, self.alpha, self.fk, self.f0], axis=-1)
@@ -184,7 +185,7 @@ class AtmosphericNoiseModel(NoiseModel):
         padded_band = jnp.pad(inv_band, pad_width)
         symmetrised_band = jnp.concatenate([padded_band, inv_band[..., -1:0:-1]], axis=-1)
         eff_inv_psd = jnp.fft.rfft(symmetrised_band, n=fft_size).real
-        new_band = jnp.fft.irfft(1.0 / eff_inv_psd, n=fft_size)[:, :correlation_length] * window
+        new_band = jnp.fft.irfft(1.0 / eff_inv_psd, n=fft_size)[..., :correlation_length] * window
         return SymmetricBandToeplitzOperator(new_band, in_structure=in_structure)
 
     def inverse_operator(

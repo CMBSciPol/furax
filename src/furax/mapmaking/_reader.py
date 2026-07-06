@@ -243,9 +243,9 @@ class ObservationReader(AbstractReader, Generic[T]):
         if ReaderField.NOISE_MODEL_FITS in data_field_names:
 
             def _pad_noise_fits(arr: np.ndarray) -> np.ndarray:
-                default = np.array([[0.0, 0.0, 1.0, 0.1]], dtype=arr.dtype)
-                zero_padded = arr[:, 0] == 0.0
-                return np.where(zero_padded[:, None], default, arr)
+                default = np.array([0.0, 0.0, 1.0, 0.1], dtype=arr.dtype)
+                zero_padded = arr[..., 0] == 0.0
+                return np.where(zero_padded[..., None], default, arr)
 
             data[ReaderField.NOISE_MODEL_FITS] = jax.tree.map(
                 _pad_noise_fits, data[ReaderField.NOISE_MODEL_FITS]
@@ -285,7 +285,7 @@ class ObservationReader(AbstractReader, Generic[T]):
             ReaderField.DETECTOR_QUATERNIONS: jax.ShapeDtypeStruct((n_detectors, 4), dtype),
             ReaderField.BORESIGHT_QUATERNIONS: jax.ShapeDtypeStruct((n_samples, 4), dtype),
             ReaderField.NOISE_MODEL_FITS: (
-                Stokes.class_for(stokes).structure_for((n_detectors, 4), dtype)
+                jax.ShapeDtypeStruct((len(stokes), n_detectors, 4), dtype)
                 if demodulated
                 else jax.ShapeDtypeStruct((n_detectors, 4), dtype)
             ),
@@ -314,9 +314,10 @@ class ObservationReader(AbstractReader, Generic[T]):
 
         def get_noise_model_fits(obs: AbstractObservation[T]) -> Any:
             if demodulated:
-                fits = obs.get_demodulated_noise_model(stokes=stokes)
+                model = obs.get_demodulated_noise_model(stokes=stokes)
             else:
-                fits = if_none_raise_error(obs.get_noise_model()).to_array()
+                model = if_none_raise_error(obs.get_noise_model())
+            fits = model.to_array()
             return jax.tree.map(lambda x: x.astype(target_dtype), fits)
 
         def get_timestamps(obs: AbstractObservation[T]) -> Any:

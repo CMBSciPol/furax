@@ -177,11 +177,11 @@ class AbstractObservation(ABC, Generic[T]):
         """
         raise NotImplementedError(f'{type(self).__name__} does not support demodulated TODs')
 
-    def get_demodulated_noise_model(self, stokes: ValidStokesType = 'IQU') -> Any:
-        """Returns pre-computed noise model fit arrays as a Stokes container.
+    def get_demodulated_noise_model(self, stokes: ValidStokesType = 'IQU') -> NoiseModel:
+        """Returns a single noise model covering every requested Stokes leg.
 
-        A single noise model covers every Stokes leg: its per-detector parameters carry a
-        leading Stokes axis, so I/Q/U may have distinct fit values without being separate models.
+        Its per-detector parameters carry a leading Stokes axis, so I/Q/U may have distinct
+        fit values without being separate models.
 
         Subclasses that support demodulated data should override this method.
         """

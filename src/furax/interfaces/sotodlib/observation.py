@@ -390,31 +390,31 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     def get_noise_model(self) -> None | NoiseModel:
         """Load precomputed noise model from the data, if present. Otherwise, return None"""
         try:
-            return self._get_noise_model_for_stoke('I')
+            fit = self._get_noise_fit_for_stoke('I')
         except ValueError:
             return None
+        return AtmosphericNoiseModel(*fit)
 
-    def get_demodulated_noise_model(self, stokes: ValidStokesType = 'IQU') -> StokesType:
-        """Returns noise model fit arrays as a Stokes container."""
+    def get_demodulated_noise_model(self, stokes: ValidStokesType = 'IQU') -> NoiseModel:
+        """Returns a single noise model covering every requested Stokes leg.
+
+        Each Stokes leg is fit independently (I/Q/U noise properties genuinely differ), so the
+        per-detector parameters carry a leading Stokes axis rather than being separate models.
+        """
         if stokes == 'IQUV':
             raise NotImplementedError
-        kls = Stokes.class_for(stokes)
-        arrays = [self._get_noise_model_for_stoke(s).to_array() for s in stokes]  # type: ignore[arg-type]
-        return kls.from_array(np.stack(arrays, axis=0))
+        fits = np.stack([self._get_noise_fit_for_stoke(s) for s in stokes], axis=1)  # type: ignore[arg-type]
+        return AtmosphericNoiseModel(*fits)
 
-    def _get_noise_model_for_stoke(self, stoke: Literal['I', 'Q', 'U']) -> AtmosphericNoiseModel:
+    def _get_noise_fit_for_stoke(self, stoke: Literal['I', 'Q', 'U']) -> NDArray[np.floating]:
+        """Returns the (sigma, alpha, fk, f0) fit rows for one Stokes leg, shape ``(4, dets)``."""
         preproc = self.data.get('preprocess')
         if preproc is None:
             raise ValueError('No preprocess data available')
         if self._sotodlib_config.noise_source == 'mapmaking':
-            wn = preproc['noiseQ_mapmaking.white_noise']
-            sigma = jnp.array(wn, dtype=jnp.float64)
-            return AtmosphericNoiseModel(
-                sigma=sigma,
-                alpha=jnp.ones_like(sigma),  # fake
-                fk=jnp.ones_like(sigma),  # fake
-                f0=jnp.ones_like(sigma),  # fake
-            )
+            sigma = np.asarray(preproc['noiseQ_mapmaking.white_noise'])
+            ones = np.ones_like(sigma)  # fake alpha, fk, f0
+            return np.stack([sigma, ones, ones, ones], axis=0)
         attr = {'I': 'noiseT', 'Q': 'noiseQ', 'U': 'noiseU'}[stoke]
         if attr not in preproc:
             raise ValueError(f'No {attr} noise model available')
@@ -426,12 +426,11 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         actual = list(fit.noise_model_coeffs.vals)
         if actual != expected:
             raise ValueError(f'Unexpected noise model coefficients: {actual}, expected {expected}')
-        return AtmosphericNoiseModel(
-            sigma=jnp.array(fit.fit[:, 0]),
-            alpha=jnp.array(-fit.fit[:, 2]),
-            fk=jnp.array(fit.fit[:, 1]),
-            f0=1e-5 * jnp.ones_like(fit.fit[:, 1]),
-        )
+        sigma = np.asarray(fit.fit[:, 0])
+        alpha = np.asarray(-fit.fit[:, 2])
+        fk = np.asarray(fit.fit[:, 1])
+        f0 = 1e-5 * np.ones_like(fk)
+        return np.stack([sigma, alpha, fk, f0], axis=0)
 
     '''
     def get_noise_fits(self, fmin: float) -> NDArray[np.float64]:

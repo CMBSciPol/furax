@@ -209,7 +209,7 @@ def _noise_model(
         # restore the leading axes on each (flattened-detector) parameter array
         noise_model = jax.tree.map(lambda p: p.reshape(lead + p.shape[1:]), flat_model)
     else:
-        fits = _as_array(data[ReaderField.NOISE_MODEL_FITS])  # (*lead, 4)
+        fits = data[ReaderField.NOISE_MODEL_FITS]  # (*lead, 4), already a plain array
         noise_model = AtmosphericNoiseModel(*jnp.moveaxis(fits, -1, 0))
         if config.binned:
             noise_model = noise_model.to_white_noise_model()

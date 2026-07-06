@@ -5,6 +5,17 @@ import yaml
 from apischema import deserialize
 
 from furax.mapmaking import config as config_module
+from furax.mapmaking.config import (
+    GroundConfig,
+    HealpixConfig,
+    LandscapeConfig,
+    MapMakingConfig,
+    PolynomialConfig,
+    PolynomialOrders,
+    SotodlibConfig,
+    T2PConfig,
+    TemplatesConfig,
+)
 
 # Every config class whose docstring carries an `Examples:` block.
 EXAMPLE_CLASSES = [
@@ -56,3 +67,51 @@ def test_docstring_example_parses_and_deserializes(cls: type, yaml_block: str):
     )
     (value,) = parsed.values()
     deserialize(cls, value)
+
+
+class TestExplicitOnlyTemplates:
+    """T2P and ground templates don't support implicit deprojection."""
+
+    @pytest.mark.parametrize('cls', [T2PConfig, GroundConfig])
+    def test_raises_if_not_explicit(self, cls):
+        with pytest.raises(ValueError, match='requires explicit=True'):
+            cls(explicit=False)
+
+    @pytest.mark.parametrize('cls', [T2PConfig, GroundConfig])
+    def test_accepts_explicit(self, cls):
+        cls(explicit=True)
+
+
+class TestT2PRequiresDemodulated:
+    def test_raises_without_demodulated(self):
+        with pytest.raises(ValueError, match='T2P template requires demodulated=True'):
+            MapMakingConfig(templates=TemplatesConfig(t2p=T2PConfig()))
+
+    def test_raises_without_i_leg(self):
+        with pytest.raises(ValueError, match="T2P template requires an 'I' leg"):
+            MapMakingConfig(
+                sotodlib=SotodlibConfig(demodulated=True),
+                landscape=LandscapeConfig(stokes='QU', healpix=HealpixConfig()),
+                templates=TemplatesConfig(t2p=T2PConfig()),
+            )
+
+    def test_accepts_demodulated_with_i_leg(self):
+        MapMakingConfig(
+            sotodlib=SotodlibConfig(demodulated=True),
+            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig()),
+            templates=TemplatesConfig(t2p=T2PConfig()),
+        )
+
+
+class TestPolynomialLegendreQURequiresDemodulated:
+    def test_raises_without_demodulated(self):
+        poly = PolynomialConfig(legendre_qu=PolynomialOrders(0, 2))
+        with pytest.raises(ValueError, match='legendre_qu requires demodulated=True'):
+            MapMakingConfig(templates=TemplatesConfig(polynomial=poly))
+
+    def test_accepts_demodulated(self):
+        poly = PolynomialConfig(legendre_qu=PolynomialOrders(0, 2))
+        MapMakingConfig(
+            sotodlib=SotodlibConfig(demodulated=True),
+            templates=TemplatesConfig(polynomial=poly),
+        )

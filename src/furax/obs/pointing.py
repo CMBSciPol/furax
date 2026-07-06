@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import jit, lax
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float, Int, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import IndexOperator, RavelOperator, TransposeOperator
@@ -121,7 +121,7 @@ class PointingOperator(AbstractLinearOperator):
             n_chunks = 1
             chunk_size = ndet
 
-        def body(i, tod):  # type: ignore[no-untyped-def]
+        def body(i: Int[Array, ''], tod: StokesType) -> StokesType:
             # interval bounds must be static, so we shift the values afterwards
             idet = jnp.arange(chunk_size) + i * chunk_size
 
@@ -289,7 +289,7 @@ class PointingTransposeOperator(TransposeOperator):
             n_chunks = 1
             chunk_size = ndet
 
-        def body(i, sky):  # type: ignore[no-untyped-def]
+        def body(i: Int[Array, ''], sky: StokesType) -> StokesType:
             idet = jnp.arange(chunk_size) + i * chunk_size
 
             # clip, but avoid multiple contributions in the last chunk

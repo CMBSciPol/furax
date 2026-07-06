@@ -51,7 +51,7 @@ class TestBJPreconditionerI:
         w = jnp.arange(1, N_PIX + 1, dtype=jnp.float64)
         op = _diagonal_op_i(w)
         BJ = BJPreconditioner.create(op)
-        blocks = BJ.get_blocks()  # (N_PIX, 1, 1)
+        blocks = BJ.blocks  # (N_PIX, 1, 1)
         assert blocks.shape == (N_PIX, 1, 1)
         assert_allclose(blocks[:, 0, 0], w)
 
@@ -85,7 +85,7 @@ class TestBJPreconditionerQU:
         wu = 2 * wq
         op = _diagonal_op_qu(wq, wu)
         BJ = BJPreconditioner.create(op)
-        blocks = BJ.get_blocks()  # (N_PIX, 2, 2)
+        blocks = BJ.blocks  # (N_PIX, 2, 2)
         assert blocks.shape == (N_PIX, 2, 2)
         assert_allclose(blocks[:, 0, 0], wq)
         assert_allclose(blocks[:, 1, 1], wu)
@@ -116,7 +116,7 @@ class TestBJPreconditionerIQU:
         wu = 3 * wi
         op = _diagonal_op_iqu(wi, wq, wu)
         BJ = BJPreconditioner.create(op)
-        blocks = BJ.get_blocks()  # (N_PIX, 3, 3)
+        blocks = BJ.blocks  # (N_PIX, 3, 3)
         assert blocks.shape == (N_PIX, 3, 3)
         assert_allclose(blocks[:, 0, 0], wi)
         assert_allclose(blocks[:, 1, 1], wq)
@@ -164,7 +164,7 @@ class TestBJPreconditionerIQU:
         op = asoperator(coupled, in_structure=in_struct)
 
         BJ = BJPreconditioner.create(op)
-        blocks = BJ.get_blocks()  # (N_PIX, 3, 3)
+        blocks = BJ.blocks  # (N_PIX, 3, 3)
 
         expected = jnp.array([[a, b, 0.0], [b, c, 0.0], [0.0, 0.0, d]])
         for pix in range(N_PIX):
@@ -177,7 +177,7 @@ class TestBJPreconditionerIQU:
         wu = 3 * wi
         op = _diagonal_op_iqu(wi, wq, wu)
         BJ = BJPreconditioner.create(op)
-        blocks = BJ.get_blocks()
+        blocks = BJ.blocks
         assert_allclose(blocks, jnp.swapaxes(blocks, -1, -2), atol=1e-12)
 
     def test_inverse_undoes_operator(self) -> None:

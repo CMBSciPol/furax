@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator, symmetric
+from furax.core._base import structure_equal
 from furax.obs.stokes import Stokes
 
 # Pass op as an explicit argument so JAX traces its arrays as inputs rather than
@@ -41,7 +42,7 @@ class BJPreconditioner(AbstractLinearOperator):
         in_struct = op.in_structure
         if not isinstance(in_struct, Stokes):
             raise ValueError('operator must act on Stokes pytrees (sky maps)')
-        if not in_struct == op.out_structure:
+        if not structure_equal(in_struct, op.out_structure):
             raise ValueError('operator must be square')
 
         stokes_cls = type(in_struct)
@@ -55,8 +56,7 @@ class BJPreconditioner(AbstractLinearOperator):
             # the backing array has the Stokes components on the leading axis.
             probe = stokes_cls.from_array(jnp.zeros((n, *sky_shape), dtype).at[j].set(1.0))
             columns.append(_apply(op, probe).array)  # (n_i, *sky) = column j, indexed by row i
-        stacked = jnp.stack(columns, axis=1)  # (i, j, *sky)
-        blocks = jnp.moveaxis(stacked, (0, 1), (-2, -1))  # (*sky, i, j)
+        blocks = jnp.moveaxis(jnp.stack(columns, axis=-1), 0, -2)  # (i, *sky, j) -> (*sky, i, j)
         return cls(blocks, in_structure=in_struct)
 
     def mv(self, x: Stokes) -> Stokes:
@@ -67,7 +67,3 @@ class BJPreconditioner(AbstractLinearOperator):
     def inverse(self) -> 'BJPreconditioner':
         # Per-pixel matrix inverse; stays a BJPreconditioner (keeps the @symmetric tag).
         return BJPreconditioner(jnp.linalg.inv(self.blocks), in_structure=self.in_structure)
-
-    def get_blocks(self) -> Float[Array, '*sky n n']:
-        """Return the per-pixel Stokes blocks, shape ``(*sky, n, n)``."""
-        return self.blocks

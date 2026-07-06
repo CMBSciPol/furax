@@ -216,7 +216,7 @@ class MultiObservationMapMaker(Generic[T]):
             A = self.get_system_operator(model)
             diag_A = A if self.config.binned else self.get_system_operator(model, diag=True)
             BJ = BJPreconditioner.create(diag_A)
-            icov = BJ.get_blocks().block_until_ready()
+            icov = BJ.blocks.block_until_ready()
             logger_info('Computed white noise inverse covariance')
 
             valid_pixels = self.pixel_selection(hits, icov)
@@ -1029,7 +1029,7 @@ class BinnedMapMaker(MapMaker):
             logger_info('Test - second time - Finished mapmaking')
 
         final_map = np.array([res.i, res.q, res.u])
-        weights = np.array(system.get_blocks())
+        weights = np.array(system.blocks)
 
         output = {'map': final_map, 'weights': weights}
         if isinstance(landscape, WCSLandscape):
@@ -1110,7 +1110,7 @@ class MLMapmaker(MapMaker):
         logger_info('Created approximate system matrix')
 
         # Map pixel selection
-        blocks = diag_system.get_blocks()
+        blocks = diag_system.blocks
         selector = self.get_pixel_selector(blocks, landscape)
         logger_info(
             f'Selected {prod(selector.out_structure.shape)}\
@@ -1307,7 +1307,7 @@ class TwoStepMapmaker(MapMaker):
         logger_info('Created system matrix')
 
         # Map pixel selection
-        blocks = system.get_blocks()
+        blocks = system.blocks
         selector = self.get_pixel_selector(blocks, landscape)
         logger_info(
             f'Selected {prod(selector.out_structure.shape)}\
@@ -1435,7 +1435,7 @@ class ATOPMapMaker(MapMaker):
         logger_info('Created approximate system matrix')
 
         # Map pixel selection
-        blocks = diag_system.get_blocks()
+        blocks = diag_system.blocks
         selector = self.get_pixel_selector(blocks, landscape)
         logger_info(
             f'Selected {prod(selector.out_structure.shape)}\

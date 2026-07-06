@@ -285,8 +285,6 @@ def test_reader_all_fields_demod(demod_observations) -> None:
         assert tuple(padding['metadata'].uid) == ()
         assert tuple(padding['metadata'].telescope_uid) == ()
         assert tuple(padding['metadata'].detector_uids) == (ndet_max - ndet,)
-        # single-array Stokes: one combined padding tuple (Stokes axis, ndet, nsample); the
-        # leading Stokes axis is never padded.
         assert tuple(padding['sample_data'].array) == (0, ndet_max - ndet, nsample_max - nsample)
         assert tuple(padding['valid_sample_masks']) == (ndet_max - ndet, nsample_max - nsample)
         assert tuple(padding['valid_scanning_masks']) == (nsample_max - nsample,)

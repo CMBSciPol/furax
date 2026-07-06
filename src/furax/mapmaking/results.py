@@ -62,7 +62,6 @@ class MapMakingResults:
     def save(self, out_dir: str | Path) -> None:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        # The backing array is already (n_stokes, *pixel_dims) — exactly the on-disk map layout.
         self._save_array(np.array(self.map.array), 'map', out_dir)
         self._save_array(np.array(self.hit_map), 'hit_map', out_dir, column_names=['HITS'])
         self._save_icov(np.array(self.icov), out_dir)

@@ -255,7 +255,7 @@ class TestBeamOperatorIQU:
     def test_1d_input_preserves_rank(self):
         """A 1-D (npix,) leaf in_structure must yield a 1-D output leaf."""
         structure_1d = StokesIQU.structure_for((NPIX,), jnp.float64)
-        fl = jnp.ones(LMAX + 1)  # no frequency axis: the map has none
+        fl = jnp.ones(LMAX + 1)
         beam_fl = StokesIQU(i=fl, q=fl, u=fl)
         op = BeamOperatorIQU(lmax=LMAX, beam_fl=beam_fl, in_structure=structure_1d)
         x = StokesIQU.normal(jax.random.PRNGKey(0), (NPIX,))

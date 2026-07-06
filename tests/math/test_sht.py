@@ -92,12 +92,14 @@ class TestMap2Alm:
         assert jnp.issubdtype(alms.dtype, jnp.complexfloating)
 
     def test_atleast_2d_promotes_1d_input(self):
-        """A 1-D map (single frequency) should be promoted and produce (lmax+1, 2*lmax+1)."""
-        struct = StokesIQU.structure_for((NPIX,), jnp.float64)
+        """A 1-D leaf (single frequency) is promoted and produces (1, lmax+1, 2*lmax+1)."""
+        # A Stokes-wrapped leaf is always >= 2-D already (the Stokes axis), so it can't
+        # exercise this promotion; a plain, unwrapped array is the only input that does.
+        struct = jax.ShapeDtypeStruct((NPIX,), jnp.float64)
         op = Map2Alm(lmax=LMAX, nside=NSIDE, in_structure=struct)
-        maps = StokesIQU(i=jnp.ones(NPIX), q=jnp.ones(NPIX), u=jnp.ones(NPIX))
-        alms = op(maps)
-        assert alms.shape == (NALM_ROWS, NALM_COLS)
+        map_ = jnp.ones(NPIX)
+        alms = op(map_)
+        assert alms.shape == (1, NALM_ROWS, NALM_COLS)
 
     def test_inverse_returns_alm2map(self, map2alm):
         """Inverse of Map2Alm should return an Alm2Map instance."""

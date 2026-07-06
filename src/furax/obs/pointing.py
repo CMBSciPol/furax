@@ -133,15 +133,12 @@ class PointingOperator(AbstractLinearOperator):
             # process chunk
             tod_chunk = mv_inner(self.qdet[idet])
 
-            # update the output pytree
-            return jax.tree.map(
-                lambda tod_leaf, chunk_leaf: tod_leaf.at[:, idet].set(chunk_leaf), tod, tod_chunk
-            )
+            # update the output map
+            return type(tod).from_array(tod.array.at[:, idet].set(tod_chunk.array))
 
         # Start from empty timestream
-        tod_out: StokesType = jax.tree.map(
-            lambda leaf: jnp.empty_like(leaf), x.structure_for(shape=(ndet, nsamp), dtype=x.dtype)
-        )
+        empty = jnp.empty_like(x.structure_for(shape=(ndet, nsamp), dtype=x.dtype).array)
+        tod_out: StokesType = type(x).from_array(empty)
         tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
         return tod_out
 
@@ -303,11 +300,7 @@ class PointingTransposeOperator(TransposeOperator):
             sky_chunk = mv_inner(unique[:, None] * x[idet], self.operator.qdet[idet])
 
             # combine the results of the chunks into one sky map
-            return jax.tree.map(
-                lambda sky_leaf, chunk_leaf: sky_leaf.at[:].add(chunk_leaf),
-                sky,
-                sky_chunk,
-            )
+            return sky + sky_chunk
 
         sky_out: StokesType = self.operator.landscape.zeros()
         sky_out = lax.fori_loop(0, n_chunks, body, sky_out)

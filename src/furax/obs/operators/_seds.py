@@ -14,7 +14,7 @@ from astropy.cosmology import Planck15
 from jaxtyping import Array, Float, Inexact, Int, PyTree
 from scipy import constants
 
-from furax import AbstractLinearOperator, BlockRowOperator, BroadcastDiagonalOperator, diagonal
+from furax import AbstractLinearOperator, BlockRowOperator, diagonal
 
 _H_OVER_K_GHZ = constants.h * 1e9 / constants.k
 _T_CMB = Planck15.Tcmb(0).value
@@ -53,7 +53,7 @@ def K_RK_2_K_CMB(nu: Array | float) -> Array:
     return res  # type: ignore [no-any-return]
 
 
-class AbstractSEDOperator(BroadcastDiagonalOperator):
+class AbstractSEDOperator(AbstractLinearOperator):
     """Abstract base class for Spectral Energy Distribution (SED) operators.
 
     SED operators model how astrophysical components emit radiation across
@@ -68,33 +68,24 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
     """
 
     frequencies: Float[Array, ' a']
-    frequency0: float = field(metadata={'static': True})
+    frequency0: float = field(default=100e9, kw_only=True, metadata={'static': True})
 
-    def __init__(
-        self,
-        frequencies: Float[Array, '...'],
-        *,
-        frequency0: float = 100e9,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ) -> None:
-        input_shape = self._get_input_shape(in_structure)
-        n_freq = len(frequencies)
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        input_shape = self._get_input_shape(self.in_structure)
+        n_freq = len(self.frequencies)
         # The operator broadcasts a map (no frequency axis) to a multi-frequency output: the new
         # frequency axis lands just before the trailing spatial axis, with any leading batch axes
         # (e.g. the leading Stokes axis of a single-array Stokes map) broadcasting through.
         n_batch = len(input_shape) - 1
-        frequencies = frequencies.reshape((1,) * n_batch + (n_freq, 1))
+        frequencies = self.frequencies.reshape((1,) * n_batch + (n_freq, 1))
         object.__setattr__(self, 'frequencies', frequencies)
-        object.__setattr__(self, 'frequency0', frequency0)
-        super().__init__(self.sed(), axis_destination=-1, in_structure=in_structure)
+        # sanity-check shapes at construction time
+        _ = jax.eval_shape(self.mv, self.in_structure)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
-        # BroadcastDiagonalOperator's axis_destination machinery can only grow the input at its
-        # outermost or innermost edge; it cannot insert a new axis strictly between two existing
-        # ones. Since the frequency axis must land between the leading batch axes (kept intact) and
-        # the trailing spatial axis, insert it explicitly rather than going through the parent's mv.
-        # A leaf may already carry the frequency axis (e.g. a genuine multi-frequency map passed in
-        # directly); only insert it when missing, so both call conventions keep working.
+        # Insert the frequency axis before the trailing spatial axis, unless already present
+        # (e.g. a genuine multi-frequency map passed in directly).
         def func(leaf: Inexact[Array, '...']) -> Inexact[Array, '...']:
             if leaf.ndim < self.frequencies.ndim:
                 leaf = jnp.expand_dims(leaf, axis=-2)
@@ -176,26 +167,19 @@ class CMBOperator(AbstractSEDOperator):
         >>> tod = cmb_op(sky_map)  # Broadcasts CMB map to all frequencies
     """
 
-    factor: Float[Array, '...'] | float
-    units: str = field(metadata={'static': True})
+    units: str = field(default='K_CMB', kw_only=True, metadata={'static': True})
+    factor: Float[Array, '...'] | float = field(init=False)
 
-    def __init__(
-        self,
-        frequencies: Float[Array, '...'],
-        *,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-        units: str = 'K_CMB',
-    ) -> None:
+    def __post_init__(self) -> None:
         factor: Float[Array, ...] | float
-        if units == 'K_CMB':
+        if self.units == 'K_CMB':
             factor = 1.0
-        elif units == 'K_RJ':
-            factor = K_RK_2_K_CMB(frequencies)
+        elif self.units == 'K_RJ':
+            factor = K_RK_2_K_CMB(self.frequencies)
         else:
-            raise ValueError(f"Unknown units: {units}. Expected 'K_CMB' or 'K_RJ'.")
+            raise ValueError(f"Unknown units: {self.units}. Expected 'K_CMB' or 'K_RJ'.")
         object.__setattr__(self, 'factor', factor)
-        object.__setattr__(self, 'units', units)
-        super().__init__(frequencies, in_structure=in_structure)
+        super().__post_init__()
 
     def sed(self) -> Float[Array, '...']:
         """
@@ -232,40 +216,26 @@ class DustOperator(AbstractSEDOperator):
         >>> tod = dust_op(dust_map)
     """
 
-    temperature: Float[Array, '...']
-    temperature_patch_indices: Int[Array, '...'] | None
-    beta: Float[Array, '...']
-    beta_patch_indices: Int[Array, '...'] | None
-    factor: Float[Array, '...'] | float
-    units: str = field(metadata={'static': True})
+    frequency0: float = field(default=100, kw_only=True, metadata={'static': True})
+    temperature: float | Float[Array, '...'] = field(kw_only=True)
+    temperature_patch_indices: Int[Array, '...'] | None = field(default=None, kw_only=True)
+    beta: float | Float[Array, '...'] = field(kw_only=True)
+    beta_patch_indices: Int[Array, '...'] | None = field(default=None, kw_only=True)
+    units: str = field(default='K_CMB', kw_only=True, metadata={'static': True})
+    factor: Float[Array, '...'] | float = field(init=False)
 
-    def __init__(
-        self,
-        frequencies: Float[Array, '...'],
-        *,
-        frequency0: float = 100,
-        temperature: float | Float[Array, '...'],
-        units: str = 'K_CMB',
-        temperature_patch_indices: Int[Array, '...'] | None = None,
-        beta: float | Float[Array, '...'],
-        beta_patch_indices: Int[Array, '...'] | None = None,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ) -> None:
+    def __post_init__(self) -> None:
         factor: Float[Array, ...] | float
-        if units == 'K_CMB':
-            factor = K_RK_2_K_CMB(frequencies) / K_RK_2_K_CMB(frequency0)
-        elif units == 'K_RJ':
+        if self.units == 'K_CMB':
+            factor = K_RK_2_K_CMB(self.frequencies) / K_RK_2_K_CMB(self.frequency0)
+        elif self.units == 'K_RJ':
             factor = 1.0
         else:
-            raise ValueError(f"Unknown units: {units}. Expected 'K_CMB' or 'K_RJ'.")
-        object.__setattr__(self, 'temperature', jnp.asarray(temperature))
-        object.__setattr__(self, 'temperature_patch_indices', temperature_patch_indices)
-        object.__setattr__(self, 'beta', jnp.asarray(beta))
-        object.__setattr__(self, 'beta_patch_indices', beta_patch_indices)
-        object.__setattr__(self, 'units', units)
+            raise ValueError(f"Unknown units: {self.units}. Expected 'K_CMB' or 'K_RJ'.")
+        object.__setattr__(self, 'temperature', jnp.asarray(self.temperature))
+        object.__setattr__(self, 'beta', jnp.asarray(self.beta))
         object.__setattr__(self, 'factor', factor)
-
-        super().__init__(frequencies, frequency0=frequency0, in_structure=in_structure)
+        super().__post_init__()
 
     def sed(self) -> Float[Array, '...']:
         t = self._get_at(
@@ -305,39 +275,25 @@ class SynchrotronOperator(AbstractSEDOperator):
         >>> tod = sync_op(synchrotron_map)
     """
 
-    beta_pl: Float[Array, '...']
-    beta_pl_patch_indices: Int[Array, '...'] | None
-    nu_pivot: float = field(metadata={'static': True})
-    running: float = field(metadata={'static': True})
-    units: str = field(metadata={'static': True})
-    factor: Float[Array, '...'] | float
+    frequency0: float = field(default=100, kw_only=True, metadata={'static': True})
+    beta_pl: float | Float[Array, '...'] = field(kw_only=True)
+    beta_pl_patch_indices: Int[Array, '...'] | None = field(default=None, kw_only=True)
+    nu_pivot: float = field(default=1.0, kw_only=True, metadata={'static': True})
+    running: float = field(default=0.0, kw_only=True, metadata={'static': True})
+    units: str = field(default='K_CMB', kw_only=True, metadata={'static': True})
+    factor: Float[Array, '...'] | float = field(init=False)
 
-    def __init__(
-        self,
-        frequencies: Float[Array, '...'],
-        *,
-        frequency0: float = 100,
-        nu_pivot: float = 1.0,
-        running: float = 0.0,
-        units: str = 'K_CMB',
-        beta_pl: float | Float[Array, '...'],
-        beta_pl_patch_indices: Int[Array, '...'] | None = None,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ) -> None:
+    def __post_init__(self) -> None:
         factor: Float[Array, ...] | float
-        if units == 'K_CMB':
-            factor = K_RK_2_K_CMB(frequencies) / K_RK_2_K_CMB(frequency0)
-        elif units == 'K_RJ':
+        if self.units == 'K_CMB':
+            factor = K_RK_2_K_CMB(self.frequencies) / K_RK_2_K_CMB(self.frequency0)
+        elif self.units == 'K_RJ':
             factor = 1.0
         else:
-            raise ValueError(f"Unknown units: {units}. Expected 'K_CMB' or 'K_RJ'.")
-        object.__setattr__(self, 'beta_pl', jnp.asarray(beta_pl))
-        object.__setattr__(self, 'beta_pl_patch_indices', beta_pl_patch_indices)
-        object.__setattr__(self, 'nu_pivot', nu_pivot)
-        object.__setattr__(self, 'running', running)
-        object.__setattr__(self, 'units', units)
+            raise ValueError(f"Unknown units: {self.units}. Expected 'K_CMB' or 'K_RJ'.")
+        object.__setattr__(self, 'beta_pl', jnp.asarray(self.beta_pl))
         object.__setattr__(self, 'factor', factor)
-        super().__init__(frequencies, frequency0=frequency0, in_structure=in_structure)
+        super().__post_init__()
 
     def sed(self) -> Float[Array, '...']:
         sed = self._get_at(

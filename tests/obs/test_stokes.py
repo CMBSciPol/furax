@@ -161,16 +161,16 @@ def test_matmul(stokes: ValidStokesType) -> None:
         (operator.mul, True, jnp.array(2), 6.0),
         (operator.truediv, True, jnp.array(2), 2 / 3),
         (operator.pow, True, jnp.array(2), 8.0),
-        (operator.add, False, jnp.array([2.0, 1]), jnp.array([5.0, 4])),
-        (operator.sub, False, jnp.array([2.0, 1]), jnp.array([1.0, 2])),
-        (operator.mul, False, jnp.array([2.0, 1]), jnp.array([6.0, 3])),
-        (operator.truediv, False, jnp.array([2.0, 1]), jnp.array([1.5, 3])),
-        (operator.pow, False, jnp.array([2.0, 1]), jnp.array([9.0, 3])),
-        (operator.add, True, jnp.array([2.0, 1]), jnp.array([5.0, 4])),
-        (operator.sub, True, jnp.array([2.0, 1]), jnp.array([-1.0, -2])),
-        (operator.mul, True, jnp.array([2.0, 1]), jnp.array([6.0, 3])),
-        (operator.truediv, True, jnp.array([2.0, 1]), jnp.array([2 / 3, 1 / 3])),
-        (operator.pow, True, jnp.array([2.0, 1]), jnp.array([8.0, 1])),
+        (operator.add, False, [2.0, 1], [5.0, 4]),
+        (operator.sub, False, [2.0, 1], [1.0, 2]),
+        (operator.mul, False, [2.0, 1], [6.0, 3]),
+        (operator.truediv, False, [2.0, 1], [1.5, 3]),
+        (operator.pow, False, [2.0, 1], [9.0, 3]),
+        (operator.add, True, [2.0, 1], [5.0, 4]),
+        (operator.sub, True, [2.0, 1], [-1.0, -2]),
+        (operator.mul, True, [2.0, 1], [6.0, 3]),
+        (operator.truediv, True, [2.0, 1], [2 / 3, 1 / 3]),
+        (operator.pow, True, [2.0, 1], [8.0, 1]),
     ],
 )
 def test_operation_scalar_or_array(
@@ -194,8 +194,9 @@ def test_operation_scalar_or_array(
         func = jax.jit(func)
     actual_y = func(x)
 
-    expected_leaf = jnp.broadcast_to(expected_value, shape)
-    expected_y = Stokes.class_for(stokes)(*len(stokes) * (expected_leaf,))
+    cls = Stokes.class_for(stokes)
+    expected_array = jnp.broadcast_to(jnp.asarray(expected_value), (len(stokes), *shape))
+    expected_y = cls.from_array(expected_array)
     assert tree_equal(actual_y, expected_y, rtol=1e-15)
 
 

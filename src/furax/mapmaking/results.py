@@ -62,7 +62,7 @@ class MapMakingResults:
     def save(self, out_dir: str | Path) -> None:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        self._save_array(np.array(self.map.array), 'map', out_dir)
+        self._save_array(np.array(self.map.data), 'map', out_dir)
         self._save_array(np.array(self.hit_map), 'hit_map', out_dir, column_names=['HITS'])
         self._save_icov(np.array(self.icov), out_dir)
         if self.noise_fits is not None:

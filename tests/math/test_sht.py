@@ -74,7 +74,7 @@ def _real_inner(u: StokesIQU, v: StokesIQU) -> jax.Array:
     JAX's linear_transpose uses the plain bilinear pairing sum(u * v) (no
     conjugation); the adjoint identity then holds on its real part.
     """
-    return jnp.sum(jnp.real(u.array * v.array))
+    return jnp.sum(jnp.real(u.data * v.data))
 
 
 class TestMap2Alm:
@@ -132,10 +132,10 @@ class TestMap2Alm:
         pol routing, reshaping) by comparing against the upstream reference.
         """
         out = map2alm(random_maps)
-        flat_in = random_maps.array.reshape(-1, NPIX)  # jhp.map2alm batches over one leading axis
+        flat_in = random_maps.data.reshape(-1, NPIX)  # jhp.map2alm batches over one leading axis
         expected = jhp.map2alm(flat_in, iter=map2alm.iter, lmax=LMAX, pol=False)
         assert jnp.allclose(
-            out.array.reshape(-1, NALM_ROWS, NALM_COLS), expected, rtol=0, atol=1e-14
+            out.data.reshape(-1, NALM_ROWS, NALM_COLS), expected, rtol=0, atol=1e-14
         )
 
 
@@ -201,9 +201,9 @@ class TestAlm2Map:
         alms = map2alm(random_maps)
         out = alm2map(alms)
         # jhp.alm2map batches over one leading axis
-        flat_in = alms.array.reshape(-1, NALM_ROWS, NALM_COLS)
+        flat_in = alms.data.reshape(-1, NALM_ROWS, NALM_COLS)
         expected = jnp.real(jhp.alm2map(flat_in, nside=NSIDE, lmax=LMAX, pol=False))
-        assert jnp.allclose(out.array.reshape(-1, NPIX), expected, rtol=0, atol=1e-14)
+        assert jnp.allclose(out.data.reshape(-1, NPIX), expected, rtol=0, atol=1e-14)
 
 
 class TestSHTRule:
@@ -241,5 +241,5 @@ class TestRoundTrip:
         maps_synth = alm2map(alms_first)
         alms_second = map2alm(maps_synth)
 
-        max_residual = float(jnp.max(jnp.abs(alms_second.array - alms_first.array)))
+        max_residual = float(jnp.max(jnp.abs(alms_second.data - alms_first.data)))
         assert max_residual < 1e-2, f'Round-trip residual {max_residual} exceeds 1e-2'

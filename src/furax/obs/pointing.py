@@ -134,10 +134,10 @@ class PointingOperator(AbstractLinearOperator):
             tod_chunk = mv_inner(self.qdet[idet])
 
             # update the output map
-            return type(tod).from_array(tod.array.at[:, idet].set(tod_chunk.array))
+            return type(tod).from_array(tod.array.at[:, idet].set(tod_chunk.data))
 
         # Start from empty timestream
-        empty = jnp.empty_like(x.structure_for(shape=(ndet, nsamp), dtype=x.dtype).array)
+        empty = jnp.empty_like(x.structure_for(shape=(ndet, nsamp), dtype=x.dtype).data)
         tod_out: StokesType = type(x).from_array(empty)
         tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
         return tod_out
@@ -225,7 +225,7 @@ class PointingOperator(AbstractLinearOperator):
         unit_weights = weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
         # leading Stokes axis: index the (trailing) pixel axis and sum over the neighbour axis (-1);
         # the weights broadcast over the leading Stokes axis for free.
-        sampled = jnp.sum(x_flat.array[:, indices] * unit_weights, axis=-1)
+        sampled = jnp.sum(x_flat.data[:, indices] * unit_weights, axis=-1)
         return type(x_flat).from_array(sampled)
 
     def _bin(self, tod_chunk: StokesType, qdet_full: Float[Array, '*dims 4']) -> StokesType:
@@ -233,7 +233,7 @@ class PointingOperator(AbstractLinearOperator):
         sky_shape = self.landscape.shape
         n_pixels = int(np.prod(sky_shape))
         # scatter-add per pixel while keeping the leading Stokes axis of the backing array.
-        arr = tod_chunk.array  # (n_stokes, *det_sample)
+        arr = tod_chunk.data  # (n_stokes, *det_sample)
         n_stokes = arr.shape[0]
         zeros = jnp.zeros((n_stokes, n_pixels), self.landscape.dtype)
 

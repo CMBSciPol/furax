@@ -247,7 +247,7 @@ def test_from_array_preserves_numpy(stokes: ValidStokesType) -> None:
     cls = Stokes.class_for(stokes)
     array = np.ones((len(stokes), 3), dtype=np.float32)
     pytree = cls.from_array(array)
-    assert isinstance(pytree.array, np.ndarray)
+    assert isinstance(pytree.data, np.ndarray)
 
     jax_pytree = cls.from_array(jnp.ones((len(stokes), 3)))
-    assert isinstance(jax_pytree.array, jax.Array)
+    assert isinstance(jax_pytree.data, jax.Array)

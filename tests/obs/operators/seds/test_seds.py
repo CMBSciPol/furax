@@ -153,13 +153,13 @@ def test_broadcasts_sky_map_without_frequency_axis(fg_data):
     y = cmb_operator(x)
 
     assert y.shape == cmb_operator.out_structure.shape
-    expected = cmb_operator.sed() * x.array[:, jnp.newaxis, :]
-    assert jnp.allclose(y.array, expected)
+    expected = cmb_operator.sed() * x.data[:, jnp.newaxis, :]
+    assert jnp.allclose(y.data, expected)
 
     # Adjoint identity <Ax, z> == <x, A^T z>, guarding the custom mv() against a broken transpose.
     z = Stokes.from_stokes(
         *(jax.random.normal(jax.random.key(0), cmb_operator.out_structure.shape) for _ in range(3))
     )
-    lhs = jnp.sum(y.array * z.array)
-    rhs = jnp.sum(x.array * cmb_operator.T(z).array)
+    lhs = jnp.sum(y.data * z.data)
+    rhs = jnp.sum(x.data * cmb_operator.T(z).data)
     assert jnp.allclose(lhs, rhs)

@@ -28,7 +28,7 @@ __all__ = ['Stokes', 'StokesI', 'StokesQU', 'StokesIQU', 'StokesIQUV', 'ValidSto
 ValidStokesType = Literal['I', 'QU', 'IQU', 'IQUV']
 
 
-@dataclass(frozen=True)
+@dataclass
 class Stokes(ABC):
     """Stokes container backed by a single dense array with the components on the leading axis.
 
@@ -64,7 +64,7 @@ class Stokes(ABC):
     """
 
     stokes: ClassVar[ValidStokesType]
-    array: Array
+    data: Array
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         letters = self.stokes
@@ -84,7 +84,7 @@ class Stokes(ABC):
             )
             raise TypeError(msg)
         # Stack components on device; host (numpy) construction goes through `from_array`
-        object.__setattr__(self, 'array', jnp.stack(components, axis=0))
+        self.data = jnp.stack(components, axis=0)
 
     @classmethod
     def from_array(cls, array: ArrayLike | jax.ShapeDtypeStruct) -> Self:
@@ -98,12 +98,13 @@ class Stokes(ABC):
         if array.shape[0] != len(cls.stokes):
             msg = f'{cls.__name__} expects a leading axis of {len(cls.stokes)}, got shape {array.shape}.'
             raise ValueError(msg)
+        # Bypass __init__ to avoid device transfer
         instance = object.__new__(cls)
-        object.__setattr__(instance, 'array', array)
+        instance.data = array  # type: ignore[assignment]
         return instance
 
     def __pdoc__(self, **kwargs: Any) -> wl.AbstractDoc:
-        inner = wl.pdoc(self.array, **kwargs)
+        inner = wl.pdoc(self.data, **kwargs)
         return wl.ConcatDoc(wl.TextDoc(f'{type(self).__name__}('), inner, wl.TextDoc(')'))
 
     def __repr__(self) -> str:
@@ -114,7 +115,7 @@ class Stokes(ABC):
         idx = self.stokes.find(letter)
         if idx < 0:
             raise AttributeError(f'{type(self).__name__} has no Stokes component {letter!r}.')
-        return self.array[idx]
+        return self.data[idx]
 
     @property
     def i(self) -> Array:
@@ -135,11 +136,11 @@ class Stokes(ABC):
     @property
     def shape(self) -> tuple[int, ...]:
         """Returns the common shape of the Stokes components."""
-        return self.array.shape[1:]
+        return self.data.shape[1:]
 
     @property
     def dtype(self) -> np.dtype:
-        return self.array.dtype
+        return self.data.dtype
 
     @property
     def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -148,7 +149,7 @@ class Stokes(ABC):
     def __getitem__(self, index: Integer[Array, '...']) -> Self:
         # ``index`` addresses the data axes (from the first); the leading Stokes axis is preserved.
         idx = index if isinstance(index, tuple) else (index,)
-        return self.from_array(self.array[(slice(None), *idx)])
+        return self.from_array(self.data[(slice(None), *idx)])
 
     def __eq__(self, other: object) -> Any:
         # Same-type comparison of the backing array.
@@ -156,26 +157,26 @@ class Stokes(ABC):
         # For concrete arrays it returns the elementwise boolean array.
         if not isinstance(other, Stokes) or self.stokes != other.stokes:
             return NotImplemented
-        return self.array == other.array
+        return self.data == other.data
 
     def __matmul__(self, other: Any) -> Any:
         """Returns the scalar product between Stokes maps."""
         if not isinstance(other, type(self)):
             return NotImplemented
-        return jnp.sum(jnp.conj(self.array) * other.array)
+        return jnp.sum(jnp.conj(self.data) * other.data)
 
     def __abs__(self) -> Self:
-        return self.from_array(jnp.abs(self.array))
+        return self.from_array(jnp.abs(self.data))
 
     def __pos__(self) -> Self:
         return self
 
     def __neg__(self) -> Self:
-        return self.from_array(-self.array)
+        return self.from_array(-self.data)
 
     def _operand(self, other: Any) -> Any:
         if isinstance(other, Stokes):
-            return other.array if type(other) is type(self) else NotImplemented
+            return other.data if type(other) is type(self) else NotImplemented
 
         try:
             return jnp.asarray(other)
@@ -188,7 +189,7 @@ class Stokes(ABC):
             # mypy's exemption for returning NotImplemented only applies inside a method
             # literally named as a dunder (e.g. __add__), not this shared helper.
             return NotImplemented  # type: ignore[no-any-return]
-        return self.from_array(fn(rhs, self.array) if reflected else fn(self.array, rhs))
+        return self.from_array(fn(rhs, self.data) if reflected else fn(self.data, rhs))
 
     def __add__(self, other: Any) -> Self:
         return self._binop(other, operator.add)
@@ -224,11 +225,11 @@ class Stokes(ABC):
 
     def ravel(self) -> Self:
         """Ravels the batch axes of each Stokes component."""
-        return self.from_array(self.array.reshape(self.array.shape[0], -1))
+        return self.from_array(self.data.reshape(self.data.shape[0], -1))
 
     def reshape(self, shape: tuple[int, ...]) -> Self:
         """Reshape the batch axes of each Stokes component."""
-        return self.from_array(self.array.reshape(self.array.shape[0], *shape))
+        return self.from_array(self.data.reshape(self.data.shape[0], *shape))
 
     def rotate_qu(self, cos_2angles: Float[Array, '...'], sin_2angles: Float[Array, '...']) -> Self:
         """Rotate the Q, U components by an angle whose double-angle cos/sin are given.
@@ -240,9 +241,9 @@ class Stokes(ABC):
         qi = self.stokes.find('Q')
         if qi < 0:
             return self
-        q, u = self.array[qi], self.array[qi + 1]
+        q, u = self.data[qi], self.data[qi + 1]
         rotated = jnp.stack([q * cos_2angles + u * sin_2angles, -q * sin_2angles + u * cos_2angles])
-        return self.from_array(self.array.at[qi : qi + 2].set(rotated))
+        return self.from_array(self.data.at[qi : qi + 2].set(rotated))
 
     @classmethod
     @overload

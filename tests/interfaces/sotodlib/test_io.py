@@ -285,14 +285,14 @@ def test_reader_all_fields_demod(demod_observations) -> None:
         assert tuple(padding['metadata'].uid) == ()
         assert tuple(padding['metadata'].telescope_uid) == ()
         assert tuple(padding['metadata'].detector_uids) == (ndet_max - ndet,)
-        assert tuple(padding['sample_data'].array) == (0, ndet_max - ndet, nsample_max - nsample)
+        assert tuple(padding['sample_data'].data) == (0, ndet_max - ndet, nsample_max - nsample)
         assert tuple(padding['valid_sample_masks']) == (ndet_max - ndet, nsample_max - nsample)
         assert tuple(padding['valid_scanning_masks']) == (nsample_max - nsample,)
         assert tuple(padding['timestamps']) == (nsample_max - nsample,)
         assert tuple(padding['hwp_angles']) == (nsample_max - nsample,)
         assert tuple(padding['detector_quaternions']) == (ndet_max - ndet, 0)
         assert tuple(padding['boresight_quaternions']) == (nsample_max - nsample, 0)
-        assert tuple(padding['noise_model_fits'].array) == (0, ndet_max - ndet, 0)
+        assert tuple(padding['noise_model_fits'].data) == (0, ndet_max - ndet, 0)
 
 
 @pytest.mark.parametrize(

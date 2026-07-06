@@ -186,7 +186,7 @@ def _noise_model(
     # per-detector parameters carrying any leading axes (the Stokes axis) so a single model covers
     # every leg. The sample axis is always last.
     def _as_array(x: Any) -> Array:
-        return x.array if isinstance(x, Stokes) else x
+        return x.data if isinstance(x, Stokes) else x
 
     if config.weighting.mode == WeightingMode.IDENTITY:
         if tod_structure is None:

@@ -273,7 +273,7 @@ def test_reader_all_fields_demod(demod_observations) -> None:
         'hwp_angles': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
         'detector_quaternions': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
         'boresight_quaternions': jax.ShapeDtypeStruct((nsample_max, 4), dtype=jnp.float64),
-        'noise_model_fits': kls.structure_for((ndet_max, 4), jnp.float64),
+        'noise_model_fits': jax.ShapeDtypeStruct((len(stokes), ndet_max, 4), dtype=jnp.float64),
     }
 
     for i in range(len(FILES)):
@@ -292,7 +292,7 @@ def test_reader_all_fields_demod(demod_observations) -> None:
         assert tuple(padding['hwp_angles']) == (nsample_max - nsample,)
         assert tuple(padding['detector_quaternions']) == (ndet_max - ndet, 0)
         assert tuple(padding['boresight_quaternions']) == (nsample_max - nsample, 0)
-        assert tuple(padding['noise_model_fits'].data) == (0, ndet_max - ndet, 0)
+        assert tuple(padding['noise_model_fits']) == (0, ndet_max - ndet, 0)
 
 
 @pytest.mark.parametrize(

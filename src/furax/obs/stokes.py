@@ -59,7 +59,7 @@ class Stokes(ABC):
         >>> import numpy as np
         >>> host_array = np.zeros((3, 4))  # (n_stokes, npix)
         >>> host_only = StokesIQU.from_array(host_array)
-        >>> isinstance(host_only.array, np.ndarray)
+        >>> isinstance(host_only.data, np.ndarray)
         True
     """
 

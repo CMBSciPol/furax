@@ -46,6 +46,22 @@ def test_banded_cholesky_solve_matches_dense(w):
     assert_allclose(x, expected, rtol=1e-4, atol=1e-5)
 
 
+@pytest.mark.parametrize('w', [0, 1, 2])
+def test_banded_cholesky_grad_is_finite(w):
+    n, k = 6, 2
+    _, bands = _banded_spd(n, k, w, seed=13)
+    b = jr.normal(jr.key(14), (n, k))
+
+    def loss(bands, b):
+        lb = banded_cholesky(bands)
+        x = banded_cholesky_solve(lb, b)
+        return jnp.sum(x**2)
+
+    grad_bands, grad_b = jax.grad(loss, argnums=(0, 1))(bands, b)
+    assert jnp.all(jnp.isfinite(grad_bands))
+    assert jnp.all(jnp.isfinite(grad_b))
+
+
 def test_banded_cholesky_degenerate_n_blocks_one_matches_dense_cholesky():
     # n_blocks=1 is the fully dense case: must be numerically identical to a direct
     # jnp.linalg.cholesky/cho_solve, not merely close.

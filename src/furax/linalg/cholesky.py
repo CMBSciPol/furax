@@ -195,6 +195,9 @@ def _block_banded_cholesky(bands: Float[Array, 'n w1 k k']) -> Float[Array, 'n w
                 cur = cur.at[0].set(jnp.linalg.cholesky(s))  # L[i,i] = chol(S)
             else:
                 ljj = read(lb, j)[0]  # L[j,j] (lower), computed in an earlier row
+                # j < 0 aliases into an unwritten (zero) pivot: fine forward (masked below), but
+                # 0/0 gives nan gradient even through the masked branch, so swap in the identity.
+                ljj = jnp.where(j >= 0, ljj, jnp.eye(k, dtype=bands.dtype))
                 x = jax.scipy.linalg.solve_triangular(ljj, s.T, lower=True).T  # X L[j,j]ᵀ = S
                 cur = cur.at[d0].set(jnp.where(j >= 0, x, 0.0))
         return jax.lax.dynamic_update_index_in_dim(lb, cur, i, axis=0)

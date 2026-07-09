@@ -14,6 +14,7 @@ __all__ = [
     'as_structure',
     'full_like',
     'normal_like',
+    'nbytes',
     'ones_like',
     'zeros_like',
     'is_leaf',
@@ -73,6 +74,27 @@ def as_structure(x: P) -> P:
     """
     result: P = jax.eval_shape(lambda _: _, x)
     return result
+
+
+def nbytes(x: P) -> int:
+    """Returns the total byte size of a pytree.
+
+    Args:
+        x: The pytree of array-like leaves (or ``ShapeDtypeStruct`` leaves), whose total byte
+            size will be computed.
+
+    Examples:
+        >>> nbytes(jnp.ones(10))
+        40
+
+        >>> nbytes({'a': [jnp.zeros((2, 3)), jnp.array(2)]})
+        28
+    """
+    # Cast each dim to a Python int before prod: some callers' shapes carry fixed-width numpy
+    # int32 (e.g. from np.unique-derived probe shapes), which silently overflows on large arrays
+    # instead of promoting to Python's arbitrary-precision int.
+    sizes = jax.tree.map(lambda leaf: leaf.dtype.itemsize * prod(int(d) for d in leaf.shape), x)
+    return sum(jax.tree.leaves(sizes))
 
 
 def zeros_like(x: P) -> P:

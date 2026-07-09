@@ -186,18 +186,39 @@ class MultiObservationMapMaker(Generic[T]):
         rank = jax.process_index()
         n_local_devices = jax.local_device_count()
         n_devices = jax.device_count()
+
+        # Information about how observations are distributed among processes
         start, n_owned, n_pad = self.obs_distribution
         n_per_proc = n_owned + n_pad
         n_per_dev = n_per_proc // n_local_devices
+        n_slots_global = n_per_proc * n_processes
+
+        # Every slot (real or padding) is padded to the same reader.out_structure
+        per_slot_bytes = furax.tree.nbytes(self.reader.out_structure)
+        global_bytes = per_slot_bytes * n_slots_global
+
+        # The true, total data size (before observations are padded to a common structure)
+        real_bytes = self.reader.total_nbytes
+
+        slot_overhead = (n_slots_global - self.n_observations) / self.n_observations
+        byte_overhead = (global_bytes - real_bytes) / real_bytes
         logger_info(
-            f'Layout: {n_processes} process(es) x {n_local_devices} local device(s) = {n_devices} total'
+            f'layout procs={n_processes} dev_per_proc={n_local_devices} dev_total={n_devices}'
         )
         logger_info(
-            f'Observations: {self.n_observations} real, {n_per_proc * n_processes} after padding '
-            f'({n_per_proc} per process, {n_per_dev} per device)'
+            f'dataset obs={self.n_observations} slots={n_slots_global} slot_overhead=+{slot_overhead:.1%} '
+            f'slots_per_proc={n_per_proc} slots_per_dev={n_per_dev} slot_size={_format_bytes(per_slot_bytes)}'
         )
         logger_info(
-            f'Rank {rank}: owns obs[{start}:{start + n_owned}] ({n_owned} real + {n_pad} padding)'
+            f'dataset real={_format_bytes(real_bytes)} global={_format_bytes(global_bytes)} '
+            f'byte_overhead=+{byte_overhead:.1%}'
+        )
+
+        rank_pad = n_pad / n_per_proc
+        logger_info(
+            f'rank={rank} obs={start}:{start + n_owned} real={n_owned} pad={n_pad} '
+            f'pad_pct={rank_pad:.1%} real_size={_format_bytes(per_slot_bytes * n_owned)} '
+            f'pad_size={_format_bytes(per_slot_bytes * n_pad)}'
         )
 
         with jax.set_mesh(self.mesh):
@@ -469,6 +490,14 @@ class MultiObservationMapMaker(Generic[T]):
         # create the final shape and WCS objects for this covering box
         shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
         return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
+
+
+def _format_bytes(n: float) -> str:
+    for unit in ('B', 'KiB', 'MiB', 'GiB', 'TiB'):
+        if n < 1024:
+            return f'{n:.2f}{unit}'
+        n /= 1024
+    return f'{n:.2f}PiB'
 
 
 def get_obs_distribution_to_process(

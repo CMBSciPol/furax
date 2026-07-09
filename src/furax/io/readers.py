@@ -11,7 +11,7 @@ from jax.experimental import io_callback
 from jax.tree_util import register_static
 from jaxtyping import PyTree
 
-from furax.tree import zeros_like
+from furax.tree import nbytes, zeros_like
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,7 @@ class AbstractReader(ABC):
             raise ValueError(
                 f'structures length {len(structures)} does not match data count {self.count}'
             )
+        self.total_nbytes = sum(nbytes(s) for s in structures)
         self.out_structure = self._get_common_structure(structures)
 
     def reset_failures(self) -> None:

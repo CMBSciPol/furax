@@ -7,12 +7,13 @@ from jaxtyping import Array, Inexact, PyTree
 from numpy.testing import assert_allclose
 
 from furax import AbstractLinearOperator, tree
-from furax.core import DiagonalOperator, HomothetyOperator, IdentityOperator
+from furax.core import DiagonalOperator, HomothetyOperator
 from furax.mapmaking._scan_blocks import (
     ScanAdditionOperator,
     ScanBlockColumnOperator,
     ScanBlockDiagonalOperator,
     ScanBlockRowOperator,
+    Segment,
 )
 
 # ---------------------------------------------------------------------------
@@ -226,12 +227,13 @@ def test_sharded_fusion_ht_w_h() -> None:
 
 
 def test_homothety_on_block_lands_in_closed_over_map() -> None:
-    # `(-2) * block` folds the scalar into a closed-over map (here the input-side `pre`, since
-    # `c * op` puts the scalar on the input side), leaving the scanned body strictly obs-stacked.
+    # `(-2) * block` attaches the scalar as a shared segment on the input side (rightmost in
+    # composition order, since `c * op` puts the scalar on the input side), leaving the stacked core.
     blocks = _make_blocks(P('obs'))
     op = ((-2.0) * ScanBlockDiagonalOperator.create(blocks)).reduce()
     assert isinstance(op, ScanBlockDiagonalOperator)
-    assert isinstance(op.pre, HomothetyOperator)
+    assert [seg.stacked for seg in op.segments] == [True, False]
+    assert isinstance(op.segments[-1].operator, HomothetyOperator)
     x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
     x_np = np.array(jax.device_get(x))
     expected = np.stack([-2.0 * (m @ x_np[i]) for i, m in enumerate(_per_obs(blocks))])
@@ -307,22 +309,24 @@ def test_fused_block_composes_with_sharded_block() -> None:
 
 
 def test_create_carries_explicit_obs_size() -> None:
-    # n is declared, not re-inferred from leaf shapes downstream; create starts with trivial maps.
+    # n is declared, not re-inferred from leaf shapes downstream; create starts with one stacked seg.
     W = ScanBlockDiagonalOperator.create(_make_blocks(P('obs')))
     assert W.n_lead == N_OBS
-    assert W.scanned.matrix.shape[0] == N_OBS
-    assert isinstance(W.pre, IdentityOperator)
-    assert isinstance(W.post, IdentityOperator)
+    assert len(W.segments) == 1
+    assert W.segments[0].stacked
+    assert W.segments[0].operator.matrix.shape[0] == N_OBS
 
 
 def test_non_scalar_static_post_is_applied() -> None:
-    # a NON-scalar closed-over map (a shared-across-observation diagonal, leaf shape (N_OUT,) with no
-    # obs axis) is a valid post map: it must be accepted (no scalar requirement) and applied.
+    # a NON-scalar shared segment (a shared-across-observation diagonal, leaf shape (N_OUT,) with no
+    # obs axis) is a valid output-side segment: it must be accepted and applied after the core.
     blocks = _make_blocks(P('obs'))  # per-obs (N_OUT, N_IN)
     d = jax.device_put(RNG.standard_normal((N_OUT,), dtype=np.float64), P())
     post = DiagonalOperator(d, in_structure=jax.ShapeDtypeStruct((N_OUT,), jnp.float64))
-    pre = IdentityOperator(in_structure=blocks.in_structure)
-    op = ScanBlockDiagonalOperator._build(blocks, pre, post, n_lead=N_OBS)  # must not raise
+    # composition order (post @ core): post is applied after the sliced core, so it comes first
+    op = ScanBlockDiagonalOperator._build(
+        (Segment(post, False), Segment(blocks, True)), n_lead=N_OBS
+    )
     x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
     x_np = np.array(jax.device_get(x))
     d_np = np.array(jax.device_get(d))
@@ -331,13 +335,15 @@ def test_non_scalar_static_post_is_applied() -> None:
 
 
 def test_transpose_roundtrips_static() -> None:
-    # an output-side (post) map moves to the input side (pre) under transpose, symmetrically.
+    # an input-side shared map moves to the output side under transpose (segments reverse).
     blocks = _make_blocks(P('obs'))
     op = ((-3.0) * ScanBlockDiagonalOperator.create(blocks)).reduce()
-    assert isinstance(op.pre, HomothetyOperator)
+    assert isinstance(op.segments[-1].operator, HomothetyOperator)  # input side (applied first)
     op_T = op.T
     assert isinstance(op_T, ScanBlockDiagonalOperator)
-    assert isinstance(op_T.post, HomothetyOperator)
+    assert isinstance(
+        op_T.segments[0].operator, HomothetyOperator
+    )  # now output side (applied last)
     y = jax.device_put(RNG.standard_normal((N_OBS, N_OUT), dtype=np.float64), P('obs'))
     y_np = np.array(jax.device_get(y))
     expected = np.stack([-3.0 * (m.T @ y_np[i]) for i, m in enumerate(_per_obs(blocks))])
@@ -360,9 +366,7 @@ def test_addition_fusion_defers_on_obs_size_mismatch() -> None:
 
 
 def test_check_scanned_rejects_non_obs_body_leaf() -> None:
-    # a scanned body leaf that does not lead with the obs axis is a mis-stacked operator: raise.
+    # a stacked segment leaf that does not lead with the obs axis is a mis-tagged operator: raise.
     bad = _make_blocks()  # leaves lead with N_OBS
-    pre = IdentityOperator(in_structure=bad.in_structure)
-    post = IdentityOperator(in_structure=bad.out_structure)
-    with pytest.raises(ValueError, match='observation axis'):
-        ScanBlockDiagonalOperator._build(bad, pre, post, n_lead=N_OBS + 1)
+    with pytest.raises(ValueError, match='leading axis size'):
+        ScanBlockDiagonalOperator._build((Segment(bad, True),), n_lead=N_OBS + 1)

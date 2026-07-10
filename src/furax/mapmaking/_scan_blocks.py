@@ -366,10 +366,11 @@ class HomothetyScanBlockRule(AbstractCompositionRule):
         assert split is not None  # mypy
         homo, block, on_output_side = split
         if on_output_side:  # homo @ block: leading shared segment
-            scalar = HomothetyOperator(homo.value, in_structure=block.out_structure)
+            # we need the per-block structure here, not the public one with the leading axis
+            scalar = HomothetyOperator(homo.value, in_structure=block.segments[0].out_structure)
             segments = (Segment(scalar, False),) + block.segments
         else:  # block @ homo: trailing shared segment
-            scalar = HomothetyOperator(homo.value, in_structure=block.in_structure)
+            scalar = HomothetyOperator(homo.value, in_structure=block.segments[-1].in_structure)
             segments = block.segments + (Segment(scalar, False),)
         return [type(block)._build(segments, n_lead=block.n_lead)]
 

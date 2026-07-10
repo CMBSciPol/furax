@@ -28,7 +28,7 @@ from furax.mapmaking import (
 )
 from furax.mapmaking.config import SotodlibConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
-from furax.mapmaking.templates import deproject_hwpss_spline
+from furax.mapmaking.templates import resolve_hwpss_n_knots, deproject_hwpss_spline_simple
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
@@ -254,12 +254,12 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         tods = 0.5 * np.atleast_2d(np.asarray(self.data.signal, dtype=np.float64))
         cfg = self._sotodlib_config
         if cfg.hwpss_deproject:
+            n_knots = resolve_hwpss_n_knots(tods.shape[1], cfg.hwpss_knot_spacing)
             tods = np.asarray(
-                deproject_hwpss_spline(
+                deproject_hwpss_spline_simple(
                     jnp.asarray(tods),
-                    jnp.asarray(self.get_timestamps()),
                     jnp.asarray(self.get_hwp_angles()),
-                    cfg.hwpss_knot_spacing,
+                    n_knots,
                     cfg.hwpss_harmonics,
                     ridge=cfg.hwpss_ridge,
                 )

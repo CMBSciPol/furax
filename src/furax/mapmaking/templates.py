@@ -46,6 +46,8 @@ from furax.obs.stokes import ValidStokesType
 
 from .config import BinsConfig, PolynomialOrders
 
+from scipy.interpolate import BSpline
+
 
 class Basis(AbstractLinearOperator):
     """A set of template functions of time used to model a structured signal.
@@ -860,40 +862,67 @@ def resolve_hwpss_n_knots(n_samps: int, knot_spacing: int) -> int:
     return max(1, -(-n_samps // knot_spacing))  # ceil, floor at 1 knot
 
 
-def deproject_hwpss_spline(
-    tods: Float[Array, 'det samp'],
-    times: Float[Array, ' samp'],
-    hwp_angles: Float[Array, ' samp'],
-    knot_spacing: int,
-    harmonics: int | Sequence[int] = (4,),
+def _bspline_design_matrix(
+    x_norm: np.ndarray,
+    n_knots: int,
+    degree: int = 3,
     dtype: DTypeLike = jnp.float64,
-    ridge: float = 0.0,
-) -> Float[Array, 'det samp']:
-    n_dets, n_samps = tods.shape
-    n_knots = resolve_hwpss_n_knots(n_samps, knot_spacing)
-    template = PerDetectorTemplate.bspline_hwpss(
-        times, hwp_angles, n_dets, n_knots, harmonics, dtype
+) -> Array:
+    """Cubic B-spline design matrix, vectorized (no Python loop over basis fns)."""
+    internal_knots = np.linspace(0.0, 1.0, n_knots)
+    knots = np.concatenate(
+        [np.repeat(0.0, degree), internal_knots, np.repeat(1.0, degree)]
     )
+    # scipy's design_matrix builds the whole (nsamp, nbasis) matrix in one
+    # vectorized/sparse call -- this is the fix for the slow per-basis loop
+    B = BSpline.design_matrix(x_norm, knots, degree).toarray()
+    return jnp.asarray(B, dtype=dtype)
 
-    basis = cast(Basis, template.operator)
-    in_shape = basis.in_structure.shape  # (n_blocks, 2*n_harmonics)
-    n_amp = prod(in_shape)
 
-    def gram_matvec(flat_x: Float[Array, ' n_amp']) -> Float[Array, ' n_amp']:
-        x = flat_x.reshape(in_shape)
-        return basis.project(basis.expand(x)).reshape(-1)
+def _hwpss_design_matrix(
+    hwp_angles: Float[Array, ' samp'],
+    B: Float[Array, 'samp nbasis'],
+    harmonics: Sequence[int],
+) -> Float[Array, 'samp ncoeff']:
+    cols = []
+    for h in harmonics:
+        c = jnp.cos(h * hwp_angles)[:, None] * B
+        s = jnp.sin(h * hwp_angles)[:, None] * B
+        cols.append(c)
+        cols.append(s)
+    return jnp.concatenate(cols, axis=1)
 
-    G = jax.vmap(gram_matvec)(jnp.eye(n_amp, dtype=dtype))
-    if ridge:
-        G = G + ridge * jnp.eye(n_amp, dtype=dtype)
 
-    rhs = jax.vmap(basis.project)(tods.astype(dtype)).reshape(n_dets, n_amp)  # (det, n_amp)
+def deproject_hwpss_spline_simple(
+    tods: Float[Array, 'det samp'],
+    hwp_angles: Float[Array, ' samp'],
+    n_knots: int,
+    harmonics: int | Sequence[int] = (4,),
+    degree: int = 3,
+    ridge: float = 1e-6,
+    dtype: DTypeLike = jnp.float64,
+) -> Float[Array, 'det samp']:
+    """Plain per-detector spline+harmonic fit-and-subtract.
 
-    c, lower = jax.scipy.linalg.cho_factor(G)
-    x_flat = jax.scipy.linalg.cho_solve(
-        (c, lower), rhs.T
-    ).T  # (det, n_amp) -- one factorisation, all dets
-    x = x_flat.reshape(n_dets, *in_shape)
+    No orthogonalization against a pointing/mapmaking operator -- this is a
+    standalone instrumental-systematics removal step, not a component of the
+    mapmaker's projection stack. Nothing is retained after the call.
+    """
+    if isinstance(harmonics, int):
+        harmonics = (harmonics,)
 
-    model = jax.vmap(basis.expand)(x)  # (det, samp)
+    n_dets, n_samps = tods.shape
+    t = np.linspace(0.0, 1.0, n_samps)
+
+    B = _bspline_design_matrix(t, n_knots, degree, dtype)  # (samp, nbasis)
+    A = _hwpss_design_matrix(hwp_angles.astype(dtype), B, harmonics)  # (samp, ncoeff)
+
+    AtA = A.T @ A
+    AtA = AtA + ridge * jnp.eye(AtA.shape[0], dtype=dtype)
+    chol, lower = jax.scipy.linalg.cho_factor(AtA)
+
+    rhs = A.T @ tods.T.astype(dtype)              # (ncoeff, det)
+    coeffs = jax.scipy.linalg.cho_solve((chol, lower), rhs)  # (ncoeff, det)
+
+    model = (A @ coeffs).T                          # (det, samp)
     return (tods - model).astype(tods.dtype)

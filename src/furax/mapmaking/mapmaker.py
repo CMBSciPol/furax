@@ -49,7 +49,7 @@ from furax.obs.landscapes import (
 )
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesPyTreeType, ValidStokesType
+from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokesType
 
 from . import templates
 from ._geometry import minimum_enclosing_arc
@@ -216,11 +216,12 @@ class MultiObservationMapMaker(Generic[T]):
             A = self.get_system_operator(model)
             diag_A = A if self.config.binned else self.get_system_operator(model, diag=True)
             BJ = BJPreconditioner.create(diag_A)
-            icov = BJ.get_blocks().block_until_ready()
+            icov = BJ.blocks.block_until_ready()
             logger_info('Computed white noise inverse covariance')
 
             valid_pixels = self.pixel_selection(hits, icov)
-            selector = IndexOperator(jnp.where(valid_pixels), in_structure=A.out_structure)
+            # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
+            selector = IndexOperator((..., *jnp.where(valid_pixels)), in_structure=A.out_structure)
             n_selected = jnp.sum(valid_pixels)
             n_observed = jnp.sum(hits > 0)
             n_total = valid_pixels.size
@@ -273,7 +274,7 @@ class MultiObservationMapMaker(Generic[T]):
 
     def build_model_and_accumulate(
         self,
-    ) -> tuple[ObservationModel, Int64[Array, '...'], StokesPyTreeType]:
+    ) -> tuple[ObservationModel, Int64[Array, '...'], StokesType]:
         """Build the model and accumulate the hit map and RHS in a single, sharded read pass.
 
         Sharded over observations: each observation is read (and, for preproc-backed observations,
@@ -328,7 +329,10 @@ class MultiObservationMapMaker(Generic[T]):
                 assert isinstance(pointing, PointingOperator)  # mypy
                 pointing_i = pointing.as_stokes_i(interpolate=False)
                 ones = furax.tree.ones_like(obs.M.in_structure)
-                masked = jax.tree.leaves(obs.M(ones))[0]
+                masked_tod = obs.M(ones)
+                # The sample mask is per-detector (identical across Stokes legs); take one leg so
+                # StokesI wraps a (ndet, nsamp) array rather than a whole demodulated Stokes backing.
+                masked = masked_tod.data[0] if isinstance(masked_tod, Stokes) else masked_tod
                 hits_i = jnp.int64(pointing_i.T(StokesI(masked)).i)
 
                 # RHS contribution (optionally gap-filled).
@@ -663,15 +667,16 @@ class MapMaker:
             pixel_inds, spin_ang = observation.get_pointing_and_spin_angles(landscape)
             point_ang = spin_ang + det_off_ang[:, None]
 
+            # Index the (trailing) sky axes, leaving the leading Stokes axis of the map intact.
             if isinstance(landscape, WCSLandscape | AstropyWCSLandscape):
                 assert pixel_inds.shape[-1] == 2, 'Wrong WCS landscape format'
                 indexer = IndexOperator(
-                    (pixel_inds[..., 0], pixel_inds[..., 1]), in_structure=landscape.structure
+                    (..., pixel_inds[..., 0], pixel_inds[..., 1]), in_structure=landscape.structure
                 )
             elif isinstance(landscape, HealpixLandscape):
                 if pixel_inds.shape[-1] == 1:
                     pixel_inds = pixel_inds[..., 0]
-                indexer = IndexOperator(pixel_inds, in_structure=landscape.structure)
+                indexer = IndexOperator((..., pixel_inds), in_structure=landscape.structure)
 
             # Rotation due to coordinate transform
             tod_shape = pixel_inds.shape[:2]
@@ -828,7 +833,7 @@ class MapMaker:
             eigs[..., -1] > config.hits_cut * hits_quantile,
             eigs[..., 0] > config.cond_cut * eigs[..., -1],
         )
-        return IndexOperator(jnp.where(valid), in_structure=landscape.structure)
+        return IndexOperator((..., *jnp.where(valid)), in_structure=landscape.structure)
 
     def get_template_operator(
         self, observation: AbstractGroundObservation[Any]
@@ -951,7 +956,7 @@ class MapMaker:
             self._ground_coverage = ground_op.T(ones_tod)
             nonzero_hits = jnp.argwhere(self._ground_coverage.i > 0)
             indexer = IndexOperator(
-                (nonzero_hits[:, 0], nonzero_hits[:, 1]),
+                (..., nonzero_hits[:, 0], nonzero_hits[:, 1]),
                 in_structure=furax.tree.as_structure(self._ground_coverage),
             )
             flattener = furax.asoperator(
@@ -1024,7 +1029,7 @@ class BinnedMapMaker(MapMaker):
             logger_info('Test - second time - Finished mapmaking')
 
         final_map = np.array([res.i, res.q, res.u])
-        weights = np.array(system.get_blocks())
+        weights = np.array(system.blocks)
 
         output = {'map': final_map, 'weights': weights}
         if isinstance(landscape, WCSLandscape):
@@ -1105,7 +1110,7 @@ class MLMapmaker(MapMaker):
         logger_info('Created approximate system matrix')
 
         # Map pixel selection
-        blocks = diag_system.get_blocks()
+        blocks = diag_system.blocks
         selector = self.get_pixel_selector(blocks, landscape)
         logger_info(
             f'Selected {prod(selector.out_structure.shape)}\
@@ -1302,7 +1307,7 @@ class TwoStepMapmaker(MapMaker):
         logger_info('Created system matrix')
 
         # Map pixel selection
-        blocks = system.get_blocks()
+        blocks = system.blocks
         selector = self.get_pixel_selector(blocks, landscape)
         logger_info(
             f'Selected {prod(selector.out_structure.shape)}\
@@ -1430,7 +1435,7 @@ class ATOPMapMaker(MapMaker):
         logger_info('Created approximate system matrix')
 
         # Map pixel selection
-        blocks = diag_system.get_blocks()
+        blocks = diag_system.blocks
         selector = self.get_pixel_selector(blocks, landscape)
         logger_info(
             f'Selected {prod(selector.out_structure.shape)}\
@@ -1506,8 +1511,8 @@ class IQUModulationOperator(AbstractLinearOperator):
         object.__setattr__(self, 'sin_hwp_angle', jnp.sin(4 * hwp_angle.astype(dtype)))
         object.__setattr__(self, 'in_structure', in_structure)
 
-    def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:
-        return x.i + self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u  # type: ignore[union-attr]
+    def mv(self, x: StokesType) -> Float[Array, '...']:
+        return x.i + self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u
 
 
 class QUModulationOperator(AbstractLinearOperator):
@@ -1530,5 +1535,5 @@ class QUModulationOperator(AbstractLinearOperator):
         object.__setattr__(self, 'sin_hwp_angle', jnp.sin(4 * hwp_angle.astype(dtype)))
         object.__setattr__(self, 'in_structure', in_structure)
 
-    def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:
-        return self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u  # type: ignore[union-attr]
+    def mv(self, x: StokesType) -> Float[Array, '...']:
+        return self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u

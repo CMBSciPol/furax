@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import jit, lax
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float, Int, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import IndexOperator, RavelOperator, TransposeOperator
@@ -19,7 +19,7 @@ from furax.math.quaternion import (
 )
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
-from furax.obs.stokes import Stokes, StokesI, StokesPyTreeType
+from furax.obs.stokes import Stokes, StokesI, StokesType
 
 __all__ = [
     'PointingOperator',
@@ -93,10 +93,10 @@ class PointingOperator(AbstractLinearOperator):
         )
 
     @jit
-    def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
+    def mv(self, x: StokesType) -> StokesType:
         """Performs the 'un-pointing' operation, i.e. map->tod."""
 
-        def mv_inner(qdet: Float[Array, 'det 4']) -> StokesPyTreeType:
+        def mv_inner(qdet: Float[Array, 'det 4']) -> StokesType:
             # Expand detector quaternions from boresight and offsets
             # (samples, 4) x (det, 1, 4) -> (det, samples, 4)
             qdet_full = qmul(self.qbore, qdet[:, None, :])
@@ -121,7 +121,7 @@ class PointingOperator(AbstractLinearOperator):
             n_chunks = 1
             chunk_size = ndet
 
-        def body(i, tod):  # type: ignore[no-untyped-def]
+        def body(i: Int[Array, ''], tod: StokesType) -> StokesType:
             # interval bounds must be static, so we shift the values afterwards
             idet = jnp.arange(chunk_size) + i * chunk_size
 
@@ -133,15 +133,12 @@ class PointingOperator(AbstractLinearOperator):
             # process chunk
             tod_chunk = mv_inner(self.qdet[idet])
 
-            # update the output pytree
-            return jax.tree.map(
-                lambda tod_leaf, chunk_leaf: tod_leaf.at[idet, :].set(chunk_leaf), tod, tod_chunk
-            )
+            # update the output map
+            return type(tod).from_array(tod.data.at[:, idet].set(tod_chunk.data))
 
         # Start from empty timestream
-        tod_out: StokesPyTreeType = jax.tree.map(
-            lambda leaf: jnp.empty_like(leaf), x.structure_for(shape=(ndet, nsamp), dtype=x.dtype)
-        )
+        empty = jnp.empty((len(x.stokes), ndet, nsamp), dtype=x.dtype)
+        tod_out: StokesType = type(x).from_array(empty)
         tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
         return tod_out
 
@@ -178,9 +175,10 @@ class PointingOperator(AbstractLinearOperator):
             raise NotImplementedError('as_expanded_operator does not support interpolate=True')
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
         indices = self._quat2index(qdet_full)
-        # this takes care of multi-dimensional landscapes
-        ravel_op = RavelOperator(in_structure=self.landscape.structure)
-        index_op = IndexOperator(indices, in_structure=ravel_op.out_structure)
+        # Ravel the spatial axes only; the Stokes container's backing array carries a leading
+        # Stokes axis (axis 0) that must survive, so ravel axes 1..-1 and index the pixel axis last.
+        ravel_op = RavelOperator(1, -1, in_structure=self.landscape.structure)
+        index_op = IndexOperator((..., indices), in_structure=ravel_op.out_structure)
         pa = to_polarization_angle(qdet_full)
         qu_rot_op = QURotationOperator(angles=pa, in_structure=index_op.out_structure)
         return qu_rot_op @ index_op @ ravel_op
@@ -203,9 +201,7 @@ class PointingOperator(AbstractLinearOperator):
         """
         return self.landscape.quat2interp(qdet_full)
 
-    def _modulate(
-        self, tod: StokesPyTreeType, qdet_full: Float[Array, '*dims 4']
-    ) -> StokesPyTreeType:
+    def _modulate(self, tod: StokesType, qdet_full: Float[Array, '*dims 4']) -> StokesType:
         """Hook applied to the sampled TOD (identity in the base class).
 
         Subclasses override this to inject a per-sample diagonal weighting. Because the
@@ -214,9 +210,7 @@ class PointingOperator(AbstractLinearOperator):
         """
         return tod
 
-    def _sample(
-        self, x_flat: StokesPyTreeType, qdet_full: Float[Array, '*dims 4']
-    ) -> StokesPyTreeType:
+    def _sample(self, x_flat: StokesType, qdet_full: Float[Array, '*dims 4']) -> StokesType:
         """Sample the flat map at positions given by qdet_full."""
         if not self.interpolate:
             return x_flat[self._quat2index(qdet_full)]
@@ -229,25 +223,24 @@ class PointingOperator(AbstractLinearOperator):
         weights = jnp.where(valid, weights, 0.0)
         weight_sum = weights.sum(axis=-1, keepdims=True)
         unit_weights = weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
-        return jax.tree.map(  # type: ignore[no-any-return]
-            lambda m: jnp.sum(m[indices] * unit_weights, axis=-1),
-            x_flat,
-        )
+        # leading Stokes axis: index the (trailing) pixel axis and sum over the neighbour axis (-1);
+        # the weights broadcast over the leading Stokes axis for free.
+        sampled = jnp.sum(x_flat.data[:, indices] * unit_weights, axis=-1)
+        return type(x_flat).from_array(sampled)
 
-    def _bin(
-        self, tod_chunk: StokesPyTreeType, qdet_full: Float[Array, '*dims 4']
-    ) -> StokesPyTreeType:
+    def _bin(self, tod_chunk: StokesType, qdet_full: Float[Array, '*dims 4']) -> StokesType:
         """Scatter-add a TOD chunk into a sky map."""
         sky_shape = self.landscape.shape
         n_pixels = int(np.prod(sky_shape))
-        zeros = jnp.zeros(n_pixels, self.landscape.dtype)
+        # scatter-add per pixel while keeping the leading Stokes axis of the backing array.
+        arr = tod_chunk.data  # (n_stokes, *det_sample)
+        n_stokes = arr.shape[0]
+        zeros = jnp.zeros((n_stokes, n_pixels), self.landscape.dtype)
 
         if not self.interpolate:
             flat_pixels = self._quat2index(qdet_full).ravel()
-            return jax.tree.map(  # type: ignore[no-any-return]
-                lambda t: zeros.at[flat_pixels].add(t.ravel()).reshape(sky_shape),
-                tod_chunk,
-            )
+            binned = zeros.at[:, flat_pixels].add(arr.reshape(n_stokes, -1))
+            return type(tod_chunk).from_array(binned.reshape(n_stokes, *sky_shape))
 
         indices, weights = self._quat2interp(qdet_full)
         valid = indices >= 0
@@ -256,14 +249,11 @@ class PointingOperator(AbstractLinearOperator):
         weight_sum = valid_weights.sum(axis=-1, keepdims=True)
         valid_weights = valid_weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
         flat_indices = safe_indices.ravel()
-        return jax.tree.map(  # type: ignore[no-any-return]
-            lambda t: (
-                zeros.at[flat_indices]
-                .add((t[..., None] * valid_weights).ravel())
-                .reshape(sky_shape)
-            ),
-            tod_chunk,
-        )
+        # (n_stokes, *det_sample, n_nb): spread each sample over its neighbours (weights broadcast
+        # over the leading Stokes axis for free).
+        contrib = arr[..., None] * valid_weights
+        binned = zeros.at[:, flat_indices].add(contrib.reshape(n_stokes, -1))
+        return type(tod_chunk).from_array(binned.reshape(n_stokes, *sky_shape))
 
     def transpose(self) -> AbstractLinearOperator:
         return PointingTransposeOperator(operator=self)
@@ -273,10 +263,10 @@ class PointingTransposeOperator(TransposeOperator):
     operator: PointingOperator
 
     @jit
-    def mv(self, x: StokesPyTreeType) -> StokesPyTreeType:
+    def mv(self, x: StokesType) -> StokesType:
         """Performs the 'pointing' operation, i.e. tod->map."""
 
-        def mv_inner(xchunk: StokesPyTreeType, qdet: Float[Array, 'det 4']) -> StokesPyTreeType:
+        def mv_inner(xchunk: StokesType, qdet: Float[Array, 'det 4']) -> StokesType:
             # Expand detector quaternions from boresight and offsets
             qdet_full = qmul(self.operator.qbore, qdet[:, None, :])
             xchunk = self.operator._modulate(xchunk, qdet_full)
@@ -299,7 +289,7 @@ class PointingTransposeOperator(TransposeOperator):
             n_chunks = 1
             chunk_size = ndet
 
-        def body(i, sky):  # type: ignore[no-untyped-def]
+        def body(i: Int[Array, ''], sky: StokesType) -> StokesType:
             idet = jnp.arange(chunk_size) + i * chunk_size
 
             # clip, but avoid multiple contributions in the last chunk
@@ -310,12 +300,8 @@ class PointingTransposeOperator(TransposeOperator):
             sky_chunk = mv_inner(unique[:, None] * x[idet], self.operator.qdet[idet])
 
             # combine the results of the chunks into one sky map
-            return jax.tree.map(
-                lambda sky_leaf, chunk_leaf: sky_leaf.at[:].add(chunk_leaf),
-                sky,
-                sky_chunk,
-            )
+            return sky + sky_chunk
 
-        sky_out: StokesPyTreeType = self.operator.landscape.zeros()
+        sky_out: StokesType = self.operator.landscape.zeros()
         sky_out = lax.fori_loop(0, n_chunks, body, sky_out)
         return sky_out

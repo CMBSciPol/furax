@@ -80,11 +80,13 @@ class BeamOperator(AbstractLinearOperator):
         map2alm = Map2Alm(lmax=self.lmax, nside=nside, in_structure=self.in_structure)
         alm = map2alm.mv(x)
 
-        nfreq = first_leaf.shape[0]
-        fl = jnp.broadcast_to(jnp.atleast_2d(self.beam_fl), (nfreq, self.lmax + 1))
-        alm_beam = jax.tree.map(
-            lambda alm_leaf: jhp.almxfl(alm_leaf, fl, healpy_ordering=False), alm
-        )
+        # Apply the per-multipole transfer function, broadcasting it over every leading axis of the
+        # alm leaf (frequency and, for a Stokes-backed map, the leading Stokes axis).
+        def apply_beam(alm_leaf: jax.Array) -> jax.Array:
+            fl = jnp.broadcast_to(self.beam_fl, alm_leaf.shape[:-2] + (self.lmax + 1,))
+            return jnp.asarray(jhp.almxfl(alm_leaf, fl, healpy_ordering=False))
+
+        alm_beam = jax.tree.map(apply_beam, alm)
 
         out = Alm2Map(lmax=self.lmax, nside=nside, in_structure=map2alm.out_structure).mv(alm_beam)
         if input_is_1d:

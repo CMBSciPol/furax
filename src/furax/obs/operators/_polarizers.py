@@ -8,8 +8,8 @@ from furax.core.rules import AbstractCompositionRule
 from ..stokes import (
     Stokes,
     StokesI,
-    StokesPyTreeType,
     StokesQU,
+    StokesType,
     ValidStokesType,
 )
 from ._hwp import HWPOperator
@@ -45,7 +45,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         rotated_polarizer: AbstractLinearOperator = polarizer @ rot
         return rotated_polarizer
 
-    def mv(self, x: StokesPyTreeType) -> Float[Array, '...']:
+    def mv(self, x: StokesType) -> Float[Array, '...']:
         if isinstance(x, StokesI):
             return 0.5 * x.i
         if isinstance(x, StokesQU):

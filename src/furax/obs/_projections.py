@@ -33,8 +33,10 @@ def create_projection_operator(
     tod_structure = Stokes.class_for(landscape.stokes).structure_for(indices.shape, landscape.dtype)
 
     rotation = QURotationOperator(samplings.pa, in_structure=tod_structure)
-    reshape = RavelOperator(in_structure=landscape.structure)
-    sampling = IndexOperator(indices, in_structure=reshape.out_structure)
+    # Stokes maps carry the components on the leading axis: ravel only the spatial axes (1..-1) and
+    # index the trailing pixel axis, leaving the Stokes axis intact.
+    reshape = RavelOperator(1, -1, in_structure=landscape.structure)
+    sampling = IndexOperator((..., indices), in_structure=reshape.out_structure)
     projection = rotation @ sampling @ reshape
     return projection
 

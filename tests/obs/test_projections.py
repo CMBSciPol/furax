@@ -15,7 +15,7 @@ def test_direct(stokes) -> None:
         *(jnp.arange(12, dtype=landscape.dtype) * (i + 1) for i, stoke in enumerate(stokes))
     )
     indices = jnp.array([[2, 3, 2]])
-    proj = IndexOperator(indices, in_structure=landscape.structure)
+    proj = IndexOperator((..., indices), in_structure=landscape.structure)
 
     y = proj(x)
 
@@ -30,7 +30,7 @@ def test_transpose(stokes) -> None:
         *(jnp.array([[1, 2, 3]], dtype=landscape.dtype) * (i + 1) for i, stoke in enumerate(stokes))
     )
     indices = jnp.array([[2, 3, 2]])
-    proj = IndexOperator(indices, in_structure=landscape.structure)
+    proj = IndexOperator((..., indices), in_structure=landscape.structure)
 
     y = proj.T(x)
 
@@ -46,7 +46,7 @@ def test_ptp(stokes) -> None:
 
     landscape = MyStokesLandscape((4,), stokes)
     indices = jnp.array([[0, 1, 0, 2, 3], [1, 0, 1, 1, 1]])
-    op = IndexOperator(indices, in_structure=landscape.structure)
+    op = IndexOperator((..., indices), in_structure=landscape.structure)
 
     product = (op.T @ op).reduce()
     assert isinstance(product, DiagonalOperator)

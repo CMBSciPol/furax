@@ -6,7 +6,7 @@ from furax import tree
 from furax.math.quaternion import qrot_zaxis
 from furax.obs.landscapes import TangentialLandscape
 from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import StokesI, StokesPyTreeType
+from furax.obs.stokes import StokesI, StokesType
 
 __all__ = [
     'AtmospherePointingOperator',
@@ -100,9 +100,7 @@ class AtmospherePointingOperator(PointingOperator):
             y + self.wind_displacement[None, :, 1],
         )
 
-    def _modulate(
-        self, tod: StokesPyTreeType, qdet_full: Float[Array, '*dims 4']
-    ) -> StokesPyTreeType:
+    def _modulate(self, tod: StokesType, qdet_full: Float[Array, '*dims 4']) -> StokesType:
         """Weight each sample by the airmass loading ``1 / sin(el)`` when enabled."""
         if not self.elevation_modulation:
             return tod

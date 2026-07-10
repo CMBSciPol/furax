@@ -14,7 +14,7 @@ from astropy.cosmology import Planck15
 from jaxtyping import Array, Float, Inexact, Int, PyTree
 from scipy import constants
 
-from furax import AbstractLinearOperator, BlockRowOperator, BroadcastDiagonalOperator, diagonal
+from furax import AbstractLinearOperator, BlockRowOperator, diagonal
 
 _H_OVER_K_GHZ = constants.h * 1e9 / constants.k
 _T_CMB = Planck15.Tcmb(0).value
@@ -53,7 +53,7 @@ def K_RK_2_K_CMB(nu: Array | float) -> Array:
     return res  # type: ignore [no-any-return]
 
 
-class AbstractSEDOperator(BroadcastDiagonalOperator):
+class AbstractSEDOperator(AbstractLinearOperator):
     """Abstract base class for Spectral Energy Distribution (SED) operators.
 
     SED operators model how astrophysical components emit radiation across
@@ -64,24 +64,37 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
 
     Attributes:
         frequencies: Array of observation frequencies.
-        frequency0: Reference frequency for the SED normalization.
     """
 
     frequencies: Float[Array, ' a']
-    frequency0: float = field(metadata={'static': True})
 
     def __init__(
         self,
         frequencies: Float[Array, '...'],
         *,
-        frequency0: float = 100e9,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
         input_shape = self._get_input_shape(in_structure)
-        frequencies = frequencies.reshape((len(frequencies),) + tuple(1 for _ in input_shape))
+        n_freq = len(frequencies)
+        # The operator broadcasts a map (no frequency axis) to a multi-frequency output: the new
+        # frequency axis lands just before the trailing spatial axis, with any leading batch axes
+        # (e.g. the leading Stokes axis of a single-array Stokes map) broadcasting through.
+        n_batch = len(input_shape) - 1
+        frequencies = frequencies.reshape((1,) * n_batch + (n_freq, 1))
         object.__setattr__(self, 'frequencies', frequencies)
-        object.__setattr__(self, 'frequency0', frequency0)
-        super().__init__(self.sed(), axis_destination=-1, in_structure=in_structure)
+        object.__setattr__(self, 'in_structure', in_structure)
+        # sanity-check shapes at construction time
+        _ = jax.eval_shape(self.mv, in_structure)
+
+    def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
+        # Insert the frequency axis before the trailing spatial axis, unless already present
+        # (e.g. a genuine multi-frequency map passed in directly).
+        def func(leaf: Inexact[Array, '...']) -> Inexact[Array, '...']:
+            if leaf.ndim < self.frequencies.ndim:
+                leaf = jnp.expand_dims(leaf, axis=-2)
+            return self.sed() * leaf
+
+        return jax.tree.map(func, x)
 
     @staticmethod
     def _get_input_shape(in_structure: PyTree[jax.ShapeDtypeStruct]) -> tuple[int, ...]:
@@ -101,6 +114,14 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
         if len(input_shapes) != 1:
             raise ValueError(f'the leaves of the input do not have the same shape: {in_structure}')
         return input_shapes.pop()  # type: ignore[no-any-return]
+
+    def _broadcast_over_maps(self, x: Any) -> Float[Array, '...']:
+        """Reshape a per-frequency (or scalar) array to broadcast like :attr:`frequencies`, i.e. its
+        frequency axis placed just before the trailing spatial axis, batch axes broadcasting."""
+        arr = jnp.asarray(x)
+        if arr.ndim == 0:
+            return arr.reshape((1,) * self.frequencies.ndim)
+        return arr.reshape(self.frequencies.shape)
 
     @abstractmethod
     def sed(self) -> Float[Array, '...']:
@@ -177,7 +198,7 @@ class CMBOperator(AbstractSEDOperator):
         Returns:
             Float[Array, '...']: The SED for the CMB.
         """
-        return jnp.ones_like(self.frequencies) / jnp.expand_dims(self.factor, axis=-1)
+        return jnp.ones_like(self.frequencies) / self._broadcast_over_maps(self.factor)
 
 
 class DustOperator(AbstractSEDOperator):
@@ -211,6 +232,7 @@ class DustOperator(AbstractSEDOperator):
     beta_patch_indices: Int[Array, '...'] | None
     factor: Float[Array, '...'] | float
     units: str = field(metadata={'static': True})
+    frequency0: float = field(metadata={'static': True})
 
     def __init__(
         self,
@@ -236,9 +258,9 @@ class DustOperator(AbstractSEDOperator):
         object.__setattr__(self, 'beta', jnp.asarray(beta))
         object.__setattr__(self, 'beta_patch_indices', beta_patch_indices)
         object.__setattr__(self, 'units', units)
+        object.__setattr__(self, 'frequency0', frequency0)
         object.__setattr__(self, 'factor', factor)
-
-        super().__init__(frequencies, frequency0=frequency0, in_structure=in_structure)
+        super().__init__(frequencies, in_structure=in_structure)
 
     def sed(self) -> Float[Array, '...']:
         t = self._get_at(
@@ -249,7 +271,7 @@ class DustOperator(AbstractSEDOperator):
         b = self._get_at(
             (self.frequencies / self.frequency0) ** (1 + self.beta), self.beta_patch_indices
         )
-        sed = (t * b) * jnp.expand_dims(self.factor, axis=-1)
+        sed = (t * b) * self._broadcast_over_maps(self.factor)
         return sed
 
 
@@ -283,6 +305,7 @@ class SynchrotronOperator(AbstractSEDOperator):
     nu_pivot: float = field(metadata={'static': True})
     running: float = field(metadata={'static': True})
     units: str = field(metadata={'static': True})
+    frequency0: float = field(metadata={'static': True})
     factor: Float[Array, '...'] | float
 
     def __init__(
@@ -309,8 +332,9 @@ class SynchrotronOperator(AbstractSEDOperator):
         object.__setattr__(self, 'nu_pivot', nu_pivot)
         object.__setattr__(self, 'running', running)
         object.__setattr__(self, 'units', units)
+        object.__setattr__(self, 'frequency0', frequency0)
         object.__setattr__(self, 'factor', factor)
-        super().__init__(frequencies, frequency0=frequency0, in_structure=in_structure)
+        super().__init__(frequencies, in_structure=in_structure)
 
     def sed(self) -> Float[Array, '...']:
         sed = self._get_at(
@@ -324,7 +348,7 @@ class SynchrotronOperator(AbstractSEDOperator):
         sed = self._get_at(
             (self.frequencies / self.frequency0) ** self.beta_pl, self.beta_pl_patch_indices
         )
-        sed *= jnp.expand_dims(self.factor, axis=-1)
+        sed *= self._broadcast_over_maps(self.factor)
 
         return sed
 
@@ -390,9 +414,7 @@ class NoiseDiagonalOperator(AbstractLinearOperator):
         >>> d = landscape.normal(jax.random.key(0))  # d
         >>> N = NoiseDiagonalOperator(noise_sample, in_structure=d.structure)
         >>> N.I(d).structure
-        StokesIQU(i=ShapeDtypeStruct(shape=(10, 49152), dtype=float64),
-                  q=ShapeDtypeStruct(shape=(10, 49152), dtype=float64),
-                  u=ShapeDtypeStruct(shape=(10, 49152), dtype=float64))
+        StokesIQU(ShapeDtypeStruct(shape=(3, 10, 49152), dtype=float64))
     """
 
     vector: PyTree[Inexact[Array, '...']]

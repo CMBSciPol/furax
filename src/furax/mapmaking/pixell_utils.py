@@ -10,11 +10,11 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from numpy.typing import NDArray
 
 from furax.obs.landscapes import AstropyWCSLandscape, WCSLandscape
-from furax.obs.stokes import StokesPyTreeType
+from furax.obs.stokes import StokesType
 
 
 def ndmap_from_wcs_landscape(
-    map: StokesPyTreeType, landscape: WCSLandscape | AstropyWCSLandscape
+    map: StokesType, landscape: WCSLandscape | AstropyWCSLandscape
 ) -> pixell.enmap.ndmap:
     """Convert a given Stokes pytree to pixell's ndmap"""
     wcs = landscape.wcs if isinstance(landscape, AstropyWCSLandscape) else landscape.to_wcs()

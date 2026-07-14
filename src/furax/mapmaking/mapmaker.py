@@ -77,6 +77,7 @@ from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
 from .templates import PerDetectorTemplate
+from .templates import resolve_hwpss_n_knots, deproject_hwpss_spline_simple
 from .weight import WeightOperator
 
 T = TypeVar('T')
@@ -355,6 +356,16 @@ class MultiObservationMapMaker(Generic[T]):
 
                 # Use Python `if` for static `fill_gaps`, so gap-filling branch is not traced
                 tod = data[ReaderField.SAMPLE_DATA]
+                
+                if (hwpss_cfg := config.hwpss_deproject) is not None:
+                    tod = deproject_hwpss_spline_simple(
+                        tod,
+                        hwp_angles=data[ReaderField.HWP_ANGLES],
+                        n_knots=resolve_hwpss_n_knots(tod.shape[1], hwpss_cfg.knot_spacing),
+                        harmonics=hwpss_cfg.harmonics,
+                        ridge=hwpss_cfg.ridge,
+                    )
+                    
                 if fill_gaps:
                     tod = jax.lax.cond(
                         real & valid,
@@ -385,12 +396,12 @@ class MultiObservationMapMaker(Generic[T]):
         self, model: ObservationModel, *, diag: bool = False
     ) -> AbstractLinearOperator:
         H = ScanBlockColumnOperator.create(model.H)
-        # filter_vmap: array leaves mapped, static fields held
         weight = eqx.filter_vmap(ObservationModel.diag_W)(model) if diag else model.W
         W = ScanBlockDiagonalOperator.create(weight)
-        # specify leading axis dimension because F can be trivial
-        _, n_own, n_pad = self.obs_distribution
-        F = ScanBlockDiagonalOperator.create(model.F, n_lead=n_own + n_pad)
+        _, n_owned, n_pad = self.obs_distribution
+        n_per_proc = n_owned + n_pad          # identical on every rank by construction
+        n_total_padded = n_per_proc * jax.process_count()
+        F = ScanBlockDiagonalOperator.create(model.F, n_lead=n_total_padded)
         return (H.T @ W @ F @ H).reduce()
 
     def pixel_selection(

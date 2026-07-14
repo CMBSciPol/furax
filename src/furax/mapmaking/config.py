@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
@@ -51,8 +51,21 @@ class GapTreatment(Enum):
 @dataclass
 class SolverConfig:
     rtol: float = 1e-6
+    """Relative tolerance of iterative solver."""
+
     atol: float = 0
+    """Absolute tolerance of iterative solver."""
+
     max_steps: int = 1_000
+    """Maximum allowed number of iterations steps."""
+
+    verbose: bool = False
+    """Log the residual norm at every iteration."""
+
+    @property
+    def options(self) -> dict[str, Any]:
+        """Dictionary of solver options, minus `verbose`."""
+        return {k: v for k, v in asdict(self).items() if k != 'verbose'}
 
 
 @dataclass

@@ -278,9 +278,7 @@ class AbstractReader(ABC):
         subclasses may override to apply field-specific padding.
         """
         return jax.tree.map(
-            lambda leaf, pad: (
-                np.pad(leaf, [(0, p) for p in pad]) if len(pad) > 0 else np.asarray(leaf)
-            ),
+            lambda leaf, pad: np.pad(leaf, [(0, p) for p in pad]) if any(pad) else np.asarray(leaf),
             data,
             padding,
         )

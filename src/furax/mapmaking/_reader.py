@@ -338,7 +338,7 @@ class ObservationReader(AbstractReader, Generic[T]):
                 tods = obs.get_demodulated_tods(stokes=stokes)
             else:
                 tods = obs.get_tods()
-            return jax.tree.map(lambda x: x.astype(target_dtype), tods)
+            return jax.tree.map(lambda x: x.astype(target_dtype, copy=False), tods)
 
         def get_noise_model_fits(obs: AbstractObservation[T]) -> Any:
             if demodulated:
@@ -346,14 +346,14 @@ class ObservationReader(AbstractReader, Generic[T]):
             else:
                 model = if_none_raise_error(obs.get_noise_model())
             fits = model.to_array()
-            return jax.tree.map(lambda x: x.astype(target_dtype), fits)
+            return jax.tree.map(lambda x: x.astype(target_dtype, copy=False), fits)
 
         def get_timestamps(obs: AbstractObservation[T]) -> Any:
             # The pipeline uses only time differences, so anchor each observation at its
             # own start. Subtracting in float64 keeps the samples resolved when cast to
             # float32; the absolute epoch is read from the interface where needed.
             timestamps = np.asarray(obs.get_timestamps(), dtype=np.float64)
-            return (timestamps - timestamps[0]).astype(target_dtype)
+            return (timestamps - timestamps[0]).astype(target_dtype, copy=False)
 
         return {
             ReaderField.METADATA: lambda obs: HashedObservationMetadata.from_observation(obs),
@@ -361,18 +361,24 @@ class ObservationReader(AbstractReader, Generic[T]):
             ReaderField.VALID_SAMPLE_MASKS: lambda obs: obs.get_sample_mask(),
             ReaderField.VALID_SCANNING_MASKS: lambda obs: obs.get_scanning_mask(),
             ReaderField.TIMESTAMPS: get_timestamps,
-            ReaderField.HWP_ANGLES: lambda obs: obs.get_hwp_angles().astype(target_dtype),
+            ReaderField.HWP_ANGLES: lambda obs: obs.get_hwp_angles().astype(
+                target_dtype, copy=False
+            ),
             ReaderField.DETECTOR_QUATERNIONS: lambda obs: obs.get_detector_quaternions().astype(
-                target_dtype
+                target_dtype, copy=False
             ),
             ReaderField.BORESIGHT_QUATERNIONS: lambda obs: obs.get_boresight_quaternions().astype(
-                target_dtype
+                target_dtype, copy=False
             ),
             ReaderField.NOISE_MODEL_FITS: get_noise_model_fits,
-            ReaderField.AZIMUTH: lambda obs: obs.get_azimuth().astype(target_dtype),
-            ReaderField.ELEVATION: lambda obs: obs.get_elevation().astype(target_dtype),
-            ReaderField.LEFT_SCAN_MASK: lambda obs: obs.get_left_scan_mask().astype(bool),
-            ReaderField.RIGHT_SCAN_MASK: lambda obs: obs.get_right_scan_mask().astype(bool),
+            ReaderField.AZIMUTH: lambda obs: obs.get_azimuth().astype(target_dtype, copy=False),
+            ReaderField.ELEVATION: lambda obs: obs.get_elevation().astype(target_dtype, copy=False),
+            ReaderField.LEFT_SCAN_MASK: lambda obs: obs.get_left_scan_mask().astype(
+                bool, copy=False
+            ),
+            ReaderField.RIGHT_SCAN_MASK: lambda obs: obs.get_right_scan_mask().astype(
+                bool, copy=False
+            ),
             ReaderField.SCANNING_INTERVALS: lambda obs: np.asarray(
                 obs.get_scanning_intervals(), dtype=np.int32
             ),

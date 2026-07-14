@@ -109,48 +109,50 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if isinstance(filename, Path):
             filename = filename.as_posix()
 
-        # default is to load everything
-        fields: set[str] | None = None
         config = sotodlib_config or SotodlibConfig()
-        if requested_fields is not None:
-            requested = set(requested_fields)
-            # minimum information needed to determine buffer shapes
-            fields = {'dets', 'samp'}
-            # translate request to sotodlib subfield names (sets dedup overlapping requests)
-            if ReaderField.METADATA in requested:
-                fields.add('obs_info')
-            if ReaderField.SAMPLE_DATA in requested:
-                if config.demodulated:
-                    fields |= {'dsT', 'demodQ', 'demodU'}
-                else:
-                    fields.add('signal')
-            if ReaderField.VALID_SAMPLE_MASKS in requested:
-                fields.add('flags.glitch_flags')
-            if {ReaderField.VALID_SCANNING_MASKS, ReaderField.SCANNING_INTERVALS} & requested:
-                fields.add('preprocess.turnaround_flags')
-            if ReaderField.LEFT_SCAN_MASK in requested:
-                fields.add('flags.left_scan')
-            if ReaderField.RIGHT_SCAN_MASK in requested:
-                fields.add('flags.right_scan')
-            if {ReaderField.AZIMUTH, ReaderField.ELEVATION} & requested:
-                fields.add('boresight')
-            if ReaderField.TIMESTAMPS in requested:
-                fields.add('timestamps')
-            if ReaderField.HWP_ANGLES in requested:
-                fields.add('hwp_angle')
-            if ReaderField.BORESIGHT_QUATERNIONS in requested:
-                fields |= {'boresight', 'timestamps'}
-                if config.wobble_correction:
-                    fields |= {'wobble_params', 'det_info', 'hwp_angle'}
-            if ReaderField.DETECTOR_QUATERNIONS in requested:
-                fields.add('focal_plane')
-            if ReaderField.NOISE_MODEL_FITS in requested:
-                if config.noise_source == 'mapmaking':
-                    fields.add('preprocess.noiseQ_mapmaking')
-                else:
-                    fields |= {'preprocess.noiseT', 'preprocess.noiseQ', 'preprocess.noiseU'}
+        if requested_fields is None:
+            # default is to load everything
+            data = AxisManager.load(filename, fields=None)
+            return cls(data, config)
 
-        data = AxisManager.load(filename, fields=None if fields is None else list(fields))
+        requested = set(requested_fields)
+        # minimum information needed to determine buffer shapes
+        fields = {'dets', 'samp'}
+        # translate request to sotodlib subfield names (sets dedup overlapping requests)
+        if ReaderField.METADATA in requested:
+            fields.add('obs_info')
+        if ReaderField.SAMPLE_DATA in requested:
+            if config.demodulated:
+                fields |= {'dsT', 'demodQ', 'demodU'}
+            else:
+                fields.add('signal')
+        if ReaderField.VALID_SAMPLE_MASKS in requested:
+            fields.add('flags.glitch_flags')
+        if {ReaderField.VALID_SCANNING_MASKS, ReaderField.SCANNING_INTERVALS} & requested:
+            fields.add('preprocess.turnaround_flags')
+        if ReaderField.LEFT_SCAN_MASK in requested:
+            fields.add('flags.left_scan')
+        if ReaderField.RIGHT_SCAN_MASK in requested:
+            fields.add('flags.right_scan')
+        if {ReaderField.AZIMUTH, ReaderField.ELEVATION} & requested:
+            fields.add('boresight')
+        if ReaderField.TIMESTAMPS in requested:
+            fields.add('timestamps')
+        if ReaderField.HWP_ANGLES in requested:
+            fields.add('hwp_angle')
+        if ReaderField.BORESIGHT_QUATERNIONS in requested:
+            fields |= {'boresight', 'timestamps'}
+            if config.wobble_correction:
+                fields |= {'wobble_params', 'det_info', 'hwp_angle'}
+        if ReaderField.DETECTOR_QUATERNIONS in requested:
+            fields.add('focal_plane')
+        if ReaderField.NOISE_MODEL_FITS in requested:
+            if config.noise_source == 'mapmaking':
+                fields.add('preprocess.noiseQ_mapmaking')
+            else:
+                fields |= {'preprocess.noiseT', 'preprocess.noiseQ', 'preprocess.noiseU'}
+
+        data = AxisManager.load(filename, fields=list(fields))
         return cls(data, config)
 
     @classmethod

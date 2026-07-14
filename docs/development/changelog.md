@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-07-14
+
 ### Changed
 
 - Migrated the documentation website from Sphinx to Zensical (Material for MkDocs), with the
@@ -253,7 +255,8 @@ Initial tagged release.
 
 - Project classifiers and editable-mode installation instructions
 
-[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.11.2...HEAD
+[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/CMBSciPol/furax/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/CMBSciPol/furax/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/CMBSciPol/furax/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/CMBSciPol/furax/compare/v0.10.4...v0.11.0

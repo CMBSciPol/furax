@@ -51,6 +51,12 @@ def run(  # type: ignore[no-untyped-def]
     # merely importing this module stays cheap and backend-free.
     import jax
 
+    # MapMakingConfig.double_precision defaults to True, and the mapmaking config (which could
+    # override it) isn't available until after the furax imports below -- so assume the default
+    # here to avoid jax_healpy's import-time "not using 64-bit precision" warning firing on a
+    # flag we're about to set anyway; corrected below once the actual config is loaded.
+    jax.config.update('jax_enable_x64', True)
+
     from furax.distributed import maybe_init
 
     maybe_init()  # must run before the JAX backend is touched
@@ -74,8 +80,7 @@ def run(  # type: ignore[no-untyped-def]
     else:
         config = MapMakingConfig.load_yaml(mapmaking_config)
 
-    if config.double_precision:
-        jax.config.update('jax_enable_x64', True)
+    jax.config.update('jax_enable_x64', config.double_precision)
 
     obsids = resolve_obsids(obsid, obsids_file)
     observations: list[AbstractLazyObservation[Any]]

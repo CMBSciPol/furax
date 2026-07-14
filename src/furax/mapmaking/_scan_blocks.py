@@ -51,7 +51,7 @@ class Segment(eqx.Module):
 class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
     """Base class for operators that apply a batched pytree operator slice-by-slice via scan.
 
-    The effective per-observation operator is stored as a list of "segments" (:class:`Segment`).
+    The effective per-observation operator is stored as a list of "segments" ([`Segment`][]).
     Segments are in composition (left-to-right) order: segments[0] is applied last (output side),
     segments[-1] first (input side). Each segment is tagged obs-*stacked* (sliced per observation)
     or *shared* (broadcast across observations).
@@ -116,8 +116,10 @@ class AbstractScanBlockOperator(AbstractLinearOperator, ABC):
     def _partition(
         self,
     ) -> tuple[tuple[AbstractLinearOperator, ...], tuple[AbstractLinearOperator, ...]]:
-        """Split each segment's operator into (dynamic, static): stacked segments expose their
-        arrays to the scan, shared segments keep everything static (broadcast across observations).
+        """Split each segment's operator into (dynamic, static).
+
+        Stacked segments expose their arrays to the scan, shared segments keep everything static
+        (broadcast across observations).
         """
         dyn: list[AbstractLinearOperator] = []
         stat: list[AbstractLinearOperator] = []
@@ -470,7 +472,7 @@ def _leading_size(operator: AbstractLinearOperator) -> int:
     """Observation-axis size of a *stacked* operator: all (array) leaves share a leading axis.
 
     This only returns the leading axis size of the first leaf encountered. It does not check that
-    all leaves have consistent dimensions (see :func:`_check_stacked` for that).
+    all leaves have consistent dimensions (see [`_check_stacked`][] for that).
     """
     for leaf in jax.tree.leaves(operator):
         if eqx.is_array(leaf) and jnp.ndim(leaf) >= 1:

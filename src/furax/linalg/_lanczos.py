@@ -131,14 +131,17 @@ def lanczos_tridiag(
     Float[Array, ''],
     PyTree[Num[Array, '...']],
 ]:
-    """Run m iterations of the Lanczos algorithm to build a tridiagonal matrix.
+    r"""Run m iterations of the Lanczos algorithm to build a tridiagonal matrix.
 
     The Lanczos algorithm generates an orthonormal basis {v_0, v_1, ..., v_{m-1}}
     for the Krylov subspace K_m(A, v0) = span{v0, Av0, A^2 v0, ..., A^{m-1} v0}.
 
     The matrix A restricted to this basis is tridiagonal with diagonal alpha
     and off-diagonal beta.  The full m-step Lanczos factorization is:
-        A V = V T + beta_last * v_last * e_{m-1}^T
+
+    $$
+    A V = V T + \beta_\text{last}\, v_\text{last}\, e_{m-1}^T
+    $$
 
     Args:
         A: A Hermitian linear operator.
@@ -215,7 +218,7 @@ def lanczos_eigh(
         LanczosResult containing the k best eigenvalues, eigenvectors, and their
         residual norms, sorted by eigenvalue ascending.
 
-    Example:
+    Examples:
         >>> import jax
         >>> import jax.numpy as jnp
         >>> from furax import DiagonalOperator
@@ -359,17 +362,21 @@ def lanczos_tr(
     max_restarts: int = 300,
     tol: float = 1e-10,
 ) -> LanczosResult:
-    """Thick-restart Lanczos for computing k eigenpairs of a Hermitian operator.
+    r"""Thick-restart Lanczos for computing k eigenpairs of a Hermitian operator.
 
     Each restart cycle maintains an m-step Lanczos factorization:
 
-        A V_m = V_m H + beta_last * v_last * e_{m-1}^T
+    $$
+    A V_m = V_m H + \beta_\text{last}\, v_\text{last}\, e_{m-1}^T
+    $$
 
     where H is a bordered tridiagonal inner matrix.
 
     A pair is converged when the cheap Lanczos residual bound (ARPACK criterion)
 
-        ``|beta_last| * |S[m-1, i]| ≤ tol * max(|theta_i|, eps * ||A||)``
+    $$
+    |\beta_\text{last}| \cdot |S[m-1, i]| \le \text{tol} \cdot \max(|\theta_i|, \epsilon \|A\|)
+    $$
 
     where ``S`` is the eigenvector matrix of the m×m inner matrix H, so
     ``S[m-1, i]`` is the last component of the i-th eigenvector of H, and
@@ -411,7 +418,7 @@ def lanczos_tr(
         LanczosResult containing eigenvalues, eigenvectors, and residual norms,
         sorted by eigenvalue ascending.
 
-    Example:
+    Examples:
         >>> import jax
         >>> import jax.numpy as jnp
         >>> from furax import DiagonalOperator

@@ -23,8 +23,9 @@ class SumOperator(AbstractLinearOperator):
     Attributes:
         axis: The axes along which to sum, as a pytree or single value.
 
-    Example:
+    Examples:
         To sum along every dimension of all leaves:
+
         >>> from furax.tree import as_structure
         >>> x = {'a': jnp.array([[0, 0, 0], [1, 1, 1]]),
         ...      'b': jnp.array([[1, 1, 1], [2, 2, 2]])}
@@ -33,11 +34,13 @@ class SumOperator(AbstractLinearOperator):
         {'a': Array(3, dtype=int32), 'b': Array(9, dtype=int32)}
 
         To sum along every dimension of only one leaf:
+
         >>> op = SumOperator(axis={'a': None, 'b': ()}, in_structure=as_structure(x))
         >>> op(x)
         {'a': Array(3, dtype=int32), 'b': Array([[1, 1, 1], [2, 2, 2]], dtype=int32)}
 
         To sum the leaves along different axes:
+
         >>> op = SumOperator(axis={'a': 0, 'b': 1}, in_structure=as_structure(x))
         >>> op(x)
         {'a': Array([1, 1, 1], dtype=int32), 'b': Array([3, 6], dtype=int32)}

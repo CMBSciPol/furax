@@ -114,7 +114,7 @@ def iter_config_paths(config_path: Path) -> Iterator[ConfigPath]:
     Covers the archive index and any config-level ``metadata`` db (resolved against the config
     root), plus the context's ``obsfiledb`` / ``obsdb`` / ``detdb`` and ``metadata`` dbs (resolved
     against the context dir, with tags expanded). The ``context_file`` itself is not yielded -- it
-    is a yaml that is rewritten rather than copied; use :func:`context_file` for it.
+    is a yaml that is rewritten rather than copied; use [`context_file`][] for it.
     """
     config_path = config_path.resolve()
     root = config_path.parents[PREPROC_ROOT_DEPTH]

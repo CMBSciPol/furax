@@ -61,6 +61,8 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
             azimuth: The key for the azimuth angle buffer.
             elevation: The key for the elevation angle buffer.
             boresight: The key for the (RA/dec) boresight quaternions buffer.
+            cross_psd: Optional ``(frequencies, cross-PSD matrix)`` tuple defining a
+                correlated noise model across detectors.
         """
         # only keep the observation at the given index
         self.data: toast.Observation = data.obs[observation_index]
@@ -196,6 +198,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
     def get_scanning_intervals(self) -> NDArray[Any]:
         """Returns scanning intervals.
+
         The output is a list of the starting and ending sample indices
         """
         if not hasattr(self.data, 'intervals') or 'scanning' not in self.data.intervals:
@@ -232,19 +235,19 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         return mask
 
     def get_azimuth(self) -> Float[np.ndarray, ' a']:
-        """Returns the azimuth of the boresight for each sample"""
+        """Returns the azimuth of the boresight for each sample."""
         if self._azimuth not in self.data.shared:
             raise ValueError('Azimuth field not provided.')
         return np.asarray(self.data.shared[self._azimuth].data)
 
     def get_elevation(self) -> Float[np.ndarray, ' a']:
-        """Returns the elevation of the boresight for each sample"""
+        """Returns the elevation of the boresight for each sample."""
         if self._elevation not in self.data.shared:
             raise ValueError('Elevation field not provided.')
         return np.asarray(self.data.shared[self._elevation].data)
 
     def get_timestamps(self) -> Float[np.ndarray, ' a']:
-        """Returns timestamps (sec) of the samples"""
+        """Returns timestamps (sec) of the samples."""
         return np.asarray(self.data.shared['times'].data)
 
     def get_wcs_shape_and_kernel(
@@ -253,8 +256,9 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         projection: ProjectionType = ProjectionType.CAR,
     ) -> tuple[tuple[int, int], WCS]:
         """Returns the shape and object corresponding to a WCS projection.
-        Here, this is obtained while we compute the pointing and pixelisation."""
 
+        Here, this is obtained while we compute the pointing and pixelisation.
+        """
         det_pointing = toast.ops.PointingDetectorSimple(
             boresight=defaults.boresight_radec, quats=self._quats
         )
@@ -280,8 +284,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
     def get_pointing_and_spin_angles(
         self, landscape: StokesLandscape
     ) -> tuple[Float[Array, ' ...'], Float[Array, ' ...']]:
-        """Obtain pointing information and spin angles from the observation"""
-
+        """Obtain pointing information and spin angles from the observation."""
         det_keys = self.data.detdata.keys()
         if self._quats in det_keys and self._pixels in det_keys:
             indices = self._get_pixel_indices()
@@ -320,8 +323,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
     @typing.no_type_check
     def get_noise_model(self) -> None | NoiseModel:
-        """Load noise model from the focalplane data, if present. Otherwise, return None"""
-
+        """Load noise model from the focalplane data, if present. Otherwise, return None."""
         noise_keys = ['psd_fmin', 'psd_fknee', 'psd_alpha', 'psd_net']
         fp_data = self.data.telescope.focalplane.detector_data
         for key in noise_keys:
@@ -367,8 +369,7 @@ class LazyToastObservation(FileBackedLazyObservation[toast.Data]):
 
 @partial(np.vectorize, signature='(4)->()')
 def get_local_meridian_angle(quat):  # type: ignore[no-untyped-def]
-    """
-    Compute angle between local meridian and orientation vector from quaternions.
+    """Compute angle between local meridian and orientation vector from quaternions.
 
     Assumes that the quaternions encode the rotation between the celestial frame
     and some other frame (e.g. detector or boresight frame). The "orientation vector"

@@ -661,7 +661,7 @@ class IdentityOperator(AbstractLinearOperator):
     The identity operator is diagonal, orthogonal and positive semi-definite.
     Its transpose and inverse are itself.
 
-    Example:
+    Examples:
         >>> I = IdentityOperator(in_structure=jax.ShapeDtypeStruct((3,), jnp.float32))
         >>> x = jnp.array([1.0, 2.0, 3.0])
         >>> I(x)
@@ -691,7 +691,7 @@ class HomothetyOperator(AbstractLinearOperator):
     Attributes:
         value: The scalar multiplier.
 
-    Example:
+    Examples:
         >>> H = HomothetyOperator(2.0, in_structure=jax.ShapeDtypeStruct((3,), jnp.float32))
         >>> x = jnp.array([1.0, 2.0, 3.0])
         >>> H(x)
@@ -727,6 +727,7 @@ def asoperator(
 
     Args:
         func: The function to wrap.
+        in_structure: The structure (shapes and dtypes) of the operator's input.
         **keywords: Keyword arguments to pass to the function.
 
     Usage:

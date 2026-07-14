@@ -25,7 +25,7 @@ pip install -e .[dev]
 This installs:
 - Core dependencies (JAX, Lineax, etc.)
 - Development tools (pytest, mypy, ruff, pre-commit)
-- Documentation tools (sphinx, etc.)
+- Documentation tools (zensical, etc.)
 
 ### Pre-commit Hooks
 
@@ -257,27 +257,32 @@ def my_function(
 
 ### Building Documentation
 
-```bash
-# Build HTML documentation
-cd docs
-make html
+The documentation is built with [Zensical](https://zensical.org/):
 
-# View in browser
-open build/html/index.html
+```bash
+# Install the docs dependency group
+uv sync --group docs
+
+# Live-reloading preview server
+uv run zensical serve
+
+# Build the static site into ./site
+uv run zensical build
 ```
 
 ### Mathematical Notation
 
-Use proper LaTeX for mathematical expressions:
+Use LaTeX for mathematical expressions, rendered via MathJax. Inline math uses `$...$` and
+display math uses `$$...$$`:
 
-```rst
+```markdown
 The maximum likelihood estimator is:
 
-.. math::
+$$
+\hat{m} = (P^T N^{-1} P)^{-1} P^T N^{-1} d
+$$
 
-   \\hat{m} = (P^T N^{-1} P)^{-1} P^T N^{-1} d
-
-where :math:`P` is the pointing matrix.
+where $P$ is the pointing matrix.
 ```
 
 ## Pull Request Process

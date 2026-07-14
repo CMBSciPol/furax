@@ -22,7 +22,7 @@ from .config import NoiseFitConfig
 @jax.tree_util.register_dataclass
 @dataclass
 class NoiseModel(ABC):
-    """Dataclass for noise models used for ground observation data"""
+    """Dataclass for noise models used for ground observation data."""
 
     @property
     @abstractmethod
@@ -57,7 +57,7 @@ class NoiseModel(ABC):
         sample_rate: float,
         inverse: bool = True,
     ) -> FourierOperator:
-        """Fourier operator representation of the noise model"""
+        """Fourier operator representation of the noise model."""
         func = (lambda f: 1.0 / self.psd(f)) if inverse else self.psd
         # do not use apodization -- sufficient padding is done by the FourierOperator
         return FourierOperator(
@@ -67,7 +67,7 @@ class NoiseModel(ABC):
     def l2_loss(
         self, f: Float[Array, ' a'], Pxx: Float[Array, 'dets a'], mask: Float[Array, ' a']
     ) -> Float[Array, '']:
-        """l2 loss in log-log spacea with given frequency mask"""
+        """l2 loss in log-log spacea with given frequency mask."""
         pred = self.log_psd(f)
         loss = jnp.trapezoid(((pred - jnp.log10(Pxx)) * mask[None, :]) ** 2, jnp.log10(f))
         return jnp.mean(loss)
@@ -76,7 +76,7 @@ class NoiseModel(ABC):
 @jax.tree_util.register_dataclass
 @dataclass
 class WhiteNoiseModel(NoiseModel):
-    """Dataclass for the white noise model used for ground observation data"""
+    """Dataclass for the white noise model used for ground observation data."""
 
     sigma: Float[Array, ' dets']
 
@@ -122,7 +122,7 @@ class WhiteNoiseModel(NoiseModel):
         hwp_frequency: Array,
         config: NoiseFitConfig | None = None,
     ) -> 'WhiteNoiseModel':
-        """Fit a white noise model to data"""
+        """Fit a white noise model to data."""
         sigma = fit_white_noise_model(
             f,
             Pxx,
@@ -136,7 +136,7 @@ class WhiteNoiseModel(NoiseModel):
 @jax.tree_util.register_dataclass
 @dataclass
 class AtmosphericNoiseModel(NoiseModel):
-    """Dataclass for the 1/f noise model used for ground observation data"""
+    """Dataclass for the 1/f noise model used for ground observation data."""
 
     sigma: Float[Array, ' dets']
     alpha: Float[Array, ' dets']
@@ -167,10 +167,11 @@ class AtmosphericNoiseModel(NoiseModel):
     def operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
     ) -> AbstractLinearOperator:
-        """Toeplitz operator from the autocorrelation function evaluated via
-        inverse fft of the noise psd, which is apodized and cut at given length
-        """
+        """Build a Toeplitz operator from the autocorrelation function.
 
+        The autocorrelation is evaluated via inverse FFT of the noise PSD, which is
+        apodized and cut at the given length.
+        """
         sample_rate: float = cast(float, kwargs.get('sample_rate'))
         correlation_length: int = cast(int, kwargs.get('correlation_length'))
         window = apodization_window(correlation_length)
@@ -191,10 +192,11 @@ class AtmosphericNoiseModel(NoiseModel):
     def inverse_operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
     ) -> AbstractLinearOperator:
-        """Toeplitz operator from the inverse autocorrelation function evaluated via
-        inverse fft of the noise psd, which is apodized and cut at given length
-        """
+        """Build a Toeplitz operator from the inverse autocorrelation function.
 
+        The inverse autocorrelation is evaluated via inverse FFT of the noise PSD, which
+        is apodized and cut at the given length.
+        """
         sample_rate: float = cast(float, kwargs.get('sample_rate'))
         correlation_length: int = cast(int, kwargs.get('correlation_length'))
 
@@ -219,7 +221,7 @@ class AtmosphericNoiseModel(NoiseModel):
         hwp_frequency: Array,
         config: NoiseFitConfig | None = None,
     ) -> 'AtmosphericNoiseModel':
-        """Fit a atmospheric (1/f) noise model to data"""
+        """Fit a atmospheric (1/f) noise model to data."""
         result = fit_atmospheric_psd_model(
             f,
             Pxx,
@@ -264,6 +266,7 @@ def fit_white_noise_model(
     Args:
         f: Frequency array (Hz). Shape: (n_freq,)
         Pxx: Power spectral density values. Shape: (n_detectors, n_freq)
+        sample_rate: Sampling rate of the timestream (Hz).
         hwp_frequency: HWP rotation frequency (Hz)
         config: NoiseFitConfig instance
 
@@ -394,6 +397,8 @@ def _fit_psd_model_masked(
             Used in choosing the starting point for alpha and f_knee
         high_f_threshold: Frequency above which the PSD is assumed to be dominated by white noise
             Used in choosing the starting point for sigma
+        max_iter: Maximum number of optimizer iterations.
+        tol: Convergence tolerance for the optimizer.
 
     Returns:
         params: Array of fitted parameters [sigma, alpha, f_knee, f_min].

@@ -402,8 +402,10 @@ def _legendre_values(
     max_order: int,
     dtype: DTypeLike,
 ) -> Float[Array, '{max_order-min_order+1} samp']:
-    """Legendre polynomials of orders `min_order..max_order` (inclusive), evaluated on
-    `u` already rescaled to `[-1, 1]`."""
+    """Legendre polynomials of orders `min_order..max_order` (inclusive).
+
+    Evaluated on `u`, already rescaled to `[-1, 1]`.
+    """
     legs = jax.scipy.special.lpmn_values(max_order, max_order, u, is_normalized=False)
     return legs[0, min_order:, :].astype(dtype)
 
@@ -414,8 +416,10 @@ def _legendre(
     max_order: int,
     dtype: DTypeLike,
 ) -> Float[Array, '{max_order-min_order+1} samp']:
-    """Legendre polynomials of orders `min_order..max_order` (inclusive), evaluated on
-    `x` rescaled to `[-1, 1]` over its global range."""
+    """Legendre polynomials of orders `min_order..max_order` (inclusive).
+
+    Evaluated on `x`, rescaled to `[-1, 1]` over its global range.
+    """
     u = -1.0 + 2.0 * (x - jnp.min(x)) / jnp.ptp(x)
     return _legendre_values(u, min_order, max_order, dtype)
 
@@ -427,8 +431,9 @@ def _harmonics(
     *,
     dc: bool,
 ) -> Float[Array, ' rows samp']:
-    """Harmonic basis `sin(k·angle), cos(k·angle)` for each harmonic `k`, optionally
-    prepended with a constant (DC) row when `dc` is set.
+    """Harmonic basis `sin(k·angle), cos(k·angle)` for each harmonic `k`.
+
+    Optionally prepended with a constant (DC) row when `dc` is set.
 
     `harmonics` is either an int `n` (the harmonics `1..n`) or an explicit sequence of
     harmonic orders.
@@ -666,9 +671,11 @@ class PerDetectorTemplate(AbstractLinearOperator):
 
     @classmethod
     def none(cls, n_dets: int, n_samps: int, dtype: DTypeLike) -> Self:
-        """Empty template: no amplitudes, zero output. Used to leave a Stokes leg
-        untouched in a per-leg block (e.g. the I leg of the T2P template, which acts
-        on Q/U only)."""
+        """Empty template: no amplitudes, zero output.
+
+        Used to leave a Stokes leg untouched in a per-leg block (e.g. the I leg of the
+        T2P template, which acts on Q/U only).
+        """
         # k-axis is 0, so this is a zero-size array; n_samps only sizes the einsum output.
         values = jnp.zeros((n_dets, 0, n_samps), dtype)
         basis = TensorBasis(
@@ -710,9 +717,10 @@ class PerDetectorTemplate(AbstractLinearOperator):
 
 
 class GroundTemplateOperator(AbstractLinearOperator):
-    """Operator for ground signal templates. The template amplitudes
-    form a two-dimensional (elevation, azimuth) IQU map of the ground
-    observed that is shared across detectors for the observation range.
+    """Operator for ground signal templates.
+
+    The template amplitudes form a two-dimensional (elevation, azimuth) IQU map of the
+    ground observed that is shared across detectors for the observation range.
     This class only contains a factory method.
     All argument angles should be provided in radians.
     """

@@ -29,7 +29,7 @@ class TreeOperator(AbstractLinearOperator):
         inner_treedef: PyTreeDef for columns.
         tree_shape: (num_rows, num_cols) in terms of tree leaves.
 
-    Example:
+    Examples:
         To represent the Mueller Matrix of a quarter-wave plate with a vertical fast-axis:
 
         >>> from furax.obs.stokes import StokesIQUV

@@ -3,6 +3,8 @@ MANIFEST
 build
 dist
 _site
+/site/
+.cache/
 htmlcov
 __pycache__
 *.egg-info
@@ -18,3 +20,6 @@ __pycache__
 *.pyo
 *.pyd
 *.pytest_cache
+
+# local-only design notes
+/docs/design/deprojection-atop.md

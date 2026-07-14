@@ -665,7 +665,7 @@ class MapMaker:
         return cls.from_config(MapMakingConfig.load_yaml(path), logger=logger)
 
     def get_landscape(self, observation: AbstractGroundObservation[Any]) -> StokesLandscape:
-        """Landscape used for mapmaking with given observation"""
+        """Landscape used for mapmaking with given observation."""
         lc = self.config.landscape
         if (landscape := _static_landscape(lc, self.config.dtype)) is not None:
             return landscape
@@ -678,8 +678,7 @@ class MapMaker:
     def get_pointing(
         self, observation: AbstractGroundObservation[Any], landscape: StokesLandscape
     ) -> AbstractLinearOperator:
-        """Operator containing pointing information for given observation"""
-
+        """Operator containing pointing information for given observation."""
         det_off_ang = observation.get_detector_offset_angles().astype(landscape.dtype)
 
         if self.config.pointing.on_the_fly:
@@ -720,7 +719,7 @@ class MapMaker:
         observation: AbstractGroundObservation[Any],
         landscape: StokesLandscape,
     ) -> AbstractLinearOperator:
-        """Acquisition operator mapping sky maps to time-ordered data"""
+        """Acquisition operator mapping sky maps to time-ordered data."""
         pointing = self.get_pointing(observation, landscape)
 
         if self.config.demodulated:
@@ -747,8 +746,9 @@ class MapMaker:
     def get_scanning_masker(
         self, observation: AbstractGroundObservation[Any]
     ) -> AbstractLinearOperator:
-        """Flag operator which selects only the scanning intervals
-        of the given TOD of shape (ndets, nsamps).
+        """Select only the scanning intervals of the given TOD.
+
+        The TOD has shape (ndets, nsamps).
         """
         in_structure = ShapeDtypeStruct(
             shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
@@ -770,8 +770,9 @@ class MapMaker:
     def get_scanning_mask_projector(
         self, observation: AbstractGroundObservation[Any]
     ) -> AbstractLinearOperator:
-        """Flag operator which sets the values outside the scanning intervals
-        of the given TOD (of shape (ndets, nsamps)) to zero.
+        """Zero the values outside the scanning intervals of the given TOD.
+
+        The TOD has shape (ndets, nsamps).
         """
         structure = ShapeDtypeStruct(
             shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
@@ -786,8 +787,9 @@ class MapMaker:
     def get_sample_mask_projector(
         self, observation: AbstractGroundObservation[Any]
     ) -> AbstractLinearOperator:
-        """Flag operator which sets the values of the given TOD (of shape (ndets, nsamps)) to
-        zero at masked (flagged) samples.
+        """Zero the given TOD at masked (flagged) samples.
+
+        The TOD has shape (ndets, nsamps).
         """
         structure = ShapeDtypeStruct(
             shape=(observation.n_detectors, observation.n_samples), dtype=self.config.dtype
@@ -809,8 +811,9 @@ class MapMaker:
         ).reduce()
 
     def get_or_fit_noise_model(self, observation: AbstractGroundObservation[Any]) -> NoiseModel:
-        """Return a noise model for the observation, corresponding to
-        the type (diagonal, toeplitz, ...) specified by the mapmaker.
+        """Return a noise model for the observation.
+
+        The model type (diagonal, toeplitz, ...) is specified by the mapmaker.
         Attempts to load the noise model from the data if available,
         but otherwise fits a model to the data.
         """
@@ -851,8 +854,11 @@ class MapMaker:
     def get_pixel_selector(
         self, blocks: Float[Array, '... nstokes nstokes'], landscape: StokesLandscape
     ) -> IndexOperator:
-        """Select indices of map pixels satisfying
-        the minimum fractional hits (hits_cut) and condition number (cond_cut) criteria"""
+        """Select indices of map pixels satisfying the hit and condition-number cuts.
+
+        Pixels must meet the minimum fractional hits (hits_cut) and condition number
+        (cond_cut) criteria.
+        """
         config = self.config
 
         # eigs = jnp.linalg.eigvalsh(blocks)
@@ -867,9 +873,7 @@ class MapMaker:
     def get_template_operator(
         self, observation: AbstractGroundObservation[Any]
     ) -> BlockRowOperator:
-        """Create and return a template operator corresponding to the
-        name and configuration provided.
-        """
+        """Create a template operator from the provided name and configuration."""
         config = self.config
         assert config.templates is not None
         blocks: dict[str, AbstractLinearOperator] = {}
@@ -1078,7 +1082,7 @@ class BinnedMapMaker(MapMaker):
 
 
 class MLMapmaker(MapMaker):
-    """Class for mapmaking with maximum likelihood (ML) estimator"""
+    """Class for mapmaking with maximum likelihood (ML) estimator."""
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -1296,7 +1300,7 @@ class MLMapmaker(MapMaker):
 
 
 class TwoStepMapmaker(MapMaker):
-    """Class for binned mapmaking with templates, using the two-step estimation method"""
+    """Class for binned mapmaking with templates, using the two-step estimation method."""
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -1521,9 +1525,10 @@ class ATOPMapMaker(MapMaker):
 
 
 class IQUModulationOperator(AbstractLinearOperator):
-    """Class that adds the input Stokes signals to a single HWP-modulated signal
-    Similar to LinearPolarizerOperator @ QURotationOperator(hwp_angle), except that
-    only half of the QU rotation needs to be computed
+    """Add the input Stokes signals into a single HWP-modulated signal.
+
+    Similar to ``LinearPolarizerOperator @ QURotationOperator(hwp_angle)``, except that
+    only half of the QU rotation needs to be computed.
     """
 
     cos_hwp_angle: Float[Array, ' samps']
@@ -1545,9 +1550,10 @@ class IQUModulationOperator(AbstractLinearOperator):
 
 
 class QUModulationOperator(AbstractLinearOperator):
-    """Class that adds the input Stokes signals to a single HWP-modulated signal
-    Similar to LinearPolarizerOperator @ QURotationOperator(hwp_angle), except that
-    only half of the QU rotation needs to be computed
+    """Add the input Stokes signals into a single HWP-modulated signal.
+
+    Similar to ``LinearPolarizerOperator @ QURotationOperator(hwp_angle)``, except that
+    only half of the QU rotation needs to be computed.
     """
 
     cos_hwp_angle: Float[Array, ' samps']

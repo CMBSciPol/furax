@@ -23,13 +23,13 @@ __all__ = [
 class BandedCholeskyOperator(AbstractLinearOperator):
     """Inverse of a symmetric positive-(semi)definite matrix, by Cholesky solve.
 
-    This operator can be used with an ordinary dense matrix (:meth:`from_dense`), or from
-    a banded matrix (zero away from the diagonal, :meth:`from_bands`) and so is stored
+    This operator can be used with an ordinary dense matrix ([`from_dense`][]), or from
+    a banded matrix (zero away from the diagonal, [`from_bands`][]) and so is stored
     compactly instead of as the full matrix.
 
     Calling ``A(b)`` solves ``A x = b``.
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax.linalg import BandedCholeskyOperator
         >>> A = jnp.array([[4., 2.], [2., 3.]])
@@ -48,7 +48,7 @@ class BandedCholeskyOperator(AbstractLinearOperator):
         in_structure: PyTree[jax.ShapeDtypeStruct] | None = None,
         regularization: float = 0.0,
     ) -> Self:
-        """Factor a block-banded matrix (see :func:`banded_cholesky`) and wrap it as an operator.
+        """Factor a block-banded matrix (see [`banded_cholesky`][]) and wrap it as an operator.
 
         Args:
             bands: Upper-band representation of the block-banded matrix, shape
@@ -139,7 +139,7 @@ def banded_cholesky(
     Returns:
         The lower band factor, same shape as ``bands``.
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax.linalg import banded_cholesky
         >>> # tridiagonal SPD A = [[4,1,0,0],[1,4,1,0],[0,1,4,1],[0,0,1,4]], scalar (k=1) blocks
@@ -164,8 +164,9 @@ def banded_cholesky(
 
 @partial(jnp.vectorize, signature='(n,w1,k,k)->(n,w1,k,k)')
 def _block_banded_cholesky(bands: Float[Array, 'n w1 k k']) -> Float[Array, 'n w1 k k']:
-    """Block Cholesky of a symmetric positive-definite block-banded matrix. Batched over
-    arbitrary leading dims via the ``jnp.vectorize`` signature.
+    """Block Cholesky of a symmetric positive-definite block-banded matrix.
+
+    Batched over arbitrary leading dims via the ``jnp.vectorize`` signature.
 
     ``bands[j, d, :, :]`` is the upper block ``A[j, j+d]`` (``d = 0..w``, ``w = w1-1`` the block
     bandwidth; ``d=0`` the symmetric diagonal block). Returns the lower factor in the same band
@@ -210,12 +211,12 @@ def _block_banded_cholesky(bands: Float[Array, 'n w1 k k']) -> Float[Array, 'n w
 def banded_cholesky_solve(
     lb: Float[Array, '*batch n w1 k k'], b: Float[Array, '*batch n k']
 ) -> Float[Array, '*batch n k']:
-    """Solve ``L Lᵀ x = b`` given the lower band factor ``lb`` from :func:`banded_cholesky`.
+    """Solve ``L Lᵀ x = b`` given the lower band factor ``lb`` from [`banded_cholesky`][].
 
     Batched over arbitrary leading dims (matching ``lb``'s, excluding its trailing
     ``(n, w1, k, k)`` core).
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax.linalg import banded_cholesky, banded_cholesky_solve
         >>> a = jnp.array([[4., 2.], [2., 3.]])

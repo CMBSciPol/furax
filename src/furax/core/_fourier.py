@@ -27,7 +27,7 @@ class FourierOperator(AbstractLinearOperator):
         apodize: Whether to apply Hamming window apodization.
         fft_size: Size of the FFT (power of 2 for efficiency).
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> n = 1000
         >>> fs = 200.0  # sampling frequency
@@ -155,7 +155,7 @@ class FourierOperator(AbstractLinearOperator):
     ) -> 'FourierOperator':
         """Creates a bandpass filtering operator.
 
-        Example:
+        Examples:
             >>> import jax.numpy as jnp
             >>> tod = jnp.sin(2 * jnp.pi * 10 * jnp.linspace(0, 1, 1000))
             >>> op = FourierOperator.create_bandpass_operator(

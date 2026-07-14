@@ -21,7 +21,7 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
         blocks: The dense blocks as an array (at least 2D).
         subscripts: Einsum subscripts defining the operation (default: 'ij...,j...->i...').
 
-    Example:
+    Examples:
         For a matrix made of three 2x4 diagonal blocks, and input block columns of three blocks of
         four elements each, the operator can be written as:
 

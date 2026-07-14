@@ -29,12 +29,12 @@ __all__ = [
 
 
 def K_RK_2_K_CMB(nu: Array | float) -> Array:
-    """
-    Convert Rayleigh-Jeans brightness temperature to CMB temperature.
+    r"""Convert Rayleigh-Jeans brightness temperature to CMB temperature.
 
-    .. math::
-        T_{CMB} = \frac{(e^{\frac{h \nu}{k T_{CMB}}} - 1)^2}{(e^{\frac{h \nu}{k T_{CMB}}})
-        \\left( \frac{h \nu}{k T_{CMB}} \right)^2}
+    $$
+    T_{CMB} = \frac{(e^{\frac{h \nu}{k T_{CMB}}} - 1)^2}{(e^{\frac{h \nu}{k T_{CMB}}})
+    \left( \frac{h \nu}{k T_{CMB}} \right)^2}
+    $$
 
     Args:
         nu (Array | float): Frequency in GHz.
@@ -42,7 +42,7 @@ def K_RK_2_K_CMB(nu: Array | float) -> Array:
     Returns:
         Array: Conversion factor from Rayleigh-Jeans to CMB temperature.
 
-    Example:
+    Examples:
         >>> nu = jnp.array([30, 40, 100])
         >>> conversion = K_RK_2_K_CMB(nu)
         >>> print(conversion)
@@ -98,8 +98,7 @@ class AbstractSEDOperator(AbstractLinearOperator):
 
     @staticmethod
     def _get_input_shape(in_structure: PyTree[jax.ShapeDtypeStruct]) -> tuple[int, ...]:
-        """
-        Determine the shape of the input leaves in the PyTree.
+        """Determine the shape of the input leaves in the PyTree.
 
         Args:
             in_structure (PyTree): The PyTree structure.
@@ -116,8 +115,11 @@ class AbstractSEDOperator(AbstractLinearOperator):
         return input_shapes.pop()  # type: ignore[no-any-return]
 
     def _broadcast_over_maps(self, x: Any) -> Float[Array, '...']:
-        """Reshape a per-frequency (or scalar) array to broadcast like :attr:`frequencies`, i.e. its
-        frequency axis placed just before the trailing spatial axis, batch axes broadcasting."""
+        """Reshape a per-frequency (or scalar) array to broadcast like `frequencies`.
+
+        The frequency axis is placed just before the trailing spatial axis, with batch axes
+        broadcasting.
+        """
         arr = jnp.asarray(x)
         if arr.ndim == 0:
             return arr.reshape((1,) * self.frequencies.ndim)
@@ -125,8 +127,7 @@ class AbstractSEDOperator(AbstractLinearOperator):
 
     @abstractmethod
     def sed(self) -> Float[Array, '...']:
-        """
-        Define the spectral energy distribution transformation.
+        """Define the spectral energy distribution transformation.
 
         Returns:
             Float[Array, '...']: The transformed SED.
@@ -137,8 +138,7 @@ class AbstractSEDOperator(AbstractLinearOperator):
     def _get_at(
         values: Float[Array, '...'], indices: Int[Array, '...'] | None
     ) -> Float[Array, '...']:
-        """
-        Retrieve values at specified indices, or return all values if indices are None.
+        """Retrieve values at specified indices, or return all values if indices are None.
 
         Args:
             values (Array): Input array.
@@ -164,7 +164,7 @@ class CMBOperator(AbstractSEDOperator):
         units: Output units ('K_CMB' or 'K_RJ').
         factor: Unit conversion factor.
 
-    Example:
+    Examples:
         >>> nu = jnp.array([30, 40, 100])  # GHz
         >>> cmb_op = CMBOperator(frequencies=nu, in_structure=landscape.structure)
         >>> tod = cmb_op(sky_map)  # Broadcasts CMB map to all frequencies
@@ -192,8 +192,7 @@ class CMBOperator(AbstractSEDOperator):
         super().__init__(frequencies, in_structure=in_structure)
 
     def sed(self) -> Float[Array, '...']:
-        """
-        Compute the spectral energy distribution for the CMB.
+        """Compute the spectral energy distribution for the CMB.
 
         Returns:
             Float[Array, '...']: The SED for the CMB.
@@ -217,7 +216,7 @@ class DustOperator(AbstractSEDOperator):
         beta: Spectral index (typically ~1.5).
         units: Output units ('K_CMB' or 'K_RJ').
 
-    Example:
+    Examples:
         >>> nu = jnp.array([100, 143, 217, 353])  # GHz
         >>> dust_op = DustOperator(
         ...     frequencies=nu, frequency0=353, beta=1.54, temperature=20.0,
@@ -291,7 +290,7 @@ class SynchrotronOperator(AbstractSEDOperator):
         running: Running of the spectral index.
         units: Output units ('K_CMB' or 'K_RJ').
 
-    Example:
+    Examples:
         >>> nu = jnp.array([30, 44, 70])  # GHz
         >>> sync_op = SynchrotronOperator(
         ...     frequencies=nu, frequency0=30, beta_pl=-3.0,
@@ -365,7 +364,7 @@ def MixingMatrixOperator(**blocks: AbstractSEDOperator) -> AbstractLinearOperato
     Returns:
         BlockRowOperator: A reduced block row operator representing the mixing matrix.
 
-    Example:
+    Examples:
         >>> from furax.obs import CMBOperator, DustOperator,\
              SynchrotronOperator, MixingMatrixOperator
         >>> nu = jnp.array([30, 40, 100])  # Frequencies in GHz
@@ -399,11 +398,11 @@ class NoiseDiagonalOperator(AbstractLinearOperator):
     This operator applies a noise vector (in a PyTree structure) in an element‐wise
     multiplication to an input data PyTree.
 
-    Args:
+    Attributes:
         vector: PyTree of arrays representing the noise values.
         in_structure: Input structure (PyTree[jax.ShapeDtypeStruct]) specifying the shape and dtype.
 
-    Example:
+    Examples:
         >>> import jax
         >>> import jax.numpy as jnp
         >>> from furax.obs.landscapes import FrequencyLandscape

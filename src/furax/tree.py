@@ -41,7 +41,7 @@ def as_promoted_dtype(x: P) -> P:
     Args:
         x: The pytree to promote.
 
-    Example:
+    Examples:
         >>> as_promoted_dtype({'a': jnp.ones(2, jnp.float16), 'b': jnp.ones(2, jnp.float32)})
         {'a': Array([1., 1.], dtype=float32), 'b': Array([1., 1.], dtype=float32)}
     """
@@ -121,7 +121,7 @@ def ones_like(x: P) -> P:
         x: The pytree of array-like leaves with ``shape`` and ``dtype`` attributes, whose structure
             will be used to construct the output pytree of ones.
 
-    Example:
+    Examples:
         >>> ones_like({'a': jnp.zeros(2, dtype=jnp.int32)})
         {'a': Array([1, 1], dtype=int32)}
 
@@ -139,7 +139,7 @@ def full_like(x: P, fill_value: ScalarLike) -> P:
             will be used to construct the output pytree of the specified value..
         fill_value: The value to fill with.
 
-    Example:
+    Examples:
         >>> full_like({'a': jnp.array(1, jnp.int32), 'b': jnp.array(2, jnp.float32)}, 3)
         {'a': Array(3, dtype=int32), 'b': Array(3., dtype=float32)}
 
@@ -159,7 +159,7 @@ def normal_like(x: P, key: Key[Array, '']) -> P:
             will be used to construct the output pytree of pseudo-random values.
         key: The PRNGKey to use.
 
-    Example:
+    Examples:
         >>> normal_like({'a': jnp.array(1, jnp.float16),
         ...            'b': jnp.array(2, jnp.float32)}, jax.random.PRNGKey(0))
         {'a': Array(-1.34, dtype=float16), 'b': Array(-1.2515389, dtype=float32)}
@@ -183,10 +183,10 @@ def uniform_like(x: P, key: Key[Array, ''], low: float = 0.0, high: float = 1.0)
         x: The pytree of array-like leaves with ``shape`` and ``dtype`` attributes, whose structure
             will be used to construct the output pytree of pseudo-random values.
         key: The PRNGKey to use.
-        min_val: The minimum value of the uniform distribution.
-        max_val: The maximum value of the uniform distribution.
+        low: The minimum value of the uniform distribution.
+        high: The maximum value of the uniform distribution.
 
-    Example:
+    Examples:
         >>> uniform_like({'a': jnp.array(1, jnp.float16),
         ...            'b': jnp.array(2, jnp.float32)}, jax.random.PRNGKey(0))
         {'a': Array(0.08984, dtype=float16), 'b': Array(0.10536897, dtype=float32)}
@@ -269,7 +269,7 @@ def dot(x: PyTree[Num[Array, '...']], y: PyTree[Num[Array, '...']]) -> Num[Array
         x: The first Pytree.
         y: The second Pytree.
 
-    Example:
+    Examples:
         >>> import furax as fx
         >>> x = {'a': jnp.array([1., 2, 3]), 'b': jnp.array([1, 0])}
         >>> y = {'a': jnp.array([2, -1, 1]), 'b': jnp.array([2, 0])}
@@ -296,7 +296,7 @@ def norm(x: PyTree[Num[Array, '...']]) -> Num[Array, '']:
     Args:
         x: The Pytree.
 
-    Example:
+    Examples:
         >>> import furax as fx
         >>> x = {'a': jnp.array([3., 4.]), 'b': jnp.array([0.])}
         >>> fx.tree.norm(x)
@@ -329,7 +329,7 @@ def matvec(
     Returns:
         A pytree with the same structure as the generalized matrix outer tree structure.
 
-    Example:
+    Examples:
         To represent with pytrees the sparse tensor
             [ a11 a12 ]
             [ a21 a22 ] of shape (2, 2, 100) where a11, a12 and a21 are arrays of 100 elements and
@@ -379,7 +379,7 @@ def vecmat(
     Returns:
         A pytree with the same structure as the generalized matrix inner tree structure.
 
-    Example:
+    Examples:
         To represent with pytrees the sparse tensor
             [ a11 a12 ]
             [ a21 a22 ] of shape (2, 2, 100) where a11, a12 and a21 are arrays of 100 elements and
@@ -425,7 +425,7 @@ def matmat(
             an outer and inner tree structures, with leaves given by the elements of the
             generalized matrix.
         b_outer_treedef: The outer structure of the second generalized matrix.
-        a: The second generalized matrix.
+        b: The second generalized matrix.
 
     Returns:
         A pytree whose structure is the tree product of the outer structure of `a` and the inner
@@ -444,8 +444,9 @@ def matmat(
 
 
 def _get_outer_treedef(inner_treedef: PyTreeDef | PyTree[Any], tree: PyTree[Array]) -> PyTreeDef:
-    """Given a pytree whose structure is the tree product of an outer and inner structures,
-    returns the outer structure, knowing the inner structure.
+    """Return the outer structure of a tree-product pytree, given the inner structure.
+
+    The pytree's structure is the tree product of an outer and an inner structure.
     """
     if not isinstance(inner_treedef, PyTreeDef):
         inner_treedef = jax.tree.structure(inner_treedef)

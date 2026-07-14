@@ -51,7 +51,7 @@ class Landscape(ABC):
 
 @register_static
 class StokesLandscape(Landscape):
-    """Class representing a multidimensional map of Stokes vectors.
+    r"""Class representing a multidimensional map of Stokes vectors.
 
     We assume that integer pixel values fall at the center of pixels (as in the FITS WCS standard,
     see Section 2.1.4 of Greisen et al., 2002, A&A 446, 747).
@@ -59,9 +59,9 @@ class StokesLandscape(Landscape):
     Attributes:
         shape: The shape of the array that stores the map values. The dimensions are in the reverse
             order of the FITS NAXIS* keywords. For a 2-dimensional map, the shape corresponds to
-            (NAXIS2, NAXIS1) or (:math:`n_\\mathrm{row}`, :math:`n_\\mathrm{col}`), i.e. (:math:`n_y`, :math:`n_x`).
+            (NAXIS2, NAXIS1) or ($n_\mathrm{row}$, $n_\mathrm{col}$), i.e. ($n_y$, $n_x$).
         pixel_shape: The shape in reversed order. For a 2-dimensional map, the shape corresponds to
-            (NAXIS1, NAXIS2) or (:math:`n_\\mathrm{col}`, :math:`n_\\mathrm{row}`), i.e. (:math:`n_x`, :math:`n_y`).
+            (NAXIS1, NAXIS2) or ($n_\mathrm{col}$, $n_\mathrm{row}$), i.e. ($n_x$, $n_y$).
         stokes: The identifier for the Stokes vectors (`I`, `QU`, `IQU` or `IQUV`)
         dtype: The data type for the values of the landscape.
     """
@@ -125,11 +125,11 @@ class StokesLandscape(Landscape):
     def world2pixel(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Float[Array, ' *dims'], ...]:
-        r"""Converts angles from WCS to pixel coordinates
+        r"""Converts angles from WCS to pixel coordinates.
 
         Args:
-            theta (float): Spherical :math:`\theta` angle.
-            phi (float): Spherical :math:`\phi` angle.
+            theta (float): Spherical $\theta$ angle.
+            phi (float): Spherical $\phi$ angle.
 
         Returns:
             tuple[float, ...]: x, y, z, ... pixel coordinates
@@ -138,19 +138,19 @@ class StokesLandscape(Landscape):
     def pixel2index(self, *coords: Float[Array, ' *dims']) -> Integer[Array, ' *ndims']:
         r"""Converts multidimensional pixel coordinates into 1-dimensional indices.
 
-        For a map of shape :math:`(n_y, n_x)`, the indices of the pixels are walked from the
-        rightmost dimension :math:`n_x` to the leftmost dimension :math:`n_y` (row-major layout).
-        In such a map, the pixel with float coordinates :math:`(p_x, p_y)` has an index
-        :math:`i = round(p_x) + n_x round(p_y)`.
+        For a map of shape $(n_y, n_x)$, the indices of the pixels are walked from the
+        rightmost dimension $n_x$ to the leftmost dimension $n_y$ (row-major layout).
+        In such a map, the pixel with float coordinates $(p_x, p_y)$ has an index
+        $i = round(p_x) + n_x round(p_y)$.
 
         The indices travel from bottom to top, like the Y-coordinates.
 
         Integer values of the pixel coordinates correspond to the pixel centers. The points
-        :math:`(p_x, p_y)` strictly inside a pixel centered on the integer coordinates
-        :math:`(i_x, i_y)` verify
+        $(p_x, p_y)$ strictly inside a pixel centered on the integer coordinates
+        $(i_x, i_y)$ verify
 
-            - :math:`i_x - ½ < p_x < i_x + ½`
-            - :math:`i_y - ½ < p_y < i_y + ½`
+        - $i_x - \frac{1}{2} < p_x < i_x + \frac{1}{2}$
+        - $i_y - \frac{1}{2} < p_y < i_y + \frac{1}{2}$
 
         The convention for pixels and indices is that the first one starts at zero.
 
@@ -315,15 +315,14 @@ class CARLandscape(WCSLandscape):
     celestial-to-native rotation to a pure RA shift and making the full world-to-pixel
     mapping linear in ``(RA, Dec)``:
 
-    .. math::
+    $$
+    p_x = \frac{\Delta\lambda}{\delta_x} + (c_x - 1) \\
+    p_y = \frac{\phi}{\delta_y} + (c_y - 1)
+    $$
 
-        p_x = \frac{\Delta\lambda}{\delta_x} + (c_x - 1)
-
-        p_y = \frac{\phi}{\delta_y} + (c_y - 1)
-
-    where :math:`\Delta\lambda = ((\lambda - \lambda_0 + 180) \bmod 360) - 180` handles
-    the 0°/360° RA wrap, :math:`(\lambda_0, 0.0)` is ``crval``, :math:`(\delta_x, \delta_y)`
-    is ``cdelt`` in degrees, and :math:`(c_x, c_y)` is ``crpix`` (1-indexed FITS convention).
+    where $\Delta\lambda = ((\lambda - \lambda_0 + 180) \bmod 360) - 180$ handles
+    the 0°/360° RA wrap, $(\lambda_0, 0.0)$ is ``crval``, $(\delta_x, \delta_y)$
+    is ``cdelt`` in degrees, and $(c_x, c_y)$ is ``crpix`` (1-indexed FITS convention).
     """
 
     def __init__(
@@ -348,8 +347,8 @@ class CARLandscape(WCSLandscape):
         r"""Convert spherical angles to CAR pixel coordinates in pure JAX.
 
         Args:
-            theta (float): Spherical :math:`\theta` angle (co-latitude, 0 at north pole).
-            phi (float): Spherical :math:`\phi` angle (longitude).
+            theta (float): Spherical $\theta$ angle (co-latitude, 0 at north pole).
+            phi (float): Spherical $\phi$ angle (longitude).
 
         Returns:
             Pixel coordinate pair ``(pix_x, pix_y)`` as float arrays.
@@ -448,8 +447,8 @@ class HealpixLandscape(StokesLandscape):
         r"""Convert angles to HEALPix pixel index.
 
         Args:
-            theta (float): Spherical :math:`\theta` angle.
-            phi (float): Spherical :math:`\phi` angle.
+            theta (float): Spherical $\theta$ angle.
+            phi (float): Spherical $\phi$ angle.
 
         Returns:
             int: HEALPix pixel index.
@@ -492,8 +491,8 @@ class AstropyWCSLandscape(StokesLandscape):
         r"""Convert angles to WCS map indices.
 
         Args:
-            theta (float): Spherical :math:`\theta` angle.
-            phi (float): Spherical :math:`\phi` angle.
+            theta (float): Spherical $\theta$ angle.
+            phi (float): Spherical $\phi$ angle.
 
         Returns:
             WCS map index pairs
@@ -513,6 +512,7 @@ class AstropyWCSLandscape(StokesLandscape):
 @register_static
 class HorizonLandscape(StokesLandscape):
     """Class representing a map of Stokes vectors in horizon (ground) coordinates.
+
     Contains two axes:
         AXIS1: altitude (elevation) in radians
         AXIS2: azimuth in radians
@@ -551,8 +551,8 @@ class HorizonLandscape(StokesLandscape):
         r"""Convert angles in radians to Horizon map indices.
 
         Args:
-            theta (float): Spherical :math:`\theta` angle = pi/2 - altitude.
-            phi (float): Spherical :math:`\phi` angle = -azimuth.
+            theta (float): Spherical $\theta$ angle = pi/2 - altitude.
+            phi (float): Spherical $\phi$ angle = -azimuth.
 
         Returns:
             Ground map index pairs
@@ -577,13 +577,13 @@ class TangentialLandscape(StokesLandscape):
     r"""Class representing a flat map in the local tangent plane at zenith.
 
     Implements the gnomonic (tangential) projection: a ray from the telescope origin
-    in direction :math:`\hat{v}` intersects the horizontal plane at height :math:`h` at
+    in direction $\hat{v}$ intersects the horizontal plane at height $h$ at
 
-    .. math::
+    $$
+    x = h \frac{v_x}{v_z}, \quad y = h \frac{v_y}{v_z}
+    $$
 
-        x = h \frac{v_x}{v_z}, \quad y = h \frac{v_y}{v_z}
-
-    where :math:`v_z = \cos\theta` is the elevation cosine (z-axis = zenith).
+    where $v_z = \cos\theta$ is the elevation cosine (z-axis = zenith).
 
     The map is a 2D Cartesian grid in physical units (same units as ``height``), centered
     at the origin. Pixel spacing is ``dx`` along x and ``dy`` along y, so the map covers
@@ -691,7 +691,7 @@ class TangentialLandscape(StokesLandscape):
         r"""Convert ISO spherical angles to pixel coordinates via gnomonic projection.
 
         Args:
-            theta: Co-latitude from zenith (0 at zenith, :math:`\pi/2` at horizon).
+            theta: Co-latitude from zenith (0 at zenith, $\pi/2$ at horizon).
             phi: Azimuthal angle.
 
         Returns:
@@ -708,9 +708,10 @@ class TangentialLandscape(StokesLandscape):
     ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Convert quaternions to physical (x, y) coordinates on the tangent plane.
 
-        Uses :func:`qrot_zaxis` to extract the pointing direction and applies the exact
+        Uses [`qrot_zaxis`][] to extract the pointing direction and applies the exact
         gnomonic projection. This is the primary conversion step used by
-        :class:`AtmosphereOperator` before adding wind displacement.
+        [`AtmospherePointingOperator`][furax.obs.atmosphere.AtmospherePointingOperator] before
+        adding wind displacement.
 
         Args:
             quat: Pointing quaternions (z-axis = zenith frame).
@@ -731,7 +732,7 @@ class TangentialLandscape(StokesLandscape):
     ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Convert quaternions to floating-point pixel coordinates.
 
-        Overrides the base-class implementation to use :func:`qrot_zaxis` directly,
+        Overrides the base-class implementation to use [`qrot_zaxis`][] directly,
         avoiding the round-trip through ISO angles.
         """
         x, y = self.quat2xy(quat)

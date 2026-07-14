@@ -54,8 +54,8 @@ class ObservationModel:
             data[ReaderField.DETECTOR_QUATERNIONS],
             data.get(ReaderField.HWP_ANGLES),
             demodulated=config.demodulated,
-            pointing_chunk_size=config.pointing.chunk_size,
             pointing_on_the_fly=config.pointing.on_the_fly,
+            pointing_batch_size=config.pointing.batch_size,
             pointing_interpolate=config.pointing.interpolation == 'bilinear',
             dtype=config.dtype,
         )

@@ -40,7 +40,7 @@ class TestAsExpandedOperator:
         qbore = _random_unit_quats(key1, (NSAMP,))
         qdet = _random_unit_quats(key2, (NDET,))
 
-        pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, chunk_size=2)
+        pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, batch_size=2)
         sky = landscape.normal(key3)
 
         tod_direct = pointing_op(sky)
@@ -57,7 +57,7 @@ class TestAsExpandedOperator:
         qbore = _random_unit_quats(key1, (NSAMP,))
         qdet = _random_unit_quats(key2, (NDET,))
 
-        pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, chunk_size=2)
+        pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, batch_size=2)
         tod = pointing_op.out_structure
         tod = jax.tree.map(lambda s: jax.random.normal(key3, s.shape, s.dtype), tod)
 

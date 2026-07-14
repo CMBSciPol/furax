@@ -41,13 +41,13 @@ class PointingOperator(AbstractLinearOperator):
         landscape: The sky pixelization (HEALPix landscape).
         qbore: Boresight quaternions, shape (n_samples, 4).
         qdet: Detector quaternions, shape (n_detectors, 4).
-        chunk_size: Number of detectors per chunk (memory/speed tradeoff).
+        batch_size: Detector batch size (memory/speed tradeoff; see jax.lax.map documentation).
     """
 
     landscape: StokesLandscape
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
-    chunk_size: int = field(metadata={'static': True})
+    batch_size: int = field(metadata={'static': True})
     interpolate: bool = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
 
@@ -58,7 +58,7 @@ class PointingOperator(AbstractLinearOperator):
         boresight_quaternions: Float[Array, 'samp 4'],
         detector_quaternions: Float[Array, 'det 4'],
         *,
-        chunk_size: int = 16,
+        batch_size: int = 32,
         frame: Literal['boresight', 'detector'] = 'boresight',
         interpolate: bool = False,
     ) -> 'PointingOperator':
@@ -86,7 +86,7 @@ class PointingOperator(AbstractLinearOperator):
             landscape,
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
-            chunk_size=chunk_size,
+            batch_size=batch_size,
             interpolate=interpolate,
             in_structure=landscape.structure,
             _out_structure=out_structure,
@@ -95,13 +95,13 @@ class PointingOperator(AbstractLinearOperator):
     @jit
     def mv(self, x: StokesType) -> StokesType:
         """Performs the 'un-pointing' operation, i.e. map->tod."""
+        x_flat = x.ravel()
 
-        def mv_inner(qdet: Float[Array, 'det 4']) -> StokesType:
-            # Expand detector quaternions from boresight and offsets
-            # (samples, 4) x (det, 1, 4) -> (det, samples, 4)
-            qdet_full = qmul(self.qbore, qdet[:, None, :])
+        def mv_inner(qdet: Float[Array, ' 4']) -> StokesType:
+            # Expand one detector's quaternion from boresight and offset: (samp, 4)
+            qdet_full = qmul(self.qbore, qdet)
 
-            tod = self._sample(x.ravel(), qdet_full)
+            tod = self._sample(x_flat, qdet_full)
             tod = self._modulate(tod, qdet_full)
 
             if isinstance(tod, StokesI):
@@ -112,35 +112,10 @@ class PointingOperator(AbstractLinearOperator):
             cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
             return rotate_qu_cs(tod, cos_angles, sin_angles)  # type: ignore[no-any-return]
 
-        # Loop over chunks of detectors
-        ndet, nsamp = self.out_structure.shape
-        chunk_size = min(self.chunk_size, ndet)
-        if chunk_size > 0:
-            n_chunks = (ndet + chunk_size - 1) // chunk_size
-        else:
-            n_chunks = 1
-            chunk_size = ndet
-
-        def body(i: Int[Array, ''], tod: StokesType) -> StokesType:
-            # interval bounds must be static, so we shift the values afterwards
-            idet = jnp.arange(chunk_size) + i * chunk_size
-
-            # clip array to avoid out of bounds
-            # this means that the last chunk may do redundant work
-            # but avoids recompilation
-            idet = jnp.clip(idet, max=ndet - 1)
-
-            # process chunk
-            tod_chunk = mv_inner(self.qdet[idet])
-
-            # update the output map
-            return type(tod).from_array(tod.data.at[:, idet].set(tod_chunk.data))
-
-        # Start from empty timestream
-        empty = jnp.empty((len(x.stokes), ndet, nsamp), dtype=x.dtype)
-        tod_out: StokesType = type(x).from_array(empty)
-        tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
-        return tod_out
+        tod_out: StokesType = lax.map(mv_inner, self.qdet, batch_size=self.batch_size)
+        # lax.map stacks the new detector axis at position 0
+        # so move it back: (det, n_stokes, samp) -> (n_stokes, det, samp).
+        return type(tod_out).from_array(jnp.moveaxis(tod_out.data, 0, 1))
 
     def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
         """Return a copy of this operator restricted to StokesI.
@@ -160,7 +135,7 @@ class PointingOperator(AbstractLinearOperator):
             landscape,
             qbore=self.qbore,
             qdet=self.qdet,
-            chunk_size=self.chunk_size,
+            batch_size=self.batch_size,
             interpolate=effective_interpolate,
             in_structure=landscape.structure,
             _out_structure=out_structure,
@@ -228,19 +203,19 @@ class PointingOperator(AbstractLinearOperator):
         sampled = jnp.sum(x_flat.data[:, indices] * unit_weights, axis=-1)
         return type(x_flat).from_array(sampled)
 
-    def _bin(self, tod_chunk: StokesType, qdet_full: Float[Array, '*dims 4']) -> StokesType:
-        """Scatter-add a TOD chunk into a sky map."""
+    def _bin(self, tod_batch: StokesType, qdet_full: Float[Array, '*dims 4']) -> StokesType:
+        """Scatter-add a batch of TOD into a sky map."""
         sky_shape = self.landscape.shape
         n_pixels = int(np.prod(sky_shape))
         # scatter-add per pixel while keeping the leading Stokes axis of the backing array.
-        arr = tod_chunk.data  # (n_stokes, *det_sample)
+        arr = tod_batch.data  # (n_stokes, *det_sample)
         n_stokes = arr.shape[0]
         zeros = jnp.zeros((n_stokes, n_pixels), self.landscape.dtype)
 
         if not self.interpolate:
             flat_pixels = self._quat2index(qdet_full).ravel()
             binned = zeros.at[:, flat_pixels].add(arr.reshape(n_stokes, -1))
-            return type(tod_chunk).from_array(binned.reshape(n_stokes, *sky_shape))
+            return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
 
         indices, weights = self._quat2interp(qdet_full)
         valid = indices >= 0
@@ -253,7 +228,7 @@ class PointingOperator(AbstractLinearOperator):
         # over the leading Stokes axis for free).
         contrib = arr[..., None] * valid_weights
         binned = zeros.at[:, flat_indices].add(contrib.reshape(n_stokes, -1))
-        return type(tod_chunk).from_array(binned.reshape(n_stokes, *sky_shape))
+        return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
 
     def transpose(self) -> AbstractLinearOperator:
         return PointingTransposeOperator(operator=self)
@@ -266,42 +241,42 @@ class PointingTransposeOperator(TransposeOperator):
     def mv(self, x: StokesType) -> StokesType:
         """Performs the 'pointing' operation, i.e. tod->map."""
 
-        def mv_inner(xchunk: StokesType, qdet: Float[Array, 'det 4']) -> StokesType:
+        def mv_inner(xbatch: StokesType, qdet: Float[Array, 'det 4']) -> StokesType:
             # Expand detector quaternions from boresight and offsets
             qdet_full = qmul(self.operator.qbore, qdet[:, None, :])
-            xchunk = self.operator._modulate(xchunk, qdet_full)
+            xbatch = self.operator._modulate(xbatch, qdet_full)
 
-            if isinstance(xchunk, StokesI):
+            if isinstance(xbatch, StokesI):
                 # no rotation needed
-                return self.operator._bin(xchunk, qdet_full)
+                return self.operator._bin(xbatch, qdet_full)
 
             # Rotate back to the celestial frame with the inverse rotation
             cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
-            rotated = rotate_qu_cs(xchunk, cos_angles, -sin_angles)
+            rotated = rotate_qu_cs(xbatch, cos_angles, -sin_angles)
             return self.operator._bin(rotated, qdet_full)
 
-        # Loop over chunks of detectors
+        # Loop over batches of detectors
         ndet, _ = self.in_structure.shape
-        chunk_size = min(self.operator.chunk_size, ndet)
-        if chunk_size > 0:
-            n_chunks = (ndet + chunk_size - 1) // chunk_size
+        batch_size = min(self.operator.batch_size, ndet)
+        if batch_size > 0:
+            n_batches = (ndet + batch_size - 1) // batch_size
         else:
-            n_chunks = 1
-            chunk_size = ndet
+            n_batches = 1
+            batch_size = ndet
 
         def body(i: Int[Array, ''], sky: StokesType) -> StokesType:
-            idet = jnp.arange(chunk_size) + i * chunk_size
+            idet = jnp.arange(batch_size) + i * batch_size
 
-            # clip, but avoid multiple contributions in the last chunk
+            # clip, but avoid multiple contributions in the last batch
             unique = idet < ndet
             idet = jnp.clip(idet, max=ndet - 1)
 
-            # process chunk
-            sky_chunk = mv_inner(unique[:, None] * x[idet], self.operator.qdet[idet])
+            # process batch
+            sky_batch = mv_inner(unique[:, None] * x[idet], self.operator.qdet[idet])
 
-            # combine the results of the chunks into one sky map
-            return sky + sky_chunk
+            # combine the results of the batches into one sky map
+            return sky + sky_batch
 
         sky_out: StokesType = self.operator.landscape.zeros()
-        sky_out = lax.fori_loop(0, n_chunks, body, sky_out)
+        sky_out = lax.fori_loop(0, n_batches, body, sky_out)
         return sky_out

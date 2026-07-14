@@ -2,14 +2,14 @@
 
 The two core operators are:
 
-- :class:`BeamOperator`: applies a single beam transfer function shared across all
+- [`BeamOperator`][]: applies a single beam transfer function shared across all
   Stokes components.
-- :class:`BeamOperatorIQU`: applies an independent beam transfer function per Stokes
+- [`BeamOperatorIQU`][]: applies an independent beam transfer function per Stokes
   component.
 
 Both operators round-trip input pixel maps through a spherical harmonic transform
-(Map2Alm → per-multipole scaling → Alm2Map).  :class:`BeamRule` and
-:class:`BeamIQURule` register algebraic simplifications so that
+(Map2Alm → per-multipole scaling → Alm2Map).  `BeamRule` and
+`BeamIQURule` register algebraic simplifications so that
 ``BeamOperator @ BeamOperator`` collapses to a single operator whose transfer
 function is the product of both beams at construction time.
 """
@@ -34,21 +34,21 @@ class BeamOperator(AbstractLinearOperator):
     in alm space as a per-multipole, per-frequency scaling.
 
     The operator is symmetric (self-adjoint): applying it twice is equivalent to
-    squaring the transfer function.  Use :attr:`inverse` to obtain the deconvolution
+    squaring the transfer function.  Use [`inverse`][] to obtain the deconvolution
     operator (``beam_fl`` replaced by its reciprocal).
 
     Algebraic rule: ``BeamOperator @ BeamOperator`` reduces to a single
-    :class:`BeamOperator` whose ``beam_fl`` is the element-wise product of both
-    transfer functions (see :class:`BeamRule`).
+    [`BeamOperator`][] whose ``beam_fl`` is the element-wise product of both
+    transfer functions (see `BeamRule`).
 
     Attributes:
         lmax: Maximum spherical harmonic degree.
         beam_fl: Beam transfer function, shape ``(nfreq, lmax+1)`` for a
             per-frequency beam, or ``(lmax+1,)`` for a beam shared across all
-            frequencies (promoted to 2-D via :func:`jnp.atleast_2d` before
+            frequencies (promoted to 2-D via `jnp.atleast_2d` before
             broadcasting over frequencies).
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax.obs.stokes import StokesIQU
         >>> from furax.obs.operators import BeamOperator
@@ -94,10 +94,10 @@ class BeamOperator(AbstractLinearOperator):
         return out
 
     def inverse(self) -> 'BeamOperator':
-        """Return a :class:`BeamOperator` with the reciprocal transfer function.
+        """Return a [`BeamOperator`][] with the reciprocal transfer function.
 
         Returns:
-            A new :class:`BeamOperator` whose ``beam_fl`` equals ``1 / self.beam_fl``.
+            A new [`BeamOperator`][] whose ``beam_fl`` equals ``1 / self.beam_fl``.
         """
         return BeamOperator(
             lmax=self.lmax, beam_fl=1.0 / self.beam_fl, in_structure=self.in_structure
@@ -113,12 +113,12 @@ class BeamOperatorIQU(AbstractLinearOperator):
     of ``beam_fl``, enabling different beams for I, Q, and U (or any other
     Stokes combination).
 
-    The operator is symmetric (self-adjoint). Use :attr:`inverse` to obtain the
+    The operator is symmetric (self-adjoint). Use [`inverse`][] to obtain the
     deconvolution operator (each ``beam_fl`` leaf replaced by its reciprocal).
 
     Algebraic rule: ``BeamOperatorIQU @ BeamOperatorIQU`` reduces to a single
     operator whose per-leaf transfer functions are the element-wise products of
-    both (see :class:`BeamIQURule`).
+    both (see `BeamIQURule`).
 
     Attributes:
         lmax: Maximum spherical harmonic degree.
@@ -126,7 +126,7 @@ class BeamOperatorIQU(AbstractLinearOperator):
             shape ``(nfreq, lmax+1)`` and carries the per-frequency beam transfer
             function for that Stokes component.
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax.obs.stokes import StokesIQU
         >>> from furax.obs.operators import BeamOperatorIQU
@@ -171,10 +171,10 @@ class BeamOperatorIQU(AbstractLinearOperator):
         return out
 
     def inverse(self) -> 'BeamOperatorIQU':
-        """Return a :class:`BeamOperatorIQU` with per-Stokes reciprocal transfer functions.
+        """Return a [`BeamOperatorIQU`][] with per-Stokes reciprocal transfer functions.
 
         Returns:
-            A new :class:`BeamOperatorIQU` whose ``beam_fl`` leaves equal
+            A new [`BeamOperatorIQU`][] whose ``beam_fl`` leaves equal
             ``1 / leaf`` for each leaf in ``self.beam_fl``.
         """
         inv_beam = jax.tree.map(lambda fl: 1.0 / fl, self.beam_fl)
@@ -184,8 +184,8 @@ class BeamOperatorIQU(AbstractLinearOperator):
 class BeamRule(AbstractCompositionRule):
     """Algebraic rule reducing ``BeamOperator @ BeamOperator`` to a single operator.
 
-    When two :class:`BeamOperator` instances with the same ``lmax`` are composed,
-    the composition is replaced by a single :class:`BeamOperator` whose
+    When two [`BeamOperator`][] instances with the same ``lmax`` are composed,
+    the composition is replaced by a single [`BeamOperator`][] whose
     ``beam_fl`` is the element-wise product of both transfer functions.
 
     Raises:
@@ -202,15 +202,15 @@ class BeamRule(AbstractCompositionRule):
         """Combine two beam operators into one with multiplied transfer functions.
 
         Args:
-            left: Left operator in the composition (must be :class:`BeamOperator`).
-            right: Right operator in the composition (must be :class:`BeamOperator`).
+            left: Left operator in the composition (must be [`BeamOperator`][]).
+            right: Right operator in the composition (must be [`BeamOperator`][]).
 
         Returns:
-            A single-element list containing a :class:`BeamOperator` whose
+            A single-element list containing a [`BeamOperator`][] whose
             ``beam_fl`` is ``left.beam_fl * right.beam_fl``.
 
         Raises:
-            NoReduction: If either operator is not a :class:`BeamOperator` or
+            NoReduction: If either operator is not a [`BeamOperator`][] or
                 their ``lmax`` values differ.
         """
         if not (isinstance(left, BeamOperator) and isinstance(right, BeamOperator)):
@@ -229,8 +229,8 @@ class BeamRule(AbstractCompositionRule):
 class BeamIQURule(AbstractCompositionRule):
     """Algebraic rule reducing ``BeamOperatorIQU @ BeamOperatorIQU`` to a single operator.
 
-    When two :class:`BeamOperatorIQU` instances with the same ``lmax`` are
-    composed, the composition is replaced by a single :class:`BeamOperatorIQU`
+    When two [`BeamOperatorIQU`][] instances with the same ``lmax`` are
+    composed, the composition is replaced by a single [`BeamOperatorIQU`][]
     whose per-Stokes ``beam_fl`` leaves are the element-wise products of the
     corresponding leaves from both operators.
 
@@ -248,15 +248,15 @@ class BeamIQURule(AbstractCompositionRule):
         """Combine two per-Stokes beam operators into one with multiplied transfer functions.
 
         Args:
-            left: Left operator in the composition (must be :class:`BeamOperatorIQU`).
-            right: Right operator in the composition (must be :class:`BeamOperatorIQU`).
+            left: Left operator in the composition (must be [`BeamOperatorIQU`][]).
+            right: Right operator in the composition (must be [`BeamOperatorIQU`][]).
 
         Returns:
-            A single-element list containing a :class:`BeamOperatorIQU` whose
+            A single-element list containing a [`BeamOperatorIQU`][] whose
             per-leaf ``beam_fl`` entries are ``left_leaf * right_leaf``.
 
         Raises:
-            NoReduction: If either operator is not a :class:`BeamOperatorIQU` or
+            NoReduction: If either operator is not a [`BeamOperatorIQU`][] or
                 their ``lmax`` values differ.
         """
         if not (isinstance(left, BeamOperatorIQU) and isinstance(right, BeamOperatorIQU)):

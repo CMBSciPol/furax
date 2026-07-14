@@ -40,15 +40,17 @@ class AbstractReader(ABC):
         known_failures: Sequence[int] | None = None,
         **keywords: Sequence[Any],
     ) -> None:
-        """
+        """Initialize the reader.
+
         Args:
-            *args: One list per positional argument to the read function, one element per data item.
+            *args: One list per positional argument to the read function, one element per item.
             common_keywords: Keyword arguments shared by all data items.
             structures: Pre-computed per-item output structures.
                 When provided, constructor skips all I/O and uses them directly.
             known_failures: Item indices known to be unreadable up front (e.g. their shape probe
-                failed); :meth:`read` returns filler for them without attempting a load.
-            **keywords: One list per keyword argument to the read function, one element per data item.
+                failed); [`read`][furax.io.readers.AbstractReader.read] returns filler for them
+                without attempting a load.
+            **keywords: One list per keyword argument to the read function, one element per item.
         """
         self.args, self.keywords = self._normalize_args_keywords(args, keywords)
         self.count = len(self.args)
@@ -67,9 +69,9 @@ class AbstractReader(ABC):
     def reset_failures(self) -> None:
         """Reset runtime read failures to the known-failure baseline.
 
-        :meth:`read` records caught failures in ``failed_indices`` as a host side effect, so a
-        reused reader would otherwise carry failures across read passes. Call this before a fresh
-        pass to start from just the up-front ``known_failures``.
+        [`read`][furax.io.readers.AbstractReader.read] records caught failures in ``failed_indices``
+        as a host side effect, so a reused reader would otherwise carry failures across read passes.
+        Call this before a fresh pass to start from just the up-front ``known_failures``.
 
         ``failed_indices`` is a set: ``read`` runs inside ``io_callback``, which JAX may dispatch
         on concurrent host threads, so two threads can record the same failing index at once.

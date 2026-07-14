@@ -32,7 +32,7 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
             dimensions will be ``(axis, ..., axis + diagonal.ndim - 1)``. If the type is a negative
             scalar integer, the dimensions will be ``(axis - diagonal.ndim, ..., axis)``.
 
-    Example:
+    Examples:
         >>> import furax as fx
         >>> import jax.numpy as jnp
         >>> from numpy.testing import assert_allclose
@@ -211,7 +211,7 @@ class DiagonalOperator(BroadcastDiagonalOperator):
             will be ``(axis, ..., axis + diagonal.ndim - 1)``. If the type is a negative scalar
             integer, the dimensions will be ``(axis - diagonal.ndim, ..., axis)``.
 
-    Example:
+    Examples:
         >>> import furax as fx
         >>> from numpy.testing import assert_allclose
         >>> key_gain, key_tod, key_common = jax.random.split(jax.random.PRNGKey(0), 3)

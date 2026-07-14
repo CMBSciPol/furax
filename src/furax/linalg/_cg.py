@@ -103,7 +103,7 @@ def cg(
     Returns:
         CGResult with the solution, per-iteration residual norms, and iteration count.
 
-    Example:
+    Examples:
         >>> import jax.numpy as jnp
         >>> from furax import DiagonalOperator
         >>> from furax.tree import as_structure

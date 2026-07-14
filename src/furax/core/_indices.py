@@ -23,25 +23,25 @@ class IndexOperator(AbstractLinearOperator):
         indices: The indexing tuple (integers, slices, arrays, or Ellipsis).
         unique_indices: Whether the indices select unique elements (enables optimizations).
 
-    Example:
-    To extract the second element of the first axis:
+    Examples:
+        To extract the second element of the first axis:
 
         >>> op = IndexOperator(1, in_structure=jax.ShapeDtypeStruct((10, 4), jax.numpy.float32))
 
-    To extract values from the penultimate axis given an array of indices:
+        To extract values from the penultimate axis given an array of indices:
 
         >>> indices = jax.numpy.array([2, 4, 4, 5, 7])
         >>> in_structure = jax.ShapeDtypeStruct((9, 8, 3), jax.numpy.float32)
         >>> op = IndexOperator((..., indices, slice(None)), in_structure=in_structure)
 
-    In order to extract values using a boolean mask, it is required to specify an output structure:
+        In order to extract values using a boolean mask, it is required to specify an output structure:
 
         >>> indices = jax.numpy.array([True, False, True, False])
         >>> in_structure = jax.ShapeDtypeStruct((4,), jax.numpy.float32)
         >>> out_structure = jax.ShapeDtypeStruct((2,), jax.numpy.float32)
         >>> op = IndexOperator(indices, in_structure=in_structure, out_structure=out_structure)
 
-    So it is usually better to specify an index mask:
+        So it is usually better to specify an index mask:
 
         >>> op = IndexOperator(jnp.where(indices), in_structure=in_structure)
     """

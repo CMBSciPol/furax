@@ -10,7 +10,7 @@ T = TypeVar('T')
 class DefaultIdentityDict(dict[T, T]):
     """A dict whose default factory is the identity.
 
-    Example:
+    Examples:
         >>> d = DefaultIdentityDict({'a': 'b'})
         >>> d['c']
         'c'

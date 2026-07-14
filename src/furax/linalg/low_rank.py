@@ -59,7 +59,7 @@ def low_rank(
     Returns:
         LowRankTerms containing eigenvalues and eigenvectors.
 
-    Example:
+    Examples:
         >>> import jax
         >>> import jax.numpy as jnp
         >>> from furax import DiagonalOperator
@@ -93,7 +93,7 @@ def low_rank_mv(terms: LowRankTerms, x: PyTree[Num[Array, '...']]) -> PyTree[Num
     Returns:
         Output PyTree y = U @ diag(S) @ U^T @ x.
 
-    Example:
+    Examples:
         >>> import jax
         >>> import jax.numpy as jnp
         >>> from furax import DiagonalOperator
@@ -123,7 +123,7 @@ class LowRankOperator(AbstractLinearOperator):
         in_structure: The expected structure of the operator input. If None,
             inferred from the eigenvectors structure.
 
-    Example:
+    Examples:
         >>> import jax
         >>> import jax.numpy as jnp
         >>> from furax import DiagonalOperator

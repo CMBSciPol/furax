@@ -49,7 +49,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         method: The computation method.
         fft_size: FFT size for the fft and overlap methods.
 
-    Example:
+    Examples:
         >>> tod = jnp.ones((2, 5))
         >>> op = SymmetricBandToeplitzOperator(
         ...     jnp.array([[1., 0.5], [1, 0.25]]),

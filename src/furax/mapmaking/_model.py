@@ -94,7 +94,7 @@ class ObservationModel:
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
-        """Reader fields needed to build an :class:`ObservationModel` via :meth:`create`."""
+        """Reader fields needed to build an [`ObservationModel`][] via [`create`][]."""
         fields: set[str] = {
             ReaderField.BORESIGHT_QUATERNIONS,
             ReaderField.DETECTOR_QUATERNIONS,
@@ -166,8 +166,9 @@ class ObservationModel:
 
         Assumes ``self`` is a single-observation model (single-observation ``noise_model`` and
         ``tod_structure``). The observation-stacked preconditioner is obtained by mapping this over
-        the observation axis in :meth:`MultiObservationMapMaker.get_system_operator`, mirroring how
-        ``W`` is stacked inside the accumulation scan.
+        the observation axis in
+        [`MultiObservationMapMaker.get_system_operator`][furax.mapmaking.mapmaker.MultiObservationMapMaker.get_system_operator],
+        mirroring how ``W`` is stacked inside the accumulation scan.
         """
         white = self.noise_model.to_white_noise_model()
         inv = _noise_operator(white, self.tod_structure, self.sample_rate, inverse=True)
@@ -221,7 +222,6 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
 
     For ATOP mapmaker, extra pixels may be masked depending on atop_tau.
     """
-
     mask = data[ReaderField.VALID_SAMPLE_MASKS]
 
     if config.method == Methods.ATOP:

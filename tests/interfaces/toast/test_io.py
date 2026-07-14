@@ -16,6 +16,7 @@ FOLDER = Path(__file__).parents[2] / 'data/toast'
 FILES = ['test_obs.h5', 'test_obs.h5']
 OBS_NDET = [2, 2]
 OBS_NSAMPLE = [1000, 1000]
+OBS_NINTERVAL = [8, 8]
 
 
 @pytest.fixture
@@ -28,7 +29,7 @@ def test_reader_all_fields(observations) -> None:
     reader = ObservationReader.from_observations(
         observations, requested_fields=AbstractGroundObservation.AVAILABLE_READER_FIELDS
     )
-    ndet_max, nsample_max = max(OBS_NDET), max(OBS_NSAMPLE)
+    ndet_max, nsample_max, nint_max = max(OBS_NDET), max(OBS_NSAMPLE), max(OBS_NINTERVAL)
 
     # check output structure is as expected
     assert reader.out_structure == {
@@ -45,6 +46,11 @@ def test_reader_all_fields(observations) -> None:
         'detector_quaternions': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
         'boresight_quaternions': jax.ShapeDtypeStruct((nsample_max, 4), dtype=jnp.float64),
         'noise_model_fits': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
+        'azimuth': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
+        'elevation': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
+        'left_scan_mask': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.bool),
+        'right_scan_mask': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.bool),
+        'scanning_intervals': jax.ShapeDtypeStruct((nint_max, 2), dtype=jnp.int32),
     }
 
     for i in range(len(FILES)):
@@ -54,7 +60,7 @@ def test_reader_all_fields(observations) -> None:
         assert as_structure(datum) == reader.out_structure
 
         # check padding consistency
-        ndet, nsample = OBS_NDET[i], OBS_NSAMPLE[i]
+        ndet, nsample, nint = OBS_NDET[i], OBS_NSAMPLE[i], OBS_NINTERVAL[i]
         assert tuple(padding['metadata'].uid) == ()
         assert tuple(padding['metadata'].telescope_uid) == ()
         assert tuple(padding['metadata'].detector_uids) == (ndet_max - ndet,)
@@ -66,6 +72,11 @@ def test_reader_all_fields(observations) -> None:
         assert tuple(padding['detector_quaternions']) == (ndet_max - ndet, 0)
         assert tuple(padding['boresight_quaternions']) == (nsample_max - nsample, 0)
         assert tuple(padding['noise_model_fits']) == (ndet_max - ndet, 0)
+        assert tuple(padding['azimuth']) == (nsample_max - nsample,)
+        assert tuple(padding['elevation']) == (nsample_max - nsample,)
+        assert tuple(padding['left_scan_mask']) == (nsample_max - nsample,)
+        assert tuple(padding['right_scan_mask']) == (nsample_max - nsample,)
+        assert tuple(padding['scanning_intervals']) == (nint_max - nint, 0)
 
 
 def test_reader_invalid_data_field_name(observations) -> None:

@@ -1,7 +1,7 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Collection, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from functools import cached_property
 from logging import Logger
 from math import prod
@@ -252,30 +252,33 @@ class MultiObservationMapMaker(Generic[T]):
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
             # Solve the mapmaking system
-            solver = lineax.CG(**asdict(self.config.solver))
-            spd = OperatorTag.POSITIVE_SEMIDEFINITE
-            lx_system = as_lineax_operator(selector @ A @ selector.T, spd)
+            A_reduced = (selector @ A @ selector.T).reduce()
             M = (selector @ BJ.I @ selector.T).reduce()  # preconditioner
-            lx_precond = as_lineax_operator(M, spd)
             rhs_reduced = selector(rhs)
-            y0 = M(rhs_reduced)
 
-            solution = lineax.linear_solve(
-                lx_system,
+            iteration_callback = None
+            if self.config.solver.verbose:
+                # log from rank 0 only
+                def iteration_callback(step: Array, r_norm: Array) -> None:
+                    if rank == 0:
+                        logger_info(f'CG step={int(step)} residual={float(r_norm):.6e}')
+
+            result = furax.linalg.cg(
+                A_reduced,
                 rhs_reduced,
-                solver=solver,
-                options={'preconditioner': lx_precond, 'y0': y0},
-                throw=False,
+                preconditioner=M,
+                iteration_callback=iteration_callback,
+                **self.config.solver.options,
             )
-            estimate = selector.T(solution.value)
-            num_steps = solution.stats['num_steps']
+            estimate = selector.T(result.solution)
+            num_steps = result.num_steps
             logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
 
         return MapMakingResults(
             map=estimate,
             icov=icov,
             hit_map=hits,
-            solver_stats=solution.stats,
+            solver_stats={'num_steps': num_steps},
             landscape=self.landscape,
             failed_observations=failed_observations,
         )
@@ -1233,7 +1236,7 @@ class MLMapmaker(MapMaker):
             )
             logger_info('Set up nested PCG for the noise inverse')
 
-        solver = lineax.CG(**asdict(config.solver))
+        solver = lineax.CG(**config.solver.options)
         options = {'solver': solver, 'preconditioner': p}
         if config.use_templates:
             mapmaking_operator = (h.T @ M @ h + reg).I(**options) @ h.T @ M
@@ -1358,7 +1361,7 @@ class TwoStepMapmaker(MapMaker):
         mp = masker
         FA = M - M @ mp @ A @ system_inv @ A.T @ mp @ M
 
-        solver = lineax.CG(**asdict(config.solver))
+        solver = lineax.CG(**config.solver.options)
         with Config(solver=solver):
             template_estimator = (
                 (template_op.T @ mp @ FA @ mp @ template_op).I @ template_op.T @ mp @ FA @ mp
@@ -1485,7 +1488,7 @@ class ATOPMapMaker(MapMaker):
         lhs = h.T @ mp @ ap @ mp @ h
         rhs_op = jax.jit(lambda d: (h.T @ mp @ ap @ mp).reduce()(d))
 
-        solver = lineax.CG(**asdict(self.config.solver))
+        solver = lineax.CG(**self.config.solver.options)
         spd = OperatorTag.POSITIVE_SEMIDEFINITE
         lx_system = as_lineax_operator(lhs, spd)
         lx_precond = as_lineax_operator(preconditioner.reduce(), spd)

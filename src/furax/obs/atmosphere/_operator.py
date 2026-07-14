@@ -96,8 +96,8 @@ class AtmospherePointingOperator(PointingOperator):
         """Gnomonic projection onto the atmosphere screen, including wind displacement."""
         x, y = self.landscape.quat2xy(qdet_full)
         return (
-            x + self.wind_displacement[None, :, 0],
-            y + self.wind_displacement[None, :, 1],
+            x + self.wind_displacement[:, 0],
+            y + self.wind_displacement[:, 1],
         )
 
     def _modulate(self, tod: StokesType, qdet_full: Float[Array, '*dims 4']) -> StokesType:

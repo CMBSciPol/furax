@@ -41,7 +41,7 @@ class PointingOperator(AbstractLinearOperator):
         landscape: The sky pixelization (HEALPix landscape).
         qbore: Boresight quaternions, shape (n_samples, 4).
         qdet: Detector quaternions, shape (n_detectors, 4).
-        batch_size: Number of detectors per batch (memory/speed tradeoff).
+        batch_size: Detector batch size (memory/speed tradeoff; see jax.lax.map documentation).
     """
 
     landscape: StokesLandscape
@@ -95,13 +95,13 @@ class PointingOperator(AbstractLinearOperator):
     @jit
     def mv(self, x: StokesType) -> StokesType:
         """Performs the 'un-pointing' operation, i.e. map->tod."""
+        x_flat = x.ravel()
 
-        def mv_inner(qdet: Float[Array, 'det 4']) -> StokesType:
-            # Expand detector quaternions from boresight and offsets
-            # (samples, 4) x (det, 1, 4) -> (det, samples, 4)
-            qdet_full = qmul(self.qbore, qdet[:, None, :])
+        def mv_inner(qdet: Float[Array, ' 4']) -> StokesType:
+            # Expand one detector's quaternion from boresight and offset: (samp, 4)
+            qdet_full = qmul(self.qbore, qdet)
 
-            tod = self._sample(x.ravel(), qdet_full)
+            tod = self._sample(x_flat, qdet_full)
             tod = self._modulate(tod, qdet_full)
 
             if isinstance(tod, StokesI):
@@ -112,35 +112,10 @@ class PointingOperator(AbstractLinearOperator):
             cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
             return rotate_qu_cs(tod, cos_angles, sin_angles)  # type: ignore[no-any-return]
 
-        # Loop over chunks of detectors
-        ndet, nsamp = self.out_structure.shape
-        batch_size = min(self.batch_size, ndet)
-        if batch_size > 0:
-            n_chunks = (ndet + batch_size - 1) // batch_size
-        else:
-            n_chunks = 1
-            batch_size = ndet
-
-        def body(i: Int[Array, ''], tod: StokesType) -> StokesType:
-            # interval bounds must be static, so we shift the values afterwards
-            idet = jnp.arange(batch_size) + i * batch_size
-
-            # clip array to avoid out of bounds
-            # this means that the last chunk may do redundant work
-            # but avoids recompilation
-            idet = jnp.clip(idet, max=ndet - 1)
-
-            # process chunk
-            tod_chunk = mv_inner(self.qdet[idet])
-
-            # update the output map
-            return type(tod).from_array(tod.data.at[:, idet].set(tod_chunk.data))
-
-        # Start from empty timestream
-        empty = jnp.empty((len(x.stokes), ndet, nsamp), dtype=x.dtype)
-        tod_out: StokesType = type(x).from_array(empty)
-        tod_out = lax.fori_loop(0, n_chunks, body, tod_out)
-        return tod_out
+        tod_out: StokesType = lax.map(mv_inner, self.qdet, batch_size=self.batch_size)
+        # lax.map stacks the new detector axis at position 0
+        # so move it back: (det, n_stokes, samp) -> (n_stokes, det, samp).
+        return type(tod_out).from_array(jnp.moveaxis(tod_out.data, 0, 1))
 
     def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
         """Return a copy of this operator restricted to StokesI.

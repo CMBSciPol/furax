@@ -62,7 +62,6 @@ from ._observation import (
     ReaderField,
 )
 from ._reader import ObservationReader
-from ._scan_blocks import ScanBlockColumnOperator, ScanBlockDiagonalOperator
 from .config import (
     GapTreatment,
     LandscapeConfig,
@@ -76,6 +75,7 @@ from .gap_filling import gap_fill
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
+from .streaming import StreamColumnOperator, StreamDiagonalOperator
 from .templates import PerDetectorTemplate
 from .weight import WeightOperator
 
@@ -409,13 +409,13 @@ class MultiObservationMapMaker(Generic[T]):
     def get_system_operator(
         self, model: ObservationModel, *, diag: bool = False
     ) -> AbstractLinearOperator:
-        H = ScanBlockColumnOperator.create(model.H)
+        H = StreamColumnOperator.create(model.H)
         # filter_vmap: array leaves mapped, static fields held
         weight = eqx.filter_vmap(ObservationModel.diag_W)(model) if diag else model.W
-        W = ScanBlockDiagonalOperator.create(weight)
+        W = StreamDiagonalOperator.create(weight)
         # specify leading axis dimension because F can be trivial
         _, n_own, n_pad = self.obs_distribution
-        F = ScanBlockDiagonalOperator.create(model.F, n_lead=n_own + n_pad)
+        F = StreamDiagonalOperator.create(model.F, n_lead=n_own + n_pad)
         return (H.T @ W @ F @ H).reduce()
 
     def pixel_selection(

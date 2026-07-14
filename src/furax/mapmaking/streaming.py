@@ -1,3 +1,5 @@
+"""Operators that stream a per-observation operator across a sharded observation axis."""
+
 import functools
 from abc import ABC
 from dataclasses import field

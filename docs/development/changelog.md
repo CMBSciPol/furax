@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed scan-block operators to `Stream*` and made the module public (`streaming.py`) (#173)
+
 ## [0.11.3] - 2026-07-14
 
 ### Changed

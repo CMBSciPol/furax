@@ -255,7 +255,6 @@ class MultiObservationMapMaker(Generic[T]):
             A_reduced = (selector @ A @ selector.T).reduce()
             M = (selector @ BJ.I @ selector.T).reduce()  # preconditioner
             rhs_reduced = selector(rhs)
-            y0 = M(rhs_reduced)
 
             iteration_callback = None
             if self.config.solver.verbose:
@@ -267,7 +266,6 @@ class MultiObservationMapMaker(Generic[T]):
             result = furax.linalg.cg(
                 A_reduced,
                 rhs_reduced,
-                y0,
                 preconditioner=M,
                 iteration_callback=iteration_callback,
                 **self.config.solver.options,

@@ -26,7 +26,7 @@ def _make_operator(
     times=None,
     ndet=NDET,
     nsamp=NSAMP,
-    chunk_size=2,
+    batch_size=2,
     seed=0,
     elevation_modulation=False,
 ) -> tuple[AtmospherePointingOperator, TangentialLandscape, StokesI]:
@@ -61,7 +61,7 @@ def _make_operator(
         qdet,
         wind_velocity,
         times,
-        chunk_size=chunk_size,
+        batch_size=batch_size,
         interpolate=False,
         elevation_modulation=elevation_modulation,
     )

@@ -38,7 +38,7 @@ class AtmospherePointingOperator(PointingOperator):
         qdet: Detector offset quaternions, shape ``(n_detectors, 4)``.
         wind_displacement: Pre-computed wind offset ``(vx * t_k, vy * t_k)`` for each
             sample, shape ``(n_samples, 2)``.
-        chunk_size: Number of detectors processed per chunk (memory/speed trade-off).
+        batch_size: Detector batch size.
         interpolate: If ``True``, use bilinear interpolation; otherwise nearest-neighbour.
         elevation_modulation: If ``True``, weight each sample by ``1 / sin(el)`` (airmass).
     """
@@ -56,7 +56,7 @@ class AtmospherePointingOperator(PointingOperator):
         wind_velocity: Float[Array, '2'],
         times: Float[Array, ' samp'],
         *,
-        chunk_size: int = 16,
+        batch_size: int = 16,
         interpolate: bool = True,
         elevation_modulation: bool = False,
     ) -> 'AtmospherePointingOperator':
@@ -70,7 +70,7 @@ class AtmospherePointingOperator(PointingOperator):
             wind_velocity: Wind velocity ``(vx, vy)`` in the same physical units as
                 ``landscape.height`` per second.
             times: Elapsed time for each sample, shape ``(n_samples,)``.
-            chunk_size: Number of detectors per chunk.
+            batch_size: Detector batch size.
             interpolate: Use bilinear interpolation (default: nearest-neighbour).
             elevation_modulation: Weight each sample by the airmass loading ``1 / sin(el)``.
         """
@@ -82,7 +82,7 @@ class AtmospherePointingOperator(PointingOperator):
             landscape,
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
-            chunk_size=chunk_size,
+            batch_size=batch_size,
             interpolate=interpolate,
             _out_structure=out_structure,
             wind_displacement=wind_displacement,

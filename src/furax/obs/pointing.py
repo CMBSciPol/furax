@@ -41,13 +41,13 @@ class PointingOperator(AbstractLinearOperator):
         landscape: The sky pixelization (HEALPix landscape).
         qbore: Boresight quaternions, shape (n_samples, 4).
         qdet: Detector quaternions, shape (n_detectors, 4).
-        chunk_size: Number of detectors per chunk (memory/speed tradeoff).
+        batch_size: Number of detectors per batch (memory/speed tradeoff).
     """
 
     landscape: StokesLandscape
     qbore: Float[Array, 'samp 4']
     qdet: Float[Array, 'det 4']
-    chunk_size: int = field(metadata={'static': True})
+    batch_size: int = field(metadata={'static': True})
     interpolate: bool = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
 
@@ -58,7 +58,7 @@ class PointingOperator(AbstractLinearOperator):
         boresight_quaternions: Float[Array, 'samp 4'],
         detector_quaternions: Float[Array, 'det 4'],
         *,
-        chunk_size: int = 16,
+        batch_size: int = 32,
         frame: Literal['boresight', 'detector'] = 'boresight',
         interpolate: bool = False,
     ) -> 'PointingOperator':
@@ -86,7 +86,7 @@ class PointingOperator(AbstractLinearOperator):
             landscape,
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
-            chunk_size=chunk_size,
+            batch_size=batch_size,
             interpolate=interpolate,
             in_structure=landscape.structure,
             _out_structure=out_structure,
@@ -114,16 +114,16 @@ class PointingOperator(AbstractLinearOperator):
 
         # Loop over chunks of detectors
         ndet, nsamp = self.out_structure.shape
-        chunk_size = min(self.chunk_size, ndet)
-        if chunk_size > 0:
-            n_chunks = (ndet + chunk_size - 1) // chunk_size
+        batch_size = min(self.batch_size, ndet)
+        if batch_size > 0:
+            n_chunks = (ndet + batch_size - 1) // batch_size
         else:
             n_chunks = 1
-            chunk_size = ndet
+            batch_size = ndet
 
         def body(i: Int[Array, ''], tod: StokesType) -> StokesType:
             # interval bounds must be static, so we shift the values afterwards
-            idet = jnp.arange(chunk_size) + i * chunk_size
+            idet = jnp.arange(batch_size) + i * batch_size
 
             # clip array to avoid out of bounds
             # this means that the last chunk may do redundant work
@@ -160,7 +160,7 @@ class PointingOperator(AbstractLinearOperator):
             landscape,
             qbore=self.qbore,
             qdet=self.qdet,
-            chunk_size=self.chunk_size,
+            batch_size=self.batch_size,
             interpolate=effective_interpolate,
             in_structure=landscape.structure,
             _out_structure=out_structure,
@@ -282,15 +282,15 @@ class PointingTransposeOperator(TransposeOperator):
 
         # Loop over chunks of detectors
         ndet, _ = self.in_structure.shape
-        chunk_size = min(self.operator.chunk_size, ndet)
-        if chunk_size > 0:
-            n_chunks = (ndet + chunk_size - 1) // chunk_size
+        batch_size = min(self.operator.batch_size, ndet)
+        if batch_size > 0:
+            n_chunks = (ndet + batch_size - 1) // batch_size
         else:
             n_chunks = 1
-            chunk_size = ndet
+            batch_size = ndet
 
         def body(i: Int[Array, ''], sky: StokesType) -> StokesType:
-            idet = jnp.arange(chunk_size) + i * chunk_size
+            idet = jnp.arange(batch_size) + i * batch_size
 
             # clip, but avoid multiple contributions in the last chunk
             unique = idet < ndet

@@ -687,7 +687,7 @@ class MapMaker:
                 landscape,
                 jnp.asarray(observation.get_boresight_quaternions()),
                 jnp.asarray(observation.get_detector_quaternions()),
-                chunk_size=self.config.pointing.chunk_size,
+                batch_size=self.config.pointing.batch_size,
                 interpolate=self.config.pointing.interpolation == 'bilinear',
             )
             return pointing
@@ -977,7 +977,7 @@ class MapMaker:
                 stokes='IQU',
                 dtype=config.dtype,
                 landscape=self._ground_landscape,
-                chunk_size=config.pointing.chunk_size,
+                batch_size=config.pointing.batch_size,
             )
             ones_tod = jnp.ones(
                 (observation.n_detectors, observation.n_samples), dtype=config.dtype

@@ -1,3 +1,5 @@
+"""Hierarchical configuration system for mapmaking runs."""
+
 from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
@@ -17,44 +19,110 @@ from furax.obs.stokes import ValidStokesLiteral
 serializer(Conversion(lambda p: p.name, source=ProjectionType, target=str))
 deserializer(Conversion(lambda s: ProjectionType[s], source=str, target=ProjectionType))
 
+# Docs order: main config first, then its sub-configs grouped by topic.
+__all__ = [
+    'MapMakingConfig',
+    'Methods',
+    'PointingConfig',
+    'WeightingConfig',
+    'WeightingMode',
+    'NoiseSource',
+    'NoiseFitConfig',
+    'SolverConfig',
+    'GapsConfig',
+    'GapTreatment',
+    'GapFillingConfig',
+    'NestedConfig',
+    'LandscapeConfig',
+    'HealpixConfig',
+    'WCSConfig',
+    'SkyPatch',
+    'TemplatesConfig',
+    'PolynomialOrders',
+    'PolynomialConfig',
+    'ScanSynchronousConfig',
+    'BinsConfig',
+    'BinAzSynchronousConfig',
+    'HWPSynchronousConfig',
+    'AzHWPSynchronousConfig',
+    'BinAzHWPSynchronousConfig',
+    'SplineHWPSSConfig',
+    'GroundConfig',
+    'SotodlibConfig',
+]
+
 
 class Methods(Enum):
+    """Mapmaking algorithm selector (see [`MapMakingConfig.method`][])."""
+
     BINNED = 'Binned'
+    """Invert the diagonal mapmaking system directly and skip the iterative solve.
+
+    Only available when diagonal weights are used (see [`MapMakingConfig.weighting`][]).
+    """
+
     MAXL = 'ML'
+    """Classic maximum-likelihood mapmaking solve via conjugate gradient iteration."""
+
     TWOSTEP = 'TwoStep'
+    """Two-step mapmaking (destriper-like)."""
+
     ATOP = 'ATOP'
+    """Polarisation (QU only) estimator using deprojection of short baselines.
+
+    See [`MapMakingConfig.atop_tau`][].
+    """
 
 
 class WeightingMode(Enum):
-    IDENTITY = 'identity'  # identity inverse-noise, no weighting
-    DIAGONAL = 'diagonal'  # white (diagonal) weighting
-    TOEPLITZ = 'toeplitz'  # atmospheric 1/f, banded Toeplitz weighting
+    """Structure of the weighting matrix (see [`WeightingConfig.mode`][])."""
+
+    IDENTITY = 'identity'
+    """No weighting (identity matrix)."""
+
+    DIAGONAL = 'diagonal'
+    """Diagonal weighting (white noise model)."""
+
+    TOEPLITZ = 'toeplitz'
+    """Banded Toeplitz weighting ($1/f$ noise model)."""
 
 
 class NoiseSource(Enum):
-    FIT = 'fit'  # fit the noise model from the TOD PSD
-    PRECOMPUTED = 'precomputed'  # read precomputed noise parameters from the data pipeline
+    """Where the noise model used for weighting comes from (see [`WeightingConfig.source`][])."""
+
+    FIT = 'fit'
+    """Fit the noise model from the TOD PSD."""
+
+    PRECOMPUTED = 'precomputed'
+    """Read precomputed noise parameters from the data pipeline."""
 
 
 class GapTreatment(Enum):
     """How flagged samples enter the correlated-noise GLS weighting.
 
-    For white/diagonal weights all three coincide (`M W M = M W` for mask `M`);
-    the distinction only matters in the correlated (Toeplitz/atmospheric) regime.
+    For diagonal weights all three coincide ($M W M = M W$ for mask $M$ and diagonal $W$);
+    the distinction only matters in the correlated regime.
     """
 
-    INNER_MASK = 'inner_mask'  # W = M N⁻¹ M (unbiased but suboptimal; cheap)
-    FILL = 'fill'  # gap-fill the RHS with a constrained noise realization (single-realization use)
-    NESTED = 'nested'  # W = M (M N M)⁻¹ M = W_exact (unbiased and minimum-variance)
+    INNER_MASK = 'inner_mask'
+    """$W = M N^{-1} M$ (unbiased but suboptimal; cheap)."""
+
+    FILL = 'fill'
+    """Gap-fill the RHS with a constrained noise realization (single-realization use)."""
+
+    NESTED = 'nested'
+    """$W = M (M N M)^{-1} M$ (unbiased and minimum-variance)."""
 
 
 @dataclass
 class SolverConfig:
+    """Options for the iterative (conjugate gradient) solver."""
+
     rtol: float = 1e-6
-    """Relative tolerance of iterative solver."""
+    """Relative tolerance."""
 
     atol: float = 0
-    """Absolute tolerance of iterative solver."""
+    """Absolute tolerance."""
 
     max_steps: int = 1_000
     """Maximum allowed number of iterations steps."""
@@ -70,69 +138,57 @@ class SolverConfig:
 
 @dataclass
 class NoiseFitConfig:
+    r"""Options for fitting a parametric $1/f$ noise model to each detector's TOD PSD."""
+
     nperseg: int = 2_048
-    """Welch window length in samples for PSD estimation."""
+    """Welch window length in samples."""
 
     max_iter: int = 100
-    """Maximum number of iterations"""
+    """Maximum number of minimiser iterations."""
 
     tol: float = 1e-10
-    """Relative minimiser tolerance (step size and function value change)"""
+    """Relative minimiser tolerance (step size and function value change)."""
 
     min_freq_nyquist: float = 1e-8
-    """Only use f >= min_freq * nyquist for noise fitting"""
+    r"""Only use $f \geq$ `min_freq_nyquist` $\times f_\mathrm{Nyquist}$ for noise fitting."""
 
     max_freq_nyquist: float = 1
-    """Only use f < max_freq * nyquist for noise fitting"""
+    r"""Only use $f <$ `max_freq_nyquist` $\times f_\mathrm{Nyquist}$ for noise fitting."""
 
     low_freq_nyquist: float = 0.02
-    """The PSD at f < low_freq * nyquist is assumed to be dominated by 1/f noise"""
+    r"""PSD at $f <$ `low_freq_nyquist` $\times f_\mathrm{Nyquist}$ assumed dominated by $1/f$."""
 
     high_freq_nyquist: float = 0.02
-    """The PSD at f > high_freq * nyquist is assumed to be dominated by white noise"""
+    r"""PSD at $f >$ `high_freq_nyquist` $\times f_\mathrm{Nyquist}$ assumed white."""
 
     mask_hwp_harmonics: bool = True
-    """Mask HWP harmonics: 1f, 2f, 4f"""
+    """Mask HWP harmonics: $1f$, $2f$, $4f$."""
 
     mask_ptc_harmonics: bool = False
-    """Mask PTC harmonics: 1f, 2f"""
+    """Mask PTC harmonics: $1f$, $2f$."""
 
     freq_mask_width: float = 0.5
-    """Full width [Hz] of the frequency mask (if used) around HWP and PTC harmonics"""
+    """Full width of the frequency mask (if used) around HWP and PTC harmonics, in Hz."""
 
     ptc_freq: float = 1.4
-    """PTC frequency [Hz] used for masking (if used)"""
+    """PTC frequency used for masking (if used), in Hz."""
 
 
 @dataclass
 class WeightingConfig:
-    """Configuration for the inverse-noise / weighting matrix used in mapmaking.
-
-    ``mode`` selects the structure of the inverse-noise matrix:
-
-    - ``IDENTITY``: identity matrix (no weighting).
-    - ``DIAGONAL``: diagonal white-noise weighting (default).
-    - ``TOEPLITZ``: banded Toeplitz weighting for atmospheric (1/f) noise.
-
-    ``source`` selects where the noise model comes from: ``FIT`` (default) fits it from the
-    TOD power spectral density using ``fitting``; ``PRECOMPUTED`` reads noise parameters from
-    the data pipeline (``fitting`` is then ignored).
-
-    ``correlation_length`` sets the Toeplitz bandwidth (in samples) of the inverse-noise
-    operator.  It is only used in ``TOEPLITZ`` mode and is ignored otherwise.
-    """
+    """Configuration for the inverse-noise / weighting matrix used in mapmaking."""
 
     mode: WeightingMode = WeightingMode.DIAGONAL
-    """Inverse-noise weighting matrix structure."""
+    """Matrix structure."""
 
     source: NoiseSource = NoiseSource.FIT
-    """Where the noise model comes from: fit from the TOD PSD or read precomputed parameters."""
+    """Where the noise model comes from."""
 
     correlation_length: int = 1_000
-    """Toeplitz bandwidth in samples.  Only relevant in ``TOEPLITZ`` mode."""
+    """Toeplitz bandwidth in samples.  Only relevant in `TOEPLITZ` mode."""
 
     fitting: NoiseFitConfig = field(default_factory=NoiseFitConfig)
-    """Options for fitting the noise PSD to the data.  Ignored when ``source`` is PRECOMPUTED."""
+    """Options for fitting the noise PSD to the data."""
 
     @property
     def diagonal_matrix(self) -> bool:
@@ -145,14 +201,17 @@ class HealpixConfig:
     """Configuration for a HEALPix output map.
 
     Examples:
-        In a YAML config file:
+        YAML config section
 
-        healpix:
-          nside: 512
+            healpix:
+                nside: 512
     """
 
     nside: int = 512
+    """HEALPix resolution parameter."""
+
     ordering: Literal['nest', 'ring'] = 'ring'
+    """Pixel ordering scheme. Only ``'ring'`` is currently supported."""
 
     def __post_init__(self) -> None:
         if self.ordering == 'nest':
@@ -164,12 +223,12 @@ class SkyPatch:
     """Explicit rectangular sky patch for WCS map construction.
 
     Examples:
-        In a YAML config file:
+        YAML config section
 
-        patch:
-          center: [30.0, -10.0]  # ra, dec in degrees
-          width: 20.0
-          height: 10.0
+            patch:
+                center: [30.0, -10.0]  # ra, dec in degrees
+                width: 20.0
+                height: 10.0
     """
 
     center: tuple[float, float]
@@ -186,34 +245,34 @@ class SkyPatch:
 class WCSConfig:
     """Configuration for a WCS-projected output map.
 
-    ``projection`` applies to all modes except ``geometry_file``, where it is read from the file.
-
     The map extent is determined by exactly one of three mutually exclusive modes:
 
-    1. **geometry_file**: read shape and WCS directly from a FITS/HDF file via
-       ``pixell.enmap.read_map_geometry``. All other fields are ignored.
-    2. **patch**: build a rectangular patch of sky at the given ``resolution``.
-    3. **auto** (no geometry specified): scan the observations to compute each observation's
-       bounding box, take their union, and pixelise at the given ``resolution``.
+    - read from `geometry_file` (shape and WCS come from the file, all other fields ignored);
+    - an explicit `patch` pixelised at `resolution`; or
+    - automatic footprint detection from the observations (when neither is set), also pixelised
+        at `resolution`.
+
+    `projection` applies to the `patch`/auto modes only.
 
     Examples:
-        In a YAML config file:
+        Auto footprint at 4 arcmin resolution
 
-        # Auto footprint at 4 arcmin resolution
-        car:
-          resolution: 4.0
+            car:
+                resolution: 4.0
 
-        # Explicit patch
-        car:
-          resolution: 4.0
-          patch:
-            center: [30.0, -10.0]
-            width: 20.0
-            height: 10.0
+        Explicit patch
 
-        # Geometry from file
-        car:
-          geometry_file: /path/to/map.fits
+            car:
+                resolution: 4.0
+                patch:
+                    center: [30.0, -10.0]
+                    width: 20.0
+                    height: 10.0
+
+        Geometry from file
+
+            car:
+                geometry_file: /path/to/map.fits
     """
 
     projection: ProjectionType = ProjectionType.CAR
@@ -223,10 +282,10 @@ class WCSConfig:
     """Pixel resolution in arcminutes."""
 
     geometry_file: str | None = None
-    """Path to a FITS or HDF map file from which to read the output geometry."""
+    """Path to a FITS/HDF map file to read shape and WCS from via `pixell.enmap.read_map_geometry`."""
 
     patch: SkyPatch | None = None
-    """Explicit sky patch definition. Mutually exclusive with ``geometry_file``."""
+    """Explicit sky patch definition."""
 
     def __post_init__(self) -> None:
         if self.geometry_file is not None and self.patch is not None:
@@ -234,14 +293,22 @@ class WCSConfig:
 
     @property
     def has_geometry(self) -> bool:
+        """True if geometry is fixed by the configuration"""
         return self.geometry_file is not None or self.patch is not None
 
 
 @dataclass
 class LandscapeConfig:
+    """Configuration of the output sky map: its Stokes components and pixelisation."""
+
     stokes: ValidStokesLiteral = 'IQU'
+    """Which Stokes components (`'I'`, `'QU'`, `'IQU'`, or `'IQUV'`) the output map holds."""
+
     healpix: HealpixConfig | None = None
+    """HEALPix pixelisation. Mutually exclusive with ``wcs``."""
+
     wcs: WCSConfig | None = None
+    """WCS (CAR) pixelisation. Mutually exclusive with ``healpix``."""
 
     def __post_init__(self) -> None:
         if (self.healpix is None) == (self.wcs is None):
@@ -252,7 +319,10 @@ class PolynomialOrders(NamedTuple):
     """A polynomial order range, inclusive."""
 
     min_order: int = 0
+    """Lowest polynomial order in the range."""
+
     max_order: int = 3
+    """Highest polynomial order in the range."""
 
     @property
     def n_orders(self) -> int:
@@ -262,20 +332,25 @@ class PolynomialOrders(NamedTuple):
 
 @dataclass
 class BinsConfig:
-    """A piecewise basis that bins a variable into ``n_bins`` intervals.
-
-    With ``interpolate = False`` each sample is hard-assigned to its bin. With
-    ``interpolate = True`` samples are spread over neighbouring bin centres using
-    triangular (or, if ``smooth``, sin^2) weights.
-    """
+    """Configuration for binning a variable into `n_bins` intervals."""
 
     n_bins: int = 4
+    """Number of bins."""
+
     interpolate: bool = False
+    """Spread each sample over neighbouring bin centres instead of hard-assigning it to its bin.
+
+    Interpolation uses triangular weights, or sin^2 if `smooth` is set.
+    """
+
     smooth: bool = False
+    """When `interpolate` is set, use sin^2 weights instead of triangular ones."""
 
 
 @dataclass
 class PolynomialConfig:
+    """Polynomial drift template (per-detector low-order Legendre polynomial in time)."""
+
     legendre: PolynomialOrders = PolynomialOrders(0, 3)
     """Legendre orders for the polynomial drift template."""
 
@@ -288,44 +363,66 @@ class ScanSynchronousConfig:
     """
 
     legendre: PolynomialOrders = PolynomialOrders(3, 7)
+    """Legendre orders for the azimuth-dependent basis."""
 
 
 @dataclass
 class BinAzSynchronousConfig:
     """Binned azimuth-synchronous signal, no HWP coupling.
 
-    The binned counterpart of `ScanSynchronousConfig`.
+    The binned counterpart of [`ScanSynchronousConfig`][].
     """
 
     bins: BinsConfig = field(default_factory=BinsConfig)
+    """Azimuth binning."""
 
 
 @dataclass
 class HWPSynchronousConfig:
+    """HWP-synchronous signal on a global Fourier (harmonic) basis in HWP angle."""
+
     n_harmonics: int = 3
+    """Number of HWP harmonics to fit."""
 
 
 @dataclass
 class AzHWPSynchronousConfig:
+    """Joint azimuth/HWP-synchronous signal: Legendre in azimuth times Fourier in HWP angle."""
+
     legendre: PolynomialOrders = PolynomialOrders(0, 3)
+    """Legendre orders for the azimuth-dependent basis."""
+
     n_harmonics: int = 4
+    """Number of HWP harmonics to fit."""
+
     split_scans: bool = False
+    """Fit independent coefficients per subscan instead of shared ones."""
 
 
 @dataclass
 class BinAzHWPSynchronousConfig:
+    """Joint azimuth/HWP-synchronous signal: azimuth binning times Fourier in HWP angle.
+
+    The binned-azimuth counterpart of [`AzHWPSynchronousConfig`][].
+    """
+
     bins: BinsConfig = field(default_factory=BinsConfig)
+    """Azimuth binning."""
+
     n_harmonics: int = 4
+    """Number of HWP harmonics to fit."""
 
 
 @dataclass
 class SplineHWPSSConfig:
+    """HWP-synchronous signal on a cubic B-spline basis in HWP angle."""
+
     n_knots: int | None = None
-    """Number of spline knots. If set, takes precedence over samples_per_knot."""
+    """Number of spline knots. If set, takes precedence over `samples_per_knot`."""
     samples_per_knot: int | None = 4000
-    """Number of samples per knot. Defaults to 4000."""
+    """Number of samples per knot."""
     harmonics: tuple[int, ...] = (4,)
-    """HWP harmonics to fit with splines. Defaults to (4,)."""
+    """HWP harmonics to fit with splines."""
 
     def __post_init__(self) -> None:
         if self.n_knots is None and self.samples_per_knot is None:
@@ -344,21 +441,55 @@ class SplineHWPSSConfig:
 
 @dataclass
 class GroundConfig:
-    azimuth_resolution: float = 0.05  # ~3 deg
-    elevation_resolution: float = 0.05  # ~3 deg
+    """Ground pickup template: binned in (azimuth, elevation)."""
+
+    azimuth_resolution: float = 0.05
+    """Azimuth bin width in radians.
+
+    Defaults to 0.05 (~3 deg).
+    """
+
+    elevation_resolution: float = 0.05
+    """Elevation bin width in radians.
+
+    Defaults to 0.05 (~3 deg).
+    """
 
 
 @dataclass
 class TemplatesConfig:
+    """Selection and configuration of templates to deproject/fit alongside sky map reconstruction.
+
+    Each field is `None` by default, meaning that template is disabled; setting it to an instance
+    of its config class enables the corresponding template with those options.
+    """
+
     polynomial: PolynomialConfig | None = None
+    """Per-detector polynomial template."""
+
     scan_synchronous: ScanSynchronousConfig | None = None
+    """Scan-synchronous (azimuth-only) template on a global Legendre basis."""
+
     binaz_synchronous: BinAzSynchronousConfig | None = None
+    """Scan-synchronous (azimuth-only) template on a binned azimuth basis."""
+
     hwp_synchronous: HWPSynchronousConfig | None = None
+    """HWP-synchronous template on a global Fourier (harmonic) basis."""
+
     azhwp_synchronous: AzHWPSynchronousConfig | None = None
+    """Joint azimuth/HWP-synchronous template, Legendre in azimuth times Fourier in HWP angle."""
+
     binazhwp_synchronous: BinAzHWPSynchronousConfig | None = None
+    """Joint azimuth/HWP-synchronous template, binned azimuth times Fourier in HWP angle."""
+
     spline_hwpss: SplineHWPSSConfig | None = None
+    """HWP-synchronous template on a cubic B-spline basis in HWP angle."""
+
     ground: GroundConfig | None = None
+    """Ground pickup template, binned in (azimuth, elevation)."""
+
     regularization: float = 0.0
+    """Ridge regularization strength applied to the template regression."""
 
     @classmethod
     def full_defaults(cls) -> 'TemplatesConfig':
@@ -376,6 +507,7 @@ class TemplatesConfig:
 
     @property
     def empty(self) -> bool:
+        """True when every template is disabled."""
         return all(getattr(self, f.name) is None for f in fields(self))
 
 
@@ -393,12 +525,7 @@ class GapFillingConfig:
     """The relative tolerance of the solver for the gap-filling solve"""
 
     precondition: bool = False
-    """Precondition the flagged-subspace solve with the covariance from the noise model.
-
-    Off by default: it speeds up convergence only for few gaps wider than the correlation length, and
-    *slows* the common case of many short gaps (turnarounds/glitches) where the bare system is already
-    well-conditioned. Enable for observations dominated by a few wide gaps.
-    """
+    """Precondition the flagged-subspace solve with the noise-model covariance (off by default)."""
 
 
 @dataclass
@@ -406,24 +533,22 @@ class NestedConfig:
     """Inner-solver options for the nested-inverse gap weight (`GapTreatment.NESTED`)."""
 
     max_flag_fraction: float = 0.3
-    """Flagged-fraction budget; observations flagged above this fall back to INNER_MASK."""
+    """Flagged-fraction budget; observations flagged above this fall back to `INNER_MASK`."""
 
     inner_steps: int = 20
-    """Fixed number of inner CG iterations for the flagged-block solve."""
+    """Maximum number of inner CG iterations for the flagged-block solve.
+
+    Set `rtol = atol = 0` to force exactly this number of steps.
+    """
 
     rtol: float = 0.0
-    """Relative tolerance of the inner solver (0 forces exactly ``inner_steps`` iterations)."""
+    """Relative tolerance."""
 
     atol: float = 0.0
-    """Absolute tolerance of the inner solver (0 forces exactly ``inner_steps`` iterations)."""
+    """Absolute tolerance."""
 
     precondition: bool = False
-    """Precondition the inner flagged-block CG with the covariance from the noise model.
-
-    Off by default: it helps only for few gaps wider than the correlation length, and *slows* the
-    common case of many short gaps (turnarounds/glitches) where the bare inner block is already
-    well-conditioned. Enable for observations dominated by a few wide gaps.
-    """
+    """Use the noise-model covariance to precondition the solve (off by default)."""
 
 
 @dataclass
@@ -431,24 +556,18 @@ class GapsConfig:
     """Configuration options related to the treatment of gaps."""
 
     treatment: GapTreatment = GapTreatment.FILL
-    """How flagged samples enter the weighting (see [`GapTreatment`][])."""
+    """How flagged samples enter the weighting."""
 
     fill_options: GapFillingConfig = field(default_factory=GapFillingConfig)
-    """Options to pass to the gap-filling operator (used when ``treatment`` is ``FILL``)."""
+    """Options to pass to the gap-filling operator (when `treatment` is `FILL`)."""
 
     nested: NestedConfig = field(default_factory=NestedConfig)
-    """Inner-solver options (used when ``treatment`` is ``NESTED``)."""
+    """Inner-solver options (when `treatment` is `NESTED`)."""
 
 
 @dataclass
 class PointingConfig:
-    """Configuration options for pointing computation.
-
-    ``interpolation`` controls how the sky map is sampled:
-
-    - ``'nearest'``: nearest-neighbor (default, fastest).
-    - ``'bilinear'``: bilinear interpolation using the four nearest pixels.
-    """
+    """Configuration options for pointing computation."""
 
     on_the_fly: bool = True
     """Compute pointing on the fly instead of pre-computing pixel indices."""
@@ -457,7 +576,11 @@ class PointingConfig:
     """Detector batch size for on-the-fly pointing (set to 0 to use a full batch)."""
 
     interpolation: Literal['nearest', 'bilinear'] = 'nearest'
-    """Pixel interpolation scheme used when sampling the sky map."""
+    """Pixel interpolation scheme used when sampling the sky map.
+
+    - ``'nearest'``: nearest-neighbor (default, fastest).
+    - ``'bilinear'``: bilinear interpolation using the four nearest pixels.
+    """
 
 
 @dataclass
@@ -478,32 +601,59 @@ class SotodlibConfig:
     """Apply HWP wobble correction to the line of sight."""
 
     noise_source: Literal['preprocess', 'mapmaking'] = 'preprocess'
-    """Which precomputed noise model to use when fit_noise_model is False.
-
-    'preprocess': use per-stoke noise fits (noiseT, noiseQ, noiseU) from preprocessing.
-    'mapmaking': use the white noise estimate from noiseQ_mapmaking.
-    """
+    """Precomputed noise model to use: preprocessing fits, or the mapmaking white-noise estimate."""
 
 
 @dataclass
 class MapMakingConfig:
+    """Top-level configuration for a mapmaking run."""
+
     method: Methods = Methods.BINNED
+    """Mapmaking algorithm to use."""
+
     scanning_mask: bool = False
+    """Drop samples outside each observation's scanning intervals."""
+
     sample_mask: bool = False
+    """Zero out TOD samples flagged invalid (glitches/cuts)."""
+
     hits_cut: float = 1e-2
+    """Drop pixels whose hit count is below this threshold times the 95th-percentile hit count."""
+
     cond_cut: float = 1e-2
+    """Drop pixels whose weight matrix rcond is smaller than this threshold."""
+
     double_precision: bool = True
+    """Run the pipeline in float64 (`True`) or float32 (`False`); see [`dtype`][]."""
+
     pointing: PointingConfig = field(default_factory=PointingConfig)
+    """Pointing computation options."""
+
     weighting: WeightingConfig = field(default_factory=WeightingConfig)
+    """Inverse-noise weighting / noise model options."""
+
     debug: bool = True
+    """Run mapmaking solve twice to determine JIT time, and compute the reprojected map."""
+
     solver: SolverConfig = field(default_factory=SolverConfig)
+    """Iterative (conjugate gradient) solver options."""
+
     gaps: GapsConfig = field(default_factory=GapsConfig)
+    """Treatment of flagged samples in the correlated-noise weighting."""
+
     landscape: LandscapeConfig = field(
         default_factory=lambda: LandscapeConfig(healpix=HealpixConfig())
     )
+    """Output sky map: Stokes components and pixelisation."""
+
     templates: TemplatesConfig | None = None
+    """Template deprojection options. `None` disables all templates."""
+
     atop_tau: int = 0
+    """Length of the `ATOP` interval (in samples)."""
+
     sotodlib: SotodlibConfig | None = None
+    """Options specific to the sotodlib interface. `None` when not using sotodlib data."""
 
     @classmethod
     def for_method(cls, method: 'Methods | str') -> 'MapMakingConfig':
@@ -604,16 +754,20 @@ class MapMakingConfig:
 
     @property
     def binned(self) -> bool:
+        """True when the inverse-noise weighting is diagonal (identity or white)."""
         return self.weighting.diagonal_matrix
 
     @property
     def demodulated(self) -> bool:
+        """True when using demodulated TODs (sotodlib-specific)."""
         return self.sotodlib.demodulated if self.sotodlib is not None else False
 
     @property
     def use_templates(self) -> bool:
+        """True when at least one template is enabled."""
         return (self.templates is not None) and (not self.templates.empty)
 
     @property
     def dtype(self) -> DTypeLike:
+        """The floating-point dtype used throughout the pipeline, per `double_precision`."""
         return jnp.float64 if self.double_precision else jnp.float32  # type: ignore[no-any-return]

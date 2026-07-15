@@ -32,7 +32,7 @@ from furax.core.rules import AbstractCompositionRule, NoReduction
 from ..stokes import (
     Stokes,
     StokesType,
-    ValidStokesType,
+    ValidStokesLiteral,
 )
 
 
@@ -88,7 +88,7 @@ class QURotationOperator(AbstractLinearOperator):
         cls,
         shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         *,
         angles: Float[Array, '...'],
         atomic: bool = False,

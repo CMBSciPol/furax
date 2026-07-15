@@ -16,10 +16,10 @@ from furax.obs.landscapes import (
     WCSLandscape,
     WCSProjection,
 )
-from furax.obs.stokes import Stokes, ValidStokesType
+from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 
-def test_healpix_landscape(stokes: ValidStokesType) -> None:
+def test_healpix_landscape(stokes: ValidStokesLiteral) -> None:
     nside = 64
     npixel = 12 * nside**2
 
@@ -35,7 +35,7 @@ def test_healpix_landscape(stokes: ValidStokesType) -> None:
         assert_array_equal(leaf, 1.0)
 
 
-def test_frequency_landscape(stokes: ValidStokesType) -> None:
+def test_frequency_landscape(stokes: ValidStokesLiteral) -> None:
     nside = 64
     npixel = 12 * nside**2
     frequencies = jnp.array([10, 20, 30])

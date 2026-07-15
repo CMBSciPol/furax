@@ -4,10 +4,10 @@ import jax.numpy as jnp
 from furax.core import CompositionOperator
 from furax.obs import HWPOperator, QURotationOperator
 from furax.obs.operators._qu_rotations import QURotationTransposeOperator
-from furax.obs.stokes import Stokes, StokesI, StokesIQUV, ValidStokesType
+from furax.obs.stokes import Stokes, StokesI, StokesIQUV, ValidStokesLiteral
 
 
-def test_hwp(stokes: ValidStokesType) -> None:
+def test_hwp(stokes: ValidStokesLiteral) -> None:
     hwp = HWPOperator.create(shape=(), stokes=stokes)
     cls = Stokes.class_for(stokes)
     x = cls.ones(())
@@ -18,14 +18,14 @@ def test_hwp(stokes: ValidStokesType) -> None:
     assert equinox.tree_equal(actual_y, expected_y)
 
 
-def test_hwp_orthogonal(stokes: ValidStokesType) -> None:
+def test_hwp_orthogonal(stokes: ValidStokesLiteral) -> None:
     hwp = HWPOperator.create(shape=(), stokes=stokes)
     x = Stokes.class_for(stokes).ones(())
     y = (hwp.T @ hwp)(x)
     assert equinox.tree_equal(y, x)
 
 
-def test_qu_rotation_hwp_rule(stokes: ValidStokesType) -> None:
+def test_qu_rotation_hwp_rule(stokes: ValidStokesLiteral) -> None:
     in_structure = Stokes.class_for(stokes).structure_for(())
     hwp = HWPOperator(in_structure=in_structure)
     rot = QURotationOperator(jnp.array(1.0), in_structure=in_structure)
@@ -73,7 +73,7 @@ def test_rotating_hwp_iquv() -> None:
     assert equinox.tree_equal(actual_y, expected_y, atol=1e-15, rtol=1e-15)
 
 
-def test_rotating_hwp_orthogonal(stokes: ValidStokesType) -> None:
+def test_rotating_hwp_orthogonal(stokes: ValidStokesLiteral) -> None:
     hwp = HWPOperator.create(shape=(), stokes=stokes, angles=1.1)
     x = Stokes.class_for(stokes).ones(())
     y = (hwp.T @ hwp)(x)

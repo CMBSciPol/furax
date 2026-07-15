@@ -12,7 +12,7 @@ from jax.typing import DTypeLike
 from jaxtyping import PyTree
 
 from furax.io.readers import AbstractReader
-from furax.obs.stokes import Stokes, ValidStokesType
+from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 from ._observation import (
     AbstractLazyObservation,
@@ -54,7 +54,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         self,
         *args: Sequence[Any],
         demodulated: bool,
-        stokes: ValidStokesType,
+        stokes: ValidStokesLiteral,
         dtype: DTypeLike = jnp.float64,
         common_keywords: dict[str, Any] | None = None,
         shapes: list[tuple[int, ...]] | None = None,
@@ -88,7 +88,7 @@ class ObservationReader(AbstractReader, Generic[T]):
         read_indices: Sequence[int] | None = None,
         requested_fields: Collection[str] | None = None,
         demodulated: bool = False,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = jnp.float64,
     ) -> Self:
         """Create a reader, performing I/O to infer data structures.

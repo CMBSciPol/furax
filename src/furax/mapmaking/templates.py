@@ -42,7 +42,7 @@ from furax.math import bspline, quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
 from furax.obs.landscapes import HorizonLandscape
 from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import ValidStokesType
+from furax.obs.stokes import ValidStokesLiteral
 
 from .config import BinsConfig, PolynomialOrders
 
@@ -735,7 +735,7 @@ class GroundTemplateOperator(AbstractLinearOperator):
         boresight_rotation: Float[Array, ' samps'],
         detector_quaternions: Float[Array, 'dets 4'],
         hwp_angles: Float[Array, ' samps'],
-        stokes: ValidStokesType,
+        stokes: ValidStokesLiteral,
         dtype: DTypeLike,
         landscape: HorizonLandscape | None = None,
         batch_size: int = 0,
@@ -794,7 +794,7 @@ class GroundTemplateOperator(AbstractLinearOperator):
         boresight_azimuth: Float[Array, ' samps'],
         boresight_elevation: Float[Array, ' samps'],
         detector_quaternions: Float[Array, 'dets 4'],
-        stokes: ValidStokesType,
+        stokes: ValidStokesLiteral,
         dtype: DTypeLike,
     ) -> HorizonLandscape:
         # First, set up a grid of (az, el) pairs

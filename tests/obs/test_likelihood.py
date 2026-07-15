@@ -17,7 +17,7 @@ from furax.obs.operators import (
     NoiseDiagonalOperator,
     SynchrotronOperator,
 )
-from furax.obs.stokes import ValidStokesType
+from furax.obs.stokes import ValidStokesLiteral
 
 
 def check_tree(x, y) -> bool:
@@ -25,7 +25,7 @@ def check_tree(x, y) -> bool:
 
 
 @pytest.fixture
-def likelihood_setup(stokes: ValidStokesType):
+def likelihood_setup(stokes: ValidStokesLiteral):
     # Setup parameters
     nside = 4
     nu = jnp.arange(10.0, 50.0, 10.0)

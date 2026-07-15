@@ -7,7 +7,7 @@ from numpy.testing import assert_array_almost_equal
 import furax.tree as ftree
 from furax.obs.landscapes import CARLandscape, HealpixLandscape, StokesLandscape, WCSProjection
 from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import ValidStokesType
+from furax.obs.stokes import ValidStokesLiteral
 
 NSIDE = 4
 NDET, NSAMP = 3, 10
@@ -16,7 +16,7 @@ NDET, NSAMP = 3, 10
 _CAR_PROJECTION = WCSProjection(crpix=(180.5, 90.5), crval=(180.0, 0.0), cdelt=(-1.0, 1.0))
 
 
-def _make_landscape(landscape_type: str, stokes: ValidStokesType) -> StokesLandscape:
+def _make_landscape(landscape_type: str, stokes: ValidStokesLiteral) -> StokesLandscape:
     if landscape_type == 'healpix':
         return HealpixLandscape(NSIDE, stokes)
     return CARLandscape((180, 360), _CAR_PROJECTION, stokes)

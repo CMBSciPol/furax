@@ -32,7 +32,7 @@ from furax.mapmaking.config import (
 from furax.mapmaking.mapmaker import MLMapmaker, get_obs_distribution_to_process
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
-from furax.obs.stokes import ValidStokesType
+from furax.obs.stokes import ValidStokesLiteral
 from tests.mapmaking.helpers import (
     FailingLazyObservation,
     FakeGroundObservation,
@@ -325,7 +325,7 @@ class TestATOPStokesValidation:
     (or an empty list) rather than an interface or ``.h5`` fixture.
     """
 
-    def _base_config(self, stokes: ValidStokesType) -> MapMakingConfig:
+    def _base_config(self, stokes: ValidStokesLiteral) -> MapMakingConfig:
         return MapMakingConfig(
             method=Methods.ATOP,
             atop_tau=ATOP_TAU,
@@ -364,7 +364,7 @@ def _observations(name: str, demodulated: bool = False) -> list[AbstractLazyObse
 
 def _config(
     landscape_type: Literal['healpix', 'car'],
-    stokes: ValidStokesType,
+    stokes: ValidStokesLiteral,
     demodulated: bool = False,
     interpolation: Literal['nearest', 'bilinear'] = 'nearest',
     method: Methods = Methods.BINNED,

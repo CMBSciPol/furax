@@ -11,7 +11,7 @@ from jaxtyping import Array, DTypeLike, PRNGKeyArray
 from numpy.typing import NDArray
 
 from ..obs.landscapes import FrequencyLandscape
-from ..obs.stokes import Stokes, ValidStokesType
+from ..obs.stokes import Stokes, ValidStokesLiteral
 
 
 class FGBusterInstrument(eqx.Module):
@@ -175,7 +175,7 @@ def get_sky(nside: int, tag: str = 'c1d0s0') -> pysm3.Sky:
 def get_noise_sigma_from_instrument(
     instrument: FGBusterInstrument,
     nside: int,
-    stokes_type: ValidStokesType = 'IQU',
+    stokes_type: ValidStokesLiteral = 'IQU',
     unit: str = 'uK_CMB',
 ) -> Stokes:
     instrument = instrument.depth_conversion(unit)
@@ -204,7 +204,7 @@ def get_observation(
     tag: str = 'c1d0s0',
     noise_ratio: float = 0.0,
     key: PRNGKeyArray | None = None,
-    stokes_type: ValidStokesType = 'IQU',
+    stokes_type: ValidStokesLiteral = 'IQU',
     dtype: DTypeLike = np.float64,
     unit: str = 'uK_CMB',
 ) -> Stokes:
@@ -231,7 +231,7 @@ def get_observation(
             Defaults to 0.0.
         key (PRNGKeyArray, optional): PRNG key for the Gaussian noise realization.
             Required when noise_ratio > 0. Defaults to None.
-        stokes_type (ValidStokesType, optional): The Stokes components
+        stokes_type (ValidStokesLiteral, optional): The Stokes components
             to include ('I', 'QU', 'IQU'). Defaults to 'IQU'.
         dtype (DTypeLike, optional): The data type for the output.
             Defaults to np.float64.

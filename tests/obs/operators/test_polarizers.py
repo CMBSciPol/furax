@@ -5,11 +5,11 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.core import CompositionOperator
 from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
-from furax.obs.stokes import Stokes, StokesI, StokesIQU, ValidStokesType
+from furax.obs.stokes import Stokes, StokesI, StokesIQU, ValidStokesLiteral
 from furax.tree import as_structure
 
 
-def test_as_matrix(stokes: ValidStokesType) -> None:
+def test_as_matrix(stokes: ValidStokesLiteral) -> None:
     polarizer = LinearPolarizerOperator.create(shape=(), stokes=stokes)
     stokes_slice = {'I': slice(0, 1), 'QU': slice(1, 3), 'IQU': slice(0, 3), 'IQUV': slice(0, 4)}[
         stokes
@@ -18,7 +18,7 @@ def test_as_matrix(stokes: ValidStokesType) -> None:
     assert_array_equal(polarizer.as_matrix(), expected_matrix)
 
 
-def test_transpose_as_matrix(stokes: ValidStokesType) -> None:
+def test_transpose_as_matrix(stokes: ValidStokesLiteral) -> None:
     polarizer = LinearPolarizerOperator.create(shape=(), stokes=stokes)
     stokes_slice = {
         'I': slice(0, 1),
@@ -30,7 +30,7 @@ def test_transpose_as_matrix(stokes: ValidStokesType) -> None:
     assert_array_equal(polarizer.T.as_matrix(), expected_matrix)
 
 
-def test_hwp_rule(stokes: ValidStokesType) -> None:
+def test_hwp_rule(stokes: ValidStokesLiteral) -> None:
     polarizer = LinearPolarizerOperator.create(shape=(), stokes=stokes)
     hwp = HWPOperator.create(shape=(), stokes=stokes)
     op = polarizer @ hwp
@@ -39,7 +39,7 @@ def test_hwp_rule(stokes: ValidStokesType) -> None:
     assert_array_equal(reduced_op.as_matrix(), op.as_matrix())
 
 
-def test_hwp_rule_with_angles(stokes: ValidStokesType) -> None:
+def test_hwp_rule_with_angles(stokes: ValidStokesLiteral) -> None:
     polarizer = LinearPolarizerOperator.create(shape=(), stokes=stokes, angles=1.0)
     hwp = HWPOperator.create(shape=(), stokes=stokes, angles=2.0)
     op = (polarizer @ hwp).reduce()
@@ -77,7 +77,7 @@ def test_create_direct_iqu() -> None:
     assert_allclose(y, expected_y, atol=1e-15, rtol=1e-15)
 
 
-def test_create_transpose(stokes: ValidStokesType) -> None:
+def test_create_transpose(stokes: ValidStokesLiteral) -> None:
     angles = np.deg2rad(15)
     polarizer = LinearPolarizerOperator.create(shape=(2, 5), stokes=stokes, angles=angles)
     x = jnp.array([[1.0, 2, 3, 4, 5], [1, 1, 1, 1, 1]])

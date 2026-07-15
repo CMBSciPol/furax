@@ -7,7 +7,7 @@ from jaxtyping import Float
 from furax import AbstractLinearOperator, diagonal
 from furax.core.rules import AbstractCompositionRule
 
-from ..stokes import Stokes, StokesType, ValidStokesType
+from ..stokes import Stokes, StokesType, ValidStokesLiteral
 from ._qu_rotations import QURotationOperator, QURotationTransposeOperator
 from ._transfer_matrix import Stack, mueller_matrix
 
@@ -41,7 +41,7 @@ class HWPOperator(AbstractLinearOperator):
         cls,
         shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         *,
         angles: Float[Array, '...'] | None = None,
     ) -> AbstractLinearOperator:
@@ -145,7 +145,7 @@ class NonIdealHWPOperator(AbstractLinearOperator):
         cls,
         shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         *,
         mueller: Array,
         angles: Float[Array, '...'] | None = None,

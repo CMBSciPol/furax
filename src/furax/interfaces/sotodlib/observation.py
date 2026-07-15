@@ -42,7 +42,7 @@ from furax.obs.stokes import (
     StokesIQUV,
     StokesQU,
     StokesType,
-    ValidStokesType,
+    ValidStokesLiteral,
 )
 
 # Per-process cache of (configs, context) from sotodlib's get_preprocess_context, keyed by
@@ -278,7 +278,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     def get_demodulated_tods(self, stokes: Literal['IQU']) -> StokesIQU: ...
     @overload
     def get_demodulated_tods(self, stokes: Literal['IQUV']) -> StokesIQUV: ...
-    def get_demodulated_tods(self, stokes: ValidStokesType = 'IQU') -> StokesType:
+    def get_demodulated_tods(self, stokes: ValidStokesLiteral = 'IQU') -> StokesType:
         """Returns the demodulated timestream data as a Stokes pytree.
 
         'IQUV' is not supported.
@@ -403,7 +403,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             return None
         return AtmosphericNoiseModel(*fit)
 
-    def get_demodulated_noise_model(self, stokes: ValidStokesType = 'IQU') -> NoiseModel:
+    def get_demodulated_noise_model(self, stokes: ValidStokesLiteral = 'IQU') -> NoiseModel:
         """Returns a single noise model covering every requested Stokes leg.
 
         Each Stokes leg is fit independently (I/Q/U noise properties genuinely differ), so the

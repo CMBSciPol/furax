@@ -12,7 +12,7 @@ from jax import Array
 from jaxtyping import Float
 from numpy.testing import assert_array_equal
 
-from furax.obs.stokes import Stokes, ValidStokesType
+from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 
 @pytest.mark.parametrize(
@@ -28,7 +28,7 @@ def test_class_for(any_stokes: str) -> None:
         assert cls.stokes == any_stokes
 
 
-def test_from_stokes_args(stokes: ValidStokesType) -> None:
+def test_from_stokes_args(stokes: ValidStokesLiteral) -> None:
     arrays = [jnp.ones(1) for _ in stokes]
     pytree = Stokes.from_stokes(*arrays)
     assert type(pytree) is Stokes.class_for(stokes)
@@ -48,7 +48,7 @@ def test_from_stokes_kwargs(any_stokes: str) -> None:
         assert type(pytree) is Stokes.class_for(any_stokes)
 
 
-def test_from_iquv(stokes: ValidStokesType) -> None:
+def test_from_iquv(stokes: ValidStokesLiteral) -> None:
     arrays = {stoke: jnp.array(istoke) for istoke, stoke in enumerate('IQUV', 1)}
     cls = Stokes.class_for(stokes)
     pytree = cls.from_iquv(*arrays.values())
@@ -57,7 +57,7 @@ def test_from_iquv(stokes: ValidStokesType) -> None:
         assert getattr(pytree, stoke.lower()) == arrays[stoke]
 
 
-def test_ravel(stokes: ValidStokesType) -> None:
+def test_ravel(stokes: ValidStokesLiteral) -> None:
     shape = (4, 2)
     arrays = {k: jnp.ones(shape) for k in stokes}
     pytree = Stokes.from_stokes(**arrays)
@@ -66,7 +66,7 @@ def test_ravel(stokes: ValidStokesType) -> None:
         assert getattr(raveled_pytree, stoke.lower()).shape == (8,)
 
 
-def test_reshape(stokes: ValidStokesType) -> None:
+def test_reshape(stokes: ValidStokesLiteral) -> None:
     shape = (4, 2)
     new_shape = (2, 2, 2)
     arrays = {k: jnp.ones(shape) for k in stokes}
@@ -86,7 +86,7 @@ def test_reshape(stokes: ValidStokesType) -> None:
         (lambda c, s, d: c.full(s, 2, d), 2),
     ],
 )
-def test_zeros(stokes: ValidStokesType, shape: tuple[int, ...], dtype, factory, value) -> None:
+def test_zeros(stokes: ValidStokesLiteral, shape: tuple[int, ...], dtype, factory, value) -> None:
     cls = Stokes.class_for(stokes)
     pytree = factory(cls, shape, dtype)
     for stoke in stokes:
@@ -98,7 +98,7 @@ def test_zeros(stokes: ValidStokesType, shape: tuple[int, ...], dtype, factory, 
 
 @pytest.mark.parametrize('shape', [(10,), (2, 10)])
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
-def test_structure(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> None:
+def test_structure(stokes: ValidStokesLiteral, shape: tuple[int, ...], dtype) -> None:
     array = jnp.zeros(shape, dtype)
     pytree = Stokes.from_stokes(*[array for _ in stokes])
     expected_pytree_structure = Stokes.class_for(stokes).structure_for(shape, dtype)
@@ -111,7 +111,7 @@ def test_structure(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> No
 
 @pytest.mark.parametrize('shape', [(10,), (2, 10)])
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
-def test_structure_for(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -> None:
+def test_structure_for(stokes: ValidStokesLiteral, shape: tuple[int, ...], dtype) -> None:
     structure = Stokes.class_for(stokes).structure_for(shape, dtype)
     array = jnp.zeros(shape, dtype)
     pytree = Stokes.from_stokes(*[array for _ in stokes])
@@ -120,7 +120,7 @@ def test_structure_for(stokes: ValidStokesType, shape: tuple[int, ...], dtype) -
     assert structure == expected_structure
 
 
-def test_matmul(stokes: ValidStokesType) -> None:
+def test_matmul(stokes: ValidStokesLiteral) -> None:
     cls = Stokes.class_for(stokes)
     x = cls.ones((2, 3))
     y = cls.full((2, 3), 2)
@@ -174,7 +174,7 @@ def test_matmul(stokes: ValidStokesType) -> None:
     ],
 )
 def test_operation_scalar_or_array(
-    stokes: ValidStokesType,
+    stokes: ValidStokesLiteral,
     operation: Callable[[Any, Any], Any],
     reverse: bool,
     value: float | Float[Array, ''],
@@ -212,7 +212,7 @@ def test_operation_scalar_or_array(
     ],
 )
 def test_operation_pytree(
-    stokes: ValidStokesType,
+    stokes: ValidStokesLiteral,
     operation: Callable[[Any, Any], Any],
     expected_value: float,
     do_jit: bool,
@@ -244,7 +244,7 @@ def test_operation_incompatible_pytree(operation: Callable[[Any, Any], Any]) -> 
         operation(a, b)
 
 
-def test_from_array_preserves_numpy(stokes: ValidStokesType) -> None:
+def test_from_array_preserves_numpy(stokes: ValidStokesLiteral) -> None:
     cls = Stokes.class_for(stokes)
     array = np.ones((len(stokes), 3), dtype=np.float32)
     pytree = cls.from_array(array)

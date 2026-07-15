@@ -22,16 +22,37 @@ nav = [
   ] },
   { "API reference" = [
       "api/furax.md",
-      "api/core.md",
-      "api/obs.md",
-      "api/mapmaking.md",
-      "api/math.md",
-      "api/linalg.md",
-      "api/io.md",
-      "api/interfaces.md",
-      "api/tree.md",
-      "api/distributed.md",
-      "api/exceptions.md",
+      { "furax.core" = [
+          "api/core/algebra.md",
+          "api/core/composite.md",
+          "api/core/structural.md",
+          "api/core/special.md",
+      ] },
+      { "furax.obs" = [
+          "api/obs/pointing.md",
+          "api/obs/polarization.md",
+          "api/obs/beam.md",
+          "api/obs/seds.md",
+          "api/obs/likelihoods.md",
+          "api/obs/landscapes.md",
+          "api/obs/stokes.md",
+          "api/obs/atmosphere.md",
+      ] },
+      { "furax.mapmaking" = [
+          "api/mapmaking/observation.md",
+          "api/mapmaking/mapmaker.md",
+          "api/mapmaking/config.md",
+          "api/mapmaking/preconditioner.md",
+      ] },
+      { "Other subpackages" = [
+          "api/math.md",
+          "api/linalg.md",
+          "api/io.md",
+          "api/interfaces.md",
+          "api/tree.md",
+          "api/distributed.md",
+          "api/exceptions.md",
+      ] },
   ] },
   { "Development" = [
       "development/contributing.md",
@@ -60,8 +81,7 @@ paths = ["src"]
 # Parse docstrings as Google style, rendering sections as lists (not tables).
 docstring_style = "google"
 docstring_section_style = "list"
-# Prefix members with their full path on package/module pages; keep source order.
-show_root_members_full_path = true
+# Keep source order.
 members_order = "source"
 # Cross-references: resolve [`Name`][] by scope, by dotted relative path, and in signatures.
 relative_crossrefs = true
@@ -69,6 +89,8 @@ scoped_crossrefs = true
 signature_crossrefs = true
 # Show the real type inside Annotated[...] annotations.
 unwrap_annotated = true
+# Render a heading for the symbol requested directly by a `:::` block.
+show_root_heading = true
 # Render symbols with no docstring; document only public (non-_) names.
 show_if_no_docstring = true
 filters = "public"

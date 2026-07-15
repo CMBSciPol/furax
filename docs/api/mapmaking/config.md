@@ -1,0 +1,3 @@
+# Configuration
+
+::: furax.mapmaking.MapMakingConfig

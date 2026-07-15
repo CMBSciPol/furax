@@ -18,7 +18,14 @@ from numpy.typing import NDArray
 
 from furax.math.quaternion import qmul, to_lonlat_angles
 from furax.obs.landscapes import ProjectionType, StokesLandscape
-from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesIQUV, StokesQU, ValidStokesLiteral
+from furax.obs.stokes import (
+    StokesI,
+    StokesIQU,
+    StokesIQUV,
+    StokesQU,
+    StokesType,
+    ValidStokesLiteral,
+)
 
 from .noise import NoiseModel
 
@@ -175,7 +182,7 @@ class AbstractObservation(ABC, Generic[T]):
     def get_demodulated_tods(self, stokes: Literal['IQU']) -> StokesIQU: ...
     @overload
     def get_demodulated_tods(self, stokes: Literal['IQUV']) -> StokesIQUV: ...
-    def get_demodulated_tods(self, stokes: ValidStokesLiteral = 'IQU') -> Stokes:
+    def get_demodulated_tods(self, stokes: ValidStokesLiteral = 'IQU') -> StokesType:
         """Returns demodulated timestream data as a Stokes pytree.
 
         Subclasses that support demodulated data should override this method.

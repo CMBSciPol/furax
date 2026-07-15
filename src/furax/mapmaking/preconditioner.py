@@ -1,3 +1,5 @@
+from typing import TypeVar
+
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
@@ -9,6 +11,8 @@ from furax.obs.stokes import Stokes
 # Pass op as an explicit argument so JAX traces its arrays as inputs rather than
 # capturing them as XLA constants (which would happen with jit(op.mv) or jit(op)).
 _apply = jax.jit(lambda op, x: op(x))
+
+_StokesT = TypeVar('_StokesT', bound=Stokes)
 
 
 @symmetric
@@ -59,7 +63,7 @@ class BJPreconditioner(AbstractLinearOperator):
         blocks = jnp.moveaxis(jnp.stack(columns, axis=-1), 0, -2)  # (i, *sky, j) -> (*sky, i, j)
         return cls(blocks, in_structure=in_struct)
 
-    def mv(self, x: Stokes) -> Stokes:
+    def mv(self, x: _StokesT) -> _StokesT:
         # einsum aligns the blocks' trailing (i, j) axes against x.data's leading Stokes axis
         # directly, without physically transposing either array.
         return type(x).from_array(jnp.einsum('...ij,j...->i...', self.blocks, x.data))

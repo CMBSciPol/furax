@@ -17,6 +17,7 @@ which encodes successively (from right to left):
 """
 
 from dataclasses import field
+from typing import TypeVar
 
 import jax
 import numpy as np
@@ -31,13 +32,14 @@ from furax.core.rules import AbstractCompositionRule, NoReduction
 
 from ..stokes import (
     Stokes,
-    StokesType,
     ValidStokesLiteral,
 )
 
+_StokesT = TypeVar('_StokesT', bound=Stokes)
+
 
 @jax.jit
-def rotate_qu(x: StokesType, angles: Float[Array, '...']) -> StokesType:
+def rotate_qu(x: _StokesT, angles: Float[Array, '...']) -> _StokesT:
     """Rotate QU Stokes parameters by the given angles (in radians).
 
     The transpose rotation is obtained by passing ``-angles``.
@@ -47,10 +49,10 @@ def rotate_qu(x: StokesType, angles: Float[Array, '...']) -> StokesType:
 
 @jax.jit
 def rotate_qu_cs(
-    x: StokesType,
+    x: _StokesT,
     cos_angles: Float[Array, '...'],
     sin_angles: Float[Array, '...'],
-) -> StokesType:
+) -> _StokesT:
     """Rotate QU Stokes parameters given precomputed cos(a) and sin(a).
 
     The transpose rotation is obtained by negating ``sin_angles``.
@@ -96,7 +98,7 @@ class QURotationOperator(AbstractLinearOperator):
         structure = Stokes.class_for(stokes).structure_for(shape, dtype)
         return cls(angles=angles, atomic=atomic, in_structure=structure)
 
-    def mv(self, x: StokesType) -> StokesType:
+    def mv(self, x: _StokesT) -> _StokesT:
         return rotate_qu(x, self.angles)  # type: ignore[no-any-return]
 
     def transpose(self) -> AbstractLinearOperator:
@@ -106,7 +108,7 @@ class QURotationOperator(AbstractLinearOperator):
 class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
     operator: QURotationOperator
 
-    def mv(self, x: StokesType) -> StokesType:
+    def mv(self, x: _StokesT) -> _StokesT:
         return rotate_qu(x, -self.operator.angles)  # type: ignore[no-any-return]
 
 

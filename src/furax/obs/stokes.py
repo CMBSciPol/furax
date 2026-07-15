@@ -23,9 +23,16 @@ from furax.tree import (
     zeros_like,
 )
 
-__all__ = ['Stokes', 'StokesI', 'StokesQU', 'StokesIQU', 'StokesIQUV', 'ValidStokesType']
+__all__ = [
+    'Stokes',
+    'StokesI',
+    'StokesQU',
+    'StokesIQU',
+    'StokesIQUV',
+    'ValidStokesLiteral',
+]
 
-ValidStokesType = Literal['I', 'QU', 'IQU', 'IQUV']
+ValidStokesLiteral = Literal['I', 'QU', 'IQU', 'IQUV']
 
 
 @dataclass
@@ -63,7 +70,7 @@ class Stokes(ABC):
         True
     """
 
-    stokes: ClassVar[ValidStokesType]
+    stokes: ClassVar[ValidStokesLiteral]
     data: Array
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -264,7 +271,7 @@ class Stokes(ABC):
     @classmethod
     def class_for(cls, stokes: str) -> type['StokesType']:
         """Returns the StokesPyTree subclass associated to the specified Stokes types."""
-        if stokes not in get_args(ValidStokesType):
+        if stokes not in get_args(ValidStokesLiteral):
             raise ValueError(f'Invalid Stokes parameters: {stokes!r}')
         requested_cls = {
             'I': StokesI,
@@ -317,7 +324,7 @@ class Stokes(ABC):
             )
         if keywords:
             stokes = ''.join(sorted(keywords))
-            if stokes not in get_args(ValidStokesType):
+            if stokes not in get_args(ValidStokesLiteral):
                 raise TypeError(
                     f"Invalid Stokes vectors: {stokes!r}. Use 'I', 'QU', 'IQU' or 'IQUV'."
                 )
@@ -376,22 +383,22 @@ class Stokes(ABC):
 
 @register_dataclass_with_keys
 class StokesI(Stokes):
-    stokes: ClassVar[ValidStokesType] = 'I'
+    stokes: ClassVar[ValidStokesLiteral] = 'I'
 
 
 @register_dataclass_with_keys
 class StokesQU(Stokes):
-    stokes: ClassVar[ValidStokesType] = 'QU'
+    stokes: ClassVar[ValidStokesLiteral] = 'QU'
 
 
 @register_dataclass_with_keys
 class StokesIQU(Stokes):
-    stokes: ClassVar[ValidStokesType] = 'IQU'
+    stokes: ClassVar[ValidStokesLiteral] = 'IQU'
 
 
 @register_dataclass_with_keys
 class StokesIQUV(Stokes):
-    stokes: ClassVar[ValidStokesType] = 'IQUV'
+    stokes: ClassVar[ValidStokesLiteral] = 'IQUV'
 
 
 StokesType = StokesI | StokesQU | StokesIQU | StokesIQUV

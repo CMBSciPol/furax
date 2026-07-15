@@ -15,7 +15,7 @@ from jaxtyping import Array, DTypeLike, Float, Integer, Key, PyTree, ScalarLike,
 
 from furax.math.quaternion import qrot_zaxis, to_iso_angles
 from furax.obs._samplings import Sampling
-from furax.obs.stokes import Stokes, ValidStokesType
+from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 
 @register_static
@@ -69,7 +69,7 @@ class StokesLandscape(Landscape):
     def __init__(
         self,
         shape: tuple[int, ...] | None = None,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = np.float64,
         pixel_shape: tuple[int, ...] | None = None,
     ):
@@ -254,7 +254,7 @@ class WCSLandscape(StokesLandscape):
         self,
         shape: tuple[int, int],
         projection: WCSProjection,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = np.float64,
     ) -> None:
         super().__init__(shape, stokes, dtype)
@@ -295,7 +295,7 @@ class WCSLandscape(StokesLandscape):
         cls,
         shape: tuple[int, int],
         wcs: WCS,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = np.float64,
     ) -> 'WCSLandscape':
         """Create a WCSLandscape subclass instance from an astropy WCS object.
@@ -329,7 +329,7 @@ class CARLandscape(WCSLandscape):
         self,
         shape: tuple[int, int],
         projection: WCSProjection,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = np.float64,
     ) -> None:
         if projection.crval[1] != 0.0:
@@ -404,7 +404,7 @@ class HealpixLandscape(StokesLandscape):
     def __init__(
         self,
         nside: int,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = np.float64,
         nested: bool = False,
     ) -> None:
@@ -462,7 +462,7 @@ class FrequencyLandscape(HealpixLandscape):
         self,
         nside: int,
         frequencies: Array,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = np.float64,
     ):
         super().__init__(nside, stokes, dtype)
@@ -478,7 +478,7 @@ class AstropyWCSLandscape(StokesLandscape):
         self,
         shape: tuple[int, ...],
         wcs: WCS,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = np.float64,
     ) -> None:
         super().__init__(shape, stokes, dtype)
@@ -523,7 +523,7 @@ class HorizonLandscape(StokesLandscape):
         shape: tuple[int, ...],
         altitude_limits: tuple[Array, Array],
         azimuth_limits: tuple[Array, Array],
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = np.float64,
     ) -> None:
         super().__init__(shape, stokes, dtype)
@@ -606,7 +606,7 @@ class TangentialLandscape(StokesLandscape):
         height: float,
         x0: float = 0.0,
         y0: float = 0.0,
-        stokes: ValidStokesType = 'I',
+        stokes: ValidStokesLiteral = 'I',
         dtype: DTypeLike = np.float64,
     ) -> None:
         if stokes != 'I':
@@ -634,7 +634,7 @@ class TangentialLandscape(StokesLandscape):
         height: float,
         x0: float = 0.0,
         y0: float = 0.0,
-        stokes: ValidStokesType = 'I',
+        stokes: ValidStokesLiteral = 'I',
         dtype: DTypeLike = np.float64,
     ) -> 'TangentialLandscape':
         """Create a landscape from physical extent and pixel spacing.

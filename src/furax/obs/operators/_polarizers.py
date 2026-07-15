@@ -10,7 +10,7 @@ from ..stokes import (
     StokesI,
     StokesQU,
     StokesType,
-    ValidStokesType,
+    ValidStokesLiteral,
 )
 from ._hwp import HWPOperator
 from ._qu_rotations import QURotationOperator
@@ -33,7 +33,7 @@ class LinearPolarizerOperator(AbstractLinearOperator):
         cls,
         shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         *,
         angles: Float[Array, '...'] | None = None,
     ) -> AbstractLinearOperator:

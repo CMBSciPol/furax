@@ -6,7 +6,7 @@ import furax as fx
 from furax import IdentityOperator
 from furax.core import CompositionOperator
 from furax.obs import QURotationOperator
-from furax.obs.stokes import Stokes, StokesI, StokesIQU, ValidStokesType
+from furax.obs.stokes import Stokes, StokesI, StokesIQU, ValidStokesLiteral
 
 
 def test_i() -> None:
@@ -39,14 +39,14 @@ def test_iqu() -> None:
     assert equinox.tree_equal(actual_y, expected_y, atol=1e-15, rtol=1e-15)
 
 
-def test_orthogonal(stokes: ValidStokesType) -> None:
+def test_orthogonal(stokes: ValidStokesLiteral) -> None:
     hwp = QURotationOperator.create(shape=(), stokes=stokes, angles=1.1)
     x = fx.tree.ones_like(hwp.out_structure)
     y = hwp.T(hwp(x))
     assert equinox.tree_equal(y, x, atol=1e-15, rtol=1e-15)
 
 
-def test_matmul(stokes: ValidStokesType) -> None:
+def test_matmul(stokes: ValidStokesLiteral) -> None:
     structure = Stokes.class_for(stokes).structure_for(())
     hwp = QURotationOperator(1.1, in_structure=structure)
     assert isinstance(hwp @ hwp.T, IdentityOperator)
@@ -57,7 +57,7 @@ def test_matmul(stokes: ValidStokesType) -> None:
     'transpose_left, transpose_right, expected_value',
     [(False, False, 3), (False, True, -1), (True, False, 1), (True, True, -3)],
 )
-def test_rules(stokes: ValidStokesType, transpose_left, transpose_right, expected_value) -> None:
+def test_rules(stokes: ValidStokesLiteral, transpose_left, transpose_right, expected_value) -> None:
     structure = Stokes.class_for(stokes).structure_for(())
     left = QURotationOperator(1, in_structure=structure)
     if transpose_left:
@@ -80,7 +80,7 @@ def test_rules(stokes: ValidStokesType, transpose_left, transpose_right, expecte
     [(False, False), (False, True), (True, False), (True, True)],
 )
 def test_atomic_prevents_reduction(
-    stokes: ValidStokesType,
+    stokes: ValidStokesLiteral,
     atomic_left: bool,
     atomic_right: bool,
     transpose_left: bool,
@@ -98,7 +98,7 @@ def test_atomic_prevents_reduction(
     assert isinstance(reduced_op, CompositionOperator) and len(reduced_op.operands) == 2
 
 
-def test_atomic_identity_still_reduces(stokes: ValidStokesType) -> None:
+def test_atomic_identity_still_reduces(stokes: ValidStokesLiteral) -> None:
     structure = Stokes.class_for(stokes).structure_for(())
     op = QURotationOperator(1.1, atomic=True, in_structure=structure)
 

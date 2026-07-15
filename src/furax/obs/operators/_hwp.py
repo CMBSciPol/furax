@@ -1,3 +1,5 @@
+from typing import TypeVar
+
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
@@ -7,9 +9,11 @@ from jaxtyping import Float
 from furax import AbstractLinearOperator, diagonal
 from furax.core.rules import AbstractCompositionRule
 
-from ..stokes import Stokes, StokesType, ValidStokesType
+from ..stokes import Stokes, ValidStokesLiteral
 from ._qu_rotations import QURotationOperator, QURotationTransposeOperator
 from ._transfer_matrix import Stack, mueller_matrix
+
+_StokesT = TypeVar('_StokesT', bound=Stokes)
 
 
 @diagonal
@@ -41,7 +45,7 @@ class HWPOperator(AbstractLinearOperator):
         cls,
         shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         *,
         angles: Float[Array, '...'] | None = None,
     ) -> AbstractLinearOperator:
@@ -65,7 +69,7 @@ class HWPOperator(AbstractLinearOperator):
         rotated_hwp: AbstractLinearOperator = rot.T @ hwp @ rot
         return rotated_hwp
 
-    def mv(self, x: StokesType) -> Stokes:
+    def mv(self, x: _StokesT) -> _StokesT:
         # Canonical component order is I, Q, U, V: once 'U' is present, it and
         # every component after it (i.e. V) flip sign; I and Q are untouched.
         idx = x.stokes.find('U')
@@ -145,7 +149,7 @@ class NonIdealHWPOperator(AbstractLinearOperator):
         cls,
         shape: tuple[int, ...],
         dtype: DTypeLike = np.float64,
-        stokes: ValidStokesType = 'IQU',
+        stokes: ValidStokesLiteral = 'IQU',
         *,
         mueller: Array,
         angles: Float[Array, '...'] | None = None,
@@ -178,7 +182,7 @@ class NonIdealHWPOperator(AbstractLinearOperator):
         'IQUV': slice(0, 3),
     }
 
-    def mv(self, x: StokesType) -> StokesType:
+    def mv(self, x: _StokesT) -> _StokesT:
         # Slice the Mueller matrix to keep only relevant components
         sl = self._MUELLER_SLICE[x.stokes]
         data = x.data[:3]  # drops V if x has it; no-op otherwise

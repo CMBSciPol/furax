@@ -2,10 +2,10 @@ from typing import get_args
 
 import pytest
 
-from furax.obs.stokes import ValidStokesType
+from furax.obs.stokes import ValidStokesLiteral
 
 
-@pytest.fixture(params=get_args(ValidStokesType))
-def stokes(request: pytest.FixtureRequest) -> ValidStokesType:
+@pytest.fixture(params=get_args(ValidStokesLiteral))
+def stokes(request: pytest.FixtureRequest) -> ValidStokesLiteral:
     """Parametrized fixture for I, QU, IQU and IQUV."""
     return request.param

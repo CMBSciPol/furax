@@ -49,7 +49,7 @@ from furax.obs.landscapes import (
 )
 from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokesType
+from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokesLiteral
 
 from . import templates
 from ._geometry import minimum_enclosing_arc
@@ -577,7 +577,7 @@ def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape 
 
 def _wcs_landscape_from_geometry(
     wcs_config: WCSConfig,
-    stokes: ValidStokesType,
+    stokes: ValidStokesLiteral,
     dtype: DTypeLike,
 ) -> WCSLandscape:
     """Build a WCSLandscape from an explicit geometry specification."""

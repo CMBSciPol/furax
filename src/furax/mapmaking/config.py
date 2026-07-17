@@ -116,7 +116,15 @@ class GapTreatment(Enum):
 
 @dataclass
 class SolverConfig:
-    """Options for the iterative (conjugate gradient) solver."""
+    """Options for the iterative (conjugate gradient) solver.
+
+    Examples:
+        YAML config section
+
+            solver:
+                rtol: 1.0e-6  # needs the decimal point, else PyYAML reads it as a string
+                max_steps: 1000
+    """
 
     rtol: float = 1e-6
     """Relative tolerance."""
@@ -176,7 +184,21 @@ class NoiseFitConfig:
 
 @dataclass
 class WeightingConfig:
-    """Configuration for the inverse-noise / weighting matrix used in mapmaking."""
+    """Configuration for the inverse-noise / weighting matrix used in mapmaking.
+
+    Examples:
+        Diagonal (white noise) weighting using precomputed noise parameters
+
+            weighting:
+                mode: diagonal
+                source: precomputed
+
+        Toeplitz ($1/f$) weighting
+
+            weighting:
+                mode: toeplitz
+                correlation_length: 1000
+    """
 
     mode: WeightingMode = WeightingMode.DIAGONAL
     """Matrix structure."""
@@ -198,14 +220,7 @@ class WeightingConfig:
 
 @dataclass
 class HealpixConfig:
-    """Configuration for a HEALPix output map.
-
-    Examples:
-        YAML config section
-
-            healpix:
-                nside: 512
-    """
+    """Configuration for a HEALPix output map."""
 
     nside: int = 512
     """HEALPix resolution parameter."""
@@ -220,16 +235,7 @@ class HealpixConfig:
 
 @dataclass
 class SkyPatch:
-    """Explicit rectangular sky patch for WCS map construction.
-
-    Examples:
-        YAML config section
-
-            patch:
-                center: [30.0, -10.0]  # ra, dec in degrees
-                width: 20.0
-                height: 10.0
-    """
+    """Explicit rectangular sky patch for WCS map construction."""
 
     center: tuple[float, float]
     """Center ``(ra, dec)`` in degrees."""
@@ -253,26 +259,6 @@ class WCSConfig:
         at `resolution`.
 
     `projection` applies to the `patch`/auto modes only.
-
-    Examples:
-        Auto footprint at 4 arcmin resolution
-
-            car:
-                resolution: 4.0
-
-        Explicit patch
-
-            car:
-                resolution: 4.0
-                patch:
-                    center: [30.0, -10.0]
-                    width: 20.0
-                    height: 10.0
-
-        Geometry from file
-
-            car:
-                geometry_file: /path/to/map.fits
     """
 
     projection: ProjectionType = ProjectionType.CAR
@@ -299,7 +285,43 @@ class WCSConfig:
 
 @dataclass
 class LandscapeConfig:
-    """Configuration of the output sky map: its Stokes components and pixelisation."""
+    """Configuration of the output sky map: its Stokes components and pixelisation.
+
+    Exactly one of `healpix` or `wcs` must be set.
+
+    Examples:
+        HEALPix output
+
+            landscape:
+                stokes: IQU
+                healpix:
+                    nside: 512
+
+        WCS output, automatic footprint detection at 4 arcmin resolution
+
+            landscape:
+                stokes: IQU
+                wcs:
+                    resolution: 4.0
+
+        WCS output, explicit patch
+
+            landscape:
+                stokes: IQU
+                wcs:
+                    resolution: 4.0
+                    patch:
+                        center: [30.0, -10.0]  # ra, dec in degrees
+                        width: 20.0
+                        height: 10.0
+
+        WCS output, geometry read from a file
+
+            landscape:
+                stokes: IQU
+                wcs:
+                    geometry_file: /path/to/map.fits
+    """
 
     stokes: ValidStokesLiteral = 'IQU'
     """Which Stokes components (`'I'`, `'QU'`, `'IQU'`, or `'IQUV'`) the output map holds."""
@@ -462,6 +484,17 @@ class TemplatesConfig:
 
     Each field is `None` by default, meaning that template is disabled; setting it to an instance
     of its config class enables the corresponding template with those options.
+
+    Examples:
+        YAML config section (enables the polynomial and ground templates)
+
+            templates:
+                polynomial:
+                    legendre:
+                        min_order: 0
+                        max_order: 3
+                ground:
+                    azimuth_resolution: 0.05
     """
 
     polynomial: PolynomialConfig | None = None
@@ -553,7 +586,28 @@ class NestedConfig:
 
 @dataclass
 class GapsConfig:
-    """Configuration options related to the treatment of gaps."""
+    """Configuration options related to the treatment of gaps.
+
+    Examples:
+        Cheap, suboptimal inner-mask weighting (default correlated-noise fallback)
+
+            gaps:
+                treatment: inner_mask
+
+        Gap-fill the RHS with a constrained noise realization
+
+            gaps:
+                treatment: fill
+                fill_options:
+                    seed: 42
+
+        Unbiased, minimum-variance nested-inverse weighting
+
+            gaps:
+                treatment: nested
+                nested:
+                    inner_steps: 20
+    """
 
     treatment: GapTreatment = GapTreatment.FILL
     """How flagged samples enter the weighting."""
@@ -567,7 +621,23 @@ class GapsConfig:
 
 @dataclass
 class PointingConfig:
-    """Configuration options for pointing computation."""
+    """Configuration options for pointing computation.
+
+    `interpolation: 'bilinear'` requires `on_the_fly: true`: pre-computed pointing only stores
+    a single pixel index per sample, so it cannot carry interpolation weights.
+
+    Examples:
+        On-the-fly pointing with bilinear sampling
+
+            pointing:
+                on_the_fly: true
+                interpolation: bilinear
+
+        Pre-computed pointing, nearest-neighbor sampling (default, fastest)
+
+            pointing:
+                on_the_fly: false
+    """
 
     on_the_fly: bool = True
     """Compute pointing on the fly instead of pre-computing pixel indices."""
@@ -578,14 +648,28 @@ class PointingConfig:
     interpolation: Literal['nearest', 'bilinear'] = 'nearest'
     """Pixel interpolation scheme used when sampling the sky map.
 
+    ``'bilinear'`` requires `on_the_fly`.
+
     - ``'nearest'``: nearest-neighbor (default, fastest).
     - ``'bilinear'``: bilinear interpolation using the four nearest pixels.
     """
 
+    def __post_init__(self) -> None:
+        if self.interpolation == 'bilinear' and not self.on_the_fly:
+            raise ValueError("interpolation='bilinear' requires on_the_fly=True")
+
 
 @dataclass
 class SotodlibConfig:
-    """Configuration options specific to the sotodlib interface."""
+    """Configuration options specific to the sotodlib interface.
+
+    Examples:
+        YAML config section
+
+            sotodlib:
+                site: so_sat1
+                demodulated: true
+    """
 
     # see https://github.com/simonsobs/so3g/blob/master/python/proj/coords.py#L45
     site: Literal['so', 'so_sat1', 'so_sat2', 'so_sat3', 'so_lat'] = 'so'

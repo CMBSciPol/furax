@@ -576,6 +576,9 @@ class TemplatesConfig:
     regularization: float = 0.0
     """Ridge regularization strength applied to the template regression."""
 
+    gram_batch_size: int = 32
+    """Detector batch size for Gram inversion."""
+
     @classmethod
     def full_defaults(cls) -> 'TemplatesConfig':
         """Create a template config with default values for all templates."""

@@ -421,6 +421,7 @@ class MultiObservationMapMaker(Generic[T]):
         fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
         build_templates = config.use_templates
         reg = config.templates.regularization if config.templates is not None else 0.0
+        gram_batch_size = config.templates.gram_batch_size if config.templates is not None else 32
 
         indices = self.distribute(self.get_padded_read_indices())
         is_real = self.distribute(self._real_observation_mask())
@@ -509,7 +510,7 @@ class MultiObservationMapMaker(Generic[T]):
                 if templates.implicit is not None:
                     Ti = templates.implicit
                     # ATOP + templates is rejected in _check_config, so F = I and Weff = W (diagonal)
-                    ginv_i = gram_inverse(Ti, obs.W, reg)
+                    ginv_i = gram_inverse(Ti, obs.W, reg, batch_size=gram_batch_size)
                     wd = wd - Weff(Ti(ginv_i(Ti.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
                 rhs_i = obs.H.T(wd)
                 amp_i = None
@@ -521,7 +522,13 @@ class MultiObservationMapMaker(Generic[T]):
                     # per-detector (shared=False) basis, the only option. A large-K structured
                     # explicit family (e.g. polynomial with explicit: true) still gets the fast
                     # structured path automatically -- gram_inverse always tries it first.
-                    ginv_e = gram_inverse(templates.explicit, obs.W, reg, allow_dense_probe=True)
+                    ginv_e = gram_inverse(
+                        templates.explicit,
+                        obs.W,
+                        reg,
+                        allow_dense_probe=True,
+                        batch_size=gram_batch_size,
+                    )
                 carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
                 return carry, (obs, templates, amp_i, ginv_i, ginv_e)
 

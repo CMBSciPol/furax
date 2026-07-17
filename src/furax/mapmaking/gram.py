@@ -110,7 +110,7 @@ def pairwise_gram(
 
 
 def _coupled_gram_inverse(
-    template: TemplateOperator, diag: PyTree[Array], regularization: float
+    template: TemplateOperator, diag: PyTree[Array], regularization: float, batch_size: int
 ) -> AbstractLinearOperator:
     """Dense per-detector inverse Gram for several coupled shared-basis families.
 
@@ -161,12 +161,12 @@ def _coupled_gram_inverse(
                 block = block.at[offsets[i] : offsets[i + 1], offsets[j] : offsets[j + 1]].set(blk)
         return block
 
-    block = jax.vmap(build)(*diags)  # (n_dets, n, n)
+    block = jax.lax.map(lambda ds: build(*ds), tuple(diags), batch_size=batch_size)
     return BandedCholeskyOperator.from_dense(block, template.in_structure, regularization)
 
 
 def _structured_gram_inverse(
-    template: TemplateOperator, diag: PyTree[Array], regularization: float
+    template: TemplateOperator, diag: PyTree[Array], regularization: float, batch_size: int
 ) -> AbstractLinearOperator:
     """Structured inverse Gram for a shared-basis ``TemplateOperator``.
 
@@ -179,7 +179,7 @@ def _structured_gram_inverse(
     basis).
     """
     if len(template.families) > 1:
-        return _coupled_gram_inverse(template, diag, regularization)
+        return _coupled_gram_inverse(template, diag, regularization, batch_size)
 
     family = template.families[0]
     if not family.shared:
@@ -188,7 +188,7 @@ def _structured_gram_inverse(
 
     def _leg_gram_inverse(basis: Basis, leg_diag: Array, amp: PyTree[Any]) -> Any:
         try:
-            bands = jax.vmap(basis.weighted_gram)(leg_diag)
+            bands = jax.lax.map(basis.weighted_gram, leg_diag, batch_size=batch_size)
         except NotImplementedError:
             raise _NoStructuredGram from None
         return BandedCholeskyOperator.from_bands(bands, amp, regularization)
@@ -251,6 +251,7 @@ def gram_inverse(
     regularization: float = 0.0,
     *,
     allow_dense_probe: bool = False,
+    batch_size: int = 32,
 ) -> AbstractLinearOperator:
     """Per-detector inverse Gram matrix ``(Aᵀ W A)⁻¹`` for operator ``A`` and weight ``W``.
 
@@ -272,6 +273,8 @@ def gram_inverse(
         allow_dense_probe: Allow the ``O(K)`` dense-probe fallback when the structured path is
             unavailable. Defaults to ``False`` (raise instead) — flip only for small-``K``
             families known to have no structural Gram view.
+        batch_size: Detector batch size to bound transient memory usage in the structured
+            per-detector Gram assembly path.
 
     Returns:
         The per-detector inverse Gram operator.
@@ -283,7 +286,7 @@ def gram_inverse(
         try:
             ones = furax.tree.ones_like(weight.in_structure)
             diag = weight(ones)
-            return _structured_gram_inverse(operator, diag, regularization)
+            return _structured_gram_inverse(operator, diag, regularization, batch_size)
         except _NoStructuredGram:
             pass  # fall back to dense probe, or raise below
     if allow_dense_probe:

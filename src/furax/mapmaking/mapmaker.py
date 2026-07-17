@@ -35,9 +35,7 @@ from furax import (
     SymmetricBandToeplitzOperator,
 )
 from furax.core import (
-    BlockColumnOperator,
     BlockDiagonalOperator,
-    BlockRowOperator,
     IndexOperator,
 )
 from furax.interfaces.lineax import as_lineax_operator
@@ -75,7 +73,7 @@ from .gram import gram_inverse
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
-from .streaming import StreamColumnOperator, StreamDiagonalOperator
+from .streaming import StreamColumnOperator, StreamDiagonalOperator, stream_block_row
 from .templates import ATOPProjectionOperator
 from .weight import WeightOperator
 
@@ -294,7 +292,8 @@ class MultiObservationMapMaker(Generic[T]):
             valid_pixels = self.pixel_selection(hit_map, icov)
             # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
             S = IndexOperator((..., *jnp.where(valid_pixels)), in_structure=H_sky.in_structure)
-            H_sky @= S.T
+            # H_sky stays a pure stream (needed to fuse with the templates below); pixel selection
+            # is applied around the assembled system operator instead.
             M_sky = (S @ BJ.I @ S.T).reduce()
 
             n_selected = jnp.sum(valid_pixels)
@@ -329,7 +328,8 @@ class MultiObservationMapMaker(Generic[T]):
             if not joint:
                 M = M_sky
                 rhs_joint: Any = S(map_rhs)
-                A = (H_sky.T @ WF @ H_sky).reduce()
+                # Solve on the selected pixels: S/S.T sandwich the full-sky stream system.
+                A = (S @ (H_sky.T @ WF @ H_sky).reduce() @ S.T).reduce()
             else:
                 assert templates is not None and templates.explicit is not None  # mypy (joint)
                 Te = StreamDiagonalOperator.create(templates.explicit)
@@ -338,16 +338,14 @@ class MultiObservationMapMaker(Generic[T]):
                 M = BlockDiagonalOperator([M_sky, G_e])
                 rhs_joint = [S(map_rhs), amp_rhs]
 
-                # Joint sky + explicit-amplitude system, assembled as a 2x2 block.
-                # Each block independently reduces to a streaming operator (Stream*Operator).
-                # TODO: fused mixed reduce+stack scan to share TOD computation.
-                A_ss = (H_sky.T @ WF @ H_sky).reduce()
-                A_sa = (H_sky.T @ WF @ Te).reduce()
-                A_as = (Te.T @ WF @ H_sky).reduce()
-                A_aa = (Te.T @ WF @ Te).reduce()
-                A = BlockColumnOperator(
-                    [BlockRowOperator([A_ss, A_sa]), BlockRowOperator([A_as, A_aa])]
-                )
+                # Joint sky + explicit-amplitude system as ONE fused mixed stream: each CG apply
+                # runs a single scan that computes the weighted TOD once per observation and feeds
+                # both the sky leg (shared, accumulated) and the amplitude leg (per-obs, stacked).
+                H = stream_block_row([H_sky, Te])
+                A_full = (H.T @ WF @ H).reduce()
+                # Pixel selection on the sky leg only; the amplitude leg passes through.
+                Sel = BlockDiagonalOperator([S, IdentityOperator(in_structure=Te.in_structure)])
+                A = (Sel @ A_full @ Sel.T).reduce()
 
             iteration_callback = None
             if self.config.solver.verbose:

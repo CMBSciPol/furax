@@ -79,7 +79,7 @@ weighted_data = weight_op(stokes_data)
 - **Examples**: [Component separation](examples/component_separation.md),
   [Mapmaking](examples/mapmaking.md)
 - **API Reference**: [`furax`](api/furax.md) top-level namespace, plus per-subpackage pages
-  ([`core`](api/core.md), [`obs`](api/obs.md), [`mapmaking`](api/mapmaking.md),
+  ([`core`](api/core/algebra.md), [`obs`](api/obs/pointing.md), [`mapmaking`](api/mapmaking/observation.md),
   [`math`](api/math.md), [`linalg`](api/linalg.md), [`io`](api/io.md),
   [`interfaces`](api/interfaces.md), [`tree`](api/tree.md))
 - **Development**: [Contributing](development/contributing.md),

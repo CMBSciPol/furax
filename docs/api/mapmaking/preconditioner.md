@@ -1,0 +1,3 @@
+# Preconditioner
+
+::: furax.mapmaking.BJPreconditioner

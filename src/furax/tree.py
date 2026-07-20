@@ -97,6 +97,21 @@ def nbytes(x: P) -> int:
     return sum(jax.tree.leaves(sizes))
 
 
+def empty_like(x: P) -> P:
+    """Returns a pytree of uninitialized arrays with the same structure as x.
+
+    Args:
+        x: The pytree of array-like leaves with ``shape`` and ``dtype`` attributes, whose structure
+            will be used to construct the output pytree.
+
+    Examples:
+        >>> empty_like({'a': jax.ShapeDtypeStruct((2,), jnp.int32)}).keys()
+        dict_keys(['a'])
+    """
+    result: P = jax.tree.map(lambda leaf: jnp.empty_like(leaf), x)
+    return result
+
+
 def zeros_like(x: P) -> P:
     """Returns a pytrees of zeros with the same structure as x.
 

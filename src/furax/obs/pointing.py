@@ -43,7 +43,7 @@ class PointingOperator(AbstractLinearOperator):
         landscape: The sky pixelization (HEALPix landscape).
         qbore: Boresight quaternions, shape (n_samples, 4).
         qdet: Detector quaternions, shape (n_detectors, 4).
-        batch_size: Detector batch size (memory/speed tradeoff; see jax.lax.map documentation).
+        batch_size: Number of detectors processed per batch (memory/speed tradeoff).
     """
 
     landscape: StokesLandscape
@@ -99,9 +99,10 @@ class PointingOperator(AbstractLinearOperator):
         """Performs the 'un-pointing' operation, i.e. map->tod."""
         x_flat = x.ravel()
 
-        def mv_inner(qdet: Float[Array, ' 4']) -> _StokesT:
-            # Expand one detector's quaternion from boresight and offset: (samp, 4)
-            qdet_full = qmul(self.qbore, qdet)
+        def mv_inner(qdet: Float[Array, 'det 4']) -> _StokesT:
+            # Expand detector quaternions from boresight and offsets
+            # (samples, 4) x (det, 1, 4) -> (det, samples, 4)
+            qdet_full = qmul(self.qbore, qdet[:, None, :])
 
             tod = self._sample(x_flat, qdet_full)
             tod = self._modulate(tod, qdet_full)
@@ -114,10 +115,23 @@ class PointingOperator(AbstractLinearOperator):
             cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
             return rotate_qu_cs(tod, cos_angles, sin_angles)  # type: ignore[no-any-return]
 
-        tod_out: _StokesT = lax.map(mv_inner, self.qdet, batch_size=self.batch_size)
-        # lax.map stacks the new detector axis at position 0
-        # so move it back: (det, n_stokes, samp) -> (n_stokes, det, samp).
-        return type(tod_out).from_array(jnp.moveaxis(tod_out.data, 0, 1))
+        # Loop over batches of detectors.
+        # NB: lax.map was tried here (PR #172) instead of the fori_loop+scatter form
+        # It seemed faster on GPU, but there was a 3-4x perf regression on CPU
+        ndet, nsamp = self.out_structure.shape
+        batch_size, n_batches = _batch_plan(self.batch_size, ndet)
+
+        def body(i: Int[Array, ''], tod: _StokesT) -> _StokesT:
+            # interval bounds must be static, so we shift the values afterwards
+            # jax indexing semantics automatically clip out-of-bounds indices
+            idet = jnp.arange(batch_size) + i * batch_size
+            tod_batch = mv_inner(self.qdet[idet])
+            return type(tod).from_array(tod.data.at[:, idet].set(tod_batch.data))
+
+        # Start from an empty timestream: every slot gets overwritten by body.
+        tod_out: _StokesT = type(x).empty((ndet, nsamp), dtype=x.dtype)
+        tod_out = lax.fori_loop(0, n_batches, body, tod_out)
+        return tod_out
 
     def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
         """Return a copy of this operator restricted to StokesI.
@@ -259,19 +273,13 @@ class PointingTransposeOperator(TransposeOperator):
 
         # Loop over batches of detectors
         ndet, _ = self.in_structure.shape
-        batch_size = min(self.operator.batch_size, ndet)
-        if batch_size > 0:
-            n_batches = (ndet + batch_size - 1) // batch_size
-        else:
-            n_batches = 1
-            batch_size = ndet
+        batch_size, n_batches = _batch_plan(self.operator.batch_size, ndet)
 
         def body(i: Int[Array, ''], sky: _StokesT) -> _StokesT:
+            # Past ndet, indices are out of range; `sky` is never indexed by `idet` so we need to use
+            # the `unique` indices to mask out redundant/repeated contributions from the last batch
             idet = jnp.arange(batch_size) + i * batch_size
-
-            # clip, but avoid multiple contributions in the last batch
             unique = idet < ndet
-            idet = jnp.clip(idet, max=ndet - 1)
 
             # process batch
             sky_batch = mv_inner(unique[:, None] * x[idet], self.operator.qdet[idet])
@@ -282,3 +290,10 @@ class PointingTransposeOperator(TransposeOperator):
         sky_out: _StokesT = self.operator.landscape.zeros()
         sky_out = lax.fori_loop(0, n_batches, body, sky_out)
         return sky_out
+
+
+def _batch_plan(batch_size: int, n: int) -> tuple[int, int]:
+    """Resolve `(batch_size, n_batches)` for looping over `n` items in batches."""
+    batch_size = min(batch_size, n) if batch_size > 0 else n
+    n_batches = (n + batch_size - 1) // batch_size
+    return batch_size, n_batches

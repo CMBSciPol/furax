@@ -16,6 +16,7 @@ from jaxtyping import DTypeLike, Float, Integer, Key, PyTree, ScalarLike
 from furax.core.utils import register_dataclass_with_keys
 from furax.tree import (
     as_promoted_dtype,
+    empty_like,
     full_like,
     normal_like,
     ones_like,
@@ -352,6 +353,10 @@ class Stokes(ABC):
         """Build this Stokes type from the full I, Q, U, V set, keeping only its own components."""
         available = {'I': i, 'Q': q, 'U': u, 'V': v}
         return cls(*(available[letter] for letter in cls.stokes))
+
+    @classmethod
+    def empty(cls, shape: tuple[int, ...], dtype: DTypeLike = float) -> Self:
+        return empty_like(cls.structure_for(shape, dtype))
 
     @classmethod
     def zeros(cls, shape: tuple[int, ...], dtype: DTypeLike = float) -> Self:

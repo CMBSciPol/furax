@@ -128,9 +128,8 @@ class PointingOperator(AbstractLinearOperator):
             tod_batch = mv_inner(self.qdet[idet])
             return type(tod).from_array(tod.data.at[:, idet].set(tod_batch.data))
 
-        # Start from empty timestream
-        empty = jnp.empty((len(x.stokes), ndet, nsamp), dtype=x.dtype)
-        tod_out: _StokesT = type(x).from_array(empty)
+        # Start from an empty timestream: every slot gets overwritten by body.
+        tod_out: _StokesT = type(x).empty((ndet, nsamp), dtype=x.dtype)
         tod_out = lax.fori_loop(0, n_batches, body, tod_out)
         return tod_out
 

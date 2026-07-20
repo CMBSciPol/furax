@@ -119,12 +119,7 @@ class PointingOperator(AbstractLinearOperator):
         # NB: lax.map was tried here (PR #172) instead of the fori_loop+scatter form
         # It seemed faster on GPU, but there was a 3-4x perf regression on CPU
         ndet, nsamp = self.out_structure.shape
-        batch_size = min(self.batch_size, ndet)
-        if batch_size > 0:
-            n_batches = (ndet + batch_size - 1) // batch_size
-        else:
-            n_batches = 1
-            batch_size = ndet
+        batch_size, n_batches = _batch_plan(self.batch_size, ndet)
 
         def body(i: Int[Array, ''], tod: _StokesT) -> _StokesT:
             # interval bounds must be static, so we shift the values afterwards
@@ -279,12 +274,7 @@ class PointingTransposeOperator(TransposeOperator):
 
         # Loop over batches of detectors
         ndet, _ = self.in_structure.shape
-        batch_size = min(self.operator.batch_size, ndet)
-        if batch_size > 0:
-            n_batches = (ndet + batch_size - 1) // batch_size
-        else:
-            n_batches = 1
-            batch_size = ndet
+        batch_size, n_batches = _batch_plan(self.operator.batch_size, ndet)
 
         def body(i: Int[Array, ''], sky: _StokesT) -> _StokesT:
             # Past ndet, indices are out of range; `sky` is never indexed by `idet` so we need to use
@@ -301,3 +291,10 @@ class PointingTransposeOperator(TransposeOperator):
         sky_out: _StokesT = self.operator.landscape.zeros()
         sky_out = lax.fori_loop(0, n_batches, body, sky_out)
         return sky_out
+
+
+def _batch_plan(batch_size: int, n: int) -> tuple[int, int]:
+    """Resolve `(batch_size, n_batches)` for looping over `n` items in batches."""
+    batch_size = min(batch_size, n) if batch_size > 0 else n
+    n_batches = (n + batch_size - 1) // batch_size
+    return batch_size, n_batches

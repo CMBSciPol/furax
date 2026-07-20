@@ -250,8 +250,14 @@ class Stokes(ABC):
         if qi < 0:
             return self
         q, u = self.data[qi], self.data[qi + 1]
-        rotated = jnp.stack([q * cos_2angles + u * sin_2angles, -q * sin_2angles + u * cos_2angles])
-        return self.from_array(self.data.at[qi : qi + 2].set(rotated))
+        q_rot = q * cos_2angles + u * sin_2angles
+        u_rot = -q * sin_2angles + u * cos_2angles
+        # Build the output directly to avoid a defensive copy of the untouched rows
+        rows = [
+            q_rot if i == qi else u_rot if i == qi + 1 else self.data[i]
+            for i in range(len(self.stokes))
+        ]
+        return self.from_array(jnp.stack(rows))
 
     @classmethod
     @overload

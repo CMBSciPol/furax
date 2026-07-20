@@ -1,4 +1,6 @@
+import os
 import pickle
+import time
 from abc import abstractmethod
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
@@ -354,11 +356,29 @@ class MultiObservationMapMaker(Generic[T]):
                     if rank == 0:
                         logger_info(f'CG step={int(step)} residual={float(r_norm):.6e}')
 
+            # Diagnostic only: per-step wall-clock breakdown of A(p) / M(r) / everything else,
+            # gated behind an env var so it's a no-op unless explicitly requested. Remove once the
+            # ~85% unaccounted CG iteration time is pinned down.
+            debug_timing_callback = None
+            if os.environ.get('FURAX_CG_DEBUG_TIMING'):
+                _last_t = [time.perf_counter()]
+                _last_tag = ['loop_start']
+
+                def debug_timing_callback(tag: str, _value: Array) -> None:
+                    if rank == 0:
+                        now = time.perf_counter()
+                        logger_info(
+                            f'CG timing: {_last_tag[0]:>10s} -> {tag:<10s} {now - _last_t[0]:8.3f}s'
+                        )
+                        _last_t[0] = now
+                        _last_tag[0] = tag
+
             result = furax.linalg.cg(
                 A,
                 rhs_joint,
                 preconditioner=M,
                 iteration_callback=iteration_callback,
+                debug_timing_callback=debug_timing_callback,
                 **self.config.solver.options,
             )
             logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')

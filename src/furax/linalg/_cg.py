@@ -54,6 +54,7 @@ def cg(
     negative_curvature: Literal['ignore', 'error', 'truncate'] = 'ignore',
     loop_kind: Literal['lax', 'checkpointed', 'bounded'] = 'lax',
     iteration_callback: Callable[[Array, Array], None] | None = None,
+    debug_timing_callback: Callable[[str, Array], None] | None = None,
 ) -> CGResult:
     """Conjugate Gradient solver for symmetric positive definite systems Ax = b.
 
@@ -99,6 +100,13 @@ def cg(
         iteration_callback: Optional host callback called after each step with
             ``(step, r_norm)`` as 0-d JAX arrays.  Runs via
             ``jax.debug.callback`` so it is JIT-compatible and ordered.
+        debug_timing_callback: Optional diagnostic host callback called three times per step,
+            with ``(tag, value)`` where ``tag`` is one of ``'Ap'``, ``'r_norm'``, ``'Mz'`` marking
+            the point right after ``A(p)``, the residual norm, and ``M(r)`` are each computed
+            (in that order). ``value`` is a cheap already-computed scalar carried along purely to
+            force the callback to fire at that point; it has no diagnostic meaning of its own.
+            Meant for timing instrumentation (the caller tracks wall-clock deltas between calls),
+            not for regular use.
 
     Returns:
         CGResult with the solution, per-iteration residual norms, and iteration count.
@@ -166,6 +174,8 @@ def cg(
 
         Ap = A(p)
         pAp = tree.dot(p, Ap)
+        if debug_timing_callback is not None:
+            jax.debug.callback(lambda v: debug_timing_callback('Ap', v), pAp)
         active = jnp.abs(rz) > rz_floor
 
         # `pAp == 0` only at convergence (p -> 0), handled by `safe_pAp`
@@ -201,9 +211,13 @@ def cg(
         if iteration_callback is not None:
             # `ordered = True` would error in distributed mode
             jax.debug.callback(iteration_callback, i, r_norm)
+        if debug_timing_callback is not None:
+            jax.debug.callback(lambda v: debug_timing_callback('r_norm', v), r_norm)
 
         z = M(r)
         rz_new = tree.dot(r, z)
+        if debug_timing_callback is not None:
+            jax.debug.callback(lambda v: debug_timing_callback('Mz', v), rz_new)
         # Once the preconditioned residual energy reaches the floating-point floor,
         # fixed-iteration CG should become inert. This avoids dividing true-residual
         # roundoff by true-residual roundoff after stabilisation.

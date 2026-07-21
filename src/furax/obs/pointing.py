@@ -17,7 +17,7 @@ from furax.math.quaternion import (
     to_polarization_angle,
     to_polarization_angle_cos_sin,
 )
-from furax.obs.landscapes import StokesLandscape, WCSLandscape
+from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
 from furax.obs.stokes import Stokes, StokesI
 
@@ -167,8 +167,8 @@ class PointingOperator(AbstractLinearOperator):
         with the acquisition chain via operator algebra.
 
         Nearest-neighbour uses a precomputed [`IndexOperator`][]. Bilinear interpolation uses an
-        [`XSamplingOperator`][] that caches the float pixel coordinates and recovers the four
-        interpolation weights cheaply on each apply (requires a WCS/CAR landscape).
+        [`XSamplingOperator`][] that caches the world angles ``(theta, phi)`` and recovers the four
+        interpolation weights on each apply (works for HEALPix and WCS/CAR landscapes).
         """
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
         # Ravel the spatial axes only; the Stokes container's backing array carries a leading
@@ -316,25 +316,25 @@ def _batch_plan(batch_size: int, n: int) -> tuple[int, int]:
 
 
 class XSamplingOperator(AbstractLinearOperator):
-    r"""Precomputed pixel-sampling operator from cached float pixel coordinates.
+    r"""Precomputed sky-sampling operator from cached world angles.
 
-    The "expanded pointing" sampler. It stores the per-sample projected pixel coordinates
-    `(pix_x, pix_y)` (computed once from the quaternion pointing) and on every apply gathers a
-    raveled sky map at those coordinates, nearest-neighbour or bilinear.
+    The "expanded pointing" sampler. It stores the per-sample world angles `(theta, phi)`
+    (computed once from the quaternion pointing, so the expensive quaternion-to-angle
+    transcendentals are hoisted out of repeated applies) and on every apply gathers a raveled
+    sky map at those angles, nearest-neighbour or bilinear.
 
-    Requires a landscape exposing `pixel2index` / `pixel2interp` (WCS/CAR).
-    HEALPix has no 2-D pixel coordinates and is not supported.
+    Works for any landscape exposing `world2index` / `world2interp` (HEALPix and WCS/CAR).
 
     Attributes:
-        landscape: The WCS/CAR sky pixelization providing `pixel2index` / `pixel2interp`.
-        pix_x: Cached pixel x-coordinates, shape ``(ndet, nsamp)``.
-        pix_y: Cached pixel y-coordinates, shape ``(ndet, nsamp)``.
+        landscape: The sky pixelization providing `world2index` / `world2interp`.
+        theta: Cached spherical co-latitude angles, shape ``(ndet, nsamp)``.
+        phi: Cached spherical longitude angles, shape ``(ndet, nsamp)``.
         interpolate: If True, bilinear interpolation over the four nearest pixels; else nearest.
     """
 
     landscape: StokesLandscape
-    pix_x: Float[Array, 'det samp']
-    pix_y: Float[Array, 'det samp']
+    theta: Float[Array, 'det samp']
+    phi: Float[Array, 'det samp']
     interpolate: bool = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
 
@@ -346,22 +346,17 @@ class XSamplingOperator(AbstractLinearOperator):
         *,
         interpolate: bool = False,
     ) -> 'XSamplingOperator':
-        if interpolate and not isinstance(landscape, WCSLandscape):
-            raise NotImplementedError(
-                f'{type(landscape).__name__} does not support cached bilinear interpolation; '
-                'a WCSLandscape is required.'
-            )
-        pix_x, pix_y = landscape.quat2pixel(quaternions)
+        theta, phi = landscape.quat2world(quaternions)
         # The map is raveled along its spatial axes (see PointingOperator.as_expanded_operator),
         # leaving a single pixel axis that this operator indexes.
         ravel_op = RavelOperator(1, -1, in_structure=landscape.structure)
         out_structure = Stokes.class_for(landscape.stokes).structure_for(
-            pix_x.shape, dtype=landscape.dtype
+            theta.shape, dtype=landscape.dtype
         )
         return cls(
             landscape,
-            pix_x=pix_x,
-            pix_y=pix_y,
+            theta=theta,
+            phi=phi,
             interpolate=interpolate,
             in_structure=ravel_op.out_structure,
             _out_structure=out_structure,
@@ -373,12 +368,12 @@ class XSamplingOperator(AbstractLinearOperator):
 
     def mv(self, x: _StokesT) -> _StokesT:
         # `x` is a raveled sky map: its single backing array is (n_stokes, n_pixels). Index the pixel
-        # (last) axis with the cached per-sample coordinates to produce the (n_stokes, ndet, nsamp) TOD.
+        # (last) axis with the cached per-sample angles to produce the (n_stokes, ndet, nsamp) TOD.
         if not self.interpolate:
-            indices = self.landscape.pixel2index(self.pix_x, self.pix_y)
+            indices = self.landscape.world2index(self.theta, self.phi)
             return type(x).from_array(x.data[..., indices])
 
-        indices, weights = self.landscape.pixel2interp(self.pix_x, self.pix_y)
+        indices, weights = self.landscape.world2interp(self.theta, self.phi)
         # Zero contributions from out-of-bounds pixels (index == -1 -> pixel 0, weight 0) and
         # renormalise so partially-covered samples stay unbiased -- matches PointingOperator._sample.
         valid = indices >= 0

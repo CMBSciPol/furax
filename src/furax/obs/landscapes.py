@@ -188,6 +188,13 @@ class StokesLandscape(Landscape):
         """Converts quaternion to 1-dimensional pixel indices."""
         return self.pixel2index(*self.quat2pixel(quat))
 
+    def quat2world(
+        self, quat: Float[Array, '*dims 4']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Converts quaternion to spherical world angles ``(theta, phi)``."""
+        theta, phi, _ = to_iso_angles(quat)  # psi not needed
+        return theta, phi
+
     def world2interp(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:

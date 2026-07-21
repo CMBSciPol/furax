@@ -5,7 +5,9 @@ from equinox import tree_equal
 from numpy.testing import assert_array_almost_equal
 
 import furax.tree as ftree
+from furax.core import AbstractLinearOperator, CompositionOperator
 from furax.obs.landscapes import CARLandscape, HealpixLandscape, StokesLandscape, WCSProjection
+from furax.obs.operators import QURotationOperator
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import ValidStokesLiteral
 
@@ -66,6 +68,58 @@ class TestAsExpandedOperator:
 
         assert tree_equal(sky_direct, sky_expanded, rtol=1e-10, atol=0)
 
+    def test_mv_interpolate(self, stokes, frame, landscape_type) -> None:
+        """Interpolated PointingOperator.mv equals as_expanded_operator().mv (WCS/CAR only)."""
+        if landscape_type == 'healpix':
+            pytest.skip('cached bilinear interpolation requires a WCS/CAR landscape')
+        landscape = _make_landscape(landscape_type, stokes)
+
+        key = jax.random.PRNGKey(42)
+        key1, key2, key3 = jax.random.split(key, 3)
+        qbore = _random_unit_quats(key1, (NSAMP,))
+        qdet = _random_unit_quats(key2, (NDET,))
+
+        pointing_op = PointingOperator.create(
+            landscape, qbore, qdet, frame=frame, batch_size=2, interpolate=True
+        )
+        sky = landscape.normal(key3)
+
+        assert tree_equal(pointing_op(sky), pointing_op.as_expanded_operator()(sky), rtol=1e-10)
+
+    def test_transpose_mv_interpolate(self, stokes, frame, landscape_type) -> None:
+        """Interpolated PointingOperator.T.mv equals as_expanded_operator().T.mv (WCS/CAR only)."""
+        if landscape_type == 'healpix':
+            pytest.skip('cached bilinear interpolation requires a WCS/CAR landscape')
+        landscape = _make_landscape(landscape_type, stokes)
+
+        key = jax.random.PRNGKey(42)
+        key1, key2, key3 = jax.random.split(key, 3)
+        qbore = _random_unit_quats(key1, (NSAMP,))
+        qdet = _random_unit_quats(key2, (NDET,))
+
+        pointing_op = PointingOperator.create(
+            landscape, qbore, qdet, frame=frame, batch_size=2, interpolate=True
+        )
+        tod = jax.tree.map(
+            lambda s: jax.random.normal(key3, s.shape, s.dtype), pointing_op.out_structure
+        )
+
+        sky_direct = pointing_op.T(tod)
+        sky_expanded = pointing_op.as_expanded_operator().T(tod)
+
+        assert tree_equal(sky_direct, sky_expanded, rtol=1e-10)
+
+    def test_healpix_interpolate_raises(self, stokes, frame, landscape_type) -> None:
+        """Cached bilinear interpolation is unsupported for HEALPix landscapes."""
+        if landscape_type != 'healpix':
+            pytest.skip('guard is HEALPix-specific')
+        landscape = _make_landscape(landscape_type, stokes)
+        qbore = _random_unit_quats(jax.random.PRNGKey(1), (NSAMP,))
+        qdet = _random_unit_quats(jax.random.PRNGKey(2), (NDET,))
+        op = PointingOperator.create(landscape, qbore, qdet, frame=frame, interpolate=True)
+        with pytest.raises(NotImplementedError, match='pixel2interp'):
+            op.as_expanded_operator()
+
 
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
 class TestInterpolate:
@@ -98,3 +152,32 @@ class TestInterpolate:
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
         tod = op(landscape.full(3.14))
         assert_array_almost_equal(tod.i, 3.14, decimal=10)
+
+
+def test_expanded_interpolate_preserves_rotation_fusion() -> None:
+    """The expanded interpolated operator keeps QURotation exposed so it fuses via algebra.
+
+    An outer QURotation composed with `QURot(pa) @ XSampling @ Ravel` must reduce to a single
+    QURotation (angles added), leaving one rotation in the chain rather than two.
+    """
+    landscape = _make_landscape('car', 'IQU')
+    key1, key2, key3, key4 = jax.random.split(jax.random.PRNGKey(3), 4)
+    qbore = _random_unit_quats(key1, (NSAMP,))
+    qdet = _random_unit_quats(key2, (NDET,))
+
+    op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+    expanded = op.as_expanded_operator()
+    gamma = jax.random.normal(key3, (NDET, NSAMP))
+    outer = QURotationOperator(angles=gamma, in_structure=expanded.out_structure)
+
+    reduced = (outer @ expanded).reduce()
+
+    assert isinstance(reduced, CompositionOperator)
+    leaves = jax.tree.leaves(
+        reduced.operands, is_leaf=lambda x: isinstance(x, AbstractLinearOperator)
+    )
+    n_rotations = sum(isinstance(o, QURotationOperator) for o in leaves)
+    assert n_rotations == 1
+
+    tod = jax.tree.map(lambda s: jax.random.normal(key4, s.shape, s.dtype), expanded.out_structure)
+    assert tree_equal((outer @ expanded)(op.T(tod)), reduced(op.T(tod)), rtol=1e-10)

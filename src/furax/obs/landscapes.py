@@ -197,6 +197,19 @@ class StokesLandscape(Landscape):
         """
         raise NotImplementedError(f'{type(self).__name__} does not support interpolation')
 
+    def pixel2interp(
+        self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
+        """Returns (indices, weights) for interpolation from float pixel coordinates.
+
+        The pixel-space entry point to interpolation (see [`XSamplingOperator`][]). Subclasses with a
+        2-D pixel grid (WCS/CAR) override this; landscapes without 2-D pixel coordinates (e.g.
+        HEALPix) do not support it.
+        """
+        raise NotImplementedError(
+            f'{type(self).__name__} does not support pixel-space interpolation'
+        )
+
     def quat2interp(
         self, quat: Float[Array, '*dims 4']
     ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
@@ -364,7 +377,17 @@ class CARLandscape(WCSLandscape):
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
         """Returns (indices, weights) for bilinear interpolation (n=4)."""
-        pix_x, pix_y = self.world2pixel(theta, phi)
+        return self.pixel2interp(*self.world2pixel(theta, phi))
+
+    def pixel2interp(
+        self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
+        """Returns (indices, weights) for bilinear interpolation (n=4) from float pixel coords.
+
+        The pixel-space entry point to bilinear interpolation, letting callers cache the projected
+        coordinates (see [`XSamplingOperator`][]) and skip the quaternion-to-sky projection on every
+        apply. [`world2interp`][] is `pixel2interp(*world2pixel(theta, phi))`.
+        """
         xs, ys, weights = _2d_bilinear_interp(pix_x, pix_y)
         indices = self.pixel2index(xs, ys)
         return indices, weights

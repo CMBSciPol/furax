@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improve `MapMakingConfig` documentation and add examples (#179)
 - Revert change to `lax.map` in forward on-the-fly pointing (#180)
 - Introduce `XSamplingOperator` to support precomputed bilinear pointing (#181)
+- Fix precomputed nearest pointing in multi-observation mapmaking (#182)
 
 ## [0.11.3] - 2026-07-14
 

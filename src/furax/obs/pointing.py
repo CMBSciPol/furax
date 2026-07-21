@@ -166,8 +166,8 @@ class PointingOperator(AbstractLinearOperator):
         CG iteration). The polarisation rotation stays a [`QURotationOperator`][] so it still fuses
         with the acquisition chain via operator algebra.
 
-        Nearest-neighbour uses a plain precomputed [`IndexOperator`][]. Bilinear interpolation uses
-        an [`XSamplingOperator`][] that caches the float pixel coordinates and recovers the four
+        Nearest-neighbour uses a precomputed [`IndexOperator`][]. Bilinear interpolation uses an
+        [`XSamplingOperator`][] that caches the float pixel coordinates and recovers the four
         interpolation weights cheaply on each apply (requires a WCS/CAR landscape).
         """
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
@@ -178,8 +178,14 @@ class PointingOperator(AbstractLinearOperator):
         if self.interpolate:
             sampler = XSamplingOperator.create(self.landscape, qdet_full, interpolate=True)
         else:
-            indices = self._quat2index(qdet_full)
-            sampler = IndexOperator((..., indices), in_structure=ravel_op.out_structure)
+            # Index the (leading) Stokes axis and the (trailing) pixel axis with broadcast arrays,
+            # rather than the ergonomic `(..., pix)`. An Ellipsis (or slice) index element is a
+            # non-array pytree leaf and is not a valid JAX type, so it would break the operator as a
+            # multi-observation scan leaf; an all-array index tuple keeps it scan-safe.
+            pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
+            n_stokes = len(self.landscape.stokes)
+            stokes_idx = jnp.arange(n_stokes)[:, None, None]
+            sampler = IndexOperator((stokes_idx, pix[None]), in_structure=ravel_op.out_structure)
         pa = to_polarization_angle(qdet_full)
         qu_rot_op = QURotationOperator(angles=pa, in_structure=sampler.out_structure)
         return qu_rot_op @ sampler @ ravel_op

@@ -314,15 +314,11 @@ class XSamplingOperator(AbstractLinearOperator):
     r"""Precomputed pixel-sampling operator from cached float pixel coordinates.
 
     The "expanded pointing" sampler. It stores the per-sample projected pixel coordinates
-    ``(pix_x, pix_y)`` -- computed once from the quaternion pointing -- and on every apply gathers a
-    raveled sky map at those coordinates, nearest-neighbour or bilinear. It replaces the plain
-    [`IndexOperator`][] in [`PointingOperator.as_expanded_operator`][] so the expensive
-    quaternion-to-sky transcendentals are hoisted out of repeated applies (e.g. every CG iteration);
-    the four bilinear weights are recovered cheaply from the cached coordinates each apply.
+    `(pix_x, pix_y)` (computed once from the quaternion pointing) and on every apply gathers a
+    raveled sky map at those coordinates, nearest-neighbour or bilinear.
 
-    Requires a landscape exposing `pixel2index` / `pixel2interp` (WCS/CAR); HEALPix has no 2-D pixel
-    coordinates and is not supported. The transpose (map binning) is the automatic linear transpose
-    of the gather -- a weighted scatter-add -- so it is adjoint-exact by construction.
+    Requires a landscape exposing `pixel2index` / `pixel2interp` (WCS/CAR).
+    HEALPix has no 2-D pixel coordinates and is not supported.
 
     Attributes:
         landscape: The WCS/CAR sky pixelization providing `pixel2index` / `pixel2interp`.

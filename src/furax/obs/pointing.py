@@ -176,8 +176,7 @@ class PointingOperator(AbstractLinearOperator):
         ravel_op = RavelOperator(1, -1, in_structure=self.landscape.structure)
         sampler: AbstractLinearOperator
         if self.interpolate:
-            pix_x, pix_y = self.landscape.quat2pixel(qdet_full)
-            sampler = XSamplingOperator.create(self.landscape, pix_x, pix_y, interpolate=True)
+            sampler = XSamplingOperator.create(self.landscape, qdet_full, interpolate=True)
         else:
             indices = self._quat2index(qdet_full)
             sampler = IndexOperator((..., indices), in_structure=ravel_op.out_structure)
@@ -337,8 +336,7 @@ class XSamplingOperator(AbstractLinearOperator):
     def create(
         cls,
         landscape: StokesLandscape,
-        pix_x: Float[Array, 'det samp'],
-        pix_y: Float[Array, 'det samp'],
+        quaternions: Float[Array, 'det samp 4'],
         *,
         interpolate: bool = False,
     ) -> 'XSamplingOperator':
@@ -347,6 +345,7 @@ class XSamplingOperator(AbstractLinearOperator):
                 f'{type(landscape).__name__} does not support cached bilinear interpolation; '
                 'a WCSLandscape is required.'
             )
+        pix_x, pix_y = landscape.quat2pixel(quaternions)
         # The map is raveled along its spatial axes (see PointingOperator.as_expanded_operator),
         # leaving a single pixel axis that this operator indexes.
         ravel_op = RavelOperator(1, -1, in_structure=landscape.structure)

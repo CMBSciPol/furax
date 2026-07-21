@@ -623,24 +623,25 @@ class GapsConfig:
 class PointingConfig:
     """Configuration options for pointing computation.
 
-    `interpolation: 'bilinear'` requires `on_the_fly: true`: pre-computed pointing only stores
-    a single pixel index per sample, so it cannot carry interpolation weights.
+    Pre-computed (`on_the_fly: false`) pointing with `interpolation: bilinear` caches the projected
+    pixel coordinates and recovers interpolation weights on each apply; it requires a WCS/CAR
+    landscape (HEALPix is not supported and raises at build time).
 
     Examples:
-        On-the-fly pointing with bilinear sampling
+        Pre-computed pointing with bilinear sampling (WCS/CAR)
 
             pointing:
-                on_the_fly: true
+                on_the_fly: false
                 interpolation: bilinear
 
-        Pre-computed pointing, nearest-neighbor sampling (default, fastest)
+        Pre-computed pointing, nearest-neighbor sampling (fastest)
 
             pointing:
                 on_the_fly: false
     """
 
     on_the_fly: bool = True
-    """Compute pointing on the fly instead of pre-computing pixel indices."""
+    """Compute pointing on the fly instead of pre-computing pixel indices/coordinates."""
 
     batch_size: int = 32
     """Detector batch size for on-the-fly pointing (set to 0 to use a full batch)."""
@@ -648,15 +649,11 @@ class PointingConfig:
     interpolation: Literal['nearest', 'bilinear'] = 'nearest'
     """Pixel interpolation scheme used when sampling the sky map.
 
-    ``'bilinear'`` requires `on_the_fly`.
+    Pre-computed `'bilinear'` (`on_the_fly: false`) requires a WCS/CAR landscape.
 
     - ``'nearest'``: nearest-neighbor (default, fastest).
     - ``'bilinear'``: bilinear interpolation using the four nearest pixels.
     """
-
-    def __post_init__(self) -> None:
-        if self.interpolation == 'bilinear' and not self.on_the_fly:
-            raise ValueError("interpolation='bilinear' requires on_the_fly=True")
 
 
 @dataclass

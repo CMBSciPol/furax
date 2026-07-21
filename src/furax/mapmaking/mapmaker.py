@@ -37,7 +37,6 @@ from furax import (
 from furax.core import (
     BlockDiagonalOperator,
     BlockRowOperator,
-    CompositionOperator,
     IndexOperator,
 )
 from furax.interfaces.lineax import as_lineax_operator
@@ -347,17 +346,17 @@ class MultiObservationMapMaker(Generic[T]):
                 # Padding/failed observations contribute nothing
                 obs.M = obs.M.restrict(real & valid)
 
-                # Hit map contribution.
-                assert isinstance(obs.H, CompositionOperator)  # mypy
-                pointing = obs.H.operands[-1]
-                assert isinstance(pointing, PointingOperator)  # mypy
-                pointing_i = pointing.as_stokes_i(interpolate=False)
-                ones = furax.tree.ones_like(obs.M.in_structure)
-                masked_tod = obs.M(ones)
-                # The sample mask is per-detector (identical across Stokes legs); take one leg so
-                # StokesI wraps a (ndet, nsamp) array rather than a whole demodulated Stokes backing.
-                masked = masked_tod.data[0] if isinstance(masked_tod, Stokes) else masked_tod
-                hits_i = jnp.int64(pointing_i.T(StokesI(masked)).i)
+                # Hit map = nearest-neighbour coverage of the sample mask
+                hit_pointing = PointingOperator.create(
+                    landscape,
+                    data[ReaderField.BORESIGHT_QUATERNIONS],
+                    data[ReaderField.DETECTOR_QUATERNIONS],
+                ).as_stokes_i(interpolate=False)
+                # Read the mask directly: M(ones) = M.to_boolean_mask()
+                masked_tod = obs.M.to_boolean_mask()
+                # The mask is (ndet, nsamp) even in the demodulated case (all legs share the same)
+                masked = masked_tod.data if isinstance(masked_tod, Stokes) else masked_tod
+                hits_i = jnp.int64(hit_pointing.T(StokesI(masked)).i)
 
                 # RHS contribution (optionally gap-filled).
                 def func_gapfill(tod):  # type: ignore[no-untyped-def]

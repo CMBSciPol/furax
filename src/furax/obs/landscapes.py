@@ -193,9 +193,18 @@ class StokesLandscape(Landscape):
     ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
         """Returns (indices, weights) with a trailing neighbor dimension for interpolation.
 
-        Subclasses must override this to support interpolated pointing.
+        Subclasses support interpolation by overriding [`pixel2interp`][] (2-D pixel grid, see
+        [`WCSLandscape`][]) or this method directly (e.g. HEALPix via ``get_interp_weights``).
         """
         raise NotImplementedError(f'{type(self).__name__} does not support interpolation')
+
+    def pixel2interp(
+        self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
+        """Returns (indices, weights) for interpolation from float pixel coordinates."""
+        raise NotImplementedError(
+            f'{type(self).__name__} does not support pixel-space interpolation'
+        )
 
     def quat2interp(
         self, quat: Float[Array, '*dims 4']
@@ -271,6 +280,20 @@ class WCSLandscape(StokesLandscape):
     @property
     def cdelt(self) -> tuple[float, float]:
         return self.projection.cdelt
+
+    def world2interp(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
+        """Returns (indices, weights) for bilinear interpolation (n=4)."""
+        return self.pixel2interp(*self.world2pixel(theta, phi))
+
+    def pixel2interp(
+        self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
+        """Bilinear (indices, weights) from float pixel coordinates (grid-agnostic)."""
+        xs, ys, weights = _2d_bilinear_interp(pix_x, pix_y)
+        indices = self.pixel2index(xs, ys)
+        return indices, weights
 
     def to_wcs(self) -> WCS:
         """Reconstruct an astropy WCS object from the stored projection parameters."""
@@ -359,15 +382,6 @@ class CARLandscape(WCSLandscape):
         pix_x = lon_diff / self.cdelt[0] + (self.crpix[0] - 1)
         pix_y = lat_deg / self.cdelt[1] + (self.crpix[1] - 1)
         return pix_x, pix_y
-
-    def world2interp(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
-        """Returns (indices, weights) for bilinear interpolation (n=4)."""
-        pix_x, pix_y = self.world2pixel(theta, phi)
-        xs, ys, weights = _2d_bilinear_interp(pix_x, pix_y)
-        indices = self.pixel2index(xs, ys)
-        return indices, weights
 
 
 def _2d_bilinear_interp(

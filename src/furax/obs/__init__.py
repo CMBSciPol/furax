@@ -16,10 +16,11 @@ from .operators import (
     QURotationOperator,
     SynchrotronOperator,
 )
-from .pointing import PointingOperator
+from .pointing import PointingOperator, XSamplingOperator
 
 __all__ = [
     'PointingOperator',
+    'XSamplingOperator',
     'HWPOperator',
     'LinearPolarizerOperator',
     'QURotationOperator',

@@ -17,12 +17,13 @@ from furax.math.quaternion import (
     to_polarization_angle,
     to_polarization_angle_cos_sin,
 )
-from furax.obs.landscapes import StokesLandscape
+from furax.obs.landscapes import StokesLandscape, WCSLandscape
 from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
 from furax.obs.stokes import Stokes, StokesI
 
 __all__ = [
     'PointingOperator',
+    'XSamplingOperator',
 ]
 
 _StokesT = TypeVar('_StokesT', bound=Stokes)
@@ -158,21 +159,30 @@ class PointingOperator(AbstractLinearOperator):
         )
 
     def as_expanded_operator(self) -> AbstractLinearOperator:
-        """Return the equivalent QURotationOperator @ IndexOperator @ RavelOperator.
+        """Return the equivalent QURotation @ (Index or XSampling) @ Ravel composition.
 
-        Equivalent to mv() but as an explicit composition, useful for testing.
+        Materialises the pointing once (pixel indices / coordinates and polarisation angles) so the
+        expensive quaternion-to-sky transcendentals are hoisted out of repeated applies (e.g. every
+        CG iteration). The polarisation rotation stays a [`QURotationOperator`][] so it still fuses
+        with the acquisition chain via operator algebra.
+
+        Nearest-neighbour uses a plain precomputed [`IndexOperator`][]. Bilinear interpolation uses
+        an [`XSamplingOperator`][] that caches the float pixel coordinates and recovers the four
+        interpolation weights cheaply on each apply (requires a WCS/CAR landscape).
         """
-        if self.interpolate:
-            raise NotImplementedError('as_expanded_operator does not support interpolate=True')
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
-        indices = self._quat2index(qdet_full)
         # Ravel the spatial axes only; the Stokes container's backing array carries a leading
         # Stokes axis (axis 0) that must survive, so ravel axes 1..-1 and index the pixel axis last.
         ravel_op = RavelOperator(1, -1, in_structure=self.landscape.structure)
-        index_op = IndexOperator((..., indices), in_structure=ravel_op.out_structure)
+        sampler: AbstractLinearOperator
+        if self.interpolate:
+            sampler = XSamplingOperator.create(self.landscape, qdet_full, interpolate=True)
+        else:
+            indices = self._quat2index(qdet_full)
+            sampler = IndexOperator((..., indices), in_structure=ravel_op.out_structure)
         pa = to_polarization_angle(qdet_full)
-        qu_rot_op = QURotationOperator(angles=pa, in_structure=index_op.out_structure)
-        return qu_rot_op @ index_op @ ravel_op
+        qu_rot_op = QURotationOperator(angles=pa, in_structure=sampler.out_structure)
+        return qu_rot_op @ sampler @ ravel_op
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -297,3 +307,77 @@ def _batch_plan(batch_size: int, n: int) -> tuple[int, int]:
     batch_size = min(batch_size, n) if batch_size > 0 else n
     n_batches = (n + batch_size - 1) // batch_size
     return batch_size, n_batches
+
+
+class XSamplingOperator(AbstractLinearOperator):
+    r"""Precomputed pixel-sampling operator from cached float pixel coordinates.
+
+    The "expanded pointing" sampler. It stores the per-sample projected pixel coordinates
+    `(pix_x, pix_y)` (computed once from the quaternion pointing) and on every apply gathers a
+    raveled sky map at those coordinates, nearest-neighbour or bilinear.
+
+    Requires a landscape exposing `pixel2index` / `pixel2interp` (WCS/CAR).
+    HEALPix has no 2-D pixel coordinates and is not supported.
+
+    Attributes:
+        landscape: The WCS/CAR sky pixelization providing `pixel2index` / `pixel2interp`.
+        pix_x: Cached pixel x-coordinates, shape ``(ndet, nsamp)``.
+        pix_y: Cached pixel y-coordinates, shape ``(ndet, nsamp)``.
+        interpolate: If True, bilinear interpolation over the four nearest pixels; else nearest.
+    """
+
+    landscape: StokesLandscape
+    pix_x: Float[Array, 'det samp']
+    pix_y: Float[Array, 'det samp']
+    interpolate: bool = field(metadata={'static': True})
+    _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
+
+    @classmethod
+    def create(
+        cls,
+        landscape: StokesLandscape,
+        quaternions: Float[Array, 'det samp 4'],
+        *,
+        interpolate: bool = False,
+    ) -> 'XSamplingOperator':
+        if interpolate and not isinstance(landscape, WCSLandscape):
+            raise NotImplementedError(
+                f'{type(landscape).__name__} does not support cached bilinear interpolation; '
+                'a WCSLandscape is required.'
+            )
+        pix_x, pix_y = landscape.quat2pixel(quaternions)
+        # The map is raveled along its spatial axes (see PointingOperator.as_expanded_operator),
+        # leaving a single pixel axis that this operator indexes.
+        ravel_op = RavelOperator(1, -1, in_structure=landscape.structure)
+        out_structure = Stokes.class_for(landscape.stokes).structure_for(
+            pix_x.shape, dtype=landscape.dtype
+        )
+        return cls(
+            landscape,
+            pix_x=pix_x,
+            pix_y=pix_y,
+            interpolate=interpolate,
+            in_structure=ravel_op.out_structure,
+            _out_structure=out_structure,
+        )
+
+    @property
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self._out_structure
+
+    def mv(self, x: _StokesT) -> _StokesT:
+        # `x` is a raveled sky map: its single backing array is (n_stokes, n_pixels). Index the pixel
+        # (last) axis with the cached per-sample coordinates to produce the (n_stokes, ndet, nsamp) TOD.
+        if not self.interpolate:
+            indices = self.landscape.pixel2index(self.pix_x, self.pix_y)
+            return type(x).from_array(x.data[..., indices])
+
+        indices, weights = self.landscape.pixel2interp(self.pix_x, self.pix_y)
+        # Zero contributions from out-of-bounds pixels (index == -1 -> pixel 0, weight 0) and
+        # renormalise so partially-covered samples stay unbiased -- matches PointingOperator._sample.
+        valid = indices >= 0
+        indices = jnp.where(valid, indices, 0)
+        weights = jnp.where(valid, weights, 0.0)
+        weight_sum = weights.sum(axis=-1, keepdims=True)
+        unit_weights = weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
+        return type(x).from_array(jnp.sum(x.data[..., indices] * unit_weights, axis=-1))

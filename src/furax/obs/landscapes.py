@@ -201,12 +201,7 @@ class StokesLandscape(Landscape):
     def pixel2interp(
         self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
     ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
-        """Returns (indices, weights) for interpolation from float pixel coordinates.
-
-        The pixel-space entry point to interpolation, so cached coordinates can be reused across
-        applies (see [`XSamplingOperator`][]). Subclasses with a 2-D pixel grid (WCS/CAR) override
-        this.
-        """
+        """Returns (indices, weights) for interpolation from float pixel coordinates."""
         raise NotImplementedError(
             f'{type(self).__name__} does not support pixel-space interpolation'
         )

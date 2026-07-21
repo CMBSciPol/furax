@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Migrate multi-observation mapmaker to furax CG and support verbose mode (#176)
 - Split long API documentation pages (#179)
 - Improve `MapMakingConfig` documentation and add examples (#179)
+- Generalise `XSamplingOperator` to cache world angles, enabling precomputed bilinear pointing for HEALPix (#183)
 
 ### Fixed
 

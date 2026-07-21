@@ -69,9 +69,7 @@ class TestAsExpandedOperator:
         assert tree_equal(sky_direct, sky_expanded, rtol=1e-10, atol=0)
 
     def test_mv_interpolate(self, stokes, frame, landscape_type) -> None:
-        """Interpolated PointingOperator.mv equals as_expanded_operator().mv (WCS/CAR only)."""
-        if landscape_type == 'healpix':
-            pytest.skip('cached bilinear interpolation requires a WCS/CAR landscape')
+        """Interpolated PointingOperator.mv equals as_expanded_operator().mv."""
         landscape = _make_landscape(landscape_type, stokes)
 
         key = jax.random.PRNGKey(42)
@@ -87,9 +85,7 @@ class TestAsExpandedOperator:
         assert tree_equal(pointing_op(sky), pointing_op.as_expanded_operator()(sky), rtol=1e-10)
 
     def test_transpose_mv_interpolate(self, stokes, frame, landscape_type) -> None:
-        """Interpolated PointingOperator.T.mv equals as_expanded_operator().T.mv (WCS/CAR only)."""
-        if landscape_type == 'healpix':
-            pytest.skip('cached bilinear interpolation requires a WCS/CAR landscape')
+        """Interpolated PointingOperator.T.mv equals as_expanded_operator().T.mv."""
         landscape = _make_landscape(landscape_type, stokes)
 
         key = jax.random.PRNGKey(42)
@@ -108,17 +104,6 @@ class TestAsExpandedOperator:
         sky_expanded = pointing_op.as_expanded_operator().T(tod)
 
         assert tree_equal(sky_direct, sky_expanded, rtol=1e-10)
-
-    def test_healpix_interpolate_raises(self, stokes, frame, landscape_type) -> None:
-        """Cached bilinear interpolation is unsupported for HEALPix landscapes."""
-        if landscape_type != 'healpix':
-            pytest.skip('guard is HEALPix-specific')
-        landscape = _make_landscape(landscape_type, stokes)
-        qbore = _random_unit_quats(jax.random.PRNGKey(1), (NSAMP,))
-        qdet = _random_unit_quats(jax.random.PRNGKey(2), (NDET,))
-        op = PointingOperator.create(landscape, qbore, qdet, frame=frame, interpolate=True)
-        with pytest.raises(NotImplementedError, match='WCSLandscape'):
-            op.as_expanded_operator()
 
 
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])

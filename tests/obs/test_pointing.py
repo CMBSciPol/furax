@@ -117,7 +117,7 @@ class TestAsExpandedOperator:
         qbore = _random_unit_quats(jax.random.PRNGKey(1), (NSAMP,))
         qdet = _random_unit_quats(jax.random.PRNGKey(2), (NDET,))
         op = PointingOperator.create(landscape, qbore, qdet, frame=frame, interpolate=True)
-        with pytest.raises(NotImplementedError, match='pixel2interp'):
+        with pytest.raises(NotImplementedError, match='WCSLandscape'):
             op.as_expanded_operator()
 
 

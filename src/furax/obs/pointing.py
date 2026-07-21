@@ -17,7 +17,7 @@ from furax.math.quaternion import (
     to_polarization_angle,
     to_polarization_angle_cos_sin,
 )
-from furax.obs.landscapes import StokesLandscape
+from furax.obs.landscapes import StokesLandscape, WCSLandscape
 from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
 from furax.obs.stokes import Stokes, StokesI
 
@@ -176,11 +176,6 @@ class PointingOperator(AbstractLinearOperator):
         ravel_op = RavelOperator(1, -1, in_structure=self.landscape.structure)
         sampler: AbstractLinearOperator
         if self.interpolate:
-            if not _supports_pixel_interp(self.landscape):
-                raise NotImplementedError(
-                    f'{type(self.landscape).__name__} does not support cached bilinear '
-                    'interpolation (no pixel2interp); a WCS/CAR landscape is required.'
-                )
             pix_x, pix_y = self.landscape.quat2pixel(qdet_full)
             sampler = XSamplingOperator.create(self.landscape, pix_x, pix_y, interpolate=True)
         else:
@@ -315,11 +310,6 @@ def _batch_plan(batch_size: int, n: int) -> tuple[int, int]:
     return batch_size, n_batches
 
 
-def _supports_pixel_interp(landscape: StokesLandscape) -> bool:
-    """Whether the landscape provides a real `pixel2interp` (WCS/CAR), not the base fallback."""
-    return type(landscape).pixel2interp is not StokesLandscape.pixel2interp
-
-
 class XSamplingOperator(AbstractLinearOperator):
     r"""Precomputed pixel-sampling operator from cached float pixel coordinates.
 
@@ -356,10 +346,10 @@ class XSamplingOperator(AbstractLinearOperator):
         *,
         interpolate: bool = False,
     ) -> 'XSamplingOperator':
-        if interpolate and not _supports_pixel_interp(landscape):
+        if interpolate and not isinstance(landscape, WCSLandscape):
             raise NotImplementedError(
-                f'{type(landscape).__name__} does not support cached bilinear interpolation '
-                '(no pixel2interp); a WCS/CAR landscape is required.'
+                f'{type(landscape).__name__} does not support cached bilinear interpolation; '
+                'a WCSLandscape is required.'
             )
         # The map is raveled along its spatial axes (see PointingOperator.as_expanded_operator),
         # leaving a single pixel axis that this operator indexes.

@@ -352,11 +352,10 @@ class MultiObservationMapMaker(Generic[T]):
                     data[ReaderField.BORESIGHT_QUATERNIONS],
                     data[ReaderField.DETECTOR_QUATERNIONS],
                 ).as_stokes_i(interpolate=False)
-                ones = furax.tree.ones_like(obs.M.in_structure)
-                masked_tod = obs.M(ones)
-                # The sample mask is per-detector (identical across Stokes legs); take one leg so
-                # `masked` is a (ndet, nsamp) array rather than a whole demodulated Stokes backing.
-                masked = masked_tod.data[0] if isinstance(masked_tod, Stokes) else masked_tod
+                # Read the mask directly: M(ones) = M.to_boolean_mask()
+                masked_tod = obs.M.to_boolean_mask()
+                # The mask is (ndet, nsamp) even in the demodulated case (all legs share the same)
+                masked = masked_tod.data if isinstance(masked_tod, Stokes) else masked_tod
                 hits_i = jnp.int64(hit_pointing.T(StokesI(masked)).i)
 
                 # RHS contribution (optionally gap-filled).

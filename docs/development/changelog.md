@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Migrate multi-observation mapmaker to furax CG and support verbose mode (#176)
 - Split long API documentation pages (#179)
 - Improve `MapMakingConfig` documentation and add examples (#179)
+- Revert change to `lax.map` in forward on-the-fly pointing (#180)
+- Introduce `XSamplingOperator` to support precomputed bilinear pointing (#181)
 
 ## [0.11.3] - 2026-07-14
 

@@ -32,6 +32,7 @@ from furax.mapmaking.config import (
 from furax.mapmaking.mapmaker import (
     ATOPMapMaker,
     BinnedMapMaker,
+    MapMaker,
     MLMapmaker,
     TwoStepMapmaker,
     get_obs_distribution_to_process,
@@ -454,13 +455,13 @@ class TestSingleObsSolverGuards:
         )
 
     @pytest.mark.parametrize('mode', [WeightingMode.IDENTITY, WeightingMode.DIAGONAL])
-    def test_ml_mapmaker_accepts_diagonal_weighting(self, mode):
+    def test_ml_mapmaker_accepts_diagonal_weighting(self, mode: WeightingMode) -> None:
         """ML runs with identity/diagonal weighting (previously rejected via ``binned=True``)."""
         obs = FakeGroundObservation(n_dets=4, n_samples=1024, sample_rate=100.0)
         res = MLMapmaker(config=self._config(mode)).make_map(obs)
         assert bool(jnp.all(jnp.isfinite(res['map'])))
 
-    def test_ml_mapmaker_accepts_bilinear_pointing(self):
+    def test_ml_mapmaker_accepts_bilinear_pointing(self) -> None:
         """Bilinear pointing runs under the ML solver."""
         obs = FakeGroundObservation(n_dets=4, n_samples=1024, sample_rate=100.0)
         cfg = self._config(WeightingMode.IDENTITY, interpolation='bilinear')
@@ -468,7 +469,7 @@ class TestSingleObsSolverGuards:
         assert bool(jnp.all(jnp.isfinite(res['map'])))
 
     @pytest.mark.parametrize('maker_cls', [BinnedMapMaker, TwoStepMapmaker, ATOPMapMaker])
-    def test_direct_solvers_reject_bilinear_pointing(self, maker_cls):
+    def test_direct_solvers_reject_bilinear_pointing(self, maker_cls: type[MapMaker]) -> None:
         """The direct binned solvers refuse bilinear pointing at construction time."""
         cfg = self._config(WeightingMode.DIAGONAL, interpolation='bilinear', method=Methods.BINNED)
         with pytest.raises(ValueError, match='does not support bilinear pointing'):

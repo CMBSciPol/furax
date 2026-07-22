@@ -604,10 +604,12 @@ class MapMaker:
     config: MapMakingConfig
     logger: Logger = furax_logger
 
-    # Whether this mapmaker solves the map system iteratively (full pixel coupling). Only such
-    # solvers may use bilinear pointing; the direct block-diagonal binners drop the off-diagonal
-    # pixel coupling that interpolation introduces and would return a biased map.
     supports_bilinear_pointing: ClassVar[bool] = False
+    """Whether this mapmaker solves the map system iteratively (full pixel coupling).
+
+    Only such solvers may use bilinear pointing; the direct block-diagonal binners drop the
+    off-diagonal pixel coupling that interpolation introduces and would return a biased map.
+    """
 
     def __post_init__(self) -> None:
         if self.config.pointing.interpolation == 'bilinear' and not self.supports_bilinear_pointing:
@@ -1096,9 +1098,8 @@ class BinnedMapMaker(MapMaker):
 class MLMapmaker(MapMaker):
     """Class for mapmaking with maximum likelihood (ML) estimator."""
 
-    # The ML estimator solves the full system iteratively, so it accepts any weighting mode
-    # (identity / diagonal / Toeplitz) and is the only mapmaker that may use bilinear pointing.
     supports_bilinear_pointing: ClassVar[bool] = True
+    """The ML solve is iterative, so it accounts for the pixel coupling from interpolation."""
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -1151,9 +1152,13 @@ class MLMapmaker(MapMaker):
             diag_inv_noise = DiagonalOperator(
                 inv_noise.band_values[..., [0]], in_structure=data_struct
             )
-        else:
-            # Identity / diagonal (white) weighting: the inverse-noise operator is already diagonal.
+        elif inv_noise.is_diagonal:
+            # Identity / diagonal (white) weighting.
             diag_inv_noise = inv_noise
+        else:
+            raise NotImplementedError(
+                f'Cannot approximate {type(inv_noise).__name__} by a diagonal operator.'
+            )
         diag_system = BJPreconditioner.create(acquisition.T @ diag_inv_noise @ masker @ acquisition)
         logger_info('Created approximate system matrix')
 

@@ -59,19 +59,13 @@ class ObservationModel:
 
     @classmethod
     def create(
-        cls, data: Any, padding: Any, config: MapMakingConfig, landscape: StokesLandscape
+        cls,
+        data: Any,
+        padding: Any,
+        config: MapMakingConfig,
+        landscape: StokesLandscape,
     ) -> Self:
-        H = build_acquisition_operator(
-            landscape,
-            data[ReaderField.BORESIGHT_QUATERNIONS],
-            data[ReaderField.DETECTOR_QUATERNIONS],
-            data.get(ReaderField.HWP_ANGLES),
-            demodulated=config.demodulated,
-            pointing_on_the_fly=config.pointing.on_the_fly,
-            pointing_batch_size=config.pointing.batch_size,
-            pointing_interpolate=config.pointing.interpolation == 'bilinear',
-            dtype=config.dtype,
-        )
+        H = ObservationGeometry.from_data(data).build_acquisition(landscape, config)
         tod_struct = H.out_structure
         M = _mask_projector(
             _sample_mask(data, config),
@@ -190,6 +184,47 @@ class ObservationModel:
         white = self.noise_model.to_white_noise_model()
         inv = _noise_operator(white, self.tod_structure, self.sample_rate, inverse=True)
         return WeightOperator.create(inv, self.M)
+
+
+@register_dataclass
+@dataclass
+class ObservationGeometry:
+    """Raw pointing geometry for one or more observations.
+
+    Kept alongside the model so the acquisition operator can be rebuilt on a different landscape
+    (e.g. a selected-pixel [`LocalStokesLandscape`][furax.obs.landscapes.LocalStokesLandscape])
+    without re-reading the data. Stores the *reader* quaternions (before any frame adjustment), so
+    [`build_acquisition`][furax.mapmaking._model.ObservationGeometry.build_acquisition] reproduces
+    the same pointing as the original. Array fields carry a leading observation axis when stacked.
+    """
+
+    boresight_quaternions: Float[Array, 'samp 4']
+    detector_quaternions: Float[Array, 'det 4']
+    hwp_angles: Float[Array, ' samp'] | None
+
+    @classmethod
+    def from_data(cls, data: Any) -> Self:
+        return cls(
+            data[ReaderField.BORESIGHT_QUATERNIONS],
+            data[ReaderField.DETECTOR_QUATERNIONS],
+            data.get(ReaderField.HWP_ANGLES),
+        )
+
+    def build_acquisition(
+        self, landscape: StokesLandscape, config: MapMakingConfig
+    ) -> AbstractLinearOperator:
+        """Build the acquisition operator on ``landscape`` from the stored geometry."""
+        return build_acquisition_operator(
+            landscape,
+            self.boresight_quaternions,
+            self.detector_quaternions,
+            self.hwp_angles,
+            demodulated=config.demodulated,
+            pointing_on_the_fly=config.pointing.on_the_fly,
+            pointing_batch_size=config.pointing.batch_size,
+            pointing_interpolate=config.pointing.interpolation == 'bilinear',
+            dtype=config.dtype,
+        )
 
 
 def _noise_model(

@@ -279,6 +279,8 @@ class MultiObservationMapMaker(Generic[T]):
             hit_map = acc.hit_map
             map_rhs = acc.map_rhs
             geometry = acc.geometry
+            # Drop the tuple itself so the per-stage deletes below actually release buffers.
+            del acc
             logger_info('Accumulated hit map and RHS vector')
 
             failed_observations = self._collect_failed_observations()
@@ -298,6 +300,7 @@ class MultiObservationMapMaker(Generic[T]):
             )
             A_diag = (H_sky.T @ W_diag @ F @ H_sky).reduce()
             icov = BJPreconditioner.create(A_diag).blocks.block_until_ready()
+            del model, H_sky, W_diag, A_diag  # only needed for pass-1 acquisition
             logger_info('Computed white noise inverse covariance')
 
             # Restrict landscape by selecting pixels based on icov estimate
@@ -307,6 +310,7 @@ class MultiObservationMapMaker(Generic[T]):
             M_sky = BJPreconditioner(icov[valid_pixels], in_structure=local_structure).I
 
             local_H = eqx.filter_vmap(lambda g: g.build_acquisition(local, self.config))(geometry)
+            del geometry  # quaternions only needed to rebuild the acquisition
             H_local = StreamColumnOperator.create(local_H)
             keep = IndexOperator((..., slice(0, local.nlocal)), in_structure=H_local.in_structure)
             embed = keep.T
@@ -318,6 +322,7 @@ class MultiObservationMapMaker(Generic[T]):
             logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
 
             hit_map = hit_map.at[~valid_pixels].set(0)  # excluded pixels have zero hits
+            del valid_pixels
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
             # Unified GLS solve (Hᵀ W' H) x = Hᵀ W' d  (W already bundles the sample mask).
@@ -366,6 +371,7 @@ class MultiObservationMapMaker(Generic[T]):
                 Sel = BlockDiagonalOperator([keep, amp_id])
                 Sel_t = BlockDiagonalOperator([embed, amp_id])
                 A = (Sel @ A_full @ Sel_t).reduce()
+            del map_rhs  # full-sky RHS already restricted into rhs_joint
 
             iteration_callback = None
             if self.config.solver.verbose:
@@ -400,6 +406,9 @@ class MultiObservationMapMaker(Generic[T]):
                 **self.config.solver.options,
             )
             logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
+            # Release CG system
+            del A, M, M_sky, WF, W, F, H_local, local_H, keep, embed, rhs_joint
+            del templates, amp_rhs, implicit_ginv, explicit_ginv
 
             if joint:
                 sky_estimate, amplitudes = result.solution

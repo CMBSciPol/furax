@@ -300,7 +300,7 @@ class MultiObservationMapMaker(Generic[T]):
             )
             A_diag = (H_sky.T @ W_diag @ F @ H_sky).reduce()
             icov = BJPreconditioner.create(A_diag).blocks.block_until_ready()
-            del model, H_sky, W_diag, A_diag  # only needed for pass-1 acquisition
+            del W_diag, A_diag  # only needed for icov
             logger_info('Computed white noise inverse covariance')
 
             # Restrict landscape by selecting pixels based on icov estimate
@@ -309,12 +309,37 @@ class MultiObservationMapMaker(Generic[T]):
             local_structure = local.structure_for((local.nlocal,))
             M_sky = BJPreconditioner(icov[valid_pixels], in_structure=local_structure).I
 
-            local_H = eqx.filter_vmap(lambda g: g.build_acquisition(local, self.config))(geometry)
-            del geometry  # quaternions only needed to rebuild the acquisition
-            H_local = StreamColumnOperator.create(local_H)
-            keep = IndexOperator((..., slice(0, local.nlocal)), in_structure=H_local.in_structure)
+            # Localized solve: rebuild the system operator on the selected-pixel landscape so each
+            # CG apply gathers a compressed, cache-resident map. Pre-computed pointing pays a
+            # one-time index remap for this, but on-the-fly pointing would pay the global→local
+            # lookup on every apply -- hence the config-driven default.
+            localize = self.config.pointing.localize
+            if localize is None:
+                localize = not self.config.pointing.on_the_fly
+            if localize:
+                # Free the pass-1 full-sky pointing before rebuilding it on the local landscape
+                # (obs-stacked, from the retained geometry -- no data re-read). The rebuilt
+                # acquisition's last pixel is the sink absorbing samples outside the selection;
+                # keep/embed drop/zero it, so the solve stays in selected-pixel space.
+                del model, H_sky
+                H_solve: AbstractLinearOperator = StreamColumnOperator.create(
+                    eqx.filter_vmap(lambda g: g.build_acquisition(local, self.config))(geometry)
+                )
+                keep = IndexOperator(
+                    (..., slice(0, local.nlocal)), in_structure=H_solve.in_structure
+                )
+                logger_info('Rebuilt acquisition on selected pixels')
+            else:
+                # Full-sky solve: the pixel selection around the system operator plays the
+                # keep/embed role (select valid pixels on the trailing sky axes, leaving the
+                # leading Stokes axis intact).
+                del model
+                H_solve = H_sky
+                keep = IndexOperator(
+                    (..., *jnp.where(valid_pixels)), in_structure=H_sky.in_structure
+                )
             embed = keep.T
-            logger_info('Rebuilt acquisition on selected pixels')
+            del geometry  # only needed to rebuild the acquisition
 
             n_selected = jnp.sum(valid_pixels)
             n_observed = jnp.sum(hit_map > 0)
@@ -328,8 +353,8 @@ class MultiObservationMapMaker(Generic[T]):
             # Unified GLS solve (Hᵀ W' H) x = Hᵀ W' d  (W already bundles the sample mask).
             #
             # H maps the unknowns to TOD:
-            # - no templates / implicit only: H = H_local        (sky map only);
-            # - explicit families:           H = [H_local | Tₑ] (sky map + template amplitudes).
+            # - no templates / implicit only: H = H_solve        (sky map only);
+            # - explicit families:           H = [H_solve | Tₑ] (sky map + template amplitudes).
             #
             # Implicit families fold into the weight (W → W', deprojection).
             # The map RHS (``rhs``) and explicit-template RHS (``amp_rhs``) were already streamed in
@@ -351,7 +376,7 @@ class MultiObservationMapMaker(Generic[T]):
                 # keep/embed solve in sink-less nlocal space
                 rhs_joint: Any = local.drop_sink(local.restrict(map_rhs))
                 # Solve on the selected pixels: keep/embed sandwich the compressed-pointing stream.
-                A = (keep @ (H_local.T @ WF @ H_local).reduce() @ embed).reduce()
+                A = (keep @ (H_solve.T @ WF @ H_solve).reduce() @ embed).reduce()
             else:
                 assert templates is not None and templates.explicit is not None  # mypy (joint)
                 Te = StreamDiagonalOperator.create(templates.explicit)
@@ -365,7 +390,7 @@ class MultiObservationMapMaker(Generic[T]):
                 # both the sky leg (shared, accumulated) and the amplitude leg (per-obs, stacked).
                 # The sky leg gathers over selected pixels (keep/embed for the sky block); the
                 # amplitude leg passes through.
-                H = stream_block_row([H_local, Te])
+                H = stream_block_row([H_solve, Te])
                 A_full = (H.T @ WF @ H).reduce()
                 amp_id = IdentityOperator(in_structure=Te.in_structure)
                 Sel = BlockDiagonalOperator([keep, amp_id])
@@ -407,7 +432,7 @@ class MultiObservationMapMaker(Generic[T]):
             )
             logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
             # Release CG system
-            del A, M, M_sky, WF, W, F, H_local, local_H, keep, embed, rhs_joint
+            del A, M, M_sky, WF, W, F, H_solve, keep, embed, rhs_joint
             del templates, amp_rhs, implicit_ginv, explicit_ginv
 
             if joint:

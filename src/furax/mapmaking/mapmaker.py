@@ -6,7 +6,7 @@ from functools import cached_property
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar
 
 import equinox as eqx
 import jax
@@ -604,8 +604,20 @@ class MapMaker:
     config: MapMakingConfig
     logger: Logger = furax_logger
 
+    supports_bilinear_pointing: ClassVar[bool] = False
+    """Whether this mapmaker solves the map system iteratively (full pixel coupling).
+
+    Only such solvers may use bilinear pointing; the direct block-diagonal binners drop the
+    off-diagonal pixel coupling that interpolation introduces and would return a biased map.
+    """
+
     def __post_init__(self) -> None:
-        return
+        if self.config.pointing.interpolation == 'bilinear' and not self.supports_bilinear_pointing:
+            raise ValueError(
+                f'{type(self).__name__} does not support bilinear pointing: the direct binned '
+                'solver ignores the off-diagonal pixel coupling that interpolation introduces and '
+                'would return a biased map. Use the ML mapmaker (method=ML) instead.'
+            )
 
     @abstractmethod
     def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]: ...
@@ -1086,12 +1098,13 @@ class BinnedMapMaker(MapMaker):
 class MLMapmaker(MapMaker):
     """Class for mapmaking with maximum likelihood (ML) estimator."""
 
+    supports_bilinear_pointing: ClassVar[bool] = True
+    """The ML solve is iterative, so it accounts for the pixel coupling from interpolation."""
+
     def __post_init__(self) -> None:
         super().__post_init__()
 
         # Validation on config
-        if self.config.binned:
-            raise ValueError('ML Mapmaker is incompatible with binned=True')
         if self.config.demodulated:
             raise ValueError('ML Mapmaker is incompatible with demodulated=True')
 
@@ -1133,14 +1146,19 @@ class MLMapmaker(MapMaker):
         logger_info('Created noise and inverse noise covariance operators')
 
         # Approximate system matrix with diagonal noise covariance and full map pixels
-        if config.weighting.mode == WeightingMode.IDENTITY:
-            diag_inv_noise = inv_noise
-        elif isinstance(inv_noise, SymmetricBandToeplitzOperator):
+        diag_inv_noise: AbstractLinearOperator
+        if isinstance(inv_noise, SymmetricBandToeplitzOperator):
+            # Correlated (Toeplitz) weighting: use the zero-lag (diagonal) band value.
             diag_inv_noise = DiagonalOperator(
                 inv_noise.band_values[..., [0]], in_structure=data_struct
             )
+        elif inv_noise.is_diagonal:
+            # Identity / diagonal (white) weighting.
+            diag_inv_noise = inv_noise
         else:
-            raise NotImplementedError
+            raise NotImplementedError(
+                f'Cannot approximate {type(inv_noise).__name__} by a diagonal operator.'
+            )
         diag_system = BJPreconditioner.create(acquisition.T @ diag_inv_noise @ masker @ acquisition)
         logger_info('Created approximate system matrix')
 

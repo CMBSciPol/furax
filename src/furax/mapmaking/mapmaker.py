@@ -43,6 +43,7 @@ from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
+    LocalStokesLandscape,
     StokesLandscape,
     WCSLandscape,
 )
@@ -54,7 +55,7 @@ from furax.profiling import format_bytes
 from ._distributed import cross_process_sum, split_stream
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel, ObservationTemplates
+from ._model import ObservationGeometry, ObservationModel, ObservationTemplates
 from ._observation import (
     AbstractGroundObservation,
     AbstractLazyObservation,
@@ -93,6 +94,8 @@ class AccumulatedModel:
         hit_map: Hit map, replicated (reduced across processes).
         map_rhs: Map RHS, replicated (reduced across processes).
         amplitude_rhs: Explicit-template RHS, obs-stacked.
+        geometry: Per-observation pointing geometry, sharded over observations; used to rebuild the
+            acquisition on the selected-pixel landscape.
     """
 
     model: ObservationModel = field(metadata={'sharded': True})
@@ -100,6 +103,7 @@ class AccumulatedModel:
     hit_map: Int64[Array, '...']
     map_rhs: StokesType
     amplitude_rhs: PyTree[Array] | None = field(metadata={'sharded': True})
+    geometry: ObservationGeometry = field(metadata={'sharded': True})
 
     @classmethod
     def shard_map_out_specs(cls, axis: str) -> 'AccumulatedModel':
@@ -320,6 +324,14 @@ class MultiObservationMapMaker[T]:
             # Single read pass, so each observation is read/preprocessed exactly once.
             acc = self.build_model_and_accumulate()
             jax.block_until_ready(acc)
+            model = acc.model
+            templates = acc.templates
+            hit_map = acc.hit_map
+            map_rhs = acc.map_rhs
+            amp_rhs = acc.amplitude_rhs
+            geometry = acc.geometry
+            # Drop the tuple itself so the per-stage deletes below actually release buffers.
+            del acc
             logger_info('Accumulated hit map and RHS vector')
 
             failed_observations = self._collect_failed_observations()
@@ -327,32 +339,78 @@ class MultiObservationMapMaker[T]:
                 logger_info(f'{len(failed_observations)} observation(s) failed and were excluded')
 
             # Diagonal pixel system for the block-Jacobi preconditioner
-            H_sky: AbstractLinearOperator = StreamOperator.column(acc.model.H)
-            W: AbstractLinearOperator = StreamOperator.diagonal(acc.model.W)
+            H_sky: AbstractLinearOperator = StreamOperator.column(model.H)
+            W: AbstractLinearOperator = StreamOperator.diagonal(model.W)
             W_diag = (
                 W
                 if self.config.binned
-                else StreamOperator.diagonal(eqx.filter_vmap(ObservationModel.diag_W)(acc.model))
+                else StreamOperator.diagonal(eqx.filter_vmap(ObservationModel.diag_W)(model))
             )
             # Specify leading axis dimension because F can be trivial (no array leaves)
             # Must be this process's slot count to compose with the other operators, whose own
             # leaves are sharded over the local devices and report exactly that.
-            F = StreamOperator.diagonal(acc.model.F, n_lead=n_per_proc)
+            F = StreamOperator.diagonal(model.F, n_lead=n_per_proc)
             A_diag = (H_sky.T @ W_diag @ F @ H_sky).reduce()
-            BJ = BJPreconditioner.create(A_diag)
-            icov = BJ.blocks.block_until_ready()
+            icov = BJPreconditioner.create(A_diag).blocks.block_until_ready()
+            del W_diag, A_diag  # only needed for icov
             logger_info('Computed white noise inverse covariance')
 
             # Fold ATOP deprojector into the weight from now on
             W = (W @ F).reduce()
 
-            # Pixel selection from the icov estimate
-            hit_map = acc.hit_map  # rebound below, once the pixel selection is known
+            # Restrict landscape by selecting pixels based on icov estimate
             valid_pixels = self.pixel_selection(hit_map, icov)
-            # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
-            S = IndexOperator((..., *jnp.where(valid_pixels)), in_structure=H_sky.in_structure)
-            H_sky_selected = H_sky @ S.T  # takes the selected pixels; H_sky takes the full grid
-            M_sky = (S @ BJ.I @ S.T).reduce()
+            # Built off the mesh: the localized solve below closes this landscape over inside
+            # `shard_map`, and its pixel index would otherwise be committed to the mesh here,
+            # which the gather in `global2local` rejects against the `Manual` context mesh.
+            with jax.set_mesh(None):
+                local = LocalStokesLandscape.from_boolean_mask(self.landscape, valid_pixels)
+            local_structure = local.structure_for((local.nlocal,))
+            M_sky = BJPreconditioner(icov[valid_pixels], in_structure=local_structure).I
+
+            # Localized solve: rebuild the system operator on the selected-pixel landscape so each
+            # CG apply gathers a compressed, cache-resident map. Pre-computed pointing pays a
+            # one-time index remap for this, but on-the-fly pointing would pay the global→local
+            # lookup on every apply -- hence the config-driven default.
+            localize = self.config.pointing.localize
+            if localize is None:
+                localize = not self.config.pointing.on_the_fly
+            if localize:
+                # Free the pass-1 full-sky pointing before rebuilding it on the local landscape
+                # (obs-stacked, from the retained geometry -- no data re-read). The rebuilt
+                # acquisition's last pixel is the sink absorbing samples outside the selection;
+                # keep/embed drop/zero it, so the solve stays in selected-pixel space.
+                del model, H_sky
+
+                # Rebuild per observation. ``geometry`` is obs-sharded (P('obs')), so run the
+                # per-obs vmap *inside* shard_map: each shard then sees unsharded local arrays and
+                # the global->local pixel remap's searchsorted no longer inherits the 'obs' mesh
+                # axis. A bare filter_vmap over the sharded array leaks that axis into an empty
+                # vmap mesh ("Resource axis: obs ... not found in mesh: ()").
+                def _rebuild(geometry):  # type: ignore[no-untyped-def]
+                    return eqx.filter_vmap(lambda g: g.build_acquisition(local, self.config))(
+                        geometry
+                    )
+
+                local_H = jax.shard_map(in_specs=(P('obs'),), out_specs=P('obs'), check_vma=False)(
+                    _rebuild
+                )(geometry)
+                H_solve: AbstractLinearOperator = StreamOperator.column(local_H)
+                keep = IndexOperator(
+                    (..., slice(0, local.nlocal)), in_structure=H_solve.in_structure
+                )
+                logger_info('Rebuilt acquisition on selected pixels')
+            else:
+                # Full-sky solve: the pixel selection around the system operator plays the
+                # keep/embed role (select valid pixels on the trailing sky axes, leaving the
+                # leading Stokes axis intact).
+                del model
+                H_solve = H_sky
+                keep = IndexOperator(
+                    (..., *jnp.where(valid_pixels)), in_structure=H_sky.in_structure
+                )
+            embed = keep.T
+            del geometry  # only needed to rebuild the acquisition
 
             n_selected = jnp.sum(valid_pixels)
             n_observed = jnp.sum(hit_map > 0)
@@ -360,17 +418,17 @@ class MultiObservationMapMaker[T]:
             logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
 
             hit_map = hit_map.at[~valid_pixels].set(0)  # excluded pixels have zero hits
+            del valid_pixels
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
             # Unified GLS solve (Hᵀ W' H) x = Hᵀ W' d  (W already bundles the sample mask).
             #
             # H maps the unknowns to TOD:
-            # - no templates / implicit only: H = H_sky        (sky map only);
-            # - explicit templates:          H = [H_sky | Tₑ] (sky map + template amplitudes).
+            # - no templates / implicit only: H = H_solve        (sky map only);
+            # - explicit templates:           H = [H_solve | Tₑ] (sky map + template amplitudes).
             #
             # Implicit templates fold into the weight (W → W', deprojection).
 
-            templates = acc.templates
             # Fold implicit templates into the system weight (marginal deprojection W').
             if templates is not None and (implicit := templates.implicit) is not None:
                 Ti = StreamOperator.diagonal(implicit.operator)
@@ -380,19 +438,25 @@ class MultiObservationMapMaker[T]:
             explicit = templates.explicit if templates is not None else None
             if explicit is None:
                 M = M_sky
-                rhs_joint: Any = S(acc.map_rhs)
-                A = (H_sky_selected.T @ W @ H_sky_selected).reduce()
+                # keep/embed solve in sink-less nlocal space
+                rhs_joint: Any = local.drop_sink(local.restrict(map_rhs))
+                # Solve on the selected pixels: keep/embed sandwich the compressed-pointing stream.
+                A = (keep @ (H_solve.T @ W @ H_solve).reduce() @ embed).reduce()
             else:
                 Te = StreamOperator.diagonal(explicit.operator)
                 G_e = StreamOperator.diagonal(explicit.gram_inverse)
                 M = BlockDiagonalOperator([M_sky, G_e])
-                rhs_joint = [S(acc.map_rhs), acc.amplitude_rhs]
+                rhs_joint = [local.drop_sink(local.restrict(map_rhs)), amp_rhs]
 
-                # Joint sky + explicit-amplitude system
-                H_joint = StreamOperator.block_row([H_sky, Te])
+                # Joint sky + explicit-amplitude system. `keep`/`embed` sandwich the sky block,
+                # dropping the sink pixel so the solve stays in selected-pixel space; the amplitude
+                # leg passes straight through.
+                H_joint = StreamOperator.block_row([H_solve, Te])
                 A_joint = (H_joint.T @ W @ H_joint).reduce()
-                select = BlockDiagonalOperator([S, IdentityOperator(in_structure=Te.in_structure)])
+                amp_id = IdentityOperator(in_structure=Te.in_structure)
+                select = BlockDiagonalOperator([keep, amp_id])
                 A = (select @ A_joint @ select.T).reduce()
+            del map_rhs  # full-sky RHS already restricted into rhs_joint
 
             iteration_callback = None
             if self.config.solver.verbose:
@@ -409,12 +473,16 @@ class MultiObservationMapMaker[T]:
                 **self.config.solver.options,
             )
             logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
+            # Release CG system
+            del A, M, M_sky, W, F, H_solve, keep, embed, rhs_joint
 
             if explicit is not None:
                 sky_estimate, amplitudes = result.solution
             else:
                 sky_estimate = result.solution
                 amplitudes = None
+            # Released last: the template legs hold the Gram inverses and the amplitude RHS.
+            del templates, explicit
 
         if amplitudes is not None:
             # Gather the (sharded) amplitudes on rank 0. Result is host-side.
@@ -424,7 +492,7 @@ class MultiObservationMapMaker[T]:
             amplitudes = jax.tree.map(lambda a: a[real], gathered)
 
         return MapMakingResults(
-            map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)
+            map=local.promote(sky_estimate),
             icov=icov,
             hit_map=hit_map,
             solver_stats={'num_steps': int(result.num_steps)},
@@ -477,6 +545,8 @@ class MultiObservationMapMaker[T]:
                     lambda: reader.read_filler(),
                 )
                 obs = ObservationModel.create(data, padding, config, landscape)
+                # Store raw pointing geometry so we can rebuild acquisition on selected pixels
+                geom = ObservationGeometry.from_data(data)
 
                 # Padding/failed observations contribute nothing
                 obs.M = obs.M.restrict(real & valid)
@@ -532,7 +602,7 @@ class MultiObservationMapMaker[T]:
                     else:
                         rhs_i = obs.rhs_operator(tod)
                     carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
-                    return carry, (obs, None, None)
+                    return carry, (obs, geom, None, None)
 
                 # Templates require config.binned=True, so fill_gaps never applies here.
                 templates, wd = ObservationTemplates.create(data, config, obs, tod)
@@ -540,19 +610,20 @@ class MultiObservationMapMaker[T]:
                 rhs_i = obs.H.T(wd)
                 amp_i = explicit.operator.T(wd) if explicit is not None else None
                 carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
-                return carry, (obs, templates, amp_i)
+                return carry, (obs, geom, templates, amp_i)
 
             init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')
             init_rhs = jax.lax.pcast(landscape.zeros(), axis, to='varying')
             (hits, rhs), stacked = jax.lax.scan(step, (init_hits, init_rhs), (indices, is_real))
             hits, rhs = jax.lax.psum((hits, rhs), axis)
-            model, templates, amp_rhs = stacked
+            model, geometry, templates, amp_rhs = stacked
             return AccumulatedModel(
                 model=model,
                 templates=templates,
                 hit_map=hits,
                 map_rhs=rhs,
                 amplitude_rhs=amp_rhs,
+                geometry=geometry,
             )
 
         # Both inputs are distributed over the observation axis; the mesh's axis types are `Auto`,

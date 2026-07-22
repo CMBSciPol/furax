@@ -37,15 +37,14 @@ from furax import (
     SymmetricBandToeplitzOperator,
 )
 from furax.core import (
-    BlockColumnOperator,
     BlockDiagonalOperator,
-    BlockRowOperator,
     IndexOperator,
 )
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
+    LocalStokesLandscape,
     StokesLandscape,
     WCSLandscape,
 )
@@ -55,7 +54,7 @@ from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokes
 
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel, ObservationTemplates
+from ._model import ObservationGeometry, ObservationModel, ObservationTemplates
 from ._observation import (
     AbstractGroundObservation,
     AbstractLazyObservation,
@@ -97,6 +96,8 @@ class AccumulatedModel(NamedTuple):
             block, not for deprojection), obs-stacked; ``None`` without explicit families.
         hit_map: Hit map, replicated (reduced across processes).
         map_rhs: Map RHS, replicated (reduced across processes).
+        geometry: Per-observation pointing geometry, sharded over observations; used to rebuild the
+            acquisition on the selected-pixel landscape.
     """
 
     model: ObservationModel
@@ -106,6 +107,7 @@ class AccumulatedModel(NamedTuple):
     explicit_gram_inverse: AbstractLinearOperator | None
     hit_map: Int64[Array, '...']
     map_rhs: StokesType
+    geometry: ObservationGeometry
 
 
 class MultiObservationMapMaker[T]:
@@ -266,7 +268,16 @@ class MultiObservationMapMaker[T]:
             # observation is read/preprocessed exactly once.
             acc = self.build_model_and_accumulate()
             jax.block_until_ready(acc)
-            model, templates, amp_rhs, implicit_ginv, explicit_ginv, hit_map, map_rhs = acc
+            model = acc.model
+            templates = acc.templates
+            amp_rhs = acc.amplitude_rhs
+            implicit_ginv = acc.implicit_gram_inverse
+            explicit_ginv = acc.explicit_gram_inverse
+            hit_map = acc.hit_map
+            map_rhs = acc.map_rhs
+            geometry = acc.geometry
+            # Drop the tuple itself so the per-stage deletes below actually release buffers.
+            del acc
             logger_info('Accumulated hit map and RHS vector')
 
             failed_observations = self._collect_failed_observations()
@@ -285,16 +296,57 @@ class MultiObservationMapMaker[T]:
                 else StreamOperator.diagonal(eqx.filter_vmap(ObservationModel.diag_W)(model))
             )
             A_diag = (H_sky.T @ W_diag @ F @ H_sky).reduce()
-            BJ = BJPreconditioner.create(A_diag)
-            icov = BJ.blocks.block_until_ready()
+            icov = BJPreconditioner.create(A_diag).blocks.block_until_ready()
+            del W_diag, A_diag  # only needed for icov
             logger_info('Computed white noise inverse covariance')
 
-            # Pixel selection from the icov estimate
+            # Restrict landscape by selecting pixels based on icov estimate
             valid_pixels = self.pixel_selection(hit_map, icov)
-            # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
-            S = IndexOperator((..., *jnp.where(valid_pixels)), in_structure=H_sky.in_structure)
-            H_sky @= S.T
-            M_sky = (S @ BJ.I @ S.T).reduce()
+            local = LocalStokesLandscape.from_boolean_mask(self.landscape, valid_pixels)
+            local_structure = local.structure_for((local.nlocal,))
+            M_sky = BJPreconditioner(icov[valid_pixels], in_structure=local_structure).I
+
+            # Localized solve: rebuild the system operator on the selected-pixel landscape so each
+            # CG apply gathers a compressed, cache-resident map. Pre-computed pointing pays a
+            # one-time index remap for this, but on-the-fly pointing would pay the global→local
+            # lookup on every apply -- hence the config-driven default.
+            localize = self.config.pointing.localize
+            if localize is None:
+                localize = not self.config.pointing.on_the_fly
+            if localize:
+                # Free the pass-1 full-sky pointing before rebuilding it on the local landscape
+                # (obs-stacked, from the retained geometry -- no data re-read). The rebuilt
+                # acquisition's last pixel is the sink absorbing samples outside the selection;
+                # keep/embed drop/zero it, so the solve stays in selected-pixel space.
+                del model, H_sky
+
+                # Rebuild per observation. ``geometry`` is obs-sharded (P('obs')), so run the
+                # per-obs vmap *inside* shard_map: each shard then sees unsharded local arrays and
+                # the global->local pixel remap's searchsorted no longer inherits the 'obs' mesh
+                # axis. A bare filter_vmap over the sharded array leaks that axis into an empty
+                # vmap mesh ("Resource axis: obs ... not found in mesh: ()").
+                def _rebuild(geometry):  # type: ignore[no-untyped-def]
+                    return eqx.filter_vmap(lambda g: g.build_acquisition(local, self.config))(
+                        geometry
+                    )
+
+                local_H = jax.shard_map(out_specs=P('obs'), check_vma=False)(_rebuild)(geometry)
+                H_solve: AbstractLinearOperator = StreamOperator.column(local_H)
+                keep = IndexOperator(
+                    (..., slice(0, local.nlocal)), in_structure=H_solve.in_structure
+                )
+                logger_info('Rebuilt acquisition on selected pixels')
+            else:
+                # Full-sky solve: the pixel selection around the system operator plays the
+                # keep/embed role (select valid pixels on the trailing sky axes, leaving the
+                # leading Stokes axis intact).
+                del model
+                H_solve = H_sky
+                keep = IndexOperator(
+                    (..., *jnp.where(valid_pixels)), in_structure=H_sky.in_structure
+                )
+            embed = keep.T
+            del geometry  # only needed to rebuild the acquisition
 
             n_selected = jnp.sum(valid_pixels)
             n_observed = jnp.sum(hit_map > 0)
@@ -302,13 +354,14 @@ class MultiObservationMapMaker[T]:
             logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
 
             hit_map = hit_map.at[~valid_pixels].set(0)  # excluded pixels have zero hits
+            del valid_pixels
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
             # Unified GLS solve (Hᵀ W' H) x = Hᵀ W' d  (W already bundles the sample mask).
             #
             # H maps the unknowns to TOD:
-            # - no templates / implicit only: H = H_sky        (sky map only);
-            # - explicit families:           H = [H_sky | Tₑ] (sky map + template amplitudes).
+            # - no templates / implicit only: H = H_solve        (sky map only);
+            # - explicit families:           H = [H_solve | Tₑ] (sky map + template amplitudes).
             #
             # Implicit families fold into the weight (W → W', deprojection).
             # The map RHS (``rhs``) and explicit-template RHS (``amp_rhs``) were already streamed in
@@ -327,26 +380,30 @@ class MultiObservationMapMaker[T]:
             joint = templates is not None and templates.explicit is not None
             if not joint:
                 M = M_sky
-                rhs_joint: Any = S(map_rhs)
-                A = (H_sky.T @ WF @ H_sky).reduce()
+                # keep/embed solve in sink-less nlocal space
+                rhs_joint: Any = local.drop_sink(local.restrict(map_rhs))
+                # Solve on the selected pixels: keep/embed sandwich the compressed-pointing stream.
+                A = (keep @ (H_solve.T @ WF @ H_solve).reduce() @ embed).reduce()
             else:
                 assert templates is not None and templates.explicit is not None  # mypy (joint)
                 Te = StreamOperator.diagonal(templates.explicit)
                 assert explicit_ginv is not None  # set alongside templates.explicit in kernel
                 G_e = StreamOperator.diagonal(explicit_ginv)
                 M = BlockDiagonalOperator([M_sky, G_e])
-                rhs_joint = [S(map_rhs), amp_rhs]
+                rhs_joint = [local.drop_sink(local.restrict(map_rhs)), amp_rhs]
 
-                # Joint sky + explicit-amplitude system, assembled as a 2x2 block.
-                # Each block independently reduces to a streaming operator (Stream*Operator).
-                # TODO: fused mixed reduce+stack scan to share TOD computation.
-                A_ss = (H_sky.T @ WF @ H_sky).reduce()
-                A_sa = (H_sky.T @ WF @ Te).reduce()
-                A_as = (Te.T @ WF @ H_sky).reduce()
-                A_aa = (Te.T @ WF @ Te).reduce()
-                A = BlockColumnOperator(
-                    [BlockRowOperator([A_ss, A_sa]), BlockRowOperator([A_as, A_aa])]
-                )
+                # Joint sky + explicit-amplitude system as ONE fused mixed stream: each CG apply
+                # runs a single scan that computes the weighted TOD once per observation and feeds
+                # both the sky leg (shared, accumulated) and the amplitude leg (per-obs, stacked).
+                # The sky leg gathers over selected pixels (keep/embed for the sky block); the
+                # amplitude leg passes through.
+                H = StreamOperator.block_row([H_solve, Te])
+                A_full = (H.T @ WF @ H).reduce()
+                amp_id = IdentityOperator(in_structure=Te.in_structure)
+                Sel = BlockDiagonalOperator([keep, amp_id])
+                Sel_t = BlockDiagonalOperator([embed, amp_id])
+                A = (Sel @ A_full @ Sel_t).reduce()
+            del map_rhs  # full-sky RHS already restricted into rhs_joint
 
             iteration_callback = None
             if self.config.solver.verbose:
@@ -381,6 +438,9 @@ class MultiObservationMapMaker[T]:
                 **self.config.solver.options,
             )
             logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
+            # Release CG system
+            del A, M, M_sky, WF, W, F, H_solve, keep, embed, rhs_joint
+            del templates, amp_rhs, implicit_ginv, explicit_ginv
 
             if joint:
                 sky_estimate, amplitudes = result.solution
@@ -389,7 +449,7 @@ class MultiObservationMapMaker[T]:
                 amplitudes = None
 
         return MapMakingResults(
-            map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)
+            map=local.promote(sky_estimate),
             icov=icov,
             hit_map=hit_map,
             solver_stats={'num_steps': int(result.num_steps)},
@@ -457,6 +517,8 @@ class MultiObservationMapMaker[T]:
                     lambda: reader.read_filler(),
                 )
                 obs = ObservationModel.create(data, padding, config, landscape)
+                # Store raw pointing geometry so we can rebuild acquisition on selected pixels
+                geom = ObservationGeometry.from_data(data)
 
                 # Padding/failed observations contribute nothing
                 obs.M = obs.M.restrict(real & valid)
@@ -513,7 +575,7 @@ class MultiObservationMapMaker[T]:
                     else:
                         rhs_i = obs.rhs_operator(tod)
                     carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
-                    return carry, (obs, None, None, None, None)
+                    return carry, (obs, geom, None, None, None, None)
 
                 # Templates: build the per-observation operators from this same read and apply the
                 # deprojected weight inline (G⁻¹ is per-observation, so no second TOD pass). Templates
@@ -547,22 +609,24 @@ class MultiObservationMapMaker[T]:
                         batch_size=gram_batch_size,
                     )
                 carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
-                return carry, (obs, templates, amp_i, ginv_i, ginv_e)
+                return carry, (obs, geom, templates, amp_i, ginv_i, ginv_e)
 
             init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')
             init_rhs = jax.lax.pcast(landscape.zeros(), axis, to='varying')
             (hits, rhs), stacked = jax.lax.scan(step, (init_hits, init_rhs), (indices, is_real))
             hits = jax.lax.psum(hits, axis)
             rhs = jax.lax.psum(rhs, axis)
-            model, templates, amp_rhs, implicit_ginv, explicit_ginv = stacked
-            return model, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs
+            model, geometry, templates, amp_rhs, implicit_ginv, explicit_ginv = stacked
+            return model, geometry, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs
 
-        out_specs = (P('obs'), P('obs'), P('obs'), P('obs'), P('obs'), P(), P())
+        out_specs = (P('obs'), P('obs'), P('obs'), P('obs'), P('obs'), P('obs'), P(), P())
         kernel = jax.shard_map(out_specs=out_specs, check_vma=False)(kernel)
-        model, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs = kernel(
+        model, geometry, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs = kernel(
             indices, is_real
         )
-        return AccumulatedModel(model, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs)
+        return AccumulatedModel(
+            model, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs, geometry
+        )
 
     def _real_observation_mask(self) -> np.ndarray:
         """Boolean flag per padded slot: True for real observations, False for padding."""

@@ -711,6 +711,15 @@ class PointingConfig:
     - ``'bilinear'``: bilinear interpolation using the four nearest pixels.
     """
 
+    localize: bool | None = None
+    """Rebuild the CG system operator on the selected-pixel landscape (multi-observation solve).
+
+    The solve then gathers a compressed, cache-resident map instead of the full sky. Pre-computed
+    pointing pays a one-time index remap for this; on-the-fly pointing pays a global-to-local
+    lookup on *every* apply. Default (``null``): localize exactly when the pointing is pre-computed
+    (``on_the_fly: false``).
+    """
+
 
 @dataclass
 class SotodlibConfig:

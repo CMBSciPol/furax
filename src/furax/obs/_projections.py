@@ -7,7 +7,6 @@ from furax.obs import QURotationOperator
 from furax.obs._detectors import DetectorArray
 from furax.obs._samplings import Sampling
 from furax.obs.landscapes import HealpixLandscape
-from furax.obs.stokes import Stokes
 
 
 def create_projection_operator(
@@ -30,7 +29,7 @@ def create_projection_operator(
         # remove the number of directions per pixels if there is only one.
         indices = indices.reshape(indices.shape[0], indices.shape[2])
 
-    tod_structure = Stokes.class_for(landscape.stokes).structure_for(indices.shape, landscape.dtype)
+    tod_structure = landscape.structure_for(indices.shape)
 
     rotation = QURotationOperator(samplings.pa, in_structure=tod_structure)
     # Stokes maps carry the components on the leading axis: ravel only the spatial axes (1..-1) and

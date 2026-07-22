@@ -29,7 +29,13 @@ from furax.mapmaking.config import (
     WeightingConfig,
     WeightingMode,
 )
-from furax.mapmaking.mapmaker import MLMapmaker, get_obs_distribution_to_process
+from furax.mapmaking.mapmaker import (
+    ATOPMapMaker,
+    BinnedMapMaker,
+    MLMapmaker,
+    TwoStepMapmaker,
+    get_obs_distribution_to_process,
+)
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import ValidStokesLiteral
@@ -422,6 +428,51 @@ class TestSingleObsTemplates:
         for key, value in res.items():
             if key.startswith('template_') and not key.startswith('template_reg'):
                 assert bool(jnp.all(jnp.isfinite(value))), key
+
+
+class TestSingleObsSolverGuards:
+    """Solver/weighting compatibility on the single-observation ``MapMaker`` path.
+
+    The direct binned solvers invert only the per-pixel (block-Jacobi) system, which is exact for
+    nearest-neighbour pointing but drops the off-diagonal pixel coupling that bilinear interpolation
+    introduces -- so bilinear pointing is restricted to the iterative ML solver. The ML solver in
+    turn accepts any weighting mode (identity / diagonal / Toeplitz), not just Toeplitz.
+    """
+
+    def _config(
+        self,
+        mode: WeightingMode,
+        interpolation: Literal['nearest', 'bilinear'] = 'nearest',
+        method: Methods = Methods.MAXL,
+    ) -> MapMakingConfig:
+        return MapMakingConfig(
+            method=method,
+            pointing=PointingConfig(on_the_fly=True, interpolation=interpolation),
+            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
+            # PRECOMPUTED sidesteps fitting a model to the synthetic white TODs (yields NaN).
+            weighting=WeightingConfig(mode=mode, source=NoiseSource.PRECOMPUTED),
+        )
+
+    @pytest.mark.parametrize('mode', [WeightingMode.IDENTITY, WeightingMode.DIAGONAL])
+    def test_ml_mapmaker_accepts_diagonal_weighting(self, mode):
+        """ML runs with identity/diagonal weighting (previously rejected via ``binned=True``)."""
+        obs = FakeGroundObservation(n_dets=4, n_samples=1024, sample_rate=100.0)
+        res = MLMapmaker(config=self._config(mode)).make_map(obs)
+        assert bool(jnp.all(jnp.isfinite(res['map'])))
+
+    def test_ml_mapmaker_accepts_bilinear_pointing(self):
+        """Bilinear pointing runs under the ML solver."""
+        obs = FakeGroundObservation(n_dets=4, n_samples=1024, sample_rate=100.0)
+        cfg = self._config(WeightingMode.IDENTITY, interpolation='bilinear')
+        res = MLMapmaker(config=cfg).make_map(obs)
+        assert bool(jnp.all(jnp.isfinite(res['map'])))
+
+    @pytest.mark.parametrize('maker_cls', [BinnedMapMaker, TwoStepMapmaker, ATOPMapMaker])
+    def test_direct_solvers_reject_bilinear_pointing(self, maker_cls):
+        """The direct binned solvers refuse bilinear pointing at construction time."""
+        cfg = self._config(WeightingMode.DIAGONAL, interpolation='bilinear', method=Methods.BINNED)
+        with pytest.raises(ValueError, match='does not support bilinear pointing'):
+            maker_cls(config=cfg)
 
 
 class TestGapTreatmentMapMaker:

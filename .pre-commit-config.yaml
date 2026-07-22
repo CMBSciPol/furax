@@ -10,7 +10,7 @@ repos:
     - --all
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.21
+  rev: v0.15.22
   hooks:
     - id: ruff-check
       name: ruff linting
@@ -35,7 +35,7 @@ repos:
   - id: check-merge-conflict
 
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.11.28
+  rev: 0.11.31
   hooks:
   - id: uv-lock
 
@@ -47,7 +47,7 @@ repos:
     - apischema
     - astropy
     - healpy
-    - jax==0.10.2
+    - jax==0.11.0
     - jaxtyping
     - jax-healpy
     - lineax

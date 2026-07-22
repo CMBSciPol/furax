@@ -3,6 +3,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +17,8 @@ from jaxtyping import Array, DTypeLike, Float, Integer, Key, PyTree, ScalarLike,
 from furax.math.quaternion import qrot_zaxis, to_iso_angles
 from furax.obs._samplings import Sampling
 from furax.obs.stokes import Stokes, ValidStokesLiteral
+
+_StokesT = TypeVar('_StokesT', bound=Stokes)
 
 
 @register_static
@@ -782,3 +785,153 @@ class TangentialLandscape(StokesLandscape):
         xs, ys, weights = _2d_bilinear_interp(pix_x, pix_y)
         indices = self.pixel2index(xs, ys)
         return indices, weights
+
+
+@register_static
+class LocalStokesLandscape(StokesLandscape):
+    r"""A landscape over a subset of a parent landscape's pixels.
+
+    Wraps a ``parent`` [`StokesLandscape`][] and an array of *global* (parent) flat pixel indices,
+    defining a reduced pixel domain of ``nlocal`` real pixels. The indices are normalized on
+    construction: any shape is flattened, duplicates are removed, negative entries (the
+    out-of-bounds marker of ``world2index``) are dropped, and the result is sorted. Index-producing
+    methods (``world2index`` / ``quat2index``) return **local** indices into the subset, so it is a
+    drop-in landscape wherever a full-sky one is used.
+
+    The pixel axis carries an extra trailing *sink* slot: ``shape == (nlocal + 1,)`` and the sink is
+    index ``nlocal``. Coordinates outside the subset (and out-of-bounds inputs) map to the sink
+    rather than ``-1``, so a plain gather from the length ``nlocal + 1`` buffer lands them on the
+    dedicated discardable slot instead of wrapping onto a real pixel (as ``-1`` would). The map
+    product space is the ``nlocal`` real pixels (no sink): [`restrict`][] and [`promote`][] move
+    between the parent sky and that space.
+
+    Attributes:
+        parent: The parent landscape.
+        global_indices: Sorted 1-D array of unique global (parent) flat pixel indices, length
+            ``nlocal``.
+
+    Examples:
+        Restrict a 12-pixel HEALPix sky to two pixels (the shape gains a trailing sink slot):
+
+        >>> parent = HealpixLandscape(1, stokes='I')
+        >>> local = LocalStokesLandscape(parent, jnp.array([3, 7]))
+        >>> local.nlocal, local.sink, local.shape
+        (2, 2, (3,))
+
+        Global indices map to local ones; unselected and out-of-bounds pixels fall in the sink:
+
+        >>> local.global2local(jnp.array([3, 7, 5, -1]))
+        Array([0, 1, 2, 2], dtype=int32)
+
+        [`restrict`][] and [`promote`][] move between the parent sky and the real (sink-less)
+        subset:
+
+        >>> sky = parent.ones()
+        >>> local.restrict(sky).shape
+        (2,)
+        >>> local.promote(local.restrict(sky)).shape
+        (12,)
+    """
+
+    def __init__(
+        self,
+        parent: StokesLandscape,
+        global_indices: Integer[np.ndarray | Array, '...'],
+    ) -> None:
+        # Deduplicate and drop negative entries to respect sorted-unique invariant.
+        gi = jnp.unique(jnp.asarray(global_indices).reshape(-1))
+        gi = gi[gi >= 0]
+        npix = math.prod(parent.shape)
+        if gi.size > 0 and int(gi[-1]) >= npix:
+            raise ValueError(
+                f'global_indices contains {int(gi[-1])}, out of range for a parent '
+                f'with {npix} pixels.'
+            )
+        nlocal = int(gi.size)
+        # The sink occupies index `nlocal`, so the buffer has shape `(nlocal + 1,)`.
+        super().__init__(shape=(nlocal + 1,), stokes=parent.stokes, dtype=parent.dtype)
+        self.parent = parent
+        self.global_indices = gi
+        # lut[global_flat_index] -> local index in [0, nlocal); unmapped pixels -> sink.
+        lut = jnp.full(npix, nlocal, dtype=jnp.int32)
+        lut = lut.at[gi].set(jnp.arange(nlocal, dtype=jnp.int32))
+        self._global2local_lut = lut
+
+    @property
+    def nlocal(self) -> int:
+        return len(self.global_indices)
+
+    @property
+    def sink(self) -> int:
+        """The sink index that unmapped/out-of-bounds samples map to."""
+        return len(self.global_indices)
+
+    def world2index(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> Integer[Array, ' *dims']:
+        """Convert world coordinates to local pixel indices (sink for unmapped)."""
+        return self.global2local(self.parent.world2index(theta, phi))
+
+    def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
+        """Convert quaternions to local pixel indices (sink for unmapped)."""
+        return self.global2local(self.parent.quat2index(quat))
+
+    def world2pixel(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], ...]:
+        raise NotImplementedError('LocalStokesLandscape does not support world2pixel.')
+
+    def global2local(self, indices: Integer[Array, ' *dims']) -> Integer[Array, ' *dims']:
+        """Map global (parent) flat indices to local indices, sending unmapped ones to the sink.
+
+        Out-of-bounds inputs (negative, e.g. ``-1`` from a missed sample) also map to the sink.
+        """
+        safe = jnp.where(indices >= 0, indices, 0)
+        local: Integer[Array, ' *dims'] = jnp.where(
+            indices >= 0, self._global2local_lut[safe], self.sink
+        )
+        return local
+
+    def local2global(self, indices: Integer[Array, ' *dims']) -> Integer[Array, ' *dims']:
+        """Map local indices to global (parent) flat indices, ``-1`` for out-of-range inputs."""
+        valid = (indices >= 0) & (indices < self.nlocal)
+        safe = jnp.where(valid, indices, 0)
+        return jnp.where(valid, self.global_indices[safe], -1)
+
+    def restrict(self, sky: _StokesT) -> _StokesT:
+        """Extract the local subset from a parent-shaped Stokes map (``nlocal``-sized, no sink)."""
+        flat = sky.data.reshape(sky.data.shape[0], -1)
+        return type(sky).from_array(flat[:, self.global_indices])
+
+    def promote(self, sky: _StokesT, fill_value: ScalarLike = 0) -> _StokesT:
+        """Scatter a local (``nlocal``-sized) Stokes map back into a parent-shaped one.
+
+        Pixels outside the local subset are set to ``fill_value``.
+        """
+        ncomp = sky.data.shape[0]
+        npix = math.prod(self.parent.shape)
+        flat = jnp.full((ncomp, npix), fill_value, dtype=sky.dtype)
+        flat = flat.at[:, self.global_indices].set(sky.data)
+        return type(sky).from_array(flat.reshape(ncomp, *self.parent.shape))
+
+    def get_coverage(self, arg: Sampling) -> Integer[Array, ' nlocal']:
+        """Per-pixel hit counts in local index space (samples outside the subset are ignored)."""
+        local = self.world2index(arg.theta, arg.phi)
+        valid = local < self.nlocal  # drop the sink
+        safe = jnp.where(valid, local, 0)
+        coverage = jnp.zeros(self.nlocal, dtype=np.int64)
+        coverage = coverage.at[safe].add(valid.astype(np.int64))
+        return coverage
+
+    @classmethod
+    def from_boolean_mask(
+        cls, parent: StokesLandscape, mask: Integer[Array, ' *shape']
+    ) -> 'LocalStokesLandscape':
+        """Build from a boolean mask over parent pixels (any shape; raveled in C order)."""
+        global_indices = jnp.flatnonzero(jnp.asarray(mask).reshape(-1))
+        return cls(parent, global_indices)
+
+    @classmethod
+    def from_sampling(cls, parent: StokesLandscape, sampling: Sampling) -> 'LocalStokesLandscape':
+        """Build from the pixels a [`Sampling`][furax.obs._samplings.Sampling] observes."""
+        return cls(parent, parent.world2index(sampling.theta, sampling.phi))

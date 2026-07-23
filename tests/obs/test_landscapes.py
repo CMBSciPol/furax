@@ -495,6 +495,14 @@ class TestLocalStokesLandscape:
         with pytest.raises(ValueError, match='out of range'):
             LocalStokesLandscape(parent, jnp.array([0, len(parent)]))
 
+    def test_rejects_non_integer_indices(self, parent: CARLandscape) -> None:
+        with pytest.raises(TypeError, match='integer'):
+            LocalStokesLandscape(parent, jnp.array([0.0, 1.0]))
+
+    def test_rejects_boolean_indices(self, parent: CARLandscape) -> None:
+        with pytest.raises(TypeError, match='from_boolean_mask'):
+            LocalStokesLandscape(parent, jnp.array([True, False]))
+
     def test_delegates_stokes_and_dtype(self, parent: CARLandscape) -> None:
         local = LocalStokesLandscape(parent, jnp.array([0, 2, 4]))
         assert local.stokes == parent.stokes

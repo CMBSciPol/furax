@@ -12,7 +12,7 @@ import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
 from jax.tree_util import register_static
-from jaxtyping import Array, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
+from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
 from furax.math.quaternion import qrot_zaxis, to_iso_angles
 from furax.obs._samplings import Sampling
@@ -846,8 +846,13 @@ class LocalStokesLandscape(StokesLandscape):
         parent: StokesLandscape,
         global_indices: Integer[np.ndarray | Array, '...'],
     ) -> None:
+        gi = jnp.asarray(global_indices)
+        if gi.dtype == jnp.bool_:
+            raise TypeError('global_indices is boolean; use from_boolean_mask for masks.')
+        if not jnp.issubdtype(gi.dtype, jnp.integer):
+            raise TypeError(f'global_indices must be an integer array, got dtype {gi.dtype}.')
         # Deduplicate and drop negative entries to respect sorted-unique invariant.
-        gi = jnp.unique(jnp.asarray(global_indices).reshape(-1))
+        gi = jnp.unique(gi.reshape(-1))
         gi = gi[gi >= 0]
         npix = math.prod(parent.shape)
         if gi.size > 0 and int(gi[-1]) >= npix:
@@ -963,10 +968,10 @@ class LocalStokesLandscape(StokesLandscape):
 
     @classmethod
     def from_boolean_mask(
-        cls, parent: StokesLandscape, mask: Integer[Array, ' *shape']
+        cls, parent: StokesLandscape, mask: Bool[np.ndarray | Array, '...']
     ) -> 'LocalStokesLandscape':
-        """Build from a boolean mask over parent pixels (any shape; raveled in C order)."""
-        global_indices = jnp.flatnonzero(jnp.asarray(mask).reshape(-1))
+        """Build from a boolean mask over parent pixels."""
+        global_indices = jnp.flatnonzero(mask)
         return cls(parent, global_indices)
 
     @classmethod

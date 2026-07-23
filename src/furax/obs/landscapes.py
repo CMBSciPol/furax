@@ -800,7 +800,10 @@ class LocalStokesLandscape(StokesLandscape):
     construction: any shape is flattened, duplicates are removed, negative entries (the
     out-of-bounds marker of ``world2index``) are dropped, and the result is sorted. Index-producing
     methods (``world2index`` / ``quat2index``) return **local** indices into the subset, so it is a
-    drop-in landscape wherever a full-sky one is used.
+    drop-in landscape wherever a full-sky one is used. Pixel coordinates, however, do not make
+    sense here: local indices are positions in the sorted subset, not points on the parent's pixel
+    grid, so the pixel-coordinate methods (``world2pixel``, ``quat2pixel``, ``pixel2index``) raise
+    ``NotImplementedError``.
 
     The pixel axis carries an extra trailing *sink* slot: ``shape == (nlocal + 1,)`` and the sink is
     index ``nlocal``. Coordinates outside the subset (and out-of-bounds inputs) map to the sink

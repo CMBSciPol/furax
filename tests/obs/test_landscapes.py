@@ -445,6 +445,24 @@ class TestLocalStokesLandscape:
             promoted.data.reshape(2, nfreq, -1)[..., gi], sky.data.reshape(2, nfreq, -1)[..., gi]
         )
 
+    def test_world2interp_localizes_indices_and_masks_weights(self) -> None:
+        parent = HealpixLandscape(2, stokes='I')
+        theta, phi = jnp.array([1.2]), jnp.array([0.7])
+        gidx, gweights = parent.world2interp(theta, phi)
+        # subset containing all 4 neighbors: indices are localized, weights unchanged
+        local = LocalStokesLandscape(parent, gidx)
+        lidx, lweights = local.world2interp(theta, phi)
+        assert_array_equal(local.local2global(lidx), gidx)
+        assert_array_equal(lweights, gweights)
+        # drop one neighbor: it maps to the sink and its weight is zeroed
+        dropped = gidx.ravel()[0]
+        local = LocalStokesLandscape(parent, gidx.ravel()[1:])
+        lidx, lweights = local.world2interp(theta, phi)
+        mask = gidx == dropped
+        assert_array_equal(lidx[mask], local.sink)
+        assert_array_equal(lweights[mask], 0.0)
+        assert_array_equal(lweights[~mask], gweights[~mask])
+
     def test_get_coverage_matches_shape(self) -> None:
         # base-class contract: coverage has shape self.shape; the sink slot counts the
         # samples falling outside the subset

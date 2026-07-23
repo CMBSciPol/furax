@@ -880,6 +880,23 @@ class LocalStokesLandscape(StokesLandscape):
         """Convert quaternions to local pixel indices (sink for unmapped)."""
         return self.global2local(self.parent.quat2index(quat))
 
+    def world2interp(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
+        r"""Returns (local indices, weights) for interpolation on the parent's grid.
+
+        Neighbors outside the subset map to the sink with their weight zeroed, following the
+        parent's out-of-bounds convention. Consumers that renormalize the weights then
+        interpolate over the covered neighbors only.
+
+        Note:
+            Calling this method entails an additional $O(\log n_\mathrm{local})$ binary search
+            per neighbor, compared to the parent landscape's method.
+        """
+        indices, weights = self.parent.world2interp(theta, phi)
+        local = self.global2local(indices)
+        return local, jnp.where(local == self.sink, 0, weights)
+
     def world2pixel(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Float[Array, ' *dims'], ...]:

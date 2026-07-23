@@ -397,7 +397,9 @@ class TestLocalStokesLandscape:
             jnp.arange(2 * parent.size // 2, dtype=jnp.float64).reshape(2, *parent.shape)
         )
         restricted = local.restrict(sky)
-        assert restricted.shape == (3,)
+        # restrict lands in the map space `self.shape` (sink slot included, zero-padded)
+        assert restricted.shape == local.shape == (4,)
+        assert_array_equal(restricted.data[:, -1], 0.0)
         promoted = local.promote(restricted)
         assert promoted.shape == parent.shape
         gi = local.global_indices
@@ -406,6 +408,61 @@ class TestLocalStokesLandscape:
         assert_array_equal(
             promoted.data.reshape(2, -1).at[:, gi].set(0.0), jnp.zeros((2, parent.size // 2))
         )
+
+    def test_with_drop_sink_roundtrip(self, parent: CARLandscape) -> None:
+        local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
+        compact = Stokes.class_for('QU').from_array(
+            jnp.arange(2 * local.nlocal, dtype=jnp.float64).reshape(2, local.nlocal)
+        )
+        padded = local.with_sink(compact, fill_value=-1.0)
+        assert padded.shape == local.shape
+        assert_array_equal(padded.data[:, -1], -1.0)
+        assert_array_equal(padded.data[:, :-1], compact.data)
+        roundtripped = local.drop_sink(padded)
+        assert roundtripped.shape == (local.nlocal,)
+        assert_array_equal(roundtripped.data, compact.data)
+
+    def test_promote_accepts_landscape_maps(self, parent: CARLandscape) -> None:
+        # zeros()/structure and restrict/promote all live in the same (nlocal + 1) space
+        local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
+        promoted = local.promote(local.zeros())
+        assert promoted.shape == parent.shape
+        assert_array_equal(promoted.data, 0.0)
+
+    def test_restrict_promote_batch_axes(self, parent: CARLandscape) -> None:
+        # extra leading axes (e.g. frequency) are preserved; only the trailing
+        # parent.ndim axes are pixel axes
+        local = LocalStokesLandscape(parent, jnp.array([3, 7, 15, 19]))
+        nfreq = 2
+        sky = Stokes.class_for('QU').from_array(
+            jnp.arange(2 * nfreq * parent.size // 2, dtype=jnp.float64).reshape(
+                2, nfreq, *parent.shape
+            )
+        )
+        restricted = local.restrict(sky)
+        assert restricted.shape == (nfreq, local.nlocal + 1)
+        gi = local.global_indices
+        assert_array_equal(restricted.data[..., :-1], sky.data.reshape(2, nfreq, -1)[..., gi])
+        promoted = local.promote(restricted)
+        assert promoted.shape == (nfreq, *parent.shape)
+        assert_array_equal(
+            promoted.data.reshape(2, nfreq, -1)[..., gi], sky.data.reshape(2, nfreq, -1)[..., gi]
+        )
+
+    def test_get_coverage_matches_shape(self) -> None:
+        # base-class contract: coverage has shape self.shape; the sink slot counts the
+        # samples falling outside the subset
+        class _IdentityLandscape(StokesLandscape):
+            def world2pixel(self, theta, phi):
+                return theta, phi
+
+        parent = _IdentityLandscape((5, 2), 'I')
+        local = LocalStokesLandscape(parent, jnp.array([0, 3]))
+        # samples hit flat parent pixels [0, 3, 3, 1]; pixel 1 is outside the subset -> sink
+        samplings = Sampling(jnp.array([0.0, 1, 1, 1]), jnp.array([0.0, 1, 1, 0]), jnp.array(0.0))
+        coverage = local.get_coverage(samplings)
+        assert coverage.shape == local.shape
+        assert_array_equal(coverage, [1, 2, 1])
 
     @pytest.mark.parametrize(
         'indices',

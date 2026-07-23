@@ -805,9 +805,10 @@ class LocalStokesLandscape(StokesLandscape):
     The pixel axis carries an extra trailing *sink* slot: ``shape == (nlocal + 1,)`` and the sink is
     index ``nlocal``. Coordinates outside the subset (and out-of-bounds inputs) map to the sink
     rather than ``-1``, so a plain gather from the length ``nlocal + 1`` buffer lands them on the
-    dedicated discardable slot instead of wrapping onto a real pixel (as ``-1`` would). The map
-    product space is the ``nlocal`` real pixels (no sink): [`restrict`][] and [`promote`][] move
-    between the parent sky and that space.
+    dedicated discardable slot instead of wrapping onto a real pixel (as ``-1`` would). Maps live
+    in that ``nlocal + 1`` space throughout: [`restrict`][] pads a zero sink slot and [`promote`][]
+    discards it when moving between the parent sky and the local one. [`with_sink`][] and
+    [`drop_sink`][] convert between that space and sink-less ``nlocal``-sized maps.
 
     Attributes:
         parent: The parent landscape.
@@ -827,12 +828,12 @@ class LocalStokesLandscape(StokesLandscape):
         >>> local.global2local(jnp.array([3, 7, 5, -1]))
         Array([0, 1, 2, 2], dtype=int32)
 
-        [`restrict`][] and [`promote`][] move between the parent sky and the real (sink-less)
-        subset:
+        [`restrict`][] and [`promote`][] move between the parent sky and the local map space
+        (sink slot included):
 
         >>> sky = parent.ones()
         >>> local.restrict(sky).shape
-        (2,)
+        (3,)
         >>> local.promote(local.restrict(sky)).shape
         (12,)
     """
@@ -856,10 +857,6 @@ class LocalStokesLandscape(StokesLandscape):
         super().__init__(shape=(nlocal + 1,), stokes=parent.stokes, dtype=parent.dtype)
         self.parent = parent
         self.global_indices = gi
-        # lut[global_flat_index] -> local index in [0, nlocal); unmapped pixels -> sink.
-        lut = jnp.full(npix, nlocal, dtype=jnp.int32)
-        lut = lut.at[gi].set(jnp.arange(nlocal, dtype=jnp.int32))
-        self._global2local_lut = lut
 
     @property
     def nlocal(self) -> int:
@@ -868,7 +865,7 @@ class LocalStokesLandscape(StokesLandscape):
     @property
     def sink(self) -> int:
         """The sink index that unmapped/out-of-bounds samples map to."""
-        return len(self.global_indices)
+        return self.nlocal
 
     def world2index(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
@@ -885,15 +882,26 @@ class LocalStokesLandscape(StokesLandscape):
     ) -> tuple[Float[Array, ' *dims'], ...]:
         raise NotImplementedError('LocalStokesLandscape does not support world2pixel.')
 
+    def quat2pixel(self, quat: Float[Array, '*dims 4']) -> tuple[Float[Array, ' *dims'], ...]:
+        raise NotImplementedError('LocalStokesLandscape does not support quat2pixel.')
+
+    def pixel2index(self, *coords: Float[Array, ' *dims']) -> Integer[Array, ' *ndims']:
+        raise NotImplementedError('LocalStokesLandscape does not support pixel2index.')
+
     def global2local(self, indices: Integer[Array, ' *dims']) -> Integer[Array, ' *dims']:
         """Map global (parent) flat indices to local indices, sending unmapped ones to the sink.
 
         Out-of-bounds inputs (negative, e.g. ``-1`` from a missed sample) also map to the sink.
         """
-        safe = jnp.where(indices >= 0, indices, 0)
-        local: Integer[Array, ' *dims'] = jnp.where(
-            indices >= 0, self._global2local_lut[safe], self.sink
-        )
+        if self.nlocal == 0:
+            return jnp.full(jnp.shape(indices), self.sink, dtype=jnp.int32)
+        # global_indices is sorted-unique: binary search + equality check gives an O(log nlocal)
+        # inverse lookup without materializing an npix-sized LUT. Negative inputs (oob markers)
+        # miss the equality check (global_indices is non-negative) and fall in the sink.
+        pos = jnp.searchsorted(self.global_indices, indices).astype(jnp.int32)
+        safe = jnp.minimum(pos, self.nlocal - 1)
+        hit = self.global_indices[safe] == indices
+        local: Integer[Array, ' *dims'] = jnp.where(hit, safe, self.sink)
         return local
 
     def local2global(self, indices: Integer[Array, ' *dims']) -> Integer[Array, ' *dims']:
@@ -902,30 +910,36 @@ class LocalStokesLandscape(StokesLandscape):
         safe = jnp.where(valid, indices, 0)
         return jnp.where(valid, self.global_indices[safe], -1)
 
+    def with_sink(self, sky: _StokesT, fill_value: ScalarLike = 0) -> _StokesT:
+        """Append a sink slot filled with ``fill_value`` (``nlocal`` -> ``nlocal + 1`` pixels)."""
+        pad_width = [(0, 0)] * (sky.data.ndim - 1) + [(0, 1)]
+        return type(sky).from_array(jnp.pad(sky.data, pad_width, constant_values=fill_value))
+
+    def drop_sink(self, sky: _StokesT) -> _StokesT:
+        """Return the map without its trailing sink slot (``nlocal + 1`` -> ``nlocal`` pixels)."""
+        return type(sky).from_array(sky.data[..., :-1])
+
     def restrict(self, sky: _StokesT) -> _StokesT:
-        """Extract the local subset from a parent-shaped Stokes map (``nlocal``-sized, no sink)."""
-        flat = sky.data.reshape(sky.data.shape[0], -1)
-        return type(sky).from_array(flat[:, self.global_indices])
+        """Extract the local subset from a parent-shaped Stokes map (shape ``self.shape``).
+
+        The trailing sink slot is padded with zeros. Leading (batch) axes are preserved; only the
+        trailing ``parent.ndim`` axes are interpreted as the pixel axes.
+        """
+        batch = sky.data.shape[: sky.data.ndim - len(self.parent.shape)]
+        flat = sky.data.reshape(*batch, -1)
+        return self.with_sink(type(sky).from_array(flat[..., self.global_indices]))
 
     def promote(self, sky: _StokesT, fill_value: ScalarLike = 0) -> _StokesT:
-        """Scatter a local (``nlocal``-sized) Stokes map back into a parent-shaped one.
+        """Scatter a local (``self.shape``-sized) Stokes map back into a parent-shaped one.
 
-        Pixels outside the local subset are set to ``fill_value``.
+        The trailing sink slot is discarded. Pixels outside the local subset are set to
+        ``fill_value``. Leading (batch) axes are preserved.
         """
-        ncomp = sky.data.shape[0]
+        batch = sky.data.shape[:-1]
         npix = math.prod(self.parent.shape)
-        flat = jnp.full((ncomp, npix), fill_value, dtype=sky.dtype)
-        flat = flat.at[:, self.global_indices].set(sky.data)
-        return type(sky).from_array(flat.reshape(ncomp, *self.parent.shape))
-
-    def get_coverage(self, arg: Sampling) -> Integer[Array, ' nlocal']:
-        """Per-pixel hit counts in local index space (samples outside the subset are ignored)."""
-        local = self.world2index(arg.theta, arg.phi)
-        valid = local < self.nlocal  # drop the sink
-        safe = jnp.where(valid, local, 0)
-        coverage = jnp.zeros(self.nlocal, dtype=np.int64)
-        coverage = coverage.at[safe].add(valid.astype(np.int64))
-        return coverage
+        flat = jnp.full((*batch, npix), fill_value, dtype=sky.dtype)
+        flat = flat.at[..., self.global_indices].set(sky.data[..., : self.nlocal])
+        return type(sky).from_array(flat.reshape(*batch, *self.parent.shape))
 
     @classmethod
     def from_boolean_mask(

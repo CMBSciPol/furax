@@ -2,11 +2,17 @@ import jax
 import jax.numpy as jnp
 import pytest
 from equinox import tree_equal
-from numpy.testing import assert_array_almost_equal
+from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
 from furax.core import AbstractLinearOperator, CompositionOperator
-from furax.obs.landscapes import CARLandscape, HealpixLandscape, StokesLandscape, WCSProjection
+from furax.obs.landscapes import (
+    CARLandscape,
+    HealpixLandscape,
+    LocalStokesLandscape,
+    StokesLandscape,
+    WCSProjection,
+)
 from furax.obs.operators import QURotationOperator
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import ValidStokesLiteral
@@ -166,3 +172,46 @@ def test_expanded_interpolate_preserves_rotation_fusion() -> None:
 
     tod = jax.tree.map(lambda s: jax.random.normal(key4, s.shape, s.dtype), expanded.out_structure)
     assert tree_equal((outer @ expanded)(op.T(tod)), reduced(op.T(tod)), rtol=1e-10)
+
+
+class TestLocalLandscape:
+    """A PointingOperator on a LocalStokesLandscape matches the full-sky one."""
+
+    @pytest.fixture
+    def setup(self):
+        parent = HealpixLandscape(NSIDE, 'IQU')
+        k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(11), 4)
+        qbore = _random_unit_quats(k1, (NSAMP,))
+        qdet = _random_unit_quats(k2, (NDET,))
+        p_full = PointingOperator.create(parent, qbore, qdet)
+        sky = parent.normal(k3)
+        tod = jax.tree.map(lambda s: jax.random.normal(k4, s.shape, s.dtype), p_full.out_structure)
+        # global pixels hit by the pointing: bin a ones-TOD (I accumulates 1 per hit)
+        hits = p_full.T(ftree.ones_like(p_full.out_structure))
+        covered = jnp.flatnonzero(hits.i)
+        return parent, qbore, qdet, p_full, sky, tod, covered
+
+    def test_mv_matches_full_sky(self, setup) -> None:
+        parent, qbore, qdet, p_full, sky, tod, covered = setup
+        local = LocalStokesLandscape(parent, covered)
+        p_local = PointingOperator.create(local, qbore, qdet)
+        assert tree_equal(p_local(local.restrict(sky)), p_full(sky), rtol=1e-13)
+
+    def test_transpose_matches_full_sky(self, setup) -> None:
+        parent, qbore, qdet, p_full, sky, tod, covered = setup
+        local = LocalStokesLandscape(parent, covered)
+        p_local = PointingOperator.create(local, qbore, qdet)
+        # uncovered pixels are zero in both the full binning and the promoted local one
+        assert tree_equal(local.promote(p_local.T(tod)), p_full.T(tod), rtol=1e-13)
+
+    def test_partial_coverage_sinks_missing_pixels(self, setup) -> None:
+        parent, qbore, qdet, p_full, sky, tod, covered = setup
+        # keep only half the covered pixels: samples on dropped pixels land in the sink
+        subset = covered[::2]
+        local = LocalStokesLandscape(parent, subset)
+        p_local = PointingOperator.create(local, qbore, qdet)
+        binned_local = local.promote(p_local.T(tod)).data
+        binned_full = p_full.T(tod).data
+        # transposes agree on the subset pixels; the sink contributions are discarded
+        assert_array_almost_equal(binned_local[:, subset], binned_full[:, subset], decimal=13)
+        assert_array_equal(binned_local.at[:, subset].set(0.0), 0.0)

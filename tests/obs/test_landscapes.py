@@ -394,7 +394,7 @@ class TestLocalStokesLandscape:
     def test_restrict_promote_roundtrip(self, parent: CARLandscape) -> None:
         local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
         sky = Stokes.class_for('QU').from_array(
-            jnp.arange(2 * parent.size // 2, dtype=jnp.float64).reshape(2, *parent.shape)
+            jnp.arange(2 * len(parent), dtype=jnp.float64).reshape(2, *parent.shape)
         )
         restricted = local.restrict(sky)
         # restrict lands in the map space `self.shape` (sink slot included, zero-padded)
@@ -405,9 +405,7 @@ class TestLocalStokesLandscape:
         gi = local.global_indices
         # selected pixels survive the roundtrip; everything else is zeroed
         assert_array_equal(promoted.data.reshape(2, -1)[:, gi], sky.data.reshape(2, -1)[:, gi])
-        assert_array_equal(
-            promoted.data.reshape(2, -1).at[:, gi].set(0.0), jnp.zeros((2, parent.size // 2))
-        )
+        assert_array_equal(promoted.data.reshape(2, -1).at[:, gi].set(0.0), 0.0)
 
     def test_with_drop_sink_roundtrip(self, parent: CARLandscape) -> None:
         local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
@@ -435,12 +433,10 @@ class TestLocalStokesLandscape:
         local = LocalStokesLandscape(parent, jnp.array([3, 7, 15, 19]))
         nfreq = 2
         sky = Stokes.class_for('QU').from_array(
-            jnp.arange(2 * nfreq * parent.size // 2, dtype=jnp.float64).reshape(
-                2, nfreq, *parent.shape
-            )
+            jnp.arange(2 * nfreq * len(parent), dtype=jnp.float64).reshape(2, nfreq, *parent.shape)
         )
         restricted = local.restrict(sky)
-        assert restricted.shape == (nfreq, local.nlocal + 1)
+        assert restricted.shape == (nfreq, *local.shape)
         gi = local.global_indices
         assert_array_equal(restricted.data[..., :-1], sky.data.reshape(2, nfreq, -1)[..., gi])
         promoted = local.promote(restricted)
@@ -479,7 +475,7 @@ class TestLocalStokesLandscape:
 
     def test_rejects_out_of_range(self, parent: CARLandscape) -> None:
         with pytest.raises(ValueError, match='out of range'):
-            LocalStokesLandscape(parent, jnp.array([0, parent.size // 2]))
+            LocalStokesLandscape(parent, jnp.array([0, len(parent)]))
 
     def test_delegates_stokes_and_dtype(self, parent: CARLandscape) -> None:
         local = LocalStokesLandscape(parent, jnp.array([0, 2, 4]))

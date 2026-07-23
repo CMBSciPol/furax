@@ -178,38 +178,50 @@ class TestLocalLandscape:
     """A PointingOperator on a LocalStokesLandscape matches the full-sky one."""
 
     @pytest.fixture
-    def setup(self):
+    def keys(self) -> jax.Array:
+        return jax.random.split(jax.random.key(11), 4)
+
+    @pytest.fixture
+    def p_full(self, keys: jax.Array) -> PointingOperator:
         parent = HealpixLandscape(NSIDE, 'IQU')
-        k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(11), 4)
-        qbore = _random_unit_quats(k1, (NSAMP,))
-        qdet = _random_unit_quats(k2, (NDET,))
-        p_full = PointingOperator.create(parent, qbore, qdet)
-        sky = parent.normal(k3)
-        tod = jax.tree.map(lambda s: jax.random.normal(k4, s.shape, s.dtype), p_full.out_structure)
+        qbore = _random_unit_quats(keys[0], (NSAMP,))
+        qdet = _random_unit_quats(keys[1], (NDET,))
+        return PointingOperator.create(parent, qbore, qdet)
+
+    @pytest.fixture
+    def sky(self, p_full: PointingOperator, keys: jax.Array):
+        return p_full.landscape.normal(keys[2])
+
+    @pytest.fixture
+    def tod(self, p_full: PointingOperator, keys: jax.Array):
+        return ftree.normal_like(p_full.out_structure, keys[3])
+
+    @pytest.fixture
+    def covered(self, p_full: PointingOperator) -> jax.Array:
         # global pixels hit by the pointing: bin a ones-TOD (I accumulates 1 per hit)
         hits = p_full.T(ftree.ones_like(p_full.out_structure))
-        covered = jnp.flatnonzero(hits.i)
-        return parent, qbore, qdet, p_full, sky, tod, covered
+        return jnp.flatnonzero(hits.i)
 
-    def test_mv_matches_full_sky(self, setup) -> None:
-        parent, qbore, qdet, p_full, sky, tod, covered = setup
-        local = LocalStokesLandscape(parent, covered)
-        p_local = PointingOperator.create(local, qbore, qdet)
+    @staticmethod
+    def _local_operator(
+        p_full: PointingOperator, indices: jax.Array
+    ) -> tuple[LocalStokesLandscape, PointingOperator]:
+        local = LocalStokesLandscape(p_full.landscape, indices)
+        return local, PointingOperator.create(local, p_full.qbore, p_full.qdet)
+
+    def test_mv_matches_full_sky(self, p_full, sky, covered) -> None:
+        local, p_local = self._local_operator(p_full, covered)
         assert tree_equal(p_local(local.restrict(sky)), p_full(sky), rtol=1e-13)
 
-    def test_transpose_matches_full_sky(self, setup) -> None:
-        parent, qbore, qdet, p_full, sky, tod, covered = setup
-        local = LocalStokesLandscape(parent, covered)
-        p_local = PointingOperator.create(local, qbore, qdet)
+    def test_transpose_matches_full_sky(self, p_full, tod, covered) -> None:
+        local, p_local = self._local_operator(p_full, covered)
         # uncovered pixels are zero in both the full binning and the promoted local one
         assert tree_equal(local.promote(p_local.T(tod)), p_full.T(tod), rtol=1e-13)
 
-    def test_partial_coverage_sinks_missing_pixels(self, setup) -> None:
-        parent, qbore, qdet, p_full, sky, tod, covered = setup
+    def test_partial_coverage_sinks_missing_pixels(self, p_full, tod, covered) -> None:
         # keep only half the covered pixels: samples on dropped pixels land in the sink
         subset = covered[::2]
-        local = LocalStokesLandscape(parent, subset)
-        p_local = PointingOperator.create(local, qbore, qdet)
+        local, p_local = self._local_operator(p_full, subset)
         binned_local = local.promote(p_local.T(tod)).data
         binned_full = p_full.T(tod).data
         # transposes agree on the subset pixels; the sink contributions are discarded

@@ -322,9 +322,19 @@ class MultiObservationMapMaker(Generic[T]):
                 # acquisition's last pixel is the sink absorbing samples outside the selection;
                 # keep/embed drop/zero it, so the solve stays in selected-pixel space.
                 del model, H_sky
-                H_solve: AbstractLinearOperator = StreamColumnOperator.create(
-                    eqx.filter_vmap(lambda g: g.build_acquisition(local, self.config))(geometry)
-                )
+
+                # Rebuild per observation. ``geometry`` is obs-sharded (P('obs')), so run the
+                # per-obs vmap *inside* shard_map: each shard then sees unsharded local arrays and
+                # the global->local pixel remap's searchsorted no longer inherits the 'obs' mesh
+                # axis. A bare filter_vmap over the sharded array leaks that axis into an empty
+                # vmap mesh ("Resource axis: obs ... not found in mesh: ()").
+                def _rebuild(geometry):  # type: ignore[no-untyped-def]
+                    return eqx.filter_vmap(lambda g: g.build_acquisition(local, self.config))(
+                        geometry
+                    )
+
+                local_H = jax.shard_map(out_specs=P('obs'), check_vma=False)(_rebuild)(geometry)
+                H_solve: AbstractLinearOperator = StreamColumnOperator.create(local_H)
                 keep = IndexOperator(
                     (..., slice(0, local.nlocal)), in_structure=H_solve.in_structure
                 )

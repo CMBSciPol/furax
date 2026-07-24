@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improve `MapMakingConfig` documentation and add examples (#179)
 - Generalise `XSamplingOperator` to cache world angles, enabling precomputed bilinear pointing for HEALPix (#183)
 - Allow the ML mapmaker to run with any weighting mode (identity/diagonal/Toeplitz), and restrict bilinear pointing to the ML solver (the direct binned solvers now raise on bilinear) (#187)
+- Bumped minimum bounds for Python (3.12+), JAX (0.11+), Numpy (2.1+), and SciPy (1.15+) (#188)
 
 ### Fixed
 

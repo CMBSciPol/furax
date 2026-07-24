@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `StreamOperator` that mixes stacked and shared components in one operator, with `stream_block_row`/`stream_block_column` constructors so a block system spanning both fuses into a single streaming scan (#190)
+
 ## [0.12.0] - 2026-07-24
 
 This version drops support for Python 3.11 following the latest JAX release (0.11.0).

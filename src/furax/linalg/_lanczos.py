@@ -11,7 +11,7 @@ from jaxtyping import Float, Num, PyTree
 from furax import tree
 from furax.core import AbstractLinearOperator
 
-type LanczosWhich = Literal['LM', 'SM', 'LA', 'SA', 'BE']
+LanczosWhich = Literal['LM', 'SM', 'LA', 'SA', 'BE']
 
 
 def _block_zeros_like(x: PyTree, k: int) -> PyTree:

@@ -12,7 +12,7 @@ from furax.tree import dot, normal_like
 
 from ._lanczos import lanczos_eigh, lanczos_tr
 
-type LowRankMethod = Literal['lanczos', 'lanczos_tr']
+LowRankMethod = Literal['lanczos', 'lanczos_tr']
 
 
 class LowRankTerms(NamedTuple):

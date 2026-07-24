@@ -975,6 +975,11 @@ class LocalStokesLandscape(StokesLandscape):
         return cls(parent, global_indices)
 
     @classmethod
-    def from_sampling(cls, parent: StokesLandscape, sampling: Sampling) -> 'LocalStokesLandscape':
+    def from_sampling(
+        cls, parent: StokesLandscape, sampling: Sampling, interpolate: bool = False
+    ) -> 'LocalStokesLandscape':
         """Build from the pixels a [`Sampling`][furax.obs._samplings.Sampling] observes."""
+        if interpolate:
+            # bilinear reads the full 4-pixel stencil, so the subset must contain it
+            return cls(parent, parent.world2interp(sampling.theta, sampling.phi)[0])
         return cls(parent, parent.world2index(sampling.theta, sampling.phi))

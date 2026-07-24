@@ -463,6 +463,27 @@ class TestLocalStokesLandscape:
         assert_array_equal(lweights[mask], 0.0)
         assert_array_equal(lweights[~mask], gweights[~mask])
 
+    def test_from_sampling(self) -> None:
+        parent = HealpixLandscape(2, stokes='I')
+        theta = jnp.array([1.2, 0.9, 2.0])
+        phi = jnp.array([0.7, 3.1, 5.0])
+        sampling = Sampling(theta, phi, jnp.zeros_like(theta))
+
+        # nearest: subset is exactly the observed (sorted-unique) pixels
+        nearest = LocalStokesLandscape.from_sampling(parent, sampling)
+        expected = jnp.unique(parent.world2index(theta, phi))
+        assert_array_equal(nearest.global_indices, expected)
+
+        # interpolate: subset is the full 4-pixel bilinear stencil
+        interp = LocalStokesLandscape.from_sampling(parent, sampling, interpolate=True)
+        gidx, _ = parent.world2interp(theta, phi)
+        assert_array_equal(interp.global_indices, jnp.unique(gidx))
+        # every stencil neighbor is local (nothing falls in the sink) -> weights preserved
+        lidx, lweights = interp.world2interp(theta, phi)
+        assert not jnp.any(lidx == interp.sink)
+        _, gweights = parent.world2interp(theta, phi)
+        assert_array_equal(lweights, gweights)
+
     def test_get_coverage_matches_shape(self) -> None:
         # base-class contract: coverage has shape self.shape; the sink slot counts the
         # samples falling outside the subset

@@ -1,5 +1,4 @@
 from dataclasses import field
-from typing import TypeVar
 
 from jaxtyping import Array, Float
 
@@ -8,8 +7,6 @@ from furax.math.quaternion import qrot_zaxis
 from furax.obs.landscapes import TangentialLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI
-
-_StokesT = TypeVar('_StokesT', bound=Stokes)
 
 __all__ = [
     'AtmospherePointingOperator',
@@ -103,7 +100,9 @@ class AtmospherePointingOperator(PointingOperator):
             y + self.wind_displacement[:, 1],
         )
 
-    def _modulate(self, tod: _StokesT, qdet_full: Float[Array, '*dims 4']) -> _StokesT:
+    def _modulate[StokesT: Stokes](
+        self, tod: StokesT, qdet_full: Float[Array, '*dims 4']
+    ) -> StokesT:
         """Weight each sample by the airmass loading ``1 / sin(el)`` when enabled."""
         if not self.elevation_modulation:
             return tod

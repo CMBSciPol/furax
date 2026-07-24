@@ -1,6 +1,6 @@
 """Low-rank approximation for PyTree-aware linear operators."""
 
-from typing import Any, Literal, NamedTuple, TypeAlias, get_args
+from typing import Any, Literal, NamedTuple, get_args
 
 import jax
 import jax.numpy as jnp
@@ -12,7 +12,7 @@ from furax.tree import dot, normal_like
 
 from ._lanczos import lanczos_eigh, lanczos_tr
 
-LowRankMethod: TypeAlias = Literal['lanczos', 'lanczos_tr']
+LowRankMethod = Literal['lanczos', 'lanczos_tr']
 
 
 class LowRankTerms(NamedTuple):

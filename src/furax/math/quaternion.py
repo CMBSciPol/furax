@@ -7,7 +7,6 @@ We use scalar-vector storage, i.e. (1,i,j,k) with the scalar part first.
 """
 
 from functools import partial
-from typing import TypeAlias
 
 import jax.numpy as jnp
 from jax import jit
@@ -23,12 +22,10 @@ __all__ = [
     'to_polarization_angle',
 ]
 
-Quat: TypeAlias = Float[Array, '... 4']
-
-
-Vec3: TypeAlias = Float[Array, '... 3']
-Ang3: TypeAlias = Float[Array, '... 3']
-Ang: TypeAlias = Float[Array, '...']
+type Quat = Float[Array, '... 4']
+type Vec3 = Float[Array, '... 3']
+type Ang3 = Float[Array, '... 3']
+type Ang = Float[Array, '...']
 
 
 @partial(jit, static_argnums=(0,))

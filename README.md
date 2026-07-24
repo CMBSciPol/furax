@@ -14,7 +14,7 @@ This framework provides building blocks for solving inverse problems, in particu
 
 ## Requirements
 
-- Python >= 3.11
+- Python 3.12 or higher
 - [JAX](https://jax.readthedocs.io/en/latest/installation.html) — install separately for your target hardware (CPU, CUDA, Metal, …)
 
 ## Installation

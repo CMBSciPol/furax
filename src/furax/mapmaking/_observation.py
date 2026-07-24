@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha1
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Literal, NamedTuple, Self, TypeVar, overload
+from typing import Any, ClassVar, Literal, NamedTuple, Self, overload
 
 import jax
 import jax.numpy as jnp
@@ -28,8 +28,6 @@ from furax.obs.stokes import (
 )
 
 from .noise import NoiseModel
-
-T = TypeVar('T')
 
 
 class ReaderField(StrEnum):
@@ -66,7 +64,7 @@ class HashedObservationMetadata:
     detector_uids: UInt32[np.ndarray | Array, '*#dets']
 
     @classmethod
-    def from_observation(cls, obs: AbstractObservation[T]) -> Self:
+    def from_observation[T](cls, obs: AbstractObservation[T]) -> Self:
         return cls(
             uid=_names_to_uids(obs.name),
             telescope_uid=_names_to_uids(obs.telescope),
@@ -93,7 +91,7 @@ def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[np.ndarray, ..
     return np.vectorize(to_int, otypes=[np.uint32])(names)  # type: ignore[no-any-return]
 
 
-class AbstractObservation(ABC, Generic[T]):
+class AbstractObservation[T](ABC):
     """Abstract class for interfacing with any observation data.
 
     This class defines what data is needed for making maps. It is meant to be
@@ -257,13 +255,13 @@ class AbstractObservation(ABC, Generic[T]):
         """Returns the quaternion offsets of the detectors."""
 
 
-class AbstractSatelliteObservation(AbstractObservation[T]):
+class AbstractSatelliteObservation[T](AbstractObservation[T]):
     """Class for interfacing with satellite observation data."""
 
     pass
 
 
-class AbstractGroundObservation(AbstractObservation[T]):
+class AbstractGroundObservation[T](AbstractObservation[T]):
     """Class for interfacing with ground-based observation data."""
 
     AVAILABLE_READER_FIELDS: ClassVar[frozenset[str]] = (
@@ -407,7 +405,7 @@ class ObservationBufferShapes(NamedTuple):
     interval_count: int = 0
 
 
-class AbstractLazyObservation(ABC, Generic[T]):
+class AbstractLazyObservation[T](ABC):
     """Deferred handle to an observation: opens its backing store only when read.
 
     The default implementation is file-backed, but subclasses are free to back the
@@ -450,7 +448,7 @@ class AbstractLazyObservation(ABC, Generic[T]):
         return ObservationBufferShapes(data.n_detectors, data.n_samples, n_intervals)
 
 
-class FileBackedLazyObservation(AbstractLazyObservation[T]):
+class FileBackedLazyObservation[T](AbstractLazyObservation[T]):
     """Lazy observation whose backing store is a single binary file."""
 
     def __init__(self, filename: str | Path):

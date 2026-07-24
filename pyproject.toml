@@ -23,19 +23,19 @@ classifiers = [
     'Operating System :: OS Independent',
     'Topic :: Scientific/Engineering',
 ]
-requires-python = '>=3.11'
+requires-python = '>=3.12'
 license = 'MIT'
 license-files = ['LICENSE']
 dependencies = [
     'astropy>=7.2',
     'equinox>=0.13.8',
     'healpy>=1.19.0',
-    'jax>=0.10.0',
+    'jax>=0.11.0',
     'jaxtyping>=0.3.9',
     "jax-healpy[recommended]>=0.5",
     'lineax>=0.1.1',
-    'numpy>=2.0',
-    'scipy>=1.14',
+    'numpy>=2.1',
+    'scipy>=1.15',
     'typing-extensions; python_version < "3.13"',
     "wadler-lindig>=0.1.7",
 ]
@@ -92,7 +92,7 @@ docs = [
     'zensical>=0.0.50',
     'mkdocstrings-python>=2.0.5',
 ]
-cuda = ['jax[cuda13]>=0.10.0']
+cuda = ['jax[cuda13]>=0.11.0']
 
 [tool.coverage.report]
 exclude_also = [

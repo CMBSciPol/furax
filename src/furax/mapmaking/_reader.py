@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Collection, Sequence
-from typing import Any, Generic, Self, TypeVar
+from typing import Any, Self
 
 import jax
 import jax.numpy as jnp
@@ -23,11 +23,9 @@ from ._observation import (
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar('T')
-
 
 @register_static
-class ObservationReader(AbstractReader, Generic[T]):
+class ObservationReader[T](AbstractReader):
     """Jittable reader for ground observations.
 
     The reader is set up with a list of filenames and data field names. Individual files can be

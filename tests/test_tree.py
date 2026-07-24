@@ -164,7 +164,7 @@ def test_dot(x, y, expected_xy) -> None:
 
 
 def test_dot_invalid_pytrees() -> None:
-    with pytest.raises(ValueError, match='Dict key mismatch'):
+    with pytest.raises(ValueError, match='pytree structure error'):
         _ = fx.tree.dot({'a': 1}, {'b': 2})
 
 

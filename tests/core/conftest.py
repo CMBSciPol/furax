@@ -1,20 +1,7 @@
 import string
-import sys
 from collections.abc import Callable
+from itertools import batched
 from typing import Any
-
-if sys.version_info < (3, 12):
-    from itertools import islice
-
-    def batched(iterable, n):
-        if n < 1:
-            raise ValueError('n must be at least one')
-        iterator = iter(iterable)
-        while batch := tuple(islice(iterator, n)):
-            yield batch
-
-else:
-    from itertools import batched
 
 import jax
 import numpy as np

@@ -2,11 +2,17 @@ import jax
 import jax.numpy as jnp
 import pytest
 from equinox import tree_equal
-from numpy.testing import assert_array_almost_equal
+from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
 from furax.core import AbstractLinearOperator, CompositionOperator
-from furax.obs.landscapes import CARLandscape, HealpixLandscape, StokesLandscape, WCSProjection
+from furax.obs.landscapes import (
+    CARLandscape,
+    HealpixLandscape,
+    LocalStokesLandscape,
+    StokesLandscape,
+    WCSProjection,
+)
 from furax.obs.operators import QURotationOperator
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import ValidStokesLiteral
@@ -166,3 +172,77 @@ def test_expanded_interpolate_preserves_rotation_fusion() -> None:
 
     tod = jax.tree.map(lambda s: jax.random.normal(key4, s.shape, s.dtype), expanded.out_structure)
     assert tree_equal((outer @ expanded)(op.T(tod)), reduced(op.T(tod)), rtol=1e-10)
+
+
+class TestLocalLandscape:
+    """A PointingOperator on a LocalStokesLandscape matches the full-sky one."""
+
+    @pytest.fixture(scope='class')
+    def keys(self) -> jax.Array:
+        return jax.random.split(jax.random.key(11), 4)
+
+    @pytest.fixture(scope='class', params=[False, True], ids=['nearest', 'bilinear'])
+    def p_full(self, request: pytest.FixtureRequest, keys: jax.Array) -> PointingOperator:
+        parent = HealpixLandscape(NSIDE, 'IQU')
+        qbore = _random_unit_quats(keys[0], (NSAMP,))
+        qdet = _random_unit_quats(keys[1], (NDET,))
+        return PointingOperator.create(parent, qbore, qdet, interpolate=request.param)
+
+    @pytest.fixture(scope='class')
+    def sky(self, p_full: PointingOperator, keys: jax.Array):
+        return p_full.landscape.normal(keys[2])
+
+    @pytest.fixture(scope='class')
+    def tod(self, p_full: PointingOperator, keys: jax.Array):
+        return ftree.normal_like(p_full.out_structure, keys[3])
+
+    @pytest.fixture(scope='class')
+    def covered(self, p_full: PointingOperator) -> jax.Array:
+        # global pixels hit by the pointing: bin a ones-TOD (I accumulates 1 per hit for
+        # nearest, the interpolation weights for bilinear)
+        hits = p_full.T(ftree.ones_like(p_full.out_structure))
+        return jnp.flatnonzero(hits.i)
+
+    @staticmethod
+    def _local_operator(
+        p_full: PointingOperator, indices: jax.Array
+    ) -> tuple[LocalStokesLandscape, PointingOperator]:
+        local = LocalStokesLandscape(p_full.landscape, indices)
+        p_local = PointingOperator.create(
+            local, p_full.qbore, p_full.qdet, interpolate=p_full.interpolate
+        )
+        return local, p_local
+
+    @pytest.fixture(scope='class')
+    def full_coverage(
+        self, p_full: PointingOperator, covered: jax.Array
+    ) -> tuple[LocalStokesLandscape, PointingOperator]:
+        return self._local_operator(p_full, covered)
+
+    @pytest.fixture(scope='class')
+    def half_coverage(
+        self, p_full: PointingOperator, covered: jax.Array
+    ) -> tuple[LocalStokesLandscape, PointingOperator]:
+        # samples on the dropped pixels land in the sink
+        return self._local_operator(p_full, covered[::2])
+
+    def test_mv_matches_full_sky(self, p_full, sky, full_coverage) -> None:
+        local, p_local = full_coverage
+        assert tree_equal(p_local(local.restrict(sky)), p_full(sky), rtol=1e-13)
+
+    def test_transpose_matches_full_sky(self, p_full, tod, full_coverage) -> None:
+        local, p_local = full_coverage
+        # uncovered pixels are zero in both the full binning and the promoted local one
+        assert tree_equal(local.promote(p_local.T(tod)), p_full.T(tod), rtol=1e-13)
+
+    def test_partial_coverage_sinks_missing_pixels(self, p_full, tod, half_coverage) -> None:
+        local, p_local = half_coverage
+        subset = local.global_indices
+        binned_local = local.promote(p_local.T(tod)).data
+        if not p_full.interpolate:
+            # nearest: contributions to kept pixels are identical, sink ones are discarded
+            # (bilinear renormalizes the weights over covered neighbors, so values differ)
+            binned_full = p_full.T(tod).data
+            assert_array_almost_equal(binned_local[:, subset], binned_full[:, subset], decimal=13)
+        # nothing lands outside the subset
+        assert_array_equal(binned_local.at[:, subset].set(0.0), 0.0)

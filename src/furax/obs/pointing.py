@@ -68,9 +68,7 @@ class PointingOperator(AbstractLinearOperator):
         # Explicitly determine the output structure
         ndet = detector_quaternions.shape[0]
         nsamp = boresight_quaternions.shape[0]
-        out_structure = Stokes.class_for(landscape.stokes).structure_for(
-            (ndet, nsamp), dtype=landscape.dtype
-        )
+        out_structure = landscape.structure_for((ndet, nsamp))
 
         # In boresight frame, strip the z-rotation (gamma) from each detector quaternion.
         # This absorbs the frame correction into qdet so that _get_cos_sin_angles always
@@ -350,9 +348,7 @@ class XSamplingOperator(AbstractLinearOperator):
         # The map is raveled along its spatial axes (see PointingOperator.as_expanded_operator),
         # leaving a single pixel axis that this operator indexes.
         ravel_op = RavelOperator(1, -1, in_structure=landscape.structure)
-        out_structure = Stokes.class_for(landscape.stokes).structure_for(
-            theta.shape, dtype=landscape.dtype
-        )
+        out_structure = landscape.structure_for(theta.shape)
         return cls(
             landscape,
             theta=theta,

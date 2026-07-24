@@ -11,6 +11,7 @@ from furax.obs.landscapes import (
     CARLandscape,
     FrequencyLandscape,
     HealpixLandscape,
+    LocalStokesLandscape,
     ProjectionType,
     StokesLandscape,
     WCSLandscape,
@@ -364,3 +365,166 @@ class TestWCSConventions:
         x2, y2 = landscape2.world2pixel(theta, phi)
         assert_array_almost_equal(x1, x2, decimal=12)
         assert_array_almost_equal(y1, y2, decimal=12)
+
+
+class TestLocalStokesLandscape:
+    @pytest.fixture
+    def parent(self) -> CARLandscape:
+        proj = WCSProjection(crpix=(6.5, 5.5), crval=(180.0, 0.0), cdelt=(-2.0, 2.0))
+        return CARLandscape((10, 12), proj, stokes='QU')
+
+    def test_from_boolean_mask(self, parent: CARLandscape) -> None:
+        mask = np.zeros(parent.shape, bool)
+        mask[0, 0] = mask[1, 2] = mask[3, 5] = True
+        local = LocalStokesLandscape.from_boolean_mask(parent, mask)
+        # global_indices are the sorted flat positions; shape carries the extra sink slot
+        assert_array_equal(local.global_indices, [0, 1 * 12 + 2, 3 * 12 + 5])
+        assert local.nlocal == 3
+        assert local.sink == 3
+        assert local.shape == (4,)  # nlocal + 1 (sink)
+
+    def test_global2local_roundtrip_and_sink(self, parent: CARLandscape) -> None:
+        local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
+        assert_array_equal(local.global2local(local.global_indices), [0, 1, 2])
+        # unmapped and out-of-bounds (-1) both fall in the sink
+        assert_array_equal(local.global2local(jnp.array([7, -1, 40])), [3, 3, 3])
+        # local2global inverts, out-of-range -> -1
+        assert_array_equal(local.local2global(jnp.array([0, 1, 2, 3])), [0, 10, 29, -1])
+
+    def test_restrict_promote_roundtrip(self, parent: CARLandscape) -> None:
+        local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
+        sky = Stokes.class_for('QU').from_array(
+            jnp.arange(2 * len(parent), dtype=jnp.float64).reshape(2, *parent.shape)
+        )
+        restricted = local.restrict(sky)
+        # restrict lands in the map space `self.shape` (sink slot included, zero-padded)
+        assert restricted.shape == local.shape == (4,)
+        assert_array_equal(restricted.data[:, -1], 0.0)
+        promoted = local.promote(restricted)
+        assert promoted.shape == parent.shape
+        gi = local.global_indices
+        # selected pixels survive the roundtrip; everything else is zeroed
+        assert_array_equal(promoted.data.reshape(2, -1)[:, gi], sky.data.reshape(2, -1)[:, gi])
+        assert_array_equal(promoted.data.reshape(2, -1).at[:, gi].set(0.0), 0.0)
+
+    def test_with_drop_sink_roundtrip(self, parent: CARLandscape) -> None:
+        local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
+        compact = Stokes.class_for('QU').from_array(
+            jnp.arange(2 * local.nlocal, dtype=jnp.float64).reshape(2, local.nlocal)
+        )
+        padded = local.with_sink(compact, fill_value=-1.0)
+        assert padded.shape == local.shape
+        assert_array_equal(padded.data[:, -1], -1.0)
+        assert_array_equal(padded.data[:, :-1], compact.data)
+        roundtripped = local.drop_sink(padded)
+        assert roundtripped.shape == (local.nlocal,)
+        assert_array_equal(roundtripped.data, compact.data)
+
+    def test_promote_accepts_landscape_maps(self, parent: CARLandscape) -> None:
+        # zeros()/structure and restrict/promote all live in the same (nlocal + 1) space
+        local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
+        promoted = local.promote(local.zeros())
+        assert promoted.shape == parent.shape
+        assert_array_equal(promoted.data, 0.0)
+
+    def test_restrict_promote_batch_axes(self, parent: CARLandscape) -> None:
+        # extra leading axes (e.g. frequency) are preserved; only the trailing
+        # parent.ndim axes are pixel axes
+        local = LocalStokesLandscape(parent, jnp.array([3, 7, 15, 19]))
+        nfreq = 2
+        sky = Stokes.class_for('QU').from_array(
+            jnp.arange(2 * nfreq * len(parent), dtype=jnp.float64).reshape(2, nfreq, *parent.shape)
+        )
+        restricted = local.restrict(sky)
+        assert restricted.shape == (nfreq, *local.shape)
+        gi = local.global_indices
+        assert_array_equal(restricted.data[..., :-1], sky.data.reshape(2, nfreq, -1)[..., gi])
+        promoted = local.promote(restricted)
+        assert promoted.shape == (nfreq, *parent.shape)
+        assert_array_equal(
+            promoted.data.reshape(2, nfreq, -1)[..., gi], sky.data.reshape(2, nfreq, -1)[..., gi]
+        )
+
+    def test_world2interp_localizes_indices_and_masks_weights(self) -> None:
+        parent = HealpixLandscape(2, stokes='I')
+        theta, phi = jnp.array([1.2]), jnp.array([0.7])
+        gidx, gweights = parent.world2interp(theta, phi)
+        # subset containing all 4 neighbors: indices are localized, weights unchanged
+        local = LocalStokesLandscape(parent, gidx)
+        lidx, lweights = local.world2interp(theta, phi)
+        assert_array_equal(local.local2global(lidx), gidx)
+        assert_array_equal(lweights, gweights)
+        # drop one neighbor: it maps to the sink and its weight is zeroed
+        dropped = gidx.ravel()[0]
+        local = LocalStokesLandscape(parent, gidx.ravel()[1:])
+        lidx, lweights = local.world2interp(theta, phi)
+        mask = gidx == dropped
+        assert_array_equal(lidx[mask], local.sink)
+        assert_array_equal(lweights[mask], 0.0)
+        assert_array_equal(lweights[~mask], gweights[~mask])
+
+    def test_from_sampling(self) -> None:
+        parent = HealpixLandscape(2, stokes='I')
+        theta = jnp.array([1.2, 0.9, 2.0])
+        phi = jnp.array([0.7, 3.1, 5.0])
+        sampling = Sampling(theta, phi, jnp.zeros_like(theta))
+
+        # nearest: subset is exactly the observed (sorted-unique) pixels
+        nearest = LocalStokesLandscape.from_sampling(parent, sampling)
+        expected = jnp.unique(parent.world2index(theta, phi))
+        assert_array_equal(nearest.global_indices, expected)
+
+        # interpolate: subset is the full 4-pixel bilinear stencil
+        interp = LocalStokesLandscape.from_sampling(parent, sampling, interpolate=True)
+        gidx, _ = parent.world2interp(theta, phi)
+        assert_array_equal(interp.global_indices, jnp.unique(gidx))
+        # every stencil neighbor is local (nothing falls in the sink) -> weights preserved
+        lidx, lweights = interp.world2interp(theta, phi)
+        assert not jnp.any(lidx == interp.sink)
+        _, gweights = parent.world2interp(theta, phi)
+        assert_array_equal(lweights, gweights)
+
+    def test_get_coverage_matches_shape(self) -> None:
+        # base-class contract: coverage has shape self.shape; the sink slot counts the
+        # samples falling outside the subset
+        class _IdentityLandscape(StokesLandscape):
+            def world2pixel(self, theta, phi):
+                return theta, phi
+
+        parent = _IdentityLandscape((5, 2), 'I')
+        local = LocalStokesLandscape(parent, jnp.array([0, 3]))
+        # samples hit flat parent pixels [0, 3, 3, 1]; pixel 1 is outside the subset -> sink
+        samplings = Sampling(jnp.array([0.0, 1, 1, 1]), jnp.array([0.0, 1, 1, 0]), jnp.array(0.0))
+        coverage = local.get_coverage(samplings)
+        assert coverage.shape == local.shape
+        assert_array_equal(coverage, [1, 2, 1])
+
+    @pytest.mark.parametrize(
+        'indices',
+        [
+            [3, 1, 5],  # unsorted
+            [1, 3, 3, 5, 1],  # duplicates
+            [[5, 3], [1, -1]],  # any shape; negatives (oob markers) dropped
+            [-1, 1, 3, 5],  # negatives dropped
+        ],
+    )
+    def test_normalizes_indices(self, parent: CARLandscape, indices: list) -> None:
+        local = LocalStokesLandscape(parent, jnp.array(indices))
+        assert_array_equal(local.global_indices, [1, 3, 5])
+
+    def test_rejects_out_of_range(self, parent: CARLandscape) -> None:
+        with pytest.raises(ValueError, match='out of range'):
+            LocalStokesLandscape(parent, jnp.array([0, len(parent)]))
+
+    def test_rejects_non_integer_indices(self, parent: CARLandscape) -> None:
+        with pytest.raises(TypeError, match='integer'):
+            LocalStokesLandscape(parent, jnp.array([0.0, 1.0]))
+
+    def test_rejects_boolean_indices(self, parent: CARLandscape) -> None:
+        with pytest.raises(TypeError, match='from_boolean_mask'):
+            LocalStokesLandscape(parent, jnp.array([True, False]))
+
+    def test_delegates_stokes_and_dtype(self, parent: CARLandscape) -> None:
+        local = LocalStokesLandscape(parent, jnp.array([0, 2, 4]))
+        assert local.stokes == parent.stokes
+        assert local.dtype == parent.dtype

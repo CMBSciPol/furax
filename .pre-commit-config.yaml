@@ -23,8 +23,11 @@ repos:
     - id: nbqa-ruff
       name: nbqa ruff linting
       args: [--fix]
+      # pin to match ruff-pre-commit rev above; nbQA installs latest ruff otherwise
+      additional_dependencies: [ruff==0.15.21]
     - id: nbqa-ruff-format
       name: nbqa ruff formatting
+      additional_dependencies: [ruff==0.15.21]
 
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0

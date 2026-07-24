@@ -34,7 +34,6 @@ from furax.mapmaking.mapmaker import (
     BinnedMapMaker,
     MapMaker,
     MLMapmaker,
-    TwoStepMapmaker,
     get_obs_distribution_to_process,
 )
 from furax.mapmaking.noise import WhiteNoiseModel
@@ -153,7 +152,7 @@ class TestMultiObsMapMaker:
             observations, demodulated=demodulated, stokes=stokes
         )
         with jax.set_mesh(maker.mesh):
-            model, _, _ = maker.build_model_and_accumulate()
+            model, *_ = maker.build_model_and_accumulate()
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
@@ -205,7 +204,7 @@ class TestFakeObsMapMaker:
             observations, demodulated=demodulated, stokes=stokes
         )
         with jax.set_mesh(maker.mesh):
-            model, _, _ = maker.build_model_and_accumulate()
+            model, *_ = maker.build_model_and_accumulate()
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
@@ -277,7 +276,7 @@ class TestNoiseModelSelection:
         config = _config('healpix', 'IQU', demodulated, identity_noise=True)
         maker = MultiObservationMapMaker(observations, config=config)
         with jax.set_mesh(maker.mesh):
-            model, _, _ = maker.build_model_and_accumulate()
+            model, *_ = maker.build_model_and_accumulate()
         noise_leaves = jax.tree.leaves(
             model.noise_model,
             is_leaf=lambda x: isinstance(x, WhiteNoiseModel),
@@ -352,6 +351,14 @@ class TestATOPStokesValidation:
         with pytest.raises(ValueError, match='cannot be reduced to a supported type'):
             MultiObservationMapMaker([], config=self._base_config('IQUV'))
 
+    def test_atop_with_templates_raises(self):
+        # ATOP + templates is deferred (Phase 2): the deprojection Gram needs the banded FᵀWF
+        # treatment. _check_config rejects it at construction, before any read.
+        config = self._base_config('QU')
+        config.templates = TemplatesConfig.full_defaults()
+        with pytest.raises(NotImplementedError, match='ATOP combined with templates'):
+            MultiObservationMapMaker([], config=config)
+
 
 def _observations(name: str, demodulated: bool = False) -> list[AbstractLazyObservation]:
     folder = Path(__file__).parents[1] / 'data' / name
@@ -402,35 +409,6 @@ def _config(
     )
 
 
-class TestSingleObsTemplates:
-    """End-to-end coverage of the single-observation template path (MapMaker.make_map)."""
-
-    def test_ml_mapmaker_runs_with_templates(self) -> None:
-        # Regression: the template preconditioner build jits the template system operator;
-        # a composite furax operator carries unhashable leaves, so it must be wrapped in a
-        # lambda (mapmaker.py). Also locks the structured (n_dets, *shape) amplitude layout.
-        n_dets = 4
-        obs = FakeGroundObservation(n_dets=n_dets, n_samples=1024, sample_rate=100.0)
-
-        cfg = MapMakingConfig.for_method('ml')
-        cfg.weighting.source = NoiseSource.PRECOMPUTED  # use the obs noise model (finite)
-        cfg.landscape = LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8))
-        cfg.templates = TemplatesConfig.full_defaults()
-        cfg.templates.ground = None  # ground template needs pointing/landscape, out of scope here
-        cfg.templates.spline_hwpss.samples_per_knot = 256  # 1024 // 256 -> n_knots=4
-
-        res = MLMapmaker(config=cfg).make_map(obs)
-
-        assert bool(jnp.all(jnp.isfinite(res['map'])))
-        # amplitudes are structured (n_dets, *basis_shape), not flat
-        assert res['template_polynomial'].shape == (n_dets, 2, 4)  # intervals x (orders 0..3)
-        assert res['template_azhwp_synchronous'].shape == (n_dets, 4, 9)  # orders x (DC+2*4)
-        assert res['template_spline_hwpss'].shape == (n_dets, 6, 2)  # (n_knots + 2) x cos/sin
-        for key, value in res.items():
-            if key.startswith('template_') and not key.startswith('template_reg'):
-                assert bool(jnp.all(jnp.isfinite(value))), key
-
-
 class TestSingleObsSolverGuards:
     """Solver/weighting compatibility on the single-observation ``MapMaker`` path.
 
@@ -468,7 +446,7 @@ class TestSingleObsSolverGuards:
         res = MLMapmaker(config=cfg).make_map(obs)
         assert bool(jnp.all(jnp.isfinite(res['map'])))
 
-    @pytest.mark.parametrize('maker_cls', [BinnedMapMaker, TwoStepMapmaker, ATOPMapMaker])
+    @pytest.mark.parametrize('maker_cls', [BinnedMapMaker, ATOPMapMaker])
     def test_direct_solvers_reject_bilinear_pointing(self, maker_cls: type[MapMaker]) -> None:
         """The direct binned solvers refuse bilinear pointing at construction time."""
         cfg = self._config(WeightingMode.DIAGONAL, interpolation='bilinear', method=Methods.BINNED)

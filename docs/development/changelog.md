@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Introduce `XSamplingOperator` to support precomputed bilinear pointing (#181)
 - Implement `LocalStokesLandscape` (#186)
+- `StreamOperator` with per-component obs-stackedness plus `stream_block_row`/`stream_block_column`
+  constructors, letting the joint sky + explicit-template GLS system fuse into a single streaming
+  scan that computes each observation's weighted TOD once per CG iteration
 
 ### Changed
 

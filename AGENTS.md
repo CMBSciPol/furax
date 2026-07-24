@@ -112,10 +112,14 @@ def foo(x: Float[jax.Array, ' n'], scale: float = 1.0) -> Float[jax.Array, ' n']
 ### Mapmaking pipeline (`/src/furax/mapmaking`)
 
 - `acquisition.py` → `build_acquisition_operator`: builds the acquisition operator `A` from observation metadata
-- `mapmaker.py`: `BinnedMapMaker` / `MLMapmaker` / `ATOPMapMaker`; solve `AᵀN⁻¹A x = AᵀN⁻¹d` via lineax CG
-- `noise.py`: noise-model operators
-- `config.py` / `_model.py`: apischema-driven YAML configuration
-- `preconditioner.py` / `templates.py`: PCG infrastructure
+- `mapmaker.py`: single-observation makers `BinnedMapMaker` / `MLMapmaker` / `ATOPMapMaker` (no template support; use `MultiObservationMapMaker` for templates), and `MultiObservationMapMaker` (obs-sharded multi-observation solve); solve `AᵀN⁻¹A x = AᵀN⁻¹d` via CG
+- `_model.py`: `ObservationModel` (per-observation operators `H`/`W`/`F`) and `ObservationTemplates` (per-observation template families, split into explicit/implicit)
+- `noise.py` / `weight.py`: noise-model operators / masked noise weights (`WeightOperator`, `NestedWeightOperator`)
+- `config.py`: apischema-driven YAML configuration (`MapMakingConfig`, `TemplatesConfig`, ...)
+- `preconditioner.py`: block-Jacobi preconditioner for PCG
+- `templates.py`: template `Basis` flavours (`Tensor` / `Kronecker` / `Segmented` / `Windowed`), `TemplateFamily` (one family, `explicit`/`shared` flags) combined into a `TemplateOperator`, plus `GroundTemplateOperator` / `ATOPProjectionOperator`; `Basis.weighted_gram` builds the structured (block-banded) Gram, `Basis.support` the column-support view `pairwise_gram` needs for cross-family coupling
+- `gram.py`: `gram_inverse` — single entry point for the per-detector inverse Gram `(AᵀWA)⁻¹`; structural assembly (`Basis.weighted_gram` for one family, `pairwise_gram` for several coupled families) is always tried first for a `TemplateOperator`, falling back to an `O(K)` dense column-probe only when `allow_dense_probe=True`
+- `_scan_blocks.py`: `ScanBlock*` operators — obs-stacked operator algebra (`W'` deprojection fusion) for the multi-observation path
 
 ### Interfaces (`/src/furax/interfaces`)
 

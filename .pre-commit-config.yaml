@@ -10,7 +10,7 @@ repos:
     - --all
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.21
+  rev: v0.16.0
   hooks:
     - id: ruff-check
       name: ruff linting
@@ -24,10 +24,10 @@ repos:
       name: nbqa ruff linting
       args: [--fix]
       # pin to match ruff-pre-commit rev above; nbQA installs latest ruff otherwise
-      additional_dependencies: [ruff==0.15.21]
+      additional_dependencies: [ruff==0.16.0]
     - id: nbqa-ruff-format
       name: nbqa ruff formatting
-      additional_dependencies: [ruff==0.15.21]
+      additional_dependencies: [ruff==0.16.0]
 
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0
@@ -38,7 +38,7 @@ repos:
   - id: check-merge-conflict
 
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.11.28
+  rev: 0.11.32
   hooks:
   - id: uv-lock
 

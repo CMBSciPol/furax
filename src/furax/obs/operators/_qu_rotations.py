@@ -30,16 +30,11 @@ from furax import AbstractLinearOperator, orthogonal
 from furax.core import AbstractLazyInverseOrthogonalOperator
 from furax.core.rules import AbstractCompositionRule, NoReduction
 
-from ..stokes import (
-    Stokes,
-    ValidStokesLiteral,
-)
-
-_StokesT = TypeVar('_StokesT', bound=Stokes)
+from ..stokes import Stokes, ValidStokesLiteral
 
 
 @jax.jit
-def rotate_qu(x: _StokesT, angles: Float[Array, '...']) -> _StokesT:
+def rotate_qu[StokesT: Stokes](x: StokesT, angles: Float[Array, '...']) -> StokesT:
     """Rotate QU Stokes parameters by the given angles (in radians).
 
     The transpose rotation is obtained by passing ``-angles``.
@@ -48,11 +43,11 @@ def rotate_qu(x: _StokesT, angles: Float[Array, '...']) -> _StokesT:
 
 
 @jax.jit
-def rotate_qu_cs(
-    x: _StokesT,
+def rotate_qu_cs[StokesT: Stokes](
+    x: StokesT,
     cos_angles: Float[Array, '...'],
     sin_angles: Float[Array, '...'],
-) -> _StokesT:
+) -> StokesT:
     """Rotate QU Stokes parameters given precomputed cos(a) and sin(a).
 
     The transpose rotation is obtained by negating ``sin_angles``.
@@ -61,6 +56,9 @@ def rotate_qu_cs(
     cos_2angles = cos_angles**2 - sin_angles**2
     sin_2angles = 2 * cos_angles * sin_angles
     return x.rotate_qu(cos_2angles, sin_2angles)
+
+
+_StokesT = TypeVar('_StokesT', bound=Stokes)
 
 
 @orthogonal

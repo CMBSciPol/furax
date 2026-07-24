@@ -1,16 +1,10 @@
 import functools
 import inspect
-import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import IntFlag, auto
-from typing import Any, ClassVar, TypeVar, overload
-
-if sys.version_info >= (3, 12):
-    from typing import dataclass_transform
-else:
-    from typing_extensions import dataclass_transform
+from typing import Any, ClassVar, dataclass_transform, overload
 
 import jax
 import jax.numpy as jnp
@@ -283,17 +277,14 @@ class AbstractLinearOperator(ABC):
         return jnp.result_type(*leaves)
 
 
-T = TypeVar('T', bound=AbstractLinearOperator)
-
-
-def square(cls: type[T]) -> type[T]:
+def square[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as square."""
     cls.class_tags |= OperatorTag.SQUARE
     cls.out_structure = property(lambda self: self.in_structure)  # type: ignore[assignment,method-assign]
     return cls
 
 
-def symmetric(cls: type[T]) -> type[T]:
+def symmetric[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as symmetric (implies square)."""
     square(cls)
     cls.class_tags |= OperatorTag.SYMMETRIC
@@ -301,7 +292,7 @@ def symmetric(cls: type[T]) -> type[T]:
     return cls
 
 
-def orthogonal(cls: type[T]) -> type[T]:
+def orthogonal[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as orthogonal (implies square)."""
     square(cls)
     cls.class_tags |= OperatorTag.ORTHOGONAL
@@ -309,49 +300,49 @@ def orthogonal(cls: type[T]) -> type[T]:
     return cls
 
 
-def diagonal(cls: type[T]) -> type[T]:
+def diagonal[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as diagonal (implies symmetric, which implies square)."""
     symmetric(cls)
     cls.class_tags |= OperatorTag.DIAGONAL
     return cls
 
 
-def tridiagonal(cls: type[T]) -> type[T]:
+def tridiagonal[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as tridiagonal (implies square)."""
     square(cls)
     cls.class_tags |= OperatorTag.TRIDIAGONAL
     return cls
 
 
-def lower_triangular(cls: type[T]) -> type[T]:
+def lower_triangular[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as lower triangular (implies square)."""
     square(cls)
     cls.class_tags |= OperatorTag.LOWER_TRIANGULAR
     return cls
 
 
-def upper_triangular(cls: type[T]) -> type[T]:
+def upper_triangular[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as upper triangular (implies square)."""
     square(cls)
     cls.class_tags |= OperatorTag.UPPER_TRIANGULAR
     return cls
 
 
-def positive_semidefinite(cls: type[T]) -> type[T]:
+def positive_semidefinite[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as positive semi-definite (implies square)."""
     square(cls)
     cls.class_tags |= OperatorTag.POSITIVE_SEMIDEFINITE
     return cls
 
 
-def negative_semidefinite(cls: type[T]) -> type[T]:
+def negative_semidefinite[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as negative semi-definite (implies square)."""
     square(cls)
     cls.class_tags |= OperatorTag.NEGATIVE_SEMIDEFINITE
     return cls
 
 
-def idempotent(cls: type[T]) -> type[T]:
+def idempotent[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as idempotent, i.e. P @ P = P (implies square)."""
     square(cls)
     cls.class_tags |= OperatorTag.IDEMPOTENT

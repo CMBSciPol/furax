@@ -23,10 +23,7 @@ class DefaultIdentityDict(dict[T, T]):
             return key
 
 
-_T = TypeVar('_T')
-
-
-def register_dataclass_with_keys(cls: type[_T]) -> type[_T]:
+def register_dataclass_with_keys[T](cls: type[T]) -> type[T]:
     """Register a dataclass as a pytree node, bypassing __init__ during unflatten.
 
     The motivation to reimplement jax.tree_util.register_dataclass comes from the fact that it does not handle
@@ -36,12 +33,12 @@ def register_dataclass_with_keys(cls: type[_T]) -> type[_T]:
     data_fields = tuple(f.name for f in fields if not f.metadata.get('static', False))
     meta_fields = tuple(f.name for f in fields if f.metadata.get('static', False))
 
-    def flatten_with_keys(obj: _T) -> tuple[list[tuple[GetAttrKey, Any]], tuple[Any, ...]]:
+    def flatten_with_keys(obj: T) -> tuple[list[tuple[GetAttrKey, Any]], tuple[Any, ...]]:
         data = [(GetAttrKey(name), getattr(obj, name)) for name in data_fields]
         meta = tuple(getattr(obj, name) for name in meta_fields)
         return data, meta
 
-    def unflatten(meta: tuple[Any, ...], data: Iterable[Any]) -> _T:
+    def unflatten(meta: tuple[Any, ...], data: Iterable[Any]) -> T:
         obj = object.__new__(cls)
         for name, value in zip(data_fields, data):
             object.__setattr__(obj, name, value)
@@ -49,7 +46,7 @@ def register_dataclass_with_keys(cls: type[_T]) -> type[_T]:
             object.__setattr__(obj, name, value)
         return obj
 
-    def flatten(obj: _T) -> tuple[list[Any], tuple[Any, ...]]:
+    def flatten(obj: T) -> tuple[list[Any], tuple[Any, ...]]:
         data = [getattr(obj, name) for name in data_fields]
         meta = tuple(getattr(obj, name) for name in meta_fields)
         return data, meta

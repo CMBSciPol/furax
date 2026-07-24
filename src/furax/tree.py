@@ -1,13 +1,15 @@
 import operator
 from collections.abc import Callable
 from math import prod
-from typing import Any, TypeVar
+from typing import Any
 
 import jax
 from jax import Array
 from jax import numpy as jnp
 from jax.tree_util import PyTreeDef
 from jaxtyping import Key, Num, PyTree, ScalarLike
+
+from furax.exceptions import StructureError
 
 __all__ = [
     'as_promoted_dtype',
@@ -30,12 +32,11 @@ __all__ = [
     'matmat',
 ]
 
-from furax.exceptions import StructureError
 
-P = TypeVar('P', bound=PyTree[Num[Array, '...']] | PyTree[jax.ShapeDtypeStruct])
+type ArrayPyTree = PyTree[Num[Array, '...']] | PyTree[jax.ShapeDtypeStruct]
 
 
-def as_promoted_dtype(x: P) -> P:
+def as_promoted_dtype[P: ArrayPyTree](x: P) -> P:
     """Promotes the data type of the leaves of a pytree to a common data type.
 
     Args:
@@ -58,7 +59,7 @@ def as_promoted_dtype(x: P) -> P:
     return result
 
 
-def as_structure(x: P) -> P:
+def as_structure[P: ArrayPyTree](x: P) -> P:
     """Returns the pytree of ShapedDtypeStruct leaves associated with x.
 
     Args:
@@ -76,7 +77,7 @@ def as_structure(x: P) -> P:
     return result
 
 
-def nbytes(x: P) -> int:
+def nbytes[P: ArrayPyTree](x: P) -> int:
     """Returns the total byte size of a pytree.
 
     Args:
@@ -97,7 +98,7 @@ def nbytes(x: P) -> int:
     return sum(jax.tree.leaves(sizes))
 
 
-def empty_like(x: P) -> P:
+def empty_like[P: ArrayPyTree](x: P) -> P:
     """Returns a pytree of uninitialized arrays with the same structure as x.
 
     Args:
@@ -112,7 +113,7 @@ def empty_like(x: P) -> P:
     return result
 
 
-def zeros_like(x: P) -> P:
+def zeros_like[P: ArrayPyTree](x: P) -> P:
     """Returns a pytrees of zeros with the same structure as x.
 
     Args:
@@ -129,7 +130,7 @@ def zeros_like(x: P) -> P:
     return full_like(x, 0)
 
 
-def ones_like(x: P) -> P:
+def ones_like[P: ArrayPyTree](x: P) -> P:
     """Returns a pytrees of ones with the same structure as x.
 
     Args:
@@ -146,7 +147,7 @@ def ones_like(x: P) -> P:
     return full_like(x, 1)
 
 
-def full_like(x: P, fill_value: ScalarLike) -> P:
+def full_like[P: ArrayPyTree](x: P, fill_value: ScalarLike) -> P:
     """Returns a pytrees of a specified value with the same structure as x.
 
     Args:
@@ -166,7 +167,7 @@ def full_like(x: P, fill_value: ScalarLike) -> P:
     return result
 
 
-def normal_like(x: P, key: Key[Array, '']) -> P:
+def normal_like[P: ArrayPyTree](x: P, key: Key[Array, '']) -> P:
     """Returns a pytrees of a normal values with the same structure as x.
 
     Args:
@@ -191,7 +192,9 @@ def normal_like(x: P, key: Key[Array, '']) -> P:
     return result
 
 
-def uniform_like(x: P, key: Key[Array, ''], low: float = 0.0, high: float = 1.0) -> P:
+def uniform_like[P: ArrayPyTree](
+    x: P, key: Key[Array, ''], low: float = 0.0, high: float = 1.0
+) -> P:
     """Returns a pytrees of a uniform values with the same structure as x.
 
     Args:

@@ -1,7 +1,7 @@
 """Lanczos eigenvalue solver for PyTree-aware linear operators."""
 
 from functools import reduce
-from typing import Literal, NamedTuple, TypeAlias, get_args
+from typing import Literal, NamedTuple, get_args
 
 import jax
 import jax.numpy as jnp
@@ -11,7 +11,7 @@ from jaxtyping import Float, Num, PyTree
 from furax import tree
 from furax.core import AbstractLinearOperator
 
-LanczosWhich: TypeAlias = Literal['LM', 'SM', 'LA', 'SA', 'BE']
+type LanczosWhich = Literal['LM', 'SM', 'LA', 'SA', 'BE']
 
 
 def _block_zeros_like(x: PyTree, k: int) -> PyTree:

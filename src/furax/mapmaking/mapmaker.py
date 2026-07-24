@@ -6,7 +6,7 @@ from functools import cached_property
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar
 
 import equinox as eqx
 import jax
@@ -34,11 +34,7 @@ from furax import (
     OperatorTag,
     SymmetricBandToeplitzOperator,
 )
-from furax.core import (
-    BlockDiagonalOperator,
-    BlockRowOperator,
-    IndexOperator,
-)
+from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -78,10 +74,8 @@ from .streaming import StreamColumnOperator, StreamDiagonalOperator
 from .templates import PerDetectorTemplate
 from .weight import WeightOperator
 
-T = TypeVar('T')
 
-
-class MultiObservationMapMaker(Generic[T]):
+class MultiObservationMapMaker[T]:
     """Class for mapping multiple observations together."""
 
     def __init__(

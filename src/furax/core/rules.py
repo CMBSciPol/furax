@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from typing import Generic, TypeVar
 
 import jax.numpy as jnp
 from jaxtyping import Scalar
@@ -22,10 +21,7 @@ class AbstractRule:
     """The base class for all algebraic reduction rules."""
 
 
-T = TypeVar('T', bound=AbstractRule)
-
-
-class RuleRegistry(Generic[T]):
+class RuleRegistry[T: AbstractRule]:
     """Registry for AbstractRules.
 
     The rules are automatically registered when a class is encountered by the Python interpreter.

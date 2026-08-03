@@ -24,7 +24,7 @@ jobs:
       - name: Set up prek and run hooks
         uses: j178/prek-action@v2.0.6
         with:
-          prek-version: "0.4.3"
+          prek-version: "0.4.12"
 
   test:
     name: Run tests on Python ${{ matrix.python-version }}

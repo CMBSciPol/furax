@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import IntFlag, auto
-from typing import Any, ClassVar, dataclass_transform, overload
+from typing import TYPE_CHECKING, Any, ClassVar, dataclass_transform, overload
 
 import jax
 import jax.numpy as jnp
@@ -18,6 +18,9 @@ from furax._config import Config, ConfigState
 from furax.tree import zeros_like
 
 from .utils import register_dataclass_with_keys
+
+if TYPE_CHECKING:
+    from furax.profiling import ProfileReport
 
 
 def structure_equal(a: PyTree[jax.ShapeDtypeStruct], b: PyTree[jax.ShapeDtypeStruct]) -> bool:
@@ -234,6 +237,53 @@ class AbstractLinearOperator(ABC):
             matrix, jcounter = jax.lax.fori_loop(0, leaf.size, body, (matrix, jcounter))
 
         return matrix
+
+    def profile(self, *, measure: bool = True) -> 'ProfileReport':
+        """Returns the static cost of applying the operator: flops, bytes and what limits them.
+
+        The operator is compiled ahead of time and XLA's cost model is read off the executable;
+        nothing is executed and no input is allocated. See [`furax.profiling`][] for the caveats
+        that come with a static cost model.
+
+        Args:
+            measure: Whether to measure this device's peak throughputs with
+                [`measure_balance`][furax.measure_balance], which is what makes the compute- or
+                memory-bound verdict possible. It runs microbenchmarks taking on the order of a
+                second, cached per device and dtype. With `False`, the report still carries flops
+                and bytes but leaves the bound unknown.
+
+        Returns:
+            The [`ProfileReport`][furax.ProfileReport] for a single application of the operator.
+
+        Examples:
+            The flop and byte counts are exact and machine-independent:
+
+            >>> structure = jax.ShapeDtypeStruct((1 << 22,), jnp.float32)
+            >>> op = DiagonalOperator(jnp.ones(1 << 22, jnp.float32), in_structure=structure)
+            >>> report = op.profile(measure=False)
+            >>> report.flops, report.bytes_accessed
+            (4194304.0, 50331648.0)
+
+            The verdict needs `measure=True` (the default), and then reads, on one machine:
+
+            ```
+            Profile on NVIDIA H100 80GB HBM3 (float32) peak=... ridge=147 flop/byte
+              flops       4.19 MFLOP  transcendentals=0
+              bytes       48.00MiB
+              intensity   0.0833 flop/byte
+              bound       memory-bound, at best 279.62 GFLOP/s (0.6% of peak)
+              memory      args=32.00MiB out=16.00MiB temp=0.00B peak=48.00MiB
+            ```
+
+            An operator that only scales its input reads three bytes for every flop it does, so it
+            can never exceed a small fraction of peak on any machine, however it is implemented.
+        """
+        from furax.profiling import measure_balance, profile  # avoids a circular import
+
+        balance = measure_balance(dtype=self.in_promoted_dtype) if measure else None
+        # `self` is passed as an argument, not captured: closed-over arrays become XLA constants,
+        # which erases their traffic from the byte count and lets constant-folding remove work.
+        return profile(lambda op, x: op.mv(x), self, self.in_structure, balance=balance)
 
     def transpose(self) -> 'AbstractLinearOperator':
         return TransposeOperator(self)

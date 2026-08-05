@@ -134,7 +134,7 @@ class AbstractLinearOperator(ABC):
         if keywords:
             raise TypeError('No keywords is allowed in AbstractLinearOperator __call__ method')
         if isinstance(x, AbstractLinearOperator):
-            raise ValueError("Use '@' to compose operators")
+            raise TypeError("Use '@' to compose operators")
         return self.mv(x)
 
     def __matmul__(self, other: Any) -> 'AbstractLinearOperator':

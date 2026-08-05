@@ -70,7 +70,7 @@ from .gap_filling import gap_fill
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
-from .streaming import StreamColumnOperator, StreamDiagonalOperator
+from .streaming import StreamOperator
 from .templates import PerDetectorTemplate
 from .weight import WeightOperator
 
@@ -405,13 +405,13 @@ class MultiObservationMapMaker[T]:
     def get_system_operator(
         self, model: ObservationModel, *, diag: bool = False
     ) -> AbstractLinearOperator:
-        H = StreamColumnOperator.create(model.H)
+        H = StreamOperator.column(model.H)
         # filter_vmap: array leaves mapped, static fields held
         weight = eqx.filter_vmap(ObservationModel.diag_W)(model) if diag else model.W
-        W = StreamDiagonalOperator.create(weight)
+        W = StreamOperator.diagonal(weight)
         # specify leading axis dimension because F can be trivial
         _, n_own, n_pad = self.obs_distribution
-        F = StreamDiagonalOperator.create(model.F, n_lead=n_own + n_pad)
+        F = StreamOperator.diagonal(model.F, n_lead=n_own + n_pad)
         return (H.T @ W @ F @ H).reduce()
 
     def pixel_selection(

@@ -247,7 +247,7 @@ class AbstractLinearOperator(ABC):
         return InverseOperator(self)
 
     @property
-    def I(self) -> 'AbstractLinearOperator':  # noqa: E743
+    def I(self) -> 'AbstractLinearOperator':
         return self.inverse()
 
     @property

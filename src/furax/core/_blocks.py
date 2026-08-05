@@ -174,7 +174,7 @@ class BlockDiagonalOperator(AbstractBlockOperator):
         return BlockDiagonalOperator(self._tree_map(lambda op: op.I))
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        return jsl.block_diag(*[op.as_matrix() for op in self.block_leaves])  # type: ignore[no-any-return]  # noqa: E501
+        return jsl.block_diag(*[op.as_matrix() for op in self.block_leaves])  # type: ignore[no-any-return]
 
     def reduce(self) -> AbstractLinearOperator:
         """BlockDiagonalOperator([I, I, ...]) -> I."""

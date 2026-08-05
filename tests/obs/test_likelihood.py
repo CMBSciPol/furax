@@ -1,7 +1,3 @@
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
 import jax
 import jax.numpy as jnp
 import lineax as lx

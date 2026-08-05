@@ -258,8 +258,6 @@ class AbstractObservation[T](ABC):
 class AbstractSatelliteObservation[T](AbstractObservation[T]):
     """Class for interfacing with satellite observation data."""
 
-    pass
-
 
 class AbstractGroundObservation[T](AbstractObservation[T]):
     """Class for interfacing with ground-based observation data."""

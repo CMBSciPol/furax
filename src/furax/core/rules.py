@@ -125,9 +125,12 @@ class HomothetyRule(AbstractNaryRule):
         # apply the homothety on the smallest number of elements
         apply_on_left = first.out_size <= last.in_size
         if homothety_number == 1:
-            if apply_on_left and isinstance(first, HomothetyOperator):
-                return operands
-            elif not apply_on_left and isinstance(last, HomothetyOperator):
+            if (
+                apply_on_left
+                and isinstance(first, HomothetyOperator)
+                or not apply_on_left
+                and isinstance(last, HomothetyOperator)
+            ):
                 return operands
 
         if apply_on_left:
@@ -227,12 +230,11 @@ class AbstractBinaryRule(AbstractRule, ABC):
                 right, self.operator_class
             ):
                 raise NoReduction
-        elif self.left_operator_class is not None and not isinstance(
-            left, self.left_operator_class
-        ):
-            raise NoReduction
-        elif self.right_operator_class is not None and not isinstance(
-            right, self.right_operator_class
+        elif (
+            self.left_operator_class is not None
+            and not isinstance(left, self.left_operator_class)
+            or self.right_operator_class is not None
+            and not isinstance(right, self.right_operator_class)
         ):
             raise NoReduction
 

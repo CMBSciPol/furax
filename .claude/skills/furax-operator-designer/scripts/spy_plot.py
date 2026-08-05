@@ -24,8 +24,8 @@ import matplotlib
 
 matplotlib.use('Agg')  # headless: doc generation has no display
 
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def spy(

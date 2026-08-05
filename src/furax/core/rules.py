@@ -215,12 +215,13 @@ class AbstractBinaryRule(AbstractRule, ABC):
             and cls.right_operator_class is None
         ):
             raise ValueError('The operator classes are not specified in the binary rule.')
-        if cls.operator_class is not None:
-            if cls.left_operator_class is not None or cls.right_operator_class is not None:
-                raise ValueError(
-                    'Either operator_class or left_operator_class and right_operator_class must be '
-                    'specified in the binary rule.'
-                )
+        if cls.operator_class is not None and not (
+            cls.left_operator_class is None and cls.right_operator_class is None
+        ):
+            raise ValueError(
+                'Either operator_class or left_operator_class and right_operator_class must be '
+                'specified in the binary rule.'
+            )
 
     def _check_operands(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
         """Shared operand-class matching: raises [`NoReduction`][] if the rule does not apply."""

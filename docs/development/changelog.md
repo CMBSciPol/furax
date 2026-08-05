@@ -285,7 +285,8 @@ Initial tagged release.
 
 - Project classifiers and editable-mode installation instructions
 
-[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.11.4...HEAD
+[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/CMBSciPol/furax/compare/v0.11.4...v0.12.0
 [0.11.4]: https://github.com/CMBSciPol/furax/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/CMBSciPol/furax/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/CMBSciPol/furax/compare/v0.11.1...v0.11.2

@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Breaking:** the four stream operator classes collapse into a single `StreamOperator` (#190):
-    - `StreamDiagonalOperator.create(op)` → `StreamOperator.diagonal(op)`, and likewise `.column`, `.row`, `.addition`
-    - `in_stacked`/`out_stacked` say which side carries the stream axis, per component, so one stream can mix shared and per-slice components
+  - `StreamDiagonalOperator.create(op)` → `StreamOperator.diagonal(op)`, and likewise `.column`, `.row`, `.addition`
+  - `in_stacked`/`out_stacked` say which side carries the stream axis, per component, so one stream can mix shared and per-slice components
 - **Breaking:** `AbstractLinearOperator.__call__`, `BJPreconditioner.create`, and the `LBSObservation`/`ToastObservation` pointing helpers now raise `TypeError` (previously `ValueError`/`RuntimeError`) for invalid argument/operator/landscape types (#194)
 - Bumped ruff to 0.16.1 and updated rule selection accordingly (#194)
 

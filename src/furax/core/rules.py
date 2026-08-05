@@ -124,14 +124,13 @@ class HomothetyRule(AbstractNaryRule):
 
         # apply the homothety on the smallest number of elements
         apply_on_left = first.out_size <= last.in_size
-        if homothety_number == 1:
-            if (
-                apply_on_left
-                and isinstance(first, HomothetyOperator)
-                or not apply_on_left
-                and isinstance(last, HomothetyOperator)
-            ):
-                return operands
+        if homothety_number == 1 and (
+            apply_on_left
+            and isinstance(first, HomothetyOperator)
+            or not apply_on_left
+            and isinstance(last, HomothetyOperator)
+        ):
+            return operands
 
         if apply_on_left:
             return [HomothetyOperator(value, in_structure=first.out_structure)] + new_operands

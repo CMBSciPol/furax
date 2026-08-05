@@ -149,9 +149,8 @@ class AbstractLinearOperator(ABC):
             raise ValueError(msg)
         if isinstance(other, CompositionOperator):
             return NotImplemented
-        if isinstance(other, AbstractLazyInverseOperator):
-            if other.operator is self:
-                return IdentityOperator(in_structure=self.in_structure)
+        if isinstance(other, AbstractLazyInverseOperator) and other.operator is self:
+            return IdentityOperator(in_structure=self.in_structure)
 
         return CompositionOperator([self, other])
 

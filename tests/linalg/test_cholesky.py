@@ -11,7 +11,7 @@ from furax.linalg import BandedCholeskyOperator, banded_cholesky, banded_cholesk
 
 def _banded_spd(n: int, k: int, w: int, seed: int):
     """A random block-banded SPD matrix of bandwidth w, as (dense, bands)."""
-    kL, kb = jr.split(jr.key(seed))
+    key = jr.key(seed)
     # dense lower block-banded L (well-conditioned diagonal) -> G = L Lᵀ is SPD, block-banded of
     # bandwidth w. w=0 is the block-diagonal degeneration.
     L = jnp.zeros((n * k, n * k))
@@ -19,7 +19,7 @@ def _banded_spd(n: int, k: int, w: int, seed: int):
         for d in range(w + 1):
             j = i - d
             if j >= 0:
-                blk = jr.normal(jr.fold_in(kL, i * 10 + d), (k, k))
+                blk = jr.normal(jr.fold_in(key, i * 10 + d), (k, k))
                 if d == 0:
                     blk = jnp.tril(blk) + (k + 1) * jnp.eye(k)
                 L = L.at[i * k : (i + 1) * k, j * k : (j + 1) * k].set(blk)

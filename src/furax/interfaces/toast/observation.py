@@ -267,7 +267,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
             pixels=self._pixels,
             resolution=[res := (resolution_arcmin * u.arcmin), res],
             projection=projection.name,
-            dimensions=tuple(),
+            dimensions=(),
         )
         det_pixels.apply(self._toast_data)
 

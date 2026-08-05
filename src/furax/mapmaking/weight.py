@@ -169,5 +169,5 @@ class NestedWeightOperator(AbstractLinearOperator):
 
 def _resolve_n_flag_max(mask: MaskOperator, max_flag_fraction: float) -> int:
     """Resolve the static flagged-subspace size from a mask."""
-    n_total = sum(math.prod(leaf.shape) for leaf in jax.tree.leaves(mask.in_structure))
-    return int(math.ceil(max_flag_fraction * n_total))
+    n_total: int = sum(math.prod(leaf.shape) for leaf in jax.tree.leaves(mask.in_structure))
+    return math.ceil(max_flag_fraction * n_total)

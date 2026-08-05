@@ -373,7 +373,7 @@ class BinsConfig:
 class PolynomialConfig:
     """Polynomial drift template (per-detector low-order Legendre polynomial in time)."""
 
-    legendre: PolynomialOrders = PolynomialOrders(0, 3)
+    legendre: PolynomialOrders = field(default_factory=lambda: PolynomialOrders(0, 3))
     """Legendre orders for the polynomial drift template."""
 
 
@@ -384,7 +384,7 @@ class ScanSynchronousConfig:
     Represents signals that depend only on the telescope's azimuth.
     """
 
-    legendre: PolynomialOrders = PolynomialOrders(3, 7)
+    legendre: PolynomialOrders = field(default_factory=lambda: PolynomialOrders(3, 7))
     """Legendre orders for the azimuth-dependent basis."""
 
 
@@ -411,7 +411,7 @@ class HWPSynchronousConfig:
 class AzHWPSynchronousConfig:
     """Joint azimuth/HWP-synchronous signal: Legendre in azimuth times Fourier in HWP angle."""
 
-    legendre: PolynomialOrders = PolynomialOrders(0, 3)
+    legendre: PolynomialOrders = field(default_factory=lambda: PolynomialOrders(0, 3))
     """Legendre orders for the azimuth-dependent basis."""
 
     n_harmonics: int = 4

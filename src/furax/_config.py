@@ -23,9 +23,13 @@ def verbose_solver_callback(solution: lx.Solution) -> None:
         print(f'Did not converge in {num_steps} iterations')
 
 
+def default_solver() -> lx.AbstractLinearSolver:
+    return lx.CG(rtol=1e-6, atol=1e-6, max_steps=500)
+
+
 @dataclass(frozen=True)
 class ConfigState:
-    solver: lx.AbstractLinearSolver = lx.CG(rtol=1e-6, atol=1e-6, max_steps=500)
+    solver: lx.AbstractLinearSolver = field(default_factory=default_solver)
     solver_throw: bool = False
     solver_options: dict[str, Any] = field(default_factory=dict)
     solver_callback: Callable[[lx.Solution], None] = default_solver_callback

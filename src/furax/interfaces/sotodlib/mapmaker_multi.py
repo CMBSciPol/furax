@@ -78,7 +78,9 @@ def main(
         fh.setFormatter(formatter)
         logger.addHandler(fh)
 
-    preprocess_config = yaml.safe_load(open(preprocess_config))  # type: ignore[arg-type]
+    if isinstance(preprocess_config, str):
+        with open(preprocess_config) as f:
+            preprocess_config = yaml.safe_load(f)
     logger.info('Preprocessing config loaded from file')
 
     for obs_id in obs_ids:

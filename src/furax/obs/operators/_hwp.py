@@ -1,4 +1,4 @@
-from typing import TypeVar
+from typing import ClassVar, TypeVar
 
 import numpy as np
 from jax import Array
@@ -175,7 +175,7 @@ class NonIdealHWPOperator(AbstractLinearOperator):
         rot = QURotationOperator(angles=angles, in_structure=in_structure)
         return rot.T @ op @ rot
 
-    _MUELLER_SLICE = {
+    _MUELLER_SLICE: ClassVar = {
         'I': slice(0, 1),
         'QU': slice(1, 3),
         'IQU': slice(0, 3),

@@ -267,7 +267,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
             pixels=self._pixels,
             resolution=[res := (resolution_arcmin * u.arcmin), res],
             projection=projection.name,
-            dimensions=tuple(),
+            dimensions=(),
         )
         det_pixels.apply(self._toast_data)
 
@@ -314,7 +314,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
             spin_ang = self._get_detector_angles() - 2 * self.get_detector_offset_angles()[:, None]
             return indices, spin_ang
         else:
-            raise ValueError('Invalid landscape type')
+            raise TypeError('Invalid landscape type')
 
     def _get_pixel_indices(self) -> Array:
         """Returns the pixel indices."""

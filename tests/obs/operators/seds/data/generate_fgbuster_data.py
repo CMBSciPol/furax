@@ -46,7 +46,7 @@ def write_fgbuster_data():
     np.savez(data_filename, **fg_data)
     print(f"Data saved to '{data_filename}'")
 
-    d = Stokes.from_stokes(I=freq_maps[:, 0, :], Q=freq_maps[:, 1, :], U=freq_maps[:, 2, :])
+    d = Stokes.from_stokes(i=freq_maps[:, 0, :], q=freq_maps[:, 1, :], u=freq_maps[:, 2, :])
     return fg_data, d, in_structure
 
 

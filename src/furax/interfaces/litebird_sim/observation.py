@@ -86,7 +86,7 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
         self, landscape: StokesLandscape
     ) -> tuple[Float[Array, ' ...'], Float[Array, ' ...']]:
         if not isinstance(landscape, HealpixLandscape):
-            raise RuntimeError('only healpix is supported')
+            raise TypeError('only healpix is supported')
         pointings, _hwp_angles = self.data.get_pointings()
         # pointings have shape (N_det, N_samples, 3)
         theta, phi, psi = np.moveaxis(pointings, -1, 0)

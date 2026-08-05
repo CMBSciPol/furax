@@ -105,7 +105,7 @@ class AbstractReader(ABC):
         # transform a dict of lists to a list of dicts
         try:
             list_of_keywords = [
-                dict((k, v) for k, v in zip(keywords, values))
+                {k: v for k, v in zip(keywords, values)}
                 for values in zip(*keywords.values(), strict=True)
             ]
         except ValueError:

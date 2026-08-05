@@ -20,8 +20,8 @@ import jax.numpy as jnp
 from furax import DiagonalOperator
 
 # Create operators
-op1 = DiagonalOperator(jnp.array([1., 2., 3.]))
-op2 = DiagonalOperator(jnp.array([2., 1., 1.]))
+op1 = DiagonalOperator(jnp.array([1.0, 2.0, 3.0]))
+op2 = DiagonalOperator(jnp.array([2.0, 1.0, 1.0]))
 
 # Composition (matrix multiplication)
 composed = op1 @ op2
@@ -56,7 +56,7 @@ weights = jnp.array([1.0, 0.5, 2.0, 1.5])
 weight_op = DiagonalOperator(weights)
 
 # Apply to data
-data = jnp.array([1., 2., 3., 4.])
+data = jnp.array([1.0, 2.0, 3.0, 4.0])
 weighted_data = weight_op(data)
 print(weighted_data)  # [1. 1. 6. 6.]
 ```
@@ -72,13 +72,13 @@ import jax.numpy as jnp
 from furax import BroadcastDiagonalOperator
 
 # Diagonal values to broadcast
-diag_values = jnp.array([1., 2., 3.])
+diag_values = jnp.array([1.0, 2.0, 3.0])
 
 # Create operator that broadcasts to (3, 4) arrays
 broadcast_op = BroadcastDiagonalOperator(
     diagonal=diag_values,
     axis_destination=0,  # Broadcast along axes except first one
-    in_structure=jax.ShapeDtypeStruct((3, 4), jnp.float32)
+    in_structure=jax.ShapeDtypeStruct((3, 4), jnp.float32),
 )
 
 # Apply to multi-dimensional data
@@ -103,9 +103,9 @@ import jax.numpy as jnp
 from furax import BlockDiagonalOperator, DiagonalOperator
 
 # Create individual block operators
-block1 = DiagonalOperator(jnp.array([1., 2.]))
-block2 = DiagonalOperator(jnp.array([3., 4., 5.]))
-block3 = DiagonalOperator(jnp.array([6.]))
+block1 = DiagonalOperator(jnp.array([1.0, 2.0]))
+block2 = DiagonalOperator(jnp.array([3.0, 4.0, 5.0]))
+block3 = DiagonalOperator(jnp.array([6.0]))
 
 # Create block diagonal operator using a tuple of operators
 block_op = BlockDiagonalOperator((block1, block2, block3))
@@ -118,7 +118,7 @@ block_op.as_matrix()
 #        [0., 0., 0., 0., 0., 6.]], dtype=float32)
 
 # Apply to a tuple of data
-data = (jnp.array([1., 1.]), jnp.array([1., 1., 1.]), jnp.array([1.]))
+data = (jnp.array([1.0, 1.0]), jnp.array([1.0, 1.0, 1.0]), jnp.array([1.0]))
 result = block_op(data)
 print(result)
 # (
@@ -138,8 +138,11 @@ import jax.numpy as jnp
 
 from furax import BlockRowOperator, DenseBlockDiagonalOperator, DiagonalOperator
 
-op1 = DiagonalOperator(jnp.array([1., 2.]))
-op2 = DenseBlockDiagonalOperator(jnp.array([[3., 0., 4.], [0., 5., 0.]]), in_structure=jax.ShapeDtypeStruct((3,), jnp.float32))
+op1 = DiagonalOperator(jnp.array([1.0, 2.0]))
+op2 = DenseBlockDiagonalOperator(
+    jnp.array([[3.0, 0.0, 4.0], [0.0, 5.0, 0.0]]),
+    in_structure=jax.ShapeDtypeStruct((3,), jnp.float32),
+)
 
 # Create row block: [op1, op2]
 row_op = BlockRowOperator([op1, op2])
@@ -148,7 +151,7 @@ row_op.as_matrix()
 #        [0., 2., 0., 5., 0.]], dtype=float32)
 
 # Input has combined size
-data = [jnp.array([1., 1.]), jnp.array([1., 1., 1.])]
+data = [jnp.array([1.0, 1.0]), jnp.array([1.0, 1.0, 1.0])]
 row_op(data)
 # Array([8., 7.], dtype=float32)
 ```
@@ -162,8 +165,8 @@ import jax.numpy as jnp
 
 from furax import BlockColumnOperator, DiagonalOperator
 
-op1 = DiagonalOperator(jnp.array([1., 2.]))
-op2 = DiagonalOperator(jnp.array([3., 4.]))
+op1 = DiagonalOperator(jnp.array([1.0, 2.0]))
+op2 = DiagonalOperator(jnp.array([3.0, 4.0]))
 
 # Create column block
 col_op = BlockColumnOperator({'x': op1, 'y': op2})
@@ -173,7 +176,7 @@ col_op.as_matrix()
 #        [3., 0.],
 #        [0., 4.]], dtype=float32)
 
-data = jnp.array([1., 1.])
+data = jnp.array([1.0, 1.0])
 col_op(data)
 # {
 #     'x': Array([1., 2.], dtype=float32),
@@ -192,10 +195,12 @@ import jax.numpy as jnp
 from furax import SymmetricBandToeplitzOperator
 
 # Define the bands for a symmetric Toeplitz matrix
-bands = jnp.array([[2., 1., 0.5], [1, 0.8, 0.1]])
+bands = jnp.array([[2.0, 1.0, 0.5], [1, 0.8, 0.1]])
 
 # Create symmetric band Toeplitz operator
-toeplitz_op = SymmetricBandToeplitzOperator(bands, in_structure=jax.ShapeDtypeStruct((2, 6), jnp.float32))
+toeplitz_op = SymmetricBandToeplitzOperator(
+    bands, in_structure=jax.ShapeDtypeStruct((2, 6), jnp.float32)
+)
 toeplitz_op.as_matrix()
 # Array([[2. , 1. , 0.5, 0. , 0. , 0. , 0. , 0. , 0. , 0. , 0. , 0. ],
 #        [1. , 2. , 1. , 0.5, 0. , 0. , 0. , 0. , 0. , 0. , 0. , 0. ],
@@ -211,7 +216,7 @@ toeplitz_op.as_matrix()
 #        [0. , 0. , 0. , 0. , 0. , 0. , 0. , 0. , 0. , 0.1, 0.8, 1. ]],      dtype=float32)
 
 # Apply to data
-data = jnp.array([1., 0., 0., 0., 0., 0.])
+data = jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 toeplitz_op(data)
 # Array([[2. , 1. , 0.5, 0. , 0. , 0. ],
 #        [1. , 0.8, 0.1, 0. , 0. , 0. ]], dtype=float32)
@@ -233,7 +238,7 @@ from furax import IndexOperator
 indices = jnp.array([0, 2, 4])
 index_op = IndexOperator(indices, in_structure=jax.ShapeDtypeStruct((5,), jnp.float32))
 
-data = jnp.array([10., 20., 30., 40., 50.])
+data = jnp.array([10.0, 20.0, 30.0, 40.0, 50.0])
 index_op(data)
 # Array([10., 30., 50.], dtype=float32)
 ```
@@ -252,7 +257,7 @@ reshape_op = ReshapeOperator(
     in_structure={'x': jax.ShapeDtypeStruct((6,), jnp.float32)},
 )
 
-data = {'x': jnp.array([1., 2., 3., 4., 5., 6.])}
+data = {'x': jnp.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])}
 reshape_op(data)
 # {
 #     'x': Array([[1., 2., 3.],
@@ -277,7 +282,6 @@ data = [jnp.arange(12).reshape((6, 2))]
 moveaxis_op(data)
 # [Array([[ 0,  2,  4,  6,  8, 10],
 #         [ 1,  3,  5,  7,  9, 11]], dtype=int32)]
-
 ```
 
 ### Tree Operators
@@ -289,19 +293,15 @@ from furax import DiagonalOperator, TreeOperator
 
 # Define operations for each leaf of a PyTree
 tree_structure = {
-    'I': DiagonalOperator(jnp.array([1., 2.])),
-    'Q': DiagonalOperator(jnp.array([3., 4.])),
-    'U': DiagonalOperator(jnp.array([5., 6.]))
+    'I': DiagonalOperator(jnp.array([1.0, 2.0])),
+    'Q': DiagonalOperator(jnp.array([3.0, 4.0])),
+    'U': DiagonalOperator(jnp.array([5.0, 6.0])),
 }
 
 tree_op = TreeOperator(tree_structure)
 
 # Apply to PyTree data
-data = {
-    'I': jnp.array([1., 1.]),
-    'Q': jnp.array([1., 1.]),
-    'U': jnp.array([1., 1.])
-}
+data = {'I': jnp.array([1.0, 1.0]), 'Q': jnp.array([1.0, 1.0]), 'U': jnp.array([1.0, 1.0])}
 
 result = tree_op(data)
 # Each component is processed by its corresponding operator
@@ -317,7 +317,8 @@ Operators can be composed to create sophisticated analysis pipelines:
 import jax.random
 
 from furax import (
-    DiagonalOperator, BlockDiagonalOperator,
+    DiagonalOperator,
+    BlockDiagonalOperator,
     IndexOperator,
 )
 from furax.obs.landscapes import HealpixLandscape
@@ -360,14 +361,14 @@ import lineax as lx
 from furax import SymmetricBandToeplitzOperator
 
 # Create a positive definite operator for solving Ax = b
-band = jnp.array([1., 0.5, 0.25, 0.125])
+band = jnp.array([1.0, 0.5, 0.25, 0.125])
 A = SymmetricBandToeplitzOperator(band, in_structure=jax.ShapeDtypeStruct((6,), jnp.float32))
 
 # Right-hand side
-b = jnp.array([1., 2., 3., 4., 5., 6.])
+b = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
 
 # Solve with conjugate gradient
-solver=lx.CG(atol=1e-5, rtol=1e-5, max_steps=100)
+solver = lx.CG(atol=1e-5, rtol=1e-5, max_steps=100)
 solution = A.I(solver=solver)(b)
 print(f'CG solution: {solution}')
 # CG solution: [0.13638389 0.9942686  0.802103   1.3276514  1.6366035  4.7495227 ]
@@ -378,7 +379,7 @@ print(f'GMRES solution: {solution}')
 # GMRES solution: [0.13638386 0.9942684  0.8021034  1.3276513  1.6366041  4.749522  ]
 
 expected_solution = jnp.linalg.inv(A.as_matrix()) @ b
-print(f"Expected solution: {expected_solution}")
+print(f'Expected solution: {expected_solution}')
 # Expected solution: [0.13638361 0.99426854 0.802103   1.3276504  1.636604   4.749522  ]
 ```
 
@@ -394,11 +395,12 @@ def large_scale_analysis(operator, data):
     result = operator(data)
 
     # Operator norms and properties
-    print(f"Operator properties:")
-    print(f"  Symmetric: {operator.is_symmetric}")
-    print(f"  Positive semidefinite: {operator.is_positive_semidefinite}")
+    print(f'Operator properties:')
+    print(f'  Symmetric: {operator.is_symmetric}')
+    print(f'  Positive semidefinite: {operator.is_positive_semidefinite}')
 
     return result
+
 
 # Even for very large operators, memory usage stays manageable
 large_diagonal = DiagonalOperator(jnp.ones(1_000_000))
@@ -421,10 +423,10 @@ import jax.numpy as jnp
 from furax import DiagonalOperator
 
 # Diagonal operators are tagged as symmetric but not as PSD (tags are static, not value-dependent)
-positive_diag = DiagonalOperator(jnp.array([1., 2., 3.]))
-print(f"Square: {positive_diag.is_square}")  # True
-print(f"Symmetric: {positive_diag.is_symmetric}")  # True
-print(f"Positive semidefinite: {positive_diag.is_positive_semidefinite}")  # False
+positive_diag = DiagonalOperator(jnp.array([1.0, 2.0, 3.0]))
+print(f'Square: {positive_diag.is_square}')  # True
+print(f'Symmetric: {positive_diag.is_symmetric}')  # True
+print(f'Positive semidefinite: {positive_diag.is_positive_semidefinite}')  # False
 ```
 
 ### Custom Operators
@@ -441,6 +443,7 @@ from jaxtyping import PyTree, Inexact
 
 from furax import AbstractLinearOperator, symmetric
 
+
 @symmetric
 class CustomScalingOperator(AbstractLinearOperator):
     """Custom operator that scales a PyTree by a static factor."""
@@ -452,8 +455,10 @@ class CustomScalingOperator(AbstractLinearOperator):
 
 
 # Use the custom operator
-custom_op = CustomScalingOperator(scale_factor=2.5, in_structure={'input': jax.ShapeDtypeStruct((3,), jnp.float32)})
-data = {'input': jnp.array([1., 2., 3.])}
+custom_op = CustomScalingOperator(
+    scale_factor=2.5, in_structure={'input': jax.ShapeDtypeStruct((3,), jnp.float32)}
+)
+data = {'input': jnp.array([1.0, 2.0, 3.0])}
 custom_op(data)
 # {
 #     'input': Array([ 2.5,  5. ,  7.5 ], dtype=float32)
@@ -482,13 +487,15 @@ import jax.numpy as jnp
 
 from furax import DiagonalOperator
 
+
 # JIT compilation
 @jax.jit
 def fast_operator_apply(op, data):
     return op(data)
 
-op = DiagonalOperator(jnp.array([1., 2., 3., 4.]))
-data = jnp.array([1., 1., 1., 1.])
+
+op = DiagonalOperator(jnp.array([1.0, 2.0, 3.0, 4.0]))
+data = jnp.array([1.0, 1.0, 1.0, 1.0])
 op(data)
 # Array([1., 2., 3., 4.], dtype=float32)
 
@@ -496,10 +503,12 @@ op(data)
 fast_operator_apply(op, data)
 # Array([1., 2., 3., 4.], dtype=float32)
 
+
 # Vectorization
 @jax.vmap
 def batch_apply(data_batch):
     return op(data_batch)
+
 
 # Apply operator to batch of data
 data_batch = jnp.arange(40).reshape(10, 4)  # 10 samples of size 4

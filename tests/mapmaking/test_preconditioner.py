@@ -203,7 +203,7 @@ def test_create_raises_for_non_stokes_operator() -> None:
     """create() raises ValueError when the operator does not act on a Stokes pytree."""
     x = jnp.zeros(N_PIX)
     op = asoperator(lambda v: v, in_structure=jax.ShapeDtypeStruct(x.shape, x.dtype))
-    with pytest.raises(ValueError, match='Stokes'):
+    with pytest.raises(TypeError, match='Stokes'):
         BJPreconditioner.create(op)
 
 

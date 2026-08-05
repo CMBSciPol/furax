@@ -206,7 +206,7 @@ class TransposeIndexRule(AbstractCompositionRule):
 
         diagonal_op = DiagonalOperator(
             coverage,
-            axis_destination=(axis,) if axis >= 0 else (axis,),
+            axis_destination=(axis,),
             in_structure=right.in_structure,
         )
         return [diagonal_op]

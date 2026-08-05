@@ -41,7 +41,7 @@ class BJPreconditioner(AbstractLinearOperator):
         """
         in_struct = op.in_structure
         if not isinstance(in_struct, Stokes):
-            raise ValueError('operator must act on Stokes pytrees (sky maps)')
+            raise TypeError('operator must act on Stokes pytrees (sky maps)')
         if not structure_equal(in_struct, op.out_structure):
             raise ValueError('operator must be square')
 

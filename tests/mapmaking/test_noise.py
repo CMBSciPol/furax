@@ -123,7 +123,7 @@ class TestAtmosphericNoiseModel:
     def test_operators_shape_and_no_nan(self, model):
         shape = (2, 200)
         struct = jax.ShapeDtypeStruct(shape, jnp.float64)
-        kwargs = dict(sample_rate=10.0, correlation_length=20)
+        kwargs = {'sample_rate': 10.0, 'correlation_length': 20}
         x = jnp.ones(shape)
         for method in ('operator', 'inverse_operator'):
             y = getattr(model, method)(struct, **kwargs)(x)

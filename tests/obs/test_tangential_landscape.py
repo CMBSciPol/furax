@@ -44,7 +44,6 @@ class TestFromExtent:
         """The actual map extent must be >= the requested size."""
         x_size, y_size = 300.0, 400.0
         ls = TangentialLandscape.from_extent(x_size, y_size, 100.0, 100.0, HEIGHT)
-        n_x, n_y = ls.pixel_shape
         x_extent, y_extent = ls.extent
         assert x_extent >= x_size
         assert y_extent >= y_size

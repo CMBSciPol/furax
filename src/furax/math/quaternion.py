@@ -210,7 +210,7 @@ def to_gamma_angles(q: Quat) -> Ang:
 
     Only the gamma angle is computed and returned.
     """
-    a, b, c, d = q
+    a, _b, _c, d = q
     gamma = jnp.atan2(2 * a * d, a**2 - d**2)
     return gamma
 

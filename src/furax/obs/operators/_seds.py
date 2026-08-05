@@ -109,7 +109,7 @@ class AbstractSEDOperator(AbstractLinearOperator):
         Raises:
             ValueError: If the shapes of the leaves are not consistent.
         """
-        input_shapes = set(leaf.shape for leaf in jax.tree.leaves(in_structure))
+        input_shapes = {leaf.shape for leaf in jax.tree.leaves(in_structure)}
         if len(input_shapes) != 1:
             raise ValueError(f'the leaves of the input do not have the same shape: {in_structure}')
         return input_shapes.pop()  # type: ignore[no-any-return]

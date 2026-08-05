@@ -182,7 +182,7 @@ class ObservationReader[T](AbstractReader):
         # Drop potential duplicates (from padding) and sort by obs index
         all_rows = mhu.process_allgather(local_rows).reshape(-1, width)
         shapes = [tuple(row[1:]) for row in np.unique(all_rows, axis=0)]
-        if not (ns := len(shapes)) == (no := len(observations)):
+        if (ns := len(shapes)) != (no := len(observations)):
             msg = f'inconsistent observation shapes after allgather: expected {no}, got {ns}'
             raise RuntimeError(msg)
         return shapes, failed

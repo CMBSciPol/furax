@@ -124,11 +124,13 @@ class HomothetyRule(AbstractNaryRule):
 
         # apply the homothety on the smallest number of elements
         apply_on_left = first.out_size <= last.in_size
-        if homothety_number == 1:
-            if apply_on_left and isinstance(first, HomothetyOperator):
-                return operands
-            elif not apply_on_left and isinstance(last, HomothetyOperator):
-                return operands
+        if homothety_number == 1 and (
+            apply_on_left
+            and isinstance(first, HomothetyOperator)
+            or not apply_on_left
+            and isinstance(last, HomothetyOperator)
+        ):
+            return operands
 
         if apply_on_left:
             return [HomothetyOperator(value, in_structure=first.out_structure)] + new_operands
@@ -213,12 +215,13 @@ class AbstractBinaryRule(AbstractRule, ABC):
             and cls.right_operator_class is None
         ):
             raise ValueError('The operator classes are not specified in the binary rule.')
-        if cls.operator_class is not None:
-            if cls.left_operator_class is not None or cls.right_operator_class is not None:
-                raise ValueError(
-                    'Either operator_class or left_operator_class and right_operator_class must be '
-                    'specified in the binary rule.'
-                )
+        if cls.operator_class is not None and not (
+            cls.left_operator_class is None and cls.right_operator_class is None
+        ):
+            raise ValueError(
+                'Either operator_class or left_operator_class and right_operator_class must be '
+                'specified in the binary rule.'
+            )
 
     def _check_operands(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
         """Shared operand-class matching: raises [`NoReduction`][] if the rule does not apply."""
@@ -227,12 +230,11 @@ class AbstractBinaryRule(AbstractRule, ABC):
                 right, self.operator_class
             ):
                 raise NoReduction
-        elif self.left_operator_class is not None and not isinstance(
-            left, self.left_operator_class
-        ):
-            raise NoReduction
-        elif self.right_operator_class is not None and not isinstance(
-            right, self.right_operator_class
+        elif (
+            self.left_operator_class is not None
+            and not isinstance(left, self.left_operator_class)
+            or self.right_operator_class is not None
+            and not isinstance(right, self.right_operator_class)
         ):
             raise NoReduction
 

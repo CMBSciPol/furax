@@ -633,7 +633,7 @@ class MapMaker:
 
     def _save(self, results: dict[str, Any], out_dir: Path) -> None:
         for key, m in results.items():
-            if isinstance(m, jax.Array) or isinstance(m, np.ndarray):
+            if isinstance(m, (jax.Array, np.ndarray)):
                 np.save(out_dir / key, np.array(m))
             elif isinstance(m, StokesIQU):
                 np.save(out_dir / key, np.stack([m.i, m.q, m.u], axis=0))
@@ -1211,7 +1211,7 @@ class MLMapmaker(MapMaker):
                     {
                         tmpl: regs[tmpl]
                         * IdentityOperator(in_structure=template_op.blocks[tmpl].in_structure)
-                        for tmpl in template_op.blocks.keys()
+                        for tmpl in template_op.blocks
                     },
                 ]
             )
@@ -1289,10 +1289,10 @@ class MLMapmaker(MapMaker):
         ):
             output['noise_fit'] = noise_model.to_array()
         if config.use_templates:
-            for key in tmpl_ampl.keys():
+            for key in tmpl_ampl:
                 output[f'template_{key}'] = tmpl_ampl[key]
                 output[f'template_reg_{key}'] = np.array(regs[key])
-            if 'ground' in tmpl_ampl.keys():
+            if 'ground' in tmpl_ampl:
                 output['ground_landscape'] = self._ground_landscape
                 output['ground_coverage'] = self._ground_coverage
                 output['ground_map'] = self._ground_selector.T(tmpl_ampl['ground'])
@@ -1397,7 +1397,7 @@ class TwoStepMapmaker(MapMaker):
         final_map = np.array([result_map.i, result_map.q, result_map.u])
 
         output = {'map': final_map, 'weights': blocks}
-        for key in tmpl_ampl.keys():
+        for key in tmpl_ampl:
             output[f'template_{key}'] = tmpl_ampl[key]
         if isinstance(landscape, WCSLandscape):
             output['wcs'] = landscape.to_wcs()

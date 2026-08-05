@@ -357,7 +357,6 @@ class TestWCSConventions:
         landscape1 = WCSLandscape.from_wcs(shape, wcs, stokes='I')
         landscape2 = WCSLandscape.from_wcs(shape2, wcs2, stokes='I')
 
-        nrow, ncol = shape
         theta = jnp.array([np.pi / 2 - np.radians(-5.0), np.pi / 2 - np.radians(4.0)])
         phi = jnp.array([np.radians(35.0), np.radians(26.0)])
 

@@ -46,6 +46,7 @@ Enable 64-bit precision for better numerical accuracy:
 
 ```python
 import jax
+
 jax.config.update('jax_enable_x64', True)
 ```
 
@@ -85,7 +86,9 @@ cmb_map = landscape.normal(jr.key(42))
 n_pixel = landscape.shape[0]
 
 # Create a noise weighting operator
-noise_weights = DiagonalOperator(1.0 / jnp.full(n_pixel, jnp.sqrt(n_pixel)), in_structure=landscape.structure)
+noise_weights = DiagonalOperator(
+    1.0 / jnp.full(n_pixel, jnp.sqrt(n_pixel)), in_structure=landscape.structure
+)
 
 # Apply the weights to the I, Q and U Stokes parameters of the map
 weighted_map = noise_weights(cmb_map)
@@ -119,7 +122,9 @@ u_processor = DiagonalOperator(0.5 * jnp.ones(n_pixel))  # Reduce U
 component_processor = BlockDiagonalOperator(StokesIQU(i_processor, q_processor, u_processor))
 
 # The noise weights apply the same diagonal matrix to I, Q and U
-noise_weights = DiagonalOperator(1.0 / jnp.full(n_pixel, jnp.sqrt(n_pixel)), in_structure=landscape.structure)
+noise_weights = DiagonalOperator(
+    1.0 / jnp.full(n_pixel, jnp.sqrt(n_pixel)), in_structure=landscape.structure
+)
 
 # Compose with noise weighting
 full_pipeline = component_processor @ noise_weights
@@ -153,7 +158,7 @@ noise = jr.normal(noise_key, observed_pixels.shape) * σ_noise
 acquisition_op = IndexOperator(observed_pixels, in_structure=as_structure(actual_map))
 observed_values = acquisition_op(actual_map) + noise
 
-noise_op = HomothetyOperator(σ_noise ** 2, in_structure=as_structure(observed_values))
+noise_op = HomothetyOperator(σ_noise**2, in_structure=as_structure(observed_values))
 
 ml = (acquisition_op.T @ noise_op.I @ acquisition_op).I @ acquisition_op.T @ noise_op.I
 
@@ -165,7 +170,11 @@ print('Difference:', abs(actual_map - maximum_likelihood_map))
 
 # Use high-precision solver for critical calculations
 solver = lx.CG(rtol=1e-10, atol=1e-10, max_steps=2000)
-high_precision_ml = (acquisition_op.T @ noise_op.I @ acquisition_op).I(solver=solver) @ acquisition_op.T @ noise_op.I
+high_precision_ml = (
+    (acquisition_op.T @ noise_op.I @ acquisition_op).I(solver=solver)
+    @ acquisition_op.T
+    @ noise_op.I
+)
 
 high_precision_map = high_precision_ml(observed_values)
 print('Difference:', abs(actual_map - high_precision_map))
@@ -182,7 +191,7 @@ from furax import IndexOperator
 from furax.obs.landscapes import HealpixLandscape
 from furax.tree import as_structure
 
-GALACTIC_MAX_LATITUDE = 5.  # degrees
+GALACTIC_MAX_LATITUDE = 5.0  # degrees
 
 landscape = HealpixLandscape(nside=128, stokes='IQU')
 n_pixel = landscape.shape[0]
@@ -211,7 +220,7 @@ from furax.obs.landscapes import HealpixLandscape
 from furax.tree import as_structure
 
 # Multi-frequency analysis setup
-frequencies = jnp.array([70., 150., 353.])  # GHz
+frequencies = jnp.array([70.0, 150.0, 353.0])  # GHz
 landscape = HealpixLandscape(nside=128, stokes='IQU')
 n_pixel = landscape.shape[0]
 
@@ -254,7 +263,7 @@ from furax.obs.landscapes import HealpixLandscape
 
 # Only for small operators!
 small_landscape = HealpixLandscape(nside=2, stokes='I')  # 48 pixels
-small_weights = DiagonalOperator(1. + jnp.arange(small_landscape.shape[0]))
+small_weights = DiagonalOperator(1.0 + jnp.arange(small_landscape.shape[0]))
 
 # Convert to explicit matrix for debugging
 weight_matrix = small_weights.as_matrix()
@@ -273,10 +282,12 @@ import jax.random as jr
 from furax import DiagonalOperator
 from furax.obs.landscapes import HealpixLandscape
 
+
 # JIT compile for repeated operations
 @jax.jit
 def process_many_maps(operator, maps):
     return jax.vmap(lambda m: operator(m))(maps)
+
 
 batch_size = 10
 landscape = HealpixLandscape(nside=128, stokes='IQU')

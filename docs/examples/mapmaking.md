@@ -31,8 +31,8 @@ nside = 64
 landscape = HealpixLandscape(nside=nside, stokes='IQU')
 n_pix = landscape.shape[0]
 
-print(f"Sky map: {n_pix} pixels with {landscape.stokes} Stokes parameters")
-print(f"Total sky parameters: {landscape.size}")
+print(f'Sky map: {n_pix} pixels with {landscape.stokes} Stokes parameters')
+print(f'Total sky parameters: {landscape.size}')
 ```
 
 ### Create Simulated Time-Ordered Data
@@ -45,15 +45,13 @@ keys = jr.split(jr.key(42), 4)
 
 # Generate random pointing (in practice, this comes from satellite attitude)
 # pixel_indices: which sky pixel each sample observes
-pixel_indices = jr.randint(
-    keys[0], (n_samples,), 0, n_pix
-)
+pixel_indices = jr.randint(keys[0], (n_samples,), 0, n_pix)
 
 # Polarization angles (detector orientation relative to sky)
-psi_angles = jr.uniform(keys[1], (n_samples,), minval=0, maxval=2*jnp.pi)
+psi_angles = jr.uniform(keys[1], (n_samples,), minval=0, maxval=2 * jnp.pi)
 
-print(f"Time-ordered data: {n_samples} samples")
-print(f"Unique pixels observed: {len(jnp.unique(pixel_indices))}")
+print(f'Time-ordered data: {n_samples} samples')
+print(f'Unique pixels observed: {len(jnp.unique(pixel_indices))}')
 ```
 
 ### Create True Sky Signal
@@ -63,21 +61,20 @@ print(f"Unique pixels observed: {len(jnp.unique(pixel_indices))}")
 true_sky = landscape.normal(keys[2])
 
 # Add some large-scale structure (simplified)
-large_scale_component = 0.1 * landscape.uniform(
-    keys[3], minval=-1, maxval=1
-)
+large_scale_component = 0.1 * landscape.uniform(keys[3], minval=-1, maxval=1)
 true_sky = true_sky + large_scale_component
 
-print(f"True sky shape: {true_sky.shape}")
-print(f"Sky RMS (I): {jnp.std(true_sky.i):.3f} μK")
-print(f"Sky RMS (Q): {jnp.std(true_sky.q):.3f} μK")
-print(f"Sky RMS (U): {jnp.std(true_sky.u):.3f} μK")
+print(f'True sky shape: {true_sky.shape}')
+print(f'Sky RMS (I): {jnp.std(true_sky.i):.3f} μK')
+print(f'Sky RMS (Q): {jnp.std(true_sky.q):.3f} μK')
+print(f'Sky RMS (U): {jnp.std(true_sky.u):.3f} μK')
 ```
 
 ### Build the Pointing Operator
 
 ```python
 from furax.obs import ProjectionOperator
+
 
 def create_pointing_matrix(pixel_indices, psi_angles, landscape):
     """Create the pointing matrix that maps sky to TOD."""
@@ -102,19 +99,20 @@ def create_pointing_matrix(pixel_indices, psi_angles, landscape):
         # Q couples with cos(2*psi), U couples with sin(2*psi)
         if landscape.stokes in ['QU', 'IQU']:
             q_idx = pix_idx + n_pix  # Q parameters start after I
-            u_idx = pix_idx + 2*n_pix  # U parameters start after Q
+            u_idx = pix_idx + 2 * n_pix  # U parameters start after Q
 
-            pointing_vector = pointing_vector.at[q_idx].set(jnp.cos(2*psi))
-            pointing_vector = pointing_vector.at[u_idx].set(jnp.sin(2*psi))
+            pointing_vector = pointing_vector.at[q_idx].set(jnp.cos(2 * psi))
+            pointing_vector = pointing_vector.at[u_idx].set(jnp.sin(2 * psi))
 
         pointing_vectors.append(pointing_vector)
 
     # Stack into pointing matrix: (n_samples, n_sky_params)
     return jnp.stack(pointing_vectors)
 
+
 # Create the pointing matrix
 pointing_matrix = create_pointing_matrix(pixel_indices, psi_angles, landscape)
-print(f"Pointing matrix shape: {pointing_matrix.shape}")
+print(f'Pointing matrix shape: {pointing_matrix.shape}')
 ```
 
 ### Simulate Observations
@@ -130,10 +128,10 @@ noise_tod = noise_level * jr.normal(jr.key(789), (n_samples,))
 # Observed time-ordered data
 observed_tod = true_tod + noise_tod
 
-print(f"TOD RMS (signal): {jnp.std(true_tod):.3f} μK")
-print(f"TOD RMS (noise): {jnp.std(noise_tod):.3f} μK")
-print(f"TOD RMS (total): {jnp.std(observed_tod):.3f} μK")
-print(f"Signal-to-noise ratio: {jnp.std(true_tod)/jnp.std(noise_tod):.2f}")
+print(f'TOD RMS (signal): {jnp.std(true_tod):.3f} μK')
+print(f'TOD RMS (noise): {jnp.std(noise_tod):.3f} μK')
+print(f'TOD RMS (total): {jnp.std(observed_tod):.3f} μK')
+print(f'Signal-to-noise ratio: {jnp.std(true_tod) / jnp.std(noise_tod):.2f}')
 ```
 
 ## Maximum Likelihood Mapmaking
@@ -167,8 +165,8 @@ normal_matrix = PtNinv @ pointing_op
 # Right-hand side: P^T N^-1 d
 rhs = PtNinv(observed_tod)
 
-print(f"Normal matrix in_structure: {normal_matrix.in_structure}")
-print(f"Right-hand side shape: {rhs.shape}")
+print(f'Normal matrix in_structure: {normal_matrix.in_structure}')
+print(f'Right-hand side shape: {rhs.shape}')
 ```
 
 ### Solve for Sky Map
@@ -181,11 +179,11 @@ recovered_sky_flat = normal_matrix.I(solver=solver)(rhs)
 # Reshape back to Stokes format
 recovered_sky = StokesIQU(
     recovered_sky_flat[:n_pix],
-    recovered_sky_flat[n_pix:2*n_pix],
-    recovered_sky_flat[2*n_pix:],
+    recovered_sky_flat[n_pix : 2 * n_pix],
+    recovered_sky_flat[2 * n_pix :],
 )
 
-print(f"Recovered sky shape: {recovered_sky.shape}")
+print(f'Recovered sky shape: {recovered_sky.shape}')
 ```
 
 ### Analyze Mapmaking Results
@@ -200,8 +198,8 @@ pixel_uncertainties = 1.0 / jnp.sqrt(normal_diag)
 # Reshape uncertainties
 uncertainty_sky = StokesIQU(
     pixel_uncertainties[:n_pix],
-    pixel_uncertainties[n_pix:2*n_pix],
-    pixel_uncertainties[2*n_pix:],
+    pixel_uncertainties[n_pix : 2 * n_pix],
+    pixel_uncertainties[2 * n_pix :],
 )
 
 # Compute residuals
@@ -209,13 +207,13 @@ residual_i = recovered_sky.i - true_sky.i
 residual_q = recovered_sky.q - true_sky.q
 residual_u = recovered_sky.u - true_sky.u
 
-print(f"Residual RMS (I): {jnp.std(residual_i):.3f} μK")
-print(f"Residual RMS (Q): {jnp.std(residual_q):.3f} μK")
-print(f"Residual RMS (U): {jnp.std(residual_u):.3f} μK")
+print(f'Residual RMS (I): {jnp.std(residual_i):.3f} μK')
+print(f'Residual RMS (Q): {jnp.std(residual_q):.3f} μK')
+print(f'Residual RMS (U): {jnp.std(residual_u):.3f} μK')
 
-print(f"Average uncertainty (I): {jnp.mean(uncertainty_sky.i):.3f} μK")
-print(f"Average uncertainty (Q): {jnp.mean(uncertainty_sky.q):.3f} μK")
-print(f"Average uncertainty (U): {jnp.mean(uncertainty_sky.u):.3f} μK")
+print(f'Average uncertainty (I): {jnp.mean(uncertainty_sky.i):.3f} μK')
+print(f'Average uncertainty (Q): {jnp.mean(uncertainty_sky.q):.3f} μK')
+print(f'Average uncertainty (U): {jnp.mean(uncertainty_sky.u):.3f} μK')
 ```
 
 ## Advanced Mapmaking
@@ -230,13 +228,13 @@ hit_counts = jnp.zeros(n_pix)
 for pix_idx in pixel_indices:
     hit_counts = hit_counts.at[pix_idx].add(1.0)
 
-print(f"Average hits per pixel: {jnp.mean(hit_counts):.1f}")
-print(f"Min hits: {jnp.min(hit_counts)}, Max hits: {jnp.max(hit_counts)}")
+print(f'Average hits per pixel: {jnp.mean(hit_counts):.1f}')
+print(f'Min hits: {jnp.min(hit_counts)}, Max hits: {jnp.max(hit_counts)}')
 
 # Pixels with no hits cannot be constrained
 observed_pixels = hit_counts > 0
 n_observed = jnp.sum(observed_pixels)
-print(f"Observed pixels: {n_observed} / {n_pix} ({100*n_observed/n_pix:.1f}%)")
+print(f'Observed pixels: {n_observed} / {n_pix} ({100 * n_observed / n_pix:.1f}%)')
 ```
 
 ### Correlated Noise
@@ -245,6 +243,7 @@ Handle temporal correlations in the noise:
 
 ```python
 from furax import SymmetricBandToeplitzOperator
+
 
 def create_correlated_noise_operator(n_samples, correlation_time=10):
     """Create operator for temporally correlated noise."""
@@ -266,12 +265,13 @@ def create_correlated_noise_operator(n_samples, correlation_time=10):
         bands, in_structure=jax.ShapeDtypeStruct((n_samples,), jnp.float64)
     )
 
+
 # Create correlated noise model
 corr_noise_cov = create_correlated_noise_operator(n_samples)
 
 # For mapmaking, we need the inverse (expensive for large problems!)
 # In practice, would use approximate methods or preconditioning
-print(f"Correlated noise covariance in_structure: {corr_noise_cov.in_structure}")
+print(f'Correlated noise covariance in_structure: {corr_noise_cov.in_structure}')
 ```
 
 ### Iterative Mapmaking with Preconditioning
@@ -294,6 +294,7 @@ def create_hit_count_preconditioner(hit_counts, landscape):
 
     return DiagonalOperator(precond_diag)
 
+
 preconditioner = create_hit_count_preconditioner(hit_counts, landscape)
 
 # Solve with preconditioning
@@ -307,7 +308,7 @@ preconditioned_solution = preconditioned_matrix.I(solver=solver)(preconditioned_
 # Transform back
 final_solution = preconditioner(preconditioned_solution)
 
-print(f"Preconditioned solver completed")
+print(f'Preconditioned solver completed')
 ```
 
 ### Multi-Detector Mapmaking
@@ -317,7 +318,7 @@ For experiments with multiple detectors:
 ```python
 # Simulate multiple detectors
 n_detectors = 4
-detector_names = [f"Det_{i:02d}" for i in range(n_detectors)]
+detector_names = [f'Det_{i:02d}' for i in range(n_detectors)]
 
 # Different noise levels per detector
 detector_noise_levels = jnp.array([8.0, 10.0, 12.0, 9.0])  # μK
@@ -343,7 +344,7 @@ for i, det_name in enumerate(detector_names):
     det_noise = detector_noise_levels[i] * jr.normal(det_keys[1], (n_samples,))
     multi_detector_tod[det_name] = det_signal + det_noise
 
-    print(f"{det_name}: noise level = {detector_noise_levels[i]:.1f} μK")
+    print(f'{det_name}: noise level = {detector_noise_levels[i]:.1f} μK')
 ```
 
 ### Combined Multi-Detector Solution
@@ -357,9 +358,7 @@ combined_pointing = jnp.concatenate(all_pointing_matrices, axis=0)
 # Create block diagonal noise covariance
 noise_cov_blocks = []
 for noise_level in detector_noise_levels:
-    det_noise_cov = DiagonalOperator(
-        (1.0 / noise_level**2) * jnp.ones(n_samples)
-    )
+    det_noise_cov = DiagonalOperator((1.0 / noise_level**2) * jnp.ones(n_samples))
     noise_cov_blocks.append(det_noise_cov)
 
 combined_inv_noise_cov = BlockDiagonalOperator(noise_cov_blocks)
@@ -373,8 +372,8 @@ combined_PtNinv = combined_pointing_op.T @ combined_inv_noise_cov
 combined_normal = combined_PtNinv @ combined_pointing_op
 combined_rhs = combined_PtNinv(all_tod)
 
-print(f"Combined system in_structure: {combined_normal.in_structure}")
-print(f"Total samples: {len(all_tod)}")
+print(f'Combined system in_structure: {combined_normal.in_structure}')
+print(f'Total samples: {len(all_tod)}')
 
 # Solve
 solver = lx.CG(rtol=1e-6, max_steps=2000)
@@ -382,11 +381,11 @@ combined_solution = combined_normal.I(solver=solver)(combined_rhs)
 
 multi_det_sky = StokesIQU(
     combined_solution[:n_pix],
-    combined_solution[n_pix:2*n_pix],
-    combined_solution[2*n_pix:],
+    combined_solution[n_pix : 2 * n_pix],
+    combined_solution[2 * n_pix :],
 )
 
-print(f"Multi-detector solution completed")
+print(f'Multi-detector solution completed')
 ```
 
 ## Cross-Validation and Diagnostics
@@ -402,8 +401,9 @@ pointing_1 = pointing_matrix[:n_half]
 tod_1 = observed_tod[:n_half]
 
 # Second half
-pointing_2 = pointing_matrix[n_half:2*n_half]
-tod_2 = observed_tod[n_half:2*n_half]
+pointing_2 = pointing_matrix[n_half : 2 * n_half]
+tod_2 = observed_tod[n_half : 2 * n_half]
+
 
 def solve_split_map(pointing_split, tod_split, noise_level):
     """Solve mapmaking for data split."""
@@ -411,9 +411,7 @@ def solve_split_map(pointing_split, tod_split, noise_level):
         pointing_split[jnp.newaxis],
         in_structure=jax.ShapeDtypeStruct((pointing_split.shape[1],), jnp.float64),
     )
-    inv_noise = DiagonalOperator(
-        (1.0 / noise_level**2) * jnp.ones(len(tod_split))
-    )
+    inv_noise = DiagonalOperator((1.0 / noise_level**2) * jnp.ones(len(tod_split)))
 
     PtNinv = pointing_op.T @ inv_noise
     normal = PtNinv @ pointing_op
@@ -422,7 +420,8 @@ def solve_split_map(pointing_split, tod_split, noise_level):
     solver = lx.CG(rtol=1e-6, max_steps=2000)
     solution = normal.I(solver=solver)(rhs)
 
-    return StokesIQU(solution[:n_pix], solution[n_pix:2*n_pix], solution[2*n_pix:])
+    return StokesIQU(solution[:n_pix], solution[n_pix : 2 * n_pix], solution[2 * n_pix :])
+
 
 # Solve for both halves
 sky_split_1 = solve_split_map(pointing_1, tod_1, noise_level)
@@ -433,9 +432,9 @@ diff_i = sky_split_1.i - sky_split_2.i
 diff_q = sky_split_1.q - sky_split_2.q
 diff_u = sky_split_1.u - sky_split_2.u
 
-print(f"Split difference RMS (I): {jnp.std(diff_i):.3f} μK")
-print(f"Split difference RMS (Q): {jnp.std(diff_q):.3f} μK")
-print(f"Split difference RMS (U): {jnp.std(diff_u):.3f} μK")
+print(f'Split difference RMS (I): {jnp.std(diff_i):.3f} μK')
+print(f'Split difference RMS (Q): {jnp.std(diff_q):.3f} μK')
+print(f'Split difference RMS (U): {jnp.std(diff_u):.3f} μK')
 ```
 
 ### Null Tests
@@ -454,12 +453,12 @@ jackknife_solution = normal_matrix.I(solver=solver)(jackknife_rhs)
 
 jackknife_sky = StokesIQU(
     jackknife_solution[:n_pix],
-    jackknife_solution[n_pix:2*n_pix],
-    jackknife_solution[2*n_pix:],
+    jackknife_solution[n_pix : 2 * n_pix],
+    jackknife_solution[2 * n_pix :],
 )
 
-print(f"Jackknife map RMS (I): {jnp.std(jackknife_sky.i):.3f} μK")
-print(f"Expected from noise: ~{noise_level/jnp.sqrt(jnp.mean(hit_counts)):.3f} μK")
+print(f'Jackknife map RMS (I): {jnp.std(jackknife_sky.i):.3f} μK')
+print(f'Expected from noise: ~{noise_level / jnp.sqrt(jnp.mean(hit_counts)):.3f} μK')
 ```
 
 ## Performance Optimization
@@ -491,9 +490,9 @@ def memory_efficient_mapmaking(pixel_indices, psi_angles, tod, noise_level):
 
         if landscape.stokes in ['QU', 'IQU']:
             q_idx = pix_idx + n_pix
-            u_idx = pix_idx + 2*n_pix
-            pointing_vec = pointing_vec.at[q_idx].set(jnp.cos(2*psi))  # Q
-            pointing_vec = pointing_vec.at[u_idx].set(jnp.sin(2*psi))  # U
+            u_idx = pix_idx + 2 * n_pix
+            pointing_vec = pointing_vec.at[q_idx].set(jnp.cos(2 * psi))  # Q
+            pointing_vec = pointing_vec.at[u_idx].set(jnp.sin(2 * psi))  # U
 
         # Accumulate: P^T N^-1 P and P^T N^-1 d
         normal_matrix_data += inv_noise_var * jnp.outer(pointing_vec, pointing_vec)
@@ -503,6 +502,7 @@ def memory_efficient_mapmaking(pixel_indices, psi_angles, tod, noise_level):
         normal_matrix_data[jnp.newaxis],
         in_structure=jax.ShapeDtypeStruct((n_sky_params,), jnp.float64),
     ), rhs_data
+
 
 # For demonstration with small subset
 subset_size = 1000
@@ -514,7 +514,7 @@ efficient_normal, efficient_rhs = memory_efficient_mapmaking(
     small_indices, small_psi, small_tod, noise_level
 )
 
-print("Memory-efficient method completed")
+print('Memory-efficient method completed')
 ```
 
 This example demonstrates the complete mapmaking pipeline in Furax, from simulation to advanced analysis techniques. The linear operator framework makes it easy to experiment with different noise models, preconditioners, and multi-detector configurations.

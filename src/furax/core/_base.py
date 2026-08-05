@@ -134,7 +134,7 @@ class AbstractLinearOperator(ABC):
         if keywords:
             raise TypeError('No keywords is allowed in AbstractLinearOperator __call__ method')
         if isinstance(x, AbstractLinearOperator):
-            raise ValueError("Use '@' to compose operators")
+            raise TypeError("Use '@' to compose operators")
         return self.mv(x)
 
     def __matmul__(self, other: Any) -> 'AbstractLinearOperator':
@@ -149,9 +149,8 @@ class AbstractLinearOperator(ABC):
             raise ValueError(msg)
         if isinstance(other, CompositionOperator):
             return NotImplemented
-        if isinstance(other, AbstractLazyInverseOperator):
-            if other.operator is self:
-                return IdentityOperator(in_structure=self.in_structure)
+        if isinstance(other, AbstractLazyInverseOperator) and other.operator is self:
+            return IdentityOperator(in_structure=self.in_structure)
 
         return CompositionOperator([self, other])
 
@@ -247,7 +246,7 @@ class AbstractLinearOperator(ABC):
         return InverseOperator(self)
 
     @property
-    def I(self) -> 'AbstractLinearOperator':  # noqa: E743
+    def I(self) -> 'AbstractLinearOperator':
         return self.inverse()
 
     @property

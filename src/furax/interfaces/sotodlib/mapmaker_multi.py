@@ -78,7 +78,9 @@ def main(
         fh.setFormatter(formatter)
         logger.addHandler(fh)
 
-    preprocess_config = yaml.safe_load(open(preprocess_config))  # type: ignore[arg-type]
+    if isinstance(preprocess_config, str):
+        with open(preprocess_config) as f:
+            preprocess_config = yaml.safe_load(f)
     logger.info('Preprocessing config loaded from file')
 
     for obs_id in obs_ids:
@@ -102,7 +104,7 @@ def main(
         try:
             obs = load_and_preprocess(obs_id, preprocess_config, dets=det_select)
             logger.info('Observationa data loaded')
-        except Exception as exception:
+        except Exception as exception:  # ruff: ignore[BLE001]
             logger.info(f'Loading failed for {obs_id}')
             logger.info(exception)
             continue
@@ -134,7 +136,7 @@ def main(
                 maker.run(observation=observation, out_dir=output_dir)
                 logger.info('Mapmaking finished')
                 logger.info(f'Output directory: {output_dir}')
-            except Exception as exception:
+            except Exception as exception:  # ruff: ignore[BLE001]
                 logger.info(f'Mapmaking failed for [{mm_name}] on {obs_id}')
                 logger.info(exception)
                 continue

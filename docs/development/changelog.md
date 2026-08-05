@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `AbstractLinearOperator.__call__`, `BJPreconditioner.create`, and the `LBSObservation`/`ToastObservation` pointing helpers now raise `TypeError` (previously `ValueError`/`RuntimeError`) for invalid argument/operator/landscape types (#194)
+- Bumped ruff to 0.16.1 and updated rule selection accordingly (#194)
+
 ## [0.12.0] - 2026-07-24
 
 This version drops support for Python 3.11 following the latest JAX release (0.11.0).

@@ -10,7 +10,7 @@ from jaxtyping import Array, Inexact, PyTree
 from numpy.testing import assert_allclose
 
 from furax import AbstractLinearOperator, tree
-from furax.core import DiagonalOperator, HomothetyOperator
+from furax.core import BlockColumnOperator, BlockRowOperator, DiagonalOperator, HomothetyOperator
 from furax.mapmaking.streaming import StreamOperator, StreamSegment
 
 # ---------------------------------------------------------------------------
@@ -325,8 +325,10 @@ def test_stacked_segment_must_lead_with_obs_axis() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Multi-segment bodies: constant maps that keep sliced segments apart
+# Mixed (per-component) streams: joint shared-sky + stacked-amplitude systems
 # ---------------------------------------------------------------------------
+
+N_AMP = 2
 
 
 def _count_scans(jaxpr: jax.extend.core.Jaxpr) -> int:
@@ -343,6 +345,93 @@ def _count_scans(jaxpr: jax.extend.core.Jaxpr) -> int:
     return n
 
 
+def _joint_operands() -> tuple[StreamOperator, StreamOperator, StreamOperator]:
+    """H_sky (shared sky -> tod), Te (stacked amps -> tod), W (tod weight)."""
+    h_sky = StreamOperator.column(_make_blocks(P('obs')))  # (N_IN,) -> (N_OBS, N_OUT)
+    te = StreamOperator.diagonal(_make_blocks(P('obs'), n_in=N_AMP))  # (N_OBS, N_AMP) -> ...
+    w = StreamOperator.diagonal(_make_blocks(P('obs'), n_in=N_OUT))
+    return h_sky, te, w
+
+
+def test_stream_block_row_structure_and_specs() -> None:
+    h_sky, te, _ = _joint_operands()
+    h = StreamOperator.block_row([h_sky, te])
+    assert isinstance(h, StreamOperator)
+    assert h.in_stacked == [False, True]  # sky shared, amplitudes stacked
+    assert h.out_stacked is True  # both map into the (stacked) tod
+    in_struct = h.in_structure
+    assert in_struct[0].shape == (N_IN,)
+    assert in_struct[1].shape == (N_OBS, N_AMP)
+    assert h.out_structure.shape == (N_OBS, N_OUT)
+
+
+def test_stream_block_row_mv_and_transpose() -> None:
+    h_sky, te, _ = _joint_operands()
+    h = StreamOperator.block_row([h_sky, te])
+    hs = _per_obs(h_sky.segments[0].operator)
+    ts = _per_obs(te.segments[0].operator)
+
+    x_sky = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
+    x_amp = jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs'))
+    sky_np, amp_np = np.array(x_sky), np.array(jax.device_get(x_amp))
+    expected = np.stack([hs[i] @ sky_np + ts[i] @ amp_np[i] for i in range(N_OBS)])
+    assert_allclose(h([x_sky, x_amp]), expected, rtol=1e-10)
+
+    # transpose: tod -> [Σ H_iᵀ y_i (shared), stack(Te_iᵀ y_i)]
+    h_t = h.T
+    assert isinstance(h_t, StreamOperator)
+    assert h_t.out_stacked == [False, True]
+    y = jax.device_put(RNG.standard_normal((N_OBS, N_OUT), dtype=np.float64), P('obs'))
+    y_np = np.array(jax.device_get(y))
+    exp_sky = sum(hs[i].T @ y_np[i] for i in range(N_OBS))
+    exp_amp = np.stack([ts[i].T @ y_np[i] for i in range(N_OBS)])
+    out_sky, out_amp = h_t(y)
+    assert_allclose(out_sky, exp_sky, rtol=1e-10)
+    assert_allclose(out_amp, exp_amp, rtol=1e-10)
+
+
+def _constant_wrapped(op: StreamOperator, *, post: bool) -> StreamOperator:
+    """Wrap a stream in a non-identity constant map, on the output (post) or input (pre) side.
+
+    Built from segments rather than from `scalar * op`, whose scalar the algebra is free to commute
+    to whichever side it likes; which side the constant segment sits on is what matters here.
+
+    The constant map has to own arrays: a leafless one (a scalar homothety, say) is legally folded
+    into the sliced core by `_normalize`, which is the case this helper is not about.
+    """
+    structure = op.segments[0].out_structure if post else op.segments[-1].in_structure
+    d = jax.device_put(RNG.standard_normal(structure.shape, dtype=np.float64), P())
+    shared = StreamSegment(DiagonalOperator(d, in_structure=structure), False)
+    segments = (shared,) + op.segments if post else op.segments + (shared,)
+    return StreamOperator.create(
+        segments, n_lead=op.n_lead, in_stacked=op.in_stacked, out_stacked=op.out_stacked
+    )
+
+
+@pytest.mark.parametrize('post', [False, True])
+def test_stream_block_row_keeps_shared_maps_out_of_the_body(post: bool) -> None:
+    # operands built by a layout constructor alone have no constant segments; wrapping them
+    # exercises the slots that keep a constant map beside the sliced core.
+    h_sky, te, _ = _joint_operands()
+    a = _constant_wrapped(h_sky, post=post)
+    b = _constant_wrapped(te, post=post)
+    h = StreamOperator.block_row([a, b])
+    # composition order: a post map lands left of the sliced core, a pre map right of it
+    assert [seg.sliced for seg in h.segments] == ([False, True] if post else [True, False])
+    assert h.in_stacked == [False, True]
+    x_sky = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
+    x_amp = jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs'))
+    assert_allclose(h([x_sky, x_amp]), tree.add(a(x_sky), b(x_amp)), rtol=1e-10)
+
+
+def test_structural_maps_fold_into_the_stacked_core() -> None:
+    # a block row's fan-in and fan-out carry no arrays when the operands have no shared
+    # segments, so `_normalize` folds those slots into the core rather than leaving them
+    h_sky, te, _ = _joint_operands()
+    h = StreamOperator.block_row([h_sky, te])
+    assert [seg.sliced for seg in h.segments] == [True]
+
+
 def _multi_stacked(n_in: int = N_IN) -> StreamOperator:
     """A body with two sliced segments, kept apart by an array-owning constant map.
 
@@ -357,6 +446,19 @@ def _multi_stacked(n_in: int = N_IN) -> StreamOperator:
         StreamSegment(_make_blocks(P('obs'), n_in=n_in), True),
     )
     return StreamOperator.create(segments, n_lead=N_OBS, in_stacked=False, out_stacked=True)
+
+
+def test_block_row_aligns_bodies_of_unequal_shape() -> None:
+    # one operand has a single sliced segment, the other two: padding with identities lets them
+    # be blocked up slot for slot, and the fused body keeps the deeper operand's two sliced slots
+    a = _multi_stacked()
+    b = StreamOperator.column(_make_blocks(P('obs'), n_in=N_AMP))
+    assert [seg.sliced for seg in a.segments] == [True, False, True]
+    h = StreamOperator.block_row([a, b])
+    assert [seg.sliced for seg in h.segments] == [True, False, True]
+    x_a = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
+    x_b = jax.device_put(RNG.standard_normal((N_AMP,), dtype=np.float64), P())
+    assert_allclose(h([x_a, x_b]), tree.add(a(x_a), b(x_b)), rtol=1e-10)
 
 
 def test_multi_stacked_bodies_still_fuse_under_addition() -> None:
@@ -418,6 +520,64 @@ def test_array_owning_shared_map_is_never_folded() -> None:
     assert_allclose(op(x), expected, rtol=1e-10)
 
 
+def test_stream_block_column_fans_out_shared_input() -> None:
+    # a column shares one input across its blocks and stacks their outputs into a list; it is the
+    # transpose of the block-row of the transposed operands.
+    a = StreamOperator.column(_make_blocks(P('obs')))  # (N_IN,) -> (N_OBS, N_OUT)
+    b = StreamOperator.column(_make_blocks(P('obs')))
+    col = StreamOperator.block_column([a, b])
+    # both output legs are obs-stacked, so the spec is uniform and collapses to a plain column
+    # a uniform per-block spec collapses back to a bare bool, so this is a plain column again
+    assert (col.in_stacked, col.out_stacked) == (False, True)
+    x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
+    out_a, out_b = col(x)
+    assert_allclose(out_a, a(x), rtol=1e-10)
+    assert_allclose(out_b, b(x), rtol=1e-10)
+
+
+def test_mixed_normal_equations_fuse_to_single_scan() -> None:
+    h_sky, te, w = _joint_operands()
+    h = StreamOperator.block_row([h_sky, te])
+    a = (h.T @ w @ h).reduce()
+    assert isinstance(a, StreamOperator)
+    assert a.in_stacked == [False, True]
+    assert a.out_stacked == [False, True]
+    assert a.sliced_count == 1  # one sliced core: one tod pass
+
+    # numerically identical to the old 2x2 block-of-reduced-streams assembly
+    a_ss = (h_sky.T @ w @ h_sky).reduce()
+    a_sa = (h_sky.T @ w @ te).reduce()
+    a_as = (te.T @ w @ h_sky).reduce()
+    a_aa = (te.T @ w @ te).reduce()
+    a_2x2 = BlockColumnOperator([BlockRowOperator([a_ss, a_sa]), BlockRowOperator([a_as, a_aa])])
+
+    x = [
+        jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P()),
+        jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs')),
+    ]
+    fused, ref = a(x), a_2x2(x)
+    for leaf_a, leaf_b in zip(jax.tree.leaves(fused), jax.tree.leaves(ref), strict=True):
+        assert_allclose(leaf_a, leaf_b, rtol=1e-9)
+
+    # the point of the change: one scan for the fused operator vs four for the 2x2 assembly
+    assert _count_scans(jax.make_jaxpr(a.mv)(x).jaxpr) == 1
+    assert _count_scans(jax.make_jaxpr(a_2x2.mv)(x).jaxpr) == 4
+
+
+def test_mixed_output_sharding() -> None:
+    h_sky, te, w = _joint_operands()
+    a = (
+        StreamOperator.block_row([h_sky, te]).T @ w @ StreamOperator.block_row([h_sky, te])
+    ).reduce()
+    x_struct = [
+        jax.ShapeDtypeStruct((N_IN,), jnp.float64, sharding=P()),
+        jax.ShapeDtypeStruct((N_OBS, N_AMP), jnp.float64, sharding=P('obs')),
+    ]
+    y = jax.eval_shape(a.mv, x_struct)
+    assert 'obs' not in y[0].sharding.spec  # sky leg replicated (not obs-sharded)
+    assert y[1].sharding.spec == P('obs', None)  # amplitude leg obs-sharded
+
+
 def test_addition_composition_does_not_fuse() -> None:
     # a shared junction is a psum only available after the scan, so `Addition @ Addition` cannot
     # fuse into one scan: (Σᵢaᵢ)(Σⱼbⱼ) != Σᵢ aᵢbᵢ. It must stay an unreduced composition.
@@ -427,6 +587,88 @@ def test_addition_composition_does_not_fuse() -> None:
     assert not isinstance(reduced, StreamOperator)
     x = jax.device_put(RNG.standard_normal((N_OUT,), dtype=np.float64), P())
     assert_allclose(reduced(x), a(b(x)), rtol=1e-10)
+
+
+def test_mixed_addition_fusion() -> None:
+    h_sky, te, w = _joint_operands()
+    left = (
+        StreamOperator.block_row([h_sky, te]).T @ w @ StreamOperator.block_row([h_sky, te])
+    ).reduce()
+    h_sky2, te2, w2 = _joint_operands()
+    right = (
+        StreamOperator.block_row([h_sky2, te2]).T @ w2 @ StreamOperator.block_row([h_sky2, te2])
+    ).reduce()
+    fused = (left + right).reduce()
+    assert isinstance(fused, StreamOperator)
+    assert fused.sliced_count == 1
+    x = [
+        jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P()),
+        jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs')),
+    ]
+    expected = tree.add(left(x), right(x))
+    for leaf_a, leaf_b in zip(jax.tree.leaves(fused(x)), jax.tree.leaves(expected), strict=True):
+        assert_allclose(leaf_a, leaf_b, rtol=1e-9)
+
+
+def test_homothety_on_mixed_stream() -> None:
+    h_sky, te, w = _joint_operands()
+    a = (
+        StreamOperator.block_row([h_sky, te]).T @ w @ StreamOperator.block_row([h_sky, te])
+    ).reduce()
+    scaled = ((-2.0) * a).reduce()
+    assert isinstance(scaled, StreamOperator)
+    assert scaled.sliced_count == 1  # scalar stays out of the sliced body
+    x = [
+        jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P()),
+        jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs')),
+    ]
+    expected = tree.mul(-2.0, a(x))
+    for leaf_a, leaf_b in zip(jax.tree.leaves(scaled(x)), jax.tree.leaves(expected), strict=True):
+        assert_allclose(leaf_a, leaf_b, rtol=1e-9)
+
+
+def _not_a_stream() -> AbstractLinearOperator:
+    return DiagonalOperator(jnp.ones(N_IN), in_structure=jax.ShapeDtypeStruct((N_IN,), jnp.float64))
+
+
+def _other_n_lead() -> AbstractLinearOperator:
+    return StreamOperator.column(_make_blocks(n_lead=N_OBS + 1))
+
+
+def _other_out_structure() -> AbstractLinearOperator:
+    return StreamOperator.column(_make_blocks(n_out=N_OUT + 1))
+
+
+def _other_out_stacked() -> AbstractLinearOperator:
+    # same per-slice out structure as a column, but summed rather than stacked
+    return StreamOperator.addition(_make_blocks())
+
+
+@pytest.mark.parametrize(
+    'make_operand, error, match',
+    [
+        (_not_a_stream, TypeError, 'must be stream operators'),
+        (_other_n_lead, ValueError, 'share n_lead'),
+        (_other_out_structure, ValueError, 'per-slice junction structure'),
+        (_other_out_stacked, ValueError, 'junction stack spec'),
+    ],
+)
+def test_stream_block_row_rejects_non_conforming_operand(
+    make_operand: Callable[[], AbstractLinearOperator], error: type[Exception], match: str
+) -> None:
+    h_sky, _, _ = _joint_operands()
+    with pytest.raises(error, match=match):
+        StreamOperator.block_row([h_sky, make_operand()])
+
+
+def test_stream_block_column_rejects_non_conforming_operand() -> None:
+    # the column delegates to the row constructor on transposed operands; `.T` is a bijection on
+    # stream operators, so a non-stream operand is still caught (and named side-neutrally)
+    h_sky, _, _ = _joint_operands()
+    with pytest.raises(TypeError, match='must be stream operators'):
+        StreamOperator.block_column([h_sky, _not_a_stream()])
+    with pytest.raises(ValueError, match='at least one operand'):
+        StreamOperator.block_column([])
 
 
 def test_create_rejects_non_prefix_spec() -> None:
@@ -489,3 +731,35 @@ class TestSharded:
         assert_allclose(op(x), expected, rtol=1e-10)
         struct = jax.ShapeDtypeStruct(x.shape, jnp.float64, sharding=_spec(in_stacked))
         assert jax.eval_shape(op.mv, struct).sharding.spec == _spec(out_stacked)
+
+    def test_mixed_normal_equations(self) -> None:
+        # a mixed boundary is what needs per-component out_specs: within one scan the sky leg is
+        # summed across shards and the amplitude leg stays sharded.
+        h_sky, te, w = _joint_operands()
+        h = StreamOperator.block_row([h_sky, te])
+        a = (h.T @ w @ h).reduce()
+        hs = _per_obs(h_sky.segments[0].operator)
+        ts = _per_obs(te.segments[0].operator)
+        ws = _per_obs(w.segments[0].operator)
+
+        x_sky = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
+        x_amp = jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs'))
+        sky_np, amp_np = np.array(x_sky), np.array(jax.device_get(x_amp))
+        wd = [ws[i] @ (hs[i] @ sky_np + ts[i] @ amp_np[i]) for i in range(N_OBS)]
+        exp_sky = sum(hs[i].T @ wd[i] for i in range(N_OBS))
+        exp_amp = np.stack([ts[i].T @ wd[i] for i in range(N_OBS)])
+
+        out_sky, out_amp = a([x_sky, x_amp])
+        assert_allclose(out_sky, exp_sky, rtol=1e-9)
+        assert_allclose(out_amp, exp_amp, rtol=1e-9)
+        assert _count_scans(jax.make_jaxpr(a.mv)([x_sky, x_amp]).jaxpr) == 1
+
+        y = jax.eval_shape(
+            a.mv,
+            [
+                jax.ShapeDtypeStruct((N_IN,), jnp.float64, sharding=P()),
+                jax.ShapeDtypeStruct((N_OBS, N_AMP), jnp.float64, sharding=P('obs')),
+            ],
+        )
+        assert 'obs' not in y[0].sharding.spec  # sky leg reduced, hence replicated
+        assert y[1].sharding.spec == P('obs', None)  # amplitude leg still sharded

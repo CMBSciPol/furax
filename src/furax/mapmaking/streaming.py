@@ -1,6 +1,7 @@
 """Operators that stream a batched operator slice-by-slice across a sharded leading axis."""
 
 import functools
+from collections.abc import Sequence
 from dataclasses import field
 from typing import Any
 
@@ -44,8 +45,8 @@ class StreamSegment(eqx.Module):
     A third case cuts across those two. A *pure* segment ([`is_pure`][]) owns no data at all --
     an identity, or a block operator assembled only to route components around. It has nothing to
     slice or hold, so it belongs to neither camp and can join whichever neighbour it sits next to.
-    That is what lets the slot alignment emit structural operators freely: `_normalize` folds them
-    away again.
+    That is what lets the block constructors and the slot alignment emit structural operators
+    freely: `_normalize` folds them away again.
     """
 
     operator: AbstractLinearOperator
@@ -104,8 +105,11 @@ class StreamOperator(AbstractLinearOperator):
     | True       | False       | `row`        | (N,in) -> (out,)  |
     | False      | False       | `addition`   | (in,)  -> (out,)  |
 
-    A boundary need not be uniform: the reduction rules produce mixed streams -- some components
-    stacked, some shared -- which is this same class with prefix pytree specs.
+    Those four lay a single operator out over the batch axis. `block_row` / `block_column` do
+    something different despite the shared vocabulary: they lay several *streams* out over the
+    components of a block structure, giving a mixed boundary -- some components stacked, some
+    shared -- which is this same class with prefix pytree specs. The reduction rules produce mixed
+    streams too.
 
     An active mesh context is required when calling `mv`; use `jax.set_mesh` beforehand.
     """
@@ -206,6 +210,92 @@ class StreamOperator(AbstractLinearOperator):
             ...     rhs = A(pixel_map)          # (*in,) -> (*out,)
         """
         return cls._single_segment(operator, n_lead, in_stacked=False, out_stacked=False)
+
+    @classmethod
+    def block_row(cls, operands: Sequence[AbstractLinearOperator]) -> 'StreamOperator':
+        """Fuse parallel streams ``[S₁ | S₂ | ...]`` sharing one batch axis into one stream.
+
+        Where [`column`][furax.mapmaking.streaming.StreamOperator.column] and friends lay *one*
+        operator out over the batch axis, this lays several *streams* out over the components of a
+        block structure: ``H([u₁, ...]) = Σᵢ Sᵢ(uᵢ)``.
+
+        Writing each operand as a chain ``Sᵢ = Aᵢ ∘ Bᵢ ∘ … ∘ Zᵢ``, the identity
+        ``BlockRow([Sᵢ]) = BlockRow([Aᵢ]) @ BlockDiagonal([Bᵢ]) @ … @ BlockDiagonal([Zᵢ])`` lays
+        the fused stream out slot by slot: the leftmost sums the blocks, the rest act
+        componentwise, and every slot keeps its own sliced/constant kind. Chains of different shapes
+        are padded to agree first (see `_aligned_segments`). The result carries a per-block
+        ``in_stacked`` list and the operands' shared ``out_stacked``.
+
+        This is an explicit constructor, not a deferring reduction: a non-conforming operand raises.
+
+        Args:
+            operands: The streams to lay out side by side, at least one.
+
+        Raises:
+            TypeError: If an operand is not a stream operator.
+            ValueError: If an operand disagrees with the first on ``n_lead``, per-slice output
+                structure or ``out_stacked``, or if no operand has a sliced segment.
+        """
+        if not operands:
+            raise ValueError('stream block requires at least one operand')
+        ops: list[StreamOperator] = []
+        for op in operands:
+            if not isinstance(op, StreamOperator):
+                raise TypeError('stream block operands must be stream operators')
+            ops.append(op)
+        n_lead = ops[0].n_lead
+        per_slice_out = ops[0].per_slice_out_structure
+        ref_mask = jax.tree.leaves(jax.tree.broadcast(ops[0].out_stacked, per_slice_out))
+        for op in ops[1:]:
+            if op.n_lead != n_lead:
+                raise ValueError('stream block operands must share n_lead')
+            if not structure_equal(op.per_slice_out_structure, per_slice_out):
+                raise ValueError(
+                    'stream block operands must share their per-slice junction structure'
+                )
+            if jax.tree.leaves(jax.tree.broadcast(op.out_stacked, per_slice_out)) != ref_mask:
+                raise ValueError('stream block operands must share their junction stack spec')
+        n_sliced = max(op.sliced_count for op in ops)
+        if n_sliced == 0:
+            raise ValueError('stream block operands must have at least one sliced segment')
+        # Align the bodies slot for slot, then block them up position-wise: the leftmost slot sums
+        # the blocks, the rest act componentwise. `_normalize` folds away the slots that end up
+        # all-identity, so a body of plain streams still collapses to a single sliced segment.
+        aligned = [op._aligned_segments(n_sliced) for op in ops]
+        segments = []
+        for position, slot in enumerate(zip(*aligned, strict=True)):
+            operators = [seg.operator for seg in slot]
+            block = (
+                BlockRowOperator(operators) if position == 0 else BlockDiagonalOperator(operators)
+            )
+            segments.append(StreamSegment(block, position % 2 == 1))
+        return cls.create(
+            tuple(segments),
+            n_lead=n_lead,
+            in_stacked=[op.in_stacked for op in ops],
+            out_stacked=ops[0].out_stacked,
+        )
+
+    @classmethod
+    def block_column(cls, operands: Sequence[AbstractLinearOperator]) -> 'StreamOperator':
+        """Fuse parallel streams ``[S₁; S₂; ...]`` sharing one batch axis into one stream.
+
+        The transpose of [`block_row`][furax.mapmaking.streaming.StreamOperator.block_row]: fans a
+        single shared input across the blocks and collects their outputs into a list,
+        ``H(u) = [S₁(u), S₂(u), ...]``. Built as ``BlockRow([Sᵢᵀ])ᵀ``, so it fuses into the same
+        one-stacked-core layout, with the per-block spec landing on ``out_stacked`` instead of
+        ``in_stacked``.
+
+        Args:
+            operands: The streams to stack, at least one.
+
+        Raises:
+            TypeError: If an operand is not a stream operator.
+            ValueError: As for [`block_row`][furax.mapmaking.streaming.StreamOperator.block_row].
+        """
+        result = cls.block_row([op.T for op in operands]).T
+        assert isinstance(result, StreamOperator)  # mypy
+        return result
 
     @classmethod
     def create(

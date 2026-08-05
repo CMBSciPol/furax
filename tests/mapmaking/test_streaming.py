@@ -792,3 +792,11 @@ class TestSharded:
         )
         assert 'obs' not in y[0].sharding.spec  # sky leg reduced, hence replicated
         assert y[1].sharding.spec == P('obs', None)  # amplitude leg still sharded
+
+    def test_indivisible_batch_axis_is_rejected(self) -> None:
+        # the scan length is per shard, so a batch axis the shards do not divide has no valid one.
+        # Blocks stay unsharded here: `P('obs')` could not place them over the mesh to begin with.
+        n_lead = self.N_SHARDS + 1
+        op = StreamOperator.diagonal(_make_blocks(n_lead=n_lead))
+        with pytest.raises(ValueError, match='not divisible'):
+            op(jnp.zeros((n_lead, N_IN)))

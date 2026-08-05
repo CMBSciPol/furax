@@ -401,7 +401,15 @@ class StreamOperator(AbstractLinearOperator):
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         mesh = _get_mesh()
         axis = mesh.axis_names[0]
-        length = self.n_lead // mesh.shape[axis]  # slices per shard
+        # The scan length is declared rather than inferred, so it also asserts the per-shard
+        # leading axis of every sliced leaf. Nothing else would catch an indivisible batch axis: a
+        # body whose sliced segments own no arrays gives `scan` no leaf to disagree with.
+        length, remainder = divmod(self.n_lead, mesh.shape[axis])  # slices per shard
+        if remainder:
+            raise ValueError(
+                f'batch axis {self.n_lead} is not divisible by the {mesh.shape[axis]} shards '
+                f'of mesh axis {axis!r}'
+            )
 
         # Stacked inputs ride the scan, shared ones are closed over. `eqx.partition` broadcasts a
         # prefix spec itself, so the input side needs no per-leaf mask.

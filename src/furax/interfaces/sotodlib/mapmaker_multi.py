@@ -104,7 +104,7 @@ def main(
         try:
             obs = load_and_preprocess(obs_id, preprocess_config, dets=det_select)
             logger.info('Observationa data loaded')
-        except Exception as exception:
+        except Exception as exception:  # ruff: ignore[BLE001]
             logger.info(f'Loading failed for {obs_id}')
             logger.info(exception)
             continue
@@ -136,7 +136,7 @@ def main(
                 maker.run(observation=observation, out_dir=output_dir)
                 logger.info('Mapmaking finished')
                 logger.info(f'Output directory: {output_dir}')
-            except Exception as exception:
+            except Exception as exception:  # ruff: ignore[BLE001]
                 logger.info(f'Mapmaking failed for [{mm_name}] on {obs_id}')
                 logger.info(exception)
                 continue

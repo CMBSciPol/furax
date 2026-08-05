@@ -39,7 +39,7 @@ def base_op_and_dense(request: pytest.FixtureRequest) -> (AbstractLinearOperator
                 ),
                 jnp.diag(jnp.r_[jnp.arange(1, 7), 8]),
             )
-    raise Exception
+    raise Exception  # ruff: ignore[TRY002]
 
 
 @pytest.fixture

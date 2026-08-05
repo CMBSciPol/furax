@@ -685,25 +685,16 @@ class TestAngleConversionConsistency:
         zero_q = jnp.zeros(4)
 
         # ISO angles
-        try:
-            theta, phi, psi = to_iso_angles(zero_q)
-            assert jnp.all(jnp.isfinite(jnp.array([theta, phi, psi])))
-        except Exception as e:
-            pytest.skip(f'ISO angles failed for zero quaternion: {e}')
+        theta, phi, psi = to_iso_angles(zero_q)
+        assert jnp.all(jnp.isfinite(jnp.array([theta, phi, psi])))
 
         # Lonlat angles
-        try:
-            alpha, delta, psi = to_lonlat_angles(zero_q)
-            assert jnp.all(jnp.isfinite(jnp.array([alpha, delta, psi])))
-        except Exception as e:
-            pytest.skip(f'Lonlat angles failed for zero quaternion: {e}')
+        alpha, delta, psi = to_lonlat_angles(zero_q)
+        assert jnp.all(jnp.isfinite(jnp.array([alpha, delta, psi])))
 
         # Xieta angles
-        try:
-            xi, eta, gamma = to_xieta_angles(zero_q)
-            assert jnp.all(jnp.isfinite(jnp.array([xi, eta, gamma])))
-        except Exception as e:
-            pytest.skip(f'Xieta angles failed for zero quaternion: {e}')
+        xi, eta, gamma = to_xieta_angles(zero_q)
+        assert jnp.all(jnp.isfinite(jnp.array([xi, eta, gamma])))
 
     def test_angle_conversion_jit_compatibility(self) -> None:
         """Test that angle conversion functions work with JAX JIT."""

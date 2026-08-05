@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `StreamOperator.block_row`/`block_column`: fuse several streams into one, evaluating a joint system in a single pass over the data (#190)
+- API reference page for `furax.mapmaking.streaming` (#190)
+
 ### Changed
 
+- **Breaking:** the four stream operator classes collapse into a single `StreamOperator` (#190):
+    - `StreamDiagonalOperator.create(op)` → `StreamOperator.diagonal(op)`, and likewise `.column`, `.row`, `.addition`
+    - `in_stacked`/`out_stacked` say which side carries the stream axis, per component, so one stream can mix shared and per-slice components
 - **Breaking:** `AbstractLinearOperator.__call__`, `BJPreconditioner.create`, and the `LBSObservation`/`ToastObservation` pointing helpers now raise `TypeError` (previously `ValueError`/`RuntimeError`) for invalid argument/operator/landscape types (#194)
 - Bumped ruff to 0.16.1 and updated rule selection accordingly (#194)
 
@@ -285,7 +293,8 @@ Initial tagged release.
 
 - Project classifiers and editable-mode installation instructions
 
-[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.11.4...HEAD
+[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/CMBSciPol/furax/compare/v0.11.4...v0.12.0
 [0.11.4]: https://github.com/CMBSciPol/furax/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/CMBSciPol/furax/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/CMBSciPol/furax/compare/v0.11.1...v0.11.2

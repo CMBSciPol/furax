@@ -54,8 +54,8 @@ class MyOperator(AbstractLinearOperator):
         Array([2., 3.], dtype=float64)
     """
 
-    weights: Inexact[Array, ' n']                       # dynamic field (a JAX array, traced)
-    axis: int = field(metadata={'static': True}, default=-1)   # static field (metadata, not traced)
+    weights: Inexact[Array, ' n']  # dynamic field (a JAX array, traced)
+    axis: int = field(metadata={'static': True}, default=-1)  # static field (metadata, not traced)
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         return jax.tree.map(lambda leaf: self.weights * leaf, x)
@@ -166,13 +166,15 @@ Prefer composing these over a new subclass. Compose with `@` (matmul) and `+`. A
 **(a) Diagonal gain / weighting** — `y_i = g_i x_i`. Compose, no subclass:
 ```python
 from furax import DiagonalOperator
-G = DiagonalOperator(gains)              # gains: (n,) array; in_structure inferred
+
+G = DiagonalOperator(gains)  # gains: (n,) array; in_structure inferred
 ```
 
 **(b) Pointing / sampling** `P` — sample a sky map onto a timestream, `(P x)_t = x_{p(t)}`:
 ```python
 import jax
 from furax import IndexOperator
+
 P = IndexOperator(pixel_index, in_structure=jax.ShapeDtypeStruct((npix,), jnp.float64))
 # P.T is the classic "co-add into pixels" scatter — for free.
 ```
@@ -186,10 +188,13 @@ import jax.numpy as jnp
 from jaxtyping import Inexact, PyTree
 from furax import AbstractLinearOperator
 
+
 class ForwardDifferenceOperator(AbstractLinearOperator):
     """(D x)_i = x_{i+1} - x_i, mapping length n to length n-1."""
+
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         return x[1:] - x[:-1]
+
 
 # D = ForwardDifferenceOperator(in_structure=jax.ShapeDtypeStruct((n,), jnp.float64))
 ```
@@ -203,13 +208,17 @@ from jax import Array
 from jaxtyping import Inexact, PyTree
 from furax import AbstractLinearOperator, orthogonal
 
+
 @orthogonal
 class QURotationOperator(AbstractLinearOperator):
     """Rotate (Q, U) by 2ψ per pixel: Q' = cos2ψ·Q − sin2ψ·U, U' = sin2ψ·Q + cos2ψ·U."""
-    angle: Inexact[Array, ' p']                      # per-pixel ψ, dynamic
+
+    angle: Inexact[Array, ' p']  # per-pixel ψ, dynamic
+
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         c, s = jnp.cos(2 * self.angle), jnp.sin(2 * self.angle)
         return {'Q': c * x['Q'] - s * x['U'], 'U': s * x['Q'] + c * x['U']}
+
 
 # in_structure = {'Q': ShapeDtypeStruct((p,), f64), 'U': ShapeDtypeStruct((p,), f64)}
 ```

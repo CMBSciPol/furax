@@ -135,7 +135,8 @@ values annotated when small). In `verify.py`, after computing the small `as_matr
 
 ```python
 import numpy as np
-np.save("M.npy", np.asarray(op.as_matrix()))
+
+np.save('M.npy', np.asarray(op.as_matrix()))
 ```
 
 then

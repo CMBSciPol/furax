@@ -59,7 +59,7 @@ The reference matrix/values are built directly from the math, independently of t
 
 import jax
 
-jax.config.update("jax_enable_x64", True)  # match furax test precision
+jax.config.update('jax_enable_x64', True)  # match furax test precision
 
 import jax.numpy as jnp
 import numpy as np
@@ -85,8 +85,8 @@ def main() -> None:
     M = np.asarray(op.as_matrix())
 
     # 1) pointwise vs hand values
-    x = jnp.ones(op.in_size)              # TODO: shape/structure to match in_structure
-    expected = None                        # TODO: value(s) computed by hand from the equation
+    x = jnp.ones(op.in_size)  # TODO: shape/structure to match in_structure
+    expected = None  # TODO: value(s) computed by hand from the equation
     if expected is not None:
         flat_out = np.concatenate([np.asarray(v).ravel() for v in jax.tree.leaves(op(x))])
         assert_allclose(flat_out, expected, atol=ATOL)
@@ -107,11 +107,11 @@ def main() -> None:
     if HAND_WRITTEN_TRANSPOSE:
         assert_allclose(np.asarray(op.T.as_matrix()).T, M, atol=ATOL)
 
-    np.save("M.npy", M)  # for scripts/spy_plot.py
-    print("all checks passed; wrote M.npy")
+    np.save('M.npy', M)  # for scripts/spy_plot.py
+    print('all checks passed; wrote M.npy')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
 ```
 

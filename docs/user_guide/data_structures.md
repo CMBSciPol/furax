@@ -100,12 +100,12 @@ from furax.obs.stokes import StokesIQU
 sky = StokesIQU.normal(jr.key(0), (100,))
 
 # Access individual Stokes parameters
-intensity = sky.i      # Intensity component
-q_parameter = sky.q    # Q polarization parameter
-u_parameter = sky.u    # U polarization parameter
+intensity = sky.i  # Intensity component
+q_parameter = sky.q  # Q polarization parameter
+u_parameter = sky.u  # U polarization parameter
 
 # Check available components
-print(sky.stokes)      # Returns the Stokes type string, e.g., 'IQU'
+print(sky.stokes)  # Returns the Stokes type string, e.g., 'IQU'
 ```
 
 ## Sky Landscapes
@@ -231,9 +231,11 @@ landscape = HealpixLandscape(nside=16, stokes='QU')
 sky = landscape.normal(jr.key(0))
 keys = jr.split(jr.key(0), 3)
 
+
 @jax.jit
 def add_noise(key, stokes_map, noise_level):
     return stokes_map + noise_level * landscape.normal(key)
+
 
 # Vectorize over different noise levels
 add_noise_vmap = jax.vmap(add_noise, in_axes=(0, None, 0), out_axes=0)
@@ -256,7 +258,7 @@ key = jr.key(0)
 
 # For very high resolution maps
 landscape_highres = HealpixLandscape(nside=2048, stokes='IQU')
-print(f"Memory per map: ~{landscape_highres.nbytes / 2**20:.1f} MiB")
+print(f'Memory per map: ~{landscape_highres.nbytes / 2**20:.1f} MiB')
 
 # Use appropriate precision
 float64_map = landscape_highres.normal(key)

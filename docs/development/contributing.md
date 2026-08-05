@@ -124,7 +124,8 @@ Use parametrized fixtures for comprehensive testing:
 import pytest
 from furax.obs.stokes import Stokes
 
-@pytest.mark.parametrize("stokes_fixture", ["I", "QU", "IQU"], indirect=True)
+
+@pytest.mark.parametrize('stokes_fixture', ['I', 'QU', 'IQU'], indirect=True)
 def test_stokes_arithmetic(stokes_fixture):
     stokes_data = stokes_fixture
 
@@ -165,6 +166,7 @@ from dataclasses import field
 from furax import AbstractLinearOperator, symmetric
 from jaxtyping import Array, Float
 
+
 @symmetric
 class MyCustomOperator(AbstractLinearOperator):
     """A custom homothety operator with static scaling factor.
@@ -178,15 +180,16 @@ class MyCustomOperator(AbstractLinearOperator):
         Array([0.1, 0.2], dtype=float32)
 
     """
+
     scaling_factor: float = field(metadata={'static': True})
 
-    def mv(self, x: Float[Array, "n"]) -> Float[Array, "n"]:
+    def mv(self, x: Float[Array, 'n']) -> Float[Array, 'n']:
         # Implement the linear operation
         return self.scaling_factor * x
 
     def inverse(self) -> AbstractLinearOperator:
         # Overrides the default implementation
-        return MyCustomOperator(1/self.scaling_factor, in_structure=self.in_structure)
+        return MyCustomOperator(1 / self.scaling_factor, in_structure=self.in_structure)
 
     @property
     def is_negative_semidefinite(self) -> bool:
@@ -210,19 +213,20 @@ New Stokes classes should follow the established pattern:
 from furax.obs.stokes import Stokes
 from jaxtyping import Array, Float
 
+
 class StokesXY(Stokes):
     """Custom Stokes parameters for X and Y polarization."""
 
-    X: Float[Array, "n_pix"]
-    Y: Float[Array, "n_pix"]
+    X: Float[Array, 'n_pix']
+    Y: Float[Array, 'n_pix']
 
     @classmethod
-    def from_stokes(cls, x: Array, y: Array) -> "StokesXY":
+    def from_stokes(cls, x: Array, y: Array) -> 'StokesXY':
         return cls(X=jnp.asarray(x), Y=jnp.asarray(y))
 
     @property
     def stokes(self) -> str:
-        return "XY"
+        return 'XY'
 ```
 
 ## Documentation
@@ -232,10 +236,7 @@ class StokesXY(Stokes):
 Use Google-style docstrings with type information:
 
 ```python
-def my_function(
-    data: Float[Array, "n_pix"],
-    scale: float = 1.0
-) -> Float[Array, "n_pix"]:
+def my_function(data: Float[Array, 'n_pix'], scale: float = 1.0) -> Float[Array, 'n_pix']:
     """Process CMB data with scaling.
 
     Args:

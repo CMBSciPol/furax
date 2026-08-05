@@ -16,6 +16,7 @@ repos:
       name: ruff linting
     - id: ruff-format
       name: ruff formatting
+      types_or: [python, pyi, jupyter, markdown]
 
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0

@@ -161,19 +161,15 @@ force-exclude = true # useful with ruff-pre-commit plugin
 [tool.ruff.lint]
 extend-select = [
     'ARG001', # flake8-unused-function-arguments
-    'B',      # flake8-bugbear
     'D',      # pydocstyle
     'I',      # isort
     'UP',     # pyupgrade
     'T10',    # flake8-debugger
 ]
 ignore = [
-    'E731', # lambda assignment
-    'E741', # ambiguous variable name
-    'F722', # forward annotation syntax error; conflicts with jaxtyping Array annotations
-    'B905', # zip() without `strict=` parameter
-    'D1',   # missing docstrings (not required)
-    'D415', # first line should end with period/question/exclamation
+    'D1',      # missing docstrings (not required)
+    'D415',    # first line should end with period/question/exclamation
+    'RUF022',  # unsorted __all__
 ]
 
 [tool.ruff.lint.per-file-ignores]

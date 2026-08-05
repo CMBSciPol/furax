@@ -10,24 +10,12 @@ repos:
     - --all
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.21
+  rev: v0.16.1
   hooks:
     - id: ruff-check
       name: ruff linting
     - id: ruff-format
       name: ruff formatting
-
-- repo: https://github.com/nbQA-dev/nbQA
-  rev: 1.9.1
-  hooks:
-    - id: nbqa-ruff
-      name: nbqa ruff linting
-      args: [--fix]
-      # pin to match ruff-pre-commit rev above; nbQA installs latest ruff otherwise
-      additional_dependencies: [ruff==0.15.21]
-    - id: nbqa-ruff-format
-      name: nbqa ruff formatting
-      additional_dependencies: [ruff==0.15.21]
 
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0

@@ -239,60 +239,50 @@ class AbstractLinearOperator(ABC):
         return matrix
 
     def profile(self, *, measure: bool = False) -> 'ProfileReport':
-        """Returns the static cost of applying the operator: flops, bytes and what limits them.
+        """Returns a cost estimate of applying the operator.
 
-        The counts are static: the operator is compiled ahead of time and XLA's cost model is read
-        off the executable, without applying it to anything. Deciding what those counts *mean* also
-        needs the device's peak rates, which have to be measured — see `measure` below. See
-        [`furax.profiling`][] for the caveats that come with a static cost model.
+        This estimate comes from the XLA compiler. See [`furax.profiling`] for caveats.
 
         Args:
-            measure: Whether to measure peak throughputs with
-                [`measure_balance`][furax.profiling.measure_balance], which is what makes the
-                compute- or memory-bound verdict possible. Off by default, because it **runs
-                benchmarks**: a large matmul and two arrays of tens of MiB, taking on the order of
-                a second and allocating a few hundred MiB, cached per device and dtype. With
-                `False` the report still carries flops, bytes and buffer sizes, and leaves the
-                bound unknown. The rates are measured on the device the operator's arrays are
-                committed to, falling back to `jax.devices()[0]`.
+            measure: Measure peak flop/bytes per second using [`measure_balance`]
+                [furax.profiling.measure_balance]. The operator is traced alongside the input.
+                The rates are measured on the device that the operator's arrays are committed to.
 
         Returns:
-            The [`ProfileReport`][furax.profiling.ProfileReport] for a single application of the
-            operator.
+            The [`ProfileReport`][furax.profiling.ProfileReport] of the operator's `mv`.
 
         Examples:
-            The flop and byte counts are exact and machine-independent:
+            Estimate the cost of a diagonal matrix-vector product:
 
-            >>> structure = jax.ShapeDtypeStruct((1 << 22,), jnp.float32)
-            >>> op = DiagonalOperator(jnp.ones(1 << 22, jnp.float32), in_structure=structure)
+            >>> n = 1024
+            >>> structure = jax.ShapeDtypeStruct((n,), jnp.float32)
+            >>> op = DiagonalOperator(jnp.ones(n, jnp.float32), in_structure=structure)
             >>> report = op.profile()
-            >>> report.flops, report.bytes_accessed
-            (4194304.0, 50331648.0)
+            >>> report.flops  # one multiply per element
+            1024.0
+            >>> # the operator is traced alongside the input, so the diagonal counts as traffic
+            >>> report.bytes_accessed / (n * 4)  # input + diagonal + output, not just in + out
+            3.0
 
-            The verdict needs `measure=True`. Printing the report then gives, with the rates
-            depending on the machine:
+            With `measure=True`, the report gives a memory- or compute-bound diagnostic:
 
             ```
-            Profile on cpu (float32) peak=180.71 GFLOP/s bandwidth=9.83 GB/s ridge=18.4 flop/byte
-              flops       4.19 MFLOP  transcendentals=0
-              bytes       48.00MiB
+            Profile on cpu (float32) peak=192.18 GFLOP/s bandwidth=9.19 GB/s ridge=20.9 flop/byte
+              flops       1.02 KFLOP  transcendentals=0
+              bytes       12.00KiB
               intensity   0.0833 flop/byte
-              bound       memory-bound, at best 819.36 MFLOP/s (0.5% of peak)
-              memory      args=32.00MiB out=16.00MiB temp=0.00B peak=48.00MiB
+              bound       memory-bound, at best 765.73 MFLOP/s (0.4% of peak)
+              memory      args=8.00KiB out=4.00KiB temp=0.00B peak=12.00KiB
             ```
-
-            Scaling a vector reads the input and the diagonal and writes the output — twelve bytes
-            of traffic per multiply — so it stays far below any device's ridge, however it is
-            implemented.
         """
         from furax.profiling import device_of, measure_balance, profile  # avoids a circular import
 
-        # measure where the operator's arrays live: counts from one device compared against rates
-        # from another are meaningless. `device_of` returns None for uncommitted arrays, which is
-        # where `measure_balance` and XLA both default to `jax.devices()[0]`.
-        balance = (
-            measure_balance(device_of(self), dtype=self.in_promoted_dtype) if measure else None
-        )
+        if measure:
+            # measure where the operator's arrays live
+            # uncommitted arrays default to `jax.devices()[0]`
+            balance = measure_balance(device_of(self), dtype=self.in_promoted_dtype)
+        else:
+            balance = None
         # `self` is passed as an argument, not captured: closed-over arrays become XLA constants,
         # which erases their traffic from the byte count and lets constant-folding remove work.
         return profile(lambda op, x: op.mv(x), self, self.in_structure, balance=balance)

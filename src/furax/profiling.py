@@ -1,15 +1,20 @@
-"""Static cost model for compiled computations.
+"""Static cost estimation for jit-compiled computations.
 
-Reports the flops, memory traffic and buffer sizes of a computation without running it. The
-computation is lowered and compiled ahead of time, and XLA's estimates are read off the resulting
-executable with [`jax.stages.Compiled.cost_analysis`][] (flops, bytes accessed) and
-[`jax.stages.Compiled.memory_analysis`][] (argument / output / temporary buffer sizes). Shapes and
-dtypes are therefore enough: no input needs to be allocated.
+This module provides utilities to estimate the flops, memory traffic and buffer sizes of a
+computation without running it. The computation is lowered and compiled, so we can read off the
+estimates from the resulting executable (see [`jax.stages.Compiled.cost_analysis`][] and
+[`jax.stages.Compiled.memory_analysis`][]).
+
+Warning:
+    Those statistics are estimates computed by the underlying XLA compiler, not measurements from
+    hardware counters. JAX documents it as a debugging tool whose structure "may be inconsistent
+    across versions of JAX and jaxlib, or even across invocations". Read these numbers, and
+    everything derived from them, as indications rather than facts.
 """
 
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -37,25 +42,7 @@ _REPEATS = 5
 _BALANCE_CACHE: dict[tuple[jax.Device, np.dtype[Any]], 'DeviceBalance'] = {}
 
 
-def _format_quantity(n: float, unit: str, *, base: int, separator: str = ' ') -> str:
-    """Formats a quantity with the largest prefix that keeps it above one.
-
-    Args:
-        n: The quantity to format.
-        unit: The unit the prefix is applied to, e.g. `'B'` or `'FLOP/s'`.
-        base: `1000` for decimal SI prefixes (`k`, `M`, ...), `1024` for binary ones (`Ki`, `Mi`).
-        separator: What to put between the number and the prefixed unit.
-
-    Returns:
-        The quantity, rounded to two decimals and suffixed with the prefixed unit.
-
-    Examples:
-        >>> _format_quantity(2.1e9, 'FLOP', base=1000)
-        '2.10 GFLOP'
-
-        >>> _format_quantity(1536, 'B', base=1024, separator='')
-        '1.50KiB'
-    """
+def _format_quantity(n: float, unit: str, *, base: Literal[1000, 1024], sep: str = ' ') -> str:
     for prefix in ('', 'K', 'M', 'G', 'T'):
         if n < base:
             break
@@ -64,27 +51,15 @@ def _format_quantity(n: float, unit: str, *, base: int, separator: str = ' ') ->
         prefix = 'P'
     if prefix and base == 1024:
         prefix += 'i'  # KiB, MiB, ... but plain B for the unprefixed case
-    return f'{n:.2f}{separator}{prefix}{unit}'
+    return f'{n:.2f}{sep}{prefix}{unit}'
 
 
 def format_bytes(n: float) -> str:
-    """Formats a byte count with a binary unit suffix.
-
-    Args:
-        n: The number of bytes.
-
-    Returns:
-        The byte count, rounded to two decimals and suffixed with a binary unit.
-
-    Examples:
-        >>> format_bytes(1536)
-        '1.50KiB'
-    """
-    return _format_quantity(n, 'B', base=1024, separator='')
+    # e.g. 1536 -> '150.00KiB'
+    return _format_quantity(n, 'B', base=1024, sep='')
 
 
 def _format_count(n: float, unit: str) -> str:
-    """Formats a count with a decimal SI prefix, e.g. ``_format_count(2.1e9, 'FLOP')``."""
     return _format_quantity(n, unit, base=1000)
 
 
@@ -109,20 +84,21 @@ def _real_float_dtype(dtype: DTypeLike) -> np.dtype[Any]:
 
 @dataclass(frozen=True)
 class DeviceBalance:
-    """Measured peak throughputs of a device, for one dtype.
+    """Peak throughputs (flops and bytes per second) of a device, for one dtype.
 
-    A device performs only so many flops per second and moves only so many bytes per second. Their
-    ratio, [`ridge`][], is how much arithmetic it must be given per byte to keep its arithmetic
-    units fed — typically tens of flops per byte.
+    A device performs only so many flops per second and moves only so many bytes per second.
+    The ratio of these quantities, [`ridge`][], is how much arithmetic it must be given per byte to
+    keep its arithmetic units fed (typically tens of flops per byte).
 
-    Compare it to a computation's [`ProfileReport.arithmetic_intensity`][], the flops it performs
-    per byte it touches. Below the ridge the computation is *memory-bound*: the units idle waiting
-    for data. Above the ridge it is *compute-bound*: the data arrives faster than the units consume
-    it, and the arithmetic sets the pace.
+    The ridge point can be compared to a computation's [`ProfileReport.arithmetic_intensity`][],
+    i.e., the flops it performs per byte it touches.
+
+    - Below the ridge the computation is *memory-bound*: units are mostly idle, waiting for data.
+    - Above the ridge it is *compute-bound*: the data arrives faster than the units can consume it.
 
     A matrix-vector product reads a whole matrix to do only two flops per element, so it is
-    typically memory-bound on all devices; a large matrix-matrix product reuses each element many
-    times, and is compute-bound on most devices.
+    typically memory-bound on all kinds of devices; a large matrix-matrix product reuses each
+    element many times, and is compute-bound on most devices.
 
     Attributes:
         device_kind: The `device_kind` of the [`jax.Device`][], e.g. `'NVIDIA H100 80GB HBM3'`.
@@ -145,9 +121,7 @@ class DeviceBalance:
         return (
             f'{self.device_kind} ({self.dtype.name}) '
             f'peak={_format_count(self.peak_flops, "FLOP/s")} '
-            # decimal units, like the flop rate and like vendor bandwidth figures: a binary
-            # bandwidth here would make `ridge` a decimal-over-binary ratio that cannot be
-            # checked against either
+            # decimal units for consistency with flop rate
             f'bandwidth={_format_count(self.peak_bandwidth, "B/s")} '
             f'ridge={self.ridge:.3g} flop/byte'
         )
@@ -155,17 +129,10 @@ class DeviceBalance:
 
 @dataclass(frozen=True)
 class ProfileReport:
-    """The static cost of one compiled computation.
+    """The estimated cost of one compiled computation.
 
     This is the result of a call to [`profile`][], or [`AbstractLinearOperator.profile`]
     [furax.core.AbstractLinearOperator.profile] for an operator.
-
-    Warning:
-        `flops` and `bytes_accessed` are estimates from XLA's static cost model, not measurements
-        from hardware counters. JAX documents that model as a debugging aid whose structure "may be
-        inconsistent across versions of JAX and jaxlib, or even across invocations", and the
-        individual counters are undocumented XLA internals. Read these numbers, and everything
-        derived from them, as indications rather than facts.
 
     Attributes:
         flops: Floating-point operations, from XLA's cost model. Excludes `transcendentals`.
@@ -217,8 +184,8 @@ class ProfileReport:
     def attainable_flops(self) -> float | None:
         """The fastest this computation could run on the device, in flop/s.
 
-        Two ceilings apply and the lower one wins: the device's [`DeviceBalance.peak_flops`][], and
-        what its bandwidth can sustain at this computation's [`arithmetic_intensity`][], which is
+        This is the minimum of the device's [`DeviceBalance.peak_flops`][] and what its bandwidth
+        can sustain at this computation's [`arithmetic_intensity`][], namely
         `arithmetic_intensity * peak_bandwidth`. A compute-bound computation is capped by the
         first, a memory-bound one by the second. `None` if `balance` is `None`.
         """
@@ -230,7 +197,7 @@ class ProfileReport:
     def efficiency(self) -> float | None:
         """The attainable throughput as a fraction of peak, in `[0, 1]`.
 
-        A memory-bound computation has a low efficiency *by construction*: it is the fraction of
+        A memory-bound computation has a low efficiency *by definition*: it is the fraction of
         the machine's arithmetic units the computation can possibly keep busy, not a measurement of
         how well it is implemented. `None` if no `balance` was measured.
         """
@@ -328,35 +295,19 @@ def measure_balance(
 ) -> DeviceBalance:
     """Measures a device's peak arithmetic and memory throughput.
 
-    Peak flop/s is measured with a large square matmul ($2n^3$ flops), which has enough data reuse
-    to keep the arithmetic units busy. Peak byte/s is measured by adding two arrays far larger than
-    any cache ($3n$ elements of traffic: two read, one written), which has none. Both take the best
-    of several runs after a warm-up. Results are cached per `(device, dtype)`, so repeated calls
-    are free.
+    Peak flop/s is measured with a large square matmul ($2n^3$ flops) to keep the arithmetic units
+    busy. Peak byte/s is measured by adding two large arrays together ($3n$ elements of traffic).
 
     The dtype matters: single- and double-precision peak rates differ by up to a factor 64 on
     accelerators. Complex dtypes are measured with their component dtype, and non-floating dtypes
     with float32.
 
     Args:
-        device: The device to measure. Defaults to `jax.devices()[0]`, which is where JAX places
-            uncommitted arrays. Pass the device the profiled computation actually runs on when it
-            differs — comparing counts from one device against rates from another says nothing.
-            [`device_of`][] derives it from an operator or a pytree.
+        device: The device to measure. Defaults to `jax.devices()[0]`.
         dtype: The dtype to measure the rates for.
 
     Returns:
         The measured [`DeviceBalance`][].
-
-    Warning:
-        This runs actual computations and takes on the order of a second the first time it is
-        called for a given `(device, dtype)`. That is why
-        [`AbstractLinearOperator.profile`][furax.core.AbstractLinearOperator.profile] does not call
-        it unless asked with `measure=True`.
-
-        The rates describe one device. Under a mesh the microbenchmark arrays follow the mesh
-        rather than the single device named here, so the result does not describe sharded
-        execution.
     """
     if device is None:
         device = jax.devices()[0]
@@ -433,9 +384,7 @@ def profile(
     Important:
         Anything `fn` closes over becomes an XLA constant rather than a buffer read: its bytes
         disappear from the count and constant-folding may delete the arithmetic that consumes it
-        outright. Pass every array `fn` depends on as an argument instead. This is why
-        [`AbstractLinearOperator.profile`][furax.core.AbstractLinearOperator.profile] lowers
-        `lambda op, x: op.mv(x)` with the operator as an argument, rather than lowering `op.mv`.
+        outright. Pass every array `fn` depends on as an argument instead.
 
     Examples:
         >>> import jax.numpy as jnp

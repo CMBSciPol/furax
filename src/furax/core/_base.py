@@ -241,16 +241,20 @@ class AbstractLinearOperator(ABC):
     def profile(self, *, measure: bool = True) -> 'ProfileReport':
         """Returns the static cost of applying the operator: flops, bytes and what limits them.
 
-        The operator is compiled ahead of time and XLA's cost model is read off the executable;
-        nothing is executed and no input is allocated. See [`furax.profiling`][] for the caveats
-        that come with a static cost model.
+        The counts are static: the operator is compiled ahead of time and XLA's cost model is read
+        off the executable, without applying it to anything. Deciding what those counts *mean*,
+        however, needs the device's peak rates, and by default they are measured — see `measure`
+        below. See [`furax.profiling`][] for the caveats that come with a static cost model.
 
         Args:
-            measure: Whether to measure this device's peak throughputs with
+            measure: Whether to measure peak throughputs with
                 [`measure_balance`][furax.profiling.measure_balance], which is what makes the
-                compute- or memory-bound verdict possible. It runs microbenchmarks taking on the
-                order of a second, cached per device and dtype. With `False`, the report still
-                carries flops and bytes but leaves the bound unknown.
+                compute- or memory-bound verdict possible. This **runs benchmarks**: a large matmul
+                and two arrays of tens of MiB, taking on the order of a second and allocating a few
+                hundred MiB, cached per device and dtype. Pass `False` in memory-tight code, or to
+                keep `profile()` free of side effects: the report still carries flops, bytes and
+                buffer sizes, and leaves the bound unknown. The rates are measured on the device the
+                operator's arrays are committed to, falling back to `jax.devices()[0]`.
 
         Returns:
             The [`ProfileReport`][furax.profiling.ProfileReport] for a single application of the
@@ -269,11 +273,11 @@ class AbstractLinearOperator(ABC):
             the rates depending on the machine:
 
             ```
-            Profile on cpu (float32) peak=178.54 GFLOP/s bandwidth=9.03GiB/s ridge=18.4 flop/byte
+            Profile on cpu (float32) peak=180.71 GFLOP/s bandwidth=9.83 GB/s ridge=18.4 flop/byte
               flops       4.19 MFLOP  transcendentals=0
               bytes       48.00MiB
               intensity   0.0833 flop/byte
-              bound       memory-bound, at best 807.62 MFLOP/s (0.5% of peak)
+              bound       memory-bound, at best 819.36 MFLOP/s (0.5% of peak)
               memory      args=32.00MiB out=16.00MiB temp=0.00B peak=48.00MiB
             ```
 
@@ -281,9 +285,14 @@ class AbstractLinearOperator(ABC):
             of traffic per multiply — so it stays far below any device's ridge, however it is
             implemented.
         """
-        from furax.profiling import measure_balance, profile  # avoids a circular import
+        from furax.profiling import device_of, measure_balance, profile  # avoids a circular import
 
-        balance = measure_balance(dtype=self.in_promoted_dtype) if measure else None
+        # measure where the operator's arrays live: counts from one device compared against rates
+        # from another are meaningless. `device_of` returns None for uncommitted arrays, which is
+        # where `measure_balance` and XLA both default to `jax.devices()[0]`.
+        balance = (
+            measure_balance(device_of(self), dtype=self.in_promoted_dtype) if measure else None
+        )
         # `self` is passed as an argument, not captured: closed-over arrays become XLA constants,
         # which erases their traffic from the byte count and lets constant-folding remove work.
         return profile(lambda op, x: op.mv(x), self, self.in_structure, balance=balance)

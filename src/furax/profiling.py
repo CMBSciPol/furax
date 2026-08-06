@@ -19,6 +19,7 @@ from jax.typing import DTypeLike
 __all__ = [
     'DeviceBalance',
     'ProfileReport',
+    'device_of',
     'format_bytes',
     'measure_balance',
     'profile',
@@ -33,7 +34,37 @@ _MATMUL_SIZE_DEFAULT = 4096
 _BANDWIDTH_SIZE = 1 << 24
 _REPEATS = 5
 
-_BALANCE_CACHE: dict[tuple[jax.Device, np.dtype[np.floating[Any]]], 'DeviceBalance'] = {}
+_BALANCE_CACHE: dict[tuple[jax.Device, np.dtype[Any]], 'DeviceBalance'] = {}
+
+
+def _format_quantity(n: float, unit: str, *, base: int, separator: str = ' ') -> str:
+    """Formats a quantity with the largest prefix that keeps it above one.
+
+    Args:
+        n: The quantity to format.
+        unit: The unit the prefix is applied to, e.g. `'B'` or `'FLOP/s'`.
+        base: `1000` for decimal SI prefixes (`k`, `M`, ...), `1024` for binary ones (`Ki`, `Mi`).
+        separator: What to put between the number and the prefixed unit.
+
+    Returns:
+        The quantity, rounded to two decimals and suffixed with the prefixed unit.
+
+    Examples:
+        >>> _format_quantity(2.1e9, 'FLOP', base=1000)
+        '2.10 GFLOP'
+
+        >>> _format_quantity(1536, 'B', base=1024, separator='')
+        '1.50KiB'
+    """
+    for prefix in ('', 'K', 'M', 'G', 'T'):
+        if n < base:
+            break
+        n /= base
+    else:
+        prefix = 'P'
+    if prefix and base == 1024:
+        prefix += 'i'  # KiB, MiB, ... but plain B for the unprefixed case
+    return f'{n:.2f}{separator}{prefix}{unit}'
 
 
 def format_bytes(n: float) -> str:
@@ -49,34 +80,26 @@ def format_bytes(n: float) -> str:
         >>> format_bytes(1536)
         '1.50KiB'
     """
-    for unit in ('B', 'KiB', 'MiB', 'GiB', 'TiB'):
-        if n < 1024:
-            return f'{n:.2f}{unit}'
-        n /= 1024
-    return f'{n:.2f}PiB'
+    return _format_quantity(n, 'B', base=1024, separator='')
 
 
 def _format_count(n: float, unit: str) -> str:
     """Formats a count with a decimal SI prefix, e.g. ``_format_count(2.1e9, 'FLOP')``."""
-    for prefix in ('', 'K', 'M', 'G', 'T'):
-        if n < 1000:
-            return f'{n:.2f} {prefix}{unit}'
-        n /= 1000
-    return f'{n:.2f} P{unit}'
+    return _format_quantity(n, unit, base=1000)
 
 
-def _real_float_dtype(dtype: DTypeLike) -> np.dtype[np.floating[Any]]:
+def _real_float_dtype(dtype: DTypeLike) -> np.dtype[Any]:
     """Maps a dtype onto the real floating-point dtype whose peak rates should be measured.
 
-    Complex dtypes are mapped to their component dtype and non-inexact dtypes to float32, since the
-    microbenchmarks measure floating-point throughput. float64 is downgraded when x64 is disabled,
-    where float64 arrays cannot be created at all.
+    Complex dtypes are mapped to their component dtype and non-floating dtypes to float32, since
+    the microbenchmarks measure floating-point throughput. float64 is downgraded when x64 is
+    disabled, where float64 arrays cannot be created at all.
     """
     given = np.dtype(dtype)
-    if np.issubdtype(given, np.complexfloating):
+    if jnp.issubdtype(given, jnp.complexfloating):
         result = np.dtype(given.type(0).real.dtype)
-    elif np.issubdtype(given, np.floating):
-        result = np.dtype(given)
+    elif jnp.issubdtype(given, jnp.floating):
+        result = given
     else:
         result = np.dtype(np.float32)
     if result == np.float64 and not jax.config.jax_enable_x64:
@@ -109,7 +132,7 @@ class DeviceBalance:
     """
 
     device_kind: str
-    dtype: np.dtype[np.floating[Any]]
+    dtype: np.dtype[Any]
     peak_flops: float
     peak_bandwidth: float
 
@@ -122,7 +145,10 @@ class DeviceBalance:
         return (
             f'{self.device_kind} ({self.dtype.name}) '
             f'peak={_format_count(self.peak_flops, "FLOP/s")} '
-            f'bandwidth={format_bytes(self.peak_bandwidth)}/s '
+            # decimal units, like the flop rate and like vendor bandwidth figures: a binary
+            # bandwidth here would make `ridge` a decimal-over-binary ratio that cannot be
+            # checked against either
+            f'bandwidth={_format_count(self.peak_bandwidth, "B/s")} '
             f'ridge={self.ridge:.3g} flop/byte'
         )
 
@@ -275,6 +301,28 @@ def _time_best(fn: Any, *args: Any) -> float:
     return best
 
 
+def device_of(tree: Any) -> jax.Device | None:
+    """Returns the device a pytree's arrays are committed to, if they agree on one.
+
+    Returns `None` when the tree holds no committed array — no leaves, uncommitted leaves, or
+    leaves committed to different devices. That is the signal to fall back to a default rather
+    than to trust any one of them.
+
+    Args:
+        tree: The pytree to inspect.
+
+    Returns:
+        The single device every committed array leaf lives on, or `None`.
+    """
+    devices = {
+        device
+        for leaf in jax.tree.leaves(tree)
+        if isinstance(leaf, jax.Array) and leaf.committed
+        for device in leaf.devices()
+    }
+    return devices.pop() if len(devices) == 1 else None
+
+
 def measure_balance(
     device: jax.Device | None = None, dtype: DTypeLike = jnp.float32
 ) -> DeviceBalance:
@@ -287,11 +335,14 @@ def measure_balance(
     are free.
 
     The dtype matters: single- and double-precision peak rates differ by up to a factor 64 on
-    accelerators. Complex dtypes are measured with their component dtype, and integer dtypes with
-    float32.
+    accelerators. Complex dtypes are measured with their component dtype, and non-floating dtypes
+    with float32.
 
     Args:
-        device: The device to measure. Defaults to `jax.devices()[0]`.
+        device: The device to measure. Defaults to `jax.devices()[0]`, which is where JAX places
+            uncommitted arrays. Pass the device the profiled computation actually runs on when it
+            differs — comparing counts from one device against rates from another says nothing.
+            [`device_of`][] derives it from an operator or a pytree.
         dtype: The dtype to measure the rates for.
 
     Returns:
@@ -301,6 +352,10 @@ def measure_balance(
         This runs actual computations and takes on the order of a second the first time it is
         called for a given `(device, dtype)`. Pass `measure=False` to
         [`AbstractLinearOperator.profile`][furax.core.AbstractLinearOperator.profile] to skip it.
+
+        The rates describe one device. Under a mesh the microbenchmark arrays follow the mesh
+        rather than the single device named here, so the result does not describe sharded
+        execution.
     """
     if device is None:
         device = jax.devices()[0]

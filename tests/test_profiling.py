@@ -10,6 +10,7 @@ from furax.profiling import (
     ProfileReport,
     _normalize_cost_analysis,
     _real_float_dtype,
+    device_of,
     format_bytes,
     measure_balance,
 )
@@ -197,10 +198,27 @@ def test_format_bytes(n: int, expected: str) -> None:
         (np.complex64, np.float32),  # measured with the component dtype
         (np.complex128, np.float64),
         (np.int32, np.float32),  # the microbenchmarks measure floating-point throughput
+        # ml_dtypes extension types
+        (jnp.bfloat16, jnp.bfloat16),
+        (jnp.float16, jnp.float16),
     ],
 )
 def test_real_float_dtype(dtype: type, expected: type) -> None:
     assert _real_float_dtype(dtype) == np.dtype(expected)
+
+
+def test_device_of_ignores_uncommitted_arrays() -> None:
+    # an uncommitted array can be moved by JAX at will, so it names no device
+    op = _diagonal_operator(16)
+    assert device_of(op) is None
+    assert device_of(jnp.ones(4)) is None
+
+
+def test_device_of_finds_a_committed_device() -> None:
+    device = jax.devices()[0]
+    committed = jax.device_put(jnp.ones(16, _F32), device)
+    op = DiagonalOperator(committed, in_structure=jax.ShapeDtypeStruct((16,), _F32))
+    assert device_of(op) is device
 
 
 # the mapmaking pipeline runs with x64 disabled when `double_precision=False`, where a float64

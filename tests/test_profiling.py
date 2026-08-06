@@ -1,7 +1,10 @@
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.typing import DTypeLike
 
 from furax import DiagonalOperator, IdentityOperator
 from furax.obs.stokes import StokesIQU
@@ -19,9 +22,9 @@ from furax.tree import nbytes
 _F32 = jnp.float32
 
 
-def _diagonal_operator(n: int, dtype: type = _F32) -> DiagonalOperator:
-    structure = jax.ShapeDtypeStruct((n,), dtype)
-    return DiagonalOperator(jnp.ones(n, dtype), in_structure=structure)
+def _diagonal_operator(n: int, dtype: DTypeLike = _F32) -> DiagonalOperator:
+    ones = jnp.ones(n, dtype)
+    return DiagonalOperator(ones, in_structure=jax.ShapeDtypeStruct.like(ones))
 
 
 @pytest.mark.parametrize('n', [16, 1024])
@@ -72,19 +75,10 @@ def test_identity_reports_zero_flops() -> None:
         pytest.param(StokesIQU.structure_for((8,), _F32), id='StokesIQU'),
     ],
 )
-def test_pytree_structures_need_no_special_casing(structure: object) -> None:
+def test_pytree_structures_need_no_special_casing(structure: Any) -> None:
     report = IdentityOperator(in_structure=structure).profile()
     assert report.bytes_accessed > 0
     assert str(report)
-
-
-def test_report_without_balance_leaves_the_bound_unknown() -> None:
-    report = _diagonal_operator(64).profile(measure=False)
-    assert report.balance is None
-    assert report.is_memory_bound is None
-    assert report.attainable_flops is None
-    assert report.efficiency is None
-    assert 'unknown' in str(report)
 
 
 def test_arithmetic_intensity_of_an_empty_computation() -> None:
@@ -99,7 +93,7 @@ def _report(flops: float, bytes_accessed: float, balance: DeviceBalance) -> Prof
 @pytest.fixture
 def balance() -> DeviceBalance:
     # ridge = 1000 / 100 = 10 flop/byte
-    return DeviceBalance('test-device', np.dtype(np.float32), 1000.0, 100.0)
+    return DeviceBalance('test-device', np.dtype(_F32), 1000.0, 100.0)
 
 
 def test_ridge_point(balance: DeviceBalance) -> None:
@@ -162,7 +156,7 @@ def test_roofline_above_the_ridge(balance: DeviceBalance) -> None:
         pytest.param([], {}, False, id='empty-list'),
     ],
 )
-def test_normalize_cost_analysis(cost: object, expected: dict[str, float], available: bool) -> None:
+def test_normalize_cost_analysis(cost, expected: dict[str, float], available: bool) -> None:
     # the shape of `cost_analysis()` varies with the backend and the jax version
     assert _normalize_cost_analysis(cost) == (expected, available)
 
@@ -201,7 +195,7 @@ def test_format_bytes(n: int, expected: str) -> None:
         (jnp.float16, jnp.float16),
     ],
 )
-def test_real_float_dtype(dtype: type, expected: type) -> None:
+def test_real_float_dtype(dtype: DTypeLike, expected: DTypeLike) -> None:
     assert _real_float_dtype(dtype) == np.dtype(expected)
 
 

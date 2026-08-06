@@ -238,23 +238,23 @@ class AbstractLinearOperator(ABC):
 
         return matrix
 
-    def profile(self, *, measure: bool = True) -> 'ProfileReport':
+    def profile(self, *, measure: bool = False) -> 'ProfileReport':
         """Returns the static cost of applying the operator: flops, bytes and what limits them.
 
         The counts are static: the operator is compiled ahead of time and XLA's cost model is read
-        off the executable, without applying it to anything. Deciding what those counts *mean*,
-        however, needs the device's peak rates, and by default they are measured — see `measure`
-        below. See [`furax.profiling`][] for the caveats that come with a static cost model.
+        off the executable, without applying it to anything. Deciding what those counts *mean* also
+        needs the device's peak rates, which have to be measured — see `measure` below. See
+        [`furax.profiling`][] for the caveats that come with a static cost model.
 
         Args:
             measure: Whether to measure peak throughputs with
                 [`measure_balance`][furax.profiling.measure_balance], which is what makes the
-                compute- or memory-bound verdict possible. This **runs benchmarks**: a large matmul
-                and two arrays of tens of MiB, taking on the order of a second and allocating a few
-                hundred MiB, cached per device and dtype. Pass `False` in memory-tight code, or to
-                keep `profile()` free of side effects: the report still carries flops, bytes and
-                buffer sizes, and leaves the bound unknown. The rates are measured on the device the
-                operator's arrays are committed to, falling back to `jax.devices()[0]`.
+                compute- or memory-bound verdict possible. Off by default, because it **runs
+                benchmarks**: a large matmul and two arrays of tens of MiB, taking on the order of
+                a second and allocating a few hundred MiB, cached per device and dtype. With
+                `False` the report still carries flops, bytes and buffer sizes, and leaves the
+                bound unknown. The rates are measured on the device the operator's arrays are
+                committed to, falling back to `jax.devices()[0]`.
 
         Returns:
             The [`ProfileReport`][furax.profiling.ProfileReport] for a single application of the
@@ -265,12 +265,12 @@ class AbstractLinearOperator(ABC):
 
             >>> structure = jax.ShapeDtypeStruct((1 << 22,), jnp.float32)
             >>> op = DiagonalOperator(jnp.ones(1 << 22, jnp.float32), in_structure=structure)
-            >>> report = op.profile(measure=False)
+            >>> report = op.profile()
             >>> report.flops, report.bytes_accessed
             (4194304.0, 50331648.0)
 
-            The verdict needs `measure=True` (the default). Printing the report then gives, with
-            the rates depending on the machine:
+            The verdict needs `measure=True`. Printing the report then gives, with the rates
+            depending on the machine:
 
             ```
             Profile on cpu (float32) peak=180.71 GFLOP/s bandwidth=9.83 GB/s ridge=18.4 flop/byte

@@ -26,7 +26,7 @@ def _diagonal_operator(n: int, dtype: type = _F32) -> DiagonalOperator:
 
 @pytest.mark.parametrize('n', [16, 1024])
 def test_diagonal_counts_are_exact(n: int) -> None:
-    report = _diagonal_operator(n).profile(measure=False)
+    report = _diagonal_operator(n).profile()
     assert report.flops == n  # one multiply per element
     assert report.bytes_accessed == 3 * n * 4  # input, diagonal, output
     assert report.transcendentals == 0
@@ -42,7 +42,7 @@ def test_operator_arrays_are_counted_as_traffic() -> None:
     """
     n = 1024
     op = _diagonal_operator(n)
-    report = op.profile(measure=False)
+    report = op.profile()
 
     passthrough_bytes = nbytes(op.in_structure) + nbytes(op.out_structure)
     assert report.bytes_accessed > passthrough_bytes
@@ -52,9 +52,7 @@ def test_operator_arrays_are_counted_as_traffic() -> None:
 
 def test_identity_reports_zero_flops() -> None:
     # a kernel that only moves data has no 'flops' key in the cost analysis at all
-    report = IdentityOperator(in_structure=jax.ShapeDtypeStruct((256,), _F32)).profile(
-        measure=False
-    )
+    report = IdentityOperator(in_structure=jax.ShapeDtypeStruct((256,), _F32)).profile()
     assert report.cost_available
     assert report.flops == 0.0
     assert report.bytes_accessed > 0
@@ -75,7 +73,7 @@ def test_identity_reports_zero_flops() -> None:
     ],
 )
 def test_pytree_structures_need_no_special_casing(structure: object) -> None:
-    report = IdentityOperator(in_structure=structure).profile(measure=False)
+    report = IdentityOperator(in_structure=structure).profile()
     assert report.bytes_accessed > 0
     assert str(report)
 

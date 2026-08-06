@@ -350,8 +350,9 @@ def measure_balance(
 
     Warning:
         This runs actual computations and takes on the order of a second the first time it is
-        called for a given `(device, dtype)`. Pass `measure=False` to
-        [`AbstractLinearOperator.profile`][furax.core.AbstractLinearOperator.profile] to skip it.
+        called for a given `(device, dtype)`. That is why
+        [`AbstractLinearOperator.profile`][furax.core.AbstractLinearOperator.profile] does not call
+        it unless asked with `measure=True`.
 
         The rates describe one device. Under a mesh the microbenchmark arrays follow the mesh
         rather than the single device named here, so the result does not describe sharded

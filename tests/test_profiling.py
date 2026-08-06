@@ -9,9 +9,11 @@ from jax.typing import DTypeLike
 from furax import DiagonalOperator, IdentityOperator
 from furax.obs.stokes import StokesIQU
 from furax.profiling import (
+    Bound,
     DeviceBalance,
     ProfileReport,
     _normalize_cost_analysis,
+    _peak_rate,
     _real_float_dtype,
     device_of,
     format_bytes,
@@ -98,13 +100,43 @@ def balance() -> DeviceBalance:
 
 def test_ridge_point(balance: DeviceBalance) -> None:
     assert balance.ridge == 10.0
+    assert balance.ridge_error == 0.0  # a hand-built balance carries no measurement spread
     assert 'test-device' in str(balance)
+
+
+def test_ridge_error_combines_both_measurements() -> None:
+    # relative errors of a ratio add in quadrature
+    noisy = DeviceBalance('test-device', np.dtype(_F32), 1000.0, 100.0, 0.03, 0.04)
+    assert noisy.ridge_error == pytest.approx(0.05)
+    assert '±5%' in str(noisy)
+
+
+@pytest.mark.parametrize(
+    'intensity, expected',
+    [
+        pytest.param(1.0, Bound.MEMORY, id='far-below'),
+        pytest.param(9.5, Bound.AMBIGUOUS, id='just-below'),
+        pytest.param(10.0, Bound.AMBIGUOUS, id='on-the-ridge'),
+        pytest.param(10.5, Bound.AMBIGUOUS, id='just-above'),
+        pytest.param(100.0, Bound.COMPUTE, id='far-above'),
+    ],
+)
+def test_a_verdict_within_the_measurement_error_is_ambiguous(
+    intensity: float, expected: Bound
+) -> None:
+    # ridge 10 flop/byte, measured to +-10%: nothing in [9, 11] can be called either way
+    noisy = DeviceBalance('test-device', np.dtype(_F32), 1000.0, 100.0, 0.1, 0.0)
+    report = _report(intensity * 10.0, 10.0, noisy)
+    assert report.bound is expected
+    if expected is Bound.AMBIGUOUS:
+        assert 'ambiguous' in str(report)
+        assert 'of peak' not in str(report)  # no verdict means no efficiency claim
 
 
 def test_roofline_below_the_ridge(balance: DeviceBalance) -> None:
     report = _report(10.0, 10.0, balance)  # intensity 1 flop/byte
     assert report.arithmetic_intensity == 1.0
-    assert report.is_memory_bound
+    assert report.bound is Bound.MEMORY
     assert report.attainable_flops == 100.0  # bandwidth-limited: 1 flop/byte x 100 byte/s
     assert report.efficiency == 0.1
     assert 'memory-bound' in str(report)
@@ -114,7 +146,7 @@ def test_a_computation_without_arithmetic_is_not_reported_as_inefficient(
     balance: DeviceBalance,
 ) -> None:
     report = _report(0.0, 10.0, balance)
-    assert report.is_memory_bound
+    assert report.bound is Bound.MEMORY
     assert 'pure data movement' in str(report)
     assert '0.0% of peak' not in str(report)
 
@@ -141,7 +173,7 @@ def test_an_unavailable_cost_analysis_yields_no_verdict(balance: DeviceBalance) 
 def test_roofline_above_the_ridge(balance: DeviceBalance) -> None:
     report = _report(1000.0, 10.0, balance)  # intensity 100 flop/byte
     assert report.arithmetic_intensity == 100.0
-    assert not report.is_memory_bound
+    assert report.bound is Bound.COMPUTE
     assert report.attainable_flops == 1000.0  # clamped at peak, not 100 x 100
     assert report.efficiency == 1.0
     assert 'compute-bound' in str(report)
@@ -222,10 +254,20 @@ def test_real_float_dtype_downgrades_float64_without_x64() -> None:
     assert _real_float_dtype(np.complex128) == np.dtype(np.float32)
 
 
+def test_peak_rate_takes_the_best_and_reports_the_spread() -> None:
+    # the peak comes from the fastest repeat; the spread says how quiet the machine was
+    peak, error = _peak_rate(100.0, [1.0, 2.0])  # rates 100 and 50
+    assert peak == 100.0
+    assert error == pytest.approx(np.std([100.0, 50.0]) / 75.0)
+
+    peak, error = _peak_rate(100.0, [2.0, 2.0])
+    assert (peak, error) == (50.0, 0.0)
+
+
 @pytest.mark.slow
-def test_measure_balance_is_positive_and_cached() -> None:
+def test_measure_balance_is_positive() -> None:
     balance = measure_balance(dtype=_F32)
     assert balance.peak_flops > 0
     assert balance.peak_bandwidth > 0
     assert balance.ridge > 0
-    assert measure_balance(dtype=_F32) is balance  # cached, not re-measured
+    assert 0.0 <= balance.ridge_error < 1.0

@@ -14,6 +14,7 @@ Warning:
 
 import time
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Literal
 
 import jax
@@ -22,6 +23,7 @@ import numpy as np
 from jax.typing import DTypeLike
 
 __all__ = [
+    'Bound',
     'DeviceBalance',
     'ProfileReport',
     'device_of',
@@ -38,8 +40,6 @@ _MATMUL_SIZE_DEFAULT = 4096
 # float32, far beyond any last-level cache, so the timing reflects main memory and not cache
 _BANDWIDTH_SIZE = 1 << 24
 _REPEATS = 5
-
-_BALANCE_CACHE: dict[tuple[jax.Device, np.dtype[Any]], 'DeviceBalance'] = {}
 
 
 def _format_quantity(n: float, unit: str, *, base: Literal[1000, 1024], sep: str = ' ') -> str:
@@ -82,6 +82,19 @@ def _real_float_dtype(dtype: DTypeLike) -> np.dtype[Any]:
     return result
 
 
+class Bound(StrEnum):
+    """What limits a computation on a device, from [`ProfileReport.bound`][]."""
+
+    MEMORY = 'memory'
+    """The computation waits on data: its arithmetic intensity is below the ridge."""
+
+    COMPUTE = 'compute'
+    """The arithmetic sets the pace: the intensity is above the ridge."""
+
+    AMBIGUOUS = 'ambiguous'
+    """The intensity is within the ridge's measurement error, so the two cannot be told apart."""
+
+
 @dataclass(frozen=True)
 class DeviceBalance:
     """Peak throughputs (flops and bytes per second) of a device, for one dtype.
@@ -105,17 +118,27 @@ class DeviceBalance:
         dtype: The dtype the rates were measured with.
         peak_flops: Measured peak arithmetic throughput, in flop/s.
         peak_bandwidth: Measured peak memory throughput, in byte/s.
+        flops_error: Relative spread of the arithmetic measurement over its repeats.
+        bandwidth_error: Relative spread of the memory measurement over its repeats.
     """
 
     device_kind: str
     dtype: np.dtype[Any]
     peak_flops: float
     peak_bandwidth: float
+    flops_error: float = 0.0
+    bandwidth_error: float = 0.0
 
     @property
     def ridge(self) -> float:
         """The ridge point in flop/byte: [`peak_flops`][] divided by [`peak_bandwidth`][]."""
         return self.peak_flops / self.peak_bandwidth
+
+    @property
+    def ridge_error(self) -> float:
+        """Relative uncertainty on [`ridge`][]."""
+        # a ratio's relative errors add in quadrature
+        return float(np.hypot(self.flops_error, self.bandwidth_error))
 
     def __str__(self) -> str:
         return (
@@ -123,7 +146,7 @@ class DeviceBalance:
             f'peak={_format_count(self.peak_flops, "FLOP/s")} '
             # decimal units for consistency with flop rate
             f'bandwidth={_format_count(self.peak_bandwidth, "B/s")} '
-            f'ridge={self.ridge:.3g} flop/byte'
+            f'ridge={self.ridge:.3g}±{self.ridge_error:.0%} flop/byte'
         )
 
 
@@ -207,14 +230,14 @@ class ProfileReport:
         return attainable / self.balance.peak_flops
 
     @property
-    def is_memory_bound(self) -> bool | None:
-        """Whether the arithmetic intensity is below the machine's ridge point.
-
-        `None` if no `balance` was measured.
-        """
+    def bound(self) -> Bound | None:
+        """What limits this computation on the device, or `None` if no `balance` was measured."""
         if self.balance is None:
             return None
-        return self.arithmetic_intensity < self.balance.ridge
+        ridge = self.balance.ridge
+        if abs(self.arithmetic_intensity - ridge) <= ridge * self.balance.ridge_error:
+            return Bound.AMBIGUOUS
+        return Bound.MEMORY if self.arithmetic_intensity < ridge else Bound.COMPUTE
 
     def __str__(self) -> str:
         header = 'Profile' if self.balance is None else f'Profile on {self.balance}'
@@ -248,24 +271,30 @@ class ProfileReport:
         if self.total_flops == 0:
             # '0.0% of peak' would read as a failure rather than as an absence of arithmetic
             return 'memory (pure data movement, no arithmetic)'
+        if self.bound is Bound.AMBIGUOUS:
+            return f'{Bound.AMBIGUOUS} (intensity within the ridge measurement error)'
         efficiency = self.efficiency
         assert efficiency is not None and self.attainable_flops is not None  # balance is not None
-        bound = 'memory' if self.is_memory_bound else 'compute'
         return (
-            f'{bound}-bound, at best {_format_count(self.attainable_flops, "FLOP/s")} '
+            f'{self.bound}-bound, at best {_format_count(self.attainable_flops, "FLOP/s")} '
             f'({efficiency:.1%} of peak)'
         )
 
 
-def _time_best(fn: Any, *args: Any) -> float:
-    """Returns the shortest wall time of `_REPEATS` calls, in seconds, after one warm-up call."""
+def _peak_rate(work: float, times: list[float]) -> tuple[float, float]:
+    rates = work / np.asarray(times)
+    return float(rates.max()), float(rates.std() / rates.mean())
+
+
+def _time_repeats(fn: Any, *args: Any) -> list[float]:
+    """Returns the wall time of `_REPEATS` calls, in seconds, after one warm-up call."""
     jax.block_until_ready(fn(*args))
-    best = float('inf')
+    times = []
     for _ in range(_REPEATS):
         start = time.perf_counter()
         jax.block_until_ready(fn(*args))
-        best = min(best, time.perf_counter() - start)
-    return best
+        times.append(time.perf_counter() - start)
+    return times
 
 
 def device_of(tree: Any) -> jax.Device | None:
@@ -298,6 +327,9 @@ def measure_balance(
     Peak flop/s is measured with a large square matmul ($2n^3$ flops) to keep the arithmetic units
     busy. Peak byte/s is measured by adding two large arrays together ($3n$ elements of traffic).
 
+    Each rate is the best of several repeats, and their relative spread is recorded alongside it.
+    Expect a few percent on an idle machine and tens of percent on a contended one.
+
     The dtype matters: single- and double-precision peak rates differ by up to a factor 64 on
     accelerators. Complex dtypes are measured with their component dtype, and non-floating dtypes
     with float32.
@@ -313,25 +345,20 @@ def measure_balance(
         device = jax.devices()[0]
     dtype = _real_float_dtype(dtype)
 
-    key = (device, dtype)
-    if (cached := _BALANCE_CACHE.get(key)) is not None:
-        return cached
-
     with jax.default_device(device):
         n = _MATMUL_SIZE.get(device.platform, _MATMUL_SIZE_DEFAULT)
         a = jnp.ones((n, n), dtype)
-        seconds = _time_best(jax.jit(jnp.matmul), a, a)
-        peak_flops = 2 * n**3 / seconds
+        peak_flops, flops_error = _peak_rate(2 * n**3, _time_repeats(jax.jit(jnp.matmul), a, a))
 
         # two distinct arrays: passing the same buffer twice would let XLA read it once
         x = jnp.ones(_BANDWIDTH_SIZE, dtype)
         y = jnp.zeros(_BANDWIDTH_SIZE, dtype)
-        seconds = _time_best(jax.jit(jnp.add), x, y)
-        peak_bandwidth = 3 * x.nbytes / seconds  # two reads and one write
+        traffic = 3 * x.nbytes  # two reads and one write
+        peak_bandwidth, bandwidth_error = _peak_rate(traffic, _time_repeats(jax.jit(jnp.add), x, y))
 
-    balance = DeviceBalance(device.device_kind, dtype, peak_flops, peak_bandwidth)
-    _BALANCE_CACHE[key] = balance
-    return balance
+    return DeviceBalance(
+        device.device_kind, dtype, peak_flops, peak_bandwidth, flops_error, bandwidth_error
+    )
 
 
 def _normalize_cost_analysis(cost: Any) -> tuple[dict[str, float], bool]:

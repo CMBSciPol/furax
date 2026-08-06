@@ -33,7 +33,6 @@ from .core import (
     upper_triangular,
 )
 from .interfaces.lineax import as_lineax_operator
-from .profiling import DeviceBalance, ProfileReport, measure_balance, profile
 
 __all__ = [
     # core
@@ -68,11 +67,6 @@ __all__ = [
     'positive_semidefinite',
     'negative_semidefinite',
     'idempotent',
-    # profiling
-    'DeviceBalance',
-    'ProfileReport',
-    'measure_balance',
-    'profile',
     # config
     'Config',
     # tree

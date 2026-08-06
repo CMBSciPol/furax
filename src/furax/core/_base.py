@@ -247,13 +247,14 @@ class AbstractLinearOperator(ABC):
 
         Args:
             measure: Whether to measure this device's peak throughputs with
-                [`measure_balance`][furax.measure_balance], which is what makes the compute- or
-                memory-bound verdict possible. It runs microbenchmarks taking on the order of a
-                second, cached per device and dtype. With `False`, the report still carries flops
-                and bytes but leaves the bound unknown.
+                [`measure_balance`][furax.profiling.measure_balance], which is what makes the
+                compute- or memory-bound verdict possible. It runs microbenchmarks taking on the
+                order of a second, cached per device and dtype. With `False`, the report still
+                carries flops and bytes but leaves the bound unknown.
 
         Returns:
-            The [`ProfileReport`][furax.ProfileReport] for a single application of the operator.
+            The [`ProfileReport`][furax.profiling.ProfileReport] for a single application of the
+            operator.
 
         Examples:
             The flop and byte counts are exact and machine-independent:

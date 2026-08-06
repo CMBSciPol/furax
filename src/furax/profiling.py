@@ -136,8 +136,10 @@ class ProfileReport:
 
     Warning:
         `flops` and `bytes_accessed` are estimates from XLA's static cost model, not measurements
-        from hardware counters: they are the arithmetic and the buffer traffic the compiler
-        attributes to the program. Everything derived from them is an estimate too.
+        from hardware counters. JAX documents that model as a debugging aid whose structure "may be
+        inconsistent across versions of JAX and jaxlib, or even across invocations", and the
+        individual counters are undocumented XLA internals. Read these numbers, and everything
+        derived from them, as indications rather than facts.
 
     Attributes:
         flops: Floating-point operations, from XLA's cost model. Excludes `transcendentals`.
@@ -165,14 +167,25 @@ class ProfileReport:
     cost_available: bool = True
 
     @property
+    def total_flops(self) -> float:
+        """[`flops`][] plus [`transcendentals`][], counting each transcendental as one operation.
+
+        XLA counts `sin`, `exp` and friends separately from `flops`, so a kernel that is nothing but
+        transcendentals reports `flops == 0`. Charging one operation each keeps it from looking
+        free, and understates it: a transcendental costs several flops. How XLA arrives at either
+        counter is undocumented, so this is a convention, not a conversion.
+        """
+        return self.flops + self.transcendentals
+
+    @property
     def arithmetic_intensity(self) -> float:
-        r"""Flops performed per byte moved: $I = \text{flops} / \text{bytes}$.
+        """Arithmetic per byte moved: [`total_flops`][] over [`bytes_accessed`][], in flop/byte.
 
         Returns `0.0` when no bytes are moved.
         """
         if self.bytes_accessed == 0:
             return 0.0
-        return self.flops / self.bytes_accessed
+        return self.total_flops / self.bytes_accessed
 
     @property
     def attainable_flops(self) -> float | None:
@@ -212,33 +225,43 @@ class ProfileReport:
 
     def __str__(self) -> str:
         header = 'Profile' if self.balance is None else f'Profile on {self.balance}'
-        flops = 'unavailable' if not self.cost_available else _format_count(self.flops, 'FLOP')
-        lines = [
-            header,
-            f'  flops       {flops}  transcendentals={self.transcendentals:.0f}',
-            f'  bytes       {format_bytes(self.bytes_accessed)}',
-            f'  intensity   {self.arithmetic_intensity:.3g} flop/byte',
-            (
-                f'  memory      args={format_bytes(self.argument_bytes)} '
-                f'out={format_bytes(self.output_bytes)} temp={format_bytes(self.temp_bytes)} '
-                f'peak={format_bytes(self.peak_bytes)}'
-            ),
-        ]
-        if self.balance is None:
-            lines.insert(4, '  bound       unknown (no machine balance measured)')
-        elif self.flops == 0 and self.cost_available:
-            # '0.0% of peak' would read as a failure rather than as an absence of arithmetic
-            lines.insert(4, '  bound       memory (pure data movement, no arithmetic)')
+        if not self.cost_available:
+            # every count is zero because the backend declined to report, so nothing derived from
+            # them may be shown as a number: it would read as a measurement of a free computation
+            flops = intensity = bound = 'unavailable'
         else:
-            bound = 'memory' if self.is_memory_bound else 'compute'
-            efficiency = self.efficiency
-            lines.insert(
-                4,
-                f'  bound       {bound}-bound, at best '
-                f'{_format_count(self.attainable_flops or 0.0, "FLOP/s")} '
-                f'({efficiency:.1%} of peak)',
-            )
-        return '\n'.join(lines)
+            flops = _format_count(self.flops, 'FLOP')
+            intensity = f'{self.arithmetic_intensity:.3g} flop/byte'
+            bound = self._format_bound()
+        return '\n'.join(
+            [
+                header,
+                f'  flops       {flops}  transcendentals={self.transcendentals:.0f}',
+                f'  bytes       {format_bytes(self.bytes_accessed)}',
+                f'  intensity   {intensity}',
+                f'  bound       {bound}',
+                (
+                    f'  memory      args={format_bytes(self.argument_bytes)} '
+                    f'out={format_bytes(self.output_bytes)} temp={format_bytes(self.temp_bytes)} '
+                    f'peak={format_bytes(self.peak_bytes)}'
+                ),
+            ]
+        )
+
+    def _format_bound(self) -> str:
+        """Renders the bound line, given that a cost analysis was available."""
+        if self.balance is None:
+            return 'unknown (no machine balance measured)'
+        if self.total_flops == 0:
+            # '0.0% of peak' would read as a failure rather than as an absence of arithmetic
+            return 'memory (pure data movement, no arithmetic)'
+        efficiency = self.efficiency
+        assert efficiency is not None and self.attainable_flops is not None  # balance is not None
+        bound = 'memory' if self.is_memory_bound else 'compute'
+        return (
+            f'{bound}-bound, at best {_format_count(self.attainable_flops, "FLOP/s")} '
+            f'({efficiency:.1%} of peak)'
+        )
 
 
 def _time_best(fn: Any, *args: Any) -> float:

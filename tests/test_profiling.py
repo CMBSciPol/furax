@@ -126,6 +126,25 @@ def test_a_computation_without_arithmetic_is_not_reported_as_inefficient(
     assert '0.0% of peak' not in str(report)
 
 
+def test_transcendentals_count_as_arithmetic(balance: DeviceBalance) -> None:
+    # XLA reports `exp`/`sin` under `transcendentals`, not `flops`; ignoring them would call a
+    # kernel that is nothing but arithmetic "pure data movement"
+    report = ProfileReport(0.0, 20.0, 10.0, 0, 0, 0, 0, balance=balance)
+    assert report.total_flops == 20.0
+    assert report.arithmetic_intensity == 2.0
+    assert 'pure data movement' not in str(report)
+    assert 'memory-bound' in str(report)
+
+
+def test_an_unavailable_cost_analysis_yields_no_verdict(balance: DeviceBalance) -> None:
+    # a balance must not turn absent counts into a confident bound
+    report = ProfileReport(0.0, 0.0, 0.0, 0, 0, 0, 0, balance=balance, cost_available=False)
+    rendered = str(report)
+    assert rendered.count('unavailable') == 3  # flops, intensity, bound
+    assert 'memory-bound' not in rendered
+    assert '% of peak' not in rendered
+
+
 def test_roofline_above_the_ridge(balance: DeviceBalance) -> None:
     report = _report(1000.0, 10.0, balance)  # intensity 100 flop/byte
     assert report.arithmetic_intensity == 100.0

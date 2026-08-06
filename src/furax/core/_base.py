@@ -264,19 +264,21 @@ class AbstractLinearOperator(ABC):
             >>> report.flops, report.bytes_accessed
             (4194304.0, 50331648.0)
 
-            The verdict needs `measure=True` (the default), and then reads, on one machine:
+            The verdict needs `measure=True` (the default). Printing the report then gives, with
+            the rates depending on the machine:
 
             ```
-            Profile on NVIDIA H100 80GB HBM3 (float32) peak=... ridge=147 flop/byte
+            Profile on cpu (float32) peak=178.54 GFLOP/s bandwidth=9.03GiB/s ridge=18.4 flop/byte
               flops       4.19 MFLOP  transcendentals=0
               bytes       48.00MiB
               intensity   0.0833 flop/byte
-              bound       memory-bound, at best 279.62 GFLOP/s (0.6% of peak)
+              bound       memory-bound, at best 807.62 MFLOP/s (0.5% of peak)
               memory      args=32.00MiB out=16.00MiB temp=0.00B peak=48.00MiB
             ```
 
-            An operator that only scales its input reads three bytes for every flop it does, so it
-            can never exceed a small fraction of peak on any machine, however it is implemented.
+            Scaling a vector reads the input and the diagonal and writes the output — twelve bytes
+            of traffic per multiply — so it stays far below any device's ridge, however it is
+            implemented.
         """
         from furax.profiling import measure_balance, profile  # avoids a circular import
 

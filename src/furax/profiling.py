@@ -41,6 +41,8 @@ _MATMUL_SIZE_DEFAULT = 4096
 _BANDWIDTH_SIZE = 1 << 24
 _REPEATS = 5
 
+TRANSCENDENTAL_FLOPS = 10
+
 
 def _format_quantity(n: float, unit: str, *, base: Literal[1000, 1024], sep: str = ' ') -> str:
     for prefix in ('', 'K', 'M', 'G', 'T'):
@@ -184,14 +186,13 @@ class ProfileReport:
 
     @property
     def total_flops(self) -> float:
-        """[`flops`][] plus [`transcendentals`][], counting each transcendental as one operation.
+        """[`flops`][] plus [`transcendentals`][], counted as 10 flops.
 
-        XLA counts `sin`, `exp` and friends separately from `flops`, so a kernel that is nothing but
-        transcendentals reports `flops == 0`. Charging one operation each keeps it from looking
-        free, and understates it: a transcendental costs several flops. How XLA arrives at either
-        counter is undocumented, so this is a convention, not a conversion.
+        XLA counts `sin`, `exp` and friends separately from `flops`. These functions are more
+        computationally expensive than basic arithmetic, and may use special hardware units.
+        For the sake of simplicity, we count each one as 10 flops.
         """
-        return self.flops + self.transcendentals
+        return self.flops + TRANSCENDENTAL_FLOPS * self.transcendentals
 
     @property
     def arithmetic_intensity(self) -> float:

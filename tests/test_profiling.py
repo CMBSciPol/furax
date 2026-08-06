@@ -9,6 +9,7 @@ from jax.typing import DTypeLike
 from furax import DiagonalOperator, IdentityOperator
 from furax.obs.stokes import StokesIQU
 from furax.profiling import (
+    TRANSCENDENTAL_FLOPS,
     Bound,
     DeviceBalance,
     ProfileReport,
@@ -154,9 +155,9 @@ def test_a_computation_without_arithmetic_is_not_reported_as_inefficient(
 def test_transcendentals_count_as_arithmetic(balance: DeviceBalance) -> None:
     # XLA reports `exp`/`sin` under `transcendentals`, not `flops`; ignoring them would call a
     # kernel that is nothing but arithmetic "pure data movement"
-    report = ProfileReport(0.0, 20.0, 10.0, 0, 0, 0, 0, balance=balance)
-    assert report.total_flops == 20.0
-    assert report.arithmetic_intensity == 2.0
+    report = ProfileReport(5.0, 2.0, 10.0, 0, 0, 0, 0, balance=balance)
+    assert report.total_flops == 5.0 + 2 * TRANSCENDENTAL_FLOPS
+    assert report.arithmetic_intensity == report.total_flops / 10.0
     assert 'pure data movement' not in str(report)
     assert 'memory-bound' in str(report)
 

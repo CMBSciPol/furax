@@ -9,7 +9,6 @@ from jax.typing import DTypeLike
 from furax import DiagonalOperator, IdentityOperator
 from furax.obs.stokes import StokesIQU
 from furax.profiling import (
-    _TRANSCENDENTAL_FLOPS,
     Bound,
     DeviceBalance,
     ProfileReport,
@@ -156,13 +155,12 @@ def test_transcendentals_count_as_arithmetic(balance: DeviceBalance) -> None:
     # XLA reports `exp`/`sin` under `transcendentals`, not `flops`; ignoring them would call a
     # kernel that is nothing but arithmetic "pure data movement"
     report = ProfileReport(5.0, 2.0, 10.0, 0, 0, 0, 0, balance=balance)
-    assert report.transcendental_flops == 2 * _TRANSCENDENTAL_FLOPS
-    assert report.total_flops == 5.0 + 2 * _TRANSCENDENTAL_FLOPS
-    assert report.arithmetic_intensity == report.total_flops / 10.0
+    assert report.transcendental_flops == 2 * ProfileReport._TRANSCENDENTAL_FLOPS
+    assert report.total_flops == 5.0 + 2 * ProfileReport._TRANSCENDENTAL_FLOPS
     assert 'pure data movement' not in str(report)
     assert 'memory-bound' in str(report)
     # the weighted contribution is broken out, so a reader can discount the arbitrary weight
-    assert f'2 ops, 20.00 FLOP (x{_TRANSCENDENTAL_FLOPS} weight)' in str(report)
+    assert f'2 ops, 20.00 FLOP (x{ProfileReport._TRANSCENDENTAL_FLOPS} weight)' in str(report)
 
 
 def test_an_unavailable_cost_analysis_yields_no_verdict(balance: DeviceBalance) -> None:

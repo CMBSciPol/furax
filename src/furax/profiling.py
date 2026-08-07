@@ -15,7 +15,7 @@ Warning:
 import time
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import jax
 import jax.numpy as jnp
@@ -31,18 +31,6 @@ __all__ = [
     'measure_balance',
     'profile',
 ]
-
-# Problem sizes for the microbenchmarks in `measure_balance`. Accelerators need a large matmul to
-# reach peak; on CPU the same size would take seconds for no extra accuracy.
-_MATMUL_SIZE = {'cpu': 1024}
-_MATMUL_SIZE_DEFAULT = 4096
-# element count of the arrays added together to measure bandwidth: 3 x 64 MiB of traffic in
-# float32, far beyond any last-level cache, so the timing reflects main memory and not cache
-_BANDWIDTH_SIZE = 1 << 24
-_REPEATS = 5
-
-# How many flops one transcendental operation is worth (for reporting purposes)
-_TRANSCENDENTAL_FLOPS = 10
 
 
 def _format_quantity(n: float, unit: str, *, base: Literal[1000, 1024], sep: str = ' ') -> str:
@@ -185,6 +173,9 @@ class ProfileReport:
     balance: DeviceBalance | None = None
     cost_available: bool = True
 
+    # how many flops one transcendental operation is worth (for reporting purposes)
+    _TRANSCENDENTAL_FLOPS: ClassVar[int] = 10
+
     @property
     def transcendental_flops(self) -> float:
         """[`transcendentals`][] weighted as 10 flops each.
@@ -194,7 +185,7 @@ class ProfileReport:
         much more depends on the function and on the device, so any single weight is arbitrary; we
         use 10, and report this contribution separately from `flops` so it can be discounted.
         """
-        return _TRANSCENDENTAL_FLOPS * self.transcendentals
+        return self._TRANSCENDENTAL_FLOPS * self.transcendentals
 
     @property
     def total_flops(self) -> float:
@@ -258,7 +249,7 @@ class ProfileReport:
             transcendentals = (
                 f'{self.transcendentals:.0f} ops, '
                 f'{_format_count(self.transcendental_flops, "FLOP")} '
-                f'(x{_TRANSCENDENTAL_FLOPS} weight)'
+                f'(x{self._TRANSCENDENTAL_FLOPS} weight)'
             )
             total = _format_count(self.total_flops, 'FLOP')
             intensity = f'{self.arithmetic_intensity:.3g} flop/byte'
@@ -295,6 +286,13 @@ class ProfileReport:
             f'{self.bound}-bound, at best {_format_count(self.attainable_flops, "FLOP/s")} '
             f'({efficiency:.1%} of peak)'
         )
+
+
+# Problem sizes for microbenchmarks
+_MATMUL_SIZE = {'cpu': 1024}
+_MATMUL_SIZE_DEFAULT = 4096  # large matmul for accelerators
+_BANDWIDTH_SIZE = 1 << 24  # 64 MiB (f32) -> 3x traffic, larger than typical cache
+_REPEATS = 5
 
 
 def _peak_rate(work: float, times: list[float]) -> tuple[float, float]:

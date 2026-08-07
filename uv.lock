@@ -1759,8 +1759,8 @@ wheels = [
 
 [[package]]
 name = "litebird-sim"
-version = "0.16.0"
-source = { git = "https://github.com/litebird/litebird_sim#be349339727daf56b2bbf9746c8aa9eab91ab26b" }
+version = "0.17.0"
+source = { git = "https://github.com/litebird/litebird_sim#30d61720baf5b479c0b2db6b8e12ca59305288c8" }
 dependencies = [
     { name = "asciimatics" },
     { name = "astropy" },

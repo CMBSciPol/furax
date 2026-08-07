@@ -14,17 +14,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pre-commit:
+  prek:
     name: Run pre-commit hooks
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout project
-        uses: actions/checkout@v7
-
-      - name: Set up prek and run hooks
-        uses: j178/prek-action@v3.0.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
-          prek-version: "0.4.12"
+          version: "0.11.19"
+      - name: "Cache prek"
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/prek
+          key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: "Run prek"
+        run: |
+          echo '```console' > "$GITHUB_STEP_SUMMARY"
+          # Enable color output for prek and remove it for the summary
+          uv run --only-group dev --locked prek run --all-files --show-diff-on-failure --color always | \
+            tee >(sed -E 's/\x1B\[([0-9]{1,2}(;[0-9]{1,2})*)?[mGK]//g' >> "$GITHUB_STEP_SUMMARY") >&1
+          exit_code="${PIPESTATUS[0]}"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit "$exit_code"
 
   test:
     name: Run tests on Python ${{ matrix.python-version }}

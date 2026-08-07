@@ -87,6 +87,7 @@ dev = [
     'pytest-mock',
     'pytest-insubprocess>=1.1',
     'beartype',
+    'prek>=0.4.12',
 ]
 docs = [
     'zensical>=0.0.50',

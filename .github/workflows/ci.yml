@@ -25,6 +25,8 @@ jobs:
         with:
           path: ~/.cache/prek
           key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: |
+            prek-
       - name: "Run prek"
         run: |
           echo '```console' > "$GITHUB_STEP_SUMMARY"

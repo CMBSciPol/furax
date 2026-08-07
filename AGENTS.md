@@ -10,11 +10,11 @@ Python, JAX, linear operator framework, CMB mapmaking.
 - `uv run pytest -v`: Run the full test suite
 - `uv run pytest path/to/test.py -v`: Run a single test file
 - `uv run pytest path/to/test.py::TestClass::test_method -v`: Run a single test
-- `uvx prek run`: Run pre-commit hooks (staged files)
-- `uvx prek run -a`: Run pre-commit hooks (all files)
-- `uvx prek ruff-check`: Run linting hook
-- `uvx prek ruff-format`: Run formatting hook
-- `uvx prek mypy`: Run type-checking hook
+- `uv run prek run`: Run pre-commit hooks (staged files)
+- `uv run prek run -a`: Run pre-commit hooks (all files)
+- `uv run prek ruff-check`: Run linting hook
+- `uv run prek ruff-format`: Run formatting hook
+- `uv run prek mypy`: Run type-checking hook
 
 ## Guidelines
 

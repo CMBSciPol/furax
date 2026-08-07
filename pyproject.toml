@@ -81,6 +81,7 @@ furax-so-stage = 'so_mapmaking.stage:app'
 [dependency-groups]
 dev = [
     {include-group = 'docs'},
+    {include-group = 'lint'},
     'ipython',
     'pytest>=9.0',
     'pytest-cov',
@@ -92,6 +93,7 @@ docs = [
     'zensical>=0.0.50',
     'mkdocstrings-python>=2.0.5',
 ]
+lint = ['prek>=0.4.12']
 cuda = ['jax[cuda13]>=0.11.0']
 
 [tool.coverage.report]

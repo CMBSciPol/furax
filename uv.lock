@@ -1463,7 +1463,7 @@ cuda13 = [
 
 [[package]]
 name = "jax-cadre"
-version = "0.1.2"
+version = "0.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "equinox" },
@@ -1473,9 +1473,9 @@ dependencies = [
     { name = "optax" },
     { name = "optimistix" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6c/58/bccdb59c6da692332c7e254e43c5eae9ccbb6e491af465ac7dbae40bfc7a/jax_cadre-0.1.2.tar.gz", hash = "sha256:33f3aa246a238ac1012945fed562118829ae947cf083e6ddf5141d543fae6f00", size = 23487, upload-time = "2026-04-10T13:09:52.262Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/48/996e719969c7bbc9de621deee651b7b9e420dd3c51514d81226923ec0446/jax_cadre-0.1.3.tar.gz", hash = "sha256:c2c47bdca71c000f96a798fcd6350415646d9b963d5626f3fe3954c6bfa63591", size = 24657, upload-time = "2026-07-06T22:10:01.616Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c4/bd/8b6dffdb0921b620939bf9c7ef41c770a501489872aa6ed830c8e24339e0/jax_cadre-0.1.2-py3-none-any.whl", hash = "sha256:3a232acd5a1eb61df96ad2567837562e146be7b302e9c0e22906591c6dbdb999", size = 21534, upload-time = "2026-04-10T13:09:50.783Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/44/db66a2de5f5d4065a824c4db617a5a7c715bd83d0732392b7b31814da62b/jax_cadre-0.1.3-py3-none-any.whl", hash = "sha256:d1950e499843517cf5ac47cbb73619e0667f23db3bc0420c235b8a90fd6dc792", size = 23451, upload-time = "2026-07-06T22:10:00.371Z" },
 ]
 
 [[package]]

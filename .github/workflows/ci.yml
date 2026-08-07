@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   prek:
-    name: Run pre-commit hooks
+    name: "Run pre-commit hooks"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -40,29 +40,22 @@ jobs:
           exit "$exit_code"
 
   test:
-    name: Run tests on Python ${{ matrix.python-version }}
+    name: "Run tests on Python ${{ matrix.python-version }}"
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
-
     steps:
-      - name: Checkout project
-        uses: actions/checkout@v7.0.1
-
-      - name: Install uv and set up environment
-        uses: astral-sh/setup-uv@v9.0.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           version: "0.11.19"
           python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
+      - name: "Install dependencies"
         run: uv sync --locked --all-extras
-
-      - name: Run tests
+      - name: "Run tests"
         run: uv run pytest -vv
-
-      - name: Run distributed tests
+      - name: "Run distributed tests"
         run: uv run pytest -vv -m distributed

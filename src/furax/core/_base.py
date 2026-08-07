@@ -268,11 +268,13 @@ class AbstractLinearOperator(ABC):
 
             ```
             Profile on cpu (float32) peak=192.18 GFLOP/s bandwidth=9.19 GB/s ridge=20.9 flop/byte
-              flops       1.02 KFLOP  transcendentals=0
-              bytes       12.00KiB
-              intensity   0.0833 flop/byte
-              bound       memory-bound, at best 765.73 MFLOP/s (0.4% of peak)
-              memory      args=8.00KiB out=4.00KiB temp=0.00B peak=12.00KiB
+              flops           1.02 KFLOP
+              transcendental  0 ops, 0.00 FLOP (x10 weight)
+              total flops     1.02 KFLOP
+              bytes           12.00KiB
+              intensity       0.0833 flop/byte
+              bound           memory-bound, at best 765.73 MFLOP/s (0.4% of peak)
+              memory          args=8.00KiB out=4.00KiB temp=0.00B peak=12.00KiB
             ```
         """
         from furax.profiling import device_of, measure_balance, profile  # avoids a circular import

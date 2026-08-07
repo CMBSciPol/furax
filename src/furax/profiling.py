@@ -41,7 +41,8 @@ _MATMUL_SIZE_DEFAULT = 4096
 _BANDWIDTH_SIZE = 1 << 24
 _REPEATS = 5
 
-TRANSCENDENTAL_FLOPS = 10
+# How many flops one transcendental operation is worth (for reporting purposes)
+_TRANSCENDENTAL_FLOPS = 10
 
 
 def _format_quantity(n: float, unit: str, *, base: Literal[1000, 1024], sep: str = ' ') -> str:
@@ -185,14 +186,20 @@ class ProfileReport:
     cost_available: bool = True
 
     @property
-    def total_flops(self) -> float:
-        """[`flops`][] plus [`transcendentals`][], counted as 10 flops.
+    def transcendental_flops(self) -> float:
+        """[`transcendentals`][] weighted as 10 flops each.
 
         XLA counts `sin`, `exp` and friends separately from `flops`. These functions are more
-        computationally expensive than basic arithmetic, and may use special hardware units.
-        For the sake of simplicity, we count each one as 10 flops.
+        computationally expensive than basic arithmetic, and may use special hardware units. How
+        much more depends on the function and on the device, so any single weight is arbitrary; we
+        use 10, and report this contribution separately from `flops` so it can be discounted.
         """
-        return self.flops + TRANSCENDENTAL_FLOPS * self.transcendentals
+        return _TRANSCENDENTAL_FLOPS * self.transcendentals
+
+    @property
+    def total_flops(self) -> float:
+        """[`flops`][] plus [`transcendental_flops`][]."""
+        return self.flops + self.transcendental_flops
 
     @property
     def arithmetic_intensity(self) -> float:
@@ -232,8 +239,8 @@ class ProfileReport:
 
     @property
     def bound(self) -> Bound | None:
-        """What limits this computation on the device, or `None` if no `balance` was measured."""
-        if self.balance is None:
+        """What limits this computation on the device; `None` when no verdict can be reached."""
+        if self.balance is None or not self.cost_available:
             return None
         ridge = self.balance.ridge
         if abs(self.arithmetic_intensity - ridge) <= ridge * self.balance.ridge_error:
@@ -245,20 +252,28 @@ class ProfileReport:
         if not self.cost_available:
             # every count is zero because the backend declined to report, so nothing derived from
             # them may be shown as a number: it would read as a measurement of a free computation
-            flops = intensity = bound = 'unavailable'
+            flops = transcendentals = total = intensity = bound = 'unavailable'
         else:
             flops = _format_count(self.flops, 'FLOP')
+            transcendentals = (
+                f'{self.transcendentals:.0f} ops, '
+                f'{_format_count(self.transcendental_flops, "FLOP")} '
+                f'(x{_TRANSCENDENTAL_FLOPS} weight)'
+            )
+            total = _format_count(self.total_flops, 'FLOP')
             intensity = f'{self.arithmetic_intensity:.3g} flop/byte'
             bound = self._format_bound()
         return '\n'.join(
             [
                 header,
-                f'  flops       {flops}  transcendentals={self.transcendentals:.0f}',
-                f'  bytes       {format_bytes(self.bytes_accessed)}',
-                f'  intensity   {intensity}',
-                f'  bound       {bound}',
+                f'  flops           {flops}',
+                f'  transcendental  {transcendentals}',
+                f'  total flops     {total}',
+                f'  bytes           {format_bytes(self.bytes_accessed)}',
+                f'  intensity       {intensity}',
+                f'  bound           {bound}',
                 (
-                    f'  memory      args={format_bytes(self.argument_bytes)} '
+                    f'  memory          args={format_bytes(self.argument_bytes)} '
                     f'out={format_bytes(self.output_bytes)} temp={format_bytes(self.temp_bytes)} '
                     f'peak={format_bytes(self.peak_bytes)}'
                 ),

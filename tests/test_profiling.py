@@ -9,7 +9,7 @@ from jax.typing import DTypeLike
 from furax import DiagonalOperator, IdentityOperator
 from furax.obs.stokes import StokesIQU
 from furax.profiling import (
-    TRANSCENDENTAL_FLOPS,
+    _TRANSCENDENTAL_FLOPS,
     Bound,
     DeviceBalance,
     ProfileReport,
@@ -156,17 +156,23 @@ def test_transcendentals_count_as_arithmetic(balance: DeviceBalance) -> None:
     # XLA reports `exp`/`sin` under `transcendentals`, not `flops`; ignoring them would call a
     # kernel that is nothing but arithmetic "pure data movement"
     report = ProfileReport(5.0, 2.0, 10.0, 0, 0, 0, 0, balance=balance)
-    assert report.total_flops == 5.0 + 2 * TRANSCENDENTAL_FLOPS
+    assert report.transcendental_flops == 2 * _TRANSCENDENTAL_FLOPS
+    assert report.total_flops == 5.0 + 2 * _TRANSCENDENTAL_FLOPS
     assert report.arithmetic_intensity == report.total_flops / 10.0
     assert 'pure data movement' not in str(report)
     assert 'memory-bound' in str(report)
+    # the weighted contribution is broken out, so a reader can discount the arbitrary weight
+    assert f'2 ops, 20.00 FLOP (x{_TRANSCENDENTAL_FLOPS} weight)' in str(report)
 
 
 def test_an_unavailable_cost_analysis_yields_no_verdict(balance: DeviceBalance) -> None:
     # a balance must not turn absent counts into a confident bound
     report = ProfileReport(0.0, 0.0, 0.0, 0, 0, 0, 0, balance=balance, cost_available=False)
+    # zeroed counts sit below any ridge, so a naive verdict would confidently say 'memory'
+    assert report.bound is None
     rendered = str(report)
-    assert rendered.count('unavailable') == 3  # flops, intensity, bound
+    # flops, transcendental, total, intensity, bound
+    assert rendered.count('unavailable') == 5
     assert 'memory-bound' not in rendered
     assert '% of peak' not in rendered
 

@@ -1074,6 +1074,9 @@ docs = [
     { name = "mkdocstrings-python" },
     { name = "zensical" },
 ]
+lint = [
+    { name = "prek" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1128,6 +1131,7 @@ docs = [
     { name = "mkdocstrings-python", specifier = ">=2.0.5" },
     { name = "zensical", specifier = ">=0.0.50" },
 ]
+lint = [{ name = "prek", specifier = ">=0.4.12" }]
 
 [[package]]
 name = "ghp-import"

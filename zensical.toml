@@ -51,6 +51,7 @@ nav = [
           "api/io.md",
           "api/interfaces.md",
           "api/tree.md",
+          "api/profiling.md",
           "api/distributed.md",
           "api/exceptions.md",
       ] },

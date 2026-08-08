@@ -90,6 +90,8 @@ class ObservationReader[T](AbstractReader):
         demodulated: bool = False,
         stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = jnp.float64,
+        shapes: list[tuple[int, ...]] | None = None,
+        known_failures: Sequence[int] | None = None,
     ) -> Self:
         """Create a reader, performing I/O to infer data structures.
 
@@ -110,14 +112,17 @@ class ObservationReader[T](AbstractReader):
                 zero origin (in float64, before the downcast) so the float32 cast does not
                 collapse the absolute POSIX epoch onto a single value; see the timestamps
                 reader in ``_get_data_field_readers``.
+            shapes: Pre-gathered per-observation probe shapes, in observation order. Skips the
+                probe entirely -- for a caller that has already run [`_gather_shapes`][] to decide
+                which observations to assign to which process, and would otherwise pay for it
+                twice.
+            known_failures: Observations known to be unreadable, when ``shapes`` is supplied.
         """
         fields = cls._resolve_fields(observations, requested_fields)
         # In the default path, leave ``shapes`` unset so AbstractReader.__init__ opens every
         # observation on this process to infer its structure. In distributed mode, gather the
         # per-observation shapes from the local subset and all-gather them (see ``_gather_shapes``).
-        shapes = None
-        known_failures = None
-        if read_indices is not None:
+        if shapes is None and read_indices is not None:
             shapes, known_failures = cls._gather_shapes(observations, read_indices, fields)
         # Buffers are sized by the largest observation this process actually reads, not the
         # largest in the dataset: its observations never leave it. Padding repeats indices, so

@@ -52,6 +52,7 @@ from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotation
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokesLiteral
 
+from ._bucketing import partition_balanced
 from ._distributed import cross_process_sum, split_stream
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
@@ -133,7 +134,8 @@ class MultiObservationMapMaker[T]:
         model_fields = ObservationModel.required_reader_fields(self.config)
         # Template families need extra fields (azimuth, scanning intervals, ...); empty otherwise.
         template_fields = ObservationTemplates.required_reader_fields(self.config)
-        self.reader = self.get_reader(model_fields | rhs_fields | template_fields)
+        self.reader_fields = model_fields | rhs_fields | template_fields
+        self.reader = self.get_reader(self.reader_fields)
 
     def _check_config(self) -> None:
         """Validate and adjust config for method-specific compatibility."""
@@ -189,21 +191,55 @@ class MultiObservationMapMaker[T]:
         """Total number of observations across all processes."""
         return len(self.observations)
 
+    @cached_property
+    def _probe(self) -> tuple[list[tuple[int, ...]], np.ndarray]:
+        """Every observation's probe shape, plus a mask of the ones that could not be probed.
+
+        Assignment needs the shapes of *all* observations, but probing one costs an open, so they
+        are split evenly for this pass only -- each process probes a share and the all-gather
+        inside ``_gather_shapes`` gives everyone the full list. The real assignment is decided
+        from it in [`owned_observations`][], and the shapes are handed to the reader so the probe
+        is not paid twice.
+        """
+        start, n_owned, _ = get_obs_distribution_to_process(self.n_observations)
+        provisional = tuple(range(start, start + n_owned))
+        shapes, failed = ObservationReader._gather_shapes(
+            self.observations, provisional, self.reader_fields
+        )
+        local = np.zeros(self.n_observations, dtype=bool)
+        local[list(failed)] = True
+        gathered = np.asarray(mhu.process_allgather(local)).reshape(-1, self.n_observations)
+        return shapes, gathered.any(axis=0)
+
+    @cached_property
+    def owned_observations(self) -> np.ndarray:
+        """Global indices of the observations this process owns.
+
+        Volume-balanced rather than count-balanced: segments are size-contiguous, so a process
+        holding short scans holds more of them and every process pads to a buffer close to its own
+        observations' size. An even split by count would instead give one process the long scans
+        and pad everyone to the longest.
+        """
+        shapes, _ = self._probe
+        segments = partition_balanced(shapes, jax.process_count())
+        return np.asarray(segments[jax.process_index()], dtype=int)
+
     @property
-    def obs_distribution(self) -> tuple[int, int, int]:
-        """``(start, n_owned, n_pad)`` for this process."""
-        return get_obs_distribution_to_process(self.n_observations)
+    def obs_distribution(self) -> tuple[int, int]:
+        """``(n_owned, n_pad)`` for this process."""
+        n_owned = len(self.owned_observations)
+        n_pad = -n_owned % jax.local_device_count()
+        return n_owned, n_pad
 
     def get_padded_read_indices(self) -> np.ndarray:
-        start, n_owned, n_pad = self.obs_distribution
-        indices = np.arange(start, start + n_owned)
-        return np.pad(indices, (0, n_pad), mode='edge')
+        _, n_pad = self.obs_distribution
+        return np.pad(self.owned_observations, (0, n_pad), mode='edge')
 
     def get_reader(self, required_fields: Collection[str]) -> ObservationReader[T]:
         """Build an ObservationReader for this process's local observations."""
-        # Pass padded indices so the reader sizes its buffers from the slots actually read. The
-        # count may differ between ranks -- each pads only to fill its own devices -- which
-        # ``_gather_shapes`` levels out before its all-gather.
+        # Pass padded indices so the reader sizes its buffers from the slots actually read; the
+        # count differs between ranks, since each pads only to fill its own devices.
+        shapes, failed = self._probe
         return ObservationReader.from_observations(
             self.observations,
             read_indices=tuple(self.get_padded_read_indices()),
@@ -211,6 +247,8 @@ class MultiObservationMapMaker[T]:
             demodulated=self.config.demodulated,
             stokes=self.config.landscape.stokes,
             dtype=self.config.dtype,
+            shapes=shapes,
+            known_failures=[int(i) for i in np.flatnonzero(failed)],
         )
 
     def run(self, out_dir: str | Path | None = None) -> MapMakingResults:
@@ -240,7 +278,7 @@ class MultiObservationMapMaker[T]:
         n_devices = jax.device_count()
 
         # Information about how observations are distributed among processes
-        start, n_owned, n_pad = self.obs_distribution
+        n_owned, n_pad = self.obs_distribution
         n_per_proc = n_owned + n_pad
         n_per_dev = n_per_proc // n_local_devices
         # Slot counts and buffer sizes now differ between processes, so the totals have to be
@@ -271,8 +309,12 @@ class MultiObservationMapMaker[T]:
         )
 
         rank_pad = n_pad / n_per_proc
+        # Segments are volume-balanced, so the counts differ between ranks; the sample range says
+        # how homogeneous this rank's share is, which is what its buffer padding costs it.
+        owned_samples = [self._probe[0][i][1] for i in self.owned_observations]
         logger_info(
-            f'rank={rank} obs={start}:{start + n_owned} real={n_owned} pad={n_pad} '
+            f'rank={rank} real={n_owned} pad={n_pad} '
+            f'samples={min(owned_samples)}..{max(owned_samples)} '
             f'pad_pct={rank_pad:.1%} real_size={_format_bytes(per_slot_bytes * n_owned)} '
             f'pad_size={_format_bytes(per_slot_bytes * n_pad)}'
         )
@@ -659,7 +701,7 @@ class MultiObservationMapMaker[T]:
 
     def _real_observation_mask(self) -> np.ndarray:
         """Boolean flag per padded slot: True for real observations, False for padding."""
-        _, n_owned, n_pad = self.obs_distribution
+        n_owned, n_pad = self.obs_distribution
         return np.concatenate([np.ones(n_owned, dtype=bool), np.zeros(n_pad, dtype=bool)])
 
     def pixel_selection(

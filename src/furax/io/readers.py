@@ -38,6 +38,7 @@ class AbstractReader(ABC):
         common_keywords: Mapping[str, Any] | None = None,
         structures: list[PyTree[jax.ShapeDtypeStruct]] | None = None,
         known_failures: Sequence[int] | None = None,
+        structure_indices: Sequence[int] | None = None,
         **keywords: Sequence[Any],
     ) -> None:
         """Initialize the reader.
@@ -50,6 +51,10 @@ class AbstractReader(ABC):
             known_failures: Item indices known to be unreadable up front (e.g. their shape probe
                 failed); [`read`][furax.io.readers.AbstractReader.read] returns filler for them
                 without attempting a load.
+            structure_indices: Items whose shapes set the common ``out_structure`` every read is
+                padded to. Defaults to all of them. A caller that reads only a subset -- one
+                process owning a segment of the observations -- passes that subset here so its
+                buffers are sized by its own largest item rather than the global largest.
             **keywords: One list per keyword argument to the read function, one element per item.
         """
         self.args, self.keywords = self._normalize_args_keywords(args, keywords)
@@ -64,7 +69,13 @@ class AbstractReader(ABC):
                 f'structures length {len(structures)} does not match data count {self.count}'
             )
         self.total_nbytes = sum(nbytes(s) for s in structures)
-        self.out_structure = self._get_common_structure(structures)
+        if structure_indices is None:
+            sizing = structures
+        else:
+            sizing = [structures[i] for i in structure_indices]
+            if not sizing:
+                raise ValueError('structure_indices must select at least one item')
+        self.out_structure = self._get_common_structure(sizing)
 
     def reset_failures(self) -> None:
         """Reset runtime read failures to the known-failure baseline.

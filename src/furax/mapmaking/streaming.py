@@ -23,6 +23,7 @@ from furax.core import (
 )
 from furax.core._base import structure_equal
 from furax.core.rules import AbstractAdditionRule, AbstractCompositionRule, NoReduction
+from furax.mapmaking._distributed import cross_process_sum, stream_is_split
 
 __all__ = [
     'StackSpec',
@@ -436,7 +437,13 @@ class StreamOperator(AbstractLinearOperator):
             carry, ys = jax.lax.scan(step, init, (dyn, x_stacked), length=length)
             return eqx.combine(ys, jax.lax.psum(carry, axis_name=axis))
 
-        return kernel(dyn, static, x_stacked, x_shared)
+        out = kernel(dyn, static, x_stacked, x_shared)
+        if stream_is_split():
+            # The psum reached this process's devices only; the rest of the stream lives on the
+            # other processes. Stacked outputs stay process-local, shared ones are partials.
+            stacked_out, shared_out = eqx.partition(out, out_mask)
+            out = eqx.combine(stacked_out, cross_process_sum(shared_out))
+        return out
 
     def _check_shared_replicated(
         self, x_shared: PyTree[Any], static: tuple[AbstractLinearOperator, ...], axis: str

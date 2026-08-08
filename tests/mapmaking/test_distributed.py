@@ -65,5 +65,54 @@ def test_cross_process_sum_over_heterogeneous_segments(n_proc: int, n_local: int
     assert codes == [0] * n_proc, f'child exit codes {codes}'
 
 
+def _child_gather_shapes(proc_id: int, n_proc: int, port: int, n_local: int) -> int:
+    """Probe-shape all-gather with a different observation count on every process."""
+    os.environ['JAX_PLATFORMS'] = 'cpu'
+    os.environ['XLA_FLAGS'] = f'--xla_force_host_platform_device_count={n_local}'
+    import jax
+
+    jax.distributed.initialize(
+        coordinator_address=f'localhost:{port}', num_processes=n_proc, process_id=proc_id
+    )
+    from furax.mapmaking._reader import ObservationReader
+
+    class _FakeObs:
+        def __init__(self, n_det: int, n_samp: int) -> None:
+            self._shape = (n_det, n_samp)
+
+        def probe_shape(self, intervals: bool = False) -> tuple[int, ...]:
+            return self._shape
+
+    # 7 observations over n_proc processes: the even split gives unequal counts, so with one
+    # device per process the ranks probe different numbers of them.
+    observations = [_FakeObs(4, 10 * (i + 1)) for i in range(7)]
+    base, rem = divmod(len(observations), n_proc)
+    n_owned = base + (1 if proc_id < rem else 0)
+    start = proc_id * base + min(proc_id, rem)
+    read_indices = tuple(range(start, start + n_owned))
+
+    shapes, _ = ObservationReader._gather_shapes(observations, read_indices, fields=())
+    expected = [(4, 10 * (i + 1)) for i in range(7)]
+    ok = [tuple(s) for s in shapes] == expected
+    return 0 if ok else 1
+
+
+@pytest.mark.distributed
+@pytest.mark.parametrize('n_proc, n_local', [(3, 1), (2, 1)])
+def test_gather_shapes_with_uneven_observation_counts(n_proc: int, n_local: int) -> None:
+    port = 54460 + 10 * n_proc + n_local
+    env = {**os.environ, 'FURAX_TEST_CHILD': 'gather'}
+    procs = [
+        subprocess.Popen(
+            [sys.executable, __file__, str(i), str(n_proc), str(port), str(n_local), 'gather'],
+            env=env,
+        )
+        for i in range(n_proc)
+    ]
+    codes = [p.wait(timeout=180) for p in procs]
+    assert codes == [0] * n_proc, f'child exit codes {codes}'
+
+
 if __name__ == '__main__':  # spawned child, not collected by pytest
-    sys.exit(_child(int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])))
+    _fn = _child_gather_shapes if sys.argv[5:6] == ['gather'] else _child
+    sys.exit(_fn(int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])))

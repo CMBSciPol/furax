@@ -161,7 +161,8 @@ class ObservationReader[T](AbstractReader):
         """Gather every observation's ``probe_shape()`` tuple in distributed mode.
 
         Each process probes only its ``read_indices`` subset; an all-gather then makes every rank
-        agree on the full shape list, so padding / out_structure / etc. stay consistent.
+        agree on the full shape list, so padding / out_structure / etc. stay consistent. Ranks may
+        probe different numbers of observations, since each pads only to fill its own devices.
 
         A probe that raises must not crash the rank (it would deadlock the others at the all-gather):
         the observation is given a dummy ``(1, 1)`` shape so it is excluded from the buffer-sizing
@@ -185,6 +186,10 @@ class ObservationReader[T](AbstractReader):
         local = [probe(idx) for idx in read_indices]
         width = 1 + len(local[0][1])  # each row is (idx, *shape)
         local_rows = np.array([(idx, *shape) for idx, shape in local], dtype=np.int32)
+
+        # Processes own different numbers of observations, but an all-gather takes one shape from
+        # every rank, so bring them to a common height first. Repeating a row is safe: the dedup
+        # below removes it, exactly as it removes the duplicates padding already introduces.
 
         # Drop potential duplicates (from padding) and sort by obs index
         all_rows = mhu.process_allgather(local_rows).reshape(-1, width)

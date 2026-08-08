@@ -20,8 +20,9 @@ import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
+from jax.experimental import mesh_utils
 from jax.experimental import multihost_utils as mhu
-from jax.sharding import Mesh, NamedSharding
+from jax.sharding import AxisType, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
@@ -160,7 +161,9 @@ class MultiObservationMapMaker[T]:
 
     @cached_property
     def mesh(self) -> Mesh:
-        return jax.make_mesh((jax.device_count(),), ('obs',))
+        # skip jax.make_mesh to avoid tripping a multi-slice error in some cases
+        devices = mesh_utils.create_device_mesh((jax.device_count(),))
+        return Mesh(devices, ('obs',), axis_types=(AxisType.Explicit,))
 
     @property
     def sharding(self) -> NamedSharding:

@@ -20,7 +20,6 @@ import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
 from jax import ShapeDtypeStruct
-from jax.experimental import mesh_utils
 from jax.experimental import multihost_utils as mhu
 from jax.sharding import AxisType, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
@@ -53,6 +52,7 @@ from furax.obs.operators import HWPOperator, LinearPolarizerOperator, QURotation
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokesLiteral
 
+from ._distributed import cross_process_sum, split_stream
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
 from ._model import ObservationGeometry, ObservationModel, ObservationTemplates
@@ -161,8 +161,10 @@ class MultiObservationMapMaker[T]:
 
     @cached_property
     def mesh(self) -> Mesh:
-        # skip jax.make_mesh to avoid tripping a multi-slice error in some cases
-        devices = mesh_utils.create_device_mesh((jax.device_count(),))
+        # The observation axis stops at the process boundary: each process owns its observations
+        # outright, so nothing forces the buffer shapes of one process on any other. A
+        # single-process run is the degenerate case, where this is every device in the job.
+        devices = np.array(sorted(jax.local_devices(), key=lambda d: d.id))
         return Mesh(devices, ('obs',), axis_types=(AxisType.Explicit,))
 
     @property
@@ -175,7 +177,7 @@ class MultiObservationMapMaker[T]:
     def distribute[S](self, x: S) -> S: ...
     def distribute(self, x: Any) -> Any:
         """Shard a pytree of process-local arrays along the leading 'obs' axis."""
-        return jax.tree.map(lambda a: jax.make_array_from_process_local_data(self.sharding, a), x)
+        return jax.tree.map(lambda a: jax.device_put(a, self.sharding), x)
 
     @property
     def n_observations(self) -> int:
@@ -235,11 +237,15 @@ class MultiObservationMapMaker[T]:
         start, n_owned, n_pad = self.obs_distribution
         n_per_proc = n_owned + n_pad
         n_per_dev = n_per_proc // n_local_devices
-        n_slots_global = n_per_proc * n_processes
+        # Slot counts and buffer sizes now differ between processes, so the totals have to be
+        # summed rather than scaled from this process's share.
+        n_slots_global = int(np.asarray(mhu.process_allgather(np.array([n_per_proc]))).sum())
 
-        # Every slot (real or padding) is padded to the same reader.out_structure
+        # Every slot (real or padding) is padded to the same reader.out_structure -- the same
+        # only within this process, which sizes its buffers from its own observations.
         per_slot_bytes = furax.tree.nbytes(self.reader.out_structure)
-        global_bytes = per_slot_bytes * n_slots_global
+        local_bytes = per_slot_bytes * n_per_proc
+        global_bytes = int(np.asarray(mhu.process_allgather(np.array([local_bytes]))).sum())
 
         # The true, total data size (before observations are padded to a common structure)
         real_bytes = self.reader.total_nbytes
@@ -265,7 +271,9 @@ class MultiObservationMapMaker[T]:
             f'pad_size={_format_bytes(per_slot_bytes * n_pad)}'
         )
 
-        with jax.set_mesh(self.mesh):
+        # The mesh covers this process's devices only, so every stream-axis reduction inside it
+        # needs finishing across processes.
+        with jax.set_mesh(self.mesh), split_stream():
             # Single read pass (sharded over observations): build the model, the per-observation
             # template operators (when active) and accumulate the hit map + RHS together, so each
             # observation is read/preprocessed exactly once.
@@ -291,8 +299,9 @@ class MultiObservationMapMaker[T]:
             H_sky: AbstractLinearOperator = StreamOperator.column(model.H)
             W: AbstractLinearOperator = StreamOperator.diagonal(model.W)
             # Specify leading axis dimension because F can be trivial (no array leaves)
-            # Must be the *global* slot count to compose with the other operators
-            F = StreamOperator.diagonal(model.F, n_lead=n_slots_global)
+            # Must be this process's slot count to compose with the other operators, whose own
+            # leaves are sharded over the local devices and report exactly that.
+            F = StreamOperator.diagonal(model.F, n_lead=n_per_proc)
             W_diag = (
                 W
                 if self.config.binned
@@ -627,6 +636,8 @@ class MultiObservationMapMaker[T]:
         model, geometry, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs = kernel(
             indices, is_real
         )
+        # The psum above spans this process's devices only, so these are still partials.
+        hits, rhs = cross_process_sum((hits, rhs))
         return AccumulatedModel(
             model, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs, geometry
         )
@@ -728,9 +739,9 @@ def get_obs_distribution_to_process(
 
     Distributes ``n_obs`` observations across processes as evenly as possible
     (first ``n_obs % n_proc`` processes get one extra), then pads each process's
-    share to the next multiple of ``n_local`` so every device has a uniform
-    workload.  All processes end up with the same number of total slots
-    (``n_owned + n_pad``), which is required for multi-process sharding.
+    share to the next multiple of ``n_local`` so every local device has a uniform
+    workload.  Processes need not end up with the same number of slots: each owns
+    its observations outright, so only its own devices have to divide evenly.
 
     Args:
         n_obs: Total number of observations across all processes.
@@ -762,11 +773,12 @@ def get_obs_distribution_to_process(
 
     base = n_obs // n_proc
     remainder = n_obs % n_proc
-    max_owned = base + (1 if remainder > 0 else 0)
-    n_per_proc = max_owned + (-max_owned) % n_local  # ceil to next multiple of n_local
-
     n_owned = base + (1 if rank < remainder else 0)
     start = rank * base + min(rank, remainder)
+
+    # Nothing has to agree between processes, so pad only enough to fill this process's own
+    # devices; a process owning fewer observations carries fewer empty slots.
+    n_per_proc = n_owned + (-n_owned) % n_local
     n_pad = n_per_proc - n_owned
 
     return start, n_owned, n_pad

@@ -57,6 +57,7 @@ class ObservationReader[T](AbstractReader):
         common_keywords: dict[str, Any] | None = None,
         shapes: list[tuple[int, ...]] | None = None,
         known_failures: Sequence[int] | None = None,
+        structure_indices: Sequence[int] | None = None,
         **keywords: Sequence[Any],
     ) -> None:
         # Set before super().__init__ so the structure/reader builders can use them
@@ -75,6 +76,7 @@ class ObservationReader[T](AbstractReader):
             common_keywords=common_keywords,
             structures=structures,
             known_failures=known_failures,
+            structure_indices=structure_indices,
             **keywords,
         )
 
@@ -117,6 +119,10 @@ class ObservationReader[T](AbstractReader):
         known_failures = None
         if read_indices is not None:
             shapes, known_failures = cls._gather_shapes(observations, read_indices, fields)
+        # Buffers are sized by the largest observation this process actually reads, not the
+        # largest in the dataset: its observations never leave it. Padding repeats indices, so
+        # dedup before sizing.
+        structure_indices = None if read_indices is None else tuple(dict.fromkeys(read_indices))
         return cls(
             observations,
             common_keywords={'data_field_names': fields},
@@ -125,6 +131,7 @@ class ObservationReader[T](AbstractReader):
             dtype=dtype,
             shapes=shapes,
             known_failures=known_failures,
+            structure_indices=structure_indices,
         )
 
     @staticmethod

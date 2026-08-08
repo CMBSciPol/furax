@@ -15,13 +15,46 @@ array sharded over a ``proc`` axis and sums the leading axis, which lowers to an
 partials never leave the device.
 """
 
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import jax
 import numpy as np
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, PyTree
 
-__all__ = ['cross_process_mesh', 'cross_process_sum']
+__all__ = ['cross_process_mesh', 'cross_process_sum', 'split_stream', 'stream_is_split']
+
+_state = threading.local()
+
+
+@contextmanager
+def split_stream() -> Iterator[None]:
+    """Declare that the active mesh covers only this process's share of the stream.
+
+    Operators that reduce over the stream axis (see
+    [`AbstractStreamOperator`][furax.mapmaking.streaming.AbstractStreamOperator]) ``psum`` over the
+    active mesh, which under this context reaches only the local devices. Inside it they finish the
+    job with [`cross_process_sum`][], so their reduced outputs mean the same thing they do on a
+    mesh spanning the whole job.
+
+    Declared rather than detected: a process-local mesh is not by itself evidence that the stream
+    continues elsewhere, and silently adding a collective to one built for other reasons would be
+    both wrong and hard to see.
+    """
+    previous = stream_is_split()
+    _state.split = True
+    try:
+        yield
+    finally:
+        _state.split = previous
+
+
+def stream_is_split() -> bool:
+    """Whether the stream axis stops at the process boundary; see [`split_stream`][]."""
+    return getattr(_state, 'split', False)
 
 
 def cross_process_mesh() -> Mesh:

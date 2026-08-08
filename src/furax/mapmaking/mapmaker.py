@@ -320,7 +320,11 @@ class MultiObservationMapMaker[T]:
 
             # Restrict landscape by selecting pixels based on icov estimate
             valid_pixels = self.pixel_selection(hit_map, icov)
-            local = LocalStokesLandscape.from_boolean_mask(self.landscape, valid_pixels)
+            # Built off the mesh: the localized solve below closes this landscape over inside
+            # `shard_map`, and its pixel index would otherwise be committed to the mesh here,
+            # which the gather in `global2local` rejects against the `Manual` context mesh.
+            with jax.set_mesh(None):
+                local = LocalStokesLandscape.from_boolean_mask(self.landscape, valid_pixels)
             local_structure = local.structure_for((local.nlocal,))
             M_sky = BJPreconditioner(icov[valid_pixels], in_structure=local_structure).I
 

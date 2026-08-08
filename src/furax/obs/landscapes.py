@@ -861,13 +861,6 @@ class LocalStokesLandscape(StokesLandscape):
                 f'with {npix} pixels.'
             )
         nlocal = int(gi.size)
-        # Detach from any active mesh: this landscape is a static pytree node and `global_indices`
-        # is host-concrete metadata (it fixes `nlocal`, hence the buffer shape), not sharded data.
-        # An array built under a mesh is committed to it, and the localized solve closes over this
-        # one inside `shard_map`, where the context mesh is `Manual` -- the gather in `global2local`
-        # rejects the mismatch. (Under `Explicit` axis types even closing over it is unsupported.)
-        with jax.set_mesh(None):
-            gi = jnp.asarray(np.asarray(gi))
         # The sink occupies index `nlocal`, so the buffer has shape `(nlocal + 1,)`.
         super().__init__(shape=(nlocal + 1,), stokes=parent.stokes, dtype=parent.dtype)
         self.parent = parent

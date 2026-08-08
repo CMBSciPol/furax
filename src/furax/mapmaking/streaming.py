@@ -424,7 +424,12 @@ class StreamOperator(AbstractLinearOperator):
         out_pspecs = jax.tree.map(lambda stacked: P(axis) if stacked else P(), out_mask)
         _, shared_out_structure = eqx.partition(per_slice_out, out_mask)
 
-        @jax.shard_map(out_specs=out_pspecs, check_vma=False)
+        # One spec per argument, broadcast over that argument's subtree: the sliced segments and
+        # the stacked input components carry the batch axis, the constant segments and the shared
+        # components are replicated. Given rather than inferred, since the mesh may be `Auto`.
+        in_pspecs = (P(axis), P(), P(axis), P())
+
+        @jax.shard_map(in_specs=in_pspecs, out_specs=out_pspecs, check_vma=False)
         def kernel(dyn, static, x_stacked, x_shared):  # type: ignore[no-untyped-def]
             def step(carry, args):  # type: ignore[no-untyped-def]
                 dyn_i, xs_i = args

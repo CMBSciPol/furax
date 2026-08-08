@@ -1,8 +1,12 @@
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from astropy.wcs import WCS
 from jax import Array
+from jax.experimental import mesh_utils
+from jax.sharding import AxisType, Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 from furax.obs._samplings import Sampling
@@ -461,6 +465,26 @@ class TestLocalStokesLandscape:
         assert_array_equal(lidx[mask], local.sink)
         assert_array_equal(lweights[mask], 0.0)
         assert_array_equal(lweights[~mask], gweights[~mask])
+
+    def test_global2local_closes_over_inside_shard_map(self) -> None:
+        # `global_indices` must not carry an ambient mesh's sharding: under `Explicit` axis types
+        # such an array cannot be closed over inside `shard_map`, which is how the localized solve
+        # calls `global2local`. Regression test for a failure only reachable with a live mesh.
+        mesh = Mesh(
+            mesh_utils.create_device_mesh((jax.device_count(),)),
+            ('obs',),
+            axis_types=(AxisType.Explicit,),
+        )
+        parent = HealpixLandscape(2, stokes='I')
+        raw = np.arange(4 * jax.device_count()).reshape(jax.device_count(), 4)
+        with jax.set_mesh(mesh):
+            # built *under* the mesh, exactly as the mapmaker builds it from the pixel selection
+            local = LocalStokesLandscape(parent, jnp.arange(0, 12, 2))
+            queries = jax.device_put(jnp.asarray(raw), NamedSharding(mesh, P('obs')))
+            out = jax.shard_map(out_specs=P('obs'), check_vma=False)(local.global2local)(queries)
+        # reference on unsharded inputs: `searchsorted` rejects an obs-sharded query outside
+        # `shard_map`, so the comparison has to be made off the mesh
+        assert_array_equal(out, local.global2local(jnp.asarray(raw)))
 
     def test_from_sampling(self) -> None:
         parent = HealpixLandscape(2, stokes='I')

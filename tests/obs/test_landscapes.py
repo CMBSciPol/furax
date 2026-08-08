@@ -467,10 +467,10 @@ class TestLocalStokesLandscape:
         assert_array_equal(lweights[~mask], gweights[~mask])
 
     def test_global2local_closes_over_inside_shard_map(self) -> None:
-        # The localized solve reaches `global2local` from inside `shard_map`, with the landscape
-        # closed over. `global_indices` must therefore not be committed to the ambient mesh: the
-        # gather would be rejected against the `Manual` context mesh inside. Built here under a
-        # live mesh, exactly as the mapmaker builds it, on the `Auto` axis types the mapmaker uses.
+        # The localized solve closes a landscape over inside `shard_map` and gathers from its
+        # `global_indices` there. That requires the landscape to have been built off the mesh:
+        # an array committed to one is rejected against the `Manual` context mesh inside. The
+        # mapmaker builds it that way; this pins the requirement it is honouring.
         mesh = Mesh(
             mesh_utils.create_device_mesh((jax.device_count(),)),
             ('obs',),
@@ -478,9 +478,9 @@ class TestLocalStokesLandscape:
         )
         parent = HealpixLandscape(2, stokes='I')
         raw = np.arange(4 * jax.device_count()).reshape(jax.device_count(), 4)
-        with jax.set_mesh(mesh):
-            # built *under* the mesh, exactly as the mapmaker builds it from the pixel selection
+        with jax.set_mesh(None):
             local = LocalStokesLandscape(parent, jnp.arange(0, 12, 2))
+        with jax.set_mesh(mesh):
             queries = jax.device_put(jnp.asarray(raw), NamedSharding(mesh, P('obs')))
             out = jax.shard_map(in_specs=(P('obs'),), out_specs=P('obs'), check_vma=False)(
                 local.global2local

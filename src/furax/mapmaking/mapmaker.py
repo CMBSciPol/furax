@@ -196,8 +196,9 @@ class MultiObservationMapMaker[T]:
 
     def get_reader(self, required_fields: Collection[str]) -> ObservationReader[T]:
         """Build an ObservationReader for this process's local observations."""
-        # Pass padded indices: process_allgather inside from_observations needs every
-        # rank to send the same shape, so all ranks must report the same obs count.
+        # Pass padded indices so the reader sizes its buffers from the slots actually read. The
+        # count may differ between ranks -- each pads only to fill its own devices -- which
+        # ``_gather_shapes`` levels out before its all-gather.
         return ObservationReader.from_observations(
             self.observations,
             read_indices=tuple(self.get_padded_read_indices()),

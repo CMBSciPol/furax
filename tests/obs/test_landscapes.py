@@ -467,13 +467,14 @@ class TestLocalStokesLandscape:
         assert_array_equal(lweights[~mask], gweights[~mask])
 
     def test_global2local_closes_over_inside_shard_map(self) -> None:
-        # `global_indices` must not carry an ambient mesh's sharding: under `Explicit` axis types
-        # such an array cannot be closed over inside `shard_map`, which is how the localized solve
-        # calls `global2local`. Regression test for a failure only reachable with a live mesh.
+        # The localized solve reaches `global2local` from inside `shard_map`, with the landscape
+        # closed over. `global_indices` must therefore not be committed to the ambient mesh: the
+        # gather would be rejected against the `Manual` context mesh inside. Built here under a
+        # live mesh, exactly as the mapmaker builds it, on the `Auto` axis types the mapmaker uses.
         mesh = Mesh(
             mesh_utils.create_device_mesh((jax.device_count(),)),
             ('obs',),
-            axis_types=(AxisType.Explicit,),
+            axis_types=(AxisType.Auto,),
         )
         parent = HealpixLandscape(2, stokes='I')
         raw = np.arange(4 * jax.device_count()).reshape(jax.device_count(), 4)
@@ -481,9 +482,9 @@ class TestLocalStokesLandscape:
             # built *under* the mesh, exactly as the mapmaker builds it from the pixel selection
             local = LocalStokesLandscape(parent, jnp.arange(0, 12, 2))
             queries = jax.device_put(jnp.asarray(raw), NamedSharding(mesh, P('obs')))
-            out = jax.shard_map(out_specs=P('obs'), check_vma=False)(local.global2local)(queries)
-        # reference on unsharded inputs: `searchsorted` rejects an obs-sharded query outside
-        # `shard_map`, so the comparison has to be made off the mesh
+            out = jax.shard_map(in_specs=(P('obs'),), out_specs=P('obs'), check_vma=False)(
+                local.global2local
+            )(queries)
         assert_array_equal(out, local.global2local(jnp.asarray(raw)))
 
     def test_from_sampling(self) -> None:

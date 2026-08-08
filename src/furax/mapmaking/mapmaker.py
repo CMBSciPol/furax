@@ -164,8 +164,13 @@ class MultiObservationMapMaker[T]:
         # The observation axis stops at the process boundary: each process owns its observations
         # outright, so nothing forces the buffer shapes of one process on any other. A
         # single-process run is the degenerate case, where this is every device in the job.
+        #
+        # `Auto` rather than `Explicit`: under explicit axis types an array built on this mesh
+        # carries it in its sharding and then cannot be closed over inside `shard_map`, which is
+        # how the sky landscape reaches the pointing. The price is that every `shard_map` must
+        # spell out its `in_specs` instead of having them inferred.
         devices = np.array(sorted(jax.local_devices(), key=lambda d: d.id))
-        return Mesh(devices, ('obs',), axis_types=(AxisType.Explicit,))
+        return Mesh(devices, ('obs',), axis_types=(AxisType.Auto,))
 
     @property
     def sharding(self) -> NamedSharding:
@@ -342,7 +347,9 @@ class MultiObservationMapMaker[T]:
                         geometry
                     )
 
-                local_H = jax.shard_map(out_specs=P('obs'), check_vma=False)(_rebuild)(geometry)
+                local_H = jax.shard_map(in_specs=(P('obs'),), out_specs=P('obs'), check_vma=False)(
+                    _rebuild
+                )(geometry)
                 H_solve: AbstractLinearOperator = StreamOperator.column(local_H)
                 keep = IndexOperator(
                     (..., slice(0, local.nlocal)), in_structure=H_solve.in_structure
@@ -632,7 +639,10 @@ class MultiObservationMapMaker[T]:
             return model, geometry, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs
 
         out_specs = (P('obs'), P('obs'), P('obs'), P('obs'), P('obs'), P('obs'), P(), P())
-        kernel = jax.shard_map(out_specs=out_specs, check_vma=False)(kernel)
+        # Both inputs are distributed over the observation axis; the mesh's axis types are `Auto`,
+        # so the specs are given rather than inferred.
+        in_specs = (P('obs'), P('obs'))
+        kernel = jax.shard_map(in_specs=in_specs, out_specs=out_specs, check_vma=False)(kernel)
         model, geometry, templates, amp_rhs, implicit_ginv, explicit_ginv, hits, rhs = kernel(
             indices, is_real
         )

@@ -376,13 +376,12 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         # which have 1, cos(2*p), sin(2*p) where p is the parallactic angle
         pixel_inds, spin_proj = proj.get_pointing_matrix(assembly)
 
-        # TODO: check if this could be jnp array directly
-        pixel_inds = np.array(pixel_inds)
+        pixel_inds = jnp.array(pixel_inds)
 
         spin_proj = jnp.array(spin_proj, dtype=landscape.dtype)
         spin_ang = jnp.arctan2(spin_proj[..., 2], spin_proj[..., 1]) / 2.0
 
-        return pixel_inds, spin_ang  # ty: ignore[invalid-return-type]
+        return pixel_inds, spin_ang
 
     def get_timestamps(self) -> Float[np.ndarray, ' a']:
         """Returns timestamps (sec) of the samples."""

@@ -1128,7 +1128,7 @@ class BinnedMapMaker(MapMaker):
         final_map = np.array([res.i, res.q, res.u])
         weights = np.array(system.blocks)
 
-        output: dict[str, Any] = {'map': final_map, 'weights': weights}
+        output = {'map': final_map, 'weights': weights}
         if isinstance(landscape, WCSLandscape):
             output['wcs'] = landscape.to_wcs()
         elif isinstance(landscape, AstropyWCSLandscape):
@@ -1282,7 +1282,7 @@ class MLMapmaker(MapMaker):
         # Format output and compute auxiliary data
         final_map = np.array([result_map.i, result_map.q, result_map.u])
 
-        output: dict[str, Any] = {'map': final_map, 'weights': weights, 'weights_uncut': blocks}
+        output = {'map': final_map, 'weights': weights, 'weights_uncut': blocks}
         if isinstance(landscape, WCSLandscape):
             output['wcs'] = landscape.to_wcs()
         elif isinstance(landscape, AstropyWCSLandscape):
@@ -1398,7 +1398,7 @@ class ATOPMapMaker(MapMaker):
         # Format output and compute auxiliary data
         final_map = np.array([result_map.q, result_map.u])
 
-        output: dict[str, Any] = {'map': final_map, 'weights': blocks}
+        output = {'map': final_map, 'weights': blocks}
         if isinstance(landscape, AstropyWCSLandscape):
             output['wcs'] = landscape.wcs
         if (

@@ -38,6 +38,7 @@ Use Google-style docstrings. Docs site renders via mkdocstrings/griffe, so a few
 - Use `Examples:` (plural) for code examples. Singular `Example:` becomes an admonition with no `pycon` syntax highlighting.
 - A `>>>` console block must be preceded by a **blank line** when prose comes before it, but **not** directly after the section header (ruff `D412`).
 - Math: `$inline$` / `$$display$$`. Cross-reference symbols with autorefs: ``[`OtherClass`][]``.
+- Docstrings are public API documentation, read with no context. Keep them short and precise: what it does, what the arguments mean. Never reference repo Markdown files, design notes, branches, PRs or external directories.
 
 ```python
 def foo(x: Float[jax.Array, ' n'], scale: float = 1.0) -> Float[jax.Array, ' n']:

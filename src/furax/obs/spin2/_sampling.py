@@ -13,14 +13,14 @@ __all__ = [
 ]
 
 
-def transported_gather[StokesT: Stokes](
-    sky: StokesT,
+def transported_gather[S: Stokes](
+    sky: S,
     indices: Integer[Array, '*dims neighbors'],
     weights: Float[Array, '*dims neighbors'],
     centers: InterpCenters,
     theta: Float[Array, ' *dims'],
     phi: Float[Array, ' *dims'],
-) -> StokesT:
+) -> S:
     r"""Interpolate a flat sky map at world angles, transporting each neighbour's $(Q, U)$.
 
     Each neighbour's polarisation is carried into the meridian basis of the target direction before
@@ -46,15 +46,15 @@ def transported_gather[StokesT: Stokes](
     return type(sky).from_array(jnp.sum(rotated.data * unit_weights, axis=-1))
 
 
-def transported_scatter[StokesT: Stokes](
-    out: StokesT,
-    tod: StokesT,
+def transported_scatter[S: Stokes](
+    out: S,
+    tod: S,
     indices: Integer[Array, '*dims neighbors'],
     weights: Float[Array, '*dims neighbors'],
     centers: InterpCenters,
     theta: Float[Array, ' *dims'],
     phi: Float[Array, ' *dims'],
-) -> StokesT:
+) -> S:
     r"""Scatter-add samples into a flat sky map, adjoint to [`transported_gather`][].
 
     Each sample's polarisation is carried into the meridian basis of the neighbour it is deposited

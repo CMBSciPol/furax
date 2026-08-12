@@ -6,9 +6,12 @@ scalar interpolation weights is ill-defined. This package supplies the frame rot
 neighbour's $(Q, U)$ into the basis of the point being interpolated.
 """
 
+from ._sampling import transported_gather, transported_scatter
 from ._transport import spin2_cos_sin, spin2_cos_sin_zs
 
 __all__ = [
     'spin2_cos_sin',
     'spin2_cos_sin_zs',
+    'transported_gather',
+    'transported_scatter',
 ]

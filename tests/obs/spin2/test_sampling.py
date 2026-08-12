@@ -127,6 +127,26 @@ class TestAdjoint:
     """A sign error in either rotation shows up here, on a fixed stencil, with no operator built."""
 
     @pytest.mark.parametrize('stokes', ['I', 'QU', 'IQU'])
+    def test_scatter_is_the_transpose_jax_derives(self, stokes: ValidStokesLiteral) -> None:
+        """Compare against the whole transposed operator, not one random projection of it.
+
+        The gather is linear in the sky, so `jax.linear_transpose` builds its exact adjoint. The
+        hand-written scatter exists because the operator framework needs a method and the beam port
+        needs a free function to vmap, not because JAX cannot derive it -- so it must agree.
+        """
+        landscape = HealpixLandscape(NSIDE, stokes=stokes)
+        theta, phi = _directions(300, 12)
+        indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
+        tod = _random_tod(landscape, 300, 13)
+
+        def gather(sky: Stokes) -> Stokes:
+            return transported_gather(sky, indices, weights, centers, theta, phi)
+
+        (derived,) = jax.linear_transpose(gather, landscape.zeros())(tod)
+        written = transported_scatter(landscape.zeros(), tod, indices, weights, centers, theta, phi)
+        assert_allclose(np.asarray(written.data), np.asarray(derived.data), atol=1e-14)
+
+    @pytest.mark.parametrize('stokes', ['I', 'QU', 'IQU'])
     def test_gather_and_scatter_are_adjoint(self, stokes: ValidStokesLiteral) -> None:
         landscape = HealpixLandscape(NSIDE, stokes=stokes)
         theta, phi = _directions(500, 4)

@@ -32,7 +32,8 @@ def spin2_cos_sin_zs(
         phi_x: Target longitude, in radians.
 
     Returns:
-        The pair $(\cos 2\delta,\, \sin 2\delta)$. Broadcasts over the six inputs.
+        The pair $(\cos 2\delta,\, -\sin 2\delta)$, as taken by [`Stokes.rotate_qu`][]. Broadcasts
+        over the six inputs.
     """
     # Haversine formulation. The textbook form -- two atan2 bearings -- is algebraically identical
     # but cancels catastrophically at the sub-pixel separations this is used at, losing about four
@@ -73,16 +74,16 @@ def spin2_cos_sin(
     theta_x: Float[Array, '...'],
     phi_x: Float[Array, '...'],
 ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
-    r"""Cosine and sine of twice the spin-2 transport angle between two directions.
+    r"""Spin-2 transport pair between two directions, in the form taken by `rotate_qu`.
 
     A polarisation $P = Q + iU$ stored at a neighbour direction $\hat n$ is expressed in the local
     meridian basis at $\hat n$. Carrying it to the basis at a target direction $\hat x$ turns it by
-    the transport angle $\delta$, as $P \to P e^{+2i\delta}$. This returns the pair
-    $(\cos 2\delta,\, \sin 2\delta)$ describing that rotation.
+    the transport angle $\delta$, as $P \to P e^{+2i\delta}$.
 
-    The pair is the double-angle form taken by [`Stokes.rotate_qu`][], so it can be passed there
-    directly. It must not be passed to [`rotate_qu_cs`][], which expects a single-angle pair and
-    doubles it internally.
+    The returned pair is $(\cos 2\delta,\, -\sin 2\delta)$: [`Stokes.rotate_qu`][] applies
+    $P \to P e^{-2ia}$ to a pair $(\cos 2a,\, \sin 2a)$, so passing this pair there directly, with
+    no sign flip, performs the transport. It must not be passed to [`rotate_qu_cs`][], which expects
+    a single-angle pair and doubles it internally.
 
     The sign convention is that of HEALPix/COSMO maps. An IAU-convention map has $U$ flipped and
     would run the transport backwards.
@@ -97,7 +98,8 @@ def spin2_cos_sin(
         phi_x: Target longitude, in radians.
 
     Returns:
-        The pair $(\cos 2\delta,\, \sin 2\delta)$. Broadcasts over the four inputs.
+        The pair $(\cos 2\delta,\, -\sin 2\delta)$, as taken by [`Stokes.rotate_qu`][]. Broadcasts
+        over the four inputs.
 
     Examples:
         Two directions on the same meridian need no rotation.

@@ -3,7 +3,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import TypeVar
+from typing import NamedTuple, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -19,6 +19,25 @@ from furax.obs._samplings import Sampling
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 _StokesT = TypeVar('_StokesT', bound=Stokes)
+
+
+class InterpCenters(NamedTuple):
+    r"""World positions of the neighbours of an interpolation stencil.
+
+    Returned by [`StokesLandscape.world2interp_with_centers`][], aligned neighbour for neighbour
+    with the indices and weights it returns alongside. The co-latitude comes as its cosine and sine
+    rather than as an angle, because that is the form the pixelization produces natively and forming
+    the angle would round twice.
+
+    Attributes:
+        z: Cosine of the neighbour co-latitude.
+        sth: Sine of the neighbour co-latitude.
+        phi: Neighbour longitude, in radians.
+    """
+
+    z: Float[Array, '*dims neighbors']
+    sth: Float[Array, '*dims neighbors']
+    phi: Float[Array, '*dims neighbors']
 
 
 @register_static
@@ -211,6 +230,20 @@ class StokesLandscape(Landscape):
         [`WCSLandscape`][]) or this method directly (e.g. HEALPix via ``get_interp_weights``).
         """
         raise NotImplementedError(f'{type(self).__name__} does not support interpolation')
+
+    def world2interp_with_centers(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '...'], Float[Array, '...'], InterpCenters]:
+        """Returns (indices, weights, centers), where centers holds the neighbours' world positions.
+
+        The indices and the weights are those of [`world2interp`][]. The centers are needed by
+        interpolators that must know where each neighbour sits, such as the spin-2 transported
+        sampler, and are supplied here because the pixelization computes them on the way to the
+        weights anyway.
+        """
+        raise NotImplementedError(
+            f'{type(self).__name__} does not supply interpolation neighbour centers'
+        )
 
     def pixel2interp(
         self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
@@ -467,6 +500,32 @@ class HealpixLandscape(StokesLandscape):
         indices = jnp.moveaxis(pixels, 0, -1)
         weights = jnp.moveaxis(weights, 0, -1).astype(self.dtype)
         return indices, weights
+
+    def world2interp_with_centers(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4'], InterpCenters]:
+        """Returns (indices, weights, centers) for bilinear HEALPix interpolation (n=4).
+
+        The indices and weights are bit-identical to those of [`world2interp`][].
+        """
+        pixels, weights, centers = jhp.get_interp_weights(
+            self.nside, theta, phi, nest=self.nested, with_centers=True
+        )
+        indices = jnp.moveaxis(pixels, 0, -1)
+        weights = jnp.moveaxis(weights, 0, -1).astype(self.dtype)
+        # The four neighbours lie on two rings, so jax-healpy returns two co-latitudes per sample:
+        # rows 0 and 1 of `pixels` share the first, rows 2 and 3 the second. Expand to one per
+        # neighbour, so all three arrays carry the same trailing neighbour axis as the weights.
+        ring = jnp.array([0, 0, 1, 1])
+        return (
+            indices,
+            weights,
+            InterpCenters(
+                z=jnp.moveaxis(centers.z[ring], 0, -1).astype(self.dtype),
+                sth=jnp.moveaxis(centers.sth[ring], 0, -1).astype(self.dtype),
+                phi=jnp.moveaxis(centers.phi, 0, -1).astype(self.dtype),
+            ),
+        )
 
     @jax.jit
     def world2pixel(
@@ -898,7 +957,24 @@ class LocalStokesLandscape(StokesLandscape):
             Calling this method entails an additional $O(\log n_\mathrm{local})$ binary search
             per neighbor, compared to the parent landscape's method.
         """
-        indices, weights = self.parent.world2interp(theta, phi)
+        return self._localize(*self.parent.world2interp(theta, phi))
+
+    def world2interp_with_centers(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '...'], Float[Array, '...'], InterpCenters]:
+        """Returns (local indices, weights, centers) for interpolation on the parent's grid.
+
+        Same convention as [`world2interp`][]. The centers are the parent's, i.e. positions on the
+        sky: they are not affected by the local re-indexing, and neighbours sent to the sink keep
+        theirs (their weight is zero, so it never enters an interpolated value).
+        """
+        indices, weights, centers = self.parent.world2interp_with_centers(theta, phi)
+        return *self._localize(indices, weights), centers
+
+    def _localize(
+        self, indices: Integer[Array, '...'], weights: Float[Array, '...']
+    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
+        """Map parent neighbour indices to local ones, zeroing the weight of those in the sink."""
         local = self.global2local(indices)
         return local, jnp.where(local == self.sink, 0, weights)
 

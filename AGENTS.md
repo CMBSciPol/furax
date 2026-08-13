@@ -62,6 +62,17 @@ def foo(x: Float[jax.Array, ' n'], scale: float = 1.0) -> Float[jax.Array, ' n']
     """
 ```
 
+## Changelog
+
+Register every user-visible change in `docs/development/changelog.md` under `## [Unreleased]` before opening the PR. The file follows [Keep a Changelog](https://keepachangelog.com/en/2.0.0/): `### Added`, `### Changed`, `### Fixed`.
+
+- One bullet per change, ending with the PR number, e.g. `(#204)`. Use nested bullets for the details of a single change, not for separate changes.
+- Name the public symbol in backticks, so the entry can be found by grepping for it.
+- Prefix with `**Breaking:**` anything that changes a public signature, changes which exception a call raises, or changes the numbers an existing configuration produces. A silent change of results is the case most easily missed, and the one users most need to read about.
+- A pure refactor with no user-visible effect needs no entry.
+
+New public API also needs an entry in the matching `docs/api/**.md` page, which lists exported symbols explicitly rather than picking them up automatically. A new module needs its own page and a nav entry in `zensical.toml`. Build the docs with `zensical build` to check; CI does not.
+
 ## When to ask first
 
 - Don't add or remove dependencies (`uv add`/`uv remove`) without confirming.

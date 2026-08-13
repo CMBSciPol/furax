@@ -36,6 +36,7 @@ nav = [
           "api/obs/likelihoods.md",
           "api/obs/landscapes.md",
           "api/obs/stokes.md",
+          "api/obs/spin2.md",
           "api/obs/atmosphere.md",
       ] },
       { "furax.mapmaking" = [

@@ -14,3 +14,5 @@ Stokes-aware sky pixelisation: HEALPix, WCS, and horizon/tangential projections.
 ::: furax.obs.landscapes.AstropyWCSLandscape
 ::: furax.obs.landscapes.HorizonLandscape
 ::: furax.obs.landscapes.TangentialLandscape
+::: furax.obs.landscapes.InterpCenters
+::: furax.obs.landscapes.resolve_stencil

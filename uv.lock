@@ -1061,6 +1061,7 @@ cuda = [
 ]
 dev = [
     { name = "beartype" },
+    { name = "ducc0" },
     { name = "ipython" },
     { name = "mkdocstrings-python" },
     { name = "prek" },
@@ -1118,6 +1119,7 @@ provides-extras = ["comp-sep", "interfaces", "lbs", "mapmaking", "sht", "so", "t
 cuda = [{ name = "jax", extras = ["cuda13"], specifier = ">=0.11.0" }]
 dev = [
     { name = "beartype" },
+    { name = "ducc0", specifier = ">=0.41.0" },
     { name = "ipython" },
     { name = "mkdocstrings-python", specifier = ">=2.0.5" },
     { name = "prek", specifier = ">=0.4.12" },

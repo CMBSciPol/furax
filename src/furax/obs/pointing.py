@@ -33,11 +33,9 @@ _StokesT = TypeVar('_StokesT', bound=Stokes)
 def _transports_spin2(landscape: StokesLandscape, interpolate: bool) -> bool:
     """Whether a sampler on this landscape must transport Q and U across its stencil.
 
-    Each pixel stores Q and U in its own meridian basis, so interpolating them as scalars sums
-    components of different frames. Bilinear sampling of a polarised map therefore always carries
-    each neighbour into the sampled direction's frame first; this is a property of the geometry,
-    not an option. Nearest-neighbour sampling has no stencil to transport across, and an
-    intensity-only map has nothing to rotate.
+    True for bilinear sampling of a map holding Q and U, because each pixel expresses them in its
+    own meridian basis and a weighted sum of different bases is not an interpolation. Nearest
+    neighbour has no stencil to transport across, and an intensity-only map has nothing to rotate.
     """
     return interpolate and 'Q' in landscape.stokes
 
@@ -230,18 +228,17 @@ class PointingOperator(AbstractLinearOperator):
     ) -> tuple[Array, Array, InterpCenters, Array, Array]:
         """Convert quaternions to (indices, weights, neighbour centers, theta, phi).
 
-        The transported sampling path uses this instead of [`_quat2interp`][], because it needs the
-        sky positions of the sampled direction and of each of its neighbours. A subclass that
-        overrides `_quat2interp` to change the pointing-to-index mapping must override this too, or
-        it cannot interpolate a polarized map.
+        Sampling a polarized map uses this instead of [`_quat2interp`][], because it also needs the
+        sky positions of the sampled direction and of its neighbours. Override this alongside
+        `_quat2interp` in a subclass that changes the pointing-to-index mapping.
         """
-        # This path does not go through `_quat2interp`, so a subclass that redefines the pointing
-        # there would silently be sampled at the base class's positions instead. Refuse rather than
-        # return the wrong operator; an intensity-only map never reaches here (see `_transports`).
+        # Since this bypasses `_quat2interp`, a subclass that redefines the pointing there would be
+        # sampled at the base class's positions instead. Refuse rather than return the wrong
+        # operator. An intensity-only map never reaches here, so such a subclass still works.
         if type(self)._quat2interp is not PointingOperator._quat2interp:
             raise NotImplementedError(
                 f'{type(self).__name__} overrides _quat2interp, so it must also override '
-                f'_quat2interp_with_centers to interpolate a polarized map.'
+                f'_quat2interp_with_centers to interpolate a polarized map'
             )
         theta, phi = self.landscape.quat2world(qdet_full)
         indices, weights, centers = self.landscape.world2interp_with_centers(theta, phi)

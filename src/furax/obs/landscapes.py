@@ -25,9 +25,8 @@ class InterpCenters(NamedTuple):
     r"""World positions of the neighbours of an interpolation stencil.
 
     Returned by [`StokesLandscape.world2interp_with_centers`][], aligned neighbour for neighbour
-    with the indices and weights it returns alongside. The co-latitude comes as its cosine and sine
-    rather than as an angle, because that is the form the pixelization produces natively and forming
-    the angle would round twice.
+    with the indices and weights it returns alongside. The co-latitude is given as its cosine and
+    its sine rather than as an angle.
 
     Attributes:
         z: Cosine of the neighbour co-latitude.
@@ -261,10 +260,9 @@ class StokesLandscape(Landscape):
     ) -> tuple[Integer[Array, '...'], Float[Array, '...'], InterpCenters]:
         """Returns (indices, weights, centers), where centers holds the neighbours' world positions.
 
-        The indices and the weights are those of [`world2interp`][]. The centers are needed by
-        interpolators that must know where each neighbour sits, such as the spin-2 transported
-        sampler, and are supplied here because the pixelization computes them on the way to the
-        weights anyway.
+        The indices and the weights are those of [`world2interp`][]. The centers are for
+        interpolators that must know where each neighbour sits on the sky, not only which pixel it
+        is.
         """
         raise NotImplementedError(
             f'{type(self).__name__} does not supply interpolation neighbour centers'
@@ -372,7 +370,7 @@ class WCSLandscape(StokesLandscape):
     ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Converts pixel coordinates to spherical world angles ``(theta, phi)``."""
         raise NotImplementedError(
-            f'{type(self).__name__} does not implement the inverse projection.'
+            f'{type(self).__name__} does not implement the inverse projection'
         )
 
     def world2interp_with_centers(
@@ -382,14 +380,13 @@ class WCSLandscape(StokesLandscape):
 
         The indices and weights are those of [`world2interp`][].
         """
-        # This forms the stencil itself rather than going through `pixel2interp`, because it needs
-        # the neighbour pixel coordinates that `pixel2interp` discards. Refuse to answer for a
-        # subclass that redefines the stencil, instead of silently returning a different one here
-        # than `world2interp` returns.
+        # Builds the stencil here rather than through `pixel2interp`, which discards the neighbour
+        # pixel coordinates this needs. A subclass that redefines `pixel2interp` would then get two
+        # different stencils from the two methods, so refuse instead of answering with the wrong one.
         if type(self).pixel2interp is not WCSLandscape.pixel2interp:
             raise NotImplementedError(
                 f'{type(self).__name__} overrides pixel2interp, so it must also override '
-                f'world2interp_with_centers to describe the same stencil.'
+                f'world2interp_with_centers to describe the same stencil'
             )
         xs, ys, weights = _2d_bilinear_interp(*self.world2pixel(theta, phi))
         theta_n, phi_n = self.pixel2world(xs, ys)

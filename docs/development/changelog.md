@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StreamOperator.block_row`/`block_column`: fuse several streams into one, evaluating a joint system in a single pass over the data (#190)
 - API reference page for `furax.mapmaking.streaming` (#190)
 - `AbstractLinearOperator.profile()` and a new `furax.profiling` module for estimated cost analysis (#193)
+- `furax.obs.spin2`: parallel transport of Q and U across an interpolation stencil, exposing `transported_gather`/`transported_scatter` and the frame rotation they are built on (#204)
+- `StokesLandscape.world2interp_with_centers`, returning an interpolation stencil together with its neighbours' sky positions, implemented for HEALPix and WCS/CAR landscapes (#204)
+- `CARLandscape.pixel2world`, the analytic inverse of `world2pixel` (#204)
+- `furax.obs.landscapes.resolve_stencil`, which sends out-of-map neighbours to a safe index and normalises the remaining weights (#204)
+- API reference page for `furax.obs.spin2` (#204)
 
 ### Changed
 
@@ -20,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `in_stacked`/`out_stacked` say which side carries the stream axis, per component, so one stream can mix shared and per-slice components
 - **Breaking:** `AbstractLinearOperator.__call__`, `BJPreconditioner.create`, and the `LBSObservation`/`ToastObservation` pointing helpers now raise `TypeError` (previously `ValueError`/`RuntimeError`) for invalid argument/operator/landscape types (#194)
 - Bumped ruff to 0.16.1 and updated rule selection accordingly (#194)
+- **Breaking:** bilinear pointing now carries each neighbour's Q and U into the frame of the sampled direction before interpolating, so `PointingOperator` and `XSamplingOperator` return different values for a polarised map with `interpolate=True` (#204):
+  - each pixel stores Q and U in its own meridian basis, so the previous scalar interpolation combined components of different frames and leaked E into B
+  - nearest-neighbour pointing, which is the default, and intensity-only maps are bit-identical
+  - the transport is implied by bilinear sampling of a map containing Q or U, and is not configurable
+- **Breaking:** a subclass overriding `PointingOperator._quat2interp` or `WCSLandscape.pixel2interp` must now also override the matching `world2interp_with_centers` / `_quat2interp_with_centers` to interpolate a polarised map, and raises `NotImplementedError` otherwise (#204)
 
 ## [0.12.0] - 2026-07-24
 

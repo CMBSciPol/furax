@@ -40,6 +40,31 @@ class InterpCenters(NamedTuple):
     phi: Float[Array, '*dims neighbors']
 
 
+def resolve_stencil(
+    indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*dims neighbors']
+) -> tuple[Integer[Array, '*dims neighbors'], Float[Array, '*dims neighbors']]:
+    """Make an interpolation stencil safe to gather with, and normalize its weights.
+
+    Neighbours outside the map (negative index) are sent to pixel 0 with their weight zeroed, so
+    that the stencil can be gathered unconditionally, and the remaining weights are rescaled to sum
+    to one, which keeps a partially covered sample unbiased.
+
+    Args:
+        indices: Neighbour pixel indices, negative for neighbours outside the map.
+        weights: Interpolation weights, one per neighbour.
+
+    Returns:
+        The in-bounds indices and the normalized weights.
+    """
+    # Every sampler must resolve a stencil the same way: the forward gather and the transposed
+    # scatter are adjoint only if they normalize against identical weights.
+    valid = indices >= 0
+    indices = jnp.where(valid, indices, 0)
+    weights = jnp.where(valid, weights, 0.0)
+    weight_sum = weights.sum(axis=-1, keepdims=True)
+    return indices, weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
+
+
 @register_static
 class Landscape(ABC):
     def __init__(self, shape: tuple[int, ...], dtype: DTypeLike = np.float64):
@@ -342,6 +367,35 @@ class WCSLandscape(StokesLandscape):
         indices = self.pixel2index(xs, ys)
         return indices, weights
 
+    def pixel2world(
+        self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Converts pixel coordinates to spherical world angles ``(theta, phi)``."""
+        raise NotImplementedError(
+            f'{type(self).__name__} does not implement the inverse projection.'
+        )
+
+    def world2interp_with_centers(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4'], InterpCenters]:
+        """Returns (indices, weights, centers) for bilinear interpolation (n=4).
+
+        The indices and weights are those of [`world2interp`][].
+        """
+        # This forms the stencil itself rather than going through `pixel2interp`, because it needs
+        # the neighbour pixel coordinates that `pixel2interp` discards. Refuse to answer for a
+        # subclass that redefines the stencil, instead of silently returning a different one here
+        # than `world2interp` returns.
+        if type(self).pixel2interp is not WCSLandscape.pixel2interp:
+            raise NotImplementedError(
+                f'{type(self).__name__} overrides pixel2interp, so it must also override '
+                f'world2interp_with_centers to describe the same stencil.'
+            )
+        xs, ys, weights = _2d_bilinear_interp(*self.world2pixel(theta, phi))
+        theta_n, phi_n = self.pixel2world(xs, ys)
+        centers = InterpCenters(z=jnp.cos(theta_n), sth=jnp.sin(theta_n), phi=phi_n)
+        return self.pixel2index(xs, ys), weights, centers
+
     def to_wcs(self) -> WCS:
         """Reconstruct an astropy WCS object from the stored projection parameters."""
         proj = self.projection.type.name
@@ -429,6 +483,25 @@ class CARLandscape(WCSLandscape):
         pix_x = lon_diff / self.cdelt[0] + (self.crpix[0] - 1)
         pix_y = lat_deg / self.cdelt[1] + (self.crpix[1] - 1)
         return pix_x, pix_y
+
+    @jax.jit
+    def pixel2world(
+        self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        r"""Convert CAR pixel coordinates to spherical angles, inverting [`world2pixel`][].
+
+        Args:
+            pix_x: Pixel coordinate along the RA axis.
+            pix_y: Pixel coordinate along the declination axis.
+
+        Returns:
+            The angle pair $(\theta, \varphi)$ in radians, with $\varphi \in [0, 2\pi)$.
+        """
+        lon_deg = (pix_x - (self.crpix[0] - 1)) * self.cdelt[0] + self.crval[0]
+        lat_deg = (pix_y - (self.crpix[1] - 1)) * self.cdelt[1]
+        theta = jnp.pi / 2 - jnp.radians(lat_deg)
+        phi = jnp.radians(lon_deg) % (2 * jnp.pi)
+        return theta, phi
 
 
 def _2d_bilinear_interp(

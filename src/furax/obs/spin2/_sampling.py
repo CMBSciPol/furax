@@ -3,7 +3,7 @@ r"""Spin-2 transported gather and scatter over an interpolation stencil."""
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Integer
 
-from furax.obs.landscapes import InterpCenters
+from furax.obs.landscapes import InterpCenters, resolve_stencil
 from furax.obs.spin2._transport import spin2_cos_sin_zs
 from furax.obs.stokes import Stokes
 
@@ -39,7 +39,7 @@ def transported_gather[S: Stokes](
     Returns:
         The interpolated Stokes values, of shape ``dims``.
     """
-    indices, unit_weights = _resolve_stencil(indices, weights)
+    indices, unit_weights = resolve_stencil(indices, weights)
     gathered = type(sky).from_array(sky.data[..., indices])
     cos_2delta, sin_2delta = _transport_pair(gathered, centers, theta, phi)
     rotated = gathered.rotate_qu(cos_2delta, sin_2delta)
@@ -72,7 +72,7 @@ def transported_scatter[S: Stokes](
     Returns:
         The accumulated sky map.
     """
-    indices, unit_weights = _resolve_stencil(indices, weights)
+    indices, unit_weights = resolve_stencil(indices, weights)
     # Spread over the neighbour axis before rotating: the transport differs per neighbour, so each
     # copy of the sample turns by its own angle. The broadcast must be materialised, because
     # `rotate_qu` stacks the rotated Q, U rows back with the untouched I, V ones.
@@ -89,25 +89,14 @@ def transported_scatter[S: Stokes](
     return type(out).from_array(accumulated)
 
 
-def _resolve_stencil(
-    indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*dims neighbors']
-) -> tuple[Integer[Array, '*dims neighbors'], Float[Array, '*dims neighbors']]:
-    """Send out-of-bounds neighbours to pixel 0 with zero weight, and renormalize.
-
-    Renormalizing keeps partially covered samples unbiased. It must happen identically in the gather
-    and in the scatter, or the two stop being adjoint.
-    """
-    valid = indices >= 0
-    indices = jnp.where(valid, indices, 0)
-    weights = jnp.where(valid, weights, 0.0)
-    weight_sum = weights.sum(axis=-1, keepdims=True)
-    return indices, weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
-
-
 def _transport_pair(
     x: Stokes, centers: InterpCenters, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-) -> tuple[Float[Array, '*dims neighbors'], Float[Array, '*dims neighbors']]:
-    """Per-neighbour transport pair, or the identity pair when there is nothing to rotate."""
+) -> tuple[Float[Array, '...'], Float[Array, '...']]:
+    """Per-neighbour transport pair, or the identity pair when there is nothing to rotate.
+
+    The identity pair is returned as a scalar rather than as an array of ones, so a map with no
+    polarisation costs no memory here; it broadcasts against the neighbour axis unchanged.
+    """
     if 'Q' not in x.stokes:
         return jnp.ones(()), jnp.zeros(())
     return spin2_cos_sin_zs(

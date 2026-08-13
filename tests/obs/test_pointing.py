@@ -6,6 +6,7 @@ from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
 from furax.core import AbstractLinearOperator, CompositionOperator
+from furax.math.quaternion import qmul, to_polarization_angle_cos_sin
 from furax.obs.landscapes import (
     CARLandscape,
     HealpixLandscape,
@@ -14,6 +15,7 @@ from furax.obs.landscapes import (
     WCSProjection,
 )
 from furax.obs.operators import QURotationOperator
+from furax.obs.operators._qu_rotations import rotate_qu_cs
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import ValidStokesLiteral
 
@@ -233,7 +235,7 @@ class TestLocalLandscape:
     def test_transpose_matches_full_sky(self, p_full, tod, full_coverage) -> None:
         local, p_local = full_coverage
         # uncovered pixels are zero in both the full binning and the promoted local one
-        assert tree_equal(local.promote(p_local.T(tod)), p_full.T(tod), rtol=1e-13)
+        assert tree_equal(local.promote(p_local.T(tod)), p_full.T(tod), rtol=1e-12)
 
     def test_partial_coverage_sinks_missing_pixels(self, p_full, tod, half_coverage) -> None:
         local, p_local = half_coverage
@@ -246,3 +248,132 @@ class TestLocalLandscape:
             assert_array_almost_equal(binned_local[:, subset], binned_full[:, subset], decimal=13)
         # nothing lands outside the subset
         assert_array_equal(binned_local.at[:, subset].set(0.0), 0.0)
+
+
+def _scalar_interp(landscape: StokesLandscape, sky, qdet_full: jax.Array):
+    """Plain scalar interpolation: what the sampler would do if it ignored the pixel frames."""
+    sky_flat = sky.ravel()  # a CAR map is 2-D, and the indices address the raveled pixel axis
+    indices, weights = landscape.quat2interp(qdet_full)
+    valid = indices >= 0
+    indices = jnp.where(valid, indices, 0)
+    weights = jnp.where(valid, weights, 0.0)
+    weight_sum = weights.sum(axis=-1, keepdims=True)
+    unit_weights = weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
+    return type(sky).from_array(jnp.sum(sky_flat.data[..., indices] * unit_weights, axis=-1))
+
+
+class TestTransport:
+    """Bilinear sampling of a polarized map always transports Q and U across the stencil."""
+
+    @staticmethod
+    def _quats(seed: int) -> tuple[jax.Array, jax.Array]:
+        k1, k2 = jax.random.split(jax.random.key(seed))
+        return _random_unit_quats(k1, (NSAMP,)), _random_unit_quats(k2, (NDET,))
+
+    @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
+    def test_adjoint(self, stokes, landscape_type) -> None:
+        landscape = _make_landscape(landscape_type, stokes)
+        qbore, qdet = self._quats(2)
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        sky = landscape.normal(jax.random.key(3))
+        tod = ftree.normal_like(op.out_structure, jax.random.key(4))
+        assert_array_almost_equal(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), decimal=10)
+
+    @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
+    def test_polarization_is_transported(self, landscape_type) -> None:
+        """The interpolated Q differs from the scalar interpolation that would ignore the frames."""
+        landscape = _make_landscape(landscape_type, 'IQU')
+        qbore, qdet = self._quats(7)
+        sky = landscape.normal(jax.random.key(8))
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+
+        qdet_full = qmul(op.qbore, op.qdet[:, None, :])
+        cos_pa, sin_pa = to_polarization_angle_cos_sin(qdet_full)
+        scalar = rotate_qu_cs(_scalar_interp(landscape, sky, qdet_full), cos_pa, sin_pa)
+
+        tod = op(sky)
+        assert_array_almost_equal(tod.i, scalar.i, decimal=13)
+        assert jnp.abs(tod.q - scalar.q).max() > 1e-6
+
+    @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
+    def test_intensity_only_is_untouched(self, landscape_type) -> None:
+        """An intensity map has nothing to rotate, so it takes the plain interpolation path."""
+        landscape = _make_landscape(landscape_type, 'I')
+        qbore, qdet = self._quats(5)
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        assert not op._transports
+
+        sky = landscape.normal(jax.random.key(6))
+        qdet_full = qmul(op.qbore, op.qdet[:, None, :])
+        expected = _scalar_interp(landscape, sky, qdet_full)
+        assert_array_almost_equal(op(sky).data, expected.data, decimal=13)
+
+    def test_nearest_neighbour_does_not_transport(self) -> None:
+        """There is no stencil to transport across."""
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        qbore, qdet = self._quats(1)
+        assert not PointingOperator.create(landscape, qbore, qdet)._transports
+        assert PointingOperator.create(landscape, qbore, qdet, interpolate=True)._transports
+
+    def test_expanded_operator_transports_too(self) -> None:
+        """`as_expanded_operator` must not silently drop back to a scalar interpolation."""
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        qbore, qdet = self._quats(9)
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        sky = landscape.normal(jax.random.key(10))
+        assert tree_equal(op.as_expanded_operator()(sky), op(sky), rtol=1e-10, atol=0)
+
+    @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
+    def test_expanded_operator_adjoint(self, stokes, landscape_type) -> None:
+        """The expanded sampler has no hand-written transpose; JAX derives it from the gather."""
+        landscape = _make_landscape(landscape_type, stokes)
+        qbore, qdet = self._quats(15)
+        op = PointingOperator.create(
+            landscape, qbore, qdet, interpolate=True
+        ).as_expanded_operator()
+        sky = landscape.normal(jax.random.key(16))
+        tod = ftree.normal_like(op.out_structure, jax.random.key(17))
+        assert_array_almost_equal(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), decimal=10)
+
+    @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
+    def test_expanded_transpose_matches_the_hand_written_one(self, landscape_type) -> None:
+        """The derived transpose of the expanded sampler is the scatter the operator writes out."""
+        landscape = _make_landscape(landscape_type, 'IQU')
+        qbore, qdet = self._quats(18)
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        tod = ftree.normal_like(op.out_structure, jax.random.key(19))
+        assert tree_equal(op.as_expanded_operator().T(tod), op.T(tod), rtol=1e-12, atol=1e-12)
+
+    def test_a_subclass_overriding_quat2interp_alone_must_raise(self) -> None:
+        """Sampling a polarized map bypasses `_quat2interp`, so overriding it alone must raise."""
+
+        class CustomPointingOperator(PointingOperator):
+            def _quat2interp(self, qdet_full):
+                # A real subclass moves the pointing here; delegating is enough to trip the guard.
+                return self.landscape.quat2interp(qdet_full)
+
+        qbore, qdet = self._quats(20)
+        op = CustomPointingOperator.create(
+            HealpixLandscape(NSIDE, 'IQU'), qbore, qdet, interpolate=True
+        )
+        with pytest.raises(NotImplementedError, match='_quat2interp_with_centers'):
+            op(op.landscape.normal(jax.random.key(21)))
+
+        # An intensity-only map never takes the transported path, so the override still works there.
+        op_i = CustomPointingOperator.create(
+            HealpixLandscape(NSIDE, 'I'), qbore, qdet, interpolate=True
+        )
+        assert jnp.all(jnp.isfinite(op_i(op_i.landscape.normal(jax.random.key(22))).i))
+
+    def test_local_landscape_adjoint(self) -> None:
+        """Neighbours outside the subset sink, and the centers still come from the parent."""
+        parent = HealpixLandscape(NSIDE, 'IQU')
+        qbore, qdet = self._quats(12)
+        p_full = PointingOperator.create(parent, qbore, qdet, interpolate=True)
+        covered = jnp.flatnonzero(p_full.T(ftree.ones_like(p_full.out_structure)).i)
+        local = LocalStokesLandscape(parent, covered[::2])
+        op = PointingOperator.create(local, qbore, qdet, interpolate=True)
+
+        sky = local.normal(jax.random.key(13))
+        tod = ftree.normal_like(op.out_structure, jax.random.key(14))
+        assert_array_almost_equal(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), decimal=10)

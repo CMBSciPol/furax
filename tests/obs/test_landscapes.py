@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import jax_healpy as jhp
 import numpy as np
 import pytest
 from astropy.wcs import WCS
@@ -286,6 +287,83 @@ class TestInterp:
         phi = jnp.array(np.radians(100.0))
         indices, _ = car.world2interp(theta, phi)
         assert_array_equal(indices, -1)
+
+
+class TestInterpCenters:
+    """Tests for world2interp_with_centers, which reports where each neighbor sits on the sky."""
+
+    @pytest.fixture
+    def car(self):
+        """Full-sphere CAR landscape at 1°/pixel, so every stencil is in bounds."""
+        proj = WCSProjection(crpix=(180.5, 90.5), crval=(180.0, 0.0), cdelt=(-1.0, 1.0))
+        return CARLandscape((180, 360), proj, stokes='IQU')
+
+    @pytest.fixture
+    def angles(self):
+        """Directions kept clear of the CAR grid's poles and of its RA seam at phi = 0."""
+        rng = np.random.default_rng(0)
+        theta = jnp.array(rng.uniform(0.2, np.pi - 0.2, 20))
+        phi = jnp.array(rng.uniform(0.2, 2 * np.pi - 0.2, 20))
+        return theta, phi
+
+    def test_not_implemented(self):
+        """A landscape that does not supply centers says so."""
+
+        class MinimalLandscape(StokesLandscape):
+            def world2pixel(self, theta, phi):
+                return (theta,)
+
+        landscape = MinimalLandscape((10,), 'I')
+        with pytest.raises(NotImplementedError):
+            landscape.world2interp_with_centers(jnp.array(1.0), jnp.array(0.0))
+
+    @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
+    def test_stencil_matches_world2interp(self, landscape_type, car, angles):
+        """The stencil is the one world2interp returns; only the centers are extra."""
+        landscape = HealpixLandscape(16, 'IQU') if landscape_type == 'healpix' else car
+        indices, weights = landscape.world2interp(*angles)
+        indices_c, weights_c, _ = landscape.world2interp_with_centers(*angles)
+        assert_array_equal(indices, indices_c)
+        assert_array_equal(weights, weights_c)
+
+    def test_healpix_centers_are_the_pixel_centers(self, angles):
+        """The centers are the positions of the pixels the stencil indexes."""
+        landscape = HealpixLandscape(16, 'IQU')
+        indices, _, centers = landscape.world2interp_with_centers(*angles)
+        theta_n, phi_n = jhp.pix2ang(landscape.nside, indices)
+        assert_array_almost_equal(centers.z, np.cos(theta_n), decimal=12)
+        assert_array_almost_equal(centers.sth, np.sin(theta_n), decimal=12)
+        assert_array_almost_equal(centers.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12)
+
+    def test_car_centers_are_the_pixel_centers(self, car, angles):
+        """Same for CAR, where the centers come from the analytic inverse projection."""
+        indices, _, centers = car.world2interp_with_centers(*angles)
+        assert jnp.all(indices >= 0), 'the fixture must keep every neighbor on the grid'
+        # Undo pixel2index: the raveled index is pix_x + n_x * pix_y (see StokesLandscape).
+        n_x = car.pixel_shape[0]
+        theta_n, phi_n = car.pixel2world(indices % n_x, indices // n_x)
+        assert_array_almost_equal(centers.z, jnp.cos(theta_n), decimal=12)
+        assert_array_almost_equal(centers.sth, jnp.sin(theta_n), decimal=12)
+        assert_array_almost_equal(centers.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12)
+
+    def test_car_pixel2world_inverts_world2pixel(self, car, angles):
+        """The CAR centers are only as good as the inverse projection they come from."""
+        theta, phi = angles
+        theta_r, phi_r = car.pixel2world(*car.world2pixel(theta, phi))
+        assert_array_almost_equal(theta_r, theta, decimal=14)
+        assert_array_almost_equal((phi_r - phi + np.pi) % (2 * np.pi) - np.pi, 0.0, decimal=14)
+
+    def test_a_subclass_redefining_the_stencil_must_supply_its_own_centers(self, car):
+        """Overriding pixel2interp alone would leave the two stencils free to disagree."""
+
+        class CoarseCARLandscape(CARLandscape):
+            def pixel2interp(self, pix_x, pix_y):
+                # A real subclass changes the stencil here; delegating trips the guard just as well.
+                return super().pixel2interp(pix_x, pix_y)
+
+        landscape = CoarseCARLandscape(car.shape, car.projection, 'IQU')
+        with pytest.raises(NotImplementedError, match='world2interp_with_centers'):
+            landscape.world2interp_with_centers(jnp.array(1.0), jnp.array(0.0))
 
 
 class TestWCSConventions:

@@ -1524,11 +1524,13 @@ with-cuda = [
 
 [[package]]
 name = "jax-healpy"
-version = "0.8.dev1+g24d530a8e"
-source = { git = "https://github.com/CMBSciPol/jax-healpy#24d530a8ee84ee8275f90ede85e7e08f67108f12" }
+version = "0.8.dev4+g2443c5f14"
+source = { git = "https://github.com/CMBSciPol/jax-healpy#2443c5f149fd2525e7a498f05e6bd76b53c25361" }
 dependencies = [
+    { name = "equinox" },
     { name = "jax" },
     { name = "jaxtyping" },
+    { name = "optax" },
 ]
 
 [package.optional-dependencies]

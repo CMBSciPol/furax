@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import jax.numpy as jnp
+import jax_healpy as jhp
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 from sotodlib import coords
@@ -8,7 +9,9 @@ from sotodlib.mapmaking.demod_mapmaker import project_rhs_demod
 
 from furax.interfaces.sotodlib import LazySOTODLibObservation
 from furax.mapmaking.acquisition import build_acquisition_operator
+from furax.math.quaternion import qmul
 from furax.obs.landscapes import HealpixLandscape
+from furax.obs.spin2 import spin2_cos_sin
 from furax.obs.stokes import StokesI
 
 FOLDER = Path(__file__).parents[2] / 'data' / 'sotodlib'
@@ -18,6 +21,25 @@ NSIDE = 16
 def _sotodlib_pointing(obs, hwp: bool):
     hp_geom = coords.healpix_utils.get_geometry(nside=NSIDE, ordering='RING')
     return coords.P.for_tod(obs.data, geom=hp_geom, comps='TQU', hwp=hwp)
+
+
+def _assert_matches_up_to_the_transport(furax_map, sotodlib_map, obs, landscape) -> None:
+    """Compare the two binned maps, allowing for the one place the conventions differ.
+
+    furax carries each pixel's Q and U into the frame of the direction a sample points at;
+    sotodlib takes the pixel's own frame. I is untouched by that rotation and must match exactly.
+    Q and U differ by it, by at most the largest |sin 2d| over the samples -- so bounding the
+    difference by that leaves the comparison able to catch anything larger.
+    """
+    assert_allclose(furax_map[0], sotodlib_map[0], rtol=1e-5, atol=0)
+
+    qdet_full = qmul(obs.get_boresight_quaternions(), obs.get_detector_quaternions()[:, None, :])
+    indices = landscape.quat2index(qdet_full)
+    _, sin_2delta = spin2_cos_sin(
+        *jhp.pix2ang(landscape.nside, indices), *landscape.quat2world(qdet_full)
+    )
+    bound = float(jnp.abs(sin_2delta).max()) * np.abs(sotodlib_map[1:]).max()
+    assert np.abs(furax_map[1:] - sotodlib_map[1:]).max() < bound
 
 
 def test_acquisition_no_hwp_vs_sotodlib():
@@ -49,7 +71,7 @@ def test_acquisition_no_hwp_vs_sotodlib():
     sotodlib_map = pmap.to_map(tod=obs.data, signal=np.array(tods, dtype=np.float32))
 
     # Furax TODs assume power, so they are 2x smaller
-    assert_allclose(2 * furax_map.data, sotodlib_map, rtol=1e-5, atol=0)
+    _assert_matches_up_to_the_transport(2 * furax_map.data, sotodlib_map, obs, landscape)
 
 
 def test_demod_acquisition_vs_sotodlib():
@@ -92,7 +114,7 @@ def test_demod_acquisition_vs_sotodlib():
     )
 
     # Furax TODs assume power, so they are 2x smaller
-    assert_allclose(2 * furax_map.data, sotodlib_map, rtol=1e-5, atol=0)
+    _assert_matches_up_to_the_transport(2 * furax_map.data, sotodlib_map, obs, landscape)
 
 
 def test_hit_map_vs_sotodlib():

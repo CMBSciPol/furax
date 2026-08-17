@@ -12,9 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StreamOperator.block_row`/`block_column`: fuse several streams into one, evaluating a joint system in a single pass over the data (#190)
 - API reference page for `furax.mapmaking.streaming` (#190)
 - `AbstractLinearOperator.profile()` and a new `furax.profiling` module for estimated cost analysis (#193)
-- `furax.obs.spin2`: parallel transport of Q and U across an interpolation stencil, exposing `transported_gather`/`transported_scatter` and the frame rotation they are built on (#204)
+- `furax.obs.spin2`: parallel transport of Q and U across a sampling stencil, exposing `transported_gather`/`transported_scatter` and the frame rotation they are built on (#204)
 - `StokesLandscape.world2interp_with_centers`, returning an interpolation stencil together with its neighbours' sky positions, implemented for HEALPix and WCS/CAR landscapes (#204)
-- `CARLandscape.pixel2world`, the analytic inverse of `world2pixel` (#204)
+- `StokesLandscape.world2nearest_with_centers`, the same triple for the single pixel a sample falls in, implemented for HEALPix, WCS/CAR, astropy-WCS, horizon and subset landscapes (#204)
+- `CARLandscape.pixel2world`, `AstropyWCSLandscape.pixel2world` and `HorizonLandscape.pixel2world`, the inverses of their `world2pixel` (#204)
 - `furax.obs.landscapes.resolve_stencil`, which sends out-of-map neighbours to a safe index and normalises the remaining weights (#204)
 - API reference page for `furax.obs.spin2` (#204)
 
@@ -25,11 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `in_stacked`/`out_stacked` say which side carries the stream axis, per component, so one stream can mix shared and per-slice components
 - **Breaking:** `AbstractLinearOperator.__call__`, `BJPreconditioner.create`, and the `LBSObservation`/`ToastObservation` pointing helpers now raise `TypeError` (previously `ValueError`/`RuntimeError`) for invalid argument/operator/landscape types (#194)
 - Bumped ruff to 0.16.1 and updated rule selection accordingly (#194)
-- **Breaking:** bilinear pointing now carries each neighbour's Q and U into the frame of the sampled direction before interpolating, so `PointingOperator` and `XSamplingOperator` return different values for a polarised map with `interpolate=True` (#204):
-  - each pixel stores Q and U in its own meridian basis, so the previous scalar interpolation combined components of different frames and leaked E into B
-  - nearest-neighbour pointing, which is the default, and intensity-only maps are bit-identical
-  - the transport is implied by bilinear sampling of a map containing Q or U, and is not configurable
-- **Breaking:** a subclass overriding `PointingOperator._quat2interp` or `WCSLandscape.pixel2interp` must now also override the matching `world2interp_with_centers` / `_quat2interp_with_centers` to interpolate a polarised map, and raises `NotImplementedError` otherwise (#204)
+- **Breaking:** pointing now carries the Q and U of every pixel it reads into the frame of the direction it samples at, so `PointingOperator` and `XSamplingOperator` return different values for a polarised map, on both the nearest-neighbour and the bilinear path (#204):
+  - each pixel stores Q and U in its own meridian basis, which is not the basis of a sample that sits off the pixel centre; combining the two without the rotation leaks E into B, and the leakage grows towards the poles as $\cot\theta$
+  - bilinear summed four different bases; nearest returned the pixel centre's basis unrotated
+  - intensity-only maps are bit-identical, and so is which pixel each sample lands in
+  - the transport is implied by sampling a map containing Q or U, and is not configurable
+- **Breaking:** a nearest-neighbour sample of a polarised map that falls outside the map now contributes nothing, instead of reading and writing the last pixel; on a subset landscape it no longer reads the sink slot (#204)
+- **Breaking:** a subclass overriding `PointingOperator._quat2index` or `_quat2interp`, or `WCSLandscape.pixel2interp`, must now also override the matching `_quat2stencil_with_centers` / `world2interp_with_centers` to sample a polarised map, and raises `NotImplementedError` otherwise (#204)
 
 ## [0.12.0] - 2026-07-24
 

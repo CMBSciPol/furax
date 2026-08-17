@@ -30,14 +30,15 @@ __all__ = [
 _StokesT = TypeVar('_StokesT', bound=Stokes)
 
 
-def _transports_spin2(landscape: StokesLandscape, interpolate: bool) -> bool:
-    """Whether a sampler on this landscape must transport Q and U across its stencil.
+def _transports_spin2(landscape: StokesLandscape) -> bool:
+    """Whether a sampler on this landscape must transport Q and U from the pixels it reads.
 
-    True for bilinear sampling of a map holding Q and U, because each pixel expresses them in its
-    own meridian basis and a weighted sum of different bases is not an interpolation. Nearest
-    neighbour has no stencil to transport across, and an intensity-only map has nothing to rotate.
+    True for any map holding Q and U. Each pixel expresses them in its own meridian basis, which is
+    not the basis of the direction being sampled: bilinear sampling would otherwise sum four
+    different bases, and nearest neighbour would return the pixel center's basis for a sample that
+    sits off center. An intensity-only map has nothing to rotate.
     """
-    return interpolate and 'Q' in landscape.stokes
+    return 'Q' in landscape.stokes
 
 
 class PointingOperator(AbstractLinearOperator):
@@ -46,8 +47,8 @@ class PointingOperator(AbstractLinearOperator):
     Equivalent to: QURotation @ Index @ Ravel, but computed on-the-fly to save memory.
     For each detector and time sample, it:
     1. Computes the sky pixel from boresight and detector quaternions
-    2. Samples the sky map at that pixel, parallel-transporting each neighbour's Q and U into
-       the sampled direction's frame when interpolating a polarized map
+    2. Samples the sky map at that pixel, parallel-transporting the Q and U of every pixel it
+       reads into the sampled direction's frame when the map is polarized
     3. Rotates Stokes QU by the polarization angle
 
     The transpose accumulates TOD into a sky map (binning).
@@ -177,17 +178,21 @@ class PointingOperator(AbstractLinearOperator):
         CG iteration). The polarisation rotation stays a [`QURotationOperator`][] so it still fuses
         with the acquisition chain via operator algebra.
 
-        Nearest-neighbour uses a precomputed [`IndexOperator`][]. Bilinear interpolation uses an
-        [`XSamplingOperator`][] that caches the world angles ``(theta, phi)`` and recovers the four
-        interpolation weights on each apply (works for HEALPix and WCS/CAR landscapes).
+        Nearest-neighbour sampling of an intensity-only map uses a precomputed [`IndexOperator`][].
+        Every other case uses an [`XSamplingOperator`][] that caches the world angles
+        ``(theta, phi)`` and recovers the stencil on each apply (works for HEALPix and WCS/CAR
+        landscapes), because a polarized map must be sampled through the pixel centers the
+        [`IndexOperator`][] does not carry.
         """
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
         # Ravel the spatial axes only; the Stokes container's backing array carries a leading
         # Stokes axis (axis 0) that must survive, so ravel axes 1..-1 and index the pixel axis last.
         ravel_op = RavelOperator(1, -1, in_structure=self.landscape.structure)
         sampler: AbstractLinearOperator
-        if self.interpolate:
-            sampler = XSamplingOperator.create(self.landscape, qdet_full, interpolate=True)
+        if self.interpolate or self._transports:
+            sampler = XSamplingOperator.create(
+                self.landscape, qdet_full, interpolate=self.interpolate
+            )
         else:
             # Index the (leading) Stokes axis and the (trailing) pixel axis with broadcast arrays,
             # rather than the ergonomic `(..., pix)`. An Ellipsis (or slice) index element is a
@@ -207,7 +212,7 @@ class PointingOperator(AbstractLinearOperator):
 
     @property
     def _transports(self) -> bool:
-        return _transports_spin2(self.landscape, self.interpolate)
+        return _transports_spin2(self.landscape)
 
     def _quat2index(self, qdet_full: Float[Array, '*dims 4']) -> Array:
         """Convert full detector quaternions to flat pixel indices.
@@ -223,25 +228,31 @@ class PointingOperator(AbstractLinearOperator):
         """
         return self.landscape.quat2interp(qdet_full)
 
-    def _quat2interp_with_centers(
+    def _quat2stencil_with_centers(
         self, qdet_full: Float[Array, '*dims 4']
     ) -> tuple[Array, Array, InterpCenters, Array, Array]:
-        """Convert quaternions to (indices, weights, neighbour centers, theta, phi).
+        """Convert quaternions to (indices, weights, pixel centers, theta, phi).
 
-        Sampling a polarized map uses this instead of [`_quat2interp`][], because it also needs the
-        sky positions of the sampled direction and of its neighbours. Override this alongside
-        `_quat2interp` in a subclass that changes the pointing-to-index mapping.
+        Sampling a polarized map uses this instead of [`_quat2index`][] / [`_quat2interp`][],
+        because it also needs the sky positions of the sampled direction and of the pixels it
+        reads. Override this alongside them in a subclass that changes the pointing-to-index
+        mapping.
         """
-        # Since this bypasses `_quat2interp`, a subclass that redefines the pointing there would be
-        # sampled at the base class's positions instead. Refuse rather than return the wrong
-        # operator. An intensity-only map never reaches here, so such a subclass still works.
-        if type(self)._quat2interp is not PointingOperator._quat2interp:
+        # Since this bypasses the two methods above, a subclass that redefines the pointing in
+        # either would be sampled at the base class's positions instead. Refuse rather than return
+        # the wrong operator. An intensity-only map never reaches here, so such a subclass still
+        # works.
+        overridden = '_quat2interp' if self.interpolate else '_quat2index'
+        if getattr(type(self), overridden) is not getattr(PointingOperator, overridden):
             raise NotImplementedError(
-                f'{type(self).__name__} overrides _quat2interp, so it must also override '
-                f'_quat2interp_with_centers to interpolate a polarized map'
+                f'{type(self).__name__} overrides {overridden}, so it must also override '
+                f'_quat2stencil_with_centers to sample a polarized map'
             )
         theta, phi = self.landscape.quat2world(qdet_full)
-        indices, weights, centers = self.landscape.world2interp_with_centers(theta, phi)
+        if self.interpolate:
+            indices, weights, centers = self.landscape.world2interp_with_centers(theta, phi)
+        else:
+            indices, weights, centers = self.landscape.world2nearest_with_centers(theta, phi)
         return indices, weights, centers, theta, phi
 
     def _modulate(self, tod: _StokesT, qdet_full: Float[Array, '*dims 4']) -> _StokesT:
@@ -255,12 +266,12 @@ class PointingOperator(AbstractLinearOperator):
 
     def _sample(self, x_flat: _StokesT, qdet_full: Float[Array, '*dims 4']) -> _StokesT:
         """Sample the flat map at positions given by qdet_full."""
+        if self._transports:
+            indices, weights, centers, theta, phi = self._quat2stencil_with_centers(qdet_full)
+            return transported_gather(x_flat, indices, weights, centers, theta, phi)
+
         if not self.interpolate:
             return x_flat[self._quat2index(qdet_full)]
-
-        if self._transports:
-            indices, weights, centers, theta, phi = self._quat2interp_with_centers(qdet_full)
-            return transported_gather(x_flat, indices, weights, centers, theta, phi)
 
         indices, unit_weights = resolve_stencil(*self._quat2interp(qdet_full))
         # leading Stokes axis: index the (trailing) pixel axis and sum over the neighbour axis (-1);
@@ -277,18 +288,18 @@ class PointingOperator(AbstractLinearOperator):
         n_stokes = arr.shape[0]
         zeros = jnp.zeros((n_stokes, n_pixels), self.landscape.dtype)
 
-        if not self.interpolate:
-            flat_pixels = self._quat2index(qdet_full).ravel()
-            binned = zeros.at[:, flat_pixels].add(arr.reshape(n_stokes, -1))
-            return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
-
         if self._transports:
-            indices, weights, centers, theta, phi = self._quat2interp_with_centers(qdet_full)
+            indices, weights, centers, theta, phi = self._quat2stencil_with_centers(qdet_full)
             flat_sky = type(tod_batch).from_array(zeros)
             binned_sky = transported_scatter(
                 flat_sky, tod_batch, indices, weights, centers, theta, phi
             )
             return type(tod_batch).from_array(binned_sky.data.reshape(n_stokes, *sky_shape))
+
+        if not self.interpolate:
+            flat_pixels = self._quat2index(qdet_full).ravel()
+            binned = zeros.at[:, flat_pixels].add(arr.reshape(n_stokes, -1))
+            return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
 
         indices, unit_weights = resolve_stencil(*self._quat2interp(qdet_full))
         # (n_stokes, *det_sample, n_nb): spread each sample over its neighbours (weights broadcast
@@ -401,20 +412,22 @@ class XSamplingOperator(AbstractLinearOperator):
 
     @property
     def _transports(self) -> bool:
-        return _transports_spin2(self.landscape, self.interpolate)
+        return _transports_spin2(self.landscape)
 
     def mv(self, x: _StokesT) -> _StokesT:
         # `x` is a raveled sky map: its single backing array is (n_stokes, n_pixels). Index the pixel
         # (last) axis with the cached per-sample angles to produce the (n_stokes, ndet, nsamp) TOD.
+        if self._transports:
+            if self.interpolate:
+                stencil = self.landscape.world2interp_with_centers(self.theta, self.phi)
+            else:
+                stencil = self.landscape.world2nearest_with_centers(self.theta, self.phi)
+            indices, weights, centers = stencil
+            return transported_gather(x, indices, weights, centers, self.theta, self.phi)
+
         if not self.interpolate:
             indices = self.landscape.world2index(self.theta, self.phi)
             return type(x).from_array(x.data[..., indices])
-
-        if self._transports:
-            indices, weights, centers = self.landscape.world2interp_with_centers(
-                self.theta, self.phi
-            )
-            return transported_gather(x, indices, weights, centers, self.theta, self.phi)
 
         indices, unit_weights = resolve_stencil(*self.landscape.world2interp(self.theta, self.phi))
         return type(x).from_array(jnp.sum(x.data[..., indices] * unit_weights, axis=-1))

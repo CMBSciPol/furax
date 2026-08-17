@@ -123,6 +123,89 @@ class TestTransportedGather:
         assert error(np.asarray(flipped[1]), np.asarray(flipped[2])) > scalar_error
 
 
+class TestNearestStencil:
+    """The one-neighbour stencil of a nearest-neighbour sampler, transported by the same kernel."""
+
+    def test_transport_carries_the_pixel_value_to_the_sample(self) -> None:
+        """The pixel's Q and U are rotated from its own meridian to the sampled direction's."""
+        landscape = HealpixLandscape(NSIDE, stokes='IQU')
+        theta, phi = _directions(200, 20)
+        indices, weights, centers = landscape.world2nearest_with_centers(theta, phi)
+        sky = landscape.normal(jax.random.key(20))
+
+        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
+
+        pixel = Stokes.class_for('IQU').from_array(sky.data[..., indices[..., 0]])
+        cos_2delta, sin_2delta = spin2_cos_sin(*jhp.pix2ang(NSIDE, indices[..., 0]), theta, phi)
+        expected = pixel.rotate_qu(cos_2delta, sin_2delta)
+
+        assert_allclose(np.asarray(gathered.data), np.asarray(expected.data), atol=1e-14)
+        # I is untouched, and Q is not: a no-op implementation would pass the I check alone
+        assert_allclose(np.asarray(gathered.i), np.asarray(pixel.i), atol=1e-14)
+        assert np.abs(np.asarray(gathered.q) - np.asarray(pixel.q)).max() > 1e-6
+
+    def test_pixel_centers_reproduce_the_pixel_value(self) -> None:
+        """A sample sitting on a pixel center has nothing to transport."""
+        landscape = HealpixLandscape(NSIDE, stokes='IQU')
+        pixels = jnp.arange(0, 12 * NSIDE**2, 37)
+        theta, phi = jhp.pix2ang(NSIDE, pixels)
+        indices, weights, centers = landscape.world2nearest_with_centers(theta, phi)
+        sky = landscape.normal(jax.random.key(21))
+
+        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
+        assert_allclose(np.asarray(gathered.data), np.asarray(sky.data[..., pixels]), atol=1e-14)
+
+    def test_beats_the_raw_pixel_value_against_an_exact_spin2_evaluation(self) -> None:
+        """Pins the transport sign for the nearest stencil against an external truth.
+
+        Same external reference as the bilinear case: `ducc0.sht.synthesis_general(spin=2)`
+        evaluates the polarised sky exactly off-grid. The nearest sampler keeps the sub-pixel
+        gradient error the bilinear one removes, so the transport cannot win by the same margin
+        here -- but it must win, and its opposite sign must lose.
+        """
+        ducc_sht = pytest.importorskip('ducc0.sht')
+        healpy = pytest.importorskip('healpy')
+
+        nside, lmax = 32, 32
+        ell = np.arange(lmax + 1)
+        cl_ee = np.zeros(lmax + 1)
+        cl_ee[2:] = 1.0 / (ell[2:] * (ell[2:] + 1))
+        zero = np.zeros(lmax + 1)
+        alm_t, alm_e, alm_b = healpy.synalm([zero, cl_ee, 0.05 * cl_ee, zero], lmax=lmax, new=True)
+        maps = healpy.alm2map([alm_t, alm_e, alm_b], nside=nside, lmax=lmax, pol=True)
+        sky = Stokes.class_for('IQU').from_array(jnp.asarray(np.asarray(maps)))
+
+        # a ring near the pole, offset off the pixel centers
+        rng = np.random.default_rng(12)
+        n = 2000
+        theta_np = np.deg2rad(3.0) + rng.uniform(-0.004, 0.004, n)
+        phi_np = rng.uniform(0.0, 2 * np.pi, n)
+        exact = ducc_sht.synthesis_general(
+            alm=np.asarray([alm_e, alm_b]),
+            spin=2,
+            lmax=lmax,
+            loc=np.stack([theta_np, phi_np], axis=-1),
+            epsilon=1e-12,
+        )
+
+        landscape = HealpixLandscape(nside, stokes='IQU')
+        theta, phi = jnp.asarray(theta_np), jnp.asarray(phi_np)
+        indices, weights, centers = landscape.world2nearest_with_centers(theta, phi)
+        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
+        raw = Stokes.class_for('IQU').from_array(sky.data[..., indices[..., 0]])
+
+        def error(q: np.ndarray, u: np.ndarray) -> float:
+            return float(np.sqrt(np.mean((q - exact[0]) ** 2 + (u - exact[1]) ** 2)))
+
+        raw_error = error(np.asarray(raw.q), np.asarray(raw.u))
+        assert error(np.asarray(gathered.q), np.asarray(gathered.u)) < 0.7 * raw_error
+
+        # The same rotation applied backwards, i.e. the pair flipped before `rotate_qu`.
+        cos_2delta, sin_2delta = spin2_cos_sin(*jhp.pix2ang(nside, indices[..., 0]), theta, phi)
+        flipped = raw.rotate_qu(cos_2delta, -sin_2delta)
+        assert error(np.asarray(flipped.q), np.asarray(flipped.u)) > raw_error
+
+
 class TestAdjoint:
     """A sign error in either rotation shows up here, on a fixed stencil, with no operator built."""
 
@@ -227,9 +310,13 @@ class TestFloat32:
         landscape = HealpixLandscape(NSIDE, stokes='IQU', dtype=np.float32)
         theta, phi = _directions(100, 11)
         theta, phi = theta.astype(jnp.float32), phi.astype(jnp.float32)
+        for stencil in (
+            landscape.world2interp_with_centers(theta, phi),
+            landscape.world2nearest_with_centers(theta, phi),
+        ):
+            assert stencil[1].dtype == jnp.float32
+            assert stencil[2].z.dtype == jnp.float32
         indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
-        assert weights.dtype == jnp.float32
-        assert centers.z.dtype == jnp.float32
 
         sky = landscape.normal(jax.random.key(11))
         gathered = transported_gather(sky, indices, weights, centers, theta, phi)

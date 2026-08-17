@@ -1,12 +1,13 @@
 import jax
 import jax.numpy as jnp
+import jax_healpy as jhp
 import pytest
 from equinox import tree_equal
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
 from furax.core import AbstractLinearOperator, CompositionOperator
-from furax.math.quaternion import qmul, to_polarization_angle_cos_sin
+from furax.math.quaternion import from_iso_angles, qmul, to_polarization_angle_cos_sin
 from furax.obs.landscapes import (
     CARLandscape,
     HealpixLandscape,
@@ -250,9 +251,11 @@ class TestLocalLandscape:
         assert_array_equal(binned_local.at[:, subset].set(0.0), 0.0)
 
 
-def _scalar_interp(landscape: StokesLandscape, sky, qdet_full: jax.Array):
-    """Plain scalar interpolation: what the sampler would do if it ignored the pixel frames."""
+def _untransported_sample(landscape: StokesLandscape, sky, qdet_full: jax.Array, interpolate: bool):
+    """What the sampler would compute if it ignored the pixel frames."""
     sky_flat = sky.ravel()  # a CAR map is 2-D, and the indices address the raveled pixel axis
+    if not interpolate:
+        return type(sky).from_array(sky_flat.data[..., landscape.quat2index(qdet_full)])
     indices, weights = landscape.quat2interp(qdet_full)
     valid = indices >= 0
     indices = jnp.where(valid, indices, 0)
@@ -262,8 +265,9 @@ def _scalar_interp(landscape: StokesLandscape, sky, qdet_full: jax.Array):
     return type(sky).from_array(jnp.sum(sky_flat.data[..., indices] * unit_weights, axis=-1))
 
 
+@pytest.mark.parametrize('interpolate', [False, True], ids=['nearest', 'bilinear'])
 class TestTransport:
-    """Bilinear sampling of a polarized map always transports Q and U across the stencil."""
+    """Sampling a polarized map always transports Q and U from the pixels it reads."""
 
     @staticmethod
     def _quats(seed: int) -> tuple[jax.Array, jax.Array]:
@@ -271,109 +275,167 @@ class TestTransport:
         return _random_unit_quats(k1, (NSAMP,)), _random_unit_quats(k2, (NDET,))
 
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
-    def test_adjoint(self, stokes, landscape_type) -> None:
+    def test_adjoint(self, stokes, landscape_type, interpolate) -> None:
         landscape = _make_landscape(landscape_type, stokes)
         qbore, qdet = self._quats(2)
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
         sky = landscape.normal(jax.random.key(3))
         tod = ftree.normal_like(op.out_structure, jax.random.key(4))
         assert_array_almost_equal(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), decimal=10)
 
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
-    def test_polarization_is_transported(self, landscape_type) -> None:
-        """The interpolated Q differs from the scalar interpolation that would ignore the frames."""
+    def test_polarization_is_transported(self, landscape_type, interpolate) -> None:
+        """The sampled Q differs from the value a sampler ignoring the pixel frames would give."""
         landscape = _make_landscape(landscape_type, 'IQU')
         qbore, qdet = self._quats(7)
         sky = landscape.normal(jax.random.key(8))
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
 
         qdet_full = qmul(op.qbore, op.qdet[:, None, :])
         cos_pa, sin_pa = to_polarization_angle_cos_sin(qdet_full)
-        scalar = rotate_qu_cs(_scalar_interp(landscape, sky, qdet_full), cos_pa, sin_pa)
+        untransported = _untransported_sample(landscape, sky, qdet_full, interpolate)
+        reference = rotate_qu_cs(untransported, cos_pa, sin_pa)
 
         tod = op(sky)
-        assert_array_almost_equal(tod.i, scalar.i, decimal=13)
-        assert jnp.abs(tod.q - scalar.q).max() > 1e-6
+        assert_array_almost_equal(tod.i, reference.i, decimal=13)
+        assert jnp.abs(tod.q - reference.q).max() > 1e-6
 
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
-    def test_intensity_only_is_untouched(self, landscape_type) -> None:
-        """An intensity map has nothing to rotate, so it takes the plain interpolation path."""
+    def test_intensity_only_is_untouched(self, landscape_type, interpolate) -> None:
+        """An intensity map has nothing to rotate, so it takes the plain sampling path."""
         landscape = _make_landscape(landscape_type, 'I')
         qbore, qdet = self._quats(5)
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
         assert not op._transports
 
         sky = landscape.normal(jax.random.key(6))
         qdet_full = qmul(op.qbore, op.qdet[:, None, :])
-        expected = _scalar_interp(landscape, sky, qdet_full)
+        expected = _untransported_sample(landscape, sky, qdet_full, interpolate)
         assert_array_almost_equal(op(sky).data, expected.data, decimal=13)
 
-    def test_nearest_neighbour_does_not_transport(self) -> None:
-        """There is no stencil to transport across."""
+    def test_transports_a_polarized_map_either_way(self, interpolate) -> None:
         landscape = HealpixLandscape(NSIDE, 'IQU')
         qbore, qdet = self._quats(1)
-        assert not PointingOperator.create(landscape, qbore, qdet)._transports
-        assert PointingOperator.create(landscape, qbore, qdet, interpolate=True)._transports
+        assert PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)._transports
 
-    def test_expanded_operator_transports_too(self) -> None:
-        """`as_expanded_operator` must not silently drop back to a scalar interpolation."""
+    def test_expanded_operator_transports_too(self, interpolate) -> None:
+        """`as_expanded_operator` must not silently drop back to an untransported sampling."""
         landscape = HealpixLandscape(NSIDE, 'IQU')
         qbore, qdet = self._quats(9)
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
         sky = landscape.normal(jax.random.key(10))
         assert tree_equal(op.as_expanded_operator()(sky), op(sky), rtol=1e-10, atol=0)
 
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
-    def test_expanded_operator_adjoint(self, stokes, landscape_type) -> None:
+    def test_expanded_operator_adjoint(self, stokes, landscape_type, interpolate) -> None:
         """The expanded sampler has no hand-written transpose; JAX derives it from the gather."""
         landscape = _make_landscape(landscape_type, stokes)
         qbore, qdet = self._quats(15)
         op = PointingOperator.create(
-            landscape, qbore, qdet, interpolate=True
+            landscape, qbore, qdet, interpolate=interpolate
         ).as_expanded_operator()
         sky = landscape.normal(jax.random.key(16))
         tod = ftree.normal_like(op.out_structure, jax.random.key(17))
         assert_array_almost_equal(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), decimal=10)
 
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
-    def test_expanded_transpose_matches_the_hand_written_one(self, landscape_type) -> None:
+    def test_expanded_transpose_matches_the_hand_written_one(
+        self, landscape_type, interpolate
+    ) -> None:
         """The derived transpose of the expanded sampler is the scatter the operator writes out."""
         landscape = _make_landscape(landscape_type, 'IQU')
         qbore, qdet = self._quats(18)
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
         tod = ftree.normal_like(op.out_structure, jax.random.key(19))
         assert tree_equal(op.as_expanded_operator().T(tod), op.T(tod), rtol=1e-12, atol=1e-12)
 
-    def test_a_subclass_overriding_quat2interp_alone_must_raise(self) -> None:
-        """Sampling a polarized map bypasses `_quat2interp`, so overriding it alone must raise."""
+    def test_a_subclass_moving_the_pointing_must_supply_its_own_centers(self, interpolate) -> None:
+        """Sampling a polarized map bypasses the index hooks, so overriding one alone must raise."""
+        hook = '_quat2interp' if interpolate else '_quat2index'
 
         class CustomPointingOperator(PointingOperator):
+            # A real subclass moves the pointing here; delegating is enough to trip the guard.
+            def _quat2index(self, qdet_full):
+                return self.landscape.quat2index(qdet_full)
+
             def _quat2interp(self, qdet_full):
-                # A real subclass moves the pointing here; delegating is enough to trip the guard.
                 return self.landscape.quat2interp(qdet_full)
 
         qbore, qdet = self._quats(20)
         op = CustomPointingOperator.create(
-            HealpixLandscape(NSIDE, 'IQU'), qbore, qdet, interpolate=True
+            HealpixLandscape(NSIDE, 'IQU'), qbore, qdet, interpolate=interpolate
         )
-        with pytest.raises(NotImplementedError, match='_quat2interp_with_centers'):
+        with pytest.raises(NotImplementedError, match=f'overrides {hook}'):
             op(op.landscape.normal(jax.random.key(21)))
 
         # An intensity-only map never takes the transported path, so the override still works there.
         op_i = CustomPointingOperator.create(
-            HealpixLandscape(NSIDE, 'I'), qbore, qdet, interpolate=True
+            HealpixLandscape(NSIDE, 'I'), qbore, qdet, interpolate=interpolate
         )
         assert jnp.all(jnp.isfinite(op_i(op_i.landscape.normal(jax.random.key(22))).i))
 
-    def test_local_landscape_adjoint(self) -> None:
-        """Neighbours outside the subset sink, and the centers still come from the parent."""
+    def test_local_landscape_adjoint(self, interpolate) -> None:
+        """Samples outside the subset sink, and the centers still come from the parent."""
         parent = HealpixLandscape(NSIDE, 'IQU')
         qbore, qdet = self._quats(12)
-        p_full = PointingOperator.create(parent, qbore, qdet, interpolate=True)
+        p_full = PointingOperator.create(parent, qbore, qdet, interpolate=interpolate)
         covered = jnp.flatnonzero(p_full.T(ftree.ones_like(p_full.out_structure)).i)
         local = LocalStokesLandscape(parent, covered[::2])
-        op = PointingOperator.create(local, qbore, qdet, interpolate=True)
+        op = PointingOperator.create(local, qbore, qdet, interpolate=interpolate)
 
         sky = local.normal(jax.random.key(13))
         tod = ftree.normal_like(op.out_structure, jax.random.key(14))
         assert_array_almost_equal(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), decimal=10)
+
+
+class TestNearestTransport:
+    """What the transport changes, and does not change, on the nearest-neighbour path."""
+
+    @staticmethod
+    def _quats(seed: int) -> tuple[jax.Array, jax.Array]:
+        k1, k2 = jax.random.split(jax.random.key(seed))
+        return _random_unit_quats(k1, (NSAMP,)), _random_unit_quats(k2, (NDET,))
+
+    def test_samples_on_pixel_centers_are_unchanged(self) -> None:
+        """A sample sitting on its pixel center has nothing to transport."""
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        pixels = jnp.arange(0, 12 * NSIDE**2, 7)
+        theta, phi = jhp.pix2ang(NSIDE, pixels)
+        qbore = from_iso_angles(theta, phi, jnp.zeros_like(theta))
+        qdet = jnp.array([[0.0, 0.0, 0.0, 1.0]])  # identity: the detector points at the boresight
+
+        op = PointingOperator.create(landscape, qbore, qdet)
+        sky = landscape.normal(jax.random.key(30))
+        qdet_full = qmul(op.qbore, op.qdet[:, None, :])
+        cos_pa, sin_pa = to_polarization_angle_cos_sin(qdet_full)
+        expected = rotate_qu_cs(
+            _untransported_sample(landscape, sky, qdet_full, False), cos_pa, sin_pa
+        )
+        assert_array_almost_equal(op(sky).data, expected.data, decimal=12)
+
+    def test_hit_counts_are_unchanged(self) -> None:
+        """The transport is a rotation per sample: which pixel a sample lands in does not move."""
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        qbore, qdet = self._quats(31)
+        op = PointingOperator.create(landscape, qbore, qdet)
+        hits = op.T(ftree.ones_like(op.out_structure)).i
+
+        qdet_full = qmul(op.qbore, op.qdet[:, None, :])
+        expected = jnp.zeros(len(landscape)).at[landscape.quat2index(qdet_full).ravel()].add(1.0)
+        assert_array_equal(hits, expected)
+
+    def test_the_system_matrix_stays_block_diagonal(self) -> None:
+        """One sample still touches one pixel, so P^T P couples no two pixels."""
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        qbore, qdet = self._quats(32)
+        op = PointingOperator.create(landscape, qbore, qdet)
+
+        # column of P^T P for one Stokes component of one hit pixel
+        qdet_full = qmul(op.qbore, op.qdet[:, None, :])
+        pixel = int(landscape.quat2index(qdet_full).ravel()[0])
+        zeros = landscape.zeros()
+        probe = type(zeros).from_array(zeros.data.at[:, pixel].set(1.0))
+        response = op.T(op(probe)).data
+
+        touched = jnp.flatnonzero(jnp.abs(response).sum(axis=0) > 0)
+        assert_array_equal(touched, jnp.array([pixel]))

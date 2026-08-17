@@ -386,7 +386,9 @@ def _config(
             wcs=WCSConfig(
                 projection=ProjectionType.CAR,
                 resolution=60.0,
-                patch=SkyPatch(center=(0.0, 0.0), width=20.0, height=20.0),
+                # centred on the footprint of the test observations (RA 303-310, dec -45 to -35),
+                # so that samples land on the patch instead of falling off it
+                patch=SkyPatch(center=(306.5, -40.0), width=20.0, height=20.0),
             ),
         )
     return MapMakingConfig(

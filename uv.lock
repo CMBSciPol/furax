@@ -1092,8 +1092,8 @@ requires-dist = [
     { name = "jax-healpy", extras = ["recommended"], marker = "extra == 'sht'", git = "https://github.com/CMBSciPol/jax-healpy" },
     { name = "jaxtyping", specifier = ">=0.3.9" },
     { name = "lineax", specifier = ">=0.1.1" },
-    { name = "litebird-sim", marker = "extra == 'interfaces'", git = "https://github.com/litebird/litebird_sim" },
-    { name = "litebird-sim", marker = "extra == 'lbs'", git = "https://github.com/litebird/litebird_sim" },
+    { name = "litebird-sim", marker = "extra == 'interfaces'", specifier = ">=0.17" },
+    { name = "litebird-sim", marker = "extra == 'lbs'", specifier = ">=0.17" },
     { name = "matplotlib", marker = "extra == 'mapmaking'", specifier = ">=3.8.4" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "pixell", marker = "extra == 'mapmaking'", specifier = ">=0.31.3" },
@@ -1760,7 +1760,7 @@ wheels = [
 [[package]]
 name = "litebird-sim"
 version = "0.17.0"
-source = { git = "https://github.com/litebird/litebird_sim#30d61720baf5b479c0b2db6b8e12ca59305288c8" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "asciimatics" },
     { name = "astropy" },
@@ -1784,6 +1784,10 @@ dependencies = [
     { name = "rich" },
     { name = "scipy" },
     { name = "tomlkit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/27/d3/cadc574399615f1b693d4e80834d630475aead7148dc05560e3318bd18a5/litebird_sim-0.17.0.tar.gz", hash = "sha256:11b5494437cf5d9efa091005948e12f137d282cbb7ec363293c11ef2db352649", size = 18098670, upload-time = "2026-07-08T07:49:51.589Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ee/63/20fa61def4f435c58989e2fbd0f771f41f962b43188687696570da3f5c0a/litebird_sim-0.17.0-py3-none-any.whl", hash = "sha256:2cc1d8164176af6eef01b17d8d7f1d1b3e1a14690b4bf0da0e5662d614ca79a0", size = 2347646, upload-time = "2026-07-08T07:49:48.45Z" },
 ]
 
 [[package]]

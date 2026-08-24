@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import IntFlag, auto
-from typing import Any, ClassVar, dataclass_transform, overload
+from typing import TYPE_CHECKING, Any, ClassVar, dataclass_transform, overload
 
 import jax
 import jax.numpy as jnp
@@ -18,6 +18,9 @@ from furax._config import Config, ConfigState
 from furax.tree import zeros_like
 
 from .utils import register_dataclass_with_keys
+
+if TYPE_CHECKING:
+    from furax.profiling import ProfileReport
 
 
 def structure_equal(a: PyTree[jax.ShapeDtypeStruct], b: PyTree[jax.ShapeDtypeStruct]) -> bool:
@@ -234,6 +237,57 @@ class AbstractLinearOperator(ABC):
             matrix, jcounter = jax.lax.fori_loop(0, leaf.size, body, (matrix, jcounter))
 
         return matrix
+
+    def profile(self, *, measure: bool = False) -> 'ProfileReport':
+        """Returns a cost estimate of applying the operator.
+
+        This estimate comes from the XLA compiler. See [`furax.profiling`] for caveats.
+
+        Args:
+            measure: Measure peak flop/bytes per second using [`measure_balance`]
+                [furax.profiling.measure_balance]. The operator is traced alongside the input.
+                The rates are measured on the device that the operator's arrays are committed to.
+
+        Returns:
+            The [`ProfileReport`][furax.profiling.ProfileReport] of the operator's `mv`.
+
+        Examples:
+            Estimate the cost of a diagonal matrix-vector product:
+
+            >>> n = 1024
+            >>> structure = jax.ShapeDtypeStruct((n,), jnp.float32)
+            >>> op = DiagonalOperator(jnp.ones(n, jnp.float32), in_structure=structure)
+            >>> report = op.profile()
+            >>> report.flops  # one multiply per element
+            1024.0
+            >>> # the operator is traced alongside the input, so the diagonal counts as traffic
+            >>> report.bytes_accessed / (n * 4)  # input + diagonal + output, not just in + out
+            3.0
+
+            With `measure=True`, the report gives a memory- or compute-bound diagnostic:
+
+            ```
+            Profile on cpu (float32) peak=192.18 GFLOP/s bandwidth=9.19 GB/s ridge=20.9 flop/byte
+              flops           1.02 KFLOP
+              transcendental  0 ops, 0.00 FLOP (x10 weight)
+              total flops     1.02 KFLOP
+              bytes           12.00KiB
+              intensity       0.0833 flop/byte
+              bound           memory-bound, at best 765.73 MFLOP/s (0.4% of peak)
+              memory          args=8.00KiB out=4.00KiB temp=0.00B peak=12.00KiB
+            ```
+        """
+        from furax.profiling import device_of, measure_balance, profile  # avoids a circular import
+
+        if measure:
+            # measure where the operator's arrays live
+            # uncommitted arrays default to `jax.devices()[0]`
+            balance = measure_balance(device_of(self), dtype=self.in_promoted_dtype)
+        else:
+            balance = None
+        # `self` is passed as an argument, not captured: closed-over arrays become XLA constants,
+        # which erases their traffic from the byte count and lets constant-folding remove work.
+        return profile(lambda op, x: op.mv(x), self, self.in_structure, balance=balance)
 
     def transpose(self) -> 'AbstractLinearOperator':
         return TransposeOperator(self)

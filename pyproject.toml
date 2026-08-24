@@ -60,7 +60,7 @@ toast = [
     'toast>=3.0.3',
 ]
 lbs = [
-    'litebird_sim>=0.16.1',
+    'litebird_sim>=0.17',
 ]
 sht = [
     'jax-healpy[recommended]>=0.5',
@@ -151,7 +151,6 @@ log_level = "INFO"
 xfail_strict = true
 
 [tool.uv.sources]
-litebird-sim = { git = "https://github.com/litebird/litebird_sim" }  # TODO: remove when 0.17.0 is released
 s2fft = { git = "https://github.com/astro-informatics/s2fft" }  # TODO: remove when next release is out
 jax-healpy = { git = "https://github.com/CMBSciPol/jax-healpy" }
 

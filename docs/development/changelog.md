@@ -13,11 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - API reference page for `furax.mapmaking.streaming` (#190)
 - `AbstractLinearOperator.profile()` and a new `furax.profiling` module for estimated cost analysis (#193)
 - `furax.obs.spin2`: parallel transport of Q and U across a sampling stencil, exposing `transported_gather`/`transported_scatter` and the frame rotation they are built on (#204)
-- `StokesLandscape.world2interp_with_centers`, returning an interpolation stencil together with its neighbours' sky positions, implemented for HEALPix and WCS/CAR landscapes (#204)
-- `StokesLandscape.world2nearest_with_centers`, the same triple for the single pixel a sample falls in, implemented for HEALPix, WCS/CAR, astropy-WCS, horizon and subset landscapes (#204)
+- `furax.obs.stencil`, a pixelisation-free module holding `Stencil`: the pixels one sample reads, their weights and their sky positions, in one type that a landscape produces and a sampler consumes (#204)
+  - a stencil is resolved when it is built, by `Stencil.resolve` or `Stencil.nearest`: its indices are in bounds and its weights sum to one, so no sampler can normalise them differently from another
+  - nearest-neighbour sampling is the one-neighbour case of the same type, not a second shape
+- `StokesLandscape.world2interp_with_centers`, returning the interpolation `Stencil` a sample reads, implemented for HEALPix and WCS/CAR landscapes (#204)
+- `StokesLandscape.world2nearest_with_centers`, the same for the single pixel a sample falls in, implemented for HEALPix, WCS/CAR, astropy-WCS, horizon and subset landscapes (#204)
 - `CARLandscape.pixel2world`, `AstropyWCSLandscape.pixel2world` and `HorizonLandscape.pixel2world`, the inverses of their `world2pixel` (#204)
-- `furax.obs.landscapes.resolve_stencil`, which sends out-of-map neighbours to a safe index and normalises the remaining weights (#204)
-- API reference page for `furax.obs.spin2` (#204)
+- `furax.obs.stencil.resolve_stencil`, which sends out-of-map neighbours to a safe index and normalises the remaining weights (#204)
+- API reference pages for `furax.obs.spin2` and `furax.obs.stencil` (#204)
 
 ### Changed
 

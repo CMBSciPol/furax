@@ -4,6 +4,7 @@ The type in this module carries no notion of pixelization. A landscape produces 
 sampler consumes one, and neither has to agree on anything else.
 """
 
+from enum import IntEnum
 from typing import NamedTuple
 
 import jax.numpy as jnp
@@ -11,8 +12,25 @@ from jaxtyping import Array, DTypeLike, Float, Integer
 
 __all__ = [
     'Stencil',
+    'StencilOrder',
     'resolve_stencil',
 ]
+
+
+class StencilOrder(IntEnum):
+    """How many pixels a sample reads, and therefore which interpolation it gets.
+
+    The two are one choice, not two: nearest neighbour is the stencil of a single pixel, and
+    bilinear the stencil of the four pixels around the sample. The enum value is the number of
+    neighbours.
+
+    Attributes:
+        NEAREST: The single pixel the sample falls in.
+        BILINEAR: The four pixels around the sample, weighted by the sub-pixel offset.
+    """
+
+    NEAREST = 1
+    BILINEAR = 4
 
 
 def resolve_stencil(

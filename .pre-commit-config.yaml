@@ -10,7 +10,7 @@ repos:
     - --all
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.16.1
+  rev: v0.16.3
   hooks:
     - id: ruff-check
       name: ruff linting
@@ -27,12 +27,12 @@ repos:
   - id: check-merge-conflict
 
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.11.28
+  rev: 0.12.5
   hooks:
   - id: uv-lock
 
 - repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v2.3.0
+  rev: v2.3.1
   hooks:
   - id: mypy
     additional_dependencies:

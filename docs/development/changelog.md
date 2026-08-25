@@ -16,8 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax.obs.stencil`, a pixelisation-free module holding `Stencil`: the pixels one sample reads, their weights and their sky positions, in one type that a landscape produces and a sampler consumes (#204)
   - a stencil is resolved when it is built, by `Stencil.resolve` or `Stencil.nearest`: its indices are in bounds and its weights sum to one, so no sampler can normalise them differently from another
   - nearest-neighbour sampling is the one-neighbour case of the same type, not a second shape
-- `StokesLandscape.world2interp_with_centers`, returning the interpolation `Stencil` a sample reads, implemented for HEALPix and WCS/CAR landscapes (#204)
-- `StokesLandscape.world2nearest_with_centers`, the same for the single pixel a sample falls in, implemented for HEALPix, WCS/CAR, astropy-WCS, horizon and subset landscapes (#204)
+  - `StencilOrder` names how many pixels a sample reads: `NEAREST` (one) or `BILINEAR` (four)
+  - `Stencil.scalar` builds one for a grid that is not the sphere, such as the atmosphere screen: it carries no neighbour positions, and sampling polarisation through it raises `ValueError` instead of transporting from a plausible wrong frame
+- `StokesLandscape.world2stencil(theta, phi, order)`, returning the `Stencil` a sample reads at the requested order, implemented for HEALPix and WCS/CAR (both orders) and for astropy-WCS, horizon and subset landscapes (#204)
+  - a landscape answers for every order it supports in this one method, so it cannot define one order and leave another to a mismatched inherited definition; an unsupported order raises `NotImplementedError`
+  - `world2interp` now derives from it and is no longer overridable; measured on HEALPix and CAR, the compiled cost of `PointingOperator.mv` is unchanged, because XLA drops the neighbour positions nothing reads
 - `CARLandscape.pixel2world`, `AstropyWCSLandscape.pixel2world` and `HorizonLandscape.pixel2world`, the inverses of their `world2pixel` (#204)
 - `furax.obs.stencil.resolve_stencil`, which sends out-of-map neighbours to a safe index and normalises the remaining weights (#204)
 - API reference pages for `furax.obs.spin2` and `furax.obs.stencil` (#204)
@@ -35,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - intensity-only maps are bit-identical, and so is which pixel each sample lands in
   - the transport is implied by sampling a map containing Q or U, and is not configurable
 - **Breaking:** a nearest-neighbour sample of a polarised map that falls outside the map now contributes nothing, instead of reading and writing the last pixel; on a subset landscape it no longer reads the sink slot (#204)
-- **Breaking:** a subclass overriding `PointingOperator._quat2index` or `_quat2interp`, or `WCSLandscape.pixel2interp`, must now also override the matching `_quat2stencil_with_centers` / `world2interp_with_centers` to sample a polarised map, and raises `NotImplementedError` otherwise (#204)
+- **Breaking:** `StokesLandscape.world2interp` returns a resolved stencil: a neighbour outside the map comes back as index 0 with weight 0, where it used to come back as index -1 with its raw weight, and the surviving weights are rescaled to sum to one (#204)
+- **Breaking:** removed `StokesLandscape.pixel2interp` and `WCSLandscape.pixel2interp`; a landscape defines its interpolation by overriding `world2stencil` (#204)
+- `PointingOperator` samples a stencil through the single `_quat2stencil` hook, replacing `_quat2interp`; a subclass that moves the pointing in `_quat2index` alone raises `NotImplementedError` when it samples a polarised map (#204)
 
 ## [0.12.0] - 2026-07-24
 

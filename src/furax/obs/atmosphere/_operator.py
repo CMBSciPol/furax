@@ -1,11 +1,13 @@
 from dataclasses import field
 
+import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from furax import tree
 from furax.math.quaternion import qrot_zaxis
 from furax.obs.landscapes import TangentialLandscape
 from furax.obs.pointing import PointingOperator
+from furax.obs.stencil import Stencil
 from furax.obs.stokes import Stokes, StokesI
 
 __all__ = [
@@ -113,5 +115,19 @@ class AtmospherePointingOperator(PointingOperator):
         x, y = self._wind_xy(qdet_full)
         return self.landscape.pixel2index(*self.landscape.xy2pixel(x, y))
 
-    def _quat2interp(self, qdet_full: Float[Array, '*dims 4']) -> tuple[Array, Array]:
-        return self.landscape.xy2interp(*self._wind_xy(qdet_full))
+    def _quat2stencil(self, qdet_full: Float[Array, '*dims 4']) -> tuple[Stencil, Array, Array]:
+        """The screen stencil, which carries no sky positions and no sampled direction.
+
+        The screen is a projection plane, not the sphere, so a neighbour has no co-latitude to
+        transport a polarisation from. This operator samples intensity only, which never asks: the
+        angles returned alongside are placeholders, and a caller that would read them is refused by
+        the stencil's missing positions first.
+        """
+        if self.interpolate:
+            stencil = Stencil.scalar(*self.landscape.xy2interp(*self._wind_xy(qdet_full)))
+        else:
+            indices = self._quat2index(qdet_full)
+            weights = jnp.ones((*indices.shape, 1), self.landscape.dtype)
+            stencil = Stencil.scalar(indices[..., None], weights)
+        nowhere = jnp.zeros(stencil.indices.shape[:-1], self.landscape.dtype)
+        return stencil, nowhere, nowhere

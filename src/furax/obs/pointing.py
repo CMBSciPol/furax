@@ -20,7 +20,7 @@ from furax.math.quaternion import (
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
 from furax.obs.spin2 import transported_gather, transported_scatter
-from furax.obs.stencil import Stencil, StencilOrder, resolve_stencil
+from furax.obs.stencil import Stencil, StencilOrder
 from furax.obs.stokes import Stokes, StokesI
 
 __all__ = [
@@ -226,29 +226,20 @@ class PointingOperator(AbstractLinearOperator):
         """
         return self.landscape.quat2index(qdet_full)
 
-    def _quat2interp(self, qdet_full: Float[Array, '*dims 4']) -> tuple[Array, Array]:
-        """Convert full detector quaternions to (indices, weights) for interpolation.
-
-        Override in subclasses to change the pointing-to-index mapping.
-        """
-        return self.landscape.quat2interp(qdet_full)
-
     def _quat2stencil(self, qdet_full: Float[Array, '*dims 4']) -> tuple[Stencil, Array, Array]:
         """Convert quaternions to the sampling stencil and the sampled direction ``(theta, phi)``.
 
-        Sampling a polarized map uses this instead of [`_quat2index`][] / [`_quat2interp`][],
-        because it also needs the sky positions of the sampled direction and of the pixels it
-        reads. Override this alongside them in a subclass that changes the pointing-to-index
-        mapping.
+        The single hook for stencil sampling, at whichever order [`interpolate`][] selects. Override
+        it in a subclass that changes the pointing-to-index mapping; [`_quat2index`][] is its
+        scalar shortcut, for a nearest-neighbour sample of a map with nothing to transport.
         """
-        # Since this bypasses the two methods above, a subclass that redefines the pointing in
-        # either would be sampled at the base class's positions instead. Refuse rather than return
-        # the wrong operator. An intensity-only map never reaches here, so such a subclass still
-        # works.
-        overridden = '_quat2interp' if self.interpolate else '_quat2index'
-        if getattr(type(self), overridden) is not getattr(PointingOperator, overridden):
+        # A subclass redefining the nearest pointing in `_quat2index` alone would be sampled at the
+        # base class's positions here instead. Refuse rather than return the wrong operator. An
+        # intensity-only map never reaches here, so such a subclass still works. The guard goes away
+        # once `_quat2index` derives from this method rather than standing beside it.
+        if not self.interpolate and type(self)._quat2index is not PointingOperator._quat2index:
             raise NotImplementedError(
-                f'{type(self).__name__} overrides {overridden}, so it must also override '
+                f'{type(self).__name__} overrides _quat2index, so it must also override '
                 f'_quat2stencil to sample a polarized map'
             )
         theta, phi = self.landscape.quat2world(qdet_full)
@@ -272,10 +263,10 @@ class PointingOperator(AbstractLinearOperator):
         if not self.interpolate:
             return x_flat[self._quat2index(qdet_full)]
 
-        indices, unit_weights = resolve_stencil(*self._quat2interp(qdet_full))
+        stencil, _, _ = self._quat2stencil(qdet_full)
         # leading Stokes axis: index the (trailing) pixel axis and sum over the neighbour axis (-1);
         # the weights broadcast over the leading Stokes axis for free.
-        sampled = jnp.sum(x_flat.data[:, indices] * unit_weights, axis=-1)
+        sampled = jnp.sum(x_flat.data[:, stencil.indices] * stencil.weights, axis=-1)
         return type(x_flat).from_array(sampled)
 
     def _bin(self, tod_batch: _StokesT, qdet_full: Float[Array, '*dims 4']) -> _StokesT:
@@ -298,11 +289,11 @@ class PointingOperator(AbstractLinearOperator):
             binned = zeros.at[:, flat_pixels].add(arr.reshape(n_stokes, -1))
             return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
 
-        indices, unit_weights = resolve_stencil(*self._quat2interp(qdet_full))
+        stencil, _, _ = self._quat2stencil(qdet_full)
         # (n_stokes, *det_sample, n_nb): spread each sample over its neighbours (weights broadcast
         # over the leading Stokes axis for free).
-        contrib = arr[..., None] * unit_weights
-        binned = zeros.at[:, indices.ravel()].add(contrib.reshape(n_stokes, -1))
+        contrib = arr[..., None] * stencil.weights
+        binned = zeros.at[:, stencil.indices.ravel()].add(contrib.reshape(n_stokes, -1))
         return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
 
     def transpose(self) -> AbstractLinearOperator:
@@ -426,5 +417,5 @@ class XSamplingOperator(AbstractLinearOperator):
             indices = self.landscape.world2index(self.theta, self.phi)
             return type(x).from_array(x.data[..., indices])
 
-        indices, unit_weights = resolve_stencil(*self.landscape.world2interp(self.theta, self.phi))
-        return type(x).from_array(jnp.sum(x.data[..., indices] * unit_weights, axis=-1))
+        stencil = self.landscape.world2stencil(self.theta, self.phi, StencilOrder.BILINEAR)
+        return type(x).from_array(jnp.sum(x.data[..., stencil.indices] * stencil.weights, axis=-1))

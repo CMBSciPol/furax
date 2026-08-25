@@ -206,12 +206,14 @@ class StokesLandscape(Landscape):
     def world2interp(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
-        """Returns (indices, weights) with a trailing neighbor dimension for interpolation.
+        """Returns the resolved (indices, weights) of the bilinear stencil, for a scalar sampler.
 
-        Subclasses support interpolation by overriding [`pixel2interp`][] (2-D pixel grid, see
-        [`WCSLandscape`][]) or this method directly (e.g. HEALPix via ``get_interp_weights``).
+        The stencil of [`world2stencil`][] without its neighbour positions, which XLA does not
+        compute when nothing reads them. Interpolation is supported by overriding
+        [`world2stencil`][], never this method.
         """
-        raise NotImplementedError(f'{type(self).__name__} does not support interpolation')
+        stencil = self.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        return stencil.indices, stencil.weights
 
     def world2stencil(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims'], order: StencilOrder
@@ -236,14 +238,6 @@ class StokesLandscape(Landscape):
             The resolved stencil.
         """
         raise NotImplementedError(f'{type(self).__name__} does not supply {order.name} stencils')
-
-    def pixel2interp(
-        self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
-        """Returns (indices, weights) for interpolation from float pixel coordinates."""
-        raise NotImplementedError(
-            f'{type(self).__name__} does not support pixel-space interpolation'
-        )
 
     def quat2interp(
         self, quat: Float[Array, '*dims 4']
@@ -320,20 +314,6 @@ class WCSLandscape(StokesLandscape):
     def cdelt(self) -> tuple[float, float]:
         return self.projection.cdelt
 
-    def world2interp(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
-        """Returns (indices, weights) for bilinear interpolation (n=4)."""
-        return self.pixel2interp(*self.world2pixel(theta, phi))
-
-    def pixel2interp(
-        self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
-        """Bilinear (indices, weights) from float pixel coordinates (grid-agnostic)."""
-        xs, ys, weights = _2d_bilinear_interp(pix_x, pix_y)
-        indices = self.pixel2index(xs, ys)
-        return indices, weights
-
     def pixel2world(
         self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
     ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
@@ -347,8 +327,8 @@ class WCSLandscape(StokesLandscape):
     ) -> Stencil:
         """Returns the [`Stencil`][] a sample reads, positioned by [`pixel2world`][].
 
-        At [`StencilOrder.BILINEAR`][] its indices and weights are those of [`world2interp`][],
-        resolved; at [`StencilOrder.NEAREST`][] its index is that of [`world2index`][].
+        At [`StencilOrder.BILINEAR`][] it holds the four pixels around the sample; at
+        [`StencilOrder.NEAREST`][] the one it falls in, whose index is that of [`world2index`][].
         """
         if order is StencilOrder.NEAREST:
             pix_x, pix_y = self.world2pixel(theta, phi)
@@ -357,14 +337,6 @@ class WCSLandscape(StokesLandscape):
             indices = self.pixel2index(center_x, center_y)
             return Stencil.nearest(indices, theta_c, phi_c, dtype=self.dtype)
 
-        # Builds the stencil here rather than through `pixel2interp`, which discards the neighbour
-        # pixel coordinates this needs. A subclass that redefines `pixel2interp` would then get two
-        # different stencils from the two methods, so refuse instead of answering with the wrong one.
-        if type(self).pixel2interp is not WCSLandscape.pixel2interp:
-            raise NotImplementedError(
-                f'{type(self).__name__} overrides pixel2interp, so it must also override '
-                f'world2stencil to describe the same stencil'
-            )
         xs, ys, weights = _2d_bilinear_interp(*self.world2pixel(theta, phi))
         theta_n, phi_n = self.pixel2world(xs, ys)
         return Stencil.resolve(
@@ -539,24 +511,14 @@ class HealpixLandscape(StokesLandscape):
         pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec, nest=self.nested)
         return pix
 
-    def world2interp(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
-        """Returns (indices, weights) for bilinear HEALPix interpolation (n=4)."""
-        # get_interp_weights returns (4, *dims) for both pixels and weights
-        pixels, weights = jhp.get_interp_weights(self.nside, theta, phi, nest=self.nested)
-        indices = jnp.moveaxis(pixels, 0, -1)
-        weights = jnp.moveaxis(weights, 0, -1).astype(self.dtype)
-        return indices, weights
-
     def world2stencil(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims'], order: StencilOrder
     ) -> Stencil:
         """Returns the [`Stencil`][] a sample reads, centered on HEALPix pixel centers.
 
-        At [`StencilOrder.BILINEAR`][] its indices are bit-identical to those of
-        [`world2interp`][] and its weights are those of [`world2interp`][] resolved; at
-        [`StencilOrder.NEAREST`][] its index is bit-identical to that of [`world2index`][].
+        At [`StencilOrder.BILINEAR`][] it holds the four neighbours ``get_interp_weights``
+        returns; at [`StencilOrder.NEAREST`][] the pixel the sample falls in, whose index is
+        bit-identical to that of [`world2index`][].
         """
         if order is StencilOrder.NEAREST:
             indices = self.world2index(theta, phi)
@@ -1079,30 +1041,19 @@ class LocalStokesLandscape(StokesLandscape):
         """Convert quaternions to local pixel indices (sink for unmapped)."""
         return self.global2local(self.parent.quat2index(quat))
 
-    def world2interp(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
-        r"""Returns (local indices, weights) for interpolation on the parent's grid.
+    def world2stencil(
+        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims'], order: StencilOrder
+    ) -> Stencil:
+        r"""Returns the parent's [`Stencil`][], locally indexed.
 
-        Neighbors outside the subset map to the sink with their weight zeroed, following the
-        parent's out-of-bounds convention. Consumers that renormalize the weights then
-        interpolate over the covered neighbors only.
+        A neighbour outside the subset lands in the sink with its weight zeroed, so it contributes
+        nothing rather than reading the sink slot, and the remaining weights are rescaled over the
+        covered neighbours only. The neighbour positions are the parent's, i.e. positions on the
+        sky, unaffected by the local re-indexing.
 
         Note:
             Calling this method entails an additional $O(\log n_\mathrm{local})$ binary search
             per neighbor, compared to the parent landscape's method.
-        """
-        return self._localize(*self.parent.world2interp(theta, phi))
-
-    def world2stencil(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims'], order: StencilOrder
-    ) -> Stencil:
-        """Returns the parent's [`Stencil`][], locally indexed.
-
-        Same convention as [`world2interp`][]: a neighbour outside the subset lands in the sink
-        with its weight zeroed, so it contributes nothing rather than reading the sink slot. The
-        neighbour positions are the parent's, i.e. positions on the sky, unaffected by the local
-        re-indexing.
         """
         stencil = self.parent.world2stencil(theta, phi, order)
         return stencil.reindexed(*self._localize(stencil.indices, stencil.weights))
@@ -1193,5 +1144,8 @@ class LocalStokesLandscape(StokesLandscape):
         """Build from the pixels a [`Sampling`][furax.obs._samplings.Sampling] observes."""
         if interpolate:
             # bilinear reads the full 4-pixel stencil, so the subset must contain it
-            return cls(parent, parent.world2interp(sampling.theta, sampling.phi)[0])
+            indices, weights = parent.world2interp(sampling.theta, sampling.phi)
+            # A resolved stencil parks the neighbours it drops on pixel 0 with a zero weight, so
+            # select on the weight: taking the indices alone would enrol pixel 0 in every subset.
+            return cls(parent, jnp.where(weights > 0, indices, -1))
         return cls(parent, parent.world2index(sampling.theta, sampling.phi))

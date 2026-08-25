@@ -88,6 +88,11 @@ def _transport_pair(
     """
     if 'Q' not in x.stokes:
         return jnp.ones(()), jnp.zeros(())
+    if stencil.z is None or stencil.sth is None or stencil.phi is None:
+        raise ValueError(
+            'the stencil carries no sky positions, so its Q and U cannot be transported; it '
+            'describes a grid that is not the sphere and can only sample an intensity map'
+        )
     return spin2_cos_sin_zs(
         stencil.z,
         stencil.sth,

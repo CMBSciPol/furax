@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from astropy.wcs import WCS
 from jax import Array
-from numpy.testing import assert_array_almost_equal, assert_array_equal
+from numpy.testing import assert_allclose, assert_array_almost_equal, assert_array_equal
 
 from furax.obs._samplings import Sampling
 from furax.obs.landscapes import (
@@ -19,7 +19,7 @@ from furax.obs.landscapes import (
     WCSLandscape,
     WCSProjection,
 )
-from furax.obs.stencil import StencilOrder, resolve_stencil
+from furax.obs.stencil import StencilOrder
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 
@@ -282,13 +282,14 @@ class TestInterp:
         _, weights = car.world2interp(theta, phi)
         assert_array_almost_equal(weights, [0.25, 0.25, 0.25, 0.25], decimal=12)
 
-    def test_car_oob_all_minus_one(self, car):
-        """A point far outside the map returns -1 for all four neighbor indices."""
+    def test_car_oob_contributes_nothing(self, car):
+        """A point far outside the map is resolved to a safe index carrying no weight."""
         # phi=radians(100) → pix_x ≈ -995.5, all four neighbors outside [0, 9]
         theta = jnp.array(np.pi / 2)
         phi = jnp.array(np.radians(100.0))
-        indices, _ = car.world2interp(theta, phi)
-        assert_array_equal(indices, -1)
+        indices, weights = car.world2interp(theta, phi)
+        assert_array_equal(indices, 0)
+        assert_array_equal(weights, 0.0)
 
 
 class TestBilinearStencil:
@@ -320,10 +321,10 @@ class TestBilinearStencil:
             landscape.world2stencil(jnp.array(1.0), jnp.array(0.0), StencilOrder.BILINEAR)
 
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
-    def test_stencil_matches_world2interp(self, landscape_type, car, angles):
-        """The stencil is the one world2interp returns, resolved; only the positions are extra."""
+    def test_world2interp_is_the_stencil_without_its_positions(self, landscape_type, car, angles):
+        """world2interp derives from world2stencil, so the two cannot describe different pixels."""
         landscape = HealpixLandscape(16, 'IQU') if landscape_type == 'healpix' else car
-        indices, weights = resolve_stencil(*landscape.world2interp(*angles))
+        indices, weights = landscape.world2interp(*angles)
         stencil = landscape.world2stencil(*angles, StencilOrder.BILINEAR)
         assert_array_equal(stencil.indices, indices)
         assert_array_equal(stencil.weights, weights)
@@ -355,18 +356,6 @@ class TestBilinearStencil:
         theta_r, phi_r = car.pixel2world(*car.world2pixel(theta, phi))
         assert_array_almost_equal(theta_r, theta, decimal=14)
         assert_array_almost_equal((phi_r - phi + np.pi) % (2 * np.pi) - np.pi, 0.0, decimal=14)
-
-    def test_a_subclass_redefining_the_stencil_must_supply_its_own_centers(self, car):
-        """Overriding pixel2interp alone would leave the two stencils free to disagree."""
-
-        class CoarseCARLandscape(CARLandscape):
-            def pixel2interp(self, pix_x, pix_y):
-                # A real subclass changes the stencil here; delegating trips the guard just as well.
-                return super().pixel2interp(pix_x, pix_y)
-
-        landscape = CoarseCARLandscape(car.shape, car.projection, 'IQU')
-        with pytest.raises(NotImplementedError, match='world2stencil'):
-            landscape.world2stencil(jnp.array(1.0), jnp.array(0.0), StencilOrder.BILINEAR)
 
 
 class TestNearestStencil:
@@ -707,7 +696,8 @@ class TestLocalStokesLandscape:
         mask = gidx == dropped
         assert_array_equal(lidx[mask], local.sink)
         assert_array_equal(lweights[mask], 0.0)
-        assert_array_equal(lweights[~mask], gweights[~mask])
+        # the survivors are rescaled over the covered neighbors, so they still sum to one
+        assert_allclose(lweights[~mask], gweights[~mask] / gweights[~mask].sum(), rtol=1e-14)
 
     def test_from_sampling(self) -> None:
         parent = HealpixLandscape(2, stokes='I')

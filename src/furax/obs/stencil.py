@@ -69,21 +69,23 @@ class Stencil(NamedTuple):
     trailing neighbour axis has length one and the weight is one.
 
     The neighbour co-latitude is given as its cosine and its sine rather than as an angle, which is
-    the form a HEALPix ring geometry produces and the form the spin-2 transport consumes.
+    the form a HEALPix ring geometry produces and the form the spin-2 transport consumes. A stencil
+    on a grid that is not the sphere has no such positions and carries `None` for all three, which
+    [`Stencil.scalar`][] builds; only a map with no polarisation can be sampled through one.
 
     Attributes:
         indices: Neighbour pixel indices into the raveled map, all in bounds.
         weights: Interpolation weights, one per neighbour, summing to one.
-        z: Cosine of the neighbour co-latitude.
-        sth: Sine of the neighbour co-latitude.
-        phi: Neighbour longitude, in radians.
+        z: Cosine of the neighbour co-latitude, or `None` off the sphere.
+        sth: Sine of the neighbour co-latitude, or `None` off the sphere.
+        phi: Neighbour longitude in radians, or `None` off the sphere.
     """
 
     indices: Integer[Array, '*dims neighbors']
     weights: Float[Array, '*dims neighbors']
-    z: Float[Array, '*dims neighbors']
-    sth: Float[Array, '*dims neighbors']
-    phi: Float[Array, '*dims neighbors']
+    z: Float[Array, '*dims neighbors'] | None
+    sth: Float[Array, '*dims neighbors'] | None
+    phi: Float[Array, '*dims neighbors'] | None
 
     @property
     def n_neighbors(self) -> int:
@@ -95,9 +97,9 @@ class Stencil(NamedTuple):
         cls,
         indices: Integer[Array, '*dims neighbors'],
         weights: Float[Array, '*dims neighbors'],
-        z: Float[Array, '*dims neighbors'],
-        sth: Float[Array, '*dims neighbors'],
-        phi: Float[Array, '*dims neighbors'],
+        z: Float[Array, '*dims neighbors'] | None,
+        sth: Float[Array, '*dims neighbors'] | None,
+        phi: Float[Array, '*dims neighbors'] | None,
         *,
         dtype: DTypeLike | None = None,
     ) -> 'Stencil':
@@ -106,9 +108,9 @@ class Stencil(NamedTuple):
         Args:
             indices: Neighbour pixel indices, negative for neighbours outside the map.
             weights: Interpolation weights, one per neighbour, not necessarily normalized.
-            z: Cosine of the neighbour co-latitude.
-            sth: Sine of the neighbour co-latitude.
-            phi: Neighbour longitude, in radians.
+            z: Cosine of the neighbour co-latitude, or `None` off the sphere.
+            sth: Sine of the neighbour co-latitude, or `None` off the sphere.
+            phi: Neighbour longitude in radians, or `None` off the sphere.
             dtype: If given, the floating-point type the weights and positions are cast to.
 
         Returns:
@@ -117,7 +119,9 @@ class Stencil(NamedTuple):
         indices, weights = resolve_stencil(indices, weights)
         if dtype is not None:
             weights = weights.astype(dtype)
-            z, sth, phi = z.astype(dtype), sth.astype(dtype), phi.astype(dtype)
+            z = None if z is None else z.astype(dtype)
+            sth = None if sth is None else sth.astype(dtype)
+            phi = None if phi is None else phi.astype(dtype)
         return cls(indices, weights, z, sth, phi)
 
     @classmethod
@@ -148,6 +152,27 @@ class Stencil(NamedTuple):
             phi_center[..., None],
             dtype=dtype,
         )
+
+    @classmethod
+    def scalar(
+        cls,
+        indices: Integer[Array, '*dims neighbors'],
+        weights: Float[Array, '*dims neighbors'],
+    ) -> 'Stencil':
+        """Build a stencil with no sky positions, for a grid that is not the sphere.
+
+        The atmosphere screen is one: its pixels are a projection plane, so "where the neighbour
+        sits on the sky" has no answer. Such a stencil can only sample a map with nothing to
+        transport; anything reading its positions gets `None` rather than a plausible wrong number.
+
+        Args:
+            indices: Neighbour cell indices, negative for neighbours outside the grid.
+            weights: Interpolation weights, one per neighbour, not necessarily normalized.
+
+        Returns:
+            The resolved stencil, with `z`, `sth` and `phi` set to `None`.
+        """
+        return cls.resolve(indices, weights, None, None, None)
 
     def reindexed(
         self, indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*dims neighbors']

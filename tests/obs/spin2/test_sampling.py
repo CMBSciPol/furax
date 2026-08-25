@@ -7,7 +7,7 @@ from numpy.testing import assert_allclose
 
 from furax.obs.landscapes import HealpixLandscape, LocalStokesLandscape, StokesLandscape
 from furax.obs.spin2 import spin2_cos_sin, transported_gather, transported_scatter
-from furax.obs.stencil import StencilOrder
+from furax.obs.stencil import Stencil, StencilOrder
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 NSIDE = 16
@@ -300,6 +300,33 @@ class TestOutOfBounds:
         kept = stencil.reindexed(stencil.indices, stencil.weights.at[..., -1].set(0.0))
         expected = transported_gather(sky, kept, theta, phi)
         assert_allclose(np.asarray(gathered.data), np.asarray(expected.data), atol=1e-14)
+
+
+class TestUnpositionedStencil:
+    def test_transporting_a_stencil_with_no_positions_is_refused(self) -> None:
+        """A stencil off the sphere cannot say what frame its Q and U are in, so it must not try."""
+        landscape = HealpixLandscape(NSIDE, stokes='IQU')
+        theta, phi = _directions(50, 30)
+        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        scalar = Stencil.scalar(stencil.indices, stencil.weights)
+        sky = landscape.normal(jax.random.key(30))
+
+        with pytest.raises(ValueError, match='no sky positions'):
+            transported_gather(sky, scalar, theta, phi)
+
+    def test_an_intensity_map_samples_through_it_unchanged(self) -> None:
+        """Intensity never asks for the positions, which is what makes such a stencil usable."""
+        landscape = HealpixLandscape(NSIDE, stokes='I')
+        theta, phi = _directions(50, 31)
+        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        sky = landscape.normal(jax.random.key(31))
+
+        scalar = Stencil.scalar(stencil.indices, stencil.weights)
+        assert_allclose(
+            np.asarray(transported_gather(sky, scalar, theta, phi).i),
+            np.asarray(transported_gather(sky, stencil, theta, phi).i),
+            atol=1e-14,
+        )
 
 
 class TestFloat32:

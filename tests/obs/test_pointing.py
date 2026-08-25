@@ -349,31 +349,6 @@ class TestTransport:
         tod = ftree.normal_like(op.out_structure, jax.random.key(19))
         assert tree_equal(op.as_expanded_operator().T(tod), op.T(tod), rtol=1e-12, atol=1e-12)
 
-    def test_a_subclass_moving_the_pointing_must_supply_its_own_centers(self, interpolate) -> None:
-        """Sampling a polarized map bypasses the index hooks, so overriding one alone must raise."""
-        hook = '_quat2interp' if interpolate else '_quat2index'
-
-        class CustomPointingOperator(PointingOperator):
-            # A real subclass moves the pointing here; delegating is enough to trip the guard.
-            def _quat2index(self, qdet_full):
-                return self.landscape.quat2index(qdet_full)
-
-            def _quat2interp(self, qdet_full):
-                return self.landscape.quat2interp(qdet_full)
-
-        qbore, qdet = self._quats(20)
-        op = CustomPointingOperator.create(
-            HealpixLandscape(NSIDE, 'IQU'), qbore, qdet, interpolate=interpolate
-        )
-        with pytest.raises(NotImplementedError, match=f'overrides {hook}'):
-            op(op.landscape.normal(jax.random.key(21)))
-
-        # An intensity-only map never takes the transported path, so the override still works there.
-        op_i = CustomPointingOperator.create(
-            HealpixLandscape(NSIDE, 'I'), qbore, qdet, interpolate=interpolate
-        )
-        assert jnp.all(jnp.isfinite(op_i(op_i.landscape.normal(jax.random.key(22))).i))
-
     def test_local_landscape_adjoint(self, interpolate) -> None:
         """Samples outside the subset sink, and the centers still come from the parent."""
         parent = HealpixLandscape(NSIDE, 'IQU')
@@ -386,6 +361,55 @@ class TestTransport:
         sky = local.normal(jax.random.key(13))
         tod = ftree.normal_like(op.out_structure, jax.random.key(14))
         assert_array_almost_equal(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), decimal=10)
+
+
+class TestTransportHooks:
+    """One hook moves the pointing for a stencil sampler; the scalar index hook stands apart."""
+
+    @staticmethod
+    def _quats(seed: int) -> tuple[jax.Array, jax.Array]:
+        k1, k2 = jax.random.split(jax.random.key(seed))
+        return _random_unit_quats(k1, (NSAMP,)), _random_unit_quats(k2, (NDET,))
+
+    def test_a_subclass_moving_the_nearest_pointing_must_supply_its_own_stencil(self) -> None:
+        """`_quat2index` stands beside `_quat2stencil`, so overriding it alone must raise."""
+
+        class CustomPointingOperator(PointingOperator):
+            # A real subclass moves the pointing here; delegating is enough to trip the guard.
+            def _quat2index(self, qdet_full):
+                return self.landscape.quat2index(qdet_full)
+
+        qbore, qdet = self._quats(20)
+        op = CustomPointingOperator.create(HealpixLandscape(NSIDE, 'IQU'), qbore, qdet)
+        with pytest.raises(NotImplementedError, match='overrides _quat2index'):
+            op(op.landscape.normal(jax.random.key(21)))
+
+        # An intensity-only map never takes the transported path, so the override still works there.
+        op_i = CustomPointingOperator.create(HealpixLandscape(NSIDE, 'I'), qbore, qdet)
+        assert jnp.all(jnp.isfinite(op_i(op_i.landscape.normal(jax.random.key(22))).i))
+
+    def test_one_hook_moves_the_bilinear_pointing(self) -> None:
+        """Bilinear reads its pixels and its transport positions from `_quat2stencil` alone.
+
+        There is no second hook for it to disagree with, so no guard is needed: a subclass that
+        moves the pointing there moves both, and the polarized sample follows.
+        """
+
+        class ShiftedPointingOperator(PointingOperator):
+            def _quat2stencil(self, qdet_full):
+                theta, phi = self.landscape.quat2world(qdet_full)
+                phi = phi + 0.05
+                return self.landscape.world2stencil(theta, phi, self._stencil_order), theta, phi
+
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        qbore, qdet = self._quats(20)
+        sky = landscape.normal(jax.random.key(21))
+        base = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        shifted = ShiftedPointingOperator.create(landscape, qbore, qdet, interpolate=True)
+
+        moved = shifted(sky)
+        assert jnp.all(jnp.isfinite(moved.q))
+        assert float(jnp.max(jnp.abs(moved.q - base(sky).q))) > 1e-6
 
 
 class TestNearestTransport:

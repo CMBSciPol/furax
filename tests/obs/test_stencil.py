@@ -94,6 +94,17 @@ class TestStencil:
         assert_allclose(np.asarray(dropped.weights), [[1 / 3, 1 / 3, 1 / 3, 0.0]])
         assert_array_equal(np.asarray(dropped.phi), np.asarray(phi))
 
+    def test_scalar_has_no_sky_positions(self):
+        """A grid that is not the sphere reports no positions rather than plausible wrong ones."""
+        stencil = Stencil.scalar(jnp.array([[0, -1, 2, 3]]), jnp.array([[0.4, 0.4, 0.1, 0.1]]))
+
+        assert stencil.z is None and stencil.sth is None and stencil.phi is None
+        # still resolved, like any other stencil
+        assert_array_equal(np.asarray(stencil.indices), [[0, 0, 2, 3]])
+        assert_allclose(np.asarray(stencil.weights), [[2 / 3, 0.0, 1 / 6, 1 / 6]])
+        # the missing positions flatten away, so it stays a pytree jax can carry
+        assert len(jax.tree.flatten(stencil)[0]) == 2
+
     @pytest.mark.parametrize('n_neighbors', [1, 4])
     def test_is_a_pytree_jax_can_trace_through(self, n_neighbors):
         """The samplers carry stencils through jit and scan, so it must flatten as a pytree."""

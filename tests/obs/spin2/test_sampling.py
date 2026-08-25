@@ -35,11 +35,11 @@ class TestTransportedGather:
         """The transport acts on P alone, so I must be untouched."""
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         theta, phi = _directions(200, 0)
-        indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
+        stencil = landscape.world2interp_with_centers(theta, phi)
         sky = landscape.normal(jax.random.key(0))
 
-        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
-        expected = _scalar_gather(sky, indices, weights)
+        gathered = transported_gather(sky, stencil, theta, phi)
+        expected = _scalar_gather(sky, stencil.indices, stencil.weights)
 
         assert_allclose(np.asarray(gathered.i), np.asarray(expected[0]), atol=1e-14)
         # Q and U are where the transport bites; a no-op implementation would pass the I check.
@@ -48,23 +48,22 @@ class TestTransportedGather:
     def test_stokes_i_map_is_scalar_interpolation(self) -> None:
         landscape = HealpixLandscape(NSIDE, stokes='I')
         theta, phi = _directions(200, 1)
-        indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
+        stencil = landscape.world2interp_with_centers(theta, phi)
         sky = landscape.normal(jax.random.key(1))
 
-        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
-        assert_allclose(
-            np.asarray(gathered.i), np.asarray(_scalar_gather(sky, indices, weights)[0]), atol=1e-14
-        )
+        gathered = transported_gather(sky, stencil, theta, phi)
+        expected = _scalar_gather(sky, stencil.indices, stencil.weights)
+        assert_allclose(np.asarray(gathered.i), np.asarray(expected[0]), atol=1e-14)
 
     def test_pixel_centers_reproduce_the_pixel_value(self) -> None:
         """At a pixel center the stencil collapses onto that pixel and no transport is left."""
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         pixels = jnp.arange(0, 12 * NSIDE**2, 37)
         theta, phi = jhp.pix2ang(NSIDE, pixels)
-        indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
+        stencil = landscape.world2interp_with_centers(theta, phi)
         sky = landscape.normal(jax.random.key(2))
 
-        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
+        gathered = transported_gather(sky, stencil, theta, phi)
         assert_allclose(np.asarray(gathered.data), np.asarray(sky.data[..., pixels]), atol=1e-12)
 
     def test_beats_scalar_interpolation_against_an_exact_spin2_evaluation(self) -> None:
@@ -102,9 +101,9 @@ class TestTransportedGather:
 
         landscape = HealpixLandscape(nside, stokes='IQU')
         theta, phi = jnp.asarray(theta_np), jnp.asarray(phi_np)
-        indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
-        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
-        scalar = _scalar_gather(sky, indices, weights)
+        stencil = landscape.world2interp_with_centers(theta, phi)
+        gathered = transported_gather(sky, stencil, theta, phi)
+        scalar = _scalar_gather(sky, stencil.indices, stencil.weights)
 
         def error(q: np.ndarray, u: np.ndarray) -> float:
             return float(np.sqrt(np.mean((q - exact[0]) ** 2 + (u - exact[1]) ** 2)))
@@ -115,11 +114,12 @@ class TestTransportedGather:
 
         # The same rotation applied backwards, i.e. the pair flipped before `rotate_qu`.
         cos_2delta, sin_2delta = spin2_cos_sin(
-            *jhp.pix2ang(nside, jnp.where(indices >= 0, indices, 0)), theta[:, None], phi[:, None]
+            *jhp.pix2ang(nside, stencil.indices), theta[:, None], phi[:, None]
         )
-        unit_weights = weights / weights.sum(axis=-1, keepdims=True)
-        neighbors = Stokes.class_for('IQU').from_array(sky.data[..., indices])
-        flipped = jnp.sum(neighbors.rotate_qu(cos_2delta, -sin_2delta).data * unit_weights, axis=-1)
+        neighbors = Stokes.class_for('IQU').from_array(sky.data[..., stencil.indices])
+        flipped = jnp.sum(
+            neighbors.rotate_qu(cos_2delta, -sin_2delta).data * stencil.weights, axis=-1
+        )
         assert error(np.asarray(flipped[1]), np.asarray(flipped[2])) > scalar_error
 
 
@@ -130,13 +130,15 @@ class TestNearestStencil:
         """The pixel's Q and U are rotated from its own meridian to the sampled direction's."""
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         theta, phi = _directions(200, 20)
-        indices, weights, centers = landscape.world2nearest_with_centers(theta, phi)
+        stencil = landscape.world2nearest_with_centers(theta, phi)
         sky = landscape.normal(jax.random.key(20))
 
-        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
+        gathered = transported_gather(sky, stencil, theta, phi)
 
-        pixel = Stokes.class_for('IQU').from_array(sky.data[..., indices[..., 0]])
-        cos_2delta, sin_2delta = spin2_cos_sin(*jhp.pix2ang(NSIDE, indices[..., 0]), theta, phi)
+        pixel = Stokes.class_for('IQU').from_array(sky.data[..., stencil.indices[..., 0]])
+        cos_2delta, sin_2delta = spin2_cos_sin(
+            *jhp.pix2ang(NSIDE, stencil.indices[..., 0]), theta, phi
+        )
         expected = pixel.rotate_qu(cos_2delta, sin_2delta)
 
         assert_allclose(np.asarray(gathered.data), np.asarray(expected.data), atol=1e-14)
@@ -149,10 +151,10 @@ class TestNearestStencil:
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         pixels = jnp.arange(0, 12 * NSIDE**2, 37)
         theta, phi = jhp.pix2ang(NSIDE, pixels)
-        indices, weights, centers = landscape.world2nearest_with_centers(theta, phi)
+        stencil = landscape.world2nearest_with_centers(theta, phi)
         sky = landscape.normal(jax.random.key(21))
 
-        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
+        gathered = transported_gather(sky, stencil, theta, phi)
         assert_allclose(np.asarray(gathered.data), np.asarray(sky.data[..., pixels]), atol=1e-14)
 
     def test_beats_the_raw_pixel_value_against_an_exact_spin2_evaluation(self) -> None:
@@ -190,9 +192,9 @@ class TestNearestStencil:
 
         landscape = HealpixLandscape(nside, stokes='IQU')
         theta, phi = jnp.asarray(theta_np), jnp.asarray(phi_np)
-        indices, weights, centers = landscape.world2nearest_with_centers(theta, phi)
-        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
-        raw = Stokes.class_for('IQU').from_array(sky.data[..., indices[..., 0]])
+        stencil = landscape.world2nearest_with_centers(theta, phi)
+        gathered = transported_gather(sky, stencil, theta, phi)
+        raw = Stokes.class_for('IQU').from_array(sky.data[..., stencil.indices[..., 0]])
 
         def error(q: np.ndarray, u: np.ndarray) -> float:
             return float(np.sqrt(np.mean((q - exact[0]) ** 2 + (u - exact[1]) ** 2)))
@@ -201,7 +203,9 @@ class TestNearestStencil:
         assert error(np.asarray(gathered.q), np.asarray(gathered.u)) < 0.7 * raw_error
 
         # The same rotation applied backwards, i.e. the pair flipped before `rotate_qu`.
-        cos_2delta, sin_2delta = spin2_cos_sin(*jhp.pix2ang(nside, indices[..., 0]), theta, phi)
+        cos_2delta, sin_2delta = spin2_cos_sin(
+            *jhp.pix2ang(nside, stencil.indices[..., 0]), theta, phi
+        )
         flipped = raw.rotate_qu(cos_2delta, -sin_2delta)
         assert error(np.asarray(flipped.q), np.asarray(flipped.u)) > raw_error
 
@@ -219,28 +223,26 @@ class TestAdjoint:
         """
         landscape = HealpixLandscape(NSIDE, stokes=stokes)
         theta, phi = _directions(300, 12)
-        indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
+        stencil = landscape.world2interp_with_centers(theta, phi)
         tod = _random_tod(landscape, 300, 13)
 
         def gather(sky: Stokes) -> Stokes:
-            return transported_gather(sky, indices, weights, centers, theta, phi)
+            return transported_gather(sky, stencil, theta, phi)
 
         (derived,) = jax.linear_transpose(gather, landscape.zeros())(tod)
-        written = transported_scatter(landscape.zeros(), tod, indices, weights, centers, theta, phi)
+        written = transported_scatter(landscape.zeros(), tod, stencil, theta, phi)
         assert_allclose(np.asarray(written.data), np.asarray(derived.data), atol=1e-14)
 
     @pytest.mark.parametrize('stokes', ['I', 'QU', 'IQU'])
     def test_gather_and_scatter_are_adjoint(self, stokes: ValidStokesLiteral) -> None:
         landscape = HealpixLandscape(NSIDE, stokes=stokes)
         theta, phi = _directions(500, 4)
-        indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
+        stencil = landscape.world2interp_with_centers(theta, phi)
         sky = landscape.normal(jax.random.key(4))
         tod = _random_tod(landscape, 500, 5)
 
-        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
-        scattered = transported_scatter(
-            landscape.zeros(), tod, indices, weights, centers, theta, phi
-        )
+        gathered = transported_gather(sky, stencil, theta, phi)
+        scattered = transported_scatter(landscape.zeros(), tod, stencil, theta, phi)
         lhs = float(jnp.sum(gathered.data * tod.data))
         rhs = float(jnp.sum(sky.data * scattered.data))
         assert_allclose(lhs, rhs, rtol=1e-12)
@@ -257,15 +259,13 @@ class TestAdjoint:
         # keep two thirds of the covered pixels, so plenty of stencils straddle the boundary
         landscape = LocalStokesLandscape(parent, covered[: 2 * len(covered) // 3])
 
-        indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
-        assert int((indices == landscape.sink).sum()) > 0
+        stencil = landscape.world2interp_with_centers(theta, phi)
+        assert int((stencil.indices == landscape.sink).sum()) > 0
 
         sky = landscape.normal(jax.random.key(6))
         tod = _random_tod(landscape, 400, 7)
-        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
-        scattered = transported_scatter(
-            landscape.zeros(), tod, indices, weights, centers, theta, phi
-        )
+        gathered = transported_gather(sky, stencil, theta, phi)
+        scattered = transported_scatter(landscape.zeros(), tod, stencil, theta, phi)
         assert_allclose(
             float(jnp.sum(gathered.data * tod.data)),
             float(jnp.sum(sky.data * scattered.data)),
@@ -275,11 +275,11 @@ class TestAdjoint:
     def test_scatter_accumulates_into_the_given_map(self) -> None:
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         theta, phi = _directions(100, 8)
-        indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
+        stencil = landscape.world2interp_with_centers(theta, phi)
         tod = _random_tod(landscape, 100, 9)
 
-        once = transported_scatter(landscape.zeros(), tod, indices, weights, centers, theta, phi)
-        twice = transported_scatter(once, tod, indices, weights, centers, theta, phi)
+        once = transported_scatter(landscape.zeros(), tod, stencil, theta, phi)
+        twice = transported_scatter(once, tod, stencil, theta, phi)
         assert_allclose(np.asarray(twice.data), 2 * np.asarray(once.data), rtol=1e-12)
 
 
@@ -288,16 +288,16 @@ class TestOutOfBounds:
         """A neighbour sent to the sink must neither be read nor written."""
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         theta, phi = _directions(50, 10)
-        indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
+        stencil = landscape.world2interp_with_centers(theta, phi)
         sky = landscape.normal(jax.random.key(10))
 
         # drop the last neighbour of every sample by marking it out of bounds
-        masked = indices.at[..., -1].set(-1)
-        gathered = transported_gather(sky, masked, weights, centers, theta, phi)
+        masked = stencil.reindexed(stencil.indices.at[..., -1].set(-1), stencil.weights)
+        gathered = transported_gather(sky, masked, theta, phi)
 
         # the same thing said differently: keep the index, zero the weight, renormalize
-        kept_weights = weights.at[..., -1].set(0.0)
-        expected = transported_gather(sky, indices, kept_weights, centers, theta, phi)
+        kept = stencil.reindexed(stencil.indices, stencil.weights.at[..., -1].set(0.0))
+        expected = transported_gather(sky, kept, theta, phi)
         assert_allclose(np.asarray(gathered.data), np.asarray(expected.data), atol=1e-14)
 
 
@@ -314,15 +314,13 @@ class TestFloat32:
             landscape.world2interp_with_centers(theta, phi),
             landscape.world2nearest_with_centers(theta, phi),
         ):
-            assert stencil[1].dtype == jnp.float32
-            assert stencil[2].z.dtype == jnp.float32
-        indices, weights, centers = landscape.world2interp_with_centers(theta, phi)
+            assert stencil.weights.dtype == jnp.float32
+            assert stencil.z.dtype == jnp.float32
+        stencil = landscape.world2interp_with_centers(theta, phi)
 
         sky = landscape.normal(jax.random.key(11))
-        gathered = transported_gather(sky, indices, weights, centers, theta, phi)
+        gathered = transported_gather(sky, stencil, theta, phi)
         assert gathered.dtype == jnp.float32
-        scattered = transported_scatter(
-            landscape.zeros(), gathered, indices, weights, centers, theta, phi
-        )
+        scattered = transported_scatter(landscape.zeros(), gathered, stencil, theta, phi)
         assert scattered.dtype == jnp.float32
         assert np.isfinite(np.asarray(scattered.data)).all()

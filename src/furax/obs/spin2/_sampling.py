@@ -1,10 +1,10 @@
 r"""Spin-2 transported gather and scatter over an interpolation stencil."""
 
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Integer
+from jaxtyping import Array, Float
 
-from furax.obs.landscapes import InterpCenters, resolve_stencil
 from furax.obs.spin2._transport import spin2_cos_sin_zs
+from furax.obs.stencil import Stencil
 from furax.obs.stokes import Stokes
 
 __all__ = [
@@ -15,9 +15,7 @@ __all__ = [
 
 def transported_gather[S: Stokes](
     sky: S,
-    indices: Integer[Array, '*dims neighbors'],
-    weights: Float[Array, '*dims neighbors'],
-    centers: InterpCenters,
+    stencil: Stencil,
     theta: Float[Array, ' *dims'],
     phi: Float[Array, ' *dims'],
 ) -> S:
@@ -30,28 +28,23 @@ def transported_gather[S: Stokes](
 
     Args:
         sky: Sky map whose spatial axes are raveled, i.e. of shape ``(n_pixels,)`` per component.
-        indices: Neighbour pixel indices, negative for neighbours outside the map.
-        weights: Interpolation weights, one per neighbour.
-        centers: World positions of the neighbours.
+        stencil: The pixels each sample reads, their weights and their positions.
         theta: Target co-latitude, in radians.
         phi: Target longitude, in radians.
 
     Returns:
         The interpolated Stokes values, of shape ``dims``.
     """
-    indices, unit_weights = resolve_stencil(indices, weights)
-    gathered = type(sky).from_array(sky.data[..., indices])
-    cos_2delta, sin_2delta = _transport_pair(gathered, centers, theta, phi)
+    gathered = type(sky).from_array(sky.data[..., stencil.indices])
+    cos_2delta, sin_2delta = _transport_pair(gathered, stencil, theta, phi)
     rotated = gathered.rotate_qu(cos_2delta, sin_2delta)
-    return type(sky).from_array(jnp.sum(rotated.data * unit_weights, axis=-1))
+    return type(sky).from_array(jnp.sum(rotated.data * stencil.weights, axis=-1))
 
 
 def transported_scatter[S: Stokes](
     out: S,
     tod: S,
-    indices: Integer[Array, '*dims neighbors'],
-    weights: Float[Array, '*dims neighbors'],
-    centers: InterpCenters,
+    stencil: Stencil,
     theta: Float[Array, ' *dims'],
     phi: Float[Array, ' *dims'],
 ) -> S:
@@ -63,34 +56,30 @@ def transported_scatter[S: Stokes](
     Args:
         out: Sky map to accumulate into, of the same shape as the map being sampled.
         tod: Samples to deposit, of shape ``dims``.
-        indices: Neighbour pixel indices, negative for neighbours outside the map.
-        weights: Interpolation weights, one per neighbour.
-        centers: World positions of the neighbours.
+        stencil: The pixels each sample is deposited in, their weights and their positions.
         theta: Target co-latitude, in radians.
         phi: Target longitude, in radians.
 
     Returns:
         The accumulated sky map.
     """
-    indices, unit_weights = resolve_stencil(indices, weights)
     # Spread over the neighbour axis before rotating: the transport differs per neighbour, so each
     # copy of the sample turns by its own angle. The broadcast must be materialised, because
     # `rotate_qu` stacks the rotated Q, U rows back with the untouched I, V ones.
-    n_neighbors = unit_weights.shape[-1]
     spread = type(tod).from_array(
-        jnp.broadcast_to(tod.data[..., None], (*tod.data.shape, n_neighbors))
+        jnp.broadcast_to(tod.data[..., None], (*tod.data.shape, stencil.n_neighbors))
     )
-    cos_2delta, sin_2delta = _transport_pair(spread, centers, theta, phi)
+    cos_2delta, sin_2delta = _transport_pair(spread, stencil, theta, phi)
     # The transpose of rotate_qu(c, s) is rotate_qu(c, -s), which is what makes this the adjoint.
     rotated = spread.rotate_qu(cos_2delta, -sin_2delta)
-    contrib = rotated.data * unit_weights
+    contrib = rotated.data * stencil.weights
     n_stokes = out.data.shape[0]
-    accumulated = out.data.at[..., indices.ravel()].add(contrib.reshape(n_stokes, -1))
+    accumulated = out.data.at[..., stencil.indices.ravel()].add(contrib.reshape(n_stokes, -1))
     return type(out).from_array(accumulated)
 
 
 def _transport_pair(
-    x: Stokes, centers: InterpCenters, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+    x: Stokes, stencil: Stencil, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
 ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
     """Per-neighbour transport pair, or the identity pair when there is nothing to rotate.
 
@@ -100,9 +89,9 @@ def _transport_pair(
     if 'Q' not in x.stokes:
         return jnp.ones(()), jnp.zeros(())
     return spin2_cos_sin_zs(
-        centers.z,
-        centers.sth,
-        centers.phi,
+        stencil.z,
+        stencil.sth,
+        stencil.phi,
         jnp.cos(theta)[..., None],
         jnp.sin(theta)[..., None],
         phi[..., None],

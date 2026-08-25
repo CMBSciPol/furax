@@ -17,9 +17,10 @@ from furax.math.quaternion import (
     to_polarization_angle,
     to_polarization_angle_cos_sin,
 )
-from furax.obs.landscapes import InterpCenters, StokesLandscape, resolve_stencil
+from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
 from furax.obs.spin2 import transported_gather, transported_scatter
+from furax.obs.stencil import Stencil, resolve_stencil
 from furax.obs.stokes import Stokes, StokesI
 
 __all__ = [
@@ -230,8 +231,8 @@ class PointingOperator(AbstractLinearOperator):
 
     def _quat2stencil_with_centers(
         self, qdet_full: Float[Array, '*dims 4']
-    ) -> tuple[Array, Array, InterpCenters, Array, Array]:
-        """Convert quaternions to (indices, weights, pixel centers, theta, phi).
+    ) -> tuple[Stencil, Array, Array]:
+        """Convert quaternions to the sampling stencil and the sampled direction ``(theta, phi)``.
 
         Sampling a polarized map uses this instead of [`_quat2index`][] / [`_quat2interp`][],
         because it also needs the sky positions of the sampled direction and of the pixels it
@@ -250,10 +251,10 @@ class PointingOperator(AbstractLinearOperator):
             )
         theta, phi = self.landscape.quat2world(qdet_full)
         if self.interpolate:
-            indices, weights, centers = self.landscape.world2interp_with_centers(theta, phi)
+            stencil = self.landscape.world2interp_with_centers(theta, phi)
         else:
-            indices, weights, centers = self.landscape.world2nearest_with_centers(theta, phi)
-        return indices, weights, centers, theta, phi
+            stencil = self.landscape.world2nearest_with_centers(theta, phi)
+        return stencil, theta, phi
 
     def _modulate(self, tod: _StokesT, qdet_full: Float[Array, '*dims 4']) -> _StokesT:
         """Hook applied to the sampled TOD (identity in the base class).
@@ -267,8 +268,8 @@ class PointingOperator(AbstractLinearOperator):
     def _sample(self, x_flat: _StokesT, qdet_full: Float[Array, '*dims 4']) -> _StokesT:
         """Sample the flat map at positions given by qdet_full."""
         if self._transports:
-            indices, weights, centers, theta, phi = self._quat2stencil_with_centers(qdet_full)
-            return transported_gather(x_flat, indices, weights, centers, theta, phi)
+            stencil, theta, phi = self._quat2stencil_with_centers(qdet_full)
+            return transported_gather(x_flat, stencil, theta, phi)
 
         if not self.interpolate:
             return x_flat[self._quat2index(qdet_full)]
@@ -289,11 +290,9 @@ class PointingOperator(AbstractLinearOperator):
         zeros = jnp.zeros((n_stokes, n_pixels), self.landscape.dtype)
 
         if self._transports:
-            indices, weights, centers, theta, phi = self._quat2stencil_with_centers(qdet_full)
+            stencil, theta, phi = self._quat2stencil_with_centers(qdet_full)
             flat_sky = type(tod_batch).from_array(zeros)
-            binned_sky = transported_scatter(
-                flat_sky, tod_batch, indices, weights, centers, theta, phi
-            )
+            binned_sky = transported_scatter(flat_sky, tod_batch, stencil, theta, phi)
             return type(tod_batch).from_array(binned_sky.data.reshape(n_stokes, *sky_shape))
 
         if not self.interpolate:
@@ -422,8 +421,7 @@ class XSamplingOperator(AbstractLinearOperator):
                 stencil = self.landscape.world2interp_with_centers(self.theta, self.phi)
             else:
                 stencil = self.landscape.world2nearest_with_centers(self.theta, self.phi)
-            indices, weights, centers = stencil
-            return transported_gather(x, indices, weights, centers, self.theta, self.phi)
+            return transported_gather(x, stencil, self.theta, self.phi)
 
         if not self.interpolate:
             indices = self.landscape.world2index(self.theta, self.phi)

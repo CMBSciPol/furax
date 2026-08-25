@@ -20,7 +20,7 @@ from furax.math.quaternion import (
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
 from furax.obs.spin2 import transported_gather, transported_scatter
-from furax.obs.stencil import Stencil, resolve_stencil
+from furax.obs.stencil import Stencil, StencilOrder, resolve_stencil
 from furax.obs.stokes import Stokes, StokesI
 
 __all__ = [
@@ -215,6 +215,10 @@ class PointingOperator(AbstractLinearOperator):
     def _transports(self) -> bool:
         return _transports_spin2(self.landscape)
 
+    @property
+    def _stencil_order(self) -> StencilOrder:
+        return StencilOrder.BILINEAR if self.interpolate else StencilOrder.NEAREST
+
     def _quat2index(self, qdet_full: Float[Array, '*dims 4']) -> Array:
         """Convert full detector quaternions to flat pixel indices.
 
@@ -229,9 +233,7 @@ class PointingOperator(AbstractLinearOperator):
         """
         return self.landscape.quat2interp(qdet_full)
 
-    def _quat2stencil_with_centers(
-        self, qdet_full: Float[Array, '*dims 4']
-    ) -> tuple[Stencil, Array, Array]:
+    def _quat2stencil(self, qdet_full: Float[Array, '*dims 4']) -> tuple[Stencil, Array, Array]:
         """Convert quaternions to the sampling stencil and the sampled direction ``(theta, phi)``.
 
         Sampling a polarized map uses this instead of [`_quat2index`][] / [`_quat2interp`][],
@@ -247,14 +249,10 @@ class PointingOperator(AbstractLinearOperator):
         if getattr(type(self), overridden) is not getattr(PointingOperator, overridden):
             raise NotImplementedError(
                 f'{type(self).__name__} overrides {overridden}, so it must also override '
-                f'_quat2stencil_with_centers to sample a polarized map'
+                f'_quat2stencil to sample a polarized map'
             )
         theta, phi = self.landscape.quat2world(qdet_full)
-        if self.interpolate:
-            stencil = self.landscape.world2interp_with_centers(theta, phi)
-        else:
-            stencil = self.landscape.world2nearest_with_centers(theta, phi)
-        return stencil, theta, phi
+        return self.landscape.world2stencil(theta, phi, self._stencil_order), theta, phi
 
     def _modulate(self, tod: _StokesT, qdet_full: Float[Array, '*dims 4']) -> _StokesT:
         """Hook applied to the sampled TOD (identity in the base class).
@@ -268,7 +266,7 @@ class PointingOperator(AbstractLinearOperator):
     def _sample(self, x_flat: _StokesT, qdet_full: Float[Array, '*dims 4']) -> _StokesT:
         """Sample the flat map at positions given by qdet_full."""
         if self._transports:
-            stencil, theta, phi = self._quat2stencil_with_centers(qdet_full)
+            stencil, theta, phi = self._quat2stencil(qdet_full)
             return transported_gather(x_flat, stencil, theta, phi)
 
         if not self.interpolate:
@@ -290,7 +288,7 @@ class PointingOperator(AbstractLinearOperator):
         zeros = jnp.zeros((n_stokes, n_pixels), self.landscape.dtype)
 
         if self._transports:
-            stencil, theta, phi = self._quat2stencil_with_centers(qdet_full)
+            stencil, theta, phi = self._quat2stencil(qdet_full)
             flat_sky = type(tod_batch).from_array(zeros)
             binned_sky = transported_scatter(flat_sky, tod_batch, stencil, theta, phi)
             return type(tod_batch).from_array(binned_sky.data.reshape(n_stokes, *sky_shape))
@@ -413,14 +411,15 @@ class XSamplingOperator(AbstractLinearOperator):
     def _transports(self) -> bool:
         return _transports_spin2(self.landscape)
 
+    @property
+    def _stencil_order(self) -> StencilOrder:
+        return StencilOrder.BILINEAR if self.interpolate else StencilOrder.NEAREST
+
     def mv(self, x: _StokesT) -> _StokesT:
         # `x` is a raveled sky map: its single backing array is (n_stokes, n_pixels). Index the pixel
         # (last) axis with the cached per-sample angles to produce the (n_stokes, ndet, nsamp) TOD.
         if self._transports:
-            if self.interpolate:
-                stencil = self.landscape.world2interp_with_centers(self.theta, self.phi)
-            else:
-                stencil = self.landscape.world2nearest_with_centers(self.theta, self.phi)
+            stencil = self.landscape.world2stencil(self.theta, self.phi, self._stencil_order)
             return transported_gather(x, stencil, self.theta, self.phi)
 
         if not self.interpolate:

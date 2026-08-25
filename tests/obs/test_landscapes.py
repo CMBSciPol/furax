@@ -19,6 +19,7 @@ from furax.obs.landscapes import (
     WCSLandscape,
     WCSProjection,
 )
+from furax.obs.stencil import resolve_stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 
@@ -320,25 +321,26 @@ class TestInterpCenters:
 
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
     def test_stencil_matches_world2interp(self, landscape_type, car, angles):
-        """The stencil is the one world2interp returns; only the centers are extra."""
+        """The stencil is the one world2interp returns, resolved; only the positions are extra."""
         landscape = HealpixLandscape(16, 'IQU') if landscape_type == 'healpix' else car
-        indices, weights = landscape.world2interp(*angles)
-        indices_c, weights_c, _ = landscape.world2interp_with_centers(*angles)
-        assert_array_equal(indices, indices_c)
-        assert_array_equal(weights, weights_c)
+        indices, weights = resolve_stencil(*landscape.world2interp(*angles))
+        stencil = landscape.world2interp_with_centers(*angles)
+        assert_array_equal(stencil.indices, indices)
+        assert_array_equal(stencil.weights, weights)
 
     def test_healpix_centers_are_the_pixel_centers(self, angles):
         """The centers are the positions of the pixels the stencil indexes."""
         landscape = HealpixLandscape(16, 'IQU')
-        indices, _, centers = landscape.world2interp_with_centers(*angles)
-        theta_n, phi_n = jhp.pix2ang(landscape.nside, indices)
+        centers = landscape.world2interp_with_centers(*angles)
+        theta_n, phi_n = jhp.pix2ang(landscape.nside, centers.indices)
         assert_array_almost_equal(centers.z, np.cos(theta_n), decimal=12)
         assert_array_almost_equal(centers.sth, np.sin(theta_n), decimal=12)
         assert_array_almost_equal(centers.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12)
 
     def test_car_centers_are_the_pixel_centers(self, car, angles):
         """Same for CAR, where the centers come from the analytic inverse projection."""
-        indices, _, centers = car.world2interp_with_centers(*angles)
+        centers = car.world2interp_with_centers(*angles)
+        indices = centers.indices
         assert jnp.all(indices >= 0), 'the fixture must keep every neighbor on the grid'
         # Undo pixel2index: the raveled index is pix_x + n_x * pix_y (see StokesLandscape).
         n_x = car.pixel_shape[0]
@@ -399,23 +401,25 @@ class TestNearestCenters:
     def test_stencil_is_the_world2index_pixel(self, landscape_type, car, angles):
         """The one-neighbour stencil holds the pixel world2index returns, with unit weight."""
         landscape = HealpixLandscape(16, 'IQU') if landscape_type == 'healpix' else car
-        indices, weights, _ = landscape.world2nearest_with_centers(*angles)
-        assert indices.shape == (*angles[0].shape, 1)
-        assert_array_equal(indices[..., 0], landscape.world2index(*angles))
-        assert_array_equal(weights, 1.0)
+        stencil = landscape.world2nearest_with_centers(*angles)
+        assert stencil.indices.shape == (*angles[0].shape, 1)
+        assert stencil.n_neighbors == 1
+        assert_array_equal(stencil.indices[..., 0], landscape.world2index(*angles))
+        assert_array_equal(stencil.weights, 1.0)
 
     def test_healpix_centers_are_the_pixel_centers(self, angles):
         """The centers are the positions of the pixel the stencil indexes."""
         landscape = HealpixLandscape(16, 'IQU')
-        indices, _, centers = landscape.world2nearest_with_centers(*angles)
-        theta_n, phi_n = jhp.pix2ang(landscape.nside, indices)
+        centers = landscape.world2nearest_with_centers(*angles)
+        theta_n, phi_n = jhp.pix2ang(landscape.nside, centers.indices)
         assert_array_almost_equal(centers.z, np.cos(theta_n), decimal=12)
         assert_array_almost_equal(centers.sth, np.sin(theta_n), decimal=12)
         assert_array_almost_equal(centers.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12)
 
     def test_car_centers_are_the_pixel_centers(self, car, angles):
         """Same for CAR, where the centers come from the analytic inverse projection."""
-        indices, _, centers = car.world2nearest_with_centers(*angles)
+        centers = car.world2nearest_with_centers(*angles)
+        indices = centers.indices
         assert jnp.all(indices >= 0), 'the fixture must keep every sample on the grid'
         # Undo pixel2index: the raveled index is pix_x + n_x * pix_y (see StokesLandscape).
         n_x = car.pixel_shape[0]
@@ -427,7 +431,7 @@ class TestNearestCenters:
     def test_centers_are_within_half_a_pixel(self, car, angles):
         """The center reported for a sample is the center of the pixel the sample falls in."""
         theta, phi = angles
-        _, _, centers = car.world2nearest_with_centers(theta, phi)
+        centers = car.world2nearest_with_centers(theta, phi)
         theta_c = jnp.arctan2(centers.sth[..., 0], centers.z[..., 0])
         dphi = (centers.phi[..., 0] - phi + np.pi) % (2 * np.pi) - np.pi
         # the fixture grid is 1°/pixel, so no center sits more than half a degree away in either
@@ -447,10 +451,10 @@ class TestNearestCenters:
         car = CARLandscape(shape, WCSProjection.from_astropy(wcs), stokes='IQU')
         astropy_landscape = AstropyWCSLandscape(shape, wcs, stokes='IQU')
 
-        indices, _, centers = car.world2nearest_with_centers(*angles)
-        ref_indices, _, ref_centers = astropy_landscape.world2nearest_with_centers(*angles)
+        centers = car.world2nearest_with_centers(*angles)
+        ref_centers = astropy_landscape.world2nearest_with_centers(*angles)
 
-        assert_array_equal(indices, ref_indices)
+        assert_array_equal(centers.indices, ref_centers.indices)
         assert_array_almost_equal(centers.z, ref_centers.z, decimal=12)
         assert_array_almost_equal(centers.sth, ref_centers.sth, decimal=12)
         assert_array_almost_equal(
@@ -471,7 +475,7 @@ class TestNearestCenters:
         azimuth = jnp.array(rng.uniform(0.0, 1.6, 20))
 
         pix_i, pix_j = landscape.world2pixel(np.pi / 2 - altitude, -azimuth)
-        _, _, centers = landscape.world2nearest_with_centers(np.pi / 2 - altitude, -azimuth)
+        centers = landscape.world2nearest_with_centers(np.pi / 2 - altitude, -azimuth)
 
         theta_c = jnp.arctan2(centers.sth[..., 0], centers.z[..., 0])
         assert_array_almost_equal(np.pi / 2 - theta_c, alt_centers[pix_i], decimal=12)
@@ -480,16 +484,16 @@ class TestNearestCenters:
     def test_local_landscape_sinks_unmapped_samples(self, angles):
         """A sample outside the subset keeps the parent's center but loses its weight."""
         parent = HealpixLandscape(16, 'IQU')
-        indices, _, centers = parent.world2nearest_with_centers(*angles)
+        centers = parent.world2nearest_with_centers(*angles)
         # keep half the hit pixels, so some samples sink
-        local = LocalStokesLandscape(parent, indices[::2, 0])
-        local_indices, local_weights, local_centers = local.world2nearest_with_centers(*angles)
+        local = LocalStokesLandscape(parent, centers.indices[::2, 0])
+        local_stencil = local.world2nearest_with_centers(*angles)
 
-        sunk = local_indices == local.sink
+        sunk = local_stencil.indices == local.sink
         assert jnp.any(sunk) and not jnp.all(sunk), 'the fixture must sink some samples but not all'
-        assert_array_equal(local_weights[sunk], 0.0)
-        assert_array_equal(local_weights[~sunk], 1.0)
-        assert_array_equal(local_centers.z, centers.z)
+        assert_array_equal(local_stencil.weights[sunk], 0.0)
+        assert_array_equal(local_stencil.weights[~sunk], 1.0)
+        assert_array_equal(local_stencil.z, centers.z)
 
 
 class TestWCSConventions:

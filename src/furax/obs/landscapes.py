@@ -3,7 +3,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import NamedTuple, TypeVar
+from typing import TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -16,68 +16,10 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, Scala
 
 from furax.math.quaternion import qrot_zaxis, to_iso_angles
 from furax.obs._samplings import Sampling
+from furax.obs.stencil import Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 _StokesT = TypeVar('_StokesT', bound=Stokes)
-
-
-class InterpCenters(NamedTuple):
-    r"""World positions of the neighbours of a sampling stencil.
-
-    Returned by [`StokesLandscape.world2interp_with_centers`][], aligned neighbour for neighbour
-    with the indices and weights it returns alongside, and by
-    [`StokesLandscape.world2nearest_with_centers`][], whose stencil holds a single neighbour. The
-    co-latitude is given as its cosine and its sine rather than as an angle.
-
-    Attributes:
-        z: Cosine of the neighbour co-latitude.
-        sth: Sine of the neighbour co-latitude.
-        phi: Neighbour longitude, in radians.
-    """
-
-    z: Float[Array, '*dims neighbors']
-    sth: Float[Array, '*dims neighbors']
-    phi: Float[Array, '*dims neighbors']
-
-
-def resolve_stencil(
-    indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*dims neighbors']
-) -> tuple[Integer[Array, '*dims neighbors'], Float[Array, '*dims neighbors']]:
-    """Make an interpolation stencil safe to gather with, and normalize its weights.
-
-    Neighbours outside the map (negative index) are sent to pixel 0 with their weight zeroed, so
-    that the stencil can be gathered unconditionally, and the remaining weights are rescaled to sum
-    to one, which keeps a partially covered sample unbiased.
-
-    Args:
-        indices: Neighbour pixel indices, negative for neighbours outside the map.
-        weights: Interpolation weights, one per neighbour.
-
-    Returns:
-        The in-bounds indices and the normalized weights.
-    """
-    # Every sampler must resolve a stencil the same way: the forward gather and the transposed
-    # scatter are adjoint only if they normalize against identical weights.
-    valid = indices >= 0
-    indices = jnp.where(valid, indices, 0)
-    weights = jnp.where(valid, weights, 0.0)
-    weight_sum = weights.sum(axis=-1, keepdims=True)
-    return indices, weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
-
-
-def _nearest_stencil(
-    indices: Integer[Array, ' *dims'],
-    theta_center: Float[Array, ' *dims'],
-    phi_center: Float[Array, ' *dims'],
-    dtype: DTypeLike,
-) -> tuple[Integer[Array, '*dims 1'], Float[Array, '*dims 1'], InterpCenters]:
-    """Package a pixel and its center as the one-neighbour stencil of a nearest-neighbour sampler."""
-    centers = InterpCenters(
-        z=jnp.cos(theta_center)[..., None].astype(dtype),
-        sth=jnp.sin(theta_center)[..., None].astype(dtype),
-        phi=phi_center[..., None].astype(dtype),
-    )
-    return indices[..., None], jnp.ones((*indices.shape, 1), dtype), centers
 
 
 @register_static
@@ -273,12 +215,12 @@ class StokesLandscape(Landscape):
 
     def world2interp_with_centers(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '...'], Float[Array, '...'], InterpCenters]:
-        """Returns (indices, weights, centers), where centers holds the neighbours' world positions.
+    ) -> Stencil:
+        """Returns the interpolation [`Stencil`][] a sample at these angles reads.
 
-        The indices and the weights are those of [`world2interp`][]. The centers are for
-        interpolators that must know where each neighbour sits on the sky, not only which pixel it
-        is.
+        Its indices and weights are those of [`world2interp`][], resolved. It also carries where
+        each neighbour sits on the sky, for interpolators that must know that, not only which pixel
+        the neighbour is.
         """
         raise NotImplementedError(
             f'{type(self).__name__} does not supply interpolation neighbour centers'
@@ -286,13 +228,13 @@ class StokesLandscape(Landscape):
 
     def world2nearest_with_centers(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 1'], Float[Array, '*dims 1'], InterpCenters]:
-        """Returns (indices, weights, centers) for nearest-neighbour sampling.
+    ) -> Stencil:
+        """Returns the nearest-neighbour [`Stencil`][] a sample at these angles reads.
 
-        The same triple as [`world2interp_with_centers`][], for a stencil holding the single pixel
-        the sample falls in: the indices are those of [`world2index`][] with a trailing axis of
-        length one, and the weights are one. The center is where that pixel sits on the sky, which
-        a sampler needs to express its $Q$ and $U$ in the frame of the direction sampled at.
+        The same type as [`world2interp_with_centers`][], holding the single pixel the sample falls
+        in: the index is that of [`world2index`][] and the weight is one. The center is where that
+        pixel sits on the sky, which a sampler needs to express its $Q$ and $U$ in the frame of the
+        direction sampled at.
         """
         raise NotImplementedError(f'{type(self).__name__} does not supply pixel centers')
 
@@ -403,10 +345,10 @@ class WCSLandscape(StokesLandscape):
 
     def world2interp_with_centers(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4'], InterpCenters]:
-        """Returns (indices, weights, centers) for bilinear interpolation (n=4).
+    ) -> Stencil:
+        """Returns the bilinear interpolation [`Stencil`][] (n=4).
 
-        The indices and weights are those of [`world2interp`][].
+        Its indices and weights are those of [`world2interp`][], resolved.
         """
         # Builds the stencil here rather than through `pixel2interp`, which discards the neighbour
         # pixel coordinates this needs. A subclass that redefines `pixel2interp` would then get two
@@ -418,22 +360,22 @@ class WCSLandscape(StokesLandscape):
             )
         xs, ys, weights = _2d_bilinear_interp(*self.world2pixel(theta, phi))
         theta_n, phi_n = self.pixel2world(xs, ys)
-        centers = InterpCenters(z=jnp.cos(theta_n), sth=jnp.sin(theta_n), phi=phi_n)
-        return self.pixel2index(xs, ys), weights, centers
+        return Stencil.resolve(
+            self.pixel2index(xs, ys), weights, jnp.cos(theta_n), jnp.sin(theta_n), phi_n
+        )
 
     def world2nearest_with_centers(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 1'], Float[Array, '*dims 1'], InterpCenters]:
-        """Returns (indices, weights, centers) for the pixel the sample falls in.
+    ) -> Stencil:
+        """Returns the [`Stencil`][] holding the pixel the sample falls in.
 
-        The indices are those of [`world2index`][], and the center of each pixel comes from
-        [`pixel2world`][].
+        Its index is that of [`world2index`][], and the pixel center comes from [`pixel2world`][].
         """
         pix_x, pix_y = self.world2pixel(theta, phi)
         center_x, center_y = jnp.round(pix_x), jnp.round(pix_y)
         theta_c, phi_c = self.pixel2world(center_x, center_y)
         indices = self.pixel2index(center_x, center_y)
-        return _nearest_stencil(indices, theta_c, phi_c, self.dtype)
+        return Stencil.nearest(indices, theta_c, phi_c, dtype=self.dtype)
 
     def to_wcs(self) -> WCS:
         """Reconstruct an astropy WCS object from the stored projection parameters."""
@@ -615,41 +557,39 @@ class HealpixLandscape(StokesLandscape):
 
     def world2interp_with_centers(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4'], InterpCenters]:
-        """Returns (indices, weights, centers) for bilinear HEALPix interpolation (n=4).
+    ) -> Stencil:
+        """Returns the bilinear HEALPix interpolation [`Stencil`][] (n=4).
 
-        The indices and weights are bit-identical to those of [`world2interp`][].
+        Its indices are bit-identical to those of [`world2interp`][], and its weights are those of
+        [`world2interp`][] resolved.
         """
         pixels, weights, centers = jhp.get_interp_weights(
             self.nside, theta, phi, nest=self.nested, with_centers=True
         )
-        indices = jnp.moveaxis(pixels, 0, -1)
-        weights = jnp.moveaxis(weights, 0, -1).astype(self.dtype)
         # The four neighbours lie on two rings, so jax-healpy returns two co-latitudes per sample:
         # rows 0 and 1 of `pixels` share the first, rows 2 and 3 the second. Expand to one per
-        # neighbour, so all three arrays carry the same trailing neighbour axis as the weights.
+        # neighbour, so every field carries the same trailing neighbour axis as the weights.
         ring = jnp.array([0, 0, 1, 1])
-        return (
-            indices,
-            weights,
-            InterpCenters(
-                z=jnp.moveaxis(centers.z[ring], 0, -1).astype(self.dtype),
-                sth=jnp.moveaxis(centers.sth[ring], 0, -1).astype(self.dtype),
-                phi=jnp.moveaxis(centers.phi, 0, -1).astype(self.dtype),
-            ),
+        return Stencil.resolve(
+            jnp.moveaxis(pixels, 0, -1),
+            jnp.moveaxis(weights, 0, -1),
+            jnp.moveaxis(centers.z[ring], 0, -1),
+            jnp.moveaxis(centers.sth[ring], 0, -1),
+            jnp.moveaxis(centers.phi, 0, -1),
+            dtype=self.dtype,
         )
 
     def world2nearest_with_centers(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 1'], Float[Array, '*dims 1'], InterpCenters]:
-        """Returns (indices, weights, centers) for the HEALPix pixel the sample falls in.
+    ) -> Stencil:
+        """Returns the [`Stencil`][] holding the HEALPix pixel the sample falls in.
 
-        The indices are bit-identical to those of [`world2index`][], and the centers are the pixel
-        centers HEALPix defines them to sit at.
+        Its index is bit-identical to that of [`world2index`][], and its center is the pixel center
+        HEALPix defines it to sit at.
         """
         indices = self.world2index(theta, phi)
         theta_c, phi_c = jhp.pix2ang(self.nside, indices, nest=self.nested)
-        return _nearest_stencil(indices, theta_c, phi_c, self.dtype)
+        return Stencil.nearest(indices, theta_c, phi_c, dtype=self.dtype)
 
     @jax.jit
     def world2pixel(
@@ -745,17 +685,16 @@ class AstropyWCSLandscape(StokesLandscape):
 
     def world2nearest_with_centers(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 1'], Float[Array, '*dims 1'], InterpCenters]:
-        """Returns (indices, weights, centers) for the pixel the sample falls in.
+    ) -> Stencil:
+        """Returns the [`Stencil`][] holding the pixel the sample falls in.
 
-        The indices are those of [`world2index`][], and the center of each pixel comes from
-        [`pixel2world`][].
+        Its index is that of [`world2index`][], and the pixel center comes from [`pixel2world`][].
         """
         pix_x, pix_y = self.world2pixel(theta, phi)
         center_x, center_y = jnp.round(pix_x), jnp.round(pix_y)
         theta_c, phi_c = self.pixel2world(center_x, center_y)
         indices = self.pixel2index(center_x, center_y)
-        return _nearest_stencil(indices, theta_c, phi_c, self.dtype)
+        return Stencil.nearest(indices, theta_c, phi_c, dtype=self.dtype)
 
 
 @register_static
@@ -847,15 +786,14 @@ class HorizonLandscape(StokesLandscape):
 
     def world2nearest_with_centers(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 1'], Float[Array, '*dims 1'], InterpCenters]:
-        """Returns (indices, weights, centers) for the pixel the sample falls in.
+    ) -> Stencil:
+        """Returns the [`Stencil`][] holding the pixel the sample falls in.
 
-        The indices are those of [`world2index`][], and the center of each pixel comes from
-        [`pixel2world`][].
+        Its index is that of [`world2index`][], and the pixel center comes from [`pixel2world`][].
         """
         pix_i, pix_j = self.world2pixel(theta, phi)
         theta_c, phi_c = self.pixel2world(pix_i, pix_j)
-        return _nearest_stencil(self.pixel2index(pix_i, pix_j), theta_c, phi_c, self.dtype)
+        return Stencil.nearest(self.pixel2index(pix_i, pix_j), theta_c, phi_c, dtype=self.dtype)
 
 
 @register_static
@@ -1160,27 +1098,27 @@ class LocalStokesLandscape(StokesLandscape):
 
     def world2interp_with_centers(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '...'], Float[Array, '...'], InterpCenters]:
-        """Returns (local indices, weights, centers) for interpolation on the parent's grid.
+    ) -> Stencil:
+        """Returns the interpolation [`Stencil`][] on the parent's grid, locally indexed.
 
-        Same convention as [`world2interp`][]. The centers are the parent's, i.e. positions on the
-        sky: they are not affected by the local re-indexing, and neighbours sent to the sink keep
-        theirs (their weight is zero, so it never enters an interpolated value).
+        Same convention as [`world2interp`][]. The neighbour positions are the parent's, i.e.
+        positions on the sky: they are not affected by the local re-indexing, and neighbours sent
+        to the sink keep theirs (their weight is zero, so it never enters an interpolated value).
         """
-        indices, weights, centers = self.parent.world2interp_with_centers(theta, phi)
-        return *self._localize(indices, weights), centers
+        stencil = self.parent.world2interp_with_centers(theta, phi)
+        return stencil.reindexed(*self._localize(stencil.indices, stencil.weights))
 
     def world2nearest_with_centers(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 1'], Float[Array, '*dims 1'], InterpCenters]:
-        """Returns (local indices, weights, centers) for the parent's nearest pixel.
+    ) -> Stencil:
+        """Returns the [`Stencil`][] holding the parent's nearest pixel, locally indexed.
 
         A sample falling outside the subset lands in the sink with its weight zeroed, so it
-        contributes nothing rather than reading the sink slot. The centers are the parent's, i.e.
-        positions on the sky, unaffected by the local re-indexing.
+        contributes nothing rather than reading the sink slot. The neighbour position is the
+        parent's, i.e. a position on the sky, unaffected by the local re-indexing.
         """
-        indices, weights, centers = self.parent.world2nearest_with_centers(theta, phi)
-        return *self._localize(indices, weights), centers
+        stencil = self.parent.world2nearest_with_centers(theta, phi)
+        return stencil.reindexed(*self._localize(stencil.indices, stencil.weights))
 
     def _localize(
         self, indices: Integer[Array, '...'], weights: Float[Array, '...']

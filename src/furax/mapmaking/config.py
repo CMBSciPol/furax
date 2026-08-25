@@ -580,6 +580,9 @@ class TemplatesConfig:
     regularization: float = field(default=0.0, metadata={'template': False})
     """Ridge regularization strength applied to the template regression."""
 
+    gram_batch_size: int = field(default=32, metadata={'template': False})
+    """Detector batch size for Gram inversion."""
+
     @classmethod
     def full_defaults(cls) -> 'TemplatesConfig':
         """Create a template config with default values for all templates."""

@@ -15,7 +15,21 @@ from ._observation import ReaderField
 from .acquisition import build_acquisition_operator
 from .config import GapTreatment, MapMakingConfig, Methods, NoiseSource, WeightingMode
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
-from .templates import ATOPProjectionOperator
+from .templates import (
+    AbstractTemplateOperator,
+    ATOPProjectionOperator,
+    Basis,
+    StokesTemplateOperator,
+    TemplateOperator,
+    azimuth_hwp_synchronous_basis,
+    binned_azimuth_hwp_synchronous_basis,
+    binned_azimuth_synchronous_basis,
+    hwp_synchronous_basis,
+    polynomial_basis,
+    scan_synchronous_basis,
+    spline_hwp_synchronous_basis,
+    t2p_basis,
+)
 from .weight import NestedWeightOperator, WeightOperator
 
 
@@ -36,7 +50,7 @@ class ObservationModel:
     """Weighting operator (noise weights + mask)"""
 
     F: AbstractLinearOperator
-    """Deprojection operator"""
+    """ATOP filter/deprojector (identity when not enabled)"""
 
     noise_model: PyTree[NoiseModel]
     """Noise model"""
@@ -59,15 +73,16 @@ class ObservationModel:
             pointing_interpolate=config.pointing.interpolation == 'bilinear',
             dtype=config.dtype,
         )
+        tod_struct = H.out_structure
         M = _mask_projector(
             _sample_mask(data, config),
             data.get(ReaderField.VALID_SCANNING_MASKS),
-            structure=H.out_structure,
+            structure=tod_struct,
         )
-        noise_model, sample_rate = _noise_model(data, config, tod_structure=H.out_structure)
+        noise_model, sample_rate = _noise_model(data, config, tod_structure=tod_struct)
         Ninv = _noise_operator(
             noise_model,
-            H.out_structure,
+            tod_struct,
             sample_rate,
             config.weighting.correlation_length,
             inverse=True,
@@ -80,7 +95,7 @@ class ObservationModel:
                 # Precondition inner flagged-subspace CG using covariance N
                 cov = _noise_operator(
                     noise_model,
-                    H.out_structure,
+                    tod_struct,
                     sample_rate,
                     config.weighting.correlation_length,
                     inverse=False,
@@ -89,7 +104,11 @@ class ObservationModel:
         else:
             # Plain masked weights, only exact for diagonal W
             W = WeightOperator.create(Ninv, M)
-        F = _template_deprojector(config, H.out_structure)
+        F = (
+            ATOPProjectionOperator(config.atop_tau, in_structure=tod_struct)
+            if config.method == Methods.ATOP
+            else IdentityOperator(in_structure=tod_struct)
+        )
         return cls(H, W, F, noise_model, sample_rate)
 
     @staticmethod
@@ -166,9 +185,8 @@ class ObservationModel:
 
         Assumes ``self`` is a single-observation model (single-observation ``noise_model`` and
         ``tod_structure``). The observation-stacked preconditioner is obtained by mapping this over
-        the observation axis in
-        [`MultiObservationMapMaker.get_system_operator`][furax.mapmaking.mapmaker.MultiObservationMapMaker.get_system_operator],
-        mirroring how ``W`` is stacked inside the accumulation scan.
+        the observation axis in [`MultiObservationMapMaker.make_maps`][], mirroring how ``W`` is
+        stacked inside the accumulation scan.
         """
         white = self.noise_model.to_white_noise_model()
         inv = _noise_operator(white, self.tod_structure, self.sample_rate, inverse=True)
@@ -255,16 +273,6 @@ def _noise_operator(
     return build(tod_structure, sample_rate=sample_rate, correlation_length=correlation_length)
 
 
-def _template_deprojector(
-    config: MapMakingConfig,
-    tod_structure: jax.ShapeDtypeStruct,
-) -> AbstractLinearOperator:
-    """Build the template deprojection operator."""
-    if config.method == Methods.ATOP:
-        return ATOPProjectionOperator(config.atop_tau, in_structure=tod_structure)
-    return IdentityOperator(in_structure=tod_structure)
-
-
 def _sample_rate(timestamps: Float[Array, '...']) -> Float[Array, '']:
     # Note that the reader extrapolates timestamps in the padded region, keeping sample rate constant
     return (timestamps.size - 1) / jnp.ptp(timestamps)
@@ -284,3 +292,219 @@ def _mask_projector(*valid_masks: Array | None, structure: jax.ShapeDtypeStruct)
     # A per-sample mask (ndet, nsamp) broadcasts right-aligned over a demodulated Stokes TOD's
     # leading Stokes axis (n, ndet, nsamp), and the sample axis stays last (packed by MaskOperator).
     return MaskOperator.from_boolean_mask(combined, in_structure=structure)
+
+
+def _demod_bases(basis: Basis, config: MapMakingConfig) -> Basis | dict[str, Basis]:
+    """Bare basis if not demodulated; the same basis repeated for every Stokes leg otherwise.
+
+    A kind-agnostic template (e.g. scan-synchronous pickup) shares one functional form across
+    legs, but demodulation splits the raw stream into differently-filtered I/Q/U streams, so
+    each leg still needs its own independently fitted amplitude — hence a per-leg dict (with
+    the same [`Basis`][] object repeated), not a single shared amplitude. Every template in one
+    operator must be keyed the same way, since [`TemplateOperator`][] and
+    [`StokesTemplateOperator`][] produce different TOD structures.
+    """
+    if not config.demodulated:
+        return basis
+    return {s.lower(): basis for s in config.landscape.stokes}
+
+
+@register_dataclass
+@dataclass
+class ObservationTemplates:
+    """Per-observation template operators, stackable across observations via ``jax.lax.scan``.
+
+    Active templates are partitioned by their ``explicit`` config flag when built:
+
+    - ``explicit`` — templates whose amplitudes are solved jointly with the map and returned
+      (``explicit=True``). ``None`` if every active template is implicit.
+    - ``implicit`` — templates folded into the noise weight ``W → W_m`` and never solved
+      (``explicit=False``). ``None`` if every active template is explicit (then ``W_m = W``).
+
+    Each maps a dict of per-template amplitudes to a single observation's TOD; under
+    ``jax.lax.scan`` the array leaves gain a leading observation axis.
+    """
+
+    explicit: AbstractTemplateOperator | None
+    implicit: AbstractTemplateOperator | None
+
+    @staticmethod
+    def required_reader_fields(config: MapMakingConfig) -> set[str]:
+        """Reader fields needed to build the active templates via [`create`][]."""
+        tcfg = config.templates
+        if tcfg is None:
+            return set()
+        fields: set[str] = set()
+        if tcfg.polynomial is not None:
+            fields.update(
+                {
+                    ReaderField.SCANNING_INTERVALS,
+                    ReaderField.TIMESTAMPS,
+                    ReaderField.VALID_SCANNING_MASKS,
+                }
+            )
+        if tcfg.scan_synchronous is not None:
+            fields.add(ReaderField.AZIMUTH)
+        if tcfg.binned_azimuth_synchronous is not None:
+            fields.add(ReaderField.AZIMUTH)
+        if tcfg.hwp_synchronous is not None:
+            fields.add(ReaderField.HWP_ANGLES)
+        if tcfg.azimuth_hwp_synchronous is not None:
+            fields.update({ReaderField.AZIMUTH, ReaderField.HWP_ANGLES})
+            if tcfg.azimuth_hwp_synchronous.split_scans:
+                fields.update({ReaderField.LEFT_SCAN_MASK, ReaderField.RIGHT_SCAN_MASK})
+        if tcfg.binned_azimuth_hwp_synchronous is not None:
+            fields.update({ReaderField.AZIMUTH, ReaderField.HWP_ANGLES})
+        if tcfg.spline_hwp_synchronous is not None:
+            fields.update({ReaderField.TIMESTAMPS, ReaderField.HWP_ANGLES})
+        if tcfg.t2p is not None:
+            fields.update({ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS})
+        if tcfg.ground is not None:
+            raise NotImplementedError(
+                'Ground templates are not supported in the multi-observation path.'
+            )
+        return fields
+
+    @classmethod
+    def create(
+        cls,
+        data: Any,
+        config: MapMakingConfig,
+        tod_structure: jax.ShapeDtypeStruct,
+    ) -> Self:
+        if (tcfg := config.templates) is None:
+            raise ValueError('templates config required to build template operators')
+        n_dets = tod_structure.shape[0]
+        dtype = config.dtype
+        # ``explicit`` is a solver policy, not a property of the basis: partition here rather
+        # than stamping each template and filtering later.
+        explicit_bases: dict[str, Any] = {}
+        implicit_bases: dict[str, Any] = {}
+
+        def add(name: str, bases: Any, explicit: bool) -> None:
+            (explicit_bases if explicit else implicit_bases)[name] = bases
+
+        if (poly := tcfg.polynomial) is not None:
+            if config.demodulated:
+                legendre_qu = poly.legendre_qu if poly.legendre_qu is not None else poly.legendre
+                bases: Basis | dict[str, Basis] = {
+                    s.lower(): polynomial_basis(
+                        max_poly_order=(poly.legendre if s == 'I' else legendre_qu).max_order,
+                        intervals=data[ReaderField.SCANNING_INTERVALS],
+                        times=data[ReaderField.TIMESTAMPS],
+                        dtype=dtype,
+                        valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
+                    )
+                    for s in config.landscape.stokes
+                }
+            else:
+                bases = polynomial_basis(
+                    max_poly_order=poly.legendre.max_order,
+                    intervals=data[ReaderField.SCANNING_INTERVALS],
+                    times=data[ReaderField.TIMESTAMPS],
+                    dtype=dtype,
+                    valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
+                )
+            add('polynomial', bases, poly.explicit)
+
+        if (scan := tcfg.scan_synchronous) is not None:
+            basis = scan_synchronous_basis(scan.legendre, data[ReaderField.AZIMUTH], dtype)
+            add('scan_synchronous', _demod_bases(basis, config), scan.explicit)
+
+        if (binned_az := tcfg.binned_azimuth_synchronous) is not None:
+            basis = binned_azimuth_synchronous_basis(
+                binned_az.bins, data[ReaderField.AZIMUTH], dtype
+            )
+            add('binned_azimuth_synchronous', _demod_bases(basis, config), binned_az.explicit)
+
+        if (hwp := tcfg.hwp_synchronous) is not None:
+            basis = hwp_synchronous_basis(hwp.n_harmonics, data[ReaderField.HWP_ANGLES], dtype)
+            add('hwp_synchronous', _demod_bases(basis, config), hwp.explicit)
+
+        if (az_hwp := tcfg.azimuth_hwp_synchronous) is not None:
+            if az_hwp.split_scans:
+                for side, scan_mask_field in (
+                    ('left', ReaderField.LEFT_SCAN_MASK),
+                    ('right', ReaderField.RIGHT_SCAN_MASK),
+                ):
+                    basis = azimuth_hwp_synchronous_basis(
+                        az_hwp.legendre,
+                        az_hwp.n_harmonics,
+                        data[ReaderField.AZIMUTH],
+                        data[ReaderField.HWP_ANGLES],
+                        dtype,
+                        scan_mask=data[scan_mask_field],
+                    )
+                    add(
+                        f'azimuth_hwp_synchronous_{side}',
+                        _demod_bases(basis, config),
+                        az_hwp.explicit,
+                    )
+            else:
+                basis = azimuth_hwp_synchronous_basis(
+                    az_hwp.legendre,
+                    az_hwp.n_harmonics,
+                    data[ReaderField.AZIMUTH],
+                    data[ReaderField.HWP_ANGLES],
+                    dtype,
+                )
+                add('azimuth_hwp_synchronous', _demod_bases(basis, config), az_hwp.explicit)
+
+        if (binned_az_hwp := tcfg.binned_azimuth_hwp_synchronous) is not None:
+            basis = binned_azimuth_hwp_synchronous_basis(
+                binned_az_hwp.bins,
+                binned_az_hwp.n_harmonics,
+                data[ReaderField.AZIMUTH],
+                data[ReaderField.HWP_ANGLES],
+                dtype,
+            )
+            add(
+                'binned_azimuth_hwp_synchronous',
+                _demod_bases(basis, config),
+                binned_az_hwp.explicit,
+            )
+
+        if (spline_hwp := tcfg.spline_hwp_synchronous) is not None:
+            times = data[ReaderField.TIMESTAMPS]
+            basis = spline_hwp_synchronous_basis(
+                times,
+                data[ReaderField.HWP_ANGLES],
+                spline_hwp.resolve_n_knots(times.size),
+                spline_hwp.harmonics,
+                dtype,
+            )
+            add('spline_hwp_synchronous', _demod_bases(basis, config), spline_hwp.explicit)
+
+        if (t2p := tcfg.t2p) is not None:
+            temperature = data[ReaderField.SAMPLE_DATA].i
+            sample_rate = _sample_rate(data[ReaderField.TIMESTAMPS])
+            # Q and U each fit their own leakage amplitude from the same temperature stream.
+            bases = {
+                s.lower(): t2p_basis(
+                    temperature,
+                    dtype,
+                    fit_band=t2p.fit_band,
+                    sample_rate=sample_rate,
+                    decimation_factor=t2p.decimation_factor,
+                )
+                for s in config.landscape.stokes
+                if s in 'QU'
+            }
+            add('t2p', bases, t2p.explicit)
+
+        if tcfg.ground is not None:
+            raise NotImplementedError(
+                'Ground templates are not supported in the multi-observation path.'
+            )
+
+        if not explicit_bases and not implicit_bases:
+            raise ValueError('config.templates is set but no template is active.')
+
+        def build(bases: dict[str, Any]) -> AbstractTemplateOperator | None:
+            if not bases:
+                return None
+            if config.demodulated:
+                return StokesTemplateOperator(bases, n_dets, config.landscape.stokes)
+            return TemplateOperator(bases, n_dets)
+
+        return cls(explicit=build(explicit_bases), implicit=build(implicit_bases))

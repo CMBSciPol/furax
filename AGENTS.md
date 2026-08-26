@@ -4,13 +4,13 @@ Python, JAX, linear operator framework, CMB mapmaking.
 
 ## Writing for human readers
 
-Write every code comment, piece of documentation, PR description, and GitHub issue for its eventual reader, not for the current conversation. Determine the reader's knowledge, purpose, and likely questions privately; do not add an audience-analysis section to the artifact.
+Write every code comment, piece of documentation, PR description, and GitHub issue for its eventual reader - furax developer or library user, i.e., scientist - not for the current conversation. Determine the reader's purpose and likely questions privately; do not add an audience-analysis section to the artifact. Before finishing, reread each change as that reader and remove or explain anything that would surprise or confuse them.
 
 Base public-facing text on the final code, complete final diff, relevant issue, and verified evidence. Explain the observable behavior or problem before implementation details. Use established technical terminology and the actual names of types, functions, files, and invariants.
 
-Do not mention discarded alternatives, intermediate edits, private instructions, tool usage, branch or draft status, local test commands, or session history unless the reader needs that information to understand the final result. Do not describe reverted changes as part of the final change.
+Do not mention discarded alternatives, intermediate edits, private instructions, tool usage, branch or draft status, local test commands, or session history. Do not describe reverted changes as part of the final change.
 
-Preserve useful human-written comments unless the code change makes them inaccurate. Before finishing, reread each changed artifact as someone with no access to the current session and remove or explain anything that would surprise or confuse that reader.
+Preserve useful human-written comments unless the code change makes them inaccurate.
 
 ## Commands
 

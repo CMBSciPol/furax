@@ -24,7 +24,7 @@ from furax.mapmaking import (
     AbstractGroundObservation,
     AbstractLazyObservation,
     FileBackedLazyObservation,
-    ObservationBufferShapes,
+    ObservationBufferShape,
     ReaderField,
 )
 from furax.mapmaking.config import SotodlibConfig
@@ -568,7 +568,7 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             sotodlib_config=self._sotodlib_config,
         )
 
-    def probe_shape(self, intervals: bool = False) -> ObservationBufferShapes:
+    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
         """Returns an upper bound on the variable padded-buffer dimensions for ``fields``.
 
         All values are read from the init preprocess metadata: no heavy I/O work is done.
@@ -586,7 +586,7 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         _, context = pu.get_preprocess_context(self.init_config.as_posix())
         meta = context.get_meta(self.observation_id, dets=self.detector_selection)
         n_samps_ub = -(-meta.samps.count // self.downsample)  # ceil, matches downsample_obs
-        return ObservationBufferShapes(
+        return ObservationBufferShape(
             meta.dets.count,
             n_samps_ub,
             meta.subscans.count if intervals else 0,

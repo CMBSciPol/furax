@@ -59,6 +59,7 @@ from ._observation import (
     AbstractGroundObservation,
     AbstractLazyObservation,
     FileBackedLazyObservation,
+    ObservationBufferShape,
     ReaderField,
 )
 from ._partition import partition_balanced
@@ -187,7 +188,7 @@ class MultiObservationMapMaker[T]:
         return len(self.observations)
 
     @cached_property
-    def _probe(self) -> tuple[list[tuple[int, ...]], np.ndarray]:
+    def _probe(self) -> tuple[list[ObservationBufferShape], np.ndarray]:
         """Every observation's probe shape, plus a mask of the ones that could not be probed.
 
         Assignment needs the shapes of *all* observations, but probing one costs an open, so they
@@ -305,7 +306,7 @@ class MultiObservationMapMaker[T]:
         rank_pad = n_pad / n_per_proc
         # Segments are volume-balanced, so the counts differ between ranks; the sample range says
         # how homogeneous this rank's share is, which is what its buffer padding costs it.
-        owned_samples = [self._probe[0][i][1] for i in self.owned_observations]
+        owned_samples = [self._probe[0][i].sample_count for i in self.owned_observations]
         logger_info(
             f'rank={rank} real={n_owned} pad={n_pad} '
             f'samples={min(owned_samples)}..{max(owned_samples)} '

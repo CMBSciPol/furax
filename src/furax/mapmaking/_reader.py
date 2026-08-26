@@ -18,6 +18,7 @@ from ._observation import (
     AbstractLazyObservation,
     AbstractObservation,
     HashedObservationMetadata,
+    ObservationBufferShape,
     ReaderField,
 )
 
@@ -55,7 +56,7 @@ class ObservationReader[T](AbstractReader):
         stokes: ValidStokesLiteral,
         dtype: DTypeLike = jnp.float64,
         common_keywords: dict[str, Any] | None = None,
-        shapes: list[tuple[int, ...]] | None = None,
+        shapes: list[ObservationBufferShape] | None = None,
         known_failures: Sequence[int] | None = None,
         structure_indices: Sequence[int] | None = None,
         **keywords: Sequence[Any],
@@ -90,7 +91,7 @@ class ObservationReader[T](AbstractReader):
         demodulated: bool = False,
         stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = jnp.float64,
-        shapes: list[tuple[int, ...]] | None = None,
+        shapes: list[ObservationBufferShape] | None = None,
         known_failures: Sequence[int] | None = None,
     ) -> Self:
         """Create a reader, performing I/O to infer data structures.
@@ -162,8 +163,8 @@ class ObservationReader[T](AbstractReader):
         observations: Sequence[AbstractLazyObservation[T]],
         read_indices: Sequence[int],
         fields: Collection[str],
-    ) -> tuple[list[tuple[int, ...]], list[int]]:
-        """Gather every observation's ``probe_shape()`` tuple in distributed mode.
+    ) -> tuple[list[ObservationBufferShape], list[int]]:
+        """Gather every observation's ``probe_shape()`` in distributed mode.
 
         Each process probes only its ``read_indices`` subset; an all-gather then makes every rank
         agree on the full shape list, so padding / out_structure / etc. stay consistent. Ranks may
@@ -179,14 +180,14 @@ class ObservationReader[T](AbstractReader):
         failed: list[int] = []
         need_intervals = ReaderField.SCANNING_INTERVALS in fields
 
-        def probe(idx: int) -> tuple[int, tuple[int, ...]]:
+        def probe(idx: int) -> tuple[int, ObservationBufferShape]:
             try:
                 # retain observation index so we can dedup after gathering
-                return idx, tuple(observations[idx].probe_shape(intervals=need_intervals))
+                return idx, ObservationBufferShape(*observations[idx].probe_shape(need_intervals))
             except Exception:
                 logger.exception('probe of observation %d failed', idx)
                 failed.append(idx)
-                return idx, (1, 1, 0)
+                return idx, ObservationBufferShape(1, 1, 0)
 
         local = [probe(idx) for idx in read_indices]
         width = 1 + len(local[0][1])  # each row is (idx, *shape)
@@ -201,7 +202,8 @@ class ObservationReader[T](AbstractReader):
 
         # Drop potential duplicates (from padding) and sort by obs index
         all_rows = mhu.process_allgather(local_rows).reshape(-1, width)
-        shapes = [tuple(row[1:]) for row in np.unique(all_rows, axis=0)]
+        # The all-gather round-trips through numpy, so rebuild the named type on the way out.
+        shapes = [ObservationBufferShape(*map(int, row[1:])) for row in np.unique(all_rows, axis=0)]
         if (ns := len(shapes)) != (no := len(observations)):
             msg = f'inconsistent observation shapes after allgather: expected {no}, got {ns}'
             raise RuntimeError(msg)

@@ -62,13 +62,14 @@ def _child_gather_shapes(proc_id: int, n_proc: int, port: int, n_local: int) -> 
     jax.distributed.initialize(
         coordinator_address=f'localhost:{port}', num_processes=n_proc, process_id=proc_id
     )
+    from furax.mapmaking import ObservationBufferShape
     from furax.mapmaking._reader import ObservationReader
 
     class _FakeObs:
         def __init__(self, n_det: int, n_samp: int) -> None:
-            self._shape = (n_det, n_samp)
+            self._shape = ObservationBufferShape(n_det, n_samp)
 
-        def probe_shape(self, intervals: bool = False) -> tuple[int, ...]:
+        def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
             return self._shape
 
     # 7 observations over n_proc processes: the even split gives unequal counts, so with one
@@ -80,8 +81,8 @@ def _child_gather_shapes(proc_id: int, n_proc: int, port: int, n_local: int) -> 
     read_indices = tuple(range(start, start + n_owned))
 
     shapes, _ = ObservationReader._gather_shapes(observations, read_indices, fields=())
-    expected = [(4, 10 * (i + 1)) for i in range(7)]
-    ok = [tuple(s) for s in shapes] == expected
+    expected = [ObservationBufferShape(4, 10 * (i + 1)) for i in range(7)]
+    ok = list(shapes) == expected
     return 0 if ok else 1
 
 

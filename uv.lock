@@ -2785,7 +2785,7 @@ wheels = [
 
 [[package]]
 name = "pixell"
-version = "0.31.10"
+version = "0.32.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "astropy" },
@@ -2800,12 +2800,12 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "scipy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d6/42/74f9af450667074feff09a74460019d98c689a5027b0143f3daf9df1adaa/pixell-0.31.10.tar.gz", hash = "sha256:8bfd542941efd899c4977c0dd71e3ed08b1eb609372948d3c5167938cbbdc621", size = 6659231, upload-time = "2026-04-20T09:43:49.965Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/29/cef5d7c7db46b45575607c408b7faccdea05ce76a2b4f0fe0d37481b33ff/pixell-0.32.4.tar.gz", hash = "sha256:a1260f4363a949ecce1f0b5f0f3cb796ea00a3fe82228080b2ba205a77e8f213", size = 6660831, upload-time = "2026-08-05T14:13:41.87Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/dc/4fd86fcecd8d03013af6268a8e130f124e4508fa0cbff50180187e5e18b3/pixell-0.31.10-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:36e5a676fd6d85e8f1334834a61c7ccb243769efbc73ba8b65f83c9ea004878e", size = 2070691, upload-time = "2026-04-20T09:43:43.311Z" },
-    { url = "https://files.pythonhosted.org/packages/5e/5d/8fe2b4da06c6d8f1805e7d065b3e94d89b9b46e1fb51e159f7289c889318/pixell-0.31.10-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:83f36620748c05bf59e46073d4a5ba174e770a704dcc1a18e57edf7910844ca1", size = 2310736, upload-time = "2026-04-20T09:43:44.968Z" },
-    { url = "https://files.pythonhosted.org/packages/cb/3b/94e619b1754383e3bc880d469bfa75f2eb03067dc52516f7939add76994b/pixell-0.31.10-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:36bd61e78416610bdc1647f40747f30f51a56800f62b4d92ae9912aff577cd64", size = 2070191, upload-time = "2026-04-20T09:43:46.406Z" },
-    { url = "https://files.pythonhosted.org/packages/08/8c/34b8637da085a647bcb3fca6570fffa5084009613d0ad218d839bf6638d3/pixell-0.31.10-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:78bf01ab3b5462c10893337317e023ec58d7e855fc5d122da043cf00989f84b3", size = 2309705, upload-time = "2026-04-20T09:43:48.057Z" },
+    { url = "https://files.pythonhosted.org/packages/38/35/4bead8d72eefec1598be800df55f01554d894505b2d4a2af4dbbb868d992/pixell-0.32.4-cp312-cp312-macosx_26_0_arm64.whl", hash = "sha256:1bdf71a5ca3374f1124235aad8e3542fac646cbfce6f7ea693f6a3fc8c958ca9", size = 2081353, upload-time = "2026-08-05T14:13:35.716Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/e1/a933c1d754163d2063ea6486b64a423f8b71cc4e22f82aea464732eb2205/pixell-0.32.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b359000c15cf0f696ce154086db69ea56feba51457bd689f936122a4d601f022", size = 2320549, upload-time = "2026-08-05T14:13:37.304Z" },
+    { url = "https://files.pythonhosted.org/packages/51/5d/c3ad1302c02024ff95bfd11f35454790915b641bdc8a2160d8bd7859fba5/pixell-0.32.4-cp313-cp313-macosx_26_0_arm64.whl", hash = "sha256:2f9fd5ecc04218627cef43b46a2c840f6391bf0aa8f9183e6db58f293413fccc", size = 2077499, upload-time = "2026-08-05T14:13:39.188Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/92/f2409b8b2c7cb0108ce393159e00e74831211d8c0640849d4c6298a601ac/pixell-0.32.4-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f9afb8a2a7c50f7ffabf68034e515c6ba97ffd9d7bcf0cbf65b056bc752848e3", size = 2320456, upload-time = "2026-08-05T14:13:40.474Z" },
 ]
 
 [[package]]

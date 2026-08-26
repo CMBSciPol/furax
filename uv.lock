@@ -1016,6 +1016,7 @@ dependencies = [
     { name = "jaxtyping" },
     { name = "lineax" },
     { name = "numpy" },
+    { name = "s2fft" },
     { name = "scipy" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
     { name = "wadler-lindig" },
@@ -1041,10 +1042,6 @@ mapmaking = [
     { name = "matplotlib" },
     { name = "pixell" },
     { name = "pyyaml" },
-]
-sht = [
-    { name = "jax-healpy", extra = ["recommended"] },
-    { name = "s2fft" },
 ]
 so = [
     { name = "cyclopts" },
@@ -1089,8 +1086,7 @@ requires-dist = [
     { name = "healpy", specifier = ">=1.19.0" },
     { name = "jax", specifier = ">=0.11.0" },
     { name = "jax-cadre", marker = "extra == 'mapmaking'", specifier = ">=0.1.2" },
-    { name = "jax-healpy", extras = ["recommended"], git = "https://github.com/CMBSciPol/jax-healpy" },
-    { name = "jax-healpy", extras = ["recommended"], marker = "extra == 'sht'", git = "https://github.com/CMBSciPol/jax-healpy" },
+    { name = "jax-healpy", extras = ["recommended"], specifier = ">=0.7.1" },
     { name = "jaxtyping", specifier = ">=0.3.9" },
     { name = "lineax", specifier = ">=0.1.1" },
     { name = "litebird-sim", marker = "extra == 'interfaces'", git = "https://github.com/litebird/litebird_sim" },
@@ -1100,7 +1096,7 @@ requires-dist = [
     { name = "pixell", marker = "extra == 'mapmaking'", specifier = ">=0.31.3" },
     { name = "pysm3", marker = "extra == 'comp-sep'" },
     { name = "pyyaml", marker = "extra == 'mapmaking'", specifier = ">=6.0.3" },
-    { name = "s2fft", marker = "extra == 'sht'", git = "https://github.com/astro-informatics/s2fft" },
+    { name = "s2fft", git = "https://github.com/astro-informatics/s2fft" },
     { name = "scipy", specifier = ">=1.15" },
     { name = "so3g", marker = "python_full_version >= '3.13' and extra == 'interfaces'", specifier = ">=0.2.7" },
     { name = "so3g", marker = "python_full_version >= '3.13' and extra == 'so'", specifier = ">=0.2.7" },
@@ -1113,7 +1109,7 @@ requires-dist = [
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
     { name = "wadler-lindig", specifier = ">=0.1.7" },
 ]
-provides-extras = ["comp-sep", "interfaces", "lbs", "mapmaking", "sht", "so", "toast"]
+provides-extras = ["comp-sep", "interfaces", "lbs", "mapmaking", "so", "toast"]
 
 [package.metadata.requires-dev]
 cuda = [{ name = "jax", extras = ["cuda13"], specifier = ">=0.11.0" }]
@@ -1526,13 +1522,17 @@ with-cuda = [
 
 [[package]]
 name = "jax-healpy"
-version = "0.8.dev4+g2443c5f14"
-source = { git = "https://github.com/CMBSciPol/jax-healpy#2443c5f149fd2525e7a498f05e6bd76b53c25361" }
+version = "0.7.1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "equinox" },
     { name = "jax" },
     { name = "jaxtyping" },
     { name = "optax" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8d/f2/a1368e3b58763e61f9227bdcb59fcf6f36b5fd58cf3af4b2efc373f6006a/jax_healpy-0.7.1.tar.gz", hash = "sha256:bd80c919ccba739d0db0ce83e17e90e4b7b8beba2dfec38867728b38c160449b", size = 1937046, upload-time = "2026-08-25T08:37:55.353Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/6d/0d0309944cacfe117b862b6bd5b37ad2030c5b9d6d248e543d39598b1b8f/jax_healpy-0.7.1-py3-none-any.whl", hash = "sha256:8cac116feb8325773152970b34654e223a6467f8e8f52a3a09737ebbce8be608", size = 92857, upload-time = "2026-08-25T08:37:53.737Z" },
 ]
 
 [package.optional-dependencies]

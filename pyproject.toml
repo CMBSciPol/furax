@@ -16,7 +16,6 @@ readme = 'README.md'
 keywords = ['scientific computing']
 classifiers = [
     'Programming Language :: Python',
-    'Programming Language :: Python :: 3.11',
     'Programming Language :: Python :: 3.12',
     'Programming Language :: Python :: 3.13',
     'Intended Audience :: Science/Research',
@@ -32,12 +31,13 @@ dependencies = [
     'healpy>=1.19.0',
     'jax>=0.11.0',
     'jaxtyping>=0.3.9',
-    "jax-healpy[recommended]>=0.7.1",
+    'jax-healpy[recommended]>=0.7.1',
     'lineax>=0.1.1',
     'numpy>=2.1',
+    's2fft>=1.4.1.dev18',  # TODO: remove when next release is out; git source pinned in [tool.uv.sources]
     'scipy>=1.15',
     'typing-extensions; python_version < "3.13"',
-    "wadler-lindig>=0.1.7",
+    'wadler-lindig>=0.1.7',
 ]
 dynamic = ['version']
 
@@ -61,10 +61,6 @@ toast = [
 ]
 lbs = [
     'litebird_sim>=0.16.1',
-]
-sht = [
-    'jax-healpy[recommended]>=0.7.1',
-    's2fft',  # TODO: remove; needed for now since uv sources overrides don't apply to transitive deps
 ]
 interfaces = ["furax[so,toast,lbs]"]
 
@@ -153,8 +149,7 @@ xfail_strict = true
 
 [tool.uv.sources]
 litebird-sim = { git = "https://github.com/litebird/litebird_sim" }  # TODO: remove when 0.17.0 is released
-s2fft = { git = "https://github.com/astro-informatics/s2fft" }  # TODO: remove when next release is out
-jax-healpy = { git = "https://github.com/CMBSciPol/jax-healpy" }
+s2fft = { git = "https://github.com/astro-informatics/s2fft" }
 
 [tool.ruff]
 line-length = 100

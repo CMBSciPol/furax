@@ -28,14 +28,13 @@ import furax.linalg
 import furax.tree
 from furax import (
     AbstractLinearOperator,
-    Config,
     DiagonalOperator,
     IdentityOperator,
     MaskOperator,
     OperatorTag,
     SymmetricBandToeplitzOperator,
 )
-from furax.core import BlockDiagonalOperator, BlockRowOperator, IndexOperator
+from furax.core import IndexOperator
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -48,7 +47,6 @@ from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokesLiteral
 from furax.profiling import format_bytes
 
-from . import templates
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
 from ._model import ObservationModel
@@ -73,7 +71,7 @@ from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
 from .streaming import StreamOperator
-from .templates import PerDetectorTemplate
+from .templates import ATOPProjectionOperator
 from .weight import WeightOperator
 
 
@@ -655,7 +653,6 @@ class MapMaker:
         maker = {
             Methods.BINNED: BinnedMapMaker,
             Methods.MAXL: MLMapmaker,
-            Methods.TWOSTEP: TwoStepMapmaker,
             Methods.ATOP: ATOPMapMaker,
         }[config.method]
 
@@ -874,138 +871,6 @@ class MapMaker:
         )
         return IndexOperator((..., *jnp.where(valid)), in_structure=landscape.structure)
 
-    def get_template_operator(
-        self, observation: AbstractGroundObservation[Any]
-    ) -> BlockRowOperator:
-        """Create a template operator from the provided name and configuration."""
-        config = self.config
-        assert config.templates is not None
-        blocks: dict[str, AbstractLinearOperator] = {}
-
-        if poly := config.templates.polynomial:
-            blocks['polynomial'] = PerDetectorTemplate.polynomial(
-                max_poly_order=poly.legendre.max_order,
-                intervals=jnp.asarray(observation.get_scanning_intervals()),
-                times=jnp.asarray(observation.get_elapsed_times()),
-                n_dets=observation.n_detectors,
-                dtype=config.dtype,
-            )
-        if sss := config.templates.scan_synchronous:
-            blocks['scan_synchronous'] = PerDetectorTemplate.scan_synchronous(
-                legendre=sss.legendre,
-                azimuth=jnp.asarray(observation.get_azimuth()),
-                n_dets=observation.n_detectors,
-                dtype=config.dtype,
-            )
-        if baz := config.templates.binaz_synchronous:
-            blocks['binaz_synchronous'] = PerDetectorTemplate.binaz_synchronous(
-                bins=baz.bins,
-                azimuth=jnp.asarray(observation.get_azimuth()),
-                n_dets=observation.n_detectors,
-                dtype=config.dtype,
-            )
-        if hwpss := config.templates.hwp_synchronous:
-            blocks['hwp_synchronous'] = PerDetectorTemplate.hwp_synchronous(
-                n_harmonics=hwpss.n_harmonics,
-                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
-                n_dets=observation.n_detectors,
-                dtype=config.dtype,
-            )
-        if azhwpss := config.templates.azhwp_synchronous:
-            azimuth = jnp.asarray(observation.get_azimuth())
-            hwp_angles = jnp.asarray(observation.get_hwp_angles())
-            if azhwpss.split_scans:
-                blocks['azhwp_synchronous_left'] = PerDetectorTemplate.azhwp_synchronous(
-                    legendre=azhwpss.legendre,
-                    n_harmonics=azhwpss.n_harmonics,
-                    azimuth=azimuth,
-                    hwp_angles=hwp_angles,
-                    n_dets=observation.n_detectors,
-                    dtype=config.dtype,
-                    scan_mask=jnp.asarray(observation.get_left_scan_mask()),
-                )
-                blocks['azhwp_synchronous_right'] = PerDetectorTemplate.azhwp_synchronous(
-                    legendre=azhwpss.legendre,
-                    n_harmonics=azhwpss.n_harmonics,
-                    azimuth=azimuth,
-                    hwp_angles=hwp_angles,
-                    n_dets=observation.n_detectors,
-                    dtype=config.dtype,
-                    scan_mask=jnp.asarray(observation.get_right_scan_mask()),
-                )
-            else:
-                blocks['azhwp_synchronous'] = PerDetectorTemplate.azhwp_synchronous(
-                    legendre=azhwpss.legendre,
-                    n_harmonics=azhwpss.n_harmonics,
-                    azimuth=azimuth,
-                    hwp_angles=hwp_angles,
-                    n_dets=observation.n_detectors,
-                    dtype=config.dtype,
-                )
-        if binazhwpss := config.templates.binazhwp_synchronous:
-            blocks['binazhwp_synchronous'] = PerDetectorTemplate.binazhwp_synchronous(
-                bins=binazhwpss.bins,
-                n_harmonics=binazhwpss.n_harmonics,
-                azimuth=jnp.asarray(observation.get_azimuth()),
-                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
-                n_dets=observation.n_detectors,
-                dtype=config.dtype,
-            )
-        if shwpss := config.templates.spline_hwpss:
-            times = jnp.asarray(observation.get_elapsed_times())
-            blocks['spline_hwpss'] = PerDetectorTemplate.bspline_hwpss(
-                times=times,
-                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
-                n_dets=observation.n_detectors,
-                n_knots=shwpss.resolve_n_knots(times.size),
-                harmonics=shwpss.harmonics,
-                dtype=config.dtype,
-            )
-        if ground := config.templates.ground:
-            azimuth = jnp.asarray(observation.get_azimuth())
-            elevation = jnp.asarray(observation.get_elevation())
-            detector_quaternions = jnp.asarray(observation.get_detector_quaternions())
-            self._ground_landscape = templates.GroundTemplateOperator.get_landscape(
-                azimuth_resolution=ground.azimuth_resolution,
-                elevation_resolution=ground.elevation_resolution,
-                boresight_azimuth=azimuth,
-                boresight_elevation=elevation,
-                detector_quaternions=detector_quaternions,
-                stokes='IQU',
-                dtype=config.dtype,
-            )
-            ground_op = templates.GroundTemplateOperator.create(
-                azimuth_resolution=ground.azimuth_resolution,
-                elevation_resolution=ground.elevation_resolution,
-                boresight_azimuth=azimuth,
-                boresight_elevation=elevation,
-                boresight_rotation=jnp.zeros_like(azimuth),
-                detector_quaternions=detector_quaternions,
-                hwp_angles=jnp.asarray(observation.get_hwp_angles()),
-                stokes='IQU',
-                dtype=config.dtype,
-                landscape=self._ground_landscape,
-                batch_size=config.pointing.batch_size,
-            )
-            ones_tod = jnp.ones(
-                (observation.n_detectors, observation.n_samples), dtype=config.dtype
-            )
-            self._ground_coverage = ground_op.T(ones_tod)
-            nonzero_hits = jnp.argwhere(self._ground_coverage.i > 0)
-            indexer = IndexOperator(
-                (..., nonzero_hits[:, 0], nonzero_hits[:, 1]),
-                in_structure=furax.tree.as_structure(self._ground_coverage),
-            )
-            flattener = furax.asoperator(
-                lambda s: jnp.concatenate([s.i, s.q, s.u]),
-                in_structure=indexer.out_structure,
-            )
-            self._ground_selector = flattener @ indexer
-
-            blocks['ground'] = ground_op @ self._ground_selector.T
-
-        return BlockRowOperator(blocks=blocks)
-
 
 class BinnedMapMaker(MapMaker):
     """Class for mapmaking with diagonal noise covariance."""
@@ -1178,52 +1043,7 @@ class MLMapmaker(MapMaker):
         # Preconditioner
         # We use the approximate diagonal system matrix before the mask update
         preconditioner = selector @ diag_system.inverse() @ selector.T
-
-        # Templates (optional)
-        if config.use_templates:
-            template_op = self.get_template_operator(observation)
-            logger_info('Built template operators')
-            REGVAL = config.templates.regularization  # type: ignore[union-attr]
-            tmpl_inv_sys = {}
-            regs = {}
-            # Pass the operator as an explicit argument so JAX traces its arrays as inputs
-            # rather than hashing it as the jit fun (operators carry unhashable leaves).
-            apply = jax.jit(lambda op, v: op(v))
-            for tmpl, tmpl_op in template_op.blocks.items():
-                tmpl_sys = (tmpl_op.T @ diag_inv_noise @ masker @ tmpl_op).reduce()
-                # Approximation to the diagonal of the matrix
-                norm_sys = jnp.abs(apply(tmpl_sys, furax.tree.ones_like(tmpl_op.in_structure)))
-                # Regualrisation value is REGVAL times the smallest non-zero eigenvalue
-                regs[tmpl] = REGVAL * jnp.min(norm_sys[norm_sys > 0])
-                tmpl_inv_sys[tmpl] = DiagonalOperator(
-                    (norm_sys + regs[tmpl]),
-                    in_structure=tmpl_op.in_structure,
-                ).inverse()
-            template_preconditioner = BlockDiagonalOperator(tmpl_inv_sys)
-            logger_info('Built template preconditioner')
-            template_reg_op = BlockDiagonalOperator(
-                [
-                    DiagonalOperator(jnp.array([0.0]), in_structure=selector.out_structure),
-                    {
-                        tmpl: regs[tmpl]
-                        * IdentityOperator(in_structure=template_op.blocks[tmpl].in_structure)
-                        for tmpl in template_op.blocks
-                    },
-                ]
-            )
-            logger_info('Built template regularizer')
-            logger_info(f'Template operator input structure: {template_op.in_structure}')
-
-        # Mapmaking operator
-        p: AbstractLinearOperator
-        h: AbstractLinearOperator
-        if config.use_templates:
-            p = BlockDiagonalOperator([preconditioner, template_preconditioner])
-            h = BlockRowOperator([acquisition @ selector.T, template_op])
-            reg = template_reg_op
-        else:
-            p = preconditioner
-            h = acquisition @ selector.T
+        h = acquisition @ selector.T
 
         if config.gaps.treatment != GapTreatment.NESTED:
             M = masker @ inv_noise @ masker
@@ -1244,11 +1064,8 @@ class MLMapmaker(MapMaker):
             logger_info('Set up nested PCG for the noise inverse')
 
         solver = lineax.CG(**config.solver.options)
-        options = {'solver': solver, 'preconditioner': p}
-        if config.use_templates:
-            mapmaking_operator = (h.T @ M @ h + reg).I(**options) @ h.T @ M
-        else:
-            mapmaking_operator = (h.T @ M @ h).I(**options) @ h.T @ M
+        options = {'solver': solver, 'preconditioner': preconditioner}
+        mapmaking_operator = (h.T @ M @ h).I(**options) @ h.T @ M
 
         @jax.jit
         def process(d):  # type: ignore[no-untyped-def]
@@ -1257,10 +1074,7 @@ class MLMapmaker(MapMaker):
         logger_info('Completed setting up the solver')
 
         # Run mapmaking
-        if config.use_templates:
-            rec_map, tmpl_ampl = process(data)
-        else:
-            rec_map = process(data)
+        rec_map = process(data)
         result_map = selector.T(rec_map)
         result_map.i.block_until_ready()
         logger_info('Finished mapmaking computation')
@@ -1284,136 +1098,9 @@ class MLMapmaker(MapMaker):
             and config.weighting.mode != WeightingMode.IDENTITY
         ):
             output['noise_fit'] = noise_model.to_array()
-        if config.use_templates:
-            for key in tmpl_ampl:
-                output[f'template_{key}'] = tmpl_ampl[key]
-                output[f'template_reg_{key}'] = np.array(regs[key])
-            if 'ground' in tmpl_ampl:
-                output['ground_landscape'] = self._ground_landscape
-                output['ground_coverage'] = self._ground_coverage
-                output['ground_map'] = self._ground_selector.T(tmpl_ampl['ground'])
         if config.debug:
             proj_map = (masker @ acquisition)(result_map)
-            if config.use_templates:
-                projs = {
-                    'proj_map': proj_map,
-                    **{
-                        f'proj_{tmpl}': (masker @ template_op.blocks[tmpl])(tmpl_ampl[tmpl])
-                        for tmpl in tmpl_ampl
-                    },
-                }
-            else:
-                projs = {'proj_map': proj_map}
-            output['projs'] = projs
-
-        return output
-
-
-class TwoStepMapmaker(MapMaker):
-    """Class for binned mapmaking with templates, using the two-step estimation method."""
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-
-        # Validation on config
-        if not self.config.binned:
-            raise ValueError('Two-Step Mapmaker is incompatible with binned=False')
-        if self.config.demodulated:
-            raise ValueError('Two-Step Mapmaker is incompatible with demodulated=True')
-        if not self.config.use_templates:
-            raise ValueError('Two-Step Mapmaker is incompatible with no templates')
-
-    def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]:
-        config = self.config
-        logger_info = lambda msg: self.logger.info(f'Two-Step Mapmaker: {msg}')
-
-        # Data and landscape
-        data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
-        data_struct = ShapeDtypeStruct(data.shape, data.dtype)
-        landscape = self.get_landscape(observation)
-
-        # Acquisition (I, Q, U Maps -> TOD)
-        acquisition = self.get_acquisition(observation, landscape=landscape)
-        logger_info('Created acquisition operator')
-
-        # Optional mask for scanning
-        masker = self.get_scanning_mask_projector(observation)
-        logger_info('Created scanning mask operator')
-
-        # Noise
-        noise_model = self.get_or_fit_noise_model(observation)
-        inv_noise = noise_model.inverse_operator(data_struct)
-        logger_info('Created inverse noise covariance operator')
-
-        # System matrix
-        system = BJPreconditioner.create(acquisition.T @ masker @ inv_noise @ masker @ acquisition)
-        logger_info('Created system matrix')
-
-        # Map pixel selection
-        blocks = system.blocks
-        selector = self.get_pixel_selector(blocks, landscape)
-        logger_info(
-            f'Selected {prod(selector.out_structure.shape)}\
-                            /{prod(landscape.shape)} pixels'
-        )
-
-        # Templates
-        template_op = self.get_template_operator(observation)
-        logger_info('Built template operators')
-
-        # Define operators
-        system_inv = selector @ system.inverse() @ selector.T
-        A = acquisition @ selector.T
-        M = inv_noise
-        mp = masker
-        FA = M - M @ mp @ A @ system_inv @ A.T @ mp @ M
-
-        solver = lineax.CG(**config.solver.options)
-        with Config(solver=solver):
-            template_estimator = (
-                (template_op.T @ mp @ FA @ mp @ template_op).I @ template_op.T @ mp @ FA @ mp
-            )
-        map_estimator = system_inv @ A.T @ mp @ M @ mp
-
-        @jax.jit
-        def process(d):  # type: ignore[no-untyped-def]
-            x = template_estimator(d)  # Template amplitude estimates
-            s = map_estimator(d - template_op(x))  # Map estimates
-            return s, x
-
-        logger_info('Completed setting up the solver')
-
-        # Run mapmaking
-        rec_map, tmpl_ampl = process(data)
-        result_map = selector.T(rec_map)
-        result_map.i.block_until_ready()
-        logger_info('Finished mapmaking computation')
-
-        # Format output and compute auxiliary data
-        final_map = np.array([result_map.i, result_map.q, result_map.u])
-
-        output = {'map': final_map, 'weights': blocks}
-        for key in tmpl_ampl:
-            output[f'template_{key}'] = tmpl_ampl[key]
-        if isinstance(landscape, WCSLandscape):
-            output['wcs'] = landscape.to_wcs()
-        elif isinstance(landscape, AstropyWCSLandscape):
-            output['wcs'] = landscape.wcs
-        if (
-            config.weighting.source == NoiseSource.FIT
-            and config.weighting.mode != WeightingMode.IDENTITY
-        ):
-            output['noise_fit'] = noise_model.to_array()
-        if config.debug:
-            proj_map = (mp @ acquisition)(result_map)
-            projs = {
-                'proj_map': proj_map,
-                **{
-                    f'proj_{tmpl}': (mp @ template_op.blocks[tmpl])(tmpl_ampl[tmpl])
-                    for tmpl in tmpl_ampl
-                },
-            }
-            output['projs'] = projs
+            output['projs'] = {'proj_map': proj_map}
 
         return output
 
@@ -1446,9 +1133,7 @@ class ATOPMapMaker(MapMaker):
         logger_info('Created acquisition operator')
 
         # ATOP projector
-        atop_projector = templates.ATOPProjectionOperator(
-            self.config.atop_tau, in_structure=data_struct
-        )
+        atop_projector = ATOPProjectionOperator(self.config.atop_tau, in_structure=data_struct)
 
         # Optional mask for scanning
         masker = self.get_mask_projector(observation)

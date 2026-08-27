@@ -24,7 +24,6 @@ from furax.mapmaking.config import (
     PointingConfig,
     SkyPatch,
     SotodlibConfig,
-    TemplatesConfig,
     WCSConfig,
     WeightingConfig,
     WeightingMode,
@@ -34,7 +33,6 @@ from furax.mapmaking.mapmaker import (
     BinnedMapMaker,
     MapMaker,
     MLMapmaker,
-    TwoStepMapmaker,
     get_obs_distribution_to_process,
 )
 from furax.mapmaking.noise import WhiteNoiseModel
@@ -402,35 +400,6 @@ def _config(
     )
 
 
-class TestSingleObsTemplates:
-    """End-to-end coverage of the single-observation template path (MapMaker.make_map)."""
-
-    def test_ml_mapmaker_runs_with_templates(self) -> None:
-        # Regression: the template preconditioner build jits the template system operator;
-        # a composite furax operator carries unhashable leaves, so it must be wrapped in a
-        # lambda (mapmaker.py). Also locks the structured (n_dets, *shape) amplitude layout.
-        n_dets = 4
-        obs = FakeGroundObservation(n_dets=n_dets, n_samples=1024, sample_rate=100.0)
-
-        cfg = MapMakingConfig.for_method('ml')
-        cfg.weighting.source = NoiseSource.PRECOMPUTED  # use the obs noise model (finite)
-        cfg.landscape = LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8))
-        cfg.templates = TemplatesConfig.full_defaults()
-        cfg.templates.ground = None  # ground template needs pointing/landscape, out of scope here
-        cfg.templates.spline_hwpss.samples_per_knot = 256  # 1024 // 256 -> n_knots=4
-
-        res = MLMapmaker(config=cfg).make_map(obs)
-
-        assert bool(jnp.all(jnp.isfinite(res['map'])))
-        # amplitudes are structured (n_dets, *basis_shape), not flat
-        assert res['template_polynomial'].shape == (n_dets, 2, 4)  # intervals x (orders 0..3)
-        assert res['template_azhwp_synchronous'].shape == (n_dets, 4, 9)  # orders x (DC+2*4)
-        assert res['template_spline_hwpss'].shape == (n_dets, 6, 2)  # (n_knots + 2) x cos/sin
-        for key, value in res.items():
-            if key.startswith('template_') and not key.startswith('template_reg'):
-                assert bool(jnp.all(jnp.isfinite(value))), key
-
-
 class TestSingleObsSolverGuards:
     """Solver/weighting compatibility on the single-observation ``MapMaker`` path.
 
@@ -468,7 +437,7 @@ class TestSingleObsSolverGuards:
         res = MLMapmaker(config=cfg).make_map(obs)
         assert bool(jnp.all(jnp.isfinite(res['map'])))
 
-    @pytest.mark.parametrize('maker_cls', [BinnedMapMaker, TwoStepMapmaker, ATOPMapMaker])
+    @pytest.mark.parametrize('maker_cls', [BinnedMapMaker, ATOPMapMaker])
     def test_direct_solvers_reject_bilinear_pointing(self, maker_cls: type[MapMaker]) -> None:
         """The direct binned solvers refuse bilinear pointing at construction time."""
         cfg = self._config(WeightingMode.DIAGONAL, interpolation='bilinear', method=Methods.BINNED)

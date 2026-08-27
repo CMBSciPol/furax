@@ -1,39 +1,42 @@
 """Template operators for fitting structured nuisance signals out of the data.
 
-A template turns a small set of per-detector amplitudes into a time stream, so
-the mapmaker can fit and remove unwanted but predictable signals (slow drifts,
+A template turns a small set of per-detector amplitudes into a time stream, so the
+mapmaker can fit and remove unwanted but predictable signals (slow drifts,
 scan-synchronous pickup, HWP-synchronous lines, T-to-P leakage).
 
-The building block is a `Basis`: a small set of functions of time (Legendre
-polynomials, HWP harmonics, ...). Going from amplitudes to a signal is `expand`;
-the reverse is `project`. A `PerDetectorTemplate` then gives every detector its
-own copy (or its own basis), so each detector fits its own amplitudes.
+The building block is a [`Basis`][]: a small set of functions of time (Legendre polynomials,
+HWP harmonics, ...). Going from amplitudes to a signal is ``expand``; the reverse is
+``project``. A [`TemplateOperator`][] combines every enabled template into one operator, keyed
+by template name, giving each detector its own amplitudes;
+[`StokesTemplateOperator`][] does the same for a [`Stokes`][] TOD, one amplitude set per leg.
 
-A few `Basis` flavours trade memory for structure:
-- `TensorBasis`: stores every basis function value directly, as a dense array
-  (optionally on a coarser time grid, `q > 1`, to trade resolution for memory).
-- `KroneckerBasis`: a product of independent factors (e.g. azimuth x HWP), stored
+A few [`Basis`][] flavours trade memory for structure:
+
+- [`TensorBasis`][]: stores every basis function value directly, as a dense array
+  (optionally on a coarser time grid, ``q > 1``, to trade resolution for memory).
+- [`KroneckerBasis`][]: a product of independent factors (e.g. azimuth x HWP), stored
   factored to save memory.
-- `SegmentedBasis`: each sample belongs to one segment (e.g. one scan interval),
+- [`SegmentedBasis`][]: each sample belongs to one segment (e.g. one scan interval),
   stored sparsely instead of as a mostly-zero dense array.
-- `WindowedBasis`: each sample reads a fixed window of overlapping blocks, the
-  overlapping generalisation of `SegmentedBasis`.
+- [`WindowedBasis`][]: each sample reads a fixed window of overlapping blocks, the
+  overlapping generalisation of [`SegmentedBasis`][].
 
-Build several templates and combine them by wrapping each in a
-`PerDetectorTemplate` and stacking with `BlockRowOperator`.
+A basis is normally shared by every detector. When the functions differ from detector to
+detector, as for the T-to-P leakage template, [`Basis.per_detector_stack`][] stacks one basis per
+detector into a single [`Basis`][] of any flavour.
 """
 
 from abc import abstractmethod
 from collections.abc import Sequence
-from dataclasses import field
+from dataclasses import field, fields
 from itertools import chain
 from math import prod
-from typing import Any, Self
+from typing import Any, Literal, Self, cast
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 from jax import Array, ShapeDtypeStruct
-from jax import numpy as jnp
 from jaxtyping import DTypeLike, Float, Int, PyTree
 
 from furax import AbstractLinearOperator, square
@@ -42,9 +45,35 @@ from furax.math import bspline, quaternion
 from furax.obs import HWPOperator, LinearPolarizerOperator
 from furax.obs.landscapes import HorizonLandscape
 from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import ValidStokesLiteral
+from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 from .config import BinsConfig, PolynomialOrders
+
+__all__ = [
+    'StokesLeg',
+    'Basis',
+    'TensorBasis',
+    'KroneckerBasis',
+    'SegmentedBasis',
+    'WindowedBasis',
+    'polynomial_basis',
+    'temperature_basis',
+    'scan_synchronous_basis',
+    'binaz_synchronous_basis',
+    'hwp_synchronous_basis',
+    'azhwp_synchronous_basis',
+    'binazhwp_synchronous_basis',
+    'bspline_hwpss_basis',
+    'AbstractTemplateOperator',
+    'TemplateOperator',
+    'StokesTemplateOperator',
+    'GroundTemplateOperator',
+    'ATOPProjectionOperator',
+]
+
+
+StokesLeg = Literal['i', 'q', 'u', 'v']
+"""One Stokes component, lower case."""
 
 
 class Basis(AbstractLinearOperator):
@@ -62,9 +91,83 @@ class Basis(AbstractLinearOperator):
     - `project` (analysis, signal to amplitudes): `a = B.T(s)`.
     """
 
+    per_detector: bool = field(metadata={'static': True}, default=False, kw_only=True)
+    """Whether the stored arrays carry a leading detector axis."""
+
+    @property
+    @abstractmethod
+    def _index_shape(self) -> tuple[int, ...]:
+        """Single-detector amplitude index shape, read off the stored arrays."""
+
+    @property
+    @abstractmethod
+    def _array_dtype(self) -> DTypeLike:
+        """Dtype of the stored basis values."""
+
+    def __post_init__(self) -> None:
+        # ``in_structure`` is derived, never passed: it can then never disagree with the arrays.
+        if self.in_structure is not None:
+            raise ValueError('in_structure is derived from the basis arrays; do not pass it')
+        # ``per_detector_stack`` marks its result after unflattening, which does not run this,
+        # so reaching here with the marker set means a stack built by hand: ``shape`` would
+        # describe one detector while the arrays hold many.
+        if self.per_detector:
+            raise ValueError('per_detector is set by per_detector_stack, not by the constructor')
+        # Construction is the only caller, so ``_index_shape`` always sees one detector's arrays.
+        object.__setattr__(
+            self, 'in_structure', ShapeDtypeStruct(self._index_shape, self._array_dtype)
+        )
+        super().__post_init__()
+
+    @classmethod
+    def per_detector_stack(cls, **attributes: Any) -> Self:
+        """One basis per detector, stacked into a single basis.
+
+        Use this for a template whose functions differ from detector to detector, such as the
+        temperature-to-polarization leakage template, whose basis is each detector's own
+        temperature stream. Available on every flavour.
+
+        Call it as you would the constructor, with every array argument carrying a leading
+        detector axis. All detectors then share one index shape, dtype and static metadata,
+        read off detector 0, and differ only in their array values. The result keeps that
+        single-detector metadata, so `shape` and `in_structure` still describe one detector's
+        amplitudes, which is what the template operators map over.
+
+        Args:
+            attributes: The constructor arguments. Array arguments carry a leading detector
+                axis; static ones (`q`, `n_segments`, ...) are passed as usual.
+
+        Returns:
+            A basis whose arrays carry a leading detector axis.
+
+        Raises:
+            ValueError: If an array argument is missing, or they disagree on the detector count.
+
+        Examples:
+            >>> temperature = jnp.arange(6.0).reshape(3, 2)  # 3 detectors, 2 samples
+            >>> basis = TensorBasis.per_detector_stack(values=temperature[:, None])
+            >>> basis.shape, basis.values.shape, basis.per_detector
+            ((1,), (3, 1, 2), True)
+        """
+        array_names = [f.name for f in fields(cls) if not f.metadata.get('static', False)]
+        if missing := [name for name in array_names if name not in attributes]:
+            raise ValueError(f'{cls.__name__} needs a detector-stacked {", ".join(missing)}')
+
+        stacked = [attributes[name] for name in array_names]
+        if len(n_dets := {leaf.shape[0] for leaf in jax.tree.leaves(stacked)}) != 1:
+            raise ValueError(f'detector axes disagree: {sorted(n_dets)}')
+
+        # Detector 0 fixes the metadata; unflatten then carries it over to the stack untouched,
+        # which is the point: the single-detector index shape must survive the stacking.
+        first = lambda x: jax.tree.map(lambda leaf: leaf[0], x)
+        proto = cls(**{k: first(v) if k in array_names else v for k, v in attributes.items()})
+        basis: Self = jax.tree.unflatten(jax.tree.structure(proto), jax.tree.leaves(stacked))
+        object.__setattr__(basis, 'per_detector', True)
+        return basis
+
     @property
     def shape(self) -> tuple[int, ...]:
-        """Shape of the basis index."""
+        """Shape of the basis index, for a single detector."""
         return self.in_structure.shape  # type: ignore[no-any-return]
 
     @property
@@ -127,7 +230,18 @@ class TensorBasis(Basis):
     q: int = field(metadata={'static': True}, default=1)
     n_full: int = field(metadata={'static': True}, default=0)
 
+    @property
+    def _index_shape(self) -> tuple[int, ...]:
+        return self.values.shape[:-1]
+
+    @property
+    def _array_dtype(self) -> DTypeLike:
+        return self.values.dtype
+
     def __post_init__(self) -> None:
+        if self.n_full == 0:
+            # q == 1: the stored grid is already the full grid.
+            object.__setattr__(self, 'n_full', self.values.shape[-1])
         super().__post_init__()
         if self.q < 1:
             raise ValueError(f'q must be >= 1, got {self.q}.')
@@ -135,24 +249,6 @@ class TensorBasis(Basis):
         # the coarse grid must be the q-block count covering n_full, i.e. n_dec = ceil(n_full / q).
         if not (n_dec - 1) * self.q < self.n_full <= n_dec * self.q:
             raise ValueError(f'n_dec={n_dec} inconsistent with n_full={self.n_full}, q={self.q}.')
-
-    @classmethod
-    def create(
-        cls,
-        values: Float[Array, '*shape samp_dec'],
-        q: int = 1,
-        n_full: int | None = None,
-    ) -> Self:
-        shape = values.shape[:-1]
-        if n_full is None:
-            # q == 1: the stored grid is already the full grid.
-            n_full = values.shape[-1]
-        return cls(
-            values=values,
-            q=q,
-            n_full=n_full,
-            in_structure=ShapeDtypeStruct(shape, values.dtype),
-        )
 
     @property
     def n_points(self) -> int:
@@ -201,14 +297,13 @@ class KroneckerBasis(Basis):
 
     factors: tuple[Float[Array, 'd samp'], ...]
 
-    @classmethod
-    def create(cls, factors: tuple[Float[Array, 'd samp'], ...]) -> Self:
-        shape = tuple(f.shape[0] for f in factors)
-        dtype = factors[0].dtype
-        return cls(
-            factors=factors,
-            in_structure=ShapeDtypeStruct(shape, dtype),
-        )
+    @property
+    def _index_shape(self) -> tuple[int, ...]:
+        return tuple(f.shape[0] for f in self.factors)
+
+    @property
+    def _array_dtype(self) -> DTypeLike:
+        return self.factors[0].dtype
 
     @property
     def n_points(self) -> int:
@@ -251,20 +346,15 @@ class SegmentedBasis(Basis):
 
     segment: Int[Array, ' samp']
     values: Float[Array, 'k samp']
+    n_segments: int = field(metadata={'static': True})
 
-    @classmethod
-    def create(
-        cls,
-        segment: Int[Array, ' samp'],
-        values: Float[Array, 'k samp'],
-        n_segments: int,
-    ) -> Self:
-        k = values.shape[0]
-        return cls(
-            segment=segment,
-            values=values,
-            in_structure=ShapeDtypeStruct((n_segments, k), values.dtype),
-        )
+    @property
+    def _index_shape(self) -> tuple[int, ...]:
+        return (self.n_segments, self.values.shape[0])
+
+    @property
+    def _array_dtype(self) -> DTypeLike:
+        return self.values.dtype
 
     @property
     def n_points(self) -> int:
@@ -304,34 +394,31 @@ class WindowedBasis(Basis):
     offset: Int[Array, ' samp']
     block_weights: Float[Array, 'O samp']
     sub_values: Float[Array, 'k samp']
+    n_blocks: int = field(metadata={'static': True})
 
-    @classmethod
-    def create(
-        cls,
-        offset: Int[Array, ' samp'],
-        block_weights: Float[Array, 'O samp'],
-        sub_values: Float[Array, 'k samp'],
-        n_blocks: int,
-    ) -> Self:
-        n_window, n_points = block_weights.shape
-        k = sub_values.shape[0]
-        if offset.shape != (n_points,) or sub_values.shape[1] != n_points:
-            raise ValueError(
-                f'sample axes disagree: offset {offset.shape}, block_weights {block_weights.shape}'
-                f', sub_values {sub_values.shape}'
+    @property
+    def _index_shape(self) -> tuple[int, ...]:
+        return (self.n_blocks, self.sub_values.shape[0])
+
+    @property
+    def _array_dtype(self) -> DTypeLike:
+        return self.sub_values.dtype
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        n_window, n_points = self.block_weights.shape
+        if self.offset.shape != (n_points,) or self.sub_values.shape[1] != n_points:
+            msg = (
+                f'sample axes disagree: offset {self.offset.shape}, block_weights '
+                f'{self.block_weights.shape}, sub_values {self.sub_values.shape}'
             )
-        if n_window > n_blocks:
-            raise ValueError(f'window ({n_window}) wider than block count ({n_blocks})')
-        return cls(
-            offset=offset,
-            block_weights=block_weights,
-            sub_values=sub_values,
-            in_structure=ShapeDtypeStruct((n_blocks, k), sub_values.dtype),
-        )
+            raise ValueError(msg)
+        if n_window > self.n_blocks:
+            raise ValueError(f'window ({n_window}) wider than block count ({self.n_blocks})')
 
     @property
     def n_points(self) -> int:
-        return self.offset.shape[0]
+        return self.offset.shape[-1]
 
     def _block_indices(self) -> Int[Array, 'samp O']:
         # each sample's window: O consecutive block ids starting at its offset.
@@ -445,275 +532,339 @@ def _harmonics(
     return jnp.concatenate(parts, axis=0).astype(dtype)
 
 
-class PerDetectorTemplate(AbstractLinearOperator):
-    """Turn a single-detector `Basis` into a per-detector template operator.
+def polynomial_basis(
+    max_poly_order: int,
+    intervals: Float[Array, 'n_intervals 2'],
+    times: Float[Array, ' samp'],
+    dtype: DTypeLike,
+    valid_mask: Float[Array, ' samp'] | None = None,
+) -> Basis:
+    """Basis for a polynomial drift template, one polynomial per scanning interval.
 
-    Each detector is an independent block fitting its own amplitudes. Two modes:
+    Each sample belongs to one interval and is fitted with Legendre orders
+    `0..max_poly_order` over that interval.
 
-    - `shared_basis=True` (default): all detectors use the same basis. Used by templates
-      whose basis depends only on shared quantities (azimuth, HWP angle): polynomial,
-      scan- and HWP-synchronous.
-    - `shared_basis=False`: each detector has its own basis. Used by the T2P leakage
-      template, where detector `d`'s basis is its own temperature stream.
+    Assumes `intervals` are sorted, non-overlapping `[start, end)` rows. Samples in
+    gaps or past the last interval get a zero basis column. `valid_mask` optionally
+    zeroes flagged samples (1 = keep, 0 = drop) so they neither carry template
+    signal nor constrain the fitted amplitudes.
     """
+    n_samps = times.size
+    n_intervals = intervals.shape[0]
+    starts = intervals[:, 0]
+    ends = intervals[:, 1]
 
-    operator: AbstractLinearOperator
-    shared_basis: bool = field(default=True, metadata={'static': True})
+    s = jnp.arange(n_samps)
+    # interval id per sample: last interval whose start <= s (intervals sorted),
+    # clamped into range. Gaps/out-of-range are caught by ``in_range`` below.
+    segment = jnp.clip(jnp.searchsorted(starts, s, side='right') - 1, 0, n_intervals - 1)
+    seg_start = starts[segment]
+    seg_end = ends[segment]
+    in_range = (s >= seg_start) & (s < seg_end)
+
+    t0 = times[seg_start]
+    span = jnp.where(seg_end > seg_start + 1, times[seg_end - 1] - t0, 1.0)
+    # rescale each sample to [-1, 1] within its own interval; out-of-range
+    # samples sit at 0 and are zeroed by ``in_range`` below.
+    u = jnp.where(in_range, -1.0 + 2.0 * (times - t0) / span, 0.0)
+    legs = _legendre_values(u, 0, max_poly_order, dtype)  # (k, n_samps)
+    legs = legs * in_range[None, :]
+    if valid_mask is not None:
+        legs = legs * valid_mask[None, :].astype(dtype)
+
+    return SegmentedBasis(segment.astype(jnp.int32), legs, n_intervals)
+
+
+def temperature_basis(
+    temperature: Float[Array, 'det samp'],
+    dtype: DTypeLike,
+    fit_band: tuple[float, float] | None = None,
+    sample_rate: Float[Array, ''] | float = 1.0,
+    decimation_factor: int = 1,
+) -> Basis:
+    """Per-detector basis for a temperature-to-polarization leakage template.
+
+    Each detector's basis is just its own temperature stream, so fitting one amplitude
+    per detector estimates how much temperature leaks into its polarization.
+
+    `fit_band=(f0, f1)` restricts the temperature basis to that frequency band (Hz), so
+    the leakage is both estimated and removed only there, keeping the template a clean
+    linear operator.
+
+    `decimation_factor=q` stores the basis on a `q`-times coarser grid to cut memory; the
+    coarse-grid Nyquist frequency `sample_rate / 2q` must stay above `f1`. As a rule of
+    thumb keep it at a few times `f1` (`q ≲ sample_rate / 6·f1`): the fractional error on
+    the fitted amplitude grows like `(f1 / (sample_rate / 2q))²`.
+
+    Assumes `temperature` is already deglitched/gap-filled upstream: a glitch left in it
+    would smear across the band and bias the fitted amplitude.
+    """
+    t = temperature
+    if fit_band is not None:
+        f0, f1 = fit_band
+        freqs = jnp.fft.rfftfreq(t.shape[-1], d=1.0 / sample_rate)
+        band = (freqs > f0) & (freqs < f1)
+        t = jnp.fft.irfft(jnp.fft.rfft(t, axis=-1) * band, n=t.shape[-1], axis=-1)
+    n_dets, n_full = t.shape
+    q = decimation_factor
+    if q > 1:
+        # Block-average onto a q-times coarser grid: pad the tail to a whole block,
+        # reshape (..., n_dec, q) and mean. ``TensorBasis`` hold-upsamples back to
+        # ``n_full`` in synthesis (band-limits above sample_rate / 2q).
+        n_dec = -(-n_full // q)  # ceil
+        pad = n_dec * q - n_full
+        tp = jnp.pad(t, [(0, 0), (0, pad)])
+        t_dec = tp.reshape(n_dets, n_dec, q).mean(axis=-1)
+        values = t_dec[:, None, :].astype(dtype)  # (det, k=1, dec)
+        return TensorBasis.per_detector_stack(values=values, q=q, n_full=n_full)
+    values = t[:, None, :].astype(dtype)  # (det, k=1, samp)
+    return TensorBasis.per_detector_stack(values=values)
+
+
+def scan_synchronous_basis(
+    legendre: PolynomialOrders,
+    azimuth: Float[Array, ' samp'],
+    dtype: DTypeLike,
+) -> Basis:
+    """Scan-synchronous (azimuth-only) basis on a global Legendre basis."""
+    legs = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)
+    return TensorBasis(legs)
+
+
+def binaz_synchronous_basis(
+    bins: BinsConfig,
+    azimuth: Float[Array, ' samp'],
+    dtype: DTypeLike,
+) -> Basis:
+    """Binned azimuth-synchronous basis, no HWP coupling: one amplitude per azimuth bin."""
+    weights = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
+    return TensorBasis(weights)
+
+
+def hwp_synchronous_basis(
+    n_harmonics: int,
+    hwp_angles: Float[Array, ' samp'],
+    dtype: DTypeLike,
+) -> Basis:
+    """HWP-synchronous basis: harmonics of the HWP angle, `k = 1..n_harmonics`."""
+    matrix = _harmonics(hwp_angles, n_harmonics, dtype, dc=False)
+    return TensorBasis(matrix)
+
+
+def azhwp_synchronous_basis(
+    legendre: PolynomialOrders,
+    n_harmonics: int,
+    azimuth: Float[Array, ' samp'],
+    hwp_angles: Float[Array, ' samp'],
+    dtype: DTypeLike,
+    scan_mask: Float[Array, ' samp'] | None = None,
+) -> Basis:
+    """Azimuth-Legendre x HWP-harmonic basis (Kronecker product of the two).
+
+    `scan_mask` optionally zeroes the azimuth leg on flagged samples (e.g. to fit separate
+    amplitudes per scan direction).
+    """
+    poly = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)
+    if scan_mask is not None:
+        poly = scan_mask[None, :] * poly
+    harm = _harmonics(hwp_angles, n_harmonics, dtype, dc=True)
+    return KroneckerBasis((poly, harm))
+
+
+def binazhwp_synchronous_basis(
+    bins: BinsConfig,
+    n_harmonics: int,
+    azimuth: Float[Array, ' samp'],
+    hwp_angles: Float[Array, ' samp'],
+    dtype: DTypeLike,
+) -> Basis:
+    """Azimuth-binned x HWP-harmonic basis (azimuth is always binned)."""
+    bin_basis = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
+    harm = _harmonics(hwp_angles, n_harmonics, dtype, dc=True)
+    return KroneckerBasis((bin_basis, harm))
+
+
+def bspline_hwpss_basis(
+    times: Float[Array, ' samp'],
+    hwp_angles: Float[Array, ' samp'],
+    n_knots: int,
+    harmonics: int | Sequence[int],
+    dtype: DTypeLike,
+) -> Basis:
+    """Spline-based HWP synchronous basis.
+
+    A cubic B-spline models the slowly time-varying amplitude of the HWP-synchronous
+    signal: knot `j` carries a `(sin kχ, cos kχ)` pair for each harmonic `k`, so the
+    amplitudes have shape `(K, 2*n_harmonics)` with `K = n_knots + 2`.
+    """
+    offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
+    sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False).astype(dtype)
+    return WindowedBasis(offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2)
+
+
+class AbstractTemplateOperator(AbstractLinearOperator):
+    """Every enabled template as one operator, from amplitudes keyed by template name to a TOD."""
+
+    # The bases must stay the only dynamic leaves: an operator then stacks under a scan over
+    # observations by gaining a leading axis on the basis arrays, everything else being static.
+    bases: dict[str, Any]
+    n_dets: int = field(metadata={'static': True})
+
+    def __post_init__(self) -> None:
+        # ``in_structure`` is derived, never passed: it can then never disagree with the bases.
+        if self.in_structure is not None:
+            raise ValueError('in_structure is derived from the bases; do not pass it')
+        object.__setattr__(self, 'in_structure', self._amplitude_structure())
+        super().__post_init__()
+
+    # ---- amplitude side -------------------------------------------------------------------------
+    @abstractmethod
+    def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        """``bases`` with each basis replaced by the amplitudes it takes (``_amplitude_leaf``)."""
+
+    def _amplitude_leaf(self, basis: Basis) -> jax.ShapeDtypeStruct:
+        return jax.ShapeDtypeStruct((self.n_dets, *basis.shape), basis.dtype)
+
+    # ---- TOD side -------------------------------------------------------------------------------
+    @abstractmethod
+    def _a_basis(self) -> Basis:
+        """Any one of the bases: they agree on sample count and dtype."""
+
+    def _stream_structure(self) -> jax.ShapeDtypeStruct:
+        """One detector-by-sample stream, the shape every Stokes leg of the TOD takes."""
+        b = self._a_basis()
+        return jax.ShapeDtypeStruct((self.n_dets, b.n_points), b.dtype)
+
+    def _zero_stream(self) -> Array:
+        s = self._stream_structure()
+        return jnp.zeros(s.shape, s.dtype)
+
+    # ---- per-detector expand / project of one basis ---------------------------------------------
+    @staticmethod
+    def _in_axes(basis: Basis) -> tuple[int | None, int]:
+        # map over the basis's own detector axis when it has one, broadcast it when shared
+        return (0 if basis.per_detector else None, 0)
 
     @classmethod
-    def from_basis(cls, basis: Basis, n_dets: int, *, shared: bool = True) -> Self:
-        """Build the per-detector operator over `n_dets` detectors from a single `basis`.
+    def _expand(cls, basis: Basis, a: Array) -> Array:
+        vmapped = jax.vmap(lambda op, ai: op.expand(ai), in_axes=cls._in_axes(basis))
+        return vmapped(basis, a)  # type: ignore[no-any-return]
 
-        `shared=True` uses one basis for all detectors; `shared=False` expects a
-        per-detector basis, one per detector (see the class docstring).
-        """
-        return cls(
-            operator=basis,
-            shared_basis=shared,
-            in_structure=jax.ShapeDtypeStruct((n_dets, *basis.shape), basis.dtype),
-        )
+    @classmethod
+    def _project(cls, basis: Basis, s: Array) -> Array:
+        vmapped = jax.vmap(lambda op, si: op.project(si), in_axes=cls._in_axes(basis))
+        return vmapped(basis, s)  # type: ignore[no-any-return]
 
-    @property
-    def out_structure(self) -> jax.ShapeDtypeStruct:
-        n_dets = self.in_structure.shape[0]
-        out = self.operator.out_structure
-        return jax.ShapeDtypeStruct((n_dets, *out.shape), out.dtype)
-
-    def mv(self, x: Float[Array, ' det *shape']) -> Float[Array, 'det samp']:
-        if self.shared_basis:
-            # broadcast the shared operator across detectors.
-            return jax.vmap(self.operator.mv)(x)  # type: ignore[no-any-return]
-        # slice the basis values on the detector axis in lockstep with x
-        return jax.vmap(lambda op, xi: op.mv(xi), in_axes=(0, 0))(self.operator, x)  # type: ignore[no-any-return]
+    # ---- adjoint --------------------------------------------------------------------------------
+    @abstractmethod
+    def project(self, tod: PyTree[Array]) -> PyTree[Array]:
+        """Every template's amplitudes, from a TOD. This is the transpose's ``mv``."""
 
     def transpose(self) -> AbstractLinearOperator:
-        return PerDetectorTemplate(
-            self.operator.T, shared_basis=self.shared_basis, in_structure=self.out_structure
-        )
+        return _TemplateOperatorTranspose(self)
 
-    @classmethod
-    def scan_synchronous(
-        cls,
-        legendre: PolynomialOrders,
-        azimuth: Float[Array, ' samp'],
-        n_dets: int,
-        dtype: DTypeLike,
-    ) -> Self:
-        """Scan-synchronous (azimuth-only) template on a global Legendre basis."""
-        legs = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)
-        return cls.from_basis(TensorBasis.create(legs), n_dets=n_dets)
 
-    @classmethod
-    def binaz_synchronous(
-        cls,
-        bins: BinsConfig,
-        azimuth: Float[Array, ' samp'],
-        n_dets: int,
-        dtype: DTypeLike,
-    ) -> Self:
-        """Binned azimuth-synchronous template, no HWP coupling.
+class TemplateOperator(AbstractTemplateOperator):
+    """Templates over a TOD with no Stokes axis, producing one ``(n_dets, n_points)`` array.
 
-        One amplitude per azimuth bin per detector.
-        """
-        weights = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
-        return cls.from_basis(TensorBasis.create(weights), n_dets=n_dets)
+    Each template contributes ``(n_dets, *basis.shape)`` amplitudes, and the TOD is their summed
+    expansion.
+    """
 
-    @classmethod
-    def hwp_synchronous(
-        cls,
-        n_harmonics: int,
-        hwp_angles: Float[Array, ' samp'],
-        n_dets: int,
-        dtype: DTypeLike,
-    ) -> Self:
-        """HWP-synchronous template: harmonics of the HWP angle, `k = 1..n_harmonics`."""
-        matrix = _harmonics(hwp_angles, n_harmonics, dtype, dc=False)
-        return cls.from_basis(TensorBasis.create(matrix), n_dets=n_dets)
+    bases: dict[str, Basis]
 
-    @classmethod
-    def azhwp_synchronous(
-        cls,
-        legendre: PolynomialOrders,
-        n_harmonics: int,
-        azimuth: Float[Array, ' samp'],
-        hwp_angles: Float[Array, ' samp'],
-        n_dets: int,
-        dtype: DTypeLike,
-        scan_mask: Float[Array, ' samp'] | None = None,
-    ) -> Self:
-        """Azimuth-Legendre × HWP-harmonic template (Kronecker product of the two).
+    def _a_basis(self) -> Basis:
+        return next(iter(self.bases.values()))
 
-        `scan_mask` optionally zeroes the azimuth leg on flagged samples (e.g. to fit
-        separate amplitudes per scan direction).
-        """
-        poly = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)
-        if scan_mask is not None:
-            poly = scan_mask[None, :] * poly
-        harm = _harmonics(hwp_angles, n_harmonics, dtype, dc=True)
-        return cls.from_basis(KroneckerBasis.create((poly, harm)), n_dets=n_dets)
+    def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return {name: self._amplitude_leaf(basis) for name, basis in self.bases.items()}
 
-    @classmethod
-    def binazhwp_synchronous(
-        cls,
-        bins: BinsConfig,
-        n_harmonics: int,
-        azimuth: Float[Array, ' samp'],
-        hwp_angles: Float[Array, ' samp'],
-        n_dets: int,
-        dtype: DTypeLike,
-    ) -> Self:
-        """Azimuth-binned × HWP-harmonic template (azimuth is always binned)."""
-        bin_basis = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
-        harm = _harmonics(hwp_angles, n_harmonics, dtype, dc=True)
-        return cls.from_basis(KroneckerBasis.create((bin_basis, harm)), n_dets=n_dets)
+    @property
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self._stream_structure()
 
-    @classmethod
-    def polynomial(
-        cls,
-        max_poly_order: int,
-        intervals: Float[Array, 'n_intervals 2'],
-        times: Float[Array, ' samp'],
-        n_dets: int,
-        dtype: DTypeLike,
-        valid_mask: Float[Array, ' samp'] | None = None,
-    ) -> Self:
-        """A polynomial drift template, one polynomial per scanning interval.
+    def mv(self, x: PyTree[Array]) -> PyTree[Array]:
+        stream = self._zero_stream()
+        for name, basis in self.bases.items():
+            stream = stream + self._expand(basis, x[name])
+        return stream
 
-        Each sample belongs to one interval and is fitted with Legendre orders
-        `0..max_poly_order` over that interval.
+    def project(self, tod: PyTree[Array]) -> PyTree[Array]:
+        return {name: self._project(basis, tod) for name, basis in self.bases.items()}
 
-        Assumes `intervals` are sorted, non-overlapping `[start, end)` rows. Samples in
-        gaps or past the last interval get a zero basis column. `valid_mask` optionally
-        zeroes flagged samples (1 = keep, 0 = drop) so they neither carry template
-        signal nor constrain the fitted amplitudes.
-        """
-        n_samps = times.size
-        n_intervals = intervals.shape[0]
-        starts = intervals[:, 0]
-        ends = intervals[:, 1]
 
-        s = jnp.arange(n_samps)
-        # interval id per sample: last interval whose start <= s (intervals sorted),
-        # clamped into range. Gaps/out-of-range are caught by ``in_range`` below.
-        segment = jnp.clip(jnp.searchsorted(starts, s, side='right') - 1, 0, n_intervals - 1)
-        seg_start = starts[segment]
-        seg_end = ends[segment]
-        in_range = (s >= seg_start) & (s < seg_end)
+class StokesTemplateOperator(AbstractTemplateOperator):
+    """Templates over a [`Stokes`][] TOD, each leg one ``(n_dets, n_points)`` array.
 
-        t0 = times[seg_start]
-        span = jnp.where(seg_end > seg_start + 1, times[seg_end - 1] - t0, 1.0)
-        # rescale each sample to [-1, 1] within its own interval; out-of-range
-        # samples sit at 0 and are zeroed by ``in_range`` below.
-        u = jnp.where(in_range, -1.0 + 2.0 * (times - t0) / span, 0.0)
-        legs = _legendre_values(u, 0, max_poly_order, dtype)  # (k, n_samps)
-        legs = legs * in_range[None, :]
-        if valid_mask is not None:
-            legs = legs * valid_mask[None, :].astype(dtype)
+    A Stokes-valued TOD carries one differently filtered stream per leg (as demodulation
+    produces), so a template fits an independent set of amplitudes on each leg it covers. It need
+    not cover them all: temperature-to-polarization leakage is fitted on Q and U only.
 
-        basis = SegmentedBasis.create(segment.astype(jnp.int32), legs, n_intervals)
-        return cls.from_basis(basis, n_dets=n_dets)
+    Raises:
+        TypeError: If a template is given as a bare basis rather than keyed by leg.
+        ValueError: If a template names a leg outside `stokes`.
+    """
 
-    @classmethod
-    def temperature(
-        cls,
-        temperature: Float[Array, 'det samp'],
-        dtype: DTypeLike,
-        fit_band: tuple[float, float] | None = None,
-        sample_rate: Float[Array, ''] | float = 1.0,
-        decimation_factor: int = 1,
-    ) -> Self:
-        """Temperature-to-polarization leakage template.
+    bases: dict[str, dict[StokesLeg, Basis]]
+    stokes: ValidStokesLiteral = field(metadata={'static': True})
 
-        Each detector's basis is just its own temperature stream, so fitting one
-        amplitude per detector estimates how much temperature leaks into its
-        polarization.
+    def __post_init__(self) -> None:
+        # ``stokes`` declares the leg axis: every template must be keyed by a subset of it.
+        for name, legged in self.bases.items():
+            if isinstance(legged, Basis):
+                msg = f'template {name!r} needs one basis per Stokes leg of {self.stokes!r}'
+                raise TypeError(msg)
+            if extra := sorted(leg for leg in legged if leg not in self.legs):
+                msg = (
+                    f'template {name!r} has legs {extra} outside stokes={self.stokes!r} '
+                    f'(expected {list(self.legs)})'
+                )
+                raise ValueError(msg)
+        super().__post_init__()
 
-        `fit_band=(f0, f1)` restricts the temperature basis to that frequency band (Hz),
-        so the leakage is both estimated and removed only there, keeping the template a
-        clean linear operator.
+    @property
+    def legs(self) -> tuple[StokesLeg, ...]:
+        """The Stokes legs the TOD carries, as the bases and amplitudes key them."""
+        return cast(tuple[StokesLeg, ...], tuple(s.lower() for s in self.stokes))
 
-        `decimation_factor=q` stores the basis on a `q`-times coarser grid to cut memory; the
-        coarse-grid Nyquist frequency `sample_rate / 2q` must stay above `f1`. As a rule
-        of thumb keep it at a few times `f1` (`q ≲ sample_rate / 6·f1`): the fractional
-        error on the fitted amplitude grows like `(f1 / (sample_rate / 2q))²`.
+    def _a_basis(self) -> Basis:
+        return next(iter(next(iter(self.bases.values())).values()))
 
-        Assumes `temperature` is already deglitched/gap-filled upstream: a glitch left in
-        it would smear across the band and bias the fitted amplitude.
-        """
-        t = temperature
-        if fit_band is not None:
-            f0, f1 = fit_band
-            freqs = jnp.fft.rfftfreq(t.shape[-1], d=1.0 / sample_rate)
-            band = (freqs > f0) & (freqs < f1)
-            t = jnp.fft.irfft(jnp.fft.rfft(t, axis=-1) * band, n=t.shape[-1], axis=-1)
-        n_dets, n_full = t.shape
-        q = decimation_factor
-        if q > 1:
-            # Block-average onto a q-times coarser grid: pad the tail to a whole block,
-            # reshape (..., n_dec, q) and mean. ``TensorBasis`` hold-upsamples back to
-            # ``n_full`` in synthesis (band-limits above sample_rate / 2q).
-            n_dec = -(-n_full // q)  # ceil
-            pad = n_dec * q - n_full
-            tp = jnp.pad(t, [(0, 0), (0, pad)])
-            t_dec = tp.reshape(n_dets, n_dec, q).mean(axis=-1)
-            values = t_dec[:, None, :].astype(dtype)  # (det, k=1, dec)
-            # per-detector basis: values carry a leading det axis sliced by ``from_basis``,
-            # so ``in_structure`` is the single-detector shape (k=1,).
-            basis = TensorBasis(
-                values=values, q=q, n_full=n_full, in_structure=ShapeDtypeStruct((1,), dtype)
-            )
-        else:
-            values = t[:, None, :].astype(dtype)  # (det, k=1, samp)
-            basis = TensorBasis(
-                values=values, n_full=n_full, in_structure=ShapeDtypeStruct((1,), dtype)
-            )
-        return cls.from_basis(basis, n_dets=n_dets, shared=False)
+    def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return {
+            name: {leg: self._amplitude_leaf(basis) for leg, basis in legged.items()}
+            for name, legged in self.bases.items()
+        }
 
-    @classmethod
-    def none(cls, n_dets: int, n_samps: int, dtype: DTypeLike) -> Self:
-        """Empty template: no amplitudes, zero output.
+    @property
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        stream = self._stream_structure()
+        return Stokes.class_for(self.stokes).structure_for(stream.shape, stream.dtype)
 
-        Used to leave a Stokes leg untouched in a per-leg block (e.g. the I leg of the
-        T2P template, which acts on Q/U only).
-        """
-        # k-axis is 0, so this is a zero-size array; n_samps only sizes the einsum output.
-        values = jnp.zeros((n_dets, 0, n_samps), dtype)
-        basis = TensorBasis(
-            values=values, n_full=n_samps, in_structure=ShapeDtypeStruct((0,), dtype)
-        )
-        return cls.from_basis(basis, n_dets=n_dets, shared=False)
+    def _streams(self, tod: PyTree[Array]) -> dict[StokesLeg, Array]:
+        return dict(zip(self.legs, tod.data, strict=True))
 
-    @classmethod
-    def bspline_hwpss(
-        cls,
-        times: Float[Array, ' samp'],
-        hwp_angles: Float[Array, ' samp'],
-        n_dets: int,
-        n_knots: int,
-        harmonics: int | Sequence[int] = (4,),
-        dtype: DTypeLike = jnp.float32,
-    ) -> Self:
-        """Spline-based HWP synchronous template.
+    def mv(self, x: PyTree[Array]) -> PyTree[Array]:
+        streams = dict.fromkeys(self.legs, self._zero_stream())
+        for name, legged in self.bases.items():
+            for leg, basis in legged.items():
+                streams[leg] = streams[leg] + self._expand(basis, x[name][leg])
+        stacked = jnp.stack([streams[leg] for leg in self.legs], axis=0)
+        return Stokes.class_for(self.stokes).from_array(stacked)
 
-        A cubic B-spline models the slowly time-varying amplitude of the HWP-synchronous
-        signal: knot `j` carries a `(sin kχ, cos kχ)` pair for each harmonic `k`, so the
-        amplitudes have shape `(K, 2*n_harmonics)` with `K = n_knots + 2`.
+    def project(self, tod: PyTree[Array]) -> PyTree[Array]:
+        streams = self._streams(tod)
+        return {
+            name: {leg: self._project(basis, streams[leg]) for leg, basis in legged.items()}
+            for name, legged in self.bases.items()
+        }
 
-        Args:
-            times: Per-sample timestamps used to place the spline knots.
-            hwp_angles: Per-sample HWP angle `χ` (radians).
-            n_dets: Number of detectors; each fits its own amplitudes.
-            n_knots: Number of interior spline knots (see `SplineHWPSSConfig.resolve_n_knots`).
-            harmonics: HWP harmonics to model, either an int `n` (the harmonics `1..n`)
-                or an explicit sequence of orders.
-            dtype: Floating dtype of the basis values.
-        """
-        offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
-        sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False).astype(dtype)
-        basis = WindowedBasis.create(
-            offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2
-        )
-        return cls.from_basis(basis, n_dets=n_dets, shared=True)
+
+class _TemplateOperatorTranspose(TransposeOperator):
+    operator: AbstractTemplateOperator
+
+    def mv(self, x: PyTree[Array]) -> PyTree[Array]:
+        return self.operator.project(x)
 
 
 class GroundTemplateOperator(AbstractLinearOperator):

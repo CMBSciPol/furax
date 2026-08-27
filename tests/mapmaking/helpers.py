@@ -11,7 +11,7 @@ from furax.mapmaking import (
     AbstractGroundObservation,
     AbstractLazyObservation,
     AbstractObservation,
-    ObservationBufferShapes,
+    ObservationBufferShape,
 )
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import ProjectionType, StokesLandscape
@@ -171,11 +171,11 @@ class FailingLazyObservation(FakeLazyObservation):
     def name(self) -> str:
         return 'failing_obs'
 
-    def probe_shape(self, intervals: bool = False) -> ObservationBufferShapes:
+    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
         # get_data raises, so build the shape directly. Non-ground obs -> no scanning intervals.
         del intervals
         obs = FakeObservation(**self._kwargs)
-        return ObservationBufferShapes(obs.n_detectors, obs.n_samples, 0)
+        return ObservationBufferShape(obs.n_detectors, obs.n_samples, 0)
 
     def get_data(self, requested_fields=None) -> FakeObservation:
         raise RuntimeError('simulated preprocessing failure')

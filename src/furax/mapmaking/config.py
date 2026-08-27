@@ -458,7 +458,11 @@ class BinAzHWPSynchronousConfig:
 
 @dataclass
 class SplineHWPSSConfig:
-    """HWP-synchronous signal on a cubic B-spline basis in HWP angle."""
+    """HWP-synchronous signal whose harmonic amplitudes vary slowly with time.
+
+    The template is built from harmonics of the HWP angle, each carried by a cubic B-spline in
+    *time*: `n_knots` (or `samples_per_knot`) sets how fast the amplitude is allowed to vary.
+    """
 
     n_knots: int | None = None
     """Number of spline knots. If set, takes precedence over `samples_per_knot`."""
@@ -565,7 +569,7 @@ class TemplatesConfig:
     """Joint azimuth/HWP-synchronous template, binned azimuth times Fourier in HWP angle."""
 
     spline_hwpss: SplineHWPSSConfig | None = None
-    """HWP-synchronous template on a cubic B-spline basis in HWP angle."""
+    """HWP-synchronous template whose harmonic amplitudes follow a cubic B-spline in time."""
 
     t2p: T2PConfig | None = None
     """Temperature-to-polarization leakage template (demodulated data only)."""

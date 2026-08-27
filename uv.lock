@@ -4247,7 +4247,7 @@ wheels = [
 
 [[package]]
 name = "toast"
-version = "3.0.3"
+version = "3.0.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "astropy" },
@@ -4265,14 +4265,14 @@ dependencies = [
     { name = "traitlets" },
     { name = "wurlitzer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3e/b3/e8fd4039520520ba9b0498304c8831e28710063accdbd6a286b5edb706a6/toast-3.0.3.tar.gz", hash = "sha256:bed736fa2f7a7b183f3913ebce87ba5b419bd26634bc4534ae3a31f24908c5f2", size = 4856195, upload-time = "2026-05-12T21:34:13.619Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/2c/d3352842a76467d89f2e7a3f1f9c546a904ce945ebe9444ead91a0369899/toast-3.0.4.tar.gz", hash = "sha256:d89cf72112fdb242ee296ccf4fb469de448e820cf9c3cfb62c0d9007f232f751", size = 4869621, upload-time = "2026-07-06T16:22:51.284Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fd/93/bd1fb825cf18e3579837853b08bdbccefac7f2b951c703bc23649711b9e5/toast-3.0.3-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:01bcaf7e4986beedd829ea29a95edfe73eb592efc1213b484121890a28f455e1", size = 14455955, upload-time = "2026-05-12T21:33:58.063Z" },
-    { url = "https://files.pythonhosted.org/packages/95/d9/b4577b9daf233af628c74528826101b20478a82f14196ef98d346a51eb55/toast-3.0.3-cp312-cp312-macosx_15_0_x86_64.whl", hash = "sha256:88806d84f59a925d955147749c75961a93c1ea52a74de2e8236b122c5a382eed", size = 17825856, upload-time = "2026-05-12T21:34:00.508Z" },
-    { url = "https://files.pythonhosted.org/packages/5b/75/c4151314939581067a69ba9c2d23bb2d79cc3078aa682e11e34085781153/toast-3.0.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ca53fe2028a9c604cc53301be9d0eb2a36f74775dcd18a82fee80141303de9bf", size = 21632407, upload-time = "2026-05-12T21:34:03.019Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/99/9d847120c84a1dff21bb55631e1d09ca0f144a6fe9a6658b281ea08a3bf8/toast-3.0.3-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:cd7d1722d30b694f0e9d8a5bbe0d7b907d86c974456d16cb4338b1af868a2bcc", size = 14455968, upload-time = "2026-05-12T21:34:05.888Z" },
-    { url = "https://files.pythonhosted.org/packages/8a/9b/2f261a77092fe1cd27dc487db683302b91079063467141a7e89bff8c1a8e/toast-3.0.3-cp313-cp313-macosx_15_0_x86_64.whl", hash = "sha256:8550bd56b5d004fef49b9698e9e58ef1b8317ef2df3a07d506dfa1d281b3b6b3", size = 17825907, upload-time = "2026-05-12T21:34:08.585Z" },
-    { url = "https://files.pythonhosted.org/packages/55/4d/8a321ebdd2bf7342d01823723e9ee97c9ff0a02d1ea957f912a0dd32734f/toast-3.0.3-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:64dd7ca3e7db6f6b4c396e6cc82e14e182513bf9b68fbc058c1440542dc2f534", size = 21632389, upload-time = "2026-05-12T21:34:11.227Z" },
+    { url = "https://files.pythonhosted.org/packages/46/93/2dae5b802f0b2f0d8fcfb9661723d8d6af4458ea6fb0e63612897e815bdd/toast-3.0.4-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:fc3c7d92bb4d71c899dbc0ebb93b97ba4df2c046fe63570e8497b353feddd870", size = 14471696, upload-time = "2026-07-06T16:22:36.879Z" },
+    { url = "https://files.pythonhosted.org/packages/57/cb/793f8dc84ef4cc33017cfe7529e89d95dcb466cec3d471d1cefd5db28a5c/toast-3.0.4-cp312-cp312-macosx_15_0_x86_64.whl", hash = "sha256:9f423f61b5a5bf8402ab59029b2ab7b5e8347b1b53bf7dc8fe2307ee88c6afa4", size = 17841605, upload-time = "2026-07-06T16:22:39.223Z" },
+    { url = "https://files.pythonhosted.org/packages/a9/2f/ac0fdf7f0863952b4c2d5f2f0f30d1e287d97c99ea1d7418fc77e6f05ea7/toast-3.0.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ebf5d0ddf676179711eff06e42e11a82b1c66334a1be86ec5c9563876380208a", size = 21648199, upload-time = "2026-07-06T16:22:41.717Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/a6/6020e51b6c1ba855ce9f83a82092383e90fee1e190699154a9df3b55e77e/toast-3.0.4-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:59d4d1ce9b5658b01310a486f614c401acad6c6a1c3291f968adb5e8820c2133", size = 14471674, upload-time = "2026-07-06T16:22:43.937Z" },
+    { url = "https://files.pythonhosted.org/packages/51/6a/fa4d95774e06601f70d08239d0686cf3a151eabff76d177701ad9aae4470/toast-3.0.4-cp313-cp313-macosx_15_0_x86_64.whl", hash = "sha256:d0eef940188b197ef78a073d4e171d596cfae9971a6b8d88c8b015067530fe6f", size = 17841758, upload-time = "2026-07-06T16:22:46.688Z" },
+    { url = "https://files.pythonhosted.org/packages/04/82/563604fd4defbba4a3ad2d62cfda9086b1554cd942bd082572c05f241f84/toast-3.0.4-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0c9a810d19f9576f13fdf0829d3138992b72088e6b419fc1ae54c11bb1a73683", size = 21648290, upload-time = "2026-07-06T16:22:49.108Z" },
 ]
 
 [[package]]

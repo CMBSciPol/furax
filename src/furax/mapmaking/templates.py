@@ -57,13 +57,13 @@ __all__ = [
     'SegmentedBasis',
     'WindowedBasis',
     'polynomial_basis',
-    'temperature_basis',
+    't2p_basis',
     'scan_synchronous_basis',
-    'binaz_synchronous_basis',
+    'binned_azimuth_synchronous_basis',
     'hwp_synchronous_basis',
-    'azhwp_synchronous_basis',
-    'binazhwp_synchronous_basis',
-    'bspline_hwpss_basis',
+    'azimuth_hwp_synchronous_basis',
+    'binned_azimuth_hwp_synchronous_basis',
+    'spline_hwp_synchronous_basis',
     'AbstractTemplateOperator',
     'TemplateOperator',
     'StokesTemplateOperator',
@@ -575,7 +575,7 @@ def polynomial_basis(
     return SegmentedBasis(segment.astype(jnp.int32), legs, n_intervals)
 
 
-def temperature_basis(
+def t2p_basis(
     temperature: Float[Array, 'det samp'],
     dtype: DTypeLike,
     fit_band: tuple[float, float] | None = None,
@@ -631,7 +631,7 @@ def scan_synchronous_basis(
     return TensorBasis(legs)
 
 
-def binaz_synchronous_basis(
+def binned_azimuth_synchronous_basis(
     bins: BinsConfig,
     azimuth: Float[Array, ' samp'],
     dtype: DTypeLike,
@@ -651,7 +651,7 @@ def hwp_synchronous_basis(
     return TensorBasis(matrix)
 
 
-def azhwp_synchronous_basis(
+def azimuth_hwp_synchronous_basis(
     legendre: PolynomialOrders,
     n_harmonics: int,
     azimuth: Float[Array, ' samp'],
@@ -671,7 +671,7 @@ def azhwp_synchronous_basis(
     return KroneckerBasis((poly, harm))
 
 
-def binazhwp_synchronous_basis(
+def binned_azimuth_hwp_synchronous_basis(
     bins: BinsConfig,
     n_harmonics: int,
     azimuth: Float[Array, ' samp'],
@@ -684,7 +684,7 @@ def binazhwp_synchronous_basis(
     return KroneckerBasis((bin_basis, harm))
 
 
-def bspline_hwpss_basis(
+def spline_hwp_synchronous_basis(
     times: Float[Array, ' samp'],
     hwp_angles: Float[Array, ' samp'],
     n_knots: int,

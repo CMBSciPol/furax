@@ -7,7 +7,7 @@ from jax import Array
 from jaxtyping import Float
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.mapmaking.config import BinsConfig, PolynomialOrders, SplineHWPSSConfig
+from furax.mapmaking.config import BinsConfig, PolynomialOrders, SplineHWPSynchronousConfig
 from furax.mapmaking.templates import (
     ATOPProjectionOperator,
     Basis,
@@ -19,14 +19,14 @@ from furax.mapmaking.templates import (
     _bin_weights,
     _harmonics,
     _legendre,
-    azhwp_synchronous_basis,
-    binaz_synchronous_basis,
-    binazhwp_synchronous_basis,
-    bspline_hwpss_basis,
+    azimuth_hwp_synchronous_basis,
+    binned_azimuth_hwp_synchronous_basis,
+    binned_azimuth_synchronous_basis,
     hwp_synchronous_basis,
     polynomial_basis,
     scan_synchronous_basis,
-    temperature_basis,
+    spline_hwp_synchronous_basis,
+    t2p_basis,
 )
 from furax.math import bspline
 from furax.tree import as_structure
@@ -38,12 +38,12 @@ def _wrap(basis: Basis, n_dets: int) -> TemplateOperator:
     return TemplateOperator({'t': basis}, n_dets)
 
 
-def spline_4f_hwpss_basis(
+def spline_4f_hwp_basis(
     times: Float[Array, ' samp'],
     hwp_angles: Float[Array, ' samp'],
     n_knots: int,
 ) -> Float[Array, '2k samp']:
-    """Dense reference for `bspline_hwpss_basis`'s `WindowedBasis`.
+    """Dense reference for `spline_hwp_synchronous_basis`'s `WindowedBasis`.
 
     Returns:
         B: (2K, N) basis matrix, interleaved rows [phi_j sin(4χ), phi_j cos(4χ)].
@@ -566,11 +566,11 @@ class TestSynchronousTemplates:
         legs = _legendre(azimuth, legendre.min_order, legendre.max_order, jnp.float64)
         assert_allclose(basis(coeffs), coeffs @ legs, rtol=TOL)
 
-    def test_binaz_synchronous_one_amplitude_per_bin(self) -> None:
+    def test_binned_azimuth_synchronous_one_amplitude_per_bin(self) -> None:
         n_samps = 200
         azimuth, _ = _geometry(n_samps)
         bins = BinsConfig(n_bins=6, interpolate=False, smooth=False)
-        basis = binaz_synchronous_basis(bins, azimuth, jnp.float64)
+        basis = binned_azimuth_synchronous_basis(bins, azimuth, jnp.float64)
         assert basis.shape == (bins.n_bins,)
         coeffs = jr.normal(jr.key(911), basis.shape)
         signal = jr.normal(jr.key(912), basis.out_structure.shape)
@@ -587,11 +587,11 @@ class TestSynchronousTemplates:
         matrix = _harmonics(hwp, n_harm, jnp.float64, dc=False)
         assert_allclose(basis(coeffs), coeffs @ matrix, rtol=TOL)
 
-    def test_azhwp_synchronous_is_kronecker_shaped(self) -> None:
+    def test_azimuth_hwp_synchronous_is_kronecker_shaped(self) -> None:
         n_samps, n_harm = 200, 3
         azimuth, hwp = _geometry(n_samps)
         legendre = PolynomialOrders(0, 2)
-        basis = azhwp_synchronous_basis(legendre, n_harm, azimuth, hwp, jnp.float64)
+        basis = azimuth_hwp_synchronous_basis(legendre, n_harm, azimuth, hwp, jnp.float64)
         # azimuth Legendre orders x HWP harmonics with DC (2*n_harm + 1)
         assert basis.shape == (legendre.n_orders, 2 * n_harm + 1)
         coeffs = jr.normal(jr.key(931), basis.shape)
@@ -600,23 +600,23 @@ class TestSynchronousTemplates:
             jnp.vdot(basis(coeffs), signal), jnp.vdot(coeffs, basis.T(signal)), rtol=TOL
         )
 
-    def test_azhwp_scan_mask_zeroes_flagged_samples(self) -> None:
+    def test_azimuth_hwp_scan_mask_zeroes_flagged_samples(self) -> None:
         # zeroing the azimuth leg kills every basis function there -> zero synthesis.
         n_samps, n_harm = 200, 3
         azimuth, hwp = _geometry(n_samps)
         scan_mask = (jnp.arange(n_samps) % 3 != 0).astype(jnp.float64)
-        basis = azhwp_synchronous_basis(
+        basis = azimuth_hwp_synchronous_basis(
             PolynomialOrders(0, 2), n_harm, azimuth, hwp, jnp.float64, scan_mask=scan_mask
         )
         coeffs = jr.normal(jr.key(941), basis.shape)
         out = basis(coeffs)
         assert_allclose(out[scan_mask == 0], 0.0, atol=TOL)
 
-    def test_binazhwp_synchronous_is_kronecker_shaped(self) -> None:
+    def test_binned_azimuth_hwp_synchronous_is_kronecker_shaped(self) -> None:
         n_samps, n_harm = 200, 3
         azimuth, hwp = _geometry(n_samps)
         bins = BinsConfig(n_bins=5, interpolate=False, smooth=False)
-        basis = binazhwp_synchronous_basis(bins, n_harm, azimuth, hwp, jnp.float64)
+        basis = binned_azimuth_hwp_synchronous_basis(bins, n_harm, azimuth, hwp, jnp.float64)
         assert basis.shape == (bins.n_bins, 2 * n_harm + 1)
         coeffs = jr.normal(jr.key(951), basis.shape)
         signal = jr.normal(jr.key(952), basis.out_structure.shape)
@@ -695,7 +695,7 @@ class TestPolynomialMask:
 
 
 # ---------------------------------------------------------------------------
-# temperature_basis (T2P leakage template's per-detector basis)
+# t2p_basis (T2P leakage template's per-detector basis)
 # ---------------------------------------------------------------------------
 
 
@@ -704,7 +704,7 @@ class TestTemperatureTemplate:
         # each detector's basis is its own temperature stream -> mv(lambda) = lambda * T_d
         n_dets, n_samps = 4, 200
         T = jr.normal(jr.key(40), (n_dets, n_samps))
-        op = _wrap(temperature_basis(T, jnp.float64), n_dets)
+        op = _wrap(t2p_basis(T, jnp.float64), n_dets)
         assert op.in_structure['t'].shape == (n_dets, 1)  # one amplitude per detector
         lam = jr.normal(jr.key(41), (n_dets, 1))
         assert_allclose(op({'t': lam}), lam * T, rtol=TOL)
@@ -712,14 +712,14 @@ class TestTemperatureTemplate:
     def test_projection_is_per_detector_inner_product(self) -> None:
         n_dets, n_samps = 4, 200
         T = jr.normal(jr.key(42), (n_dets, n_samps))
-        op = _wrap(temperature_basis(T, jnp.float64), n_dets)
+        op = _wrap(t2p_basis(T, jnp.float64), n_dets)
         x = jr.normal(jr.key(43), (n_dets, n_samps))
         assert_allclose(op.T(x)['t'], jnp.sum(T * x, axis=-1)[:, None], rtol=TOL)
 
     def test_adjoint(self) -> None:
         n_dets, n_samps = 4, 200
         T = jr.normal(jr.key(44), (n_dets, n_samps))
-        op = _wrap(temperature_basis(T, jnp.float64), n_dets)
+        op = _wrap(t2p_basis(T, jnp.float64), n_dets)
         lam = jr.normal(jr.key(45), (n_dets, 1))
         x = jr.normal(jr.key(46), (n_dets, n_samps))
         assert_allclose(jnp.vdot(op({'t': lam}), x), jnp.vdot(lam, op.T(x)['t']), rtol=TOL)
@@ -729,7 +729,7 @@ class TestTemperatureTemplate:
         n_obs, n_dets, n_samps = 3, 4, 200
         Ts = jr.normal(jr.key(47), (n_obs, n_dets, n_samps))
         _, stack = jax.lax.scan(
-            lambda _, Ti: (None, _wrap(temperature_basis(Ti, jnp.float64), n_dets)),
+            lambda _, Ti: (None, _wrap(t2p_basis(Ti, jnp.float64), n_dets)),
             None,
             Ts,
         )
@@ -742,7 +742,7 @@ class TestTemperatureTemplate:
         n_dets, n_samps, fs = 2, 1024, 10.0
         f0, f1 = 0.5, 2.0
         T = jr.normal(jr.key(49), (n_dets, n_samps))
-        basis = temperature_basis(T, jnp.float64, fit_band=(f0, f1), sample_rate=fs)
+        basis = t2p_basis(T, jnp.float64, fit_band=(f0, f1), sample_rate=fs)
         op = _wrap(basis, n_dets)
         out = op({'t': jnp.ones((n_dets, 1))})  # = bandpass(T) since lambda = 1
         spec = jnp.abs(jnp.fft.rfft(out, axis=-1))
@@ -755,7 +755,7 @@ class TestTemperatureTemplate:
         # block-averaged temperature, held over each block.
         n_dets, n_samps, q = 2, 60, 4
         T = jr.normal(jr.key(970), (n_dets, n_samps))
-        op = _wrap(temperature_basis(T, jnp.float64, decimation_factor=q), n_dets)
+        op = _wrap(t2p_basis(T, jnp.float64, decimation_factor=q), n_dets)
         assert op.in_structure['t'].shape == (n_dets, 1)
         out = op({'t': jnp.ones((n_dets, 1))})
         assert out.shape == (n_dets, n_samps)
@@ -831,11 +831,11 @@ class TestATOPProjectionOperator:
 
 
 # ---------------------------------------------------------------------------
-# SplineHWPSS basis functions and template
+# Spline HWP-synchronous basis functions and template
 # ---------------------------------------------------------------------------
 
 
-class TestSplineHWPSSConfig:
+class TestSplineHWPSynchronousConfig:
     @pytest.mark.parametrize(
         ('n_knots', 'samples_per_knot', 'expected'),
         [
@@ -849,20 +849,20 @@ class TestSplineHWPSSConfig:
     def test_resolve_n_knots(
         self, n_knots: int | None, samples_per_knot: int | None, expected: int
     ) -> None:
-        config = SplineHWPSSConfig(n_knots=n_knots, samples_per_knot=samples_per_knot)
+        config = SplineHWPSynchronousConfig(n_knots=n_knots, samples_per_knot=samples_per_knot)
         assert config.resolve_n_knots(100) == expected
 
     def test_requires_one_of_n_knots_or_samples_per_knot(self) -> None:
         with pytest.raises(ValueError, match='one of'):
-            SplineHWPSSConfig(n_knots=None, samples_per_knot=None)
+            SplineHWPSynchronousConfig(n_knots=None, samples_per_knot=None)
 
 
-class TestSplineHWPSSTemplate:
+class TestSplineHWPSynchronousTemplate:
     def test_4f_basis_structure(self) -> None:
         t = jnp.linspace(0, 10, 100)
         hwp = jnp.linspace(0, 2 * jnp.pi, 100)
         n_knots = 3
-        B = spline_4f_hwpss_basis(t, hwp, n_knots=n_knots)
+        B = spline_4f_hwp_basis(t, hwp, n_knots=n_knots)
         K = n_knots + 2
         # 2K because cos and sin blocks
         assert B.shape == (2 * K, 100)
@@ -870,7 +870,7 @@ class TestSplineHWPSSTemplate:
     def test_4f_modulation_nonzero(self) -> None:
         t = jnp.linspace(0, 10, 100)
         hwp = jnp.linspace(0, 2 * jnp.pi, 100)
-        B = spline_4f_hwpss_basis(t, hwp, n_knots=3)
+        B = spline_4f_hwp_basis(t, hwp, n_knots=3)
         sin_part = B[0]
         cos_part = B[1]
         # should not be identical
@@ -880,7 +880,7 @@ class TestSplineHWPSSTemplate:
         n_samps, n_knots = 100, 3
         t = jnp.linspace(0, 10, n_samps)
         hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
-        basis = bspline_hwpss_basis(t, hwp, n_knots, (4,), jnp.float64)
+        basis = spline_hwp_synchronous_basis(t, hwp, n_knots, (4,), jnp.float64)
 
         K = n_knots + 2
         # WindowedBasis amplitudes: (K knots, 2 = cos/sin)
@@ -888,12 +888,12 @@ class TestSplineHWPSSTemplate:
         assert basis.out_structure.shape == (n_samps,)
 
     def test_equivalent_to_dense_4f_basis(self) -> None:
-        # WindowedBasis spline_hwpss reproduces the dense (2K, N) interleaved basis.
+        # WindowedBasis spline_hwp_synchronous reproduces the dense (2K, N) interleaved basis.
         n_samps, n_knots = 120, 5
         t = jnp.linspace(0, 10, n_samps)
         hwp = jnp.linspace(0, 6 * jnp.pi, n_samps)
-        basis = bspline_hwpss_basis(t, hwp, n_knots, (4,), jnp.float64)
-        dense = TensorBasis(spline_4f_hwpss_basis(t, hwp, n_knots))  # rows 2j=sin, 2j+1=cos
+        basis = spline_hwp_synchronous_basis(t, hwp, n_knots, (4,), jnp.float64)
+        dense = TensorBasis(spline_4f_hwp_basis(t, hwp, n_knots))  # rows 2j=sin, 2j+1=cos
 
         K = n_knots + 2
         a = jr.normal(jr.key(1010), (K, 2))  # WindowedBasis amplitudes a[j] = (sin amp, cos amp)
@@ -904,7 +904,7 @@ class TestSplineHWPSSTemplate:
         n_samps, n_knots = 100, 3
         t = jnp.linspace(0, 10, n_samps)
         hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
-        basis = bspline_hwpss_basis(t, hwp, n_knots, (4,), jnp.float64)
+        basis = spline_hwp_synchronous_basis(t, hwp, n_knots, (4,), jnp.float64)
 
         coeffs = jr.normal(jr.key(1001), basis.shape)
         signal = jr.normal(jr.key(1002), basis.out_structure.shape)
@@ -913,22 +913,22 @@ class TestSplineHWPSSTemplate:
             jnp.vdot(basis(coeffs), signal), jnp.vdot(coeffs, basis.T(signal)), rtol=TOL
         )
 
-    def test_spline_hwpss_multiple_harmonics(self) -> None:
+    def test_spline_hwp_synchronous_multiple_harmonics(self) -> None:
         n_samps = 100
         t = jnp.linspace(0, 10, n_samps)
         hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
         harmonics = [2, 4]
-        basis = bspline_hwpss_basis(t, hwp, 4, harmonics, jnp.float64)
+        basis = spline_hwp_synchronous_basis(t, hwp, 4, harmonics, jnp.float64)
         # amplitudes: (K, 2 * n_harm)
         # K = n_knots + 2 = 4 + 2 = 6
         # 2 * n_harm = 2 * 2 = 4
         assert basis.shape == (6, 4)
 
-    def test_spline_hwpss_int_harmonics(self) -> None:
+    def test_spline_hwp_synchronous_int_harmonics(self) -> None:
         # an int n is the harmonics 1..n, matching `_harmonics`' convention.
         n_samps = 100
         t = jnp.linspace(0, 10, n_samps)
         hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
-        basis = bspline_hwpss_basis(t, hwp, 4, 3, jnp.float64)
+        basis = spline_hwp_synchronous_basis(t, hwp, 4, 3, jnp.float64)
         # 1..3 -> 3 harmonics -> 2 * 3 = 6 columns; K = 4 + 2 = 6
         assert basis.shape == (6, 6)

@@ -42,11 +42,11 @@ __all__ = [
     'PolynomialConfig',
     'ScanSynchronousConfig',
     'BinsConfig',
-    'BinAzSynchronousConfig',
+    'BinnedAzimuthSynchronousConfig',
     'HWPSynchronousConfig',
-    'AzHWPSynchronousConfig',
-    'BinAzHWPSynchronousConfig',
-    'SplineHWPSSConfig',
+    'AzimuthHWPSynchronousConfig',
+    'BinnedAzimuthHWPSynchronousConfig',
+    'SplineHWPSynchronousConfig',
     'T2PConfig',
     'GroundConfig',
     'SotodlibConfig',
@@ -398,7 +398,7 @@ class ScanSynchronousConfig:
 
 
 @dataclass
-class BinAzSynchronousConfig:
+class BinnedAzimuthSynchronousConfig:
     """Binned azimuth-synchronous signal, no HWP coupling.
 
     The binned counterpart of [`ScanSynchronousConfig`][].
@@ -423,7 +423,7 @@ class HWPSynchronousConfig:
 
 
 @dataclass
-class AzHWPSynchronousConfig:
+class AzimuthHWPSynchronousConfig:
     """Joint azimuth/HWP-synchronous signal: Legendre in azimuth times Fourier in HWP angle."""
 
     legendre: PolynomialOrders = field(default_factory=lambda: PolynomialOrders(0, 3))
@@ -440,10 +440,10 @@ class AzHWPSynchronousConfig:
 
 
 @dataclass
-class BinAzHWPSynchronousConfig:
+class BinnedAzimuthHWPSynchronousConfig:
     """Joint azimuth/HWP-synchronous signal: azimuth binning times Fourier in HWP angle.
 
-    The binned-azimuth counterpart of [`AzHWPSynchronousConfig`][].
+    The binned-azimuth counterpart of [`AzimuthHWPSynchronousConfig`][].
     """
 
     bins: BinsConfig = field(default_factory=BinsConfig)
@@ -457,7 +457,7 @@ class BinAzHWPSynchronousConfig:
 
 
 @dataclass
-class SplineHWPSSConfig:
+class SplineHWPSynchronousConfig:
     """HWP-synchronous signal whose harmonic amplitudes vary slowly with time.
 
     The template is built from harmonics of the HWP angle, each carried by a cubic B-spline in
@@ -496,7 +496,7 @@ class T2PConfig:
     fit_band: tuple[float, float] | None = None
     """Frequency band (in Hz) used to fit the leakage coefficients. `None` uses the full band."""
 
-    decimate: int = 1
+    decimation_factor: int = 1
     """Decimation factor applied to the I template before fitting."""
 
     explicit: bool = True
@@ -556,19 +556,19 @@ class TemplatesConfig:
     scan_synchronous: ScanSynchronousConfig | None = None
     """Scan-synchronous (azimuth-only) template on a global Legendre basis."""
 
-    binaz_synchronous: BinAzSynchronousConfig | None = None
+    binned_azimuth_synchronous: BinnedAzimuthSynchronousConfig | None = None
     """Scan-synchronous (azimuth-only) template on a binned azimuth basis."""
 
     hwp_synchronous: HWPSynchronousConfig | None = None
     """HWP-synchronous template on a global Fourier (harmonic) basis."""
 
-    azhwp_synchronous: AzHWPSynchronousConfig | None = None
+    azimuth_hwp_synchronous: AzimuthHWPSynchronousConfig | None = None
     """Joint azimuth/HWP-synchronous template, Legendre in azimuth times Fourier in HWP angle."""
 
-    binazhwp_synchronous: BinAzHWPSynchronousConfig | None = None
+    binned_azimuth_hwp_synchronous: BinnedAzimuthHWPSynchronousConfig | None = None
     """Joint azimuth/HWP-synchronous template, binned azimuth times Fourier in HWP angle."""
 
-    spline_hwpss: SplineHWPSSConfig | None = None
+    spline_hwp_synchronous: SplineHWPSynchronousConfig | None = None
     """HWP-synchronous template whose harmonic amplitudes follow a cubic B-spline in time."""
 
     t2p: T2PConfig | None = None
@@ -586,12 +586,12 @@ class TemplatesConfig:
         return cls(
             polynomial=PolynomialConfig(),
             scan_synchronous=ScanSynchronousConfig(),
-            binaz_synchronous=BinAzSynchronousConfig(),
+            binned_azimuth_synchronous=BinnedAzimuthSynchronousConfig(),
             hwp_synchronous=HWPSynchronousConfig(),
-            azhwp_synchronous=AzHWPSynchronousConfig(),
-            binazhwp_synchronous=BinAzHWPSynchronousConfig(),
+            azimuth_hwp_synchronous=AzimuthHWPSynchronousConfig(),
+            binned_azimuth_hwp_synchronous=BinnedAzimuthHWPSynchronousConfig(),
             t2p=T2PConfig(),
-            spline_hwpss=SplineHWPSSConfig(),
+            spline_hwp_synchronous=SplineHWPSynchronousConfig(),
             ground=GroundConfig(),
         )
 

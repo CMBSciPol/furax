@@ -606,6 +606,8 @@ class MapMaker:
                 'solver ignores the off-diagonal pixel coupling that interpolation introduces and '
                 'would return a biased map. Use the ML mapmaker (method=ML) instead.'
             )
+        if self.config.use_templates:
+            raise NotImplementedError(f'{type(self).__name__} does not support templates.')
 
     @abstractmethod
     def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]: ...

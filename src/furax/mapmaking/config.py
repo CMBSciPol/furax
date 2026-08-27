@@ -871,11 +871,6 @@ class MapMakingConfig:
             raise ValueError(f'Unknown method: {method}')
 
     @classmethod
-    def full_defaults(cls) -> 'MapMakingConfig':
-        """Create a config with default values for all fields including optional ones."""
-        return cls(templates=TemplatesConfig.full_defaults(), sotodlib=SotodlibConfig())
-
-    @classmethod
     def load_yaml(cls, path: str | Path) -> 'MapMakingConfig':
         """Load and instantiate a ``MapMakingConfig`` from a YAML file."""
         data = yaml.safe_load(Path(path).read_text())

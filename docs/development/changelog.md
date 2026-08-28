@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StreamOperator.block_row`/`block_column`: fuse several streams into one, evaluating a joint system in a single pass over the data (#190)
 - API reference page for `furax.mapmaking.streaming` (#190)
 - `AbstractLinearOperator.profile()` and a new `furax.profiling` module for estimated cost analysis (#193)
+- `furax.mapmaking.templates.Basis.per_detector_stack()` to stack per-detector templates into a single basis (#214)
+- Mapmaking config entry for T-to-P leakage deprojection (#214)
 
 ### Changed
 
@@ -21,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `AbstractLinearOperator.__call__`, `BJPreconditioner.create`, and the `LBSObservation`/`ToastObservation` pointing helpers now raise `TypeError` (previously `ValueError`/`RuntimeError`) for invalid argument/operator/landscape types (#194)
 - Bumped ruff to 0.16.1 and updated rule selection accordingly (#194)
 - Fixed detection of templates usage in map-making configuration (#225)
+- Template algebra code overhaul, replacing `PerDetectorTemplate` with `(Stokes)TemplateOperator` (#214)
+- **Breaking**: template configuration keys are now spelled out (`binaz_synchronous` → `binned_azimuth_synchronous`, `azhwp_synchronous` → `azimuth_hwp_synchronous`, `binazhwp_synchronous` → `binned_azimuth_hwp_synchronous`, `spline_hwpss` → `spline_hwp_synchronous`) (#214)
+
+### Removed
+
+- "Two-step" single-observation mapmakers (the `TwoStep` method and `TwoStepMapmaker` class) (#214)
 
 ## [0.12.0] - 2026-07-24
 

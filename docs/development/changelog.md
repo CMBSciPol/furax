@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AbstractLinearOperator.profile()` and a new `furax.profiling` module for estimated cost analysis (#193)
 - `furax.mapmaking.templates.Basis.per_detector_stack()` to stack per-detector templates into a single basis (#214)
 - Mapmaking config entry for T-to-P leakage deprojection (#214)
+- `furax.mapmaking.gram` module with Gram machinery for template deprojection (#215)
 
 ### Changed
 

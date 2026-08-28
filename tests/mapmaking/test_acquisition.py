@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import jax_healpy as jhp
 from numpy.testing import assert_allclose
 
 from furax.core import CompositionOperator
@@ -7,6 +8,7 @@ from furax.mapmaking.acquisition import build_acquisition_operator
 from furax.math.quaternion import qmul, to_gamma_angles, to_polarization_angle
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.pointing import PointingOperator
+from furax.obs.spin2 import spin2_cos_sin
 
 NSIDE = 4
 NDET, NSAMP = 3, 10
@@ -17,8 +19,18 @@ def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
     return q / jnp.linalg.norm(q, axis=-1, keepdims=True)
 
 
+def _transport(landscape: HealpixLandscape, qdet_full: jax.Array) -> tuple[jax.Array, jax.Array]:
+    """(cos 2d, -sin 2d) carrying a pixel's Q, U into the frame of the direction sampled at."""
+    indices = landscape.quat2index(qdet_full)
+    theta, phi = landscape.quat2world(qdet_full)
+    return spin2_cos_sin(*jhp.pix2ang(landscape.nside, indices), theta, phi)
+
+
 def test_no_hwp_acquisition_formula() -> None:
-    """No-HWP acquisition equals 0.5*(I + cos(2pa)*Q + sin(2pa)*U)."""
+    """No-HWP acquisition equals 0.5*(I + cos(2pa)*Q + sin(2pa)*U).
+
+    Q and U are the pixel's, carried into the frame of the sampled direction first.
+    """
     landscape = HealpixLandscape(NSIDE, 'IQU')
 
     key = jax.random.PRNGKey(0)
@@ -35,9 +47,10 @@ def test_no_hwp_acquisition_formula() -> None:
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     indices = landscape.quat2index(qdet_full)  # (ndet, nsamp)
 
+    cos_2d, sin_2d = _transport(landscape, qdet_full)
     I_p = sky.i.ravel()[indices]
-    Q_p = sky.q.ravel()[indices]
-    U_p = sky.u.ravel()[indices]
+    Q_p = sky.q.ravel()[indices] * cos_2d + sky.u.ravel()[indices] * sin_2d
+    U_p = -sky.q.ravel()[indices] * sin_2d + sky.u.ravel()[indices] * cos_2d
     expected = 0.5 * (I_p + jnp.cos(2 * pa) * Q_p + jnp.sin(2 * pa) * U_p)
 
     assert_allclose(tod, expected, rtol=1e-10)
@@ -60,12 +73,17 @@ def test_no_hwp_acquisition_transpose_formula() -> None:
     qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     flat_indices = landscape.quat2index(qdet_full).ravel()
+    # the sample's (Q, U) contribution, carried back into the pixel's own frame before binning
+    cos_2d, sin_2d = _transport(landscape, qdet_full)
+    q_s = 0.5 * jnp.cos(2 * pa) * tod
+    u_s = 0.5 * jnp.sin(2 * pa) * tod
+
     d = tod.ravel()
     npix = len(landscape)
     zeros = jnp.zeros(npix)
     expected_I = zeros.at[flat_indices].add(0.5 * d)
-    expected_Q = zeros.at[flat_indices].add(0.5 * jnp.cos(2 * pa).ravel() * d)
-    expected_U = zeros.at[flat_indices].add(0.5 * jnp.sin(2 * pa).ravel() * d)
+    expected_Q = zeros.at[flat_indices].add((q_s * cos_2d - u_s * sin_2d).ravel())
+    expected_U = zeros.at[flat_indices].add((q_s * sin_2d + u_s * cos_2d).ravel())
 
     assert_allclose(sky.i, expected_I, rtol=1e-10)
     assert_allclose(sky.q, expected_Q, rtol=1e-10)
@@ -102,9 +120,10 @@ def test_hwp_acquisition_formula() -> None:
     gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)
     phi = 2 * (2 * hwp_angles[None, :] + pa - 2 * gamma)  # (ndet, nsamp)
 
+    cos_2d, sin_2d = _transport(landscape, qdet_full)
     I_p = sky.i.ravel()[indices]
-    Q_p = sky.q.ravel()[indices]
-    U_p = sky.u.ravel()[indices]
+    Q_p = sky.q.ravel()[indices] * cos_2d + sky.u.ravel()[indices] * sin_2d
+    U_p = -sky.q.ravel()[indices] * sin_2d + sky.u.ravel()[indices] * cos_2d
     expected = 0.5 * (I_p + jnp.cos(phi) * Q_p + jnp.sin(phi) * U_p)
 
     assert_allclose(tod, expected, rtol=1e-10)
@@ -133,12 +152,17 @@ def test_hwp_acquisition_transpose_formula() -> None:
     gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)
     phi = 2 * (2 * hwp_angles[None, :] + pa - 2 * gamma)  # (ndet, nsamp)
 
+    # the sample's (Q, U) contribution, carried back into the pixel's own frame before binning
+    cos_2d, sin_2d = _transport(landscape, qdet_full)
+    q_s = 0.5 * jnp.cos(phi) * tod
+    u_s = 0.5 * jnp.sin(phi) * tod
+
     d = tod.ravel()
     npix = len(landscape)
     zeros = jnp.zeros(npix)
     expected_I = zeros.at[flat_indices].add(0.5 * d)
-    expected_Q = zeros.at[flat_indices].add(0.5 * jnp.cos(phi).ravel() * d)
-    expected_U = zeros.at[flat_indices].add(0.5 * jnp.sin(phi).ravel() * d)
+    expected_Q = zeros.at[flat_indices].add((q_s * cos_2d - u_s * sin_2d).ravel())
+    expected_U = zeros.at[flat_indices].add((q_s * sin_2d + u_s * cos_2d).ravel())
 
     assert_allclose(sky.i, expected_I, rtol=1e-10)
     assert_allclose(sky.q, expected_Q, rtol=1e-10)

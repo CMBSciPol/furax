@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `StreamOperator.block_row`/`block_column`: fuse several streams into one, evaluating a joint system in a single pass over the data (#190)
 - API reference page for `furax.mapmaking.streaming` (#190)
+- API reference page for `furax.mapmaking.templates` (#214)
 - `AbstractLinearOperator.profile()` and a new `furax.profiling` module for estimated cost analysis (#193)
 - `furax.mapmaking.templates.Basis.per_detector_stack()` to stack per-detector templates into a single basis (#214)
 - Mapmaking config entry for T-to-P leakage deprojection (#214)

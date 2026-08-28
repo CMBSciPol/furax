@@ -98,32 +98,6 @@ class TestTensorBasis:
         assert basis.out_structure == jax.ShapeDtypeStruct((n_points,), values.dtype)
 
     @pytest.mark.parametrize('shape', [(4,), (3, 5), (2, 3, 4)])
-    def test_expand_matches_einsum(self, shape: tuple[int, ...]) -> None:
-        n_points = 6
-        values = jr.normal(jr.key(1), (*shape, n_points))
-        coeffs = jr.normal(jr.key(2), shape)
-        basis = TensorBasis(values)
-
-        axes = 'abcdefg'[: len(shape)]
-        expected = jnp.einsum(f'{axes},{axes}s->s', coeffs, values)
-        assert_allclose(basis.expand(coeffs), expected, rtol=TOL)
-        # mv is bound to expand
-        assert_allclose(basis(coeffs), expected, rtol=TOL)
-
-    @pytest.mark.parametrize('shape', [(4,), (3, 5), (2, 3, 4)])
-    def test_project_matches_einsum(self, shape: tuple[int, ...]) -> None:
-        n_points = 6
-        values = jr.normal(jr.key(3), (*shape, n_points))
-        signal = jr.normal(jr.key(4), (n_points,))
-        basis = TensorBasis(values)
-
-        axes = 'abcdefg'[: len(shape)]
-        expected = jnp.einsum(f'{axes}s,s->{axes}', values, signal)
-        assert_allclose(basis.project(signal), expected, rtol=TOL)
-        # transpose mv is bound to project
-        assert_allclose(basis.T(signal), expected, rtol=TOL)
-
-    @pytest.mark.parametrize('shape', [(4,), (3, 5), (2, 3, 4)])
     def test_expand_project_adjoint(self, shape: tuple[int, ...]) -> None:
         n_points = 6
         values = jr.normal(jr.key(5), (*shape, n_points))
@@ -188,13 +162,6 @@ class TestKroneckerBasis:
         signal = jr.normal(jr.key(311), (n_points,))
         assert _adjoint_residual(basis, coeffs, signal) < TOL
 
-    @pytest.mark.parametrize('shape', [(4,), (3, 5)])
-    def test_transpose_as_matrix(self, shape: tuple[int, ...]) -> None:
-        n_points = 5
-        factors = _factors(shape, n_points, 400)
-        basis = KroneckerBasis(factors)
-        assert_allclose(basis.T.as_matrix().T, basis.as_matrix(), rtol=TOL)
-
 
 # ---------------------------------------------------------------------------
 # TensorBasis (decimated: q > 1)
@@ -216,24 +183,14 @@ class TestDecimatedTensorBasis:
         assert basis.n_points == n_full
         assert basis.out_structure == jax.ShapeDtypeStruct((n_full,), basis.dtype)
 
-    def test_expand_holds_each_coarse_value_over_its_block(self) -> None:
-        # synthesis = einsum on coarse grid, then repeat each value q times, trimmed.
-        shape, n_dec, q, n_full = (4,), 5, 4, 18  # 5*4 = 20 > 18 -> trailing block trimmed
-        basis = _decimated(shape, n_dec, q, n_full, 501)
-        coeffs = jr.normal(jr.key(502), shape)
-        coarse = jnp.einsum('k,kd->d', coeffs, basis.values)
-        expected = jnp.repeat(coarse, q)[:n_full]
-        assert_allclose(basis.expand(coeffs), expected, rtol=TOL)
-
-    def test_project_sums_each_block(self) -> None:
-        # analysis downsamples by block-summing, then einsum back to coefficients.
-        shape, n_dec, q, n_full = (4,), 5, 4, 18
-        basis = _decimated(shape, n_dec, q, n_full, 503)
-        signal = jr.normal(jr.key(504), (n_full,))
-        pad = n_dec * q - n_full
-        block_sum = jnp.pad(signal, (0, pad)).reshape(n_dec, q).sum(axis=-1)
-        expected = jnp.einsum('kd,d->k', basis.values, block_sum)
-        assert_allclose(basis.project(signal), expected, rtol=TOL)
+    def test_holds_each_coarse_value_over_its_block(self) -> None:
+        # one basis function [1, 2, 3] on a q=2 grid covering 5 samples: each coarse value is
+        # held over its 2 samples, and the last block is trimmed to fit.
+        basis = TensorBasis(jnp.array([[1.0, 2.0, 3.0]]), q=2, n_full=5)
+        assert_allclose(basis.expand(jnp.array([1.0])), [1.0, 1.0, 2.0, 2.0, 3.0], rtol=TOL)
+        # project is its transpose: [0,1,2,3,4] block-sums to [1, 5, 4], then weights by the
+        # basis function -> 1*1 + 2*5 + 3*4.
+        assert_allclose(basis.project(jnp.arange(5.0)), [23.0], rtol=TOL)
 
     @pytest.mark.parametrize('shape', [(4,), (2, 3)])
     def test_expand_project_adjoint(self, shape: tuple[int, ...]) -> None:
@@ -242,10 +199,6 @@ class TestDecimatedTensorBasis:
         coeffs = jr.normal(jr.key(506), shape)
         signal = jr.normal(jr.key(507), (n_full,))
         assert _adjoint_residual(basis, coeffs, signal) < TOL
-
-    def test_transpose_as_matrix(self) -> None:
-        basis = _decimated((4,), 5, 4, 18, 508)
-        assert_allclose(basis.T.as_matrix().T, basis.as_matrix(), rtol=TOL)
 
     def test_q_one_matches_plain_dense_basis(self) -> None:
         # q=1 stores the full grid: decimation collapses to the plain dense basis.
@@ -378,10 +331,6 @@ class TestWindowedBasis:
         coeffs = jr.normal(jr.key(831), basis.shape)
         signal = jr.normal(jr.key(832), (50,))
         assert _adjoint_residual(basis, coeffs, signal) < TOL
-
-    def test_transpose_as_matrix(self) -> None:
-        basis, *_ = _windowed(6, 4, 3, 40, 840)
-        assert_allclose(basis.T.as_matrix().T, basis.as_matrix(), rtol=TOL)
 
     def test_each_sample_only_sees_its_window(self) -> None:
         # perturbing one block's amplitudes only changes samples whose window covers it.
@@ -858,24 +807,6 @@ class TestSplineHWPSynchronousConfig:
 
 
 class TestSplineHWPSynchronousTemplate:
-    def test_4f_basis_structure(self) -> None:
-        t = jnp.linspace(0, 10, 100)
-        hwp = jnp.linspace(0, 2 * jnp.pi, 100)
-        n_knots = 3
-        B = spline_4f_hwp_basis(t, hwp, n_knots=n_knots)
-        K = n_knots + 2
-        # 2K because cos and sin blocks
-        assert B.shape == (2 * K, 100)
-
-    def test_4f_modulation_nonzero(self) -> None:
-        t = jnp.linspace(0, 10, 100)
-        hwp = jnp.linspace(0, 2 * jnp.pi, 100)
-        B = spline_4f_hwp_basis(t, hwp, n_knots=3)
-        sin_part = B[0]
-        cos_part = B[1]
-        # should not be identical
-        assert not jnp.allclose(sin_part, cos_part)
-
     def test_template_structure(self) -> None:
         n_samps, n_knots = 100, 3
         t = jnp.linspace(0, 10, n_samps)

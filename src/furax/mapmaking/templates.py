@@ -698,6 +698,10 @@ def spline_hwp_synchronous_basis(
     return WindowedBasis(offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2)
 
 
+def is_basis(x: Any) -> bool:
+    return isinstance(x, Basis)
+
+
 class AbstractTemplateOperator(AbstractLinearOperator):
     """Every enabled template as one operator, from amplitudes keyed by template name to a TOD."""
 
@@ -714,17 +718,17 @@ class AbstractTemplateOperator(AbstractLinearOperator):
         super().__post_init__()
 
     # ---- amplitude side -------------------------------------------------------------------------
-    @abstractmethod
     def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        """`bases` with each basis replaced by the amplitudes it takes (`_amplitude_leaf`)."""
+        """`bases` with each basis replaced by the amplitudes it takes."""
+        return jax.tree.map(self._amplitude_leaf, self.bases, is_leaf=is_basis)
 
     def _amplitude_leaf(self, basis: Basis) -> jax.ShapeDtypeStruct:
         return jax.ShapeDtypeStruct((self.n_dets, *basis.shape), basis.dtype)
 
     # ---- TOD side -------------------------------------------------------------------------------
-    @abstractmethod
     def _a_basis(self) -> Basis:
         """Any one of the bases: they agree on sample count and dtype."""
+        return jax.tree.leaves(self.bases, is_leaf=is_basis)[0]  # type: ignore[no-any-return]
 
     def _stream_structure(self) -> jax.ShapeDtypeStruct:
         """One detector-by-sample stream, the shape every Stokes leg of the TOD takes."""
@@ -768,12 +772,6 @@ class TemplateOperator(AbstractTemplateOperator):
     """
 
     bases: dict[str, Basis]
-
-    def _a_basis(self) -> Basis:
-        return next(iter(self.bases.values()))
-
-    def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return {name: self._amplitude_leaf(basis) for name, basis in self.bases.items()}
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -822,15 +820,6 @@ class StokesTemplateOperator(AbstractTemplateOperator):
     def legs(self) -> tuple[StokesLeg, ...]:
         """The Stokes legs the TOD carries, as the bases and amplitudes key them."""
         return cast(tuple[StokesLeg, ...], tuple(s.lower() for s in self.stokes))
-
-    def _a_basis(self) -> Basis:
-        return next(iter(next(iter(self.bases.values())).values()))
-
-    def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return {
-            name: {leg: self._amplitude_leaf(basis) for leg, basis in legged.items()}
-            for name, legged in self.bases.items()
-        }
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:

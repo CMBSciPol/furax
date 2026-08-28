@@ -1,19 +1,19 @@
 """Template operators for fitting structured nuisance signals out of the data.
 
-A template turns a small set of per-detector amplitudes into a time stream, so the
-mapmaker can fit and remove unwanted but predictable signals (slow drifts,
-scan-synchronous pickup, HWP-synchronous lines, T-to-P leakage).
+A template turns a small set of per-detector amplitudes into a time stream, so the mapmaker can fit
+and remove unwanted but predictable signals (slow drifts, scan-synchronous pickup, HWP-synchronous
+lines, T-to-P leakage).
 
-The building block is a [`Basis`][]: a small set of functions of time (Legendre polynomials,
-HWP harmonics, ...). Going from amplitudes to a signal is ``expand``; the reverse is
-``project``. A [`TemplateOperator`][] combines every enabled template into one operator, keyed
-by template name, giving each detector its own amplitudes;
-[`StokesTemplateOperator`][] does the same for a [`Stokes`][] TOD, one amplitude set per leg.
+The building block is a [`Basis`][]: a small set of functions of time (Legendre polynomials, HWP
+harmonics, ...). Going from amplitudes to a signal is `expand`; the reverse is `project`. A
+[`TemplateOperator`][] combines every enabled template into one operator, keyed by template name,
+giving each detector its own amplitudes; [`StokesTemplateOperator`][] does the same for a
+[`Stokes`][] TOD, one amplitude set per leg.
 
 A few [`Basis`][] flavours trade memory for structure:
 
 - [`TensorBasis`][]: stores every basis function value directly, as a dense array
-  (optionally on a coarser time grid, ``q > 1``, to trade resolution for memory).
+  (optionally on a coarser time grid, `q > 1`, to trade resolution for memory).
 - [`KroneckerBasis`][]: a product of independent factors (e.g. azimuth x HWP), stored
   factored to save memory.
 - [`SegmentedBasis`][]: each sample belongs to one segment (e.g. one scan interval),
@@ -21,9 +21,9 @@ A few [`Basis`][] flavours trade memory for structure:
 - [`WindowedBasis`][]: each sample reads a fixed window of overlapping blocks, the
   overlapping generalisation of [`SegmentedBasis`][].
 
-A basis is normally shared by every detector. When the functions differ from detector to
-detector, as for the T-to-P leakage template, [`Basis.per_detector_stack`][] stacks one basis per
-detector into a single [`Basis`][] of any flavour.
+A basis is normally shared by every detector. When the functions differ from detector to detector,
+as for the T-to-P leakage template, [`Basis.per_detector_stack`][] stacks one basis per detector
+into a single [`Basis`][] of any flavour.
 """
 
 from abc import abstractmethod
@@ -79,11 +79,10 @@ StokesLeg = Literal['i', 'q', 'u', 'v']
 class Basis(AbstractLinearOperator):
     """A set of template functions of time used to model a structured signal.
 
-    The basis functions `b_k` are each evaluated at the same `n_points` time samples.
-    Conceptually, we can think of them as columns of a matrix `B`. The modelled signal
-    is then a linear combination `s = B a`, i.e. `s(t) = Σ_k a_k b_k(t)` where each
-    `a_k` is the amplitude of the template function `b_k`. The index `k` may be multi
-    dimensional.
+    The basis functions `b_k` are each evaluated at the same `n_points` time samples. Conceptually,
+    we can think of them as columns of a matrix `B`. The modelled signal is then a linear
+    combination `s = B a`, i.e. `s(t) = Σ_k a_k b_k(t)` where each `a_k` is the amplitude of the
+    template function `b_k`. The index `k` may be multi dimensional.
 
     Two main operations:
 
@@ -105,15 +104,15 @@ class Basis(AbstractLinearOperator):
         """Dtype of the stored basis values."""
 
     def __post_init__(self) -> None:
-        # ``in_structure`` is derived, never passed: it can then never disagree with the arrays.
+        # `in_structure` is derived, never passed: it can then never disagree with the arrays.
         if self.in_structure is not None:
             raise ValueError('in_structure is derived from the basis arrays; do not pass it')
-        # ``per_detector_stack`` marks its result after unflattening, which does not run this,
-        # so reaching here with the marker set means a stack built by hand: ``shape`` would
+        # `per_detector_stack` marks its result after unflattening, which does not run this,
+        # so reaching here with the marker set means a stack built by hand: `shape` would
         # describe one detector while the arrays hold many.
         if self.per_detector:
             raise ValueError('per_detector is set by per_detector_stack, not by the constructor')
-        # Construction is the only caller, so ``_index_shape`` always sees one detector's arrays.
+        # Construction is the only caller, so `_index_shape` always sees one detector's arrays.
         object.__setattr__(
             self, 'in_structure', ShapeDtypeStruct(self._index_shape, self._array_dtype)
         )
@@ -124,14 +123,14 @@ class Basis(AbstractLinearOperator):
         """One basis per detector, stacked into a single basis.
 
         Use this for a template whose functions differ from detector to detector, such as the
-        temperature-to-polarization leakage template, whose basis is each detector's own
-        temperature stream. Available on every flavour.
+        temperature-to-polarization leakage template, whose basis is each detector's own temperature
+        stream. Available on every flavour.
 
-        Call it as you would the constructor, with every array argument carrying a leading
-        detector axis. All detectors then share one index shape, dtype and static metadata,
-        read off detector 0, and differ only in their array values. The result keeps that
-        single-detector metadata, so `shape` and `in_structure` still describe one detector's
-        amplitudes, which is what the template operators map over.
+        Call it as you would the constructor, with every array argument carrying a leading detector
+        axis. All detectors then share one index shape, dtype and static metadata, read off detector
+        0, and differ only in their array values. The result keeps that single-detector metadata, so
+        `shape` and `in_structure` still describe one detector's amplitudes, which is what the
+        template operators map over.
 
         Args:
             attributes: The constructor arguments. Array arguments carry a leading detector
@@ -213,17 +212,17 @@ class _BasisTranspose(TransposeOperator):
 class TensorBasis(Basis):
     """Dense basis: the matrix `B` is stored explicitly.
 
-    Holds `values[k, t] = b_k(t)` as a single dense array, with no assumed structure.
-    When `B` factorises over independent variables, `KroneckerBasis`
-    represents the same map with less memory; when each sample belongs to one interval,
-    `SegmentedBasis` avoids storing the mostly-zero per-interval blocks.
+    Holds `values[k, t] = b_k(t)` as a single dense array, with no assumed structure. When `B`
+    factorises over independent variables, `KroneckerBasis` represents the same map with less
+    memory; when each sample belongs to one interval, `SegmentedBasis` avoids storing the
+    mostly-zero per-interval blocks.
 
-    With `q > 1` the values are stored on a `q`-times coarser time grid to save memory:
-    synthesis (`expand`) holds each coarse value over its block of `q` samples and analysis
-    (`project`) sums each block back down. The two are exact transposes. Hold/block-sum is a
-    zeroth-order resampler, exact only for content well below the coarse-grid Nyquist
-    frequency `sample_rate / 2q`, so choose `q` to keep that above the template's band edge.
-    The default `q = 1` is the plain dense basis with no resampling.
+    With `q > 1` the values are stored on a `q`-times coarser time grid to save memory: synthesis
+    (`expand`) holds each coarse value over its block of `q` samples and analysis (`project`) sums
+    each block back down. The two are exact transposes. Hold/block-sum is a zeroth-order resampler,
+    exact only for content well below the coarse-grid Nyquist frequency `sample_rate / 2q`, so
+    choose `q` to keep that above the template's band edge. The default `q = 1` is the plain dense
+    basis with no resampling.
     """
 
     values: Float[Array, '*shape samp_dec']
@@ -286,11 +285,11 @@ class TensorBasis(Basis):
 class KroneckerBasis(Basis):
     """Basis whose functions factorise over independent variables.
 
-    Built from factor matrices `F_i` (e.g. an azimuth-polynomial set and an HWP-harmonic
-    set), whose rows are the factor's functions of time. The basis function for
-    multi-index `k = (k_0, ...)` is the elementwise product `b_k(t) = Π_i F_i[k_i, t]`.
-    Equivalent to a `TensorBasis` holding the full outer product, but kept factored:
-    memory scales as `Σ_i d_i` rather than `Π_i d_i` columns of length `n_points`.
+    Built from factor matrices `F_i` (e.g. an azimuth-polynomial set and an HWP-harmonic set), whose
+    rows are the factor's functions of time. The basis function for multi-index `k = (k_0, ...)` is
+    the elementwise product `b_k(t) = Π_i F_i[k_i, t]`. Equivalent to a `TensorBasis` holding the
+    full outer product, but kept factored: memory scales as `Σ_i d_i` rather than `Π_i d_i` columns
+    of length `n_points`.
 
     Use when the basis cleanly separates over independent variables.
     """
@@ -330,18 +329,18 @@ class KroneckerBasis(Basis):
 class SegmentedBasis(Basis):
     """Basis partitioned into segments, each sample belonging to exactly one.
 
-    The amplitude index is `(j, k)` = segment `j` × shared sub-basis function `k`, with
-    `b_{j,k}(t) = [segment(t) = j] · v_k(t)`. Since every sample lies in a single
-    segment, only that segment's amplitudes contribute to it.
+    The amplitude index is `(j, k)` = segment `j` × shared sub-basis function `k`, with `b_{j,k}(t)
+    = [segment(t) = j] · v_k(t)`. Since every sample lies in a single segment, only that segment's
+    amplitudes contribute to it.
 
-    Stored sparsely as one segment id per sample plus one shared table `v_k(t)`, instead
-    of the equivalent dense per-segment array (segments × functions × samples) that would
-    be almost all zeros. The right choice when the segments form a partition (e.g. per-scan-interval
-    Legendre polynomials); `KroneckerBasis` does not help here, as it assumes every
-    factor is dense at every sample.
+    Stored sparsely as one segment id per sample plus one shared table `v_k(t)`, instead of the
+    equivalent dense per-segment array (segments × functions × samples) that would be almost all
+    zeros. The right choice when the segments form a partition (e.g. per-scan-interval Legendre
+    polynomials); `KroneckerBasis` does not help here, as it assumes every factor is dense at every
+    sample.
 
-    Samples in no segment must have their `values` column pre-zeroed by the builder;
-    their segment id is then irrelevant.
+    Samples in no segment must have their `values` column pre-zeroed by the builder; their segment
+    id is then irrelevant.
     """
 
     segment: Int[Array, ' samp']
@@ -378,17 +377,17 @@ class WindowedBasis(Basis):
 
     The amplitude index is a pair (block, sub-basis function). Every sample falls under a fixed
     number of consecutive blocks, weighting each by how far the sample sits inside it and each
-    sub-basis function by its value there. The typical case is a cubic B-spline, where every
-    sample lies under four consecutive knots.
+    sub-basis function by its value there. The typical case is a cubic B-spline, where every sample
+    lies under four consecutive knots.
 
-    Stored sparsely as, per sample, the index of its first block, the window weights, and the
-    shared sub-basis values, instead of the equivalent dense `TensorBasis` whose columns would
-    be almost all zeros. The right choice when blocks overlap by a fixed amount;
-    `SegmentedBasis` is the non-overlapping single-block-per-sample special case, kept separate
-    to avoid storing its trivial unit window.
+    Stored sparsely as, per sample, the index of its first block, the window weights, and the shared
+    sub-basis values, instead of the equivalent dense `TensorBasis` whose columns would be almost
+    all zeros. The right choice when blocks overlap by a fixed amount; `SegmentedBasis` is the
+    non-overlapping single-block-per-sample special case, kept separate to avoid storing its trivial
+    unit window.
 
-    The builder must keep every window inside the block range, pre-zeroing the weights of any
-    sample whose window overhangs the ends.
+    The builder must keep every window inside the block range, pre-zeroing the weights of any sample
+    whose window overhangs the ends.
     """
 
     offset: Int[Array, ' samp']
@@ -447,11 +446,10 @@ def _bin_weights(
 ) -> Float[Array, '{n_bins} samp']:
     """Assign each sample to a bin of `x`.
 
-    Splits the range of `x` into `n_bins` equal bins. Entry `[j, s]` is how much sample
-    `s` belongs to bin `j`. With `interpolate=False` this is one-hot: 1 for the bin the
-    sample falls in, 0 elsewhere. With `interpolate=True` a sample near a bin edge is
-    shared with its neighbour (triangular weights, or sin² hats if `smooth`), each
-    sample's weights summing to 1.
+    Splits the range of `x` into `n_bins` equal bins. Entry `[j, s]` is how much sample `s` belongs
+    to bin `j`. With `interpolate=False` this is one-hot: 1 for the bin the sample falls in, 0
+    elsewhere. With `interpolate=True` a sample near a bin edge is shared with its neighbour
+    (triangular weights, or sin² hats if `smooth`), each sample's weights summing to 1.
 
     Each row is then one basis function of a binned template (a bin's time profile).
     """
@@ -467,7 +465,7 @@ def _bin_weights(
         return bins.astype(dtype)
 
     # Soft assignment: triangular weights peaking at each bin centre, falling
-    # linearly to zero one bin-width (``delta``) away. Shape (n_bins, n_samps).
+    # linearly to zero one bin-width (`delta`) away. Shape (n_bins, n_samps).
     centres = 0.5 * (edges[:-1] + edges[1:])
     delta = (hi - lo) / n_bins
     triangular = jnp.clip(1 - jnp.abs(x[None, :] - centres[:, None]) / delta, min=0)
@@ -522,8 +520,8 @@ def _harmonics(
 
     Optionally prepended with a constant (DC) row when `dc` is set.
 
-    `harmonics` is either an int `n` (the harmonics `1..n`) or an explicit sequence of
-    harmonic orders.
+    `harmonics` is either an int `n` (the harmonics `1..n`) or an explicit sequence of harmonic
+    orders.
     """
     h = jnp.arange(1, harmonics + 1) if isinstance(harmonics, int) else jnp.asarray(harmonics)
     sines = jnp.sin(h[:, None] * angles[None, :])
@@ -541,13 +539,12 @@ def polynomial_basis(
 ) -> Basis:
     """Basis for a polynomial drift template, one polynomial per scanning interval.
 
-    Each sample belongs to one interval and is fitted with Legendre orders
-    `0..max_poly_order` over that interval.
+    Each sample belongs to one interval and is fitted with Legendre orders `0..max_poly_order` over
+    that interval.
 
-    Assumes `intervals` are sorted, non-overlapping `[start, end)` rows. Samples in
-    gaps or past the last interval get a zero basis column. `valid_mask` optionally
-    zeroes flagged samples (1 = keep, 0 = drop) so they neither carry template
-    signal nor constrain the fitted amplitudes.
+    Assumes `intervals` are sorted, non-overlapping `[start, end)` rows. Samples in gaps or past the
+    last interval get a zero basis column. `valid_mask` optionally zeroes flagged samples (1 = keep,
+    0 = drop) so they neither carry template signal nor constrain the fitted amplitudes.
     """
     n_samps = times.size
     n_intervals = intervals.shape[0]
@@ -556,7 +553,7 @@ def polynomial_basis(
 
     s = jnp.arange(n_samps)
     # interval id per sample: last interval whose start <= s (intervals sorted),
-    # clamped into range. Gaps/out-of-range are caught by ``in_range`` below.
+    # clamped into range. Gaps/out-of-range are caught by `in_range` below.
     segment = jnp.clip(jnp.searchsorted(starts, s, side='right') - 1, 0, n_intervals - 1)
     seg_start = starts[segment]
     seg_end = ends[segment]
@@ -565,7 +562,7 @@ def polynomial_basis(
     t0 = times[seg_start]
     span = jnp.where(seg_end > seg_start + 1, times[seg_end - 1] - t0, 1.0)
     # rescale each sample to [-1, 1] within its own interval; out-of-range
-    # samples sit at 0 and are zeroed by ``in_range`` below.
+    # samples sit at 0 and are zeroed by `in_range` below.
     u = jnp.where(in_range, -1.0 + 2.0 * (times - t0) / span, 0.0)
     legs = _legendre_values(u, 0, max_poly_order, dtype)  # (k, n_samps)
     legs = legs * in_range[None, :]
@@ -584,20 +581,19 @@ def t2p_basis(
 ) -> Basis:
     """Per-detector basis for a temperature-to-polarization leakage template.
 
-    Each detector's basis is just its own temperature stream, so fitting one amplitude
-    per detector estimates how much temperature leaks into its polarization.
+    Each detector's basis is just its own temperature stream, so fitting one amplitude per detector
+    estimates how much temperature leaks into its polarization.
 
-    `fit_band=(f0, f1)` restricts the temperature basis to that frequency band (Hz), so
-    the leakage is both estimated and removed only there, keeping the template a clean
-    linear operator.
+    `fit_band=(f0, f1)` restricts the temperature basis to that frequency band (Hz), so the leakage
+    is both estimated and removed only there, keeping the template a clean linear operator.
 
     `decimation_factor=q` stores the basis on a `q`-times coarser grid to cut memory; the
-    coarse-grid Nyquist frequency `sample_rate / 2q` must stay above `f1`. As a rule of
-    thumb keep it at a few times `f1` (`q ≲ sample_rate / 6·f1`): the fractional error on
-    the fitted amplitude grows like `(f1 / (sample_rate / 2q))²`.
+    coarse-grid Nyquist frequency `sample_rate / 2q` must stay above `f1`. As a rule of thumb keep
+    it at a few times `f1` (`q ≲ sample_rate / 6·f1`): the fractional error on the fitted amplitude
+    grows like `(f1 / (sample_rate / 2q))²`.
 
-    Assumes `temperature` is already deglitched/gap-filled upstream: a glitch left in it
-    would smear across the band and bias the fitted amplitude.
+    Assumes `temperature` is already deglitched/gap-filled upstream: a glitch left in it would smear
+    across the band and bias the fitted amplitude.
     """
     t = temperature
     if fit_band is not None:
@@ -609,8 +605,8 @@ def t2p_basis(
     q = decimation_factor
     if q > 1:
         # Block-average onto a q-times coarser grid: pad the tail to a whole block,
-        # reshape (..., n_dec, q) and mean. ``TensorBasis`` hold-upsamples back to
-        # ``n_full`` in synthesis (band-limits above sample_rate / 2q).
+        # reshape (..., n_dec, q) and mean. `TensorBasis` hold-upsamples back to
+        # `n_full` in synthesis (band-limits above sample_rate / 2q).
         n_dec = -(-n_full // q)  # ceil
         pad = n_dec * q - n_full
         tp = jnp.pad(t, [(0, 0), (0, pad)])
@@ -693,9 +689,9 @@ def spline_hwp_synchronous_basis(
 ) -> Basis:
     """Spline-based HWP synchronous basis.
 
-    A cubic B-spline models the slowly time-varying amplitude of the HWP-synchronous
-    signal: knot `j` carries a `(sin kχ, cos kχ)` pair for each harmonic `k`, so the
-    amplitudes have shape `(K, 2*n_harmonics)` with `K = n_knots + 2`.
+    A cubic B-spline models the slowly time-varying amplitude of the HWP-synchronous signal: knot
+    `j` carries a `(sin kχ, cos kχ)` pair for each harmonic `k`, so the amplitudes have shape `(K,
+    2*n_harmonics)` with `K = n_knots + 2`.
     """
     offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
     sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False).astype(dtype)
@@ -711,7 +707,7 @@ class AbstractTemplateOperator(AbstractLinearOperator):
     n_dets: int = field(metadata={'static': True})
 
     def __post_init__(self) -> None:
-        # ``in_structure`` is derived, never passed: it can then never disagree with the bases.
+        # `in_structure` is derived, never passed: it can then never disagree with the bases.
         if self.in_structure is not None:
             raise ValueError('in_structure is derived from the bases; do not pass it')
         object.__setattr__(self, 'in_structure', self._amplitude_structure())
@@ -720,7 +716,7 @@ class AbstractTemplateOperator(AbstractLinearOperator):
     # ---- amplitude side -------------------------------------------------------------------------
     @abstractmethod
     def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        """``bases`` with each basis replaced by the amplitudes it takes (``_amplitude_leaf``)."""
+        """`bases` with each basis replaced by the amplitudes it takes (`_amplitude_leaf`)."""
 
     def _amplitude_leaf(self, basis: Basis) -> jax.ShapeDtypeStruct:
         return jax.ShapeDtypeStruct((self.n_dets, *basis.shape), basis.dtype)
@@ -758,16 +754,16 @@ class AbstractTemplateOperator(AbstractLinearOperator):
     # ---- adjoint --------------------------------------------------------------------------------
     @abstractmethod
     def project(self, tod: PyTree[Array]) -> PyTree[Array]:
-        """Every template's amplitudes, from a TOD. This is the transpose's ``mv``."""
+        """Every template's amplitudes, from a TOD. This is the transpose's `mv`."""
 
     def transpose(self) -> AbstractLinearOperator:
         return _TemplateOperatorTranspose(self)
 
 
 class TemplateOperator(AbstractTemplateOperator):
-    """Templates over a TOD with no Stokes axis, producing one ``(n_dets, n_points)`` array.
+    """Templates over a TOD with no Stokes axis, producing one `(n_dets, n_points)` array.
 
-    Each template contributes ``(n_dets, *basis.shape)`` amplitudes, and the TOD is their summed
+    Each template contributes `(n_dets, *basis.shape)` amplitudes, and the TOD is their summed
     expansion.
     """
 
@@ -794,11 +790,11 @@ class TemplateOperator(AbstractTemplateOperator):
 
 
 class StokesTemplateOperator(AbstractTemplateOperator):
-    """Templates over a [`Stokes`][] TOD, each leg one ``(n_dets, n_points)`` array.
+    """Templates over a [`Stokes`][] TOD, each leg one `(n_dets, n_points)` array.
 
-    A Stokes-valued TOD carries one differently filtered stream per leg (as demodulation
-    produces), so a template fits an independent set of amplitudes on each leg it covers. It need
-    not cover them all: temperature-to-polarization leakage is fitted on Q and U only.
+    A Stokes-valued TOD carries one differently filtered stream per leg (as demodulation produces),
+    so a template fits an independent set of amplitudes on each leg it covers. It need not cover
+    them all: temperature-to-polarization leakage is fitted on Q and U only.
 
     Raises:
         TypeError: If a template is given as a bare basis rather than keyed by leg.
@@ -809,7 +805,7 @@ class StokesTemplateOperator(AbstractTemplateOperator):
     stokes: ValidStokesLiteral = field(metadata={'static': True})
 
     def __post_init__(self) -> None:
-        # ``stokes`` declares the leg axis: every template must be keyed by a subset of it.
+        # `stokes` declares the leg axis: every template must be keyed by a subset of it.
         for name, legged in self.bases.items():
             if isinstance(legged, Basis):
                 msg = f'template {name!r} needs one basis per Stokes leg of {self.stokes!r}'
@@ -870,10 +866,9 @@ class _TemplateOperatorTranspose(TransposeOperator):
 class GroundTemplateOperator(AbstractLinearOperator):
     """Operator for ground signal templates.
 
-    The template amplitudes form a two-dimensional (elevation, azimuth) IQU map of the
-    ground observed that is shared across detectors for the observation range.
-    This class only contains a factory method.
-    All argument angles should be provided in radians.
+    The template amplitudes form a two-dimensional (elevation, azimuth) IQU map of the ground
+    observed that is shared across detectors for the observation range. This class only contains a
+    factory method. All argument angles should be provided in radians.
     """
 
     @classmethod

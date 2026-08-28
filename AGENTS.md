@@ -47,6 +47,7 @@ Use Google-style docstrings. Docs site renders via mkdocstrings/griffe, so a few
 - Section bodies must be indented **under** the header (`Args:` at 4 → entries at 8). `name (type): description`.
 - Use `Examples:` (plural) for code examples. Singular `Example:` becomes an admonition with no `pycon` syntax highlighting.
 - A `>>>` console block must be preceded by a **blank line** when prose comes before it, but **not** directly after the section header (ruff `D412`).
+- Code spans take single backticks: `n_blocks`, not ``n_blocks``. Docstrings render as markdown, so the reST double-backtick form buys nothing.
 - Math: `$inline$` / `$$display$$`. Cross-reference symbols with autorefs: ``[`OtherClass`][]``.
 
 ```python

@@ -375,6 +375,15 @@ class MultiObservationMapMaker[T]:
                 sky_estimate = result.solution
                 amplitudes = None
 
+        if amplitudes is not None:
+            # Gather the (sharded) amplitudes on rank 0. Result is host-side.
+            # The gathered leading axis is the padded slot axis (per process: owned slots, then
+            # padding). Gathering the slot mask the same way keeps the two aligned, so dropping
+            # the padding leaves one entry per observation, in `self.observations` order.
+            real = mhu.process_allgather(self._real_observation_mask(), tiled=True)
+            gathered = mhu.process_allgather(amplitudes, tiled=True)
+            amplitudes = jax.tree.map(lambda a: a[real], gathered)
+
         return MapMakingResults(
             map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)
             icov=icov,

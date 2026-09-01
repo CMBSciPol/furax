@@ -36,9 +36,7 @@ from furax import (
     SymmetricBandToeplitzOperator,
 )
 from furax.core import (
-    BlockColumnOperator,
     BlockDiagonalOperator,
-    BlockRowOperator,
     IndexOperator,
 )
 from furax.interfaces.lineax import as_lineax_operator
@@ -295,6 +293,7 @@ class MultiObservationMapMaker[T]:
             valid_pixels = self.pixel_selection(hit_map, icov)
             # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
             S = IndexOperator((..., *jnp.where(valid_pixels)), in_structure=H_sky.in_structure)
+            H_sky_full = H_sky  # bare stream, fused with the template leg in the joint path below
             H_sky @= S.T
             M_sky = (S @ BJ.I @ S.T).reduce()
 
@@ -339,16 +338,20 @@ class MultiObservationMapMaker[T]:
                 M = BlockDiagonalOperator([M_sky, G_e])
                 rhs_joint = [S(map_rhs), amp_rhs]
 
-                # Joint sky + explicit-amplitude system, assembled as a 2x2 block.
-                # Each block independently reduces to a streaming operator (Stream*Operator).
-                # TODO: fused mixed reduce+stack scan to share TOD computation.
-                A_ss = (H_sky.T @ WF @ H_sky).reduce()
-                A_sa = (H_sky.T @ WF @ Te).reduce()
-                A_as = (Te.T @ WF @ H_sky).reduce()
-                A_aa = (Te.T @ WF @ Te).reduce()
-                A = BlockColumnOperator(
-                    [BlockRowOperator([A_ss, A_sa]), BlockRowOperator([A_as, A_aa])]
-                )
+                # Joint sky + explicit-amplitude system. The sky and template legs share the TOD,
+                # so `block_row` fuses them into one forward stream and the whole 2x2
+                # normal-equations block runs in a single TOD scan, instead of one scan per block.
+                #
+                # Pixel selection sandwiches the fused system rather than living inside it. This
+                # is where it always effectively was: `reduce()` cannot fold an `IndexOperator`
+                # into a stream, so the per-block streams also ran on the full grid with `S`/`S.T`
+                # applied outside. Nor should it fold in: the stream body applies constant
+                # segments at every scan step, so an in-stream `S.T` would scatter
+                # selected -> full once per observation instead of once per CG apply.
+                H_joint = StreamOperator.block_row([H_sky_full, Te])
+                A_joint = (H_joint.T @ WF @ H_joint).reduce()
+                select = BlockDiagonalOperator([S, IdentityOperator(in_structure=Te.in_structure)])
+                A = (select @ A_joint @ select.T).reduce()
 
             iteration_callback = None
             if self.config.solver.verbose:

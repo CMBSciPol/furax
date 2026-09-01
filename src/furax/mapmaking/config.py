@@ -521,7 +521,7 @@ class TemplatesConfig:
     ground: GroundConfig | None = None
     """Ground pickup template, binned in (azimuth, elevation)."""
 
-    regularization: float = 0.0
+    regularization: float = field(default=0.0, metadata={'template': False})
     """Ridge regularization strength applied to the template regression."""
 
     @classmethod
@@ -541,7 +541,12 @@ class TemplatesConfig:
     @property
     def empty(self) -> bool:
         """True when every template is disabled."""
-        return all(getattr(self, f.name) is None for f in fields(self))
+        # a field counts as a template unless marked otherwise
+        return all(
+            getattr(self, field.name) is None
+            for field in fields(self)
+            if field.metadata.get('template', True)
+        )
 
 
 @dataclass(frozen=True)

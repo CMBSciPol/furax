@@ -31,7 +31,7 @@ from collections.abc import Sequence
 from dataclasses import field, fields
 from itertools import chain
 from math import prod
-from typing import Any, Literal, Self, cast
+from typing import Any, Literal, NamedTuple, Self, cast
 
 import jax
 import jax.numpy as jnp
@@ -51,7 +51,9 @@ from .config import BinsConfig, PolynomialOrders
 
 __all__ = [
     'StokesLeg',
+    'NoStructuredView',
     'Basis',
+    'BasisColumns',
     'TensorBasis',
     'KroneckerBasis',
     'SegmentedBasis',
@@ -74,6 +76,62 @@ __all__ = [
 
 StokesLeg = Literal['i', 'q', 'u', 'v']
 """One Stokes component, lower case."""
+
+
+class NoStructuredView(Exception):
+    """Raised when a basis cannot expose a structured (column-support) view."""
+
+
+class BasisColumns(NamedTuple):
+    """Column-support view of a basis, from which self- and cross-Grams are built in one pass.
+
+    Examples:
+        A dense basis is the degenerate case: one block holding every amplitude, and every sample
+        in it with a unit tap, so `values` is the matrix itself.
+
+        >>> basis = TensorBasis(jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+        >>> view = basis.support()
+        >>> view.n_blocks, view.blocks.ravel().tolist(), view.taps.ravel().tolist()
+        (1, [0, 0, 0], [1.0, 1.0, 1.0])
+        >>> view.as_matrix()  # the basis matrix, in the same layout as basis.as_matrix()
+        Array([[1., 4.],
+               [2., 5.],
+               [3., 6.]], dtype=float32)
+
+        Overlapping blocks are what make the Gram block-banded. Four samples over five blocks, one
+        sub-basis function, each sample reading a window of three; the third sample shares its
+        window with the second, and each carries its own taps, as a B-spline's weights depend on
+        where the sample falls inside its span.
+
+        >>> taps = jnp.array([[.2, .1, .4, .3], [.5, .6, .4, .5], [.3, .3, .2, .2]])
+        >>> taps.shape  # (window, samp), transposed into (samp, window) by the view
+        (3, 4)
+        >>> offset = jnp.array([0, 1, 1, 2])  # first block of each sample's window
+        >>> basis = WindowedBasis(offset, taps, jnp.ones((1, 4)), n_blocks=5)
+        >>> basis.support().blocks.tolist()  # the window of blocks each sample reads
+        [[0, 1, 2], [1, 2, 3], [1, 2, 3], [2, 3, 4]]
+        >>> basis.support().as_matrix()  # the band the window traces out
+        Array([[0.2, 0.5, 0.3, 0. , 0. ],
+               [0. , 0.1, 0.6, 0.3, 0. ],
+               [0. , 0.4, 0.4, 0.2, 0. ],
+               [0. , 0. , 0.3, 0.5, 0.2]], dtype=float32)
+    """
+
+    blocks: Int[Array, 'samp window']
+    taps: Float[Array, 'samp window']
+    values: Float[Array, 'k samp']
+    n_blocks: int
+
+    def as_matrix(self) -> Float[Array, 'samp block_k']:
+        """The dense basis matrix this view encodes, in the basis's own `as_matrix()` layout."""
+        n_points, window = self.blocks.shape
+        k = self.values.shape[0]
+        rows = jnp.arange(n_points)
+        matrix = jnp.zeros((n_points, self.n_blocks, k), self.values.dtype)
+        for slot in range(window):  # window width is static
+            contrib = self.taps[:, slot][:, None] * self.values.T  # (samp, k)
+            matrix = matrix.at[rows, self.blocks[:, slot]].add(contrib)
+        return matrix.reshape(n_points, self.n_blocks * k)
 
 
 class Basis(AbstractLinearOperator):
@@ -201,6 +259,43 @@ class Basis(AbstractLinearOperator):
     def transpose(self) -> AbstractLinearOperator:
         return _BasisTranspose(self)
 
+    def gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n w1 k k']:
+        """The weighted Gram `Bᵀ diag(weights) B`, keeping only the blocks that can be nonzero.
+
+        Two amplitudes interact only where some sample sees both, so blocks far enough apart never
+        do. `bands[j, d]` is the `k×k` block coupling block `j` to block `j + d`, for `d = 0..w`,
+        with `d = 0` the diagonal block; the blocks below the diagonal are the transposes of these,
+        by symmetry. Shape `(n_blocks, w + 1, k, k)`: blocks that never overlap give `w = 0`, and a
+        dense basis is the single block `(1, 1, k, k)`. Consumed by
+        [`BandedCholeskyOperator.from_bands`][furax.linalg.BandedCholeskyOperator.from_bands].
+
+        Raises:
+            NoStructuredView: If this basis has no such form. Flavours implement `_gram`.
+        """
+        if self.per_detector:
+            raise NoStructuredView
+        return self._gram(weights)
+
+    @abstractmethod
+    def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n w1 k k']:
+        """Flavours with no such form raise [`NoStructuredView`][]."""
+
+    def support(self) -> BasisColumns:
+        """Column-support view ([`BasisColumns`][]) used to build self- and cross-Grams in one pass.
+
+        Consumed by [`cross_gram`][furax.mapmaking.gram.cross_gram].
+
+        Raises:
+            NoStructuredView: If this basis has no such view. Flavours implement `_support`.
+        """
+        if self.per_detector:
+            raise NoStructuredView
+        return self._support()
+
+    @abstractmethod
+    def _support(self) -> BasisColumns:
+        """Flavours with no such view raise [`NoStructuredView`][]."""
+
 
 class _BasisTranspose(TransposeOperator):
     operator: Basis
@@ -281,6 +376,27 @@ class TensorBasis(Basis):
             signal = self._downsample(signal)
         return jnp.einsum(self.values, (*idx, n), signal, (n,), idx)
 
+    def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
+        # Dense Gram over the (single) coupled amplitude axis: one block, no band (w=0).
+        if self.q != 1:
+            raise NoStructuredView('gram unsupported for decimated (q>1) TensorBasis')
+        if len(self.shape) != 1:
+            raise NoStructuredView('gram supports 1-D TensorBasis amplitude only')
+        v = self.values  # (k, samp)
+        return jnp.einsum('as,s,bs->ab', v, weights, v)[None, None]
+
+    def _support(self) -> BasisColumns:
+        # One global block, every sample in it (unit tap).
+        if self.q != 1 or len(self.shape) != 1:
+            raise NoStructuredView('support view: 1-D undecimated TensorBasis only')
+        samp = self.n_points
+        return BasisColumns(
+            blocks=jnp.zeros((samp, 1), jnp.int32),
+            taps=jnp.ones((samp, 1), self.dtype),
+            values=self.values,
+            n_blocks=1,
+        )
+
 
 class KroneckerBasis(Basis):
     """Basis whose functions factorise over independent variables.
@@ -324,6 +440,27 @@ class KroneckerBasis(Basis):
         # each appear once and become the (sorted) output.
         n = len(self.shape)
         return jnp.einsum(*self._factor_operands(), signal, (n,))
+
+    def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
+        # No block structure: the shared per-sample weight couples all factor indices, so the
+        # Gram is dense over the flattened product index (one k×k block, k = prod(shape)).
+        # Materialise the product basis `V[k_0..k_{n-1}, t] = Π_i F_i[k_i, t]` (cheap for the
+        # 2-factor bases here), flatten to `(K, samp)`, and contract the weighted self-Gram.
+        n = len(self.shape)
+        v = jnp.einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
+        return jnp.einsum('kt,t,lt->kl', v, weights, v)[None, None]
+
+    def _support(self) -> BasisColumns:
+        # One global block over the materialised product basis (flattened index k = prod(shape)).
+        n = len(self.shape)
+        v = jnp.einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
+        samp = self.n_points
+        return BasisColumns(
+            blocks=jnp.zeros((samp, 1), jnp.int32),
+            taps=jnp.ones((samp, 1), self.dtype),
+            values=v,
+            n_blocks=1,
+        )
 
 
 class SegmentedBasis(Basis):
@@ -370,6 +507,25 @@ class SegmentedBasis(Basis):
         contrib = self.values * signal[None, :]  # (k, n_points)
         zeros = jnp.zeros(self.shape, self.dtype)
         return zeros.at[self.segment].add(contrib.T)
+
+    def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'seg 1 k k']:
+        # Per-segment Gram in a single pass: bin each sample's rank-one w·vvᵀ into its segment.
+        # Block-diagonal (w=0) -> band axis of size 1. O(n_samples·k²), no full-TOD probe.
+        n_seg, k = self.shape
+        vw = self.values * weights[None, :]  # (k, samp)
+        per_sample = jnp.einsum('as,bs->sab', vw, self.values)  # (samp, k, k)
+        blocks = jnp.zeros((n_seg, 1, k, k), self.dtype)
+        return blocks.at[self.segment, 0].add(per_sample)
+
+    def _support(self) -> BasisColumns:
+        # One block per sample: its segment. Out-of-range samples were pre-zeroed in `values`.
+        samp = self.segment.shape[0]
+        return BasisColumns(
+            blocks=self.segment[:, None],
+            taps=jnp.ones((samp, 1), self.dtype),
+            values=self.values,
+            n_blocks=self.shape[0],
+        )
 
 
 class WindowedBasis(Basis):
@@ -435,6 +591,38 @@ class WindowedBasis(Basis):
         contrib = jnp.einsum('os,js,s->soj', self.block_weights, self.sub_values, signal)
         zeros = jnp.zeros(self.shape, self.dtype)
         return zeros.at[self._block_indices()].add(contrib)
+
+    def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'block band k k']:
+        """Block-banded `Bᵀ diag(weights) B` in one pass.
+
+        Overlapping windows couple block `j` only to `|j'-j| < O` (`O` = window width), so the Gram
+        is block-banded of half-width `O-1`, dense `k×k` within the band. Returns the upper band
+        `bands[j, d] = G[(j,·), (j+d,·)]` for `d = 0..O-1` (`d=0` the symmetric diagonal block; the
+        lower band is `bands[j, d]ᵀ` by symmetry). Cost `O(n_samples · O² · k²)` — no full-TOD
+        column probe.
+        """
+        n_window = self.block_weights.shape[0]
+        n_blocks, k = self.shape
+        # u[o, a, t] = block_weights[o, t] · sub_values[a, t]: sample t's value for window slot o,
+        # sub-basis a. The block it lands in is offset[t] + o.
+        u = self.block_weights[:, None, :] * self.sub_values[None, :, :]  # (O, k, samp)
+        uw = u * weights[None, None, :]  # weight folded into one side
+        bands = jnp.zeros((n_blocks, n_window, k, k), self.dtype)
+        # d = j'-j is static; slot o (block j = offset+o) couples to slot o+d (block j+d).
+        for d in range(n_window):
+            for o in range(n_window - d):
+                contrib = jnp.einsum('at,bt->tab', uw[o], u[o + d])  # (samp, k, k)
+                bands = bands.at[self.offset + o, d].add(contrib)
+        return bands
+
+    def _support(self) -> BasisColumns:
+        # Each sample reads a window of O overlapping blocks, tapered by block_weights.
+        return BasisColumns(
+            blocks=self._block_indices(),  # (samp, O)
+            taps=self.block_weights.T,  # (samp, O)
+            values=self.sub_values,  # (k, samp)
+            n_blocks=self.shape[0],
+        )
 
 
 def _bin_weights(

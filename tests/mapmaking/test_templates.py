@@ -12,6 +12,7 @@ from furax.mapmaking.templates import (
     ATOPProjectionOperator,
     Basis,
     KroneckerBasis,
+    NoStructuredView,
     SegmentedBasis,
     TemplateOperator,
     TensorBasis,
@@ -445,6 +446,45 @@ class TestPerDetectorStack:
                 values=jnp.ones((2, 2, 30)),
                 n_segments=3,
             )
+
+
+# ---------------------------------------------------------------------------
+# Structured Gram views (Basis.gram, Basis.support)
+# ---------------------------------------------------------------------------
+
+
+class TestStructuredViews:
+    @pytest.mark.parametrize('flavour', FLAVOURS)
+    def test_support_encodes_the_same_matrix_as_the_basis(self, flavour: str) -> None:
+        # the column-support view and expand/project are two encodings of one basis: they must
+        # agree, or every Gram built from the view is silently wrong.
+        _, singles = _stacked_and_singles(flavour, 1, 1100)
+        basis = singles[0]
+        assert_allclose(basis.support().as_matrix(), basis.as_matrix(), rtol=TOL, atol=TOL)
+
+    def test_windowed_gram_bands_match_the_dense_gram(self) -> None:
+        # overlapping windows make the Gram block-banded of half-width O-1; the one-pass banded
+        # build must match the dense Bᵀ diag(w) B block for block within the band.
+        n_blocks, n_window, k, n_points = 6, 3, 2, 40
+        basis, *_ = _windowed(n_blocks, n_window, k, n_points, 1110)
+        weights = jr.uniform(jr.key(1111), (n_points,), minval=0.5, maxval=2.0)
+
+        bands = basis.gram(weights)  # (n_blocks, n_window, k, k), upper band
+        matrix = basis.as_matrix()  # (samp, n_blocks * k), columns ordered (block, sub)
+        dense = (matrix.T @ (weights[:, None] * matrix)).reshape(n_blocks, k, n_blocks, k)
+        for j in range(n_blocks):
+            for d in range(n_window):
+                if j + d < n_blocks:
+                    assert_allclose(bands[j, d], dense[j, :, j + d, :], rtol=TOL, atol=TOL)
+
+    @pytest.mark.parametrize('flavour', FLAVOURS)
+    def test_per_detector_stacks_have_no_structured_view(self, flavour: str) -> None:
+        # the views describe one detector; a stack holds many, so both must refuse
+        stacked, _ = _stacked_and_singles(flavour, 3, 1120)
+        with pytest.raises(NoStructuredView):
+            stacked.support()
+        with pytest.raises(NoStructuredView):
+            stacked.gram(jnp.ones(stacked.n_points))
 
 
 # ---------------------------------------------------------------------------

@@ -23,21 +23,23 @@ __all__ = [
     'MapMakingResults',
 ]
 
-_VALID_FIELDS = frozenset({'map', 'hit_map', 'icov', 'noise_fits', 'solver_stats'})
-_REQUIRED_FIELDS = frozenset({'map', 'hit_map', 'icov'})
-
-
-class _JsonEncoder(json.JSONEncoder):
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if hasattr(obj, 'item'):  # numpy/jax scalars
-            return obj.item()
-        return super().default(obj)
+_AMPLITUDES_FILE = 'amplitudes.npz'
 
 
 @dataclass
 class MapMakingResults:
+    """The products of a mapmaking run.
+
+    Here is a summary of the files that products are saved into:
+
+        map / hit_map / icov     one file each, named after the field
+                                 FITS for HEALPix or WCS, .npy otherwise
+        noise_fits               noise_fits.npy
+        template_amplitudes      amplitudes.npz  (<template> or <template>/<leg>)
+        solver_stats             solver_stats.json
+        failed_observations      failed_observations.txt, one name per line
+    """
+
     map: StokesType
     """The estimated sky map"""
 
@@ -60,77 +62,60 @@ class MapMakingResults:
     """Names of observations that failed to load and were excluded from the maps"""
 
     template_amplitudes: dict[str, Any] | None = None
-    """Estimated amplitudes of the explicit templates, keyed by template name.
-
-    Each value is obs-stacked (leading observation axis). ``None`` when no explicit template
-    is active (implicit ones are deprojected into the weight and not returned)."""
+    """Estimated amplitudes of the explicit templates, keyed by template name"""
 
     def save(self, out_dir: str | Path) -> None:
+        """Write every product that is set, into the files listed above."""
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         self._save_array(np.array(self.map.data), 'map', out_dir)
         self._save_array(np.array(self.hit_map), 'hit_map', out_dir, column_names=['HITS'])
         self._save_icov(np.array(self.icov), out_dir)
+
         if self.noise_fits is not None:
-            np.save(out_dir / 'noise_fits', np.array(self.noise_fits))
-        if self.template_amplitudes is not None:
-            amp_dir = out_dir / 'template_amplitudes'
-            amp_dir.mkdir(exist_ok=True)
+            np.save(out_dir / 'noise_fits.npy', np.array(self.noise_fits))
+        if self.template_amplitudes:
+            # One entry per array: `<template>`, or `<template>/<leg>` when Stokes-valued.
+            entries: dict[str, np.ndarray] = {}
             for name, value in self.template_amplitudes.items():
-                np.save(amp_dir / f'{name}.npy', np.array(value))
+                legs = value if isinstance(value, dict) else {'': value}
+                for leg, amplitudes in legs.items():
+                    key = f'{name}/{leg}' if leg else name
+                    entries[key] = np.array(amplitudes)
+            np.savez(out_dir / _AMPLITUDES_FILE, **entries)  # type: ignore[arg-type]
         if self.solver_stats is not None:
-            with open(out_dir / 'solver_stats.json', 'w') as f:
-                json.dump(self.solver_stats, f, indent=2, cls=_JsonEncoder)
+            (out_dir / 'solver_stats.json').write_text(json.dumps(self.solver_stats, indent=2))
         if self.failed_observations:
-            with open(out_dir / 'failed_observations.txt', 'w') as f:
-                f.writelines(f'{name}\n' for name in self.failed_observations)
+            (out_dir / 'failed_observations.txt').write_text(
+                ''.join(f'{name}\n' for name in self.failed_observations)
+            )
 
     @classmethod
-    def load(
-        cls,
-        out_dir: str | Path,
-        landscape: StokesLandscape,
-        fields: set[str] | list[str] | None = None,
-    ) -> 'MapMakingResults':
+    def load(cls, out_dir: str | Path, landscape: StokesLandscape) -> 'MapMakingResults':
         """Load a previously saved MapMakingResults from disk.
+
+        The maps are required; every other product comes back as ``None`` when absent.
 
         Args:
             out_dir: Directory containing the saved files.
             landscape: The landscape used when the results were saved.
-            fields: Fields to load. Defaults to all fields. Required fields
-                (map, hit_map, icov) must always be included if specified.
+
+        Raises:
+            FileNotFoundError: If the directory or one of the maps is missing.
         """
         out_dir = Path(out_dir)
         if not out_dir.exists():
             raise FileNotFoundError(f'Output directory not found: {out_dir}')
 
-        if fields is None:
-            fields_to_load = _VALID_FIELDS
-        else:
-            fields_to_load = frozenset(fields)
-            invalid = fields_to_load - _VALID_FIELDS
-            if invalid:
-                raise ValueError(
-                    f'Unknown fields: {sorted(invalid)}. Valid fields: {sorted(_VALID_FIELDS)}'
-                )
-            missing_required = _REQUIRED_FIELDS - fields_to_load
-            if missing_required:
-                raise ValueError(f'Required fields cannot be excluded: {sorted(missing_required)}')
-
-        sky_map = cls._load_map(out_dir, landscape)
-        hit_map = cls._load_hit_map(out_dir, landscape)
-        icov = cls._load_icov(out_dir, landscape)
-
-        noise_fits = cls._load_noise_fits(out_dir) if 'noise_fits' in fields_to_load else None
-        solver_stats = cls._load_solver_stats(out_dir) if 'solver_stats' in fields_to_load else None
-
         return cls(
-            map=sky_map,
+            map=cls._load_map(out_dir, landscape),
             landscape=landscape,
-            hit_map=hit_map,
-            icov=icov,
-            solver_stats=solver_stats,
-            noise_fits=noise_fits,
+            hit_map=cls._load_hit_map(out_dir, landscape),
+            icov=cls._load_icov(out_dir, landscape),
+            solver_stats=cls._load_solver_stats(out_dir),
+            noise_fits=cls._load_noise_fits(out_dir),
+            failed_observations=cls._load_failed_observations(out_dir),
+            template_amplitudes=cls._load_amplitudes(out_dir),
         )
 
     @staticmethod
@@ -213,19 +198,35 @@ class MapMakingResults:
         return jnp.array(icov)
 
     @staticmethod
-    def _load_noise_fits(out_dir: Path) -> Array | None:
-        path = out_dir / 'noise_fits.npy'
+    def _load_amplitudes(out_dir: Path) -> dict[str, Any] | None:
+        """Rebuild the per-template mapping from the `<template>[/<leg>]` archive keys."""
+        path = out_dir / _AMPLITUDES_FILE
         if not path.exists():
             return None
-        return jnp.array(np.load(path))
+        amplitudes: dict[str, Any] = {}
+        with np.load(path) as archive:
+            for key in archive.files:
+                name, is_stokes_valued, leg = key.partition('/')
+                if is_stokes_valued:
+                    amplitudes.setdefault(name, {})[leg] = jnp.array(archive[key])
+                else:
+                    amplitudes[name] = jnp.array(archive[key])
+        return amplitudes or None
+
+    @staticmethod
+    def _load_noise_fits(out_dir: Path) -> Array | None:
+        path = out_dir / 'noise_fits.npy'
+        return jnp.array(np.load(path)) if path.exists() else None
 
     @staticmethod
     def _load_solver_stats(out_dir: Path) -> dict[str, Any] | None:
         path = out_dir / 'solver_stats.json'
-        if not path.exists():
-            return None
-        with open(path) as f:
-            return json.load(f)  # type: ignore[no-any-return]
+        return json.loads(path.read_text()) if path.exists() else None
+
+    @staticmethod
+    def _load_failed_observations(out_dir: Path) -> list[str] | None:
+        path = out_dir / 'failed_observations.txt'
+        return path.read_text().split() if path.exists() else None
 
     def _save_icov(self, arr: np.ndarray, out_dir: Path) -> None:
         """Save the inverse covariance, storing only the upper triangle with stokes-aware names."""

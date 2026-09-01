@@ -377,9 +377,7 @@ class MultiObservationMapMaker[T]:
 
         if amplitudes is not None:
             # Gather the (sharded) amplitudes on rank 0. Result is host-side.
-            # The gathered leading axis is the padded slot axis (per process: owned slots, then
-            # padding). Gathering the slot mask the same way keeps the two aligned, so dropping
-            # the padding leaves one entry per observation, in `self.observations` order.
+            # Gathering the slot mask the same way drops the padding slots.
             real = mhu.process_allgather(self._real_observation_mask(), tiled=True)
             gathered = mhu.process_allgather(amplitudes, tiled=True)
             amplitudes = jax.tree.map(lambda a: a[real], gathered)

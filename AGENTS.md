@@ -96,6 +96,9 @@ def foo(x: Float[jax.Array, ' n'], scale: float = 1.0) -> Float[jax.Array, ' n']
 - /src/so_mapmaking..........CLI for multi-observation mapmaking with Simons Observatory data
 - /tests.....................Tests (mirror /src structure)
 
+Module docstrings say what each module contains. This section holds only what they cannot: the
+operator base class, cross-cutting conventions, and entry points that are hard to find by grep.
+
 ### AbstractLinearOperator (`/src/furax/core/_base.py`)
 
 `AbstractLinearOperator` (a frozen dataclass ABC) is the base class for all linear operators. Key features:
@@ -111,31 +114,17 @@ def foo(x: Float[jax.Array, ' n'], scale: float = 1.0) -> Float[jax.Array, ' n']
   - `op1 + op2 = AdditionOperator(op1, op2)`
 - Composite operators can be simplified (`op.reduce()`) using algebraic rules from `COMPOSITION_RULE_REGISTRY` and `ADDITION_RULE_REGISTRY` (e.g. `A @ A.I -> I`)
 
-### Observation operators (`/src/furax/obs`)
+### Conventions
 
-- `PointingOperator`: HEALPix sky map ⇄ TOD via boresight + detector quaternions (on-the-fly)
-- `HWPOperator`, `LinearPolarizerOperator`, `QURotationOperator`: polarization modulation
-- `AbstractSEDOperator` → `DustOperator` / `SynchrotronOperator` / `CMBOperator`: SED operators for component separation
-- `StokesLandscape` (`landscapes.py`): Stokes-aware (I/Q/U) HEALPix sky pixelisation
-- `Stokes` and I/QU/IQU/IQUV variants (`stokes.py`): single-array Stokes containers (components stacked on the leading axis)
-
-### Mapmaking pipeline (`/src/furax/mapmaking`)
-
-- `acquisition.py` → `build_acquisition_operator`: builds the acquisition operator `A` from observation metadata
-- `mapmaker.py`: `BinnedMapMaker` / `MLMapmaker` / `ATOPMapMaker`; solve `AᵀN⁻¹A x = AᵀN⁻¹d` via lineax CG
-- `noise.py`: noise-model operators
-- `config.py` / `_model.py`: apischema-driven YAML configuration
-- `preconditioner.py` / `templates.py`: PCG infrastructure
-
-### Interfaces (`/src/furax/interfaces`)
-
-- `lineax.py` → `as_lineax_operator`: wrap a furax operator as a lineax `LinearOperator`
-- `sotodlib/`, `toast/`, `litebird_sim/`: SO / TOAST / LiteBird adapters
-- CLI entrypoints: `furax-so-atomic-map` (`sotodlib.mapmaker:main_cli`), `furax-so-prepare` / `furax-so-map` (`so_mapmaking`)
-
-### Mapmaking conventions
-
+- `Stokes` and its I/QU/IQU/IQUV variants (`obs/stokes.py`) are single-array containers stacking the components on the *leading* axis.
 - `double_precision=False` → float32 on every float field, including geometry (timestamps, HWP angles, quaternions); the pipeline then runs under `jax_enable_x64=False`, where float64 arrays are illegal. Timestamps are an exception in form only: the reader rebases them to a per-observation zero origin (in float64, before the downcast) so the absolute POSIX epoch does not exhaust the float32 range. The pipeline uses only time differences, so this is exact; absolute UTC is still read from the interface where needed (e.g. pointing).
+
+### Entry points
+
+- `mapmaking/acquisition.py` → `build_acquisition_operator`: the acquisition operator `A`, from observation metadata
+- `mapmaking/mapmaker.py`: `BinnedMapMaker` / `MLMapmaker` / `ATOPMapMaker` are single-observation and reject a config with templates enabled. All solve `AᵀN⁻¹A x = AᵀN⁻¹d` via CG
+- `interfaces/lineax.py` → `as_lineax_operator`: wrap a furax operator as a lineax `LinearOperator`
+- CLI: `furax-so-atomic-map` (`interfaces/sotodlib/mapmaker.py:main_cli`), `furax-so-prepare` / `furax-so-map` / `furax-so-stage` (`so_mapmaking`)
 
 ## Designing operators from math
 

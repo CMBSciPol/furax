@@ -5,6 +5,7 @@ import yaml
 from apischema import deserialize
 
 from furax.mapmaking import config as config_module
+from furax.mapmaking.config import HWPSynchronousConfig, MapMakingConfig, TemplatesConfig
 
 # Every config class whose docstring carries an `Examples:` block.
 EXAMPLE_CLASSES = [
@@ -56,3 +57,18 @@ def test_docstring_example_parses_and_deserializes(cls: type, yaml_block: str):
     )
     (value,) = parsed.values()
     deserialize(cls, value)
+
+
+@pytest.mark.parametrize(
+    'templates, enabled',
+    [
+        (TemplatesConfig(), False),
+        # a tuning knob always holds a value: setting one must not enable template fitting
+        (TemplatesConfig(regularization=0.1), False),
+        (TemplatesConfig(hwp_synchronous=HWPSynchronousConfig()), True),
+    ],
+    ids=['none-enabled', 'tuning-knob-only', 'one-enabled'],
+)
+def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig, enabled: bool):
+    assert templates.empty == (not enabled)
+    assert MapMakingConfig(templates=templates).use_templates == enabled

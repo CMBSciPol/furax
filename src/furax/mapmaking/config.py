@@ -42,11 +42,12 @@ __all__ = [
     'PolynomialConfig',
     'ScanSynchronousConfig',
     'BinsConfig',
-    'BinAzSynchronousConfig',
+    'BinnedAzimuthSynchronousConfig',
     'HWPSynchronousConfig',
-    'AzHWPSynchronousConfig',
-    'BinAzHWPSynchronousConfig',
-    'SplineHWPSSConfig',
+    'AzimuthHWPSynchronousConfig',
+    'BinnedAzimuthHWPSynchronousConfig',
+    'SplineHWPSynchronousConfig',
+    'T2PConfig',
     'GroundConfig',
     'SotodlibConfig',
 ]
@@ -63,9 +64,6 @@ class Methods(Enum):
 
     MAXL = 'ML'
     """Classic maximum-likelihood mapmaking solve via conjugate gradient iteration."""
-
-    TWOSTEP = 'TwoStep'
-    """Two-step mapmaking (destriper-like)."""
 
     ATOP = 'ATOP'
     """Polarisation (QU only) estimator using deprojection of short baselines.
@@ -375,6 +373,14 @@ class PolynomialConfig:
 
     legendre: PolynomialOrders = field(default_factory=lambda: PolynomialOrders(0, 3))
     """Legendre orders for the polynomial drift template."""
+    legendre_qu: PolynomialOrders | None = None
+    """Legendre orders for the Q/U legs, demodulated data only.
+
+    Overrides ``legendre`` for the Q and U legs (fitted independently from each other and
+    from I). ``None`` reuses ``legendre`` for every leg. Requires ``demodulated=True``.
+    """
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -387,9 +393,12 @@ class ScanSynchronousConfig:
     legendre: PolynomialOrders = field(default_factory=lambda: PolynomialOrders(3, 7))
     """Legendre orders for the azimuth-dependent basis."""
 
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
+
 
 @dataclass
-class BinAzSynchronousConfig:
+class BinnedAzimuthSynchronousConfig:
     """Binned azimuth-synchronous signal, no HWP coupling.
 
     The binned counterpart of [`ScanSynchronousConfig`][].
@@ -397,6 +406,9 @@ class BinAzSynchronousConfig:
 
     bins: BinsConfig = field(default_factory=BinsConfig)
     """Azimuth binning."""
+
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
 
 @dataclass
@@ -406,9 +418,12 @@ class HWPSynchronousConfig:
     n_harmonics: int = 3
     """Number of HWP harmonics to fit."""
 
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
+
 
 @dataclass
-class AzHWPSynchronousConfig:
+class AzimuthHWPSynchronousConfig:
     """Joint azimuth/HWP-synchronous signal: Legendre in azimuth times Fourier in HWP angle."""
 
     legendre: PolynomialOrders = field(default_factory=lambda: PolynomialOrders(0, 3))
@@ -420,12 +435,15 @@ class AzHWPSynchronousConfig:
     split_scans: bool = False
     """Fit independent coefficients per subscan instead of shared ones."""
 
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
+
 
 @dataclass
-class BinAzHWPSynchronousConfig:
+class BinnedAzimuthHWPSynchronousConfig:
     """Joint azimuth/HWP-synchronous signal: azimuth binning times Fourier in HWP angle.
 
-    The binned-azimuth counterpart of [`AzHWPSynchronousConfig`][].
+    The binned-azimuth counterpart of [`AzimuthHWPSynchronousConfig`][].
     """
 
     bins: BinsConfig = field(default_factory=BinsConfig)
@@ -434,10 +452,17 @@ class BinAzHWPSynchronousConfig:
     n_harmonics: int = 4
     """Number of HWP harmonics to fit."""
 
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
+
 
 @dataclass
-class SplineHWPSSConfig:
-    """HWP-synchronous signal on a cubic B-spline basis in HWP angle."""
+class SplineHWPSynchronousConfig:
+    """HWP-synchronous signal whose harmonic amplitudes vary slowly with time.
+
+    The template is built from harmonics of the HWP angle, each carried by a cubic B-spline in
+    *time*: `n_knots` (or `samples_per_knot`) sets how fast the amplitude is allowed to vary.
+    """
 
     n_knots: int | None = None
     """Number of spline knots. If set, takes precedence over `samples_per_knot`."""
@@ -445,6 +470,9 @@ class SplineHWPSSConfig:
     """Number of samples per knot."""
     harmonics: tuple[int, ...] = (4,)
     """HWP harmonics to fit with splines."""
+
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
     def __post_init__(self) -> None:
         if self.n_knots is None and self.samples_per_knot is None:
@@ -462,6 +490,24 @@ class SplineHWPSSConfig:
 
 
 @dataclass
+class T2PConfig:
+    """Temperature-to-polarization leakage template (demodulated data only)."""
+
+    fit_band: tuple[float, float] | None = None
+    """Frequency band (in Hz) used to fit the leakage coefficients. `None` uses the full band."""
+
+    decimation_factor: int = 1
+    """Decimation factor applied to the I template before fitting."""
+
+    explicit: bool = True
+    """T2P templates are always solved explicitly; deprojection is not supported."""
+
+    def __post_init__(self) -> None:
+        if not self.explicit:
+            raise ValueError('T2P template filtering requires explicit=True')
+
+
+@dataclass
 class GroundConfig:
     """Ground pickup template: binned in (azimuth, elevation)."""
 
@@ -476,6 +522,13 @@ class GroundConfig:
 
     Defaults to 0.05 (~3 deg).
     """
+
+    explicit: bool = True
+    """Ground templates are always solved explicitly; deprojection is not supported."""
+
+    def __post_init__(self) -> None:
+        if not self.explicit:
+            raise ValueError('Ground template filtering requires explicit=True')
 
 
 @dataclass
@@ -503,20 +556,23 @@ class TemplatesConfig:
     scan_synchronous: ScanSynchronousConfig | None = None
     """Scan-synchronous (azimuth-only) template on a global Legendre basis."""
 
-    binaz_synchronous: BinAzSynchronousConfig | None = None
+    binned_azimuth_synchronous: BinnedAzimuthSynchronousConfig | None = None
     """Scan-synchronous (azimuth-only) template on a binned azimuth basis."""
 
     hwp_synchronous: HWPSynchronousConfig | None = None
     """HWP-synchronous template on a global Fourier (harmonic) basis."""
 
-    azhwp_synchronous: AzHWPSynchronousConfig | None = None
+    azimuth_hwp_synchronous: AzimuthHWPSynchronousConfig | None = None
     """Joint azimuth/HWP-synchronous template, Legendre in azimuth times Fourier in HWP angle."""
 
-    binazhwp_synchronous: BinAzHWPSynchronousConfig | None = None
+    binned_azimuth_hwp_synchronous: BinnedAzimuthHWPSynchronousConfig | None = None
     """Joint azimuth/HWP-synchronous template, binned azimuth times Fourier in HWP angle."""
 
-    spline_hwpss: SplineHWPSSConfig | None = None
-    """HWP-synchronous template on a cubic B-spline basis in HWP angle."""
+    spline_hwp_synchronous: SplineHWPSynchronousConfig | None = None
+    """HWP-synchronous template whose harmonic amplitudes follow a cubic B-spline in time."""
+
+    t2p: T2PConfig | None = None
+    """Temperature-to-polarization leakage template (demodulated data only)."""
 
     ground: GroundConfig | None = None
     """Ground pickup template, binned in (azimuth, elevation)."""
@@ -530,11 +586,12 @@ class TemplatesConfig:
         return cls(
             polynomial=PolynomialConfig(),
             scan_synchronous=ScanSynchronousConfig(),
-            binaz_synchronous=BinAzSynchronousConfig(),
+            binned_azimuth_synchronous=BinnedAzimuthSynchronousConfig(),
             hwp_synchronous=HWPSynchronousConfig(),
-            azhwp_synchronous=AzHWPSynchronousConfig(),
-            binazhwp_synchronous=BinAzHWPSynchronousConfig(),
-            spline_hwpss=SplineHWPSSConfig(),
+            azimuth_hwp_synchronous=AzimuthHWPSynchronousConfig(),
+            binned_azimuth_hwp_synchronous=BinnedAzimuthHWPSynchronousConfig(),
+            t2p=T2PConfig(),
+            spline_hwp_synchronous=SplineHWPSynchronousConfig(),
             ground=GroundConfig(),
         )
 
@@ -741,13 +798,31 @@ class MapMakingConfig:
     sotodlib: SotodlibConfig | None = None
     """Options specific to the sotodlib interface. `None` when not using sotodlib data."""
 
+    def __post_init__(self) -> None:
+        """Validate cross-field constraints that hold regardless of which mapmaker runs."""
+        if (templates := self.templates) is not None:
+            if templates.t2p is not None:
+                if not self.demodulated:
+                    raise ValueError('The T2P template requires demodulated=True.')
+                if 'I' not in self.landscape.stokes:
+                    raise ValueError(
+                        "The T2P template requires an 'I' leg in landscape.stokes (got "
+                        f'{self.landscape.stokes!r}).'
+                    )
+            if (
+                templates.polynomial is not None
+                and templates.polynomial.legendre_qu is not None
+                and not self.demodulated
+            ):
+                raise ValueError('templates.polynomial.legendre_qu requires demodulated=True.')
+
     @classmethod
     def for_method(cls, method: 'Methods | str') -> 'MapMakingConfig':
         """Return a default MapMakingConfig pre-configured for the given method.
 
         Args:
             method: A ``Methods`` enum value or its string name (e.g. ``'binned'``,
-                ``'ml'``, ``'twostep'``, ``'atop'``), case-insensitive.
+                ``'ml'``, ``'atop'``), case-insensitive.
         """
         if isinstance(method, str):
             upper = method.upper()
@@ -780,19 +855,6 @@ class MapMakingConfig:
                 ),
                 templates=None,
             )
-        elif method == Methods.TWOSTEP:
-            return cls(
-                method=Methods.TWOSTEP,
-                weighting=WeightingConfig(),
-                solver=SolverConfig(
-                    rtol=1e-6,
-                    atol=0,
-                    max_steps=1_000,
-                ),
-                templates=TemplatesConfig(
-                    polynomial=PolynomialConfig(),
-                ),
-            )
         elif method == Methods.ATOP:
             return cls(
                 method=Methods.ATOP,
@@ -807,11 +869,6 @@ class MapMakingConfig:
             )
         else:
             raise ValueError(f'Unknown method: {method}')
-
-    @classmethod
-    def full_defaults(cls) -> 'MapMakingConfig':
-        """Create a config with default values for all fields including optional ones."""
-        return cls(templates=TemplatesConfig.full_defaults())
 
     @classmethod
     def load_yaml(cls, path: str | Path) -> 'MapMakingConfig':

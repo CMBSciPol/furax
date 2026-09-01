@@ -127,6 +127,13 @@ def cross_gram(a: Basis, b: Basis, weights: Float[Array, ' samp']) -> Float[Arra
     return gram.reshape(ca.n_blocks * ka, cb.n_blocks * kb)
 
 
+def _zero_sub_identity(diagonal_blocks: Float[Array, '*batch k k']) -> Float[Array, '*batch k k']:
+    """Substitute the identity for zero Gram blocks, which are singular and factor to NaN."""
+    k = diagonal_blocks.shape[-1]
+    unconstrained = jnp.all(diagonal_blocks == 0, axis=(-2, -1), keepdims=True)
+    return jnp.where(unconstrained, jnp.eye(k, dtype=diagonal_blocks.dtype), diagonal_blocks)
+
+
 def _structured_gram_inverse(
     template: AbstractTemplateOperator,
     diag: PyTree[Array],
@@ -140,6 +147,7 @@ def _structured_gram_inverse(
         leg = path[-1].key if len(path) > 1 else None
         leg_diag = diag if leg is None else getattr(diag, leg)
         bands = jax.lax.map(basis.gram, leg_diag, batch_size=batch_size)
+        bands = bands.at[..., 0, :, :].set(_zero_sub_identity(bands[..., 0, :, :]))
         return BandedCholeskyOperator.from_bands(bands, amp, regularization)
 
     # one factored block per template and Stokes leg, keyed as the amplitudes are: legs are
@@ -187,6 +195,7 @@ def _coupled_gram_inverse(
         return block
 
     blocks = jax.lax.map(build, diags, batch_size=batch_size)  # (n_dets, n_amps, n_amps)
+    blocks = _zero_sub_identity(blocks)
     return BandedCholeskyOperator.from_dense(blocks, template.in_structure, regularization)
 
 
@@ -227,4 +236,5 @@ def _probed_gram_inverse(
 
     columns = jax.lax.map(probe, jnp.arange(n_amps))  # (col, n_dets, row)
     blocks = jnp.moveaxis(columns, 0, -1)  # (n_dets, row, col)
+    blocks = _zero_sub_identity(blocks)
     return BandedCholeskyOperator.from_dense(blocks, in_structure, regularization)

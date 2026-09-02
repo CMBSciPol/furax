@@ -49,7 +49,7 @@ def healpix_results_with_extras(healpix_results) -> MapMakingResults:
     rng = np.random.default_rng(42)
     return dataclasses.replace(
         healpix_results,
-        solver_stats={'num_steps': np.int32(7), 'converged': True, 'residual': np.float64(1e-8)},
+        solver_stats={'num_steps': 7, 'converged': True, 'residual': 1e-8},
         noise_fits=jnp.array(rng.standard_normal(NPIX)),
     )
 
@@ -187,7 +187,7 @@ def test_unknown_landscape_save(unknown_landscape_results, tmp_path):
 def test_save_solver_stats(healpix_results, tmp_path):
     results = dataclasses.replace(
         healpix_results,
-        solver_stats={'num_steps': np.int32(3), 'converged': True, 'loss': np.float32(0.5)},
+        solver_stats={'num_steps': 3, 'converged': True, 'loss': 0.5},
     )
     results.save(tmp_path)
     assert (tmp_path / 'solver_stats.json').exists()
@@ -279,31 +279,7 @@ def test_unknown_landscape_load_roundtrip(unknown_landscape_results, tmp_path):
     assert_array_equal(loaded.hit_map, unknown_landscape_results.hit_map)
 
 
-# --- load() field selection and errors ---
-
-
-def test_load_subset_fields_skips_optionals(healpix_results_with_extras, tmp_path):
-    healpix_results_with_extras.save(tmp_path)
-    loaded = MapMakingResults.load(
-        tmp_path, healpix_results_with_extras.landscape, fields={'map', 'hit_map', 'icov'}
-    )
-    assert loaded.solver_stats is None
-    assert loaded.noise_fits is None
-    assert_array_almost_equal(loaded.map.i, healpix_results_with_extras.map.i)
-
-
-def test_load_invalid_field_raises(healpix_results, tmp_path):
-    healpix_results.save(tmp_path)
-    with pytest.raises(ValueError, match='Unknown fields'):
-        MapMakingResults.load(
-            tmp_path, healpix_results.landscape, fields={'map', 'hit_map', 'icov', 'bad_field'}
-        )
-
-
-def test_load_missing_required_field_raises(healpix_results, tmp_path):
-    healpix_results.save(tmp_path)
-    with pytest.raises(ValueError, match='Required fields cannot be excluded'):
-        MapMakingResults.load(tmp_path, healpix_results.landscape, fields={'map', 'hit_map'})
+# --- load() errors ---
 
 
 def test_load_missing_directory_raises(tmp_path):

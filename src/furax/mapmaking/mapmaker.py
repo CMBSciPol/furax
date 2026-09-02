@@ -1,12 +1,12 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
 from functools import cached_property
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, overload
 
 import equinox as eqx
 import jax
@@ -22,6 +22,8 @@ from jax.experimental import mesh_utils
 from jax.experimental import multihost_utils as mhu
 from jax.sharding import AxisType, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+from jax.tree_util import register_dataclass
+from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
 import furax.linalg
@@ -34,7 +36,10 @@ from furax import (
     OperatorTag,
     SymmetricBandToeplitzOperator,
 )
-from furax.core import IndexOperator
+from furax.core import (
+    BlockDiagonalOperator,
+    IndexOperator,
+)
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -49,7 +54,7 @@ from furax.profiling import format_bytes
 
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel
+from ._model import ObservationModel, ObservationTemplates
 from ._observation import (
     AbstractGroundObservation,
     AbstractLazyObservation,
@@ -75,6 +80,36 @@ from .templates import ATOPProjectionOperator
 from .weight import WeightOperator
 
 
+@register_dataclass
+@dataclass(frozen=True)
+class AccumulatedModel:
+    """Result of [`MultiObservationMapMaker.build_model_and_accumulate`][].
+
+    Attributes:
+        model: Per-observation model, sharded over observations.
+        templates: Per-observation templates, sharded over observations.
+        hit_map: Hit map, replicated (reduced across processes).
+        map_rhs: Map RHS, replicated (reduced across processes).
+        amplitude_rhs: Explicit-template RHS, obs-stacked.
+    """
+
+    model: ObservationModel = field(metadata={'sharded': True})
+    templates: ObservationTemplates | None = field(metadata={'sharded': True})
+    hit_map: Int64[Array, '...']
+    map_rhs: StokesType
+    amplitude_rhs: PyTree[Array] | None = field(metadata={'sharded': True})
+
+    @classmethod
+    def shard_map_out_specs(cls, axis: str) -> 'AccumulatedModel':
+        """Sharding of each field, as an instance of the class, so `jax.shard_map` matches by field.
+
+        Args:
+            axis: Name of the mesh axis the observations are distributed over.
+        """
+        specs = {f.name: P(axis) if f.metadata.get('sharded') else P() for f in fields(cls)}
+        return cls(**specs)  # type: ignore[arg-type]
+
+
 class MultiObservationMapMaker[T]:
     """Class for mapping multiple observations together."""
 
@@ -95,7 +130,8 @@ class MultiObservationMapMaker[T]:
         # Build the reader once, up front: it only probes shapes (no mesh context needed)
         rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
         model_fields = ObservationModel.required_reader_fields(self.config)
-        self.reader = self.get_reader(model_fields | rhs_fields)
+        template_fields = ObservationTemplates.required_reader_fields(self.config)
+        self.reader = self.get_reader(model_fields | rhs_fields | template_fields)
 
     def _check_config(self) -> None:
         """Validate and adjust config for method-specific compatibility."""
@@ -113,6 +149,10 @@ class MultiObservationMapMaker[T]:
                     " Falling back to stokes='QU' instead."
                 )
                 self.config.landscape.stokes = 'QU'
+        if self.config.use_templates and not self.config.binned:
+            raise NotImplementedError('Using templates requires diagonal weighting.')
+        if self.config.use_templates and self.config.method == Methods.ATOP:
+            raise NotImplementedError('ATOP combined with templates is not yet supported.')
 
     @cached_property
     def mesh(self) -> Mesh:
@@ -124,7 +164,11 @@ class MultiObservationMapMaker[T]:
     def sharding(self) -> NamedSharding:
         return NamedSharding(self.mesh, P('obs'))
 
-    def distribute(self, x: PyTree) -> PyTree:
+    @overload
+    def distribute(self, x: ArrayLike) -> Array: ...
+    @overload
+    def distribute[S](self, x: S) -> S: ...
+    def distribute(self, x: Any) -> Any:
         """Shard a pytree of process-local arrays along the leading 'obs' axis."""
         return jax.tree.map(lambda a: jax.make_array_from_process_local_data(self.sharding, a), x)
 
@@ -217,39 +261,81 @@ class MultiObservationMapMaker[T]:
         )
 
         with jax.set_mesh(self.mesh):
-            # Single read pass (sharded over observations): build the model and accumulate the
-            # hit map + RHS together, so each observation is read/preprocessed exactly once. The
-            # cross-process reduction of hits/rhs happens via psum inside the kernel.
-            model, hits, rhs = self.build_model_and_accumulate()
-            jax.block_until_ready((hits, rhs))
+            # Single read pass, so each observation is read/preprocessed exactly once.
+            acc = self.build_model_and_accumulate()
+            jax.block_until_ready(acc)
             logger_info('Accumulated hit map and RHS vector')
 
             failed_observations = self._collect_failed_observations()
             if failed_observations:
                 logger_info(f'{len(failed_observations)} observation(s) failed and were excluded')
 
-            # System operator (full/diagonal)
-            A = self.get_system_operator(model)
-            diag_A = A if self.config.binned else self.get_system_operator(model, diag=True)
-            BJ = BJPreconditioner.create(diag_A)
+            # Diagonal pixel system for the block-Jacobi preconditioner
+            H_sky: AbstractLinearOperator = StreamOperator.column(acc.model.H)
+            W: AbstractLinearOperator = StreamOperator.diagonal(acc.model.W)
+            W_diag = (
+                W
+                if self.config.binned
+                else StreamOperator.diagonal(eqx.filter_vmap(ObservationModel.diag_W)(acc.model))
+            )
+            # Specify leading axis dimension because F can be trivial (no array leaves)
+            # Must be the *global* slot count to compose with the other operators
+            F = StreamOperator.diagonal(acc.model.F, n_lead=n_slots_global)
+            A_diag = (H_sky.T @ W_diag @ F @ H_sky).reduce()
+            BJ = BJPreconditioner.create(A_diag)
             icov = BJ.blocks.block_until_ready()
             logger_info('Computed white noise inverse covariance')
 
-            valid_pixels = self.pixel_selection(hits, icov)
+            # Fold ATOP deprojector into the weight from now on
+            W = (W @ F).reduce()
+
+            # Pixel selection from the icov estimate
+            hit_map = acc.hit_map  # rebound below, once the pixel selection is known
+            valid_pixels = self.pixel_selection(hit_map, icov)
             # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
-            selector = IndexOperator((..., *jnp.where(valid_pixels)), in_structure=A.out_structure)
+            S = IndexOperator((..., *jnp.where(valid_pixels)), in_structure=H_sky.in_structure)
+            H_sky_selected = H_sky @ S.T  # takes the selected pixels; H_sky takes the full grid
+            M_sky = (S @ BJ.I @ S.T).reduce()
+
             n_selected = jnp.sum(valid_pixels)
-            n_observed = jnp.sum(hits > 0)
+            n_observed = jnp.sum(hit_map > 0)
             n_total = valid_pixels.size
             logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
 
-            hits = hits.at[~valid_pixels].set(0)  # excluded pixels have zero hits
+            hit_map = hit_map.at[~valid_pixels].set(0)  # excluded pixels have zero hits
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
-            # Solve the mapmaking system
-            A_reduced = (selector @ A @ selector.T).reduce()
-            M = (selector @ BJ.I @ selector.T).reduce()  # preconditioner
-            rhs_reduced = selector(rhs)
+            # Unified GLS solve (Hᵀ W' H) x = Hᵀ W' d  (W already bundles the sample mask).
+            #
+            # H maps the unknowns to TOD:
+            # - no templates / implicit only: H = H_sky        (sky map only);
+            # - explicit templates:          H = [H_sky | Tₑ] (sky map + template amplitudes).
+            #
+            # Implicit templates fold into the weight (W → W', deprojection).
+
+            templates = acc.templates
+            # Fold implicit templates into the system weight (marginal deprojection W').
+            if templates is not None and (implicit := templates.implicit) is not None:
+                Ti = StreamOperator.diagonal(implicit.operator)
+                G = StreamOperator.diagonal(implicit.gram_inverse)
+                W = (W - W @ Ti @ G @ Ti.T @ W).reduce()
+
+            explicit = templates.explicit if templates is not None else None
+            if explicit is None:
+                M = M_sky
+                rhs_joint: Any = S(acc.map_rhs)
+                A = (H_sky_selected.T @ W @ H_sky_selected).reduce()
+            else:
+                Te = StreamOperator.diagonal(explicit.operator)
+                G_e = StreamOperator.diagonal(explicit.gram_inverse)
+                M = BlockDiagonalOperator([M_sky, G_e])
+                rhs_joint = [S(acc.map_rhs), acc.amplitude_rhs]
+
+                # Joint sky + explicit-amplitude system
+                H_joint = StreamOperator.block_row([H_sky, Te])
+                A_joint = (H_joint.T @ W @ H_joint).reduce()
+                select = BlockDiagonalOperator([S, IdentityOperator(in_structure=Te.in_structure)])
+                A = (select @ A_joint @ select.T).reduce()
 
             iteration_callback = None
             if self.config.solver.verbose:
@@ -259,23 +345,35 @@ class MultiObservationMapMaker[T]:
                         logger_info(f'CG step={int(step)} residual={float(r_norm):.6e}')
 
             result = furax.linalg.cg(
-                A_reduced,
-                rhs_reduced,
+                A,
+                rhs_joint,
                 preconditioner=M,
                 iteration_callback=iteration_callback,
                 **self.config.solver.options,
             )
-            estimate = selector.T(result.solution)
-            num_steps = result.num_steps
-            logger_info(f'Finished mapmaking (iteration steps: {num_steps})')
+            logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
+
+            if explicit is not None:
+                sky_estimate, amplitudes = result.solution
+            else:
+                sky_estimate = result.solution
+                amplitudes = None
+
+        if amplitudes is not None:
+            # Gather the (sharded) amplitudes on rank 0. Result is host-side.
+            # Gathering the slot mask the same way drops the padding slots.
+            real = mhu.process_allgather(self._real_observation_mask(), tiled=True)
+            gathered = mhu.process_allgather(amplitudes, tiled=True)
+            amplitudes = jax.tree.map(lambda a: a[real], gathered)
 
         return MapMakingResults(
-            map=estimate,
+            map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)
             icov=icov,
-            hit_map=hits,
-            solver_stats={'num_steps': num_steps},
+            hit_map=hit_map,
+            solver_stats={'num_steps': int(result.num_steps)},
             landscape=self.landscape,
             failed_observations=failed_observations,
+            template_amplitudes=dict(amplitudes) if amplitudes is not None else None,
         )
 
     def _collect_failed_observations(self) -> list[str]:
@@ -291,39 +389,24 @@ class MultiObservationMapMaker[T]:
         failed = np.flatnonzero(gathered.any(axis=0))
         return [self.observations[int(i)].name for i in failed]
 
-    def build_model_and_accumulate(
-        self,
-    ) -> tuple[ObservationModel, Int64[Array, '...'], StokesType]:
-        """Build the model and accumulate the hit map and RHS in a single, sharded read pass.
+    def build_model_and_accumulate(self) -> AccumulatedModel:
+        """Build the model and accumulate the hit map and map RHS in one pass over the data.
 
-        Sharded over observations: each observation is read (and, for preproc-backed observations,
-        preprocessed) exactly once, and contributes to the model, the hit map and the RHS from that
-        single read. This avoids reading every observation twice (once to build the model, once to
-        accumulate the RHS). The hit map and RHS are reduced across all processes with ``psum``
-        inside the kernel.
+        Padding (or failed) slots are gated out using a zero-mask, so they drop from the system.
 
-        Observations that contribute nothing -- padding (added so every device carries the same
-        workload) and failed loads (the preprocessing pipeline raised) -- are gated out by zeroing
-        their masker inside the kernel, so they drop out of the hit map, the RHS, and the CG system
-        operator alike. Failed loads are reported afterwards from ``self.reader.failed_indices``
-        (see ``make_maps``).
-
-        Must run under ``jax.set_mesh(self.mesh)``.
-
-        Returns ``(model, hits, rhs)`` with the model sharded along the observation axis and the
-        hit map / RHS replicated (already reduced across processes).
+        This method must run under ``jax.set_mesh(self.mesh)``.
         """
         config = self.config
         landscape = self.landscape
         reader = self.reader
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
+        build_templates = config.use_templates
 
         indices = self.distribute(self.get_padded_read_indices())
         is_real = self.distribute(self._real_observation_mask())
         axis = jax.sharding.get_abstract_mesh().axis_names[0]
 
-        @jax.shard_map(out_specs=(P('obs'), P(), P()), check_vma=False)
         def kernel(indices, is_real):  # type: ignore[no-untyped-def]
             def step(carry, args):  # type: ignore[no-untyped-def]
                 hits_acc, rhs_acc = carry
@@ -331,7 +414,6 @@ class MultiObservationMapMaker[T]:
 
                 # Skip the load for padding slots: only the real branch hits the io_callback,
                 # so a padded observation is never read or preprocessed just to be masked away.
-                # (lax.cond evaluates a single branch at runtime)
                 data, padding, valid = jax.lax.cond(
                     real,
                     lambda: reader.read(i),
@@ -376,7 +458,7 @@ class MultiObservationMapMaker[T]:
                         metadata=data[ReaderField.METADATA],
                     )
 
-                # Use Python `if` for static `fill_gaps`, so gap-filling branch is not traced
+                # Use Python `if` for static conditions, so inactive branches are not traced.
                 tod = data[ReaderField.SAMPLE_DATA]
                 if fill_gaps:
                     tod = jax.lax.cond(
@@ -385,36 +467,45 @@ class MultiObservationMapMaker[T]:
                         lambda _: _,  # return raw data as-is
                         tod,
                     )
-                    # Gaps filled: skip the data-side mask so the fill survives N⁻¹.
-                    rhs_i = obs.rhs_operator_prefilled(tod)
-                else:
-                    rhs_i = obs.rhs_operator(tod)
-                return (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i)), obs
+
+                if not build_templates:
+                    if fill_gaps:
+                        # Gaps filled: skip the data-side mask so the fill survives N⁻¹.
+                        rhs_i = obs.rhs_operator_prefilled(tod)
+                    else:
+                        rhs_i = obs.rhs_operator(tod)
+                    carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
+                    return carry, (obs, None, None)
+
+                # Templates require config.binned=True, so fill_gaps never applies here.
+                templates, wd = ObservationTemplates.create(data, config, obs, tod)
+                explicit = templates.explicit
+                rhs_i = obs.H.T(wd)
+                amp_i = explicit.operator.T(wd) if explicit is not None else None
+                carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
+                return carry, (obs, templates, amp_i)
 
             init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')
             init_rhs = jax.lax.pcast(landscape.zeros(), axis, to='varying')
-            (hits, rhs), model = jax.lax.scan(step, (init_hits, init_rhs), (indices, is_real))
-            return model, jax.lax.psum(hits, axis), jax.lax.psum(rhs, axis)
+            (hits, rhs), stacked = jax.lax.scan(step, (init_hits, init_rhs), (indices, is_real))
+            hits, rhs = jax.lax.psum((hits, rhs), axis)
+            model, templates, amp_rhs = stacked
+            return AccumulatedModel(
+                model=model,
+                templates=templates,
+                hit_map=hits,
+                map_rhs=rhs,
+                amplitude_rhs=amp_rhs,
+            )
 
-        model, hits, rhs = kernel(indices, is_real)
-        return model, hits, rhs
+        out_specs = AccumulatedModel.shard_map_out_specs(axis)
+        accumulated = jax.shard_map(out_specs=out_specs, check_vma=False)(kernel)(indices, is_real)
+        return accumulated  # type: ignore[no-any-return]
 
     def _real_observation_mask(self) -> np.ndarray:
         """Boolean flag per padded slot: True for real observations, False for padding."""
         _, n_owned, n_pad = self.obs_distribution
         return np.concatenate([np.ones(n_owned, dtype=bool), np.zeros(n_pad, dtype=bool)])
-
-    def get_system_operator(
-        self, model: ObservationModel, *, diag: bool = False
-    ) -> AbstractLinearOperator:
-        H = StreamOperator.column(model.H)
-        # filter_vmap: array leaves mapped, static fields held
-        weight = eqx.filter_vmap(ObservationModel.diag_W)(model) if diag else model.W
-        W = StreamOperator.diagonal(weight)
-        # specify leading axis dimension because F can be trivial
-        _, n_own, n_pad = self.obs_distribution
-        F = StreamOperator.diagonal(model.F, n_lead=n_own + n_pad)
-        return (H.T @ W @ F @ H).reduce()
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']

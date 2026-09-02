@@ -24,6 +24,7 @@ from furax.mapmaking.config import (
     PointingConfig,
     SkyPatch,
     SotodlibConfig,
+    TemplatesConfig,
     WCSConfig,
     WeightingConfig,
     WeightingMode,
@@ -151,7 +152,7 @@ class TestMultiObsMapMaker:
             observations, demodulated=demodulated, stokes=stokes
         )
         with jax.set_mesh(maker.mesh):
-            model, _, _ = maker.build_model_and_accumulate()
+            model = maker.build_model_and_accumulate().model
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
@@ -203,7 +204,7 @@ class TestFakeObsMapMaker:
             observations, demodulated=demodulated, stokes=stokes
         )
         with jax.set_mesh(maker.mesh):
-            model, _, _ = maker.build_model_and_accumulate()
+            model = maker.build_model_and_accumulate().model
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
@@ -262,7 +263,7 @@ class TestNoiseModelSelection:
         config = _config('healpix', stokes, demodulated=demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         with jax.set_mesh(maker.mesh):
-            noise_model = maker.build_model_and_accumulate()[0].noise_model
+            noise_model = maker.build_model_and_accumulate().model.noise_model
         # A single WhiteNoiseModel covers both paths. The demodulated TOD is a single-array Stokes,
         # so its per-detector sigma carries the leading Stokes axis (here after the observation-stack
         # axis added by the accumulation scan).
@@ -275,7 +276,7 @@ class TestNoiseModelSelection:
         config = _config('healpix', 'IQU', demodulated, identity_noise=True)
         maker = MultiObservationMapMaker(observations, config=config)
         with jax.set_mesh(maker.mesh):
-            model, _, _ = maker.build_model_and_accumulate()
+            model = maker.build_model_and_accumulate().model
         noise_leaves = jax.tree.leaves(
             model.noise_model,
             is_leaf=lambda x: isinstance(x, WhiteNoiseModel),
@@ -349,6 +350,12 @@ class TestATOPStokesValidation:
     def test_iquv_stokes_raises(self):
         with pytest.raises(ValueError, match='cannot be reduced to a supported type'):
             MultiObservationMapMaker([], config=self._base_config('IQUV'))
+
+    def test_atop_with_templates_raises(self):
+        config = self._base_config('QU')
+        config.templates = TemplatesConfig.full_defaults()
+        with pytest.raises(NotImplementedError, match='ATOP combined with templates'):
+            MultiObservationMapMaker([], config=config)
 
 
 def _observations(name: str, demodulated: bool = False) -> list[AbstractLazyObservation]:

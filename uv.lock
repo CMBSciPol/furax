@@ -3377,7 +3377,7 @@ wheels = [
 
 [[package]]
 name = "pysm3"
-version = "3.4.5"
+version = "3.4.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "astropy" },
@@ -3388,9 +3388,9 @@ dependencies = [
     { name = "scipy" },
     { name = "toml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/b5/d77c0a3054c4fc7327bf9436634d50dbed8b95901ad07a087f6d1a6868c8/pysm3-3.4.5.tar.gz", hash = "sha256:34649d98735ff92feb7a39a988ccb68629cd920a8358ecb0f35f60341370e322", size = 58248, upload-time = "2026-05-29T01:46:29.36Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/56/bb/1bcd5cc127334308204362ec0c27540cacb4935b0d0e9b992f4fe406cdf5/pysm3-3.4.6.tar.gz", hash = "sha256:e491922ed3cc3de98f8ba273f6b1cfdfd5fadad8a359e8939a39cf0cd29c2397", size = 58318, upload-time = "2026-07-21T02:11:36.114Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/76/26/1173918bba8eed67a23c33eec2efea3709712302fdeb954b88168460c8c2/pysm3-3.4.5-py3-none-any.whl", hash = "sha256:51f9609be02aefffe4e0bd941278330d5afbfbc8b7e062eedb709166cab9495e", size = 75140, upload-time = "2026-05-29T01:46:30.541Z" },
+    { url = "https://files.pythonhosted.org/packages/24/2f/e8ea08536efc62ba7347c8ca7a1ec3f32846bfe71dd55061faa4db7fb313/pysm3-3.4.6-py3-none-any.whl", hash = "sha256:4183006ffc16e4a5a95026bfe99f30ec1e00bc06ca742a86ee0e4f554d6331db", size = 75186, upload-time = "2026-07-21T02:11:37.327Z" },
 ]
 
 [[package]]

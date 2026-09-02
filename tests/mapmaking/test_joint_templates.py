@@ -64,7 +64,7 @@ def test_implicit_returns_no_amplitudes():
     cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=False)))
     res = MultiObservationMapMaker(_hwp_obs(), config=cfg).run()
     assert res.template_amplitudes is None
-    assert jnp.all(jnp.isfinite(res.map.i))
+    assert jnp.all(jnp.isfinite(res.map.data))
 
 
 @pytest.mark.parametrize(
@@ -84,10 +84,7 @@ def test_explicit_and_implicit_give_the_same_map(observations, template):
     obs = observations()
     explicit = MultiObservationMapMaker(obs, config=_config(template(True))).run()
     implicit = MultiObservationMapMaker(obs, config=_config(template(False))).run()
-    for stoke in 'iqu':
-        assert_allclose(
-            getattr(explicit.map, stoke), getattr(implicit.map, stoke), rtol=1e-4, atol=1e-6
-        )
+    assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
 
 
 def test_mixed_explicit_and_implicit():
@@ -108,7 +105,7 @@ def test_runs_and_produces_a_map(explicit):
     cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=explicit)))
     maker = MultiObservationMapMaker(_hwp_obs(), config=cfg)
     res = maker.run()
-    assert res.map.i.shape == maker.landscape.shape
+    assert res.map.shape == maker.landscape.shape
     assert res.solver_stats['num_steps'] >= 1
 
 
@@ -119,4 +116,4 @@ def test_demodulated_polynomial_implicit_runs():
     cfg = _config(TemplatesConfig(polynomial=PolynomialConfig(explicit=False)))
     cfg.sotodlib = SotodlibConfig(demodulated=True)
     res = MultiObservationMapMaker(_ground_obs(), config=cfg).run()
-    assert all(bool(jnp.all(jnp.isfinite(getattr(res.map, s)))) for s in 'iqu')
+    assert jnp.all(jnp.isfinite(res.map.data))

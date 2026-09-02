@@ -325,14 +325,13 @@ class TemplateBundle:
         *,
         allow_probe: bool = False,
     ) -> Self:
-        r"""Pair an operator with the Gram inverse it induces under ``weight``.
+        r"""Pair a template operator $T$ with its Gram inverse given a weight matrix $W$.
 
         Args:
-            operator: The template operator $T$.
-            weight: The observation's noise weight $W$.
+            operator: The template operator.
+            weight: The weight matrix.
             config: Supplies the Gram regularization and batch size.
-            allow_probe: Permit the $O(K)$ dense column probe when the Gram has no structured
-                assembly. Only affordable for small $K$; see [`gram_inverse`][].
+            allow_probe: See [`gram_inverse`][].
         """
         ginv = gram_inverse(
             operator,
@@ -351,19 +350,13 @@ class ObservationTemplates:
 
     Active templates are partitioned by their ``explicit`` config flag when built, because the two
     kinds enter the map-making system in different places.
-
-    Either is ``None`` when no active template asks for it — then that term is absent from the
-    system, which is not the same as a template with no amplitudes. At least one is always present,
-    since [`create`][] rejects a config with no active template.
-
-    Under ``jax.lax.scan`` the array leaves gain a leading observation axis.
     """
 
     explicit: TemplateBundle | None
-    """Templates solved jointly with the map: a second block of the acquisition operator."""
+    """Templates whose amplitudes are solved jointly with the map."""
 
     implicit: TemplateBundle | None
-    """Templates deprojected from the noise weight, never solved for."""
+    """Templates whose amplitudes are marginalised over."""
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
@@ -373,29 +366,27 @@ class ObservationTemplates:
             return set()
         fields: set[str] = set()
         if tcfg.polynomial is not None:
-            fields.update(
-                {
-                    ReaderField.SCANNING_INTERVALS,
-                    ReaderField.TIMESTAMPS,
-                    ReaderField.VALID_SCANNING_MASKS,
-                }
-            )
+            fields |= {
+                ReaderField.SCANNING_INTERVALS,
+                ReaderField.TIMESTAMPS,
+                ReaderField.VALID_SCANNING_MASKS,
+            }
         if tcfg.scan_synchronous is not None:
-            fields.add(ReaderField.AZIMUTH)
+            fields |= {ReaderField.AZIMUTH}
         if tcfg.binned_azimuth_synchronous is not None:
-            fields.add(ReaderField.AZIMUTH)
+            fields |= {ReaderField.AZIMUTH}
         if tcfg.hwp_synchronous is not None:
-            fields.add(ReaderField.HWP_ANGLES)
+            fields |= {ReaderField.HWP_ANGLES}
         if tcfg.azimuth_hwp_synchronous is not None:
-            fields.update({ReaderField.AZIMUTH, ReaderField.HWP_ANGLES})
+            fields |= {ReaderField.AZIMUTH, ReaderField.HWP_ANGLES}
             if tcfg.azimuth_hwp_synchronous.split_scans:
-                fields.update({ReaderField.LEFT_SCAN_MASK, ReaderField.RIGHT_SCAN_MASK})
+                fields |= {ReaderField.LEFT_SCAN_MASK, ReaderField.RIGHT_SCAN_MASK}
         if tcfg.binned_azimuth_hwp_synchronous is not None:
-            fields.update({ReaderField.AZIMUTH, ReaderField.HWP_ANGLES})
+            fields |= {ReaderField.AZIMUTH, ReaderField.HWP_ANGLES}
         if tcfg.spline_hwp_synchronous is not None:
-            fields.update({ReaderField.TIMESTAMPS, ReaderField.HWP_ANGLES})
+            fields |= {ReaderField.TIMESTAMPS, ReaderField.HWP_ANGLES}
         if tcfg.t2p is not None:
-            fields.update({ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS})
+            fields |= {ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS}
         if tcfg.ground is not None:
             raise NotImplementedError(
                 'Ground templates are not supported in the multi-observation path.'
@@ -410,34 +401,15 @@ class ObservationTemplates:
         model: ObservationModel,
         tod: PyTree[Array],
     ) -> tuple[Self, PyTree[Array]]:
-        r"""Build one observation's templates and weight its TOD, from a single read.
-
-        The Gram inverses are per-observation, so building them here keeps the whole template
-        contribution to one TOD pass. The returned TOD is weighted by $W'$ rather than $W$ whenever
-        there are implicit templates, so anything projected against it — the map right-hand side
-        $H^\top W' d$ as much as the amplitude one $T_e^\top W' d$ — is deprojected already.
-
-        Args:
-            data: The reader fields for this observation.
-            config: The map-making configuration; ``config.templates`` must be set.
-            model: This observation's model, for the weight ``W`` and deprojector ``F``.
-            tod: This observation's time-ordered data.
-
-        Returns:
-            The templates, and the weighted TOD $W' d$ ($W d$ with no implicit block).
-
-        Raises:
-            ValueError: If ``config.templates`` is unset, or is set but activates no template.
-        """
+        """Build one observation's templates and weight its TOD, implicit templates folded in."""
         if (tcfg := config.templates) is None:
             raise ValueError('templates config required to build template operators')
         n_dets = model.tod_structure.shape[0]
         dtype = config.dtype
         # Demodulation splits the raw stream into differently filtered I/Q/U streams, so a template
-        # covering several legs fits an independent amplitude on each. None when not demodulated.
+        # covering several legs fits an independent amplitude on each.
         legs = config.landscape.stokes if config.demodulated else None
-        # ``explicit`` is a solver policy, not a property of the basis: partition here rather
-        # than stamping each template and filtering later.
+
         explicit_bases: dict[str, Any] = {}
         implicit_bases: dict[str, Any] = {}
 
@@ -567,8 +539,7 @@ class ObservationTemplates:
                 return StokesTemplateOperator(bases, n_dets, config.landscape.stokes)
             return TemplateOperator(bases, n_dets)
 
-        # ``Weff`` bundles the sample mask (via ``model.W``) and the deprojection operator
-        # ``model.F`` (e.g. ATOP tau-averaging; identity otherwise).
+        # `Weff` bundles the sample mask (via `model.W`) and the deprojector `model.F`
         Weff = (model.W @ model.F).reduce()
         wd = Weff(tod)
 
@@ -581,10 +552,7 @@ class ObservationTemplates:
 
         explicit = None
         if (op := build(explicit_bases)) is not None:
-            # Explicit templates are small-K in practice (T2P; config forces explicit=True there),
-            # so the O(K) probe is cheap and, for a per-detector basis, the only option. A large-K
-            # structured explicit template (e.g. polynomial with explicit: true) still gets the fast
-            # structured path automatically: gram_inverse always tries it first.
+            # T2P templates are always explicit and per-detector, so we need to allow probing.
             explicit = TemplateBundle.create(op, model.W, tcfg, allow_probe=True)
 
         return cls(explicit=explicit, implicit=implicit), wd

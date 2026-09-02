@@ -1,12 +1,12 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
 from functools import cached_property
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any, ClassVar, NamedTuple, overload
+from typing import Any, ClassVar, overload
 
 import equinox as eqx
 import jax
@@ -22,6 +22,7 @@ from jax.experimental import mesh_utils
 from jax.experimental import multihost_utils as mhu
 from jax.sharding import AxisType, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+from jax.tree_util import register_dataclass
 from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
@@ -79,7 +80,9 @@ from .templates import ATOPProjectionOperator
 from .weight import WeightOperator
 
 
-class AccumulatedModel(NamedTuple):
+@register_dataclass
+@dataclass(frozen=True)
+class AccumulatedModel:
     """Result of [`MultiObservationMapMaker.build_model_and_accumulate`][].
 
     Attributes:
@@ -90,24 +93,21 @@ class AccumulatedModel(NamedTuple):
         amplitude_rhs: Explicit-template RHS, obs-stacked.
     """
 
-    model: ObservationModel
-    templates: ObservationTemplates | None
+    model: ObservationModel = field(metadata={'sharded': True})
+    templates: ObservationTemplates | None = field(metadata={'sharded': True})
     hit_map: Int64[Array, '...']
     map_rhs: StokesType
-    amplitude_rhs: PyTree[Array] | None
+    amplitude_rhs: PyTree[Array] | None = field(metadata={'sharded': True})
 
     @classmethod
-    def out_specs(cls, axis: str) -> 'AccumulatedModel':
-        """Sharding of each field, shaped like the class itself so ``shard_map`` matches by field.
+    def shard_map_out_specs(cls, axis: str) -> 'AccumulatedModel':
+        """Sharding of each field, as an instance of the class, so `jax.shard_map` matches by field.
 
         Args:
             axis: Name of the mesh axis the observations are distributed over.
         """
-        # One entry per observation; every other field is reduced over them, so replicated.
-        obs_sharded = {'model', 'templates', 'amplitude_rhs'}
-        if unknown := obs_sharded - set(cls._fields):
-            raise ValueError(f'not fields of {cls.__name__}: {sorted(unknown)}')
-        return cls._make(P(axis) if f in obs_sharded else P() for f in cls._fields)
+        specs = {f.name: P(axis) if f.metadata.get('sharded') else P() for f in fields(cls)}
+        return cls(**specs)  # type: ignore[arg-type]
 
 
 class MultiObservationMapMaker[T]:
@@ -498,7 +498,7 @@ class MultiObservationMapMaker[T]:
                 amplitude_rhs=amp_rhs,
             )
 
-        out_specs = AccumulatedModel.out_specs(axis)
+        out_specs = AccumulatedModel.shard_map_out_specs(axis)
         accumulated = jax.shard_map(out_specs=out_specs, check_vma=False)(kernel)(indices, is_real)
         return accumulated  # type: ignore[no-any-return]
 

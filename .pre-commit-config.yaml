@@ -10,7 +10,7 @@ repos:
     - --all
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.16.4
+  rev: v0.16.5
   hooks:
     - id: ruff-check
       name: ruff linting
@@ -27,7 +27,7 @@ repos:
   - id: check-merge-conflict
 
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.12.5
+  rev: 0.12.7
   hooks:
   - id: uv-lock
 

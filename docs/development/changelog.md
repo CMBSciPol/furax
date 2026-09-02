@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1]
+
 ### Added
 
 - `StreamOperator.block_row`/`block_column`: fuse several streams into one, evaluating a joint system in a single pass over the data (#190)
@@ -306,7 +308,8 @@ Initial tagged release.
 
 - Project classifiers and editable-mode installation instructions
 
-[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.12.0...HEAD
+[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/CMBSciPol/furax/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/CMBSciPol/furax/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/CMBSciPol/furax/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/CMBSciPol/furax/compare/v0.11.1...v0.11.2

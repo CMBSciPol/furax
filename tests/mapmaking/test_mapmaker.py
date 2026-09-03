@@ -34,7 +34,6 @@ from furax.mapmaking.mapmaker import (
     BinnedMapMaker,
     MapMaker,
     MLMapmaker,
-    get_obs_distribution_to_process,
 )
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
@@ -45,65 +44,6 @@ from tests.mapmaking.helpers import (
     FakeLazyObservation,
     GappyLazyGroundObservation,
 )
-
-
-class TestObsDistribution:
-    def test_single_process_divisible(self):
-        # 8 obs, 1 proc, 4 local devs → no padding needed
-        start, n_owned, n_pad = get_obs_distribution_to_process(8, rank=0, n_proc=1, n_local=4)
-        assert (start, n_owned, n_pad) == (0, 8, 0)
-
-    def test_single_process_needs_padding(self):
-        # 10 obs, 1 proc, 4 local devs → pad to 12
-        start, n_owned, n_pad = get_obs_distribution_to_process(10, rank=0, n_proc=1, n_local=4)
-        assert (start, n_owned, n_pad) == (0, 10, 2)
-
-    def test_multi_process_even_distribution(self):
-        # 10 obs, 2 procs, 2 local devs → 5 obs each, chunk=6 (pad to multiple of 2)
-        assert get_obs_distribution_to_process(10, rank=0, n_proc=2, n_local=2) == (0, 5, 1)
-        assert get_obs_distribution_to_process(10, rank=1, n_proc=2, n_local=2) == (5, 5, 1)
-
-    def test_multi_process_uneven_distribution(self):
-        # 11 obs, 2 procs, 2 local devs → proc 0 gets 6, proc 1 gets 5
-        # chunk = ceil(11/2)=6, padded to multiple of 2 → 6
-        assert get_obs_distribution_to_process(11, rank=0, n_proc=2, n_local=2) == (0, 6, 0)
-        assert get_obs_distribution_to_process(11, rank=1, n_proc=2, n_local=2) == (6, 5, 1)
-
-    def test_no_process_left_empty(self):
-        # 85 obs, 20 procs, 1 local dev → base=4, remainder=5
-        # first 5 procs own 5 obs, rest own 4; no proc gets 0
-        for rank in range(20):
-            _, n_owned, _ = get_obs_distribution_to_process(85, rank=rank, n_proc=20, n_local=1)
-            assert n_owned > 0
-
-    def test_fewer_obs_than_procs_raises(self):
-        # n_obs < n_proc is always an error regardless of rank
-        with pytest.raises(ValueError, match='Not enough observations'):
-            get_obs_distribution_to_process(3, rank=3, n_proc=4, n_local=1)
-
-    def test_chunk_always_divisible_by_local_devices(self):
-        # n_owned + n_pad must be divisible by n_local_dev
-        n_obs, n_local_dev, n_procs = 7, 2, 3
-        for rank in range(n_procs):
-            _, n_owned, n_pad = get_obs_distribution_to_process(
-                n_obs, rank=rank, n_proc=n_procs, n_local=n_local_dev
-            )
-            assert (n_owned + n_pad) % n_local_dev == 0
-
-    def test_all_procs_cover_all_obs(self):
-        # All processes together must cover every real observation exactly once
-        n_obs, n_local_dev, n_procs = 10, 2, 2
-        starts = []
-        total_real = 0
-        for rank in range(n_procs):
-            start, n_owned, _ = get_obs_distribution_to_process(
-                n_obs, rank=rank, n_proc=n_procs, n_local=n_local_dev
-            )
-            starts.append(start)
-            total_real += n_owned
-        assert starts == [0, 5]
-        assert total_real == n_obs
-
 
 # Skip tests for interfaces that are not installed
 sotodlib_installed = importlib.util.find_spec('sotodlib') is not None
@@ -152,7 +92,7 @@ class TestMultiObsMapMaker:
             observations, demodulated=demodulated, stokes=stokes
         )
         with jax.set_mesh(maker.mesh):
-            model = maker.build_model_and_accumulate().model
+            model = maker.build_model_and_accumulate().buckets[0].model
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
@@ -204,7 +144,7 @@ class TestFakeObsMapMaker:
             observations, demodulated=demodulated, stokes=stokes
         )
         with jax.set_mesh(maker.mesh):
-            model = maker.build_model_and_accumulate().model
+            model = maker.build_model_and_accumulate().buckets[0].model
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
@@ -246,6 +186,60 @@ class TestFakeObsMapMaker:
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 
 
+class TestBuckets:
+    """Observations of different lengths, grouped into buckets of a common buffer shape.
+
+    Bucketing is a layout decision only: the maps must not depend on how many buckets the
+    observations are spread over, nor on the padding each bucket carries.
+    """
+
+    N_SAMPLES = (512, 640, 1536)
+
+    def _observations(self):
+        return [FakeLazyObservation(seed=i, n_samples=n) for i, n in enumerate(self.N_SAMPLES)]
+
+    @pytest.mark.parametrize('max_buckets', [1, 2, 3])
+    def test_layout_follows_config(self, max_buckets):
+        config = _config('healpix', 'IQU', max_buckets=max_buckets)
+        maker = MultiObservationMapMaker(self._observations(), config=config)
+        layout = maker.layout
+        assert 1 <= len(layout.buckets) <= max_buckets
+        covered = sorted(int(i) for b in layout.buckets for i in b.observations)
+        assert covered == list(range(len(self.N_SAMPLES)))
+        for bucket, reader in zip(layout.buckets, maker.readers, strict=True):
+            assert reader.count == bucket.n_real
+            assert bucket.n_slots % jax.device_count() == 0
+            # each reader pads to its own bucket's envelope, not the dataset's largest
+            n_samples = reader.out_structure['sample_data'].shape[-1]
+            assert n_samples == bucket.shape.sample_count
+        if max_buckets == 3 and jax.device_count() == 1:
+            assert len(layout.buckets) == 3  # singletons never pad on one device
+
+    @pytest.mark.parametrize('stokes', ['I', 'IQU'])
+    def test_maps_do_not_depend_on_bucketing(self, stokes):
+        # Unit weights: a fitted noise level would see the padded samples and so depend on the
+        # bucket's envelope, which is not what is under test here.
+        observations = self._observations()
+        one = _config('healpix', stokes, identity_noise=True)
+        many = _config('healpix', stokes, identity_noise=True, max_buckets=3)
+        one_result = MultiObservationMapMaker(observations, config=one).run()
+        many_result = MultiObservationMapMaker(observations, config=many).run()
+        assert eqx.tree_equal(one_result.hit_map, many_result.hit_map)
+        assert eqx.tree_equal(one_result.map, many_result.map, rtol=1e-10, atol=1e-12)
+        assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
+
+    def test_failed_observation_in_a_bucket(self):
+        # the failing observation is the short one, alone in its bucket once split
+        config = _config('healpix', 'IQU', max_buckets=3)
+        observations = self._observations()
+        observations[0] = FailingLazyObservation(seed=0, n_samples=self.N_SAMPLES[0])
+        results = MultiObservationMapMaker(observations, config=config).run()
+        assert results.failed_observations == ['failing_obs']
+        expected = MultiObservationMapMaker(observations[1:], config=config).run()
+        assert eqx.tree_equal(results.hit_map, expected.hit_map)
+        assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
+
+
 @pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])
 class TestNoiseModelSelection:
     """Noise-model *selection* logic. This is generic mapmaker behaviour that
@@ -263,7 +257,7 @@ class TestNoiseModelSelection:
         config = _config('healpix', stokes, demodulated=demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         with jax.set_mesh(maker.mesh):
-            noise_model = maker.build_model_and_accumulate().model.noise_model
+            noise_model = maker.build_model_and_accumulate().buckets[0].model.noise_model
         # A single WhiteNoiseModel covers both paths. The demodulated TOD is a single-array Stokes,
         # so its per-detector sigma carries the leading Stokes axis (here after the observation-stack
         # axis added by the accumulation scan).
@@ -276,7 +270,7 @@ class TestNoiseModelSelection:
         config = _config('healpix', 'IQU', demodulated, identity_noise=True)
         maker = MultiObservationMapMaker(observations, config=config)
         with jax.set_mesh(maker.mesh):
-            model = maker.build_model_and_accumulate().model
+            model = maker.build_model_and_accumulate().buckets[0].model
         noise_leaves = jax.tree.leaves(
             model.noise_model,
             is_leaf=lambda x: isinstance(x, WhiteNoiseModel),
@@ -382,6 +376,7 @@ def _config(
     method: Methods = Methods.BINNED,
     atop_tau: int = 0,
     identity_noise: bool = False,
+    max_buckets: int = 1,
 ) -> MapMakingConfig:
     if landscape_type == 'healpix':
         lc = LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16))
@@ -404,6 +399,7 @@ def _config(
         ),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
         atop_tau=atop_tau,
+        max_buckets=max_buckets,
     )
 
 

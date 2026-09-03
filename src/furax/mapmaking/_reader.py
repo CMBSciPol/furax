@@ -6,7 +6,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from jax.experimental import multihost_utils as mhu
 from jax.tree_util import register_static
 from jax.typing import DTypeLike
 from jaxtyping import PyTree
@@ -18,6 +17,7 @@ from ._observation import (
     AbstractLazyObservation,
     AbstractObservation,
     HashedObservationMetadata,
+    ObservationBufferShape,
     ReaderField,
 )
 
@@ -83,19 +83,17 @@ class ObservationReader[T](AbstractReader):
         cls,
         observations: Sequence[AbstractLazyObservation[T]],
         *,
-        read_indices: Sequence[int] | None = None,
         requested_fields: Collection[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = jnp.float64,
+        shapes: Sequence[ObservationBufferShape] | None = None,
+        known_failures: Sequence[int] | None = None,
     ) -> Self:
-        """Create a reader, performing I/O to infer data structures.
+        """Create a reader over the given observations.
 
         Args:
-            observations: Full list of lazy observations.
-            read_indices: Optional indices into ``observations``; when set, only
-                those are opened on this process to infer shapes, and shapes are
-                synchronised across processes (distributed-mode shortcut).
+            observations: The lazy observations to read, one item each.
             requested_fields: Optional list of fields to load. If None, read all non-optional fields.
             demodulated: Whether to read demodulated TODs.
             stokes: Stokes components to read when demodulated.
@@ -108,22 +106,21 @@ class ObservationReader[T](AbstractReader):
                 zero origin (in float64, before the downcast) so the float32 cast does not
                 collapse the absolute POSIX epoch onto a single value; see the timestamps
                 reader in ``_get_data_field_readers``.
+            shapes: Per-observation buffer shapes, in the order of ``observations``. When given,
+                no observation is opened to size the buffers (the caller has already probed them,
+                see [`AbstractLazyObservation.probe_shape`][]); otherwise every observation is
+                opened once here.
+            known_failures: Positions in ``observations`` known to be unreadable (their probe
+                failed); read as filler, never loaded.
         """
         fields = cls._resolve_fields(observations, requested_fields)
-        # In the default path, leave ``shapes`` unset so AbstractReader.__init__ opens every
-        # observation on this process to infer its structure. In distributed mode, gather the
-        # per-observation shapes from the local subset and all-gather them (see ``_gather_shapes``).
-        shapes = None
-        known_failures = None
-        if read_indices is not None:
-            shapes, known_failures = cls._gather_shapes(observations, read_indices, fields)
         return cls(
             observations,
             common_keywords={'data_field_names': fields},
             demodulated=demodulated,
             stokes=stokes,
             dtype=dtype,
-            shapes=shapes,
+            shapes=list(shapes) if shapes is not None else None,
             known_failures=known_failures,
         )
 
@@ -144,48 +141,6 @@ class ObservationReader[T](AbstractReader):
                 f'Requested data fields {unsupported} are not supported by the interface.'
             )
         return fields
-
-    @staticmethod
-    def _gather_shapes(
-        observations: Sequence[AbstractLazyObservation[T]],
-        read_indices: Sequence[int],
-        fields: Collection[str],
-    ) -> tuple[list[tuple[int, ...]], list[int]]:
-        """Gather every observation's ``probe_shape()`` tuple in distributed mode.
-
-        Each process probes only its ``read_indices`` subset; an all-gather then makes every rank
-        agree on the full shape list, so padding / out_structure / etc. stay consistent.
-
-        A probe that raises must not crash the rank (it would deadlock the others at the all-gather):
-        the observation is given a dummy ``(1, 1)`` shape so it is excluded from the buffer-sizing
-        max, and its (local) index is returned so the reader skips loading it and gates it out.
-
-        Returns ``(shapes, failed_indices)`` where ``failed_indices`` are this process's
-        probe-failed observation indices.
-        """
-        failed: list[int] = []
-        need_intervals = ReaderField.SCANNING_INTERVALS in fields
-
-        def probe(idx: int) -> tuple[int, tuple[int, ...]]:
-            try:
-                # retain observation index so we can dedup after gathering
-                return idx, tuple(observations[idx].probe_shape(intervals=need_intervals))
-            except Exception:
-                logger.exception('probe of observation %d failed', idx)
-                failed.append(idx)
-                return idx, (1, 1, 0)
-
-        local = [probe(idx) for idx in read_indices]
-        width = 1 + len(local[0][1])  # each row is (idx, *shape)
-        local_rows = np.array([(idx, *shape) for idx, shape in local], dtype=np.int32)
-
-        # Drop potential duplicates (from padding) and sort by obs index
-        all_rows = mhu.process_allgather(local_rows).reshape(-1, width)
-        shapes = [tuple(row[1:]) for row in np.unique(all_rows, axis=0)]
-        if (ns := len(shapes)) != (no := len(observations)):
-            msg = f'inconsistent observation shapes after allgather: expected {no}, got {ns}'
-            raise RuntimeError(msg)
-        return shapes, failed
 
     def _pad(
         self, data: PyTree[np.ndarray], padding: PyTree[tuple[int, ...]]

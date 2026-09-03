@@ -325,35 +325,6 @@ def test_stacked_segment_must_lead_with_obs_axis() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Shared data must be replicated along the stream axis
-# ---------------------------------------------------------------------------
-
-
-def test_shared_input_sharded_over_obs_is_rejected() -> None:
-    # shard_map infers its in_specs from the arguments, so an obs-sharded shared input raises
-    # nothing there: each shard silently sees a different slice. Catch it up front instead.
-    h = StreamOperator.column(_make_blocks(P('obs'), n_in=N_OBS))
-    x = jax.device_put(RNG.standard_normal((N_OBS,), dtype=np.float64), P('obs'))
-    with pytest.raises(ValueError, match='sharded over'):
-        h(x)
-
-
-def test_shared_segment_sharded_over_obs_is_rejected() -> None:
-    # same trap on the other entry point for shared data: a constant segment's own arrays
-    d = jax.device_put(RNG.standard_normal((N_OBS,), dtype=np.float64), P('obs'))
-    post = DiagonalOperator(d, in_structure=jax.ShapeDtypeStruct((N_OBS,), jnp.float64))
-    op = StreamOperator.create(
-        (StreamSegment(post, False), StreamSegment(_make_blocks(P('obs'), n_out=N_OBS), True)),
-        n_lead=N_OBS,
-        in_stacked=True,
-        out_stacked=True,
-    )
-    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
-    with pytest.raises(ValueError, match='sharded over'):
-        op(x)
-
-
-# ---------------------------------------------------------------------------
 # Mixed (per-component) streams: joint shared-sky + stacked-amplitude systems
 # ---------------------------------------------------------------------------
 

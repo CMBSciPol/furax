@@ -10,10 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `BlockSelectOperator`: extract one block of a block-structured input, and embed a single-block operator into the whole through its transpose (#237)
+- `MapMakingConfig.max_buckets`: largest allowed number of buckets for grouping observation by shape (#236)
 
 ### Changed
 
+- Group mapmaker observations into buckets of similar buffer shape to reduce padding overhead (#236)
 - Migrate quaternion operations to `fastquat` (#247)
+
+### Removed
+
+- `StreamOperator` no longer rejects shared inputs sharded over the stream axis (#236)
 
 ### Fixed
 

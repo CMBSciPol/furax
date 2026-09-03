@@ -415,7 +415,6 @@ class StreamOperator(AbstractLinearOperator):
         # prefix spec itself, so the input side needs no per-leaf mask.
         x_stacked, x_shared = eqx.partition(x, self.in_stacked)
         dyn, static = self._partition()
-        self._check_shared_replicated(x_shared, static, axis)
 
         # Stacked outputs are emitted per step; shared ones accumulate in the carry, then psum.
         per_slice_out = self.per_slice_out_structure
@@ -423,7 +422,11 @@ class StreamOperator(AbstractLinearOperator):
         out_pspecs = jax.tree.map(lambda stacked: P(axis) if stacked else P(), out_mask)
         _, shared_out_structure = eqx.partition(per_slice_out, out_mask)
 
-        @jax.shard_map(out_specs=out_pspecs, check_vma=False)
+        # Explicitly give the input specs so the mesh can use an `Auto` axis.
+        # JAX may gather values per device here if they are sharded over the axis.
+        in_pspecs = (P(axis), P(), P(axis), P())
+
+        @jax.shard_map(in_specs=in_pspecs, out_specs=out_pspecs, check_vma=False)
         def kernel(dyn, static, x_stacked, x_shared):  # type: ignore[no-untyped-def]
             def step(carry, args):  # type: ignore[no-untyped-def]
                 dyn_i, xs_i = args
@@ -437,13 +440,6 @@ class StreamOperator(AbstractLinearOperator):
             return eqx.combine(ys, jax.lax.psum(carry, axis_name=axis))
 
         return kernel(dyn, static, x_stacked, x_shared)
-
-    def _check_shared_replicated(
-        self, x_shared: PyTree[Any], static: tuple[AbstractLinearOperator, ...], axis: str
-    ) -> None:
-        """Reject shared data sharded over the stream axis, by either route it arrives."""
-        _reject_axis_sharded(x_shared, axis)  # caller-supplied components
-        _reject_axis_sharded(static, axis)  # the operator's own shared-segment arrays
 
     @property
     def sliced_count(self) -> int:
@@ -689,23 +685,6 @@ def _get_mesh() -> AbstractMesh:
     if mesh.empty:
         raise RuntimeError('active mesh context required')
     return mesh
-
-
-def _reject_axis_sharded(pytree: PyTree[Any], axis: str) -> None:
-    """Raise if any array leaf of ``pytree`` is sharded along ``axis``."""
-    # a PartitionSpec is a leaf itself; `tuple(...)` exposes its entries, and `jax.tree.leaves`
-    # then flattens tuple entries and drops the None (unsharded) ones
-    bad = [
-        jax.tree_util.keystr(path) or '<root>'
-        for path, leaf in jax.tree.leaves_with_path(pytree)
-        if eqx.is_array(leaf) and axis in jax.tree.leaves(tuple(jax.typeof(leaf).sharding.spec))
-    ]
-    if bad:
-        msg = (
-            f'Found arrays sharded over {axis!r}: {", ".join(bad)}. '
-            'All shared components must be replicated along the stream axis.'
-        )
-        raise ValueError(msg)
 
 
 def _leading_size(operator: AbstractLinearOperator) -> int:

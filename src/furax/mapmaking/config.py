@@ -798,6 +798,9 @@ class MapMakingConfig:
     atop_tau: int = 0
     """Length of the `ATOP` interval (in samples)."""
 
+    max_buckets: int = 4
+    """Largest number of buckets observations are grouped into."""
+
     sotodlib: SotodlibConfig | None = None
     """Options specific to the sotodlib interface. `None` when not using sotodlib data."""
 

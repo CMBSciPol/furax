@@ -3,7 +3,7 @@
 Two layers of coverage:
 
 1. **In-process dtype plumbing**: verifies that ``ObservationReader`` honours
-   its ``dtype`` parameter and that ``MultiObservationMapMaker.get_reader``
+   its ``dtype`` parameter and that ``MultiObservationMapMaker.get_readers``
    forwards ``config.dtype``. These run under the normal session-wide
    ``jax_enable_x64=True`` because they only inspect declared structures.
 
@@ -142,13 +142,13 @@ class TestObservationReaderRebasesTimestamps:
 
 
 class TestMapMakerForwardsDtype:
-    """``MultiObservationMapMaker.get_reader`` must use ``config.dtype``."""
+    """``MultiObservationMapMaker.get_readers`` must use ``config.dtype``."""
 
     @pytest.mark.parametrize(
         ('double_precision', 'expected_dtype'),
         [(True, jnp.float64), (False, jnp.float32)],
     )
-    def test_get_reader_uses_config_dtype(self, double_precision: bool, expected_dtype) -> None:
+    def test_get_readers_uses_config_dtype(self, double_precision: bool, expected_dtype) -> None:
         config = MapMakingConfig(
             method=Methods.BINNED,
             landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
@@ -157,7 +157,7 @@ class TestMapMakerForwardsDtype:
             double_precision=double_precision,
         )
         maker = MultiObservationMapMaker([FakeLazyObservation()], config=config)
-        reader = maker.get_reader(REQUIRED_FIELDS)
+        (reader,) = maker.get_readers(REQUIRED_FIELDS)
         assert reader.dtype == expected_dtype
         for field in REQUIRED_FIELDS:
             assert reader.out_structure[field].dtype == expected_dtype

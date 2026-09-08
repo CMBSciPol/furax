@@ -239,6 +239,16 @@ class TestBuckets:
         assert eqx.tree_equal(one_result.map, many_result.map, rtol=1e-10, atol=1e-12)
         assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
 
+    def test_fitted_noise_does_not_depend_on_bucketing(self):
+        observations = self._observations()
+        one = _config('healpix', 'I', max_buckets=1)
+        many = _config('healpix', 'I', max_buckets=3)
+        one_result = MultiObservationMapMaker(observations, config=one).run()
+        many_result = MultiObservationMapMaker(observations, config=many).run()
+        assert eqx.tree_equal(one_result.hit_map, many_result.hit_map)
+        assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
+        assert eqx.tree_equal(one_result.map, many_result.map, rtol=1e-10, atol=1e-12)
+
     def test_failed_observation_in_a_bucket(self):
         # the failing observation is the short one, alone in its bucket once split
         config = _config('healpix', 'IQU', max_buckets=3)

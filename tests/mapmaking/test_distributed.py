@@ -83,7 +83,14 @@ def _spawn(n_proc: int, n_local: int, port: int, out: Path, max_buckets: int) ->
         subprocess.Popen([sys.executable, __file__, str(i), *args], cwd=root, env=env)
         for i in range(n_proc)
     ]
-    codes = [p.wait(timeout=600) for p in procs]
+    try:
+        codes = [p.wait(timeout=600) for p in procs]
+    finally:
+        for process in procs:
+            if process.poll() is None:
+                process.kill()
+        for process in procs:
+            process.wait()
     assert codes == [0] * n_proc, f'child exit codes {codes}'
 
 
@@ -112,6 +119,7 @@ def test_multi_process_matches_single_process(
     _spawn(n_proc, n_local, PORT_BASE + 10 * n_proc + n_local, out, max_buckets)
     result = dict(np.load(out))
     np.testing.assert_array_equal(result['hit_map'], reference['hit_map'])
+    assert np.count_nonzero(result['hit_map']) > 1
     np.testing.assert_allclose(result['icov'], reference['icov'], rtol=1e-10, atol=1e-12)
     np.testing.assert_allclose(result['map'], reference['map'], rtol=1e-8, atol=1e-10)
     # per-observation amplitudes come back in observation order whatever the layout

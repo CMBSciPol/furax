@@ -130,7 +130,7 @@ class FakeObservation(AbstractObservation[None]):
         phi = np.linspace(0.0, np.pi / 4, self._n_samples)
         q = np.zeros((self._n_samples, 4), dtype=np.float64)
         q[:, 0] = np.cos(phi / 2)
-        q[:, 3] = np.sin(phi / 2)
+        q[:, 2] = np.sin(phi / 2)
         return q
 
     def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:

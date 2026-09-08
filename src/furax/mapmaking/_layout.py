@@ -7,9 +7,8 @@ maximum over the group), and the group to a whole number of slots per device. Bo
 and memory, so the grouping decides how much of a run is wasted on them.
 
 This module owns that bookkeeping, so nothing else has to re-derive it. [`Bucket`][] is one
-group with its padding cost, [`partition_padded`][] chooses the groups that waste the least,
-[`PaddingReport`][] measures a grouping, and [`SlotLayout`][] maps between the index spaces of a
-run:
+group with its padding cost, [`partition_padded`][] chooses the groups that waste the least, and
+[`SlotLayout`][] maps between the index spaces of a run:
 
 - the *observation* index, the position in the mapmaker's list of observations;
 - the *item* index of a bucket, the position in that bucket's reader (its observations in
@@ -22,14 +21,14 @@ run:
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any, NamedTuple, Self
+from typing import Any, Self
 
 import numpy as np
 
 from ._observation import ObservationBufferShape
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Bucket:
     """One group of observations, streamed together through every device.
 
@@ -110,58 +109,6 @@ def padded_volume(
 ) -> int:
     """Total padded volume of a partition, summed over its buckets."""
     return sum(Bucket.create(shapes, g, n_devices).padded_volume for g in groups)
-
-
-class PaddingReport(NamedTuple):
-    """Padding cost of a grouping, relative to zero-padding.
-
-    Attributes:
-        n_groups: Number of groups in the partition.
-        real: Volume before padding.
-        padded: Volume after padding, which is what gets processed.
-    """
-
-    n_groups: int
-    real: int
-    padded: int
-
-    @classmethod
-    def create(
-        cls,
-        shapes: Sequence[ObservationBufferShape],
-        groups: Sequence[Sequence[int]],
-        n_devices: int = 1,
-    ) -> Self:
-        """Measure what a partition of the observations costs in padding.
-
-        Args:
-            shapes: Per-observation buffer shapes.
-            groups: Partition of observation indices into groups.
-            n_devices: Number of devices each group is sharded over (its slot count is rounded
-                up to a multiple of it).
-
-        Returns:
-            The padding cost of that partition.
-
-        Examples:
-            Grouping everything together pads every observation to the largest one:
-
-            >>> from furax.mapmaking import ObservationBufferShape as Shape
-            >>> shapes = [Shape(2, 100), Shape(2, 100), Shape(2, 10)]
-            >>> PaddingReport.create(shapes, [[0, 1, 2]]).overhead  # padded 600 vs real 420
-            0.4285714285714286
-
-            Sharding over four devices adds an empty slot as well:
-
-            >>> PaddingReport.create(shapes, [[0, 1, 2]], n_devices=4).padded
-            800
-        """
-        return cls(len(groups), real_volume(shapes), padded_volume(shapes, groups, n_devices))
-
-    @property
-    def overhead(self) -> float:
-        """Fraction of wasted work, ``padded / real - 1``; 0.0 means no padding."""
-        return (self.padded / self.real - 1.0) if self.real > 0 else 0.0
 
 
 def partition_padded(
@@ -265,7 +212,7 @@ def partition_padded(
     return groups
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class SlotLayout:
     """The buckets of a run and the slot ranges each process holds.
 

@@ -806,6 +806,8 @@ class MapMakingConfig:
 
     def __post_init__(self) -> None:
         """Validate cross-field constraints that hold regardless of which mapmaker runs."""
+        if self.max_buckets < 1:
+            raise ValueError(f'max_buckets must be >= 1, got {self.max_buckets}')
         if (templates := self.templates) is not None:
             if templates.t2p is not None:
                 if not self.demodulated:

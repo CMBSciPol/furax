@@ -43,6 +43,7 @@ from tests.mapmaking.helpers import (
     FakeGroundObservation,
     FakeLazyObservation,
     GappyLazyGroundObservation,
+    ProbeFailingLazyObservation,
 )
 
 # Skip tests for interfaces that are not installed
@@ -198,6 +199,16 @@ class TestBuckets:
     def _observations(self):
         return [FakeLazyObservation(seed=i, n_samples=n) for i, n in enumerate(self.N_SAMPLES)]
 
+    @staticmethod
+    def _correlated_config(correlation_length: int) -> MapMakingConfig:
+        config = _config('healpix', 'IQU', method=Methods.MAXL, max_buckets=3)
+        config.weighting = WeightingConfig(
+            mode=WeightingMode.TOEPLITZ,
+            source=NoiseSource.PRECOMPUTED,
+            correlation_length=correlation_length,
+        )
+        return config
+
     @pytest.mark.parametrize('max_buckets', [1, 2, 3])
     def test_layout_follows_config(self, max_buckets):
         config = _config('healpix', 'IQU', max_buckets=max_buckets)
@@ -238,6 +249,36 @@ class TestBuckets:
         expected = MultiObservationMapMaker(observations[1:], config=config).run()
         assert eqx.tree_equal(results.hit_map, expected.hit_map)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
+
+    def test_probe_failed_observation_inherits_a_safe_shape(self):
+        config = self._correlated_config(correlation_length=64)
+        observations = [
+            ProbeFailingLazyObservation(seed=0, n_samples=32),
+            GappyLazyGroundObservation(seed=1, n_samples=128),
+            GappyLazyGroundObservation(seed=2, n_samples=256),
+        ]
+        maker = MultiObservationMapMaker(observations, config=config)
+        shapes, failed = maker._probe
+        assert failed.tolist() == [True, False, False]
+        assert shapes[0] == shapes[2]
+
+    def test_bucket_envelope_covers_toeplitz_support(self):
+        config = self._correlated_config(correlation_length=64)
+        observations = [GappyLazyGroundObservation(seed=0, n_samples=32)]
+        observations.extend(GappyLazyGroundObservation(seed=i, n_samples=256) for i in (1, 2))
+        maker = MultiObservationMapMaker(observations, config=config)
+        assert min(bucket.shape.sample_count for bucket in maker.layout.buckets) >= 2 * 64 - 1
+        with jax.set_mesh(maker.mesh):
+            maker.build_model_and_accumulate()
+
+    def test_bucket_envelope_covers_atop_support(self):
+        config = _config('healpix', 'QU', method=Methods.ATOP, atop_tau=64, max_buckets=3)
+        observations = [FakeLazyObservation(seed=0, n_samples=32)]
+        observations.extend(FakeLazyObservation(seed=i, n_samples=256) for i in (1, 2))
+        maker = MultiObservationMapMaker(observations, config=config)
+        assert min(bucket.shape.sample_count for bucket in maker.layout.buckets) >= 64
+        with jax.set_mesh(maker.mesh):
+            maker.build_model_and_accumulate()
 
 
 @pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])

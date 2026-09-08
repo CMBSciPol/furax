@@ -85,6 +85,12 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
     assert MapMakingConfig(templates=templates).use_templates == enabled
 
 
+@pytest.mark.parametrize('max_buckets', [0, -1])
+def test_max_buckets_must_be_positive(max_buckets: int):
+    with pytest.raises(ValueError, match='max_buckets must be >= 1'):
+        MapMakingConfig(max_buckets=max_buckets)
+
+
 class TestExplicitOnlyTemplates:
     """T2P and ground templates don't support implicit deprojection."""
 

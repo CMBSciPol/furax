@@ -181,6 +181,18 @@ class FailingLazyObservation(FakeLazyObservation):
         raise RuntimeError('simulated preprocessing failure')
 
 
+class ProbeFailingLazyObservation(FakeLazyObservation):
+    """Lazy observation whose shape probe fails before any data are read."""
+
+    @property
+    def name(self) -> str:
+        return 'probe_failing_obs'
+
+    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
+        del intervals
+        raise RuntimeError('simulated shape-probe failure')
+
+
 class GappyGroundObservation(FakeObservation, AbstractGroundObservation[None]):
     """Ground observation with flagged gaps in the sample mask and a finite 1/f noise model.
 

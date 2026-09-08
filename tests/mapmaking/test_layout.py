@@ -6,7 +6,6 @@ import pytest
 from furax.mapmaking import ObservationBufferShape as Shape
 from furax.mapmaking._layout import (
     Bucket,
-    PaddingReport,
     SlotLayout,
     padded_volume,
     partition_padded,
@@ -60,14 +59,14 @@ def test_bucket_slot_bookkeeping():
     np.testing.assert_array_equal(bucket.item_of_slot, [0, 1, 1, 1])
 
 
-def test_single_group_pads_to_the_largest_observation():
-    shapes = [Shape(2, 100), Shape(2, 100), Shape(2, 10)]
-    report = PaddingReport.create(shapes, [[0, 1, 2]])
-    assert report.n_groups == 1
-    assert report.real == 420
-    assert report.padded == 600  # 3 * 2 * 100
-    assert report.overhead == pytest.approx(600 / 420 - 1)
-    assert PaddingReport.create(shapes, [[0, 1, 2]], n_devices=2).padded == 800
+def test_bucket_and_layout_use_identity_equality():
+    bucket = Bucket.create([Shape(2, 10)], [0])
+    equivalent = Bucket.create([Shape(2, 10)], [0])
+    assert bucket != equivalent
+
+    layout = SlotLayout((bucket,), n_observations=1, n_devices=1)
+    equivalent_layout = SlotLayout((bucket,), n_observations=1, n_devices=1)
+    assert layout != equivalent_layout
 
 
 # ---------------------------------------------------------------------------

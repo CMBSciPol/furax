@@ -225,9 +225,10 @@ class MultiObservationMapMaker[T]:
         rows are all-gathered. Every rank sends the same fixed-size table, rows it did not probe
         left at zero, so the gather is well-formed whatever the per-rank counts (even none).
 
-        A probe that raises must not crash the rank (it would deadlock the others at the gather):
-        the observation is given a dummy ``(1, 1)`` shape, so it never inflates a bucket's
-        envelope, and flagged so the reader skips it and the accumulation gates it out.
+        A probe that raises must not crash the rank (it would deadlock the others at the gather).
+        Failed observations are flagged so the reader skips them and the accumulation gates them
+        out. After the gather, they inherit the largest successful probe shape so they cannot form
+        an undersized bucket of their own.
         """
         n_obs = self.n_observations
         n_proc = jax.process_count()
@@ -242,13 +243,36 @@ class MultiObservationMapMaker[T]:
                 rows[i] = (1, 1, 0, 1)
         # Each observation is probed by exactly one rank, so summing the tables merges them.
         rows = np.asarray(mhu.process_allgather(rows)).reshape(n_proc, n_obs, 4).sum(axis=0)
+        failed = rows[:, 3].astype(bool)
+        if np.any(~failed):
+            rows[failed, :3] = rows[~failed, :3].max(axis=0)
         shapes = [ObservationBufferShape(*map(int, row[:3])) for row in rows]
-        return shapes, rows[:, 3].astype(bool)
+        return shapes, failed
+
+    @property
+    def _minimum_buffer_samples(self) -> int:
+        """Smallest sample envelope accepted by the configured TOD operators."""
+        minimum = self.config.atop_tau if self.config.method == Methods.ATOP else 1
+        if self.config.weighting.mode == WeightingMode.TOEPLITZ:
+            correlation_length = self.config.weighting.correlation_length
+            if self.config.gaps.treatment == GapTreatment.FILL:
+                # The constrained realization embeds the symmetric band in a circulant kernel.
+                correlation_length = 2 * correlation_length - 1
+            minimum = max(minimum, correlation_length)
+        return minimum
 
     @cached_property
     def layout(self) -> SlotLayout:
         """How the observations are bucketed and laid out over the devices."""
         shapes, _ = self._probe
+        shapes = [
+            ObservationBufferShape(
+                shape.detector_count,
+                max(shape.sample_count, self._minimum_buffer_samples),
+                shape.interval_count,
+            )
+            for shape in shapes
+        ]
         return SlotLayout.create(
             shapes, n_devices=jax.device_count(), max_buckets=self.config.max_buckets
         )
@@ -267,7 +291,14 @@ class MultiObservationMapMaker[T]:
                 demodulated=self.config.demodulated,
                 stokes=self.config.landscape.stokes,
                 dtype=self.config.dtype,
-                shapes=[shapes[i] for i in bucket.observations],
+                shapes=[
+                    ObservationBufferShape(
+                        shapes[i].detector_count,
+                        max(shapes[i].sample_count, self._minimum_buffer_samples),
+                        shapes[i].interval_count,
+                    )
+                    for i in bucket.observations
+                ],
                 known_failures=np.flatnonzero(failed[bucket.observations]).tolist(),
             )
             for bucket in self.layout.buckets

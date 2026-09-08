@@ -799,7 +799,11 @@ class MapMakingConfig:
     """Length of the `ATOP` interval (in samples)."""
 
     max_buckets: int = 4
-    """Largest number of buckets observations are grouped into."""
+    """Largest number of buckets observations are grouped into.
+
+    More buckets pad the buffers less but round up to the device count more often; see
+    [`furax.mapmaking.layout`][] for how to choose it.
+    """
 
     sotodlib: SotodlibConfig | None = None
     """Options specific to the sotodlib interface. `None` when not using sotodlib data."""

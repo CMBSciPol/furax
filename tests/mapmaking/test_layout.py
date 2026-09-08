@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from furax.mapmaking import ObservationBufferShape as Shape
-from furax.mapmaking._layout import (
+from furax.mapmaking.layout import (
     Bucket,
     SlotLayout,
     padded_volume,

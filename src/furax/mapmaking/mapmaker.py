@@ -52,7 +52,6 @@ from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokes
 from furax.profiling import format_bytes
 
 from ._geometry import minimum_enclosing_arc
-from ._layout import SlotLayout
 from ._logger import logger as furax_logger
 from ._model import ObservationModel, ObservationTemplates
 from ._observation import (
@@ -73,6 +72,7 @@ from .config import (
     WeightingMode,
 )
 from .gap_filling import gap_fill
+from .layout import SlotLayout
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults

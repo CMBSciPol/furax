@@ -1,21 +1,57 @@
-"""Where every observation sits on the device mesh, and what that costs in padding.
+"""Logic to group observations into buckets of similar buffer shapes.
 
-The multi-observation mapmaker streams observations through the devices in *buckets*: groups of
-observations padded to a common buffer shape and laid out along one mesh axis that spans every
-device of the job. A bucket pads twice: every observation to the bucket's envelope (the per-axis
-maximum over the group), and the group to a whole number of slots per device. Both cost compute
-and memory, so the grouping decides how much of a run is wasted on them.
+[`MultiObservationMapMaker`][] runs one jit-compiled program over multiple observations, so they
+are required to share a common buffer shape. In reality they do not: they differ in detector and
+sample count. This module provides tools to group them into *buckets*, i.e., groups of observations
+padded to a common buffer shape. The mapmaker then streams each bucket separately through the
+available devices.
 
-This module owns that bookkeeping, so nothing else has to re-derive it. [`Bucket`][] is one
-group with its padding cost, [`partition_padded`][] chooses the groups that waste the least, and
-[`SlotLayout`][] maps between the index spaces of a run:
+Two kinds of padding are required:
 
-- the *observation* index, the position in the mapmaker's list of observations;
-- the *item* index of a bucket, the position in that bucket's reader (its observations in
-  observation order);
-- the *slot*, the position along the bucket's stream axis, which pads the items with empty slots
-  up to a multiple of the device count;
-- the *local block* of slots, the slots held by one process's devices.
+- *shape padding*: every observation of the group grows to the bucket's **envelope**, the per-axis
+  maximum over the group. A 10-minute scan bucketed with a 60-minute one occupies a 60-minute
+  buffer;
+- *slot padding*: the group is rounded up to a whole number of **slots** per device, so the stream
+  axis divides evenly over them. Nine observations on four devices take twelve slots, three of
+  them empty.
+
+The **observation index** is the global position of an observation in the list given to the
+mapmaker. Within a bucket, the local index of that observation is called the **item index**.
+A **slot** is where one observation's data lives once the bucket is sharded over the devices.
+A slot may contain a fake observation with the same bucket-level envelope (slot padding).
+
+!!! example
+
+    Six observations of two very different lengths, in two buckets, on four devices held by two
+    processes:
+
+    ```text
+    observation shapes (detectors, samples):
+      0: (100, 4900)   1: (100, 5000)   2: ( 90, 1200)
+      3: (100, 4800)   4: (110, 5000)   5: (100,  900)
+
+    bucket A, envelope (100, 1200)              bucket B, envelope (110, 5000)
+    slot  process  device  item  observation    slot  process  device  item  observation
+      0    proc 0   dev 0    0        2           0    proc 0   dev 0    0        0
+      1    proc 0   dev 1    1        5           1    proc 0   dev 1    1        1
+      2    proc 1   dev 2    -        -           2    proc 1   dev 2    2        3
+      3    proc 1   dev 3    -        -           3    proc 1   dev 3    3        4
+    ```
+
+!!! tip "Choosing the number of buckets"
+
+    [`partition_padded`][] chooses the number of buckets within the `max_buckets` budget, given the
+    available device count, optimising for total padded volume. A larger budget can only lower the
+    volume it settles on, but additional buckets cost compile time: each one is traced and compiled
+    for its own envelope. A rule of thumb is to allow one bucket per distinct observation shape.
+
+!!! tip "Choosing the device count"
+
+    Although more devices can in general increase throughput, remember that each bucket rounds up
+    its slots to the device count (slot padding). A device count just above a divisor of the bucket
+    sizes wastes almost a full round of slots, and a run with fewer observations than devices leaves
+    empty slots in every bucket. To keep slot padding low, try to size the job so its device count
+    divides the number of observations.
 """
 
 from collections.abc import Sequence
@@ -27,10 +63,25 @@ import numpy as np
 
 from ._observation import ObservationBufferShape
 
+__all__ = [
+    'Bucket',
+    'SlotLayout',
+    'padded_volume',
+    'partition_padded',
+    'real_volume',
+]
+
 
 @dataclass(frozen=True, eq=False)
 class Bucket:
     """One group of observations, streamed together through every device.
+
+    Every slot of the bucket holds a buffer of the same `shape`, the envelope of the group, and
+    the stream axis is padded up to `n_slots` so it shards evenly over the devices. A bucket is
+    therefore an observation-shaped buffer allocation plus the bookkeeping saying which slots
+    carry real data (`is_real`) and which observation each slot reads (`item_of_slot`).
+
+    Buckets are normally built for a whole run by [`SlotLayout.create`][], not one by one.
 
     Attributes:
         observations: Global indices of the observations, sorted. Their position here is their
@@ -47,12 +98,29 @@ class Bucket:
     def create(
         cls, shapes: Sequence[ObservationBufferShape], group: Sequence[int], n_devices: int = 1
     ) -> Self:
-        """Bucket a group of observations.
+        """Bucket a group of observations, padding them to their common envelope.
 
         Args:
             shapes: Per-observation buffer shapes, in observation order.
-            group: Indices of the observations in the bucket.
+            group: Indices of the observations in the bucket, in any order.
             n_devices: Number of devices the bucket is sharded over.
+
+        Returns:
+            The bucket, with its observations sorted.
+
+        Raises:
+            ValueError: If `group` is empty.
+
+        Examples:
+            A short and a long observation bucketed together: both slots are as long as the
+            longest and as wide as the widest.
+
+            >>> from furax.mapmaking import ObservationBufferShape as Shape
+            >>> bucket = Bucket.create([Shape(2, 100), Shape(3, 10)], [1, 0])
+            >>> bucket.shape
+            ObservationBufferShape(detector_count=3, sample_count=100, interval_count=0)
+            >>> bucket.padded_volume, real_volume([Shape(2, 100), Shape(3, 10)])
+            (600, 230)
         """
         if len(group) == 0:
             raise ValueError('a bucket needs at least one observation')
@@ -66,17 +134,17 @@ class Bucket:
 
     @staticmethod
     def slot_count(size: int, n_devices: int = 1) -> int:
-        """Slots a bucket of ``size`` observations takes: rounded up to fill ``n_devices`` evenly."""
+        """Slots a bucket of `size` observations takes: rounded up to fill `n_devices` evenly."""
         return -(-size // n_devices) * n_devices
 
     @property
     def n_real(self) -> int:
-        """Number of observations in the bucket."""
+        """Number of observations in the bucket, i.e. of slots holding real data."""
         return len(self.observations)
 
     @property
     def n_pad(self) -> int:
-        """Number of empty slots."""
+        """Number of empty slots: the padding the rounding to whole devices costs."""
         return self.n_slots - self.n_real
 
     @property
@@ -86,7 +154,7 @@ class Bucket:
 
     @cached_property
     def is_real(self) -> np.ndarray:
-        """Per slot, whether it holds an observation (``False`` for the empty slots at the end)."""
+        """Per slot, whether it holds an observation (`False` for the empty slots at the end)."""
         return np.arange(self.n_slots) < self.n_real
 
     @cached_property
@@ -100,28 +168,44 @@ class Bucket:
 
 
 def real_volume(shapes: Sequence[ObservationBufferShape]) -> int:
-    """Total volume of the observations, before any padding."""
+    """Total volume of the observations, before any padding.
+
+    Compare it against [`padded_volume`][] to see what a grouping costs: their ratio is the memory
+    and compute overhead the mapmaker reports as `byte_overhead`.
+
+    Args:
+        shapes: Per-observation buffer shapes.
+    """
     return sum(s.volume for s in shapes)
 
 
 def padded_volume(
     shapes: Sequence[ObservationBufferShape], groups: Sequence[Sequence[int]], n_devices: int = 1
 ) -> int:
-    """Total padded volume of a partition, summed over its buckets."""
+    """Total padded volume of a partition, summed over its buckets.
+
+    This is the quantity [`partition_padded`][] minimises.
+
+    Args:
+        shapes: Per-observation buffer shapes, in observation order.
+        groups: The groups of observation indices, e.g. as returned by [`partition_padded`][].
+        n_devices: Number of devices each group is sharded over.
+    """
     return sum(Bucket.create(shapes, g, n_devices).padded_volume for g in groups)
 
 
 def partition_padded(
     shapes: Sequence[ObservationBufferShape], max_groups: int, *, n_devices: int = 1
 ) -> list[list[int]]:
-    r"""Split observations into at most ``max_groups`` groups, wasting the least on padding.
+    r"""Split observations into at most `max_groups` groups, wasting the least on padding.
 
-    Observations in a group $b$ are padded to a common shape and the group to a whole number of
-    slots per device, so it occupies
-    $\lceil |b| / n_\text{dev} \rceil \, n_\text{dev} \cdot \max_{i \in b} d_i \cdot \max_{i \in b} s_i$
-    elements, where observation $i$ has $d_i$ detectors and $s_i$ samples. Every device processes
-    every group, so the run pays the sum over groups, and that is what the partition minimises.
-    More groups pad less in shape but more in slots, so the best count is chosen here as well.
+    A group $b$ of $n_b$ observations is padded to a common envelope, and rounded up to a whole
+    number of slots per device, so it occupies $n_b^\text{slots} d_b s_b$ elements, where
+    $n_b^\text{slots} = \lceil n_b / n_\text{dev} \rceil \, n_\text{dev}$ and $d_b$, $s_b$ are
+    the largest detector and sample counts in the group. Every device processes every group, so
+    the run pays $\sum_b n_b^\text{slots} d_b s_b$, and that is what this minimises -- over where
+    to cut, and over how many groups to make. The device count shapes the partition as much as
+    `max_groups` does: it sets the granularity every group is rounded up to.
 
     Candidate groups are runs of the observations sorted by shape, so the partition is not always
     the best possible.
@@ -132,12 +216,12 @@ def partition_padded(
         n_devices: Number of devices each group is sharded over.
 
     Returns:
-        A list of groups, from one up to ``max_groups`` of them. Each group is a sorted list of
+        A list of groups, from one up to `max_groups` of them. Each group is a sorted list of
         original observation indices. The groups are ordered by increasing detector count, then
-        sample count, and together they cover ``range(len(shapes))``.
+        sample count, and together they cover `range(len(shapes))`.
 
     Raises:
-        ValueError: If ``max_groups < 1``, ``n_devices < 1`` or there are no observations.
+        ValueError: If `max_groups < 1`, `n_devices < 1` or there are no observations.
 
     Examples:
         Three short scans, one long scan: the long one is left alone rather than padding the
@@ -216,8 +300,10 @@ def partition_padded(
 class SlotLayout:
     """The buckets of a run and the slot ranges each process holds.
 
-    Built identically on every process from the same probe shapes, so every process agrees on
-    the layout without communicating.
+    This is the mapmaker's answer to "where does every observation go?", available before any data
+    is read: [`MultiObservationMapMaker.layout`][] builds it from the probed shapes and logs it.
+    Built identically on every process from the same probe shapes, so every process agrees on the
+    layout without communicating.
 
     Attributes:
         buckets: The buckets, ordered by increasing envelope shape.
@@ -237,8 +323,28 @@ class SlotLayout:
 
         Args:
             shapes: Per-observation buffer shapes, in observation order.
-            n_devices: Number of devices each bucket is sharded over.
-            max_buckets: Largest number of buckets allowed.
+            n_devices: Number of devices each bucket is sharded over, i.e. every device of the
+                job (`jax.device_count()`).
+            max_buckets: Largest number of buckets allowed, the `max_buckets` configuration
+                option.
+
+        Examples:
+            What a dataset would cost on a given job, before running it. Three short scans and
+            one long one on two devices: rather than leave the long scan a bucket of its own,
+            which would waste a slot, one short scan joins it.
+
+            >>> from furax.mapmaking import ObservationBufferShape as Shape
+            >>> shapes = [Shape(2, 10), Shape(2, 10), Shape(2, 10), Shape(2, 90)]
+            >>> layout = SlotLayout.create(shapes, n_devices=2, max_buckets=4)
+            >>> [(b.n_real, b.n_slots, b.shape.sample_count) for b in layout.buckets]
+            [(2, 2, 10), (2, 2, 90)]
+
+            The dataset is heterogeneous enough that the layout still costs two thirds more
+            memory than the observations themselves:
+
+            >>> padded = sum(b.padded_volume for b in layout.buckets)
+            >>> round(padded / real_volume(shapes), 2)
+            1.67
         """
         groups = partition_padded(shapes, max_buckets, n_devices=n_devices)
         buckets = tuple(Bucket.create(shapes, group, n_devices) for group in groups)
@@ -261,6 +367,9 @@ class SlotLayout:
 
     def scatter(self, per_bucket: Sequence[np.ndarray]) -> np.ndarray:
         """Reorder per-slot arrays, one per bucket, into a single per-observation array.
+
+        This undoes the bucketing for results the caller wants per observation, in their original
+        order -- per-observation diagnostics, for instance.
 
         The leading axis of each input runs over the bucket's slots; the empty slots are dropped.
         Trailing axes may differ between buckets (each pads to its own shape), so the result is

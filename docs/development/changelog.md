@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `BlockSelectOperator`: extract one block of a block-structured input, and embed a single-block operator into the whole through its transpose (#237)
 - `MapMakingConfig.max_buckets`: largest allowed number of buckets for grouping observation by shape (#236)
+- API reference page for `furax.mapmaking.layout` (#236)
 
 ### Changed
 

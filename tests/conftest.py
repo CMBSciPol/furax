@@ -30,16 +30,35 @@ def pytest_configure(config: pytest.Config) -> None:
         os.environ.setdefault('XLA_FLAGS', '--xla_force_host_platform_device_count=8')
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Skip ``distributed``-marked tests unless several devices are available."""
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Drop the marked tests that the current session cannot run.
+
+    ``distributed`` tests need several devices, and are skipped so the summary names the selection
+    that picks them up.
+
+    ``insubprocess`` tests re-exec themselves through a hook that replaces the whole run protocol,
+    which pytest-xdist reads as a worker crash and turns into an INTERNALERROR. That same hook
+    fires before a skip mark would be honoured, so under xdist they have to leave the item list
+    outright; `pytest -m insubprocess` runs them in a serial session.
+    """
     import jax
 
-    if jax.device_count() >= 2:
+    if jax.device_count() < 2:
+        skip = pytest.mark.skip('distributed test; run with `pytest -m distributed`')
+        for item in items:
+            if item.get_closest_marker('distributed'):
+                item.add_marker(skip)
+
+    # the controller carries `dist`, each worker carries `workerinput`; both collect, and their
+    # collections have to agree, so the condition must hold on either side
+    under_xdist = getattr(config.option, 'dist', 'no') != 'no' or hasattr(config, 'workerinput')
+    if not under_xdist:
         return
-    skip = pytest.mark.skip(reason='distributed test; run with `pytest -m distributed`')
-    for item in items:
-        if item.get_closest_marker('distributed'):
-            item.add_marker(skip)
+    deselected = [item for item in items if item.get_closest_marker('insubprocess')]
+    if not deselected:
+        return
+    items[:] = [item for item in items if item.get_closest_marker('insubprocess') is None]
+    config.hook.pytest_deselected(items=deselected)
 
 
 @pytest.fixture(scope='session', autouse=True)

@@ -56,6 +56,10 @@ jobs:
       - name: "Install dependencies"
         run: uv sync --locked --all-extras
       - name: "Run tests"
-        run: uv run pytest -vv
+        run: uv run pytest -vv -n auto
+      # `insubprocess` tests re-exec themselves, which xdist reads as a worker crash, so the
+      # parallel selection above drops them and they run here instead.
+      - name: "Run in-subprocess tests"
+        run: uv run pytest -vv -m insubprocess
       - name: "Run distributed tests"
         run: uv run pytest -vv -m distributed

@@ -485,6 +485,75 @@ class TestNearestStencil:
         assert_array_equal(local_stencil.z, centers.z)
 
 
+class TestIndexStencil:
+    """The nearest stencil of a sampler that already knows which pixel it reads."""
+
+    @pytest.fixture
+    def angles(self):
+        rng = np.random.default_rng(0)
+        theta = jnp.array(rng.uniform(0.2, np.pi - 0.2, 20))
+        phi = jnp.array(rng.uniform(0.2, 2 * np.pi - 0.2, 20))
+        return theta, phi
+
+    @pytest.fixture
+    def car(self):
+        proj = WCSProjection(crpix=(180.5, 90.5), crval=(180.0, 0.0), cdelt=(-1.0, 1.0))
+        return CARLandscape((180, 360), proj, stokes='IQU')
+
+    @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
+    def test_it_reproduces_the_stencil_of_the_angles_it_indexed(self, landscape_type, car, angles):
+        """Same pixels, same centers, whichever way the index was reached."""
+        landscape = HealpixLandscape(16, 'IQU') if landscape_type == 'healpix' else car
+        expected = landscape.world2stencil(*angles, StencilOrder.NEAREST)
+        stencil = landscape.index2stencil(landscape.world2index(*angles))
+        assert_array_equal(stencil.indices, expected.indices)
+        assert_array_equal(stencil.weights, expected.weights)
+        assert_array_almost_equal(stencil.z, expected.z, decimal=12)
+        assert_array_almost_equal(stencil.sth, expected.sth, decimal=12)
+        assert_array_almost_equal(stencil.phi % (2 * np.pi), expected.phi % (2 * np.pi), decimal=12)
+
+    def test_the_horizon_bins_are_recovered_from_their_index(self):
+        """The generic index inversion follows `pixel2index`, whatever the axis order."""
+        landscape = HorizonLandscape(
+            shape=(8, 5),
+            altitude_limits=(jnp.array(0.5), jnp.array(1.0)),
+            azimuth_limits=(jnp.array(0.0), jnp.array(1.6)),
+            stokes='IQU',
+        )
+        rng = np.random.default_rng(1)
+        theta = np.pi / 2 - jnp.array(rng.uniform(0.5, 1.0, 20))
+        phi = -jnp.array(rng.uniform(0.0, 1.6, 20))
+        expected = landscape.world2stencil(theta, phi, StencilOrder.NEAREST)
+        stencil = landscape.index2stencil(landscape.world2index(theta, phi))
+        assert_array_equal(stencil.indices, expected.indices)
+        assert_array_almost_equal(stencil.z, expected.z, decimal=12)
+        assert_array_almost_equal(stencil.phi, expected.phi, decimal=12)
+
+    def test_an_out_of_map_index_contributes_nothing(self, car):
+        """A missed sample carries a safe index, a finite position and no weight."""
+        stencil = car.index2stencil(jnp.array([-1]))
+        assert_array_equal(stencil.indices, 0)
+        assert_array_equal(stencil.weights, 0.0)
+        assert jnp.all(jnp.isfinite(stencil.z)) and jnp.all(jnp.isfinite(stencil.phi))
+
+    def test_a_subset_landscape_sinks_the_indices_it_does_not_hold(self, angles):
+        """A local index in the sink reads the sink slot with no weight, as through the angles."""
+        parent = HealpixLandscape(16, 'IQU')
+        hit = np.unique(np.asarray(parent.world2index(*angles)))
+        local = LocalStokesLandscape(parent, hit[::2])  # keep half the hit pixels, sink the rest
+        expected = local.world2stencil(*angles, StencilOrder.NEAREST)
+        stencil = local.index2stencil(local.world2index(*angles))
+
+        sunk = stencil.indices[..., 0] == local.sink
+        assert jnp.any(sunk) and not jnp.all(sunk), 'the fixture must sink some samples but not all'
+        assert_array_equal(stencil.indices, expected.indices)
+        assert_array_equal(stencil.weights, expected.weights)
+        # A sunk index no longer names a parent pixel, so only the pixels actually read carry a
+        # position; the sunk ones are weightless either way.
+        assert_array_almost_equal(stencil.z[~sunk], expected.z[~sunk], decimal=12)
+        assert_array_almost_equal(stencil.phi[~sunk], expected.phi[~sunk], decimal=12)
+
+
 class TestStencilOrder:
     """One method answers for every order a landscape supports, and refuses the others."""
 

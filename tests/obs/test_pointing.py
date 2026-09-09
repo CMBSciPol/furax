@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import jax_healpy as jhp
 import pytest
 from equinox import tree_equal
+from jax.tree_util import register_static
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
@@ -17,7 +18,7 @@ from furax.obs.landscapes import (
 )
 from furax.obs.operators import QURotationOperator
 from furax.obs.operators._qu_rotations import rotate_qu_cs
-from furax.obs.pointing import PointingOperator
+from furax.obs.pointing import PointingOperator, XSamplingOperator
 from furax.obs.stokes import ValidStokesLiteral
 
 NSIDE = 4
@@ -410,6 +411,54 @@ class TestTransportHooks:
         moved = shifted(sky)
         assert jnp.all(jnp.isfinite(moved.q))
         assert float(jnp.max(jnp.abs(moved.q - base(sky).q))) > 1e-6
+
+
+@register_static
+class _ShiftedWorldIndexLandscape(HealpixLandscape):
+    """A landscape whose two index paths disagree, as HEALPix's own do in single precision.
+
+    `quat2index` reads the pointing axis with `vec2pix`, `world2index` reads the angles it was
+    turned into with `ang2pix`, and in float32 the two land in different pixels for a handful of
+    samples in a hundred thousand. Shifting one path by a whole pixel makes that rare divergence
+    something a test can pin down.
+    """
+
+    def world2index(self, theta, phi):
+        return (super().world2index(theta, phi) + 1) % len(self)
+
+
+class TestNearestIndexAgreement:
+    """The polarized nearest path reads the pixels `quat2index` counts, not the angles'."""
+
+    @staticmethod
+    def _setup(seed: int) -> tuple[PointingOperator, jax.Array]:
+        k1, k2 = jax.random.split(jax.random.key(seed))
+        qbore, qdet = _random_unit_quats(k1, (NSAMP,)), _random_unit_quats(k2, (NDET,))
+        op = PointingOperator.create(_ShiftedWorldIndexLandscape(NSIDE, 'IQU'), qbore, qdet)
+        return op, qmul(op.qbore, op.qdet[:, None, :])
+
+    def test_the_stencil_indexes_the_quat2index_pixel(self) -> None:
+        op, qdet_full = self._setup(40)
+        stencil, _, _ = op._quat2stencil(qdet_full)
+        assert_array_equal(stencil.indices[..., 0], op.landscape.quat2index(qdet_full))
+
+    def test_the_hit_map_of_the_polarized_operator_is_the_intensity_one(self) -> None:
+        """The map the transpose fills and the map `as_stokes_i` counts must cover the same pixels.
+
+        A sample binned into a pixel the hit map never saw is dropped by the pixel selection of a
+        map-maker, so the two must agree pixel for pixel.
+        """
+        op, _ = self._setup(41)
+        hits = op.T(ftree.ones_like(op.out_structure)).i
+        op_i = op.as_stokes_i()
+        expected = op_i.T(ftree.ones_like(op_i.out_structure)).i
+        assert_array_equal(hits, expected)
+
+    def test_the_expanded_operator_caches_the_same_pixels(self) -> None:
+        """`XSamplingOperator` caches the indices, rather than recovering them from the angles."""
+        op, qdet_full = self._setup(42)
+        sampler = XSamplingOperator.create(op.landscape, qdet_full)
+        assert_array_equal(sampler.indices, op.landscape.quat2index(qdet_full))
 
 
 class TestNearestTransport:

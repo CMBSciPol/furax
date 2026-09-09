@@ -203,6 +203,25 @@ class StokesLandscape(Landscape):
         theta, phi, _ = to_iso_angles(quat)  # psi not needed
         return theta, phi
 
+    def index2world(
+        self, indices: Integer[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        r"""Returns the angles $(\theta, \varphi)$ of the centers of the pixels of `indices`.
+
+        The inverse of [`world2index`][], up to the pixel the sample fell in. An index outside the
+        map (negative) is read as pixel 0, so that the angles stay finite.
+        """
+        raise NotImplementedError(f'{type(self).__name__} does not locate its pixel centers')
+
+    def index2stencil(self, indices: Integer[Array, ' *dims']) -> Stencil:
+        """Returns the one-neighbour [`Stencil`][] reading the pixels of `indices`.
+
+        The nearest-neighbour stencil of a sampler that already holds the index of the pixel each
+        sample falls in, from [`quat2index`][] say, positioned at those pixels' centers. An index
+        outside the map (negative) reads pixel 0 with zero weight.
+        """
+        return Stencil.nearest(indices, *self.index2world(indices), dtype=self.dtype)
+
     def world2interp(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
@@ -245,6 +264,18 @@ class StokesLandscape(Landscape):
         """Converts quaternion to (indices, weights) for interpolation."""
         theta, phi, _ = to_iso_angles(quat)
         return self.world2interp(theta, phi)
+
+
+def _index2pixel(
+    landscape: StokesLandscape, indices: Integer[Array, ' *dims']
+) -> tuple[Float[Array, ' *dims'], ...]:
+    """Inverse of `pixel2index`: the coordinates of the pixels the raveled indices address."""
+    safe = jnp.where(indices < 0, 0, indices)  # an out-of-map index reads pixel 0, weightless
+    coords = []
+    for dim in landscape.pixel_shape:
+        coords.append((safe % dim).astype(landscape.dtype))
+        safe = safe // dim
+    return tuple(coords)
 
 
 class ProjectionType(IntEnum):
@@ -313,6 +344,12 @@ class WCSLandscape(StokesLandscape):
     @property
     def cdelt(self) -> tuple[float, float]:
         return self.projection.cdelt
+
+    def index2world(
+        self, indices: Integer[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Returns the centers of the pixels of `indices`, from [`pixel2world`][]."""
+        return self.pixel2world(*_index2pixel(self, indices))
 
     def pixel2world(
         self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
@@ -511,6 +548,14 @@ class HealpixLandscape(StokesLandscape):
         pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec, nest=self.nested)
         return pix
 
+    def index2world(
+        self, indices: Integer[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Returns the HEALPix pixel centers of `indices`, from ``pix2ang``."""
+        safe = jnp.where(indices < 0, 0, indices)
+        theta, phi = jhp.pix2ang(self.nside, safe, nest=self.nested)
+        return theta, phi
+
     def world2stencil(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims'], order: StencilOrder
     ) -> Stencil:
@@ -608,6 +653,13 @@ class AstropyWCSLandscape(StokesLandscape):
         result_shape = (struct, struct)
 
         return jax.pure_callback(f, result_shape, theta, phi)  # type: ignore[no-any-return]
+
+    def index2world(
+        self, indices: Integer[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Returns the centers of the pixels of `indices`, from [`pixel2world`][]."""
+        theta, phi = self.pixel2world(*_index2pixel(self, indices))
+        return theta, phi
 
     @jax.jit
     def pixel2world(
@@ -713,6 +765,13 @@ class HorizonLandscape(StokesLandscape):
         pix_j = jnp.round(((azimuth - az_min) % (2 * jnp.pi)) / daz - 0.5).astype(jnp.int64)
 
         return pix_i, pix_j
+
+    def index2world(
+        self, indices: Integer[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Returns the centers of the pixels of `indices`, from [`pixel2world`][]."""
+        theta, phi = self.pixel2world(*_index2pixel(self, indices))
+        return theta, phi
 
     @jax.jit
     def pixel2world(
@@ -1057,6 +1116,16 @@ class LocalStokesLandscape(StokesLandscape):
         """
         stencil = self.parent.world2stencil(theta, phi, order)
         return stencil.reindexed(*self._localize(stencil.indices, stencil.weights))
+
+    def index2stencil(self, indices: Integer[Array, ' *dims']) -> Stencil:
+        """Returns the parent's one-neighbour [`Stencil`][], addressed by the local indices.
+
+        A local index in the sink reads the sink slot with zero weight, as one out of the parent
+        map does, and carries no meaningful position: it no longer names a parent pixel.
+        """
+        # `local2global` sends the sink outside the parent map, where the parent zeroes the weight.
+        stencil = self.parent.index2stencil(self.local2global(indices))
+        return stencil.reindexed(indices[..., None], stencil.weights)
 
     def _localize(
         self, indices: Integer[Array, '...'], weights: Float[Array, '...']

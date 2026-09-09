@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `BlockSelectOperator`: extract one block of a block-structured input, and embed a single-block operator into the whole through its transpose
+- `BlockSelectOperator`: extract one block of a block-structured input, and embed a single-block operator into the whole through its transpose (#237)
 
 ## [0.12.1]
 

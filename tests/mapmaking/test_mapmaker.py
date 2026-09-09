@@ -268,7 +268,7 @@ class TestBuckets:
             GappyLazyGroundObservation(seed=2, n_samples=256),
         ]
         maker = MultiObservationMapMaker(observations, config=config)
-        shapes, failed = maker._probe
+        shapes, failed = maker._probe_shapes
         assert failed.tolist() == [True, False, False]
         assert shapes[0] == shapes[2]
 

@@ -121,14 +121,7 @@ class MapMakingSystem(NamedTuple):
 
 
 class MultiObservationMapMaker[T]:
-    """Class for mapping multiple observations together.
-
-    The observations are grouped into buckets of similar buffer shape (see [`SlotLayout`][]);
-    each bucket is streamed through every device of the job as one stacked operator, and the
-    normal equations sum over the buckets. A run on several processes is the same program as on
-    one: every process holds a contiguous block of every bucket's stream axis, and the reductions
-    over that axis happen inside the stream kernels.
-    """
+    """Class for mapping multiple observations together."""
 
     def __init__(
         self,
@@ -206,8 +199,8 @@ class MultiObservationMapMaker[T]:
         return len(self.observations)
 
     @cached_property
-    def _probe(self) -> tuple[list[ObservationBufferShape], np.ndarray]:
-        """Every observation's probe shape, plus a mask of the ones that could not be probed.
+    def _probe_shapes(self) -> tuple[list[ObservationBufferShape], np.ndarray]:
+        """Every observation's buffer shape, plus a mask of the ones that could not be probed.
 
         Probing costs an open, so the observations are dealt round-robin to the processes and the
         rows are all-gathered. Every rank sends the same fixed-size table, rows it did not probe
@@ -217,6 +210,9 @@ class MultiObservationMapMaker[T]:
         Failed observations are flagged so the reader skips them and the accumulation gates them
         out. After the gather, they inherit the largest successful probe shape so they cannot form
         an undersized bucket of their own.
+
+        The sample count is raised to `_minimum_buffer_samples`, so the buckets and the readers
+        size their buffers identically.
         """
         n_obs = self.n_observations
         n_proc = jax.process_count()
@@ -234,7 +230,11 @@ class MultiObservationMapMaker[T]:
         failed = rows[:, 3].astype(bool)
         if np.any(~failed):
             rows[failed, :3] = rows[~failed, :3].max(axis=0)
-        shapes = [ObservationBufferShape(*map(int, row[:3])) for row in rows]
+        minimum_samples = self._minimum_buffer_samples
+        shapes = [
+            ObservationBufferShape(int(row[0]), max(int(row[1]), minimum_samples), int(row[2]))
+            for row in rows
+        ]
         return shapes, failed
 
     @property
@@ -252,15 +252,7 @@ class MultiObservationMapMaker[T]:
     @cached_property
     def layout(self) -> SlotLayout:
         """How the observations are bucketed and laid out over the devices."""
-        shapes, _ = self._probe
-        shapes = [
-            ObservationBufferShape(
-                shape.detector_count,
-                max(shape.sample_count, self._minimum_buffer_samples),
-                shape.interval_count,
-            )
-            for shape in shapes
-        ]
+        shapes, _ = self._probe_shapes
         return SlotLayout.create(
             shapes, n_devices=jax.device_count(), max_buckets=self.config.max_buckets
         )
@@ -271,7 +263,7 @@ class MultiObservationMapMaker[T]:
         A reader's items are its bucket's observations in order, so its buffers are sized by
         exactly the observations it can be asked to read.
         """
-        shapes, failed = self._probe
+        shapes, failed = self._probe_shapes
         return tuple(
             ObservationReader.from_observations(
                 [self.observations[i] for i in bucket.observations],
@@ -279,14 +271,7 @@ class MultiObservationMapMaker[T]:
                 demodulated=self.config.demodulated,
                 stokes=self.config.landscape.stokes,
                 dtype=self.config.dtype,
-                shapes=[
-                    ObservationBufferShape(
-                        shapes[i].detector_count,
-                        max(shapes[i].sample_count, self._minimum_buffer_samples),
-                        shapes[i].interval_count,
-                    )
-                    for i in bucket.observations
-                ],
+                shapes=[shapes[i] for i in bucket.observations],
                 known_failures=np.flatnonzero(failed[bucket.observations]).tolist(),
             )
             for bucket in self.layout.buckets

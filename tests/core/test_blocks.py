@@ -15,12 +15,13 @@ from furax import (
     HomothetyOperator,
     IdentityOperator,
 )
-from furax.core import AdditionOperator
+from furax.core import AdditionOperator, CompositionOperator
 from furax.core._blocks import (
     AbstractBlockOperator,
     BlockColumnOperator,
     BlockDiagonalOperator,
     BlockRowOperator,
+    BlockSelectOperator,
 )
 
 
@@ -308,3 +309,72 @@ def test_reduce_block_diagonal() -> None:
     reduced_op = op.reduce()
     assert isinstance(reduced_op, IdentityOperator)
     assert reduced_op.in_structure == op.in_structure
+
+
+def test_block_select_list() -> None:
+    structure = [jax.ShapeDtypeStruct((2,), jnp.float32)] * 3
+    op = BlockSelectOperator(1, in_structure=structure)
+    x = [jnp.zeros(2), jnp.ones(2), 2 * jnp.ones(2)]
+    assert_array_equal(op(x), x[1])
+    assert op.out_structure == structure[1]
+
+
+def test_block_select_dict() -> None:
+    structure = {key: jax.ShapeDtypeStruct((2,), jnp.float32) for key in 'ab'}
+    op = BlockSelectOperator('b', in_structure=structure)
+    x = {'a': jnp.zeros(2), 'b': jnp.ones(2)}
+    assert_array_equal(op(x), x['b'])
+
+
+def test_block_select_blocks_of_different_structures() -> None:
+    structure = [jax.ShapeDtypeStruct((2,), jnp.float32), jax.ShapeDtypeStruct((3,), jnp.float64)]
+    op = BlockSelectOperator(1, in_structure=structure)
+    assert op.out_structure == structure[1]
+    assert_array_equal(op([jnp.zeros(2), jnp.arange(3.0)]), jnp.arange(3.0))
+
+
+def test_block_select_transpose() -> None:
+    structure = [jax.ShapeDtypeStruct((2,), jnp.float32)] * 3
+    op = BlockSelectOperator(1, in_structure=structure)
+    y = op.T(jnp.ones(2, jnp.float32))
+    assert isinstance(y, list)
+    assert_array_equal(y[0], jnp.zeros(2))
+    assert_array_equal(y[1], jnp.ones(2))
+    assert_array_equal(y[2], jnp.zeros(2))
+
+
+def test_block_select_jit() -> None:
+    structure = [jax.ShapeDtypeStruct((2,), jnp.float32)] * 2
+    op = BlockSelectOperator(0, in_structure=structure)
+    x = [jnp.ones(2), jnp.zeros(2)]
+    jit_op = jax.jit(lambda x: BlockSelectOperator.mv(op, x))
+    assert_array_equal(jit_op(x), x[0])
+
+
+def test_rule_block_select_transpose() -> None:
+    structure = [jax.ShapeDtypeStruct((2,), jnp.float32)] * 3
+    op = BlockSelectOperator(1, in_structure=structure)
+    reduced_op = (op @ op.T).reduce()
+    assert isinstance(reduced_op, IdentityOperator)
+    assert reduced_op.in_structure == op.out_structure
+
+
+def test_rule_block_select_block_diagonal(
+    op_23: AbstractLinearOperator, op_32: AbstractLinearOperator
+) -> None:
+    block_diag = BlockDiagonalOperator([op_23, op_32])
+    op = BlockSelectOperator(1, in_structure=block_diag.out_structure) @ block_diag
+    reduced_op = op.reduce()
+    assert isinstance(reduced_op, CompositionOperator)
+    assert reduced_op.operands[0] is op_32  # the selected block moved out of the block diagonal
+    assert isinstance(reduced_op.operands[1], BlockSelectOperator)
+    assert_array_equal(reduced_op.as_matrix(), op.as_matrix())
+
+
+def test_rule_block_select_block_diagonal_nested(op_23: AbstractLinearOperator) -> None:
+    # the key selects a subtree of blocks, which the rule leaves alone
+    block_diag = BlockDiagonalOperator([[op_23, op_23], op_23])
+    op = BlockSelectOperator(0, in_structure=block_diag.out_structure) @ block_diag
+    reduced_op = op.reduce()
+    assert isinstance(reduced_op, CompositionOperator)
+    assert isinstance(reduced_op.operands[0], BlockSelectOperator)

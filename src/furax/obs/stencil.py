@@ -39,7 +39,9 @@ def _resolve(
 
     Neighbours outside the map (negative index) are sent to pixel 0 with their weight zeroed, so
     that the stencil can be gathered unconditionally, and the remaining weights are rescaled to sum
-    to one, which keeps a partially covered sample unbiased.
+    to one, which keeps a partially covered sample unbiased. A sample with no neighbour left in the
+    map has nothing to rescale: its weights stay at zero instead of being divided by zero, so it
+    reads pixel 0 and contributes nothing.
 
     Args:
         indices: Neighbour pixel indices, negative for neighbours outside the map.

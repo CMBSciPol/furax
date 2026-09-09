@@ -22,7 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - a landscape answers for every order it supports in this one method, so it cannot define one order and leave another to a mismatched inherited definition; an unsupported order raises `NotImplementedError`
   - `world2interp` now derives from it and is no longer overridable; measured on HEALPix and CAR, the compiled cost of `PointingOperator.mv` is unchanged, because XLA drops the neighbour positions nothing reads
 - `CARLandscape.pixel2world`, `AstropyWCSLandscape.pixel2world` and `HorizonLandscape.pixel2world`, the inverses of their `world2pixel` (#204)
-- `furax.obs.stencil.resolve_stencil`, which sends out-of-map neighbours to a safe index and normalises the remaining weights (#204)
 - API reference pages for `furax.obs.spin2` and `furax.obs.stencil` (#204)
 
 ### Changed

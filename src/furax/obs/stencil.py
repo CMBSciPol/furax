@@ -13,7 +13,6 @@ from jaxtyping import Array, DTypeLike, Float, Integer
 __all__ = [
     'Stencil',
     'StencilOrder',
-    'resolve_stencil',
 ]
 
 
@@ -33,7 +32,7 @@ class StencilOrder(IntEnum):
     BILINEAR = 4
 
 
-def resolve_stencil(
+def _resolve(
     indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*dims neighbors']
 ) -> tuple[Integer[Array, '*dims neighbors'], Float[Array, '*dims neighbors']]:
     """Make an interpolation stencil safe to gather with, and normalize its weights.
@@ -116,7 +115,7 @@ class Stencil(NamedTuple):
         Returns:
             The resolved stencil.
         """
-        indices, weights = resolve_stencil(indices, weights)
+        indices, weights = _resolve(indices, weights)
         if dtype is not None:
             weights = weights.astype(dtype)
             z = None if z is None else z.astype(dtype)

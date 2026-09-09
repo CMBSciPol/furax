@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.obs.stencil import Stencil, StencilOrder, resolve_stencil
+from furax.obs.stencil import Stencil, StencilOrder
 
 
 def _positions(shape: tuple[int, ...]) -> tuple[jax.Array, jax.Array, jax.Array]:
@@ -26,24 +26,23 @@ class TestStencilOrder:
         assert stencil.n_neighbors == order
 
 
-class TestResolveStencil:
+class TestResolution:
+    """Every constructor resolves the stencil it builds; `Stencil.scalar` is the shortest one."""
+
     def test_normalizes_the_weights(self):
-        indices = jnp.array([[0, 1, 2, 3]])
-        indices, weights = resolve_stencil(indices, jnp.array([[1.0, 1.0, 1.0, 1.0]]))
-        assert_allclose(np.asarray(weights), 0.25)
+        stencil = Stencil.scalar(jnp.array([[0, 1, 2, 3]]), jnp.array([[1.0, 1.0, 1.0, 1.0]]))
+        assert_allclose(np.asarray(stencil.weights), 0.25)
 
     def test_out_of_map_neighbours_are_dropped_and_the_rest_rescaled(self):
-        indices, weights = resolve_stencil(
-            jnp.array([[0, -1, 2, 3]]), jnp.array([[0.4, 0.4, 0.1, 0.1]])
-        )
-        assert_array_equal(np.asarray(indices), [[0, 0, 2, 3]])
-        assert_allclose(np.asarray(weights), [[2 / 3, 0.0, 1 / 6, 1 / 6]])
+        stencil = Stencil.scalar(jnp.array([[0, -1, 2, 3]]), jnp.array([[0.4, 0.4, 0.1, 0.1]]))
+        assert_array_equal(np.asarray(stencil.indices), [[0, 0, 2, 3]])
+        assert_allclose(np.asarray(stencil.weights), [[2 / 3, 0.0, 1 / 6, 1 / 6]])
 
     def test_a_fully_uncovered_sample_is_zero_rather_than_nan(self):
         """Dividing by a zero weight sum must be guarded: such a sample contributes nothing."""
-        indices, weights = resolve_stencil(jnp.array([[-1, -1]]), jnp.array([[0.7, 0.3]]))
-        assert_array_equal(np.asarray(indices), [[0, 0]])
-        assert_array_equal(np.asarray(weights), [[0.0, 0.0]])
+        stencil = Stencil.scalar(jnp.array([[-1, -1]]), jnp.array([[0.7, 0.3]]))
+        assert_array_equal(np.asarray(stencil.indices), [[0, 0]])
+        assert_array_equal(np.asarray(stencil.weights), [[0.0, 0.0]])
 
 
 class TestStencil:
@@ -52,9 +51,8 @@ class TestStencil:
         z, sth, phi = _positions((1, 4))
         stencil = Stencil.resolve(indices, weights, z, sth, phi)
 
-        ref_indices, ref_weights = resolve_stencil(indices, weights)
-        assert_array_equal(np.asarray(stencil.indices), np.asarray(ref_indices))
-        assert_array_equal(np.asarray(stencil.weights), np.asarray(ref_weights))
+        assert_array_equal(np.asarray(stencil.indices), [[0, 0, 2, 3]])
+        assert_allclose(np.asarray(stencil.weights), [[2 / 3, 0.0, 1 / 6, 1 / 6]])
         # a re-numbering never moves a pixel, so the positions are passed through untouched
         assert_array_equal(np.asarray(stencil.z), np.asarray(z))
         assert stencil.n_neighbors == 4

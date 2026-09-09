@@ -54,7 +54,7 @@ A slot may contain a fake observation with the same bucket-level envelope (slot 
     divides the number of observations.
 """
 
-from collections.abc import Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Self
@@ -85,7 +85,7 @@ class Bucket:
     Attributes:
         observations: Observation indices (global), sorted.
         n_slots: The number of slots; a multiple of the device count.
-        envelope: The buffer shape every slot is padded to: the per-axis maximum over the group.
+        envelope: The per-axis maximum buffer shape over the group.
     """
 
     observations: np.ndarray
@@ -94,13 +94,13 @@ class Bucket:
 
     @classmethod
     def create(
-        cls, shapes: Sequence[ObservationBufferShape], group: Sequence[int], n_devices: int = 1
+        cls, shapes: Sequence[ObservationBufferShape], group: Collection[int], n_devices: int = 1
     ) -> Self:
         """Bucket a group of observations, padding them to their common envelope.
 
         Args:
-            shapes: Per-observation buffer shapes, in observation order.
-            group: Indices of the observations in the bucket, in any order.
+            shapes: Per-observation buffer shapes.
+            group: Indices of the observations in the bucket.
             n_devices: Number of devices the bucket is sharded over.
 
         Returns:
@@ -155,6 +155,14 @@ class Bucket:
         """Per slot, whether it holds an observation (`False` for the empty slots at the end)."""
         return np.arange(self.n_slots) < self.n_real
 
+    def summary(self, n_devices: int = 1) -> str:
+        """The bucket's slot bookkeeping, as `obs=... slots=... pad=... envelope=...`."""
+        return (
+            f'obs={self.n_real} slots={self.n_slots} pad={self.n_pad} '
+            f'slots_per_dev={self.n_slots // n_devices} '
+            f'envelope=({self.envelope.detector_count}, {self.envelope.sample_count})'
+        )
+
     @cached_property
     def item_of_slot(self) -> np.ndarray:
         """Per slot, the reader item to load there.
@@ -174,14 +182,14 @@ def real_volume(shapes: Sequence[ObservationBufferShape]) -> int:
 
 
 def padded_volume(
-    shapes: Sequence[ObservationBufferShape], groups: Sequence[Sequence[int]], n_devices: int = 1
+    shapes: Sequence[ObservationBufferShape], groups: Iterable[Collection[int]], n_devices: int = 1
 ) -> int:
     """Total padded volume of a partition, summed over its buckets.
 
     This is the quantity [`partition_padded`][] minimises.
 
     Args:
-        shapes: Per-observation buffer shapes, in observation order.
+        shapes: Per-observation buffer shapes.
         groups: The groups of observation indices, e.g. as returned by [`partition_padded`][].
         n_devices: Number of devices each group is sharded over.
     """
@@ -191,18 +199,16 @@ def padded_volume(
 def partition_padded(
     shapes: Sequence[ObservationBufferShape], max_groups: int, *, n_devices: int = 1
 ) -> list[list[int]]:
-    r"""Split observations into at most `max_groups` groups, wasting the least on padding.
+    r"""Split observations into at most `max_groups` groups, minimising padding overhead.
 
     A group $b$ of $n_b$ observations is padded to a common envelope, and rounded up to a whole
     number of slots per device, so it occupies $n_b^\text{slots} d_b s_b$ elements, where
     $n_b^\text{slots} = \lceil n_b / n_\text{dev} \rceil \, n_\text{dev}$ and $d_b$, $s_b$ are
     the largest detector and sample counts in the group. Every device processes every group, so
-    the run pays $\sum_b n_b^\text{slots} d_b s_b$, and that is what this minimises -- over where
-    to cut, and over how many groups to make. The device count shapes the partition as much as
-    `max_groups` does: it sets the granularity every group is rounded up to.
+    the run pays $\sum_b n_b^\text{slots} d_b s_b$, which is the quantity minimised here.
 
-    Candidate groups are runs of the observations sorted by shape, so the partition is not always
-    the best possible.
+    For efficiency reasons, candidate groups are runs of the observations sorted by shape, so the
+    partition is not always the best possible.
 
     Args:
         shapes: Per-observation buffer shapes.
@@ -292,57 +298,76 @@ def partition_padded(
 
 @dataclass(frozen=True, eq=False)
 class SlotLayout:
-    """The buckets of a run and the slot ranges each process holds.
-
-    This is the mapmaker's answer to "where does every observation go?", available before any data
-    is read: [`MultiObservationMapMaker.layout`][] builds it from the probed shapes and logs it.
-    Built identically on every process from the same probe shapes, so every process agrees on the
-    layout without communicating.
-
-    Attributes:
-        buckets: The buckets, ordered by increasing envelope shape.
-        n_observations: Total number of observations.
-        n_devices: Number of devices the stream axis spans (the whole job).
-    """
+    """Complete layout of slots for a given dataset and job resources."""
 
     buckets: tuple[Bucket, ...]
+    """The buckets, ordered by increasing envelope shape."""
     n_observations: int
+    """Total number of (real) observations."""
     n_devices: int
+    """Total number of devices in the whole job."""
 
     @classmethod
     def create(
         cls, shapes: Sequence[ObservationBufferShape], *, n_devices: int, max_buckets: int
     ) -> Self:
-        """Choose the buckets that pad the least; see [`partition_padded`][].
+        """Choose the layout to minimise padding; see [`partition_padded`][].
 
         Args:
-            shapes: Per-observation buffer shapes, in observation order.
-            n_devices: Number of devices each bucket is sharded over, i.e. every device of the
-                job (`jax.device_count()`).
-            max_buckets: Largest number of buckets allowed, the `max_buckets` configuration
-                option.
+            shapes: Per-observation buffer shapes.
+            n_devices: Number of devices (`jax.device_count()`).
+            max_buckets: Largest number of buckets allowed.
 
         Examples:
-            What a dataset would cost on a given job, before running it. Three short scans and
-            one long one on two devices: rather than leave the long scan a bucket of its own,
-            which would waste a slot, one short scan joins it.
+            Three short scans and one long one on two devices.
 
             >>> from furax.mapmaking import ObservationBufferShape as Shape
             >>> shapes = [Shape(2, 10), Shape(2, 10), Shape(2, 10), Shape(2, 90)]
             >>> layout = SlotLayout.create(shapes, n_devices=2, max_buckets=4)
-            >>> [(b.n_real, b.n_slots, b.envelope.sample_count) for b in layout.buckets]
-            [(2, 2, 10), (2, 2, 90)]
+            >>> print(layout)
+            SlotLayout: obs=4 buckets=2 slots=4 devices=2 slot_overhead=+0.0%
+              bucket 0: obs=2 slots=2 pad=0 slots_per_dev=1 envelope=(2, 10)
+              bucket 1: obs=2 slots=2 pad=0 slots_per_dev=1 envelope=(2, 90)
 
             The dataset is heterogeneous enough that the layout still costs two thirds more
             memory than the observations themselves:
 
-            >>> padded = sum(b.padded_volume for b in layout.buckets)
-            >>> round(padded / real_volume(shapes), 2)
+            >>> round(layout.padded_volume / real_volume(shapes), 2)
             1.67
         """
         groups = partition_padded(shapes, max_buckets, n_devices=n_devices)
         buckets = tuple(Bucket.create(shapes, group, n_devices) for group in groups)
         return cls(buckets, len(shapes), n_devices)
+
+    @property
+    def n_slots(self) -> int:
+        """Total number of slots, over every bucket."""
+        return sum(bucket.n_slots for bucket in self.buckets)
+
+    @property
+    def padded_volume(self) -> int:
+        """Time-ordered elements the run occupies once padded, summed over the buckets."""
+        return sum(bucket.padded_volume for bucket in self.buckets)
+
+    @property
+    def slot_overhead(self) -> float:
+        """Empty slots as a fraction of the observation count."""
+        return (self.n_slots - self.n_observations) / self.n_observations
+
+    def summary(self) -> str:
+        """The run's totals, as `obs=... buckets=... slots=... devices=... slot_overhead=...`."""
+        return (
+            f'obs={self.n_observations} buckets={len(self.buckets)} slots={self.n_slots} '
+            f'devices={self.n_devices} slot_overhead=+{self.slot_overhead:.1%}'
+        )
+
+    def __str__(self) -> str:
+        lines = [f'{type(self).__name__}: {self.summary()}']
+        lines += [
+            f'  bucket {b}: {bucket.summary(self.n_devices)}'
+            for b, bucket in enumerate(self.buckets)
+        ]
+        return '\n'.join(lines)
 
     def local_slots(self, bucket: int, *, process_index: int, n_local: int) -> slice:
         """The slots of a bucket held by one process's devices.

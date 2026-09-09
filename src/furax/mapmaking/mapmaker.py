@@ -339,19 +339,14 @@ class MultiObservationMapMaker[T]:
             slot_bytes = furax.tree.nbytes(reader.out_structure)
             padded_bytes += slot_bytes * bucket.n_slots
             logger_info(
-                f'bucket {b}: obs={bucket.n_real} slots={bucket.n_slots} pad={bucket.n_pad} '
-                f'slots_per_dev={bucket.n_slots // n_devices} '
-                f'envelope=({bucket.envelope.detector_count}, {bucket.envelope.sample_count}) '
+                f'bucket {b}: {bucket.summary(n_devices)} '
                 f'slot_size={format_bytes(slot_bytes)} '
                 f'real_size={format_bytes(reader.total_nbytes)} '
                 f'pad_size={format_bytes(slot_bytes * bucket.n_slots - reader.total_nbytes)}'
             )
-        n_slots = sum(bucket.n_slots for bucket in layout.buckets)
-        slot_overhead = (n_slots - self.n_observations) / self.n_observations
         byte_overhead = (padded_bytes - real_bytes) / real_bytes
         logger_info(
-            f'dataset obs={self.n_observations} buckets={len(layout.buckets)} slots={n_slots} '
-            f'slot_overhead=+{slot_overhead:.1%} real={format_bytes(real_bytes)} '
+            f'dataset {layout.summary()} real={format_bytes(real_bytes)} '
             f'padded={format_bytes(padded_bytes)} byte_overhead=+{byte_overhead:.1%}'
         )
 

@@ -3,7 +3,7 @@ import operator
 import pickle
 from abc import abstractmethod
 from collections.abc import Collection, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cached_property
 from logging import Logger
 from math import prod
@@ -38,7 +38,7 @@ from furax import (
     OperatorTag,
     SymmetricBandToeplitzOperator,
 )
-from furax.core import BlockDiagonalOperator, IndexOperator
+from furax.core import BlockDiagonalOperator, BlockSelectOperator, IndexOperator
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -118,23 +118,6 @@ class MapMakingSystem(NamedTuple):
     """Approximate inverse of `A`."""
     has_amplitudes: bool
     """Whether the unknowns include explicit-template amplitudes."""
-
-
-class _PickOperator(AbstractLinearOperator):
-    """Select one entry of a list-structured input, ``y = x[index]``.
-
-    Its transpose puts a value back at that position among zeros, which is how a bucket's own
-    template amplitudes are embedded in the joint unknowns ``[sky, [amplitudes per bucket]]``.
-    """
-
-    index: int = field(metadata={'static': True})
-
-    def __init__(self, index: int, *, in_structure: PyTree[jax.ShapeDtypeStruct]) -> None:
-        object.__setattr__(self, 'index', index)
-        super().__init__(in_structure=in_structure)
-
-    def mv(self, x: list[PyTree[Array]]) -> PyTree[Array]:
-        return x[self.index]
 
 
 class MultiObservationMapMaker[T]:
@@ -515,7 +498,7 @@ class MultiObservationMapMaker[T]:
         for b, (H, T, W_b) in enumerate(zip(H_sky, Te, weights, strict=True)):
             H_joint = StreamOperator.block_row([H, T])
             A_joint = (H_joint.T @ W_b @ H_joint).reduce()
-            pick = _PickOperator(b, in_structure=amplitudes_structure)
+            pick = BlockSelectOperator(b, in_structure=amplitudes_structure)
             E = BlockDiagonalOperator([S.T, pick])
             terms.append((E.T @ A_joint @ E).reduce())
 

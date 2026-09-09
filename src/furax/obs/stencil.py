@@ -5,7 +5,7 @@ sampler consumes one, and neither has to agree on anything else.
 """
 
 from enum import IntEnum
-from typing import NamedTuple
+from typing import NamedTuple, Self
 
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Integer
@@ -103,7 +103,7 @@ class Stencil(NamedTuple):
         phi: Float[Array, '*dims neighbors'] | None,
         *,
         dtype: DTypeLike | None = None,
-    ) -> 'Stencil':
+    ) -> Self:
         """Build a stencil, sending out-of-map neighbours to a safe index and normalizing weights.
 
         Args:
@@ -133,7 +133,7 @@ class Stencil(NamedTuple):
         phi_center: Float[Array, ' *dims'],
         *,
         dtype: DTypeLike | None = None,
-    ) -> 'Stencil':
+    ) -> Self:
         """Build the one-neighbour stencil of a nearest-neighbour sampler.
 
         Args:
@@ -159,7 +159,7 @@ class Stencil(NamedTuple):
         cls,
         indices: Integer[Array, '*dims neighbors'],
         weights: Float[Array, '*dims neighbors'],
-    ) -> 'Stencil':
+    ) -> Self:
         """Build a stencil with no sky positions, for a grid that is not the sphere.
 
         The atmosphere screen is one: its pixels are a projection plane, so "where the neighbour
@@ -177,7 +177,7 @@ class Stencil(NamedTuple):
 
     def reindexed(
         self, indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*dims neighbors']
-    ) -> 'Stencil':
+    ) -> Self:
         """Return the same neighbours addressed by new indices, with the weights re-resolved.
 
         For a landscape that re-numbers another one's pixels. The sky positions are unaffected by a
@@ -191,4 +191,4 @@ class Stencil(NamedTuple):
         Returns:
             The resolved stencil.
         """
-        return Stencil.resolve(indices, weights, self.z, self.sth, self.phi)
+        return self.resolve(indices, weights, self.z, self.sth, self.phi)

@@ -22,7 +22,12 @@ from ._base import (
     tridiagonal,
     upper_triangular,
 )
-from ._blocks import BlockColumnOperator, BlockDiagonalOperator, BlockRowOperator
+from ._blocks import (
+    BlockColumnOperator,
+    BlockDiagonalOperator,
+    BlockRowOperator,
+    BlockSelectOperator,
+)
 from ._dense import DenseBlockDiagonalOperator
 from ._diagonal import BroadcastDiagonalOperator, DiagonalOperator
 from ._fourier import FourierOperator
@@ -61,6 +66,7 @@ __all__ = [
     'BlockRowOperator',
     'BlockDiagonalOperator',
     'BlockColumnOperator',
+    'BlockSelectOperator',
     'DenseBlockDiagonalOperator',
     'BroadcastDiagonalOperator',
     'DiagonalOperator',

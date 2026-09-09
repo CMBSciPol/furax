@@ -1,6 +1,7 @@
 import functools
 from abc import ABC
 from collections.abc import Callable
+from dataclasses import field
 from typing import Any
 
 import jax
@@ -15,9 +16,10 @@ from ._base import (
     AbstractLinearOperator,
     AdditionOperator,
     IdentityOperator,
+    TransposeOperator,
     structure_equal,
 )
-from .rules import AbstractCompositionRule
+from .rules import AbstractCompositionRule, NoReduction
 
 
 class AbstractBlockOperator(AbstractLinearOperator, ABC):
@@ -304,3 +306,83 @@ class BlockRowBlockColumnRule(AbstractBlockDiagonalRule):
     left_operator_class = BlockRowOperator
     right_operator_class = BlockColumnOperator
     reduced_class = AdditionOperator
+
+
+class BlockSelectOperator(AbstractLinearOperator):
+    """Operator that selects one block of a block-structured input: y = x[key].
+
+    The input is a pytree with one block per entry, such as the input of a
+    [`BlockDiagonalOperator`][]. The transpose puts a block back at that position and fills every
+    other one with zeros, which is how an operator acting on a single block is embedded in the
+    whole: `E.T @ A_k @ E` with `E = BlockSelectOperator(k, ...)` acts on the k-th block alone, so
+    such terms can be summed over the blocks.
+
+    Attributes:
+        key: Index or key of the selected block, in the top-level node of the input structure.
+
+    Examples:
+        >>> structure = [jax.ShapeDtypeStruct((2,), jnp.float32)] * 3
+        >>> op = BlockSelectOperator(1, in_structure=structure)
+        >>> op([jnp.zeros(2), jnp.ones(2), 2 * jnp.ones(2)])
+        Array([1., 1.], dtype=float32)
+        >>> op.as_matrix()
+        Array([[0., 0., 1., 0., 0., 0.],
+               [0., 0., 0., 1., 0., 0.]], dtype=float32)
+
+        The transpose pads the block back with zeros:
+
+        >>> BlockSelectOperator(0, in_structure=structure[:2]).T(jnp.ones(2))
+        [Array([1., 1.], dtype=float32), Array([0., 0.], dtype=float32)]
+
+        Dictionary-structured inputs are selected by key:
+
+        >>> op = BlockSelectOperator('b', in_structure={'a': structure[0], 'b': structure[1]})
+        >>> op({'a': jnp.zeros(2), 'b': jnp.ones(2)})
+        Array([1., 1.], dtype=float32)
+    """
+
+    key: Any = field(metadata={'static': True})
+
+    def __init__(self, key: Any, *, in_structure: PyTree[jax.ShapeDtypeStruct]) -> None:
+        object.__setattr__(self, 'key', key)
+        super().__init__(in_structure=in_structure)
+
+    def mv(self, x: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
+        return x[self.key]
+
+    @property
+    def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.in_structure[self.key]
+
+
+class BlockSelectTransposeRule(AbstractCompositionRule):
+    """Binary rule for `select @ select.T = I`."""
+
+    left_operator_class = BlockSelectOperator
+    right_operator_class = TransposeOperator
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        return []
+
+
+class BlockSelectBlockDiagonalRule(AbstractCompositionRule):
+    """Binary rule for `select_k @ BlockDiagonal(A_i, ...) = A_k @ select_k`."""
+
+    left_operator_class = BlockSelectOperator
+    right_operator_class = BlockDiagonalOperator
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        assert isinstance(left, BlockSelectOperator)  # mypy assert
+        assert isinstance(right, BlockDiagonalOperator)  # mypy assert
+        try:
+            block = right.blocks[left.key]
+        except (IndexError, KeyError, TypeError):
+            raise NoReduction
+        if not isinstance(block, AbstractLinearOperator):
+            # the key selects a subtree of blocks, not a single one
+            raise NoReduction
+        return [block, BlockSelectOperator(left.key, in_structure=right.in_structure)]

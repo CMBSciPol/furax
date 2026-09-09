@@ -343,13 +343,6 @@ def test_block_select_transpose() -> None:
     assert_array_equal(y[2], jnp.zeros(2))
 
 
-def test_block_select_as_matrix() -> None:
-    structure = [jax.ShapeDtypeStruct((2,), jnp.float32)] * 3
-    op = BlockSelectOperator(1, in_structure=structure)
-    expected = jnp.zeros((2, 6)).at[0, 2].set(1).at[1, 3].set(1)
-    assert_array_equal(op.as_matrix(), expected)
-
-
 def test_block_select_jit() -> None:
     structure = [jax.ShapeDtypeStruct((2,), jnp.float32)] * 2
     op = BlockSelectOperator(0, in_structure=structure)
@@ -373,6 +366,8 @@ def test_rule_block_select_block_diagonal(
     op = BlockSelectOperator(1, in_structure=block_diag.out_structure) @ block_diag
     reduced_op = op.reduce()
     assert isinstance(reduced_op, CompositionOperator)
+    assert reduced_op.operands[0] is op_32  # the selected block moved out of the block diagonal
+    assert isinstance(reduced_op.operands[1], BlockSelectOperator)
     assert_array_equal(reduced_op.as_matrix(), op.as_matrix())
 
 

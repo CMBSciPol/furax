@@ -311,12 +311,6 @@ class BlockRowBlockColumnRule(AbstractBlockDiagonalRule):
 class BlockSelectOperator(AbstractLinearOperator):
     """Operator that selects one block of a block-structured input: y = x[key].
 
-    The input is a pytree with one block per entry, such as the input of a
-    [`BlockDiagonalOperator`][]. The transpose puts a block back at that position and fills every
-    other one with zeros, which is how an operator acting on a single block is embedded in the
-    whole: `E.T @ A_k @ E` with `E = BlockSelectOperator(k, ...)` acts on the k-th block alone, so
-    such terms can be summed over the blocks.
-
     Attributes:
         key: Index or key of the selected block, in the top-level node of the input structure.
 

@@ -3,7 +3,7 @@ import operator
 import pickle
 from abc import abstractmethod
 from collections.abc import Collection, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from logging import Logger
 from math import prod
@@ -256,6 +256,36 @@ class MultiObservationMapMaker[T]:
         return SlotLayout.create(
             shapes, n_devices=jax.device_count(), max_buckets=self.config.max_buckets
         )
+
+    @cached_property
+    def fit_config(self) -> MapMakingConfig:
+        """The run configuration, with the Welch segment clipped to the shortest observation.
+
+        [`padding_aware_welch`][furax.mapmaking.noise.padding_aware_welch] drops the segments that
+        fall in an observation's padded tail, but the segment length sets the number of frequency
+        bins and so cannot vary with the padding. A segment longer than the shortest observation
+        would therefore leave one partial segment straddling that observation's padding, and its
+        noise fit would see the zeros. Clipping the segment keeps every averaged segment inside
+        real data.
+
+        The clip is taken over the whole dataset rather than over each bucket, so that the noise
+        fit stays independent of how the observations happen to be bucketed. Observation lengths
+        come from the probe, which is an upper bound: an observation that reads shorter than probed
+        still falls back to a partial segment.
+        """
+        weighting = self.config.weighting
+        if weighting.mode == WeightingMode.IDENTITY or weighting.source != NoiseSource.FIT:
+            return self.config  # no PSD is estimated, so the segment length is unused
+        shapes, _ = self._probe_shapes
+        nperseg = min(weighting.fitting.nperseg, min(shape.sample_count for shape in shapes))
+        if nperseg == weighting.fitting.nperseg:
+            return self.config
+        self.logger.info(
+            f'MultiObsMapMaker: Welch segment clipped to {nperseg} samples '
+            f'(configured {weighting.fitting.nperseg}) by the shortest observation'
+        )
+        fitting = replace(weighting.fitting, nperseg=nperseg)
+        return replace(self.config, weighting=replace(weighting, fitting=fitting))
 
     def get_readers(self, required_fields: Collection[str]) -> tuple[ObservationReader[T], ...]:
         """Build one reader per bucket, over that bucket's observations only.
@@ -531,7 +561,7 @@ class MultiObservationMapMaker[T]:
         self, bucket_index: int, reader: ObservationReader[T]
     ) -> tuple[Int64[Array, '...'], StokesType, BucketModel]:
         """One bucket's pass over the data: its hit map and RHS partials, and its stacked model."""
-        config = self.config
+        config = self.fit_config
         landscape = self.landscape
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned

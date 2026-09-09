@@ -239,6 +239,19 @@ class TestBuckets:
         assert eqx.tree_equal(one_result.map, many_result.map, rtol=1e-10, atol=1e-12)
         assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
 
+    def test_fitted_noise_clips_the_welch_segment_to_the_shortest_observation(self):
+        # The segment is longer than the shortest observation, so an unclipped fit would average a
+        # segment straddling its padding, differently in each bucketing.
+        observations = self._observations()
+        one = _config('healpix', 'I', max_buckets=1, nperseg=1024)
+        many = _config('healpix', 'I', max_buckets=3, nperseg=1024)
+        maker = MultiObservationMapMaker(observations, config=one)
+        assert maker.fit_config.weighting.fitting.nperseg == min(self.N_SAMPLES)
+        one_result = maker.run()
+        many_result = MultiObservationMapMaker(observations, config=many).run()
+        assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
+        assert eqx.tree_equal(one_result.map, many_result.map, rtol=1e-10, atol=1e-12)
+
     def test_fitted_noise_does_not_depend_on_bucketing(self):
         observations = self._observations()
         one = _config('healpix', 'I', max_buckets=1)
@@ -428,6 +441,7 @@ def _config(
     atop_tau: int = 0,
     identity_noise: bool = False,
     max_buckets: int = 1,
+    nperseg: int = 512,
 ) -> MapMakingConfig:
     if landscape_type == 'healpix':
         lc = LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16))
@@ -446,7 +460,7 @@ def _config(
         landscape=lc,
         weighting=WeightingConfig(
             mode=WeightingMode.IDENTITY if identity_noise else WeightingMode.DIAGONAL,
-            fitting=NoiseFitConfig(nperseg=512),
+            fitting=NoiseFitConfig(nperseg=nperseg),
         ),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
         atop_tau=atop_tau,

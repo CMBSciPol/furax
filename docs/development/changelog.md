@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The fitted noise PSD no longer averages in Welch windows that fall in an observation's padded tail (#239)
+- The Welch segment is clipped to the shortest observation, so the noise fit never sees a padded sample (#236)
 
 ## [0.12.1]
 

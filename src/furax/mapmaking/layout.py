@@ -57,7 +57,7 @@ A slot may contain a fake observation with the same bucket-level envelope (slot 
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any, Self
+from typing import Self
 
 import numpy as np
 
@@ -365,7 +365,7 @@ class SlotLayout:
         start = process_index * n_local * n_per_device
         return slice(start, start + n_local * n_per_device)
 
-    def scatter(self, per_bucket: Sequence[np.ndarray]) -> np.ndarray:
+    def to_observation_order(self, per_bucket: Sequence[np.ndarray]) -> np.ndarray:
         """Reorder per-slot arrays, one per bucket, into a single per-observation array.
 
         This undoes the bucketing for results the caller wants per observation, in their original
@@ -388,6 +388,6 @@ class SlotLayout:
         out = np.zeros((self.n_observations, *trailing), dtype=dtype)
         for bucket, values in zip(self.buckets, per_bucket, strict=True):
             real = values[: bucket.n_real]
-            region: tuple[Any, ...] = (bucket.observations, *(slice(0, n) for n in real.shape[1:]))
-            out[region] = real
+            region = (bucket.observations, *(slice(0, n) for n in real.shape[1:]))
+            out[region] = real  # type: ignore[index]
         return out

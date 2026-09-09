@@ -200,8 +200,8 @@ def test_scatter_restores_observation_order_and_pads_trailing_axes():
     )
     narrow = np.array([[10.0, 11.0], [30.0, 31.0]])  # (n_slots=2, n_det=2)
     wide = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [-1.0, -1.0, -1.0], [-1.0, -1.0, -1.0]])
-    out = layout.scatter([narrow, wide])
+    out = layout.to_observation_order([narrow, wide])
     expected = np.array([[10.0, 11.0, 0.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [30.0, 31.0, 0.0]])
     np.testing.assert_array_equal(out, expected)  # empty slots dropped, narrow rows zero-padded
     with pytest.raises(ValueError, match='expected 2 arrays'):
-        layout.scatter([narrow])
+        layout.to_observation_order([narrow])

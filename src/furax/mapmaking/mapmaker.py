@@ -490,7 +490,9 @@ class MultiObservationMapMaker[T]:
                 # Every device holds the same replicated copy after the gather, so the host
                 # array is complete on every process; then back to observation order.
                 gathered = [self._gather(a) for a in per_bucket]
-                amplitudes = jax.tree.map(lambda *leaves: self.layout.scatter(leaves), *gathered)
+                amplitudes = jax.tree.map(
+                    lambda *leaves: self.layout.to_observation_order(leaves), *gathered
+                )
 
         return MapMakingResults(
             map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)

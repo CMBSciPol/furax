@@ -253,11 +253,16 @@ def padding_aware_welch(
 ) -> tuple[Array, Array]:
     """Estimate a Welch PSD without averaging windows from a padded tail.
 
+    The segment length sets the number of frequency bins, so it is static and cannot depend on
+    `sample_padding`. When fewer than `nperseg` real samples are available, there is therefore no
+    all-real segment to average and the estimate falls back to the first one, padding included.
+    Keep `nperseg` at or below the real sample count to stay in the regime where this is exact.
+
     Args:
         tod: Time-ordered data with detector and sample axes.
         sample_padding: Number of padded samples at the end of the sample axis.
         fs: Sampling frequency.
-        nperseg: Number of samples per Welch segment.
+        nperseg: Number of samples per Welch segment, clipped to the buffer length.
 
     Returns:
         The sample frequencies and power spectral density.

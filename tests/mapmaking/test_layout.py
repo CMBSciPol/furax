@@ -24,7 +24,7 @@ def test_bucket_envelope_and_volume():
     shapes = [Shape(2, 100), Shape(3, 10)]
     bucket = Bucket.create(shapes, [1, 0])
     np.testing.assert_array_equal(bucket.observations, [0, 1])  # sorted
-    assert bucket.shape == Shape(3, 100)
+    assert bucket.envelope == Shape(3, 100)
     assert bucket.n_slots == 2
     assert bucket.padded_volume == 2 * 3 * 100  # count * max_det * max_samp
     assert real_volume(shapes) == 2 * 100 + 3 * 10
@@ -46,13 +46,13 @@ def test_bucket_slot_rounding_is_charged_for():
 
 def test_bucket_envelope_covers_the_interval_axis():
     bucket = Bucket.create([Shape(2, 100, 7), Shape(2, 50, 9)], [0, 1])
-    assert bucket.shape == Shape(2, 100, 9)
+    assert bucket.envelope == Shape(2, 100, 9)
     # Scanning intervals are metadata, not time-ordered samples.
     assert bucket.padded_volume == 2 * 2 * 100
 
 
 def test_bucket_slot_bookkeeping():
-    bucket = Bucket(observations=np.array([1, 4]), n_slots=4, shape=Shape(3, 90))
+    bucket = Bucket(observations=np.array([1, 4]), n_slots=4, envelope=Shape(3, 90))
     assert (bucket.n_real, bucket.n_pad) == (2, 2)
     np.testing.assert_array_equal(bucket.is_real, [True, True, False, False])
     # empty slots point at a valid item; they are gated out by `is_real`, never read
@@ -174,8 +174,8 @@ def test_layout_covers_every_observation_once(n_devices, max_buckets):
         assert bucket.n_real <= bucket.n_slots < bucket.n_real + n_devices
         # the envelope covers every member
         for i in bucket.observations:
-            assert SHAPES[i].detector_count <= bucket.shape.detector_count
-            assert SHAPES[i].sample_count <= bucket.shape.sample_count
+            assert SHAPES[i].detector_count <= bucket.envelope.detector_count
+            assert SHAPES[i].sample_count <= bucket.envelope.sample_count
 
 
 def test_local_slots_tile_the_axis_by_process():
@@ -192,8 +192,8 @@ def test_local_slots_tile_the_axis_by_process():
 def test_scatter_restores_observation_order_and_pads_trailing_axes():
     layout = SlotLayout(
         buckets=(
-            Bucket(observations=np.array([0, 3]), n_slots=2, shape=Shape(2, 10)),
-            Bucket(observations=np.array([1, 2]), n_slots=4, shape=Shape(3, 10)),
+            Bucket(observations=np.array([0, 3]), n_slots=2, envelope=Shape(2, 10)),
+            Bucket(observations=np.array([1, 2]), n_slots=4, envelope=Shape(3, 10)),
         ),
         n_observations=4,
         n_devices=2,

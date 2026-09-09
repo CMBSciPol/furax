@@ -222,7 +222,7 @@ class TestBuckets:
             assert bucket.n_slots % jax.device_count() == 0
             # each reader pads to its own bucket's envelope, not the dataset's largest
             n_samples = reader.out_structure['sample_data'].shape[-1]
-            assert n_samples == bucket.shape.sample_count
+            assert n_samples == bucket.envelope.sample_count
         if max_buckets == 3 and jax.device_count() == 1:
             assert len(layout.buckets) == 3  # singletons never pad on one device
 
@@ -277,7 +277,7 @@ class TestBuckets:
         observations = [GappyLazyGroundObservation(seed=0, n_samples=32)]
         observations.extend(GappyLazyGroundObservation(seed=i, n_samples=256) for i in (1, 2))
         maker = MultiObservationMapMaker(observations, config=config)
-        assert min(bucket.shape.sample_count for bucket in maker.layout.buckets) >= 2 * 64 - 1
+        assert min(bucket.envelope.sample_count for bucket in maker.layout.buckets) >= 2 * 64 - 1
         with jax.set_mesh(maker.mesh):
             maker.build_model_and_accumulate()
 
@@ -286,7 +286,7 @@ class TestBuckets:
         observations = [FakeLazyObservation(seed=0, n_samples=32)]
         observations.extend(FakeLazyObservation(seed=i, n_samples=256) for i in (1, 2))
         maker = MultiObservationMapMaker(observations, config=config)
-        assert min(bucket.shape.sample_count for bucket in maker.layout.buckets) >= 64
+        assert min(bucket.envelope.sample_count for bucket in maker.layout.buckets) >= 64
         with jax.set_mesh(maker.mesh):
             maker.build_model_and_accumulate()
 

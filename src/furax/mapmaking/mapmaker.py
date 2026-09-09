@@ -341,7 +341,7 @@ class MultiObservationMapMaker[T]:
             logger_info(
                 f'bucket {b}: obs={bucket.n_real} slots={bucket.n_slots} pad={bucket.n_pad} '
                 f'slots_per_dev={bucket.n_slots // n_devices} '
-                f'envelope=({bucket.shape.detector_count}, {bucket.shape.sample_count}) '
+                f'envelope=({bucket.envelope.detector_count}, {bucket.envelope.sample_count}) '
                 f'slot_size={format_bytes(slot_bytes)} '
                 f'real_size={format_bytes(reader.total_nbytes)} '
                 f'pad_size={format_bytes(slot_bytes * bucket.n_slots - reader.total_nbytes)}'

@@ -76,23 +76,21 @@ __all__ = [
 class Bucket:
     """One group of observations, streamed together through every device.
 
-    Every slot of the bucket holds a buffer of the same `shape`, the envelope of the group, and
-    the stream axis is padded up to `n_slots` so it shards evenly over the devices. A bucket is
-    therefore an observation-shaped buffer allocation plus the bookkeeping saying which slots
-    carry real data (`is_real`) and which observation each slot reads (`item_of_slot`).
+    Every slot of the bucket holds a buffer of the same shape, the `envelope` of the group.
+    `n_slots` is set to a value that fills the device count evenly, so its value is at least
+    the number of real observations. Empty (fake) slots are always at the end.
 
     Buckets are normally built for a whole run by [`SlotLayout.create`][], not one by one.
 
     Attributes:
-        observations: Global indices of the observations, sorted. Their position here is their
-            item index in the bucket's reader.
-        n_slots: Length of the stream axis; a multiple of the device count, at least `n_real`.
-        shape: The envelope every slot is padded to: the per-axis maximum over the group.
+        observations: Observation indices (global), sorted.
+        n_slots: The number of slots; a multiple of the device count.
+        envelope: The buffer shape every slot is padded to: the per-axis maximum over the group.
     """
 
     observations: np.ndarray
     n_slots: int
-    shape: ObservationBufferShape
+    envelope: ObservationBufferShape
 
     @classmethod
     def create(
@@ -117,20 +115,20 @@ class Bucket:
 
             >>> from furax.mapmaking import ObservationBufferShape as Shape
             >>> bucket = Bucket.create([Shape(2, 100), Shape(3, 10)], [1, 0])
-            >>> bucket.shape
+            >>> bucket.envelope
             ObservationBufferShape(detector_count=3, sample_count=100, interval_count=0)
             >>> bucket.padded_volume, real_volume([Shape(2, 100), Shape(3, 10)])
             (600, 230)
         """
         if len(group) == 0:
             raise ValueError('a bucket needs at least one observation')
-        shape = ObservationBufferShape(
+        envelope = ObservationBufferShape(
             max(shapes[i].detector_count for i in group),
             max(shapes[i].sample_count for i in group),
             max(shapes[i].interval_count for i in group),
         )
         observations = np.sort(np.asarray(group, dtype=np.int64))
-        return cls(observations, cls.slot_count(len(group), n_devices), shape)
+        return cls(observations, cls.slot_count(len(group), n_devices), envelope)
 
     @staticmethod
     def slot_count(size: int, n_devices: int = 1) -> int:
@@ -144,13 +142,13 @@ class Bucket:
 
     @property
     def n_pad(self) -> int:
-        """Number of empty slots: the padding the rounding to whole devices costs."""
+        """Number of empty slots."""
         return self.n_slots - self.n_real
 
     @property
     def padded_volume(self) -> int:
-        """Time-ordered elements the bucket occupies once padded: every slot holds the envelope."""
-        return self.n_slots * self.shape.volume
+        """Time-ordered elements the bucket occupies once padded."""
+        return self.n_slots * self.envelope.volume
 
     @cached_property
     def is_real(self) -> np.ndarray:
@@ -161,17 +159,13 @@ class Bucket:
     def item_of_slot(self) -> np.ndarray:
         """Per slot, the reader item to load there.
 
-        Empty slots repeat the last item so the index is always valid; they are never read (the
-        accumulation gates the load on `is_real`).
+        Empty slots repeat the last item so the index is always valid.
         """
         return np.minimum(np.arange(self.n_slots), self.n_real - 1)
 
 
 def real_volume(shapes: Sequence[ObservationBufferShape]) -> int:
-    """Total volume of the observations, before any padding.
-
-    Compare it against [`padded_volume`][] to see what a grouping costs: their ratio is the memory
-    and compute overhead the mapmaker reports as `byte_overhead`.
+    """Total volume of the observations, without padding.
 
     Args:
         shapes: Per-observation buffer shapes.
@@ -336,7 +330,7 @@ class SlotLayout:
             >>> from furax.mapmaking import ObservationBufferShape as Shape
             >>> shapes = [Shape(2, 10), Shape(2, 10), Shape(2, 10), Shape(2, 90)]
             >>> layout = SlotLayout.create(shapes, n_devices=2, max_buckets=4)
-            >>> [(b.n_real, b.n_slots, b.shape.sample_count) for b in layout.buckets]
+            >>> [(b.n_real, b.n_slots, b.envelope.sample_count) for b in layout.buckets]
             [(2, 2, 10), (2, 2, 90)]
 
             The dataset is heterogeneous enough that the layout still costs two thirds more

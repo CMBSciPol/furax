@@ -8,7 +8,7 @@ from functools import cached_property
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any, ClassVar, overload
+from typing import Any, ClassVar, NamedTuple, overload
 
 import equinox as eqx
 import jax
@@ -84,35 +84,40 @@ from .weight import WeightOperator
 @register_dataclass
 @dataclass(frozen=True)
 class BucketModel:
-    """One bucket's share of [`AccumulatedModel`][]: everything that is stacked over its slots.
-
-    Every leaf leads with the bucket's stream axis and is sharded over the observation mesh axis.
-
-    Attributes:
-        model: Per-slot observation model.
-        templates: Per-slot templates, or `None` when the run uses none.
-        amplitude_rhs: Explicit-template RHS per slot, or `None` without explicit templates.
-    """
+    """One bucket's share of [`AccumulatedModel`][]: everything that is stacked over its slots."""
 
     model: ObservationModel
+    """Per-slot observation model."""
     templates: ObservationTemplates | None
+    """Per-slot templates (None for a run without any)."""
     amplitude_rhs: PyTree[Array] | None
+    """Explicit-template RHS per slot (None without explicit templates)."""
 
 
 @register_dataclass
 @dataclass(frozen=True)
 class AccumulatedModel:
-    """Result of [`MultiObservationMapMaker.build_model_and_accumulate`][].
-
-    Attributes:
-        buckets: One [`BucketModel`][] per bucket of the layout, in bucket order.
-        hit_map: Hit map over every observation, replicated on every device.
-        map_rhs: Map RHS over every observation, replicated on every device.
-    """
+    """Per-bucket observation models and the map-domain sums."""
 
     buckets: tuple[BucketModel, ...]
+    """One [`BucketModel`][] per bucket of the layout, in bucket order."""
     hit_map: Int64[Array, '...']
+    """Hit map over every observation, replicated on every device."""
     map_rhs: StokesType
+    """Map RHS over every observation, replicated on every device."""
+
+
+class MapMakingSystem(NamedTuple):
+    """The normal system handed to the solver."""
+
+    A: AbstractLinearOperator
+    """The normal operator, acting on the selected sky pixels (plus amplitudes, if any)."""
+    b: PyTree
+    """The right-hand side, in the same unknowns."""
+    preconditioner: AbstractLinearOperator
+    """Approximate inverse of `A`."""
+    has_amplitudes: bool
+    """Whether the unknowns include explicit-template amplitudes."""
 
 
 class _PickOperator(AbstractLinearOperator):
@@ -368,7 +373,6 @@ class MultiObservationMapMaker[T]:
 
             # Per-bucket stream operators. Everything below sums over the buckets: each is a
             # stream of its own length, so the sums stay plain additions of stream operators.
-            buckets = self.layout.buckets
             H_sky = [StreamOperator.column(bm.model.H) for bm in acc.buckets]
             W: list[AbstractLinearOperator] = [
                 StreamOperator.diagonal(bm.model.W) for bm in acc.buckets
@@ -384,7 +388,7 @@ class MultiObservationMapMaker[T]:
             # Specify leading axis dimension because F can be trivial (no array leaves)
             F = [
                 StreamOperator.diagonal(bm.model.F, n_lead=bucket.n_slots)
-                for bm, bucket in zip(acc.buckets, buckets, strict=True)
+                for bm, bucket in zip(acc.buckets, self.layout.buckets, strict=True)
             ]
 
             # Diagonal pixel system for the block-Jacobi preconditioner
@@ -415,69 +419,22 @@ class MultiObservationMapMaker[T]:
             hit_map = hit_map.at[~valid_pixels].set(0)  # excluded pixels have zero hits
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
-            # Unified GLS solve (Hᵀ W' H) x = Hᵀ W' d  (W already bundles the sample mask).
-            #
-            # H maps the unknowns to TOD:
-            # - no templates / implicit only: H = H_sky        (sky map only);
-            # - explicit templates:          H = [H_sky | Tₑ] (sky map + template amplitudes).
-            #
-            # Implicit templates fold into the weight (W → W', deprojection).
+            system = self._build_system(acc, H_sky, W, S, M_sky)
 
-            # Fold implicit templates into the system weight (marginal deprojection W').
-            for b, bm in enumerate(acc.buckets):
-                if bm.templates is not None and (implicit := bm.templates.implicit) is not None:
-                    Ti = StreamOperator.diagonal(implicit.operator)
-                    G = StreamOperator.diagonal(implicit.gram_inverse)
-                    W[b] = (W[b] - W[b] @ Ti @ G @ Ti.T @ W[b]).reduce()
-
-            explicit = [
-                bm.templates.explicit if bm.templates is not None else None for bm in acc.buckets
-            ]
-            if all(e is None for e in explicit):
-                M = M_sky
-                rhs_joint: Any = S(acc.map_rhs)
-                A = _sum_operators(
-                    ((H @ S.T).T @ W_b @ (H @ S.T)).reduce()
-                    for H, W_b in zip(H_sky, W, strict=True)
-                )
-            else:
-                # Explicit templates are configured for the run, so every bucket carries them.
-                assert all(e is not None for e in explicit)
-                Te = [StreamOperator.diagonal(e.operator) for e in explicit]  # type: ignore[union-attr]
-                G_e = [StreamOperator.diagonal(e.gram_inverse) for e in explicit]  # type: ignore[union-attr]
-                amplitudes_structure = [T.in_structure for T in Te]
-                M = BlockDiagonalOperator([M_sky, G_e])
-                rhs_joint = [S(acc.map_rhs), [bm.amplitude_rhs for bm in acc.buckets]]
-
-                # Joint sky + explicit-amplitude system. The unknowns are the selected sky pixels
-                # and one amplitude block per bucket; each bucket's system sees the full sky grid
-                # and its own amplitudes, picked out of the list and embedded back by `E`.
-                terms = []
-                for b, (H, T, W_b) in enumerate(zip(H_sky, Te, W, strict=True)):
-                    H_joint = StreamOperator.block_row([H, T])
-                    A_joint = (H_joint.T @ W_b @ H_joint).reduce()
-                    pick = _PickOperator(b, in_structure=amplitudes_structure)
-                    E = BlockDiagonalOperator([S.T, pick])
-                    terms.append((E.T @ A_joint @ E).reduce())
-                A = _sum_operators(terms)
-
-            iteration_callback = None
-            if self.config.solver.verbose:
-                # log from rank 0 only
-                def iteration_callback(step: Array, r_norm: Array) -> None:
-                    if rank == 0:
-                        logger_info(f'CG step={int(step)} residual={float(r_norm):.6e}')
+            def log_iteration(step: Array, r_norm: Array) -> None:
+                if rank == 0:  # log from rank 0 only
+                    logger_info(f'CG step={int(step)} residual={float(r_norm):.6e}')
 
             result = furax.linalg.cg(
-                A,
-                rhs_joint,
-                preconditioner=M,
-                iteration_callback=iteration_callback,
+                system.A,
+                system.b,
+                preconditioner=system.preconditioner,
+                iteration_callback=log_iteration if self.config.solver.verbose else None,
                 **self.config.solver.options,
             )
             logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
 
-            if all(e is None for e in explicit):
+            if not system.has_amplitudes:
                 sky_estimate = result.solution
                 amplitudes = None
             else:
@@ -498,6 +455,73 @@ class MultiObservationMapMaker[T]:
             failed_observations=failed_observations,
             template_amplitudes=dict(amplitudes) if amplitudes is not None else None,
         )
+
+    def _build_system(
+        self,
+        acc: AccumulatedModel,
+        H_sky: Sequence[AbstractLinearOperator],
+        W: Sequence[AbstractLinearOperator],
+        S: AbstractLinearOperator,
+        M_sky: AbstractLinearOperator,
+    ) -> MapMakingSystem:
+        r"""Assembles the GLS normal system $H^T W' H x = H^T W' d$ over the selected pixels.
+
+        The pointing $H$ maps the unknowns to TOD: without templates, or with implicit ones only,
+        $H = H_\text{sky}$ and the unknowns are the sky map; with explicit templates,
+        $H = [H_\text{sky} | T_e]$ and the unknowns gain one amplitude block per bucket. Implicit
+        templates fold into the weight instead ($W \to W'$, marginal deprojection).
+
+        Args:
+            acc: The accumulated per-bucket models, hit map and map RHS.
+            H_sky: Per-bucket sky pointing operator.
+            W: Per-bucket weight, already bundling the sample mask and the ATOP deprojector.
+            S: Selection of the estimated pixels out of the full sky grid.
+            M_sky: Block-Jacobi preconditioner, restricted to the selected pixels.
+
+        Returns:
+            The system to solve, in the unknowns described above.
+        """
+        # Implicit templates fold into the weight (marginal deprojection).
+        weights = list(W)
+        for b, bm in enumerate(acc.buckets):
+            if bm.templates is not None and (implicit := bm.templates.implicit) is not None:
+                Ti = StreamOperator.diagonal(implicit.operator)
+                G = StreamOperator.diagonal(implicit.gram_inverse)
+                weights[b] = (weights[b] - weights[b] @ Ti @ G @ Ti.T @ weights[b]).reduce()
+
+        # Explicit templates are configured for the run, so every bucket carries them or none.
+        explicit = [
+            bm.templates.explicit
+            for bm in acc.buckets
+            if bm.templates is not None and bm.templates.explicit is not None
+        ]
+        assert len(explicit) in (0, len(acc.buckets))
+
+        if not explicit:
+            A = _sum_operators(
+                ((H @ S.T).T @ W_b @ (H @ S.T)).reduce()
+                for H, W_b in zip(H_sky, weights, strict=True)
+            )
+            return MapMakingSystem(A, S(acc.map_rhs), M_sky, has_amplitudes=False)
+
+        Te = [StreamOperator.diagonal(e.operator) for e in explicit]
+        G_e = [StreamOperator.diagonal(e.gram_inverse) for e in explicit]
+        amplitudes_structure = [T.in_structure for T in Te]
+
+        # Joint sky + explicit-amplitude system. The unknowns are the selected sky pixels and one
+        # amplitude block per bucket; each bucket's system sees the full sky grid and its own
+        # amplitudes, picked out of the list and embedded back by `E`.
+        terms = []
+        for b, (H, T, W_b) in enumerate(zip(H_sky, Te, weights, strict=True)):
+            H_joint = StreamOperator.block_row([H, T])
+            A_joint = (H_joint.T @ W_b @ H_joint).reduce()
+            pick = _PickOperator(b, in_structure=amplitudes_structure)
+            E = BlockDiagonalOperator([S.T, pick])
+            terms.append((E.T @ A_joint @ E).reduce())
+
+        rhs = [S(acc.map_rhs), [bm.amplitude_rhs for bm in acc.buckets]]
+        M = BlockDiagonalOperator([M_sky, G_e])
+        return MapMakingSystem(_sum_operators(terms), rhs, M, has_amplitudes=True)
 
     def _gather(self, x: PyTree[Array]) -> PyTree[np.ndarray]:
         """Bring a pytree sharded over the 'obs' axis to the host, whole, on every process."""

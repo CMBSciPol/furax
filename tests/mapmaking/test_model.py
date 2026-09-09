@@ -5,7 +5,34 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking._model import _noise_model, _noise_operator, _sample_mask
 from furax.mapmaking.config import MapMakingConfig, Methods, WeightingConfig, WeightingMode
-from furax.mapmaking.noise import WhiteNoiseModel
+from furax.mapmaking.noise import WhiteNoiseModel, padding_aware_welch
+
+
+def test_padding_aware_welch_matches_unpadded_signal():
+    signal = jax.random.normal(jax.random.key(0), (2, 1024), dtype=jnp.float64)
+    expected_f, expected_psd = jax.scipy.signal.welch(signal, fs=100.0, nperseg=256)
+    padded = jnp.pad(signal, ((0, 0), (0, 512)))
+    actual_f, actual_psd = padding_aware_welch(padded, 512, fs=jnp.array(100.0), nperseg=256)
+    assert_allclose(actual_f, expected_f)
+    assert_allclose(actual_psd, expected_psd, rtol=1e-12, atol=1e-12)
+
+
+def test_padding_aware_welch_clips_segment_to_short_signal():
+    signal = jax.random.normal(jax.random.key(0), (2, 127), dtype=jnp.float64)
+    expected_f, expected_psd = jax.scipy.signal.welch(signal, fs=100.0, nperseg=256)
+    actual_f, actual_psd = padding_aware_welch(signal, 0, fs=jnp.array(100.0), nperseg=256)
+    assert_allclose(actual_f, expected_f)
+    assert_allclose(actual_psd, expected_psd, rtol=1e-12, atol=1e-12)
+
+
+def test_padding_aware_welch_preserves_float32():
+    with jax.enable_x64():
+        signal = jax.random.normal(jax.random.key(0), (2, 256), dtype=jnp.float32)
+        frequencies, psd = padding_aware_welch(
+            signal, 0, fs=jnp.array(100.0, dtype=jnp.float32), nperseg=128
+        )
+    assert frequencies.dtype == jnp.float32
+    assert psd.dtype == jnp.float32
 
 
 class TestSampleMask:

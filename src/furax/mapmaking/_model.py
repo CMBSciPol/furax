@@ -22,7 +22,7 @@ from .config import (
     WeightingMode,
 )
 from .gram import gram_inverse
-from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
+from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .templates import (
     AbstractTemplateOperator,
     ATOPProjectionOperator,
@@ -87,7 +87,9 @@ class ObservationModel:
             data.get(ReaderField.VALID_SCANNING_MASKS),
             structure=tod_struct,
         )
-        noise_model, sample_rate = _noise_model(data, config, tod_structure=tod_struct)
+        noise_model, sample_rate = _noise_model(
+            data, config, tod_structure=tod_struct, padding=padding
+        )
         Ninv = _noise_operator(
             noise_model,
             tod_struct,
@@ -205,6 +207,7 @@ def _noise_model(
     data: Any,
     config: MapMakingConfig,
     tod_structure: jax.ShapeDtypeStruct | None = None,
+    padding: Any | None = None,
 ) -> tuple[PyTree[NoiseModel], Array]:
     """Compute the noise model and sample rate for a single observation block."""
     fs = _sample_rate(data[ReaderField.TIMESTAMPS])
@@ -227,8 +230,12 @@ def _noise_model(
 
         tod = _as_array(data[ReaderField.SAMPLE_DATA])  # (*lead, nsamp)
         lead = tod.shape[:-1]
-        f, Pxx = jax.scipy.signal.welch(
-            tod.reshape(-1, tod.shape[-1]), fs=fs, nperseg=fit_config.nperseg
+        sample_padding = 0 if padding is None else _as_array(padding[ReaderField.SAMPLE_DATA])[-1]
+        f, Pxx = padding_aware_welch(
+            tod.reshape(-1, tod.shape[-1]),
+            sample_padding,
+            fs=fs,
+            nperseg=fit_config.nperseg,
         )
         flat_model = noise_model_class.fit_psd_model(
             f, Pxx, sample_rate=fs, hwp_frequency=fhwp, config=fit_config

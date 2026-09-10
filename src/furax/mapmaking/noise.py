@@ -248,6 +248,53 @@ def apodization_window(size: int, kind: str = 'chebwin') -> Float[Array, ' {size
     return window
 
 
+def padding_aware_welch(
+    tod: Array, sample_padding: Array | int, *, fs: Array, nperseg: int
+) -> tuple[Array, Array]:
+    """Estimate a Welch PSD without averaging windows from a padded tail.
+
+    The segment length sets the number of frequency bins, so it is static and cannot depend on
+    `sample_padding`. When fewer than `nperseg` real samples are available, there is therefore no
+    all-real segment to average and the estimate falls back to the first one, padding included.
+    Keep `nperseg` at or below the real sample count to stay in the regime where this is exact.
+
+    Args:
+        tod: Time-ordered data with detector and sample axes.
+        sample_padding: Number of padded samples at the end of the sample axis.
+        fs: Sampling frequency.
+        nperseg: Number of samples per Welch segment, clipped to the buffer length.
+
+    Returns:
+        The sample frequencies and power spectral density.
+    """
+    input_samples = tod.shape[-1]
+    nperseg = min(nperseg, input_samples)
+
+    noverlap = nperseg // 2
+    frequencies, _, spectrum = jax.scipy.signal.stft(
+        tod,
+        fs=fs,
+        nperseg=nperseg,
+        noverlap=noverlap,
+        detrend='constant',  # type: ignore[arg-type]
+        boundary=None,
+        padded=False,
+    )
+    periodograms = jnp.real(jnp.conjugate(spectrum) * spectrum)
+    window = (jnp.ones(1) if nperseg == 1 else jnp.hanning(nperseg + 1)[:-1]).astype(tod.dtype)
+    density_scale = window.sum() ** 2 / (fs * jnp.sum(window**2))
+    periodograms *= density_scale
+    end = None if nperseg % 2 else -1
+    periodograms = periodograms.at[..., 1:end, :].mul(2)
+
+    step = nperseg - noverlap
+    real_samples = input_samples - sample_padding
+    n_valid = jnp.maximum(1, 1 + (real_samples - nperseg) // step)
+    valid = jnp.arange(periodograms.shape[-1]) < n_valid
+    psd = jnp.sum(jnp.where(valid, periodograms, 0), axis=-1) / n_valid
+    return frequencies, psd
+
+
 def fit_white_noise_model(
     f: Float[Array, ' freqs'],
     Pxx: Float[Array, 'dets freqs'],

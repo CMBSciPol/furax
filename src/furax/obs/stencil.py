@@ -109,14 +109,27 @@ class Stencil(NamedTuple):
         """Number of pixels each sample reads: one for nearest neighbour, four for bilinear."""
         return int(self.weights.shape[-1])
 
+    def astype(self, dtype: DTypeLike) -> Self:
+        """Return the stencil with its weights and positions cast to the given type.
+
+        The indices are left untouched: they are integers, and casting them to a floating-point
+        type would make them unusable as a gather index.
+
+        Args:
+            dtype: The floating-point type to cast to.
+
+        Returns:
+            The stencil, still resolved, in the requested type.
+        """
+        positions = None if self.positions is None else self.positions.astype(dtype)
+        return type(self)(self.indices, self.weights.astype(dtype), positions)
+
     @classmethod
     def resolve(
         cls,
         indices: Integer[Array, '*dims neighbors'],
         weights: Float[Array, '*dims neighbors'],
         positions: SkyPositions | None,
-        *,
-        dtype: DTypeLike | None = None,
     ) -> Self:
         """Build a stencil, sending out-of-map neighbours to a safe index and normalizing weights.
 
@@ -124,16 +137,11 @@ class Stencil(NamedTuple):
             indices: Neighbour pixel indices, negative for neighbours outside the map.
             weights: Interpolation weights, one per neighbour, not necessarily normalized.
             positions: Where the neighbours sit on the sphere, or `None` off the sphere.
-            dtype: If given, the floating-point type the weights and positions are cast to.
 
         Returns:
             The resolved stencil.
         """
-        indices, weights = _resolve(indices, weights)
-        if dtype is not None:
-            weights = weights.astype(dtype)
-            positions = None if positions is None else positions.astype(dtype)
-        return cls(indices, weights, positions)
+        return cls(*_resolve(indices, weights), positions)
 
     @classmethod
     def nearest(
@@ -141,8 +149,6 @@ class Stencil(NamedTuple):
         indices: Integer[Array, ' *dims'],
         theta_center: Float[Array, ' *dims'],
         phi_center: Float[Array, ' *dims'],
-        *,
-        dtype: DTypeLike | None = None,
     ) -> Self:
         """Build the one-neighbour stencil of a nearest-neighbour sampler.
 
@@ -150,20 +156,18 @@ class Stencil(NamedTuple):
             indices: Index of the pixel each sample falls in, negative outside the map.
             theta_center: Co-latitude of that pixel's center, in radians.
             phi_center: Longitude of that pixel's center, in radians.
-            dtype: If given, the floating-point type the weights and positions are cast to.
 
         Returns:
             The resolved stencil, whose neighbour axis has length one.
         """
         return cls.resolve(
             indices[..., None],
-            jnp.ones((*jnp.shape(indices), 1), dtype or jnp.result_type(theta_center)),
+            jnp.ones((*jnp.shape(indices), 1), jnp.result_type(theta_center)),
             SkyPositions(
                 jnp.cos(theta_center)[..., None],
                 jnp.sin(theta_center)[..., None],
                 phi_center[..., None],
             ),
-            dtype=dtype,
         )
 
     @classmethod

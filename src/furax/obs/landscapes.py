@@ -220,7 +220,7 @@ class StokesLandscape(Landscape):
         sample falls in, from [`quat2index`][] say, positioned at those pixels' centers. An index
         outside the map (negative) reads pixel 0 with zero weight.
         """
-        return Stencil.nearest(indices, *self.index2world(indices), dtype=self.dtype)
+        return Stencil.nearest(indices, *self.index2world(indices)).astype(self.dtype)
 
     def world2interp(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
@@ -380,7 +380,7 @@ class WCSLandscape(StokesLandscape):
             center_x, center_y = jnp.round(pix_x), jnp.round(pix_y)
             theta_c, phi_c = self.pixel2world(center_x, center_y)
             indices = self.pixel2index(center_x, center_y)
-            return Stencil.nearest(indices, theta_c, phi_c, dtype=self.dtype)
+            return Stencil.nearest(indices, theta_c, phi_c).astype(self.dtype)
 
         xs, ys, weights = _2d_bilinear_interp(*self.world2pixel(theta, phi))
         theta_n, phi_n = self.pixel2world(xs, ys)
@@ -581,7 +581,7 @@ class HealpixLandscape(StokesLandscape):
         if interpolation is Interpolation.NEAREST:
             indices = self.world2index(theta, phi)
             theta_c, phi_c = jhp.pix2ang(self.nside, indices, nest=self.nested)
-            return Stencil.nearest(indices, theta_c, phi_c, dtype=self.dtype)
+            return Stencil.nearest(indices, theta_c, phi_c).astype(self.dtype)
 
         pixels, weights, centers = jhp.get_interp_weights(
             self.nside, theta, phi, nest=self.nested, with_centers=True
@@ -598,8 +598,7 @@ class HealpixLandscape(StokesLandscape):
                 jnp.moveaxis(centers.sth[ring], 0, -1),
                 jnp.moveaxis(centers.phi, 0, -1),
             ),
-            dtype=self.dtype,
-        )
+        ).astype(self.dtype)
 
     @jax.jit
     def world2pixel(
@@ -719,7 +718,7 @@ class AstropyWCSLandscape(StokesLandscape):
         center_x, center_y = jnp.round(pix_x), jnp.round(pix_y)
         theta_c, phi_c = self.pixel2world(center_x, center_y)
         indices = self.pixel2index(center_x, center_y)
-        return Stencil.nearest(indices, theta_c, phi_c, dtype=self.dtype)
+        return Stencil.nearest(indices, theta_c, phi_c).astype(self.dtype)
 
 
 @register_static
@@ -833,7 +832,7 @@ class HorizonLandscape(StokesLandscape):
             )
         pix_i, pix_j = self.world2pixel(theta, phi)
         theta_c, phi_c = self.pixel2world(pix_i, pix_j)
-        return Stencil.nearest(self.pixel2index(pix_i, pix_j), theta_c, phi_c, dtype=self.dtype)
+        return Stencil.nearest(self.pixel2index(pix_i, pix_j), theta_c, phi_c).astype(self.dtype)
 
 
 @register_static

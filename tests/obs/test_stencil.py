@@ -57,14 +57,19 @@ class TestStencil:
         assert_array_equal(np.asarray(stencil.positions.z), np.asarray(positions.z))
         assert stencil.n_neighbors == 4
 
-    def test_resolve_casts_to_the_requested_dtype(self):
+    def test_astype_casts_the_weights_and_positions_but_not_the_indices(self):
         positions = _positions((3, 4))
-        stencil = Stencil.resolve(
-            jnp.zeros((3, 4), jnp.int32), jnp.ones((3, 4)), positions, dtype=jnp.float32
-        )
+        stencil = Stencil.resolve(jnp.zeros((3, 4), jnp.int32), jnp.ones((3, 4)), positions)
+
+        cast = stencil.astype(jnp.float32)
+        assert cast.weights.dtype == jnp.float32
+        assert all(component.dtype == jnp.float32 for component in cast.positions)
+        assert cast.indices.dtype == jnp.int32
+
+    def test_astype_leaves_a_stencil_without_positions_alone(self):
+        stencil = Stencil.scalar(jnp.array([[0, 1]]), jnp.ones((1, 2))).astype(jnp.float32)
         assert stencil.weights.dtype == jnp.float32
-        assert all(component.dtype == jnp.float32 for component in stencil.positions)
-        assert stencil.indices.dtype == jnp.int32
+        assert stencil.positions is None
 
     def test_nearest_holds_one_neighbour_of_unit_weight(self):
         theta, phi = jnp.array([0.3, 1.2]), jnp.array([0.0, 4.0])

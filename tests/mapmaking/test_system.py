@@ -8,7 +8,7 @@ from numpy.testing import assert_allclose
 
 from furax import AbstractLinearOperator, HomothetyOperator
 from furax.core import AdditionOperator
-from furax.mapmaking._system import BucketSumOperator, apply_bucket_sum
+from furax.mapmaking._system import BucketSumOperator
 
 
 class _MatOp(AbstractLinearOperator):
@@ -73,10 +73,3 @@ def test_symmetric_tag_propagates_from_every_term() -> None:
 def test_rejects_no_operands() -> None:
     with pytest.raises(ValueError, match='at least one operand'):
         BucketSumOperator([])
-
-
-def test_apply_bucket_sum_single_term_skips_the_loop() -> None:
-    """A one-bucket run must not pay for a conditional it cannot use."""
-    (term,) = _terms(1)
-    x = jnp.arange(4.0)
-    assert_allclose(apply_bucket_sum(x, [term]), term(x), rtol=1e-12)

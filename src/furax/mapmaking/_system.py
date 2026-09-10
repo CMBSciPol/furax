@@ -1,10 +1,3 @@
-"""Summation of a normal system's per-bucket contributions.
-
-A multi-observation system is a sum of one term per bucket of the [`layout`][furax.mapmaking.layout].
-Buckets hold different envelopes, so those terms cannot be batched together; how they are summed
-instead decides how much memory the solve reserves, which is what this module exists to get right.
-"""
-
 from collections.abc import Sequence
 
 import jax
@@ -15,13 +8,13 @@ from jaxtyping import PyTree
 import furax.tree
 from furax import AbstractLinearOperator
 
-__all__ = ['BucketSumOperator', 'apply_bucket_sum']
+__all__ = [
+    'BucketSumOperator',
+    'apply_bucket_sum',
+]
 
 
-def apply_bucket_sum(
-    x: PyTree[Array],
-    terms: Sequence[AbstractLinearOperator],
-) -> PyTree[Array]:
+def apply_bucket_sum(x: PyTree[Array], terms: Sequence[AbstractLinearOperator]) -> PyTree[Array]:
     r"""Apply a sum of per-bucket operators, $\sum_b A_b x$, one bucket at a time.
 
     Buckets hold different envelopes, so their contributions cannot be batched into a single
@@ -30,9 +23,6 @@ def apply_bucket_sum(
     with it, undoing what bucketing is for. Dispatching the buckets through a `lax.switch`
     inside a `fori_loop` keeps exactly one of them live per iteration, so their temporaries are
     overlaid and the reservation is set by the largest bucket alone.
-
-    Every term shares the operand's structure, since they are summed, which is what lets them be
-    branches of one conditional.
 
     Args:
         x: The vector to apply the sum to.
@@ -56,9 +46,8 @@ def apply_bucket_sum(
 class BucketSumOperator(AbstractLinearOperator):
     """The sum of one operator per bucket, applied a bucket at a time.
 
-    Stands in for an [`AdditionOperator`][] over the per-bucket terms of a normal system. It is
-    the same linear map, but applying it reserves memory for the largest bucket rather than for
-    all of them at once; see [`apply_bucket_sum`][] for why that differs.
+    Same as `AdditionOperator` but applies operands one at a time (see [`apply_bucket_sum`][])
+    to avoid excessive memory usage.
     """
 
     operands: list[AbstractLinearOperator]

@@ -936,6 +936,18 @@ wheels = [
 ]
 
 [[package]]
+name = "fastquat"
+version = "1.0b2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jax" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/18/08/bd236009356cf2330e792ffcf3829de58303b2952a0216b795fcefcfc4ab/fastquat-1.0b2.tar.gz", hash = "sha256:cd3c9c0762235bf869292f22d9acb8d855e0d13a635e0afb542586dfefbf0bd9", size = 210829, upload-time = "2026-09-10T14:23:14.342Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/ad/3706890a10584a767aef919724e164333aa0de0fdb8078c8d0f671ad5684/fastquat-1.0b2-py3-none-any.whl", hash = "sha256:a4d8a2cdf1786a50a779142296efd2b1e6f13997dce0edf2d32364ab8108a628", size = 8023, upload-time = "2026-09-10T14:23:13.071Z" },
+]
+
+[[package]]
 name = "flacarray"
 version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1001,6 +1013,7 @@ source = { editable = "." }
 dependencies = [
     { name = "astropy" },
     { name = "equinox" },
+    { name = "fastquat" },
     { name = "healpy" },
     { name = "jax" },
     { name = "jax-healpy", extra = ["recommended"] },
@@ -1076,6 +1089,7 @@ requires-dist = [
     { name = "cyclopts", marker = "extra == 'interfaces'", specifier = ">=4.6.0" },
     { name = "cyclopts", marker = "extra == 'so'", specifier = ">=4.6.0" },
     { name = "equinox", specifier = ">=0.13.8" },
+    { name = "fastquat", specifier = ">=1.0b2" },
     { name = "healpy", specifier = ">=1.19.0" },
     { name = "jax", specifier = ">=0.11.0" },
     { name = "jax-cadre", marker = "extra == 'mapmaking'", specifier = ">=0.1.2" },

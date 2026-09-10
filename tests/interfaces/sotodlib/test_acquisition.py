@@ -2,6 +2,7 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
+from fastquat import Quaternion
 from numpy.testing import assert_allclose, assert_array_equal
 from sotodlib import coords
 from sotodlib.mapmaking.demod_mapmaker import project_rhs_demod
@@ -36,8 +37,8 @@ def test_acquisition_no_hwp_vs_sotodlib():
     landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
     h = build_acquisition_operator(
         landscape,
-        obs.get_boresight_quaternions(),
-        obs.get_detector_quaternions(),
+        Quaternion.from_array(obs.get_boresight_quaternions()),
+        Quaternion.from_array(obs.get_detector_quaternions()),
         hwp_angles=None,
         pointing_on_the_fly=True,
     )
@@ -67,8 +68,8 @@ def test_demod_acquisition_vs_sotodlib():
     landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
     h = build_acquisition_operator(
         landscape,
-        obs.get_boresight_quaternions(),
-        obs.get_detector_quaternions(),
+        Quaternion.from_array(obs.get_boresight_quaternions()),
+        Quaternion.from_array(obs.get_detector_quaternions()),
         hwp_angles=None,
         demodulated=True,
         pointing_on_the_fly=True,
@@ -107,8 +108,8 @@ def test_hit_map_vs_sotodlib():
     landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
     h = build_acquisition_operator(
         landscape,
-        obs.get_boresight_quaternions(),
-        obs.get_detector_quaternions(),
+        Quaternion.from_array(obs.get_boresight_quaternions()),
+        Quaternion.from_array(obs.get_detector_quaternions()),
         hwp_angles=None,
         pointing_on_the_fly=True,
     )
@@ -139,8 +140,8 @@ def test_hit_map_demod_vs_sotodlib():
     landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
     h = build_acquisition_operator(
         landscape,
-        obs.get_boresight_quaternions(),
-        obs.get_detector_quaternions(),
+        Quaternion.from_array(obs.get_boresight_quaternions()),
+        Quaternion.from_array(obs.get_detector_quaternions()),
         hwp_angles=None,
         demodulated=True,
         pointing_on_the_fly=True,

@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 from equinox import tree_equal
+from fastquat import Quaternion
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
@@ -30,12 +31,6 @@ def _make_landscape(landscape_type: str, stokes: ValidStokesLiteral) -> StokesLa
     return CARLandscape((180, 360), _CAR_PROJECTION, stokes)
 
 
-def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
-    """Generate random unit quaternions."""
-    q = jax.random.normal(key, (*shape, 4))
-    return q / jnp.linalg.norm(q, axis=-1, keepdims=True)
-
-
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
 @pytest.mark.parametrize('frame', ['boresight', 'detector'])
 class TestAsExpandedOperator:
@@ -45,8 +40,8 @@ class TestAsExpandedOperator:
 
         key = jax.random.PRNGKey(42)
         key1, key2, key3 = jax.random.split(key, 3)
-        qbore = _random_unit_quats(key1, (NSAMP,))
-        qdet = _random_unit_quats(key2, (NDET,))
+        qbore = Quaternion.random(key1, (NSAMP,))
+        qdet = Quaternion.random(key2, (NDET,))
 
         pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, batch_size=2)
         sky = landscape.normal(key3)
@@ -62,8 +57,8 @@ class TestAsExpandedOperator:
 
         key = jax.random.PRNGKey(42)
         key1, key2, key3 = jax.random.split(key, 3)
-        qbore = _random_unit_quats(key1, (NSAMP,))
-        qdet = _random_unit_quats(key2, (NDET,))
+        qbore = Quaternion.random(key1, (NSAMP,))
+        qdet = Quaternion.random(key2, (NDET,))
 
         pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, batch_size=2)
         tod = pointing_op.out_structure
@@ -80,8 +75,8 @@ class TestAsExpandedOperator:
 
         key = jax.random.PRNGKey(42)
         key1, key2, key3 = jax.random.split(key, 3)
-        qbore = _random_unit_quats(key1, (NSAMP,))
-        qdet = _random_unit_quats(key2, (NDET,))
+        qbore = Quaternion.random(key1, (NSAMP,))
+        qdet = Quaternion.random(key2, (NDET,))
 
         pointing_op = PointingOperator.create(
             landscape, qbore, qdet, frame=frame, batch_size=2, interpolate=True
@@ -96,8 +91,8 @@ class TestAsExpandedOperator:
 
         key = jax.random.PRNGKey(42)
         key1, key2, key3 = jax.random.split(key, 3)
-        qbore = _random_unit_quats(key1, (NSAMP,))
-        qdet = _random_unit_quats(key2, (NDET,))
+        qbore = Quaternion.random(key1, (NSAMP,))
+        qdet = Quaternion.random(key2, (NDET,))
 
         pointing_op = PointingOperator.create(
             landscape, qbore, qdet, frame=frame, batch_size=2, interpolate=True
@@ -120,8 +115,8 @@ class TestInterpolate:
 
         key = jax.random.PRNGKey(7)
         k1, k2, k3, k4 = jax.random.split(key, 4)
-        qbore = _random_unit_quats(k1, (NSAMP,))
-        qdet = _random_unit_quats(k2, (NDET,))
+        qbore = Quaternion.random(k1, (NSAMP,))
+        qdet = Quaternion.random(k2, (NDET,))
 
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
         sky = landscape.normal(k3)
@@ -137,8 +132,8 @@ class TestInterpolate:
 
         key = jax.random.PRNGKey(7)
         k1, k2 = jax.random.split(key)
-        qbore = _random_unit_quats(k1, (NSAMP,))
-        qdet = _random_unit_quats(k2, (NDET,))
+        qbore = Quaternion.random(k1, (NSAMP,))
+        qdet = Quaternion.random(k2, (NDET,))
 
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
         tod = op(landscape.full(3.14))
@@ -153,8 +148,8 @@ def test_expanded_interpolate_preserves_rotation_fusion() -> None:
     """
     landscape = _make_landscape('car', 'IQU')
     key1, key2, key3, key4 = jax.random.split(jax.random.PRNGKey(3), 4)
-    qbore = _random_unit_quats(key1, (NSAMP,))
-    qdet = _random_unit_quats(key2, (NDET,))
+    qbore = Quaternion.random(key1, (NSAMP,))
+    qdet = Quaternion.random(key2, (NDET,))
 
     op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
     expanded = op.as_expanded_operator()
@@ -184,8 +179,8 @@ class TestLocalLandscape:
     @pytest.fixture(scope='class', params=[False, True], ids=['nearest', 'bilinear'])
     def p_full(self, request: pytest.FixtureRequest, keys: jax.Array) -> PointingOperator:
         parent = HealpixLandscape(NSIDE, 'IQU')
-        qbore = _random_unit_quats(keys[0], (NSAMP,))
-        qdet = _random_unit_quats(keys[1], (NDET,))
+        qbore = Quaternion.random(keys[0], (NSAMP,))
+        qdet = Quaternion.random(keys[1], (NDET,))
         return PointingOperator.create(parent, qbore, qdet, interpolate=request.param)
 
     @pytest.fixture(scope='class')

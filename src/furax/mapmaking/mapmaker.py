@@ -17,6 +17,7 @@ import pixell.enmap
 import pixell.utils
 from astropy.io import fits
 from astropy.wcs import WCS
+from fastquat import Quaternion
 from jax import ShapeDtypeStruct
 from jax.experimental import mesh_utils
 from jax.experimental import multihost_utils as mhu
@@ -427,8 +428,8 @@ class MultiObservationMapMaker[T]:
                 # Hit map = nearest-neighbour coverage of the sample mask
                 hit_pointing = PointingOperator.create(
                     landscape,
-                    data[ReaderField.BORESIGHT_QUATERNIONS],
-                    data[ReaderField.DETECTOR_QUATERNIONS],
+                    Quaternion.from_array(data[ReaderField.BORESIGHT_QUATERNIONS]),
+                    Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS]),
                 ).as_stokes_i(interpolate=False)
                 # Read the mask directly: M(ones) = M.to_boolean_mask()
                 masked_tod = obs.M.to_boolean_mask()
@@ -778,8 +779,8 @@ class MapMaker:
         if self.config.pointing.on_the_fly:
             pointing = PointingOperator.create(
                 landscape,
-                jnp.asarray(observation.get_boresight_quaternions()),
-                jnp.asarray(observation.get_detector_quaternions()),
+                Quaternion.from_array(observation.get_boresight_quaternions()),
+                Quaternion.from_array(observation.get_detector_quaternions()),
                 batch_size=self.config.pointing.batch_size,
                 interpolate=self.config.pointing.interpolation == 'bilinear',
             )

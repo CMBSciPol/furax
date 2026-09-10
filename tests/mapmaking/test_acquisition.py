@@ -1,20 +1,16 @@
 import jax
 import jax.numpy as jnp
+from fastquat import Quaternion
 from numpy.testing import assert_allclose
 
 from furax.core import CompositionOperator
 from furax.mapmaking.acquisition import build_acquisition_operator
-from furax.math.quaternion import qmul, to_gamma_angles, to_polarization_angle
+from furax.math.coords import to_gamma_angles, to_polarization_angle
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.pointing import PointingOperator
 
 NSIDE = 4
 NDET, NSAMP = 3, 10
-
-
-def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
-    q = jax.random.normal(key, (*shape, 4))
-    return q / jnp.linalg.norm(q, axis=-1, keepdims=True)
 
 
 def test_no_hwp_acquisition_formula() -> None:
@@ -23,15 +19,15 @@ def test_no_hwp_acquisition_formula() -> None:
 
     key = jax.random.PRNGKey(0)
     k1, k2, k3 = jax.random.split(key, 3)
-    qbore = _random_unit_quats(k1, (NSAMP,))
-    qdet = _random_unit_quats(k2, (NDET,))
+    qbore = Quaternion.random(k1, (NSAMP,))
+    qdet = Quaternion.random(k2, (NDET,))
     sky = landscape.normal(k3)
 
     acq = build_acquisition_operator(landscape, qbore, qdet)
     tod = acq(sky)
 
     # Reference: sample pixels and apply polarization angle formula directly
-    qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
+    qdet_full = qbore[None, :] * qdet[:, None]  # (ndet, nsamp)
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     indices = landscape.quat2index(qdet_full)  # (ndet, nsamp)
 
@@ -49,15 +45,15 @@ def test_no_hwp_acquisition_transpose_formula() -> None:
 
     key = jax.random.PRNGKey(1)
     k1, k2, k3 = jax.random.split(key, 3)
-    qbore = _random_unit_quats(k1, (NSAMP,))
-    qdet = _random_unit_quats(k2, (NDET,))
+    qbore = Quaternion.random(k1, (NSAMP,))
+    qdet = Quaternion.random(k2, (NDET,))
     tod = jax.random.normal(k3, (NDET, NSAMP), dtype=jnp.float64)
 
     acq = build_acquisition_operator(landscape, qbore, qdet)
     sky = acq.T(tod)
 
     # Reference: scatter TOD into sky weighted by polarization angle
-    qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
+    qdet_full = qbore[None, :] * qdet[:, None]  # (ndet, nsamp)
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     flat_indices = landscape.quat2index(qdet_full).ravel()
     d = tod.ravel()
@@ -88,15 +84,15 @@ def test_hwp_acquisition_formula() -> None:
 
     key = jax.random.PRNGKey(2)
     k1, k2, k3, k4 = jax.random.split(key, 4)
-    qbore = _random_unit_quats(k1, (NSAMP,))
-    qdet = _random_unit_quats(k2, (NDET,))
+    qbore = Quaternion.random(k1, (NSAMP,))
+    qdet = Quaternion.random(k2, (NDET,))
     hwp_angles = jax.random.uniform(k4, (NSAMP,), dtype=jnp.float64, maxval=jnp.pi)
     sky = landscape.normal(k3)
 
     acq = build_acquisition_operator(landscape, qbore, qdet, hwp_angles=hwp_angles)
     tod = acq(sky)
 
-    qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
+    qdet_full = qbore[None, :] * qdet[:, None]  # (ndet, nsamp)
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     indices = landscape.quat2index(qdet_full)  # (ndet, nsamp)
     gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)
@@ -119,15 +115,15 @@ def test_hwp_acquisition_transpose_formula() -> None:
 
     key = jax.random.PRNGKey(3)
     k1, k2, k3, k4 = jax.random.split(key, 4)
-    qbore = _random_unit_quats(k1, (NSAMP,))
-    qdet = _random_unit_quats(k2, (NDET,))
+    qbore = Quaternion.random(k1, (NSAMP,))
+    qdet = Quaternion.random(k2, (NDET,))
     hwp_angles = jax.random.uniform(k3, (NSAMP,), dtype=jnp.float64, maxval=jnp.pi)
     tod = jax.random.normal(k4, (NDET, NSAMP), dtype=jnp.float64)
 
     acq = build_acquisition_operator(landscape, qbore, qdet, hwp_angles=hwp_angles)
     sky = acq.T(tod)
 
-    qdet_full = qmul(qbore, qdet[:, None, :])  # (ndet, nsamp, 4)
+    qdet_full = qbore[None, :] * qdet[:, None]  # (ndet, nsamp)
     pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
     flat_indices = landscape.quat2index(qdet_full).ravel()
     gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)
@@ -149,8 +145,8 @@ def test_last_acquisition_operand_is_pointing() -> None:
     landscape = HealpixLandscape(NSIDE, 'IQU')
     key = jax.random.PRNGKey(0)
     k1, k2 = jax.random.split(key)
-    qbore = _random_unit_quats(k1, (NSAMP,))
-    qdet = _random_unit_quats(k2, (NDET,))
+    qbore = Quaternion.random(k1, (NSAMP,))
+    qdet = Quaternion.random(k2, (NDET,))
     acq = build_acquisition_operator(landscape, qbore, qdet)
     assert isinstance(acq, CompositionOperator)
     assert isinstance(acq.operands[-1], PointingOperator)

@@ -1,8 +1,6 @@
-import functools
-import operator
 import pickle
 from abc import abstractmethod
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 from logging import Logger
@@ -38,7 +36,12 @@ from furax import (
     OperatorTag,
     SymmetricBandToeplitzOperator,
 )
-from furax.core import BlockDiagonalOperator, BlockSelectOperator, IndexOperator
+from furax.core import (
+    AdditionOperator,
+    BlockDiagonalOperator,
+    BlockSelectOperator,
+    IndexOperator,
+)
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -371,11 +374,9 @@ class MultiObservationMapMaker[T]:
 
             # Per-bucket stream operators. Everything below sums over the buckets: each is a
             # stream of its own length, so the sums stay plain additions of stream operators.
-            H_sky = [StreamOperator.column(bm.model.H) for bm in acc.buckets]
-            W: list[AbstractLinearOperator] = [
-                StreamOperator.diagonal(bm.model.W) for bm in acc.buckets
-            ]
-            W_diag: list[AbstractLinearOperator] = (
+            H = [StreamOperator.column(bm.model.H) for bm in acc.buckets]
+            W = [StreamOperator.diagonal(bm.model.W) for bm in acc.buckets]
+            W_diag = (
                 W
                 if self.config.binned
                 else [
@@ -390,15 +391,15 @@ class MultiObservationMapMaker[T]:
             ]
 
             # Diagonal pixel system for the block-Jacobi preconditioner
-            A_diag = _sum_operators(
-                (H.T @ Wd @ F_ @ H).reduce() for H, Wd, F_ in zip(H_sky, W_diag, F, strict=True)
-            )
+            A_diag = AdditionOperator(
+                [(h.T @ wd @ f @ h).reduce() for h, wd, f in zip(H, W_diag, F, strict=True)]
+            ).reduce()
             BJ = BJPreconditioner.create(A_diag)
             icov = BJ.blocks.block_until_ready()
             logger_info('Computed white noise inverse covariance')
 
-            # Fold ATOP deprojector into the weight from now on
-            W = [(W_b @ F_b).reduce() for W_b, F_b in zip(W, F, strict=True)]
+            # Fold ATOP deprojector into the weight
+            W_prime = [(w @ f).reduce() for w, f in zip(W, F, strict=True)]
 
             # Pixel selection from the icov estimate
             hit_map = acc.hit_map  # rebound below, once the pixel selection is known
@@ -407,7 +408,7 @@ class MultiObservationMapMaker[T]:
             S = IndexOperator(
                 (..., *jnp.where(valid_pixels)), in_structure=self.landscape.structure
             )
-            M_sky = (S @ BJ.I @ S.T).reduce()
+            M = (S @ BJ.I @ S.T).reduce()  # preconditioner
 
             n_selected = jnp.sum(valid_pixels)
             n_observed = jnp.sum(hit_map > 0)
@@ -417,7 +418,7 @@ class MultiObservationMapMaker[T]:
             hit_map = hit_map.at[~valid_pixels].set(0)  # excluded pixels have zero hits
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
-            system = self._build_system(acc, H_sky, W, S, M_sky)
+            system = self._build_system(acc, H, W_prime, S, M)
 
             def log_iteration(step: Array, r_norm: Array) -> None:
                 if rank == 0:  # log from rank 0 only
@@ -457,10 +458,10 @@ class MultiObservationMapMaker[T]:
     def _build_system(
         self,
         acc: AccumulatedModel,
-        H_sky: Sequence[AbstractLinearOperator],
+        H: Sequence[AbstractLinearOperator],
         W: Sequence[AbstractLinearOperator],
         S: AbstractLinearOperator,
-        M_sky: AbstractLinearOperator,
+        M: AbstractLinearOperator,
     ) -> MapMakingSystem:
         r"""Assembles the GLS normal system $H^T W' H x = H^T W' d$ over the selected pixels.
 
@@ -471,21 +472,21 @@ class MultiObservationMapMaker[T]:
 
         Args:
             acc: The accumulated per-bucket models, hit map and map RHS.
-            H_sky: Per-bucket sky pointing operator.
+            H: Per-bucket sky pointing operator.
             W: Per-bucket weight, already bundling the sample mask and the ATOP deprojector.
             S: Selection of the estimated pixels out of the full sky grid.
-            M_sky: Block-Jacobi preconditioner, restricted to the selected pixels.
+            M: Block-Jacobi preconditioner, restricted to the selected pixels.
 
         Returns:
             The system to solve, in the unknowns described above.
         """
         # Implicit templates fold into the weight (marginal deprojection).
-        weights = list(W)
+        W = list(W)
         for b, bm in enumerate(acc.buckets):
             if bm.templates is not None and (implicit := bm.templates.implicit) is not None:
                 Ti = StreamOperator.diagonal(implicit.operator)
                 G = StreamOperator.diagonal(implicit.gram_inverse)
-                weights[b] = (weights[b] - weights[b] @ Ti @ G @ Ti.T @ weights[b]).reduce()
+                W[b] = (W[b] - W[b] @ Ti @ G @ Ti.T @ W[b]).reduce()
 
         # Explicit templates are configured for the run, so every bucket carries them or none.
         explicit = [
@@ -496,30 +497,29 @@ class MultiObservationMapMaker[T]:
         assert len(explicit) in (0, len(acc.buckets))
 
         if not explicit:
-            A = _sum_operators(
-                ((H @ S.T).T @ W_b @ (H @ S.T)).reduce()
-                for H, W_b in zip(H_sky, weights, strict=True)
-            )
-            return MapMakingSystem(A, S(acc.map_rhs), M_sky, has_amplitudes=False)
+            A = AdditionOperator(
+                [((h @ S.T).T @ w @ (h @ S.T)).reduce() for h, w in zip(H, W, strict=True)]
+            ).reduce()
+            return MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False)
 
         Te = [StreamOperator.diagonal(e.operator) for e in explicit]
-        G_e = [StreamOperator.diagonal(e.gram_inverse) for e in explicit]
-        amplitudes_structure = [T.in_structure for T in Te]
+        Ge = [StreamOperator.diagonal(e.gram_inverse) for e in explicit]
+        amplitudes_structure = [te.in_structure for te in Te]
 
         # Joint sky + explicit-amplitude system. The unknowns are the selected sky pixels and one
         # amplitude block per bucket; each bucket's system sees the full sky grid and its own
         # amplitudes, picked out of the list and embedded back by `E`.
         terms = []
-        for b, (H, T, W_b) in enumerate(zip(H_sky, Te, weights, strict=True)):
-            H_joint = StreamOperator.block_row([H, T])
-            A_joint = (H_joint.T @ W_b @ H_joint).reduce()
+        for b, (h, te, w) in enumerate(zip(H, Te, W, strict=True)):
+            h_joint = StreamOperator.block_row([h, te])
+            A_joint = (h_joint.T @ w @ h_joint).reduce()
             pick = BlockSelectOperator(b, in_structure=amplitudes_structure)
             E = BlockDiagonalOperator([S.T, pick])
             terms.append((E.T @ A_joint @ E).reduce())
 
         rhs = [S(acc.map_rhs), [bm.amplitude_rhs for bm in acc.buckets]]
-        M = BlockDiagonalOperator([M_sky, G_e])
-        return MapMakingSystem(_sum_operators(terms), rhs, M, has_amplitudes=True)
+        M = BlockDiagonalOperator([M, Ge])
+        return MapMakingSystem(AdditionOperator(terms).reduce(), rhs, M, has_amplitudes=True)
 
     def _gather(self, x: PyTree[Array]) -> PyTree[np.ndarray]:
         """Bring a pytree sharded over the 'obs' axis to the host, whole, on every process."""
@@ -741,11 +741,6 @@ class MultiObservationMapMaker[T]:
         # create the final shape and WCS objects for this covering box
         shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
         return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
-
-
-def _sum_operators(operators: Iterable[AbstractLinearOperator]) -> AbstractLinearOperator:
-    """Sum operators, one per bucket; a single one is returned as is."""
-    return functools.reduce(operator.add, operators)
 
 
 def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape | None:

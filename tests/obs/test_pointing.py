@@ -3,12 +3,13 @@ import jax.numpy as jnp
 import jax_healpy as jhp
 import pytest
 from equinox import tree_equal
+from fastquat import Quaternion
 from jax.tree_util import register_static
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
 from furax.core import AbstractLinearOperator, CompositionOperator, IndexOperator
-from furax.math.quaternion import from_iso_angles, qmul, to_polarization_angle_cos_sin
+from furax.math.coords import from_iso_angles, to_polarization_angle_cos_sin
 from furax.obs.landscapes import (
     CARLandscape,
     HealpixLandscape,
@@ -34,12 +35,6 @@ def _make_landscape(landscape_type: str, stokes: ValidStokesLiteral) -> StokesLa
     return CARLandscape((180, 360), _CAR_PROJECTION, stokes)
 
 
-def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
-    """Generate random unit quaternions."""
-    q = jax.random.normal(key, (*shape, 4))
-    return q / jnp.linalg.norm(q, axis=-1, keepdims=True)
-
-
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
 @pytest.mark.parametrize('frame', ['boresight', 'detector'])
 class TestAsExpandedOperator:
@@ -49,8 +44,8 @@ class TestAsExpandedOperator:
 
         key = jax.random.PRNGKey(42)
         key1, key2, key3 = jax.random.split(key, 3)
-        qbore = _random_unit_quats(key1, (NSAMP,))
-        qdet = _random_unit_quats(key2, (NDET,))
+        qbore = Quaternion.random(key1, (NSAMP,))
+        qdet = Quaternion.random(key2, (NDET,))
 
         pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, batch_size=2)
         sky = landscape.normal(key3)
@@ -66,8 +61,8 @@ class TestAsExpandedOperator:
 
         key = jax.random.PRNGKey(42)
         key1, key2, key3 = jax.random.split(key, 3)
-        qbore = _random_unit_quats(key1, (NSAMP,))
-        qdet = _random_unit_quats(key2, (NDET,))
+        qbore = Quaternion.random(key1, (NSAMP,))
+        qdet = Quaternion.random(key2, (NDET,))
 
         pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, batch_size=2)
         tod = pointing_op.out_structure
@@ -84,8 +79,8 @@ class TestAsExpandedOperator:
 
         key = jax.random.PRNGKey(42)
         key1, key2, key3 = jax.random.split(key, 3)
-        qbore = _random_unit_quats(key1, (NSAMP,))
-        qdet = _random_unit_quats(key2, (NDET,))
+        qbore = Quaternion.random(key1, (NSAMP,))
+        qdet = Quaternion.random(key2, (NDET,))
 
         pointing_op = PointingOperator.create(
             landscape, qbore, qdet, frame=frame, batch_size=2, interpolate=True
@@ -100,8 +95,8 @@ class TestAsExpandedOperator:
 
         key = jax.random.PRNGKey(42)
         key1, key2, key3 = jax.random.split(key, 3)
-        qbore = _random_unit_quats(key1, (NSAMP,))
-        qdet = _random_unit_quats(key2, (NDET,))
+        qbore = Quaternion.random(key1, (NSAMP,))
+        qdet = Quaternion.random(key2, (NDET,))
 
         pointing_op = PointingOperator.create(
             landscape, qbore, qdet, frame=frame, batch_size=2, interpolate=True
@@ -124,8 +119,8 @@ class TestInterpolate:
 
         key = jax.random.PRNGKey(7)
         k1, k2, k3, k4 = jax.random.split(key, 4)
-        qbore = _random_unit_quats(k1, (NSAMP,))
-        qdet = _random_unit_quats(k2, (NDET,))
+        qbore = Quaternion.random(k1, (NSAMP,))
+        qdet = Quaternion.random(k2, (NDET,))
 
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
         sky = landscape.normal(k3)
@@ -141,8 +136,8 @@ class TestInterpolate:
 
         key = jax.random.PRNGKey(7)
         k1, k2 = jax.random.split(key)
-        qbore = _random_unit_quats(k1, (NSAMP,))
-        qdet = _random_unit_quats(k2, (NDET,))
+        qbore = Quaternion.random(k1, (NSAMP,))
+        qdet = Quaternion.random(k2, (NDET,))
 
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
         tod = op(landscape.full(3.14))
@@ -157,8 +152,8 @@ def test_expanded_interpolate_preserves_rotation_fusion() -> None:
     """
     landscape = _make_landscape('car', 'IQU')
     key1, key2, key3, key4 = jax.random.split(jax.random.PRNGKey(3), 4)
-    qbore = _random_unit_quats(key1, (NSAMP,))
-    qdet = _random_unit_quats(key2, (NDET,))
+    qbore = Quaternion.random(key1, (NSAMP,))
+    qdet = Quaternion.random(key2, (NDET,))
 
     op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
     expanded = op.as_expanded_operator()
@@ -180,7 +175,7 @@ def test_expanded_interpolate_preserves_rotation_fusion() -> None:
 
 def _nearest_quats(seed: int) -> tuple[jax.Array, jax.Array]:
     k1, k2 = jax.random.split(jax.random.key(seed))
-    return _random_unit_quats(k1, (NSAMP,)), _random_unit_quats(k2, (NDET,))
+    return Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
 
 
 def test_the_expanded_nearest_operator_keeps_the_index_fast_path() -> None:
@@ -213,7 +208,7 @@ def test_the_expanded_nearest_operator_drops_samples_outside_the_map() -> None:
     tod = op.as_expanded_operator()(sky)
     assert tree_equal(tod, op(sky), rtol=1e-10, atol=1e-12)
     # half the pixels are unmapped, so some samples do sink: the test would pass vacuously
-    assert jnp.any(op.landscape.quat2index(qmul(op.qbore, op.qdet[:, None, :])) == local.sink)
+    assert jnp.any(op.landscape.quat2index(op.qbore * op.qdet[:, None]) == local.sink)
 
 
 class TestLocalLandscape:
@@ -226,8 +221,8 @@ class TestLocalLandscape:
     @pytest.fixture(scope='class', params=[False, True], ids=['nearest', 'bilinear'])
     def p_full(self, request: pytest.FixtureRequest, keys: jax.Array) -> PointingOperator:
         parent = HealpixLandscape(NSIDE, 'IQU')
-        qbore = _random_unit_quats(keys[0], (NSAMP,))
-        qdet = _random_unit_quats(keys[1], (NDET,))
+        qbore = Quaternion.random(keys[0], (NSAMP,))
+        qdet = Quaternion.random(keys[1], (NDET,))
         return PointingOperator.create(parent, qbore, qdet, interpolate=request.param)
 
     @pytest.fixture(scope='class')
@@ -311,7 +306,7 @@ class TestTransport:
     @staticmethod
     def _quats(seed: int) -> tuple[jax.Array, jax.Array]:
         k1, k2 = jax.random.split(jax.random.key(seed))
-        return _random_unit_quats(k1, (NSAMP,)), _random_unit_quats(k2, (NDET,))
+        return Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
 
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
     def test_adjoint(self, stokes, landscape_type, interpolate) -> None:
@@ -330,7 +325,7 @@ class TestTransport:
         sky = landscape.normal(jax.random.key(8))
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
 
-        qdet_full = qmul(op.qbore, op.qdet[:, None, :])
+        qdet_full = op.qbore * op.qdet[:, None]
         cos_pa, sin_pa = to_polarization_angle_cos_sin(qdet_full)
         untransported = _untransported_sample(landscape, sky, qdet_full, interpolate)
         reference = rotate_qu_cs(untransported, cos_pa, sin_pa)
@@ -348,7 +343,7 @@ class TestTransport:
         assert not op._transports
 
         sky = landscape.normal(jax.random.key(6))
-        qdet_full = qmul(op.qbore, op.qdet[:, None, :])
+        qdet_full = op.qbore * op.qdet[:, None]
         expected = _untransported_sample(landscape, sky, qdet_full, interpolate)
         assert_array_almost_equal(op(sky).data, expected.data, decimal=13)
 
@@ -408,7 +403,7 @@ class TestTransportHooks:
     @staticmethod
     def _quats(seed: int) -> tuple[jax.Array, jax.Array]:
         k1, k2 = jax.random.split(jax.random.key(seed))
-        return _random_unit_quats(k1, (NSAMP,)), _random_unit_quats(k2, (NDET,))
+        return Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
 
     def test_a_subclass_moving_the_nearest_pointing_must_supply_its_own_stencil(self) -> None:
         """`_quat2index` stands beside `_quat2stencil`, so overriding it alone must raise."""
@@ -471,9 +466,9 @@ class TestNearestIndexAgreement:
     @staticmethod
     def _setup(seed: int) -> tuple[PointingOperator, jax.Array]:
         k1, k2 = jax.random.split(jax.random.key(seed))
-        qbore, qdet = _random_unit_quats(k1, (NSAMP,)), _random_unit_quats(k2, (NDET,))
+        qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
         op = PointingOperator.create(_ShiftedWorldIndexLandscape(NSIDE, 'IQU'), qbore, qdet)
-        return op, qmul(op.qbore, op.qdet[:, None, :])
+        return op, op.qbore * op.qdet[:, None]
 
     def test_the_stencil_indexes_the_quat2index_pixel(self) -> None:
         op, qdet_full = self._setup(40)
@@ -505,7 +500,7 @@ class TestNearestTransport:
     @staticmethod
     def _quats(seed: int) -> tuple[jax.Array, jax.Array]:
         k1, k2 = jax.random.split(jax.random.key(seed))
-        return _random_unit_quats(k1, (NSAMP,)), _random_unit_quats(k2, (NDET,))
+        return Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
 
     def test_samples_on_pixel_centers_are_unchanged(self) -> None:
         """A sample sitting on its pixel center has nothing to transport."""
@@ -513,11 +508,11 @@ class TestNearestTransport:
         pixels = jnp.arange(0, 12 * NSIDE**2, 7)
         theta, phi = jhp.pix2ang(NSIDE, pixels)
         qbore = from_iso_angles(theta, phi, jnp.zeros_like(theta))
-        qdet = jnp.array([[0.0, 0.0, 0.0, 1.0]])  # identity: the detector points at the boresight
+        qdet = Quaternion.ones((1,))  # identity: the detector points at the boresight
 
         op = PointingOperator.create(landscape, qbore, qdet)
         sky = landscape.normal(jax.random.key(30))
-        qdet_full = qmul(op.qbore, op.qdet[:, None, :])
+        qdet_full = op.qbore * op.qdet[:, None]
         cos_pa, sin_pa = to_polarization_angle_cos_sin(qdet_full)
         expected = rotate_qu_cs(
             _untransported_sample(landscape, sky, qdet_full, False), cos_pa, sin_pa
@@ -531,7 +526,7 @@ class TestNearestTransport:
         op = PointingOperator.create(landscape, qbore, qdet)
         hits = op.T(ftree.ones_like(op.out_structure)).i
 
-        qdet_full = qmul(op.qbore, op.qdet[:, None, :])
+        qdet_full = op.qbore * op.qdet[:, None]
         expected = jnp.zeros(len(landscape)).at[landscape.quat2index(qdet_full).ravel()].add(1.0)
         assert_array_equal(hits, expected)
 
@@ -542,7 +537,7 @@ class TestNearestTransport:
         op = PointingOperator.create(landscape, qbore, qdet)
 
         # column of P^T P for one Stokes component of one hit pixel
-        qdet_full = qmul(op.qbore, op.qdet[:, None, :])
+        qdet_full = op.qbore * op.qdet[:, None]
         pixel = int(landscape.quat2index(qdet_full).ravel()[0])
         zeros = landscape.zeros()
         probe = type(zeros).from_array(zeros.data.at[:, pixel].set(1.0))

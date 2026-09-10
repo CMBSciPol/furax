@@ -12,11 +12,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from astropy.wcs import WCS
+from fastquat import Quaternion
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Bool, Float, Key, UInt32
 from numpy.typing import NDArray
 
-from furax.math.quaternion import qmul, to_lonlat_angles
+from furax.math.coords import to_lonlat_angles
 from furax.obs.landscapes import ProjectionType, StokesLandscape
 from furax.obs.stokes import (
     StokesI,
@@ -380,11 +381,10 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
             boresight_quaternions = boresight_quaternions[::thin_samples, :]
 
         # Combine boresight pointing with detector offsets via quaternion multiplication
-        # Broadcasting: (1, n_final_samples, 4) * (n_dets, 1, 4) -> (n_dets, n_final_samples, 4)
-        qdet_full = qmul(
-            boresight_quaternions[None, :, :],  # (1, n_final_samples, 4)
-            detector_quaternions[:, None, :],  # (n_dets, 1, 4)
-        )  # Result: (n_dets, n_final_samples, 4)
+        # Broadcasting: (1, n_final_samples) * (n_dets, 1) -> (n_dets, n_final_samples)
+        qbore = Quaternion.from_array(boresight_quaternions)
+        qdet = Quaternion.from_array(detector_quaternions)
+        qdet_full = qbore[None, :] * qdet[:, None]
 
         # Convert quaternions to longitude/latitude angles in radians
         alpha, delta, _ = to_lonlat_angles(qdet_full)
@@ -397,10 +397,26 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
         return alpha, delta
 
 
-class ObservationBufferShapes(NamedTuple):
+class ObservationBufferShape(NamedTuple):
+    """Sizes of the buffers one observation is read into.
+
+    Attributes:
+        detector_count: Number of detectors.
+        sample_count: Number of time samples per detector.
+        interval_count: Number of scanning intervals; 0 when they were not requested.
+    """
+
     detector_count: int
     sample_count: int
     interval_count: int = 0
+
+    @property
+    def volume(self) -> int:
+        """Number of time-ordered elements, ``detector_count * sample_count``.
+
+        Scanning intervals are metadata rather than samples, so the interval axis does not count.
+        """
+        return self.detector_count * self.sample_count
 
 
 class AbstractLazyObservation[T](ABC):
@@ -428,7 +444,7 @@ class AbstractLazyObservation[T](ABC):
         """Human-readable identifier, used e.g. to report observations that failed to load."""
         return type(self).__name__
 
-    def probe_shape(self, intervals: bool = False) -> ObservationBufferShapes:
+    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
         """Returns the buffer dimensions for this observation.
 
         The default opens the observation with a minimal field set request; subclasses may
@@ -443,7 +459,7 @@ class AbstractLazyObservation[T](ABC):
         else:
             data = self.get_data([])
             n_intervals = 0
-        return ObservationBufferShapes(data.n_detectors, data.n_samples, n_intervals)
+        return ObservationBufferShape(data.n_detectors, data.n_samples, n_intervals)
 
 
 class FileBackedLazyObservation[T](AbstractLazyObservation[T]):

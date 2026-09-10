@@ -5,14 +5,14 @@ from typing import Literal, TypeVar
 import jax
 import jax.numpy as jnp
 import numpy as np
+from fastquat import Quaternion
 from jax import jit, lax
 from jaxtyping import Array, Float, Int, Integer, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import DiagonalOperator, IndexOperator, RavelOperator, TransposeOperator
-from furax.math.quaternion import (
+from furax.math.coords import (
     euler,
-    qmul,
     to_gamma_angles,
     to_polarization_angle,
     to_polarization_angle_cos_sin,
@@ -72,15 +72,15 @@ class PointingOperator(AbstractLinearOperator):
 
     Attributes:
         landscape: The sky pixelization (HEALPix landscape).
-        qbore: Boresight quaternions, shape (n_samples, 4).
-        qdet: Detector quaternions, shape (n_detectors, 4).
+        qbore: Boresight quaternions, shape (n_samples,).
+        qdet: Detector quaternions, shape (n_detectors,).
         batch_size: Number of detectors processed per batch (memory/speed tradeoff).
         interpolate: If True, bilinear interpolation over the four nearest pixels; else nearest.
     """
 
     landscape: StokesLandscape
-    qbore: Float[Array, 'samp 4']
-    qdet: Float[Array, 'det 4']
+    qbore: Quaternion
+    qdet: Quaternion
     batch_size: int = field(metadata={'static': True})
     interpolate: bool = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
@@ -89,8 +89,8 @@ class PointingOperator(AbstractLinearOperator):
     def create(
         cls,
         landscape: StokesLandscape,
-        boresight_quaternions: Float[Array, 'samp 4'],
-        detector_quaternions: Float[Array, 'det 4'],
+        boresight_quaternions: Quaternion,
+        detector_quaternions: Quaternion,
         *,
         batch_size: int = 32,
         frame: Literal['boresight', 'detector'] = 'boresight',
@@ -112,7 +112,7 @@ class PointingOperator(AbstractLinearOperator):
         if frame == 'boresight':
             gamma = to_gamma_angles(detector_quaternions)
             q_z_neg = euler(2, -gamma)  # z-rotation by -gamma
-            detector_quaternions = qmul(detector_quaternions, q_z_neg)
+            detector_quaternions = detector_quaternions * q_z_neg
 
         return cls(
             landscape,
@@ -129,10 +129,9 @@ class PointingOperator(AbstractLinearOperator):
         """Performs the 'un-pointing' operation, i.e. map->tod."""
         x_flat = x.ravel()
 
-        def mv_inner(qdet: Float[Array, 'det 4']) -> _StokesT:
-            # Expand detector quaternions from boresight and offsets
-            # (samples, 4) x (det, 1, 4) -> (det, samples, 4)
-            qdet_full = qmul(self.qbore, qdet[:, None, :])
+        def mv_inner(qdet: Quaternion) -> _StokesT:
+            # Expand detector quaternions from boresight and offsets: (samp) x (det, 1) -> (det, samp)
+            qdet_full = self.qbore * qdet[:, None]
 
             tod = self._sample(x_flat, qdet_full)
             tod = self._modulate(tod, qdet_full)
@@ -203,7 +202,7 @@ class PointingOperator(AbstractLinearOperator):
         ``(theta, phi)`` and recovers the stencil on each apply (works for HEALPix and WCS/CAR
         landscapes), because its four weights depend on where in the pixel the sample falls.
         """
-        qdet_full = qmul(self.qbore, self.qdet[:, None, :])
+        qdet_full = self.qbore * self.qdet[:, None]
         # Ravel the spatial axes only; the Stokes container's backing array carries a leading
         # Stokes axis (axis 0) that must survive, so ravel axes 1..-1 and index the pixel axis last.
         ravel_op = RavelOperator(1, -1, in_structure=self.landscape.structure)
@@ -252,14 +251,14 @@ class PointingOperator(AbstractLinearOperator):
     def _interpolation(self) -> Interpolation:
         return Interpolation.BILINEAR if self.interpolate else Interpolation.NEAREST
 
-    def _quat2index(self, qdet_full: Float[Array, '*dims 4']) -> Array:
+    def _quat2index(self, qdet_full: Quaternion) -> Array:
         """Convert full detector quaternions to flat pixel indices.
 
         Override in subclasses to change the pointing-to-index mapping.
         """
         return self.landscape.quat2index(qdet_full)
 
-    def _quat2stencil(self, qdet_full: Float[Array, '*dims 4']) -> tuple[Stencil, Array, Array]:
+    def _quat2stencil(self, qdet_full: Quaternion) -> tuple[Stencil, Array, Array]:
         """Convert quaternions to the sampling stencil and the sampled direction ``(theta, phi)``.
 
         The single hook for stencil sampling, at whichever interpolation [`interpolate`][]
@@ -283,7 +282,7 @@ class PointingOperator(AbstractLinearOperator):
         # that a sample would bin into a pixel the hit map never counted, which drops it.
         return self.landscape.index2stencil(self._quat2index(qdet_full)), theta, phi
 
-    def _modulate(self, tod: _StokesT, qdet_full: Float[Array, '*dims 4']) -> _StokesT:
+    def _modulate(self, tod: _StokesT, qdet_full: Quaternion) -> _StokesT:
         """Hook applied to the sampled TOD (identity in the base class).
 
         Subclasses override this to inject a per-sample diagonal weighting. Because the
@@ -292,7 +291,7 @@ class PointingOperator(AbstractLinearOperator):
         """
         return tod
 
-    def _sample(self, x_flat: _StokesT, qdet_full: Float[Array, '*dims 4']) -> _StokesT:
+    def _sample(self, x_flat: _StokesT, qdet_full: Quaternion) -> _StokesT:
         """Sample the flat map at positions given by qdet_full."""
         if self._transports:
             stencil, theta, phi = self._quat2stencil(qdet_full)
@@ -307,7 +306,7 @@ class PointingOperator(AbstractLinearOperator):
         sampled = jnp.sum(x_flat.data[:, stencil.indices] * stencil.weights, axis=-1)
         return type(x_flat).from_array(sampled)
 
-    def _bin(self, tod_batch: _StokesT, qdet_full: Float[Array, '*dims 4']) -> _StokesT:
+    def _bin(self, tod_batch: _StokesT, qdet_full: Quaternion) -> _StokesT:
         """Scatter-add a batch of TOD into a sky map."""
         sky_shape = self.landscape.shape
         n_pixels = int(np.prod(sky_shape))
@@ -345,9 +344,9 @@ class PointingTransposeOperator(TransposeOperator):
     def mv(self, x: _StokesT) -> _StokesT:
         """Performs the 'pointing' operation, i.e. tod->map."""
 
-        def mv_inner(xbatch: _StokesT, qdet: Float[Array, 'det 4']) -> _StokesT:
+        def mv_inner(xbatch: _StokesT, qdet: Quaternion) -> _StokesT:
             # Expand detector quaternions from boresight and offsets
-            qdet_full = qmul(self.operator.qbore, qdet[:, None, :])
+            qdet_full = self.operator.qbore * qdet[:, None]
             xbatch = self.operator._modulate(xbatch, qdet_full)
 
             if isinstance(xbatch, StokesI):
@@ -419,7 +418,7 @@ class XSamplingOperator(AbstractLinearOperator):
     def create(
         cls,
         landscape: StokesLandscape,
-        quaternions: Float[Array, 'det samp 4'],
+        quaternions: Quaternion,
         *,
         interpolate: bool = False,
     ) -> 'XSamplingOperator':

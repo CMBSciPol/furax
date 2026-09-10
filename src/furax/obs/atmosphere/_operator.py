@@ -1,10 +1,11 @@
 from dataclasses import field
 
 import jax.numpy as jnp
+from fastquat import Quaternion
 from jaxtyping import Array, Float
 
 from furax import tree
-from furax.math.quaternion import qrot_zaxis
+from furax.math.coords import ZAXIS
 from furax.obs.landscapes import TangentialLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.stencil import Stencil
@@ -53,8 +54,8 @@ class AtmospherePointingOperator(PointingOperator):
     def from_wind(
         cls,
         landscape: TangentialLandscape,
-        boresight_quaternions: Float[Array, 'samp 4'],
-        detector_quaternions: Float[Array, 'det 4'],
+        boresight_quaternions: Quaternion,
+        detector_quaternions: Quaternion,
         wind_velocity: Float[Array, '2'],
         times: Float[Array, ' samp'],
         *,
@@ -93,7 +94,7 @@ class AtmospherePointingOperator(PointingOperator):
         )
 
     def _wind_xy(
-        self, qdet_full: Float[Array, '*dims 4']
+        self, qdet_full: Quaternion
     ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Gnomonic projection onto the atmosphere screen, including wind displacement."""
         x, y = self.landscape.quat2xy(qdet_full)
@@ -102,20 +103,18 @@ class AtmospherePointingOperator(PointingOperator):
             y + self.wind_displacement[:, 1],
         )
 
-    def _modulate[StokesT: Stokes](
-        self, tod: StokesT, qdet_full: Float[Array, '*dims 4']
-    ) -> StokesT:
+    def _modulate[StokesT: Stokes](self, tod: StokesT, qdet_full: Quaternion) -> StokesT:
         """Weight each sample by the airmass loading ``1 / sin(el)`` when enabled."""
         if not self.elevation_modulation:
             return tod
-        sin_el = qrot_zaxis(qdet_full)[..., 2]  # (det, samp)
+        sin_el = qdet_full.rotate_vector(ZAXIS)[..., 2]  # (det, samp)
         return tree.truediv(tod, sin_el)  # type: ignore[no-any-return]
 
-    def _quat2index(self, qdet_full: Float[Array, '*dims 4']) -> Array:
+    def _quat2index(self, qdet_full: Quaternion) -> Array:
         x, y = self._wind_xy(qdet_full)
         return self.landscape.pixel2index(*self.landscape.xy2pixel(x, y))
 
-    def _quat2stencil(self, qdet_full: Float[Array, '*dims 4']) -> tuple[Stencil, Array, Array]:
+    def _quat2stencil(self, qdet_full: Quaternion) -> tuple[Stencil, Array, Array]:
         """The screen stencil, which carries no sky positions and no sampled direction.
 
         The screen is a projection plane, not the sphere, so a neighbour has no co-latitude to

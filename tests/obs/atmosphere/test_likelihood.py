@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from fastquat import Quaternion
 from numpy.testing import assert_allclose
 
 from furax import HomothetyOperator
@@ -23,20 +24,13 @@ def _make_landscape():
     )
 
 
-def _random_unit_quats(key, shape):
-    q = jax.random.normal(key, (*shape, 4))
-    return q / jnp.linalg.norm(q, axis=-1, keepdims=True)
-
-
 def _make_operator(landscape, wind_velocity, seed=0):
     key = jax.random.PRNGKey(seed)
     k_bore, k_det = jax.random.split(key, 2)
-    qbore = _random_unit_quats(k_bore, (NSAMP,))
-    qbore = qbore.at[:, 1:3].multiply(0.02)
-    qbore = qbore / jnp.linalg.norm(qbore, axis=-1, keepdims=True)
-    qdet = _random_unit_quats(k_det, (NDET,))
-    qdet = qdet.at[:, 1:3].multiply(0.01)
-    qdet = qdet / jnp.linalg.norm(qdet, axis=-1, keepdims=True)
+    qbore = Quaternion.random(k_bore, (NSAMP,))
+    qbore = Quaternion.from_array(qbore.wxyz.at[:, 1:3].multiply(0.02)).normalize()
+    qdet = Quaternion.random(k_det, (NDET,))
+    qdet = Quaternion.from_array(qdet.wxyz.at[:, 1:3].multiply(0.01)).normalize()
     times = jnp.arange(NSAMP, dtype=jnp.float64)
     return AtmospherePointingOperator.from_wind(
         landscape, qbore, qdet, wind_velocity, times, interpolate=True
@@ -82,12 +76,10 @@ class TestProfileNegLogLikelihood:
         k_atm, k_bore, k_det = jax.random.split(key, 3)
 
         atm = simulate_kolmogorov_screen(landscape, k_atm)
-        qbore = _random_unit_quats(k_bore, (NSAMP,))
-        qbore = qbore.at[:, 1:3].multiply(0.02)
-        qbore = qbore / jnp.linalg.norm(qbore, axis=-1, keepdims=True)
-        qdet = _random_unit_quats(k_det, (NDET,))
-        qdet = qdet.at[:, 1:3].multiply(0.01)
-        qdet = qdet / jnp.linalg.norm(qdet, axis=-1, keepdims=True)
+        qbore = Quaternion.random(k_bore, (NSAMP,))
+        qbore = Quaternion.from_array(qbore.wxyz.at[:, 1:3].multiply(0.02)).normalize()
+        qdet = Quaternion.random(k_det, (NDET,))
+        qdet = Quaternion.from_array(qdet.wxyz.at[:, 1:3].multiply(0.01)).normalize()
         times = jnp.arange(NSAMP, dtype=jnp.float64)
 
         P_true = AtmospherePointingOperator.from_wind(

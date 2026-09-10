@@ -1,8 +1,9 @@
 import jax
 import jax.numpy as jnp
+from fastquat import Quaternion
 from numpy.testing import assert_array_almost_equal
 
-from furax.math.quaternion import qmul, qrot_zaxis
+from furax.math.coords import ZAXIS
 from furax.obs.atmosphere import AtmospherePointingOperator
 from furax.obs.landscapes import TangentialLandscape
 from furax.obs.stokes import StokesI
@@ -14,11 +15,6 @@ HEIGHT = 100.0
 DX = DY = 10.0
 
 WIND_VELOCITY = jnp.array([1.0, 0.5])
-
-
-def _random_unit_quats(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
-    q = jax.random.normal(key, (*shape, 4))
-    return q / jnp.linalg.norm(q, axis=-1, keepdims=True)
 
 
 def _make_operator(
@@ -45,13 +41,11 @@ def _make_operator(
     k1, k2, k3 = jax.random.split(key, 3)
 
     # Small zenith angles so all detectors land inside the map
-    qbore = _random_unit_quats(k1, (nsamp,))
-    qbore = qbore.at[:, 1:3].multiply(0.05)  # keep mostly near zenith
-    qbore = qbore / jnp.linalg.norm(qbore, axis=-1, keepdims=True)
+    qbore = Quaternion.random(k1, (nsamp,))
+    qbore = Quaternion.from_array(qbore.wxyz.at[:, 1:3].multiply(0.05)).normalize()  # near zenith
 
-    qdet = _random_unit_quats(k2, (ndet,))
-    qdet = qdet.at[:, 1:3].multiply(0.01)
-    qdet = qdet / jnp.linalg.norm(qdet, axis=-1, keepdims=True)
+    qdet = Quaternion.random(k2, (ndet,))
+    qdet = Quaternion.from_array(qdet.wxyz.at[:, 1:3].multiply(0.01)).normalize()
 
     atm_map = landscape.normal(k3)
 
@@ -83,7 +77,7 @@ class TestAtmosphereOperatorMv:
 
         flat = atm.ravel()
         for d in range(NDET):
-            qdet_full = qmul(op.qbore, op.qdet[d : d + 1, None, :])  # (1, samp, 4)
+            qdet_full = op.qbore[None, :] * op.qdet[d : d + 1, None]  # (1, samp)
             x, y = landscape.quat2xy(qdet_full[0])  # (samp,)
             idx = landscape.pixel2index(*landscape.xy2pixel(x, y))
             expected = flat.i[idx]
@@ -99,7 +93,7 @@ class TestAtmosphereOperatorMv:
 
         flat = atm.ravel()
         for d in range(NDET):
-            qdet_full = qmul(op.qbore, op.qdet[d : d + 1, None, :])  # (1, samp, 4)
+            qdet_full = op.qbore[None, :] * op.qdet[d : d + 1, None]  # (1, samp)
             x, y = landscape.quat2xy(qdet_full[0])  # (samp,)
             x_shifted = x + times * wind_velocity[0]
             y_shifted = y + times * wind_velocity[1]
@@ -118,8 +112,8 @@ class TestAtmosphereElevationModulation:
         tod_mod = op_mod(atm)
 
         for d in range(NDET):
-            qdet_full = qmul(op.qbore, op.qdet[d : d + 1, None, :])  # (1, samp, 4)
-            sin_el = qrot_zaxis(qdet_full[0])[..., 2]  # (samp,)
+            qdet_full = op.qbore[None, :] * op.qdet[d : d + 1, None]  # (1, samp)
+            sin_el = qdet_full[0].rotate_vector(ZAXIS)[..., 2]  # (samp,)
             assert_array_almost_equal(tod_mod.i[d], tod.i[d] / sin_el)
 
     def test_off_matches_plain_operator(self) -> None:

@@ -3,13 +3,13 @@ from pathlib import Path
 import jax.numpy as jnp
 import jax_healpy as jhp
 import numpy as np
+from fastquat import Quaternion
 from numpy.testing import assert_allclose, assert_array_equal
 from sotodlib import coords
 from sotodlib.mapmaking.demod_mapmaker import project_rhs_demod
 
 from furax.interfaces.sotodlib import LazySOTODLibObservation
 from furax.mapmaking.acquisition import build_acquisition_operator
-from furax.math.quaternion import qmul
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.spin2 import spin2_cos_sin
 from furax.obs.stokes import StokesI
@@ -33,7 +33,7 @@ def _assert_matches_up_to_the_transport(furax_map, sotodlib_map, obs, landscape)
     """
     assert_allclose(furax_map[0], sotodlib_map[0], rtol=1e-5, atol=0)
 
-    qdet_full = qmul(obs.get_boresight_quaternions(), obs.get_detector_quaternions()[:, None, :])
+    qdet_full = obs.get_boresight_quaternions() * obs.get_detector_quaternions()[:, None]
     indices = landscape.quat2index(qdet_full)
     _, sin_2delta = spin2_cos_sin(
         *jhp.pix2ang(landscape.nside, indices), *landscape.quat2world(qdet_full)
@@ -58,8 +58,8 @@ def test_acquisition_no_hwp_vs_sotodlib():
     landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
     h = build_acquisition_operator(
         landscape,
-        obs.get_boresight_quaternions(),
-        obs.get_detector_quaternions(),
+        Quaternion.from_array(obs.get_boresight_quaternions()),
+        Quaternion.from_array(obs.get_detector_quaternions()),
         hwp_angles=None,
         pointing_on_the_fly=True,
     )
@@ -89,8 +89,8 @@ def test_demod_acquisition_vs_sotodlib():
     landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
     h = build_acquisition_operator(
         landscape,
-        obs.get_boresight_quaternions(),
-        obs.get_detector_quaternions(),
+        Quaternion.from_array(obs.get_boresight_quaternions()),
+        Quaternion.from_array(obs.get_detector_quaternions()),
         hwp_angles=None,
         demodulated=True,
         pointing_on_the_fly=True,
@@ -129,8 +129,8 @@ def test_hit_map_vs_sotodlib():
     landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
     h = build_acquisition_operator(
         landscape,
-        obs.get_boresight_quaternions(),
-        obs.get_detector_quaternions(),
+        Quaternion.from_array(obs.get_boresight_quaternions()),
+        Quaternion.from_array(obs.get_detector_quaternions()),
         hwp_angles=None,
         pointing_on_the_fly=True,
     )
@@ -161,8 +161,8 @@ def test_hit_map_demod_vs_sotodlib():
     landscape = HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64')
     h = build_acquisition_operator(
         landscape,
-        obs.get_boresight_quaternions(),
-        obs.get_detector_quaternions(),
+        Quaternion.from_array(obs.get_boresight_quaternions()),
+        Quaternion.from_array(obs.get_detector_quaternions()),
         hwp_angles=None,
         demodulated=True,
         pointing_on_the_fly=True,

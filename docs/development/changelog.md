@@ -9,8 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `BlockSelectOperator`: extract one block of a block-structured input, and embed a single-block operator into the whole through its transpose (#237)
+
+### Changed
+
+- Migrate quaternion operations to `fastquat` (#247)
+
+### Fixed
+
+- The fitted noise PSD no longer averages in Welch windows that fall in an observation's padded tail (#239)
+
+## [0.12.1]
+
+### Added
+
 - `StreamOperator.block_row`/`block_column`: fuse several streams into one, evaluating a joint system in a single pass over the data (#190)
 - API reference page for `furax.mapmaking.streaming` (#190)
+- API reference page for `furax.mapmaking.templates` (#214)
 - `AbstractLinearOperator.profile()` and a new `furax.profiling` module for estimated cost analysis (#193)
 - `furax.obs.spin2`: parallel transport of Q and U across a sampling stencil, exposing `transported_gather`/`transported_scatter` and the frame rotation they are built on (#204)
 - `furax.obs.stencil`, a pixelisation-free module holding `Stencil`: the pixels one sample reads, their weights and their sky positions, in one type that a landscape produces and a sampler consumes (#204)
@@ -23,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `world2interp` now derives from it and is no longer overridable; measured on HEALPix and CAR, the compiled cost of `PointingOperator.mv` is unchanged, because XLA drops the neighbour positions nothing reads
 - `CARLandscape.pixel2world`, `AstropyWCSLandscape.pixel2world` and `HorizonLandscape.pixel2world`, the inverses of their `world2pixel` (#204)
 - API reference pages for `furax.obs.spin2` and `furax.obs.stencil` (#204)
+- `furax.mapmaking.templates.Basis.per_detector_stack()` to stack per-detector templates into a single basis (#214)
+- Mapmaking config entry for T-to-P leakage deprojection (#214)
+- `furax.mapmaking.gram` module with Gram machinery for template deprojection (#215)
+- Multi-observation template mapmaking capabilities (#125)
 
 ### Changed
 
@@ -40,6 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `StokesLandscape.world2interp` returns a resolved stencil: a neighbour outside the map comes back as index 0 with weight 0, where it used to come back as index -1 with its raw weight, and the surviving weights are rescaled to sum to one (#204)
 - **Breaking:** removed `StokesLandscape.pixel2interp` and `WCSLandscape.pixel2interp`; a landscape defines its interpolation by overriding `world2stencil` (#204)
 - `PointingOperator` samples a stencil through the single `_quat2stencil` hook, replacing `_quat2interp`; a subclass that moves the pointing in `_quat2index` alone raises `NotImplementedError` when it samples a polarised map (#204)
+- Fixed detection of templates usage in map-making configuration (#225)
+- Template algebra code overhaul, replacing `PerDetectorTemplate` with `(Stokes)TemplateOperator` (#214)
+- **Breaking**: template configuration keys are now spelled out (`binaz_synchronous` → `binned_azimuth_synchronous`, `azhwp_synchronous` → `azimuth_hwp_synchronous`, `binazhwp_synchronous` → `binned_azimuth_hwp_synchronous`, `spline_hwpss` → `spline_hwp_synchronous`) (#214)
+
+### Removed
+
+- "Two-step" single-observation mapmakers (the `TwoStep` method and `TwoStepMapmaker` class) (#214)
 
 ## [0.12.0] - 2026-07-24
 
@@ -314,7 +340,8 @@ Initial tagged release.
 
 - Project classifiers and editable-mode installation instructions
 
-[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.12.0...HEAD
+[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/CMBSciPol/furax/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/CMBSciPol/furax/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/CMBSciPol/furax/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/CMBSciPol/furax/compare/v0.11.1...v0.11.2

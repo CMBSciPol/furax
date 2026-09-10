@@ -8,7 +8,7 @@ Observation data model and reader.
 ::: furax.mapmaking.AbstractSatelliteObservation
 ::: furax.mapmaking.FileBackedLazyObservation
 ::: furax.mapmaking.HashedObservationMetadata
-::: furax.mapmaking.ObservationBufferShapes
+::: furax.mapmaking.ObservationBufferShape
 ::: furax.mapmaking.ReaderField
 ::: furax.mapmaking.ObservationReader
 ::: furax.mapmaking.logger

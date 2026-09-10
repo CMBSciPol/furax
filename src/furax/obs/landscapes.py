@@ -731,12 +731,6 @@ class TangentialLandscape(StokesLandscape):
     def quat2xy(self, quat: Quaternion) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Convert quaternions to physical (x, y) coordinates on the tangent plane.
 
-        Uses [`Quaternion.rotate_vector`][fastquat.Quaternion.rotate_vector] to extract the
-        pointing direction and applies the exact gnomonic projection. This is the primary
-        conversion step used by
-        [`AtmospherePointingOperator`][furax.obs.atmosphere.AtmospherePointingOperator] before
-        adding wind displacement.
-
         Args:
             quat: Pointing quaternions (z-axis = zenith frame).
 
@@ -754,9 +748,7 @@ class TangentialLandscape(StokesLandscape):
     def quat2pixel(self, quat: Quaternion) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Convert quaternions to floating-point pixel coordinates.
 
-        Overrides the base-class implementation to use
-        [`Quaternion.rotate_vector`][fastquat.Quaternion.rotate_vector] directly, avoiding the
-        round-trip through ISO angles.
+        Overrides the base-class implementation to avoid a round-trip through ISO angles.
         """
         x, y = self.quat2xy(quat)
         return self.xy2pixel(x, y)

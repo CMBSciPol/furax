@@ -1,10 +1,7 @@
 """Coordinate-system conversions built on `fastquat.Quaternion`.
 
-Rotation quaternions use scalar-vector storage, i.e. (1,i,j,k) with the scalar part first,
-matching [`fastquat.Quaternion`][].
+Quaternions use scalar-vector storage, i.e. (1,i,j,k) with the scalar part first.
 """
-
-from functools import partial
 
 import jax.numpy as jnp
 import numpy as np
@@ -35,7 +32,7 @@ YAXIS = np.array([0.0, 1.0, 0.0])
 ZAXIS = np.array([0.0, 0.0, 1.0])
 
 
-@partial(jit, static_argnums=(0,))
+@jit(static_argnums=(0,))
 def euler(axis: int, angle: Angle) -> Quaternion:
     r"""The quaternion representing an Euler rotation.
 

@@ -12,6 +12,7 @@ from jaxtyping import Array, DTypeLike, Float, Integer
 
 __all__ = [
     'Interpolation',
+    'SkyPositions',
     'Stencil',
 ]
 
@@ -59,6 +60,27 @@ def _resolve(
     return indices, weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
 
 
+class SkyPositions(NamedTuple):
+    """Where the neighbours of a [`Stencil`][] sit on the sphere.
+
+    The co-latitude is given as its cosine and its sine rather than as an angle, which is the form a
+    HEALPix ring geometry produces and the form the spin-2 transport consumes.
+
+    Attributes:
+        z: Cosine of the neighbour co-latitude.
+        sth: Sine of the neighbour co-latitude.
+        phi: Neighbour longitude, in radians.
+    """
+
+    z: Float[Array, '*dims neighbors']
+    sth: Float[Array, '*dims neighbors']
+    phi: Float[Array, '*dims neighbors']
+
+    def astype(self, dtype: DTypeLike) -> Self:
+        """Return the positions cast to the given floating-point type."""
+        return type(self)(*(component.astype(dtype) for component in self))
+
+
 class Stencil(NamedTuple):
     r"""The pixels one sample reads, their weights, and where they sit on the sky.
 
@@ -69,24 +91,18 @@ class Stencil(NamedTuple):
     Nearest-neighbour sampling is the case of a single neighbour, not a different type: the
     trailing neighbour axis has length one and the weight is one.
 
-    The neighbour co-latitude is given as its cosine and its sine rather than as an angle, which is
-    the form a HEALPix ring geometry produces and the form the spin-2 transport consumes. A stencil
-    on a grid that is not the sphere has no such positions and carries `None` for all three, which
+    A stencil on a grid that is not the sphere has no [`SkyPositions`][] and carries `None`, which
     [`Stencil.scalar`][] builds; only a map with no polarisation can be sampled through one.
 
     Attributes:
         indices: Neighbour pixel indices into the raveled map, all in bounds.
         weights: Interpolation weights, one per neighbour, summing to one.
-        z: Cosine of the neighbour co-latitude, or `None` off the sphere.
-        sth: Sine of the neighbour co-latitude, or `None` off the sphere.
-        phi: Neighbour longitude in radians, or `None` off the sphere.
+        positions: Where the neighbours sit on the sphere, or `None` off the sphere.
     """
 
     indices: Integer[Array, '*dims neighbors']
     weights: Float[Array, '*dims neighbors']
-    z: Float[Array, '*dims neighbors'] | None
-    sth: Float[Array, '*dims neighbors'] | None
-    phi: Float[Array, '*dims neighbors'] | None
+    positions: SkyPositions | None
 
     @property
     def n_neighbors(self) -> int:
@@ -98,9 +114,7 @@ class Stencil(NamedTuple):
         cls,
         indices: Integer[Array, '*dims neighbors'],
         weights: Float[Array, '*dims neighbors'],
-        z: Float[Array, '*dims neighbors'] | None,
-        sth: Float[Array, '*dims neighbors'] | None,
-        phi: Float[Array, '*dims neighbors'] | None,
+        positions: SkyPositions | None,
         *,
         dtype: DTypeLike | None = None,
     ) -> Self:
@@ -109,9 +123,7 @@ class Stencil(NamedTuple):
         Args:
             indices: Neighbour pixel indices, negative for neighbours outside the map.
             weights: Interpolation weights, one per neighbour, not necessarily normalized.
-            z: Cosine of the neighbour co-latitude, or `None` off the sphere.
-            sth: Sine of the neighbour co-latitude, or `None` off the sphere.
-            phi: Neighbour longitude in radians, or `None` off the sphere.
+            positions: Where the neighbours sit on the sphere, or `None` off the sphere.
             dtype: If given, the floating-point type the weights and positions are cast to.
 
         Returns:
@@ -120,10 +132,8 @@ class Stencil(NamedTuple):
         indices, weights = _resolve(indices, weights)
         if dtype is not None:
             weights = weights.astype(dtype)
-            z = None if z is None else z.astype(dtype)
-            sth = None if sth is None else sth.astype(dtype)
-            phi = None if phi is None else phi.astype(dtype)
-        return cls(indices, weights, z, sth, phi)
+            positions = None if positions is None else positions.astype(dtype)
+        return cls(indices, weights, positions)
 
     @classmethod
     def nearest(
@@ -148,9 +158,11 @@ class Stencil(NamedTuple):
         return cls.resolve(
             indices[..., None],
             jnp.ones((*jnp.shape(indices), 1), dtype or jnp.result_type(theta_center)),
-            jnp.cos(theta_center)[..., None],
-            jnp.sin(theta_center)[..., None],
-            phi_center[..., None],
+            SkyPositions(
+                jnp.cos(theta_center)[..., None],
+                jnp.sin(theta_center)[..., None],
+                phi_center[..., None],
+            ),
             dtype=dtype,
         )
 
@@ -171,9 +183,9 @@ class Stencil(NamedTuple):
             weights: Interpolation weights, one per neighbour, not necessarily normalized.
 
         Returns:
-            The resolved stencil, with `z`, `sth` and `phi` set to `None`.
+            The resolved stencil, with its positions set to `None`.
         """
-        return cls.resolve(indices, weights, None, None, None)
+        return cls.resolve(indices, weights, None)
 
     def reindexed(
         self, indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*dims neighbors']
@@ -191,4 +203,4 @@ class Stencil(NamedTuple):
         Returns:
             The resolved stencil.
         """
-        return self.resolve(indices, weights, self.z, self.sth, self.phi)
+        return self.resolve(indices, weights, self.positions)

@@ -343,7 +343,7 @@ class TestFloat32:
             landscape.world2stencil(theta, phi, Interpolation.NEAREST),
         ):
             assert stencil.weights.dtype == jnp.float32
-            assert stencil.z.dtype == jnp.float32
+            assert stencil.positions.z.dtype == jnp.float32
         stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
 
         sky = landscape.normal(jax.random.key(11))

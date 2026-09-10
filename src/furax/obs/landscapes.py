@@ -16,7 +16,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, Scala
 
 from furax.math.quaternion import qrot_zaxis, to_iso_angles
 from furax.obs._samplings import Sampling
-from furax.obs.stencil import Interpolation, Stencil
+from furax.obs.stencil import Interpolation, SkyPositions, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 _StokesT = TypeVar('_StokesT', bound=Stokes)
@@ -385,7 +385,9 @@ class WCSLandscape(StokesLandscape):
         xs, ys, weights = _2d_bilinear_interp(*self.world2pixel(theta, phi))
         theta_n, phi_n = self.pixel2world(xs, ys)
         return Stencil.resolve(
-            self.pixel2index(xs, ys), weights, jnp.cos(theta_n), jnp.sin(theta_n), phi_n
+            self.pixel2index(xs, ys),
+            weights,
+            SkyPositions(jnp.cos(theta_n), jnp.sin(theta_n), phi_n),
         )
 
     def to_wcs(self) -> WCS:
@@ -591,9 +593,11 @@ class HealpixLandscape(StokesLandscape):
         return Stencil.resolve(
             jnp.moveaxis(pixels, 0, -1),
             jnp.moveaxis(weights, 0, -1),
-            jnp.moveaxis(centers.z[ring], 0, -1),
-            jnp.moveaxis(centers.sth[ring], 0, -1),
-            jnp.moveaxis(centers.phi, 0, -1),
+            SkyPositions(
+                jnp.moveaxis(centers.z[ring], 0, -1),
+                jnp.moveaxis(centers.sth[ring], 0, -1),
+                jnp.moveaxis(centers.phi, 0, -1),
+            ),
             dtype=self.dtype,
         )
 

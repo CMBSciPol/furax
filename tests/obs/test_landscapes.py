@@ -334,9 +334,11 @@ class TestBilinearStencil:
         landscape = HealpixLandscape(16, 'IQU')
         centers = landscape.world2stencil(*angles, Interpolation.BILINEAR)
         theta_n, phi_n = jhp.pix2ang(landscape.nside, centers.indices)
-        assert_array_almost_equal(centers.z, np.cos(theta_n), decimal=12)
-        assert_array_almost_equal(centers.sth, np.sin(theta_n), decimal=12)
-        assert_array_almost_equal(centers.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12)
+        assert_array_almost_equal(centers.positions.z, np.cos(theta_n), decimal=12)
+        assert_array_almost_equal(centers.positions.sth, np.sin(theta_n), decimal=12)
+        assert_array_almost_equal(
+            centers.positions.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12
+        )
 
     def test_car_centers_are_the_pixel_centers(self, car, angles):
         """Same for CAR, where the centers come from the analytic inverse projection."""
@@ -346,9 +348,11 @@ class TestBilinearStencil:
         # Undo pixel2index: the raveled index is pix_x + n_x * pix_y (see StokesLandscape).
         n_x = car.pixel_shape[0]
         theta_n, phi_n = car.pixel2world(indices % n_x, indices // n_x)
-        assert_array_almost_equal(centers.z, jnp.cos(theta_n), decimal=12)
-        assert_array_almost_equal(centers.sth, jnp.sin(theta_n), decimal=12)
-        assert_array_almost_equal(centers.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12)
+        assert_array_almost_equal(centers.positions.z, jnp.cos(theta_n), decimal=12)
+        assert_array_almost_equal(centers.positions.sth, jnp.sin(theta_n), decimal=12)
+        assert_array_almost_equal(
+            centers.positions.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12
+        )
 
     def test_car_pixel2world_inverts_world2pixel(self, car, angles):
         """The CAR centers are only as good as the inverse projection they come from."""
@@ -401,9 +405,11 @@ class TestNearestStencil:
         landscape = HealpixLandscape(16, 'IQU')
         centers = landscape.world2stencil(*angles, Interpolation.NEAREST)
         theta_n, phi_n = jhp.pix2ang(landscape.nside, centers.indices)
-        assert_array_almost_equal(centers.z, np.cos(theta_n), decimal=12)
-        assert_array_almost_equal(centers.sth, np.sin(theta_n), decimal=12)
-        assert_array_almost_equal(centers.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12)
+        assert_array_almost_equal(centers.positions.z, np.cos(theta_n), decimal=12)
+        assert_array_almost_equal(centers.positions.sth, np.sin(theta_n), decimal=12)
+        assert_array_almost_equal(
+            centers.positions.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12
+        )
 
     def test_car_centers_are_the_pixel_centers(self, car, angles):
         """Same for CAR, where the centers come from the analytic inverse projection."""
@@ -413,16 +419,18 @@ class TestNearestStencil:
         # Undo pixel2index: the raveled index is pix_x + n_x * pix_y (see StokesLandscape).
         n_x = car.pixel_shape[0]
         theta_n, phi_n = car.pixel2world(indices % n_x, indices // n_x)
-        assert_array_almost_equal(centers.z, jnp.cos(theta_n), decimal=12)
-        assert_array_almost_equal(centers.sth, jnp.sin(theta_n), decimal=12)
-        assert_array_almost_equal(centers.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12)
+        assert_array_almost_equal(centers.positions.z, jnp.cos(theta_n), decimal=12)
+        assert_array_almost_equal(centers.positions.sth, jnp.sin(theta_n), decimal=12)
+        assert_array_almost_equal(
+            centers.positions.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12
+        )
 
     def test_centers_are_within_half_a_pixel(self, car, angles):
         """The center reported for a sample is the center of the pixel the sample falls in."""
         theta, phi = angles
         centers = car.world2stencil(theta, phi, Interpolation.NEAREST)
-        theta_c = jnp.arctan2(centers.sth[..., 0], centers.z[..., 0])
-        dphi = (centers.phi[..., 0] - phi + np.pi) % (2 * np.pi) - np.pi
+        theta_c = jnp.arctan2(centers.positions.sth[..., 0], centers.positions.z[..., 0])
+        dphi = (centers.positions.phi[..., 0] - phi + np.pi) % (2 * np.pi) - np.pi
         # the fixture grid is 1°/pixel, so no center sits more than half a degree away in either
         # coordinate
         assert jnp.max(jnp.abs(theta_c - theta)) <= np.radians(0.5)
@@ -444,10 +452,10 @@ class TestNearestStencil:
         ref_centers = astropy_landscape.world2stencil(*angles, Interpolation.NEAREST)
 
         assert_array_equal(centers.indices, ref_centers.indices)
-        assert_array_almost_equal(centers.z, ref_centers.z, decimal=12)
-        assert_array_almost_equal(centers.sth, ref_centers.sth, decimal=12)
+        assert_array_almost_equal(centers.positions.z, ref_centers.positions.z, decimal=12)
+        assert_array_almost_equal(centers.positions.sth, ref_centers.positions.sth, decimal=12)
         assert_array_almost_equal(
-            centers.phi % (2 * np.pi), ref_centers.phi % (2 * np.pi), decimal=12
+            centers.positions.phi % (2 * np.pi), ref_centers.positions.phi % (2 * np.pi), decimal=12
         )
 
     def test_horizon_centers_are_the_bin_centers(self):
@@ -466,9 +474,9 @@ class TestNearestStencil:
         pix_i, pix_j = landscape.world2pixel(np.pi / 2 - altitude, -azimuth)
         centers = landscape.world2stencil(np.pi / 2 - altitude, -azimuth, Interpolation.NEAREST)
 
-        theta_c = jnp.arctan2(centers.sth[..., 0], centers.z[..., 0])
+        theta_c = jnp.arctan2(centers.positions.sth[..., 0], centers.positions.z[..., 0])
         assert_array_almost_equal(np.pi / 2 - theta_c, alt_centers[pix_i], decimal=12)
-        assert_array_almost_equal(-centers.phi[..., 0], az_centers[pix_j], decimal=12)
+        assert_array_almost_equal(-centers.positions.phi[..., 0], az_centers[pix_j], decimal=12)
 
     def test_local_landscape_sinks_unmapped_samples(self, angles):
         """A sample outside the subset keeps the parent's center but loses its weight."""
@@ -482,7 +490,7 @@ class TestNearestStencil:
         assert jnp.any(sunk) and not jnp.all(sunk), 'the fixture must sink some samples but not all'
         assert_array_equal(local_stencil.weights[sunk], 0.0)
         assert_array_equal(local_stencil.weights[~sunk], 1.0)
-        assert_array_equal(local_stencil.z, centers.z)
+        assert_array_equal(local_stencil.positions.z, centers.positions.z)
 
 
 class TestIndexStencil:
@@ -508,9 +516,11 @@ class TestIndexStencil:
         stencil = landscape.index2stencil(landscape.world2index(*angles))
         assert_array_equal(stencil.indices, expected.indices)
         assert_array_equal(stencil.weights, expected.weights)
-        assert_array_almost_equal(stencil.z, expected.z, decimal=12)
-        assert_array_almost_equal(stencil.sth, expected.sth, decimal=12)
-        assert_array_almost_equal(stencil.phi % (2 * np.pi), expected.phi % (2 * np.pi), decimal=12)
+        assert_array_almost_equal(stencil.positions.z, expected.positions.z, decimal=12)
+        assert_array_almost_equal(stencil.positions.sth, expected.positions.sth, decimal=12)
+        assert_array_almost_equal(
+            stencil.positions.phi % (2 * np.pi), expected.positions.phi % (2 * np.pi), decimal=12
+        )
 
     def test_the_horizon_bins_are_recovered_from_their_index(self):
         """The generic index inversion follows `pixel2index`, whatever the axis order."""
@@ -526,15 +536,17 @@ class TestIndexStencil:
         expected = landscape.world2stencil(theta, phi, Interpolation.NEAREST)
         stencil = landscape.index2stencil(landscape.world2index(theta, phi))
         assert_array_equal(stencil.indices, expected.indices)
-        assert_array_almost_equal(stencil.z, expected.z, decimal=12)
-        assert_array_almost_equal(stencil.phi, expected.phi, decimal=12)
+        assert_array_almost_equal(stencil.positions.z, expected.positions.z, decimal=12)
+        assert_array_almost_equal(stencil.positions.phi, expected.positions.phi, decimal=12)
 
     def test_an_out_of_map_index_contributes_nothing(self, car):
         """A missed sample carries a safe index, a finite position and no weight."""
         stencil = car.index2stencil(jnp.array([-1]))
         assert_array_equal(stencil.indices, 0)
         assert_array_equal(stencil.weights, 0.0)
-        assert jnp.all(jnp.isfinite(stencil.z)) and jnp.all(jnp.isfinite(stencil.phi))
+        assert jnp.all(jnp.isfinite(stencil.positions.z)) and jnp.all(
+            jnp.isfinite(stencil.positions.phi)
+        )
 
     def test_a_subset_landscape_sinks_the_indices_it_does_not_hold(self, angles):
         """A local index in the sink reads the sink slot with no weight, as through the angles."""
@@ -550,8 +562,12 @@ class TestIndexStencil:
         assert_array_equal(stencil.weights, expected.weights)
         # A sunk index no longer names a parent pixel, so only the pixels actually read carry a
         # position; the sunk ones are weightless either way.
-        assert_array_almost_equal(stencil.z[~sunk], expected.z[~sunk], decimal=12)
-        assert_array_almost_equal(stencil.phi[~sunk], expected.phi[~sunk], decimal=12)
+        assert_array_almost_equal(
+            stencil.positions.z[~sunk], expected.positions.z[~sunk], decimal=12
+        )
+        assert_array_almost_equal(
+            stencil.positions.phi[~sunk], expected.positions.phi[~sunk], decimal=12
+        )
 
 
 class TestInterpolation:

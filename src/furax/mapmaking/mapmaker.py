@@ -37,7 +37,6 @@ from furax import (
     SymmetricBandToeplitzOperator,
 )
 from furax.core import (
-    AdditionOperator,
     BlockDiagonalOperator,
     BlockSelectOperator,
     IndexOperator,
@@ -65,6 +64,7 @@ from ._observation import (
     ReaderField,
 )
 from ._reader import ObservationReader
+from ._system import BucketSumOperator
 from .config import (
     GapTreatment,
     LandscapeConfig,
@@ -391,9 +391,9 @@ class MultiObservationMapMaker[T]:
             ]
 
             # Diagonal pixel system for the block-Jacobi preconditioner
-            A_diag = AdditionOperator(
+            A_diag = BucketSumOperator(
                 [(h.T @ wd @ f @ h).reduce() for h, wd, f in zip(H, W_diag, F, strict=True)]
-            ).reduce()
+            )
             BJ = BJPreconditioner.create(A_diag)
             icov = BJ.blocks.block_until_ready()
             logger_info('Computed white noise inverse covariance')
@@ -497,9 +497,9 @@ class MultiObservationMapMaker[T]:
         assert len(explicit) in (0, len(acc.buckets))
 
         if not explicit:
-            A = AdditionOperator(
+            A = BucketSumOperator(
                 [((h @ S.T).T @ w @ (h @ S.T)).reduce() for h, w in zip(H, W, strict=True)]
-            ).reduce()
+            )
             return MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False)
 
         Te = [StreamOperator.diagonal(e.operator) for e in explicit]
@@ -519,7 +519,7 @@ class MultiObservationMapMaker[T]:
 
         rhs = [S(acc.map_rhs), [bm.amplitude_rhs for bm in acc.buckets]]
         M = BlockDiagonalOperator([M, Ge])
-        return MapMakingSystem(AdditionOperator(terms).reduce(), rhs, M, has_amplitudes=True)
+        return MapMakingSystem(BucketSumOperator(terms), rhs, M, has_amplitudes=True)
 
     def _gather(self, x: PyTree[Array]) -> PyTree[np.ndarray]:
         """Bring a pytree sharded over the 'obs' axis to the host, whole, on every process."""

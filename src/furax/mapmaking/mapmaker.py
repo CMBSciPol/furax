@@ -36,11 +36,7 @@ from furax import (
     OperatorTag,
     SymmetricBandToeplitzOperator,
 )
-from furax.core import (
-    BlockDiagonalOperator,
-    BlockSelectOperator,
-    IndexOperator,
-)
+from furax.core import BlockDiagonalOperator, BlockSelectOperator, IndexOperator
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -408,7 +404,6 @@ class MultiObservationMapMaker[T]:
             S = IndexOperator(
                 (..., *jnp.where(valid_pixels)), in_structure=self.landscape.structure
             )
-            M = (S @ BJ.I @ S.T).reduce()  # preconditioner
 
             n_selected = jnp.sum(valid_pixels)
             n_observed = jnp.sum(hit_map > 0)
@@ -418,7 +413,7 @@ class MultiObservationMapMaker[T]:
             hit_map = hit_map.at[~valid_pixels].set(0)  # excluded pixels have zero hits
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
-            system = self._build_system(acc, H, W_prime, S, M)
+            system = self._build_system(acc, H, W_prime, S, BJ)
 
             def log_iteration(step: Array, r_norm: Array) -> None:
                 if rank == 0:  # log from rank 0 only
@@ -461,21 +456,16 @@ class MultiObservationMapMaker[T]:
         H: Sequence[AbstractLinearOperator],
         W: Sequence[AbstractLinearOperator],
         S: AbstractLinearOperator,
-        M: AbstractLinearOperator,
+        BJ: BJPreconditioner,
     ) -> MapMakingSystem:
         r"""Assembles the GLS normal system $H^T W' H x = H^T W' d$ over the selected pixels.
-
-        The pointing $H$ maps the unknowns to TOD: without templates, or with implicit ones only,
-        $H = H_\text{sky}$ and the unknowns are the sky map; with explicit templates,
-        $H = [H_\text{sky} | T_e]$ and the unknowns gain one amplitude block per bucket. Implicit
-        templates fold into the weight instead ($W \to W'$, marginal deprojection).
 
         Args:
             acc: The accumulated per-bucket models, hit map and map RHS.
             H: Per-bucket sky pointing operator.
             W: Per-bucket weight, already bundling the sample mask and the ATOP deprojector.
             S: Selection of the estimated pixels out of the full sky grid.
-            M: Block-Jacobi preconditioner, restricted to the selected pixels.
+            BJ: Block-Jacobi preconditioner.
 
         Returns:
             The system to solve, in the unknowns described above.
@@ -495,6 +485,9 @@ class MultiObservationMapMaker[T]:
             if bm.templates is not None and bm.templates.explicit is not None
         ]
         assert len(explicit) in (0, len(acc.buckets))
+
+        # Restrict BJ preconditioner to selected pixels
+        M = (S @ BJ.I @ S.T).reduce()
 
         if not explicit:
             A = BucketSumOperator(
@@ -665,9 +658,8 @@ class MultiObservationMapMaker[T]:
         # so the specs are given rather than inferred.
         in_specs = (P(axis), P(axis))
         out_specs = (P(), P(), P(axis))
-        return jax.shard_map(in_specs=in_specs, out_specs=out_specs, check_vma=False)(kernel)(  # type: ignore[no-any-return]
-            items, is_real
-        )
+        skernel = jax.shard_map(in_specs=in_specs, out_specs=out_specs, check_vma=False)(kernel)
+        return skernel(items, is_real)  # type: ignore[no-any-return]
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']

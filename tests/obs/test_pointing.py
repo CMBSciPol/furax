@@ -7,7 +7,7 @@ from jax.tree_util import register_static
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
-from furax.core import AbstractLinearOperator, CompositionOperator
+from furax.core import AbstractLinearOperator, CompositionOperator, IndexOperator
 from furax.math.quaternion import from_iso_angles, qmul, to_polarization_angle_cos_sin
 from furax.obs.landscapes import (
     CARLandscape,
@@ -176,6 +176,44 @@ def test_expanded_interpolate_preserves_rotation_fusion() -> None:
 
     tod = jax.tree.map(lambda s: jax.random.normal(key4, s.shape, s.dtype), expanded.out_structure)
     assert tree_equal((outer @ expanded)(op.T(tod)), reduced(op.T(tod)), rtol=1e-10)
+
+
+def _nearest_quats(seed: int) -> tuple[jax.Array, jax.Array]:
+    k1, k2 = jax.random.split(jax.random.key(seed))
+    return _random_unit_quats(k1, (NSAMP,)), _random_unit_quats(k2, (NDET,))
+
+
+def test_the_expanded_nearest_operator_keeps_the_index_fast_path() -> None:
+    """Nearest transport is a per-sample rotation, so the gather stays an `IndexOperator`."""
+    landscape = HealpixLandscape(NSIDE, 'IQU')
+    qbore, qdet = _nearest_quats(20)
+    op = PointingOperator.create(landscape, qbore, qdet, interpolate=False)
+
+    reduced = op.as_expanded_operator().reduce()
+
+    leaves = jax.tree.leaves(
+        reduced.operands, is_leaf=lambda o: isinstance(o, AbstractLinearOperator)
+    )
+    assert any(isinstance(o, IndexOperator) for o in leaves)
+    assert not any(isinstance(o, XSamplingOperator) for o in leaves)
+    # the transport rotation fuses with the polarisation one rather than staying beside it
+    assert sum(isinstance(o, QURotationOperator) for o in leaves) == 1
+
+
+def test_the_expanded_nearest_operator_drops_samples_outside_the_map() -> None:
+    """The index alone cannot express a sunk sample, so the stencil weight must ride along."""
+    parent = HealpixLandscape(NSIDE, 'IQU')
+    qbore, qdet = _nearest_quats(21)
+    p_full = PointingOperator.create(parent, qbore, qdet, interpolate=False)
+    covered = jnp.flatnonzero(p_full.T(ftree.ones_like(p_full.out_structure)).i)
+    local = LocalStokesLandscape(parent, covered[::2])
+    op = PointingOperator.create(local, qbore, qdet, interpolate=False)
+
+    sky = local.normal(jax.random.key(22))
+    tod = op.as_expanded_operator()(sky)
+    assert tree_equal(tod, op(sky), rtol=1e-10, atol=1e-12)
+    # half the pixels are unmapped, so some samples do sink: the test would pass vacuously
+    assert jnp.any(op.landscape.quat2index(qmul(op.qbore, op.qdet[:, None, :])) == local.sink)
 
 
 class TestLocalLandscape:

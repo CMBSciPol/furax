@@ -9,7 +9,7 @@ from jax import jit, lax
 from jaxtyping import Array, Float, Int, Integer, PyTree
 
 from furax import AbstractLinearOperator
-from furax.core import IndexOperator, RavelOperator, TransposeOperator
+from furax.core import DiagonalOperator, IndexOperator, RavelOperator, TransposeOperator
 from furax.math.quaternion import (
     euler,
     qmul,
@@ -19,7 +19,7 @@ from furax.math.quaternion import (
 )
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
-from furax.obs.spin2 import transported_gather, transported_scatter
+from furax.obs.spin2 import spin2_cos_sin_zs, transported_gather, transported_scatter
 from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, StokesI
 
@@ -40,6 +40,22 @@ def _transports_spin2(landscape: StokesLandscape) -> bool:
     sits off center. An intensity-only map has nothing to rotate.
     """
     return 'Q' in landscape.stokes
+
+
+def _transport_angles(
+    stencil: Stencil, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
+) -> Float[Array, ' *dims']:
+    """The rotation angle carrying a one-neighbour stencil's Q and U to the sampled direction.
+
+    [`QURotationOperator`][] takes an angle, while the transport is naturally a (cos, sin) pair, so
+    the pair is turned back into an angle here. The precision of the pair survives the round trip:
+    it is the pair that is delicate to compute at sub-pixel separations, not the arc tangent of it.
+    """
+    assert stencil.positions is not None  # mypy: the caller transports, so it has positions
+    cos_2delta, sin_2delta = spin2_cos_sin_zs(
+        *stencil.positions, jnp.cos(theta)[..., None], jnp.sin(theta)[..., None], phi[..., None]
+    )
+    return 0.5 * jnp.arctan2(sin_2delta[..., 0], cos_2delta[..., 0])
 
 
 class PointingOperator(AbstractLinearOperator):
@@ -179,33 +195,50 @@ class PointingOperator(AbstractLinearOperator):
         CG iteration). The polarisation rotation stays a [`QURotationOperator`][] so it still fuses
         with the acquisition chain via operator algebra.
 
-        Nearest-neighbour sampling of an intensity-only map uses a precomputed [`IndexOperator`][].
-        Every other case uses an [`XSamplingOperator`][] that caches the world angles
+        Nearest-neighbour sampling uses a precomputed [`IndexOperator`][]. On a polarized map it
+        carries a second [`QURotationOperator`][] for the transport from the pixel center to the
+        sampled direction, which the composition rules fuse with the polarisation rotation, and a
+        [`DiagonalOperator`][] holding the stencil weight, which is zero for a sample outside the
+        map. Bilinear interpolation uses an [`XSamplingOperator`][] that caches the world angles
         ``(theta, phi)`` and recovers the stencil on each apply (works for HEALPix and WCS/CAR
-        landscapes), because a polarized map must be sampled through the pixel centers the
-        [`IndexOperator`][] does not carry.
+        landscapes), because its four weights depend on where in the pixel the sample falls.
         """
         qdet_full = qmul(self.qbore, self.qdet[:, None, :])
         # Ravel the spatial axes only; the Stokes container's backing array carries a leading
         # Stokes axis (axis 0) that must survive, so ravel axes 1..-1 and index the pixel axis last.
         ravel_op = RavelOperator(1, -1, in_structure=self.landscape.structure)
         sampler: AbstractLinearOperator
-        if self.interpolate or self._transports:
-            sampler = XSamplingOperator.create(
-                self.landscape, qdet_full, interpolate=self.interpolate
+        if self.interpolate:
+            sampler = XSamplingOperator.create(self.landscape, qdet_full, interpolate=True)
+        elif self._transports:
+            stencil, theta, phi = self._quat2stencil(qdet_full)
+            sampler = self._index_operator(stencil.indices[..., 0], ravel_op.out_structure)
+            # The index alone cannot express a sample outside the map, which the stencil gives a
+            # zero weight; the weight rides along as a diagonal so that this equals `_sample`.
+            weight_op = DiagonalOperator(
+                stencil.weights[..., 0], in_structure=sampler.out_structure
             )
+            transport_op = QURotationOperator(
+                angles=_transport_angles(stencil, theta, phi), in_structure=sampler.out_structure
+            )
+            sampler = transport_op @ weight_op @ sampler
         else:
-            # Index the (leading) Stokes axis and the (trailing) pixel axis with broadcast arrays,
-            # rather than the ergonomic `(..., pix)`. An Ellipsis (or slice) index element is a
-            # non-array pytree leaf and is not a valid JAX type, so it would break the operator as a
-            # multi-observation scan leaf; an all-array index tuple keeps it scan-safe.
             pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
-            n_stokes = len(self.landscape.stokes)
-            stokes_idx = jnp.arange(n_stokes)[:, None, None]
-            sampler = IndexOperator((stokes_idx, pix[None]), in_structure=ravel_op.out_structure)
+            sampler = self._index_operator(pix, ravel_op.out_structure)
         pa = to_polarization_angle(qdet_full)
         qu_rot_op = QURotationOperator(angles=pa, in_structure=sampler.out_structure)
         return qu_rot_op @ sampler @ ravel_op
+
+    def _index_operator(
+        self, pix: Integer[Array, 'det samp'], in_structure: PyTree[jax.ShapeDtypeStruct]
+    ) -> AbstractLinearOperator:
+        """The gather of one pixel per sample, over the raveled map."""
+        # Index the (leading) Stokes axis and the (trailing) pixel axis with broadcast arrays,
+        # rather than the ergonomic `(..., pix)`. An Ellipsis (or slice) index element is a
+        # non-array pytree leaf and is not a valid JAX type, so it would break the operator as a
+        # multi-observation scan leaf; an all-array index tuple keeps it scan-safe.
+        stokes_idx = jnp.arange(len(self.landscape.stokes))[:, None, None]
+        return IndexOperator((stokes_idx, pix[None]), in_structure=in_structure)
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:

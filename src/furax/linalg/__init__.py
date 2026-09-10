@@ -1,4 +1,5 @@
 from ._cg import CGResult, cg
+from ._ecg import ECGResult, ecg
 from ._eigvalsh import eigvalsh
 from ._lanczos import LanczosResult, lanczos_eigh, lanczos_tr
 from .cholesky import BandedCholeskyOperator, banded_cholesky, banded_cholesky_solve
@@ -7,6 +8,8 @@ from .low_rank import LowRankOperator, LowRankTerms, low_rank, low_rank_mv
 __all__ = [
     'cg',
     'CGResult',
+    'ecg',
+    'ECGResult',
     'eigvalsh',
     'lanczos_eigh',
     'lanczos_tr',

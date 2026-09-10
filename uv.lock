@@ -936,6 +936,14 @@ wheels = [
 ]
 
 [[package]]
+name = "fastquat"
+version = "1.0b2.dev2+gff1fa34fe"
+source = { git = "https://github.com/CMBSciPol/fastquat?branch=sb%2Fquaternion-getitem#ff1fa34fed513c78beb9778e0e36e6cd2cae69b8" }
+dependencies = [
+    { name = "jax" },
+]
+
+[[package]]
 name = "flacarray"
 version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1001,6 +1009,7 @@ source = { editable = "." }
 dependencies = [
     { name = "astropy" },
     { name = "equinox" },
+    { name = "fastquat" },
     { name = "healpy" },
     { name = "jax" },
     { name = "jax-healpy", extra = ["recommended"] },
@@ -1076,6 +1085,7 @@ requires-dist = [
     { name = "cyclopts", marker = "extra == 'interfaces'", specifier = ">=4.6.0" },
     { name = "cyclopts", marker = "extra == 'so'", specifier = ">=4.6.0" },
     { name = "equinox", specifier = ">=0.13.8" },
+    { name = "fastquat", git = "https://github.com/CMBSciPol/fastquat?branch=sb%2Fquaternion-getitem" },
     { name = "healpy", specifier = ">=1.19.0" },
     { name = "jax", specifier = ">=0.11.0" },
     { name = "jax-cadre", marker = "extra == 'mapmaking'", specifier = ">=0.1.2" },

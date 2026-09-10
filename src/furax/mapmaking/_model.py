@@ -4,6 +4,7 @@ from typing import Any, Self
 
 import jax
 import jax.numpy as jnp
+from fastquat import Quaternion
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, PyTree
 
@@ -72,8 +73,8 @@ class ObservationModel:
     ) -> Self:
         H = build_acquisition_operator(
             landscape,
-            data[ReaderField.BORESIGHT_QUATERNIONS],
-            data[ReaderField.DETECTOR_QUATERNIONS],
+            Quaternion.from_array(data[ReaderField.BORESIGHT_QUATERNIONS]),
+            Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS]),
             data.get(ReaderField.HWP_ANGLES),
             demodulated=config.demodulated,
             pointing_on_the_fly=config.pointing.on_the_fly,

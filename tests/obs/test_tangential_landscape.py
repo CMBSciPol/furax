@@ -1,9 +1,10 @@
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from fastquat import Quaternion
 from numpy.testing import assert_array_almost_equal
 
-from furax.math.quaternion import from_iso_angles
+from furax.math.coords import from_iso_angles
 from furax.obs.landscapes import TangentialLandscape
 
 # A small landscape used across most tests:
@@ -131,7 +132,7 @@ class TestQuat2Pixel:
 
     def test_zenith_pointing_maps_to_origin(self, landscape: TangentialLandscape) -> None:
         """Identity quaternion (pointing straight up) maps to (x, y) = (0, 0)."""
-        quat = jnp.array([1.0, 0.0, 0.0, 0.0])
+        quat = Quaternion.ones(())
         x, y = landscape.quat2xy(quat)
         assert_array_almost_equal(x, 0.0)
         assert_array_almost_equal(y, 0.0)

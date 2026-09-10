@@ -11,10 +11,11 @@ import jax_healpy as jhp
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
+from fastquat import Quaternion
 from jax.tree_util import register_static
 from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
-from furax.math.quaternion import qrot_zaxis, to_iso_angles
+from furax.math.coords import ZAXIS, to_iso_angles
 from furax.obs._samplings import Sampling
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
@@ -186,18 +187,16 @@ class StokesLandscape(Landscape):
             stride *= dim
         return jnp.where(valid, indices, -1)
 
-    def quat2pixel(self, quat: Float[Array, '*dims 4']) -> tuple[Float[Array, ' *dims'], ...]:
+    def quat2pixel(self, quat: Quaternion) -> tuple[Float[Array, ' *dims'], ...]:
         """Converts quaternion to floating-point pixel coordinates."""
         theta, phi, _ = to_iso_angles(quat)  # psi not needed
         return self.world2pixel(theta, phi)
 
-    def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
+    def quat2index(self, quat: Quaternion) -> Integer[Array, ' *dims']:
         """Converts quaternion to 1-dimensional pixel indices."""
         return self.pixel2index(*self.quat2pixel(quat))
 
-    def quat2world(
-        self, quat: Float[Array, '*dims 4']
-    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+    def quat2world(self, quat: Quaternion) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Converts quaternion to spherical world angles ``(theta, phi)``."""
         theta, phi, _ = to_iso_angles(quat)  # psi not needed
         return theta, phi
@@ -220,9 +219,7 @@ class StokesLandscape(Landscape):
             f'{type(self).__name__} does not support pixel-space interpolation'
         )
 
-    def quat2interp(
-        self, quat: Float[Array, '*dims 4']
-    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
+    def quat2interp(self, quat: Quaternion) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
         """Converts quaternion to (indices, weights) for interpolation."""
         theta, phi, _ = to_iso_angles(quat)
         return self.world2interp(theta, phi)
@@ -444,17 +441,17 @@ class HealpixLandscape(StokesLandscape):
         self.nested = nested
 
     @jax.jit
-    def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
+    def quat2index(self, quat: Quaternion) -> Integer[Array, ' *dims']:
         r"""Convert quaternion to HEALPix pixel index.
 
         Args:
-            quat (float): Quaternion.
+            quat: Quaternion.
 
         Returns:
             int: HEALPix pixel index.
         """
         # we want the 3 dimensions on the left
-        vec = jnp.moveaxis(qrot_zaxis(quat), -1, 0)
+        vec = jnp.moveaxis(quat.rotate_vector(ZAXIS), -1, 0)
         pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec, nest=self.nested)
         return pix
 
@@ -731,13 +728,12 @@ class TangentialLandscape(StokesLandscape):
         y = self.height * sin_theta * jnp.sin(phi) / cos_theta
         return self.xy2pixel(x, y)
 
-    def quat2xy(
-        self, quat: Float[Array, '*dims 4']
-    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+    def quat2xy(self, quat: Quaternion) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Convert quaternions to physical (x, y) coordinates on the tangent plane.
 
-        Uses [`qrot_zaxis`][] to extract the pointing direction and applies the exact
-        gnomonic projection. This is the primary conversion step used by
+        Uses [`Quaternion.rotate_vector`][fastquat.Quaternion.rotate_vector] to extract the
+        pointing direction and applies the exact gnomonic projection. This is the primary
+        conversion step used by
         [`AtmospherePointingOperator`][furax.obs.atmosphere.AtmospherePointingOperator] before
         adding wind displacement.
 
@@ -747,7 +743,7 @@ class TangentialLandscape(StokesLandscape):
         Returns:
             Physical coordinate pair ``(x, y)``.
         """
-        v = qrot_zaxis(quat)
+        v = quat.rotate_vector(ZAXIS)
         # cos(theta) = (a² + d²) - (b² + c²) = v[..., 2]
         # sin(theta) cos(phi) = 2 (ca + db) = v[..., 0]
         # sin(theta) sin(phi) = 2 (cd - ab) = v[..., 1]
@@ -755,13 +751,12 @@ class TangentialLandscape(StokesLandscape):
         y = self.height * v[..., 1] / v[..., 2]
         return x, y
 
-    def quat2pixel(
-        self, quat: Float[Array, '*dims 4']
-    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+    def quat2pixel(self, quat: Quaternion) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Convert quaternions to floating-point pixel coordinates.
 
-        Overrides the base-class implementation to use [`qrot_zaxis`][] directly,
-        avoiding the round-trip through ISO angles.
+        Overrides the base-class implementation to use
+        [`Quaternion.rotate_vector`][fastquat.Quaternion.rotate_vector] directly, avoiding the
+        round-trip through ISO angles.
         """
         x, y = self.quat2xy(quat)
         return self.xy2pixel(x, y)
@@ -881,7 +876,7 @@ class LocalStokesLandscape(StokesLandscape):
         """Convert world coordinates to local pixel indices (sink for unmapped)."""
         return self.global2local(self.parent.world2index(theta, phi))
 
-    def quat2index(self, quat: Float[Array, '*dims 4']) -> Integer[Array, ' *dims']:
+    def quat2index(self, quat: Quaternion) -> Integer[Array, ' *dims']:
         """Convert quaternions to local pixel indices (sink for unmapped)."""
         return self.global2local(self.parent.quat2index(quat))
 
@@ -907,7 +902,7 @@ class LocalStokesLandscape(StokesLandscape):
     ) -> tuple[Float[Array, ' *dims'], ...]:
         raise NotImplementedError('LocalStokesLandscape does not support world2pixel.')
 
-    def quat2pixel(self, quat: Float[Array, '*dims 4']) -> tuple[Float[Array, ' *dims'], ...]:
+    def quat2pixel(self, quat: Quaternion) -> tuple[Float[Array, ' *dims'], ...]:
         raise NotImplementedError('LocalStokesLandscape does not support quat2pixel.')
 
     def pixel2index(self, *coords: Float[Array, ' *dims']) -> Integer[Array, ' *ndims']:

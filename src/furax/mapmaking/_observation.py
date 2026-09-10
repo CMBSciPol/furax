@@ -12,11 +12,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from astropy.wcs import WCS
+from fastquat import Quaternion
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Bool, Float, Key, UInt32
 from numpy.typing import NDArray
 
-from furax.math.quaternion import qmul, to_lonlat_angles
+from furax.math.coords import to_lonlat_angles
 from furax.obs.landscapes import ProjectionType, StokesLandscape
 from furax.obs.stokes import (
     StokesI,
@@ -380,11 +381,10 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
             boresight_quaternions = boresight_quaternions[::thin_samples, :]
 
         # Combine boresight pointing with detector offsets via quaternion multiplication
-        # Broadcasting: (1, n_final_samples, 4) * (n_dets, 1, 4) -> (n_dets, n_final_samples, 4)
-        qdet_full = qmul(
-            boresight_quaternions[None, :, :],  # (1, n_final_samples, 4)
-            detector_quaternions[:, None, :],  # (n_dets, 1, 4)
-        )  # Result: (n_dets, n_final_samples, 4)
+        # Broadcasting: (1, n_final_samples) * (n_dets, 1) -> (n_dets, n_final_samples)
+        qbore = Quaternion.from_array(boresight_quaternions)
+        qdet = Quaternion.from_array(detector_quaternions)
+        qdet_full = qbore[None, :] * qdet[:, None]
 
         # Convert quaternions to longitude/latitude angles in radians
         alpha, delta, _ = to_lonlat_angles(qdet_full)

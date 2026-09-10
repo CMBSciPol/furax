@@ -1,7 +1,7 @@
-from . import bspline, quaternion, sht
+from . import bspline, coords, sht
 
 __all__ = [
     'bspline',
-    'quaternion',
+    'coords',
     'sht',
 ]

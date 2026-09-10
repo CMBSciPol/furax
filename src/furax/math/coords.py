@@ -7,6 +7,7 @@ matching [`fastquat.Quaternion`][].
 from functools import partial
 
 import jax.numpy as jnp
+import numpy as np
 from fastquat import Quaternion
 from jax import jit
 from jaxtyping import Array, Float
@@ -29,9 +30,9 @@ __all__ = [
 
 type Ang = Float[Array, '...']
 
-XAXIS = jnp.array([1.0, 0.0, 0.0])
-YAXIS = jnp.array([0.0, 1.0, 0.0])
-ZAXIS = jnp.array([0.0, 0.0, 1.0])
+XAXIS = np.array([1.0, 0.0, 0.0])
+YAXIS = np.array([0.0, 1.0, 0.0])
+ZAXIS = np.array([0.0, 0.0, 1.0])
 
 
 @partial(jit, static_argnums=(0,))

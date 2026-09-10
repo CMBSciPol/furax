@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax.obs.stencil`, a pixelisation-free module holding `Stencil`: the pixels one sample reads, their weights and their sky positions, in one type that a landscape produces and a sampler consumes (#204)
   - a stencil is resolved when it is built, by `Stencil.resolve` or `Stencil.nearest`: its indices are in bounds and its weights sum to one, so no sampler can normalise them differently from another
   - nearest-neighbour sampling is the one-neighbour case of the same type, not a second shape
-  - `StencilOrder` names how many pixels a sample reads: `NEAREST` (one) or `BILINEAR` (four)
+  - `Interpolation` names how many pixels a sample reads: `NEAREST` (one) or `BILINEAR` (four)
   - `Stencil.scalar` builds one for a grid that is not the sphere, such as the atmosphere screen: it carries no neighbour positions, and sampling polarisation through it raises `ValueError` instead of transporting from a plausible wrong frame
 - `StokesLandscape.world2stencil(theta, phi, order)`, returning the `Stencil` a sample reads at the requested order, implemented for HEALPix and WCS/CAR (both orders) and for astropy-WCS, horizon and subset landscapes (#204)
   - a landscape answers for every order it supports in this one method, so it cannot define one order and leave another to a mismatched inherited definition; an unsupported order raises `NotImplementedError`

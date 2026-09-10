@@ -16,7 +16,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, Scala
 
 from furax.math.quaternion import qrot_zaxis, to_iso_angles
 from furax.obs._samplings import Sampling
-from furax.obs.stencil import Stencil, StencilOrder
+from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 _StokesT = TypeVar('_StokesT', bound=Stokes)
@@ -231,32 +231,37 @@ class StokesLandscape(Landscape):
         compute when nothing reads them. Interpolation is supported by overriding
         [`world2stencil`][], never this method.
         """
-        stencil = self.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = self.world2stencil(theta, phi, Interpolation.BILINEAR)
         return stencil.indices, stencil.weights
 
     def world2stencil(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims'], order: StencilOrder
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
     ) -> Stencil:
-        r"""Returns the [`Stencil`][] a sample at these angles reads, at the requested order.
+        r"""Returns the [`Stencil`][] a sample at these angles reads, at this interpolation.
 
-        At [`StencilOrder.NEAREST`][] the stencil holds the single pixel the sample falls in, whose
+        At [`Interpolation.NEAREST`][] the stencil holds the single pixel the sample falls in, whose
         index is that of [`world2index`][] and whose weight is one; at
-        [`StencilOrder.BILINEAR`][] it holds the four neighbours of [`world2interp`][], resolved.
+        [`Interpolation.BILINEAR`][] it holds the four neighbours of [`world2interp`][], resolved.
         Either way it also carries where each neighbour sits on the sky, which a sampler needs to
         express its $Q$ and $U$ in the frame of the direction sampled at.
 
-        A landscape implements every order it supports here, in this one method, so that it cannot
-        answer for one order and leave another to a mismatched inherited definition.
+        A landscape implements every interpolation it supports here, in this one method, so that it
+        cannot answer for one and leave another to a mismatched inherited definition.
 
         Args:
             theta: Sample co-latitude, in radians.
             phi: Sample longitude, in radians.
-            order: How many pixels the sample reads.
+            interpolation: How many pixels the sample reads.
 
         Returns:
             The resolved stencil.
         """
-        raise NotImplementedError(f'{type(self).__name__} does not supply {order.name} stencils')
+        raise NotImplementedError(
+            f'{type(self).__name__} does not supply {interpolation.name} stencils'
+        )
 
     def quat2interp(
         self, quat: Float[Array, '*dims 4']
@@ -360,14 +365,17 @@ class WCSLandscape(StokesLandscape):
         )
 
     def world2stencil(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims'], order: StencilOrder
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
     ) -> Stencil:
         """Returns the [`Stencil`][] a sample reads, positioned by [`pixel2world`][].
 
-        At [`StencilOrder.BILINEAR`][] it holds the four pixels around the sample; at
-        [`StencilOrder.NEAREST`][] the one it falls in, whose index is that of [`world2index`][].
+        At [`Interpolation.BILINEAR`][] it holds the four pixels around the sample; at
+        [`Interpolation.NEAREST`][] the one it falls in, whose index is that of [`world2index`][].
         """
-        if order is StencilOrder.NEAREST:
+        if interpolation is Interpolation.NEAREST:
             pix_x, pix_y = self.world2pixel(theta, phi)
             center_x, center_y = jnp.round(pix_x), jnp.round(pix_y)
             theta_c, phi_c = self.pixel2world(center_x, center_y)
@@ -557,15 +565,18 @@ class HealpixLandscape(StokesLandscape):
         return theta, phi
 
     def world2stencil(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims'], order: StencilOrder
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
     ) -> Stencil:
         """Returns the [`Stencil`][] a sample reads, centered on HEALPix pixel centers.
 
-        At [`StencilOrder.BILINEAR`][] it holds the four neighbours ``get_interp_weights``
-        returns; at [`StencilOrder.NEAREST`][] the pixel the sample falls in, whose index is
+        At [`Interpolation.BILINEAR`][] it holds the four neighbours ``get_interp_weights``
+        returns; at [`Interpolation.NEAREST`][] the pixel the sample falls in, whose index is
         bit-identical to that of [`world2index`][].
         """
-        if order is StencilOrder.NEAREST:
+        if interpolation is Interpolation.NEAREST:
             indices = self.world2index(theta, phi)
             theta_c, phi_c = jhp.pix2ang(self.nside, indices, nest=self.nested)
             return Stencil.nearest(indices, theta_c, phi_c, dtype=self.dtype)
@@ -686,16 +697,19 @@ class AstropyWCSLandscape(StokesLandscape):
         return jax.pure_callback(f, (struct, struct), pix_x, pix_y)  # type: ignore[no-any-return]
 
     def world2stencil(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims'], order: StencilOrder
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
     ) -> Stencil:
         """Returns the [`Stencil`][] holding the pixel the sample falls in.
 
         Its index is that of [`world2index`][], and the pixel center comes from [`pixel2world`][].
-        Only [`StencilOrder.NEAREST`][] is supported, as for [`world2interp`][].
+        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][].
         """
-        if order is not StencilOrder.NEAREST:
+        if interpolation is not Interpolation.NEAREST:
             raise NotImplementedError(
-                f'{type(self).__name__} does not supply {order.name} stencils'
+                f'{type(self).__name__} does not supply {interpolation.name} stencils'
             )
         pix_x, pix_y = self.world2pixel(theta, phi)
         center_x, center_y = jnp.round(pix_x), jnp.round(pix_y)
@@ -799,16 +813,19 @@ class HorizonLandscape(StokesLandscape):
         return jnp.pi / 2 - altitude, -azimuth
 
     def world2stencil(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims'], order: StencilOrder
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
     ) -> Stencil:
         """Returns the [`Stencil`][] holding the bin the sample falls in.
 
         Its index is that of [`world2index`][], and the bin center comes from [`pixel2world`][].
-        Only [`StencilOrder.NEAREST`][] is supported, as for [`world2interp`][].
+        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][].
         """
-        if order is not StencilOrder.NEAREST:
+        if interpolation is not Interpolation.NEAREST:
             raise NotImplementedError(
-                f'{type(self).__name__} does not supply {order.name} stencils'
+                f'{type(self).__name__} does not supply {interpolation.name} stencils'
             )
         pix_i, pix_j = self.world2pixel(theta, phi)
         theta_c, phi_c = self.pixel2world(pix_i, pix_j)
@@ -1101,7 +1118,10 @@ class LocalStokesLandscape(StokesLandscape):
         return self.global2local(self.parent.quat2index(quat))
 
     def world2stencil(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims'], order: StencilOrder
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
     ) -> Stencil:
         r"""Returns the parent's [`Stencil`][], locally indexed.
 
@@ -1114,7 +1134,7 @@ class LocalStokesLandscape(StokesLandscape):
             Calling this method entails an additional $O(\log n_\mathrm{local})$ binary search
             per neighbor, compared to the parent landscape's method.
         """
-        stencil = self.parent.world2stencil(theta, phi, order)
+        stencil = self.parent.world2stencil(theta, phi, interpolation)
         return stencil.reindexed(*self._localize(stencil.indices, stencil.weights))
 
     def index2stencil(self, indices: Integer[Array, ' *dims']) -> Stencil:

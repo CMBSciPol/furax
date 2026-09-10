@@ -20,7 +20,7 @@ from furax.math.quaternion import (
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
 from furax.obs.spin2 import transported_gather, transported_scatter
-from furax.obs.stencil import Stencil, StencilOrder
+from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, StokesI
 
 __all__ = [
@@ -216,8 +216,8 @@ class PointingOperator(AbstractLinearOperator):
         return _transports_spin2(self.landscape)
 
     @property
-    def _stencil_order(self) -> StencilOrder:
-        return StencilOrder.BILINEAR if self.interpolate else StencilOrder.NEAREST
+    def _interpolation(self) -> Interpolation:
+        return Interpolation.BILINEAR if self.interpolate else Interpolation.NEAREST
 
     def _quat2index(self, qdet_full: Float[Array, '*dims 4']) -> Array:
         """Convert full detector quaternions to flat pixel indices.
@@ -229,9 +229,10 @@ class PointingOperator(AbstractLinearOperator):
     def _quat2stencil(self, qdet_full: Float[Array, '*dims 4']) -> tuple[Stencil, Array, Array]:
         """Convert quaternions to the sampling stencil and the sampled direction ``(theta, phi)``.
 
-        The single hook for stencil sampling, at whichever order [`interpolate`][] selects. Override
-        it in a subclass that changes the pointing-to-index mapping; [`_quat2index`][] is its
-        scalar shortcut, for a nearest-neighbour sample of a map with nothing to transport.
+        The single hook for stencil sampling, at whichever interpolation [`interpolate`][]
+        selects. Override it in a subclass that changes the pointing-to-index mapping;
+        [`_quat2index`][] is its scalar shortcut, for a nearest-neighbour sample of a map with
+        nothing to transport.
         """
         # A subclass redefining the nearest pointing in `_quat2index` alone would be sampled at the
         # base class's directions here instead. Refuse rather than return the wrong operator. An
@@ -243,7 +244,7 @@ class PointingOperator(AbstractLinearOperator):
             )
         theta, phi = self.landscape.quat2world(qdet_full)
         if self.interpolate:
-            return self.landscape.world2stencil(theta, phi, StencilOrder.BILINEAR), theta, phi
+            return self.landscape.world2stencil(theta, phi, Interpolation.BILINEAR), theta, phi
         # Index through `_quat2index`, not through `theta, phi`: HEALPix reads the pointing axis
         # with `vec2pix` and the angles with `ang2pix`, and in float32 the two disagree often enough
         # that a sample would bin into a pixel the hit map never counted, which drops it.
@@ -428,6 +429,6 @@ class XSamplingOperator(AbstractLinearOperator):
     def _stencil(self) -> Stencil:
         """The stencil the cached pointing reads, recovered on every apply."""
         if self.interpolate:
-            return self.landscape.world2stencil(self.theta, self.phi, StencilOrder.BILINEAR)
+            return self.landscape.world2stencil(self.theta, self.phi, Interpolation.BILINEAR)
         assert self.indices is not None  # mypy assert: `create` caches them when not interpolating
         return self.landscape.index2stencil(self.indices)

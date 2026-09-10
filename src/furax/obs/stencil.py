@@ -11,13 +11,13 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Integer
 
 __all__ = [
+    'Interpolation',
     'Stencil',
-    'StencilOrder',
 ]
 
 
-class StencilOrder(IntEnum):
-    """How many pixels a sample reads, and therefore which interpolation it gets.
+class Interpolation(IntEnum):
+    """Which interpolation a sample gets, and therefore how many pixels it reads.
 
     The two are one choice, not two: nearest neighbour is the stencil of a single pixel, and
     bilinear the stencil of the four pixels around the sample. The enum value is the number of

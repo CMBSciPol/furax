@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.obs.stencil import Stencil, StencilOrder
+from furax.obs.stencil import Interpolation, Stencil
 
 
 def _positions(shape: tuple[int, ...]) -> tuple[jax.Array, jax.Array, jax.Array]:
@@ -15,15 +15,15 @@ def _positions(shape: tuple[int, ...]) -> tuple[jax.Array, jax.Array, jax.Array]
     return jnp.cos(theta), jnp.sin(theta), phi
 
 
-class TestStencilOrder:
-    @pytest.mark.parametrize('order', list(StencilOrder))
-    def test_the_value_is_the_neighbour_count(self, order):
-        """The order is how many pixels the sample reads, which a stencil can be checked against."""
-        z, sth, phi = _positions((3, order))
+class TestInterpolation:
+    @pytest.mark.parametrize('interpolation', list(Interpolation))
+    def test_the_value_is_the_neighbour_count(self, interpolation):
+        """The value is how many pixels the sample reads, which a stencil can be checked against."""
+        z, sth, phi = _positions((3, interpolation))
         stencil = Stencil.resolve(
-            jnp.zeros((3, order), jnp.int32), jnp.ones((3, order)), z, sth, phi
+            jnp.zeros((3, interpolation), jnp.int32), jnp.ones((3, interpolation)), z, sth, phi
         )
-        assert stencil.n_neighbors == order
+        assert stencil.n_neighbors == interpolation
 
 
 class TestResolution:

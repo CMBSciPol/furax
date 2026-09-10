@@ -400,7 +400,7 @@ class TestTransportHooks:
             def _quat2stencil(self, qdet_full):
                 theta, phi = self.landscape.quat2world(qdet_full)
                 phi = phi + 0.05
-                return self.landscape.world2stencil(theta, phi, self._stencil_order), theta, phi
+                return self.landscape.world2stencil(theta, phi, self._interpolation), theta, phi
 
         landscape = HealpixLandscape(NSIDE, 'IQU')
         qbore, qdet = self._quats(20)

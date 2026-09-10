@@ -7,7 +7,7 @@ from numpy.testing import assert_allclose
 
 from furax.obs.landscapes import HealpixLandscape, LocalStokesLandscape, StokesLandscape
 from furax.obs.spin2 import spin2_cos_sin, transported_gather, transported_scatter
-from furax.obs.stencil import Stencil, StencilOrder
+from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 NSIDE = 16
@@ -36,7 +36,7 @@ class TestTransportedGather:
         """The transport acts on P alone, so I must be untouched."""
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         theta, phi = _directions(200, 0)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         sky = landscape.normal(jax.random.key(0))
 
         gathered = transported_gather(sky, stencil, theta, phi)
@@ -49,7 +49,7 @@ class TestTransportedGather:
     def test_stokes_i_map_is_scalar_interpolation(self) -> None:
         landscape = HealpixLandscape(NSIDE, stokes='I')
         theta, phi = _directions(200, 1)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         sky = landscape.normal(jax.random.key(1))
 
         gathered = transported_gather(sky, stencil, theta, phi)
@@ -61,7 +61,7 @@ class TestTransportedGather:
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         pixels = jnp.arange(0, 12 * NSIDE**2, 37)
         theta, phi = jhp.pix2ang(NSIDE, pixels)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         sky = landscape.normal(jax.random.key(2))
 
         gathered = transported_gather(sky, stencil, theta, phi)
@@ -102,7 +102,7 @@ class TestTransportedGather:
 
         landscape = HealpixLandscape(nside, stokes='IQU')
         theta, phi = jnp.asarray(theta_np), jnp.asarray(phi_np)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         gathered = transported_gather(sky, stencil, theta, phi)
         scalar = _scalar_gather(sky, stencil.indices, stencil.weights)
 
@@ -131,7 +131,7 @@ class TestNearestStencil:
         """The pixel's Q and U are rotated from its own meridian to the sampled direction's."""
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         theta, phi = _directions(200, 20)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.NEAREST)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.NEAREST)
         sky = landscape.normal(jax.random.key(20))
 
         gathered = transported_gather(sky, stencil, theta, phi)
@@ -152,7 +152,7 @@ class TestNearestStencil:
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         pixels = jnp.arange(0, 12 * NSIDE**2, 37)
         theta, phi = jhp.pix2ang(NSIDE, pixels)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.NEAREST)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.NEAREST)
         sky = landscape.normal(jax.random.key(21))
 
         gathered = transported_gather(sky, stencil, theta, phi)
@@ -193,7 +193,7 @@ class TestNearestStencil:
 
         landscape = HealpixLandscape(nside, stokes='IQU')
         theta, phi = jnp.asarray(theta_np), jnp.asarray(phi_np)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.NEAREST)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.NEAREST)
         gathered = transported_gather(sky, stencil, theta, phi)
         raw = Stokes.class_for('IQU').from_array(sky.data[..., stencil.indices[..., 0]])
 
@@ -224,7 +224,7 @@ class TestAdjoint:
         """
         landscape = HealpixLandscape(NSIDE, stokes=stokes)
         theta, phi = _directions(300, 12)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         tod = _random_tod(landscape, 300, 13)
 
         def gather(sky: Stokes) -> Stokes:
@@ -238,7 +238,7 @@ class TestAdjoint:
     def test_gather_and_scatter_are_adjoint(self, stokes: ValidStokesLiteral) -> None:
         landscape = HealpixLandscape(NSIDE, stokes=stokes)
         theta, phi = _directions(500, 4)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         sky = landscape.normal(jax.random.key(4))
         tod = _random_tod(landscape, 500, 5)
 
@@ -260,7 +260,7 @@ class TestAdjoint:
         # keep two thirds of the covered pixels, so plenty of stencils straddle the boundary
         landscape = LocalStokesLandscape(parent, covered[: 2 * len(covered) // 3])
 
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         assert int((stencil.indices == landscape.sink).sum()) > 0
 
         sky = landscape.normal(jax.random.key(6))
@@ -276,7 +276,7 @@ class TestAdjoint:
     def test_scatter_accumulates_into_the_given_map(self) -> None:
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         theta, phi = _directions(100, 8)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         tod = _random_tod(landscape, 100, 9)
 
         once = transported_scatter(landscape.zeros(), tod, stencil, theta, phi)
@@ -289,7 +289,7 @@ class TestOutOfBounds:
         """A neighbour sent to the sink must neither be read nor written."""
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         theta, phi = _directions(50, 10)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         sky = landscape.normal(jax.random.key(10))
 
         # drop the last neighbour of every sample by marking it out of bounds
@@ -307,7 +307,7 @@ class TestUnpositionedStencil:
         """A stencil off the sphere cannot say what frame its Q and U are in, so it must not try."""
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         theta, phi = _directions(50, 30)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         scalar = Stencil.scalar(stencil.indices, stencil.weights)
         sky = landscape.normal(jax.random.key(30))
 
@@ -318,7 +318,7 @@ class TestUnpositionedStencil:
         """Intensity never asks for the positions, which is what makes such a stencil usable."""
         landscape = HealpixLandscape(NSIDE, stokes='I')
         theta, phi = _directions(50, 31)
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         sky = landscape.normal(jax.random.key(31))
 
         scalar = Stencil.scalar(stencil.indices, stencil.weights)
@@ -339,12 +339,12 @@ class TestFloat32:
         theta, phi = _directions(100, 11)
         theta, phi = theta.astype(jnp.float32), phi.astype(jnp.float32)
         for stencil in (
-            landscape.world2stencil(theta, phi, StencilOrder.BILINEAR),
-            landscape.world2stencil(theta, phi, StencilOrder.NEAREST),
+            landscape.world2stencil(theta, phi, Interpolation.BILINEAR),
+            landscape.world2stencil(theta, phi, Interpolation.NEAREST),
         ):
             assert stencil.weights.dtype == jnp.float32
             assert stencil.z.dtype == jnp.float32
-        stencil = landscape.world2stencil(theta, phi, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
 
         sky = landscape.normal(jax.random.key(11))
         gathered = transported_gather(sky, stencil, theta, phi)

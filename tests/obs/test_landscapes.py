@@ -19,7 +19,7 @@ from furax.obs.landscapes import (
     WCSLandscape,
     WCSProjection,
 )
-from furax.obs.stencil import StencilOrder
+from furax.obs.stencil import Interpolation
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 
@@ -318,21 +318,21 @@ class TestBilinearStencil:
 
         landscape = MinimalLandscape((10,), 'I')
         with pytest.raises(NotImplementedError):
-            landscape.world2stencil(jnp.array(1.0), jnp.array(0.0), StencilOrder.BILINEAR)
+            landscape.world2stencil(jnp.array(1.0), jnp.array(0.0), Interpolation.BILINEAR)
 
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
     def test_world2interp_is_the_stencil_without_its_positions(self, landscape_type, car, angles):
         """world2interp derives from world2stencil, so the two cannot describe different pixels."""
         landscape = HealpixLandscape(16, 'IQU') if landscape_type == 'healpix' else car
         indices, weights = landscape.world2interp(*angles)
-        stencil = landscape.world2stencil(*angles, StencilOrder.BILINEAR)
+        stencil = landscape.world2stencil(*angles, Interpolation.BILINEAR)
         assert_array_equal(stencil.indices, indices)
         assert_array_equal(stencil.weights, weights)
 
     def test_healpix_centers_are_the_pixel_centers(self, angles):
         """The centers are the positions of the pixels the stencil indexes."""
         landscape = HealpixLandscape(16, 'IQU')
-        centers = landscape.world2stencil(*angles, StencilOrder.BILINEAR)
+        centers = landscape.world2stencil(*angles, Interpolation.BILINEAR)
         theta_n, phi_n = jhp.pix2ang(landscape.nside, centers.indices)
         assert_array_almost_equal(centers.z, np.cos(theta_n), decimal=12)
         assert_array_almost_equal(centers.sth, np.sin(theta_n), decimal=12)
@@ -340,7 +340,7 @@ class TestBilinearStencil:
 
     def test_car_centers_are_the_pixel_centers(self, car, angles):
         """Same for CAR, where the centers come from the analytic inverse projection."""
-        centers = car.world2stencil(*angles, StencilOrder.BILINEAR)
+        centers = car.world2stencil(*angles, Interpolation.BILINEAR)
         indices = centers.indices
         assert jnp.all(indices >= 0), 'the fixture must keep every neighbor on the grid'
         # Undo pixel2index: the raveled index is pix_x + n_x * pix_y (see StokesLandscape).
@@ -384,13 +384,13 @@ class TestNearestStencil:
 
         landscape = MinimalLandscape((10,), 'I')
         with pytest.raises(NotImplementedError):
-            landscape.world2stencil(jnp.array(1.0), jnp.array(0.0), StencilOrder.NEAREST)
+            landscape.world2stencil(jnp.array(1.0), jnp.array(0.0), Interpolation.NEAREST)
 
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
     def test_stencil_is_the_world2index_pixel(self, landscape_type, car, angles):
         """The one-neighbour stencil holds the pixel world2index returns, with unit weight."""
         landscape = HealpixLandscape(16, 'IQU') if landscape_type == 'healpix' else car
-        stencil = landscape.world2stencil(*angles, StencilOrder.NEAREST)
+        stencil = landscape.world2stencil(*angles, Interpolation.NEAREST)
         assert stencil.indices.shape == (*angles[0].shape, 1)
         assert stencil.n_neighbors == 1
         assert_array_equal(stencil.indices[..., 0], landscape.world2index(*angles))
@@ -399,7 +399,7 @@ class TestNearestStencil:
     def test_healpix_centers_are_the_pixel_centers(self, angles):
         """The centers are the positions of the pixel the stencil indexes."""
         landscape = HealpixLandscape(16, 'IQU')
-        centers = landscape.world2stencil(*angles, StencilOrder.NEAREST)
+        centers = landscape.world2stencil(*angles, Interpolation.NEAREST)
         theta_n, phi_n = jhp.pix2ang(landscape.nside, centers.indices)
         assert_array_almost_equal(centers.z, np.cos(theta_n), decimal=12)
         assert_array_almost_equal(centers.sth, np.sin(theta_n), decimal=12)
@@ -407,7 +407,7 @@ class TestNearestStencil:
 
     def test_car_centers_are_the_pixel_centers(self, car, angles):
         """Same for CAR, where the centers come from the analytic inverse projection."""
-        centers = car.world2stencil(*angles, StencilOrder.NEAREST)
+        centers = car.world2stencil(*angles, Interpolation.NEAREST)
         indices = centers.indices
         assert jnp.all(indices >= 0), 'the fixture must keep every sample on the grid'
         # Undo pixel2index: the raveled index is pix_x + n_x * pix_y (see StokesLandscape).
@@ -420,7 +420,7 @@ class TestNearestStencil:
     def test_centers_are_within_half_a_pixel(self, car, angles):
         """The center reported for a sample is the center of the pixel the sample falls in."""
         theta, phi = angles
-        centers = car.world2stencil(theta, phi, StencilOrder.NEAREST)
+        centers = car.world2stencil(theta, phi, Interpolation.NEAREST)
         theta_c = jnp.arctan2(centers.sth[..., 0], centers.z[..., 0])
         dphi = (centers.phi[..., 0] - phi + np.pi) % (2 * np.pi) - np.pi
         # the fixture grid is 1°/pixel, so no center sits more than half a degree away in either
@@ -440,8 +440,8 @@ class TestNearestStencil:
         car = CARLandscape(shape, WCSProjection.from_astropy(wcs), stokes='IQU')
         astropy_landscape = AstropyWCSLandscape(shape, wcs, stokes='IQU')
 
-        centers = car.world2stencil(*angles, StencilOrder.NEAREST)
-        ref_centers = astropy_landscape.world2stencil(*angles, StencilOrder.NEAREST)
+        centers = car.world2stencil(*angles, Interpolation.NEAREST)
+        ref_centers = astropy_landscape.world2stencil(*angles, Interpolation.NEAREST)
 
         assert_array_equal(centers.indices, ref_centers.indices)
         assert_array_almost_equal(centers.z, ref_centers.z, decimal=12)
@@ -464,7 +464,7 @@ class TestNearestStencil:
         azimuth = jnp.array(rng.uniform(0.0, 1.6, 20))
 
         pix_i, pix_j = landscape.world2pixel(np.pi / 2 - altitude, -azimuth)
-        centers = landscape.world2stencil(np.pi / 2 - altitude, -azimuth, StencilOrder.NEAREST)
+        centers = landscape.world2stencil(np.pi / 2 - altitude, -azimuth, Interpolation.NEAREST)
 
         theta_c = jnp.arctan2(centers.sth[..., 0], centers.z[..., 0])
         assert_array_almost_equal(np.pi / 2 - theta_c, alt_centers[pix_i], decimal=12)
@@ -473,10 +473,10 @@ class TestNearestStencil:
     def test_local_landscape_sinks_unmapped_samples(self, angles):
         """A sample outside the subset keeps the parent's center but loses its weight."""
         parent = HealpixLandscape(16, 'IQU')
-        centers = parent.world2stencil(*angles, StencilOrder.NEAREST)
+        centers = parent.world2stencil(*angles, Interpolation.NEAREST)
         # keep half the hit pixels, so some samples sink
         local = LocalStokesLandscape(parent, centers.indices[::2, 0])
-        local_stencil = local.world2stencil(*angles, StencilOrder.NEAREST)
+        local_stencil = local.world2stencil(*angles, Interpolation.NEAREST)
 
         sunk = local_stencil.indices == local.sink
         assert jnp.any(sunk) and not jnp.all(sunk), 'the fixture must sink some samples but not all'
@@ -504,7 +504,7 @@ class TestIndexStencil:
     def test_it_reproduces_the_stencil_of_the_angles_it_indexed(self, landscape_type, car, angles):
         """Same pixels, same centers, whichever way the index was reached."""
         landscape = HealpixLandscape(16, 'IQU') if landscape_type == 'healpix' else car
-        expected = landscape.world2stencil(*angles, StencilOrder.NEAREST)
+        expected = landscape.world2stencil(*angles, Interpolation.NEAREST)
         stencil = landscape.index2stencil(landscape.world2index(*angles))
         assert_array_equal(stencil.indices, expected.indices)
         assert_array_equal(stencil.weights, expected.weights)
@@ -523,7 +523,7 @@ class TestIndexStencil:
         rng = np.random.default_rng(1)
         theta = np.pi / 2 - jnp.array(rng.uniform(0.5, 1.0, 20))
         phi = -jnp.array(rng.uniform(0.0, 1.6, 20))
-        expected = landscape.world2stencil(theta, phi, StencilOrder.NEAREST)
+        expected = landscape.world2stencil(theta, phi, Interpolation.NEAREST)
         stencil = landscape.index2stencil(landscape.world2index(theta, phi))
         assert_array_equal(stencil.indices, expected.indices)
         assert_array_almost_equal(stencil.z, expected.z, decimal=12)
@@ -541,7 +541,7 @@ class TestIndexStencil:
         parent = HealpixLandscape(16, 'IQU')
         hit = np.unique(np.asarray(parent.world2index(*angles)))
         local = LocalStokesLandscape(parent, hit[::2])  # keep half the hit pixels, sink the rest
-        expected = local.world2stencil(*angles, StencilOrder.NEAREST)
+        expected = local.world2stencil(*angles, Interpolation.NEAREST)
         stencil = local.index2stencil(local.world2index(*angles))
 
         sunk = stencil.indices[..., 0] == local.sink
@@ -554,8 +554,8 @@ class TestIndexStencil:
         assert_array_almost_equal(stencil.phi[~sunk], expected.phi[~sunk], decimal=12)
 
 
-class TestStencilOrder:
-    """One method answers for every order a landscape supports, and refuses the others."""
+class TestInterpolation:
+    """One method answers for every interpolation a landscape supports, and refuses the others."""
 
     @pytest.fixture
     def angles(self):
@@ -569,14 +569,14 @@ class TestStencilOrder:
         proj = WCSProjection(crpix=(180.5, 90.5), crval=(180.0, 0.0), cdelt=(-1.0, 1.0))
         return CARLandscape((180, 360), proj, stokes='IQU')
 
-    @pytest.mark.parametrize('order', list(StencilOrder))
+    @pytest.mark.parametrize('interpolation', list(Interpolation))
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
-    def test_the_order_is_the_neighbor_count(self, landscape_type, order, car, angles):
+    def test_the_value_is_the_neighbor_count(self, landscape_type, interpolation, car, angles):
         landscape = HealpixLandscape(16, 'IQU') if landscape_type == 'healpix' else car
-        assert landscape.world2stencil(*angles, order).n_neighbors == order
+        assert landscape.world2stencil(*angles, interpolation).n_neighbors == interpolation
 
-    def test_a_landscape_without_interpolation_refuses_the_bilinear_order(self, angles):
-        """Refusing is the point of the single method: the order cannot fall back to another."""
+    def test_a_landscape_without_interpolation_refuses_the_bilinear_stencil(self, angles):
+        """Refusing is the point of the single method: it cannot fall back to another."""
         landscape = HorizonLandscape(
             shape=(8, 5),
             altitude_limits=(jnp.array(0.5), jnp.array(1.0)),
@@ -584,13 +584,13 @@ class TestStencilOrder:
             stokes='IQU',
         )
         with pytest.raises(NotImplementedError, match='BILINEAR'):
-            landscape.world2stencil(*angles, StencilOrder.BILINEAR)
+            landscape.world2stencil(*angles, Interpolation.BILINEAR)
 
-    @pytest.mark.parametrize('order', list(StencilOrder))
-    def test_a_subset_landscape_follows_its_parent(self, order, angles):
+    @pytest.mark.parametrize('interpolation', list(Interpolation))
+    def test_a_subset_landscape_follows_its_parent(self, interpolation, angles):
         parent = HealpixLandscape(16, 'IQU')
         local = LocalStokesLandscape(parent, np.unique(np.asarray(parent.world2index(*angles))))
-        assert local.world2stencil(*angles, order).n_neighbors == order
+        assert local.world2stencil(*angles, interpolation).n_neighbors == interpolation
 
 
 class TestWCSConventions:

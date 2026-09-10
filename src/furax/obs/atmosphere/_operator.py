@@ -124,10 +124,10 @@ class AtmospherePointingOperator(PointingOperator):
         the stencil's missing positions first.
         """
         if self.interpolate:
-            stencil = Stencil.scalar(*self.landscape.xy2interp(*self._wind_xy(qdet_full)))
+            stencil = Stencil.unpositioned(*self.landscape.xy2interp(*self._wind_xy(qdet_full)))
         else:
             indices = self._quat2index(qdet_full)
             weights = jnp.ones((*indices.shape, 1), self.landscape.dtype)
-            stencil = Stencil.scalar(indices[..., None], weights)
+            stencil = Stencil.unpositioned(indices[..., None], weights)
         nowhere = jnp.zeros(stencil.indices.shape[:-1], self.landscape.dtype)
         return stencil, nowhere, nowhere

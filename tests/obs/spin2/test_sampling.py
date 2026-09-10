@@ -308,11 +308,11 @@ class TestUnpositionedStencil:
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         theta, phi = _directions(50, 30)
         stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
-        scalar = Stencil.scalar(stencil.indices, stencil.weights)
+        unpositioned = Stencil.unpositioned(stencil.indices, stencil.weights)
         sky = landscape.normal(jax.random.key(30))
 
         with pytest.raises(ValueError, match='no sky positions'):
-            transported_gather(sky, scalar, theta, phi)
+            transported_gather(sky, unpositioned, theta, phi)
 
     def test_an_intensity_map_samples_through_it_unchanged(self) -> None:
         """Intensity never asks for the positions, which is what makes such a stencil usable."""
@@ -321,9 +321,9 @@ class TestUnpositionedStencil:
         stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         sky = landscape.normal(jax.random.key(31))
 
-        scalar = Stencil.scalar(stencil.indices, stencil.weights)
+        unpositioned = Stencil.unpositioned(stencil.indices, stencil.weights)
         assert_allclose(
-            np.asarray(transported_gather(sky, scalar, theta, phi).i),
+            np.asarray(transported_gather(sky, unpositioned, theta, phi).i),
             np.asarray(transported_gather(sky, stencil, theta, phi).i),
             atol=1e-14,
         )

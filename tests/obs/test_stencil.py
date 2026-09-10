@@ -27,20 +27,22 @@ class TestInterpolation:
 
 
 class TestResolution:
-    """Every constructor resolves the stencil it builds; `Stencil.scalar` is the shortest one."""
+    """Every constructor resolves what it builds; `Stencil.unpositioned` is the shortest one."""
 
     def test_normalizes_the_weights(self):
-        stencil = Stencil.scalar(jnp.array([[0, 1, 2, 3]]), jnp.array([[1.0, 1.0, 1.0, 1.0]]))
+        stencil = Stencil.unpositioned(jnp.array([[0, 1, 2, 3]]), jnp.array([[1.0, 1.0, 1.0, 1.0]]))
         assert_allclose(np.asarray(stencil.weights), 0.25)
 
     def test_out_of_map_neighbours_are_dropped_and_the_rest_rescaled(self):
-        stencil = Stencil.scalar(jnp.array([[0, -1, 2, 3]]), jnp.array([[0.4, 0.4, 0.1, 0.1]]))
+        stencil = Stencil.unpositioned(
+            jnp.array([[0, -1, 2, 3]]), jnp.array([[0.4, 0.4, 0.1, 0.1]])
+        )
         assert_array_equal(np.asarray(stencil.indices), [[0, 0, 2, 3]])
         assert_allclose(np.asarray(stencil.weights), [[2 / 3, 0.0, 1 / 6, 1 / 6]])
 
     def test_a_fully_uncovered_sample_is_zero_rather_than_nan(self):
         """Dividing by a zero weight sum must be guarded: such a sample contributes nothing."""
-        stencil = Stencil.scalar(jnp.array([[-1, -1]]), jnp.array([[0.7, 0.3]]))
+        stencil = Stencil.unpositioned(jnp.array([[-1, -1]]), jnp.array([[0.7, 0.3]]))
         assert_array_equal(np.asarray(stencil.indices), [[0, 0]])
         assert_array_equal(np.asarray(stencil.weights), [[0.0, 0.0]])
 
@@ -67,7 +69,7 @@ class TestStencil:
         assert cast.indices.dtype == jnp.int32
 
     def test_astype_leaves_a_stencil_without_positions_alone(self):
-        stencil = Stencil.scalar(jnp.array([[0, 1]]), jnp.ones((1, 2))).astype(jnp.float32)
+        stencil = Stencil.unpositioned(jnp.array([[0, 1]]), jnp.ones((1, 2))).astype(jnp.float32)
         assert stencil.weights.dtype == jnp.float32
         assert stencil.positions is None
 
@@ -97,9 +99,11 @@ class TestStencil:
         assert_allclose(np.asarray(dropped.weights), [[1 / 3, 1 / 3, 1 / 3, 0.0]])
         assert_array_equal(np.asarray(dropped.positions.phi), np.asarray(positions.phi))
 
-    def test_scalar_has_no_sky_positions(self):
+    def test_unpositioned_has_no_sky_positions(self):
         """A grid that is not the sphere reports no positions rather than plausible wrong ones."""
-        stencil = Stencil.scalar(jnp.array([[0, -1, 2, 3]]), jnp.array([[0.4, 0.4, 0.1, 0.1]]))
+        stencil = Stencil.unpositioned(
+            jnp.array([[0, -1, 2, 3]]), jnp.array([[0.4, 0.4, 0.1, 0.1]])
+        )
 
         assert stencil.positions is None
         # still resolved, like any other stencil

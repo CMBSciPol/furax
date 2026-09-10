@@ -92,7 +92,7 @@ class Stencil(NamedTuple):
     trailing neighbour axis has length one and the weight is one.
 
     A stencil on a grid that is not the sphere has no [`SkyPositions`][] and carries `None`, which
-    [`Stencil.scalar`][] builds; only a map with no polarisation can be sampled through one.
+    [`Stencil.unpositioned`][] builds; only a map with no polarisation can be sampled through one.
 
     Attributes:
         indices: Neighbour pixel indices into the raveled map, all in bounds.
@@ -171,7 +171,7 @@ class Stencil(NamedTuple):
         )
 
     @classmethod
-    def scalar(
+    def unpositioned(
         cls,
         indices: Integer[Array, '*dims neighbors'],
         weights: Float[Array, '*dims neighbors'],

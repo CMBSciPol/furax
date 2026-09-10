@@ -28,7 +28,7 @@ __all__ = [
     'to_polarization_angle',
 ]
 
-type Ang = Float[Array, '...']
+type Angle = Float[Array, '...']
 
 XAXIS = np.array([1.0, 0.0, 0.0])
 YAXIS = np.array([0.0, 1.0, 0.0])
@@ -36,7 +36,7 @@ ZAXIS = np.array([0.0, 0.0, 1.0])
 
 
 @partial(jit, static_argnums=(0,))
-def euler(axis: int, angle: Ang) -> Quaternion:
+def euler(axis: int, angle: Angle) -> Quaternion:
     r"""The quaternion representing an Euler rotation.
 
     For example, if axis=2 the computed quaternion(s) will have components:
@@ -63,7 +63,7 @@ def euler(axis: int, angle: Ang) -> Quaternion:
 
 
 @jit
-def to_iso_angles(q: Quaternion) -> tuple[Ang, Ang, Ang]:
+def to_iso_angles(q: Quaternion) -> tuple[Angle, Angle, Angle]:
     """Convert quaternions to the ISO polar coordinate system angles (theta, phi, psi)."""
     a, b, c, d = q.to_components()
     theta = 2 * jnp.atan2((b**2 + c**2) ** 0.5, (a**2 + d**2) ** 0.5)
@@ -73,7 +73,7 @@ def to_iso_angles(q: Quaternion) -> tuple[Ang, Ang, Ang]:
 
 
 @jit
-def from_iso_angles(theta: Ang, phi: Ang, psi: Ang) -> Quaternion:
+def from_iso_angles(theta: Angle, phi: Angle, psi: Angle) -> Quaternion:
     """Compute quaternions from the ISO polar coordinate system angles (theta, phi, psi)."""
     cos_th = jnp.cos(theta * 0.5)
     sin_th = jnp.sin(theta * 0.5)
@@ -85,7 +85,7 @@ def from_iso_angles(theta: Ang, phi: Ang, psi: Ang) -> Quaternion:
 
 
 @jit
-def to_lonlat_angles(q: Quaternion) -> tuple[Ang, Ang, Ang]:
+def to_lonlat_angles(q: Quaternion) -> tuple[Angle, Angle, Angle]:
     """Convert quaternions to the lonlat coordinate system angles (alpha, delta, psi).
 
     alpha (lon), delta (lat), psi = phi, pi/2-theta, psi
@@ -95,7 +95,7 @@ def to_lonlat_angles(q: Quaternion) -> tuple[Ang, Ang, Ang]:
 
 
 @jit
-def from_lonlat_angles(alpha: Ang, delta: Ang, psi: Ang) -> Quaternion:
+def from_lonlat_angles(alpha: Angle, delta: Angle, psi: Angle) -> Quaternion:
     """Compute quaternions from the lonlat coordinate system angles (alpha, delta, psi).
 
     theta, phi, psi = pi/2-delta, alpha, psi
@@ -104,7 +104,7 @@ def from_lonlat_angles(alpha: Ang, delta: Ang, psi: Ang) -> Quaternion:
 
 
 @jit
-def to_xieta_angles(q: Quaternion) -> tuple[Ang, Ang, Ang]:
+def to_xieta_angles(q: Quaternion) -> tuple[Angle, Angle, Angle]:
     """Convert quaternions to the xieta coordinate system angles (xi, eta, gamma)."""
     a, b, c, d = q.to_components()
     xi = 2 * (a * b - c * d)
@@ -114,7 +114,7 @@ def to_xieta_angles(q: Quaternion) -> tuple[Ang, Ang, Ang]:
 
 
 @jit
-def from_xieta_angles(xi: Ang, eta: Ang, gamma: Ang) -> Quaternion:
+def from_xieta_angles(xi: Angle, eta: Angle, gamma: Angle) -> Quaternion:
     """Compute quaternions from the xieta coordinate system angles (xi, eta, gamma)."""
     theta = jnp.asin((xi**2 + eta**2) ** 0.5)
     phi = jnp.atan2(-xi, -eta)
@@ -123,7 +123,7 @@ def from_xieta_angles(xi: Ang, eta: Ang, gamma: Ang) -> Quaternion:
 
 
 @jit
-def to_gamma_angles(q: Quaternion) -> Ang:
+def to_gamma_angles(q: Quaternion) -> Angle:
     """Convert quaternions to the xieta coordinate system angles (xi, eta, gamma).
 
     Only the gamma angle is computed and returned.
@@ -133,7 +133,7 @@ def to_gamma_angles(q: Quaternion) -> Ang:
 
 
 @jit
-def to_polarization_angle_cos_sin(q: Quaternion) -> tuple[Ang, Ang]:
+def to_polarization_angle_cos_sin(q: Quaternion) -> tuple[Angle, Angle]:
     """Compute cos and sin of the polarization angle from the rotation quaternion.
 
     Equivalent to ``(cos(pa), sin(pa))`` where ``pa = to_polarization_angle(q)``,
@@ -155,7 +155,7 @@ def to_polarization_angle_cos_sin(q: Quaternion) -> tuple[Ang, Ang]:
 
 
 @jit
-def to_polarization_angle(q: Quaternion) -> Ang:
+def to_polarization_angle(q: Quaternion) -> Angle:
     """Compute the polarization angle from the rotation quaternion using the COSMO convention.
 
     The polarization angle is measured from the South through the East.

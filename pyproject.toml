@@ -29,7 +29,7 @@ license-files = ['LICENSE']
 dependencies = [
     'astropy>=7.2',
     'equinox>=0.13.8',
-    'fastquat',
+    'fastquat>=1.0b2',
     'healpy>=1.19.0',
     'jax>=0.11.0',
     'jaxtyping>=0.3.9',
@@ -155,7 +155,6 @@ xfail_strict = true
 [tool.uv.sources]
 s2fft = { git = "https://github.com/astro-informatics/s2fft" }  # TODO: remove when next release is out
 jax-healpy = { git = "https://github.com/CMBSciPol/jax-healpy" }
-fastquat = { git = "https://github.com/CMBSciPol/fastquat", branch = "sb/quaternion-getitem" }  # TODO: pin a release once CMBSciPol/fastquat's indexing PR merges
 
 [tool.ruff]
 line-length = 100

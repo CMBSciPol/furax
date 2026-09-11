@@ -173,26 +173,31 @@ class TestLocalLandscape:
     """A PointingOperator on a LocalStokesLandscape matches the full-sky one."""
 
     @pytest.fixture(scope='class')
-    def keys(self) -> jax.Array:
+    @classmethod
+    def keys(cls) -> jax.Array:
         return jax.random.split(jax.random.key(11), 4)
 
     @pytest.fixture(scope='class', params=[False, True], ids=['nearest', 'bilinear'])
-    def p_full(self, request: pytest.FixtureRequest, keys: jax.Array) -> PointingOperator:
+    @classmethod
+    def p_full(cls, request: pytest.FixtureRequest, keys: jax.Array) -> PointingOperator:
         parent = HealpixLandscape(NSIDE, 'IQU')
         qbore = Quaternion.random(keys[0], (NSAMP,))
         qdet = Quaternion.random(keys[1], (NDET,))
         return PointingOperator.create(parent, qbore, qdet, interpolate=request.param)
 
     @pytest.fixture(scope='class')
-    def sky(self, p_full: PointingOperator, keys: jax.Array):
+    @classmethod
+    def sky(cls, p_full: PointingOperator, keys: jax.Array):
         return p_full.landscape.normal(keys[2])
 
     @pytest.fixture(scope='class')
-    def tod(self, p_full: PointingOperator, keys: jax.Array):
+    @classmethod
+    def tod(cls, p_full: PointingOperator, keys: jax.Array):
         return ftree.normal_like(p_full.out_structure, keys[3])
 
     @pytest.fixture(scope='class')
-    def covered(self, p_full: PointingOperator) -> jax.Array:
+    @classmethod
+    def covered(cls, p_full: PointingOperator) -> jax.Array:
         # global pixels hit by the pointing: bin a ones-TOD (I accumulates 1 per hit for
         # nearest, the interpolation weights for bilinear)
         hits = p_full.T(ftree.ones_like(p_full.out_structure))
@@ -209,17 +214,19 @@ class TestLocalLandscape:
         return local, p_local
 
     @pytest.fixture(scope='class')
+    @classmethod
     def full_coverage(
-        self, p_full: PointingOperator, covered: jax.Array
+        cls, p_full: PointingOperator, covered: jax.Array
     ) -> tuple[LocalStokesLandscape, PointingOperator]:
-        return self._local_operator(p_full, covered)
+        return cls._local_operator(p_full, covered)
 
     @pytest.fixture(scope='class')
+    @classmethod
     def half_coverage(
-        self, p_full: PointingOperator, covered: jax.Array
+        cls, p_full: PointingOperator, covered: jax.Array
     ) -> tuple[LocalStokesLandscape, PointingOperator]:
         # samples on the dropped pixels land in the sink
-        return self._local_operator(p_full, covered[::2])
+        return cls._local_operator(p_full, covered[::2])
 
     def test_mv_matches_full_sky(self, p_full, sky, full_coverage) -> None:
         local, p_local = full_coverage

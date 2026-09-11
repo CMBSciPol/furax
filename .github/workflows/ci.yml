@@ -42,7 +42,7 @@ jobs:
   test:
     name: "Run tests on Python ${{ matrix.python-version }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -55,7 +55,21 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: "Install dependencies"
         run: uv sync --locked --all-extras
+      # Most of the suite's wall time is XLA compilation of small kernels that do not change
+      # between runs. Entries are keyed on the jaxlib version too, so the lockfile is part of
+      # the cache key; a test that compiles something new simply misses.
+      - name: "Cache compiled XLA kernels"
+        uses: actions/cache@v6.1.0
+        with:
+          path: .pytest_cache/jax
+          key: jax-${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            jax-${{ matrix.python-version }}-
       - name: "Run tests"
-        run: uv run pytest -vv
+        run: uv run pytest -vv -n auto
+      # `insubprocess` tests re-exec themselves, which xdist reads as a worker crash, so the
+      # parallel selection above drops them and they run here instead.
+      - name: "Run in-subprocess tests"
+        run: uv run pytest -vv -m insubprocess
       - name: "Run distributed tests"
         run: uv run pytest -vv -m distributed

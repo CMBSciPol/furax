@@ -17,7 +17,8 @@ Preserve useful human-written comments unless the code change makes them inaccur
 - `uv run path/to/script.py|command`: Run a Python file/snippet using the project environment
 - `uv add <package>`: Add a new dependency to the project
 - `uv remove <package>`: Remove a dependency from the project
-- `uv run pytest -v`: Run the full test suite
+- `uv run pytest -n auto`: Run the test suite in parallel (except distributed and in-subprocess)
+- `uv run pytest -v`: Run the test suite serially
 - `uv run pytest path/to/test.py -v`: Run a single test file
 - `uv run pytest path/to/test.py::TestClass::test_method -v`: Run a single test
 - `uv run prek run`: Run pre-commit hooks (staged files)
@@ -83,9 +84,29 @@ def foo(x: Float[jax.Array, ' n'], scale: float = 1.0) -> Float[jax.Array, ' n']
 
 - Add tests for new behaviour: cover success, failure, and edge cases.
 - Use `@pytest.mark.parametrize` for multiple similar inputs: consolidate tests that only differ in input/expected values into a single parametrized test.
-- Use `@pytest.mark.slow` for expensive tests (excluded from default test runs)
-- Top-level `tests/conftest.py` contains an session-scope autouse fixture that sets `jax_enable_x64=True` for all tests.
-- x64-off tests: mark `@pytest.mark.insubprocess` and flip `jax.config.update('jax_enable_x64', False)` in-body (the autouse fixture forces x64 on otherwise). Precedent: `tests/core/base/test_inverse.py`.
+- Tests mirror the `/src` layout.
+- `tests/conftest.py` holds the session-scope autouse fixtures every test sees, and gives the run 8 host devices via `XLA_FLAGS`.
+- Floating point: x64 is on for all tests (autouse fixture). A test that needs it off marks `insubprocess` and calls `jax.config.update('jax_enable_x64', False)` in-body, since the fixture would otherwise force it back on. Precedent: `tests/core/base/test_inverse.py`.
+
+### Markers
+
+Three markers take a test out of the default selection, each for a different reason, and each gets its own run. CI runs all four selections.
+
+| Marker | Why it cannot run with the rest | Its own run |
+| --- | --- | --- |
+| `slow` | expensive; excluded by `addopts` so the default run stays usable | `uv run pytest -m slow` |
+| `distributed` | needs several devices, and is skipped when fewer than two are visible | `uv run pytest -m distributed` |
+| `insubprocess` | re-execs itself through a hook that replaces the run protocol, which xdist reads as a crashed worker, so a parallel selection deselects it | `uv run pytest -m insubprocess` |
+
+The two sets do not overlap: `distributed` is about device count, `insubprocess` about global JAX config a test has to change before the interpreter warms up.
+
+### Suite runtime
+
+Nearly all of the wall time is XLA compilation of small kernels, not the numerics, so the two things that matter are running kernels in parallel and not compiling the same kernel twice.
+
+- `-n auto` (pytest-xdist) spreads the suite over the available cores, which is the practical local check.
+- A session fixture points JAX's persistent compilation cache at `.pytest_cache/jax`, so a re-run compiles only what changed. Set `FURAX_TEST_NO_COMPILATION_CACHE=1` to measure against cold compilation, or `FURAX_TEST_COMPILATION_CACHE_DIR` to relocate it. Deleting the directory is always safe.
+- A test costs roughly what it compiles. Adding a case that reuses shapes already covered is close to free; one that introduces a new shape, dtype, or Stokes combination is not.
 
 ## Architecture
 

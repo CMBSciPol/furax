@@ -578,7 +578,14 @@ class TemplatesConfig:
     """Ground pickup template, binned in (azimuth, elevation)."""
 
     regularization: float = field(default=0.0, metadata={'template': False})
-    """Ridge regularization strength applied to the template regression."""
+    """Ridge regularization strength applied to the template regression.
+
+    Relative to the mean diagonal of each detector's Gram block. Needed with Pomme whenever a
+    template contains a constant column (polynomial order 0, a DC harmonic, binned azimuth):
+    Pomme removes the constant part of every template, so the filtered Gram is singular there
+    and the factorisation fails without a ridge. The ridge leaks about that fraction of the
+    template signal into the map, so keep it small (`1e-8` in double precision).
+    """
 
     gram_batch_size: int = field(default=32, metadata={'template': False})
     """Detector batch size for Gram inversion."""
@@ -796,7 +803,12 @@ class MapMakingConfig:
     """Template deprojection options. `None` disables all templates."""
 
     pomme_tau: int = 0
-    """Length of the `Pomme` interval (in samples)."""
+    """Length of the `Pomme` interval (in samples).
+
+    Pomme combines with templates, which are then fitted on the Pomme-filtered TOD. A template
+    with a constant column needs `templates.regularization > 0` (see [`TemplatesConfig`][]), and
+    slow templates (polynomial drifts, low-order azimuth) are largely redundant with Pomme.
+    """
 
     max_buckets: int = 4
     """Largest number of buckets observations are grouped into.

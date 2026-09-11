@@ -159,10 +159,10 @@ class MultiObservationMapMaker[T]:
                     " reconstruction. Falling back to stokes='QU' instead."
                 )
                 self.config.landscape.stokes = 'QU'
+            if self.config.demodulated:
+                raise ValueError('Pomme acts on the HWP-modulated TOD, not on demodulated data.')
         if self.config.use_templates and not self.config.binned:
             raise NotImplementedError('Using templates requires diagonal weighting.')
-        if self.config.use_templates and self.config.method == Methods.POMME:
-            raise NotImplementedError('Pomme combined with templates is not yet supported.')
 
     @cached_property
     def mesh(self) -> Mesh:

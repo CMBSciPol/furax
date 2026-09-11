@@ -14,9 +14,11 @@ from furax.mapmaking.config import (
     HWPSynchronousConfig,
     LandscapeConfig,
     MapMakingConfig,
+    Methods,
     NoiseFitConfig,
     PointingConfig,
     PolynomialConfig,
+    PolynomialOrders,
     ScanSynchronousConfig,
     SotodlibConfig,
     TemplatesConfig,
@@ -117,3 +119,49 @@ def test_demodulated_polynomial_implicit_runs():
     cfg.sotodlib = SotodlibConfig(demodulated=True)
     res = MultiObservationMapMaker(_ground_obs(), config=cfg).run()
     assert jnp.all(jnp.isfinite(res.map.data))
+
+
+# ---------------------------------------------------------------------------
+# Pomme combined with templates
+# ---------------------------------------------------------------------------
+
+
+def _pomme_config(templates: TemplatesConfig) -> MapMakingConfig:
+    cfg = _config(templates)
+    cfg.method = Methods.POMME
+    cfg.pomme_tau = 37
+    cfg.landscape.stokes = 'QU'
+    templates.regularization = 1e-10
+    return cfg
+
+
+@pytest.mark.parametrize(
+    'observations, template',
+    [
+        (_hwp_obs, lambda e: TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=e))),
+        (
+            _ground_obs,
+            lambda e: TemplatesConfig(scan_synchronous=ScanSynchronousConfig(explicit=e)),
+        ),
+    ],
+    ids=['hwp_synchronous', 'scan_synchronous'],
+)
+def test_pomme_explicit_and_implicit_give_the_same_map(observations, template):
+    # Under Pomme the effective weight is W F; marginalising the amplitudes under it must still
+    # match the joint solve. Both paths use the Pomme-filtered Gram (as weight fold and as
+    # preconditioner respectively).
+    obs = observations()
+    explicit = MultiObservationMapMaker(obs, config=_pomme_config(template(True))).run()
+    implicit = MultiObservationMapMaker(obs, config=_pomme_config(template(False))).run()
+    assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
+
+
+def test_pomme_with_polynomial_runs():
+    # per-scan-interval polynomial: the segmented Gram gets the widened (block-tridiagonal) band
+    templates = TemplatesConfig(
+        polynomial=PolynomialConfig(legendre=PolynomialOrders(1, 3), explicit=False),
+        hwp_synchronous=HWPSynchronousConfig(2, explicit=True),
+    )
+    res = MultiObservationMapMaker(_ground_obs(), config=_pomme_config(templates)).run()
+    assert jnp.all(jnp.isfinite(res.map.data))
+    assert jnp.all(jnp.isfinite(res.template_amplitudes['hwp_synchronous']))

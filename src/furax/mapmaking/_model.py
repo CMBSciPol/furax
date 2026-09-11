@@ -435,6 +435,7 @@ class ObservationTemplates:
                         times=data[ReaderField.TIMESTAMPS],
                         dtype=dtype,
                         valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
+                        min_poly_order=(poly.legendre if s == 'I' else legendre_qu).min_order,
                     )
                     for s in legs
                 }
@@ -445,6 +446,7 @@ class ObservationTemplates:
                     times=data[ReaderField.TIMESTAMPS],
                     dtype=dtype,
                     valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
+                    min_poly_order=poly.legendre.min_order,
                 )
             add('polynomial', bases, poly.explicit)
 

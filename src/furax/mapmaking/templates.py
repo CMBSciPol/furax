@@ -724,11 +724,13 @@ def polynomial_basis(
     times: Float[Array, ' samp'],
     dtype: DTypeLike,
     valid_mask: Float[Array, ' samp'] | None = None,
+    min_poly_order: int = 0,
 ) -> Basis:
     """Basis for a polynomial drift template, one polynomial per scanning interval.
 
-    Each sample belongs to one interval and is fitted with Legendre orders `0..max_poly_order` over
-    that interval.
+    Each sample belongs to one interval and is fitted with Legendre orders
+    `min_poly_order..max_poly_order` over that interval. Under Pomme the constant is already
+    removed, so `min_poly_order=1` keeps the basis non-degenerate.
 
     Assumes `intervals` are sorted, non-overlapping `[start, end)` rows. Samples in gaps or past the
     last interval get a zero basis column. `valid_mask` optionally zeroes flagged samples (1 = keep,
@@ -752,7 +754,7 @@ def polynomial_basis(
     # rescale each sample to [-1, 1] within its own interval; out-of-range
     # samples sit at 0 and are zeroed by `in_range` below.
     u = jnp.where(in_range, -1.0 + 2.0 * (times - t0) / span, 0.0)
-    legs = _legendre_values(u, 0, max_poly_order, dtype)  # (k, n_samps)
+    legs = _legendre_values(u, min_poly_order, max_poly_order, dtype)  # (k, n_samps)
     legs = legs * in_range[None, :]
     if valid_mask is not None:
         legs = legs * valid_mask[None, :].astype(dtype)

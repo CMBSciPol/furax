@@ -29,11 +29,15 @@ jobs:
           key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
           restore-keys: |
             prek-
+      # ty resolves third-party imports from the environment, so the optional dependencies have
+      # to be installed for it to see pixell, sotodlib, pysm3 and friends.
+      - name: "Install dependencies"
+        run: uv sync --locked --all-extras --no-default-groups --group lint
       - name: "Run prek"
         run: |
           echo '```console' > "$GITHUB_STEP_SUMMARY"
           # Enable color output for prek and remove it for the summary
-          uv run --only-group lint --locked prek run --all-files --show-diff-on-failure --color always | \
+          uv run --no-sync prek run --all-files --show-diff-on-failure --color always | \
             tee >(sed -E 's/\x1B\[([0-9]{1,2}(;[0-9]{1,2})*)?[mGK]//g' >> "$GITHUB_STEP_SUMMARY") >&1
           exit_code="${PIPESTATUS[0]}"
           echo '```' >> "$GITHUB_STEP_SUMMARY"

@@ -7,13 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0]
+
 ### Added
 
 - `BlockSelectOperator`: extract one block of a block-structured input, and embed a single-block operator into the whole through its transpose (#237)
 - `MapMakingConfig.max_buckets`: largest allowed number of buckets for grouping observation by shape (#236)
 - API reference page for `furax.mapmaking.layout` (#236)
 - `furax.mapmaking.pomme` module and API reference page (moved from `furax.mapmaking.templates`) (#255)
-- Honours `PolynomialConfig.legendre.min_order` in polynomial template (#256)
+- Honour `PolynomialConfig.legendre.min_order` in polynomial template (#256)
+- `AdditionOperator` now takes a `sequential` flag (disabled by default), which applies the operands one at a time to reduce peak memory (#259)
 
 ### Changed
 
@@ -22,7 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `Stokes.from_stokes` takes lowercase keywords (`i=`, `q=`, `u=`, `v=`) and no longer accepts uppercase ones (#250)
 - Type checking moved from mypy to ty (#250)
 - **Breaking:** `MapMakingConfig.atop_tau` renamed to `pomme_tau` (#251)
-- `AdditionOperator` takes a `sequential` flag, which applies the operands one at a time to reduce peak memory (#259)
 
 ### Removed
 
@@ -336,7 +338,8 @@ Initial tagged release.
 
 - Project classifiers and editable-mode installation instructions
 
-[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.12.1...HEAD
+[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/CMBSciPol/furax/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/CMBSciPol/furax/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/CMBSciPol/furax/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/CMBSciPol/furax/compare/v0.11.2...v0.11.3

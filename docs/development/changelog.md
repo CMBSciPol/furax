@@ -42,6 +42,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - API reference page for `furax.mapmaking.streaming` (#190)
 - API reference page for `furax.mapmaking.templates` (#214)
 - `AbstractLinearOperator.profile()` and a new `furax.profiling` module for estimated cost analysis (#193)
+- `furax.obs.spin2`: parallel transport of Q and U across a sampling stencil, exposing `transported_gather`/`transported_scatter` and the frame rotation they are built on (#204)
+- `furax.obs.stencil`, a pixelisation-free module holding `Stencil`: the pixels one sample reads, their weights and their sky positions, in one type that a landscape produces and a sampler consumes (#204)
+  - a stencil is resolved when it is built, by `Stencil.resolve` or `Stencil.nearest`: its indices are in bounds and its weights sum to one, so no sampler can normalise them differently from another
+  - nearest-neighbour sampling is the one-neighbour case of the same type, not a second shape
+  - `Interpolation` names how many pixels a sample reads: `NEAREST` (one) or `BILINEAR` (four)
+  - `SkyPositions` holds where the neighbours sit, as one value rather than three loose arrays, so a stencil either carries all of them or none
+  - `Stencil.unpositioned` builds one for a grid that is not the sphere, such as the atmosphere screen: it carries no neighbour positions, and sampling polarisation through it raises `ValueError` instead of transporting from a plausible wrong frame
+  - `Stencil.astype` casts the weights and positions, leaving the indices alone, so a caller chooses the precision after building rather than through the constructor
+- `StokesLandscape.world2stencil(theta, phi, interpolation)`, returning the `Stencil` a sample reads at the requested interpolation, implemented for HEALPix and WCS/CAR (both interpolations) and for astropy-WCS, horizon and subset landscapes (#204)
+  - a landscape answers for every interpolation it supports in this one method, so it cannot define one and leave another to a mismatched inherited definition; an unsupported interpolation raises `NotImplementedError`
+  - `world2interp` now derives from it and is no longer overridable; measured on HEALPix and CAR, the compiled cost of `PointingOperator.mv` is unchanged, because XLA drops the neighbour positions nothing reads
+- `CARLandscape.pixel2world`, `AstropyWCSLandscape.pixel2world` and `HorizonLandscape.pixel2world`, the inverses of their `world2pixel` (#204)
+- API reference pages for `furax.obs.spin2` and `furax.obs.stencil` (#204)
 - `furax.mapmaking.templates.Basis.per_detector_stack()` to stack per-detector templates into a single basis (#214)
 - Mapmaking config entry for T-to-P leakage deprojection (#214)
 - `furax.mapmaking.gram` module with Gram machinery for template deprojection (#215)
@@ -54,6 +67,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `in_stacked`/`out_stacked` say which side carries the stream axis, per component, so one stream can mix shared and per-slice components
 - **Breaking:** `AbstractLinearOperator.__call__`, `BJPreconditioner.create`, and the `LBSObservation`/`ToastObservation` pointing helpers now raise `TypeError` (previously `ValueError`/`RuntimeError`) for invalid argument/operator/landscape types (#194)
 - Bumped ruff to 0.16.1 and updated rule selection accordingly (#194)
+- **Breaking:** pointing now carries the Q and U of every pixel it reads into the frame of the direction it samples at, so `PointingOperator` and `XSamplingOperator` return different values for a polarised map, on both the nearest-neighbour and the bilinear path (#204):
+  - each pixel stores Q and U in its own meridian basis, which is not the basis of a sample that sits off the pixel centre; combining the two without the rotation leaks E into B, and the leakage grows towards the poles as $\cot\theta$
+  - bilinear summed four different bases; nearest returned the pixel centre's basis unrotated
+  - intensity-only maps are bit-identical, and so is which pixel each sample lands in
+  - the transport is implied by sampling a map containing Q or U, and is not configurable
+  - on the nearest-neighbour path the transport is a per-sample rotation, so `as_expanded_operator` still expands to a precomputed `IndexOperator` gather: the transport rides as a second `QURotationOperator`, which the composition rules fuse with the polarisation one, and the stencil weight as a `DiagonalOperator`, so a sample outside the map contributes nothing
+- **Breaking:** a nearest-neighbour sample of a polarised map that falls outside the map now contributes nothing, instead of reading and writing the last pixel; on a subset landscape it no longer reads the sink slot (#204)
+- **Breaking:** `StokesLandscape.world2interp` returns a resolved stencil: a neighbour outside the map comes back as index 0 with weight 0, where it used to come back as index -1 with its raw weight, and the surviving weights are rescaled to sum to one (#204)
+- **Breaking:** removed `StokesLandscape.pixel2interp` and `WCSLandscape.pixel2interp`; a landscape defines its interpolation by overriding `world2stencil` (#204)
+- `PointingOperator` samples a stencil through the single `_quat2stencil` hook, replacing `_quat2interp`; a subclass that moves the pointing in `_quat2index` alone raises `NotImplementedError` when it samples a polarised map (#204)
 - Fixed detection of templates usage in map-making configuration (#225)
 - Template algebra code overhaul, replacing `PerDetectorTemplate` with `(Stokes)TemplateOperator` (#214)
 - **Breaking**: template configuration keys are now spelled out (`binaz_synchronous` → `binned_azimuth_synchronous`, `azhwp_synchronous` → `azimuth_hwp_synchronous`, `binazhwp_synchronous` → `binned_azimuth_hwp_synchronous`, `spline_hwpss` → `spline_hwp_synchronous`) (#214)

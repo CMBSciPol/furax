@@ -17,6 +17,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, Scala
 
 from furax.math.coords import ZAXIS, to_iso_angles
 from furax.obs._samplings import Sampling
+from furax.obs.stencil import Interpolation, SkyPositions, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 _StokesT = TypeVar('_StokesT', bound=Stokes)
@@ -201,28 +202,82 @@ class StokesLandscape(Landscape):
         theta, phi, _ = to_iso_angles(quat)  # psi not needed
         return theta, phi
 
+    def index2world(
+        self, indices: Integer[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        r"""Returns the angles $(\theta, \varphi)$ of the centers of the pixels of `indices`.
+
+        The inverse of [`world2index`][], up to the pixel the sample fell in. An index outside the
+        map (negative) is read as pixel 0, so that the angles stay finite.
+        """
+        raise NotImplementedError(f'{type(self).__name__} does not locate its pixel centers')
+
+    def index2stencil(self, indices: Integer[Array, ' *dims']) -> Stencil:
+        """Returns the one-neighbour [`Stencil`][] reading the pixels of `indices`.
+
+        The nearest-neighbour stencil of a sampler that already holds the index of the pixel each
+        sample falls in, from [`quat2index`][] say, positioned at those pixels' centers. An index
+        outside the map (negative) reads pixel 0 with zero weight.
+        """
+        return Stencil.nearest(indices, *self.index2world(indices)).astype(self.dtype)
+
     def world2interp(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
-        """Returns (indices, weights) with a trailing neighbor dimension for interpolation.
+        """Returns the resolved (indices, weights) of the bilinear stencil, for a scalar sampler.
 
-        Subclasses support interpolation by overriding [`pixel2interp`][] (2-D pixel grid, see
-        [`WCSLandscape`][]) or this method directly (e.g. HEALPix via ``get_interp_weights``).
+        The stencil of [`world2stencil`][] without its neighbour positions, which XLA does not
+        compute when nothing reads them. Interpolation is supported by overriding
+        [`world2stencil`][], never this method.
         """
-        raise NotImplementedError(f'{type(self).__name__} does not support interpolation')
+        stencil = self.world2stencil(theta, phi, Interpolation.BILINEAR)
+        return stencil.indices, stencil.weights
 
-    def pixel2interp(
-        self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
-        """Returns (indices, weights) for interpolation from float pixel coordinates."""
+    def world2stencil(
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
+    ) -> Stencil:
+        r"""Returns the [`Stencil`][] a sample at these angles reads, at this interpolation.
+
+        At [`Interpolation.NEAREST`][] the stencil holds the single pixel the sample falls in, whose
+        index is that of [`world2index`][] and whose weight is one; at
+        [`Interpolation.BILINEAR`][] it holds the four neighbours of [`world2interp`][], resolved.
+        Either way it also carries where each neighbour sits on the sky, which a sampler needs to
+        express its $Q$ and $U$ in the frame of the direction sampled at.
+
+        A landscape implements every interpolation it supports here, in this one method, so that it
+        cannot answer for one and leave another to a mismatched inherited definition.
+
+        Args:
+            theta: Sample co-latitude, in radians.
+            phi: Sample longitude, in radians.
+            interpolation: How many pixels the sample reads.
+
+        Returns:
+            The resolved stencil.
+        """
         raise NotImplementedError(
-            f'{type(self).__name__} does not support pixel-space interpolation'
+            f'{type(self).__name__} does not supply {interpolation.name} stencils'
         )
 
     def quat2interp(self, quat: Quaternion) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
         """Converts quaternion to (indices, weights) for interpolation."""
         theta, phi, _ = to_iso_angles(quat)
         return self.world2interp(theta, phi)
+
+
+def _index2pixel(
+    landscape: StokesLandscape, indices: Integer[Array, ' *dims']
+) -> tuple[Float[Array, ' *dims'], ...]:
+    """Inverse of `pixel2index`: the coordinates of the pixels the raveled indices address."""
+    safe = jnp.where(indices < 0, 0, indices)  # an out-of-map index reads pixel 0, weightless
+    coords = []
+    for dim in landscape.pixel_shape:
+        coords.append((safe % dim).astype(landscape.dtype))
+        safe = safe // dim
+    return tuple(coords)
 
 
 class ProjectionType(IntEnum):
@@ -292,19 +347,45 @@ class WCSLandscape(StokesLandscape):
     def cdelt(self) -> tuple[float, float]:
         return self.projection.cdelt
 
-    def world2interp(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
-        """Returns (indices, weights) for bilinear interpolation (n=4)."""
-        return self.pixel2interp(*self.world2pixel(theta, phi))
+    def index2world(
+        self, indices: Integer[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Returns the centers of the pixels of `indices`, from [`pixel2world`][]."""
+        return self.pixel2world(*_index2pixel(self, indices))
 
-    def pixel2interp(
+    def pixel2world(
         self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
-        """Bilinear (indices, weights) from float pixel coordinates (grid-agnostic)."""
-        xs, ys, weights = _2d_bilinear_interp(pix_x, pix_y)
-        indices = self.pixel2index(xs, ys)
-        return indices, weights
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Converts pixel coordinates to spherical world angles ``(theta, phi)``."""
+        raise NotImplementedError(
+            f'{type(self).__name__} does not implement the inverse projection'
+        )
+
+    def world2stencil(
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
+    ) -> Stencil:
+        """Returns the [`Stencil`][] a sample reads, positioned by [`pixel2world`][].
+
+        At [`Interpolation.BILINEAR`][] it holds the four pixels around the sample; at
+        [`Interpolation.NEAREST`][] the one it falls in, whose index is that of [`world2index`][].
+        """
+        if interpolation is Interpolation.NEAREST:
+            pix_x, pix_y = self.world2pixel(theta, phi)
+            center_x, center_y = jnp.round(pix_x), jnp.round(pix_y)
+            theta_c, phi_c = self.pixel2world(center_x, center_y)
+            indices = self.pixel2index(center_x, center_y)
+            return Stencil.nearest(indices, theta_c, phi_c).astype(self.dtype)
+
+        xs, ys, weights = _2d_bilinear_interp(*self.world2pixel(theta, phi))
+        theta_n, phi_n = self.pixel2world(xs, ys)
+        return Stencil.resolve(
+            self.pixel2index(xs, ys),
+            weights,
+            SkyPositions(jnp.cos(theta_n), jnp.sin(theta_n), phi_n),
+        )
 
     def to_wcs(self) -> WCS:
         """Reconstruct an astropy WCS object from the stored projection parameters."""
@@ -394,6 +475,25 @@ class CARLandscape(WCSLandscape):
         pix_y = lat_deg / self.cdelt[1] + (self.crpix[1] - 1)
         return pix_x, pix_y
 
+    @jax.jit
+    def pixel2world(
+        self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        r"""Convert CAR pixel coordinates to spherical angles, inverting [`world2pixel`][].
+
+        Args:
+            pix_x: Pixel coordinate along the RA axis.
+            pix_y: Pixel coordinate along the declination axis.
+
+        Returns:
+            The angle pair $(\theta, \varphi)$ in radians, with $\varphi \in [0, 2\pi)$.
+        """
+        lon_deg = (pix_x - (self.crpix[0] - 1)) * self.cdelt[0] + self.crval[0]
+        lat_deg = (pix_y - (self.crpix[1] - 1)) * self.cdelt[1]
+        theta = jnp.pi / 2 - jnp.radians(lat_deg)
+        phi = jnp.radians(lon_deg) % (2 * jnp.pi)
+        return theta, phi
+
 
 def _2d_bilinear_interp(
     pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
@@ -455,15 +555,47 @@ class HealpixLandscape(StokesLandscape):
         pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec, nest=self.nested)
         return pix
 
-    def world2interp(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '*dims 4'], Float[Array, '*dims 4']]:
-        """Returns (indices, weights) for bilinear HEALPix interpolation (n=4)."""
-        # get_interp_weights returns (4, *dims) for both pixels and weights
-        pixels, weights = jhp.get_interp_weights(self.nside, theta, phi, nest=self.nested)
-        indices = jnp.moveaxis(pixels, 0, -1)
-        weights = jnp.moveaxis(weights, 0, -1).astype(self.dtype)
-        return indices, weights
+    def index2world(
+        self, indices: Integer[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Returns the HEALPix pixel centers of `indices`, from ``pix2ang``."""
+        safe = jnp.where(indices < 0, 0, indices)
+        theta, phi = jhp.pix2ang(self.nside, safe, nest=self.nested)
+        return theta, phi
+
+    def world2stencil(
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
+    ) -> Stencil:
+        """Returns the [`Stencil`][] a sample reads, centered on HEALPix pixel centers.
+
+        At [`Interpolation.BILINEAR`][] it holds the four neighbours ``get_interp_weights``
+        returns; at [`Interpolation.NEAREST`][] the pixel the sample falls in, whose index is
+        bit-identical to that of [`world2index`][].
+        """
+        if interpolation is Interpolation.NEAREST:
+            indices = self.world2index(theta, phi)
+            theta_c, phi_c = jhp.pix2ang(self.nside, indices, nest=self.nested)
+            return Stencil.nearest(indices, theta_c, phi_c).astype(self.dtype)
+
+        pixels, weights, centers = jhp.get_interp_weights(
+            self.nside, theta, phi, nest=self.nested, with_centers=True
+        )
+        # The four neighbours lie on two rings, so jax-healpy returns two co-latitudes per sample:
+        # rows 0 and 1 of `pixels` share the first, rows 2 and 3 the second. Expand to one per
+        # neighbour, so every field carries the same trailing neighbour axis as the weights.
+        ring = jnp.array([0, 0, 1, 1])
+        return Stencil.resolve(
+            jnp.moveaxis(pixels, 0, -1),
+            jnp.moveaxis(weights, 0, -1),
+            SkyPositions(
+                jnp.moveaxis(centers.z[ring], 0, -1),
+                jnp.moveaxis(centers.sth[ring], 0, -1),
+                jnp.moveaxis(centers.phi, 0, -1),
+            ),
+        ).astype(self.dtype)
 
     @jax.jit
     def world2pixel(
@@ -533,6 +665,58 @@ class AstropyWCSLandscape(StokesLandscape):
 
         return jax.pure_callback(f, result_shape, theta, phi)
 
+    def index2world(
+        self, indices: Integer[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Returns the centers of the pixels of `indices`, from [`pixel2world`][]."""
+        theta, phi = self.pixel2world(*_index2pixel(self, indices))
+        return theta, phi
+
+    @jax.jit
+    def pixel2world(
+        self, pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        r"""Convert WCS map indices to angles, inverting [`world2pixel`][].
+
+        Args:
+            pix_x: Pixel coordinate along the first WCS axis.
+            pix_y: Pixel coordinate along the second WCS axis.
+
+        Returns:
+            The angle pair $(\theta, \varphi)$ in radians.
+        """
+
+        def f(pix_x, pix_y):  # type: ignore[no-untyped-def]
+            # world2pixel builds an unqualified SkyCoord, which astropy reads as ICRS, so the
+            # inverse must answer in ICRS too for the round trip to close.
+            sky = self.wcs.pixel_to_world(pix_x, pix_y).icrs
+            theta = np.asarray(np.pi / 2 - sky.dec.rad, dtype=pix_x.dtype)
+            return theta, np.asarray(sky.ra.rad, dtype=pix_x.dtype)
+
+        struct = jax.ShapeDtypeStruct(pix_x.shape, pix_x.dtype)
+        return jax.pure_callback(f, (struct, struct), pix_x, pix_y)  # type: ignore[no-any-return]
+
+    def world2stencil(
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
+    ) -> Stencil:
+        """Returns the [`Stencil`][] holding the pixel the sample falls in.
+
+        Its index is that of [`world2index`][], and the pixel center comes from [`pixel2world`][].
+        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][].
+        """
+        if interpolation is not Interpolation.NEAREST:
+            raise NotImplementedError(
+                f'{type(self).__name__} does not supply {interpolation.name} stencils'
+            )
+        pix_x, pix_y = self.world2pixel(theta, phi)
+        center_x, center_y = jnp.round(pix_x), jnp.round(pix_y)
+        theta_c, phi_c = self.pixel2world(center_x, center_y)
+        indices = self.pixel2index(center_x, center_y)
+        return Stencil.nearest(indices, theta_c, phi_c).astype(self.dtype)
+
 
 @register_static
 class HorizonLandscape(StokesLandscape):
@@ -595,6 +779,57 @@ class HorizonLandscape(StokesLandscape):
         pix_j = jnp.round(((azimuth - az_min) % (2 * jnp.pi)) / daz - 0.5).astype(jnp.int64)
 
         return pix_i, pix_j
+
+    def index2world(
+        self, indices: Integer[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        """Returns the centers of the pixels of `indices`, from [`pixel2world`][]."""
+        theta, phi = self.pixel2world(*_index2pixel(self, indices))
+        return theta, phi
+
+    @jax.jit
+    def pixel2world(
+        self, pix_i: Float[Array, ' *dims'], pix_j: Float[Array, ' *dims']
+    ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
+        r"""Convert Horizon map indices to angles, inverting [`world2pixel`][].
+
+        Args:
+            pix_i: Pixel coordinate along the altitude axis.
+            pix_j: Pixel coordinate along the azimuth axis.
+
+        Returns:
+            The angle pair $(\theta, \varphi)$ in radians, for the center of the pixel. The
+            azimuth wrap of [`world2pixel`][] is not inverted, so $\varphi$ is returned in the
+            range the map covers rather than the range it was given in.
+        """
+        alt_min, alt_max = self.altitude_limits
+        az_min, az_max = self.azimuth_limits
+        n_az, n_alt = self.shape
+        dalt = (alt_max - alt_min) / n_alt
+        daz = (az_max - az_min) / n_az
+
+        altitude = alt_min + (pix_i + 0.5) * dalt
+        azimuth = az_min + (pix_j + 0.5) * daz
+        return jnp.pi / 2 - altitude, -azimuth
+
+    def world2stencil(
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
+    ) -> Stencil:
+        """Returns the [`Stencil`][] holding the bin the sample falls in.
+
+        Its index is that of [`world2index`][], and the bin center comes from [`pixel2world`][].
+        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][].
+        """
+        if interpolation is not Interpolation.NEAREST:
+            raise NotImplementedError(
+                f'{type(self).__name__} does not supply {interpolation.name} stencils'
+            )
+        pix_i, pix_j = self.world2pixel(theta, phi)
+        theta_c, phi_c = self.pixel2world(pix_i, pix_j)
+        return Stencil.nearest(self.pixel2index(pix_i, pix_j), theta_c, phi_c).astype(self.dtype)
 
 
 @register_static
@@ -872,20 +1107,40 @@ class LocalStokesLandscape(StokesLandscape):
         """Convert quaternions to local pixel indices (sink for unmapped)."""
         return self.global2local(self.parent.quat2index(quat))
 
-    def world2interp(
-        self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
-        r"""Returns (local indices, weights) for interpolation on the parent's grid.
+    def world2stencil(
+        self,
+        theta: Float[Array, ' *dims'],
+        phi: Float[Array, ' *dims'],
+        interpolation: Interpolation,
+    ) -> Stencil:
+        r"""Returns the parent's [`Stencil`][], locally indexed.
 
-        Neighbors outside the subset map to the sink with their weight zeroed, following the
-        parent's out-of-bounds convention. Consumers that renormalize the weights then
-        interpolate over the covered neighbors only.
+        A neighbour outside the subset lands in the sink with its weight zeroed, so it contributes
+        nothing rather than reading the sink slot, and the remaining weights are rescaled over the
+        covered neighbours only. The neighbour positions are the parent's, i.e. positions on the
+        sky, unaffected by the local re-indexing.
 
         Note:
             Calling this method entails an additional $O(\log n_\mathrm{local})$ binary search
             per neighbor, compared to the parent landscape's method.
         """
-        indices, weights = self.parent.world2interp(theta, phi)
+        stencil = self.parent.world2stencil(theta, phi, interpolation)
+        return stencil.reindexed(*self._localize(stencil.indices, stencil.weights))
+
+    def index2stencil(self, indices: Integer[Array, ' *dims']) -> Stencil:
+        """Returns the parent's one-neighbour [`Stencil`][], addressed by the local indices.
+
+        A local index in the sink reads the sink slot with zero weight, as one out of the parent
+        map does, and carries no meaningful position: it no longer names a parent pixel.
+        """
+        # `local2global` sends the sink outside the parent map, where the parent zeroes the weight.
+        stencil = self.parent.index2stencil(self.local2global(indices))
+        return stencil.reindexed(indices[..., None], stencil.weights)
+
+    def _localize(
+        self, indices: Integer[Array, '...'], weights: Float[Array, '...']
+    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
+        """Map parent neighbour indices to local ones, zeroing the weight of those in the sink."""
         local = self.global2local(indices)
         return local, jnp.where(local == self.sink, 0, weights)
 
@@ -968,5 +1223,8 @@ class LocalStokesLandscape(StokesLandscape):
         """Build from the pixels a [`Sampling`][furax.obs._samplings.Sampling] observes."""
         if interpolate:
             # bilinear reads the full 4-pixel stencil, so the subset must contain it
-            return cls(parent, parent.world2interp(sampling.theta, sampling.phi)[0])
+            indices, weights = parent.world2interp(sampling.theta, sampling.phi)
+            # A resolved stencil parks the neighbours it drops on pixel 0 with a zero weight, so
+            # select on the weight: taking the indices alone would enrol pixel 0 in every subset.
+            return cls(parent, jnp.where(weights > 0, indices, -1))
         return cls(parent, parent.world2index(sampling.theta, sampling.phi))

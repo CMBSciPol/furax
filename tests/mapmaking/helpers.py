@@ -130,7 +130,7 @@ class FakeObservation(AbstractObservation[None]):
         phi = np.linspace(0.0, np.pi / 4, self._n_samples)
         q = np.zeros((self._n_samples, 4), dtype=np.float64)
         q[:, 0] = np.cos(phi / 2)
-        q[:, 3] = np.sin(phi / 2)
+        q[:, 2] = np.sin(phi / 2)
         return q
 
     def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
@@ -179,6 +179,18 @@ class FailingLazyObservation(FakeLazyObservation):
 
     def get_data(self, requested_fields=None) -> FakeObservation:
         raise RuntimeError('simulated preprocessing failure')
+
+
+class ProbeFailingLazyObservation(FakeLazyObservation):
+    """Lazy observation whose shape probe fails before any data are read."""
+
+    @property
+    def name(self) -> str:
+        return 'probe_failing_obs'
+
+    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
+        del intervals
+        raise RuntimeError('simulated shape-probe failure')
 
 
 class GappyGroundObservation(FakeObservation, AbstractGroundObservation[None]):

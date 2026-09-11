@@ -1,12 +1,12 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, replace
 from functools import cached_property
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any, ClassVar, overload
+from typing import Any, ClassVar, NamedTuple, overload
 
 import equinox as eqx
 import jax
@@ -19,7 +19,6 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from fastquat import Quaternion
 from jax import ShapeDtypeStruct
-from jax.experimental import mesh_utils
 from jax.experimental import multihost_utils as mhu
 from jax.sharding import AxisType, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
@@ -37,10 +36,7 @@ from furax import (
     OperatorTag,
     SymmetricBandToeplitzOperator,
 )
-from furax.core import (
-    BlockDiagonalOperator,
-    IndexOperator,
-)
+from furax.core import BlockDiagonalOperator, BlockSelectOperator, IndexOperator
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -60,9 +56,11 @@ from ._observation import (
     AbstractGroundObservation,
     AbstractLazyObservation,
     FileBackedLazyObservation,
+    ObservationBufferShape,
     ReaderField,
 )
 from ._reader import ObservationReader
+from ._system import BucketSumOperator
 from .config import (
     GapTreatment,
     LandscapeConfig,
@@ -73,6 +71,7 @@ from .config import (
     WeightingMode,
 )
 from .gap_filling import gap_fill
+from .layout import SlotLayout
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
@@ -83,32 +82,41 @@ from .weight import WeightOperator
 
 @register_dataclass
 @dataclass(frozen=True)
+class BucketModel:
+    """One bucket's share of [`AccumulatedModel`][]: everything that is stacked over its slots."""
+
+    model: ObservationModel
+    """Per-slot observation model."""
+    templates: ObservationTemplates | None
+    """Per-slot templates (None for a run without any)."""
+    amplitude_rhs: PyTree[Array] | None
+    """Explicit-template RHS per slot (None without explicit templates)."""
+
+
+@register_dataclass
+@dataclass(frozen=True)
 class AccumulatedModel:
-    """Result of [`MultiObservationMapMaker.build_model_and_accumulate`][].
+    """Per-bucket observation models and the map-domain sums."""
 
-    Attributes:
-        model: Per-observation model, sharded over observations.
-        templates: Per-observation templates, sharded over observations.
-        hit_map: Hit map, replicated (reduced across processes).
-        map_rhs: Map RHS, replicated (reduced across processes).
-        amplitude_rhs: Explicit-template RHS, obs-stacked.
-    """
-
-    model: ObservationModel = field(metadata={'sharded': True})
-    templates: ObservationTemplates | None = field(metadata={'sharded': True})
+    buckets: tuple[BucketModel, ...]
+    """One [`BucketModel`][] per bucket of the layout, in bucket order."""
     hit_map: Int64[Array, '...']
+    """Hit map over every observation, replicated on every device."""
     map_rhs: StokesType
-    amplitude_rhs: PyTree[Array] | None = field(metadata={'sharded': True})
+    """Map RHS over every observation, replicated on every device."""
 
-    @classmethod
-    def shard_map_out_specs(cls, axis: str) -> 'AccumulatedModel':
-        """Sharding of each field, as an instance of the class, so `jax.shard_map` matches by field.
 
-        Args:
-            axis: Name of the mesh axis the observations are distributed over.
-        """
-        specs = {f.name: P(axis) if f.metadata.get('sharded') else P() for f in fields(cls)}
-        return cls(**specs)  # type: ignore[arg-type]
+class MapMakingSystem(NamedTuple):
+    """The normal system handed to the solver."""
+
+    A: AbstractLinearOperator
+    """The normal operator, acting on the selected sky pixels (plus amplitudes, if any)."""
+    b: PyTree
+    """The right-hand side, in the same unknowns."""
+    preconditioner: AbstractLinearOperator
+    """Approximate inverse of `A`."""
+    has_amplitudes: bool
+    """Whether the unknowns include explicit-template amplitudes."""
 
 
 class MultiObservationMapMaker[T]:
@@ -128,11 +136,12 @@ class MultiObservationMapMaker[T]:
             _static_landscape(self.config.landscape, self.config.dtype)
             or self._scan_wcs_footprint()
         )
-        # Build the reader once, up front: it only probes shapes (no mesh context needed)
+        # Build the readers once, up front: they only need the probe shapes (no mesh context)
         rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
         model_fields = ObservationModel.required_reader_fields(self.config)
         template_fields = ObservationTemplates.required_reader_fields(self.config)
-        self.reader = self.get_reader(model_fields | rhs_fields | template_fields)
+        self.reader_fields = model_fields | rhs_fields | template_fields
+        self.readers = self.get_readers(self.reader_fields)
 
     def _check_config(self) -> None:
         """Validate and adjust config for method-specific compatibility."""
@@ -157,9 +166,15 @@ class MultiObservationMapMaker[T]:
 
     @cached_property
     def mesh(self) -> Mesh:
-        # skip jax.make_mesh to avoid tripping a multi-slice error in some cases
-        devices = mesh_utils.create_device_mesh((jax.device_count(),))
-        return Mesh(devices, ('obs',), axis_types=(AxisType.Explicit,))
+        # One axis over every device of the job, ordered by process so that each process's
+        # shards form one contiguous block of the axis (see `SlotLayout.local_slots`).
+        #
+        # `Auto` rather than `Explicit`: under explicit axis types an array built on this mesh
+        # carries it in its sharding and then cannot be closed over inside `shard_map`, which is
+        # how the sky landscape reaches the pointing. The price is that every `shard_map` must
+        # spell out its `in_specs` instead of having them inferred.
+        devices = np.array(sorted(jax.devices(), key=lambda d: (d.process_index, d.id)))
+        return Mesh(devices, ('obs',), axis_types=(AxisType.Auto,))
 
     @property
     def sharding(self) -> NamedSharding:
@@ -170,7 +185,11 @@ class MultiObservationMapMaker[T]:
     @overload
     def distribute[S](self, x: S) -> S: ...
     def distribute(self, x: Any) -> Any:
-        """Shard a pytree of process-local arrays along the leading 'obs' axis."""
+        """Shard a pytree of process-local slot blocks along the 'obs' axis.
+
+        Each leaf holds this process's block of a bucket's slots (see
+        [`SlotLayout.local_slots`][]); the leaves of every process together form the global array.
+        """
         return jax.tree.map(lambda a: jax.make_array_from_process_local_data(self.sharding, a), x)
 
     @property
@@ -178,27 +197,113 @@ class MultiObservationMapMaker[T]:
         """Total number of observations across all processes."""
         return len(self.observations)
 
+    @cached_property
+    def _probe_shapes(self) -> tuple[list[ObservationBufferShape], np.ndarray]:
+        """Every observation's buffer shape, plus a mask of the ones that could not be probed.
+
+        Probing costs an open, so the observations are dealt round-robin to the processes and the
+        rows are all-gathered. Every rank sends the same fixed-size table, rows it did not probe
+        left at zero, so the gather is well-formed whatever the per-rank counts (even none).
+
+        A probe that raises must not crash the rank (it would deadlock the others at the gather).
+        Failed observations are flagged so the reader skips them and the accumulation gates them
+        out. After the gather, they inherit the largest successful probe shape so they cannot form
+        an undersized bucket of their own.
+
+        The sample count is raised to `_minimum_buffer_samples`, so the buckets and the readers
+        size their buffers identically.
+        """
+        n_obs = self.n_observations
+        n_proc = jax.process_count()
+        need_intervals = ReaderField.SCANNING_INTERVALS in self.reader_fields
+
+        rows = np.zeros((n_obs, 4), dtype=np.int32)  # (n_det, n_samp, n_intervals, failed)
+        for i in range(jax.process_index(), n_obs, n_proc):
+            try:
+                rows[i, :3] = self.observations[i].probe_shape(need_intervals)
+            except Exception:
+                self.logger.exception('probe of observation %d failed', i)
+                rows[i] = (1, 1, 0, 1)
+        # Each observation is probed by exactly one rank, so summing the tables merges them.
+        rows = np.asarray(mhu.process_allgather(rows)).reshape(n_proc, n_obs, 4).sum(axis=0)
+        failed = rows[:, 3].astype(bool)
+        if np.any(~failed):
+            rows[failed, :3] = rows[~failed, :3].max(axis=0)
+        minimum_samples = self._minimum_buffer_samples
+        shapes = [
+            ObservationBufferShape(int(row[0]), max(int(row[1]), minimum_samples), int(row[2]))
+            for row in rows
+        ]
+        return shapes, failed
+
     @property
-    def obs_distribution(self) -> tuple[int, int, int]:
-        """``(start, n_owned, n_pad)`` for this process."""
-        return get_obs_distribution_to_process(self.n_observations)
+    def _minimum_buffer_samples(self) -> int:
+        """Smallest sample envelope accepted by the configured TOD operators."""
+        minimum = self.config.atop_tau if self.config.method == Methods.ATOP else 1
+        if self.config.weighting.mode == WeightingMode.TOEPLITZ:
+            correlation_length = self.config.weighting.correlation_length
+            if self.config.gaps.treatment == GapTreatment.FILL:
+                # The constrained realization embeds the symmetric band in a circulant kernel.
+                correlation_length = 2 * correlation_length - 1
+            minimum = max(minimum, correlation_length)
+        return minimum
 
-    def get_padded_read_indices(self) -> np.ndarray:
-        start, n_owned, n_pad = self.obs_distribution
-        indices = np.arange(start, start + n_owned)
-        return np.pad(indices, (0, n_pad), mode='edge')
+    @cached_property
+    def layout(self) -> SlotLayout:
+        """How the observations are bucketed and laid out over the devices."""
+        shapes, _ = self._probe_shapes
+        return SlotLayout.create(
+            shapes, n_devices=jax.device_count(), max_buckets=self.config.max_buckets
+        )
 
-    def get_reader(self, required_fields: Collection[str]) -> ObservationReader[T]:
-        """Build an ObservationReader for this process's local observations."""
-        # Pass padded indices: process_allgather inside from_observations needs every
-        # rank to send the same shape, so all ranks must report the same obs count.
-        return ObservationReader.from_observations(
-            self.observations,
-            read_indices=tuple(self.get_padded_read_indices()),
-            requested_fields=required_fields,
-            demodulated=self.config.demodulated,
-            stokes=self.config.landscape.stokes,
-            dtype=self.config.dtype,
+    @cached_property
+    def fit_config(self) -> MapMakingConfig:
+        """The run configuration, with the Welch segment clipped to the shortest observation.
+
+        [`padding_aware_welch`][furax.mapmaking.noise.padding_aware_welch] drops the segments that
+        fall in an observation's padded tail, but the segment length sets the number of frequency
+        bins and so cannot vary with the padding. A segment longer than the shortest observation
+        would therefore leave one partial segment straddling that observation's padding, and its
+        noise fit would see the zeros. Clipping the segment keeps every averaged segment inside
+        real data.
+
+        The clip is taken over the whole dataset rather than over each bucket, so that the noise
+        fit stays independent of how the observations happen to be bucketed. Observation lengths
+        come from the probe, which is an upper bound: an observation that reads shorter than probed
+        still falls back to a partial segment.
+        """
+        weighting = self.config.weighting
+        if weighting.mode == WeightingMode.IDENTITY or weighting.source != NoiseSource.FIT:
+            return self.config  # no PSD is estimated, so the segment length is unused
+        shapes, _ = self._probe_shapes
+        nperseg = min(weighting.fitting.nperseg, min(shape.sample_count for shape in shapes))
+        if nperseg == weighting.fitting.nperseg:
+            return self.config
+        self.logger.info(
+            f'MultiObsMapMaker: Welch segment clipped to {nperseg} samples '
+            f'(configured {weighting.fitting.nperseg}) by the shortest observation'
+        )
+        fitting = replace(weighting.fitting, nperseg=nperseg)
+        return replace(self.config, weighting=replace(weighting, fitting=fitting))
+
+    def get_readers(self, required_fields: Collection[str]) -> tuple[ObservationReader[T], ...]:
+        """Build one reader per bucket, over that bucket's observations only.
+
+        A reader's items are its bucket's observations in order, so its buffers are sized by
+        exactly the observations it can be asked to read.
+        """
+        shapes, failed = self._probe_shapes
+        return tuple(
+            ObservationReader.from_observations(
+                [self.observations[i] for i in bucket.observations],
+                requested_fields=required_fields,
+                demodulated=self.config.demodulated,
+                stokes=self.config.landscape.stokes,
+                dtype=self.config.dtype,
+                shapes=[shapes[i] for i in bucket.observations],
+                known_failures=np.flatnonzero(failed[bucket.observations]).tolist(),
+            )
+            for bucket in self.layout.buckets
         )
 
     def run(self, out_dir: str | Path | None = None) -> MapMakingResults:
@@ -218,48 +323,40 @@ class MultiObservationMapMaker[T]:
 
         return results
 
+    def _log_layout(self) -> None:
+        """Log the device layout and what the bucketing costs in padding (rank 0 only)."""
+        if jax.process_index() != 0:
+            return
+        logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
+        layout = self.layout
+        n_devices = jax.device_count()
+        logger_info(
+            f'layout procs={jax.process_count()} dev_per_proc={jax.local_device_count()} '
+            f'dev_total={n_devices}'
+        )
+        # Every slot of a bucket is padded to its reader's out_structure, real or empty.
+        real_bytes = sum(reader.total_nbytes for reader in self.readers)
+        padded_bytes = 0
+        for b, (bucket, reader) in enumerate(zip(layout.buckets, self.readers, strict=True)):
+            slot_bytes = furax.tree.nbytes(reader.out_structure)
+            padded_bytes += slot_bytes * bucket.n_slots
+            logger_info(
+                f'bucket {b}: {bucket.summary(n_devices)} '
+                f'slot_size={format_bytes(slot_bytes)} '
+                f'real_size={format_bytes(reader.total_nbytes)} '
+                f'pad_size={format_bytes(slot_bytes * bucket.n_slots - reader.total_nbytes)}'
+            )
+        byte_overhead = (padded_bytes - real_bytes) / real_bytes
+        logger_info(
+            f'dataset {layout.summary()} real={format_bytes(real_bytes)} '
+            f'padded={format_bytes(padded_bytes)} byte_overhead=+{byte_overhead:.1%}'
+        )
+
     def make_maps(self) -> MapMakingResults:
         """Computes the mapmaker results (maps and other products)."""
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
-
-        n_processes = jax.process_count()
         rank = jax.process_index()
-        n_local_devices = jax.local_device_count()
-        n_devices = jax.device_count()
-
-        # Information about how observations are distributed among processes
-        start, n_owned, n_pad = self.obs_distribution
-        n_per_proc = n_owned + n_pad
-        n_per_dev = n_per_proc // n_local_devices
-        n_slots_global = n_per_proc * n_processes
-
-        # Every slot (real or padding) is padded to the same reader.out_structure
-        per_slot_bytes = furax.tree.nbytes(self.reader.out_structure)
-        global_bytes = per_slot_bytes * n_slots_global
-
-        # The true, total data size (before observations are padded to a common structure)
-        real_bytes = self.reader.total_nbytes
-
-        slot_overhead = (n_slots_global - self.n_observations) / self.n_observations
-        byte_overhead = (global_bytes - real_bytes) / real_bytes
-        logger_info(
-            f'layout procs={n_processes} dev_per_proc={n_local_devices} dev_total={n_devices}'
-        )
-        logger_info(
-            f'dataset obs={self.n_observations} slots={n_slots_global} slot_overhead=+{slot_overhead:.1%} '
-            f'slots_per_proc={n_per_proc} slots_per_dev={n_per_dev} slot_size={format_bytes(per_slot_bytes)}'
-        )
-        logger_info(
-            f'dataset real={format_bytes(real_bytes)} global={format_bytes(global_bytes)} '
-            f'byte_overhead=+{byte_overhead:.1%}'
-        )
-
-        rank_pad = n_pad / n_per_proc
-        logger_info(
-            f'rank={rank} obs={start}:{start + n_owned} real={n_owned} pad={n_pad} '
-            f'pad_pct={rank_pad:.1%} real_size={format_bytes(per_slot_bytes * n_owned)} '
-            f'pad_size={format_bytes(per_slot_bytes * n_pad)}'
-        )
+        self._log_layout()
 
         with jax.set_mesh(self.mesh):
             # Single read pass, so each observation is read/preprocessed exactly once.
@@ -271,32 +368,42 @@ class MultiObservationMapMaker[T]:
             if failed_observations:
                 logger_info(f'{len(failed_observations)} observation(s) failed and were excluded')
 
-            # Diagonal pixel system for the block-Jacobi preconditioner
-            H_sky: AbstractLinearOperator = StreamOperator.column(acc.model.H)
-            W: AbstractLinearOperator = StreamOperator.diagonal(acc.model.W)
+            # Per-bucket stream operators. Everything below sums over the buckets: each is a
+            # stream of its own length, so the sums stay plain additions of stream operators.
+            H = [StreamOperator.column(bm.model.H) for bm in acc.buckets]
+            W = [StreamOperator.diagonal(bm.model.W) for bm in acc.buckets]
             W_diag = (
                 W
                 if self.config.binned
-                else StreamOperator.diagonal(eqx.filter_vmap(ObservationModel.diag_W)(acc.model))
+                else [
+                    StreamOperator.diagonal(eqx.filter_vmap(ObservationModel.diag_W)(bm.model))
+                    for bm in acc.buckets
+                ]
             )
             # Specify leading axis dimension because F can be trivial (no array leaves)
-            # Must be the *global* slot count to compose with the other operators
-            F = StreamOperator.diagonal(acc.model.F, n_lead=n_slots_global)
-            A_diag = (H_sky.T @ W_diag @ F @ H_sky).reduce()
+            F = [
+                StreamOperator.diagonal(bm.model.F, n_lead=bucket.n_slots)
+                for bm, bucket in zip(acc.buckets, self.layout.buckets, strict=True)
+            ]
+
+            # Diagonal pixel system for the block-Jacobi preconditioner
+            A_diag = BucketSumOperator(
+                [(h.T @ wd @ f @ h).reduce() for h, wd, f in zip(H, W_diag, F, strict=True)]
+            )
             BJ = BJPreconditioner.create(A_diag)
             icov = BJ.blocks.block_until_ready()
             logger_info('Computed white noise inverse covariance')
 
-            # Fold ATOP deprojector into the weight from now on
-            W = (W @ F).reduce()
+            # Fold ATOP deprojector into the weight
+            W_prime = [(w @ f).reduce() for w, f in zip(W, F, strict=True)]
 
             # Pixel selection from the icov estimate
             hit_map = acc.hit_map  # rebound below, once the pixel selection is known
             valid_pixels = self.pixel_selection(hit_map, icov)
             # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
-            S = IndexOperator((..., *jnp.where(valid_pixels)), in_structure=H_sky.in_structure)
-            H_sky_selected = H_sky @ S.T  # takes the selected pixels; H_sky takes the full grid
-            M_sky = (S @ BJ.I @ S.T).reduce()
+            S = IndexOperator(
+                (..., *jnp.where(valid_pixels)), in_structure=self.landscape.structure
+            )
 
             n_selected = jnp.sum(valid_pixels)
             n_observed = jnp.sum(hit_map > 0)
@@ -306,66 +413,32 @@ class MultiObservationMapMaker[T]:
             hit_map = hit_map.at[~valid_pixels].set(0)  # excluded pixels have zero hits
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
-            # Unified GLS solve (Hᵀ W' H) x = Hᵀ W' d  (W already bundles the sample mask).
-            #
-            # H maps the unknowns to TOD:
-            # - no templates / implicit only: H = H_sky        (sky map only);
-            # - explicit templates:          H = [H_sky | Tₑ] (sky map + template amplitudes).
-            #
-            # Implicit templates fold into the weight (W → W', deprojection).
+            system = self._build_system(acc, H, W_prime, S, BJ)
 
-            templates = acc.templates
-            # Fold implicit templates into the system weight (marginal deprojection W').
-            if templates is not None and (implicit := templates.implicit) is not None:
-                Ti = StreamOperator.diagonal(implicit.operator)
-                G = StreamOperator.diagonal(implicit.gram_inverse)
-                W = (W - W @ Ti @ G @ Ti.T @ W).reduce()
-
-            explicit = templates.explicit if templates is not None else None
-            if explicit is None:
-                M = M_sky
-                rhs_joint: Any = S(acc.map_rhs)
-                A = (H_sky_selected.T @ W @ H_sky_selected).reduce()
-            else:
-                Te = StreamOperator.diagonal(explicit.operator)
-                G_e = StreamOperator.diagonal(explicit.gram_inverse)
-                M = BlockDiagonalOperator([M_sky, G_e])
-                rhs_joint = [S(acc.map_rhs), acc.amplitude_rhs]
-
-                # Joint sky + explicit-amplitude system
-                H_joint = StreamOperator.block_row([H_sky, Te])
-                A_joint = (H_joint.T @ W @ H_joint).reduce()
-                select = BlockDiagonalOperator([S, IdentityOperator(in_structure=Te.in_structure)])
-                A = (select @ A_joint @ select.T).reduce()
-
-            iteration_callback = None
-            if self.config.solver.verbose:
-                # log from rank 0 only
-                def iteration_callback(step: Array, r_norm: Array) -> None:
-                    if rank == 0:
-                        logger_info(f'CG step={int(step)} residual={float(r_norm):.6e}')
+            def log_iteration(step: Array, r_norm: Array) -> None:
+                if rank == 0:  # log from rank 0 only
+                    logger_info(f'CG step={int(step)} residual={float(r_norm):.6e}')
 
             result = furax.linalg.cg(
-                A,
-                rhs_joint,
-                preconditioner=M,
-                iteration_callback=iteration_callback,
+                system.A,
+                system.b,
+                preconditioner=system.preconditioner,
+                iteration_callback=log_iteration if self.config.solver.verbose else None,
                 **self.config.solver.options,
             )
             logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
 
-            if explicit is not None:
-                sky_estimate, amplitudes = result.solution
-            else:
+            if not system.has_amplitudes:
                 sky_estimate = result.solution
                 amplitudes = None
-
-        if amplitudes is not None:
-            # Gather the (sharded) amplitudes on rank 0. Result is host-side.
-            # Gathering the slot mask the same way drops the padding slots.
-            real = mhu.process_allgather(self._real_observation_mask(), tiled=True)
-            gathered = mhu.process_allgather(amplitudes, tiled=True)
-            amplitudes = jax.tree.map(lambda a: a[real], gathered)
+            else:
+                sky_estimate, per_bucket = result.solution
+                # Every device holds the same replicated copy after the gather, so the host
+                # array is complete on every process; then back to observation order.
+                gathered = [self._gather(a) for a in per_bucket]
+                amplitudes = jax.tree.map(
+                    lambda *leaves: self.layout.to_observation_order(leaves), *gathered
+                )
 
         return MapMakingResults(
             map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)
@@ -377,15 +450,85 @@ class MultiObservationMapMaker[T]:
             template_amplitudes=dict(amplitudes) if amplitudes is not None else None,
         )
 
+    def _build_system(
+        self,
+        acc: AccumulatedModel,
+        H: Sequence[AbstractLinearOperator],
+        W: Sequence[AbstractLinearOperator],
+        S: AbstractLinearOperator,
+        BJ: BJPreconditioner,
+    ) -> MapMakingSystem:
+        r"""Assembles the GLS normal system $H^T W' H x = H^T W' d$ over the selected pixels.
+
+        Args:
+            acc: The accumulated per-bucket models, hit map and map RHS.
+            H: Per-bucket sky pointing operator.
+            W: Per-bucket weight, already bundling the sample mask and the ATOP deprojector.
+            S: Selection of the estimated pixels out of the full sky grid.
+            BJ: Block-Jacobi preconditioner.
+
+        Returns:
+            The system to solve, in the unknowns described above.
+        """
+        # Implicit templates fold into the weight (marginal deprojection).
+        W = list(W)
+        for b, bm in enumerate(acc.buckets):
+            if bm.templates is not None and (implicit := bm.templates.implicit) is not None:
+                Ti = StreamOperator.diagonal(implicit.operator)
+                G = StreamOperator.diagonal(implicit.gram_inverse)
+                W[b] = (W[b] - W[b] @ Ti @ G @ Ti.T @ W[b]).reduce()
+
+        # Explicit templates are configured for the run, so every bucket carries them or none.
+        explicit = [
+            bm.templates.explicit
+            for bm in acc.buckets
+            if bm.templates is not None and bm.templates.explicit is not None
+        ]
+        assert len(explicit) in (0, len(acc.buckets))
+
+        # Restrict BJ preconditioner to selected pixels
+        M = (S @ BJ.I @ S.T).reduce()
+
+        if not explicit:
+            A = BucketSumOperator(
+                [((h @ S.T).T @ w @ (h @ S.T)).reduce() for h, w in zip(H, W, strict=True)]
+            )
+            return MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False)
+
+        Te = [StreamOperator.diagonal(e.operator) for e in explicit]
+        Ge = [StreamOperator.diagonal(e.gram_inverse) for e in explicit]
+        amplitudes_structure = [te.in_structure for te in Te]
+
+        # Joint sky + explicit-amplitude system. The unknowns are the selected sky pixels and one
+        # amplitude block per bucket; each bucket's system sees the full sky grid and its own
+        # amplitudes, picked out of the list and embedded back by `E`.
+        terms = []
+        for b, (h, te, w) in enumerate(zip(H, Te, W, strict=True)):
+            h_joint = StreamOperator.block_row([h, te])
+            A_joint = (h_joint.T @ w @ h_joint).reduce()
+            pick = BlockSelectOperator(b, in_structure=amplitudes_structure)
+            E = BlockDiagonalOperator([S.T, pick])
+            terms.append((E.T @ A_joint @ E).reduce())
+
+        rhs = [S(acc.map_rhs), [bm.amplitude_rhs for bm in acc.buckets]]
+        M = BlockDiagonalOperator([M, Ge])
+        return MapMakingSystem(BucketSumOperator(terms), rhs, M, has_amplitudes=True)
+
+    def _gather(self, x: PyTree[Array]) -> PyTree[np.ndarray]:
+        """Bring a pytree sharded over the 'obs' axis to the host, whole, on every process."""
+        replicated = jax.jit(lambda t: t, out_shardings=NamedSharding(self.mesh, P()))(x)
+        return jax.tree.map(np.asarray, replicated)
+
     def _collect_failed_observations(self) -> list[str]:
         """Names of observations that failed to load, gathered across all processes.
 
-        Each process records the local indices it could not read (``reader.failed_indices``); a
-        boolean mask over all observations is all-gathered and OR-reduced so every process reports
-        the same global set.
+        Each reader records the items it could not read (``failed_indices``, in its bucket's item
+        space); a boolean mask over all observations is all-gathered and OR-reduced so every
+        process reports the same global set.
         """
         local = np.zeros(self.n_observations, dtype=bool)
-        local[sorted(self.reader.failed_indices)] = True
+        for bucket, reader in zip(self.layout.buckets, self.readers, strict=True):
+            local[bucket.observations[sorted(reader.failed_indices)]] = True
         gathered = np.asarray(mhu.process_allgather(local)).reshape(-1, self.n_observations)
         failed = np.flatnonzero(gathered.any(axis=0))
         return [self.observations[int(i)].name for i in failed]
@@ -397,18 +540,35 @@ class MultiObservationMapMaker[T]:
 
         This method must run under ``jax.set_mesh(self.mesh)``.
         """
-        config = self.config
+        hit_map = jnp.zeros(self.landscape.shape, jnp.int64)
+        map_rhs = self.landscape.zeros()
+        bucket_models = []
+        for b, reader in enumerate(self.readers):
+            hits, rhs, bucket_model = self._accumulate_bucket(b, reader)
+            hit_map = hit_map + hits
+            map_rhs = furax.tree.add(map_rhs, rhs)
+            bucket_models.append(bucket_model)
+        return AccumulatedModel(buckets=tuple(bucket_models), hit_map=hit_map, map_rhs=map_rhs)
+
+    def _accumulate_bucket(
+        self, bucket_index: int, reader: ObservationReader[T]
+    ) -> tuple[Int64[Array, '...'], StokesType, BucketModel]:
+        """One bucket's pass over the data: its hit map and RHS partials, and its stacked model."""
+        config = self.fit_config
         landscape = self.landscape
-        reader = self.reader
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
         build_templates = config.use_templates
 
-        indices = self.distribute(self.get_padded_read_indices())
-        is_real = self.distribute(self._real_observation_mask())
+        bucket = self.layout.buckets[bucket_index]
+        local = self.layout.local_slots(
+            bucket_index, process_index=jax.process_index(), n_local=jax.local_device_count()
+        )
+        items = self.distribute(bucket.item_of_slot[local])
+        is_real = self.distribute(bucket.is_real[local])
         axis = jax.sharding.get_abstract_mesh().axis_names[0]
 
-        def kernel(indices, is_real):  # type: ignore[no-untyped-def]
+        def kernel(items, is_real):  # type: ignore[no-untyped-def]
             def step(carry, args):  # type: ignore[no-untyped-def]
                 hits_acc, rhs_acc = carry
                 i, real = args
@@ -488,25 +648,18 @@ class MultiObservationMapMaker[T]:
 
             init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')
             init_rhs = jax.lax.pcast(landscape.zeros(), axis, to='varying')
-            (hits, rhs), stacked = jax.lax.scan(step, (init_hits, init_rhs), (indices, is_real))
+            (hits, rhs), stacked = jax.lax.scan(step, (init_hits, init_rhs), (items, is_real))
+            # The axis spans every device of the job, so this is the reduction over the bucket.
             hits, rhs = jax.lax.psum((hits, rhs), axis)
             model, templates, amp_rhs = stacked
-            return AccumulatedModel(
-                model=model,
-                templates=templates,
-                hit_map=hits,
-                map_rhs=rhs,
-                amplitude_rhs=amp_rhs,
-            )
+            return hits, rhs, BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
 
-        out_specs = AccumulatedModel.shard_map_out_specs(axis)
-        accumulated = jax.shard_map(out_specs=out_specs, check_vma=False)(kernel)(indices, is_real)
-        return accumulated  # type: ignore[no-any-return]
-
-    def _real_observation_mask(self) -> np.ndarray:
-        """Boolean flag per padded slot: True for real observations, False for padding."""
-        _, n_owned, n_pad = self.obs_distribution
-        return np.concatenate([np.ones(n_owned, dtype=bool), np.zeros(n_pad, dtype=bool)])
+        # Both inputs are distributed over the observation axis; the mesh's axis types are `Auto`,
+        # so the specs are given rather than inferred.
+        in_specs = (P(axis), P(axis))
+        out_specs = (P(), P(), P(axis))
+        skernel = jax.shard_map(in_specs=in_specs, out_specs=out_specs, check_vma=False)(kernel)
+        return skernel(items, is_real)  # type: ignore[no-any-return]
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -580,60 +733,6 @@ class MultiObservationMapMaker[T]:
         # create the final shape and WCS objects for this covering box
         shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
         return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
-
-
-def get_obs_distribution_to_process(
-    n_obs: int,
-    rank: int | None = None,
-    n_proc: int | None = None,
-    n_local: int | None = None,
-) -> tuple[int, int, int]:
-    """Compute this process's slice for distributed mapmaking.
-
-    Distributes ``n_obs`` observations across processes as evenly as possible
-    (first ``n_obs % n_proc`` processes get one extra), then pads each process's
-    share to the next multiple of ``n_local`` so every device has a uniform
-    workload.  All processes end up with the same number of total slots
-    (``n_owned + n_pad``), which is required for multi-process sharding.
-
-    Args:
-        n_obs: Total number of observations across all processes.
-        rank: Process index. Defaults to ``jax.process_index()``.
-        n_proc: Process count. Defaults to ``jax.process_count()``.
-        n_local: Local device count. Defaults to ``jax.local_device_count()``.
-
-    Returns:
-        A tuple ``(start, n_owned, n_pad)`` where ``start`` is the index of the
-        first real observation owned by this process, ``n_owned`` is the number
-        of real observations, and ``n_pad`` is the number of padding slots so that
-        ``n_owned + n_pad`` is a multiple of ``n_local``.
-
-    Raises:
-        ValueError: If ``n_obs < n_proc``.
-    """
-    if rank is None:
-        rank = jax.process_index()
-    if n_proc is None:
-        n_proc = jax.process_count()
-    if n_local is None:
-        n_local = jax.local_device_count()
-
-    if n_obs < n_proc:
-        raise ValueError(
-            f'Not enough observations ({n_obs}) for {n_proc} processes. '
-            f'Provide more observations or run with fewer processes.'
-        )
-
-    base = n_obs // n_proc
-    remainder = n_obs % n_proc
-    max_owned = base + (1 if remainder > 0 else 0)
-    n_per_proc = max_owned + (-max_owned) % n_local  # ceil to next multiple of n_local
-
-    n_owned = base + (1 if rank < remainder else 0)
-    start = rank * base + min(rank, remainder)
-    n_pad = n_per_proc - n_owned
-
-    return start, n_owned, n_pad
 
 
 def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape | None:

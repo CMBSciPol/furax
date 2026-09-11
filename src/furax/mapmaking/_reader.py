@@ -6,7 +6,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from jax.experimental import multihost_utils as mhu
 from jax.tree_util import register_static
 from jax.typing import DTypeLike
 from jaxtyping import PyTree
@@ -18,6 +17,7 @@ from ._observation import (
     AbstractLazyObservation,
     AbstractObservation,
     HashedObservationMetadata,
+    ObservationBufferShape,
     ReaderField,
 )
 
@@ -32,20 +32,26 @@ class ObservationReader[T](AbstractReader):
     loaded by passing an index in this list to the `read` method. The observation data is padded
     so that all observations have the same structure.
 
-    The available data fields for ground observations are:
-        - metadata: observation, telescope and detector uids.
-        - sample_data: the detector read-outs.
-        - valid_sample_masks: the (boolean) mask indicating which samples are valid (=True).
-        - valid_scanning_masks: the (boolean) mask indicating which samples are taken
-            during scans (and not turnarounds).
-        - timestamps: the timestamps of the samples.
-        - hwp_angles: the half-wave plate angle measured at each sample.
-        - detector_quaternions: the detector quaternions.
-        - boresight_quaternions: the boresight quaternions.
-        - noise_model_fits: the fitted parameters for the noise model (1/f noise by default).
-        - azimuth, elevation: the boresight scan angles (ground observations).
-        - left_scan_mask, right_scan_mask: per-sample masks splitting left/right-going scans.
-        - scanning_intervals: per-scan [start, end) sample-index pairs (ground observations).
+    These are the data fields available for ground observations, named by [`ReaderField`][]:
+
+    - `metadata`: observation, telescope and detector uids.
+    - `sample_data`: the detector read-outs.
+    - `valid_sample_masks`: the (boolean) mask indicating which samples are valid (=True).
+    - `valid_scanning_masks`: the (boolean) mask indicating which samples are taken during scans
+      (and not turnarounds).
+    - `timestamps`: the timestamps of the samples.
+    - `hwp_angles`: the half-wave plate angle measured at each sample.
+    - `detector_quaternions`: the detector quaternions.
+    - `boresight_quaternions`: the boresight quaternions.
+    - `noise_model_fits`: the fitted parameters for the noise model (1/f noise by default).
+    - `azimuth`, `elevation`: the boresight scan angles (ground observations).
+    - `left_scan_mask`, `right_scan_mask`: per-sample masks splitting left/right-going scans.
+    - `scanning_intervals`: per-scan [start, end) sample-index pairs (ground observations).
+
+    Attributes:
+        demodulated: Whether the reader loads demodulated TODs.
+        stokes: Stokes components loaded when demodulated.
+        dtype: Floating-point dtype every floating-point field is cast to.
     """
 
     def __init__(
@@ -59,6 +65,27 @@ class ObservationReader[T](AbstractReader):
         known_failures: Sequence[int] | None = None,
         **keywords: Sequence[Any],
     ) -> None:
+        """Initialize the reader.
+
+        Prefer [`from_observations`][furax.mapmaking.ObservationReader.from_observations], which
+        resolves the data fields of the observations and passes them on as `common_keywords`.
+
+        Args:
+            *args: One list per positional argument to the read function, one element per
+                observation.
+            demodulated: Whether to read demodulated TODs.
+            stokes: Stokes components to read when demodulated.
+            dtype: Floating-point dtype applied to every floating-point field the reader returns.
+            common_keywords: Keyword arguments shared by all observations, in particular
+                `data_field_names`, the fields to read.
+            shapes: Per-observation buffer shapes `(n_detectors, n_samples, n_intervals)`, in the
+                order of the observations. When given, no observation is opened to size the
+                buffers; otherwise every observation is opened once here.
+            known_failures: Positions known to be unreadable (their probe failed); read as
+                filler, never loaded.
+            **keywords: One list per keyword argument to the read function, one element per
+                observation.
+        """
         # Set before super().__init__ so the structure/reader builders can use them
         self.demodulated = demodulated
         self.stokes = stokes
@@ -83,47 +110,47 @@ class ObservationReader[T](AbstractReader):
         cls,
         observations: Sequence[AbstractLazyObservation[T]],
         *,
-        read_indices: Sequence[int] | None = None,
         requested_fields: Collection[str] | None = None,
         demodulated: bool = False,
         stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = jnp.float64,
+        shapes: Sequence[ObservationBufferShape] | None = None,
+        known_failures: Sequence[int] | None = None,
     ) -> Self:
-        """Create a reader, performing I/O to infer data structures.
+        """Create a reader over the given observations.
 
         Args:
-            observations: Full list of lazy observations.
-            read_indices: Optional indices into ``observations``; when set, only
-                those are opened on this process to infer shapes, and shapes are
-                synchronised across processes (distributed-mode shortcut).
-            requested_fields: Optional list of fields to load. If None, read all non-optional fields.
+            observations: The lazy observations to read, one item each.
+            requested_fields: Optional list of fields to load. If None, read all non-optional
+                fields.
             demodulated: Whether to read demodulated TODs.
             stokes: Stokes components to read when demodulated.
             dtype: Floating-point dtype applied to every floating-point field the reader
                 returns: sample data, noise model fits and the geometry (timestamps, HWP
-                angles, quaternions). Use jnp.float32 to run a float32 mapmaking pipeline
-                (MapMakingConfig.double_precision=False). Casting the geometry is also
-                required there: under jax_enable_x64=False a float64 array is illegal, so
-                no field may stay float64. Timestamps are rebased to a per-observation
-                zero origin (in float64, before the downcast) so the float32 cast does not
-                collapse the absolute POSIX epoch onto a single value; see the timestamps
-                reader in ``_get_data_field_readers``.
+                angles, quaternions). Use `jnp.float32` to run a float32 mapmaking pipeline
+                ([`MapMakingConfig.double_precision`][] set to `False`). Casting the geometry
+                is also required there: under `jax_enable_x64=False` a float64 array is
+                illegal, so no field may stay float64. Timestamps are rebased to a
+                per-observation zero origin (in float64, before the downcast) so the float32
+                cast does not collapse the absolute POSIX epoch onto a single value.
+            shapes: Per-observation buffer shapes, in the order of `observations`. When given,
+                no observation is opened to size the buffers (the caller has already probed them,
+                see [`AbstractLazyObservation.probe_shape`][]); otherwise every observation is
+                opened once here.
+            known_failures: Positions in `observations` known to be unreadable (their probe
+                failed); read as filler, never loaded.
+
+        Returns:
+            A reader whose items are `observations`, in order.
         """
         fields = cls._resolve_fields(observations, requested_fields)
-        # In the default path, leave ``shapes`` unset so AbstractReader.__init__ opens every
-        # observation on this process to infer its structure. In distributed mode, gather the
-        # per-observation shapes from the local subset and all-gather them (see ``_gather_shapes``).
-        shapes = None
-        known_failures = None
-        if read_indices is not None:
-            shapes, known_failures = cls._gather_shapes(observations, read_indices, fields)
         return cls(
             observations,
             common_keywords={'data_field_names': fields},
             demodulated=demodulated,
             stokes=stokes,
             dtype=dtype,
-            shapes=shapes,
+            shapes=list(shapes) if shapes is not None else None,
             known_failures=known_failures,
         )
 
@@ -145,64 +172,30 @@ class ObservationReader[T](AbstractReader):
             )
         return fields
 
-    @staticmethod
-    def _gather_shapes(
-        observations: Sequence[AbstractLazyObservation[T]],
-        read_indices: Sequence[int],
-        fields: Collection[str],
-    ) -> tuple[list[tuple[int, ...]], list[int]]:
-        """Gather every observation's ``probe_shape()`` tuple in distributed mode.
-
-        Each process probes only its ``read_indices`` subset; an all-gather then makes every rank
-        agree on the full shape list, so padding / out_structure / etc. stay consistent.
-
-        A probe that raises must not crash the rank (it would deadlock the others at the all-gather):
-        the observation is given a dummy ``(1, 1)`` shape so it is excluded from the buffer-sizing
-        max, and its (local) index is returned so the reader skips loading it and gates it out.
-
-        Returns ``(shapes, failed_indices)`` where ``failed_indices`` are this process's
-        probe-failed observation indices.
-        """
-        failed: list[int] = []
-        need_intervals = ReaderField.SCANNING_INTERVALS in fields
-
-        def probe(idx: int) -> tuple[int, tuple[int, ...]]:
-            try:
-                # retain observation index so we can dedup after gathering
-                return idx, tuple(observations[idx].probe_shape(intervals=need_intervals))
-            except Exception:
-                logger.exception('probe of observation %d failed', idx)
-                failed.append(idx)
-                return idx, (1, 1, 0)
-
-        local = [probe(idx) for idx in read_indices]
-        width = 1 + len(local[0][1])  # each row is (idx, *shape)
-        local_rows = np.array([(idx, *shape) for idx, shape in local], dtype=np.int32)
-
-        # Drop potential duplicates (from padding) and sort by obs index
-        all_rows = mhu.process_allgather(local_rows).reshape(-1, width)
-        shapes = [tuple(row[1:]) for row in np.unique(all_rows, axis=0)]
-        if (ns := len(shapes)) != (no := len(observations)):
-            msg = f'inconsistent observation shapes after allgather: expected {no}, got {ns}'
-            raise RuntimeError(msg)
-        return shapes, failed
-
     def _pad(
         self, data: PyTree[np.ndarray], padding: PyTree[tuple[int, ...]]
     ) -> PyTree[np.ndarray]:
         """Pads one ground observation to the common structure, on the host (numpy).
 
         The data is padded differently depending on the key:
-            - sample_data: padded with 0.0 outside the valid samples
-            - timestamps, hwp_angles: extrapolated in the padded region so that
-                the sample rate and the hwp rotation frequency remain consistent
-            - valid_sample_masks, valid_scanning_masks : padded with 0 (False) outside
-                the valid samples
-            - detector_quaternions: padded with (1, 0, 0, 0) for invalid detectors, as if they
-                are located at the centre of the focal plane.
-            - boresight_quaternions: padded with the last valid sample's quaternion, as if
-                the telescoped stopped moving since then.
-            - noise_model_fits: padded with (sigma, alpha, fknee, f0) = (0., 0., 1., 0.1)
+
+        - `sample_data`: padded with 0.0 outside the valid samples
+        - `timestamps`, `hwp_angles`: extrapolated in the padded region so that the sample rate
+          and the hwp rotation frequency remain consistent
+        - `valid_sample_masks`, `valid_scanning_masks`: padded with 0 (False) outside the valid
+          samples
+        - `detector_quaternions`: padded with (1, 0, 0, 0) for invalid detectors, as if they are
+          located at the centre of the focal plane.
+        - `boresight_quaternions`: padded with the last valid sample's quaternion, as if the
+          telescope stopped moving since then.
+        - `noise_model_fits`: padded with (sigma, alpha, fknee, f0) = (0., 0., 1., 0.1)
+
+        Args:
+            data: The fields read for one observation.
+            padding: Per-field padding widths, as returned by the base reader.
+
+        Returns:
+            The padded fields.
         """
         # First, pad them with 0 by default
         data = super()._pad(data, padding)
@@ -279,9 +272,9 @@ class ObservationReader[T](AbstractReader):
         shape: tuple[int, ...],
         fields: Collection[str] | None = None,
     ) -> PyTree[jax.ShapeDtypeStruct]:
-        """Build the padded-buffer structures for one observation from its ``probe_shape()``.
+        """Build the padded-buffer structures for one observation from its `probe_shape()`.
 
-        Restricted to ``fields`` when given, else returns every supported field.
+        Restricted to `fields` when given, else returns every supported field.
         """
         n_detectors, n_samples, n_intervals = shape
         demodulated = self.demodulated
@@ -379,13 +372,13 @@ class ObservationReader[T](AbstractReader):
         }
 
     def _failure_filler(self) -> dict[str, Any]:
-        """Finite, ``out_structure``-shaped data for an observation that could not be read.
+        """Finite, `out_structure`-shaped data for an observation that could not be read.
 
         The values are finite and non-degenerate (identity quaternions, a strictly increasing time
         vector, a broadband signal, unit white-noise fits) so every operator built from this
         observation stays finite. The observation is gated out (all-False masker), so these values
-        never enter the maps; finiteness only matters so the gated contribution is ``0`` and not
-        ``NaN``.
+        never enter the maps; finiteness only matters so the gated contribution is `0` and not
+        `NaN`.
         """
         rng = np.random.default_rng(0)
 

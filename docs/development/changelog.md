@@ -10,14 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `BlockSelectOperator`: extract one block of a block-structured input, and embed a single-block operator into the whole through its transpose (#237)
+- `MapMakingConfig.max_buckets`: largest allowed number of buckets for grouping observation by shape (#236)
+- API reference page for `furax.mapmaking.layout` (#236)
 
 ### Changed
 
+- Group mapmaker observations into buckets of similar buffer shape to reduce padding overhead (#236)
 - Migrate quaternion operations to `fastquat` (#247)
+
+### Removed
+
+- `StreamOperator` no longer rejects shared inputs sharded over the stream axis (#236)
 
 ### Fixed
 
 - The fitted noise PSD no longer averages in Welch windows that fall in an observation's padded tail (#239)
+- The Welch segment is clipped to the shortest observation, so the noise fit never sees a padded sample (#236)
 
 ## [0.12.1]
 

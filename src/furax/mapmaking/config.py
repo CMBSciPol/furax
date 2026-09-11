@@ -798,11 +798,20 @@ class MapMakingConfig:
     atop_tau: int = 0
     """Length of the `ATOP` interval (in samples)."""
 
+    max_buckets: int = 4
+    """Largest number of buckets observations are grouped into.
+
+    More buckets pad the buffers less but round up to the device count more often; see
+    [`furax.mapmaking.layout`][] for how to choose it.
+    """
+
     sotodlib: SotodlibConfig | None = None
     """Options specific to the sotodlib interface. `None` when not using sotodlib data."""
 
     def __post_init__(self) -> None:
         """Validate cross-field constraints that hold regardless of which mapmaker runs."""
+        if self.max_buckets < 1:
+            raise ValueError(f'max_buckets must be >= 1, got {self.max_buckets}')
         if (templates := self.templates) is not None:
             if templates.t2p is not None:
                 if not self.demodulated:

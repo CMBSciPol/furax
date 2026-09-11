@@ -9,10 +9,23 @@ the $W$-metric projector off $\mathrm{range}(T)$.
 This module assembles the Gram matrix $G \equiv T^\top W T$ from the bases of an
 [`AbstractTemplateOperator`][]. Inversion is performed via [`furax.linalg.cholesky`][].
 
+Combined with Pomme (`pomme_tau`), the effective weight is $W F$ with $F$ the
+[`PommeProjectionOperator`][], and the Gram becomes $\tilde G = T^\top W F T = (FT)^\top W (FT)$:
+the Gram of the Pomme-filtered templates. It is assembled without forming $FT$, by
+Schur-eliminating the Pomme template $Z$ (the interval indicators) from the joint Gram of $[Z\ T]$:
+
+$$ \tilde G = T^\top W T - C^\top D^{-1} C, \qquad C = Z^\top W T, \quad D = Z^\top W Z, $$
+
+with $D$ diagonal (weighted interval sample counts) and $C$ the weighted per-interval sums of the
+basis columns. This equals $T^\top W D_Z T$ for any diagonal $W$, and $T^\top W F T$ when $W$
+and $F$ commute, which the whole-interval masking of the Pomme path guarantees. An interval
+straddling two blocks of a segmented or windowed basis couples them, so the Gram band widens by
+one block. $F$ annihilates constant columns, so a template containing one (polynomial order 0, a
+DC harmonic, binned azimuth) makes $\tilde G$ singular: a `regularization` ridge is then required.
+
 Limitations:
 
-- $W$ must be *diagonal*. Correlated (Toeplitz) weights are not supported. Interaction with Pomme
-  deprojection is not handled (also results in a non-diagonal effective weight).
+- $W$ must be *diagonal*. Correlated (Toeplitz) weights are not supported.
 - When assembling the Gram, basis structure (column support) is only exploited if all bases of the
   template operator are shared over detectors.
 - With several shared bases, the per-detector Gram blocks are stored as dense objects, even where
@@ -44,6 +57,7 @@ from furax import AbstractLinearOperator
 from furax.core import BlockDiagonalOperator
 from furax.linalg import BandedCholeskyOperator
 
+from .pomme import PommeIntervals, PommeProjectionOperator
 from .templates import AbstractTemplateOperator, Basis, NoStructuredView, is_basis
 
 __all__ = [
@@ -57,6 +71,7 @@ def gram_inverse(
     weight: AbstractLinearOperator,
     regularization: float = 0.0,
     *,
+    pomme_tau: int | None = None,
     allow_probe: bool = False,
     batch_size: int = 32,
 ) -> AbstractLinearOperator:
@@ -66,6 +81,10 @@ def gram_inverse(
     sample space, and its diagonal is read off by applying it to a vector of ones: a weight that
     does not respect that contract silently changes the result. `G = Tᵀ W T` thus does not couple
     different detectors: each gets its own block, making `G` block-diagonal.
+
+    With `pomme_tau`, the effective weight is `W F` with `F` the [`PommeProjectionOperator`][] of
+    that interval length, and the inverse of `Tᵀ W F T` is returned instead (see the module
+    docstring). `W` itself stays the diagonal weight.
 
     When every basis is shared across detectors and exposes a structured (column-support) view,
     that structure is used to assemble the Gram matrix efficiently.
@@ -78,6 +97,7 @@ def gram_inverse(
         operator: The template operator `T`.
         weight: The diagonal weights `W`.
         regularization: Relative ridge added to each detector's Gram block before factoring.
+        pomme_tau: Pomme interval length, when the templates are combined with Pomme.
         allow_probe: Allow the `O(K)` dense-probe fallback.
         batch_size: Detector batch size to bound transient memory usage in the structured
             per-detector Gram assembly path.
@@ -87,17 +107,20 @@ def gram_inverse(
 
     Raises:
         NotImplementedError: If the structured path does not apply and `allow_probe` is `False`.
+        ValueError: If `pomme_tau` is given for a TOD that is not a single `(det, samp)` stream.
     """
+    if pomme_tau is not None and not isinstance(operator.out_structure, jax.ShapeDtypeStruct):
+        raise ValueError('Pomme filtering applies to a single (det, samp) stream, not a Stokes TOD')
     try:
         ones = furax.tree.ones_like(weight.in_structure)
         diag = weight(ones)
         # if we wanted to guard against a non-diagonal W, one extra application on a random
         # vector `x` and a comparison against `diag * x` would catch it with very high probability
-        return _structured_gram_inverse(operator, diag, regularization, batch_size)
+        return _structured_gram_inverse(operator, diag, regularization, batch_size, pomme_tau)
     except NoStructuredView:
         pass  # fall back to dense probe, or raise below
     if allow_probe:
-        return _probed_gram_inverse(operator, weight, regularization)
+        return _probed_gram_inverse(operator, weight, regularization, pomme_tau)
     msg = f'structured Gram construction not possible for {operator}, pass `allow_probe=True`'
     raise NotImplementedError(msg)
 
@@ -139,14 +162,34 @@ def _structured_gram_inverse(
     diag: PyTree[Array],
     regularization: float,
     batch_size: int,
+    pomme_tau: int | None,
 ) -> AbstractLinearOperator:
+    intervals = (
+        None
+        if pomme_tau is None
+        else PommeIntervals.create(template._a_basis().n_points, pomme_tau)
+    )
     if len(template.bases) > 1:
-        return _coupled_gram_inverse(template, diag, regularization, batch_size)
+        return _coupled_gram_inverse(template, diag, regularization, batch_size, intervals)
 
     def leg_inverse(path: Any, basis: Basis, amp: PyTree[Any]) -> Any:
         leg = path[-1].key if len(path) > 1 else None
         leg_diag = diag if leg is None else getattr(diag, leg)
-        bands = jax.lax.map(basis.gram, leg_diag, batch_size=batch_size)
+        if intervals is None:
+            gram = basis.gram
+        else:
+            # Pomme: widen the band by one block (an interval may straddle two) and subtract the
+            # Schur correction; a dense basis (one block) keeps its single band.
+            view = basis.support()
+            w1 = min(jax.eval_shape(basis.gram, leg_diag[0]).shape[1] + 1, view.n_blocks)
+            first = intervals.first_blocks(view, w1)
+
+            def gram(weights: Array) -> Array:
+                bands = basis.gram(weights)
+                bands = jnp.pad(bands, [(0, 0), (0, w1 - bands.shape[1]), (0, 0), (0, 0)])
+                return bands - intervals.band_correction(view, first, weights, w1)
+
+        bands = jax.lax.map(gram, leg_diag, batch_size=batch_size)
         bands = bands.at[..., 0, :, :].set(_zero_sub_identity(bands[..., 0, :, :]))
         return BandedCholeskyOperator.from_bands(bands, amp, regularization)
 
@@ -167,6 +210,7 @@ def _coupled_gram_inverse(
     diag: PyTree[Array],
     regularization: float,
     batch_size: int,
+    intervals: PommeIntervals | None,
 ) -> AbstractLinearOperator:
     # Flattening keeps the keys: `('poly', 'q')` for a Stokes-valued template, `('poly',)` without
     # a Stokes axis. The leg says which stream a basis is weighted by, and two bases on different
@@ -185,13 +229,22 @@ def _coupled_gram_inverse(
     def build(per_basis_diags: tuple[Array, ...]) -> Array:
         """One detector's joint block, filled in one basis pair at a time."""
         block = jnp.zeros((n_amps, n_amps), dtype)
+        # Pomme: Schur correction `Cᵢᵀ D⁻¹ Cⱼ` from the dense per-interval sums of each basis
+        corrections: list[tuple[Array, Array]] = []
+        if intervals is not None:
+            for a, w in zip(bases, per_basis_diags, strict=True):
+                corrections.append((intervals.sums(a.support(), w), intervals.inverse_counts(w)))
         for i, a in enumerate(bases):
             rows = slice(offsets[i], offsets[i + 1])
             for j, b in enumerate(bases):
                 if legs[i] != legs[j]:  # different Stokes legs never share a weighted sample
                     continue
                 cols = slice(offsets[j], offsets[j + 1])
-                block = block.at[rows, cols].set(cross_gram(a, b, per_basis_diags[i]))
+                gram = cross_gram(a, b, per_basis_diags[i])
+                if corrections:
+                    (c_i, inv_d), (c_j, _) = corrections[i], corrections[j]
+                    gram = gram - c_i.T @ (inv_d[:, None] * c_j)
+                block = block.at[rows, cols].set(gram)
         return block
 
     blocks = jax.lax.map(build, diags, batch_size=batch_size)  # (n_dets, n_amps, n_amps)
@@ -203,14 +256,20 @@ def _probed_gram_inverse(
     operator: AbstractTemplateOperator,
     weight: AbstractLinearOperator,
     regularization: float,
+    pomme_tau: int | None,
 ) -> AbstractLinearOperator:
     """The fallback: recover `G = Tᵀ W T` by applying it to one amplitude at a time.
 
     Costs `O(K)` applications for `K` amplitudes, but needs nothing of the bases beyond `T` itself.
     Amplitudes carry detectors on their leading axis and `T` couples none of them, so `G` is
-    block-diagonal there and each detector's block is factored on its own.
+    block-diagonal there and each detector's block is factored on its own. With Pomme the probed
+    operator is `Tᵀ W F T`, exact for any `T`.
     """
-    gram_op = (operator.T @ weight @ operator).reduce()
+    if pomme_tau is None:
+        gram_op = (operator.T @ weight @ operator).reduce()
+    else:
+        pomme = PommeProjectionOperator(pomme_tau, in_structure=operator.out_structure)
+        gram_op = (operator.T @ weight @ pomme @ operator).reduce()
     in_structure = gram_op.in_structure
     leaves, treedef = jax.tree.flatten(in_structure)
     n_dets = leaves[0].shape[0]

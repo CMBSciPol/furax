@@ -25,7 +25,7 @@ Preserve useful human-written comments unless the code change makes them inaccur
 - `uv run prek run -a`: Run pre-commit hooks (all files)
 - `uv run prek ruff-check`: Run linting hook
 - `uv run prek ruff-format`: Run formatting hook
-- `uv run prek mypy`: Run type-checking hook
+- `uv run prek ty`: Run type-checking hook
 
 ## Guidelines
 
@@ -76,7 +76,7 @@ def foo(x: Float[jax.Array, ' n'], scale: float = 1.0) -> Float[jax.Array, ' n']
 ## When to ask first
 
 - Don't add or remove dependencies (`uv add`/`uv remove`) without confirming.
-- Don't weaken checks to go green: no blanket `# type: ignore` / `# noqa` or relaxing ruff/mypy config — fix the cause or ask.
+- Don't weaken checks to go green: no blanket `# ty: ignore` / `# noqa` or relaxing ruff/ty config — fix the cause or ask.
 - Don't change operator algebra (tags, composition/addition reduction rules) or public API signatures without confirming.
 - If a task needs tools or permissions beyond what's available, stop and ask rather than guess.
 

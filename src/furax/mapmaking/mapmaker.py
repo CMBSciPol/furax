@@ -1224,9 +1224,9 @@ class MLMapmaker(MapMaker):
         positive_sample_hits = (
             (masker @ acquisition @ selector.T)(
                 StokesIQU.from_stokes(
-                    jnp.ones(selector.out_structure.shape, dtype=data.dtype),
-                    jnp.zeros(selector.out_structure.shape, dtype=data.dtype),
-                    jnp.zeros(selector.out_structure.shape, dtype=data.dtype),
+                    i=jnp.ones(selector.out_structure.shape, dtype=data.dtype),
+                    q=jnp.zeros(selector.out_structure.shape, dtype=data.dtype),
+                    u=jnp.zeros(selector.out_structure.shape, dtype=data.dtype),
                 )
             )
             > 0

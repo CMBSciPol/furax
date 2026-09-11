@@ -39,13 +39,19 @@ def test_from_stokes_args(stokes: ValidStokesLiteral) -> None:
     [''.join(_) for _ in chain.from_iterable(combinations('IQUV', n) for n in range(1, 5))],
 )
 def test_from_stokes_kwargs(any_stokes: str) -> None:
-    kwargs = {stoke: jnp.ones(1) for stoke in any_stokes}
+    kwargs = {stoke.lower(): jnp.ones(1) for stoke in any_stokes}
     if any_stokes not in ('I', 'QU', 'IQU', 'IQUV'):
-        with pytest.raises(TypeError, match=f"Invalid Stokes vectors: '{any_stokes}'"):
+        with pytest.raises(TypeError, match=f"Invalid Stokes vectors: '{any_stokes.lower()}'"):
             _ = Stokes.from_stokes(**kwargs)
     else:
         pytree = Stokes.from_stokes(**kwargs)
         assert type(pytree) is Stokes.class_for(any_stokes)
+
+
+def test_from_stokes_kwargs_rejects_uppercase(stokes: ValidStokesLiteral) -> None:
+    kwargs = {stoke: jnp.ones(1) for stoke in stokes}
+    with pytest.raises(TypeError, match=f"Invalid Stokes vectors: '{stokes}'"):
+        _ = Stokes.from_stokes(**kwargs)
 
 
 def test_from_iquv(stokes: ValidStokesLiteral) -> None:
@@ -59,7 +65,7 @@ def test_from_iquv(stokes: ValidStokesLiteral) -> None:
 
 def test_ravel(stokes: ValidStokesLiteral) -> None:
     shape = (4, 2)
-    arrays = {k: jnp.ones(shape) for k in stokes}
+    arrays = {k.lower(): jnp.ones(shape) for k in stokes}
     pytree = Stokes.from_stokes(**arrays)
     raveled_pytree = pytree.ravel()
     for stoke in stokes:
@@ -69,7 +75,7 @@ def test_ravel(stokes: ValidStokesLiteral) -> None:
 def test_reshape(stokes: ValidStokesLiteral) -> None:
     shape = (4, 2)
     new_shape = (2, 2, 2)
-    arrays = {k: jnp.ones(shape) for k in stokes}
+    arrays = {k.lower(): jnp.ones(shape) for k in stokes}
     pytree = Stokes.from_stokes(**arrays)
     raveled_pytree = pytree.reshape(new_shape)
     for stoke in stokes:

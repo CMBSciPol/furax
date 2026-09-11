@@ -311,11 +311,7 @@ class Stokes(ABC):
     ) -> 'StokesIQUV': ...
 
     @classmethod
-    def from_stokes(
-        cls,
-        *args: Any,
-        **keywords: Any,
-    ) -> 'Stokes':
+    def from_stokes(cls, *args: Any, **keywords: Any) -> 'Stokes':
         """Returns a StokesPyTree according to the specified Stokes vectors.
 
         Examples:
@@ -323,6 +319,11 @@ class Stokes(ABC):
             >>> tod_qu = Stokes.from_stokes(q, u)
             >>> tod_iqu = Stokes.from_stokes(i, q, u)
             >>> tod_iquv = Stokes.from_stokes(i, q, u, v)
+
+            The components can also be named, with lowercase keywords:
+
+            >>> tod_qu = Stokes.from_stokes(q=q, u=u)
+            >>> tod_iqu = Stokes.from_stokes(i=i, q=q, u=u)
         """
         if args and keywords:
             raise TypeError(
@@ -330,10 +331,11 @@ class Stokes(ABC):
                 'arguments.'
             )
         if keywords:
+            # 'iquv' is conveniently in alphabetical order
             stokes = ''.join(sorted(keywords))
-            if stokes not in get_args(ValidStokesLiteral):
+            if stokes.upper() not in get_args(ValidStokesLiteral):
                 raise TypeError(
-                    f"Invalid Stokes vectors: {stokes!r}. Use 'I', 'QU', 'IQU' or 'IQUV'."
+                    f"Invalid Stokes vectors: {stokes!r}. Use 'i', 'qu', 'iqu' or 'iquv'."
                 )
             args = tuple(keywords[stoke] for stoke in stokes)
 

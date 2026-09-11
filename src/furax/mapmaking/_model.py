@@ -26,8 +26,8 @@ from .gram import gram_inverse
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .templates import (
     AbstractTemplateOperator,
-    ATOPProjectionOperator,
     Basis,
+    PommeProjectionOperator,
     StokesTemplateOperator,
     TemplateOperator,
     azimuth_hwp_synchronous_basis,
@@ -59,7 +59,7 @@ class ObservationModel:
     """Weighting operator (noise weights + mask)"""
 
     F: AbstractLinearOperator
-    """ATOP filter/deprojector (identity when not enabled)"""
+    """Pomme filter/deprojector (identity when not enabled)"""
 
     noise_model: PyTree[NoiseModel]
     """Noise model"""
@@ -116,8 +116,8 @@ class ObservationModel:
             # Plain masked weights, only exact for diagonal W
             W = WeightOperator.create(Ninv, M)
         F = (
-            ATOPProjectionOperator(config.atop_tau, in_structure=tod_struct)
-            if config.method == Methods.ATOP
+            PommeProjectionOperator(config.pomme_tau, in_structure=tod_struct)
+            if config.method == Methods.POMME
             else IdentityOperator(in_structure=tod_struct)
         )
         return cls(H, W, F, noise_model, sample_rate)
@@ -254,17 +254,17 @@ def _noise_model(
 def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
     """Get the sample mask from data.
 
-    For ATOP mapmaker, extra pixels may be masked depending on atop_tau.
+    For Pomme mapmaker, extra pixels may be masked depending on pomme_tau.
     """
     mask = data[ReaderField.VALID_SAMPLE_MASKS]
 
-    if config.method == Methods.ATOP:
-        tau = config.atop_tau
-        F = ATOPProjectionOperator(config.atop_tau, in_structure=tree.as_structure(mask))
+    if config.method == Methods.POMME:
+        tau = config.pomme_tau
+        F = PommeProjectionOperator(config.pomme_tau, in_structure=tree.as_structure(mask))
         # Mask all tau-intervals that are partially masked
         interval_mask = jnp.abs(F(mask)) < 0.5 / tau
         mask = jnp.logical_and(mask, interval_mask)
-        # The partial interval at the end is unchanged by ATOP operator
+        # The partial interval at the end is unchanged by Pomme operator
         # -> True samples get interval_mask = False (since 1 > 0.5/tau)
         # -> False samples have mask = False
         # in both cases the logical and eliminates the tail
@@ -553,7 +553,7 @@ class ObservationTemplates:
 
         implicit = None
         if (op := build(implicit_bases)) is not None:
-            # ATOP + templates is rejected in _check_config, so F = I and Weff = W (diagonal)
+            # Pomme + templates is rejected in _check_config, so F = I and Weff = W (diagonal)
             implicit = TemplateBundle.create(op, model.W, tcfg)
             ginv = implicit.gram_inverse
             wd = wd - Weff(op(ginv(op.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d

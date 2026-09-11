@@ -71,7 +71,7 @@ __all__ = [
     'TemplateOperator',
     'StokesTemplateOperator',
     'GroundTemplateOperator',
-    'ATOPProjectionOperator',
+    'PommeProjectionOperator',
 ]
 
 
@@ -1162,7 +1162,7 @@ class GroundTemplateOperator(AbstractLinearOperator):
 
 
 @square
-class ATOPProjectionOperator(AbstractLinearOperator):
+class PommeProjectionOperator(AbstractLinearOperator):
     tau: int = field(metadata={'static': True})
 
     def __init__(

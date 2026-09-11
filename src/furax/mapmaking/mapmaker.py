@@ -76,7 +76,7 @@ from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
 from .streaming import StreamOperator
-from .templates import ATOPProjectionOperator
+from .templates import PommeProjectionOperator
 from .weight import WeightOperator
 
 
@@ -145,24 +145,24 @@ class MultiObservationMapMaker[T]:
 
     def _check_config(self) -> None:
         """Validate and adjust config for method-specific compatibility."""
-        if self.config.method == Methods.ATOP:
+        if self.config.method == Methods.POMME:
             if not self.config.binned:
-                raise ValueError('ATOP requires diagonal weighting (weighting.mode=DIAGONAL).')
+                raise ValueError('Pomme requires diagonal weighting (weighting.mode=DIAGONAL).')
             if 'I' in (stokes := self.config.landscape.stokes):
                 if stokes != 'IQU':
                     raise ValueError(
-                        f'ATOP does not support intensity map reconstruction and {stokes=!r}'
+                        f'Pomme does not support intensity map reconstruction and {stokes=!r}'
                         " cannot be reduced to a supported type. Use stokes='QU' instead."
                     )
                 self.logger.info(
-                    "Received stokes='IQU', but ATOP does not support intensity map reconstruction."
-                    " Falling back to stokes='QU' instead."
+                    "Received stokes='IQU', but Pomme does not support intensity map"
+                    " reconstruction. Falling back to stokes='QU' instead."
                 )
                 self.config.landscape.stokes = 'QU'
         if self.config.use_templates and not self.config.binned:
             raise NotImplementedError('Using templates requires diagonal weighting.')
-        if self.config.use_templates and self.config.method == Methods.ATOP:
-            raise NotImplementedError('ATOP combined with templates is not yet supported.')
+        if self.config.use_templates and self.config.method == Methods.POMME:
+            raise NotImplementedError('Pomme combined with templates is not yet supported.')
 
     @cached_property
     def mesh(self) -> Mesh:
@@ -239,7 +239,7 @@ class MultiObservationMapMaker[T]:
     @property
     def _minimum_buffer_samples(self) -> int:
         """Smallest sample envelope accepted by the configured TOD operators."""
-        minimum = self.config.atop_tau if self.config.method == Methods.ATOP else 1
+        minimum = self.config.pomme_tau if self.config.method == Methods.POMME else 1
         if self.config.weighting.mode == WeightingMode.TOEPLITZ:
             correlation_length = self.config.weighting.correlation_length
             if self.config.gaps.treatment == GapTreatment.FILL:
@@ -394,7 +394,7 @@ class MultiObservationMapMaker[T]:
             icov = BJ.blocks.block_until_ready()
             logger_info('Computed white noise inverse covariance')
 
-            # Fold ATOP deprojector into the weight
+            # Fold Pomme deprojector into the weight
             W_prime = [(w @ f).reduce() for w, f in zip(W, F, strict=True)]
 
             # Pixel selection from the icov estimate
@@ -463,7 +463,7 @@ class MultiObservationMapMaker[T]:
         Args:
             acc: The accumulated per-bucket models, hit map and map RHS.
             H: Per-bucket sky pointing operator.
-            W: Per-bucket weight, already bundling the sample mask and the ATOP deprojector.
+            W: Per-bucket weight, already bundling the sample mask and the Pomme deprojector.
             S: Selection of the estimated pixels out of the full sky grid.
             BJ: Block-Jacobi preconditioner.
 
@@ -846,7 +846,7 @@ class MapMaker:
         maker = {
             Methods.BINNED: BinnedMapMaker,
             Methods.MAXL: MLMapmaker,
-            Methods.ATOP: ATOPMapMaker,
+            Methods.POMME: PommeMapMaker,
         }[config.method]
 
         if logger is None:
@@ -1303,23 +1303,23 @@ class MLMapmaker(MapMaker):
         return output
 
 
-class ATOPMapMaker(MapMaker):
-    """Class for ATOP mapmaking with diagonal noise covariance."""
+class PommeMapMaker(MapMaker):
+    """Class for Pomme mapmaking with diagonal noise covariance."""
 
     def __post_init__(self) -> None:
         super().__post_init__()
 
         # Validation on config
         if not self.config.binned:
-            raise ValueError('ATOP Mapmaker is currently incompatible with binned=False')
-        if self.config.atop_tau < 2:
-            raise ValueError('ATOP tau should be at least 2')
+            raise ValueError('Pomme Mapmaker is currently incompatible with binned=False')
+        if self.config.pomme_tau < 2:
+            raise ValueError('Pomme tau should be at least 2')
         if self.config.landscape.stokes != 'QU':
-            raise ValueError('ATOP only compatible with stokes=QU')
+            raise ValueError('Pomme only compatible with stokes=QU')
 
     def make_map(self, observation: AbstractGroundObservation[Any]) -> dict[str, Any]:
         config = self.config
-        logger_info = lambda msg: self.logger.info(f'ATOP Mapmaker: {msg}')
+        logger_info = lambda msg: self.logger.info(f'Pomme Mapmaker: {msg}')
 
         # Data and landscape
         data = jnp.asarray(observation.get_tods(), dtype=config.dtype)
@@ -1330,8 +1330,8 @@ class ATOPMapMaker(MapMaker):
         acquisition = self.get_acquisition(observation, landscape=landscape)
         logger_info('Created acquisition operator')
 
-        # ATOP projector
-        atop_projector = ATOPProjectionOperator(self.config.atop_tau, in_structure=data_struct)
+        # Pomme projector
+        pomme_projector = PommeProjectionOperator(self.config.pomme_tau, in_structure=data_struct)
 
         # Optional mask for scanning
         masker = self.get_mask_projector(observation)
@@ -1344,7 +1344,7 @@ class ATOPMapMaker(MapMaker):
         logger_info(f'Valid sample fraction: {valid_sample_fraction:.4f}')
 
         # Additionally, mask all tau-intervals with any masked samples
-        tau_mask = jnp.abs(atop_projector(masker(jnp.ones_like(data)))) < 0.5 / config.atop_tau
+        tau_mask = jnp.abs(pomme_projector(masker(jnp.ones_like(data)))) < 0.5 / config.pomme_tau
         masker @= MaskOperator.from_boolean_mask(tau_mask, in_structure=data_struct)
         valid_sample_fraction = float(jnp.mean(masker(jnp.ones(data.shape, data.dtype))))
         logger_info(f'Updated valid sample fraction: {valid_sample_fraction:.4f}')
@@ -1374,7 +1374,7 @@ class ATOPMapMaker(MapMaker):
         # Mapmaking operators
         h = acquisition @ selector.T
         mp = masker
-        ap = inv_noise @ atop_projector
+        ap = inv_noise @ pomme_projector
         lhs = h.T @ mp @ ap @ mp @ h
         rhs_op = jax.jit(lambda d: (h.T @ mp @ ap @ mp).reduce()(d))
 

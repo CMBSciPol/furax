@@ -30,10 +30,10 @@ from furax.mapmaking.config import (
     WeightingMode,
 )
 from furax.mapmaking.mapmaker import (
-    ATOPMapMaker,
     BinnedMapMaker,
     MapMaker,
     MLMapmaker,
+    PommeMapMaker,
 )
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
@@ -294,8 +294,8 @@ class TestBuckets:
         with jax.set_mesh(maker.mesh):
             maker.build_model_and_accumulate()
 
-    def test_bucket_envelope_covers_atop_support(self):
-        config = _config('healpix', 'QU', method=Methods.ATOP, atop_tau=64, max_buckets=3)
+    def test_bucket_envelope_covers_pomme_support(self):
+        config = _config('healpix', 'QU', method=Methods.POMME, pomme_tau=64, max_buckets=3)
         observations = [FakeLazyObservation(seed=0, n_samples=32)]
         observations.extend(FakeLazyObservation(seed=i, n_samples=256) for i in (1, 2))
         maker = MultiObservationMapMaker(observations, config=config)
@@ -354,7 +354,7 @@ class TestNoiseModelSelection:
         assert results.solver_stats is not None
 
 
-ATOP_PARAMS = [
+POMME_PARAMS = [
     pytest.param(
         'sotodlib',
         id='sotodlib',
@@ -366,38 +366,38 @@ ATOP_PARAMS = [
         marks=pytest.mark.skipif(not toast_installed, reason='toast is not installed'),
     ),
 ]
-ATOP_TAU = 10
+POMME_TAU = 10
 
 
 @pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
-@pytest.mark.parametrize('name', ATOP_PARAMS)
-class TestATOPMapMaker:
-    """Test ATOP support in MultiObservationMapMaker."""
+@pytest.mark.parametrize('name', POMME_PARAMS)
+class TestPommeMapMaker:
+    """Test Pomme support in MultiObservationMapMaker."""
 
-    def test_atop_full_mapmaker(self, name, landscape_type):
-        """ATOP runs end-to-end and produces a QU map with the correct shape."""
+    def test_pomme_full_mapmaker(self, name, landscape_type):
+        """Pomme runs end-to-end and produces a QU map with the correct shape."""
         observations = _observations(name)
-        config = _config(landscape_type, stokes='QU', method=Methods.ATOP, atop_tau=ATOP_TAU)
+        config = _config(landscape_type, stokes='QU', method=Methods.POMME, pomme_tau=POMME_TAU)
         maker = MultiObservationMapMaker(observations, config=config)
         results = maker.run()
         assert results.icov.shape == (2, 2, *maker.landscape.shape)
 
 
-class TestATOPStokesValidation:
-    """ATOP Stokes-config normalisation/validation. Pure construction-time logic
+class TestPommeStokesValidation:
+    """Pomme Stokes-config normalisation/validation. Pure construction-time logic
     that never reads sample data, so it is backed by the synthetic observation
     (or an empty list) rather than an interface or ``.h5`` fixture.
     """
 
     def _base_config(self, stokes: ValidStokesLiteral) -> MapMakingConfig:
         return MapMakingConfig(
-            method=Methods.ATOP,
-            atop_tau=ATOP_TAU,
+            method=Methods.POMME,
+            pomme_tau=POMME_TAU,
             landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16)),
         )
 
     def test_iqu_stokes_falls_back_to_qu(self):
-        """stokes='IQU' with ATOP is converted to 'QU'."""
+        """stokes='IQU' with Pomme is converted to 'QU'."""
         maker = MultiObservationMapMaker([FakeLazyObservation()], config=self._base_config('IQU'))
         assert maker.config.landscape.stokes == 'QU'
 
@@ -409,10 +409,10 @@ class TestATOPStokesValidation:
         with pytest.raises(ValueError, match='cannot be reduced to a supported type'):
             MultiObservationMapMaker([], config=self._base_config('IQUV'))
 
-    def test_atop_with_templates_raises(self):
+    def test_pomme_with_templates_raises(self):
         config = self._base_config('QU')
         config.templates = TemplatesConfig.full_defaults()
-        with pytest.raises(NotImplementedError, match='ATOP combined with templates'):
+        with pytest.raises(NotImplementedError, match='Pomme combined with templates'):
             MultiObservationMapMaker([], config=config)
 
 
@@ -438,7 +438,7 @@ def _config(
     demodulated: bool = False,
     interpolation: Literal['nearest', 'bilinear'] = 'nearest',
     method: Methods = Methods.BINNED,
-    atop_tau: int = 0,
+    pomme_tau: int = 0,
     identity_noise: bool = False,
     max_buckets: int = 1,
     nperseg: int = 512,
@@ -463,7 +463,7 @@ def _config(
             fitting=NoiseFitConfig(nperseg=nperseg),
         ),
         sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
-        atop_tau=atop_tau,
+        pomme_tau=pomme_tau,
         max_buckets=max_buckets,
     )
 
@@ -505,7 +505,7 @@ class TestSingleObsSolverGuards:
         res = MLMapmaker(config=cfg).make_map(obs)
         assert bool(jnp.all(jnp.isfinite(res['map'])))
 
-    @pytest.mark.parametrize('maker_cls', [BinnedMapMaker, ATOPMapMaker])
+    @pytest.mark.parametrize('maker_cls', [BinnedMapMaker, PommeMapMaker])
     def test_direct_solvers_reject_bilinear_pointing(self, maker_cls: type[MapMaker]) -> None:
         """The direct binned solvers refuse bilinear pointing at construction time."""
         cfg = self._config(WeightingMode.DIAGONAL, interpolation='bilinear', method=Methods.BINNED)

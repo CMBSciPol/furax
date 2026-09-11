@@ -65,10 +65,10 @@ class Methods(Enum):
     MAXL = 'ML'
     """Classic maximum-likelihood mapmaking solve via conjugate gradient iteration."""
 
-    ATOP = 'ATOP'
+    POMME = 'Pomme'
     """Polarisation (QU only) estimator using deprojection of short baselines.
 
-    See [`MapMakingConfig.atop_tau`][].
+    See [`MapMakingConfig.pomme_tau`][].
     """
 
 
@@ -795,8 +795,8 @@ class MapMakingConfig:
     templates: TemplatesConfig | None = None
     """Template deprojection options. `None` disables all templates."""
 
-    atop_tau: int = 0
-    """Length of the `ATOP` interval (in samples)."""
+    pomme_tau: int = 0
+    """Length of the `Pomme` interval (in samples)."""
 
     max_buckets: int = 4
     """Largest number of buckets observations are grouped into.
@@ -834,7 +834,7 @@ class MapMakingConfig:
 
         Args:
             method: A ``Methods`` enum value or its string name (e.g. ``'binned'``,
-                ``'ml'``, ``'atop'``), case-insensitive.
+                ``'ml'``, ``'pomme'``), case-insensitive.
         """
         if isinstance(method, str):
             upper = method.upper()
@@ -867,16 +867,16 @@ class MapMakingConfig:
                 ),
                 templates=None,
             )
-        elif method == Methods.ATOP:
+        elif method == Methods.POMME:
             return cls(
-                method=Methods.ATOP,
+                method=Methods.POMME,
                 weighting=WeightingConfig(),
                 solver=SolverConfig(
                     rtol=1e-6,
                     atol=0,
                     max_steps=100,
                 ),
-                atop_tau=37,
+                pomme_tau=37,
                 templates=None,
             )
         else:

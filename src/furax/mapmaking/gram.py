@@ -11,7 +11,7 @@ This module assembles the Gram matrix $G \equiv T^\top W T$ from the bases of an
 
 Limitations:
 
-- $W$ must be *diagonal*. Correlated (Toeplitz) weights are not supported. Interaction with ATOP
+- $W$ must be *diagonal*. Correlated (Toeplitz) weights are not supported. Interaction with Pomme
   deprojection is not handled (also results in a non-diagonal effective weight).
 - When assembling the Gram, basis structure (column support) is only exploited if all bases of the
   template operator are shared over detectors.

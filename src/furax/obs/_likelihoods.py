@@ -266,7 +266,7 @@ def _spectral_likelihood_core(
 # ==============================================================================
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(4, 5))
+@partial(jax.custom_vjp, nondiff_argnums=(4, 5))  # ty: ignore[dynamic-function-decorator-return]
 def _spectral_log_likelihood_analytical(
     params: PyTree[Array],
     nu: Array,
@@ -439,7 +439,7 @@ def spectral_log_likelihood(
     return ll
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(4, 5))
+@partial(jax.custom_vjp, nondiff_argnums=(4, 5))  # ty: ignore[dynamic-function-decorator-return]
 def _sky_signal_analytical(
     params: PyTree[Array],
     nu: Array,

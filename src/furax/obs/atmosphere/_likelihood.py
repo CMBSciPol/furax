@@ -1,3 +1,5 @@
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import lineax as lx
@@ -17,7 +19,7 @@ def profile_neg_log_likelihood(
     d: StokesI,
     noise_cov_inv: AbstractLinearOperator,
     *,
-    solver: lx.AbstractLinearSolver | None = None,
+    solver: lx.AbstractLinearSolver[Any] | None = None,
 ) -> Scalar:
     r"""Negative profile log-likelihood for atmosphere pointing parameters.
 

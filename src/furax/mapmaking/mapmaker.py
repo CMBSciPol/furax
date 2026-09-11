@@ -899,6 +899,10 @@ class MapMaker:
                 if pixel_inds.shape[-1] == 1:
                     pixel_inds = pixel_inds[..., 0]
                 indexer = IndexOperator((..., pixel_inds), in_structure=landscape.structure)
+            else:
+                raise NotImplementedError(
+                    f'Cannot index a landscape of type {type(landscape).__name__}.'
+                )
 
             # Rotation due to coordinate transform
             tod_shape = pixel_inds.shape[:2]

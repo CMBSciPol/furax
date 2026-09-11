@@ -121,7 +121,7 @@ class AbstractLinearOperator(ABC):
 
     @overload
     def __call__(
-        self, /, *, solver: lx.AbstractLinearSolver | None = None, **keywords: Any
+        self, /, *, solver: lx.AbstractLinearSolver[Any] | None = None, **keywords: Any
     ) -> 'AbstractLinearOperator': ...
 
     @overload
@@ -646,7 +646,7 @@ class InverseOperator(AbstractLazyInverseOperator):
         x: PyTree[jax.ShapeDtypeStruct] | None = None,
         /,
         *,
-        solver: lx.AbstractLinearSolver | None = None,
+        solver: lx.AbstractLinearSolver[Any] | None = None,
         throw: bool | None = None,
         callback: Callable[[lx.Solution], None] | object = MISSING,
         **options: Any,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import typing
 from collections.abc import Collection
-from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -367,7 +366,7 @@ class LazyToastObservation(FileBackedLazyObservation[toast.Data]):
     interface_class = ToastObservation
 
 
-@partial(np.vectorize, signature='(4)->()')
+@np.vectorize(signature='(4)->()')  # ty: ignore[dynamic-function-decorator-return]
 def get_local_meridian_angle(quat):
     """Compute angle between local meridian and orientation vector from quaternions.
 

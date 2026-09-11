@@ -97,7 +97,7 @@ class QURotationOperator(AbstractLinearOperator):
         return cls(angles=angles, atomic=atomic, in_structure=structure)
 
     def mv(self, x: _StokesT) -> _StokesT:
-        return rotate_qu(x, self.angles)  # type: ignore[no-any-return]
+        return rotate_qu(x, self.angles)
 
     def transpose(self) -> AbstractLinearOperator:
         return QURotationTransposeOperator(operator=self)
@@ -107,7 +107,7 @@ class QURotationTransposeOperator(AbstractLazyInverseOrthogonalOperator):
     operator: QURotationOperator
 
     def mv(self, x: _StokesT) -> _StokesT:
-        return rotate_qu(x, -self.operator.angles)  # type: ignore[no-any-return]
+        return rotate_qu(x, -self.operator.angles)
 
 
 class QURotationRule(AbstractCompositionRule):

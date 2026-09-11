@@ -74,18 +74,18 @@ def _enable_preproc_context_cache() -> None:
         # Keyed by config path (not context_file) so init/proc layers stay distinct even when
         # they share a context — each keeps its own appended preprocess archive.
         if context is not None or not isinstance(configs, str):
-            return original(configs, context)  # type: ignore[no-any-return]
+            return original(configs, context)
         key = (configs, threading.get_ident())
         if key not in _PREPROC_CONTEXT_CACHE:
             _PREPROC_CONTEXT_CACHE[key] = original(configs, context)
         return _PREPROC_CONTEXT_CACHE[key]
 
-    cached._furax_cached = True  # type: ignore[attr-defined]
+    cached._furax_cached = True  # ty: ignore[unresolved-attribute]
     # Relies on sotodlib calling get_preprocess_context by its module-global name (which
     # load_and_preprocess / multilayer_load_and_preprocess do): reassigning the module attribute
     # is what makes the cache take effect. A future sotodlib that imports it as a local alias, or
     # builds core.Context directly, would bypass this.
-    pu.get_preprocess_context = cached
+    pu.get_preprocess_context = cached  # ty: ignore[invalid-assignment]
 
 
 class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
@@ -240,23 +240,23 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
     @property
     def name(self) -> str:
-        return self.data.obs_info.obs_id  # type: ignore[no-any-return]
+        return self.data.obs_info.obs_id
 
     @property
     def telescope(self) -> str:
-        return self.data.obs_info.get('telescope')  # type: ignore[no-any-return]
+        return self.data.obs_info.get('telescope')
 
     @property
     def n_samples(self) -> int:
-        return self.data.samps.count  # type: ignore[no-any-return]
+        return self.data.samps.count
 
     @property
     def detectors(self) -> list[str]:
-        return self.data.dets.vals  # type: ignore[no-any-return]
+        return self.data.dets.vals
 
     @property
     def n_detectors(self) -> int:
-        return self.data.dets.count  # type: ignore[no-any-return]
+        return self.data.dets.count
 
     @property
     def sample_rate(self) -> float:
@@ -286,7 +286,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if stokes == 'IQUV':
             raise NotImplementedError
         kls = Stokes.class_for(stokes)
-        tods = [self._get_demodulated_tod(s) for s in stokes]  # type: ignore[arg-type]
+        tods = [self._get_demodulated_tod(s) for s in stokes]
         return kls.from_array(np.stack(tods, axis=0))
 
     def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> NDArray[np.float64]:
@@ -376,13 +376,12 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         # which have 1, cos(2*p), sin(2*p) where p is the parallactic angle
         pixel_inds, spin_proj = proj.get_pointing_matrix(assembly)
 
-        # TODO: check if this could be jnp array directly
-        pixel_inds = np.array(pixel_inds)
+        pixel_inds = jnp.array(pixel_inds)
 
         spin_proj = jnp.array(spin_proj, dtype=landscape.dtype)
         spin_ang = jnp.arctan2(spin_proj[..., 2], spin_proj[..., 1]) / 2.0
 
-        return pixel_inds, spin_ang  # type: ignore[return-value]
+        return pixel_inds, spin_ang
 
     def get_timestamps(self) -> Float[np.ndarray, ' a']:
         """Returns timestamps (sec) of the samples."""
@@ -411,7 +410,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         """
         if stokes == 'IQUV':
             raise NotImplementedError
-        fits = np.stack([self._get_noise_fit_for_stoke(s) for s in stokes], axis=1)  # type: ignore[arg-type]
+        fits = np.stack([self._get_noise_fit_for_stoke(s) for s in stokes], axis=1)
         return AtmosphericNoiseModel(*fits)
 
     def _get_noise_fit_for_stoke(self, stoke: Literal['I', 'Q', 'U']) -> NDArray[np.floating]:
@@ -482,7 +481,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         else:
             # Estimate psd
             raise NotImplementedError('Self-psd evaluation not implemented')
-        return fit[:, 1]  # type: ignore[no-any-return]
+        return fit[:, 1]
     '''
 
     def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:

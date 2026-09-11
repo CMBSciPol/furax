@@ -296,7 +296,7 @@ def _layer_transfer_matrix(
 
     # Transfer matrix: Ψ Φ (Ψ Φ P)⁻¹
     PsiPhi = Psi @ Phi
-    return PsiPhi @ jnp.linalg.inv(PsiPhi @ P)  # type: ignore[no-any-return]
+    return PsiPhi @ jnp.linalg.inv(PsiPhi @ P)
 
 
 def _stack_transfer_matrix(

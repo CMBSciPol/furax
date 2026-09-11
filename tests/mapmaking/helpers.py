@@ -47,7 +47,7 @@ class FakeObservation(AbstractObservation[None]):
         sample_rate: float = 100.0,
         hwp_frequency: float = 2.0,
         seed: int = 0,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         # Bypass AbstractObservation.__init__: there is no underlying
         # ``data`` container for an in-memory observation.
         self._n_dets = n_dets
@@ -130,7 +130,7 @@ class FakeObservation(AbstractObservation[None]):
         phi = np.linspace(0.0, np.pi / 4, self._n_samples)
         q = np.zeros((self._n_samples, 4), dtype=np.float64)
         q[:, 0] = np.cos(phi / 2)
-        q[:, 3] = np.sin(phi / 2)
+        q[:, 2] = np.sin(phi / 2)
         return q
 
     def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
@@ -152,7 +152,7 @@ class FakeLazyObservation(AbstractLazyObservation[None]):
 
     interface_class = FakeObservation
 
-    def __init__(self, **kwargs: Any) -> None:  # type: ignore[override]
+    def __init__(self, **kwargs: Any) -> None:
         self.file = Path('<synthetic>')
         self._kwargs = kwargs
 
@@ -179,6 +179,18 @@ class FailingLazyObservation(FakeLazyObservation):
 
     def get_data(self, requested_fields=None) -> FakeObservation:
         raise RuntimeError('simulated preprocessing failure')
+
+
+class ProbeFailingLazyObservation(FakeLazyObservation):
+    """Lazy observation whose shape probe fails before any data are read."""
+
+    @property
+    def name(self) -> str:
+        return 'probe_failing_obs'
+
+    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
+        del intervals
+        raise RuntimeError('simulated shape-probe failure')
 
 
 class GappyGroundObservation(FakeObservation, AbstractGroundObservation[None]):
@@ -281,7 +293,7 @@ class FakeLazyGroundObservation(AbstractLazyObservation[None]):
 
     interface_class = FakeGroundObservation
 
-    def __init__(self, **kwargs: Any) -> None:  # type: ignore[override]
+    def __init__(self, **kwargs: Any) -> None:
         self.file = Path('<synthetic>')
         self._kwargs = kwargs
 

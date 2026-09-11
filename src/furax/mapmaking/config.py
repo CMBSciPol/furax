@@ -65,10 +65,10 @@ class Methods(Enum):
     MAXL = 'ML'
     """Classic maximum-likelihood mapmaking solve via conjugate gradient iteration."""
 
-    ATOP = 'ATOP'
+    POMME = 'Pomme'
     """Polarisation (QU only) estimator using deprojection of short baselines.
 
-    See [`MapMakingConfig.atop_tau`][].
+    See [`MapMakingConfig.pomme_tau`][].
     """
 
 
@@ -795,14 +795,23 @@ class MapMakingConfig:
     templates: TemplatesConfig | None = None
     """Template deprojection options. `None` disables all templates."""
 
-    atop_tau: int = 0
-    """Length of the `ATOP` interval (in samples)."""
+    pomme_tau: int = 0
+    """Length of the `Pomme` interval (in samples)."""
+
+    max_buckets: int = 4
+    """Largest number of buckets observations are grouped into.
+
+    More buckets pad the buffers less but round up to the device count more often; see
+    [`furax.mapmaking.layout`][] for how to choose it.
+    """
 
     sotodlib: SotodlibConfig | None = None
     """Options specific to the sotodlib interface. `None` when not using sotodlib data."""
 
     def __post_init__(self) -> None:
         """Validate cross-field constraints that hold regardless of which mapmaker runs."""
+        if self.max_buckets < 1:
+            raise ValueError(f'max_buckets must be >= 1, got {self.max_buckets}')
         if (templates := self.templates) is not None:
             if templates.t2p is not None:
                 if not self.demodulated:
@@ -825,7 +834,7 @@ class MapMakingConfig:
 
         Args:
             method: A ``Methods`` enum value or its string name (e.g. ``'binned'``,
-                ``'ml'``, ``'atop'``), case-insensitive.
+                ``'ml'``, ``'pomme'``), case-insensitive.
         """
         if isinstance(method, str):
             upper = method.upper()
@@ -858,16 +867,16 @@ class MapMakingConfig:
                 ),
                 templates=None,
             )
-        elif method == Methods.ATOP:
+        elif method == Methods.POMME:
             return cls(
-                method=Methods.ATOP,
+                method=Methods.POMME,
                 weighting=WeightingConfig(),
                 solver=SolverConfig(
                     rtol=1e-6,
                     atol=0,
                     max_steps=100,
                 ),
-                atop_tau=37,
+                pomme_tau=37,
                 templates=None,
             )
         else:
@@ -916,4 +925,4 @@ class MapMakingConfig:
     @property
     def dtype(self) -> DTypeLike:
         """The floating-point dtype used throughout the pipeline, per `double_precision`."""
-        return jnp.float64 if self.double_precision else jnp.float32  # type: ignore[no-any-return]
+        return jnp.float64 if self.double_precision else jnp.float32

@@ -23,22 +23,22 @@ def verbose_solver_callback(solution: lx.Solution) -> None:
         print(f'Did not converge in {num_steps} iterations')
 
 
-def default_solver() -> lx.AbstractLinearSolver:
+def default_solver() -> lx.AbstractLinearSolver[Any]:
     return lx.CG(rtol=1e-6, atol=1e-6, max_steps=500)
 
 
 @dataclass(frozen=True)
 class ConfigState:
-    solver: lx.AbstractLinearSolver = field(default_factory=default_solver)
+    solver: lx.AbstractLinearSolver[Any] = field(default_factory=default_solver)
     solver_throw: bool = False
     solver_options: dict[str, Any] = field(default_factory=dict)
     solver_callback: Callable[[lx.Solution], None] = default_solver_callback
 
-    def tree_flatten(self):  # type: ignore[no-untyped-def]
+    def tree_flatten(self):
         return (), asdict(self)
 
     @classmethod
-    def tree_unflatten(cls, aux_data, children):  # type: ignore[no-untyped-def]
+    def tree_unflatten(cls, aux_data, children):
         return cls(**aux_data)
 
 

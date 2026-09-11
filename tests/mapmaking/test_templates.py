@@ -9,10 +9,10 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking.config import BinsConfig, PolynomialOrders, SplineHWPSynchronousConfig
 from furax.mapmaking.templates import (
-    ATOPProjectionOperator,
     Basis,
     KroneckerBasis,
     NoStructuredView,
+    PommeProjectionOperator,
     SegmentedBasis,
     TemplateOperator,
     TensorBasis,
@@ -757,13 +757,13 @@ class TestTemperatureTemplate:
 
 
 # ---------------------------------------------------------------------------
-# ATOPProjectionOperator
+# PommeProjectionOperator
 # ---------------------------------------------------------------------------
 
 
-class TestATOPProjectionOperator:
-    def make_op(self, n_det: int, n_samp: int, tau: int) -> ATOPProjectionOperator:
-        return ATOPProjectionOperator(
+class TestPommeProjectionOperator:
+    def make_op(self, n_det: int, n_samp: int, tau: int) -> PommeProjectionOperator:
+        return PommeProjectionOperator(
             tau, in_structure=jax.ShapeDtypeStruct((n_det, n_samp), jnp.float64)
         )
 

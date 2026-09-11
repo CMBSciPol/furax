@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.0.1
         with:
-          version: "0.12.7"
+          version: "0.12.10"
       - name: "Cache prek"
         uses: actions/cache@v6.1.0
         with:
@@ -29,11 +29,15 @@ jobs:
           key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
           restore-keys: |
             prek-
+      # ty resolves third-party imports from the environment, so the optional dependencies have
+      # to be installed for it to see pixell, sotodlib, pysm3 and friends.
+      - name: "Install dependencies"
+        run: uv sync --locked --all-extras --no-default-groups --group lint
       - name: "Run prek"
         run: |
           echo '```console' > "$GITHUB_STEP_SUMMARY"
           # Enable color output for prek and remove it for the summary
-          uv run --only-group lint --locked prek run --all-files --show-diff-on-failure --color always | \
+          uv run --no-sync prek run --all-files --show-diff-on-failure --color always | \
             tee >(sed -E 's/\x1B\[([0-9]{1,2}(;[0-9]{1,2})*)?[mGK]//g' >> "$GITHUB_STEP_SUMMARY") >&1
           exit_code="${PIPESTATUS[0]}"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -42,7 +46,7 @@ jobs:
   test:
     name: "Run tests on Python ${{ matrix.python-version }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -51,11 +55,25 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.0.1
         with:
-          version: "0.12.7"
+          version: "0.12.10"
           python-version: ${{ matrix.python-version }}
       - name: "Install dependencies"
         run: uv sync --locked --all-extras
+      # Most of the suite's wall time is XLA compilation of small kernels that do not change
+      # between runs. Entries are keyed on the jaxlib version too, so the lockfile is part of
+      # the cache key; a test that compiles something new simply misses.
+      - name: "Cache compiled XLA kernels"
+        uses: actions/cache@v6.1.0
+        with:
+          path: .pytest_cache/jax
+          key: jax-${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            jax-${{ matrix.python-version }}-
       - name: "Run tests"
-        run: uv run pytest -vv
+        run: uv run pytest -vv -n auto
+      # `insubprocess` tests re-exec themselves, which xdist reads as a worker crash, so the
+      # parallel selection above drops them and they run here instead.
+      - name: "Run in-subprocess tests"
+        run: uv run pytest -vv -m insubprocess
       - name: "Run distributed tests"
         run: uv run pytest -vv -m distributed

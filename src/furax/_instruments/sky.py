@@ -122,8 +122,8 @@ class FGBusterInstrument(eqx.Module):
     ) -> 'FGBusterInstrument':
         """Converts depths to a specified unit and dtype."""
         # Because we used @property, self.depth_i and self.frequency act like normal numpy arrays here!
-        depth_i = self.depth_i * u.arcmin * u.uK_CMB
-        depth_p = self.depth_p * u.arcmin * u.uK_CMB
+        depth_i = self.depth_i * u.arcmin * u.uK_CMB  # ty: ignore[unresolved-attribute]
+        depth_p = self.depth_p * u.arcmin * u.uK_CMB  # ty: ignore[unresolved-attribute]
 
         depth_i = depth_i.to(
             getattr(u, unit) * u.arcmin,
@@ -266,9 +266,7 @@ def get_observation(
     else:
         noise_sky = landscapes.zeros()
 
-    stoke_arrays: Array = np.array([np.zeros(noise_sky.shape) for _ in stokes_type]).transpose(  # type: ignore[assignment]
-        1, 0, 2
-    )
+    stoke_arrays = np.array([np.zeros(noise_sky.shape) for _ in stokes_type]).transpose(1, 0, 2)
     match stokes_type:
         case 'I':
             # From a two dimension array for example (3 , 48) take a[0].reshape(1 , -1)

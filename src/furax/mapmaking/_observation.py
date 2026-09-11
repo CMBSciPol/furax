@@ -75,21 +75,25 @@ class HashedObservationMetadata:
     @classmethod
     def structure_for(cls, n_dets: int) -> Self:
         return cls(
-            uid=jax.ShapeDtypeStruct((), dtype=np.uint32),  # type: ignore[arg-type]
-            telescope_uid=jax.ShapeDtypeStruct((), dtype=np.uint32),  # type: ignore[arg-type]
-            detector_uids=jax.ShapeDtypeStruct((n_dets,), dtype=np.uint32),  # type: ignore[arg-type]
+            uid=jax.ShapeDtypeStruct((), dtype=np.uint32),  # ty: ignore[invalid-argument-type]
+            telescope_uid=jax.ShapeDtypeStruct(  # ty: ignore[invalid-argument-type]
+                (), dtype=np.uint32
+            ),
+            detector_uids=jax.ShapeDtypeStruct(  # ty: ignore[invalid-argument-type]
+                (n_dets,), dtype=np.uint32
+            ),
         )
 
     def split_key(self, key: Key[Array, '']) -> Key[Array, '*#dets']:
         fold = jnp.vectorize(jax.random.fold_in, signature='(),()->()')
-        return fold(fold(fold(key, self.uid), self.telescope_uid), self.detector_uids)  # type: ignore[no-any-return]
+        return fold(fold(fold(key, self.uid), self.telescope_uid), self.detector_uids)
 
 
 def _names_to_uids(names: str | list[str] | np.ndarray) -> UInt32[np.ndarray, ...]:
     """Converts names to unsigned 32-bit integers using hashing."""
     # SHA-1 hash truncated to a non-negative 32-bit integer
     to_int = lambda s: int(sha1(s.encode()).hexdigest(), 16) & 0x7FFFFFFF
-    return np.vectorize(to_int, otypes=[np.uint32])(names)  # type: ignore[no-any-return]
+    return np.vectorize(to_int, otypes=[np.uint32])(names)
 
 
 class AbstractObservation[T](ABC):
@@ -227,7 +231,7 @@ class AbstractObservation[T](ABC):
     def get_elapsed_times(self) -> Float[np.ndarray, ' a']:
         """Returns time (sec) of the samples since the observation began."""
         timestamps = self.get_timestamps()
-        return timestamps - timestamps[0]  # type: ignore[no-any-return]
+        return timestamps - timestamps[0]
 
     @abstractmethod
     def get_wcs_shape_and_kernel(
@@ -455,7 +459,7 @@ class AbstractLazyObservation[T](ABC):
                 msg = 'observation does not support reading scanning intervals'
                 raise RuntimeError(msg)
             data = self.get_data([ReaderField.SCANNING_INTERVALS])
-            n_intervals = data.get_scanning_intervals().shape[0]  # type: ignore[attr-defined]
+            n_intervals = data.get_scanning_intervals().shape[0]  # ty: ignore[unresolved-attribute]
         else:
             data = self.get_data([])
             n_intervals = 0

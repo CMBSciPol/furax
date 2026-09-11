@@ -47,6 +47,7 @@ nav = [
           "api/mapmaking/templates.md",
           "api/mapmaking/preconditioner.md",
           "api/mapmaking/streaming.md",
+          "api/mapmaking/layout.md",
       ] },
       { "Other subpackages" = [
           "api/math.md",

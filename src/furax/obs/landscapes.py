@@ -83,7 +83,7 @@ class StokesLandscape(Landscape):
         if shape is not None and pixel_shape is not None:
             raise TypeError('Either the shape or pixel_shape should be specified.')
         shape = shape if pixel_shape is None else pixel_shape[::-1]
-        assert shape is not None  # mypy assert
+        assert shape is not None  # ty assert
         super().__init__(shape, dtype)
         self.stokes = stokes
         self.pixel_shape = shape[::-1]
@@ -287,7 +287,7 @@ class ProjectionType(IntEnum):
 
 
 @register_static
-@dataclass
+@dataclass(frozen=True)
 class WCSProjection:
     """Class that holds basic WCS projection parameters."""
 
@@ -655,7 +655,7 @@ class AstropyWCSLandscape(StokesLandscape):
             WCS map index pairs
         """
 
-        def f(theta, phi):  # type: ignore[no-untyped-def]
+        def f(theta, phi):
             # SkyCoord takes (lon,lat)
             pix_i, pix_j = self.wcs.world_to_pixel(SkyCoord(phi, (np.pi / 2 - theta), unit='rad'))
             return np.array(pix_i), np.array(pix_j)
@@ -663,7 +663,7 @@ class AstropyWCSLandscape(StokesLandscape):
         struct = jax.ShapeDtypeStruct(theta.shape, theta.dtype)
         result_shape = (struct, struct)
 
-        return jax.pure_callback(f, result_shape, theta, phi)  # type: ignore[no-any-return]
+        return jax.pure_callback(f, result_shape, theta, phi)
 
     def index2world(
         self, indices: Integer[Array, ' *dims']

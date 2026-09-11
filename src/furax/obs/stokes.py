@@ -108,7 +108,7 @@ class Stokes(ABC):
             raise ValueError(msg)
         # Bypass __init__ to avoid device transfer
         instance = object.__new__(cls)
-        instance.data = array  # type: ignore[assignment]
+        instance.data = array  # ty: ignore[invalid-assignment]
         return instance
 
     def __pdoc__(self, **kwargs: Any) -> wl.AbstractDoc:
@@ -116,7 +116,7 @@ class Stokes(ABC):
         return wl.ConcatDoc(wl.TextDoc(f'{type(self).__name__}('), inner, wl.TextDoc(')'))
 
     def __repr__(self) -> str:
-        return wl.pformat(self, width=80)  # type: ignore[no-any-return]
+        return wl.pformat(self, width=80)
 
     # ---- component access -----------------------------------------------------------------------
     def _component(self, letter: str) -> Array:
@@ -196,7 +196,7 @@ class Stokes(ABC):
         if rhs is NotImplemented:
             # mypy's exemption for returning NotImplemented only applies inside a method
             # literally named as a dunder (e.g. __add__), not this shared helper.
-            return NotImplemented  # type: ignore[no-any-return]
+            return NotImplemented
         return self.from_array(fn(rhs, self.data) if reflected else fn(self.data, rhs))
 
     def __add__(self, other: Any) -> Self:
@@ -311,11 +311,7 @@ class Stokes(ABC):
     ) -> 'StokesIQUV': ...
 
     @classmethod
-    def from_stokes(
-        cls,
-        *args: Any,
-        **keywords: Any,
-    ) -> 'Stokes':
+    def from_stokes(cls, *args: Any, **keywords: Any) -> 'Stokes':
         """Returns a StokesPyTree according to the specified Stokes vectors.
 
         Examples:
@@ -323,6 +319,11 @@ class Stokes(ABC):
             >>> tod_qu = Stokes.from_stokes(q, u)
             >>> tod_iqu = Stokes.from_stokes(i, q, u)
             >>> tod_iquv = Stokes.from_stokes(i, q, u, v)
+
+            The components can also be named, with lowercase keywords:
+
+            >>> tod_qu = Stokes.from_stokes(q=q, u=u)
+            >>> tod_iqu = Stokes.from_stokes(i=i, q=q, u=u)
         """
         if args and keywords:
             raise TypeError(
@@ -330,10 +331,12 @@ class Stokes(ABC):
                 'arguments.'
             )
         if keywords:
-            stokes = ''.join(sorted(keywords))
-            if stokes not in get_args(ValidStokesLiteral):
+            # The keywords are the lowercase component names of the overloads (i=, q=, ...)
+            valid = tuple(combination.lower() for combination in get_args(ValidStokesLiteral))
+            stokes = ''.join(sorted(keywords))  #'iquv' is alphabetically sorted
+            if stokes not in valid:
                 raise TypeError(
-                    f"Invalid Stokes vectors: {stokes!r}. Use 'I', 'QU', 'IQU' or 'IQUV'."
+                    f"Invalid Stokes vectors: {stokes!r}. Use 'i', 'qu', 'iqu' or 'iquv'."
                 )
             args = tuple(keywords[stoke] for stoke in stokes)
 

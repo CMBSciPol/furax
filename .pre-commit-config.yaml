@@ -10,7 +10,7 @@ repos:
     - --all
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.16.5
+  rev: v0.16.6
   hooks:
     - id: ruff-check
       name: ruff linting
@@ -27,29 +27,13 @@ repos:
   - id: check-merge-conflict
 
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.12.7
+  rev: 0.12.10
   hooks:
   - id: uv-lock
 
-- repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v2.3.1
+- repo: https://github.com/astral-sh/ty-pre-commit
+  rev: v0.0.80
   hooks:
-  - id: mypy
-    additional_dependencies:
-    - apischema
-    - astropy
-    - healpy
-    - jax==0.11.1
-    - jaxtyping
-    - jax-healpy
-    - lineax
-    - types-PyYAML
-    - scipy
-    - traitlets
-    args:
-    - --strict
-    - --show-error-codes
-    - --enable-error-code=ignore-without-code
-    - --allow-untyped-calls
-    - --num-workers=4
-    files: ^src/
+  - id: ty
+
+exclude: '^slurms/'

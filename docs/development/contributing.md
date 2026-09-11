@@ -24,7 +24,7 @@ pip install -e .[dev]
 
 This installs:
 - Core dependencies (JAX, Lineax, etc.)
-- Development tools (pytest, mypy, ruff, pre-commit)
+- Development tools (pytest, ty, ruff, pre-commit)
 - Documentation tools (zensical, etc.)
 
 ### Pre-commit Hooks
@@ -61,14 +61,14 @@ Configuration:
 
 ### Type Checking
 
-We use MyPy for static type checking:
+We use [ty](https://github.com/astral-sh/ty) for static type checking:
 
 ```bash
 # Type check the core package
-mypy src/furax/
+uv run ty check
 ```
 
-Type checking is enforced only on the `src/furax/` directory. External dependencies like `healpy` and `jax-healpy` are ignored.
+Type checking is enforced only on the `src/furax/` directory. Untyped dependencies like `toast` and `litebird_sim` are replaced with `Any`.
 
 Key requirements:
 - All public functions should have type annotations
@@ -291,7 +291,7 @@ where $P$ is the pointing matrix.
 ### Before Submitting
 
 1. Ensure all tests pass: `pytest`
-2. Check code quality: `ruff check src/` and `mypy src/furax/`
+2. Check code quality: `ruff check src/` and `uv run ty check`
 3. Update documentation if needed
 4. Add tests for new functionality
 

@@ -83,7 +83,7 @@ def _lanczos_loop(
         v_last: Residual direction after the final step.
     """
 
-    def body_fn(j, carry):  # type: ignore[no-untyped-def]
+    def body_fn(j, carry):
         V_m, alpha, beta, v, v_prev, beta_prev = carry
 
         w = A(v)  # w = A v_j
@@ -93,7 +93,7 @@ def _lanczos_loop(
         w = tree.add(tree.mul(-alpha_j, v), w)  # w -= α_j v_j
         w = tree.add(tree.mul(-beta_prev, v_prev), w)  # w -= β_{j-1} v_{j-1}
 
-        def reorth_step(k, w):  # type: ignore[no-untyped-def]
+        def reorth_step(k, w):
             v_k = jax.tree.map(lambda V_leaf: V_leaf[k], V_m)
             coeff = tree.dot(v_k, w)
             return tree.add(tree.mul(-coeff, v_k), w)  # w -= <v_k, w> v_k
@@ -172,7 +172,7 @@ def _default_m(A: AbstractLinearOperator, k: int) -> int:
     """Default Krylov subspace size: min(2k, n)."""
     leaves = jax.tree.leaves(A.in_structure)
     n = sum(leaf.size for leaf in leaves)
-    return min(2 * k, n)  # type: ignore[no-any-return]
+    return min(2 * k, n)
 
 
 def lanczos_eigh(
@@ -436,7 +436,7 @@ def lanczos_tr(
     if m <= k:
         raise ValueError(f'm ({m}) must be > k ({k})')
 
-    def _select_wanted(theta):  # type: ignore[no-untyped-def]
+    def _select_wanted(theta):
         if which == 'LM':  # largest magnitude
             sorted_idx = jnp.argsort(-jnp.abs(theta))
         elif which == 'SM':  # smallest magnitude
@@ -452,7 +452,7 @@ def lanczos_tr(
             return jnp.concatenate([sorted_idx[:n_low], sorted_idx[-n_high:]])
         return sorted_idx[:k]
 
-    def _check_converged(theta, beta_last, S, wanted_idx):  # type: ignore[no-untyped-def]
+    def _check_converged(theta, beta_last, S, wanted_idx):
         # ARPACK criterion: |β_m| |s_i[-1]| ≤ tol * max(|θ_i|, eps*||A||)
         # Floor prevents stall when θ_i ≈ 0; max|θ| estimates ||A||.
         ritz_res = jnp.abs(beta_last) * jnp.abs(S[-1, wanted_idx])  # |β_m| |s_i[-1]|
@@ -466,11 +466,11 @@ def lanczos_tr(
     wanted_idx = _select_wanted(theta)
     init_converged = _check_converged(theta, beta_last, S, wanted_idx)
 
-    def cond_fn(state):  # type: ignore[no-untyped-def]
+    def cond_fn(state):
         *_, iteration, converged, _theta, _S, _wanted_idx = state
         return jnp.logical_and(iteration < max_restarts, ~converged)
 
-    def body_fn(state):  # type: ignore[no-untyped-def]
+    def body_fn(state):
         V, beta_last, v_last, iteration, _converged, theta, S, wanted_idx = state
 
         V_k = _vecmat(V, S[:, wanted_idx])  # U_k = V S[:,wanted]  (Ritz vectors)

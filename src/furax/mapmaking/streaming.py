@@ -294,7 +294,7 @@ class StreamOperator(AbstractLinearOperator):
             ValueError: As for [`block_row`][furax.mapmaking.streaming.StreamOperator.block_row].
         """
         result = cls.block_row([op.T for op in operands]).T
-        assert isinstance(result, StreamOperator)  # mypy
+        assert isinstance(result, StreamOperator)  # ty assert
         return result
 
     @classmethod
@@ -415,7 +415,6 @@ class StreamOperator(AbstractLinearOperator):
         # prefix spec itself, so the input side needs no per-leaf mask.
         x_stacked, x_shared = eqx.partition(x, self.in_stacked)
         dyn, static = self._partition()
-        self._check_shared_replicated(x_shared, static, axis)
 
         # Stacked outputs are emitted per step; shared ones accumulate in the carry, then psum.
         per_slice_out = self.per_slice_out_structure
@@ -423,9 +422,13 @@ class StreamOperator(AbstractLinearOperator):
         out_pspecs = jax.tree.map(lambda stacked: P(axis) if stacked else P(), out_mask)
         _, shared_out_structure = eqx.partition(per_slice_out, out_mask)
 
-        @jax.shard_map(out_specs=out_pspecs, check_vma=False)
-        def kernel(dyn, static, x_stacked, x_shared):  # type: ignore[no-untyped-def]
-            def step(carry, args):  # type: ignore[no-untyped-def]
+        # Explicitly give the input specs so the mesh can use an `Auto` axis.
+        # JAX may gather values per device here if they are sharded over the axis.
+        in_pspecs = (P(axis), P(), P(axis), P())
+
+        @jax.shard_map(in_specs=in_pspecs, out_specs=out_pspecs, check_vma=False)
+        def kernel(dyn, static, x_stacked, x_shared):
+            def step(carry, args):
                 dyn_i, xs_i = args
                 y = _apply_chain(dyn_i, static, eqx.combine(xs_i, x_shared))
                 ys_i, y_shared = eqx.partition(y, out_mask)
@@ -437,13 +440,6 @@ class StreamOperator(AbstractLinearOperator):
             return eqx.combine(ys, jax.lax.psum(carry, axis_name=axis))
 
         return kernel(dyn, static, x_stacked, x_shared)
-
-    def _check_shared_replicated(
-        self, x_shared: PyTree[Any], static: tuple[AbstractLinearOperator, ...], axis: str
-    ) -> None:
-        """Reject shared data sharded over the stream axis, by either route it arrives."""
-        _reject_axis_sharded(x_shared, axis)  # caller-supplied components
-        _reject_axis_sharded(static, axis)  # the operator's own shared-segment arrays
 
     @property
     def sliced_count(self) -> int:
@@ -525,8 +521,8 @@ class StreamStreamFusionRule(AbstractCompositionRule):
 
     def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
         super().check(left, right)
-        assert isinstance(left, StreamOperator)  # mypy
-        assert isinstance(right, StreamOperator)  # mypy
+        assert isinstance(left, StreamOperator)  # ty assert
+        assert isinstance(right, StreamOperator)  # ty assert
         # n_lead must be checked explicitly: the all-stacked test below is vacuous on a leafless
         # junction (no leaves to disagree), so it cannot catch a slot-count mismatch on its own.
         if left.n_lead != right.n_lead:
@@ -542,8 +538,8 @@ class StreamStreamFusionRule(AbstractCompositionRule):
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        assert isinstance(left, StreamOperator)  # mypy
-        assert isinstance(right, StreamOperator)  # mypy
+        assert isinstance(left, StreamOperator)  # ty assert
+        assert isinstance(right, StreamOperator)  # ty assert
         segments = left.segments + right.segments
         return [
             StreamOperator.create(
@@ -589,7 +585,7 @@ class HomothetyStreamRule(AbstractCompositionRule):
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         split = self._split(left, right)
-        assert split is not None  # mypy
+        assert split is not None  # ty assert
         homo, block, on_output_side = split
         if on_output_side:  # homo @ block: leading constant segment
             # we need the per-block structure here, not the public one with the leading axis
@@ -628,8 +624,8 @@ class StreamStreamAdditionRule(AbstractAdditionRule):
 
     def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
         super().check(left, right)
-        assert isinstance(left, StreamOperator)  # mypy
-        assert isinstance(right, StreamOperator)  # mypy
+        assert isinstance(left, StreamOperator)  # ty assert
+        assert isinstance(right, StreamOperator)  # ty assert
         # An addition stream's structures are per-slice, so `__add__`'s structure check does not
         # force equal n; a mismatched-n sum is legal algebra that must stay unreduced. Mixed specs
         # (previously guaranteed equal by same-class dispatch) must now be checked explicitly too.
@@ -649,8 +645,8 @@ class StreamStreamAdditionRule(AbstractAdditionRule):
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        assert isinstance(left, StreamOperator)  # mypy
-        assert isinstance(right, StreamOperator)  # mypy
+        assert isinstance(left, StreamOperator)  # ty assert
+        assert isinstance(right, StreamOperator)  # ty assert
         n_sliced = max(left.sliced_count, right.sliced_count)
         if n_sliced == 0:
             raise NoReduction  # nothing to stream: defer to a plain AdditionOperator
@@ -689,23 +685,6 @@ def _get_mesh() -> AbstractMesh:
     if mesh.empty:
         raise RuntimeError('active mesh context required')
     return mesh
-
-
-def _reject_axis_sharded(pytree: PyTree[Any], axis: str) -> None:
-    """Raise if any array leaf of ``pytree`` is sharded along ``axis``."""
-    # a PartitionSpec is a leaf itself; `tuple(...)` exposes its entries, and `jax.tree.leaves`
-    # then flattens tuple entries and drops the None (unsharded) ones
-    bad = [
-        jax.tree_util.keystr(path) or '<root>'
-        for path, leaf in jax.tree.leaves_with_path(pytree)
-        if eqx.is_array(leaf) and axis in jax.tree.leaves(tuple(jax.typeof(leaf).sharding.spec))
-    ]
-    if bad:
-        msg = (
-            f'Found arrays sharded over {axis!r}: {", ".join(bad)}. '
-            'All shared components must be replicated along the stream axis.'
-        )
-        raise ValueError(msg)
 
 
 def _leading_size(operator: AbstractLinearOperator) -> int:

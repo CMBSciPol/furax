@@ -11,7 +11,7 @@ This module assembles the Gram matrix $G \equiv T^\top W T$ from the bases of an
 
 Limitations:
 
-- $W$ must be *diagonal*. Correlated (Toeplitz) weights are not supported. Interaction with ATOP
+- $W$ must be *diagonal*. Correlated (Toeplitz) weights are not supported. Interaction with Pomme
   deprojection is not handled (also results in a non-diagonal effective weight).
 - When assembling the Gram, basis structure (column support) is only exploited if all bases of the
   template operator are shared over detectors.
@@ -230,7 +230,7 @@ def _probed_gram_inverse(
             jnp.broadcast_to(part.reshape(s.shape[1:]), s.shape)
             for part, s in zip(jnp.split(flat, split_points), leaves, strict=True)
         ]
-        response = gram_op(treedef.unflatten(parts))  # type: ignore[attr-defined]
+        response = gram_op(treedef.unflatten(parts))
         per_leaf = [leaf.reshape(n_dets, -1) for leaf in jax.tree.leaves(response)]
         return jnp.concatenate(per_leaf, axis=-1)  # (n_dets, n_amps)
 

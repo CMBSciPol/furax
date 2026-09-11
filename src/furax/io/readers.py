@@ -256,11 +256,11 @@ class AbstractReader(ABC):
         """Return finite filler data without touching any backing store."""
         padding_structure = self._padding_structure()
 
-        def callback():  # type: ignore[no-untyped-def]
+        def callback():
             return self._failure_filler(), zeros_like(padding_structure), np.array(False)
 
         result_shape = (self.out_structure, padding_structure, jax.ShapeDtypeStruct((), bool))
-        return io_callback(callback, result_shape)  # type: ignore[no-any-return]
+        return io_callback(callback, result_shape)
 
     @staticmethod
     def _padding_to_arrays(padding: PyTree[tuple[int, ...]]) -> PyTree[np.ndarray]:

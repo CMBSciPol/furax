@@ -86,11 +86,11 @@ def eigvalsh(A: Float[Array, '... n n'], batch_size: int = 10_000) -> Float[Arra
     if n == 1:
         return A[..., :1, 0]
     elif n == 2:
-        return _eigvalsh_2x2(A)  # type: ignore[no-any-return]
+        return _eigvalsh_2x2(A)
     elif n == 3:
-        return _eigvalsh_3x3(A)  # type: ignore[no-any-return]
+        return _eigvalsh_3x3(A)
     else:
         leading = A.shape[:-2]
         flat = A.reshape(-1, n, n)
         result = jax.lax.map(jnp.linalg.eigvalsh, flat, batch_size=batch_size)
-        return result.reshape(*leading, n)  # type: ignore[no-any-return]
+        return result.reshape(*leading, n)

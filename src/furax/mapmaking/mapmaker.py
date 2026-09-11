@@ -73,10 +73,10 @@ from .config import (
 from .gap_filling import gap_fill
 from .layout import SlotLayout
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
+from .pomme import PommeProjectionOperator
 from .preconditioner import BJPreconditioner
 from .results import MapMakingResults
 from .streaming import StreamOperator
-from .templates import PommeProjectionOperator
 from .weight import WeightOperator
 
 

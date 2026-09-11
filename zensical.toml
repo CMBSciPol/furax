@@ -43,6 +43,7 @@ nav = [
           "api/mapmaking/mapmaker.md",
           "api/mapmaking/config.md",
           "api/mapmaking/templates.md",
+          "api/mapmaking/pomme.md",
           "api/mapmaking/preconditioner.md",
           "api/mapmaking/streaming.md",
           "api/mapmaking/layout.md",

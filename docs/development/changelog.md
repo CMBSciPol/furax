@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MapMakingConfig.max_buckets`: largest allowed number of buckets for grouping observation by shape (#236)
 - API reference page for `furax.mapmaking.layout` (#236)
 - `furax.mapmaking.pomme` module and API reference page (moved from `furax.mapmaking.templates`) (#255)
+- Honours `PolynomialConfig.legendre.min_order` in polynomial template (#256)
 
 ### Changed
 

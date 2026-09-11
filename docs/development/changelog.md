@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.13.0]
+## [0.13.0] - 2026-09-11
 
 ### Added
 
@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Aligned `Stokes.from_stokes` keyword handling with its declared overloads (#250)
 - Pomme in `MultiObservationMapMaker` now widens the scanning mask to whole intervals too (#254)
 
-## [0.12.1]
+## [0.12.1] - 2026-09-03
 
 ### Added
 

@@ -226,7 +226,7 @@ class Basis(AbstractLinearOperator):
     @property
     def shape(self) -> tuple[int, ...]:
         """Shape of the basis index, for a single detector."""
-        return self.in_structure.shape  # type: ignore[no-any-return]
+        return self.in_structure.shape
 
     @property
     @abstractmethod
@@ -240,7 +240,7 @@ class Basis(AbstractLinearOperator):
 
     @property
     def dtype(self) -> DTypeLike:
-        return self.in_structure.dtype  # type: ignore[no-any-return]
+        return self.in_structure.dtype
 
     @property
     def out_structure(self) -> jax.ShapeDtypeStruct:
@@ -917,7 +917,7 @@ class AbstractTemplateOperator(AbstractLinearOperator):
     # ---- TOD side -------------------------------------------------------------------------------
     def _a_basis(self) -> Basis:
         """Any one of the bases: they agree on sample count and dtype."""
-        return jax.tree.leaves(self.bases, is_leaf=is_basis)[0]  # type: ignore[no-any-return]
+        return jax.tree.leaves(self.bases, is_leaf=is_basis)[0]
 
     def _stream_structure(self) -> jax.ShapeDtypeStruct:
         """One detector-by-sample stream, the shape every Stokes leg of the TOD takes."""
@@ -937,12 +937,12 @@ class AbstractTemplateOperator(AbstractLinearOperator):
     @classmethod
     def _expand(cls, basis: Basis, a: Array) -> Array:
         vmapped = jax.vmap(lambda op, ai: op.expand(ai), in_axes=cls._in_axes(basis))
-        return vmapped(basis, a)  # type: ignore[no-any-return]
+        return vmapped(basis, a)
 
     @classmethod
     def _project(cls, basis: Basis, s: Array) -> Array:
         vmapped = jax.vmap(lambda op, si: op.project(si), in_axes=cls._in_axes(basis))
-        return vmapped(basis, s)  # type: ignore[no-any-return]
+        return vmapped(basis, s)
 
     # ---- adjoint --------------------------------------------------------------------------------
     @abstractmethod

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import typing
 from collections.abc import Collection
-from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -137,15 +136,15 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
 
     @property
     def name(self) -> str:
-        return self.data.name  # type: ignore[no-any-return]
+        return self.data.name
 
     @property
     def telescope(self) -> str:
-        return self.data.telescope.name  # type: ignore[no-any-return]
+        return self.data.telescope.name
 
     @property
     def n_samples(self) -> int:
-        return self.data.n_local_samples  # type: ignore[no-any-return]
+        return self.data.n_local_samples
 
     @property
     def detectors(self) -> list[str]:
@@ -161,7 +160,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
     @property
     def sample_rate(self) -> float:
         """Returns the sampling rate (in Hz) of the data."""
-        return self._focal_plane.sample_rate.to_value(u.Hz)  # type: ignore[no-any-return]
+        return self._focal_plane.sample_rate.to_value(u.Hz)
 
     def get_tods(self) -> Float[np.ndarray, 'dets samps']:
         """Returns the timestream data."""
@@ -367,8 +366,8 @@ class LazyToastObservation(FileBackedLazyObservation[toast.Data]):
     interface_class = ToastObservation
 
 
-@partial(np.vectorize, signature='(4)->()')
-def get_local_meridian_angle(quat):  # type: ignore[no-untyped-def]
+@np.vectorize(signature='(4)->()')  # ty: ignore[dynamic-function-decorator-return]
+def get_local_meridian_angle(quat):
     """Compute angle between local meridian and orientation vector from quaternions.
 
     Assumes that the quaternions encode the rotation between the celestial frame

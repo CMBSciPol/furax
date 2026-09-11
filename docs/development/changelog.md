@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Group mapmaker observations into buckets of similar buffer shape to reduce padding overhead (#236)
 - Migrate quaternion operations to `fastquat` (#247)
+- **Breaking:** `Stokes.from_stokes` takes lowercase keywords (`i=`, `q=`, `u=`, `v=`) and no longer accepts uppercase ones (#250)
+- Type checking moved from mypy to ty (#250)
 
 ### Removed
 
@@ -26,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The fitted noise PSD no longer averages in Welch windows that fall in an observation's padded tail (#239)
 - The Welch segment is clipped to the shortest observation, so the noise fit never sees a padded sample (#236)
+- Aligned `Stokes.from_stokes` keyword handling with its declared overloads (#250)
 
 ## [0.12.1]
 

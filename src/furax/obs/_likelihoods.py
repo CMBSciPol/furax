@@ -142,7 +142,7 @@ def preconditionner(
     dust_nu0: float,
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
-) -> MixingMatrixOperator:  # type: ignore[valid-type]
+) -> AbstractLinearOperator:
     """Constructs the MixingMatrixOperator for preconditioning purposes.
 
     This function builds the mixing matrix operator based on the provided spectral parameters
@@ -266,7 +266,7 @@ def _spectral_likelihood_core(
 # ==============================================================================
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(4, 5))
+@partial(jax.custom_vjp, nondiff_argnums=(4, 5))  # ty: ignore[dynamic-function-decorator-return]
 def _spectral_log_likelihood_analytical(
     params: PyTree[Array],
     nu: Array,
@@ -439,7 +439,7 @@ def spectral_log_likelihood(
     return ll
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(4, 5))
+@partial(jax.custom_vjp, nondiff_argnums=(4, 5))  # ty: ignore[dynamic-function-decorator-return]
 def _sky_signal_analytical(
     params: PyTree[Array],
     nu: Array,

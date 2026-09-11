@@ -131,7 +131,7 @@ def stage_config(stager: Stager, config_path: Path) -> Path:
     return patched_config
 
 
-@app.default  # type: ignore[untyped-decorator]
+@app.default
 def stage(init_config: Path, dest: Path, proc_config: Path | None = None) -> None:
     """Stage the init (and optional proc) preproc indices to ``dest`` and print the patched configs.
 

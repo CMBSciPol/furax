@@ -50,7 +50,7 @@ def K_RK_2_K_CMB(nu: Array | float) -> Array:
     res = jnp.expm1(_H_OVER_K_GHZ * nu / _T_CMB) ** 2 / (
         jnp.exp(_H_OVER_K_GHZ * nu / _T_CMB) * (_H_OVER_K_GHZ * nu / _T_CMB) ** 2
     )
-    return res  # type: ignore [no-any-return]
+    return res
 
 
 class AbstractSEDOperator(AbstractLinearOperator):
@@ -112,7 +112,7 @@ class AbstractSEDOperator(AbstractLinearOperator):
         input_shapes = {leaf.shape for leaf in jax.tree.leaves(in_structure)}
         if len(input_shapes) != 1:
             raise ValueError(f'the leaves of the input do not have the same shape: {in_structure}')
-        return input_shapes.pop()  # type: ignore[no-any-return]
+        return input_shapes.pop()
 
     def _broadcast_over_maps(self, x: Any) -> Float[Array, '...']:
         """Reshape a per-frequency (or scalar) array to broadcast like `frequencies`.
@@ -422,7 +422,9 @@ class NoiseDiagonalOperator(AbstractLinearOperator):
         return jax.tree.map(lambda v, leaf: v * leaf, self.vector, x)
 
     def inverse(self) -> AbstractLinearOperator:
-        return NoiseDiagonalOperator(vector=1 / self.vector, in_structure=self.in_structure)
+        return NoiseDiagonalOperator(  # ty: ignore[deprecated]
+            vector=1 / self.vector, in_structure=self.in_structure
+        )
 
     def as_matrix(self) -> Any:
         return jax.tree.map(lambda x: jnp.diag(x.flatten()), self.vector)

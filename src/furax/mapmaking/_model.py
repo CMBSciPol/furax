@@ -269,7 +269,7 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
         # -> False samples have mask = False
         # in both cases the logical and eliminates the tail
 
-    return mask  # type: ignore[no-any-return]
+    return mask
 
 
 def _noise_operator(

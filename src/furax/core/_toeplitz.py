@@ -233,7 +233,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
             return y
 
         y = lax.fori_loop(0, nblock, func, y)
-        return y[half_band_width : half_band_width + l]  # type: ignore[no-any-return]
+        return y[half_band_width : half_band_width + l]
 
     def _get_kernel(self, band_values: Array) -> Array:
         """[4, 3, 2, 1] -> [1, 2, 3, 4, 3, 2, 1]"""
@@ -241,7 +241,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
 
     def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
         func = jnp.vectorize(self._get_func(), signature='(n),(k)->(n)')
-        return func(x, self.band_values)  # type: ignore[no-any-return]
+        return func(x, self.band_values)
 
     def as_matrix(self) -> Inexact[Array, 'a a']:
         @partial(jnp.vectorize, signature='(n),(k)->(n,n)')

@@ -41,7 +41,7 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
 
     @property
     def n_samples(self) -> int:
-        return self.data.n_samples  # type: ignore[no-any-return]
+        return self.data.n_samples
 
     @property
     def detectors(self) -> list[str]:
@@ -50,11 +50,11 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
 
     @property
     def n_detectors(self) -> int:
-        return self.data.n_detectors  # type: ignore[no-any-return]
+        return self.data.n_detectors
 
     @property
     def sample_rate(self) -> float:
-        return self.data.sampling_rate_hz  # type: ignore[no-any-return]
+        return self.data.sampling_rate_hz
 
     def get_tods(self) -> Float[np.ndarray, 'dets samps']:
         tods = np.asarray(self.data.tod, dtype=np.float64)

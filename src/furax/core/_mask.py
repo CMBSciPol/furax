@@ -52,7 +52,7 @@ class MaskOperator(AbstractLinearOperator):
         mask_treedef = jax.tree.structure(boolean_mask)
         struct_treedef = jax.tree.structure(in_structure)
 
-        if mask_treedef == struct_treedef:  # type: ignore[operator]
+        if mask_treedef == struct_treedef:
             # Pytree of masks matching in_structure: pack each leaf
             packed_mask = jax.tree.map(_check_and_pack, boolean_mask, in_structure)
         else:

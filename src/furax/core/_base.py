@@ -31,12 +31,8 @@ def structure_equal(a: PyTree[jax.ShapeDtypeStruct], b: PyTree[jax.ShapeDtypeStr
     a_leaves, a_treedef = jax.tree.flatten(a)
     b_leaves, b_treedef = jax.tree.flatten(b)
     # equal treedefs guarantee equal leaf counts, so the zip below is aligned
-    return (
-        a_treedef == b_treedef  # type: ignore[operator]
-        and all(
-            x.shape == y.shape and x.dtype == y.dtype
-            for x, y in zip(a_leaves, b_leaves, strict=True)
-        )
+    return a_treedef == b_treedef and all(
+        x.shape == y.shape and x.dtype == y.dtype for x, y in zip(a_leaves, b_leaves, strict=True)
     )
 
 
@@ -125,14 +121,14 @@ class AbstractLinearOperator(ABC):
 
     @overload
     def __call__(
-        self, *, solver: lx.AbstractLinearSolver, **keywords: Any
+        self, /, *, solver: lx.AbstractLinearSolver[Any] | None = None, **keywords: Any
     ) -> 'AbstractLinearOperator': ...
 
     @overload
-    def __call__(self, x: PyTree[jax.ShapeDtypeStruct]) -> PyTree[jax.ShapeDtypeStruct]: ...
+    def __call__(self, x: PyTree[jax.ShapeDtypeStruct], /) -> PyTree[jax.ShapeDtypeStruct]: ...
 
     def __call__(
-        self, x: PyTree[jax.ShapeDtypeStruct] | None = None, **keywords: Any
+        self, x: PyTree[jax.ShapeDtypeStruct] | None = None, /, **keywords: Any
     ) -> 'AbstractLinearOperator | PyTree[jax.ShapeDtypeStruct]':
         if keywords:
             raise TypeError('No keywords is allowed in AbstractLinearOperator __call__ method')
@@ -182,7 +178,7 @@ class AbstractLinearOperator(ABC):
 
     def __mul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
         result = other * self
-        assert isinstance(result, AbstractLinearOperator)  # mypy
+        assert isinstance(result, AbstractLinearOperator)  # ty assert
         return result
 
     def __rmul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
@@ -223,7 +219,7 @@ class AbstractLinearOperator(ABC):
 
         for ileaf, leaf in enumerate(in_leaves_ref):
 
-            def body(index, carry):  # type: ignore[no-untyped-def]
+            def body(index, carry):
                 matrix, jcounter = carry
                 zeros = in_leaves_ref.copy()
                 zeros[ileaf] = leaf.ravel().at[index].set(1).reshape(leaf.shape)  # noqa: B023 (`body` consumed immediately, no deferred call)
@@ -333,7 +329,7 @@ class AbstractLinearOperator(ABC):
 def square[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as square."""
     cls.class_tags |= OperatorTag.SQUARE
-    cls.out_structure = property(lambda self: self.in_structure)  # type: ignore[assignment,method-assign]
+    cls.out_structure = property(lambda self: self.in_structure)  # ty: ignore[invalid-assignment]
     return cls
 
 
@@ -341,7 +337,7 @@ def symmetric[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as symmetric (implies square)."""
     square(cls)
     cls.class_tags |= OperatorTag.SYMMETRIC
-    cls.transpose = lambda self: self  # type: ignore[method-assign]
+    cls.transpose = lambda self: self  # ty: ignore[invalid-assignment]
     return cls
 
 
@@ -349,7 +345,7 @@ def orthogonal[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as orthogonal (implies square)."""
     square(cls)
     cls.class_tags |= OperatorTag.ORTHOGONAL
-    cls.inverse = cls.transpose  # type: ignore[method-assign]
+    cls.inverse = cls.transpose  # ty: ignore[invalid-assignment]
     return cls
 
 
@@ -650,7 +646,7 @@ class InverseOperator(AbstractLazyInverseOperator):
         x: PyTree[jax.ShapeDtypeStruct] | None = None,
         /,
         *,
-        solver: lx.AbstractLinearSolver | None = None,
+        solver: lx.AbstractLinearSolver[Any] | None = None,
         throw: bool | None = None,
         callback: Callable[[lx.Solution], None] | object = MISSING,
         **options: Any,

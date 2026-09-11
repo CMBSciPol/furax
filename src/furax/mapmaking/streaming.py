@@ -294,7 +294,7 @@ class StreamOperator(AbstractLinearOperator):
             ValueError: As for [`block_row`][furax.mapmaking.streaming.StreamOperator.block_row].
         """
         result = cls.block_row([op.T for op in operands]).T
-        assert isinstance(result, StreamOperator)  # mypy
+        assert isinstance(result, StreamOperator)  # ty assert
         return result
 
     @classmethod
@@ -427,8 +427,8 @@ class StreamOperator(AbstractLinearOperator):
         in_pspecs = (P(axis), P(), P(axis), P())
 
         @jax.shard_map(in_specs=in_pspecs, out_specs=out_pspecs, check_vma=False)
-        def kernel(dyn, static, x_stacked, x_shared):  # type: ignore[no-untyped-def]
-            def step(carry, args):  # type: ignore[no-untyped-def]
+        def kernel(dyn, static, x_stacked, x_shared):
+            def step(carry, args):
                 dyn_i, xs_i = args
                 y = _apply_chain(dyn_i, static, eqx.combine(xs_i, x_shared))
                 ys_i, y_shared = eqx.partition(y, out_mask)
@@ -521,8 +521,8 @@ class StreamStreamFusionRule(AbstractCompositionRule):
 
     def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
         super().check(left, right)
-        assert isinstance(left, StreamOperator)  # mypy
-        assert isinstance(right, StreamOperator)  # mypy
+        assert isinstance(left, StreamOperator)  # ty assert
+        assert isinstance(right, StreamOperator)  # ty assert
         # n_lead must be checked explicitly: the all-stacked test below is vacuous on a leafless
         # junction (no leaves to disagree), so it cannot catch a slot-count mismatch on its own.
         if left.n_lead != right.n_lead:
@@ -538,8 +538,8 @@ class StreamStreamFusionRule(AbstractCompositionRule):
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        assert isinstance(left, StreamOperator)  # mypy
-        assert isinstance(right, StreamOperator)  # mypy
+        assert isinstance(left, StreamOperator)  # ty assert
+        assert isinstance(right, StreamOperator)  # ty assert
         segments = left.segments + right.segments
         return [
             StreamOperator.create(
@@ -585,7 +585,7 @@ class HomothetyStreamRule(AbstractCompositionRule):
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         split = self._split(left, right)
-        assert split is not None  # mypy
+        assert split is not None  # ty assert
         homo, block, on_output_side = split
         if on_output_side:  # homo @ block: leading constant segment
             # we need the per-block structure here, not the public one with the leading axis
@@ -624,8 +624,8 @@ class StreamStreamAdditionRule(AbstractAdditionRule):
 
     def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
         super().check(left, right)
-        assert isinstance(left, StreamOperator)  # mypy
-        assert isinstance(right, StreamOperator)  # mypy
+        assert isinstance(left, StreamOperator)  # ty assert
+        assert isinstance(right, StreamOperator)  # ty assert
         # An addition stream's structures are per-slice, so `__add__`'s structure check does not
         # force equal n; a mismatched-n sum is legal algebra that must stay unreduced. Mixed specs
         # (previously guaranteed equal by same-class dispatch) must now be checked explicitly too.
@@ -645,8 +645,8 @@ class StreamStreamAdditionRule(AbstractAdditionRule):
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        assert isinstance(left, StreamOperator)  # mypy
-        assert isinstance(right, StreamOperator)  # mypy
+        assert isinstance(left, StreamOperator)  # ty assert
+        assert isinstance(right, StreamOperator)  # ty assert
         n_sliced = max(left.sliced_count, right.sliced_count)
         if n_sliced == 0:
             raise NoReduction  # nothing to stream: defer to a plain AdditionOperator

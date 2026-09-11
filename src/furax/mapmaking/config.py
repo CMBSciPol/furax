@@ -925,4 +925,4 @@ class MapMakingConfig:
     @property
     def dtype(self) -> DTypeLike:
         """The floating-point dtype used throughout the pipeline, per `double_precision`."""
-        return jnp.float64 if self.double_precision else jnp.float32  # type: ignore[no-any-return]
+        return jnp.float64 if self.double_precision else jnp.float32

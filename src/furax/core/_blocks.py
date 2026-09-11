@@ -161,8 +161,8 @@ class BlockDiagonalOperator(AbstractBlockOperator):
         # required: otherwise, the parent constructor would not be called by the dataclass-generated constructor
         super().__init__(blocks)
 
-    def mv(self, vector: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
-        return self._tree_map(lambda op, vect: op.mv(vect), vector)
+    def mv(self, x: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
+        return self._tree_map(lambda op, vect: op.mv(vect), x)
 
     def transpose(self) -> AbstractLinearOperator:
         return BlockDiagonalOperator(self._tree_map(lambda op: op.T))
@@ -176,7 +176,7 @@ class BlockDiagonalOperator(AbstractBlockOperator):
         return BlockDiagonalOperator(self._tree_map(lambda op: op.I))
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        return jsl.block_diag(*[op.as_matrix() for op in self.block_leaves])  # type: ignore[no-any-return]
+        return jsl.block_diag(*[op.as_matrix() for op in self.block_leaves])
 
     def reduce(self) -> AbstractLinearOperator:
         """BlockDiagonalOperator([I, I, ...]) -> I."""
@@ -243,8 +243,8 @@ class BlockColumnOperator(AbstractBlockOperator):
                 f' - {structures_as_str}'
             )
 
-    def mv(self, vector: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
-        return self._tree_map(lambda op: op.mv(vector))
+    def mv(self, x: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
+        return self._tree_map(lambda op: op.mv(x))
 
     def transpose(self) -> AbstractLinearOperator:
         return BlockRowOperator(self._tree_map(lambda op: op.T))
@@ -259,8 +259,8 @@ class AbstractBlockDiagonalRule(AbstractCompositionRule):
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        assert isinstance(left, AbstractBlockOperator)  # mypy assert
-        assert isinstance(right, AbstractBlockOperator)  # mypy assert
+        assert isinstance(left, AbstractBlockOperator)  # ty assert
+        assert isinstance(right, AbstractBlockOperator)  # ty assert
         return [self.reduced_class(left._tree_map(lambda l, r: l @ r, right.blocks)).reduce()]
 
 
@@ -370,8 +370,8 @@ class BlockSelectBlockDiagonalRule(AbstractCompositionRule):
     def apply(
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
-        assert isinstance(left, BlockSelectOperator)  # mypy assert
-        assert isinstance(right, BlockDiagonalOperator)  # mypy assert
+        assert isinstance(left, BlockSelectOperator)  # ty assert
+        assert isinstance(right, BlockDiagonalOperator)  # ty assert
         try:
             block = right.blocks[left.key]
         except (IndexError, KeyError, TypeError):

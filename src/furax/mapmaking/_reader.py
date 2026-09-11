@@ -313,7 +313,7 @@ class ObservationReader[T](AbstractReader):
             return structures
         return {field: structures[field] for field in fields}
 
-    def _get_data_field_readers(self):  # type: ignore[no-untyped-def]
+    def _get_data_field_readers(self):
         def if_none_raise_error(x: Any) -> Any:
             if x is None:
                 raise ValueError('Data field not available')

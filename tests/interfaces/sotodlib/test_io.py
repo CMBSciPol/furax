@@ -177,7 +177,7 @@ def test_preproc_context_cache(tmp_path, monkeypatch) -> None:
     n_builds = 0
     original_init = Context.__init__
 
-    def counting_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+    def counting_init(self, *args, **kwargs):
         nonlocal n_builds
         n_builds += 1
         original_init(self, *args, **kwargs)
@@ -224,7 +224,7 @@ def test_mapmaker_reads_each_observation_once(tmp_path, monkeypatch) -> None:
     n_loads = 0
     original = SOTODLibObservation.from_preproc_group.__func__
 
-    def counting(cls, *args, **kwargs):  # type: ignore[no-untyped-def]
+    def counting(cls, *args, **kwargs):
         nonlocal n_loads
         n_loads += 1
         return original(cls, *args, **kwargs)

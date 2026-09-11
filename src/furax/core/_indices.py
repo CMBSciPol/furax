@@ -98,7 +98,7 @@ class IndexOperator(AbstractLinearOperator):
 
             if out_structure is None:
                 # Compute output structure manually
-                def temp_mv(x):  # type: ignore[no-untyped-def]
+                def temp_mv(x):
                     return jax.tree.map(lambda leaf: leaf[indices], x)
 
                 out_structure = jax.eval_shape(temp_mv, in_structure)

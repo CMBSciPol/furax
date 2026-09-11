@@ -42,7 +42,7 @@ def build_acquisition_operator(
         interpolate=pointing_interpolate,
     )
     if not pointing_on_the_fly:
-        pointing = pointing.as_expanded_operator()  # type: ignore[assignment]
+        pointing = pointing.as_expanded_operator()
 
     # If there is no HWP, we just add a polarizer at the end
     # NB: already in detector frame at this point

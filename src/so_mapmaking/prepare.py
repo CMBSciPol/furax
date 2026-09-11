@@ -73,8 +73,8 @@ def _process_obs(obs_id: str, ctx: _Context) -> None:
     logger.info(f'saved observation to {obsfile.name}')
 
 
-@app.default  # type: ignore[untyped-decorator]
-def prepare(  # type: ignore[no-untyped-def]
+@app.default
+def prepare(
     init_config: Path,
     proc_config: Path | None = None,
     obsid: list[str] | None = None,

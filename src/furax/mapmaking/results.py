@@ -82,7 +82,7 @@ class MapMakingResults:
                 for leg, amplitudes in legs.items():
                     key = f'{name}/{leg}' if leg else name
                     entries[key] = np.array(amplitudes)
-            np.savez(out_dir / _AMPLITUDES_FILE, **entries)  # type: ignore[arg-type]
+            np.savez(out_dir / _AMPLITUDES_FILE, **entries)  # ty: ignore[invalid-argument-type]
         if self.solver_stats is not None:
             (out_dir / 'solver_stats.json').write_text(json.dumps(self.solver_stats, indent=2))
         if self.failed_observations:
@@ -151,7 +151,7 @@ class MapMakingResults:
             path = out_dir / f'{name}.npy'
             if not path.exists():
                 raise FileNotFoundError(f'Expected file not found: {path}')
-            return np.load(path)  # type: ignore[no-any-return]
+            return np.load(path)
 
     @staticmethod
     def _load_map(out_dir: Path, landscape: StokesLandscape) -> StokesType:
@@ -233,7 +233,7 @@ class MapMakingResults:
         stokes = self.landscape.stokes
         ns = len(stokes)
         upper = [(i, j) for i in range(ns) for j in range(i, ns)]
-        column_names = [stokes[i] + stokes[j] for i, j in upper]
+        column_names: list[str] = [stokes[i] + stokes[j] for i, j in upper]
         arr_upper = np.stack([arr[i, j] for i, j in upper], axis=0)
         self._save_array(arr_upper, 'icov', out_dir, column_names=column_names)
 

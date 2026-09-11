@@ -111,7 +111,7 @@ class PointingOperator(AbstractLinearOperator):
 
             # Return the rotated Stokes parameters
             cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
-            return rotate_qu_cs(tod, cos_angles, sin_angles)  # type: ignore[no-any-return]
+            return rotate_qu_cs(tod, cos_angles, sin_angles)
 
         # Loop over batches of detectors.
         # NB: lax.map was tried here (PR #172) instead of the fori_loop+scatter form

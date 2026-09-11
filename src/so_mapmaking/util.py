@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def setup_logger(loglevel: str, log_path: Path | None, process_index: int = 0) -> logging.Logger:
-    level = logging.getLevelName(loglevel.upper())
+    level = loglevel.upper()
     # Configure the package-root logger so every ``furax.*`` submodule (mapmaker, io.readers, ...)
     # propagates its records to these handlers. Configuring ``furax.mapmaker`` alone would drop
     # sibling loggers such as ``furax.io.readers`` (per-observation read logging).

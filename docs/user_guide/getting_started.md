@@ -38,7 +38,7 @@ Furax relies on the JAX ecosystem and scientific Python packages:
 
 - **Core**: JAX
 - **Astronomy**: jax-healpy, astropy
-- **Development**: pytest, pre-commit, ruff, mypy
+- **Development**: pytest, pre-commit, ruff, ty
 
 ## First Steps
 

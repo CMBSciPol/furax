@@ -17,6 +17,7 @@ from furax.mapmaking import (
 from furax.mapmaking.config import (
     GapTreatment,
     HealpixConfig,
+    HWPSynchronousConfig,
     LandscapeConfig,
     Methods,
     NoiseFitConfig,
@@ -409,10 +410,15 @@ class TestPommeStokesValidation:
         with pytest.raises(ValueError, match='cannot be reduced to a supported type'):
             MultiObservationMapMaker([], config=self._base_config('IQUV'))
 
-    def test_pomme_with_templates_raises(self):
+    def test_pomme_with_templates_is_accepted(self):
         config = self._base_config('QU')
-        config.templates = TemplatesConfig.full_defaults()
-        with pytest.raises(NotImplementedError, match='Pomme combined with templates'):
+        config.templates = TemplatesConfig(hwp_synchronous=HWPSynchronousConfig())
+        MultiObservationMapMaker([FakeLazyObservation()], config=config)
+
+    def test_pomme_with_demodulated_data_raises(self):
+        config = self._base_config('QU')
+        config.sotodlib = SotodlibConfig(demodulated=True)
+        with pytest.raises(ValueError, match='demodulated'):
             MultiObservationMapMaker([], config=config)
 
 

@@ -320,7 +320,11 @@ def _on_every_leg(basis: Basis, legs: ValidStokesLiteral | None) -> Basis | dict
 @register_dataclass
 @dataclass
 class TemplateBundle:
-    r"""One template operator $T$ and the accompanying Gram inverse $(T^\top W T)^{-1}$."""
+    r"""One template operator $T$ and the accompanying Gram inverse $(T^\top W_\text{eff} T)^{-1}$.
+
+    The effective weight $W_\text{eff}$ is the diagonal weight $W$, or $W F$ with $F$ the Pomme
+    deprojector when the templates are combined with Pomme.
+    """
 
     operator: AbstractTemplateOperator
     gram_inverse: AbstractLinearOperator
@@ -332,20 +336,24 @@ class TemplateBundle:
         weight: AbstractLinearOperator,
         config: TemplatesConfig,
         *,
+        pomme_tau: int | None = None,
         allow_probe: bool = False,
     ) -> Self:
-        r"""Pair a template operator $T$ with its Gram inverse given a weight matrix $W$.
+        r"""Pair a template operator $T$ with its Gram inverse given a diagonal weight $W$.
 
         Args:
             operator: The template operator.
-            weight: The weight matrix.
+            weight: The diagonal weight matrix.
             config: Supplies the Gram regularization and batch size.
+            pomme_tau: Pomme interval length, when the templates are combined with Pomme; the
+                Gram is then taken under the effective weight $W F$ (see [`gram_inverse`][]).
             allow_probe: See [`gram_inverse`][].
         """
         ginv = gram_inverse(
             operator,
             weight,
             config.regularization,
+            pomme_tau=pomme_tau,
             allow_probe=allow_probe,
             batch_size=config.gram_batch_size,
         )
@@ -550,20 +558,23 @@ class ObservationTemplates:
                 return StokesTemplateOperator(bases, n_dets, config.landscape.stokes)
             return TemplateOperator(bases, n_dets)
 
-        # `Weff` bundles the sample mask (via `model.W`) and the deprojector `model.F`
+        # `Weff` bundles the sample mask (via `model.W`) and the Pomme deprojector `model.F`; the
+        # Grams are taken under the same effective weight, from the diagonal `model.W` and `tau`.
         Weff = (model.W @ model.F).reduce()
         wd = Weff(tod)
+        pomme_tau = config.pomme_tau if config.method == Methods.POMME else None
 
         implicit = None
         if (op := build(implicit_bases)) is not None:
-            # Pomme + templates is rejected in _check_config, so F = I and Weff = W (diagonal)
-            implicit = TemplateBundle.create(op, model.W, tcfg)
+            implicit = TemplateBundle.create(op, model.W, tcfg, pomme_tau=pomme_tau)
             ginv = implicit.gram_inverse
             wd = wd - Weff(op(ginv(op.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
 
         explicit = None
         if (op := build(explicit_bases)) is not None:
             # T2P templates are always explicit and per-detector, so we need to allow probing.
-            explicit = TemplateBundle.create(op, model.W, tcfg, allow_probe=True)
+            explicit = TemplateBundle.create(
+                op, model.W, tcfg, pomme_tau=pomme_tau, allow_probe=True
+            )
 
         return cls(explicit=explicit, implicit=implicit), wd

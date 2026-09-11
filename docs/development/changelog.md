@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - API reference page for `furax.mapmaking.layout` (#236)
 - `furax.mapmaking.pomme` module and API reference page (moved from `furax.mapmaking.templates`) (#255)
 - Honours `PolynomialConfig.legendre.min_order` in polynomial template (#256)
+- Pomme can be combined with templates in `MultiObservationMapMaker` (#257)
 
 ### Changed
 

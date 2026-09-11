@@ -126,7 +126,7 @@ possibly-unresolved-reference = "warn"
 unused-ignore-comment = "error"
 
 [tool.ty.src]
-include = ["src/furax"]
+include = ["src"]
 
 [tool.pytest]
 # addopts includes jaxtyping option for type-checking tests:

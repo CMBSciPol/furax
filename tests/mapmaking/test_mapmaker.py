@@ -413,7 +413,7 @@ class TestPommeStokesValidation:
     def test_pomme_with_templates_is_accepted(self):
         config = self._base_config('QU')
         config.templates = TemplatesConfig(hwp_synchronous=HWPSynchronousConfig())
-        MultiObservationMapMaker([], config=config)
+        MultiObservationMapMaker([FakeLazyObservation()], config=config)
 
     def test_pomme_with_demodulated_data_raises(self):
         config = self._base_config('QU')

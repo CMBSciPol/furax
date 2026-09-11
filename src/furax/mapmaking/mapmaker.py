@@ -36,7 +36,12 @@ from furax import (
     OperatorTag,
     SymmetricBandToeplitzOperator,
 )
-from furax.core import BlockDiagonalOperator, BlockSelectOperator, IndexOperator
+from furax.core import (
+    AdditionOperator,
+    BlockDiagonalOperator,
+    BlockSelectOperator,
+    IndexOperator,
+)
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -60,7 +65,6 @@ from ._observation import (
     ReaderField,
 )
 from ._reader import ObservationReader
-from ._system import BucketSumOperator
 from .config import (
     GapTreatment,
     LandscapeConfig,
@@ -387,8 +391,9 @@ class MultiObservationMapMaker[T]:
             ]
 
             # Diagonal pixel system for the block-Jacobi preconditioner
-            A_diag = BucketSumOperator(
-                [(h.T @ wd @ f @ h).reduce() for h, wd, f in zip(H, W_diag, F, strict=True)]
+            A_diag = AdditionOperator(
+                [(h.T @ wd @ f @ h).reduce() for h, wd, f in zip(H, W_diag, F, strict=True)],
+                sequential=True,
             )
             BJ = BJPreconditioner.create(A_diag)
             icov = BJ.blocks.block_until_ready()
@@ -490,8 +495,9 @@ class MultiObservationMapMaker[T]:
         M = (S @ BJ.I @ S.T).reduce()
 
         if not explicit:
-            A = BucketSumOperator(
-                [((h @ S.T).T @ w @ (h @ S.T)).reduce() for h, w in zip(H, W, strict=True)]
+            A = AdditionOperator(
+                [((h @ S.T).T @ w @ (h @ S.T)).reduce() for h, w in zip(H, W, strict=True)],
+                sequential=True,
             )
             return MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False)
 
@@ -512,7 +518,8 @@ class MultiObservationMapMaker[T]:
 
         rhs = [S(acc.map_rhs), [bm.amplitude_rhs for bm in acc.buckets]]
         M = BlockDiagonalOperator([M, Ge])
-        return MapMakingSystem(BucketSumOperator(terms), rhs, M, has_amplitudes=True)
+        A = AdditionOperator(terms, sequential=True)
+        return MapMakingSystem(A, rhs, M, has_amplitudes=True)
 
     def _gather(self, x: PyTree[Array]) -> PyTree[np.ndarray]:
         """Bring a pytree sharded over the 'obs' axis to the host, whole, on every process."""

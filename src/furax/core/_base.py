@@ -15,6 +15,7 @@ from jax.tree_util import Partial
 from jaxtyping import Inexact, PyTree, Scalar, ScalarLike
 
 from furax._config import Config, ConfigState
+from furax.tree import add as tree_add
 from furax.tree import zeros_like
 
 from .utils import register_dataclass_with_keys
@@ -398,13 +399,38 @@ def idempotent[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     return cls
 
 
+def _apply_sequential(x: PyTree[Array], operands: list[AbstractLinearOperator]) -> PyTree[Array]:
+    # dispatch operands through a `lax.switch` inside a `fori_loop` so only one is live at a time
+    if len(operands) == 1:
+        return operands[0](x)
+    branches = [lambda x, operand=operand: operand(x) for operand in operands]
+    return jax.lax.fori_loop(
+        0,
+        len(branches),
+        lambda i, acc: tree_add(acc, jax.lax.switch(i, branches, x)),
+        zeros_like(operands[0].out_structure),
+    )
+
+
 class AdditionOperator(AbstractLinearOperator):
-    """An operator that adds two operators, as in C = A + B."""
+    """An operator that adds two operators, as in C = A + B.
+
+    By default the operands are summed as one expression, which lets XLA reserve memory for all
+    of them at once. Set `sequential` to sum them one at a time instead. The result is the same
+    linear map, but the peak memory of an application is set by the largest operand rather than
+    by all of them together.
+
+    A `sequential` sum is not reduced pairwise by `reduce`.
+    """
 
     operands: PyTree[AbstractLinearOperator]
+    sequential: bool = field(default=False, metadata={'static': True})
 
-    def __init__(self, operands: PyTree[AbstractLinearOperator]) -> None:
+    def __init__(self, operands: PyTree[AbstractLinearOperator], sequential: bool = False) -> None:
         object.__setattr__(self, 'operands', operands)
+        object.__setattr__(self, 'sequential', sequential)
+        if not self.operand_leaves:
+            raise ValueError('AdditionOperator needs at least one operand')
         super().__init__(in_structure=self.operand_leaves[0].in_structure)
 
     # Tag propagation properties
@@ -434,6 +460,9 @@ class AdditionOperator(AbstractLinearOperator):
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         operands = self.operand_leaves
+        if self.sequential:
+            return _apply_sequential(x, operands)
+
         y = operands[0](x)
 
         for operand in operands[1:]:
@@ -442,7 +471,7 @@ class AdditionOperator(AbstractLinearOperator):
         return y
 
     def transpose(self) -> AbstractLinearOperator:
-        return AdditionOperator(self._tree_map(lambda operand: operand.T))
+        return AdditionOperator(self._tree_map(lambda operand: operand.T), self.sequential)
 
     def __add__(self, other: AbstractLinearOperator) -> 'AdditionOperator':
         if not isinstance(other, AbstractLinearOperator):
@@ -453,9 +482,11 @@ class AdditionOperator(AbstractLinearOperator):
             raise ValueError('Incompatible linear operator output structures')
         if isinstance(other, AdditionOperator):
             operands = other.operand_leaves
+            sequential = self.sequential or other.sequential
         else:
             operands = [other]
-        return AdditionOperator(self.operand_leaves + operands)
+            sequential = self.sequential
+        return AdditionOperator(self.operand_leaves + operands, sequential)
 
     def __radd__(self, other: AbstractLinearOperator) -> 'AdditionOperator':
         if not isinstance(other, AbstractLinearOperator):
@@ -464,10 +495,10 @@ class AdditionOperator(AbstractLinearOperator):
             raise ValueError('Incompatible linear operator input structures')
         if not structure_equal(self.out_structure, other.out_structure):
             raise ValueError('Incompatible linear operator output structures')
-        return AdditionOperator([other] + self.operand_leaves)
+        return AdditionOperator([other] + self.operand_leaves, self.sequential)
 
     def __neg__(self) -> 'AdditionOperator':
-        return AdditionOperator(self._tree_map(lambda operand: (-1) * operand))
+        return AdditionOperator(self._tree_map(lambda operand: (-1) * operand), self.sequential)
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -480,10 +511,11 @@ class AdditionOperator(AbstractLinearOperator):
         from .rules import AdditiveReductionRule
 
         operands = [operand.reduce() for operand in self.operand_leaves]
-        operands = AdditiveReductionRule().apply(operands)
+        if not self.sequential:
+            operands = AdditiveReductionRule().apply(operands)
         if len(operands) == 1:
             return operands[0]
-        return AdditionOperator(operands)
+        return AdditionOperator(operands, self.sequential)
 
     @property
     def operand_leaves(self) -> list[AbstractLinearOperator]:

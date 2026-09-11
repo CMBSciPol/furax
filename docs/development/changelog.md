@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Migrate quaternion operations to `fastquat` (#247)
 - **Breaking:** `Stokes.from_stokes` takes lowercase keywords (`i=`, `q=`, `u=`, `v=`) and no longer accepts uppercase ones (#250)
 - Type checking moved from mypy to ty (#250)
+- **Breaking:** `MapMakingConfig.atop_tau` renamed to `pomme_tau` (#251)
 
 ### Removed
 

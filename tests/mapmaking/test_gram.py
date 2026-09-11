@@ -189,6 +189,15 @@ def _pomme_reference(basis, diag, amps):
     return jnp.stack(out)
 
 
+def _aligned_segmented(key, n_samps):
+    # segments of 3*TAU samples: every interval sits inside one segment, so the Gram keeps its
+    # block-diagonal form and only the diagonal blocks get a correction
+    span = 3 * TAU
+    n_seg = -(-n_samps // span)  # ceil
+    segment = (jnp.arange(n_samps) // span).astype(jnp.int32)
+    return SegmentedBasis(segment, jr.normal(key, (2, n_samps)), n_seg)
+
+
 def _straddling_segmented(key, n_samps):
     # segments of 12 samples do not align with the TAU=5 grid: intervals straddle segments
     segment = jnp.minimum(jnp.arange(n_samps) // 12, 5).astype(jnp.int32)
@@ -208,7 +217,7 @@ def _straddling_windowed(key, n_samps):
     [
         lambda k, n: TensorBasis(jr.normal(k, (4, n))),
         lambda k, n: KroneckerBasis((jr.normal(k, (2, n)), jr.normal(jr.fold_in(k, 1), (3, n)))),
-        lambda k, n: SegmentedBasis(jnp.arange(n) // (2 * TAU), jr.normal(k, (2, n)), 7),
+        lambda k, n: _aligned_segmented(k, n),
         _straddling_segmented,
         _straddling_windowed,
     ],
@@ -291,6 +300,23 @@ def test_pomme_marginal_weight_deprojects_templates_and_intervals():
     scale = jnp.abs(WF(template_signal)).max()
     assert_allclose(W_prime(template_signal) / scale, 0.0, atol=1e-8)
     assert_allclose(W_prime(offsets), 0.0, atol=1e-12)
+
+
+def test_pomme_gram_inverse_handles_a_fully_masked_block():
+    # A segment covered entirely by masked intervals has a zero Gram block, singular on its own.
+    # It is replaced by the identity, so its (unconstrained) amplitudes come back unchanged and
+    # the other segments are unaffected.
+    n_samps = 70
+    segment = (jnp.arange(n_samps) // (2 * TAU)).astype(jnp.int32)  # segment 1 = the masked range
+    basis = SegmentedBasis(segment, jr.normal(jr.key(35), (2, n_samps)), 7)
+    T = TemplateOperator({'t': basis}, n_dets=N_DETS)
+    diag, W = _pomme_weight(jr.key(36), n_samps)
+    assert jnp.all(diag[:, 2 * TAU : 4 * TAU] == 0)  # the segment really is fully masked
+    amps = jr.normal(jr.key(37), T.in_structure['t'].shape)
+
+    actual = gram_inverse(T, W, pomme_tau=TAU)({'t': amps})['t']
+    assert jnp.all(jnp.isfinite(actual))
+    assert_allclose(actual[:, 1], amps[:, 1], rtol=1e-12)
 
 
 def test_pomme_gram_rejects_blocks_shorter_than_an_interval():

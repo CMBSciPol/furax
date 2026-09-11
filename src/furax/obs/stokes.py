@@ -331,9 +331,10 @@ class Stokes(ABC):
                 'arguments.'
             )
         if keywords:
-            # 'iquv' is conveniently in alphabetical order
-            stokes = ''.join(sorted(keywords))
-            if stokes.upper() not in get_args(ValidStokesLiteral):
+            # The keywords are the lowercase component names of the overloads (i=, q=, ...)
+            valid = tuple(combination.lower() for combination in get_args(ValidStokesLiteral))
+            stokes = ''.join(sorted(keywords))  #'iquv' is alphabetically sorted
+            if stokes not in valid:
                 raise TypeError(
                     f"Invalid Stokes vectors: {stokes!r}. Use 'i', 'qu', 'iqu' or 'iquv'."
                 )

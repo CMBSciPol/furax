@@ -47,7 +47,7 @@ class FakeObservation(AbstractObservation[None]):
         sample_rate: float = 100.0,
         hwp_frequency: float = 2.0,
         seed: int = 0,
-    ) -> None:  # type: ignore[override]
+    ) -> None:
         # Bypass AbstractObservation.__init__: there is no underlying
         # ``data`` container for an in-memory observation.
         self._n_dets = n_dets
@@ -152,7 +152,7 @@ class FakeLazyObservation(AbstractLazyObservation[None]):
 
     interface_class = FakeObservation
 
-    def __init__(self, **kwargs: Any) -> None:  # type: ignore[override]
+    def __init__(self, **kwargs: Any) -> None:
         self.file = Path('<synthetic>')
         self._kwargs = kwargs
 
@@ -293,7 +293,7 @@ class FakeLazyGroundObservation(AbstractLazyObservation[None]):
 
     interface_class = FakeGroundObservation
 
-    def __init__(self, **kwargs: Any) -> None:  # type: ignore[override]
+    def __init__(self, **kwargs: Any) -> None:
         self.file = Path('<synthetic>')
         self._kwargs = kwargs
 

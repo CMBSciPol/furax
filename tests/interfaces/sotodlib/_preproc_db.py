@@ -16,7 +16,7 @@ from sotodlib.core import OBSLOADER_REGISTRY, AxisManager, metadata
 _RAW_FILES: dict[str, str] = {}
 
 
-def _furax_test_loader(_obsfiledb, obs_id, dets=None, samples=None, no_signal=None, **_kwargs):  # type: ignore[no-untyped-def]
+def _furax_test_loader(_obsfiledb, obs_id, dets=None, samples=None, no_signal=None, **_kwargs):
     """Serve the raw observation from a saved AxisManager file (test obs loader).
 
     Mimics a real obs loader: returns signal + geometry only, leaving obs_info and the

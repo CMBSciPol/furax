@@ -24,10 +24,10 @@ from .config import (
 )
 from .gram import gram_inverse
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
+from .pomme import PommeProjectionOperator
 from .templates import (
     AbstractTemplateOperator,
     Basis,
-    PommeProjectionOperator,
     StokesTemplateOperator,
     TemplateOperator,
     azimuth_hwp_synchronous_basis,

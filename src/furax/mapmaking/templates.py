@@ -40,7 +40,7 @@ from fastquat import Quaternion
 from jax import Array, ShapeDtypeStruct
 from jaxtyping import DTypeLike, Float, Int, PyTree
 
-from furax import AbstractLinearOperator, square
+from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
 from furax.math import bspline, coords
 from furax.obs import HWPOperator, LinearPolarizerOperator
@@ -71,7 +71,6 @@ __all__ = [
     'TemplateOperator',
     'StokesTemplateOperator',
     'GroundTemplateOperator',
-    'PommeProjectionOperator',
 ]
 
 
@@ -1159,27 +1158,3 @@ class GroundTemplateOperator(AbstractLinearOperator):
         )
 
         return landscape
-
-
-@square
-class PommeProjectionOperator(AbstractLinearOperator):
-    tau: int = field(metadata={'static': True})
-
-    def __init__(
-        self,
-        tau: int,
-        *,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ) -> None:
-        object.__setattr__(self, 'tau', tau)
-        object.__setattr__(self, 'in_structure', in_structure)
-
-    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
-        n_det, n_samp = self.in_structure.shape
-        n_int, n_rem = divmod(n_samp, self.tau)
-        y = x[:, : n_int * self.tau].reshape(n_det, n_int, self.tau)
-        y = y - jnp.mean(y, axis=-1, keepdims=True)
-        y = y.reshape(n_det, n_int * self.tau)
-        if n_rem == 0:
-            return y
-        return jnp.concatenate([y, x[:, -n_rem:]], axis=1)

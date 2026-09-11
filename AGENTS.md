@@ -102,9 +102,10 @@ The two sets do not overlap: `distributed` is about device count, `insubprocess`
 
 ### Suite runtime
 
-Nearly all of the wall time is XLA compilation of small kernels, not the numerics. Every run compiles from scratch, on purpose: reusing executables from an earlier run can hide a change in what the suite compiles.
+Nearly all of the wall time is XLA compilation of small kernels, not the numerics, so the two things that matter are running kernels in parallel and not compiling the same kernel twice.
 
 - `-n auto` (pytest-xdist) spreads the suite over the available cores, which is the practical local check.
+- A session fixture points JAX's persistent compilation cache at `.pytest_cache/jax`, so a re-run compiles only what changed. Set `FURAX_TEST_NO_COMPILATION_CACHE=1` to measure against cold compilation, or `FURAX_TEST_COMPILATION_CACHE_DIR` to relocate it. Deleting the directory is always safe.
 - A test costs roughly what it compiles. Adding a case that reuses shapes already covered is close to free; one that introduces a new shape, dtype, or Stokes combination is not.
 
 ## Architecture

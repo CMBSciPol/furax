@@ -33,7 +33,9 @@ def _assert_matches_up_to_the_transport(furax_map, sotodlib_map, obs, landscape)
     """
     assert_allclose(furax_map[0], sotodlib_map[0], rtol=1e-5, atol=0)
 
-    qdet_full = obs.get_boresight_quaternions() * obs.get_detector_quaternions()[:, None]
+    qbore = Quaternion.from_array(obs.get_boresight_quaternions())
+    qdet = Quaternion.from_array(obs.get_detector_quaternions())
+    qdet_full = qbore * qdet[:, None]
     indices = landscape.quat2index(qdet_full)
     _, sin_2delta = spin2_cos_sin(
         *jhp.pix2ang(landscape.nside, indices), *landscape.quat2world(qdet_full)

@@ -138,8 +138,10 @@ class PommeIntervals(eqx.Module):
         row of `ids`.
         """
         n_blocks = view.n_blocks
-        first = jnp.full(self.n_int + 1, n_blocks, jnp.int32).at[self.ids].min(view.blocks[:, 0])
-        last = jnp.full(self.n_int + 1, -1, jnp.int32).at[self.ids].max(view.blocks[:, -1])
+        # the accumulators take the block index dtype, which varies with the basis flavour
+        dtype = view.blocks.dtype
+        first = jnp.full(self.n_int + 1, n_blocks, dtype).at[self.ids].min(view.blocks[:, 0])
+        last = jnp.full(self.n_int + 1, -1, dtype).at[self.ids].max(view.blocks[:, -1])
         span = (last - first)[: self.n_int]
         return eqx.error_if(
             first,

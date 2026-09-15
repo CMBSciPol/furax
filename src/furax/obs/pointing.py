@@ -190,7 +190,7 @@ class PointingOperator(AbstractLinearOperator):
         sampler = (
             XSamplingOperator.create(self.landscape, qdet_full)
             if self.interpolate
-            else self._nearest_sampler(qdet_full, ravel_op.out_structure)
+            else self._nearest_sampler(qdet_full, self.landscape.raveled_structure)
         )
         pa = to_polarization_angle(qdet_full)
         qu_rot_op = QURotationOperator(angles=pa, in_structure=sampler.out_structure)
@@ -393,14 +393,12 @@ class XSamplingOperator(AbstractLinearOperator):
     @classmethod
     def create(cls, landscape: StokesLandscape, quaternions: Quaternion) -> Self:
         theta, phi = landscape.quat2world(quaternions)
-        # The map is raveled along its spatial axes (see PointingOperator.as_expanded_operator),
-        # leaving a single pixel axis that this operator indexes.
-        ravel_op = RavelOperator(1, -1, in_structure=landscape.structure)
+        # The map reaching this operator is raveled by PointingOperator.as_expanded_operator.
         return cls(
             landscape,
             theta=theta,
             phi=phi,
-            in_structure=ravel_op.out_structure,
+            in_structure=landscape.raveled_structure,
             _out_structure=landscape.structure_for(theta.shape),
         )
 

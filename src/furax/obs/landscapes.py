@@ -101,6 +101,10 @@ class StokesLandscape(Landscape):
     def structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.structure_for(self.shape)
 
+    @property
+    def raveled_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return self.structure_for((len(self),))
+
     def structure_for(self, shape: tuple[int, ...]) -> PyTree[jax.ShapeDtypeStruct]:
         """Structure of a Stokes map with this landscape's Stokes components and dtype."""
         cls = Stokes.class_for(self.stokes)

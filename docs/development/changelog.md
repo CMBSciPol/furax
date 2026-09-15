@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-15
+
 Significant changes to the pointing interpolation logic (#204) are summarised below. For more details and backstory, users are invited to read the pull request body as well as the new/updated API pages.
 
 ### Added
@@ -361,7 +363,8 @@ Initial tagged release.
 
 - Project classifiers and editable-mode installation instructions
 
-[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.13.0...HEAD
+[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/CMBSciPol/furax/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/CMBSciPol/furax/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/CMBSciPol/furax/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/CMBSciPol/furax/compare/v0.11.3...v0.12.0

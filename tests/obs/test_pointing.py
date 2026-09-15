@@ -19,7 +19,7 @@ from furax.obs.landscapes import (
 )
 from furax.obs.operators import QURotationOperator
 from furax.obs.operators._qu_rotations import rotate_qu_cs
-from furax.obs.pointing import PointingOperator, XSamplingOperator
+from furax.obs.pointing import PointingOperator, SampledPointing, XSamplingOperator
 from furax.obs.stokes import ValidStokesLiteral
 
 NSIDE = 4
@@ -413,7 +413,7 @@ class TestTransportHooks:
         return Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
 
     def test_a_subclass_moving_the_nearest_pointing_must_supply_its_own_stencil(self) -> None:
-        """`_quat2index` stands beside `_quat2stencil`, so overriding it alone must raise."""
+        """`_quat2index` stands beside `_quat2pointing`, so overriding it alone must raise."""
 
         class CustomPointingOperator(PointingOperator):
             # A real subclass moves the pointing here; delegating is enough to trip the guard.
@@ -430,17 +430,18 @@ class TestTransportHooks:
         assert jnp.all(jnp.isfinite(op_i(op_i.landscape.normal(jax.random.key(22))).i))
 
     def test_one_hook_moves_the_bilinear_pointing(self) -> None:
-        """Bilinear reads its pixels and its transport positions from `_quat2stencil` alone.
+        """Bilinear reads its pixels and its transport positions from `_quat2pointing` alone.
 
         There is no second hook for it to disagree with, so no guard is needed: a subclass that
         moves the pointing there moves both, and the polarized sample follows.
         """
 
         class ShiftedPointingOperator(PointingOperator):
-            def _quat2stencil(self, qdet_full):
+            def _quat2pointing(self, qdet_full):
                 theta, phi = self.landscape.quat2world(qdet_full)
                 phi = phi + 0.05
-                return self.landscape.world2stencil(theta, phi, self._interpolation), theta, phi
+                stencil = self.landscape.world2stencil(theta, phi, self._interpolation)
+                return SampledPointing(stencil, theta, phi)
 
         landscape = HealpixLandscape(NSIDE, 'IQU')
         qbore, qdet = self._quats(20)
@@ -479,7 +480,7 @@ class TestNearestIndexAgreement:
 
     def test_the_stencil_indexes_the_quat2index_pixel(self) -> None:
         op, qdet_full = self._setup(40)
-        stencil, _, _ = op._quat2stencil(qdet_full)
+        stencil = op._quat2pointing(qdet_full).stencil
         assert_array_equal(stencil.indices[..., 0], op.landscape.quat2index(qdet_full))
 
     def test_the_hit_map_of_the_polarized_operator_is_the_intensity_one(self) -> None:

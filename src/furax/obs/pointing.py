@@ -1,6 +1,6 @@
 import copy
 from dataclasses import field
-from typing import Literal, TypeVar
+from typing import Literal, NamedTuple, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -42,20 +42,20 @@ def _transports_spin2(landscape: StokesLandscape) -> bool:
     return 'Q' in landscape.stokes
 
 
-def _transport_angles(
-    stencil: Stencil, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
-) -> Float[Array, ' *dims']:
-    """The rotation angle carrying a one-neighbour stencil's Q and U to the sampled direction.
+class SampledPointing(NamedTuple):
+    stencil: Stencil
+    theta: Float[Array, 'det samp']
+    phi: Float[Array, 'det samp']
 
-    [`QURotationOperator`][] takes an angle, while the transport is naturally a (cos, sin) pair, so
-    the pair is turned back into an angle here. The precision of the pair survives the round trip:
-    it is the pair that is delicate to compute at sub-pixel separations, not the arc tangent of it.
-    """
-    assert stencil.positions is not None  # mypy: the caller transports, so it has positions
-    cos_2delta, sin_2delta = spin2_cos_sin_zs(
-        *stencil.positions, jnp.cos(theta)[..., None], jnp.sin(theta)[..., None], phi[..., None]
-    )
-    return 0.5 * jnp.arctan2(sin_2delta[..., 0], cos_2delta[..., 0])
+    def transport_angles(self) -> Float[Array, 'det samp']:
+        assert self.stencil.positions is not None  # the caller transports, so it has positions
+        cos_2delta, sin_2delta = spin2_cos_sin_zs(
+            *self.stencil.positions,
+            jnp.cos(self.theta)[..., None],
+            jnp.sin(self.theta)[..., None],
+            self.phi[..., None],
+        )
+        return 0.5 * jnp.arctan2(sin_2delta[..., 0], cos_2delta[..., 0])
 
 
 class PointingOperator(AbstractLinearOperator):
@@ -210,7 +210,8 @@ class PointingOperator(AbstractLinearOperator):
         if self.interpolate:
             sampler = XSamplingOperator.create(self.landscape, qdet_full, interpolate=True)
         elif self._transports:
-            stencil, theta, phi = self._quat2stencil(qdet_full)
+            pointing = self._quat2pointing(qdet_full)
+            stencil = pointing.stencil
             sampler = self._index_operator(stencil.indices[..., 0], ravel_op.out_structure)
             # The index alone cannot express a sample outside the map, which the stencil gives a
             # zero weight; the weight rides along as a diagonal so that this equals `_sample`.
@@ -218,7 +219,7 @@ class PointingOperator(AbstractLinearOperator):
                 stencil.weights[..., 0], in_structure=sampler.out_structure
             )
             transport_op = QURotationOperator(
-                angles=_transport_angles(stencil, theta, phi), in_structure=sampler.out_structure
+                angles=pointing.transport_angles(), in_structure=sampler.out_structure
             )
             sampler = transport_op @ weight_op @ sampler
         else:
@@ -258,29 +259,30 @@ class PointingOperator(AbstractLinearOperator):
         """
         return self.landscape.quat2index(qdet_full)
 
-    def _quat2stencil(self, qdet_full: Quaternion) -> tuple[Stencil, Array, Array]:
-        """Convert quaternions to the sampling stencil and the sampled direction ``(theta, phi)``.
+    def _quat2pointing(self, qdet_full: Quaternion) -> SampledPointing:
+        """Convert quaternions to the [`SampledPointing`][] of every sample.
 
-        The single hook for stencil sampling, at whichever interpolation [`interpolate`][]
-        selects. Override it in a subclass that changes the pointing-to-index mapping;
-        [`_quat2index`][] is its scalar shortcut, for a nearest-neighbour sample of a map with
-        nothing to transport.
+        This method *must be* overriden in any subclass that changes [`_quat2index`][] (pointing
+        to index mapping).
         """
-        # A subclass redefining the nearest pointing in `_quat2index` alone would be sampled at the
-        # base class's directions here instead. Refuse rather than return the wrong operator. An
-        # intensity-only map never reaches here, so such a subclass still works.
-        if not self.interpolate and type(self)._quat2index is not PointingOperator._quat2index:
-            raise NotImplementedError(
+        # rewriting `_quat2index` but not `_quat2pointing` is very likely a bug
+        self._check_index_hook_not_overridden()
+        world = self.landscape.quat2world(qdet_full)
+        stencil = (
+            self.landscape.world2stencil(*world, self._interpolation)
+            if self.interpolate
+            # Nearest case: index through `_quat2index` to stay consistent with hitmap etc.
+            else self.landscape.index2stencil(self._quat2index(qdet_full))
+        )
+        return SampledPointing(stencil, *world)
+
+    def _check_index_hook_not_overridden(self) -> None:
+        if type(self)._quat2index is not PointingOperator._quat2index:
+            msg = (
                 f'{type(self).__name__} overrides _quat2index, so it must also override '
-                f'_quat2stencil to sample a polarized map'
+                f'_quat2pointing to sample a polarized map'
             )
-        theta, phi = self.landscape.quat2world(qdet_full)
-        if self.interpolate:
-            return self.landscape.world2stencil(theta, phi, Interpolation.BILINEAR), theta, phi
-        # Index through `_quat2index`, not through `theta, phi`: HEALPix reads the pointing axis
-        # with `vec2pix` and the angles with `ang2pix`, and in float32 the two disagree often enough
-        # that a sample would bin into a pixel the hit map never counted, which drops it.
-        return self.landscape.index2stencil(self._quat2index(qdet_full)), theta, phi
+            raise NotImplementedError(msg)
 
     def _modulate(self, tod: _StokesT, qdet_full: Quaternion) -> _StokesT:
         """Hook applied to the sampled TOD (identity in the base class).
@@ -294,13 +296,13 @@ class PointingOperator(AbstractLinearOperator):
     def _sample(self, x_flat: _StokesT, qdet_full: Quaternion) -> _StokesT:
         """Sample the flat map at positions given by qdet_full."""
         if self._transports:
-            stencil, theta, phi = self._quat2stencil(qdet_full)
-            return transported_gather(x_flat, stencil, theta, phi)
+            return transported_gather(x_flat, *self._quat2pointing(qdet_full))
 
         if not self.interpolate:
+            # fast path for nearest-neighbour
             return x_flat[self._quat2index(qdet_full)]
 
-        stencil, _, _ = self._quat2stencil(qdet_full)
+        stencil = self._quat2pointing(qdet_full).stencil
         # leading Stokes axis: index the (trailing) pixel axis and sum over the neighbour axis (-1);
         # the weights broadcast over the leading Stokes axis for free.
         sampled = jnp.sum(x_flat.data[:, stencil.indices] * stencil.weights, axis=-1)
@@ -316,17 +318,17 @@ class PointingOperator(AbstractLinearOperator):
         zeros = jnp.zeros((n_stokes, n_pixels), self.landscape.dtype)
 
         if self._transports:
-            stencil, theta, phi = self._quat2stencil(qdet_full)
             flat_sky = type(tod_batch).from_array(zeros)
-            binned_sky = transported_scatter(flat_sky, tod_batch, stencil, theta, phi)
+            binned_sky = transported_scatter(flat_sky, tod_batch, *self._quat2pointing(qdet_full))
             return type(tod_batch).from_array(binned_sky.data.reshape(n_stokes, *sky_shape))
 
         if not self.interpolate:
+            # fast path for nearest-neighbour
             flat_pixels = self._quat2index(qdet_full).ravel()
             binned = zeros.at[:, flat_pixels].add(arr.reshape(n_stokes, -1))
             return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
 
-        stencil, _, _ = self._quat2stencil(qdet_full)
+        stencil = self._quat2pointing(qdet_full).stencil
         # (n_stokes, *det_sample, n_nb): spread each sample over its neighbours (weights broadcast
         # over the leading Stokes axis for free).
         contrib = arr[..., None] * stencil.weights

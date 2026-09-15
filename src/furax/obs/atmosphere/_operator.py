@@ -7,7 +7,7 @@ from jaxtyping import Array, Float
 from furax import tree
 from furax.math.coords import ZAXIS
 from furax.obs.landscapes import TangentialLandscape
-from furax.obs.pointing import PointingOperator
+from furax.obs.pointing import PointingOperator, SampledPointing
 from furax.obs.stencil import Stencil
 from furax.obs.stokes import Stokes, StokesI
 
@@ -114,7 +114,7 @@ class AtmospherePointingOperator(PointingOperator):
         x, y = self._wind_xy(qdet_full)
         return self.landscape.pixel2index(*self.landscape.xy2pixel(x, y))
 
-    def _quat2stencil(self, qdet_full: Quaternion) -> tuple[Stencil, Array, Array]:
+    def _quat2pointing(self, qdet_full: Quaternion) -> SampledPointing:
         """The screen stencil, which carries no sky positions and no sampled direction.
 
         The screen is a projection plane, not the sphere, so a neighbour has no co-latitude to
@@ -129,4 +129,4 @@ class AtmospherePointingOperator(PointingOperator):
             weights = jnp.ones((*indices.shape, 1), self.landscape.dtype)
             stencil = Stencil.unpositioned(indices[..., None], weights)
         nowhere = jnp.zeros(stencil.indices.shape[:-1], self.landscape.dtype)
-        return stencil, nowhere, nowhere
+        return SampledPointing(stencil, nowhere, nowhere)

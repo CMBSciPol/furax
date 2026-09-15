@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Significant changes to the pointing interpolation logic (#204) are summarised below. For more details and backstory, users are invited to read the pull request body as well as the new/updated API pages.
+
+### Added
+
+- `furax.obs.stencil` module: a stencil carries pixel indices and weights for interpolation (#204)
+- `furax.obs.spin2` module: parallel transport of Q and U across a stencil (#204)
+- `StokesLandscape.world2stencil`, the one interpolation entrypoint; `world2interp` now derives from it (#204)
+- `StokesLandscape.has_spin2`, true for a map holding the Q and U pair (#204)
+- `CARLandscape.pixel2world`, `AstropyWCSLandscape.pixel2world` and `HorizonLandscape.pixel2world`, inverting their `world2pixel` (#204)
+- API reference pages for `furax.obs.spin2` and `furax.obs.stencil` (#204)
+
+### Changed
+
+- **Breaking:** sampling a polarised map now carries each pixel's Q and U into the frame of the direction sampled at, so `PointingOperator` and `XSamplingOperator` return different values on both the nearest-neighbour and the bilinear path. The previous behaviour was source of E-to-B leakage. Intensity-only pointing is unaffected (#204)
+- **Breaking:** `StokesLandscape.world2interp` now returns index 0 with weight 0 (instead of index -1 with raw weight) for a neighbour outside the map, with the remaining weights normalised so they add up to one (#204)
+- **Breaking:** removed `StokesLandscape.pixel2interp` and `WCSLandscape.pixel2interp`; a landscape defines its interpolation by overriding `world2stencil` (#204)
+
+### Fixed
+
+- A nearest-neighbour sample of a polarised sky that falls outside the map now contributes nothing, instead of reading and writing the last pixel (#204)
+
 ## [0.13.0] - 2026-09-11
 
 ### Added

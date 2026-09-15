@@ -50,6 +50,7 @@ Use Google-style docstrings. Docs site renders via mkdocstrings/griffe, so a few
 - A `>>>` console block must be preceded by a **blank line** when prose comes before it, but **not** directly after the section header (ruff `D412`).
 - Code spans take single backticks: `n_blocks`, not ``n_blocks``. Docstrings render as markdown, so the reST double-backtick form buys nothing.
 - Math: `$inline$` / `$$display$$`. Cross-reference symbols with autorefs: ``[`OtherClass`][]``.
+- Docstrings are public API documentation, written for humans. Follow the "Writing for human readers" guidance. Keep docstrings short but precise: what the code does, what the arguments mean. Do not include implementation details, or references to repo Markdown files, design notes, git history, or external directories.
 
 ```python
 def foo(x: Float[jax.Array, ' n'], scale: float = 1.0) -> Float[jax.Array, ' n']:
@@ -72,6 +73,19 @@ def foo(x: Float[jax.Array, ' n'], scale: float = 1.0) -> Float[jax.Array, ' n']
         Array([2., 2.], dtype=float32)
     """
 ```
+
+## Changelog
+
+Register every user-visible change in `docs/development/changelog.md` under `## [Unreleased]` before opening the PR.
+
+- One bullet per change, one line, ending with the PR number, e.g. `(#204)`. Match the brevity of the entries already in the file: say what changed, not why or how.
+- Name the public symbol in backticks when the change has one.
+- A bug fix goes under `### Fixed`, a deliberate change of behaviour under `### Changed`.
+- Use `**Breaking:**` for breaking changes.
+- Use nested bullets only when enumerating parts of one change a user may need to act on, such as a table of renames. Rationale, derivations, measurements and internals belong in the pull request body or API docs, not here.
+- A pure refactor with no user-visible effect needs no entry.
+
+New public API also needs an entry in the matching `docs/api/**.md` page, which lists exported symbols explicitly rather than picking them up automatically. A new module needs its own page and a nav entry in `zensical.toml`. Build the docs with `zensical build` to check; CI does not.
 
 ## When to ask first
 

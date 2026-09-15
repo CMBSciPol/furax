@@ -201,15 +201,15 @@ class PointingOperator(AbstractLinearOperator):
     ) -> AbstractLinearOperator:
         if not self.landscape.has_spin2:
             pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
-            return self._index_operator(pix, in_structure)
+            gather = self._index_operator(pix, in_structure)
+            # A -1 index would wrap onto the last pixel, which the sample never observed.
+            mask = MaskOperator.from_boolean_mask(pix >= 0, in_structure=gather.out_structure)
+            return mask @ gather
 
         pointing = self._quat2pointing(qdet_full)
         stencil = pointing.stencil
         gather = self._index_operator(stencil.indices[..., 0], in_structure)
-        # The index alone cannot express a sample outside the map, which the stencil gives a zero
-        # weight; the weight rides along so that this equals `_sample`. A nearest stencil weighs
-        # one or zero, so a bit-packed mask carries it in an eighth of a byte per sample instead of
-        # a float.
+        # A nearest stencil weighs one or zero, so we can use a boolean mask
         weight_op = MaskOperator.from_boolean_mask(
             stencil.weights[..., 0] > 0, in_structure=gather.out_structure
         )
@@ -285,7 +285,10 @@ class PointingOperator(AbstractLinearOperator):
 
         if not self.interpolate:
             # fast path for nearest-neighbour
-            return x_flat[self._quat2index(qdet_full)]
+            pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
+            sampled = x_flat[pix]
+            # the gather wraps a -1 onto the last pixel, which the sample never observed
+            return type(x_flat).from_array(jnp.where(pix >= 0, sampled.data, 0))
 
         stencil = self._quat2pointing(qdet_full).stencil
         # leading Stokes axis: index the (trailing) pixel axis and sum over the neighbour axis (-1);
@@ -309,8 +312,10 @@ class PointingOperator(AbstractLinearOperator):
 
         if not self.interpolate:
             # fast path for nearest-neighbour
-            flat_pixels = self._quat2index(qdet_full).ravel()
-            binned = zeros.at[:, flat_pixels].add(arr.reshape(n_stokes, -1))
+            pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
+            # the scatter wraps a -1 onto the last pixel, so such a sample must add nothing
+            contrib = jnp.where(pix >= 0, arr, 0)
+            binned = zeros.at[:, pix.ravel()].add(contrib.reshape(n_stokes, -1))
             return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
 
         stencil = self._quat2pointing(qdet_full).stencil

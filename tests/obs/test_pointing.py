@@ -488,12 +488,6 @@ class TestNearestIndexAgreement:
         expected = op_i.T(ftree.ones_like(op_i.out_structure)).i
         assert_array_equal(hits, expected)
 
-    def test_the_expanded_operator_caches_the_same_pixels(self) -> None:
-        """`XSamplingOperator` caches the indices, rather than recovering them from the angles."""
-        op, qdet_full = self._setup(42)
-        sampler = XSamplingOperator.create(op.landscape, qdet_full)
-        assert_array_equal(sampler.indices, op.landscape.quat2index(qdet_full))
-
 
 class TestNearestTransport:
     """What the transport changes, and does not change, on the nearest-neighbour path."""

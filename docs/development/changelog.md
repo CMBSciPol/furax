@@ -7,34 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Significant changes to the pointing interpolation logic (#204) are summarised below. For more details and backstory, users are invited to read the pull request body as well as the new/updated API pages.
+
 ### Added
 
-- `furax.obs.spin2`: parallel transport of Q and U across a sampling stencil, exposing `transported_gather`/`transported_scatter` and the frame rotation they are built on (#204)
-- `furax.obs.stencil`, a pixelisation-free module holding `Stencil`: the pixels one sample reads, their weights and their sky positions, in one type that a landscape produces and a sampler consumes (#204)
-  - a stencil is resolved when it is built, by `Stencil.resolve` or `Stencil.nearest`: its indices are in bounds and its weights sum to one, so no sampler can normalise them differently from another
-  - nearest-neighbour sampling is the one-neighbour case of the same type, not a second shape
-  - `Interpolation` names how many pixels a sample reads: `NEAREST` (one) or `BILINEAR` (four)
-  - `SkyPositions` holds where the neighbours sit, as one value rather than three loose arrays, so a stencil either carries all of them or none
-  - `Stencil.unpositioned` builds one for a grid that is not the sphere, such as the atmosphere screen: it carries no neighbour positions, and sampling polarisation through it raises `ValueError` instead of transporting from a plausible wrong frame
-  - `Stencil.astype` casts the weights and positions, leaving the indices alone, so a caller chooses the precision after building rather than through the constructor
-- `StokesLandscape.world2stencil(theta, phi, interpolation)`, returning the `Stencil` a sample reads at the requested interpolation, implemented for HEALPix and WCS/CAR (both interpolations) and for astropy-WCS, horizon and subset landscapes (#204)
-  - a landscape answers for every interpolation it supports in this one method, so it cannot define one and leave another to a mismatched inherited definition; an unsupported interpolation raises `NotImplementedError`
-  - `world2interp` now derives from it and is no longer overridable; measured on HEALPix and CAR, the compiled cost of `PointingOperator.mv` is unchanged, because XLA drops the neighbour positions nothing reads
-- `CARLandscape.pixel2world`, `AstropyWCSLandscape.pixel2world` and `HorizonLandscape.pixel2world`, the inverses of their `world2pixel` (#204)
+- `furax.obs.stencil` module: a stencil carries pixel indices and weights for interpolation (#204)
+- `furax.obs.spin2` module: parallel transport of Q and U across a stencil (#204)
+- `StokesLandscape.world2stencil`, the one interpolation entrypoint; `world2interp` now derives from it (#204)
+- `CARLandscape.pixel2world`, `AstropyWCSLandscape.pixel2world` and `HorizonLandscape.pixel2world`, inverting their `world2pixel` (#204)
 - API reference pages for `furax.obs.spin2` and `furax.obs.stencil` (#204)
 
 ### Changed
 
-- **Breaking:** pointing now carries the Q and U of every pixel it reads into the frame of the direction it samples at, so `PointingOperator` and `XSamplingOperator` return different values for a polarised map, on both the nearest-neighbour and the bilinear path (#204):
-  - each pixel stores Q and U in its own meridian basis, which is not the basis of a sample that sits off the pixel centre; combining the two without the rotation leaks E into B, and the leakage grows towards the poles as $\cot\theta$
-  - bilinear summed four different bases; nearest returned the pixel centre's basis unrotated
-  - intensity-only maps are bit-identical, and so is which pixel each sample lands in
-  - the transport is implied by sampling a map containing Q or U, and is not configurable
-  - on the nearest-neighbour path the transport is a per-sample rotation, so `as_expanded_operator` still expands to a precomputed `IndexOperator` gather: the transport rides as a second `QURotationOperator`, which the composition rules fuse with the polarisation one, and the stencil weight as a `DiagonalOperator`, so a sample outside the map contributes nothing
-- **Breaking:** a nearest-neighbour sample of a polarised map that falls outside the map now contributes nothing, instead of reading and writing the last pixel; on a subset landscape it no longer reads the sink slot (#204)
-- **Breaking:** `StokesLandscape.world2interp` returns a resolved stencil: a neighbour outside the map comes back as index 0 with weight 0, where it used to come back as index -1 with its raw weight, and the surviving weights are rescaled to sum to one (#204)
+- **Breaking:** sampling a polarised map now carries each pixel's Q and U into the frame of the direction sampled at, so `PointingOperator` and `XSamplingOperator` return different values on both the nearest-neighbour and the bilinear path. The previous behaviour was source of E-to-B leakage. Intensity-only pointing is unaffected (#204)
+- **Breaking:** `StokesLandscape.world2interp` now returns index 0 with weight 0 (instead of index -1 with raw weight) for a neighbour outside the map, with the remaining weights normalised so they add up to one (#204)
 - **Breaking:** removed `StokesLandscape.pixel2interp` and `WCSLandscape.pixel2interp`; a landscape defines its interpolation by overriding `world2stencil` (#204)
-- `PointingOperator` samples a stencil through the single `_quat2stencil` hook, replacing `_quat2interp`; a subclass that moves the pointing in `_quat2index` alone raises `NotImplementedError` when it samples a polarised map (#204)
+
+### Fixed
+
+- A nearest-neighbour sample of a polarised sky that falls outside the map now contributes nothing, instead of reading and writing the last pixel (#204)
 
 ## [0.13.0] - 2026-09-11
 

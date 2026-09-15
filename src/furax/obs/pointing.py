@@ -31,17 +31,6 @@ __all__ = [
 _StokesT = TypeVar('_StokesT', bound=Stokes)
 
 
-def _transports_spin2(landscape: StokesLandscape) -> bool:
-    """Whether a sampler on this landscape must transport Q and U from the pixels it reads.
-
-    True for any map holding Q and U. Each pixel expresses them in its own meridian basis, which is
-    not the basis of the direction being sampled: bilinear sampling would otherwise sum four
-    different bases, and nearest neighbour would return the pixel center's basis for a sample that
-    sits off center. An intensity-only map has nothing to rotate.
-    """
-    return 'Q' in landscape.stokes
-
-
 class SampledPointing(NamedTuple):
     stencil: Stencil
     theta: Float[Array, 'det samp']
@@ -209,7 +198,7 @@ class PointingOperator(AbstractLinearOperator):
         sampler: AbstractLinearOperator
         if self.interpolate:
             sampler = XSamplingOperator.create(self.landscape, qdet_full, interpolate=True)
-        elif self._transports:
+        elif self.landscape.has_spin2:
             pointing = self._quat2pointing(qdet_full)
             stencil = pointing.stencil
             sampler = self._index_operator(stencil.indices[..., 0], ravel_op.out_structure)
@@ -243,10 +232,6 @@ class PointingOperator(AbstractLinearOperator):
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._out_structure
-
-    @property
-    def _transports(self) -> bool:
-        return _transports_spin2(self.landscape)
 
     @property
     def _interpolation(self) -> Interpolation:
@@ -295,7 +280,7 @@ class PointingOperator(AbstractLinearOperator):
 
     def _sample(self, x_flat: _StokesT, qdet_full: Quaternion) -> _StokesT:
         """Sample the flat map at positions given by qdet_full."""
-        if self._transports:
+        if self.landscape.has_spin2:
             return transported_gather(x_flat, *self._quat2pointing(qdet_full))
 
         if not self.interpolate:
@@ -317,7 +302,7 @@ class PointingOperator(AbstractLinearOperator):
         n_stokes = arr.shape[0]
         zeros = jnp.zeros((n_stokes, n_pixels), self.landscape.dtype)
 
-        if self._transports:
+        if self.landscape.has_spin2:
             flat_sky = type(tod_batch).from_array(zeros)
             binned_sky = transported_scatter(flat_sky, tod_batch, *self._quat2pointing(qdet_full))
             return type(tod_batch).from_array(binned_sky.data.reshape(n_stokes, *sky_shape))
@@ -444,14 +429,10 @@ class XSamplingOperator(AbstractLinearOperator):
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._out_structure
 
-    @property
-    def _transports(self) -> bool:
-        return _transports_spin2(self.landscape)
-
     def mv(self, x: _StokesT) -> _StokesT:
         # `x` is a raveled sky map: its single backing array is (n_stokes, n_pixels). Index the pixel
         # (last) axis with the cached pointing to produce the (n_stokes, ndet, nsamp) TOD.
-        if self._transports:
+        if self.landscape.has_spin2:
             return transported_gather(x, self._stencil(), self.theta, self.phi)
 
         if not self.interpolate:

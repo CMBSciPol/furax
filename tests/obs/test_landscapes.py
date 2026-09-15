@@ -56,6 +56,15 @@ def test_frequency_landscape(stokes: ValidStokesLiteral) -> None:
 
 
 @pytest.mark.parametrize(
+    'stokes, expected',
+    [('I', False), ('QU', True), ('IQU', True), ('IQUV', True)],
+)
+def test_has_spin2(stokes: ValidStokesLiteral, expected: bool) -> None:
+    """Every variant holding Q holds U with it, and V alone is not a spin-2 field."""
+    assert HealpixLandscape(1, stokes).has_spin2 is expected
+
+
+@pytest.mark.parametrize(
     'pixel, expected_index',
     [
         ((-0.5 - 1e-15, -0.5), -1),

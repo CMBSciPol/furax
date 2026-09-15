@@ -347,17 +347,10 @@ class TestTransport:
         landscape = _make_landscape(landscape_type, 'I')
         qbore, qdet = self._quats(5)
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
-        assert not op._transports
-
         sky = landscape.normal(jax.random.key(6))
         qdet_full = op.qbore * op.qdet[:, None]
         expected = _untransported_sample(landscape, sky, qdet_full, interpolate)
         assert_array_almost_equal(op(sky).data, expected.data, decimal=13)
-
-    def test_transports_a_polarized_map_either_way(self, interpolate) -> None:
-        landscape = HealpixLandscape(NSIDE, 'IQU')
-        qbore, qdet = self._quats(1)
-        assert PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)._transports
 
     def test_expanded_operator_transports_too(self, interpolate) -> None:
         """`as_expanded_operator` must not silently drop back to an untransported sampling."""

@@ -89,6 +89,11 @@ class StokesLandscape(Landscape):
         self.pixel_shape = shape[::-1]
 
     @property
+    def has_spin2(self) -> bool:
+        """Whether the landscape holds the spin-2 linear polarisation pair."""
+        return 'Q' in self.stokes
+
+    @property
     def size(self) -> int:
         return len(self.stokes) * len(self)
 

@@ -10,7 +10,7 @@ from jax import jit, lax
 from jaxtyping import Array, Float, Int, Integer, PyTree
 
 from furax import AbstractLinearOperator
-from furax.core import DiagonalOperator, IndexOperator, RavelOperator, TransposeOperator
+from furax.core import IndexOperator, MaskOperator, RavelOperator, TransposeOperator
 from furax.math.coords import (
     euler,
     to_gamma_angles,
@@ -206,9 +206,13 @@ class PointingOperator(AbstractLinearOperator):
         pointing = self._quat2pointing(qdet_full)
         stencil = pointing.stencil
         gather = self._index_operator(stencil.indices[..., 0], in_structure)
-        # The index alone cannot express a sample outside the map, which the stencil gives a
-        # zero weight; the weight rides along as a diagonal so that this equals `_sample`.
-        weight_op = DiagonalOperator(stencil.weights[..., 0], in_structure=gather.out_structure)
+        # The index alone cannot express a sample outside the map, which the stencil gives a zero
+        # weight; the weight rides along so that this equals `_sample`. A nearest stencil weighs
+        # one or zero, so a bit-packed mask carries it in an eighth of a byte per sample instead of
+        # a float.
+        weight_op = MaskOperator.from_boolean_mask(
+            stencil.weights[..., 0] > 0, in_structure=gather.out_structure
+        )
         transport_op = QURotationOperator(
             angles=pointing.transport_angles(), in_structure=gather.out_structure
         )

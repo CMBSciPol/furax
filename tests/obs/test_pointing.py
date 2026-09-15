@@ -489,6 +489,44 @@ class TestNearestIndexAgreement:
         assert_array_equal(hits, expected)
 
 
+class TestPartialSkyNearest:
+    """A polarized nearest sample falling outside the map contributes nothing."""
+
+    # A 20x20 deg patch, so random pointing lands mostly outside it.
+    _PATCH = CARLandscape((20, 20), _CAR_PROJECTION, 'IQU')
+
+    @staticmethod
+    def _quats(seed: int) -> tuple[jax.Array, jax.Array]:
+        k1, k2 = jax.random.split(jax.random.key(seed))
+        return Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
+
+    def _op(self, seed: int) -> PointingOperator:
+        qbore, qdet = self._quats(seed)
+        return PointingOperator.create(self._PATCH, qbore, qdet, interpolate=False)
+
+    def test_the_stencil_drops_samples_outside_the_map(self) -> None:
+        op = self._op(50)
+        weights = op._quat2pointing(op.qbore * op.qdet[:, None]).stencil.weights[..., 0]
+        assert jnp.any(weights == 0)  # the case the mask exists for
+        assert jnp.all((weights == 0) | (weights == 1))  # nearest weighs one or nothing
+
+    def test_a_sample_outside_the_map_reads_zero(self) -> None:
+        """Without the mask it would read the last pixel, which the raw index -1 wraps onto."""
+        op = self._op(51)
+        qdet_full = op.qbore * op.qdet[:, None]
+        outside = op._quat2pointing(qdet_full).stencil.weights[..., 0] == 0
+        sky = self._PATCH.ones()
+        assert_array_equal(op(sky).i[outside], 0.0)
+
+    def test_the_expanded_operator_agrees(self) -> None:
+        """The mask on the expanded sampler must drop exactly what `mv` drops."""
+        op = self._op(52)
+        qdet_full = op.qbore * op.qdet[:, None]
+        assert jnp.any(op._quat2pointing(qdet_full).stencil.weights[..., 0] == 0)
+        sky = self._PATCH.normal(jax.random.key(53))
+        assert tree_equal(op.as_expanded_operator()(sky), op(sky), rtol=1e-10, atol=0)
+
+
 class TestNearestTransport:
     """What the transport changes, and does not change, on the nearest-neighbour path."""
 

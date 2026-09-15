@@ -32,25 +32,22 @@ def _scalar_gather(sky: Stokes, indices: jax.Array, weights: jax.Array) -> jax.A
 
 
 def _polarised_sky(healpy, nside: int, lmax: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
-    """A band-limited E-dominated sky: its alm (E, B) and IQU maps, from a seeded generator.
+    """A band-limited E-dominated sky: its (E, B) alm and IQU maps.
 
-    Drawn by hand rather than through `healpy.synalm`, which reads NumPy's global state and
-    would give a different sky on every run.
+    The sky is fixed by `seed`: the tests compare sampling errors against a threshold that only
+    holds for most skies, so a fresh draw on every run would fail now and then. `healpy.synalm`
+    draws from NumPy's global generator, which is restored afterwards.
     """
     ell = np.arange(lmax + 1)
     cl_ee = np.zeros(lmax + 1)
     cl_ee[2:] = 1.0 / (ell[2:] * (ell[2:] + 1))
-    rng = np.random.default_rng(seed)
-    l, m = healpy.Alm.getlm(lmax)
-
-    def synalm(cl: np.ndarray) -> np.ndarray:
-        sigma = np.sqrt(cl[l])
-        # m = 0 coefficients are real; the others split the variance over both parts
-        real = rng.normal(size=l.size) * np.where(m == 0, sigma, sigma / np.sqrt(2))
-        imag = rng.normal(size=l.size) * np.where(m == 0, 0.0, sigma / np.sqrt(2))
-        return real + 1j * imag
-
-    alm = np.stack([np.zeros(l.size, complex), synalm(cl_ee), synalm(0.05 * cl_ee)])
+    zero = np.zeros(lmax + 1)
+    state = np.random.get_state()
+    np.random.seed(seed)
+    try:
+        alm = healpy.synalm([zero, cl_ee, 0.05 * cl_ee, zero], lmax=lmax, new=True)
+    finally:
+        np.random.set_state(state)
     maps = healpy.alm2map(alm, nside=nside, lmax=lmax, pol=True)
     return alm[1:], maps
 

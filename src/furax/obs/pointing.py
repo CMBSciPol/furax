@@ -1,6 +1,6 @@
 import copy
 from dataclasses import field
-from typing import Literal, NamedTuple, TypeVar
+from typing import Literal, NamedTuple, Self, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -10,7 +10,7 @@ from jax import jit, lax
 from jaxtyping import Array, Float, Int, Integer, PyTree
 
 from furax import AbstractLinearOperator
-from furax.core import DiagonalOperator, IndexOperator, RavelOperator, TransposeOperator
+from furax.core import IndexOperator, MaskOperator, RavelOperator, TransposeOperator
 from furax.math.coords import (
     euler,
     to_gamma_angles,
@@ -182,41 +182,41 @@ class PointingOperator(AbstractLinearOperator):
         expensive quaternion-to-sky transcendentals are hoisted out of repeated applies (e.g. every
         CG iteration). The polarisation rotation stays a [`QURotationOperator`][] so it still fuses
         with the acquisition chain via operator algebra.
-
-        Nearest-neighbour sampling uses a precomputed [`IndexOperator`][]. On a polarized map it
-        carries a second [`QURotationOperator`][] for the transport from the pixel center to the
-        sampled direction, which the composition rules fuse with the polarisation rotation, and a
-        [`DiagonalOperator`][] holding the stencil weight, which is zero for a sample outside the
-        map. Bilinear interpolation uses an [`XSamplingOperator`][] that caches the world angles
-        ``(theta, phi)`` and recovers the stencil on each apply (works for HEALPix and WCS/CAR
-        landscapes), because its four weights depend on where in the pixel the sample falls.
         """
         qdet_full = self.qbore * self.qdet[:, None]
         # Ravel the spatial axes only; the Stokes container's backing array carries a leading
         # Stokes axis (axis 0) that must survive, so ravel axes 1..-1 and index the pixel axis last.
         ravel_op = RavelOperator(1, -1, in_structure=self.landscape.structure)
-        sampler: AbstractLinearOperator
-        if self.interpolate:
-            sampler = XSamplingOperator.create(self.landscape, qdet_full, interpolate=True)
-        elif self.landscape.has_spin2:
-            pointing = self._quat2pointing(qdet_full)
-            stencil = pointing.stencil
-            sampler = self._index_operator(stencil.indices[..., 0], ravel_op.out_structure)
-            # The index alone cannot express a sample outside the map, which the stencil gives a
-            # zero weight; the weight rides along as a diagonal so that this equals `_sample`.
-            weight_op = DiagonalOperator(
-                stencil.weights[..., 0], in_structure=sampler.out_structure
-            )
-            transport_op = QURotationOperator(
-                angles=pointing.transport_angles(), in_structure=sampler.out_structure
-            )
-            sampler = transport_op @ weight_op @ sampler
-        else:
-            pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
-            sampler = self._index_operator(pix, ravel_op.out_structure)
+        sampler = (
+            XSamplingOperator.create(self.landscape, qdet_full)
+            if self.interpolate
+            else self._nearest_sampler(qdet_full, self.landscape.raveled_structure)
+        )
         pa = to_polarization_angle(qdet_full)
         qu_rot_op = QURotationOperator(angles=pa, in_structure=sampler.out_structure)
         return qu_rot_op @ sampler @ ravel_op
+
+    def _nearest_sampler(
+        self, qdet_full: Quaternion, in_structure: PyTree[jax.ShapeDtypeStruct]
+    ) -> AbstractLinearOperator:
+        if not self.landscape.has_spin2:
+            pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
+            gather = self._index_operator(pix, in_structure)
+            # A -1 index would wrap onto the last pixel, which the sample never observed.
+            mask = MaskOperator.from_boolean_mask(pix >= 0, in_structure=gather.out_structure)
+            return mask @ gather
+
+        pointing = self._quat2pointing(qdet_full)
+        stencil = pointing.stencil
+        gather = self._index_operator(stencil.indices[..., 0], in_structure)
+        # A nearest stencil weighs one or zero, so we can use a boolean mask
+        weight_op = MaskOperator.from_boolean_mask(
+            stencil.weights[..., 0] > 0, in_structure=gather.out_structure
+        )
+        transport_op = QURotationOperator(
+            angles=pointing.transport_angles(), in_structure=gather.out_structure
+        )
+        return transport_op @ weight_op @ gather
 
     def _index_operator(
         self, pix: Integer[Array, 'det samp'], in_structure: PyTree[jax.ShapeDtypeStruct]
@@ -285,7 +285,10 @@ class PointingOperator(AbstractLinearOperator):
 
         if not self.interpolate:
             # fast path for nearest-neighbour
-            return x_flat[self._quat2index(qdet_full)]
+            pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
+            sampled = x_flat[pix]
+            # the gather wraps a -1 onto the last pixel, which the sample never observed
+            return type(x_flat).from_array(jnp.where(pix >= 0, sampled.data, 0))
 
         stencil = self._quat2pointing(qdet_full).stencil
         # leading Stokes axis: index the (trailing) pixel axis and sum over the neighbour axis (-1);
@@ -309,8 +312,10 @@ class PointingOperator(AbstractLinearOperator):
 
         if not self.interpolate:
             # fast path for nearest-neighbour
-            flat_pixels = self._quat2index(qdet_full).ravel()
-            binned = zeros.at[:, flat_pixels].add(arr.reshape(n_stokes, -1))
+            pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
+            # the scatter wraps a -1 onto the last pixel, so such a sample must add nothing
+            contrib = jnp.where(pix >= 0, arr, 0)
+            binned = zeros.at[:, pix.ravel()].add(contrib.reshape(n_stokes, -1))
             return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
 
         stencil = self._quat2pointing(qdet_full).stencil
@@ -374,55 +379,36 @@ def _batch_plan(batch_size: int, n: int) -> tuple[int, int]:
 
 
 class XSamplingOperator(AbstractLinearOperator):
-    r"""Precomputed sky-sampling operator from cached world angles.
+    r"""Precomputed bilinear sky-sampling operator from cached world angles.
 
     The "expanded pointing" sampler. It stores the per-sample world angles `(theta, phi)`
     (computed once from the quaternion pointing, so the expensive quaternion-to-angle
     transcendentals are hoisted out of repeated applies) and on every apply gathers a raveled
-    sky map at those angles, nearest-neighbour or bilinear.
+    sky map at the four pixels around each of them.
 
-    Nearest-neighbour sampling caches the pixel indices too, from `quat2index`, so that it reads
-    the pixels a hit map built the same way counts rather than the ones the angles fall in.
-
-    Works for any landscape exposing `world2index` / `world2interp` (HEALPix and WCS/CAR).
+    Works for any landscape supplying a bilinear [`Stencil`][] (HEALPix and WCS/CAR).
 
     Attributes:
-        landscape: The sky pixelization providing `world2index` / `world2interp`.
+        landscape: The sky pixelization supplying the bilinear stencil.
         theta: Cached spherical co-latitude angles, shape ``(ndet, nsamp)``.
         phi: Cached spherical longitude angles, shape ``(ndet, nsamp)``.
-        indices: Cached nearest-pixel indices, shape ``(ndet, nsamp)``, `None` when interpolating.
-        interpolate: If True, bilinear interpolation over the four nearest pixels; else nearest.
     """
 
     landscape: StokesLandscape
     theta: Float[Array, 'det samp']
     phi: Float[Array, 'det samp']
-    indices: Integer[Array, 'det samp'] | None
-    interpolate: bool = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
 
     @classmethod
-    def create(
-        cls,
-        landscape: StokesLandscape,
-        quaternions: Quaternion,
-        *,
-        interpolate: bool = False,
-    ) -> 'XSamplingOperator':
+    def create(cls, landscape: StokesLandscape, quaternions: Quaternion) -> Self:
         theta, phi = landscape.quat2world(quaternions)
-        indices = None if interpolate else landscape.quat2index(quaternions)
-        # The map is raveled along its spatial axes (see PointingOperator.as_expanded_operator),
-        # leaving a single pixel axis that this operator indexes.
-        ravel_op = RavelOperator(1, -1, in_structure=landscape.structure)
-        out_structure = landscape.structure_for(theta.shape)
+        # The map reaching this operator is raveled by PointingOperator.as_expanded_operator.
         return cls(
             landscape,
             theta=theta,
             phi=phi,
-            indices=indices,
-            interpolate=interpolate,
-            in_structure=ravel_op.out_structure,
-            _out_structure=out_structure,
+            in_structure=landscape.raveled_structure,
+            _out_structure=landscape.structure_for(theta.shape),
         )
 
     @property
@@ -432,18 +418,7 @@ class XSamplingOperator(AbstractLinearOperator):
     def mv(self, x: _StokesT) -> _StokesT:
         # `x` is a raveled sky map: its single backing array is (n_stokes, n_pixels). Index the pixel
         # (last) axis with the cached pointing to produce the (n_stokes, ndet, nsamp) TOD.
+        stencil = self.landscape.world2stencil(self.theta, self.phi, Interpolation.BILINEAR)
         if self.landscape.has_spin2:
-            return transported_gather(x, self._stencil(), self.theta, self.phi)
-
-        if not self.interpolate:
-            return type(x).from_array(x.data[..., self.indices])
-
-        stencil = self._stencil()
+            return transported_gather(x, stencil, self.theta, self.phi)
         return type(x).from_array(jnp.sum(x.data[..., stencil.indices] * stencil.weights, axis=-1))
-
-    def _stencil(self) -> Stencil:
-        """The stencil the cached pointing reads, recovered on every apply."""
-        if self.interpolate:
-            return self.landscape.world2stencil(self.theta, self.phi, Interpolation.BILINEAR)
-        assert self.indices is not None  # mypy assert: `create` caches them when not interpolating
-        return self.landscape.index2stencil(self.indices)

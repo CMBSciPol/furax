@@ -488,11 +488,55 @@ class TestNearestIndexAgreement:
         expected = op_i.T(ftree.ones_like(op_i.out_structure)).i
         assert_array_equal(hits, expected)
 
-    def test_the_expanded_operator_caches_the_same_pixels(self) -> None:
-        """`XSamplingOperator` caches the indices, rather than recovering them from the angles."""
-        op, qdet_full = self._setup(42)
-        sampler = XSamplingOperator.create(op.landscape, qdet_full)
-        assert_array_equal(sampler.indices, op.landscape.quat2index(qdet_full))
+
+@pytest.mark.parametrize('stokes', ['I', 'IQU'])
+class TestPartialSkyNearest:
+    """A nearest sample falling outside the map contributes nothing, whatever the map holds."""
+
+    @staticmethod
+    def _quats(seed: int) -> tuple[jax.Array, jax.Array]:
+        k1, k2 = jax.random.split(jax.random.key(seed))
+        return Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
+
+    def _op(self, seed: int, stokes: ValidStokesLiteral) -> PointingOperator:
+        # A 20x20 deg patch, so random pointing lands mostly outside it.
+        patch = CARLandscape((20, 20), _CAR_PROJECTION, stokes)
+        qbore, qdet = self._quats(seed)
+        return PointingOperator.create(patch, qbore, qdet, interpolate=False)
+
+    @staticmethod
+    def _outside(op: PointingOperator, qdet_full: Quaternion) -> jax.Array:
+        return op.landscape.quat2index(qdet_full) < 0
+
+    def test_the_stencil_drops_samples_outside_the_map(self, stokes) -> None:
+        op = self._op(50, stokes)
+        stencil = op.landscape.index2stencil(op.landscape.quat2index(op.qbore * op.qdet[:, None]))
+        weights = stencil.weights[..., 0]
+        assert jnp.any(weights == 0)  # the case the mask exists for
+        assert jnp.all((weights == 0) | (weights == 1))  # nearest weighs one or nothing
+
+    def test_a_sample_outside_the_map_reads_zero(self, stokes) -> None:
+        """Without the mask it would read the last pixel, which the raw index -1 wraps onto."""
+        op = self._op(51, stokes)
+        outside = self._outside(op, op.qbore * op.qdet[:, None])
+        assert jnp.any(outside)
+        sky = op.landscape.ones()
+        assert_array_equal(op(sky).i[outside], 0.0)
+
+    def test_binning_a_sample_outside_the_map_adds_nothing(self, stokes) -> None:
+        """Without the mask its TOD would land on the last pixel, inflating a pixel it never hit."""
+        op = self._op(52, stokes)
+        outside = self._outside(op, op.qbore * op.qdet[:, None])
+        assert jnp.any(outside)
+        hits = op.T(ftree.ones_like(op.out_structure)).i
+        assert float(hits.sum()) == pytest.approx(float((~outside).sum()))
+
+    def test_the_expanded_operator_agrees(self, stokes) -> None:
+        """The mask on the expanded sampler must drop exactly what `mv` drops."""
+        op = self._op(53, stokes)
+        assert jnp.any(self._outside(op, op.qbore * op.qdet[:, None]))
+        sky = op.landscape.normal(jax.random.key(54))
+        assert tree_equal(op.as_expanded_operator()(sky), op(sky), rtol=1e-10, atol=0)
 
 
 class TestNearestTransport:

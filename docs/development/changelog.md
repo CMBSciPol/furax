@@ -14,6 +14,7 @@ Significant changes to the pointing interpolation logic (#204) are summarised be
 - `furax.obs.stencil` module: a stencil carries pixel indices and weights for interpolation (#204)
 - `furax.obs.spin2` module: parallel transport of Q and U across a stencil (#204)
 - `StokesLandscape.world2stencil`, the one interpolation entrypoint; `world2interp` now derives from it (#204)
+- `StokesLandscape.has_spin2`, true for a map holding the Q and U pair (#204)
 - `CARLandscape.pixel2world`, `AstropyWCSLandscape.pixel2world` and `HorizonLandscape.pixel2world`, inverting their `world2pixel` (#204)
 - API reference pages for `furax.obs.spin2` and `furax.obs.stencil` (#204)
 

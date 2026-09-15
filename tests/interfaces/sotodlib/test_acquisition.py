@@ -1,3 +1,5 @@
+import operator
+from functools import reduce
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -10,9 +12,12 @@ from sotodlib import coords
 from sotodlib.mapmaking.demod_mapmaker import project_rhs_demod
 
 from furax import AbstractLinearOperator
+from furax.core import IndexOperator, RavelOperator
 from furax.interfaces.sotodlib import LazySOTODLibObservation
 from furax.mapmaking.acquisition import build_acquisition_operator
 from furax.mapmaking.config import SotodlibConfig
+from furax.math.coords import to_polarization_angle
+from furax.obs import QURotationOperator
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.spin2 import spin2_cos_sin
 from furax.obs.stokes import Stokes, StokesI
@@ -49,6 +54,22 @@ def _sotodlib_pointing(obs, hwp: bool):
     return coords.P.for_tod(obs.data, geom=hp_geom, comps='TQU', hwp=hwp)
 
 
+def _in_pixel_frame(h: AbstractLinearOperator) -> AbstractLinearOperator:
+    """The same acquisition, sampling Q and U in the pixel centre's frame (no transport)."""
+    pointing = h.operands[-1]
+    landscape = pointing.landscape
+    qdet_full = pointing.qbore * pointing.qdet[:, None]
+
+    ravel = RavelOperator(1, -1, in_structure=landscape.structure)
+    stokes_idx = jnp.arange(len(landscape.stokes))[:, None, None]
+    pixels = landscape.quat2index(qdet_full)[None]
+    gather = IndexOperator((stokes_idx, pixels), in_structure=ravel.out_structure)
+    rot = QURotationOperator(
+        angles=to_polarization_angle(qdet_full), in_structure=gather.out_structure
+    )
+    return reduce(operator.matmul, h.operands[:-1]) @ rot @ gather @ ravel
+
+
 def _assert_binning_matches_sotodlib(
     h: AbstractLinearOperator, tods: Stokes, sotodlib_map: np.ndarray
 ) -> None:
@@ -73,6 +94,9 @@ def _assert_binning_matches_sotodlib(
     bound = float(jnp.abs(sin_2delta).max()) * np.abs(sotodlib_map[1:]).max()
     assert np.abs(furax_map.q - sotodlib_map[1]).max() < bound
     assert np.abs(furax_map.u - sotodlib_map[2]).max() < bound
+
+    # the whole backing array at once, which pins the component order against sotodlib's TQU
+    assert_allclose((2 * _in_pixel_frame(h).T(tods)).data, sotodlib_map, rtol=1e-5, atol=0)
 
 
 def _furax_hit_map(h: AbstractLinearOperator) -> np.ndarray:

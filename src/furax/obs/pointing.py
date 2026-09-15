@@ -182,41 +182,37 @@ class PointingOperator(AbstractLinearOperator):
         expensive quaternion-to-sky transcendentals are hoisted out of repeated applies (e.g. every
         CG iteration). The polarisation rotation stays a [`QURotationOperator`][] so it still fuses
         with the acquisition chain via operator algebra.
-
-        Nearest-neighbour sampling uses a precomputed [`IndexOperator`][]. On a polarized map it
-        carries a second [`QURotationOperator`][] for the transport from the pixel center to the
-        sampled direction, which the composition rules fuse with the polarisation rotation, and a
-        [`DiagonalOperator`][] holding the stencil weight, which is zero for a sample outside the
-        map. Bilinear interpolation uses an [`XSamplingOperator`][] that caches the world angles
-        ``(theta, phi)`` and recovers the stencil on each apply (works for HEALPix and WCS/CAR
-        landscapes), because its four weights depend on where in the pixel the sample falls.
         """
         qdet_full = self.qbore * self.qdet[:, None]
         # Ravel the spatial axes only; the Stokes container's backing array carries a leading
         # Stokes axis (axis 0) that must survive, so ravel axes 1..-1 and index the pixel axis last.
         ravel_op = RavelOperator(1, -1, in_structure=self.landscape.structure)
-        sampler: AbstractLinearOperator
-        if self.interpolate:
-            sampler = XSamplingOperator.create(self.landscape, qdet_full, interpolate=True)
-        elif self.landscape.has_spin2:
-            pointing = self._quat2pointing(qdet_full)
-            stencil = pointing.stencil
-            sampler = self._index_operator(stencil.indices[..., 0], ravel_op.out_structure)
-            # The index alone cannot express a sample outside the map, which the stencil gives a
-            # zero weight; the weight rides along as a diagonal so that this equals `_sample`.
-            weight_op = DiagonalOperator(
-                stencil.weights[..., 0], in_structure=sampler.out_structure
-            )
-            transport_op = QURotationOperator(
-                angles=pointing.transport_angles(), in_structure=sampler.out_structure
-            )
-            sampler = transport_op @ weight_op @ sampler
-        else:
-            pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
-            sampler = self._index_operator(pix, ravel_op.out_structure)
+        sampler = (
+            XSamplingOperator.create(self.landscape, qdet_full, interpolate=True)
+            if self.interpolate
+            else self._nearest_sampler(qdet_full, ravel_op.out_structure)
+        )
         pa = to_polarization_angle(qdet_full)
         qu_rot_op = QURotationOperator(angles=pa, in_structure=sampler.out_structure)
         return qu_rot_op @ sampler @ ravel_op
+
+    def _nearest_sampler(
+        self, qdet_full: Quaternion, in_structure: PyTree[jax.ShapeDtypeStruct]
+    ) -> AbstractLinearOperator:
+        if not self.landscape.has_spin2:
+            pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
+            return self._index_operator(pix, in_structure)
+
+        pointing = self._quat2pointing(qdet_full)
+        stencil = pointing.stencil
+        gather = self._index_operator(stencil.indices[..., 0], in_structure)
+        # The index alone cannot express a sample outside the map, which the stencil gives a
+        # zero weight; the weight rides along as a diagonal so that this equals `_sample`.
+        weight_op = DiagonalOperator(stencil.weights[..., 0], in_structure=gather.out_structure)
+        transport_op = QURotationOperator(
+            angles=pointing.transport_angles(), in_structure=gather.out_structure
+        )
+        return transport_op @ weight_op @ gather
 
     def _index_operator(
         self, pix: Integer[Array, 'det samp'], in_structure: PyTree[jax.ShapeDtypeStruct]

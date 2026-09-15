@@ -2,6 +2,7 @@ import operator
 from functools import reduce
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import jax_healpy as jhp
 import numpy as np
@@ -70,15 +71,26 @@ def _in_pixel_frame(h: AbstractLinearOperator) -> AbstractLinearOperator:
     return reduce(operator.matmul, h.operands[:-1]) @ rot @ gather @ ravel
 
 
+def _qu_magnitude(tods: Stokes | jax.Array) -> jax.Array:
+    return jnp.hypot(tods.q, tods.u) if isinstance(tods, Stokes) else jnp.abs(jnp.asarray(tods))
+
+
 def _assert_binning_matches_sotodlib(
     h: AbstractLinearOperator, tods: Stokes, sotodlib_map: np.ndarray
 ) -> None:
-    """Compare the two binned maps, allowing for the one place the conventions differ.
+    r"""Compare the two binned maps, allowing for the one place the conventions differ.
 
     furax carries each pixel's Q and U into the frame of the direction a sample points at;
     sotodlib takes the pixel's own frame. I is untouched by that rotation and must match exactly.
-    Q and U differ by it, by at most the largest |sin 2d| over the samples -- so bounding the
-    difference by that leaves the comparison able to catch anything larger.
+    Q and U differ by it, and the difference is bounded: a sample's contribution is rotated by
+    $2\delta_s$ before it is binned, so the binned difference is at most the largest rotation over
+    the samples times the sum of the contribution magnitudes in a pixel,
+
+    $$ |\Delta| = \Big|\sum_s (R_s - 1) u_s\Big| \le \max_s |R_s - 1| \sum_s |u_s|, $$
+
+    with $|R(2\delta) u - u| = 2 |\sin\delta| \, |u|$. The binned map is not that sum: Q and U
+    cancel as the polarisation angle turns, by a factor of several hundred here, so the sum has to
+    be accumulated separately, through the intensity operator.
     """
     # Furax TODs assume power, so they are 2x smaller
     furax_map = 2 * h.T(tods)
@@ -87,11 +99,13 @@ def _assert_binning_matches_sotodlib(
     pointing = h.operands[-1]
     landscape = pointing.landscape
     qdet_full = pointing.qbore * pointing.qdet[:, None]
-    _, sin_2delta = spin2_cos_sin(
+    cos_2delta, _ = spin2_cos_sin(
         *jhp.pix2ang(landscape.nside, landscape.quat2index(qdet_full)),
         *landscape.quat2world(qdet_full),
     )
-    bound = float(jnp.abs(sin_2delta).max()) * np.abs(sotodlib_map[1:]).max()
+    max_rotation = float(jnp.sqrt(2 * (1 - cos_2delta)).max())  # max |R(2d) u - u| / |u|
+    summed = pointing.as_stokes_i().T(StokesI(_qu_magnitude(tods))).i
+    bound = max_rotation * float(summed.max())
     assert np.abs(furax_map.q - sotodlib_map[1]).max() < bound
     assert np.abs(furax_map.u - sotodlib_map[2]).max() < bound
 

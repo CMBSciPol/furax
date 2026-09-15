@@ -53,6 +53,31 @@ class TestSampleMask:
 
         assert_array_equal(result[0, 2 * tau :], jnp.zeros(n_samp - 2 * tau, dtype=bool))
 
+    def test_pomme_widens_scanning_mask_to_whole_intervals(self):
+        """An interval partially flagged by the scanning mask is dropped whole.
+
+        The weight must be constant on every interval for it to commute with the Pomme projector,
+        whichever mask flags the samples.
+        """
+        tau, n_det, n_samp = 4, 2, 12  # 3 whole intervals
+        sample_mask = jnp.ones((n_det, n_samp), dtype=bool)
+        scanning = jnp.ones(n_samp, dtype=bool).at[5].set(False)  # one sample of interval 1
+
+        config = MapMakingConfig(method=Methods.POMME, pomme_tau=tau)
+        data = {'valid_sample_masks': sample_mask, 'valid_scanning_masks': scanning}
+        result = _sample_mask(data, config)
+
+        expected = jnp.ones((n_det, n_samp), dtype=bool).at[:, tau : 2 * tau].set(False)
+        assert_array_equal(result, expected)
+
+    def test_scanning_mask_applies_without_pomme(self):
+        n_det, n_samp = 2, 6
+        sample_mask = jnp.ones((n_det, n_samp), dtype=bool)
+        scanning = jnp.ones(n_samp, dtype=bool).at[1].set(False)
+        data = {'valid_sample_masks': sample_mask, 'valid_scanning_masks': scanning}
+        result = _sample_mask(data, MapMakingConfig())
+        assert_array_equal(result, sample_mask.at[:, 1].set(False))
+
 
 class TestIdentityNoise:
     @pytest.fixture

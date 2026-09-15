@@ -8,11 +8,11 @@ from jaxtyping import Float
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking.config import BinsConfig, PolynomialOrders, SplineHWPSynchronousConfig
+from furax.mapmaking.pomme import PommeProjectionOperator
 from furax.mapmaking.templates import (
     Basis,
     KroneckerBasis,
     NoStructuredView,
-    PommeProjectionOperator,
     SegmentedBasis,
     TemplateOperator,
     TensorBasis,

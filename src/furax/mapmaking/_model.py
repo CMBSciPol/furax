@@ -24,10 +24,10 @@ from .config import (
 )
 from .gram import gram_inverse
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
+from .pomme import PommeProjectionOperator
 from .templates import (
     AbstractTemplateOperator,
     Basis,
-    PommeProjectionOperator,
     StokesTemplateOperator,
     TemplateOperator,
     azimuth_hwp_synchronous_basis,
@@ -83,11 +83,7 @@ class ObservationModel:
             dtype=config.dtype,
         )
         tod_struct = H.out_structure
-        M = _mask_projector(
-            _sample_mask(data, config),
-            data.get(ReaderField.VALID_SCANNING_MASKS),
-            structure=tod_struct,
-        )
+        M = _mask_projector(_sample_mask(data, config), structure=tod_struct)
         noise_model, sample_rate = _noise_model(
             data, config, tod_structure=tod_struct, padding=padding
         )
@@ -252,11 +248,16 @@ def _noise_model(
 
 
 def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
-    """Get the sample mask from data.
+    """The valid-sample mask, `(ndet, nsamp)`, combining the sample and scanning masks.
 
-    For Pomme mapmaker, extra pixels may be masked depending on pomme_tau.
+    For Pomme, every tau-interval with a masked sample is masked whole, and so is the partial
+    interval at the end. The weight is then constant on each interval, which makes it commute with
+    the Pomme projector (see [`PommeProjectionOperator`][]). The widening applies to the combined
+    mask: an interval straddling a scan boundary is dropped too.
     """
     mask = data[ReaderField.VALID_SAMPLE_MASKS]
+    if (scanning := data.get(ReaderField.VALID_SCANNING_MASKS)) is not None:
+        mask = jnp.logical_and(mask, scanning)
 
     if config.method == Methods.POMME:
         tau = config.pomme_tau
@@ -434,6 +435,7 @@ class ObservationTemplates:
                         times=data[ReaderField.TIMESTAMPS],
                         dtype=dtype,
                         valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
+                        min_poly_order=(poly.legendre if s == 'I' else legendre_qu).min_order,
                     )
                     for s in legs
                 }
@@ -444,6 +446,7 @@ class ObservationTemplates:
                     times=data[ReaderField.TIMESTAMPS],
                     dtype=dtype,
                     valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
+                    min_poly_order=poly.legendre.min_order,
                 )
             add('polynomial', bases, poly.explicit)
 

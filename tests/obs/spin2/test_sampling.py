@@ -31,6 +31,30 @@ def _scalar_gather(sky: Stokes, indices: jax.Array, weights: jax.Array) -> jax.A
     return jnp.sum(sky.data[..., indices] * unit_weights, axis=-1)
 
 
+def _polarised_sky(healpy, nside: int, lmax: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """A band-limited E-dominated sky: its alm (E, B) and IQU maps, from a seeded generator.
+
+    Drawn by hand rather than through `healpy.synalm`, which reads NumPy's global state and
+    would give a different sky on every run.
+    """
+    ell = np.arange(lmax + 1)
+    cl_ee = np.zeros(lmax + 1)
+    cl_ee[2:] = 1.0 / (ell[2:] * (ell[2:] + 1))
+    rng = np.random.default_rng(seed)
+    l, m = healpy.Alm.getlm(lmax)
+
+    def synalm(cl: np.ndarray) -> np.ndarray:
+        sigma = np.sqrt(cl[l])
+        # m = 0 coefficients are real; the others split the variance over both parts
+        real = rng.normal(size=l.size) * np.where(m == 0, sigma, sigma / np.sqrt(2))
+        imag = rng.normal(size=l.size) * np.where(m == 0, 0.0, sigma / np.sqrt(2))
+        return real + 1j * imag
+
+    alm = np.stack([np.zeros(l.size, complex), synalm(cl_ee), synalm(0.05 * cl_ee)])
+    maps = healpy.alm2map(alm, nside=nside, lmax=lmax, pol=True)
+    return alm[1:], maps
+
+
 class TestTransportedGather:
     def test_matches_scalar_interpolation_on_intensity(self) -> None:
         """The transport acts on P alone, so I must be untouched."""
@@ -79,12 +103,7 @@ class TestTransportedGather:
         healpy = pytest.importorskip('healpy')
 
         nside, lmax = 32, 32
-        ell = np.arange(lmax + 1)
-        cl_ee = np.zeros(lmax + 1)
-        cl_ee[2:] = 1.0 / (ell[2:] * (ell[2:] + 1))
-        zero = np.zeros(lmax + 1)
-        alm_t, alm_e, alm_b = healpy.synalm([zero, cl_ee, 0.05 * cl_ee, zero], lmax=lmax, new=True)
-        maps = healpy.alm2map([alm_t, alm_e, alm_b], nside=nside, lmax=lmax, pol=True)
+        alm_eb, maps = _polarised_sky(healpy, nside, lmax, seed=7)
         sky = Stokes.class_for('IQU').from_array(jnp.asarray(maps))
 
         # a ring near the pole, offset off the pixel centers
@@ -93,7 +112,7 @@ class TestTransportedGather:
         theta_np = np.deg2rad(3.0) + rng.uniform(-0.004, 0.004, n)
         phi_np = rng.uniform(0.0, 2 * np.pi, n)
         exact = ducc_sht.synthesis_general(
-            alm=np.asarray([alm_e, alm_b]),
+            alm=alm_eb,
             spin=2,
             lmax=lmax,
             loc=np.stack([theta_np, phi_np], axis=-1),
@@ -170,12 +189,7 @@ class TestNearestStencil:
         healpy = pytest.importorskip('healpy')
 
         nside, lmax = 32, 32
-        ell = np.arange(lmax + 1)
-        cl_ee = np.zeros(lmax + 1)
-        cl_ee[2:] = 1.0 / (ell[2:] * (ell[2:] + 1))
-        zero = np.zeros(lmax + 1)
-        alm_t, alm_e, alm_b = healpy.synalm([zero, cl_ee, 0.05 * cl_ee, zero], lmax=lmax, new=True)
-        maps = healpy.alm2map([alm_t, alm_e, alm_b], nside=nside, lmax=lmax, pol=True)
+        alm_eb, maps = _polarised_sky(healpy, nside, lmax, seed=8)
         sky = Stokes.class_for('IQU').from_array(jnp.asarray(maps))
 
         # a ring near the pole, offset off the pixel centers
@@ -184,7 +198,7 @@ class TestNearestStencil:
         theta_np = np.deg2rad(3.0) + rng.uniform(-0.004, 0.004, n)
         phi_np = rng.uniform(0.0, 2 * np.pi, n)
         exact = ducc_sht.synthesis_general(
-            alm=np.asarray([alm_e, alm_b]),
+            alm=alm_eb,
             spin=2,
             lmax=lmax,
             loc=np.stack([theta_np, phi_np], axis=-1),

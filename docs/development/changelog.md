@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Pomme can be combined with templates in `MultiObservationMapMaker` (#257)
+
 ## [0.14.0] - 2026-09-15
 
 Significant changes to the pointing interpolation logic (#204) are summarised below. For more details and backstory, users are invited to read the pull request body as well as the new/updated API pages.

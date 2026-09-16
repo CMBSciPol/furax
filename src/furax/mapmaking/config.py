@@ -615,6 +615,26 @@ class TemplatesConfig:
             if field.metadata.get('template', True)
         )
 
+    def enabled_constant_template_names(self) -> tuple[str, ...]:
+        """Names of configured templates whose span contains a constant TOD mode."""
+        names = []
+        if self.polynomial is not None and self.polynomial.legendre.min_order == 0:
+            names.append('polynomial')
+        if self.scan_synchronous is not None and self.scan_synchronous.legendre.min_order == 0:
+            names.append('scan_synchronous')
+        if self.binned_azimuth_synchronous is not None:
+            names.append('binned_azimuth_synchronous')
+        if (
+            self.azimuth_hwp_synchronous is not None
+            and self.azimuth_hwp_synchronous.legendre.min_order == 0
+        ):
+            names.append('azimuth_hwp_synchronous')
+        if self.binned_azimuth_hwp_synchronous is not None:
+            names.append('binned_azimuth_hwp_synchronous')
+        if self.spline_hwp_synchronous is not None and 0 in self.spline_hwp_synchronous.harmonics:
+            names.append('spline_hwp_synchronous')
+        return tuple(names)
+
 
 @dataclass(frozen=True)
 class GapFillingConfig:

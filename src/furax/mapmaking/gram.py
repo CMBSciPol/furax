@@ -53,7 +53,7 @@ from jax import Array
 from jaxtyping import Float, PyTree
 
 import furax.tree
-from furax import AbstractLinearOperator
+from furax import AbstractLinearOperator, DiagonalOperator
 from furax.core import BlockDiagonalOperator
 from furax.linalg import BandedCholeskyOperator
 
@@ -109,6 +109,27 @@ def gram_inverse(
         NotImplementedError: If the structured path does not apply and `allow_probe` is `False`.
         ValueError: If `pomme_tau` is given for a TOD that is not a single `(det, samp)` stream.
     """
+    inverse, _ = _gram_inverse_and_ridge(
+        operator,
+        weight,
+        regularization,
+        pomme_tau=pomme_tau,
+        allow_probe=allow_probe,
+        batch_size=batch_size,
+    )
+    return inverse
+
+
+def _gram_inverse_and_ridge(
+    operator: AbstractTemplateOperator,
+    weight: AbstractLinearOperator,
+    regularization: float = 0.0,
+    *,
+    pomme_tau: int | None = None,
+    allow_probe: bool = False,
+    batch_size: int = 32,
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
+    """Build the inverse Gram and the ridge applied before its factorization."""
     if pomme_tau is not None and not isinstance(operator.out_structure, jax.ShapeDtypeStruct):
         raise ValueError('Pomme filtering applies to a single (det, samp) stream, not a Stokes TOD')
     try:
@@ -163,7 +184,7 @@ def _structured_gram_inverse(
     regularization: float,
     batch_size: int,
     pomme_tau: int | None,
-) -> AbstractLinearOperator:
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
     intervals = (
         None
         if pomme_tau is None
@@ -191,17 +212,34 @@ def _structured_gram_inverse(
 
         bands = jax.lax.map(gram, leg_diag, batch_size=batch_size)
         bands = bands.at[..., 0, :, :].set(_zero_sub_identity(bands[..., 0, :, :]))
-        return BandedCholeskyOperator.from_bands(bands, amp, regularization)
+        inverse = BandedCholeskyOperator.from_bands(bands, amp, regularization)
+        if not regularization:
+            return inverse, None
+        diagonal = jnp.diagonal(bands[..., 0, :, :], axis1=-2, axis2=-1)
+        scale = jnp.mean(diagonal, axis=-1, keepdims=True)
+        ridge = regularization * jnp.broadcast_to(scale, diagonal.shape).reshape(amp.shape)
+        return inverse, DiagonalOperator(ridge, in_structure=amp)
 
     # one factored block per template and Stokes leg, keyed as the amplitudes are: legs are
     # independent, and detectors are already the leading axis inside each block
-    return BlockDiagonalOperator(
-        jax.tree.map_with_path(
-            leg_inverse,
-            template.bases,
-            template.in_structure,
-            is_leaf=is_basis,
-        )
+    pairs = jax.tree.map_with_path(
+        leg_inverse,
+        template.bases,
+        template.in_structure,
+        is_leaf=is_basis,
+    )
+    inverse = BlockDiagonalOperator(jax.tree.map(lambda pair: pair[0], pairs, is_leaf=_is_pair))
+    if not regularization:
+        return inverse, None
+    ridge = BlockDiagonalOperator(jax.tree.map(lambda pair: pair[1], pairs, is_leaf=_is_pair))
+    return inverse, ridge
+
+
+def _is_pair(value: Any) -> bool:
+    return (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and isinstance(value[0], AbstractLinearOperator)
     )
 
 
@@ -211,7 +249,7 @@ def _coupled_gram_inverse(
     regularization: float,
     batch_size: int,
     intervals: PommeIntervals | None,
-) -> AbstractLinearOperator:
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
     # Flattening keeps the keys: `('poly', 'q')` for a Stokes-valued template, `('poly',)` without
     # a Stokes axis. The leg says which stream a basis is weighted by, and two bases on different
     # legs never share a weighted sample.
@@ -249,7 +287,12 @@ def _coupled_gram_inverse(
 
     blocks = jax.lax.map(build, diags, batch_size=batch_size)  # (n_dets, n_amps, n_amps)
     blocks = _zero_sub_identity(blocks)
-    return BandedCholeskyOperator.from_dense(blocks, template.in_structure, regularization)
+    inverse = BandedCholeskyOperator.from_dense(blocks, template.in_structure, regularization)
+    if not regularization:
+        return inverse, None
+    scale = regularization * jnp.mean(jnp.diagonal(blocks, axis1=-2, axis2=-1), axis=-1)
+    ridge = DiagonalOperator(scale, axis_destination=0, in_structure=template.in_structure)
+    return inverse, ridge
 
 
 def _probed_gram_inverse(
@@ -257,7 +300,7 @@ def _probed_gram_inverse(
     weight: AbstractLinearOperator,
     regularization: float,
     pomme_tau: int | None,
-) -> AbstractLinearOperator:
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
     """The fallback: recover `G = Tᵀ W T` by applying it to one amplitude at a time.
 
     Costs `O(K)` applications for `K` amplitudes, but needs nothing of the bases beyond `T` itself.
@@ -296,4 +339,9 @@ def _probed_gram_inverse(
     columns = jax.lax.map(probe, jnp.arange(n_amps))  # (col, n_dets, row)
     blocks = jnp.moveaxis(columns, 0, -1)  # (n_dets, row, col)
     blocks = _zero_sub_identity(blocks)
-    return BandedCholeskyOperator.from_dense(blocks, in_structure, regularization)
+    inverse = BandedCholeskyOperator.from_dense(blocks, in_structure, regularization)
+    if not regularization:
+        return inverse, None
+    scale = regularization * jnp.mean(jnp.diagonal(blocks, axis1=-2, axis2=-1), axis=-1)
+    ridge = DiagonalOperator(scale, axis_destination=0, in_structure=in_structure)
+    return inverse, ridge

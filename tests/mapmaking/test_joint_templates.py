@@ -165,3 +165,12 @@ def test_pomme_with_polynomial_runs():
     res = MultiObservationMapMaker(_ground_obs(), config=_pomme_config(templates)).run()
     assert jnp.all(jnp.isfinite(res.map.data))
     assert jnp.all(jnp.isfinite(res.template_amplitudes['hwp_synchronous']))
+
+
+def test_pomme_explicit_constant_template_uses_ridge_in_normal_system():
+    templates = TemplatesConfig(polynomial=PolynomialConfig(explicit=True))
+    res = MultiObservationMapMaker(
+        _ground_obs(n_obs=1, n_dets=2, n_samples=256), config=_pomme_config(templates)
+    ).run()
+    assert jnp.all(jnp.isfinite(res.map.data))
+    assert jnp.all(jnp.isfinite(res.template_amplitudes['polynomial']))

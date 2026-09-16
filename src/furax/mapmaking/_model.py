@@ -22,7 +22,7 @@ from .config import (
     TemplatesConfig,
     WeightingMode,
 )
-from .gram import gram_inverse
+from .gram import _gram_inverse_and_ridge
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .pomme import PommeProjectionOperator
 from .templates import (
@@ -320,14 +320,16 @@ def _on_every_leg(basis: Basis, legs: ValidStokesLiteral | None) -> Basis | dict
 @register_dataclass
 @dataclass
 class TemplateBundle:
-    r"""One template operator $T$ and the accompanying Gram inverse $(T^\top W_\text{eff} T)^{-1}$.
+    r"""One template operator $T$, its Gram inverse, and any configured ridge.
 
     The effective weight $W_\text{eff}$ is the diagonal weight $W$, or $W F$ with $F$ the Pomme
-    deprojector when the templates are combined with Pomme.
+    deprojector when the templates are combined with Pomme. The ridge uses the amplitude structure
+    and scaling of the Gram factorization.
     """
 
     operator: AbstractTemplateOperator
     gram_inverse: AbstractLinearOperator
+    ridge: AbstractLinearOperator | None
 
     @classmethod
     def create(
@@ -349,7 +351,7 @@ class TemplateBundle:
                 Gram is then taken under the effective weight $W F$ (see [`gram_inverse`][]).
             allow_probe: See [`gram_inverse`][].
         """
-        ginv = gram_inverse(
+        ginv, ridge = _gram_inverse_and_ridge(
             operator,
             weight,
             config.regularization,
@@ -357,7 +359,7 @@ class TemplateBundle:
             allow_probe=allow_probe,
             batch_size=config.gram_batch_size,
         )
-        return cls(operator, ginv)
+        return cls(operator, ginv, ridge)
 
 
 @register_dataclass

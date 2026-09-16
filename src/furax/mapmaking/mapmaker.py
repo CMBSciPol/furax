@@ -31,6 +31,7 @@ import furax.tree
 from furax import (
     AbstractLinearOperator,
     DiagonalOperator,
+    HomothetyOperator,
     IdentityOperator,
     MaskOperator,
     OperatorTag,
@@ -517,9 +518,13 @@ class MultiObservationMapMaker[T]:
         # amplitude block per bucket; each bucket's system sees the full sky grid and its own
         # amplitudes, picked out of the list and embedded back by `E`.
         terms = []
-        for b, (h, te, w) in enumerate(zip(H, Te, W, strict=True)):
+        for b, (h, te, w, bundle) in enumerate(zip(H, Te, W, explicit, strict=True)):
             h_joint = StreamOperator.block_row([h, te])
             A_joint = (h_joint.T @ w @ h_joint).reduce()
+            if bundle.ridge is not None:
+                ridge = StreamOperator.diagonal(bundle.ridge)
+                zero = HomothetyOperator(0.0, in_structure=h.in_structure)
+                A_joint = (A_joint + BlockDiagonalOperator([zero, ridge])).reduce()
             pick = BlockSelectOperator(b, in_structure=amplitudes_structure)
             E = BlockDiagonalOperator([S.T, pick])
             terms.append((E.T @ A_joint @ E).reduce())

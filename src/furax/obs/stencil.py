@@ -4,6 +4,7 @@ The type in this module carries no notion of pixelization. A landscape produces 
 sampler consumes one, and neither has to agree on anything else.
 """
 
+from collections.abc import Sequence
 from enum import IntEnum
 from typing import NamedTuple, Self
 
@@ -34,8 +35,8 @@ class Interpolation(IntEnum):
 
 
 def _resolve(
-    indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*dims neighbors']
-) -> tuple[Integer[Array, '*dims neighbors'], Float[Array, '*dims neighbors']]:
+    indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*weight_dims neighbors']
+) -> tuple[Integer[Array, '*dims neighbors'], Float[Array, '*weight_dims neighbors']]:
     """Make an interpolation stencil safe to gather with, and normalize its weights.
 
     Neighbours outside the map (negative index) are sent to pixel 0 with their weight zeroed, so
@@ -44,9 +45,12 @@ def _resolve(
     map has nothing to rescale: its weights stay at zero instead of being divided by zero, so it
     reads pixel 0 and contributes nothing.
 
+    The weights may carry a leading Stokes axis the indices do not have, one row per component;
+    the normalization is along the neighbour axis alone, so each component sums to one on its own.
+
     Args:
         indices: Neighbour pixel indices, negative for neighbours outside the map.
-        weights: Interpolation weights, one per neighbour.
+        weights: Interpolation weights, one per neighbour, broadcastable to the indices.
 
     Returns:
         The in-bounds indices and the normalized weights.
@@ -91,17 +95,22 @@ class Stencil(NamedTuple):
     Nearest-neighbour sampling is the case of a single neighbour, not a different type: the
     trailing neighbour axis has length one and the weight is one.
 
+    The weights may carry a leading Stokes axis that the indices and positions do not have, so
+    that each component reads the same pixels with its own weights. A sampler multiplies the
+    gathered values, whose Stokes axis leads, by the weights, and the two broadcast either way.
+
     A stencil on a grid that is not the sphere has no [`SkyPositions`][] and carries `None`, which
     [`Stencil.unpositioned`][] builds; only a map with no polarisation can be sampled through one.
 
     Attributes:
         indices: Neighbour pixel indices into the raveled map, all in bounds.
-        weights: Interpolation weights, one per neighbour, summing to one.
+        weights: Interpolation weights, one per neighbour, summing to one, optionally with a
+            leading Stokes axis.
         positions: Where the neighbours sit on the sphere, or `None` off the sphere.
     """
 
     indices: Integer[Array, '*dims neighbors']
-    weights: Float[Array, '*dims neighbors']
+    weights: Float[Array, '*weight_dims neighbors']
     positions: SkyPositions | None
 
     @property
@@ -128,7 +137,7 @@ class Stencil(NamedTuple):
     def resolve(
         cls,
         indices: Integer[Array, '*dims neighbors'],
-        weights: Float[Array, '*dims neighbors'],
+        weights: Float[Array, '*weight_dims neighbors'],
         positions: SkyPositions | None,
     ) -> Self:
         """Build a stencil, sending out-of-map neighbours to a safe index and normalizing weights.
@@ -174,7 +183,7 @@ class Stencil(NamedTuple):
     def unpositioned(
         cls,
         indices: Integer[Array, '*dims neighbors'],
-        weights: Float[Array, '*dims neighbors'],
+        weights: Float[Array, '*weight_dims neighbors'],
     ) -> Self:
         """Build a stencil with no sky positions, for a grid that is not the sphere.
 
@@ -191,8 +200,67 @@ class Stencil(NamedTuple):
         """
         return cls.resolve(indices, weights, None)
 
+    @classmethod
+    def concatenate(
+        cls,
+        stencils: Sequence[Self],
+        outer_weights: Float[Array, ' n_stencils'] | Float[Array, 'n_stokes n_stencils'],
+    ) -> Self:
+        """Merge the stencils of several directions into one stencil per sample.
+
+        The neighbour axes are stacked, each stencil's weights are multiplied by its outer weight,
+        and the positions are carried over, so the result reads every pixel the parts read. It is
+        re-resolved, which normalizes the trailing axis to one: a sample whose stencils partly fall
+        off a partial-sky map is renormalized to the part in view, the same convention as a partly
+        covered bilinear sample. With outer weights that sum to one and every part in view, the
+        weights are exactly the products.
+
+        Args:
+            stencils: The stencils to merge, all of the same sample shape and all positioned, or
+                all unpositioned.
+            outer_weights: One weight per stencil, or one row of them per Stokes component.
+
+        Returns:
+            The resolved stencil, whose neighbour axis is the sum of the parts' axes.
+        """
+        if len(stencils) == 0:
+            raise ValueError('at least one stencil is required')
+        outer_weights = jnp.asarray(outer_weights)
+        if outer_weights.shape[-1] != len(stencils):
+            raise ValueError(
+                f'{len(stencils)} stencils but {outer_weights.shape[-1]} outer weights were given'
+            )
+        n_sample_dims = stencils[0].indices.ndim - 1
+        # shape (n_stokes, 1, ..., 1, 1) or (1, ..., 1, 1): broadcast over the sample and
+        # neighbour axes only, and put a Stokes row, if any, in front of them.
+        broadcast_shape = (*outer_weights.shape[:-1], *(1,) * n_sample_dims, 1)
+        weights = jnp.concatenate(
+            [
+                stencil.weights * outer_weights[..., k].reshape(broadcast_shape)
+                for k, stencil in enumerate(stencils)
+            ],
+            axis=-1,
+        )
+        indices = jnp.concatenate([stencil.indices for stencil in stencils], axis=-1)
+        all_positions = [stencil.positions for stencil in stencils]
+        positioned = [p for p in all_positions if p is not None]
+        if len(positioned) == len(stencils):
+            positions = SkyPositions(
+                *(
+                    jnp.concatenate([p[i] for p in positioned], axis=-1)
+                    for i in range(len(SkyPositions._fields))
+                )
+            )
+        elif positioned:
+            raise ValueError('cannot merge positioned and unpositioned stencils')
+        else:
+            positions = None
+        return cls.resolve(indices, weights, positions)
+
     def reindexed(
-        self, indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*dims neighbors']
+        self,
+        indices: Integer[Array, '*dims neighbors'],
+        weights: Float[Array, '*weight_dims neighbors'],
     ) -> Self:
         """Return the same neighbours addressed by new indices, with the weights re-resolved.
 

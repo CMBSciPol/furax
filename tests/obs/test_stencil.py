@@ -124,3 +124,86 @@ class TestStencil:
         assert len(leaves) == 5
         assert jax.jit(lambda s: s.weights.sum())(stencil) == pytest.approx(5.0)
         assert isinstance(jax.tree.unflatten(treedef, leaves), Stencil)
+
+
+class TestConcatenate:
+    def test_stacks_the_parts_and_scales_each_by_its_outer_weight(self):
+        parts = [
+            Stencil.resolve(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]]), _positions((1, 2))),
+            Stencil.resolve(jnp.array([[2, 3]]), jnp.array([[0.25, 0.75]]), _positions((1, 2))),
+        ]
+        merged = Stencil.concatenate(parts, jnp.array([0.4, 0.6]))
+
+        assert merged.n_neighbors == 4
+        assert_array_equal(np.asarray(merged.indices), [[0, 1, 2, 3]])
+        assert_allclose(np.asarray(merged.weights), [[0.2, 0.2, 0.15, 0.45]])
+        for component in SkyPositions._fields:
+            assert_array_equal(
+                np.asarray(getattr(merged.positions, component)),
+                np.concatenate(
+                    [np.asarray(getattr(p.positions, component)) for p in parts], axis=-1
+                ),
+            )
+
+    def test_one_part_with_unit_weight_is_that_part(self):
+        part = Stencil.resolve(
+            jnp.array([[0, -1, 2, 3]]), jnp.array([[0.4, 0.4, 0.1, 0.1]]), _positions((1, 4))
+        )
+        merged = Stencil.concatenate([part], jnp.array([1.0]))
+        assert_array_equal(np.asarray(merged.indices), np.asarray(part.indices))
+        assert_allclose(np.asarray(merged.weights), np.asarray(part.weights))
+
+    def test_a_part_off_the_map_renormalizes_to_the_parts_in_view(self):
+        """The same convention as a partly covered bilinear sample: no bias, less support."""
+        in_view = Stencil.unpositioned(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]]))
+        off_map = Stencil.unpositioned(jnp.array([[-1, -1]]), jnp.array([[0.5, 0.5]]))
+        merged = Stencil.concatenate([in_view, off_map], jnp.array([0.5, 0.5]))
+        assert_allclose(np.asarray(merged.weights), [[0.5, 0.5, 0.0, 0.0]])
+        assert merged.positions is None
+
+    def test_per_stokes_outer_weights_give_one_weight_row_per_component(self):
+        """Each component reads the same pixels with its own weights, each row summing to one."""
+        parts = [
+            Stencil.unpositioned(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]])),
+            Stencil.unpositioned(jnp.array([[2, 3]]), jnp.array([[0.5, 0.5]])),
+        ]
+        outer = jnp.array([[0.5, 0.5], [1.0, 0.0], [0.0, 1.0]])  # I, Q, U
+        merged = Stencil.concatenate(parts, outer)
+
+        assert merged.indices.shape == (1, 4)
+        assert merged.weights.shape == (3, 1, 4)
+        assert_allclose(
+            np.asarray(merged.weights[:, 0]),
+            [[0.25, 0.25, 0.25, 0.25], [0.5, 0.5, 0.0, 0.0], [0.0, 0.0, 0.5, 0.5]],
+        )
+
+    def test_per_stokes_weights_broadcast_against_a_gathered_map(self):
+        """The sampler contracts `values[:, ..., neighbours] * weights` over the trailing axis."""
+        parts = [
+            Stencil.unpositioned(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]])),
+            Stencil.unpositioned(jnp.array([[2, 3]]), jnp.array([[0.5, 0.5]])),
+        ]
+        merged = Stencil.concatenate(parts, jnp.array([[1.0, 0.0], [0.0, 1.0]]))
+        sky = jnp.array([[1.0, 2.0, 3.0, 4.0], [10.0, 20.0, 30.0, 40.0]])
+        sampled = jnp.sum(sky[:, merged.indices] * merged.weights, axis=-1)
+        assert_allclose(np.asarray(sampled), [[1.5], [35.0]])
+
+    def test_is_a_pytree_jax_can_trace_through(self):
+        parts = [
+            Stencil.resolve(jnp.zeros((5, 4), jnp.int32), jnp.ones((5, 4)), _positions((5, 4)))
+            for _ in range(3)
+        ]
+        outer = jnp.array([0.2, 0.3, 0.5])
+        merged = jax.jit(lambda ps, w: Stencil.concatenate(ps, w))(parts, outer)
+        assert merged.n_neighbors == 12
+        assert_allclose(np.asarray(merged.weights.sum(axis=-1)), 1.0)
+
+    def test_rejects_mismatched_counts_and_mixed_positioning(self):
+        positioned = Stencil.resolve(jnp.array([[0, 1]]), jnp.ones((1, 2)), _positions((1, 2)))
+        unpositioned = Stencil.unpositioned(jnp.array([[0, 1]]), jnp.ones((1, 2)))
+        with pytest.raises(ValueError, match='outer weights'):
+            Stencil.concatenate([positioned, positioned], jnp.array([1.0]))
+        with pytest.raises(ValueError, match='positioned'):
+            Stencil.concatenate([positioned, unpositioned], jnp.array([0.5, 0.5]))
+        with pytest.raises(ValueError, match='at least one'):
+            Stencil.concatenate([], jnp.array([]))

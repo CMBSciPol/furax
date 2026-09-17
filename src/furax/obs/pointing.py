@@ -71,8 +71,9 @@ class PointingOperator(AbstractLinearOperator):
         qdet: Detector quaternions, shape (n_detectors,).
         batch_size: Number of detectors processed per batch (memory/speed tradeoff).
         interpolate: If True, bilinear interpolation over the four nearest pixels; else nearest.
-        offsets: Detector-frame directions a sample integrates over, shape (n_offsets,), or
-            `None` to read the pointing direction alone.
+        offsets: Directions a sample integrates over, one row per detector, expressed in the frame
+            `qdet` is in, shape (n_detectors, n_offsets). `None` to read the pointing direction
+            alone.
         offset_weights: The weight of each offset, shape (n_offsets,), or one row per Stokes
             component, shape (n_stokes, n_offsets). `None` if `offsets` is `None`.
     """
@@ -116,9 +117,10 @@ class PointingOperator(AbstractLinearOperator):
                 boresight.
             interpolate: If True, bilinear interpolation over the four nearest pixels, otherwise
                 nearest neighbour.
-            offsets: Directions a sample integrates over, as quaternions composed like a detector
-                offset, shape (n_offsets,). Only their direction is used. `None` reads the
-                pointing direction alone.
+            offsets: Directions a sample integrates over, as detector-frame quaternions composed
+                like a detector offset, shape (n_offsets,) for the same directions on every
+                detector, or (n_detectors, n_offsets). Only their direction is used. `None` reads
+                the pointing direction alone.
             offset_weights: The weight of each offset, shape (n_offsets,), or one row per Stokes
                 component of the landscape, shape (n_stokes, n_offsets). Required with `offsets`.
         """
@@ -132,8 +134,13 @@ class PointingOperator(AbstractLinearOperator):
         if offsets is not None:
             assert offset_weights is not None
             offset_weights = jnp.asarray(offset_weights, dtype=landscape.dtype)
-            n_offsets = offsets.shape[0]
+            n_offsets = offsets.shape[-1]
             n_stokes = len(landscape.stokes)
+            if offsets.shape not in {(n_offsets,), (ndet, n_offsets)}:
+                raise ValueError(
+                    f'offsets has shape {offsets.shape}, expected ({n_offsets},) or '
+                    f'({ndet}, {n_offsets}) for {ndet} detectors'
+                )
             if offset_weights.shape not in {(n_offsets,), (n_stokes, n_offsets)}:
                 raise ValueError(
                     f'offset_weights has shape {offset_weights.shape}, expected ({n_offsets},) or '
@@ -149,10 +156,17 @@ class PointingOperator(AbstractLinearOperator):
         # NB: the xieta parametrization is incomplete and cannot describe all rotations.
         # Thus converting to xieta and back (with gamma=0) may not work in full generality.
         # This approach is more general and just as efficient.
+        gamma = jnp.zeros(ndet, dtype=landscape.dtype)
         if frame == 'boresight':
             gamma = to_gamma_angles(detector_quaternions)
             q_z_neg = euler(2, -gamma)  # z-rotation by -gamma
             detector_quaternions = detector_quaternions * q_z_neg
+
+        if offsets is not None:
+            # An offset direction is fixed to the physical detector, so stripping gamma from qdet
+            # must not turn it: rotate the offsets by +gamma to compensate, which also gives them
+            # their per-detector shape. In the detector frame gamma is zero and this is exact.
+            offsets = euler(2, gamma)[:, None] * offsets
 
         return cls(
             landscape,
@@ -171,11 +185,11 @@ class PointingOperator(AbstractLinearOperator):
         """Performs the 'un-pointing' operation, i.e. map->tod."""
         x_flat = x.ravel()
 
-        def mv_inner(qdet: Quaternion) -> _StokesT:
+        def mv_inner(qdet: Quaternion, offsets: Quaternion | None) -> _StokesT:
             # Expand detector quaternions from boresight and offsets: (samp) x (det, 1) -> (det, samp)
             qdet_full = self.qbore * qdet[:, None]
 
-            tod = self._sample(x_flat, qdet_full)
+            tod = self._sample(x_flat, qdet_full, offsets)
             tod = self._modulate(tod, qdet_full)
 
             if isinstance(tod, StokesI):
@@ -196,13 +210,17 @@ class PointingOperator(AbstractLinearOperator):
             # interval bounds must be static, so we shift the values afterwards
             # jax indexing semantics automatically clip out-of-bounds indices
             idet = jnp.arange(batch_size) + i * batch_size
-            tod_batch = mv_inner(self.qdet[idet])
+            tod_batch = mv_inner(self.qdet[idet], self._offsets_batch(idet))
             return type(tod).from_array(tod.data.at[:, idet].set(tod_batch.data))
 
         # Start from an empty timestream: every slot gets overwritten by body.
         tod_out: _StokesT = type(x).empty((ndet, nsamp), dtype=x.dtype)
         tod_out = lax.fori_loop(0, n_batches, body, tod_out)
         return tod_out
+
+    def _offsets_batch(self, idet: Int[Array, ' batch']) -> Quaternion | None:
+        """The offsets of a batch of detectors, or `None` when the operator has none."""
+        return None if self.offsets is None else self.offsets[idet]
 
     def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
         """Return a copy of this operator restricted to StokesI.
@@ -314,6 +332,27 @@ class PointingOperator(AbstractLinearOperator):
         )
         return SampledPointing(stencil, *world)
 
+    def _pointing(self, qdet_full: Quaternion, offsets: Quaternion | None) -> SampledPointing:
+        """The [`SampledPointing`][] of every sample, integrated over the offsets if any.
+
+        Each offset reads the map around its own direction through [`_quat2pointing`][], and the
+        parts are merged into one stencil per sample. The transport target stays the un-offset
+        direction, so every pixel read, whichever offset reads it, is carried into the same frame
+        before the sum.
+
+        Args:
+            qdet_full: The pointing of every sample, shape (det, samp).
+            offsets: The offsets of those detectors, shape (det, n_offsets), or `None`.
+        """
+        pointing = self._quat2pointing(qdet_full)
+        if offsets is None:
+            return pointing
+        assert self.offset_weights is not None
+        n_offsets = offsets.shape[-1]
+        parts = [self._quat2pointing(qdet_full * offsets[:, k, None]) for k in range(n_offsets)]
+        stencil = Stencil.concatenate([part.stencil for part in parts], self.offset_weights)
+        return SampledPointing(stencil, pointing.theta, pointing.phi)
+
     def _check_index_hook_not_overridden(self) -> None:
         if type(self)._quat2index is not PointingOperator._quat2index:
             msg = (
@@ -331,10 +370,12 @@ class PointingOperator(AbstractLinearOperator):
         """
         return tod
 
-    def _sample(self, x_flat: _StokesT, qdet_full: Quaternion) -> _StokesT:
+    def _sample(
+        self, x_flat: _StokesT, qdet_full: Quaternion, offsets: Quaternion | None = None
+    ) -> _StokesT:
         """Sample the flat map at positions given by qdet_full."""
         if self.landscape.has_spin2:
-            return transported_gather(x_flat, *self._quat2pointing(qdet_full))
+            return transported_gather(x_flat, *self._pointing(qdet_full, offsets))
 
         if not self.interpolate:
             # fast path for nearest-neighbour
@@ -343,13 +384,15 @@ class PointingOperator(AbstractLinearOperator):
             # the gather wraps a -1 onto the last pixel, which the sample never observed
             return type(x_flat).from_array(jnp.where(pix >= 0, sampled.data, 0))
 
-        stencil = self._quat2pointing(qdet_full).stencil
+        stencil = self._pointing(qdet_full, offsets).stencil
         # leading Stokes axis: index the (trailing) pixel axis and sum over the neighbour axis (-1);
         # the weights broadcast over the leading Stokes axis for free.
         sampled = jnp.sum(x_flat.data[:, stencil.indices] * stencil.weights, axis=-1)
         return type(x_flat).from_array(sampled)
 
-    def _bin(self, tod_batch: _StokesT, qdet_full: Quaternion) -> _StokesT:
+    def _bin(
+        self, tod_batch: _StokesT, qdet_full: Quaternion, offsets: Quaternion | None = None
+    ) -> _StokesT:
         """Scatter-add a batch of TOD into a sky map."""
         sky_shape = self.landscape.shape
         n_pixels = int(np.prod(sky_shape))
@@ -360,7 +403,9 @@ class PointingOperator(AbstractLinearOperator):
 
         if self.landscape.has_spin2:
             flat_sky = type(tod_batch).from_array(zeros)
-            binned_sky = transported_scatter(flat_sky, tod_batch, *self._quat2pointing(qdet_full))
+            binned_sky = transported_scatter(
+                flat_sky, tod_batch, *self._pointing(qdet_full, offsets)
+            )
             return type(tod_batch).from_array(binned_sky.data.reshape(n_stokes, *sky_shape))
 
         if not self.interpolate:
@@ -371,7 +416,7 @@ class PointingOperator(AbstractLinearOperator):
             binned = zeros.at[:, pix.ravel()].add(contrib.reshape(n_stokes, -1))
             return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
 
-        stencil = self._quat2pointing(qdet_full).stencil
+        stencil = self._pointing(qdet_full, offsets).stencil
         # (n_stokes, *det_sample, n_nb): spread each sample over its neighbours (weights broadcast
         # over the leading Stokes axis for free).
         contrib = arr[..., None] * stencil.weights
@@ -389,19 +434,19 @@ class PointingTransposeOperator(TransposeOperator):
     def mv(self, x: _StokesT) -> _StokesT:
         """Performs the 'pointing' operation, i.e. tod->map."""
 
-        def mv_inner(xbatch: _StokesT, qdet: Quaternion) -> _StokesT:
+        def mv_inner(xbatch: _StokesT, qdet: Quaternion, offsets: Quaternion | None) -> _StokesT:
             # Expand detector quaternions from boresight and offsets
             qdet_full = self.operator.qbore * qdet[:, None]
             xbatch = self.operator._modulate(xbatch, qdet_full)
 
             if isinstance(xbatch, StokesI):
                 # no rotation needed
-                return self.operator._bin(xbatch, qdet_full)
+                return self.operator._bin(xbatch, qdet_full, offsets)
 
             # Rotate back to the celestial frame with the inverse rotation
             cos_angles, sin_angles = to_polarization_angle_cos_sin(qdet_full)
             rotated: _StokesT = rotate_qu_cs(xbatch, cos_angles, -sin_angles)
-            return self.operator._bin(rotated, qdet_full)
+            return self.operator._bin(rotated, qdet_full, offsets)
 
         # Loop over batches of detectors
         ndet, _ = self.in_structure.shape
@@ -414,7 +459,11 @@ class PointingTransposeOperator(TransposeOperator):
             unique = idet < ndet
 
             # process batch
-            sky_batch = mv_inner(unique[:, None] * x[idet], self.operator.qdet[idet])
+            sky_batch = mv_inner(
+                unique[:, None] * x[idet],
+                self.operator.qdet[idet],
+                self.operator._offsets_batch(idet),
+            )
 
             # combine the results of the batches into one sky map
             return sky + sky_batch

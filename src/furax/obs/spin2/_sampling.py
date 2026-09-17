@@ -26,6 +26,9 @@ def transported_gather[S: Stokes](
     transport the sum mixes bases and leaks $E$ into $B$. $I$ and $V$ are unaffected, and a
     [`StokesI`][] map is interpolated exactly as a scalar one.
 
+    Stencil weights with a leading Stokes axis weigh each component on its own, in the frame of
+    the target direction.
+
     Args:
         sky: Sky map whose spatial axes are raveled, i.e. of shape ``(n_pixels,)`` per component.
         stencil: The pixels each sample reads, their weights and their positions.
@@ -64,15 +67,19 @@ def transported_scatter[S: Stokes](
         The accumulated sky map.
     """
     # Spread over the neighbour axis before rotating: the transport differs per neighbour, so each
-    # copy of the sample turns by its own angle. The broadcast must be materialised, because
-    # `rotate_qu` stacks the rotated Q, U rows back with the untouched I, V ones.
+    # copy of the sample turns by its own angle. Weighting comes first, mirroring the gather in
+    # reverse: the gather weights *after* rotating into the target frame, so the adjoint weights
+    # in that frame *before* rotating back. The order matters once the weights differ between Q
+    # and U, since a per-component weight does not commute with the rotation. The spread is
+    # materialised (not a lazy broadcast) because `rotate_qu` stacks the rotated Q, U rows back
+    # with the untouched I, V ones.
     spread = type(tod).from_array(
         jnp.broadcast_to(tod.data[..., None], (*tod.data.shape, stencil.n_neighbors))
+        * stencil.weights
     )
     cos_2delta, sin_2delta = _transport_pair(spread, stencil, theta, phi)
     # The transpose of rotate_qu(c, s) is rotate_qu(c, -s), which is what makes this the adjoint.
-    rotated = spread.rotate_qu(cos_2delta, -sin_2delta)
-    contrib = rotated.data * stencil.weights
+    contrib = spread.rotate_qu(cos_2delta, -sin_2delta).data
     n_stokes = out.data.shape[0]
     accumulated = out.data.at[..., stencil.indices.ravel()].add(contrib.reshape(n_stokes, -1))
     return type(out).from_array(accumulated)

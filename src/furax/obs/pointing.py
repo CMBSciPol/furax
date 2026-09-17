@@ -377,8 +377,8 @@ class PointingOperator(AbstractLinearOperator):
         if self.landscape.has_spin2:
             return transported_gather(x_flat, *self._pointing(qdet_full, offsets))
 
-        if not self.interpolate:
-            # fast path for nearest-neighbour
+        if not self.interpolate and offsets is None:
+            # fast path for nearest-neighbour: one pixel per sample, so no stencil is needed
             pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
             sampled = x_flat[pix]
             # the gather wraps a -1 onto the last pixel, which the sample never observed
@@ -408,8 +408,8 @@ class PointingOperator(AbstractLinearOperator):
             )
             return type(tod_batch).from_array(binned_sky.data.reshape(n_stokes, *sky_shape))
 
-        if not self.interpolate:
-            # fast path for nearest-neighbour
+        if not self.interpolate and offsets is None:
+            # fast path for nearest-neighbour: one pixel per sample, so no stencil is needed
             pix = self._quat2index(qdet_full)  # (ndet, nsamp), -1 for out-of-bounds samples
             # the scatter wraps a -1 onto the last pixel, so such a sample must add nothing
             contrib = jnp.where(pix >= 0, arr, 0)

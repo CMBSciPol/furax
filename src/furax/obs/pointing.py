@@ -59,12 +59,22 @@ class PointingOperator(AbstractLinearOperator):
 
     The transpose accumulates TOD into a sky map (binning).
 
+    A detector may read the sky at several offsets around its pointing direction, each with a
+    weight, and return their weighted sum. The offsets model an integration within a sample: a
+    finite time integration, a pixel window, or a beam. Every offset reads the map with the same
+    interpolation, and the polarization of every pixel read is transported into the frame of the
+    un-offset direction before the sum, so the offsets never mix polarization bases.
+
     Attributes:
         landscape: The sky pixelization (HEALPix landscape).
         qbore: Boresight quaternions, shape (n_samples,).
         qdet: Detector quaternions, shape (n_detectors,).
         batch_size: Number of detectors processed per batch (memory/speed tradeoff).
         interpolate: If True, bilinear interpolation over the four nearest pixels; else nearest.
+        offsets: Detector-frame directions a sample integrates over, shape (n_offsets,), or
+            `None` to read the pointing direction alone.
+        offset_weights: The weight of each offset, shape (n_offsets,), or one row per Stokes
+            component, shape (n_stokes, n_offsets). `None` if `offsets` is `None`.
     """
 
     landscape: StokesLandscape
@@ -73,6 +83,11 @@ class PointingOperator(AbstractLinearOperator):
     batch_size: int = field(metadata={'static': True})
     interpolate: bool = field(metadata={'static': True})
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
+    # keyword-only so that subclasses can still declare required fields
+    offsets: Quaternion | None = field(default=None, kw_only=True)
+    offset_weights: Float[Array, ' n_offsets'] | Float[Array, 'n_stokes n_offsets'] | None = field(
+        default=None, kw_only=True
+    )
 
     @classmethod
     def create(
@@ -84,11 +99,47 @@ class PointingOperator(AbstractLinearOperator):
         batch_size: int = 32,
         frame: Literal['boresight', 'detector'] = 'boresight',
         interpolate: bool = False,
+        offsets: Quaternion | None = None,
+        offset_weights: Float[Array, ' n_offsets']
+        | Float[Array, 'n_stokes n_offsets']
+        | None = None,
     ) -> 'PointingOperator':
+        """Build the operator from the boresight pointing and the detector offsets.
+
+        Args:
+            landscape: The sky pixelization.
+            boresight_quaternions: Boresight quaternions, shape (n_samples,).
+            detector_quaternions: Detector offset quaternions, shape (n_detectors,).
+            batch_size: Number of detectors processed per batch.
+            frame: Frame the polarization angle is measured in. In the `'boresight'` frame the
+                z-rotation of each detector offset is stripped, so the angle is that of the
+                boresight.
+            interpolate: If True, bilinear interpolation over the four nearest pixels, otherwise
+                nearest neighbour.
+            offsets: Directions a sample integrates over, as quaternions composed like a detector
+                offset, shape (n_offsets,). Only their direction is used. `None` reads the
+                pointing direction alone.
+            offset_weights: The weight of each offset, shape (n_offsets,), or one row per Stokes
+                component of the landscape, shape (n_stokes, n_offsets). Required with `offsets`.
+        """
         # Explicitly determine the output structure
         ndet = detector_quaternions.shape[0]
         nsamp = boresight_quaternions.shape[0]
         out_structure = landscape.structure_for((ndet, nsamp))
+
+        if (offsets is None) != (offset_weights is None):
+            raise ValueError('offsets and offset_weights must be given together')
+        if offsets is not None:
+            assert offset_weights is not None
+            offset_weights = jnp.asarray(offset_weights, dtype=landscape.dtype)
+            n_offsets = offsets.shape[0]
+            n_stokes = len(landscape.stokes)
+            if offset_weights.shape not in {(n_offsets,), (n_stokes, n_offsets)}:
+                raise ValueError(
+                    f'offset_weights has shape {offset_weights.shape}, expected ({n_offsets},) or '
+                    f'({n_stokes}, {n_offsets}) for {n_offsets} offsets and a {landscape.stokes} '
+                    'landscape'
+                )
 
         # In boresight frame, strip the z-rotation (gamma) from each detector quaternion.
         # This absorbs the frame correction into qdet so that _get_cos_sin_angles always
@@ -111,6 +162,8 @@ class PointingOperator(AbstractLinearOperator):
             interpolate=interpolate,
             in_structure=landscape.structure,
             _out_structure=out_structure,
+            offsets=offsets,
+            offset_weights=offset_weights,
         )
 
     @jit

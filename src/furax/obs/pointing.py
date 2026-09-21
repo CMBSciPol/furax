@@ -363,14 +363,14 @@ class PointingOperator(AbstractLinearOperator):
             qdet_full: The pointing of every sample, shape (det, samp).
             offsets: The offsets of those detectors, shape (det, n_offsets), or `None`.
         """
-        pointing = self._quat2pointing(qdet_full)
         if offsets is None:
-            return pointing
+            return self._quat2pointing(qdet_full)
         assert self.offset_weights is not None
+        theta, phi = self.landscape.quat2world(qdet_full)
         # (det, samp, 1) x (det, 1, n_offsets) -> (det, samp, n_offsets), one direction per offset
         offset_pointing = self._quat2pointing(qdet_full[:, :, None] * offsets[:, None, :])
         stencil = offset_pointing.stencil.integrated(self.offset_weights)
-        return SampledPointing(stencil, pointing.theta, pointing.phi)
+        return SampledPointing(stencil, theta, phi)
 
     def _check_index_hook_not_overridden(self) -> None:
         if type(self)._quat2index is not PointingOperator._quat2index:

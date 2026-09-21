@@ -185,7 +185,7 @@ class PointingOperator(AbstractLinearOperator):
         x_flat = x.ravel()
 
         def mv_inner(qdet: Quaternion, offsets: Quaternion | None) -> _StokesT:
-            # Expand detector quaternions from boresight and offsets: (samp) x (det, 1) -> (det, samp)
+            # Expand the pointing from boresight and detector quaternions: (samp) x (det, 1) -> (det, samp)
             qdet_full = self.qbore * qdet[:, None]
 
             tod = self._sample(x_flat, qdet_full, offsets)
@@ -450,7 +450,7 @@ class PointingTransposeOperator(TransposeOperator):
         """Performs the 'pointing' operation, i.e. tod->map."""
 
         def mv_inner(xbatch: _StokesT, qdet: Quaternion, offsets: Quaternion | None) -> _StokesT:
-            # Expand detector quaternions from boresight and offsets
+            # Expand the pointing from boresight and detector quaternions
             qdet_full = self.operator.qbore * qdet[:, None]
             xbatch = self.operator._modulate(xbatch, qdet_full)
 

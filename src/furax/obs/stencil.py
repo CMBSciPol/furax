@@ -4,7 +4,6 @@ The type in this module carries no notion of pixelization. A landscape produces 
 sampler consumes one, and neither has to agree on anything else.
 """
 
-from collections.abc import Sequence
 from enum import IntEnum
 from typing import NamedTuple, Self
 
@@ -200,62 +199,44 @@ class Stencil(NamedTuple):
         """
         return cls.resolve(indices, weights, None)
 
-    @classmethod
-    def concatenate(
-        cls,
-        stencils: Sequence[Self],
-        outer_weights: Float[Array, ' n_stencils'] | Float[Array, 'n_stokes n_stencils'],
+    def integrated(
+        self, weights: Float[Array, ' n_offsets'] | Float[Array, 'n_stokes n_offsets']
     ) -> Self:
-        """Merge the stencils of several directions into one stencil per sample.
+        """Fold a trailing axis of directions into the neighbour axis, with a weight per direction.
 
-        The neighbour axes are stacked, each stencil's weights are multiplied by its outer weight,
-        and the positions are carried over, so the result reads every pixel the parts read. It is
-        re-resolved, which normalizes the trailing axis to one: a sample whose stencils partly fall
-        off a partial-sky map is renormalized to the part in view, the same convention as a partly
-        covered bilinear sample. With outer weights that sum to one and every part in view, the
-        weights are exactly the products.
+        For a stencil of shape `(..., n_offsets, neighbors)`, built for the directions a sample
+        integrates over, the result has shape `(..., n_offsets * neighbors)`: it reads every pixel
+        the directions read, each direction's weights multiplied by its own weight, and the
+        positions carried over. It is re-resolved, which normalizes the merged axis to one: a
+        sample whose directions partly fall off a partial-sky map is renormalized to the part in
+        view, the same convention as a partly covered bilinear sample. With weights that sum to
+        one and every direction in view, the merged weights are exactly the products.
 
         Args:
-            stencils: The stencils to merge, all of the same sample shape and all positioned, or
-                all unpositioned.
-            outer_weights: One weight per stencil, or one row of them per Stokes component.
+            weights: One weight per direction, or one row of them per Stokes component.
 
         Returns:
-            The resolved stencil, whose neighbour axis is the sum of the parts' axes.
+            The resolved stencil, with the direction axis folded into the neighbour axis.
         """
-        if len(stencils) == 0:
-            raise ValueError('at least one stencil is required')
-        outer_weights = jnp.asarray(outer_weights)
-        if outer_weights.shape[-1] != len(stencils):
+        weights = jnp.asarray(weights)
+        n_offsets, n_neighbors = self.indices.shape[-2:]
+        if weights.shape[-1] != n_offsets:
             raise ValueError(
-                f'{len(stencils)} stencils but {outer_weights.shape[-1]} outer weights were given'
+                f'the stencil has {n_offsets} directions but {weights.shape[-1]} weights were given'
             )
-        n_sample_dims = stencils[0].indices.ndim - 1
-        # shape (n_stokes, 1, ..., 1, 1) or (1, ..., 1, 1): broadcast over the sample and
-        # neighbour axes only, and put a Stokes row, if any, in front of them.
-        broadcast_shape = (*outer_weights.shape[:-1], *(1,) * n_sample_dims, 1)
-        weights = jnp.concatenate(
-            [
-                stencil.weights * outer_weights[..., k].reshape(broadcast_shape)
-                for k, stencil in enumerate(stencils)
-            ],
-            axis=-1,
+        # shape (n_stokes, 1, ..., 1, n_offsets, 1) or (1, ..., 1, n_offsets, 1): broadcast over
+        # the sample and neighbour axes, and put a Stokes row, if any, in front of them.
+        n_sample_dims = self.indices.ndim - 2
+        weights = weights.reshape(*weights.shape[:-1], *(1,) * n_sample_dims, n_offsets, 1)
+        merged_weights = self.weights * weights
+        merged_shape = (*merged_weights.shape[:-2], n_offsets * n_neighbors)
+        indices = self.indices.reshape(*self.indices.shape[:-2], -1)
+        positions = (
+            None
+            if self.positions is None
+            else SkyPositions(*(p.reshape(*p.shape[:-2], -1) for p in self.positions))
         )
-        indices = jnp.concatenate([stencil.indices for stencil in stencils], axis=-1)
-        all_positions = [stencil.positions for stencil in stencils]
-        positioned = [p for p in all_positions if p is not None]
-        if len(positioned) == len(stencils):
-            positions = SkyPositions(
-                *(
-                    jnp.concatenate([p[i] for p in positioned], axis=-1)
-                    for i in range(len(SkyPositions._fields))
-                )
-            )
-        elif positioned:
-            raise ValueError('cannot merge positioned and unpositioned stencils')
-        else:
-            positions = None
-        return cls.resolve(indices, weights, positions)
+        return self.resolve(indices, merged_weights.reshape(merged_shape), positions)
 
     def reindexed(
         self,

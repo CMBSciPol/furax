@@ -126,13 +126,28 @@ class TestStencil:
         assert isinstance(jax.tree.unflatten(treedef, leaves), Stencil)
 
 
-class TestConcatenate:
-    def test_stacks_the_parts_and_scales_each_by_its_outer_weight(self):
+class TestIntegrated:
+    def _stacked(self, *parts: Stencil) -> Stencil:
+        """Stack one-direction stencils along a new second-to-last axis, as a sampler builds them."""
+        return Stencil(
+            jnp.stack([p.indices for p in parts], axis=-2),
+            jnp.stack([p.weights for p in parts], axis=-2),
+            None
+            if parts[0].positions is None
+            else SkyPositions(
+                *(
+                    jnp.stack([getattr(p.positions, c) for p in parts], axis=-2)
+                    for c in ['z', 'sth', 'phi']
+                )
+            ),
+        )
+
+    def test_folds_the_directions_and_scales_each_by_its_weight(self):
         parts = [
             Stencil.resolve(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]]), _positions((1, 2))),
             Stencil.resolve(jnp.array([[2, 3]]), jnp.array([[0.25, 0.75]]), _positions((1, 2))),
         ]
-        merged = Stencil.concatenate(parts, jnp.array([0.4, 0.6]))
+        merged = self._stacked(*parts).integrated(jnp.array([0.4, 0.6]))
 
         assert merged.n_neighbors == 4
         assert_array_equal(np.asarray(merged.indices), [[0, 1, 2, 3]])
@@ -145,30 +160,30 @@ class TestConcatenate:
                 ),
             )
 
-    def test_one_part_with_unit_weight_is_that_part(self):
+    def test_one_direction_with_unit_weight_is_that_direction(self):
         part = Stencil.resolve(
             jnp.array([[0, -1, 2, 3]]), jnp.array([[0.4, 0.4, 0.1, 0.1]]), _positions((1, 4))
         )
-        merged = Stencil.concatenate([part], jnp.array([1.0]))
+        merged = self._stacked(part).integrated(jnp.array([1.0]))
         assert_array_equal(np.asarray(merged.indices), np.asarray(part.indices))
         assert_allclose(np.asarray(merged.weights), np.asarray(part.weights))
 
-    def test_a_part_off_the_map_renormalizes_to_the_parts_in_view(self):
+    def test_a_direction_off_the_map_renormalizes_to_the_directions_in_view(self):
         """The same convention as a partly covered bilinear sample: no bias, less support."""
         in_view = Stencil.unpositioned(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]]))
         off_map = Stencil.unpositioned(jnp.array([[-1, -1]]), jnp.array([[0.5, 0.5]]))
-        merged = Stencil.concatenate([in_view, off_map], jnp.array([0.5, 0.5]))
+        merged = self._stacked(in_view, off_map).integrated(jnp.array([0.5, 0.5]))
         assert_allclose(np.asarray(merged.weights), [[0.5, 0.5, 0.0, 0.0]])
         assert merged.positions is None
 
-    def test_per_stokes_outer_weights_give_one_weight_row_per_component(self):
+    def test_per_stokes_weights_give_one_weight_row_per_component(self):
         """Each component reads the same pixels with its own weights, each row summing to one."""
         parts = [
             Stencil.unpositioned(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]])),
             Stencil.unpositioned(jnp.array([[2, 3]]), jnp.array([[0.5, 0.5]])),
         ]
         outer = jnp.array([[0.5, 0.5], [1.0, 0.0], [0.0, 1.0]])  # I, Q, U
-        merged = Stencil.concatenate(parts, outer)
+        merged = self._stacked(*parts).integrated(outer)
 
         assert merged.indices.shape == (1, 4)
         assert merged.weights.shape == (3, 1, 4)
@@ -183,27 +198,21 @@ class TestConcatenate:
             Stencil.unpositioned(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]])),
             Stencil.unpositioned(jnp.array([[2, 3]]), jnp.array([[0.5, 0.5]])),
         ]
-        merged = Stencil.concatenate(parts, jnp.array([[1.0, 0.0], [0.0, 1.0]]))
+        merged = self._stacked(*parts).integrated(jnp.array([[1.0, 0.0], [0.0, 1.0]]))
         sky = jnp.array([[1.0, 2.0, 3.0, 4.0], [10.0, 20.0, 30.0, 40.0]])
         sampled = jnp.sum(sky[:, merged.indices] * merged.weights, axis=-1)
         assert_allclose(np.asarray(sampled), [[1.5], [35.0]])
 
     def test_is_a_pytree_jax_can_trace_through(self):
-        parts = [
-            Stencil.resolve(jnp.zeros((5, 4), jnp.int32), jnp.ones((5, 4)), _positions((5, 4)))
-            for _ in range(3)
-        ]
-        outer = jnp.array([0.2, 0.3, 0.5])
-        merged = jax.jit(lambda ps, w: Stencil.concatenate(ps, w))(parts, outer)
+        stencil = Stencil.resolve(
+            jnp.zeros((5, 3, 4), jnp.int32), jnp.ones((5, 3, 4)), _positions((5, 3, 4))
+        )
+        merged = jax.jit(lambda s, w: s.integrated(w))(stencil, jnp.array([0.2, 0.3, 0.5]))
         assert merged.n_neighbors == 12
+        assert merged.indices.shape == (5, 12)
         assert_allclose(np.asarray(merged.weights.sum(axis=-1)), 1.0)
 
-    def test_rejects_mismatched_counts_and_mixed_positioning(self):
-        positioned = Stencil.resolve(jnp.array([[0, 1]]), jnp.ones((1, 2)), _positions((1, 2)))
-        unpositioned = Stencil.unpositioned(jnp.array([[0, 1]]), jnp.ones((1, 2)))
-        with pytest.raises(ValueError, match='outer weights'):
-            Stencil.concatenate([positioned, positioned], jnp.array([1.0]))
-        with pytest.raises(ValueError, match='positioned'):
-            Stencil.concatenate([positioned, unpositioned], jnp.array([0.5, 0.5]))
-        with pytest.raises(ValueError, match='at least one'):
-            Stencil.concatenate([], jnp.array([]))
+    def test_rejects_a_weight_count_that_does_not_match_the_directions(self):
+        stencil = Stencil.unpositioned(jnp.zeros((1, 2, 2), jnp.int32), jnp.ones((1, 2, 2)))
+        with pytest.raises(ValueError, match='2 directions'):
+            stencil.integrated(jnp.array([1.0]))

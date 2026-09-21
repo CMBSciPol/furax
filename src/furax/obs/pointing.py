@@ -352,9 +352,9 @@ class PointingOperator(AbstractLinearOperator):
         """The [`SampledPointing`][] of every sample, integrated over the offsets if any.
 
         Each offset reads the map around its own direction through [`_quat2pointing`][], and the
-        parts are merged into one stencil per sample. The transport target stays the un-offset
-        direction, so every pixel read, whichever offset reads it, is carried into the same frame
-        before the sum.
+        directions are folded into one stencil per sample. The transport target stays the
+        un-offset direction, so every pixel read, whichever offset reads it, is carried into the
+        same frame before the sum.
 
         Args:
             qdet_full: The pointing of every sample, shape (det, samp).
@@ -364,9 +364,9 @@ class PointingOperator(AbstractLinearOperator):
         if offsets is None:
             return pointing
         assert self.offset_weights is not None
-        n_offsets = offsets.shape[-1]
-        parts = [self._quat2pointing(qdet_full * offsets[:, k, None]) for k in range(n_offsets)]
-        stencil = Stencil.concatenate([part.stencil for part in parts], self.offset_weights)
+        # (det, samp, 1) x (det, 1, n_offsets) -> (det, samp, n_offsets), one direction per offset
+        offset_pointing = self._quat2pointing(qdet_full[:, :, None] * offsets[:, None, :])
+        stencil = offset_pointing.stencil.integrated(self.offset_weights)
         return SampledPointing(stencil, pointing.theta, pointing.phi)
 
     def _check_index_hook_not_overridden(self) -> None:
@@ -586,23 +586,16 @@ class XSamplingOperator(AbstractLinearOperator):
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._out_structure
 
-    def _stencil(self) -> Stencil:
-        """The pixels each sample reads, merged over its offsets if any."""
-        if self.offset_theta is None:
-            return self.landscape.world2stencil(self.theta, self.phi, self.interpolation)
-        assert self.offset_phi is not None and self.offset_weights is not None
-        parts = [
-            self.landscape.world2stencil(
-                self.offset_theta[..., k], self.offset_phi[..., k], self.interpolation
-            )
-            for k in range(self.offset_theta.shape[-1])
-        ]
-        return Stencil.concatenate(parts, self.offset_weights)
-
     def mv(self, x: _StokesT) -> _StokesT:
         # `x` is a raveled sky map: its single backing array is (n_stokes, n_pixels). Index the pixel
         # (last) axis with the cached pointing to produce the (n_stokes, ndet, nsamp) TOD.
-        stencil = self._stencil()
+        if self.offset_theta is None:
+            stencil = self.landscape.world2stencil(self.theta, self.phi, self.interpolation)
+        else:
+            assert self.offset_phi is not None and self.offset_weights is not None
+            stencil = self.landscape.world2stencil(
+                self.offset_theta, self.offset_phi, self.interpolation
+            ).integrated(self.offset_weights)
         if self.landscape.has_spin2:
             return transported_gather(x, stencil, self.theta, self.phi)
         return type(x).from_array(jnp.sum(x.data[..., stencil.indices] * stencil.weights, axis=-1))

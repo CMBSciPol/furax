@@ -123,6 +123,9 @@ class PointingOperator(AbstractLinearOperator):
                 the pointing direction alone.
             offset_weights: The weight of each offset, shape (n_offsets,), or one row per Stokes
                 component of the landscape, shape (n_stokes, n_offsets). Required with `offsets`.
+                The weights are normalized to sum to one, per Stokes row, over the offsets whose
+                pixels are in the map: a sample partly off a partial-sky map is renormalized to
+                the part in view, like a partly covered bilinear sample.
         """
         # Explicitly determine the output structure
         ndet = detector_quaternions.shape[0]
@@ -558,7 +561,8 @@ class XSamplingOperator(AbstractLinearOperator):
             offsets: Directions each detector integrates over, in the frame of `quaternions`,
                 shape (ndet, n_offsets), or `None`.
             offset_weights: The weight of each offset, shape (n_offsets,) or (n_stokes, n_offsets).
-                Required with `offsets`.
+                Required with `offsets`. Normalized to sum to one over the offsets in the map, as
+                in [`PointingOperator.create`][].
         """
         if (offsets is None) != (offset_weights is None):
             raise ValueError('offsets and offset_weights must be given together')

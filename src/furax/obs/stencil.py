@@ -12,9 +12,13 @@ from jaxtyping import Array, DTypeLike, Float, Integer
 
 __all__ = [
     'Interpolation',
+    'OffsetWeights',
     'SkyPositions',
     'Stencil',
 ]
+
+# The weight of each direction a sample integrates over, or one row of them per Stokes component.
+OffsetWeights = Float[Array, ' n_offsets'] | Float[Array, 'n_stokes n_offsets']
 
 
 class Interpolation(IntEnum):
@@ -199,9 +203,7 @@ class Stencil(NamedTuple):
         """
         return cls.resolve(indices, weights, None)
 
-    def integrated(
-        self, weights: Float[Array, ' n_offsets'] | Float[Array, 'n_stokes n_offsets']
-    ) -> Self:
+    def integrated(self, weights: OffsetWeights) -> Self:
         """Fold a trailing axis of directions into the neighbour axis, with a weight per direction.
 
         For a stencil of shape `(..., n_offsets, neighbors)`, built for the directions a sample

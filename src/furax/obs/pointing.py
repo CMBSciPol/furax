@@ -20,7 +20,7 @@ from furax.math.coords import (
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
 from furax.obs.spin2 import spin2_cos_sin_zs, transported_gather, transported_scatter
-from furax.obs.stencil import Interpolation, Stencil
+from furax.obs.stencil import Interpolation, OffsetWeights, Stencil
 from furax.obs.stokes import Stokes, StokesI
 
 __all__ = [
@@ -86,9 +86,7 @@ class PointingOperator(AbstractLinearOperator):
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
     # keyword-only so that subclasses can still declare required fields
     offsets: Quaternion | None = field(default=None, kw_only=True)
-    offset_weights: Float[Array, ' n_offsets'] | Float[Array, 'n_stokes n_offsets'] | None = field(
-        default=None, kw_only=True
-    )
+    offset_weights: OffsetWeights | None = field(default=None, kw_only=True)
 
     @classmethod
     def create(
@@ -101,9 +99,7 @@ class PointingOperator(AbstractLinearOperator):
         frame: Literal['boresight', 'detector'] = 'boresight',
         interpolate: bool = False,
         offsets: Quaternion | None = None,
-        offset_weights: Float[Array, ' n_offsets']
-        | Float[Array, 'n_stokes n_offsets']
-        | None = None,
+        offset_weights: OffsetWeights | None = None,
     ) -> 'PointingOperator':
         """Build the operator from the boresight pointing and the detector offsets.
 
@@ -538,9 +534,7 @@ class XSamplingOperator(AbstractLinearOperator):
     )
     offset_theta: Float[Array, 'det samp n_offsets'] | None = field(default=None, kw_only=True)
     offset_phi: Float[Array, 'det samp n_offsets'] | None = field(default=None, kw_only=True)
-    offset_weights: Float[Array, ' n_offsets'] | Float[Array, 'n_stokes n_offsets'] | None = field(
-        default=None, kw_only=True
-    )
+    offset_weights: OffsetWeights | None = field(default=None, kw_only=True)
 
     @classmethod
     def create(
@@ -550,9 +544,7 @@ class XSamplingOperator(AbstractLinearOperator):
         *,
         interpolation: Interpolation = Interpolation.BILINEAR,
         offsets: Quaternion | None = None,
-        offset_weights: Float[Array, ' n_offsets']
-        | Float[Array, 'n_stokes n_offsets']
-        | None = None,
+        offset_weights: OffsetWeights | None = None,
     ) -> Self:
         """Cache the world angles of the given pointing.
 

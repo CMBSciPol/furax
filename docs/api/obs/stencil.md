@@ -5,3 +5,4 @@ Which pixels a sample reads, with what weights, and where those pixels sit on th
 ::: furax.obs.stencil.Interpolation
 ::: furax.obs.stencil.SkyPositions
 ::: furax.obs.stencil.Stencil
+::: furax.obs.stencil.OffsetWeights

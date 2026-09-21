@@ -225,6 +225,9 @@ class PointingOperator(AbstractLinearOperator):
     def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
         """Return a copy of this operator restricted to StokesI.
 
+        The offsets are kept. Per-Stokes offset weights reduce to their I row, or to their mean
+        over the components when the operator has no I component.
+
         Args:
             interpolate: Override the interpolation flag.  If ``None`` (default),
                 the flag is inherited from ``self.interpolate``.
@@ -236,6 +239,12 @@ class PointingOperator(AbstractLinearOperator):
         landscape.stokes = 'I'
         ndet, nsamp = self.qdet.shape[0], self.qbore.shape[0]
         out_structure = StokesI.structure_for((ndet, nsamp), dtype=landscape.dtype)
+        offset_weights = self.offset_weights
+        if offset_weights is not None and offset_weights.ndim == 2:
+            stokes = self.landscape.stokes
+            offset_weights = (
+                offset_weights[stokes.index('I')] if 'I' in stokes else offset_weights.mean(axis=0)
+            )
         return PointingOperator(
             landscape,
             qbore=self.qbore,
@@ -244,6 +253,8 @@ class PointingOperator(AbstractLinearOperator):
             interpolate=effective_interpolate,
             in_structure=landscape.structure,
             _out_structure=out_structure,
+            offsets=self.offsets,
+            offset_weights=offset_weights,
         )
 
     def as_expanded_operator(self) -> AbstractLinearOperator:
@@ -258,11 +269,16 @@ class PointingOperator(AbstractLinearOperator):
         # Ravel the spatial axes only; the Stokes container's backing array carries a leading
         # Stokes axis (axis 0) that must survive, so ravel axes 1..-1 and index the pixel axis last.
         ravel_op = RavelOperator(1, -1, in_structure=self.landscape.structure)
-        sampler = (
-            XSamplingOperator.create(self.landscape, qdet_full)
-            if self.interpolate
-            else self._nearest_sampler(qdet_full, self.landscape.raveled_structure)
-        )
+        if self.interpolate or self.offsets is not None:
+            sampler: AbstractLinearOperator = XSamplingOperator.create(
+                self.landscape,
+                qdet_full,
+                interpolation=self._interpolation,
+                offsets=self.offsets,
+                offset_weights=self.offset_weights,
+            )
+        else:
+            sampler = self._nearest_sampler(qdet_full, self.landscape.raveled_structure)
         pa = to_polarization_angle(qdet_full)
         qu_rot_op = QURotationOperator(angles=pa, in_structure=sampler.out_structure)
         return qu_rot_op @ sampler @ ravel_op
@@ -481,29 +497,78 @@ def _batch_plan(batch_size: int, n: int) -> tuple[int, int]:
 
 
 class XSamplingOperator(AbstractLinearOperator):
-    r"""Precomputed bilinear sky-sampling operator from cached world angles.
+    r"""Precomputed sky-sampling operator from cached world angles.
 
     The "expanded pointing" sampler. It stores the per-sample world angles `(theta, phi)`
     (computed once from the quaternion pointing, so the expensive quaternion-to-angle
     transcendentals are hoisted out of repeated applies) and on every apply gathers a raveled
-    sky map at the four pixels around each of them.
+    sky map at the pixels around each of them, four for bilinear interpolation and one for nearest
+    neighbour.
 
-    Works for any landscape supplying a bilinear [`Stencil`][] (HEALPix and WCS/CAR).
+    A sample may integrate over offsets around its direction, as in [`PointingOperator`][]: the
+    world angles of every offset direction are cached too, each is interpolated the same way, and
+    the polarization of every pixel read is transported into the frame of the un-offset direction
+    before the weighted sum.
+
+    Works for any landscape supplying a [`Stencil`][] (HEALPix and WCS/CAR).
 
     Attributes:
-        landscape: The sky pixelization supplying the bilinear stencil.
+        landscape: The sky pixelization supplying the stencil.
         theta: Cached spherical co-latitude angles, shape ``(ndet, nsamp)``.
         phi: Cached spherical longitude angles, shape ``(ndet, nsamp)``.
+        interpolation: How each direction is read from the map.
+        offset_theta: Co-latitude of every offset direction, shape ``(ndet, nsamp, n_offsets)``,
+            or `None` to read the pointing direction alone.
+        offset_phi: Longitude of every offset direction, of the same shape, or `None`.
+        offset_weights: The weight of each offset, shape ``(n_offsets,)``, or one row per Stokes
+            component, shape ``(n_stokes, n_offsets)``. `None` if there are no offsets.
     """
 
     landscape: StokesLandscape
     theta: Float[Array, 'det samp']
     phi: Float[Array, 'det samp']
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
+    interpolation: Interpolation = field(
+        default=Interpolation.BILINEAR, kw_only=True, metadata={'static': True}
+    )
+    offset_theta: Float[Array, 'det samp n_offsets'] | None = field(default=None, kw_only=True)
+    offset_phi: Float[Array, 'det samp n_offsets'] | None = field(default=None, kw_only=True)
+    offset_weights: Float[Array, ' n_offsets'] | Float[Array, 'n_stokes n_offsets'] | None = field(
+        default=None, kw_only=True
+    )
 
     @classmethod
-    def create(cls, landscape: StokesLandscape, quaternions: Quaternion) -> Self:
+    def create(
+        cls,
+        landscape: StokesLandscape,
+        quaternions: Quaternion,
+        *,
+        interpolation: Interpolation = Interpolation.BILINEAR,
+        offsets: Quaternion | None = None,
+        offset_weights: Float[Array, ' n_offsets']
+        | Float[Array, 'n_stokes n_offsets']
+        | None = None,
+    ) -> Self:
+        """Cache the world angles of the given pointing.
+
+        Args:
+            landscape: The sky pixelization.
+            quaternions: The pointing of every sample, shape (ndet, nsamp).
+            interpolation: How each direction is read from the map.
+            offsets: Directions each detector integrates over, in the frame of `quaternions`,
+                shape (ndet, n_offsets), or `None`.
+            offset_weights: The weight of each offset, shape (n_offsets,) or (n_stokes, n_offsets).
+                Required with `offsets`.
+        """
+        if (offsets is None) != (offset_weights is None):
+            raise ValueError('offsets and offset_weights must be given together')
         theta, phi = landscape.quat2world(quaternions)
+        offset_theta = offset_phi = None
+        if offsets is not None:
+            # (ndet, nsamp, 1) x (ndet, 1, n_offsets) -> (ndet, nsamp, n_offsets)
+            offset_theta, offset_phi = landscape.quat2world(
+                quaternions[:, :, None] * offsets[:, None, :]
+            )
         # The map reaching this operator is raveled by PointingOperator.as_expanded_operator.
         return cls(
             landscape,
@@ -511,16 +576,33 @@ class XSamplingOperator(AbstractLinearOperator):
             phi=phi,
             in_structure=landscape.raveled_structure,
             _out_structure=landscape.structure_for(theta.shape),
+            interpolation=interpolation,
+            offset_theta=offset_theta,
+            offset_phi=offset_phi,
+            offset_weights=offset_weights,
         )
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self._out_structure
 
+    def _stencil(self) -> Stencil:
+        """The pixels each sample reads, merged over its offsets if any."""
+        if self.offset_theta is None:
+            return self.landscape.world2stencil(self.theta, self.phi, self.interpolation)
+        assert self.offset_phi is not None and self.offset_weights is not None
+        parts = [
+            self.landscape.world2stencil(
+                self.offset_theta[..., k], self.offset_phi[..., k], self.interpolation
+            )
+            for k in range(self.offset_theta.shape[-1])
+        ]
+        return Stencil.concatenate(parts, self.offset_weights)
+
     def mv(self, x: _StokesT) -> _StokesT:
         # `x` is a raveled sky map: its single backing array is (n_stokes, n_pixels). Index the pixel
         # (last) axis with the cached pointing to produce the (n_stokes, ndet, nsamp) TOD.
-        stencil = self.landscape.world2stencil(self.theta, self.phi, Interpolation.BILINEAR)
+        stencil = self._stencil()
         if self.landscape.has_spin2:
             return transported_gather(x, stencil, self.theta, self.phi)
         return type(x).from_array(jnp.sum(x.data[..., stencil.indices] * stencil.weights, axis=-1))

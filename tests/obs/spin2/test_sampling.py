@@ -259,6 +259,29 @@ class TestAdjoint:
         rhs = float(jnp.sum(sky.data * scattered.data))
         assert_allclose(lhs, rhs, rtol=1e-12)
 
+    @pytest.mark.parametrize('stokes', ['QU', 'IQU'])
+    def test_scatter_is_the_transpose_with_a_weight_per_component(
+        self, stokes: ValidStokesLiteral
+    ) -> None:
+        """A weight of its own per Stokes component does not commute with the transport.
+
+        The gather weights after rotating into the target frame, so the scatter must weight before
+        rotating back; the two orders differ as soon as Q and U carry different weights.
+        """
+        landscape = HealpixLandscape(NSIDE, stokes=stokes)
+        theta, phi = _directions(300, 14)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
+        rows = jnp.linspace(0.5, 1.5, len(stokes))[:, None, None]  # a distinct scale per row
+        stencil = Stencil(stencil.indices, stencil.weights * rows, stencil.positions)
+        tod = _random_tod(landscape, 300, 15)
+
+        def gather(sky: Stokes) -> Stokes:
+            return transported_gather(sky, stencil, theta, phi)
+
+        (derived,) = jax.linear_transpose(gather, landscape.zeros())(tod)
+        written = transported_scatter(landscape.zeros(), tod, stencil, theta, phi)
+        assert_allclose(written.data, derived.data, atol=1e-14)
+
     def test_adjoint_on_a_subset_landscape(self) -> None:
         """Neighbours falling outside the subset go to the sink; the pair must stay adjoint.
 

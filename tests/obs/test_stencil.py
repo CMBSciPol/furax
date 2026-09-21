@@ -212,7 +212,15 @@ class TestIntegrated:
         assert merged.indices.shape == (5, 12)
         assert_allclose(np.asarray(merged.weights.sum(axis=-1)), 1.0)
 
-    def test_rejects_a_weight_count_that_does_not_match_the_directions(self):
+    @pytest.mark.parametrize(
+        'weights, match',
+        [
+            (jnp.array([1.0]), '2 directions'),
+            (jnp.ones((3, 1, 2)), 'must have shape'),
+            (jnp.array(1.0), 'must have shape'),
+        ],
+    )
+    def test_rejects_weights_that_do_not_match_the_directions(self, weights, match):
         stencil = Stencil.unpositioned(jnp.zeros((1, 2, 2), jnp.int32), jnp.ones((1, 2, 2)))
-        with pytest.raises(ValueError, match='2 directions'):
-            stencil.integrated(jnp.array([1.0]))
+        with pytest.raises(ValueError, match=match):
+            stencil.integrated(weights)

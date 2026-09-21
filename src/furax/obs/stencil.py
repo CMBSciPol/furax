@@ -220,6 +220,10 @@ class Stencil(NamedTuple):
         """
         weights = jnp.asarray(weights)
         n_offsets, n_neighbors = self.indices.shape[-2:]
+        if weights.ndim not in (1, 2):
+            raise ValueError(
+                f'weights must have shape (n_offsets,) or (n_stokes, n_offsets), got {weights.shape}'
+            )
         if weights.shape[-1] != n_offsets:
             raise ValueError(
                 f'the stencil has {n_offsets} directions but {weights.shape[-1]} weights were given'

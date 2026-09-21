@@ -511,7 +511,9 @@ class XSamplingOperator(AbstractLinearOperator):
     A sample may integrate over offsets around its direction, as in [`PointingOperator`][]: the
     world angles of every offset direction are cached too, each is interpolated the same way, and
     the polarization of every pixel read is transported into the frame of the un-offset direction
-    before the weighted sum.
+    before the weighted sum. The cache then holds `n_offsets` angle pairs per sample instead of
+    one, so with many offsets, a beam sampled at thousands of nodes say, it can exceed the memory
+    of the on-the-fly [`PointingOperator`][], which recomputes the directions on every apply.
 
     Works for any landscape supplying a [`Stencil`][] (HEALPix and WCS/CAR).
 

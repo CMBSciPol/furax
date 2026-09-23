@@ -75,8 +75,9 @@ class PointingOperator(AbstractLinearOperator):
         offsets: Directions a sample integrates over, one row per detector, expressed in the frame
             `qdet` is in, shape (n_detectors, n_offsets). `None` to read the pointing direction
             alone.
-        offset_weights: The weight of each offset, shape (n_offsets,), or one row per Stokes
-            component of the output, shape (n_stokes, n_offsets). `None` if `offsets` is `None`.
+        offset_weights: The weight of each offset, shape (n_offsets,), shared by every Stokes
+            component, or a [`Stokes`][] holding the weights of each component of the output,
+            each of shape (n_offsets,). `None` if `offsets` is `None`.
     """
 
     landscape: StokesLandscape
@@ -87,7 +88,7 @@ class PointingOperator(AbstractLinearOperator):
     _out_structure: PyTree[jax.ShapeDtypeStruct] = field(metadata={'static': True})
     # keyword-only so that subclasses can still declare required fields
     offsets: Quaternion | None = field(default=None, kw_only=True)
-    offset_weights: OffsetWeights | None = field(default=None, kw_only=True)
+    offset_weights: Float[Array, ' n_offsets'] | Stokes | None = field(default=None, kw_only=True)
 
     @classmethod
     def create(
@@ -100,7 +101,7 @@ class PointingOperator(AbstractLinearOperator):
         frame: Literal['boresight', 'detector'] = 'boresight',
         interpolate: bool = False,
         offsets: Quaternion | None = None,
-        offset_weights: OffsetWeights | None = None,
+        offset_weights: Float[Array, ' n_offsets'] | Stokes | None = None,
     ) -> 'PointingOperator':
         """Build the operator from the boresight pointing and the detector offsets.
 
@@ -118,12 +119,14 @@ class PointingOperator(AbstractLinearOperator):
                 like a detector offset, shape (n_offsets,) for the same directions on every
                 detector, or (n_detectors, n_offsets). Only their direction is used. `None` reads
                 the pointing direction alone.
-            offset_weights: The weight of each offset, shape (n_offsets,), or one row per Stokes
-                component of the landscape, shape (n_stokes, n_offsets). Required with `offsets`.
-                A row weighs its component of the output, i.e. in the polarization frame chosen
-                by `frame`, not in the sky's meridian basis. The weights are normalized to sum to one, per Stokes row, over the offsets whose
-                pixels are in the map: a sample partly off a partial-sky map is renormalized to
-                the part in view, like a partly covered bilinear sample.
+            offset_weights: The weight of each offset, shape (n_offsets,), shared by every Stokes
+                component, or a [`Stokes`][] of the landscape's components, each of shape
+                (n_offsets,), to weigh them differently, e.g. with a beam per component. Required
+                with `offsets`. A component's weights act on that component of the output, i.e.
+                in the polarization frame chosen by `frame`, not in the sky's meridian basis. The
+                weights are normalized to sum to one, per component, over the offsets whose pixels
+                are in the map: a sample partly off a partial-sky map is renormalized to the part
+                in view, like a partly covered bilinear sample.
         """
         # Explicitly determine the output structure
         ndet = detector_quaternions.shape[0]
@@ -134,20 +137,13 @@ class PointingOperator(AbstractLinearOperator):
             raise ValueError('offsets and offset_weights must be given together')
         if offsets is not None:
             assert offset_weights is not None
-            offset_weights = jnp.asarray(offset_weights, dtype=landscape.dtype)
             n_offsets = offsets.shape[-1]
-            n_stokes = len(landscape.stokes)
             if offsets.shape not in {(n_offsets,), (ndet, n_offsets)}:
                 raise ValueError(
                     f'offsets has shape {offsets.shape}, expected ({n_offsets},) or '
                     f'({ndet}, {n_offsets}) for {ndet} detectors'
                 )
-            if offset_weights.shape not in {(n_offsets,), (n_stokes, n_offsets)}:
-                raise ValueError(
-                    f'offset_weights has shape {offset_weights.shape}, expected ({n_offsets},) or '
-                    f'({n_stokes}, {n_offsets}) for {n_offsets} offsets and a {landscape.stokes} '
-                    'landscape'
-                )
+            offset_weights = _checked_offset_weights(offset_weights, landscape, n_offsets)
 
         # In boresight frame, strip the z-rotation (gamma) from each detector quaternion.
         # This absorbs the frame correction into qdet so that _get_cos_sin_angles always
@@ -226,8 +222,8 @@ class PointingOperator(AbstractLinearOperator):
     def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
         """Return a copy of this operator restricted to StokesI.
 
-        The offsets are kept. Per-Stokes offset weights reduce to their I row, or to their mean
-        over the components when the operator has no I component.
+        The offsets are kept. Offset weights given per Stokes component reduce to those of I, or
+        to their mean over the components when the operator has no I component.
 
         Args:
             interpolate: Override the interpolation flag.  If ``None`` (default),
@@ -241,10 +237,9 @@ class PointingOperator(AbstractLinearOperator):
         ndet, nsamp = self.qdet.shape[0], self.qbore.shape[0]
         out_structure = StokesI.structure_for((ndet, nsamp), dtype=landscape.dtype)
         offset_weights = self.offset_weights
-        if offset_weights is not None and offset_weights.ndim == 2:
-            stokes = self.landscape.stokes
+        if isinstance(offset_weights, Stokes):
             offset_weights = (
-                offset_weights[stokes.index('I')] if 'I' in stokes else offset_weights.mean(axis=0)
+                offset_weights.i if 'I' in offset_weights.stokes else offset_weights.data.mean(0)
             )
         return PointingOperator(
             landscape,
@@ -372,7 +367,7 @@ class PointingOperator(AbstractLinearOperator):
         theta, phi = self.landscape.quat2world(qdet_full)
         # (det, samp, 1) x (det, 1, n_offsets) -> (det, samp, n_offsets), one direction per offset
         offset_pointing = self._quat2pointing(qdet_full[:, :, None] * offsets[:, None, :])
-        stencil = offset_pointing.stencil.integrated(self.offset_weights)
+        stencil = offset_pointing.stencil.integrated(_weight_rows(self.offset_weights))
         return SampledPointing(stencil, theta, phi)
 
     def _check_index_hook_not_overridden(self) -> None:
@@ -502,6 +497,42 @@ class PointingTransposeOperator(TransposeOperator):
         return sky_out
 
 
+def _checked_offset_weights(
+    weights: Float[Array, ' n_offsets'] | Stokes, landscape: StokesLandscape, n_offsets: int
+) -> Float[Array, ' n_offsets'] | Stokes:
+    """The offset weights in the landscape's dtype, after checking they fit the offsets and map."""
+    if isinstance(weights, Stokes):
+        if weights.stokes != landscape.stokes:
+            raise ValueError(
+                f'offset_weights has Stokes components {weights.stokes!r}, expected those of '
+                f'the landscape, {landscape.stokes!r}'
+            )
+        if weights.shape != (n_offsets,):
+            raise ValueError(
+                f'offset_weights has shape {weights.shape} per component, expected '
+                f'({n_offsets},) for {n_offsets} offsets'
+            )
+        return type(weights).from_array(jnp.asarray(weights.data, dtype=landscape.dtype))
+    weights = jnp.asarray(weights, dtype=landscape.dtype)
+    if weights.shape != (n_offsets,):
+        hint = (
+            ', or give one set per Stokes component as a Stokes, '
+            'e.g. StokesIQU(i=..., q=..., u=...)'
+            if weights.ndim == 2
+            else ''
+        )
+        raise ValueError(
+            f'offset_weights has shape {weights.shape}, expected ({n_offsets},) for '
+            f'{n_offsets} offsets{hint}'
+        )
+    return weights
+
+
+def _weight_rows(weights: Float[Array, ' n_offsets'] | Stokes) -> OffsetWeights:
+    """The offset weights as `Stencil.integrated` takes them: shared, or one per component."""
+    return weights.data if isinstance(weights, Stokes) else weights
+
+
 def _detector_rotation(
     qdet_full: Quaternion, offsets: Quaternion | None
 ) -> tuple[Float[Array, 'det samp'], Float[Array, 'det samp']] | None:
@@ -539,9 +570,10 @@ class XSamplingOperator(AbstractLinearOperator):
     the polarization of every pixel read is transported into the frame of the un-offset direction
     and rotated by the polarization angle before the weighted sum, so that weights given per Stokes
     component act on the detector's Q and U. The output is then in the detector frame, unlike the
-    output without offsets, which is in the frame of the sampled direction. The cache then holds `n_offsets` angle pairs per sample instead of
-    one, so with many offsets, a beam sampled at thousands of nodes say, it can exceed the memory
-    of the on-the-fly [`PointingOperator`][], which recomputes the directions on every apply.
+    output without offsets, which is in the frame of the sampled direction. The cache then holds
+    `n_offsets` angle pairs per sample instead of one, so with many offsets, a beam sampled at
+    thousands of nodes say, it can exceed the memory of the on-the-fly [`PointingOperator`][],
+    which recomputes the directions on every apply.
 
     Works for any landscape supplying a [`Stencil`][] (HEALPix and WCS/CAR).
 
@@ -553,8 +585,8 @@ class XSamplingOperator(AbstractLinearOperator):
         offset_theta: Co-latitude of every offset direction, shape ``(ndet, nsamp, n_offsets)``,
             or `None` to read the pointing direction alone.
         offset_phi: Longitude of every offset direction, of the same shape, or `None`.
-        offset_weights: The weight of each offset, shape ``(n_offsets,)``, or one row per Stokes
-            component, shape ``(n_stokes, n_offsets)``. `None` if there are no offsets.
+        offset_weights: The weight of each offset, shape ``(n_offsets,)``, or a [`Stokes`][] of
+            the weights of each component. `None` if there are no offsets.
         polarization_angles: Cached polarization angles, shape ``(ndet, nsamp)``, applied between
             the transport and the offset weights. `None` if there are no offsets.
     """
@@ -568,7 +600,7 @@ class XSamplingOperator(AbstractLinearOperator):
     )
     offset_theta: Float[Array, 'det samp n_offsets'] | None = field(default=None, kw_only=True)
     offset_phi: Float[Array, 'det samp n_offsets'] | None = field(default=None, kw_only=True)
-    offset_weights: OffsetWeights | None = field(default=None, kw_only=True)
+    offset_weights: Float[Array, ' n_offsets'] | Stokes | None = field(default=None, kw_only=True)
     polarization_angles: Float[Array, 'det samp'] | None = field(default=None, kw_only=True)
 
     @classmethod
@@ -579,7 +611,7 @@ class XSamplingOperator(AbstractLinearOperator):
         *,
         interpolation: Interpolation = Interpolation.BILINEAR,
         offsets: Quaternion | None = None,
-        offset_weights: OffsetWeights | None = None,
+        offset_weights: Float[Array, ' n_offsets'] | Stokes | None = None,
     ) -> Self:
         """Cache the world angles of the given pointing.
 
@@ -590,15 +622,18 @@ class XSamplingOperator(AbstractLinearOperator):
             offsets: Directions each detector integrates over, in the frame of `quaternions`,
                 shape (ndet, n_offsets), or `None`. With offsets, the output is rotated by the
                 polarization angle of `quaternions`.
-            offset_weights: The weight of each offset, shape (n_offsets,) or (n_stokes, n_offsets).
-                Required with `offsets`. Normalized to sum to one over the offsets in the map, as
-                in [`PointingOperator.create`][].
+            offset_weights: The weight of each offset, shape (n_offsets,), or a [`Stokes`][] of
+                the landscape's components, each of shape (n_offsets,). Required with `offsets`.
+                Normalized to sum to one over the offsets in the map, as in
+                [`PointingOperator.create`][].
         """
         if (offsets is None) != (offset_weights is None):
             raise ValueError('offsets and offset_weights must be given together')
         theta, phi = landscape.quat2world(quaternions)
         offset_theta = offset_phi = polarization_angles = None
         if offsets is not None:
+            assert offset_weights is not None
+            offset_weights = _checked_offset_weights(offset_weights, landscape, offsets.shape[-1])
             # (ndet, nsamp, 1) x (ndet, 1, n_offsets) -> (ndet, nsamp, n_offsets)
             offset_theta, offset_phi = landscape.quat2world(
                 quaternions[:, :, None] * offsets[:, None, :]
@@ -631,7 +666,7 @@ class XSamplingOperator(AbstractLinearOperator):
             assert self.offset_phi is not None and self.offset_weights is not None
             stencil = self.landscape.world2stencil(
                 self.offset_theta, self.offset_phi, self.interpolation
-            ).integrated(self.offset_weights)
+            ).integrated(_weight_rows(self.offset_weights))
         if self.landscape.has_spin2:
             rotation = (
                 None

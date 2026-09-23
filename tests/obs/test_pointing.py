@@ -20,7 +20,7 @@ from furax.obs.landscapes import (
 from furax.obs.operators import QURotationOperator
 from furax.obs.operators._qu_rotations import rotate_qu_cs
 from furax.obs.pointing import PointingOperator, SampledPointing, XSamplingOperator
-from furax.obs.stokes import ValidStokesLiteral
+from furax.obs.stokes import Stokes, StokesIQU, StokesQU, ValidStokesLiteral
 
 NSIDE = 4
 NDET, NSAMP = 3, 10
@@ -612,10 +612,13 @@ class TestOffsets:
         return from_xieta_angles(jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), jnp.zeros(2))
 
     @staticmethod
-    def _per_stokes_weights(stokes: str) -> jax.Array:
-        # distinct rows so that a weight applied in the wrong frame or order shows up
+    def _per_stokes_weights(stokes: ValidStokesLiteral) -> Stokes:
+        # distinct weights per component so that a weight applied in the wrong frame or order
+        # shows up
         rows = {'I': [0.5, 0.5], 'Q': [0.7, 0.3], 'U': [0.2, 0.8], 'V': [0.4, 0.6]}
-        return jnp.array([rows[component] for component in stokes])
+        return Stokes.class_for(stokes).from_array(
+            jnp.array([rows[component] for component in stokes])
+        )
 
     def test_no_offsets_is_the_plain_operator(self, stokes, frame, interpolate) -> None:
         """`offsets=None` leaves every code path as it was."""
@@ -748,8 +751,31 @@ class TestOffsets:
             )(sky).data
             for k in range(2)
         ]
-        expected = weights[:, 0, None, None] * parts[0] + weights[:, 1, None, None] * parts[1]
+        rows = weights.data
+        expected = rows[:, 0, None, None] * parts[0] + rows[:, 1, None, None] * parts[1]
         assert_array_almost_equal(op(sky).data, expected, decimal=12)
+
+    def test_equal_weights_per_component_are_shared_weights(
+        self, stokes, frame, interpolate
+    ) -> None:
+        landscape = HealpixLandscape(NSIDE, stokes)
+        qbore, qdet = self._quats(57)
+        shared = jnp.array([0.3, 0.7])
+        per_component = Stokes.class_for(stokes).from_array(jnp.tile(shared, (len(stokes), 1)))
+        ops = [
+            PointingOperator.create(
+                landscape,
+                qbore,
+                qdet,
+                frame=frame,
+                interpolate=interpolate,
+                offsets=self._offsets(),
+                offset_weights=weights,
+            )
+            for weights in (shared, per_component)
+        ]
+        sky = landscape.normal(jax.random.key(58))
+        assert tree_equal(ops[1](sky), ops[0](sky), rtol=1e-12, atol=1e-12)
 
     def test_adjoint_with_per_stokes_weights(self, stokes, frame, interpolate) -> None:
         """P^T is the transpose of P as matrices, with a weight of its own per Stokes component."""
@@ -829,7 +855,15 @@ class TestOffsets:
             ({'offsets': 'given'}, 'given together'),
             ({'offset_weights': jnp.ones(2)}, 'given together'),
             ({'offsets': 'given', 'offset_weights': jnp.ones(3)}, 'offset_weights has shape'),
-            ({'offsets': 'given', 'offset_weights': jnp.ones((2, 2))}, 'offset_weights has shape'),
+            ({'offsets': 'given', 'offset_weights': jnp.ones((3, 2))}, 'as a Stokes'),
+            (
+                {'offsets': 'given', 'offset_weights': StokesQU(jnp.ones(2), jnp.ones(2))},
+                'Stokes components',
+            ),
+            (
+                {'offsets': 'given', 'offset_weights': StokesIQU(*(jnp.ones(3),) * 3)},
+                'per component',
+            ),
             ({'offsets': 'wrong_ndet', 'offset_weights': jnp.ones(2)}, 'offsets has shape'),
         ],
     )

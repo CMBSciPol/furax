@@ -6,7 +6,9 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.math.coords import from_xieta_angles
 from furax.obs.landscapes import HealpixLandscape
-from furax.obs.sampling import SamplingKernel
+from furax.obs.pointing import PointingOperator
+from furax.obs.sampling import AngleSampler, PrecomputedSampler, QuaternionSampler, SamplingKernel
+from furax.obs.spin2 import transported_gather
 from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import StokesI, StokesIQU, StokesQU
 
@@ -116,3 +118,51 @@ class TestIntensityOnly:
             assert_array_equal(reduced.weights, weights.i)
         else:
             assert reduced is kernel
+
+
+class TestAngleSampler:
+    def test_without_polarization_angle_returns_the_meridian_basis(self) -> None:
+        """Samples of any shape, read at given angles, as `transported_gather` reads them."""
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        k1, k2 = jax.random.split(jax.random.key(0))
+        theta = jax.random.uniform(k1, (4, 5), minval=0.1, maxval=jnp.pi - 0.1)
+        phi = jax.random.uniform(k2, (4, 5), maxval=2 * jnp.pi)
+        sampler = AngleSampler(kernel=SamplingKernel(Interpolation.BILINEAR), theta=theta, phi=phi)
+        sky = landscape.normal(jax.random.key(1))
+
+        tod = PointingOperator.from_sampler(landscape, sampler, batch_size=3)(sky)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
+        expected = transported_gather(sky.ravel(), stencil, theta, phi)
+        assert_allclose(tod.data, expected.data, rtol=1e-12, atol=1e-12)
+
+    def test_quaternions_to_angles_reads_the_same_map(self) -> None:
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        qbore = Quaternion.random(jax.random.key(2), (7,))
+        sampler = QuaternionSampler(
+            kernel=SamplingKernel(Interpolation.BILINEAR, _offsets(), jnp.array([0.3, 0.7])),
+            qbore=qbore,
+            qdet=from_xieta_angles(jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)),
+        )
+        sky = landscape.normal(jax.random.key(3))
+        on_the_fly = PointingOperator.from_sampler(landscape, sampler)(sky)
+        from_angles = PointingOperator.from_sampler(landscape, sampler.to_angles(landscape))(sky)
+        assert_allclose(from_angles.data, on_the_fly.data, rtol=1e-12, atol=1e-13)
+
+
+class TestPrecomputedSampler:
+    @pytest.mark.parametrize('stokes', ['I', 'IQU'])
+    @pytest.mark.parametrize('interpolation', list(Interpolation))
+    def test_reads_the_map_as_its_source(self, stokes, interpolation) -> None:
+        landscape = HealpixLandscape(NSIDE, stokes)
+        sampler = QuaternionSampler(
+            kernel=SamplingKernel(interpolation),
+            qbore=Quaternion.random(jax.random.key(4), (7,)),
+            qdet=from_xieta_angles(jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)),
+        )
+        cached = PrecomputedSampler.from_sampler(sampler, landscape)
+        sky = landscape.normal(jax.random.key(5))
+        source_op = PointingOperator.from_sampler(landscape, sampler)
+        cached_op = PointingOperator.from_sampler(landscape, cached, batch_size=2)
+        assert_allclose(cached_op(sky).data, source_op(sky).data, rtol=1e-12, atol=1e-13)
+        tod = source_op(sky)
+        assert_allclose(cached_op.T(tod).data, source_op.T(tod).data, rtol=1e-12, atol=1e-13)

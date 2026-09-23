@@ -92,12 +92,10 @@ class ScreenSampler(AbstractSampler):
     def pointing_rows(
         self, landscape: StokesLandscape, index: Int[Array, ' batch']
     ) -> PointingRows:
-        """The screen stencil, which carries no sky positions and no line of sight.
+        """The screen stencil, which carries no sky positions and no rotation.
 
         The screen is a projection plane, not the sphere, so a neighbour has no co-latitude to
-        transport a polarisation from. This sampler reads intensity only, which never asks: the
-        angles returned alongside are placeholders, and a caller that would read them is refused by
-        the stencil's missing positions first.
+        transport a polarisation from: this sampler reads intensity only.
         """
         screen = _screen(landscape)
         if self.kernel.interpolation is Interpolation.BILINEAR:
@@ -107,8 +105,7 @@ class ScreenSampler(AbstractSampler):
             indices = self._indices(screen, index)
             weights = jnp.ones((*indices.shape, 1), landscape.dtype)
             stencil = Stencil.unpositioned(indices[..., None], weights)
-        nowhere = jnp.zeros(stencil.indices.shape[:-1], landscape.dtype)
-        return PointingRows(stencil, nowhere, nowhere)
+        return PointingRows(stencil, None)
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: Int[Array, ' batch']

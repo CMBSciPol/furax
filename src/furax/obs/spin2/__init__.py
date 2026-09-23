@@ -7,12 +7,21 @@ rotation that carries a neighbour's $(Q, U)$ into the basis of the point being i
 depends on no pixelization, and is used for both HEALPix and WCS maps.
 """
 
-from ._sampling import transported_gather, transported_scatter
+from ._sampling import (
+    rotated_gather,
+    rotated_scatter,
+    transport_rotation,
+    transported_gather,
+    transported_scatter,
+)
 from ._transport import spin2_cos_sin, spin2_cos_sin_zs
 
 __all__ = [
+    'rotated_gather',
+    'rotated_scatter',
     'spin2_cos_sin',
     'spin2_cos_sin_zs',
+    'transport_rotation',
     'transported_gather',
     'transported_scatter',
 ]

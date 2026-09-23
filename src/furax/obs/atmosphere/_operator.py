@@ -50,6 +50,13 @@ class AtmospherePointingOperator(PointingOperator):
     wind_displacement: Float[Array, 'samp 2']
     elevation_modulation: bool = field(metadata={'static': True})
 
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        # The wind displacement is added per sample, which only the (det, samp) pointing of an
+        # un-offset detector lines up with.
+        if self.offsets is not None:
+            raise ValueError(f'{type(self).__name__} does not support offsets')
+
     @classmethod
     def from_wind(
         cls,

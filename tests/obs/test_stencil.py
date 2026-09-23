@@ -124,3 +124,103 @@ class TestStencil:
         assert len(leaves) == 5
         assert jax.jit(lambda s: s.weights.sum())(stencil) == pytest.approx(5.0)
         assert isinstance(jax.tree.unflatten(treedef, leaves), Stencil)
+
+
+class TestIntegrated:
+    def _stacked(self, *parts: Stencil) -> Stencil:
+        """Stack one-direction stencils along a new second-to-last axis, as a sampler builds them."""
+        return Stencil(
+            jnp.stack([p.indices for p in parts], axis=-2),
+            jnp.stack([p.weights for p in parts], axis=-2),
+            None
+            if parts[0].positions is None
+            else SkyPositions(
+                *(
+                    jnp.stack([getattr(p.positions, c) for p in parts], axis=-2)
+                    for c in ['z', 'sth', 'phi']
+                )
+            ),
+        )
+
+    def test_folds_the_directions_and_scales_each_by_its_weight(self):
+        parts = [
+            Stencil.resolve(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]]), _positions((1, 2))),
+            Stencil.resolve(jnp.array([[2, 3]]), jnp.array([[0.25, 0.75]]), _positions((1, 2))),
+        ]
+        merged = self._stacked(*parts).integrated(jnp.array([0.4, 0.6]))
+
+        assert merged.n_neighbors == 4
+        assert_array_equal(np.asarray(merged.indices), [[0, 1, 2, 3]])
+        assert_allclose(np.asarray(merged.weights), [[0.2, 0.2, 0.15, 0.45]])
+        for component in SkyPositions._fields:
+            assert_array_equal(
+                np.asarray(getattr(merged.positions, component)),
+                np.concatenate(
+                    [np.asarray(getattr(p.positions, component)) for p in parts], axis=-1
+                ),
+            )
+
+    def test_one_direction_with_unit_weight_is_that_direction(self):
+        part = Stencil.resolve(
+            jnp.array([[0, -1, 2, 3]]), jnp.array([[0.4, 0.4, 0.1, 0.1]]), _positions((1, 4))
+        )
+        merged = self._stacked(part).integrated(jnp.array([1.0]))
+        assert_array_equal(np.asarray(merged.indices), np.asarray(part.indices))
+        assert_allclose(np.asarray(merged.weights), np.asarray(part.weights))
+
+    def test_a_direction_off_the_map_renormalizes_to_the_directions_in_view(self):
+        """The same convention as a partly covered bilinear sample: no bias, less support."""
+        in_view = Stencil.unpositioned(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]]))
+        off_map = Stencil.unpositioned(jnp.array([[-1, -1]]), jnp.array([[0.5, 0.5]]))
+        merged = self._stacked(in_view, off_map).integrated(jnp.array([0.5, 0.5]))
+        assert_allclose(np.asarray(merged.weights), [[0.5, 0.5, 0.0, 0.0]])
+        assert merged.positions is None
+
+    def test_per_stokes_weights_give_one_weight_row_per_component(self):
+        """Each component reads the same pixels with its own weights, each row summing to one."""
+        parts = [
+            Stencil.unpositioned(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]])),
+            Stencil.unpositioned(jnp.array([[2, 3]]), jnp.array([[0.5, 0.5]])),
+        ]
+        outer = jnp.array([[0.5, 0.5], [1.0, 0.0], [0.0, 1.0]])  # I, Q, U
+        merged = self._stacked(*parts).integrated(outer)
+
+        assert merged.indices.shape == (1, 4)
+        assert merged.weights.shape == (3, 1, 4)
+        assert_allclose(
+            np.asarray(merged.weights[:, 0]),
+            [[0.25, 0.25, 0.25, 0.25], [0.5, 0.5, 0.0, 0.0], [0.0, 0.0, 0.5, 0.5]],
+        )
+
+    def test_per_stokes_weights_broadcast_against_a_gathered_map(self):
+        """The sampler contracts `values[:, ..., neighbours] * weights` over the trailing axis."""
+        parts = [
+            Stencil.unpositioned(jnp.array([[0, 1]]), jnp.array([[0.5, 0.5]])),
+            Stencil.unpositioned(jnp.array([[2, 3]]), jnp.array([[0.5, 0.5]])),
+        ]
+        merged = self._stacked(*parts).integrated(jnp.array([[1.0, 0.0], [0.0, 1.0]]))
+        sky = jnp.array([[1.0, 2.0, 3.0, 4.0], [10.0, 20.0, 30.0, 40.0]])
+        sampled = jnp.sum(sky[:, merged.indices] * merged.weights, axis=-1)
+        assert_allclose(np.asarray(sampled), [[1.5], [35.0]])
+
+    def test_is_a_pytree_jax_can_trace_through(self):
+        stencil = Stencil.resolve(
+            jnp.zeros((5, 3, 4), jnp.int32), jnp.ones((5, 3, 4)), _positions((5, 3, 4))
+        )
+        merged = jax.jit(lambda s, w: s.integrated(w))(stencil, jnp.array([0.2, 0.3, 0.5]))
+        assert merged.n_neighbors == 12
+        assert merged.indices.shape == (5, 12)
+        assert_allclose(np.asarray(merged.weights.sum(axis=-1)), 1.0)
+
+    @pytest.mark.parametrize(
+        'weights, match',
+        [
+            (jnp.array([1.0]), '2 directions'),
+            (jnp.ones((3, 1, 2)), 'must have shape'),
+            (jnp.array(1.0), 'must have shape'),
+        ],
+    )
+    def test_rejects_weights_that_do_not_match_the_directions(self, weights, match):
+        stencil = Stencil.unpositioned(jnp.zeros((1, 2, 2), jnp.int32), jnp.ones((1, 2, 2)))
+        with pytest.raises(ValueError, match=match):
+            stencil.integrated(weights)

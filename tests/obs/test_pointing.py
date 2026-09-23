@@ -9,7 +9,7 @@ from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
 from furax.core import AbstractLinearOperator, CompositionOperator, IndexOperator
-from furax.math.coords import from_iso_angles, to_polarization_angle_cos_sin
+from furax.math.coords import from_iso_angles, from_xieta_angles, to_polarization_angle_cos_sin
 from furax.obs.landscapes import (
     CARLandscape,
     HealpixLandscape,
@@ -20,7 +20,7 @@ from furax.obs.landscapes import (
 from furax.obs.operators import QURotationOperator
 from furax.obs.operators._qu_rotations import rotate_qu_cs
 from furax.obs.pointing import PointingOperator, SampledPointing, XSamplingOperator
-from furax.obs.stokes import ValidStokesLiteral
+from furax.obs.stokes import Stokes, StokesIQU, StokesQU, ValidStokesLiteral
 
 NSIDE = 4
 NDET, NSAMP = 3, 10
@@ -590,3 +590,292 @@ class TestNearestTransport:
 
         touched = jnp.flatnonzero(jnp.abs(response).sum(axis=0) > 0)
         assert_array_equal(touched, jnp.array([pixel]))
+
+
+@pytest.mark.parametrize('interpolate', [False, True], ids=['nearest', 'bilinear'])
+@pytest.mark.parametrize('frame', ['boresight', 'detector'])
+class TestOffsets:
+    """A detector reads the sky at several offsets around its direction, with weights."""
+
+    @staticmethod
+    def _quats(seed: int) -> tuple[Quaternion, Quaternion]:
+        # each detector has a gamma of its own: the boresight frame strips it from `qdet`, and the
+        # offsets must not turn with it
+        return Quaternion.random(jax.random.key(seed), (NSAMP,)), from_xieta_angles(
+            jnp.array([0.0, 0.02, -0.03]),
+            jnp.array([0.0, -0.01, 0.02]),
+            jnp.array([0.3, 0.1, -1.2]),
+        )
+
+    @staticmethod
+    def _offsets() -> Quaternion:
+        return from_xieta_angles(jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), jnp.zeros(2))
+
+    @staticmethod
+    def _per_stokes_weights(stokes: ValidStokesLiteral) -> Stokes:
+        # distinct weights per component so that a weight applied in the wrong frame or order
+        # shows up
+        rows = {'I': [0.5, 0.5], 'Q': [0.7, 0.3], 'U': [0.2, 0.8], 'V': [0.4, 0.6]}
+        return Stokes.class_for(stokes).from_array(
+            jnp.array([rows[component] for component in stokes])
+        )
+
+    def test_no_offsets_is_the_plain_operator(self, stokes, frame, interpolate) -> None:
+        """`offsets=None` leaves every code path as it was."""
+        landscape = HealpixLandscape(NSIDE, stokes)
+        qbore, qdet = self._quats(40)
+        op = PointingOperator.create(landscape, qbore, qdet, frame=frame, interpolate=interpolate)
+        assert op.offsets is None and op.offset_weights is None
+        assert len(jax.tree.leaves(op)) == 2  # qbore, qdet: no offset leaf sneaks in
+
+    def test_the_origin_offset_with_unit_weight_is_the_plain_operator(
+        self, stokes, frame, interpolate
+    ) -> None:
+        landscape = HealpixLandscape(NSIDE, stokes)
+        qbore, qdet = self._quats(41)
+        plain = PointingOperator.create(
+            landscape, qbore, qdet, frame=frame, interpolate=interpolate
+        )
+        origin = from_xieta_angles(jnp.zeros(1), jnp.zeros(1), jnp.zeros(1))
+        op = PointingOperator.create(
+            landscape,
+            qbore,
+            qdet,
+            frame=frame,
+            interpolate=interpolate,
+            offsets=origin,
+            offset_weights=jnp.ones(1),
+        )
+        sky = landscape.normal(jax.random.key(42))
+        tod = ftree.normal_like(op.out_structure, jax.random.key(43))
+        assert tree_equal(op(sky), plain(sky), rtol=1e-12, atol=1e-12)
+        assert tree_equal(op.T(tod), plain.T(tod), rtol=1e-12, atol=1e-12)
+
+    def test_offsets_read_the_sky_where_the_physical_detector_points(
+        self, frame, interpolate
+    ) -> None:
+        """Two offsets at equal weight average two detectors carrying those offsets.
+
+        The reference folds each offset into the detector quaternion itself, in the detector frame,
+        so it holds whatever frame the operator under test uses: the boresight frame strips the
+        detector's z-rotation from `qdet`, and the offsets must stay attached to the physical
+        detector regardless.
+        """
+        landscape = HealpixLandscape(NSIDE, 'I')
+        qbore, qdet = self._quats(44)
+        offsets = self._offsets()
+        sky = landscape.normal(jax.random.key(45))
+
+        op = PointingOperator.create(
+            landscape,
+            qbore,
+            qdet,
+            frame=frame,
+            interpolate=interpolate,
+            offsets=offsets,
+            offset_weights=jnp.array([0.5, 0.5]),
+            batch_size=2,
+        )
+        parts = [
+            PointingOperator.create(
+                landscape, qbore, qdet * offsets[k], frame='detector', interpolate=interpolate
+            )(sky)
+            for k in range(2)
+        ]
+        expected = ftree.mul(0.5, ftree.add(parts[0], parts[1]))
+        assert tree_equal(op(sky), expected, rtol=1e-12, atol=1e-12)
+
+    def test_per_detector_offsets_match_shared_ones(self, frame, interpolate) -> None:
+        landscape = HealpixLandscape(NSIDE, 'I')
+        qbore, qdet = self._quats(46)
+        offsets = self._offsets()
+        weights = jnp.array([0.5, 0.5])
+        sky = landscape.normal(jax.random.key(47))
+        shared = PointingOperator.create(
+            landscape,
+            qbore,
+            qdet,
+            frame=frame,
+            interpolate=interpolate,
+            offsets=offsets,
+            offset_weights=weights,
+        )
+        identity = Quaternion.ones((NDET, 1))
+        per_detector = PointingOperator.create(
+            landscape,
+            qbore,
+            qdet,
+            frame=frame,
+            interpolate=interpolate,
+            offsets=identity * offsets[None, :],
+            offset_weights=weights,
+        )
+        assert shared.offsets.shape == (NDET, 2)
+        assert tree_equal(per_detector(sky), shared(sky), rtol=1e-12, atol=1e-12)
+
+    def test_per_stokes_weights_act_on_the_output_components(
+        self, stokes, frame, interpolate
+    ) -> None:
+        """Each row weighs its component of the output, in the frame set by `frame`.
+
+        The reference applies the weights to the TOD of each offset read on its own, i.e. after
+        the rotation by the polarization angle. Weighting before that rotation instead weighs
+        the Q and U of the sky's meridian basis, and would make the response depend on the
+        polarization angle as soon as the Q and U rows differ.
+        """
+        landscape = HealpixLandscape(NSIDE, stokes)
+        qbore, qdet = self._quats(55)
+        offsets = self._offsets()
+        weights = self._per_stokes_weights(stokes)
+        sky = landscape.normal(jax.random.key(56))
+
+        op = PointingOperator.create(
+            landscape,
+            qbore,
+            qdet,
+            frame=frame,
+            interpolate=interpolate,
+            offsets=offsets,
+            offset_weights=weights,
+            batch_size=2,
+        )
+        parts = [
+            PointingOperator.create(
+                landscape,
+                qbore,
+                qdet,
+                frame=frame,
+                interpolate=interpolate,
+                offsets=offsets[k : k + 1],
+                offset_weights=jnp.ones(1),
+            )(sky).data
+            for k in range(2)
+        ]
+        rows = weights.data
+        expected = rows[:, 0, None, None] * parts[0] + rows[:, 1, None, None] * parts[1]
+        assert_array_almost_equal(op(sky).data, expected, decimal=12)
+
+    def test_equal_weights_per_component_are_shared_weights(
+        self, stokes, frame, interpolate
+    ) -> None:
+        landscape = HealpixLandscape(NSIDE, stokes)
+        qbore, qdet = self._quats(57)
+        shared = jnp.array([0.3, 0.7])
+        per_component = Stokes.class_for(stokes).from_array(jnp.tile(shared, (len(stokes), 1)))
+        ops = [
+            PointingOperator.create(
+                landscape,
+                qbore,
+                qdet,
+                frame=frame,
+                interpolate=interpolate,
+                offsets=self._offsets(),
+                offset_weights=weights,
+            )
+            for weights in (shared, per_component)
+        ]
+        sky = landscape.normal(jax.random.key(58))
+        assert tree_equal(ops[1](sky), ops[0](sky), rtol=1e-12, atol=1e-12)
+
+    def test_adjoint_with_per_stokes_weights(self, stokes, frame, interpolate) -> None:
+        """P^T is the transpose of P as matrices, with a weight of its own per Stokes component."""
+        landscape = HealpixLandscape(NSIDE, stokes)
+        qbore, qdet = self._quats(48)
+        op = PointingOperator.create(
+            landscape,
+            qbore,
+            qdet,
+            frame=frame,
+            interpolate=interpolate,
+            offsets=self._offsets(),
+            offset_weights=self._per_stokes_weights(stokes),
+            batch_size=2,
+        )
+        assert_array_almost_equal(op.as_matrix().T, op.T.as_matrix(), decimal=12)
+
+    def test_the_expanded_operator_carries_the_offsets(self, stokes, frame, interpolate) -> None:
+        """`as_expanded_operator` must not drop the offsets, or the mapmaker loses the beam."""
+        landscape = HealpixLandscape(NSIDE, stokes)
+        qbore, qdet = self._quats(49)
+        op = PointingOperator.create(
+            landscape,
+            qbore,
+            qdet,
+            frame=frame,
+            interpolate=interpolate,
+            offsets=self._offsets(),
+            offset_weights=self._per_stokes_weights(stokes),
+            batch_size=2,
+        )
+        expanded = op.as_expanded_operator()
+        sky = landscape.normal(jax.random.key(50))
+        tod = ftree.normal_like(op.out_structure, jax.random.key(51))
+        assert tree_equal(expanded(sky), op(sky), rtol=1e-11, atol=1e-12)
+        assert tree_equal(expanded.T(tod), op.T(tod), rtol=1e-11, atol=1e-12)
+        assert_array_almost_equal(expanded.as_matrix().T, expanded.T.as_matrix(), decimal=12)
+
+    def test_as_stokes_i_keeps_the_offsets_with_the_intensity_weights(
+        self, frame, interpolate
+    ) -> None:
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        qbore, qdet = self._quats(52)
+        op = PointingOperator.create(
+            landscape,
+            qbore,
+            qdet,
+            frame=frame,
+            interpolate=interpolate,
+            offsets=self._offsets(),
+            offset_weights=self._per_stokes_weights('IQU'),
+        )
+        op_i = op.as_stokes_i(interpolate=not interpolate)
+        assert op_i.offsets is op.offsets
+        assert_array_equal(op_i.offset_weights, jnp.array([0.5, 0.5]))
+        assert op_i.landscape.stokes == 'I' and op_i.interpolate is (not interpolate)
+
+    def test_as_stokes_i_averages_the_weights_of_a_map_without_intensity(
+        self, frame, interpolate
+    ) -> None:
+        landscape = HealpixLandscape(NSIDE, 'QU')
+        qbore, qdet = self._quats(53)
+        op = PointingOperator.create(
+            landscape,
+            qbore,
+            qdet,
+            frame=frame,
+            interpolate=interpolate,
+            offsets=self._offsets(),
+            offset_weights=self._per_stokes_weights('QU'),
+        )
+        assert_array_almost_equal(op.as_stokes_i().offset_weights, jnp.array([0.45, 0.55]))
+
+    @pytest.mark.parametrize(
+        'kwargs, match',
+        [
+            ({'offsets': 'given'}, 'given together'),
+            ({'offset_weights': jnp.ones(2)}, 'given together'),
+            ({'offsets': 'given', 'offset_weights': jnp.ones(3)}, 'offset_weights has shape'),
+            ({'offsets': 'given', 'offset_weights': jnp.ones((3, 2))}, 'as a Stokes'),
+            (
+                {'offsets': 'given', 'offset_weights': StokesQU(jnp.ones(2), jnp.ones(2))},
+                'Stokes components',
+            ),
+            (
+                {'offsets': 'given', 'offset_weights': StokesIQU(*(jnp.ones(3),) * 3)},
+                'per component',
+            ),
+            ({'offsets': 'wrong_ndet', 'offset_weights': jnp.ones(2)}, 'offsets has shape'),
+        ],
+    )
+    def test_create_rejects_inconsistent_offsets(self, frame, interpolate, kwargs, match) -> None:
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        qbore, qdet = self._quats(54)
+        offsets = self._offsets()
+        if kwargs.get('offsets') == 'given':
+            kwargs = {**kwargs, 'offsets': offsets}
+        elif kwargs.get('offsets') == 'wrong_ndet':
+            kwargs = {**kwargs, 'offsets': Quaternion.ones((NDET + 1, 1)) * offsets[None, :]}
+        with pytest.raises(ValueError, match=match):
+            PointingOperator.create(
+                landscape, qbore, qdet, frame=frame, interpolate=interpolate, **kwargs
+            )

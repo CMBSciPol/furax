@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import pytest
 from fastquat import Quaternion
 from numpy.testing import assert_array_almost_equal
 
@@ -60,6 +61,26 @@ def _make_operator(
         elevation_modulation=elevation_modulation,
     )
     return op, landscape, atm_map
+
+
+class TestAtmosphereOperatorRejectsOffsets:
+    def test_offsets_are_rejected(self) -> None:
+        op, _, _ = _make_operator()
+        offsets = Quaternion.ones((NDET, 1))
+        with pytest.raises(ValueError, match='does not support offsets'):
+            AtmospherePointingOperator(
+                op.landscape,
+                qbore=op.qbore,
+                qdet=op.qdet,
+                batch_size=op.batch_size,
+                interpolate=op.interpolate,
+                _out_structure=op.out_structure,
+                wind_displacement=op.wind_displacement,
+                elevation_modulation=op.elevation_modulation,
+                in_structure=op.in_structure,
+                offsets=offsets,
+                offset_weights=jnp.ones(1),
+            )
 
 
 class TestAtmosphereOperatorMv:

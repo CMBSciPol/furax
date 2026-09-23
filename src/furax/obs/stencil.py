@@ -34,8 +34,8 @@ class Interpolation(IntEnum):
 
 
 def _resolve(
-    indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*dims neighbors']
-) -> tuple[Integer[Array, '*dims neighbors'], Float[Array, '*dims neighbors']]:
+    indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*weight_dims neighbors']
+) -> tuple[Integer[Array, '*dims neighbors'], Float[Array, '*weight_dims neighbors']]:
     """Make an interpolation stencil safe to gather with, and normalize its weights.
 
     Neighbours outside the map (negative index) are sent to pixel 0 with their weight zeroed, so
@@ -44,9 +44,12 @@ def _resolve(
     map has nothing to rescale: its weights stay at zero instead of being divided by zero, so it
     reads pixel 0 and contributes nothing.
 
+    The weights may carry a leading Stokes axis the indices do not have, one row per component;
+    the normalization is along the neighbour axis alone, so each component sums to one on its own.
+
     Args:
         indices: Neighbour pixel indices, negative for neighbours outside the map.
-        weights: Interpolation weights, one per neighbour.
+        weights: Interpolation weights, one per neighbour, broadcastable to the indices.
 
     Returns:
         The in-bounds indices and the normalized weights.
@@ -91,17 +94,22 @@ class Stencil(NamedTuple):
     Nearest-neighbour sampling is the case of a single neighbour, not a different type: the
     trailing neighbour axis has length one and the weight is one.
 
+    The weights may carry a leading Stokes axis that the indices and positions do not have, so
+    that each component reads the same pixels with its own weights. A sampler multiplies the
+    gathered values, whose Stokes axis leads, by the weights, and the two broadcast either way.
+
     A stencil on a grid that is not the sphere has no [`SkyPositions`][] and carries `None`, which
     [`Stencil.unpositioned`][] builds; only a map with no polarisation can be sampled through one.
 
     Attributes:
         indices: Neighbour pixel indices into the raveled map, all in bounds.
-        weights: Interpolation weights, one per neighbour, summing to one.
+        weights: Interpolation weights, one per neighbour, summing to one, optionally with a
+            leading Stokes axis.
         positions: Where the neighbours sit on the sphere, or `None` off the sphere.
     """
 
     indices: Integer[Array, '*dims neighbors']
-    weights: Float[Array, '*dims neighbors']
+    weights: Float[Array, '*weight_dims neighbors']
     positions: SkyPositions | None
 
     @property
@@ -128,7 +136,7 @@ class Stencil(NamedTuple):
     def resolve(
         cls,
         indices: Integer[Array, '*dims neighbors'],
-        weights: Float[Array, '*dims neighbors'],
+        weights: Float[Array, '*weight_dims neighbors'],
         positions: SkyPositions | None,
     ) -> Self:
         """Build a stencil, sending out-of-map neighbours to a safe index and normalizing weights.
@@ -174,7 +182,7 @@ class Stencil(NamedTuple):
     def unpositioned(
         cls,
         indices: Integer[Array, '*dims neighbors'],
-        weights: Float[Array, '*dims neighbors'],
+        weights: Float[Array, '*weight_dims neighbors'],
     ) -> Self:
         """Build a stencil with no sky positions, for a grid that is not the sphere.
 
@@ -191,8 +199,53 @@ class Stencil(NamedTuple):
         """
         return cls.resolve(indices, weights, None)
 
+    def integrated(
+        self, weights: Float[Array, ' n_offsets'] | Float[Array, 'n_stokes n_offsets']
+    ) -> Self:
+        """Fold a trailing axis of directions into the neighbour axis, with a weight per direction.
+
+        For a stencil of shape `(..., n_offsets, neighbors)`, built for the directions a sample
+        integrates over, the result has shape `(..., n_offsets * neighbors)`: it reads every pixel
+        the directions read, each direction's weights multiplied by its own weight, and the
+        positions carried over. It is re-resolved, which normalizes the merged axis to one: a
+        sample whose directions partly fall off a partial-sky map is renormalized to the part in
+        view, the same convention as a partly covered bilinear sample. With weights that sum to
+        one and every direction in view, the merged weights are exactly the products.
+
+        Args:
+            weights: One weight per direction, or one row of them per Stokes component.
+
+        Returns:
+            The resolved stencil, with the direction axis folded into the neighbour axis.
+        """
+        weights = jnp.asarray(weights)
+        n_offsets, n_neighbors = self.indices.shape[-2:]
+        if weights.ndim not in (1, 2):
+            raise ValueError(
+                f'weights must have shape (n_offsets,) or (n_stokes, n_offsets), got {weights.shape}'
+            )
+        if weights.shape[-1] != n_offsets:
+            raise ValueError(
+                f'the stencil has {n_offsets} directions but {weights.shape[-1]} weights were given'
+            )
+        # shape (n_stokes, 1, ..., 1, n_offsets, 1) or (1, ..., 1, n_offsets, 1): broadcast over
+        # the sample and neighbour axes, and put a Stokes row, if any, in front of them.
+        n_sample_dims = self.indices.ndim - 2
+        weights = weights.reshape(*weights.shape[:-1], *(1,) * n_sample_dims, n_offsets, 1)
+        merged_weights = self.weights * weights
+        merged_shape = (*merged_weights.shape[:-2], n_offsets * n_neighbors)
+        indices = self.indices.reshape(*self.indices.shape[:-2], -1)
+        positions = (
+            None
+            if self.positions is None
+            else SkyPositions(*(p.reshape(*p.shape[:-2], -1) for p in self.positions))
+        )
+        return self.resolve(indices, merged_weights.reshape(merged_shape), positions)
+
     def reindexed(
-        self, indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*dims neighbors']
+        self,
+        indices: Integer[Array, '*dims neighbors'],
+        weights: Float[Array, '*weight_dims neighbors'],
     ) -> Self:
         """Return the same neighbours addressed by new indices, with the weights re-resolved.
 

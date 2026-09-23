@@ -9,9 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `PointingOperator.create` takes `offsets` and `offset_weights`: each sample reads the sky at several directions around the detector's pointing and returns their weighted sum; the weights are shared by every Stokes component, or given per component as a `Stokes`, acting on the detector's I, Q and U (#265)
+- `PointingOperator.create` takes `offsets` and `offset_weights`: each sample reads the sky at several directions around the detector's pointing and returns their weighted sum; the weights are shared by every Stokes component, or given per component as a `Stokes`, acting on I, Q and U in the basis set by `frame` (#265)
 - `transported_gather` and `transported_scatter` take a `rotation` applied after the transport and before the stencil weights (#265)
-- `XSamplingOperator.create` takes `interpolation`, `offsets` and `offset_weights`, so the expanded pointing carries the same integration (#265)
 - `Stencil.integrated`, folding a trailing axis of directions into the neighbour axis with a weight per direction (#265)
 - `Stencil` weights may carry a leading Stokes axis (#265)
 - `SamplingKernel` in the new `furax.obs.sampling` module (#266)
@@ -19,14 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PointingOperator.precomputed`, `PrecomputedSampler` and `AngleSampler` (#270)
 - `rotated_gather`, `rotated_scatter` and `transport_rotation` in `furax.obs.spin2` (#270)
 - `PointingOperator.rotated` and `RotatedSampler`; `QURotationOperator @ PointingOperator` reduces to a `PointingOperator` (#271)
+- `PointingOperator.create(frame='sky')` and the `PolarizationFrame` type (#272)
 
 ### Changed
 
-- **Breaking:** `PointingOperator`, `XSamplingOperator` and `AtmospherePointingOperator` hold a `kernel` instead of their interpolation and offset fields (#266)
-- **Breaking:** `PointingOperator` holds a `sampler` instead of `qbore`, `qdet` and `kernel` (#267)
+- **Breaking:** `PointingOperator` holds a `sampler` instead of its pointing, interpolation and offset fields (#266, #267)
 - **Breaking:** `AtmospherePointingOperator` is replaced by `ScreenSampler` (#267)
-- `build_acquisition_operator(pointing_on_the_fly=False)` uses `PointingOperator.precomputed` (#270)
 - **Breaking:** `LocalStokesLandscape.from_sampler` takes an `AbstractSampler`; `interpolate` is removed (#269)
+- `build_acquisition_operator(pointing_on_the_fly=False)` uses `PointingOperator.precomputed` (#270)
+- `PointingOperator.create` keeps the detector quaternions as given in every frame (#272)
 - `transported_scatter` applies the stencil weights before rotating back into the pixel frames, which keeps it adjoint to `transported_gather` when the weights differ between Stokes components; results with equal weights change at round-off level only (#265)
 
 ### Removed

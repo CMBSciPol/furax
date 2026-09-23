@@ -13,7 +13,6 @@ from jaxtyping import Array, Float, Int, PyTree
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
 from furax.core.rules import AbstractCompositionRule, NoReduction
-from furax.math.coords import euler, to_gamma_angles
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import (
     QURotationOperator,
@@ -22,6 +21,7 @@ from furax.obs.operators._qu_rotations import (
 from furax.obs.sampling import (
     AbstractSampler,
     PointingRows,
+    PolarizationFrame,
     PrecomputedSampler,
     QuaternionSampler,
     SamplingKernel,
@@ -71,7 +71,7 @@ class PointingOperator(AbstractLinearOperator):
         detector_quaternions: Quaternion,
         *,
         batch_size: int = 32,
-        frame: Literal['boresight', 'detector'] = 'boresight',
+        frame: PolarizationFrame = 'boresight',
         interpolate: bool = False,
         offsets: Quaternion | None = None,
         offset_weights: Float[Array, ' n_offsets'] | Stokes | None = None,
@@ -83,9 +83,8 @@ class PointingOperator(AbstractLinearOperator):
             boresight_quaternions: Boresight quaternions, shape (n_samples,).
             detector_quaternions: Detector offset quaternions, shape (n_detectors,).
             batch_size: Number of detectors processed per batch.
-            frame: Frame the polarization angle is measured in. In the `'boresight'` frame the
-                z-rotation of each detector offset is stripped, so the angle is that of the
-                boresight.
+            frame: The basis Q and U are returned in, see
+                [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler].
             interpolate: If True, bilinear interpolation over the four nearest pixels, otherwise
                 nearest neighbour.
             offsets: Rotations from the line of sight to each read direction, in the detector
@@ -129,28 +128,11 @@ class PointingOperator(AbstractLinearOperator):
             weights=offset_weights,
         )
 
-        # In boresight frame, strip the z-rotation (gamma) from each detector quaternion.
-        # This absorbs the frame correction into qdet so that the polarization angle always
-        # works the same way, regardless of frame. Pixel indices are unaffected because
-        # a z-rotation does not change the direction of the boresight (z) axis.
-        #
-        # NB: the xieta parametrization is incomplete and cannot describe all rotations.
-        # Thus converting to xieta and back (with gamma=0) may not work in full generality.
-        # This approach is more general and just as efficient.
-        gamma = jnp.zeros(ndet, dtype=landscape.dtype)
-        if frame == 'boresight':
-            gamma = to_gamma_angles(detector_quaternions)
-            q_z_neg = euler(2, -gamma)  # z-rotation by -gamma
-            detector_quaternions = detector_quaternions * q_z_neg
-
-        if kernel.offsets is not None:
-            # An offset direction is fixed to the physical detector, so stripping gamma from qdet
-            # must not turn it: rotate the offsets by +gamma to compensate, which also gives them
-            # their per-detector shape. In the detector frame gamma is zero and this is exact.
-            kernel = dataclasses.replace(kernel, offsets=euler(2, gamma)[:, None] * kernel.offsets)
-
         sampler = QuaternionSampler(
-            kernel=kernel, qbore=boresight_quaternions, qdet=detector_quaternions
+            kernel=kernel,
+            qbore=boresight_quaternions,
+            qdet=detector_quaternions,
+            frame=frame,
         )
         return cls.from_sampler(landscape, sampler, batch_size=batch_size)
 

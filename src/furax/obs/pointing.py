@@ -12,8 +12,13 @@ from jaxtyping import Array, Float, Int, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
+from furax.core.rules import AbstractCompositionRule, NoReduction
 from furax.math.coords import euler, to_gamma_angles
 from furax.obs.landscapes import StokesLandscape
+from furax.obs.operators._qu_rotations import (
+    QURotationOperator,
+    QURotationTransposeOperator,
+)
 from furax.obs.sampling import (
     AbstractSampler,
     PointingRows,
@@ -177,6 +182,9 @@ class PointingOperator(AbstractLinearOperator):
         # It seemed faster on GPU, but there was a 3-4x perf regression on CPU
         shape = self.sampler.shape
         batch_size, n_batches = _batch_plan(self.batch_size, shape[0])
+        if n_batches == 1:
+            # a single batch needs no loop, nor a copy into the output
+            return self._sample(x_flat, jnp.arange(shape[0]))
 
         def body(i: Int[Array, ''], tod: _StokesT) -> _StokesT:
             # interval bounds must be static, so we shift the values afterwards
@@ -313,6 +321,16 @@ class PointingOperator(AbstractLinearOperator):
             )
         return pointing
 
+    def rotated(self, angles: Float[Array, '...']) -> 'PointingOperator':
+        """The operator followed by a rotation of Q and U by `angles`, in a single pass.
+
+        Args:
+            angles: Rotation angles in radians, broadcastable to the shape of the samples, with
+                the convention of [`QURotationOperator`][furax.obs.operators.QURotationOperator].
+        """
+        sampler = self.sampler.rotated((jnp.cos(2 * angles), jnp.sin(2 * angles)))
+        return PointingOperator.from_sampler(self.landscape, sampler, batch_size=self.batch_size)
+
     def transpose(self) -> AbstractLinearOperator:
         return PointingTransposeOperator(operator=self)
 
@@ -326,6 +344,8 @@ class PointingTransposeOperator(TransposeOperator):
         # Loop over batches of rows
         n_rows = self.operator.sampler.shape[0]
         batch_size, n_batches = _batch_plan(self.operator.batch_size, n_rows)
+        if n_batches == 1:
+            return self.operator._bin(x, jnp.arange(n_rows))
 
         def body(i: Int[Array, ''], sky: _StokesT) -> _StokesT:
             # Past n_rows, indices are out of range; `sky` is never indexed by `index` so we need to
@@ -355,3 +375,39 @@ def _batch_plan(batch_size: int, n: int) -> tuple[int, int]:
     batch_size = min(batch_size, n) if batch_size > 0 else n
     n_batches = (n + batch_size - 1) // batch_size
     return batch_size, n_batches
+
+
+def _rotation_angles(rotation: AbstractLinearOperator) -> Float[Array, '...']:
+    """The angles of a QU rotation, or its transpose, that operator algebra may merge."""
+    if isinstance(rotation, QURotationOperator) and not rotation.atomic:
+        return rotation.angles
+    if isinstance(rotation, QURotationTransposeOperator) and not rotation.operator.atomic:
+        return -rotation.operator.angles
+    raise NoReduction
+
+
+class QURotationPointingRule(AbstractCompositionRule):
+    """Absorb `R(theta) @ P` into `P`: the sampler rotates its samples further by `theta`."""
+
+    left_operator_class = (QURotationOperator, QURotationTransposeOperator)
+    right_operator_class = PointingOperator
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        assert isinstance(right, PointingOperator)
+        return [right.rotated(_rotation_angles(left))]
+
+
+class PointingTransposeQURotationRule(AbstractCompositionRule):
+    """Absorb `P.T @ R(theta).T`, the transpose of `R(theta) @ P`, into `P.T`."""
+
+    left_operator_class = PointingTransposeOperator
+    right_operator_class = (QURotationOperator, QURotationTransposeOperator)
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        assert isinstance(left, PointingTransposeOperator)
+        # right is R(theta).T, i.e. R(-theta)
+        return [left.operator.rotated(-_rotation_angles(right)).T]

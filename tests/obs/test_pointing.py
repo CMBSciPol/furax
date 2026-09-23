@@ -20,19 +20,21 @@ from furax.obs.landscapes import (
     StokesLandscape,
     WCSProjection,
 )
+from furax.obs.operators import QURotationOperator
 from furax.obs.operators._qu_rotations import rotate_qu_cs
-from furax.obs.pointing import PointingOperator
+from furax.obs.pointing import PointingOperator, PointingTransposeOperator
 from furax.obs.sampling import (
     AbstractSampler,
     AngleSampler,
     PointingRows,
     PrecomputedSampler,
     QuaternionSampler,
+    RotatedSampler,
     SamplingKernel,
 )
 from furax.obs.spin2 import transport_rotation, transported_gather
 from furax.obs.stencil import Interpolation
-from furax.obs.stokes import Stokes, ValidStokesLiteral
+from furax.obs.stokes import Stokes, StokesIQU, ValidStokesLiteral
 
 NSIDE = 4
 NDET, NSAMP = 3, 10
@@ -782,3 +784,55 @@ class TestOffsets:
                 offsets=self._offsets(),
                 offset_weights=jnp.ones(3),
             )
+
+
+class TestRotationAbsorption:
+    """A QU rotation after the pointing folds into it, so the two cost a single pass."""
+
+    @staticmethod
+    def _op(store: str | None, per_stokes: bool) -> PointingOperator:
+        k1, k2 = jax.random.split(jax.random.key(60))
+        qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
+        kwargs = {}
+        if per_stokes:
+            offsets = from_xieta_angles(jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), 0.0)
+            weights = StokesIQU(jnp.array([0.5, 0.5]), jnp.array([0.7, 0.3]), jnp.array([0.2, 0.8]))
+            kwargs = {'offsets': offsets, 'offset_weights': weights}
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True, **kwargs)
+        return op if store is None else op.precomputed(store)
+
+    @pytest.mark.parametrize('per_stokes', [False, True], ids=['shared', 'per-stokes'])
+    @pytest.mark.parametrize('store', [None, 'rows', 'angles'], ids=['fly', 'rows', 'angles'])
+    @pytest.mark.parametrize('transposed', [False, True], ids=['R', 'R.T'])
+    def test_reduces_to_one_pointing(self, store, per_stokes, transposed) -> None:
+        op = self._op(store, per_stokes)
+        rotation = QURotationOperator(
+            angles=jax.random.normal(jax.random.key(61), (NSAMP,)), in_structure=op.out_structure
+        )
+        chain = (rotation.T if transposed else rotation) @ op
+        reduced = chain.reduce()
+        assert isinstance(reduced, PointingOperator)
+
+        sky = op.landscape.normal(jax.random.key(62))
+        tod = ftree.normal_like(op.out_structure, jax.random.key(63))
+        assert tree_equal(reduced(sky), chain(sky), rtol=1e-12, atol=1e-12)
+        transpose = (op.T @ (rotation if transposed else rotation.T)).reduce()
+        assert isinstance(transpose, PointingTransposeOperator)
+        assert tree_equal(transpose(tod), chain.T(tod), rtol=1e-12, atol=1e-12)
+
+    def test_an_atomic_rotation_stays_apart(self) -> None:
+        op = self._op(None, False)
+        rotation = QURotationOperator(
+            angles=jnp.ones(NSAMP), atomic=True, in_structure=op.out_structure
+        )
+        assert not isinstance((rotation @ op).reduce(), PointingOperator)
+
+    def test_successive_rotations_merge(self) -> None:
+        op = self._op(None, False)
+        twice = op.rotated(jnp.full(NSAMP, 0.3)).rotated(jnp.full(NSAMP, 0.4))
+        once = op.rotated(jnp.full(NSAMP, 0.7))
+        assert isinstance(twice.sampler, RotatedSampler)
+        assert isinstance(twice.sampler.source, QuaternionSampler)
+        sky = op.landscape.normal(jax.random.key(64))
+        assert tree_equal(twice(sky), once(sky), rtol=1e-12, atol=1e-12)

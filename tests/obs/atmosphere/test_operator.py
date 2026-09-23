@@ -7,6 +7,7 @@ from numpy.testing import assert_array_almost_equal
 from furax.math.coords import ZAXIS
 from furax.obs.atmosphere import AtmospherePointingOperator
 from furax.obs.landscapes import TangentialLandscape
+from furax.obs.sampling import SamplingKernel
 from furax.obs.stokes import StokesI
 
 # Small problem size for fast tests
@@ -73,13 +74,11 @@ class TestAtmosphereOperatorRejectsOffsets:
                 qbore=op.qbore,
                 qdet=op.qdet,
                 batch_size=op.batch_size,
-                interpolate=op.interpolate,
+                kernel=SamplingKernel(offsets=offsets),
                 _out_structure=op.out_structure,
                 wind_displacement=op.wind_displacement,
                 elevation_modulation=op.elevation_modulation,
                 in_structure=op.in_structure,
-                offsets=offsets,
-                offset_weights=jnp.ones(1),
             )
 
 

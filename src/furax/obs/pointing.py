@@ -20,7 +20,7 @@ from furax.math.coords import (
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import QURotationOperator, rotate_qu_cs
 from furax.obs.spin2 import spin2_cos_sin_zs, transported_gather, transported_scatter
-from furax.obs.stencil import Interpolation, OffsetWeights, Stencil
+from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, StokesI
 
 __all__ = [
@@ -528,7 +528,9 @@ def _checked_offset_weights(
     return weights
 
 
-def _weight_rows(weights: Float[Array, ' n_offsets'] | Stokes) -> OffsetWeights:
+def _weight_rows(
+    weights: Float[Array, ' n_offsets'] | Stokes,
+) -> Float[Array, ' n_offsets'] | Float[Array, 'n_stokes n_offsets']:
     """The offset weights as `Stencil.integrated` takes them: shared, or one per component."""
     return weights.data if isinstance(weights, Stokes) else weights
 

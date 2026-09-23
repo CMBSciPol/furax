@@ -21,6 +21,7 @@ __all__ = [
     'PrecomputedSampler',
     'SamplingKernel',
     'QuaternionSampler',
+    'RotatedSampler',
     'PointingRows',
 ]
 
@@ -181,6 +182,15 @@ def _doubled(
     return cos**2 - sin**2, 2 * cos * sin
 
 
+def _composed(
+    first: tuple[Float[Array, '...'], Float[Array, '...']],
+    then: tuple[Float[Array, '...'], Float[Array, '...']],
+) -> tuple[Float[Array, '...'], Float[Array, '...']]:
+    """The (cos, sin) of the sum of two angles, from those of each."""
+    (cos_a, sin_a), (cos_b, sin_b) = first, then
+    return cos_a * cos_b - sin_a * sin_b, sin_a * cos_b + cos_a * sin_b
+
+
 def _polarized(
     stencil: Stencil,
     theta: Float[Array, '...'],
@@ -263,6 +273,16 @@ class AbstractSampler(ABC):
     def with_kernel(self, kernel: SamplingKernel) -> 'AbstractSampler':
         """The same sampler with another kernel, e.g. to read the intensity alone."""
         return dataclasses.replace(self, kernel=kernel)
+
+    def rotated(
+        self, rotation: tuple[Float[Array, '...'], Float[Array, '...']]
+    ) -> 'AbstractSampler':
+        r"""The same sampler, with the polarization of every sample rotated further by $\beta$.
+
+        Args:
+            rotation: $(\cos 2\beta, \sin 2\beta)$, broadcastable to the shape of the samples.
+        """
+        return RotatedSampler(kernel=self.kernel, source=self, rotation=rotation)
 
 
 class QuaternionSampler(AbstractSampler):
@@ -492,3 +512,51 @@ class PrecomputedSampler(AbstractSampler):
     def with_kernel(self, kernel: SamplingKernel) -> AbstractSampler:
         """The source sampler with another kernel: the cache no longer applies."""
         return self.source.with_kernel(kernel)
+
+
+class RotatedSampler(AbstractSampler):
+    r"""Another sampler, with the polarization of every sample rotated further by $\beta$.
+
+    What [`PointingOperator`][furax.obs.pointing.PointingOperator] builds when it absorbs a
+    [`QURotationOperator`][furax.obs.operators.QURotationOperator] applied to its output, so
+    that the two cost one pass over the samples instead of two.
+
+    Attributes:
+        kernel: The kernel of the rotated sampler.
+        source: The sampler whose samples are rotated.
+        rotation: $(\cos 2\beta, \sin 2\beta)$, broadcastable to the shape of the samples.
+    """
+
+    source: AbstractSampler
+    rotation: tuple[Float[Array, '...'], Float[Array, '...']]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.source.shape
+
+    def pointing_rows(
+        self, landscape: StokesLandscape, index: Int[Array, ' batch']
+    ) -> PointingRows:
+        pointing = self.source.pointing_rows(landscape, index)
+        if not landscape.has_spin2:
+            return pointing
+        cos_2b, sin_2b = (jnp.broadcast_to(r, self.shape)[index] for r in self.rotation)
+        rotation = cos_2b, sin_2b
+        if pointing.polarization_rotation is not None:
+            rotation = _composed(pointing.polarization_rotation, rotation)
+        return pointing._replace(polarization_rotation=rotation)
+
+    def nearest_indices(
+        self, landscape: StokesLandscape, index: Int[Array, ' batch']
+    ) -> Integer[Array, 'batch ...'] | None:
+        return self.source.nearest_indices(landscape, index)
+
+    def scaling(self, index: Int[Array, ' batch']) -> Float[Array, 'batch ...'] | None:
+        return self.source.scaling(index)
+
+    def with_kernel(self, kernel: SamplingKernel) -> AbstractSampler:
+        source = self.source.with_kernel(kernel)
+        return RotatedSampler(kernel=kernel, source=source, rotation=self.rotation)
+
+    def rotated(self, rotation: tuple[Float[Array, '...'], Float[Array, '...']]) -> AbstractSampler:
+        return self.source.rotated(_composed(self.rotation, rotation))

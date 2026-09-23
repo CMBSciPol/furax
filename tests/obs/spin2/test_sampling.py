@@ -140,6 +140,51 @@ class TestTransportedGather:
         assert error(flipped[1], flipped[2]) > scalar_error
 
 
+class TestRotation:
+    """A rotation turns every neighbour after the transport, before the stencil weights."""
+
+    @staticmethod
+    def _rotation(n: int, seed: int) -> tuple[jax.Array, jax.Array]:
+        psi = jnp.asarray(np.random.default_rng(seed).uniform(0.0, np.pi, n))
+        return jnp.cos(2 * psi), jnp.sin(2 * psi)
+
+    def test_with_shared_weights_it_rotates_the_interpolated_value(self) -> None:
+        """Weights shared by Q and U commute with the rotation, so its place does not matter."""
+        landscape = HealpixLandscape(NSIDE, stokes='IQU')
+        theta, phi = _directions(200, 20)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
+        sky = landscape.normal(jax.random.key(20))
+        rotation = self._rotation(200, 21)
+
+        rotated = transported_gather(sky, stencil, theta, phi, rotation=rotation)
+        expected = transported_gather(sky, stencil, theta, phi).rotate_qu(*rotation)
+        assert_allclose(rotated.data, expected.data, atol=1e-14)
+
+    def test_weights_per_component_act_in_the_rotated_basis(self) -> None:
+        """Rotate each neighbour into the rotated basis, then weigh Q and U on their own."""
+        landscape = HealpixLandscape(NSIDE, stokes='IQU')
+        theta, phi = _directions(200, 22)
+        stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
+        rows = jnp.array([1.0, 1.4, 0.3])[:, None, None]
+        stencil = Stencil(stencil.indices, stencil.weights * rows, stencil.positions)
+        sky = landscape.normal(jax.random.key(22))
+        cos_2psi, sin_2psi = self._rotation(200, 23)
+
+        rotated = transported_gather(sky, stencil, theta, phi, rotation=(cos_2psi, sin_2psi))
+
+        neighbors = Stokes.class_for('IQU').from_array(sky.data[..., stencil.indices])
+        theta_n, phi_n = jhp.pix2ang(NSIDE, stencil.indices)
+        cos_2delta, sin_2delta = spin2_cos_sin(theta_n, phi_n, theta[:, None], phi[:, None])
+        in_rotated_basis = neighbors.rotate_qu(cos_2delta, sin_2delta).rotate_qu(
+            cos_2psi[:, None], sin_2psi[:, None]
+        )
+        expected = jnp.sum(in_rotated_basis.data * stencil.weights, axis=-1)
+        assert_allclose(rotated.data, expected, atol=1e-13)
+        # weighting before the rotation is a different operator
+        misordered = transported_gather(sky, stencil, theta, phi).rotate_qu(cos_2psi, sin_2psi)
+        assert jnp.abs(misordered.data - expected).max() > 1e-2
+
+
 class TestNearestStencil:
     """The one-neighbour stencil of a nearest-neighbour sampler, transported by the same kernel."""
 
@@ -259,14 +304,16 @@ class TestAdjoint:
         rhs = float(jnp.sum(sky.data * scattered.data))
         assert_allclose(lhs, rhs, rtol=1e-12)
 
+    @pytest.mark.parametrize('rotated', [False, True], ids=['meridian', 'rotated'])
     @pytest.mark.parametrize('stokes', ['QU', 'IQU'])
     def test_scatter_is_the_transpose_with_a_weight_per_component(
-        self, stokes: ValidStokesLiteral
+        self, stokes: ValidStokesLiteral, rotated: bool
     ) -> None:
-        """A weight of its own per Stokes component does not commute with the transport.
+        """A weight of its own per Stokes component does not commute with the rotations.
 
-        The gather weights after rotating into the target frame, so the scatter must weight before
-        rotating back; the two orders differ as soon as Q and U carry different weights.
+        The gather weights after rotating into the target (or rotated) basis, so the scatter must
+        weight before rotating back; the two orders differ as soon as Q and U carry different
+        weights.
         """
         landscape = HealpixLandscape(NSIDE, stokes=stokes)
         theta, phi = _directions(300, 14)
@@ -274,12 +321,15 @@ class TestAdjoint:
         rows = jnp.linspace(0.5, 1.5, len(stokes))[:, None, None]  # a distinct scale per row
         stencil = Stencil(stencil.indices, stencil.weights * rows, stencil.positions)
         tod = _random_tod(landscape, 300, 15)
+        rotation = TestRotation._rotation(300, 16) if rotated else None
 
         def gather(sky: Stokes) -> Stokes:
-            return transported_gather(sky, stencil, theta, phi)
+            return transported_gather(sky, stencil, theta, phi, rotation=rotation)
 
         (derived,) = jax.linear_transpose(gather, landscape.zeros())(tod)
-        written = transported_scatter(landscape.zeros(), tod, stencil, theta, phi)
+        written = transported_scatter(
+            landscape.zeros(), tod, stencil, theta, phi, rotation=rotation
+        )
         assert_allclose(written.data, derived.data, atol=1e-14)
 
     def test_adjoint_on_a_subset_landscape(self) -> None:

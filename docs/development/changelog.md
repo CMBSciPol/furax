@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `PointingOperator.create` takes `offsets` and `offset_weights`: each sample reads the sky at several directions around the detector's pointing and returns their weighted sum, with a weight per Stokes component if desired (#265)
+- `PointingOperator.create` takes `offsets` and `offset_weights`: each sample reads the sky at several directions around the detector's pointing and returns their weighted sum, with a weight per Stokes component if desired, applied to the detector's Q and U (#265)
+- `transported_gather` and `transported_scatter` take a `rotation` applied after the transport and before the stencil weights (#265)
 - `XSamplingOperator.create` takes `interpolation`, `offsets` and `offset_weights`, so the expanded pointing carries the same integration (#265)
 - `Stencil.integrated`, folding a trailing axis of directions into the neighbour axis with a weight per direction (#265)
 - `Stencil` weights may carry a leading Stokes axis (#265)

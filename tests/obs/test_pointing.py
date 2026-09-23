@@ -710,6 +710,47 @@ class TestOffsets:
         assert shared.offsets.shape == (NDET, 2)
         assert tree_equal(per_detector(sky), shared(sky), rtol=1e-12, atol=1e-12)
 
+    def test_per_stokes_weights_act_on_the_output_components(
+        self, stokes, frame, interpolate
+    ) -> None:
+        """Each row weighs its component of the output, in the frame set by `frame`.
+
+        The reference applies the weights to the TOD of each offset read on its own, i.e. after
+        the rotation by the polarization angle. Weighting before that rotation instead weighs
+        the Q and U of the sky's meridian basis, and would make the response depend on the
+        polarization angle as soon as the Q and U rows differ.
+        """
+        landscape = HealpixLandscape(NSIDE, stokes)
+        qbore, qdet = self._quats(55)
+        offsets = self._offsets()
+        weights = self._per_stokes_weights(stokes)
+        sky = landscape.normal(jax.random.key(56))
+
+        op = PointingOperator.create(
+            landscape,
+            qbore,
+            qdet,
+            frame=frame,
+            interpolate=interpolate,
+            offsets=offsets,
+            offset_weights=weights,
+            batch_size=2,
+        )
+        parts = [
+            PointingOperator.create(
+                landscape,
+                qbore,
+                qdet,
+                frame=frame,
+                interpolate=interpolate,
+                offsets=offsets[k : k + 1],
+                offset_weights=jnp.ones(1),
+            )(sky).data
+            for k in range(2)
+        ]
+        expected = weights[:, 0, None, None] * parts[0] + weights[:, 1, None, None] * parts[1]
+        assert_array_almost_equal(op(sky).data, expected, decimal=12)
+
     def test_adjoint_with_per_stokes_weights(self, stokes, frame, interpolate) -> None:
         """P^T is the transpose of P as matrices, with a weight of its own per Stokes component."""
         landscape = HealpixLandscape(NSIDE, stokes)

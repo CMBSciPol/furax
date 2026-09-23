@@ -8,8 +8,11 @@ from jax.tree_util import register_static
 from numpy.testing import assert_allclose, assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
-from furax.core import AbstractLinearOperator, CompositionOperator, IndexOperator
-from furax.math.coords import from_iso_angles, from_xieta_angles, to_polarization_angle_cos_sin
+from furax.math.coords import (
+    from_iso_angles,
+    from_xieta_angles,
+    to_polarization_angle_cos_sin,
+)
 from furax.obs.landscapes import (
     CARLandscape,
     HealpixLandscape,
@@ -17,11 +20,17 @@ from furax.obs.landscapes import (
     StokesLandscape,
     WCSProjection,
 )
-from furax.obs.operators import QURotationOperator
 from furax.obs.operators._qu_rotations import rotate_qu_cs
-from furax.obs.pointing import PointingOperator, XSamplingOperator
-from furax.obs.sampling import AbstractSampler, PointingRows, SamplingKernel
-from furax.obs.spin2 import transported_gather
+from furax.obs.pointing import PointingOperator
+from furax.obs.sampling import (
+    AbstractSampler,
+    AngleSampler,
+    PointingRows,
+    PrecomputedSampler,
+    QuaternionSampler,
+    SamplingKernel,
+)
+from furax.obs.spin2 import transport_rotation, transported_gather
 from furax.obs.stencil import Interpolation
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
@@ -44,78 +53,76 @@ def _make_landscape(landscape_type: str, stokes: ValidStokesLiteral) -> StokesLa
 
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
 @pytest.mark.parametrize('frame', ['boresight', 'detector'])
-class TestAsExpandedOperator:
-    def test_mv(self, stokes, frame, landscape_type) -> None:
-        """PointingOperator.mv is equivalent to as_expanded_operator().mv."""
-        landscape = _make_landscape(landscape_type, stokes)
+@pytest.mark.parametrize('interpolate', [False, True], ids=['nearest', 'bilinear'])
+@pytest.mark.parametrize('store', ['rows', 'angles'])
+def test_precomputed_matches_on_the_fly(stokes, frame, landscape_type, interpolate, store) -> None:
+    landscape = _make_landscape(landscape_type, stokes)
+    key1, key2, key3, key4 = jax.random.split(jax.random.key(42), 4)
+    qbore = Quaternion.random(key1, (NSAMP,))
+    qdet = Quaternion.random(key2, (NDET,))
+    op = PointingOperator.create(
+        landscape, qbore, qdet, frame=frame, batch_size=2, interpolate=interpolate
+    )
+    precomputed = op.precomputed(store)
+    sky = landscape.normal(key3)
+    tod = ftree.normal_like(op.out_structure, key4)
 
-        key = jax.random.PRNGKey(42)
-        key1, key2, key3 = jax.random.split(key, 3)
-        qbore = Quaternion.random(key1, (NSAMP,))
-        qdet = Quaternion.random(key2, (NDET,))
+    assert tree_equal(precomputed(sky), op(sky), rtol=1e-10, atol=1e-13)
+    assert tree_equal(precomputed.T(tod), op.T(tod), rtol=1e-10, atol=1e-13)
 
-        pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, batch_size=2)
-        sky = landscape.normal(key3)
 
-        tod_direct = pointing_op(sky)
-        tod_expanded = pointing_op.as_expanded_operator()(sky)
+class TestPrecomputed:
+    @staticmethod
+    def _op(interpolate: bool, stokes: ValidStokesLiteral = 'IQU') -> PointingOperator:
+        k1, k2 = jax.random.split(jax.random.key(20))
+        qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
+        landscape = HealpixLandscape(NSIDE, stokes)
+        return PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
 
-        assert tree_equal(tod_direct, tod_expanded, rtol=1e-10, atol=0)
+    @pytest.mark.parametrize(
+        'interpolate, expected',
+        [(False, PrecomputedSampler), (True, AngleSampler)],
+        ids=['nearest', 'bilinear'],
+    )
+    def test_the_default_store(self, interpolate, expected) -> None:
+        """Nearest stores its few indices; bilinear stores angles, not four neighbours."""
+        assert isinstance(self._op(interpolate).precomputed().sampler, expected)
 
-    def test_transpose_mv(self, stokes, frame, landscape_type) -> None:
-        """PointingOperator.T.mv is equivalent to as_expanded_operator().T.mv."""
-        landscape = _make_landscape(landscape_type, stokes)
+    def test_a_map_without_polarization_stores_the_indices_alone(self) -> None:
+        sampler = self._op(False, 'I').precomputed().sampler
+        assert isinstance(sampler, PrecomputedSampler)
+        assert sampler.stencil is None and sampler.neighbour_rotation is None
+        assert sampler.nearest is not None
 
-        key = jax.random.PRNGKey(42)
-        key1, key2, key3 = jax.random.split(key, 3)
-        qbore = Quaternion.random(key1, (NSAMP,))
-        qdet = Quaternion.random(key2, (NDET,))
-
-        pointing_op = PointingOperator.create(landscape, qbore, qdet, frame=frame, batch_size=2)
-        tod = pointing_op.out_structure
-        tod = jax.tree.map(lambda s: jax.random.normal(key3, s.shape, s.dtype), tod)
-
-        sky_direct = pointing_op.T(tod)
-        sky_expanded = pointing_op.as_expanded_operator().T(tod)
-
-        assert tree_equal(sky_direct, sky_expanded, rtol=1e-10, atol=0)
-
-    def test_mv_interpolate(self, stokes, frame, landscape_type) -> None:
-        """Interpolated PointingOperator.mv equals as_expanded_operator().mv."""
-        landscape = _make_landscape(landscape_type, stokes)
-
-        key = jax.random.PRNGKey(42)
-        key1, key2, key3 = jax.random.split(key, 3)
-        qbore = Quaternion.random(key1, (NSAMP,))
-        qdet = Quaternion.random(key2, (NDET,))
-
-        pointing_op = PointingOperator.create(
-            landscape, qbore, qdet, frame=frame, batch_size=2, interpolate=True
+    def test_only_quaternions_are_stored_as_angles(self) -> None:
+        landscape = HealpixLandscape(NSIDE, 'I')
+        sampler = _PointsSampler(
+            kernel=SamplingKernel(), theta=jnp.array([0.5, 1.0]), phi=jnp.array([0.2, 3.0])
         )
-        sky = landscape.normal(key3)
+        with pytest.raises(TypeError, match='only a QuaternionSampler'):
+            PointingOperator.from_sampler(landscape, sampler).precomputed('angles')
 
-        assert tree_equal(pointing_op(sky), pointing_op.as_expanded_operator()(sky), rtol=1e-10)
+    def test_as_stokes_i_reads_the_source_again(self) -> None:
+        """The cache holds the rotations of a polarized map, so the intensity one recomputes."""
+        op = self._op(False)
+        op_i = op.precomputed('rows').as_stokes_i()
+        assert isinstance(op_i.sampler, QuaternionSampler)
+        tod = ftree.ones_like(op_i.out_structure)
+        assert tree_equal(op_i.T(tod), op.as_stokes_i().T(tod))
 
-    def test_transpose_mv_interpolate(self, stokes, frame, landscape_type) -> None:
-        """Interpolated PointingOperator.T.mv equals as_expanded_operator().T.mv."""
-        landscape = _make_landscape(landscape_type, stokes)
+    def test_nearest_drops_samples_outside_the_map(self) -> None:
+        """A sample outside a partial map reads nothing, cached or not."""
+        parent = HealpixLandscape(NSIDE, 'IQU')
+        p_full = self._op(False)
+        covered = jnp.flatnonzero(p_full.T(ftree.ones_like(p_full.out_structure)).i)
+        local = LocalStokesLandscape(parent, covered[::2])
+        op = PointingOperator.from_sampler(local, p_full.sampler)
 
-        key = jax.random.PRNGKey(42)
-        key1, key2, key3 = jax.random.split(key, 3)
-        qbore = Quaternion.random(key1, (NSAMP,))
-        qdet = Quaternion.random(key2, (NDET,))
-
-        pointing_op = PointingOperator.create(
-            landscape, qbore, qdet, frame=frame, batch_size=2, interpolate=True
-        )
-        tod = jax.tree.map(
-            lambda s: jax.random.normal(key3, s.shape, s.dtype), pointing_op.out_structure
-        )
-
-        sky_direct = pointing_op.T(tod)
-        sky_expanded = pointing_op.as_expanded_operator().T(tod)
-
-        assert tree_equal(sky_direct, sky_expanded, rtol=1e-10)
+        sky = local.normal(jax.random.key(22))
+        assert tree_equal(op.precomputed()(sky), op(sky), rtol=1e-10, atol=1e-12)
+        # half the pixels are unmapped, so some samples do sink: the test would pass vacuously
+        rows = jnp.arange(op.sampler.shape[0])
+        assert jnp.any(op.landscape.quat2index(op.sampler.quaternions(rows)) == local.sink)
 
 
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
@@ -149,73 +156,6 @@ class TestInterpolate:
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
         tod = op(landscape.full(3.14))
         assert_array_almost_equal(tod.i, 3.14, decimal=10)
-
-
-def test_expanded_interpolate_preserves_rotation_fusion() -> None:
-    """The expanded interpolated operator keeps QURotation exposed so it fuses via algebra.
-
-    An outer QURotation composed with `QURot(pa) @ XSampling @ Ravel` must reduce to a single
-    QURotation (angles added), leaving one rotation in the chain rather than two.
-    """
-    landscape = _make_landscape('car', 'IQU')
-    key1, key2, key3, key4 = jax.random.split(jax.random.PRNGKey(3), 4)
-    qbore = Quaternion.random(key1, (NSAMP,))
-    qdet = Quaternion.random(key2, (NDET,))
-
-    op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
-    expanded = op.as_expanded_operator()
-    gamma = jax.random.normal(key3, (NDET, NSAMP))
-    outer = QURotationOperator(angles=gamma, in_structure=expanded.out_structure)
-
-    reduced = (outer @ expanded).reduce()
-
-    assert isinstance(reduced, CompositionOperator)
-    leaves = jax.tree.leaves(
-        reduced.operands, is_leaf=lambda x: isinstance(x, AbstractLinearOperator)
-    )
-    n_rotations = sum(isinstance(o, QURotationOperator) for o in leaves)
-    assert n_rotations == 1
-
-    tod = jax.tree.map(lambda s: jax.random.normal(key4, s.shape, s.dtype), expanded.out_structure)
-    assert tree_equal((outer @ expanded)(op.T(tod)), reduced(op.T(tod)), rtol=1e-10)
-
-
-def _nearest_quats(seed: int) -> tuple[jax.Array, jax.Array]:
-    k1, k2 = jax.random.split(jax.random.key(seed))
-    return Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
-
-
-def test_the_expanded_nearest_operator_keeps_the_index_fast_path() -> None:
-    """Nearest transport is a per-sample rotation, so the gather stays an `IndexOperator`."""
-    landscape = HealpixLandscape(NSIDE, 'IQU')
-    qbore, qdet = _nearest_quats(20)
-    op = PointingOperator.create(landscape, qbore, qdet, interpolate=False)
-
-    reduced = op.as_expanded_operator().reduce()
-
-    leaves = jax.tree.leaves(
-        reduced.operands, is_leaf=lambda o: isinstance(o, AbstractLinearOperator)
-    )
-    assert any(isinstance(o, IndexOperator) for o in leaves)
-    assert not any(isinstance(o, XSamplingOperator) for o in leaves)
-    # the transport rotation fuses with the polarisation one rather than staying beside it
-    assert sum(isinstance(o, QURotationOperator) for o in leaves) == 1
-
-
-def test_the_expanded_nearest_operator_drops_samples_outside_the_map() -> None:
-    """The index alone cannot express a sunk sample, so the stencil weight must ride along."""
-    parent = HealpixLandscape(NSIDE, 'IQU')
-    qbore, qdet = _nearest_quats(21)
-    p_full = PointingOperator.create(parent, qbore, qdet, interpolate=False)
-    covered = jnp.flatnonzero(p_full.T(ftree.ones_like(p_full.out_structure)).i)
-    local = LocalStokesLandscape(parent, covered[::2])
-    op = PointingOperator.create(local, qbore, qdet, interpolate=False)
-
-    sky = local.normal(jax.random.key(22))
-    tod = op.as_expanded_operator()(sky)
-    assert tree_equal(tod, op(sky), rtol=1e-10, atol=1e-12)
-    # half the pixels are unmapped, so some samples do sink: the test would pass vacuously
-    assert jnp.any(op.landscape.quat2index(op.sampler.quaternions()) == local.sink)
 
 
 class TestLocalLandscape:
@@ -359,37 +299,6 @@ class TestTransport:
         expected = _untransported_sample(landscape, sky, qdet_full, interpolate)
         assert_array_almost_equal(op(sky).data, expected.data, decimal=13)
 
-    def test_expanded_operator_transports_too(self, interpolate) -> None:
-        """`as_expanded_operator` must not silently drop back to an untransported sampling."""
-        landscape = HealpixLandscape(NSIDE, 'IQU')
-        qbore, qdet = self._quats(9)
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
-        sky = landscape.normal(jax.random.key(10))
-        assert tree_equal(op.as_expanded_operator()(sky), op(sky), rtol=1e-10, atol=0)
-
-    @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
-    def test_expanded_operator_adjoint(self, stokes, landscape_type, interpolate) -> None:
-        """The expanded sampler has no hand-written transpose; JAX derives it from the gather."""
-        landscape = _make_landscape(landscape_type, stokes)
-        qbore, qdet = self._quats(15)
-        op = PointingOperator.create(
-            landscape, qbore, qdet, interpolate=interpolate
-        ).as_expanded_operator()
-        sky = landscape.normal(jax.random.key(16))
-        tod = ftree.normal_like(op.out_structure, jax.random.key(17))
-        assert_array_almost_equal(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), decimal=10)
-
-    @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
-    def test_expanded_transpose_matches_the_hand_written_one(
-        self, landscape_type, interpolate
-    ) -> None:
-        """The derived transpose of the expanded sampler is the scatter the operator writes out."""
-        landscape = _make_landscape(landscape_type, 'IQU')
-        qbore, qdet = self._quats(18)
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
-        tod = ftree.normal_like(op.out_structure, jax.random.key(19))
-        assert tree_equal(op.as_expanded_operator().T(tod), op.T(tod), rtol=1e-12, atol=1e-12)
-
     def test_local_landscape_adjoint(self, interpolate) -> None:
         """Samples outside the subset sink, and the centers still come from the parent."""
         parent = HealpixLandscape(NSIDE, 'IQU')
@@ -416,9 +325,9 @@ class _PointsSampler(AbstractSampler):
 
     def pointing_rows(self, landscape, index):
         theta, phi = self.theta[index], self.phi[index]
-        return PointingRows(
-            landscape.world2stencil(theta, phi, self.kernel.interpolation), theta, phi
-        )
+        stencil = landscape.world2stencil(theta, phi, self.kernel.interpolation)
+        rotation = transport_rotation(stencil, theta, phi) if landscape.has_spin2 else None
+        return PointingRows(stencil, rotation)
 
 
 class TestCustomSampler:
@@ -538,12 +447,12 @@ class TestPartialSkyNearest:
         hits = op.T(ftree.ones_like(op.out_structure)).i
         assert float(hits.sum()) == pytest.approx(float((~outside).sum()))
 
-    def test_the_expanded_operator_agrees(self, stokes) -> None:
-        """The mask on the expanded sampler must drop exactly what `mv` drops."""
+    def test_the_precomputed_operator_agrees(self, stokes) -> None:
+        """The precomputed operator must drop exactly what `mv` drops."""
         op = self._op(53, stokes)
         assert jnp.any(self._outside(op, op.sampler.quaternions()))
         sky = op.landscape.normal(jax.random.key(54))
-        assert tree_equal(op.as_expanded_operator()(sky), op(sky), rtol=1e-10, atol=0)
+        assert tree_equal(op.precomputed()(sky), op(sky), rtol=1e-10, atol=1e-13)
 
 
 class TestNearestTransport:
@@ -800,8 +709,11 @@ class TestOffsets:
         )
         assert_array_almost_equal(op.as_matrix().T, op.T.as_matrix(), decimal=12)
 
-    def test_the_expanded_operator_carries_the_offsets(self, stokes, frame, interpolate) -> None:
-        """`as_expanded_operator` must not drop the offsets, or the mapmaker loses the beam."""
+    @pytest.mark.parametrize('store', ['rows', 'angles'])
+    def test_the_precomputed_operator_carries_the_offsets(
+        self, stokes, frame, interpolate, store
+    ) -> None:
+        """`precomputed` must not drop the offsets, or the mapmaker loses the beam."""
         landscape = HealpixLandscape(NSIDE, stokes)
         qbore, qdet = self._quats(49)
         op = PointingOperator.create(
@@ -814,7 +726,7 @@ class TestOffsets:
             offset_weights=self._per_stokes_weights(stokes),
             batch_size=2,
         )
-        expanded = op.as_expanded_operator()
+        expanded = op.precomputed(store)
         sky = landscape.normal(jax.random.key(50))
         tod = ftree.normal_like(op.out_structure, jax.random.key(51))
         assert tree_equal(expanded(sky), op(sky), rtol=1e-11, atol=1e-12)

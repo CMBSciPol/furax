@@ -11,12 +11,14 @@ from jaxtyping import Array, Float, Int, Integer
 from furax.core.utils import register_dataclass_with_keys
 from furax.math.coords import to_polarization_angle_cos_sin
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.spin2 import spin2_cos_sin_zs
+from furax.obs.spin2 import transport_rotation
 from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes
 
 __all__ = [
     'AbstractSampler',
+    'AngleSampler',
+    'PrecomputedSampler',
     'SamplingKernel',
     'QuaternionSampler',
     'PointingRows',
@@ -149,29 +151,50 @@ def _checked_weights(
 
 
 class PointingRows(NamedTuple):
-    """The pixels a batch of samples reads, and the line of sight their polarization is carried to.
+    r"""How a batch of samples reads a map: one sparse row of the pointing matrix per sample.
+
+    Sample $s$ reads $R(\psi_s) \sum_n w_{sn} R(\alpha_{sn}) m_{p_{sn}}$: the pixels $p$ and
+    weights $w$ of the stencil, each neighbour's $(Q, U)$ rotated by its own angle $\alpha$, then
+    the sum rotated by $\psi$ into the frame the sample is returned in. For a sampler on the
+    sphere, $\alpha$ is the parallel transport to the line of sight, see
+    [`transport_rotation`][furax.obs.spin2.transport_rotation], and $\psi$ the polarization angle.
+    When the weights differ between Stokes components, they act on the rotated $Q$ and $U$, so
+    $\psi$ is folded into every $\alpha$ instead and `polarization_rotation` is `None`.
 
     Attributes:
         stencil: The pixels each sample reads and their weights.
-        los_theta: Co-latitude of each sample's line of sight, which its polarization is
-            transported to, in radians.
-        los_phi: Longitude of the line of sight, in radians.
+        neighbour_rotation: $(\cos 2\alpha, \sin 2\alpha)$ for each neighbour, or `None` when
+            the map read has no polarization.
+        polarization_rotation: $(\cos 2\psi, \sin 2\psi)$ for each sample, or `None` to return
+            the sum as it is.
     """
 
     stencil: Stencil
-    los_theta: Float[Array, ' *dims']
-    los_phi: Float[Array, ' *dims']
+    neighbour_rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None
+    polarization_rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None = None
 
-    def transport_angles(self) -> Float[Array, ' *dims']:
-        """The transport angle of a one-neighbour stencil, in radians."""
-        assert self.stencil.positions is not None  # the caller transports, so it has positions
-        cos_2delta, sin_2delta = spin2_cos_sin_zs(
-            *self.stencil.positions,
-            jnp.cos(self.los_theta)[..., None],
-            jnp.sin(self.los_theta)[..., None],
-            self.los_phi[..., None],
-        )
-        return 0.5 * jnp.arctan2(sin_2delta[..., 0], cos_2delta[..., 0])
+
+def _doubled(
+    cos: Float[Array, '...'], sin: Float[Array, '...']
+) -> tuple[Float[Array, '...'], Float[Array, '...']]:
+    r"""$(\cos 2x, \sin 2x)$ from $(\cos x, \sin x)$, the form a rotation of Q and U takes."""
+    return cos**2 - sin**2, 2 * cos * sin
+
+
+def _polarized(
+    stencil: Stencil,
+    theta: Float[Array, '...'],
+    phi: Float[Array, '...'],
+    rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None,
+    kernel: 'SamplingKernel',
+) -> PointingRows:
+    """The pointing rows of a polarized map, transported to the line of sight `(theta, phi)`."""
+    if rotation is None:
+        return PointingRows(stencil, transport_rotation(stencil, theta, phi))
+    if isinstance(kernel.weights, Stokes):
+        # weights per component act on the rotated Q and U: turn every neighbour before the sum
+        return PointingRows(stencil, transport_rotation(stencil, theta, phi, rotation))
+    return PointingRows(stencil, transport_rotation(stencil, theta, phi), rotation)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -206,14 +229,15 @@ class AbstractSampler(ABC):
     def pointing_rows(
         self, landscape: StokesLandscape, index: Int[Array, ' batch']
     ) -> PointingRows:
-        """The pixels a batch of samples reads, and where their polarization is transported.
+        """How a batch of samples reads the map.
 
         Args:
             landscape: The map being read.
             index: Indices into the first axis of the samples.
 
         Returns:
-            The pointing rows, of shape `(batch, *shape[1:])`.
+            The pointing rows, of shape `(batch, *shape[1:])`, with a rotation when the map is
+            polarized.
         """
 
     def nearest_indices(
@@ -222,21 +246,9 @@ class AbstractSampler(ABC):
         """The pixel each sample reads, when it reads a single one, or `None`.
 
         A shortcut for reading a map with no polarization: when every sample reads one pixel, the
-        gather needs its index alone, not a stencil. Samples outside the map are negative.
-        `None` (the default) means the stencil of
-        [`pointing_rows`][furax.obs.sampling.AbstractSampler.pointing_rows] must be used.
-        """
-        return None
-
-    def polarization_rotation(
-        self, index: Int[Array, ' batch']
-    ) -> tuple[Float[Array, 'batch ...'], Float[Array, 'batch ...']] | None:
-        r"""$(\cos\psi, \sin\psi)$ of the angle each sample's polarization is rotated by, or `None`.
-
-        The sampled Q and U are first transported into the meridian basis of the line of sight
-        given by [`pointing_rows`][furax.obs.sampling.AbstractSampler.pointing_rows], then
-        rotated by $\psi$, e.g. into the frame of a detector. `None` (the default) leaves them in
-        the meridian basis.
+        gather needs its index alone, not a stencil. It must be the pixel of the
+        [`pointing_rows`][furax.obs.sampling.AbstractSampler.pointing_rows] stencil; samples
+        outside the map are negative. `None` (the default) means the stencil must be used.
         """
         return None
 
@@ -248,12 +260,16 @@ class AbstractSampler(ABC):
         """
         return None
 
+    def with_kernel(self, kernel: SamplingKernel) -> 'AbstractSampler':
+        """The same sampler with another kernel, e.g. to read the intensity alone."""
+        return dataclasses.replace(self, kernel=kernel)
+
 
 class QuaternionSampler(AbstractSampler):
     """Detectors on a moving boresight, read along the pointing given by quaternions.
 
     The pointing of detector $d$ at sample $t$ is `qbore[t] * qdet[d]`, and the samples have shape
-    (n_detectors, n_samples). The polarization is rotated into the frame of `qdet`.
+    (n_detectors, n_samples). The polarization is returned in the frame of `qdet`.
 
     Attributes:
         kernel: What each sample integrates over. Its offsets, if any, compose with the
@@ -280,14 +296,19 @@ class QuaternionSampler(AbstractSampler):
         quats = self.quaternions(index)
         offsets = self.kernel.offsets_for(index)
         if offsets is None:
-            return self._read(landscape, quats)
-        # Every read direction has its own stencil, and they fold into one stencil per
-        # sample. The polarization of every pixel read is still transported to the line of
-        # sight, so it is all in the same basis before the sum.
+            stencil = self._stencil(landscape, quats)
+        else:
+            # Every read direction has its own stencil, and they fold into one stencil per
+            # sample. The polarization of every pixel read is still transported to the line of
+            # sight, so it is all in the same basis before the sum.
+            # (batch, samp, 1) x (batch, 1, n_offsets) -> (batch, samp, n_offsets)
+            offset_quats = quats[:, :, None] * offsets[:, None, :]
+            stencil = self.kernel.integrate(self._stencil(landscape, offset_quats))
+        if not landscape.has_spin2:
+            return PointingRows(stencil, None)
+        rotation = _doubled(*to_polarization_angle_cos_sin(quats))
         theta, phi = landscape.quat2world(quats)
-        # (batch, samp, 1) x (batch, 1, n_offsets) -> (batch, samp, n_offsets)
-        offset_pointing = self._read(landscape, quats[:, :, None] * offsets[:, None, :])
-        return PointingRows(self.kernel.integrate(offset_pointing.stencil), theta, phi)
+        return _polarized(stencil, theta, phi, rotation, self.kernel)
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: Int[Array, ' batch']
@@ -296,17 +317,178 @@ class QuaternionSampler(AbstractSampler):
             return None
         return landscape.quat2index(self.quaternions(index))
 
-    def polarization_rotation(
-        self, index: Int[Array, ' batch']
-    ) -> tuple[Float[Array, 'batch samp'], Float[Array, 'batch samp']]:
-        return to_polarization_angle_cos_sin(self.quaternions(index))
+    def to_angles(self, landscape: StokesLandscape) -> 'AngleSampler':
+        """The same sampler, from the world angles of every direction, computed once."""
+        index = jnp.arange(self.shape[0])
+        quats = self.quaternions(index)
+        theta, phi = landscape.quat2world(quats)
+        rotation = _doubled(*to_polarization_angle_cos_sin(quats))
+        offset_theta = offset_phi = None
+        offsets = self.kernel.offsets_for(index)
+        if offsets is not None:
+            offset_theta, offset_phi = landscape.quat2world(quats[:, :, None] * offsets[:, None, :])
+        return AngleSampler(
+            kernel=self.kernel,
+            theta=theta,
+            phi=phi,
+            polarization_rotation=rotation,
+            offset_theta=offset_theta,
+            offset_phi=offset_phi,
+        )
 
-    def _read(self, landscape: StokesLandscape, quats: Quaternion) -> PointingRows:
+    def _stencil(self, landscape: StokesLandscape, quats: Quaternion) -> Stencil:
         """Read the map around each direction, with the kernel's interpolation."""
-        world = landscape.quat2world(quats)
         if self.kernel.interpolation is Interpolation.NEAREST:
             # index through `quat2index`, so that the pixel is the one the hit map counts
-            stencil = landscape.index2stencil(landscape.quat2index(quats))
+            return landscape.index2stencil(landscape.quat2index(quats))
+        return landscape.world2stencil(*landscape.quat2world(quats), self.kernel.interpolation)
+
+
+class AngleSampler(AbstractSampler):
+    r"""Samples at given world angles, with a polarization angle each.
+
+    The lines of sight are the co-latitude $\theta$ and longitude $\phi$ of each sample, and the
+    polarization is returned in a frame rotated by $\psi$ from the meridian basis of that direction.
+    It holds the pointing as arrays, which costs memory but no trigonometry on every apply:
+    [`QuaternionSampler.to_angles`][furax.obs.sampling.QuaternionSampler.to_angles] builds one.
+
+    Attributes:
+        kernel: What each sample integrates over. With offsets, their directions are given by
+            `offset_theta` and `offset_phi`.
+        theta: Co-latitude of every sample, in radians.
+        phi: Longitude of every sample, in radians.
+        polarization_rotation: $(\cos 2\psi, \sin 2\psi)$ of every sample, or `None` to return
+            the meridian basis.
+        offset_theta: Co-latitude of every read direction, shape `(*shape, n_offsets)`, or `None`.
+        offset_phi: Longitude of every read direction, or `None`.
+    """
+
+    theta: Float[Array, '...']
+    phi: Float[Array, '...']
+    polarization_rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None = None
+    offset_theta: Float[Array, '... n_offsets'] | None = None
+    offset_phi: Float[Array, '... n_offsets'] | None = None
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.theta.shape
+
+    def pointing_rows(
+        self, landscape: StokesLandscape, index: Int[Array, ' batch']
+    ) -> PointingRows:
+        theta, phi = self.theta[index], self.phi[index]
+        if self.offset_theta is None:
+            stencil = self._stencil(landscape, theta, phi)
         else:
-            stencil = landscape.world2stencil(*world, self.kernel.interpolation)
-        return PointingRows(stencil, *world)
+            assert self.offset_phi is not None
+            offset_stencil = self._stencil(
+                landscape, self.offset_theta[index], self.offset_phi[index]
+            )
+            stencil = self.kernel.integrate(offset_stencil)
+        if not landscape.has_spin2:
+            return PointingRows(stencil, None)
+        rotation = self.polarization_rotation
+        if rotation is not None:
+            rotation = rotation[0][index], rotation[1][index]
+        return _polarized(stencil, theta, phi, rotation, self.kernel)
+
+    def nearest_indices(
+        self, landscape: StokesLandscape, index: Int[Array, ' batch']
+    ) -> Integer[Array, 'batch ...'] | None:
+        if not self.kernel.reads_one_pixel:
+            return None
+        return landscape.world2index(self.theta[index], self.phi[index])
+
+    def _stencil(
+        self, landscape: StokesLandscape, theta: Float[Array, '...'], phi: Float[Array, '...']
+    ) -> Stencil:
+        if self.kernel.interpolation is Interpolation.NEAREST:
+            return landscape.index2stencil(landscape.world2index(theta, phi))
+        return landscape.world2stencil(theta, phi, self.kernel.interpolation)
+
+
+class PrecomputedSampler(AbstractSampler):
+    """Another sampler, with the rows of its pointing matrix computed once for a given map.
+
+    Reading a map through it is a gather of stored indices, weights and rotations: the fastest
+    apply, at the cost of storing them, per neighbour. It stores only what the map needs: no
+    rotation for a map without polarization, and the pixel index alone when every sample reads a
+    single pixel of such a map. The rows are valid for the map they were computed for only.
+
+    Attributes:
+        kernel: The kernel of `source`.
+        source: The sampler whose rows are stored, which still scales the samples (`scaling`).
+        stencil: The stored stencils, or `None` when `nearest` suffices.
+        neighbour_rotation: The stored rotation of each neighbour, or `None`.
+        polarization_rotation: The stored rotation of each sample, or `None`.
+        nearest: The stored pixel of each sample, when every sample reads a single pixel of a map
+            without polarization, or `None`.
+    """
+
+    source: AbstractSampler
+    stencil: Stencil | None = None
+    neighbour_rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None = None
+    polarization_rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None = None
+    nearest: Integer[Array, '...'] | None = None
+
+    @classmethod
+    def from_sampler(cls, sampler: AbstractSampler, landscape: StokesLandscape) -> Self:
+        """Compute and store the pointing rows of a sampler for a map.
+
+        Args:
+            sampler: The sampler whose rows to store.
+            landscape: The map the rows will read.
+        """
+        index = jnp.arange(sampler.shape[0])
+        nearest = sampler.nearest_indices(landscape, index)
+        if nearest is not None and not landscape.has_spin2:
+            return cls(kernel=sampler.kernel, source=sampler, nearest=nearest)
+        pointing = sampler.pointing_rows(landscape, index)
+        # the positions only served to compute the rotation, which is cached instead
+        stencil = Stencil(pointing.stencil.indices, pointing.stencil.weights, None)
+        return cls(
+            kernel=sampler.kernel,
+            source=sampler,
+            stencil=stencil,
+            neighbour_rotation=pointing.neighbour_rotation,
+            polarization_rotation=pointing.polarization_rotation,
+        )
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.source.shape
+
+    def pointing_rows(
+        self, landscape: StokesLandscape, index: Int[Array, ' batch']
+    ) -> PointingRows:
+        if self.stencil is None:
+            assert self.nearest is not None
+            indices = self.nearest[index]
+            weights = jnp.ones((*indices.shape, 1), landscape.dtype)
+            return PointingRows(Stencil.unpositioned(indices[..., None], weights), None)
+        if self.stencil.weights.ndim > self.stencil.indices.ndim:
+            # weights per Stokes component lead: the batch axis is the second one
+            stencil = Stencil(self.stencil.indices[index], self.stencil.weights[:, index], None)
+        else:
+            stencil = Stencil(self.stencil.indices[index], self.stencil.weights[index], None)
+        rotation = polarization = None
+        if self.neighbour_rotation is not None:
+            rotation = self.neighbour_rotation[0][index], self.neighbour_rotation[1][index]
+        if self.polarization_rotation is not None:
+            polarization = (
+                self.polarization_rotation[0][index],
+                self.polarization_rotation[1][index],
+            )
+        return PointingRows(stencil, rotation, polarization)
+
+    def nearest_indices(
+        self, landscape: StokesLandscape, index: Int[Array, ' batch']
+    ) -> Integer[Array, 'batch ...'] | None:
+        return None if self.nearest is None else self.nearest[index]
+
+    def scaling(self, index: Int[Array, ' batch']) -> Float[Array, 'batch ...'] | None:
+        return self.source.scaling(index)
+
+    def with_kernel(self, kernel: SamplingKernel) -> AbstractSampler:
+        """The source sampler with another kernel: the cache no longer applies."""
+        return self.source.with_kernel(kernel)

@@ -107,10 +107,28 @@ def rotated_gather[S: Stokes](sky: S, stencil: Stencil, rotation: Spin2Rotation 
     Returns:
         The sampled Stokes values, of the shape of the stencil minus its neighbour axis.
     """
-    gathered = type(sky).from_array(sky.data[..., stencil.indices])
-    if rotation is not None:
-        gathered = gathered.rotate_qu(*rotation)
-    return type(sky).from_array(jnp.sum(gathered.data * stencil.weights, axis=-1))
+    if stencil.n_neighbors == 1:
+        gathered = type(sky).from_array(sky.data[..., stencil.indices])
+        if rotation is not None:
+            gathered = gathered.rotate_qu(*rotation)
+        return type(sky).from_array(jnp.sum(gathered.data * stencil.weights, axis=-1))
+    # With several neighbours, each component is gathered, rotated and summed over them before
+    # the rows are stacked, so that XLA fuses the gathers into the sums instead of materialising
+    # every neighbour of every component, which `Stokes.rotate_qu` on the gathered map would
+    # force. With a single neighbour there is nothing to sum, and one gather of all the rows is
+    # faster.
+    rows = [sky.data[i][stencil.indices] for i in range(len(sky.stokes))]
+    qi = sky.stokes.find('Q')
+    if rotation is not None and qi >= 0:
+        cos_2a, sin_2a = rotation
+        q, u = rows[qi], rows[qi + 1]
+        rows[qi], rows[qi + 1] = q * cos_2a + u * sin_2a, -q * sin_2a + u * cos_2a
+    per_stokes = stencil.weights.ndim > stencil.indices.ndim
+    sums = [
+        jnp.sum(row * (stencil.weights[i] if per_stokes else stencil.weights), axis=-1)
+        for i, row in enumerate(rows)
+    ]
+    return type(sky).from_array(jnp.stack(sums))
 
 
 def rotated_scatter[S: Stokes](

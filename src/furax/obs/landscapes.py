@@ -390,12 +390,12 @@ class WCSLandscape(StokesLandscape):
             return Stencil.nearest(indices, theta_c, phi_c).astype(self.dtype)
 
         xs, ys, weights = _2d_bilinear_interp(*self.world2pixel(theta, phi))
-        theta_n, phi_n = self.pixel2world(xs, ys)
-        return Stencil.resolve(
-            self.pixel2index(xs, ys),
-            weights,
-            ZSPhi.from_angles(theta_n, phi_n),
-        )
+        return Stencil.resolve(self.pixel2index(xs, ys), weights, self._grid_positions(xs, ys))
+
+    def _grid_positions(self, xs: Float[Array, ' *dims'], ys: Float[Array, ' *dims']) -> ZSPhi:
+        """The positions of the pixel centres `(xs, ys)`, from [`pixel2world`][]."""
+        theta, phi = self.pixel2world(xs, ys)
+        return ZSPhi.from_angles(theta, phi)
 
     def to_wcs(self) -> WCS:
         """Reconstruct an astropy WCS object from the stored projection parameters."""
@@ -503,6 +503,21 @@ class CARLandscape(WCSLandscape):
         theta = jnp.pi / 2 - jnp.radians(lat_deg)
         phi = jnp.radians(lon_deg) % (2 * jnp.pi)
         return theta, phi
+
+    def _grid_positions(self, xs: Float[Array, ' *dims'], ys: Float[Array, ' *dims']) -> ZSPhi:
+        """The positions of the pixel centres `(xs, ys)`, from [`pixel2world`][].
+
+        In CAR, the colatitude of a centre depends on its row alone and its longitude on its
+        column alone. One table per axis, looked up per neighbour, costs
+        less than a cosine and a sine per neighbour. Out-of-map neighbours read a clipped entry,
+        which their zero weight discards.
+        """
+        ny, nx = self.shape
+        theta_rows, _ = self.pixel2world(jnp.zeros(ny), jnp.arange(ny, dtype=xs.dtype))
+        _, phi_cols = self.pixel2world(jnp.arange(nx, dtype=xs.dtype), jnp.zeros(nx))
+        rows = jnp.clip(ys.astype(jnp.int32), 0, ny - 1)
+        cols = jnp.clip(xs.astype(jnp.int32), 0, nx - 1)
+        return ZSPhi(jnp.cos(theta_rows)[rows], jnp.sin(theta_rows)[rows], phi_cols[cols])
 
 
 def _2d_bilinear_interp(

@@ -11,6 +11,7 @@ from jaxtyping import Array, Float, Int, Integer
 from furax.core.utils import register_dataclass_with_keys
 from furax.math.coords import gamma_angle_cos_sin, polarization_angle_cos_sin
 from furax.obs.landscapes import StokesLandscape
+from furax.obs.operators import Spin2Rotation
 from furax.obs.spin2 import transport_rotation
 from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes
@@ -169,38 +170,22 @@ class PointingRows(NamedTuple):
 
     Attributes:
         stencil: The pixels each sample reads and their weights.
-        neighbour_rotation: $(\cos 2\alpha, \sin 2\alpha)$ for each neighbour, or `None` when
-            the map read has no polarization.
-        polarization_rotation: $(\cos 2\psi, \sin 2\psi)$ for each sample, or `None` to return
-            the sum as it is.
+        neighbour_rotation: The rotation by $\alpha$ of each neighbour, or `None` when the map
+            read has no polarization.
+        polarization_rotation: The rotation by $\psi$ of each sample, or `None` to return the sum
+            as it is.
     """
 
     stencil: Stencil
-    neighbour_rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None
-    polarization_rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None = None
-
-
-def _doubled(
-    cos: Float[Array, '...'], sin: Float[Array, '...']
-) -> tuple[Float[Array, '...'], Float[Array, '...']]:
-    r"""$(\cos 2x, \sin 2x)$ from $(\cos x, \sin x)$, the form a rotation of Q and U takes."""
-    return cos**2 - sin**2, 2 * cos * sin
-
-
-def _composed(
-    first: tuple[Float[Array, '...'], Float[Array, '...']],
-    then: tuple[Float[Array, '...'], Float[Array, '...']],
-) -> tuple[Float[Array, '...'], Float[Array, '...']]:
-    """The (cos, sin) of the sum of two angles, from those of each."""
-    (cos_a, sin_a), (cos_b, sin_b) = first, then
-    return cos_a * cos_b - sin_a * sin_b, sin_a * cos_b + cos_a * sin_b
+    neighbour_rotation: Spin2Rotation | None
+    polarization_rotation: Spin2Rotation | None = None
 
 
 def _polarized(
     stencil: Stencil,
     theta: Float[Array, '...'],
     phi: Float[Array, '...'],
-    rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None,
+    rotation: Spin2Rotation | None,
     kernel: 'SamplingKernel',
 ) -> PointingRows:
     """The pointing rows of a polarized map, transported to the line of sight `(theta, phi)`."""
@@ -279,13 +264,11 @@ class AbstractSampler(ABC):
         """The same sampler with another kernel, e.g. to read the intensity alone."""
         return dataclasses.replace(self, kernel=kernel)
 
-    def rotated(
-        self, rotation: tuple[Float[Array, '...'], Float[Array, '...']]
-    ) -> 'AbstractSampler':
+    def rotated(self, rotation: Spin2Rotation) -> 'AbstractSampler':
         r"""The same sampler, with the polarization of every sample rotated further by $\beta$.
 
         Args:
-            rotation: $(\cos 2\beta, \sin 2\beta)$, broadcastable to the shape of the samples.
+            rotation: The rotation by $\beta$, broadcastable to the shape of the samples.
         """
         return RotatedSampler(kernel=self.kernel, source=self, rotation=rotation)
 
@@ -368,17 +351,16 @@ class QuaternionSampler(AbstractSampler):
 
     def _frame_rotation(
         self, quats: Quaternion, index: Int[Array, ' batch']
-    ) -> tuple[Float[Array, 'batch samp'], Float[Array, 'batch samp']] | None:
-        r"""$(\cos 2x, \sin 2x)$ of the angle $x$ from the meridian basis to the frame, if any."""
+    ) -> Spin2Rotation | None:
+        """The rotation from the meridian basis to the frame, if any."""
         if self.frame == 'sky':
             return None
-        psi = polarization_angle_cos_sin(quats)
+        psi = Spin2Rotation.from_cos_sin(*polarization_angle_cos_sin(quats))
         if self.frame == 'detector':
-            return _doubled(*psi)
+            return psi
         # psi - gamma, with gamma the angle of the detector about the boresight
-        cos_gamma, sin_gamma = gamma_angle_cos_sin(self.qdet[index])
-        cos_gamma, sin_gamma = cos_gamma[:, None], sin_gamma[:, None]
-        return _doubled(*_composed(psi, (cos_gamma, -sin_gamma)))
+        gamma = Spin2Rotation.from_cos_sin(*gamma_angle_cos_sin(self.qdet[index]))
+        return psi.compose(gamma[:, None].inverse())
 
     def _stencil(self, landscape: StokesLandscape, quats: Quaternion) -> Stencil:
         """Read the map around each direction, with the kernel's interpolation."""
@@ -401,15 +383,15 @@ class AngleSampler(AbstractSampler):
             `offset_theta` and `offset_phi`.
         theta: Co-latitude of every sample, in radians.
         phi: Longitude of every sample, in radians.
-        polarization_rotation: $(\cos 2\psi, \sin 2\psi)$ of every sample, or `None` to return
-            the meridian basis.
+        polarization_rotation: The rotation by $\psi$ of every sample, or `None` to return the
+            meridian basis.
         offset_theta: Co-latitude of every read direction, shape `(*shape, n_offsets)`, or `None`.
         offset_phi: Longitude of every read direction, or `None`.
     """
 
     theta: Float[Array, '...']
     phi: Float[Array, '...']
-    polarization_rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None = None
+    polarization_rotation: Spin2Rotation | None = None
     offset_theta: Float[Array, '... n_offsets'] | None = None
     offset_phi: Float[Array, '... n_offsets'] | None = None
 
@@ -433,7 +415,7 @@ class AngleSampler(AbstractSampler):
             return PointingRows(stencil, None)
         rotation = self.polarization_rotation
         if rotation is not None:
-            rotation = rotation[0][index], rotation[1][index]
+            rotation = rotation[index]
         return _polarized(stencil, theta, phi, rotation, self.kernel)
 
     def nearest_indices(
@@ -471,8 +453,8 @@ class PrecomputedSampler(AbstractSampler):
 
     source: AbstractSampler
     stencil: Stencil | None = None
-    neighbour_rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None = None
-    polarization_rotation: tuple[Float[Array, '...'], Float[Array, '...']] | None = None
+    neighbour_rotation: Spin2Rotation | None = None
+    polarization_rotation: Spin2Rotation | None = None
     nearest: Integer[Array, '...'] | None = None
 
     @classmethod
@@ -515,14 +497,10 @@ class PrecomputedSampler(AbstractSampler):
             stencil = Stencil(self.stencil.indices[index], self.stencil.weights[:, index], None)
         else:
             stencil = Stencil(self.stencil.indices[index], self.stencil.weights[index], None)
-        rotation = polarization = None
-        if self.neighbour_rotation is not None:
-            rotation = self.neighbour_rotation[0][index], self.neighbour_rotation[1][index]
-        if self.polarization_rotation is not None:
-            polarization = (
-                self.polarization_rotation[0][index],
-                self.polarization_rotation[1][index],
-            )
+        rotation = None if self.neighbour_rotation is None else self.neighbour_rotation[index]
+        polarization = (
+            None if self.polarization_rotation is None else self.polarization_rotation[index]
+        )
         return PointingRows(stencil, rotation, polarization)
 
     def nearest_indices(
@@ -548,11 +526,11 @@ class RotatedSampler(AbstractSampler):
     Attributes:
         kernel: The kernel of the rotated sampler.
         source: The sampler whose samples are rotated.
-        rotation: $(\cos 2\beta, \sin 2\beta)$, broadcastable to the shape of the samples.
+        rotation: The rotation by $\beta$, broadcastable to the shape of the samples.
     """
 
     source: AbstractSampler
-    rotation: tuple[Float[Array, '...'], Float[Array, '...']]
+    rotation: Spin2Rotation
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -564,10 +542,9 @@ class RotatedSampler(AbstractSampler):
         pointing = self.source.pointing_rows(landscape, index)
         if not landscape.has_spin2:
             return pointing
-        cos_2b, sin_2b = (jnp.broadcast_to(r, self.shape)[index] for r in self.rotation)
-        rotation = cos_2b, sin_2b
+        rotation = self.rotation.broadcast_to(self.shape)[index]
         if pointing.polarization_rotation is not None:
-            rotation = _composed(pointing.polarization_rotation, rotation)
+            rotation = pointing.polarization_rotation.compose(rotation)
         return pointing._replace(polarization_rotation=rotation)
 
     def nearest_indices(
@@ -582,5 +559,5 @@ class RotatedSampler(AbstractSampler):
         source = self.source.with_kernel(kernel)
         return RotatedSampler(kernel=kernel, source=source, rotation=self.rotation)
 
-    def rotated(self, rotation: tuple[Float[Array, '...'], Float[Array, '...']]) -> AbstractSampler:
-        return self.source.rotated(_composed(self.rotation, rotation))
+    def rotated(self, rotation: Spin2Rotation) -> AbstractSampler:
+        return self.source.rotated(self.rotation.compose(rotation))

@@ -17,6 +17,7 @@ from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import (
     QURotationOperator,
     QURotationTransposeOperator,
+    Spin2Rotation,
 )
 from furax.obs.sampling import (
     AbstractSampler,
@@ -288,9 +289,7 @@ class PointingOperator(AbstractLinearOperator):
         else:
             pointing = self._pointing(index)
             if pointing.polarization_rotation is not None:
-                # rotate back with the inverse rotation
-                cos_2psi, sin_2psi = pointing.polarization_rotation
-                tod_batch = tod_batch.rotate_qu(cos_2psi, -sin_2psi)
+                tod_batch = tod_batch.rotate_qu(*pointing.polarization_rotation.inverse())
             binned = rotated_scatter(zeros, tod_batch, *pointing[:2]).data
         return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
 
@@ -310,7 +309,7 @@ class PointingOperator(AbstractLinearOperator):
             angles: Rotation angles in radians, broadcastable to the shape of the samples, with
                 the convention of [`QURotationOperator`][furax.obs.operators.QURotationOperator].
         """
-        sampler = self.sampler.rotated((jnp.cos(2 * angles), jnp.sin(2 * angles)))
+        sampler = self.sampler.rotated(Spin2Rotation.from_angles(angles))
         return PointingOperator.from_sampler(self.landscape, sampler, batch_size=self.batch_size)
 
     def transpose(self) -> AbstractLinearOperator:

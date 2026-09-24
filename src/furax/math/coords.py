@@ -10,7 +10,6 @@ from typing import NamedTuple, Self
 import jax.numpy as jnp
 import numpy as np
 from fastquat import Quaternion
-from jax import jit
 from jaxtyping import Array, Float
 
 __all__ = [
@@ -35,7 +34,6 @@ YAXIS = np.array([0.0, 1.0, 0.0])
 ZAXIS = np.array([0.0, 0.0, 1.0])
 
 
-@jit(static_argnums=(0,))
 def euler(axis: int, angle: Angle) -> Quaternion:
     r"""The quaternion representing an Euler rotation.
 
@@ -67,7 +65,8 @@ class IsoAngles(NamedTuple):
 
     For a pointing, $(\theta, \phi)$ locate the direction the detector looks at, and $\psi$ is its
     polarization angle, the angle [`polarization_angle`][] returns. At the poles ($\theta = 0$ or
-    $\pi$) only $\phi + \psi$ or $\phi - \psi$ is defined.
+    $\pi$) only $\phi + \psi$ or $\phi - \psi$ is defined: there, $\phi = 0$, the limit along
+    that meridian, so that a rotation round-trips.
 
     Attributes:
         theta: Co-latitude, from the north pole, in $[0, \pi]$.
@@ -83,11 +82,28 @@ class IsoAngles(NamedTuple):
     @classmethod
     def from_quaternion(cls, q: Quaternion) -> Self:
         """The ISO angles of a rotation."""
-        return cls(*_iso_from_quaternion(q))
+        a, b, c, d = q.to_components()
+        theta = 2 * jnp.atan2((b**2 + c**2) ** 0.5, (a**2 + d**2) ** 0.5)
+        phi = jnp.atan2(c * d - a * b, a * c + b * d)
+        psi = jnp.atan2(c * d + a * b, a * c - b * d)
+        # at a pole, both arctangents above are atan2(0, 0): take phi = 0, and psi = phi + psi
+        # (north) or psi - phi (south), the only combination defined there
+        north = (b == 0) & (c == 0)
+        south = (a == 0) & (d == 0)
+        psi = jnp.where(
+            north,
+            jnp.atan2(2 * a * d, a**2 - d**2),
+            jnp.where(south, jnp.atan2(2 * b * c, c**2 - b**2), psi),
+        )
+        return cls(theta, jnp.where(north | south, 0.0, phi), psi)
 
     def to_quaternion(self) -> Quaternion:
         """The rotation of these ISO angles."""
-        return _quaternion_from_iso(*self)
+        theta, phi, psi = self
+        cos_th, sin_th = jnp.cos(theta / 2), jnp.sin(theta / 2)
+        cos_pp, sin_pp = jnp.cos((psi + phi) / 2), jnp.sin((psi + phi) / 2)
+        cos_pm, sin_pm = jnp.cos((psi - phi) / 2), jnp.sin((psi - phi) / 2)
+        return Quaternion(cos_th * cos_pp, sin_th * sin_pm, sin_th * cos_pm, cos_th * sin_pp)
 
 
 class LonLatAngles(NamedTuple):
@@ -162,7 +178,8 @@ class XiEtaAngles(NamedTuple):
     @classmethod
     def from_quaternion(cls, q: Quaternion) -> Self:
         r"""The $(\xi, \eta, \gamma)$ of a detector quaternion."""
-        return cls(*_xieta_from_quaternion(q))
+        a, b, c, d = q.to_components()
+        return cls(2 * (a * b - c * d), -2 * (a * c + b * d), gamma_angle(q))
 
     def to_quaternion(self) -> Quaternion:
         """The detector quaternion of these angles."""
@@ -171,36 +188,40 @@ class XiEtaAngles(NamedTuple):
         return IsoAngles(theta, phi, self.gamma - phi).to_quaternion()
 
 
-@jit
 def gamma_angle(q: Quaternion) -> Angle:
     r"""The angle $\gamma = \phi + \psi$ of a rotation about the $z$ axis.
 
     For a detector quaternion, the orientation of the detector about the boresight, see
-    [`XiEtaAngles`][]. $0$ where it is undefined, for a detector looking opposite the
-    boresight.
+    [`XiEtaAngles`][]. For a detector looking opposite the boresight, where $\phi$ is undefined,
+    $\phi = 0$ as in [`IsoAngles`][].
     """
-    a, _b, _c, d = q.to_components()
-    return jnp.atan2(2 * a * d, a**2 - d**2)
+    a, b, c, d = q.to_components()
+    opposite = (a == 0) & (d == 0)
+    return jnp.where(opposite, jnp.atan2(2 * b * c, c**2 - b**2), jnp.atan2(2 * a * d, a**2 - d**2))
 
 
-@jit
 def gamma_angle_cos_sin(q: Quaternion) -> tuple[Angle, Angle]:
     r"""$(\cos\gamma, \sin\gamma)$ of [`gamma_angle`][], without trigonometric functions."""
-    a, _b, _c, d = q.to_components()
-    norm = a**2 + d**2
-    undefined = norm == 0
-    safe = jnp.where(undefined, 1.0, norm)
-    return jnp.where(undefined, 1.0, (a**2 - d**2) / safe), jnp.where(
-        undefined, 0.0, 2 * a * d / safe
+    a, b, c, d = q.to_components()
+    opposite = (a == 0) & (d == 0)
+    # (a, d) or, looking opposite the boresight, (c, b): the half-angle of gamma
+    x, y = jnp.where(opposite, c, a), jnp.where(opposite, b, d)
+    norm = x**2 + y**2
+    safe = jnp.where(norm == 0, 1.0, norm)
+    return jnp.where(norm == 0, 1.0, (x**2 - y**2) / safe), jnp.where(
+        norm == 0, 0.0, 2 * x * y / safe
     )
 
 
-@jit
 def polarization_angle(q: Quaternion) -> Angle:
     r"""Compute the polarization angle from the rotation quaternion using the COSMO convention.
 
     The polarization angle is measured from the South through the East. It is the angle $\psi$ of
-    [`IsoAngles`][].
+    [`IsoAngles`][]. The South is that of the meridian of the frame `q` rotates into, so the same
+    detector has different polarization angles in, e.g., equatorial and galactic coordinates. At
+    the poles of that frame, which have no meridian, it is measured from that of $\phi = 0$, as in
+    [`IsoAngles`][]. For the orientation of a detector about the boresight, which sits at such a
+    pole, see [`gamma_angle`][].
 
     The rotation quaternion `q` transforms detector coordinates to celestial (equatorial)
     coordinates. In detector coordinates:
@@ -232,54 +253,31 @@ def polarization_angle(q: Quaternion) -> Angle:
     """
     v = q.rotate_vector(ZAXIS)
     u = q.rotate_vector(XAXIS)
-    return jnp.arctan2(v[..., 0] * u[..., 1] - v[..., 1] * u[..., 0], -u[..., 2])
+    sin_pa = v[..., 0] * u[..., 1] - v[..., 1] * u[..., 0]
+    cos_pa = -u[..., 2]
+    # both vanish only at a pole (v = ±z), where w = 0: there, the south of the meridian phi = 0
+    # is v_z x, and its east is y
+    at_pole = (sin_pa == 0) & (cos_pa == 0)
+    return jnp.arctan2(
+        jnp.where(at_pole, u[..., 1], sin_pa), jnp.where(at_pole, v[..., 2] * u[..., 0], cos_pa)
+    )
 
 
-@jit
 def polarization_angle_cos_sin(q: Quaternion) -> tuple[Angle, Angle]:
     """Compute cos and sin of the polarization angle from the rotation quaternion.
 
     Equivalent to `(cos(pa), sin(pa))` where `pa = polarization_angle(q)`, but avoids
-    transcendental functions by using quaternion algebra directly. At the poles, where the angle
-    is undefined, it returns `(1, 0)`.
+    transcendental functions by using quaternion algebra directly.
 
     See [`polarization_angle`][] for the definition and convention.
     """
     a, b, c, d = q.to_components()
-    cos_theta = a**2 - b**2 - c**2 + d**2
-    # clip to avoid numerical issues giving cos_theta**2 > 1
-    half_sin_theta = 0.5 * jnp.sqrt(jnp.clip(1 - cos_theta**2, 0.0, None))
+    # sin(theta) / 2, as in `direction`: exactly zero at a pole, where b = c = 0 or a = d = 0
+    half_sin_theta = jnp.sqrt((a**2 + d**2) * (b**2 + c**2))
     at_pole = half_sin_theta == 0
     safe = jnp.where(at_pole, 1.0, half_sin_theta)
-    # angle undefined at the pole, use pa = 0
-    cos_pa = jnp.where(at_pole, 1.0, (a * c - b * d) / safe)
-    sin_pa = jnp.where(at_pole, 0.0, (a * b + c * d) / safe)
+    # at the pole, the angle from the meridian phi = 0: that of (a, d) at the north pole, of (c, b)
+    # at the south pole, where the other pair vanishes
+    cos_pa = jnp.where(at_pole, a**2 - d**2 + c**2 - b**2, (a * c - b * d) / safe)
+    sin_pa = jnp.where(at_pole, 2 * (a * d + b * c), (a * b + c * d) / safe)
     return cos_pa, sin_pa
-
-
-@jit
-def _iso_from_quaternion(q: Quaternion) -> tuple[Angle, Angle, Angle]:
-    a, b, c, d = q.to_components()
-    theta = 2 * jnp.atan2((b**2 + c**2) ** 0.5, (a**2 + d**2) ** 0.5)
-    phi = jnp.atan2(c * d - a * b, a * c + b * d)
-    psi = jnp.atan2(c * d + a * b, a * c - b * d)
-    return theta, phi, psi
-
-
-@jit
-def _quaternion_from_iso(theta: Angle, phi: Angle, psi: Angle) -> Quaternion:
-    cos_th = jnp.cos(theta * 0.5)
-    sin_th = jnp.sin(theta * 0.5)
-    cos_pp = jnp.cos((psi + phi) * 0.5)
-    sin_pp = jnp.sin((psi + phi) * 0.5)
-    cos_pm = jnp.cos((psi - phi) * 0.5)
-    sin_pm = jnp.sin((psi - phi) * 0.5)
-    return Quaternion(cos_th * cos_pp, sin_th * sin_pm, sin_th * cos_pm, cos_th * sin_pp)
-
-
-@jit
-def _xieta_from_quaternion(q: Quaternion) -> tuple[Angle, Angle, Angle]:
-    a, b, c, d = q.to_components()
-    xi = 2 * (a * b - c * d)
-    eta = 2 * (-c * a - d * b)
-    return xi, eta, gamma_angle(q)

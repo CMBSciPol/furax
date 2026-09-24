@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `spin2_cos_sin` and `spin2_cos_sin_zs` return a `Spin2Rotation`, and `transported_gather` and `transported_scatter` take one as `rotation` (#273)
 - `polarization_angle`, `gamma_angle` and their `_cos_sin` variants take the longitude 0 at the poles, as `IsoAngles` does (#273)
 - **Breaking:** `SkyPositions` is replaced by `ZSPhi` in `furax.math.coords`, its field `sth` renamed `s` (#273)
+- Faster on-the-fly HEALPix pointing (#274)
 - `transported_scatter` applies the stencil weights before rotating back into the pixel frames, which keeps it adjoint to `transported_gather` when the weights differ between Stokes components; results with equal weights change at round-off level only (#265)
 
 ### Removed

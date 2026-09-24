@@ -11,6 +11,7 @@ import furax.tree as ftree
 from furax.math.coords import (
     IsoAngles,
     XiEtaAngles,
+    ZSPhi,
     gamma_angle,
     polarization_angle_cos_sin,
 )
@@ -329,7 +330,8 @@ class _PointsSampler(AbstractSampler):
     def pointing_rows(self, landscape, index):
         theta, phi = self.theta[index], self.phi[index]
         stencil = landscape.world2stencil(theta, phi, self.kernel.interpolation)
-        rotation = transport_rotation(stencil, theta, phi) if landscape.has_spin2 else None
+        line_of_sight = ZSPhi.from_angles(theta, phi)
+        rotation = transport_rotation(stencil, line_of_sight) if landscape.has_spin2 else None
         return PointingRows(stencil, rotation)
 
 

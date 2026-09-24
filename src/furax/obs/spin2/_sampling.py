@@ -3,6 +3,7 @@ r"""Spin-2 transported gather and scatter over an interpolation stencil."""
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
+from furax.math.coords import ZSPhi
 from furax.obs.operators._qu_rotations import Spin2Rotation
 from furax.obs.spin2._transport import spin2_cos_sin_zs
 from furax.obs.stencil import Stencil
@@ -52,7 +53,8 @@ def transported_gather[S: Stokes](
     """
     if 'Q' not in sky.stokes:
         return rotated_gather(sky, stencil, None)
-    return rotated_gather(sky, stencil, transport_rotation(stencil, theta, phi, rotation))
+    target = ZSPhi.from_angles(theta, phi)
+    return rotated_gather(sky, stencil, transport_rotation(stencil, target, rotation))
 
 
 def transported_scatter[S: Stokes](
@@ -83,7 +85,8 @@ def transported_scatter[S: Stokes](
     """
     if 'Q' not in tod.stokes:
         return rotated_scatter(out, tod, stencil, None)
-    return rotated_scatter(out, tod, stencil, transport_rotation(stencil, theta, phi, rotation))
+    target = ZSPhi.from_angles(theta, phi)
+    return rotated_scatter(out, tod, stencil, transport_rotation(stencil, target, rotation))
 
 
 def rotated_gather[S: Stokes](sky: S, stencil: Stencil, rotation: Spin2Rotation | None) -> S:
@@ -146,8 +149,7 @@ def rotated_scatter[S: Stokes](
 
 def transport_rotation(
     stencil: Stencil,
-    theta: Float[Array, ' *dims'],
-    phi: Float[Array, ' *dims'],
+    target: ZSPhi,
     rotation: Spin2Rotation | None = None,
 ) -> Spin2Rotation:
     r"""The rotation of each neighbour's $(Q, U)$ into the basis of the sampled direction.
@@ -157,8 +159,8 @@ def transport_rotation(
 
     Args:
         stencil: The pixels each sample reads, with their positions.
-        theta: Target co-latitude, in radians.
-        phi: Target longitude, in radians.
+        target: The direction each sample is transported to, of shape `dims` (no neighbour
+            axis).
         rotation: The rotation by $\psi$ after the transport, or `None`.
 
     Returns:
@@ -170,10 +172,7 @@ def transport_rotation(
             'describes a grid that is not the sphere and can only sample an intensity map'
         )
     transport = spin2_cos_sin_zs(
-        *stencil.positions,
-        jnp.cos(theta)[..., None],
-        jnp.sin(theta)[..., None],
-        phi[..., None],
+        *stencil.positions, *(component[..., None] for component in target)
     )
     if rotation is None:
         return transport

@@ -13,6 +13,9 @@ from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
 from fastquat import Quaternion
 from jax.tree_util import register_static
+
+# TODO: use the public pix2zphi / zphi2pix once jax-healpy exposes them
+from jax_healpy.pixelfunc import _pix2i_ring, _pix2phi_ring, _pix2z_ring, _zphi2pix_ring
 from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
 from furax.math.coords import ZAXIS, IsoAngles, ZSPhi
@@ -202,6 +205,13 @@ class StokesLandscape(Landscape):
         """Converts quaternion to spherical world angles ``(theta, phi)``."""
         angles = IsoAngles.from_quaternion(quat)
         return angles.theta, angles.phi
+
+    def quat2direction(self, quat: Quaternion) -> ZSPhi:
+        """The direction each quaternion looks at, as a [`ZSPhi`][furax.math.coords.ZSPhi].
+
+        The same direction as [`quat2world`][], in the form the spin-2 transport takes.
+        """
+        return ZSPhi.from_quaternion(quat)
 
     def index2world(
         self, indices: Integer[Array, ' *dims']
@@ -550,10 +560,29 @@ class HealpixLandscape(StokesLandscape):
         Returns:
             int: HEALPix pixel index.
         """
-        # we want the 3 dimensions on the left
-        vec = jnp.moveaxis(quat.rotate_vector(ZAXIS), -1, 0)
-        pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec, nest=self.nested)
-        return pix
+        # what `vec2pix` computes from the direction vector, straight from the quaternion
+        return _zphi2pix_ring(self.nside, *ZSPhi.from_quaternion(quat))
+
+    def index2stencil(self, indices: Integer[Array, ' *dims']) -> Stencil:
+        r"""Returns the one-neighbour [`Stencil`][] reading the pixels of `indices`.
+
+        The pixel centres come as $(\cos\theta, \sin\theta, \phi)$ straight from the ring
+        scheme, without forming $\theta$. An index outside the map (negative) reads pixel 0 with
+        zero weight.
+        """
+        safe = jnp.where(indices < 0, 0, indices)
+        iring = _pix2i_ring(self.nside, safe)
+        z, one_minus_abs_z = _pix2z_ring(self.nside, iring, safe)
+        # near the poles, 1 - |z| keeps the precision that 1 - z**2 loses
+        sin_theta = jnp.where(
+            jnp.abs(z) > 0.99,
+            jnp.sqrt(one_minus_abs_z * (2 - one_minus_abs_z)),
+            jnp.sqrt((1 - z) * (1 + z)),
+        )
+        phi = _pix2phi_ring(self.nside, iring, safe)
+        positions = ZSPhi(z[..., None], sin_theta[..., None], phi[..., None])
+        weights = jnp.ones((*indices.shape, 1), self.dtype)
+        return Stencil.resolve(indices[..., None], weights, positions).astype(self.dtype)
 
     def index2world(
         self, indices: Integer[Array, ' *dims']

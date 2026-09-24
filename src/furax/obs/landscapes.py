@@ -15,7 +15,7 @@ from fastquat import Quaternion
 from jax.tree_util import register_static
 from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
-from furax.math.coords import ZAXIS, to_iso_angles
+from furax.math.coords import ZAXIS, IsoAngles
 from furax.obs.stencil import Interpolation, SkyPositions, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
@@ -192,8 +192,7 @@ class StokesLandscape(Landscape):
 
     def quat2pixel(self, quat: Quaternion) -> tuple[Float[Array, ' *dims'], ...]:
         """Converts quaternion to floating-point pixel coordinates."""
-        theta, phi, _ = to_iso_angles(quat)  # psi not needed
-        return self.world2pixel(theta, phi)
+        return self.world2pixel(*self.quat2world(quat))
 
     def quat2index(self, quat: Quaternion) -> Integer[Array, ' *dims']:
         """Converts quaternion to 1-dimensional pixel indices."""
@@ -201,8 +200,8 @@ class StokesLandscape(Landscape):
 
     def quat2world(self, quat: Quaternion) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
         """Converts quaternion to spherical world angles ``(theta, phi)``."""
-        theta, phi, _ = to_iso_angles(quat)  # psi not needed
-        return theta, phi
+        angles = IsoAngles.from_quaternion(quat)
+        return angles.theta, angles.phi
 
     def index2world(
         self, indices: Integer[Array, ' *dims']
@@ -266,8 +265,7 @@ class StokesLandscape(Landscape):
 
     def quat2interp(self, quat: Quaternion) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
         """Converts quaternion to (indices, weights) for interpolation."""
-        theta, phi, _ = to_iso_angles(quat)
-        return self.world2interp(theta, phi)
+        return self.world2interp(*self.quat2world(quat))
 
 
 def _index2pixel(

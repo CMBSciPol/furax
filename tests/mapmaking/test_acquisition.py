@@ -6,7 +6,7 @@ from numpy.testing import assert_allclose
 
 from furax.core import CompositionOperator
 from furax.mapmaking.acquisition import build_acquisition_operator
-from furax.math.coords import to_gamma_angles, to_polarization_angle
+from furax.math.coords import gamma_angle, polarization_angle
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.spin2 import spin2_cos_sin
@@ -40,7 +40,7 @@ def test_no_hwp_acquisition_formula() -> None:
 
     # Reference: sample pixels and apply polarization angle formula directly
     qdet_full = qbore[None, :] * qdet[:, None]  # (ndet, nsamp)
-    pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
+    pa = polarization_angle(qdet_full)  # (ndet, nsamp)
     indices = landscape.quat2index(qdet_full)  # (ndet, nsamp)
 
     cos_2d, sin_2d = _transport(landscape, qdet_full)
@@ -67,7 +67,7 @@ def test_no_hwp_acquisition_transpose_formula() -> None:
 
     # Reference: scatter TOD into sky weighted by polarization angle
     qdet_full = qbore[None, :] * qdet[:, None]  # (ndet, nsamp)
-    pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
+    pa = polarization_angle(qdet_full)  # (ndet, nsamp)
     flat_indices = landscape.quat2index(qdet_full).ravel()
     # the sample's (Q, U) contribution, carried back into the pixel's own frame before binning
     cos_2d, sin_2d = _transport(landscape, qdet_full)
@@ -111,9 +111,9 @@ def test_hwp_acquisition_formula() -> None:
     tod = acq(sky)
 
     qdet_full = qbore[None, :] * qdet[:, None]  # (ndet, nsamp)
-    pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
+    pa = polarization_angle(qdet_full)  # (ndet, nsamp)
     indices = landscape.quat2index(qdet_full)  # (ndet, nsamp)
-    gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)
+    gamma = gamma_angle(qdet)[:, None]  # (ndet, 1)
     phi = 2 * (2 * hwp_angles[None, :] + pa - 2 * gamma)  # (ndet, nsamp)
 
     cos_2d, sin_2d = _transport(landscape, qdet_full)
@@ -143,9 +143,9 @@ def test_hwp_acquisition_transpose_formula() -> None:
     sky = acq.T(tod)
 
     qdet_full = qbore[None, :] * qdet[:, None]  # (ndet, nsamp)
-    pa = to_polarization_angle(qdet_full)  # (ndet, nsamp)
+    pa = polarization_angle(qdet_full)  # (ndet, nsamp)
     flat_indices = landscape.quat2index(qdet_full).ravel()
-    gamma = to_gamma_angles(qdet)[:, None]  # (ndet, 1)
+    gamma = gamma_angle(qdet)[:, None]  # (ndet, 1)
     phi = 2 * (2 * hwp_angles[None, :] + pa - 2 * gamma)  # (ndet, nsamp)
 
     # the sample's (Q, U) contribution, carried back into the pixel's own frame before binning

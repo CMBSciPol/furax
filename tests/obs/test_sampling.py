@@ -4,7 +4,7 @@ import pytest
 from fastquat import Quaternion
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.math.coords import from_xieta_angles
+from furax.math.coords import XiEtaAngles
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.sampling import AngleSampler, PrecomputedSampler, QuaternionSampler, SamplingKernel
@@ -17,7 +17,9 @@ NDET = 3
 
 
 def _offsets() -> Quaternion:
-    return from_xieta_angles(jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), jnp.zeros(2))
+    return XiEtaAngles(
+        jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), jnp.zeros(2)
+    ).to_quaternion()
 
 
 class TestCreate:
@@ -79,7 +81,7 @@ class TestIntegrate:
 
 class TestOffsetsFor:
     def test_selects_the_detectors_of_a_batch(self) -> None:
-        offsets = from_xieta_angles(*jax.random.normal(jax.random.key(0), (3, NDET, 2)))
+        offsets = XiEtaAngles(*jax.random.normal(jax.random.key(0), (3, NDET, 2))).to_quaternion()
         kernel = SamplingKernel(offsets=offsets, weights=jnp.ones(2))
         batch = kernel.offsets_for(jnp.array([2, 0]))
         assert batch is not None
@@ -141,7 +143,9 @@ class TestAngleSampler:
         sampler = QuaternionSampler(
             kernel=SamplingKernel(Interpolation.BILINEAR, _offsets(), jnp.array([0.3, 0.7])),
             qbore=qbore,
-            qdet=from_xieta_angles(jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)),
+            qdet=XiEtaAngles(
+                jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)
+            ).to_quaternion(),
         )
         sky = landscape.normal(jax.random.key(3))
         on_the_fly = PointingOperator.from_sampler(landscape, sampler)(sky)
@@ -157,7 +161,9 @@ class TestPrecomputedSampler:
         sampler = QuaternionSampler(
             kernel=SamplingKernel(interpolation),
             qbore=Quaternion.random(jax.random.key(4), (7,)),
-            qdet=from_xieta_angles(jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)),
+            qdet=XiEtaAngles(
+                jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)
+            ).to_quaternion(),
         )
         cached = PrecomputedSampler.from_sampler(sampler, landscape)
         sky = landscape.normal(jax.random.key(5))

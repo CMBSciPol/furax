@@ -3,7 +3,7 @@ from fastquat import Quaternion
 from jaxtyping import Array, DTypeLike
 
 from furax import AbstractLinearOperator
-from furax.math.coords import to_gamma_angles
+from furax.math.coords import gamma_angle
 from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.pointing import PointingOperator
@@ -60,7 +60,7 @@ def build_acquisition_operator(
     # QURotationHWPRule commutes rot past the HWP, then QURotationRule would
     # absorb rot.T(gamma, ndet×1) into rot(hwp_angles, ndet×nsamp), broadcasting
     # the per-detector gamma across all samples unnecessarily.
-    gamma = to_gamma_angles(detector_quaternions)[:, None]
+    gamma = gamma_angle(detector_quaternions)[:, None]
     rot = QURotationOperator.create(
         data_shape,
         dtype,

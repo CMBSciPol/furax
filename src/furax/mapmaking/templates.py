@@ -1079,11 +1079,10 @@ class GroundTemplateOperator(AbstractLinearOperator):
         else:
             horizon_landscape = landscape
 
-        # Azimuth increases in an opposite way to longitude
-        boresight_quaternions = coords.from_lonlat_angles(
-            -boresight_azimuth, boresight_elevation, boresight_rotation
-        )
-        _, _, det_gamma = coords.to_xieta_angles(detector_quaternions)
+        boresight_quaternions = coords.AzElAngles(
+            boresight_azimuth, boresight_elevation, boresight_rotation
+        ).to_quaternion()
+        det_gamma = coords.gamma_angle(detector_quaternions)
 
         n_dets = detector_quaternions.shape[0]
         n_samps = boresight_azimuth.size
@@ -1127,14 +1126,13 @@ class GroundTemplateOperator(AbstractLinearOperator):
         az_grid = jnp.linspace(jnp.min(boresight_azimuth), jnp.max(boresight_azimuth), n_grid)
         el_grid = jnp.linspace(jnp.min(boresight_elevation), jnp.max(boresight_elevation), n_grid)
         az_mesh, el_mesh = jnp.meshgrid(az_grid, el_grid, indexing='ij')
-        qbore_mesh = coords.from_lonlat_angles(
-            -az_mesh, el_mesh, jnp.zeros_like(az_mesh)
-        )  # (N_GRID, N_GRID)
+        qbore_mesh = coords.AzElAngles(
+            az_mesh, el_mesh, jnp.zeros_like(az_mesh)
+        ).to_quaternion()  # (N_GRID, N_GRID)
         qfull_mesh = (
             qbore_mesh[None] * detector_quaternions[:, None, None]
         )  # (ndet, N_GRID, N_GRID)
-        det_az_mesh, det_el_mesh, _ = coords.to_lonlat_angles(qfull_mesh)
-        det_az_mesh = -det_az_mesh
+        det_az_mesh, det_el_mesh, _ = coords.AzElAngles.from_quaternion(qfull_mesh)
 
         # Azimuth angle is first restricted to to [0,2pi),
         # and unwrapped along the elevation grid, azimuth grid, and detector axes in order

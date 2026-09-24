@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PointingOperator.create(frame='sky')` and the `PolarizationFrame` type (#272)
 - `IsoAngles`, `LonLatAngles`, `AzElAngles`, `XiEtaAngles` and `gamma_angle_cos_sin` in `furax.math.coords` (#273)
 - `Spin2Rotation` in `furax.obs.operators`, a rotation of Q and U stored as the cosine and sine of twice its angle (#273)
+- `HealpixLandscape(nested=True)`, nearest neighbour only (#276)
 
 ### Changed
 

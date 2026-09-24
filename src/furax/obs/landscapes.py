@@ -555,8 +555,6 @@ class HealpixLandscape(StokesLandscape):
         dtype: DTypeLike = np.float64,
         nested: bool = False,
     ) -> None:
-        if nested:
-            raise NotImplementedError('NESTED pixel ordering is not fully supported by jax-healpy.')
         shape = (12 * nside**2,)
         super().__init__(shape, stokes, dtype)
         self.nside = nside
@@ -605,14 +603,19 @@ class HealpixLandscape(StokesLandscape):
         """Returns the [`Stencil`][] a sample reads, centered on HEALPix pixel centers.
 
         At [`Interpolation.BILINEAR`][] it holds the four neighbours ``get_interp_weights``
-        returns; at [`Interpolation.NEAREST`][] the pixel the sample falls in, whose index is
-        bit-identical to that of [`world2index`][].
+        returns, in RING pixel ordering only; at [`Interpolation.NEAREST`][] the pixel the sample
+        falls in, whose index is bit-identical to that of [`world2index`][].
         """
         if interpolation is Interpolation.NEAREST:
             indices = self.world2index(theta, phi)
             theta_c, phi_c = jhp.pix2ang(self.nside, indices, nest=self.nested)
             return Stencil.nearest(indices, theta_c, phi_c).astype(self.dtype)
 
+        if self.nested:
+            raise NotImplementedError(
+                f'{type(self).__name__} does not supply {interpolation.name} stencils '
+                'in NESTED pixel ordering'
+            )
         pixels, weights, centers = jhp.get_interp_weights(
             self.nside, theta, phi, nest=self.nested, with_centers=True
         )

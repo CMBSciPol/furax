@@ -17,7 +17,7 @@ from jax.tree_util import register_dataclass
 from jaxtyping import Array, Bool, Float, Key, UInt32
 from numpy.typing import NDArray
 
-from furax.math.coords import to_lonlat_angles
+from furax.math.coords import LonLatAngles
 from furax.obs.landscapes import ProjectionType, StokesLandscape
 from furax.obs.stokes import (
     StokesI,
@@ -391,7 +391,7 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
         qdet_full = qbore[None, :] * qdet[:, None]
 
         # Convert quaternions to longitude/latitude angles in radians
-        alpha, delta, _ = to_lonlat_angles(qdet_full)
+        alpha, delta, _ = LonLatAngles.from_quaternion(qdet_full)
 
         # Convert to degrees if requested
         if use_degrees:

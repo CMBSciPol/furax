@@ -9,7 +9,7 @@ from fastquat import Quaternion
 from jaxtyping import Array, Float, Int, Integer
 
 from furax.core.utils import register_dataclass_with_keys
-from furax.math.coords import to_polarization_angle_cos_sin
+from furax.math.coords import gamma_angle_cos_sin, polarization_angle_cos_sin
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.spin2 import transport_rotation
 from furax.obs.stencil import Interpolation, Stencil
@@ -372,13 +372,12 @@ class QuaternionSampler(AbstractSampler):
         r"""$(\cos 2x, \sin 2x)$ of the angle $x$ from the meridian basis to the frame, if any."""
         if self.frame == 'sky':
             return None
-        psi = to_polarization_angle_cos_sin(quats)
+        psi = polarization_angle_cos_sin(quats)
         if self.frame == 'detector':
             return _doubled(*psi)
         # psi - gamma, with gamma the angle of the detector about the boresight
-        a, _, _, d = self.qdet[index].to_components()
-        norm = a**2 + d**2
-        cos_gamma, sin_gamma = ((a**2 - d**2) / norm)[:, None], (2 * a * d / norm)[:, None]
+        cos_gamma, sin_gamma = gamma_angle_cos_sin(self.qdet[index])
+        cos_gamma, sin_gamma = cos_gamma[:, None], sin_gamma[:, None]
         return _doubled(*_composed(psi, (cos_gamma, -sin_gamma)))
 
     def _stencil(self, landscape: StokesLandscape, quats: Quaternion) -> Stencil:

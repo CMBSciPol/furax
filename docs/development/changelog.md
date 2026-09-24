@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rotated_gather`, `rotated_scatter` and `transport_rotation` in `furax.obs.spin2` (#270)
 - `PointingOperator.rotated` and `RotatedSampler`; `QURotationOperator @ PointingOperator` reduces to a `PointingOperator` (#271)
 - `PointingOperator.create(frame='sky')` and the `PolarizationFrame` type (#272)
+- `IsoAngles`, `LonLatAngles`, `AzElAngles`, `XiEtaAngles` and `gamma_angle_cos_sin` in `furax.math.coords` (#273)
 
 ### Changed
 
@@ -31,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Breaking:** the `to_*_angles` and `from_*_angles` functions of `furax.math.coords`, replaced by the coordinate classes; `to_gamma_angles` and `to_polarization_angle(_cos_sin)` are renamed `gamma_angle` and `polarization_angle(_cos_sin)` (#273)
 - **Breaking:** `XSamplingOperator` and `PointingOperator.as_expanded_operator` (#270)
 - `StokesLandscape.get_coverage` (#269)
 

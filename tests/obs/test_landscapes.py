@@ -8,7 +8,7 @@ from fastquat import Quaternion
 from jax import Array
 from numpy.testing import assert_allclose, assert_array_almost_equal, assert_array_equal
 
-from furax.math.coords import from_iso_angles, from_xieta_angles
+from furax.math.coords import IsoAngles, XiEtaAngles
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     CARLandscape,
@@ -791,7 +791,7 @@ class TestLocalStokesLandscape:
         phi = jnp.array([0.7, 3.1, 5.0])
         return QuaternionSampler(
             kernel=SamplingKernel(interpolation, **kernel),
-            qbore=from_iso_angles(theta, phi, jnp.zeros_like(theta)),
+            qbore=IsoAngles(theta, phi, jnp.zeros_like(theta)).to_quaternion(),
             qdet=Quaternion.ones((1,)),
         )
 
@@ -820,7 +820,9 @@ class TestLocalStokesLandscape:
     def test_from_sampler_reads_the_parent_map_exactly(self, stokes) -> None:
         """Offsets and per-Stokes weights widen the subset to every pixel they read."""
         parent = HealpixLandscape(2, stokes=stokes)
-        offsets = from_xieta_angles(jnp.array([0.2, -0.3]), jnp.array([0.1, 0.25]), jnp.zeros(2))
+        offsets = XiEtaAngles(
+            jnp.array([0.2, -0.3]), jnp.array([0.1, 0.25]), jnp.zeros(2)
+        ).to_quaternion()
         weights = jnp.array([0.4, 0.6])
         if stokes == 'IQU':
             weights = StokesIQU(weights, jnp.array([1.0, 0.0]), jnp.array([0.0, 1.0]))

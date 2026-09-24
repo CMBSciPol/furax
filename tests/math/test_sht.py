@@ -109,7 +109,6 @@ class TestMap2Alm:
         """Inverse operator's in_structure must equal Map2Alm's out_structure."""
         assert map2alm.I.in_structure == map2alm.out_structure
 
-    @pytest.mark.skip(reason='upstream jax-healpy bug')
     def test_transpose_satisfies_adjoint_identity(self, map2alm, random_maps):
         """<A x, y> must equal <x, A^T y> for A = Map2Alm.
 

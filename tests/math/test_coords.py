@@ -61,12 +61,8 @@ class TestISOAngles:
         'q',
         [
             IDENTITY,
-            pytest.param(
-                ROT_Z_90,
-                marks=pytest.mark.xfail(
-                    reason='ISO angle singularity: pure Z-rotations cause phi/psi degeneracy'
-                ),
-            ),
+            ROT_Z_90,
+            ROT_Z_90 * Q(0.0, 0.0, 1.0, 0.0),  # at the south pole
             ROT_X_90,
             ROT_Y_90,
         ],
@@ -205,13 +201,9 @@ class TestGammaAngle:
 
 class TestPolarizationAngle:
     def test_identity(self) -> None:
-        """Identity quaternion: v_x u_y - v_y u_x = 0 and u_z = 0, so pa = atan2(0, -0) = pi."""
-        np.testing.assert_allclose(polarization_angle(IDENTITY), math.pi, atol=1e-8)
+        np.testing.assert_allclose(polarization_angle(IDENTITY), 0.0, atol=1e-8)
 
     def test_cos_sin_matches_direct_angle(self) -> None:
-        # Away from the at_pole branch (cos_theta**2 == 1, e.g. the identity quaternion above):
-        # polarization_angle_cos_sin uses pa=0 there regardless of what atan2's zero-sign
-        # convention gives polarization_angle.
         q = Q(0.6, 0.3, 0.4, 0.7).normalize()
         pa = polarization_angle(q)
         cos_pa, sin_pa = polarization_angle_cos_sin(q)
@@ -219,7 +211,6 @@ class TestPolarizationAngle:
         np.testing.assert_allclose(sin_pa, jnp.sin(pa), atol=1e-6)
 
     def test_batch(self) -> None:
-        # Generic (non-pole) quaternions -- see test_cos_sin_matches_direct_angle for why.
         batch = Q.from_array(
             jnp.array([[0.6, 0.3, 0.4, 0.7], [0.8, 0.1, 0.2, 0.5], [0.5, 0.5, 0.5, 0.5]])
         ).normalize()
@@ -235,6 +226,36 @@ class TestPolarizationAngle:
         cos_pa, sin_pa = jax.jit(polarization_angle_cos_sin)(q)
         np.testing.assert_allclose(cos_pa, jnp.cos(pa), atol=1e-6)
         np.testing.assert_allclose(sin_pa, jnp.sin(pa), atol=1e-6)
+
+
+@pytest.mark.parametrize('theta', [0.0, math.pi], ids=['north', 'south'])
+class TestPoles:
+    """Where only phi + psi or psi - phi is defined, every angle takes phi = 0."""
+
+    PSI = np.array([-2.5, -0.7, 0.0, 0.3, 1.9, 3.0])
+
+    def _pointing(self, theta: float) -> Q:
+        psi = jnp.asarray(self.PSI)
+        return IsoAngles(jnp.full_like(psi, theta), jnp.zeros_like(psi), psi).to_quaternion()
+
+    def test_iso_angles_roundtrip(self, theta: float) -> None:
+        angles = IsoAngles.from_quaternion(self._pointing(theta))
+        np.testing.assert_allclose(angles.phi, 0.0, atol=1e-15)
+        np.testing.assert_allclose(angles.psi, self.PSI, atol=1e-14)
+
+    def test_polarization_angle(self, theta: float) -> None:
+        q = self._pointing(theta)
+        np.testing.assert_allclose(polarization_angle(q), self.PSI, atol=1e-14)
+        cos_pa, sin_pa = polarization_angle_cos_sin(q)
+        np.testing.assert_allclose(cos_pa, np.cos(self.PSI), atol=1e-14)
+        np.testing.assert_allclose(sin_pa, np.sin(self.PSI), atol=1e-14)
+
+    def test_limit_along_the_meridian(self, theta: float) -> None:
+        """Approaching the pole along phi = 0 gives the angle at the pole."""
+        psi = jnp.asarray(self.PSI)
+        near = abs(theta - 1e-7)
+        q = IsoAngles(jnp.full_like(psi, near), jnp.zeros_like(psi), psi).to_quaternion()
+        np.testing.assert_allclose(polarization_angle(q), self.PSI, atol=1e-12)
 
 
 class TestAngleConversionConsistency:
@@ -288,10 +309,15 @@ class TestConventions:
         np.testing.assert_allclose(cos_gamma, jnp.cos(gamma_angle(q)), atol=1e-12)
         np.testing.assert_allclose(sin_gamma, jnp.sin(gamma_angle(q)), atol=1e-12)
 
-    def test_gamma_cos_sin_where_undefined(self) -> None:
-        """A detector looking opposite the boresight, a half turn about x, has no gamma."""
-        cos_gamma, sin_gamma = gamma_angle_cos_sin(Q(0.0, 1.0, 0.0, 0.0))
-        assert (float(cos_gamma), float(sin_gamma)) == (1.0, 0.0)
+    def test_gamma_opposite_the_boresight(self) -> None:
+        """A detector looking opposite the boresight is at the south pole: gamma = psi, phi = 0."""
+        psi = TestPoles.PSI
+        q = IsoAngles(jnp.full(psi.shape, jnp.pi), jnp.zeros(psi.shape), jnp.asarray(psi))
+        q = q.to_quaternion()
+        np.testing.assert_allclose(gamma_angle(q), psi, atol=1e-14)
+        cos_gamma, sin_gamma = gamma_angle_cos_sin(q)
+        np.testing.assert_allclose(cos_gamma, np.cos(psi), atol=1e-14)
+        np.testing.assert_allclose(sin_gamma, np.sin(psi), atol=1e-14)
 
     def test_xi_eta_are_orthographic_coordinates(self) -> None:
         xi, eta = jax.random.normal(jax.random.key(1), (2, 200)) * 0.1

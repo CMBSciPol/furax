@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PointingOperator.rotated` and `RotatedSampler`; `QURotationOperator @ PointingOperator` reduces to a `PointingOperator` (#271)
 - `PointingOperator.create(frame='sky')` and the `PolarizationFrame` type (#272)
 - `IsoAngles`, `LonLatAngles`, `AzElAngles`, `XiEtaAngles` and `gamma_angle_cos_sin` in `furax.math.coords` (#273)
+- `Spin2Rotation` in `furax.obs.operators`, a rotation of Q and U stored as the cosine and sine of twice its angle (#273)
 
 ### Changed
 
@@ -28,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `LocalStokesLandscape.from_sampler` takes an `AbstractSampler`; `interpolate` is removed (#269)
 - `build_acquisition_operator(pointing_on_the_fly=False)` uses `PointingOperator.precomputed` (#270)
 - `PointingOperator.create` keeps the detector quaternions as given in every frame (#272)
+- **Breaking:** `spin2_cos_sin` and `spin2_cos_sin_zs` return a `Spin2Rotation`, and `transported_gather` and `transported_scatter` take one as `rotation` (#273)
+- `polarization_angle`, `gamma_angle` and their `_cos_sin` variants take the longitude 0 at the poles, as `IsoAngles` does (#273)
 - `transported_scatter` applies the stencil weights before rotating back into the pixel frames, which keeps it adjoint to `transported_gather` when the weights differ between Stokes components; results with equal weights change at round-off level only (#265)
 
 ### Removed

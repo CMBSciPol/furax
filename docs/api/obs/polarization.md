@@ -7,6 +7,7 @@ HWP (including the physical transfer-matrix model), polarizer, and QU-rotation o
 ::: furax.obs.operators.hwp_mueller_from_stack
 ::: furax.obs.operators.LinearPolarizerOperator
 ::: furax.obs.operators.QURotationOperator
+::: furax.obs.operators.Spin2Rotation
 ::: furax.obs.operators.Material
 ::: furax.obs.operators.Layer
 ::: furax.obs.operators.Stack

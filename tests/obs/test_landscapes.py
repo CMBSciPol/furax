@@ -1,12 +1,14 @@
+import jax
 import jax.numpy as jnp
 import jax_healpy as jhp
 import numpy as np
 import pytest
 from astropy.wcs import WCS
+from fastquat import Quaternion
 from jax import Array
 from numpy.testing import assert_allclose, assert_array_almost_equal, assert_array_equal
 
-from furax.obs._samplings import Sampling
+from furax.math.coords import from_iso_angles, from_xieta_angles
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     CARLandscape,
@@ -19,8 +21,10 @@ from furax.obs.landscapes import (
     WCSLandscape,
     WCSProjection,
 )
+from furax.obs.pointing import PointingOperator
+from furax.obs.sampling import QuaternionSampler, SamplingKernel
 from furax.obs.stencil import Interpolation
-from furax.obs.stokes import Stokes, ValidStokesLiteral
+from furax.obs.stokes import Stokes, StokesIQU, ValidStokesLiteral
 
 
 def test_healpix_landscape(stokes: ValidStokesLiteral) -> None:
@@ -95,19 +99,6 @@ def test_pixel2index(pixel: tuple[float, float], expected_index: int) -> None:
     landscape = CARStokesLandscape((5, 2), 'I')
     actual_index = landscape.pixel2index(*pixel)
     assert_array_equal(actual_index, expected_index)
-
-
-def test_get_coverage() -> None:
-    class CARStokesLandscape(StokesLandscape):
-        def world2pixel(self, theta, phi):
-            return theta, phi
-
-    samplings = Sampling(
-        jnp.array([0.0, 1, 0, 1, 1, 1, 0]), jnp.array([0.0, 0, 0, 3, 0, 1, 0]), jnp.array(0.0)
-    )
-    landscape = CARStokesLandscape((5, 2), 'I')
-    coverage = landscape.get_coverage(samplings)
-    assert_array_equal(coverage, [[3, 2], [0, 1], [0, 0], [0, 1], [0, 0]])
 
 
 @pytest.mark.parametrize('projection_type', list(ProjectionType))
@@ -793,19 +784,30 @@ class TestLocalStokesLandscape:
         # the survivors are rescaled over the covered neighbors, so they still sum to one
         assert_allclose(lweights[~mask], gweights[~mask] / gweights[~mask].sum(), rtol=1e-14)
 
-    def test_from_sampling(self) -> None:
-        parent = HealpixLandscape(2, stokes='I')
+    @staticmethod
+    def _sampler(interpolation: Interpolation, **kernel) -> QuaternionSampler:
+        """One detector at the boresight, pointing at three directions."""
         theta = jnp.array([1.2, 0.9, 2.0])
         phi = jnp.array([0.7, 3.1, 5.0])
-        sampling = Sampling(theta, phi, jnp.zeros_like(theta))
+        return QuaternionSampler(
+            kernel=SamplingKernel(interpolation, **kernel),
+            qbore=from_iso_angles(theta, phi, jnp.zeros_like(theta)),
+            qdet=Quaternion.ones((1,)),
+        )
+
+    def test_from_sampler_keeps_the_pixels_read(self) -> None:
+        parent = HealpixLandscape(2, stokes='I')
 
         # nearest: subset is exactly the observed (sorted-unique) pixels
-        nearest = LocalStokesLandscape.from_sampling(parent, sampling)
-        expected = jnp.unique(parent.world2index(theta, phi))
+        sampler = self._sampler(Interpolation.NEAREST)
+        nearest = LocalStokesLandscape.from_sampler(parent, sampler)
+        expected = jnp.unique(parent.quat2index(sampler.quaternions()))
         assert_array_equal(nearest.global_indices, expected)
 
         # interpolate: subset is the full 4-pixel bilinear stencil
-        interp = LocalStokesLandscape.from_sampling(parent, sampling, interpolate=True)
+        sampler = self._sampler(Interpolation.BILINEAR)
+        interp = LocalStokesLandscape.from_sampler(parent, sampler)
+        theta, phi = parent.quat2world(sampler.quaternions())
         gidx, _ = parent.world2interp(theta, phi)
         assert_array_equal(interp.global_indices, jnp.unique(gidx))
         # every stencil neighbor is local (nothing falls in the sink) -> weights preserved
@@ -814,20 +816,21 @@ class TestLocalStokesLandscape:
         _, gweights = parent.world2interp(theta, phi)
         assert_array_equal(lweights, gweights)
 
-    def test_get_coverage_matches_shape(self) -> None:
-        # base-class contract: coverage has shape self.shape; the sink slot counts the
-        # samples falling outside the subset
-        class _IdentityLandscape(StokesLandscape):
-            def world2pixel(self, theta, phi):
-                return theta, phi
+    @pytest.mark.parametrize('stokes', ['I', 'IQU'])
+    def test_from_sampler_reads_the_parent_map_exactly(self, stokes) -> None:
+        """Offsets and per-Stokes weights widen the subset to every pixel they read."""
+        parent = HealpixLandscape(2, stokes=stokes)
+        offsets = from_xieta_angles(jnp.array([0.2, -0.3]), jnp.array([0.1, 0.25]), jnp.zeros(2))
+        weights = jnp.array([0.4, 0.6])
+        if stokes == 'IQU':
+            weights = StokesIQU(weights, jnp.array([1.0, 0.0]), jnp.array([0.0, 1.0]))
+        sampler = self._sampler(Interpolation.BILINEAR, offsets=offsets, weights=weights)
+        local = LocalStokesLandscape.from_sampler(parent, sampler)
 
-        parent = _IdentityLandscape((5, 2), 'I')
-        local = LocalStokesLandscape(parent, jnp.array([0, 3]))
-        # samples hit flat parent pixels [0, 3, 3, 1]; pixel 1 is outside the subset -> sink
-        samplings = Sampling(jnp.array([0.0, 1, 1, 1]), jnp.array([0.0, 1, 1, 0]), jnp.array(0.0))
-        coverage = local.get_coverage(samplings)
-        assert coverage.shape == local.shape
-        assert_array_equal(coverage, [1, 2, 1])
+        sky = parent.normal(jax.random.key(0))
+        p_parent = PointingOperator.from_sampler(parent, sampler)
+        p_local = PointingOperator.from_sampler(local, sampler)
+        assert_allclose(p_local(local.restrict(sky)).data, p_parent(sky).data, rtol=1e-13)
 
     @pytest.mark.parametrize(
         'indices',

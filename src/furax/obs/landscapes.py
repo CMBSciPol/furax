@@ -15,8 +15,8 @@ from fastquat import Quaternion
 from jax.tree_util import register_static
 from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
-from furax.math.coords import ZAXIS, IsoAngles
-from furax.obs.stencil import Interpolation, SkyPositions, Stencil
+from furax.math.coords import ZAXIS, IsoAngles, ZSPhi
+from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 if TYPE_CHECKING:  # the sampling module reads landscapes
@@ -384,7 +384,7 @@ class WCSLandscape(StokesLandscape):
         return Stencil.resolve(
             self.pixel2index(xs, ys),
             weights,
-            SkyPositions(jnp.cos(theta_n), jnp.sin(theta_n), phi_n),
+            ZSPhi.from_angles(theta_n, phi_n),
         )
 
     def to_wcs(self) -> WCS:
@@ -590,7 +590,7 @@ class HealpixLandscape(StokesLandscape):
         return Stencil.resolve(
             jnp.moveaxis(pixels, 0, -1),
             jnp.moveaxis(weights, 0, -1),
-            SkyPositions(
+            ZSPhi(
                 jnp.moveaxis(centers.z[ring], 0, -1),
                 jnp.moveaxis(centers.sth[ring], 0, -1),
                 jnp.moveaxis(centers.phi, 0, -1),

@@ -609,6 +609,51 @@ class TestInterpolation:
         assert local.world2stencil(*angles, interpolation).n_neighbors == interpolation
 
 
+class TestNestedHealpix:
+    """A NESTED landscape indexes the pixels of its RING twin under the NESTED numbering."""
+
+    @pytest.fixture
+    def angles(self):
+        rng = np.random.default_rng(0)
+        theta = jnp.array(np.arccos(rng.uniform(-1, 1, 50)))
+        phi = jnp.array(rng.uniform(0, 2 * np.pi, 50))
+        return theta, phi
+
+    @pytest.fixture
+    def ring(self):
+        return HealpixLandscape(16, 'IQU')
+
+    @pytest.fixture
+    def nested(self):
+        return HealpixLandscape(16, 'IQU', nested=True)
+
+    def test_world2index_is_the_nested_number_of_the_ring_pixel(self, ring, nested, angles):
+        expected = jhp.ring2nest(16, ring.world2index(*angles))
+        assert_array_equal(nested.world2index(*angles), expected)
+
+    def test_quat2index_matches_world2index(self, nested, angles):
+        quat = IsoAngles(*angles, jnp.zeros_like(angles[0])).to_quaternion()
+        assert_array_equal(nested.quat2index(quat), nested.world2index(*angles))
+
+    def test_index2stencil_reads_the_same_pixel_centers(self, ring, nested, angles):
+        ring_indices = ring.world2index(*angles)
+        expected = ring.index2stencil(ring_indices).positions
+        stencil = nested.index2stencil(jhp.ring2nest(16, ring_indices))
+        assert_array_almost_equal(stencil.positions.z, expected.z, decimal=12)
+        assert_array_almost_equal(stencil.positions.s, expected.s, decimal=12)
+        assert_array_almost_equal(
+            stencil.positions.phi % (2 * np.pi), expected.phi % (2 * np.pi), decimal=12
+        )
+
+    def test_nearest_stencil_is_the_world2index_pixel(self, nested, angles):
+        stencil = nested.world2stencil(*angles, Interpolation.NEAREST)
+        assert_array_equal(stencil.indices[..., 0], nested.world2index(*angles))
+
+    def test_bilinear_stencil_is_refused(self, nested, angles):
+        with pytest.raises(NotImplementedError, match='NESTED'):
+            nested.world2stencil(*angles, Interpolation.BILINEAR)
+
+
 class TestWCSConventions:
     """Tests documenting the FITS/pixell WCS sign conventions used throughout this codebase.
 

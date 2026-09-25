@@ -11,6 +11,7 @@ import furax.tree as ftree
 from furax.math.coords import (
     from_iso_angles,
     from_xieta_angles,
+    to_gamma_angles,
     to_polarization_angle_cos_sin,
 )
 from furax.obs.landscapes import (
@@ -604,6 +605,7 @@ class TestOffsets:
         assert tree_equal(op(sky), expected, rtol=1e-12, atol=1e-12)
 
     def test_per_detector_offsets_match_shared_ones(self, frame, interpolate) -> None:
+        """Shared offsets are stored once, not copied per detector, and read the same sky."""
         landscape = HealpixLandscape(NSIDE, 'I')
         qbore, qdet = self._quats(46)
         offsets = self._offsets()
@@ -628,7 +630,7 @@ class TestOffsets:
             offsets=identity * offsets[None, :],
             offset_weights=weights,
         )
-        assert shared.sampler.kernel.offsets.shape == (NDET, 2)
+        assert shared.sampler.kernel.offsets.shape == (2,)
         assert tree_equal(per_detector(sky), shared(sky), rtol=1e-12, atol=1e-12)
 
     def test_per_stokes_weights_act_on_the_output_components(
@@ -836,3 +838,68 @@ class TestRotationAbsorption:
         assert isinstance(twice.sampler.source, QuaternionSampler)
         sky = op.landscape.normal(jax.random.key(64))
         assert tree_equal(twice(sky), once(sky), rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize('interpolate', [False, True], ids=['nearest', 'bilinear'])
+@pytest.mark.parametrize('offsets', [False, True], ids=['no-offsets', 'shared-offsets'])
+class TestFrames:
+    """The frame only sets the basis of the output: the frames differ by a rotation per sample."""
+
+    @staticmethod
+    def _ops(interpolate: bool, offsets: bool) -> dict[str, PointingOperator]:
+        k1 = jax.random.key(70)
+        qbore = Quaternion.random(k1, (NSAMP,))
+        qdet = from_xieta_angles(
+            jnp.array([0.0, 0.02, -0.03]),
+            jnp.array([0.0, -0.01, 0.02]),
+            jnp.array([0.3, 0.1, -1.2]),
+        )
+        kwargs = {}
+        if offsets:
+            kwargs = {
+                'offsets': from_xieta_angles(
+                    jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), 0.0
+                ),
+                'offset_weights': jnp.array([0.3, 0.7]),
+            }
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        return {
+            frame: PointingOperator.create(
+                landscape, qbore, qdet, frame=frame, interpolate=interpolate, **kwargs
+            )
+            for frame in ('detector', 'boresight', 'sky')
+        }
+
+    def test_the_frames_differ_by_the_detector_angles(self, interpolate, offsets) -> None:
+        ops = self._ops(interpolate, offsets)
+        sampler = ops['detector'].sampler
+        quats = sampler.quaternions()
+        cos_psi, sin_psi = to_polarization_angle_cos_sin(quats)
+        gamma = to_gamma_angles(sampler.qdet)[:, None]
+        sky = ops['detector'].landscape.normal(jax.random.key(71))
+
+        tods = {frame: op(sky) for frame, op in ops.items()}
+        # the detector frame is the sky frame rotated by psi, the boresight one by psi - gamma
+        assert tree_equal(tods['detector'], rotate_qu_cs(tods['sky'], cos_psi, sin_psi), atol=1e-12)
+        assert tree_equal(
+            tods['boresight'],
+            rotate_qu_cs(tods['detector'], jnp.cos(gamma), -jnp.sin(gamma)),
+            atol=1e-12,
+        )
+
+    def test_the_sky_frame_is_adjoint(self, interpolate, offsets) -> None:
+        op = self._ops(interpolate, offsets)['sky']
+        sky = op.landscape.normal(jax.random.key(73))
+        tod = ftree.normal_like(op.out_structure, jax.random.key(74))
+        assert_allclose(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), rtol=1e-12)
+
+
+@pytest.mark.parametrize('interpolate', [False, True], ids=['nearest', 'bilinear'])
+def test_the_sky_frame_is_the_transported_sample(interpolate) -> None:
+    op = TestFrames._ops(interpolate, offsets=False)['sky']
+    quats = op.sampler.quaternions()
+    theta, phi = op.landscape.quat2world(quats)
+    stencil = op.sampler.pointing_rows(op.landscape, jnp.arange(NDET)).stencil
+    sky = op.landscape.normal(jax.random.key(72))
+    expected = transported_gather(sky.ravel(), stencil, theta, phi)
+    assert tree_equal(op(sky), expected, rtol=1e-12, atol=1e-12)

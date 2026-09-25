@@ -1,7 +1,7 @@
 import dataclasses
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, NamedTuple, Self, dataclass_transform
+from typing import Any, Literal, NamedTuple, Self, dataclass_transform
 
 import jax
 import jax.numpy as jnp
@@ -18,12 +18,17 @@ from furax.obs.stokes import Stokes
 __all__ = [
     'AbstractSampler',
     'AngleSampler',
+    'PolarizationFrame',
     'PrecomputedSampler',
     'SamplingKernel',
     'QuaternionSampler',
     'RotatedSampler',
     'PointingRows',
 ]
+
+
+type PolarizationFrame = Literal['boresight', 'detector', 'sky']
+"""The basis a [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler] returns Q and U in."""
 
 
 @jax.tree_util.register_dataclass
@@ -286,20 +291,25 @@ class AbstractSampler(ABC):
 
 
 class QuaternionSampler(AbstractSampler):
-    """Detectors on a moving boresight, read along the pointing given by quaternions.
+    r"""Detectors on a moving boresight, read along the pointing given by quaternions.
 
     The pointing of detector $d$ at sample $t$ is `qbore[t] * qdet[d]`, and the samples have shape
-    (n_detectors, n_samples). The polarization is returned in the frame of `qdet`.
+    (n_detectors, n_samples). Q and U are returned in the meridian basis of the line of sight
+    rotated by $\psi - \gamma$, with $\psi$ the polarization angle and $\gamma$ the detector's
+    angle about the boresight (`'boresight'` frame, the default), by $\psi$ (`'detector'`), or not
+    rotated (`'sky'`).
 
     Attributes:
-        kernel: What each sample integrates over. Its offsets, if any, compose with the
-            pointing like a detector quaternion.
+        kernel: What each sample integrates over. Offsets compose with `qdet`; per-Stokes weights
+            act on Q and U in the `frame` basis.
         qbore: Boresight quaternions, shape (n_samples,).
         qdet: Detector quaternions, shape (n_detectors,).
+        frame: The basis Q and U are returned in.
     """
 
     qbore: Quaternion
     qdet: Quaternion
+    frame: PolarizationFrame = field(default='boresight', metadata={'static': True})
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -326,7 +336,7 @@ class QuaternionSampler(AbstractSampler):
             stencil = self.kernel.integrate(self._stencil(landscape, offset_quats))
         if not landscape.has_spin2:
             return PointingRows(stencil, None)
-        rotation = _doubled(*to_polarization_angle_cos_sin(quats))
+        rotation = self._frame_rotation(quats, index)
         theta, phi = landscape.quat2world(quats)
         return _polarized(stencil, theta, phi, rotation, self.kernel)
 
@@ -342,7 +352,7 @@ class QuaternionSampler(AbstractSampler):
         index = jnp.arange(self.shape[0])
         quats = self.quaternions(index)
         theta, phi = landscape.quat2world(quats)
-        rotation = _doubled(*to_polarization_angle_cos_sin(quats))
+        rotation = self._frame_rotation(quats, index)
         offset_theta = offset_phi = None
         offsets = self.kernel.offsets_for(index)
         if offsets is not None:
@@ -355,6 +365,21 @@ class QuaternionSampler(AbstractSampler):
             offset_theta=offset_theta,
             offset_phi=offset_phi,
         )
+
+    def _frame_rotation(
+        self, quats: Quaternion, index: Int[Array, ' batch']
+    ) -> tuple[Float[Array, 'batch samp'], Float[Array, 'batch samp']] | None:
+        r"""$(\cos 2x, \sin 2x)$ of the angle $x$ from the meridian basis to the frame, if any."""
+        if self.frame == 'sky':
+            return None
+        psi = to_polarization_angle_cos_sin(quats)
+        if self.frame == 'detector':
+            return _doubled(*psi)
+        # psi - gamma, with gamma the angle of the detector about the boresight
+        a, _, _, d = self.qdet[index].to_components()
+        norm = a**2 + d**2
+        cos_gamma, sin_gamma = ((a**2 - d**2) / norm)[:, None], (2 * a * d / norm)[:, None]
+        return _doubled(*_composed(psi, (cos_gamma, -sin_gamma)))
 
     def _stencil(self, landscape: StokesLandscape, quats: Quaternion) -> Stencil:
         """Read the map around each direction, with the kernel's interpolation."""

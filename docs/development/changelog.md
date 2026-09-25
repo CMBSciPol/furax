@@ -16,17 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Stencil` weights may carry a leading Stokes axis (#265)
 - `SamplingKernel` in the new `furax.obs.sampling` module (#266)
 - `AbstractSampler`, `QuaternionSampler`, `ScreenSampler` and `PointingOperator.from_sampler` (#267)
+- `PointingOperator.precomputed`, `PrecomputedSampler` and `AngleSampler` (#270)
+- `rotated_gather`, `rotated_scatter` and `transport_rotation` in `furax.obs.spin2` (#270)
 
 ### Changed
 
 - **Breaking:** `PointingOperator`, `XSamplingOperator` and `AtmospherePointingOperator` hold a `kernel` instead of their interpolation and offset fields (#266)
 - **Breaking:** `PointingOperator` holds a `sampler` instead of `qbore`, `qdet` and `kernel` (#267)
 - **Breaking:** `AtmospherePointingOperator` is replaced by `ScreenSampler` (#267)
+- `build_acquisition_operator(pointing_on_the_fly=False)` uses `PointingOperator.precomputed` (#270)
 - **Breaking:** `LocalStokesLandscape.from_sampler` takes an `AbstractSampler`; `interpolate` is removed (#269)
 - `transported_scatter` applies the stencil weights before rotating back into the pixel frames, which keeps it adjoint to `transported_gather` when the weights differ between Stokes components; results with equal weights change at round-off level only (#265)
 
 ### Removed
 
+- **Breaking:** `XSamplingOperator` and `PointingOperator.as_expanded_operator` (#270)
 - `StokesLandscape.get_coverage` (#269)
 
 ## [0.14.0] - 2026-09-15

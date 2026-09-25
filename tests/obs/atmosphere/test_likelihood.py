@@ -6,11 +6,12 @@ from numpy.testing import assert_allclose
 
 from furax import HomothetyOperator
 from furax.obs.atmosphere import (
-    AtmospherePointingOperator,
+    ScreenSampler,
     profile_neg_log_likelihood,
     simulate_kolmogorov_screen,
 )
 from furax.obs.landscapes import TangentialLandscape
+from furax.obs.pointing import PointingOperator
 
 HEIGHT = 100.0
 DX = DY = 10.0
@@ -32,8 +33,8 @@ def _make_operator(landscape, wind_velocity, seed=0):
     qdet = Quaternion.random(k_det, (NDET,))
     qdet = Quaternion.from_array(qdet.wxyz.at[:, 1:3].multiply(0.01)).normalize()
     times = jnp.arange(NSAMP, dtype=jnp.float64)
-    return AtmospherePointingOperator.from_wind(
-        landscape, qbore, qdet, wind_velocity, times, interpolate=True
+    return PointingOperator.from_sampler(
+        landscape, ScreenSampler.from_wind(qbore, qdet, wind_velocity, times)
     )
 
 
@@ -82,15 +83,15 @@ class TestProfileNegLogLikelihood:
         qdet = Quaternion.from_array(qdet.wxyz.at[:, 1:3].multiply(0.01)).normalize()
         times = jnp.arange(NSAMP, dtype=jnp.float64)
 
-        P_true = AtmospherePointingOperator.from_wind(
-            landscape, qbore, qdet, v_true, times, interpolate=True
+        P_true = PointingOperator.from_sampler(
+            landscape, ScreenSampler.from_wind(qbore, qdet, v_true, times)
         )
         d_obs = P_true(atm)
         N_inv = HomothetyOperator(1.0, in_structure=d_obs.structure)
 
         def loss(wind_velocity):
-            P = AtmospherePointingOperator.from_wind(
-                landscape, qbore, qdet, wind_velocity, times, interpolate=True
+            P = PointingOperator.from_sampler(
+                landscape, ScreenSampler.from_wind(qbore, qdet, wind_velocity, times)
             )
             return profile_neg_log_likelihood(P, d_obs, N_inv)
 

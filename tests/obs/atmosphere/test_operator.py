@@ -5,8 +5,9 @@ from fastquat import Quaternion
 from numpy.testing import assert_array_almost_equal
 
 from furax.math.coords import ZAXIS
-from furax.obs.atmosphere import AtmospherePointingOperator
-from furax.obs.landscapes import TangentialLandscape
+from furax.obs.atmosphere import ScreenSampler
+from furax.obs.landscapes import HealpixLandscape, TangentialLandscape
+from furax.obs.pointing import PointingOperator
 from furax.obs.sampling import SamplingKernel
 from furax.obs.stokes import StokesI
 
@@ -27,7 +28,7 @@ def _make_operator(
     batch_size=2,
     seed=0,
     elevation_modulation=False,
-) -> tuple[AtmospherePointingOperator, TangentialLandscape, StokesI]:
+) -> tuple[PointingOperator, TangentialLandscape, StokesI]:
     """Return (operator, landscape, atm_map) for use in tests."""
     if wind_velocity is None:
         wind_velocity = WIND_VELOCITY
@@ -51,34 +52,35 @@ def _make_operator(
 
     atm_map = landscape.normal(k3)
 
-    op = AtmospherePointingOperator.from_wind(
-        landscape,
+    sampler = ScreenSampler.from_wind(
         qbore,
         qdet,
         wind_velocity,
         times,
-        batch_size=batch_size,
         interpolate=False,
         elevation_modulation=elevation_modulation,
     )
+    op = PointingOperator.from_sampler(landscape, sampler, batch_size=batch_size)
     return op, landscape, atm_map
 
 
-class TestAtmosphereOperatorRejectsOffsets:
+class TestScreenSamplerValidation:
     def test_offsets_are_rejected(self) -> None:
         op, _, _ = _make_operator()
         offsets = Quaternion.ones((NDET, 1))
         with pytest.raises(ValueError, match='does not support offsets'):
-            AtmospherePointingOperator(
-                op.landscape,
-                qbore=op.qbore,
-                qdet=op.qdet,
-                batch_size=op.batch_size,
+            ScreenSampler(
                 kernel=SamplingKernel(offsets=offsets),
-                _out_structure=op.out_structure,
-                wind_displacement=op.wind_displacement,
-                elevation_modulation=op.elevation_modulation,
-                in_structure=op.in_structure,
+                qbore=op.sampler.qbore,
+                qdet=op.sampler.qdet,
+                wind_displacement=op.sampler.wind_displacement,
+            )
+
+    def test_the_screen_must_be_a_tangential_landscape(self) -> None:
+        op, _, _ = _make_operator()
+        with pytest.raises(TypeError, match='TangentialLandscape'):
+            PointingOperator.from_sampler(HealpixLandscape(4, 'I'), op.sampler)(
+                HealpixLandscape(4, 'I').zeros()
             )
 
 
@@ -97,7 +99,7 @@ class TestAtmosphereOperatorMv:
 
         flat = atm.ravel()
         for d in range(NDET):
-            qdet_full = op.qbore[None, :] * op.qdet[d : d + 1, None]  # (1, samp)
+            qdet_full = op.sampler.qbore[None, :] * op.sampler.qdet[d : d + 1, None]  # (1, samp)
             x, y = landscape.quat2xy(qdet_full[0])  # (samp,)
             idx = landscape.pixel2index(*landscape.xy2pixel(x, y))
             expected = flat.i[idx]
@@ -113,7 +115,7 @@ class TestAtmosphereOperatorMv:
 
         flat = atm.ravel()
         for d in range(NDET):
-            qdet_full = op.qbore[None, :] * op.qdet[d : d + 1, None]  # (1, samp)
+            qdet_full = op.sampler.qbore[None, :] * op.sampler.qdet[d : d + 1, None]  # (1, samp)
             x, y = landscape.quat2xy(qdet_full[0])  # (samp,)
             x_shifted = x + times * wind_velocity[0]
             y_shifted = y + times * wind_velocity[1]
@@ -132,7 +134,7 @@ class TestAtmosphereElevationModulation:
         tod_mod = op_mod(atm)
 
         for d in range(NDET):
-            qdet_full = op.qbore[None, :] * op.qdet[d : d + 1, None]  # (1, samp)
+            qdet_full = op.sampler.qbore[None, :] * op.sampler.qdet[d : d + 1, None]  # (1, samp)
             sin_el = qdet_full[0].rotate_vector(ZAXIS)[..., 2]  # (samp,)
             assert_array_almost_equal(tod_mod.i[d], tod.i[d] / sin_el)
 

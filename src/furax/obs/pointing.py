@@ -17,6 +17,7 @@ from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import (
     QURotationOperator,
     QURotationTransposeOperator,
+    Spin2Rotation,
 )
 from furax.obs.sampling import (
     AbstractSampler,
@@ -107,14 +108,14 @@ class PointingOperator(AbstractLinearOperator):
             >>> import jax
             >>> import jax.numpy as jnp
             >>> from fastquat import Quaternion
-            >>> from furax.math.coords import from_iso_angles
+            >>> from furax.math.coords import IsoAngles
             >>> from furax.obs.landscapes import HealpixLandscape
             >>> theta, phi, psi = jax.random.uniform(jax.random.key(0), (3, 1000)) * jnp.array(
             ...     [[jnp.pi], [2 * jnp.pi], [2 * jnp.pi]]
             ... )
             >>> landscape = HealpixLandscape(nside=64, stokes='IQU')
             >>> pointing = PointingOperator.create(
-            ...     landscape, from_iso_angles(theta, phi, psi), Quaternion.ones((1,))
+            ...     landscape, IsoAngles(theta, phi, psi).to_quaternion(), Quaternion.ones((1,))
             ... )
             >>> pointing.out_structure.shape
             (1, 1000)
@@ -288,9 +289,7 @@ class PointingOperator(AbstractLinearOperator):
         else:
             pointing = self._pointing(index)
             if pointing.polarization_rotation is not None:
-                # rotate back with the inverse rotation
-                cos_2psi, sin_2psi = pointing.polarization_rotation
-                tod_batch = tod_batch.rotate_qu(cos_2psi, -sin_2psi)
+                tod_batch = tod_batch.rotate_qu(*pointing.polarization_rotation.inverse())
             binned = rotated_scatter(zeros, tod_batch, *pointing[:2]).data
         return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
 
@@ -310,7 +309,7 @@ class PointingOperator(AbstractLinearOperator):
             angles: Rotation angles in radians, broadcastable to the shape of the samples, with
                 the convention of [`QURotationOperator`][furax.obs.operators.QURotationOperator].
         """
-        sampler = self.sampler.rotated((jnp.cos(2 * angles), jnp.sin(2 * angles)))
+        sampler = self.sampler.rotated(Spin2Rotation.from_angles(angles))
         return PointingOperator.from_sampler(self.landscape, sampler, batch_size=self.batch_size)
 
     def transpose(self) -> AbstractLinearOperator:

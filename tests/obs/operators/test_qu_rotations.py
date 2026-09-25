@@ -1,11 +1,15 @@
 import equinox
+import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
+from numpy.testing import assert_allclose
 
 import furax as fx
 from furax import IdentityOperator
 from furax.core import CompositionOperator
 from furax.obs import QURotationOperator
+from furax.obs.operators import Spin2Rotation
 from furax.obs.stokes import Stokes, StokesI, StokesIQU, ValidStokesLiteral
 
 
@@ -104,3 +108,55 @@ def test_atomic_identity_still_reduces(stokes: ValidStokesLiteral) -> None:
 
     assert isinstance((op @ op.T).reduce(), IdentityOperator)
     assert isinstance((op.T @ op).reduce(), IdentityOperator)
+
+
+# numpy, so that it is float64 once the autouse fixture enables x64
+ANGLES = np.array([-2.0, -0.3, 0.0, 0.4, 1.2, 3.0])
+
+
+def _assert_rotation_allclose(actual: Spin2Rotation, expected: Spin2Rotation) -> None:
+    assert_allclose(actual.cos_2angles, expected.cos_2angles, atol=1e-14)
+    assert_allclose(actual.sin_2angles, expected.sin_2angles, atol=1e-14)
+
+
+def test_from_angles_rotates_like_qu_rotation_operator() -> None:
+    x = StokesIQU.normal(jax.random.key(0), ANGLES.shape)
+    op = QURotationOperator.create(ANGLES.shape, angles=ANGLES)
+    rotated = x.rotate_qu(*Spin2Rotation.from_angles(ANGLES))
+    assert_allclose(rotated.data, op(x).data, atol=1e-14)
+
+
+def test_from_cos_sin_doubles_the_angle() -> None:
+    rotation = Spin2Rotation.from_cos_sin(jnp.cos(ANGLES), jnp.sin(ANGLES))
+    _assert_rotation_allclose(rotation, Spin2Rotation.from_angles(ANGLES))
+
+
+def test_compose_adds_the_angles() -> None:
+    first = Spin2Rotation.from_angles(ANGLES)
+    then = Spin2Rotation.from_angles(ANGLES[::-1])
+    _assert_rotation_allclose(first.compose(then), Spin2Rotation.from_angles(ANGLES + ANGLES[::-1]))
+
+
+def test_inverse_undoes_the_rotation() -> None:
+    rotation = Spin2Rotation.from_angles(ANGLES)
+    _assert_rotation_allclose(rotation.inverse(), Spin2Rotation.from_angles(-ANGLES))
+    identity = rotation.compose(rotation.inverse())
+    _assert_rotation_allclose(identity, Spin2Rotation.from_angles(jnp.zeros_like(ANGLES)))
+
+
+@pytest.mark.parametrize('index', [np.array([4, 0]), (slice(None), None)])
+def test_indexing_indexes_both_arrays(index) -> None:
+    rotation = Spin2Rotation.from_angles(ANGLES)
+    _assert_rotation_allclose(rotation[index], Spin2Rotation.from_angles(ANGLES[index]))
+
+
+def test_broadcast_to() -> None:
+    rotation = Spin2Rotation.from_angles(ANGLES[:, None]).broadcast_to((ANGLES.size, 3))
+    assert rotation.cos_2angles.shape == rotation.sin_2angles.shape == (ANGLES.size, 3)
+
+
+def test_is_a_pytree() -> None:
+    rotation = Spin2Rotation.from_angles(ANGLES)
+    doubled = jax.jit(lambda r: r.compose(r))(rotation)
+    assert isinstance(doubled, Spin2Rotation)
+    _assert_rotation_allclose(doubled, Spin2Rotation.from_angles(2 * ANGLES))

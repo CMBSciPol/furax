@@ -10,9 +10,10 @@ from typing import NamedTuple, Self
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Integer
 
+from furax.math.coords import ZSPhi
+
 __all__ = [
     'Interpolation',
-    'SkyPositions',
     'Stencil',
 ]
 
@@ -63,27 +64,6 @@ def _resolve(
     return indices, weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
 
 
-class SkyPositions(NamedTuple):
-    """Where the neighbours of a [`Stencil`][] sit on the sphere.
-
-    The co-latitude is given as its cosine and its sine rather than as an angle, which is the form a
-    HEALPix ring geometry produces and the form the spin-2 transport consumes.
-
-    Attributes:
-        z: Cosine of the neighbour co-latitude.
-        sth: Sine of the neighbour co-latitude.
-        phi: Neighbour longitude, in radians.
-    """
-
-    z: Float[Array, '*dims neighbors']
-    sth: Float[Array, '*dims neighbors']
-    phi: Float[Array, '*dims neighbors']
-
-    def astype(self, dtype: DTypeLike) -> Self:
-        """Return the positions cast to the given floating-point type."""
-        return type(self)(*(component.astype(dtype) for component in self))
-
-
 class Stencil(NamedTuple):
     r"""The pixels one sample reads, their weights, and where they sit on the sky.
 
@@ -98,19 +78,20 @@ class Stencil(NamedTuple):
     that each component reads the same pixels with its own weights. An operator multiplies the
     gathered values, whose Stokes axis leads, by the weights, and the two broadcast either way.
 
-    A stencil on a grid that is not the sphere has no [`SkyPositions`][] and carries `None`, which
+    A stencil on a grid that is not the sphere has no positions and carries `None`, which
     [`Stencil.unpositioned`][] builds; only a map with no polarisation can be sampled through one.
 
     Attributes:
         indices: Neighbour pixel indices into the raveled map, all in bounds.
         weights: Interpolation weights, one per neighbour, summing to one, optionally with a
             leading Stokes axis.
-        positions: Where the neighbours sit on the sphere, or `None` off the sphere.
+        positions: Where the neighbours sit on the sphere, of the shape of the indices, or `None`
+            off the sphere.
     """
 
     indices: Integer[Array, '*dims neighbors']
     weights: Float[Array, '*weight_dims neighbors']
-    positions: SkyPositions | None
+    positions: ZSPhi | None
 
     @property
     def n_neighbors(self) -> int:
@@ -137,14 +118,15 @@ class Stencil(NamedTuple):
         cls,
         indices: Integer[Array, '*dims neighbors'],
         weights: Float[Array, '*weight_dims neighbors'],
-        positions: SkyPositions | None,
+        positions: ZSPhi | None,
     ) -> Self:
         """Build a stencil, sending out-of-map neighbours to a safe index and normalizing weights.
 
         Args:
             indices: Neighbour pixel indices, negative for neighbours outside the map.
             weights: Interpolation weights, one per neighbour, not necessarily normalized.
-            positions: Where the neighbours sit on the sphere, or `None` off the sphere.
+            positions: Where the neighbours sit on the sphere, of the shape of the indices, or `None`
+            off the sphere.
 
         Returns:
             The resolved stencil.
@@ -171,11 +153,7 @@ class Stencil(NamedTuple):
         return cls.resolve(
             indices[..., None],
             jnp.ones((*jnp.shape(indices), 1), jnp.result_type(theta_center)),
-            SkyPositions(
-                jnp.cos(theta_center)[..., None],
-                jnp.sin(theta_center)[..., None],
-                phi_center[..., None],
-            ),
+            ZSPhi.from_angles(theta_center[..., None], phi_center[..., None]),
         )
 
     @classmethod
@@ -238,7 +216,7 @@ class Stencil(NamedTuple):
         positions = (
             None
             if self.positions is None
-            else SkyPositions(*(p.reshape(*p.shape[:-2], -1) for p in self.positions))
+            else ZSPhi(*(p.reshape(*p.shape[:-2], -1) for p in self.positions))
         )
         return self.resolve(indices, merged_weights.reshape(merged_shape), positions)
 

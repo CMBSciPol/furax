@@ -6,6 +6,7 @@ import pytest
 from numpy.testing import assert_allclose
 
 from furax.obs.landscapes import HealpixLandscape, LocalStokesLandscape, StokesLandscape
+from furax.obs.operators import Spin2Rotation
 from furax.obs.spin2 import spin2_cos_sin, transported_gather, transported_scatter
 from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
@@ -144,9 +145,9 @@ class TestRotation:
     """A rotation turns every neighbour after the transport, before the stencil weights."""
 
     @staticmethod
-    def _rotation(n: int, seed: int) -> tuple[jax.Array, jax.Array]:
+    def _rotation(n: int, seed: int) -> Spin2Rotation:
         psi = jnp.asarray(np.random.default_rng(seed).uniform(0.0, np.pi, n))
-        return jnp.cos(2 * psi), jnp.sin(2 * psi)
+        return Spin2Rotation.from_angles(psi)
 
     def test_with_shared_weights_it_rotates_the_interpolated_value(self) -> None:
         """Weights shared by Q and U commute with the rotation, so its place does not matter."""
@@ -168,9 +169,10 @@ class TestRotation:
         rows = jnp.array([1.0, 1.4, 0.3])[:, None, None]
         stencil = Stencil(stencil.indices, stencil.weights * rows, stencil.positions)
         sky = landscape.normal(jax.random.key(22))
-        cos_2psi, sin_2psi = self._rotation(200, 23)
+        rotation = self._rotation(200, 23)
+        cos_2psi, sin_2psi = rotation
 
-        rotated = transported_gather(sky, stencil, theta, phi, rotation=(cos_2psi, sin_2psi))
+        rotated = transported_gather(sky, stencil, theta, phi, rotation=rotation)
 
         neighbors = Stokes.class_for('IQU').from_array(sky.data[..., stencil.indices])
         theta_n, phi_n = jhp.pix2ang(NSIDE, stencil.indices)

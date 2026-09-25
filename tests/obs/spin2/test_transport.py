@@ -47,8 +47,8 @@ class TestSpin2CosSin:
         theta_x, phi_x = _random_directions(500, 3)
         fwd = spin2_cos_sin(*map(jnp.asarray, (theta_n, phi_n, theta_x, phi_x)))
         bwd = spin2_cos_sin(*map(jnp.asarray, (theta_x, phi_x, theta_n, phi_n)))
-        assert_allclose(fwd[0], bwd[0], atol=1e-12)
-        assert_allclose(fwd[1], -bwd[1], atol=1e-12)
+        assert_allclose(fwd.cos_2angles, bwd.cos_2angles, atol=1e-12)
+        assert_allclose(fwd.sin_2angles, -bwd.sin_2angles, atol=1e-12)
 
     @pytest.mark.parametrize(
         'theta_n, theta_x', [(0.3, 1.0), (1.0, 2.5), (0.1, np.pi - 0.1), (1.2, 1.2)]
@@ -120,8 +120,8 @@ class TestSpin2CosSin:
             jnp.sin(jnp.asarray(theta_x)),
             jnp.asarray(phi_x),
         )
-        assert_allclose(from_angles[0], from_zs[0], atol=1e-15)
-        assert_allclose(from_angles[1], from_zs[1], atol=1e-15)
+        assert_allclose(from_angles.cos_2angles, from_zs.cos_2angles, atol=1e-15)
+        assert_allclose(from_angles.sin_2angles, from_zs.sin_2angles, atol=1e-15)
 
     def test_broadcasts(self) -> None:
         theta_n = jnp.asarray(np.random.default_rng(8).uniform(0.1, 3.0, (5, 4)))

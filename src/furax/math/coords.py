@@ -10,7 +10,7 @@ from typing import NamedTuple, Self
 import jax.numpy as jnp
 import numpy as np
 from fastquat import Quaternion
-from jaxtyping import Array, Float
+from jaxtyping import Array, DTypeLike, Float
 
 __all__ = [
     'XAXIS',
@@ -20,6 +20,7 @@ __all__ = [
     'IsoAngles',
     'LonLatAngles',
     'XiEtaAngles',
+    'ZSPhi',
     'euler',
     'gamma_angle',
     'gamma_angle_cos_sin',
@@ -188,6 +189,40 @@ class XiEtaAngles(NamedTuple):
         return IsoAngles(theta, phi, self.gamma - phi).to_quaternion()
 
 
+class ZSPhi(NamedTuple):
+    r"""A direction on the unit sphere as $(\cos\theta, \sin\theta, \phi)$.
+
+    The co-latitude $\theta$ and longitude $\phi$ of [`IsoAngles`][], with the co-latitude given by
+    its cosine $z$ and sine $s$. It is the form HEALPix pixel centres come in, and the spin-2
+    transport takes, so that neither needs to evaluate $\theta$.
+
+    Attributes:
+        z: $\cos\theta$, the $z$ coordinate of the direction.
+        s: $\sin\theta$.
+        phi: Longitude $\phi$.
+    """
+
+    z: Angle
+    s: Angle
+    phi: Angle
+
+    @classmethod
+    def from_angles(cls, theta: Angle, phi: Angle) -> Self:
+        """The direction at co-latitude `theta` and longitude `phi`."""
+        return cls(jnp.cos(theta), jnp.sin(theta), phi)
+
+    @classmethod
+    def from_quaternion(cls, q: Quaternion) -> Self:
+        r"""The direction $q\,\hat z$ of a unit quaternion, with a single arctangent."""
+        a, b, c, d = q.to_components()
+        p, m = a**2 + d**2, b**2 + c**2
+        return cls(p - m, 2 * jnp.sqrt(p * m), jnp.atan2(c * d - a * b, a * c + b * d))
+
+    def astype(self, dtype: DTypeLike) -> Self:
+        """The direction cast to the given floating-point type."""
+        return type(self)(*(component.astype(dtype) for component in self))
+
+
 def gamma_angle(q: Quaternion) -> Angle:
     r"""The angle $\gamma = \phi + \psi$ of a rotation about the $z$ axis.
 
@@ -272,7 +307,8 @@ def polarization_angle_cos_sin(q: Quaternion) -> tuple[Angle, Angle]:
     See [`polarization_angle`][] for the definition and convention.
     """
     a, b, c, d = q.to_components()
-    # sin(theta) / 2, as in `direction`: exactly zero at a pole, where b = c = 0 or a = d = 0
+    # sin(theta) / 2, as in `ZSPhi.from_quaternion`: exactly zero at a pole, where b = c = 0 or
+    # a = d = 0
     half_sin_theta = jnp.sqrt((a**2 + d**2) * (b**2 + c**2))
     at_pole = half_sin_theta == 0
     safe = jnp.where(at_pole, 1.0, half_sin_theta)

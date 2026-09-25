@@ -184,9 +184,6 @@ class AbstractSampler(ABC):
     shape is assumed: a timestream has shape (n_detectors, n_samples), but a sampler may as well
     read a map at a list of points, or at the pixels of another map.
 
-    Subclasses are frozen, keyword-only dataclasses registered as JAX pytrees. Mark static fields
-    with `field(metadata={'static': True})`.
-
     Attributes:
         kernel: What each sample integrates over.
     """

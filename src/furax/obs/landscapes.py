@@ -233,7 +233,7 @@ class StokesLandscape(Landscape):
     def world2interp(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
-        """Returns the resolved (indices, weights) of the bilinear stencil, for a scalar sampler.
+        """Returns the resolved (indices, weights) of the bilinear stencil, for an intensity read.
 
         The stencil of [`world2stencil`][] without its neighbour positions, which XLA does not
         compute when nothing reads them. Interpolation is supported by overriding
@@ -253,8 +253,8 @@ class StokesLandscape(Landscape):
         At [`Interpolation.NEAREST`][] the stencil holds the single pixel the sample falls in, whose
         index is that of [`world2index`][] and whose weight is one; at
         [`Interpolation.BILINEAR`][] it holds the four neighbours of [`world2interp`][], resolved.
-        Either way it also carries where each neighbour sits on the sky, which a sampler needs to
-        express its $Q$ and $U$ in the frame of the direction sampled at.
+        Either way it also carries where each neighbour sits on the sky, needed to
+        transport $Q$ and $U$ into the frame of the direction sampled at.
 
         A landscape implements every interpolation it supports here, in this one method, so that it
         cannot answer for one and leave another to a mismatched inherited definition.

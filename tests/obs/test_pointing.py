@@ -5,7 +5,7 @@ import pytest
 from equinox import tree_equal
 from fastquat import Quaternion
 from jax.tree_util import register_static
-from numpy.testing import assert_array_almost_equal, assert_array_equal
+from numpy.testing import assert_allclose, assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
 from furax.core import AbstractLinearOperator, CompositionOperator, IndexOperator
@@ -19,7 +19,9 @@ from furax.obs.landscapes import (
 )
 from furax.obs.operators import QURotationOperator
 from furax.obs.operators._qu_rotations import rotate_qu_cs
-from furax.obs.pointing import PointingOperator, SampledPointing, XSamplingOperator
+from furax.obs.pointing import PointingOperator, XSamplingOperator
+from furax.obs.sampling import AbstractSampler, PointingRows, SamplingKernel
+from furax.obs.spin2 import transported_gather
 from furax.obs.stencil import Interpolation
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
@@ -31,7 +33,7 @@ _CAR_PROJECTION = WCSProjection(crpix=(180.5, 90.5), crval=(180.0, 0.0), cdelt=(
 
 
 def _interpolates(op: PointingOperator) -> bool:
-    return op.kernel.interpolation is Interpolation.BILINEAR
+    return op.sampler.kernel.interpolation is Interpolation.BILINEAR
 
 
 def _make_landscape(landscape_type: str, stokes: ValidStokesLiteral) -> StokesLandscape:
@@ -213,7 +215,7 @@ def test_the_expanded_nearest_operator_drops_samples_outside_the_map() -> None:
     tod = op.as_expanded_operator()(sky)
     assert tree_equal(tod, op(sky), rtol=1e-10, atol=1e-12)
     # half the pixels are unmapped, so some samples do sink: the test would pass vacuously
-    assert jnp.any(op.landscape.quat2index(op.qbore * op.qdet[:, None]) == local.sink)
+    assert jnp.any(op.landscape.quat2index(op.sampler.quaternions()) == local.sink)
 
 
 class TestLocalLandscape:
@@ -256,7 +258,7 @@ class TestLocalLandscape:
     ) -> tuple[LocalStokesLandscape, PointingOperator]:
         local = LocalStokesLandscape(p_full.landscape, indices)
         p_local = PointingOperator.create(
-            local, p_full.qbore, p_full.qdet, interpolate=_interpolates(p_full)
+            local, p_full.sampler.qbore, p_full.sampler.qdet, interpolate=_interpolates(p_full)
         )
         return local, p_local
 
@@ -337,7 +339,7 @@ class TestTransport:
         sky = landscape.normal(jax.random.key(8))
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
 
-        qdet_full = op.qbore * op.qdet[:, None]
+        qdet_full = op.sampler.quaternions()
         cos_pa, sin_pa = to_polarization_angle_cos_sin(qdet_full)
         untransported = _untransported_sample(landscape, sky, qdet_full, interpolate)
         reference = rotate_qu_cs(untransported, cos_pa, sin_pa)
@@ -353,7 +355,7 @@ class TestTransport:
         qbore, qdet = self._quats(5)
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
         sky = landscape.normal(jax.random.key(6))
-        qdet_full = op.qbore * op.qdet[:, None]
+        qdet_full = op.sampler.quaternions()
         expected = _untransported_sample(landscape, sky, qdet_full, interpolate)
         assert_array_almost_equal(op(sky).data, expected.data, decimal=13)
 
@@ -402,54 +404,54 @@ class TestTransport:
         assert_array_almost_equal(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), decimal=10)
 
 
-class TestTransportHooks:
-    """One hook moves the pointing for a stencil sampler; the scalar index hook stands apart."""
+class _PointsSampler(AbstractSampler):
+    """Reads a map at given directions, in their meridian basis: samples that are not a TOD."""
+
+    theta: jax.Array
+    phi: jax.Array
+
+    @property
+    def shape(self):
+        return self.theta.shape
+
+    def pointing_rows(self, landscape, index):
+        theta, phi = self.theta[index], self.phi[index]
+        return PointingRows(
+            landscape.world2stencil(theta, phi, self.kernel.interpolation), theta, phi
+        )
+
+
+class TestCustomSampler:
+    """Any sampler gets the batch loop, the transport and an exact transpose."""
 
     @staticmethod
-    def _quats(seed: int) -> tuple[jax.Array, jax.Array]:
+    def _points(shape: tuple[int, ...], seed: int) -> _PointsSampler:
         k1, k2 = jax.random.split(jax.random.key(seed))
-        return Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
+        theta = jax.random.uniform(k1, shape, minval=0.1, maxval=jnp.pi - 0.1)
+        phi = jax.random.uniform(k2, shape, maxval=2 * jnp.pi)
+        return _PointsSampler(kernel=SamplingKernel(Interpolation.BILINEAR), theta=theta, phi=phi)
 
-    def test_a_subclass_moving_the_nearest_pointing_must_supply_its_own_stencil(self) -> None:
-        """`_quat2index` stands beside `_quat2pointing`, so overriding it alone must raise."""
-
-        class CustomPointingOperator(PointingOperator):
-            # A real subclass moves the pointing here; delegating is enough to trip the guard.
-            def _quat2index(self, qdet_full):
-                return self.landscape.quat2index(qdet_full)
-
-        qbore, qdet = self._quats(20)
-        op = CustomPointingOperator.create(HealpixLandscape(NSIDE, 'IQU'), qbore, qdet)
-        with pytest.raises(NotImplementedError, match='overrides _quat2index'):
-            op(op.landscape.normal(jax.random.key(21)))
-
-        # An intensity-only map never takes the transported path, so the override still works there.
-        op_i = CustomPointingOperator.create(HealpixLandscape(NSIDE, 'I'), qbore, qdet)
-        assert jnp.all(jnp.isfinite(op_i(op_i.landscape.normal(jax.random.key(22))).i))
-
-    def test_one_hook_moves_the_bilinear_pointing(self) -> None:
-        """Bilinear reads its pixels and its transport positions from `_quat2pointing` alone.
-
-        There is no second hook for it to disagree with, so no guard is needed: a subclass that
-        moves the pointing there moves both, and the polarized sample follows.
-        """
-
-        class ShiftedPointingOperator(PointingOperator):
-            def _quat2pointing(self, qdet_full):
-                theta, phi = self.landscape.quat2world(qdet_full)
-                phi = phi + 0.05
-                stencil = self.landscape.world2stencil(theta, phi, self.kernel.interpolation)
-                return SampledPointing(stencil, theta, phi)
-
+    @pytest.mark.parametrize('shape', [(7,), (5, 2, 3)], ids=['points', '3d'])
+    @pytest.mark.parametrize('batch_size', [3, 0], ids=['partial-batches', 'one-batch'])
+    def test_samples_of_any_shape(self, shape, batch_size) -> None:
         landscape = HealpixLandscape(NSIDE, 'IQU')
-        qbore, qdet = self._quats(20)
-        sky = landscape.normal(jax.random.key(21))
-        base = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
-        shifted = ShiftedPointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        sampler = self._points(shape, 30)
+        op = PointingOperator.from_sampler(landscape, sampler, batch_size=batch_size)
+        sky = landscape.normal(jax.random.key(31))
 
-        moved = shifted(sky)
-        assert jnp.all(jnp.isfinite(moved.q))
-        assert float(jnp.max(jnp.abs(moved.q - base(sky).q))) > 1e-6
+        assert op.out_structure == landscape.structure_for(shape)
+        stencil = landscape.world2stencil(sampler.theta, sampler.phi, Interpolation.BILINEAR)
+        expected = transported_gather(sky.ravel(), stencil, sampler.theta, sampler.phi)
+        assert tree_equal(op(sky), expected, rtol=1e-12, atol=1e-12)
+
+        tod = ftree.normal_like(op.out_structure, jax.random.key(32))
+        assert_allclose(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), rtol=1e-12)
+
+    def test_the_operator_is_a_pytree(self) -> None:
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        op = PointingOperator.from_sampler(landscape, self._points((7,), 33), batch_size=3)
+        sky = landscape.normal(jax.random.key(34))
+        assert tree_equal(jax.jit(lambda op, sky: op(sky))(op, sky), op(sky))
 
 
 @register_static
@@ -474,11 +476,11 @@ class TestNearestIndexAgreement:
         k1, k2 = jax.random.split(jax.random.key(seed))
         qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
         op = PointingOperator.create(_ShiftedWorldIndexLandscape(NSIDE, 'IQU'), qbore, qdet)
-        return op, op.qbore * op.qdet[:, None]
+        return op, op.sampler.quaternions()
 
     def test_the_stencil_indexes_the_quat2index_pixel(self) -> None:
         op, qdet_full = self._setup(40)
-        stencil = op._quat2pointing(qdet_full).stencil
+        stencil = op.sampler.pointing_rows(op.landscape, jnp.arange(op.sampler.shape[0])).stencil
         assert_array_equal(stencil.indices[..., 0], op.landscape.quat2index(qdet_full))
 
     def test_the_hit_map_of_the_polarized_operator_is_the_intensity_one(self) -> None:
@@ -515,7 +517,7 @@ class TestPartialSkyNearest:
 
     def test_the_stencil_drops_samples_outside_the_map(self, stokes) -> None:
         op = self._op(50, stokes)
-        stencil = op.landscape.index2stencil(op.landscape.quat2index(op.qbore * op.qdet[:, None]))
+        stencil = op.landscape.index2stencil(op.landscape.quat2index(op.sampler.quaternions()))
         weights = stencil.weights[..., 0]
         assert jnp.any(weights == 0)  # the case the mask exists for
         assert jnp.all((weights == 0) | (weights == 1))  # nearest weighs one or nothing
@@ -523,7 +525,7 @@ class TestPartialSkyNearest:
     def test_a_sample_outside_the_map_reads_zero(self, stokes) -> None:
         """Without the mask it would read the last pixel, which the raw index -1 wraps onto."""
         op = self._op(51, stokes)
-        outside = self._outside(op, op.qbore * op.qdet[:, None])
+        outside = self._outside(op, op.sampler.quaternions())
         assert jnp.any(outside)
         sky = op.landscape.ones()
         assert_array_equal(op(sky).i[outside], 0.0)
@@ -531,7 +533,7 @@ class TestPartialSkyNearest:
     def test_binning_a_sample_outside_the_map_adds_nothing(self, stokes) -> None:
         """Without the mask its TOD would land on the last pixel, inflating a pixel it never hit."""
         op = self._op(52, stokes)
-        outside = self._outside(op, op.qbore * op.qdet[:, None])
+        outside = self._outside(op, op.sampler.quaternions())
         assert jnp.any(outside)
         hits = op.T(ftree.ones_like(op.out_structure)).i
         assert float(hits.sum()) == pytest.approx(float((~outside).sum()))
@@ -539,7 +541,7 @@ class TestPartialSkyNearest:
     def test_the_expanded_operator_agrees(self, stokes) -> None:
         """The mask on the expanded sampler must drop exactly what `mv` drops."""
         op = self._op(53, stokes)
-        assert jnp.any(self._outside(op, op.qbore * op.qdet[:, None]))
+        assert jnp.any(self._outside(op, op.sampler.quaternions()))
         sky = op.landscape.normal(jax.random.key(54))
         assert tree_equal(op.as_expanded_operator()(sky), op(sky), rtol=1e-10, atol=0)
 
@@ -562,7 +564,7 @@ class TestNearestTransport:
 
         op = PointingOperator.create(landscape, qbore, qdet)
         sky = landscape.normal(jax.random.key(30))
-        qdet_full = op.qbore * op.qdet[:, None]
+        qdet_full = op.sampler.quaternions()
         cos_pa, sin_pa = to_polarization_angle_cos_sin(qdet_full)
         expected = rotate_qu_cs(
             _untransported_sample(landscape, sky, qdet_full, False), cos_pa, sin_pa
@@ -576,7 +578,7 @@ class TestNearestTransport:
         op = PointingOperator.create(landscape, qbore, qdet)
         hits = op.T(ftree.ones_like(op.out_structure)).i
 
-        qdet_full = op.qbore * op.qdet[:, None]
+        qdet_full = op.sampler.quaternions()
         expected = jnp.zeros(len(landscape)).at[landscape.quat2index(qdet_full).ravel()].add(1.0)
         assert_array_equal(hits, expected)
 
@@ -587,7 +589,7 @@ class TestNearestTransport:
         op = PointingOperator.create(landscape, qbore, qdet)
 
         # column of P^T P for one Stokes component of one hit pixel
-        qdet_full = op.qbore * op.qdet[:, None]
+        qdet_full = op.sampler.quaternions()
         pixel = int(landscape.quat2index(qdet_full).ravel()[0])
         zeros = landscape.zeros()
         probe = type(zeros).from_array(zeros.data.at[:, pixel].set(1.0))
@@ -630,7 +632,7 @@ class TestOffsets:
         landscape = HealpixLandscape(NSIDE, stokes)
         qbore, qdet = self._quats(40)
         op = PointingOperator.create(landscape, qbore, qdet, frame=frame, interpolate=interpolate)
-        assert op.kernel.offsets is None and op.kernel.weights is None
+        assert op.sampler.kernel.offsets is None and op.sampler.kernel.weights is None
         assert len(jax.tree.leaves(op)) == 2  # qbore, qdet: no offset leaf sneaks in
 
     def test_the_origin_offset_with_unit_weight_is_the_plain_operator(
@@ -715,7 +717,7 @@ class TestOffsets:
             offsets=identity * offsets[None, :],
             offset_weights=weights,
         )
-        assert shared.kernel.offsets.shape == (NDET, 2)
+        assert shared.sampler.kernel.offsets.shape == (NDET, 2)
         assert tree_equal(per_detector(sky), shared(sky), rtol=1e-12, atol=1e-12)
 
     def test_per_stokes_weights_act_on_the_output_components(
@@ -834,8 +836,8 @@ class TestOffsets:
             offset_weights=self._per_stokes_weights('IQU'),
         )
         op_i = op.as_stokes_i(interpolate=not interpolate)
-        assert op_i.kernel.offsets is op.kernel.offsets
-        assert_array_equal(op_i.kernel.weights, jnp.array([0.5, 0.5]))
+        assert op_i.sampler.kernel.offsets is op.sampler.kernel.offsets
+        assert_array_equal(op_i.sampler.kernel.weights, jnp.array([0.5, 0.5]))
         assert op_i.landscape.stokes == 'I' and _interpolates(op_i) is (not interpolate)
 
     def test_as_stokes_i_averages_the_weights_of_a_map_without_intensity(
@@ -852,7 +854,7 @@ class TestOffsets:
             offsets=self._offsets(),
             offset_weights=self._per_stokes_weights('QU'),
         )
-        assert_array_almost_equal(op.as_stokes_i().kernel.weights, jnp.array([0.45, 0.55]))
+        assert_array_almost_equal(op.as_stokes_i().sampler.kernel.weights, jnp.array([0.45, 0.55]))
 
     def test_create_validates_the_kernel(self, frame, interpolate) -> None:
         """The offsets and weights are checked by `SamplingKernel.create`, see `test_sampling.py`."""

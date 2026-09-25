@@ -15,10 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Stencil.integrated`, folding a trailing axis of directions into the neighbour axis with a weight per direction (#265)
 - `Stencil` weights may carry a leading Stokes axis (#265)
 - `SamplingKernel` in the new `furax.obs.sampling` module (#266)
+- `AbstractSampler`, `QuaternionSampler`, `ScreenSampler` and `PointingOperator.from_sampler` (#267)
 
 ### Changed
 
 - **Breaking:** `PointingOperator`, `XSamplingOperator` and `AtmospherePointingOperator` hold a `kernel` instead of their interpolation and offset fields (#266)
+- **Breaking:** `PointingOperator` holds a `sampler` instead of `qbore`, `qdet` and `kernel` (#267)
+- **Breaking:** `AtmospherePointingOperator` is replaced by `ScreenSampler` (#267)
 - `transported_scatter` applies the stencil weights before rotating back into the pixel frames, which keeps it adjoint to `transported_gather` when the weights differ between Stokes components; results with equal weights change at round-off level only (#265)
 
 ## [0.14.0] - 2026-09-15

@@ -59,7 +59,7 @@ def _in_pixel_frame(h: AbstractLinearOperator) -> AbstractLinearOperator:
     """The same acquisition, sampling Q and U in the pixel centre's frame (no transport)."""
     pointing = h.operands[-1]
     landscape = pointing.landscape
-    qdet_full = pointing.qbore * pointing.qdet[:, None]
+    qdet_full = pointing.sampler.quaternions()
 
     ravel = RavelOperator(1, -1, in_structure=landscape.structure)
     stokes_idx = jnp.arange(len(landscape.stokes))[:, None, None]
@@ -98,7 +98,7 @@ def _assert_binning_matches_sotodlib(
 
     pointing = h.operands[-1]
     landscape = pointing.landscape
-    qdet_full = pointing.qbore * pointing.qdet[:, None]
+    qdet_full = pointing.sampler.quaternions()
     cos_2delta, _ = spin2_cos_sin(
         *jhp.pix2ang(landscape.nside, landscape.quat2index(qdet_full)),
         *landscape.quat2world(qdet_full),

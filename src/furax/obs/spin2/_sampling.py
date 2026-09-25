@@ -3,6 +3,7 @@ r"""Spin-2 transported gather and scatter over an interpolation stencil."""
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
+from furax.math.coords import ZSPhi
 from furax.obs.operators._qu_rotations import Spin2Rotation
 from furax.obs.spin2._transport import spin2_cos_sin_zs
 from furax.obs.stencil import Stencil
@@ -52,7 +53,8 @@ def transported_gather[S: Stokes](
     """
     if 'Q' not in sky.stokes:
         return rotated_gather(sky, stencil, None)
-    return rotated_gather(sky, stencil, transport_rotation(stencil, theta, phi, rotation))
+    target = ZSPhi.from_angles(theta, phi)
+    return rotated_gather(sky, stencil, transport_rotation(stencil, target, rotation))
 
 
 def transported_scatter[S: Stokes](
@@ -83,7 +85,8 @@ def transported_scatter[S: Stokes](
     """
     if 'Q' not in tod.stokes:
         return rotated_scatter(out, tod, stencil, None)
-    return rotated_scatter(out, tod, stencil, transport_rotation(stencil, theta, phi, rotation))
+    target = ZSPhi.from_angles(theta, phi)
+    return rotated_scatter(out, tod, stencil, transport_rotation(stencil, target, rotation))
 
 
 def rotated_gather[S: Stokes](sky: S, stencil: Stencil, rotation: Spin2Rotation | None) -> S:
@@ -104,10 +107,28 @@ def rotated_gather[S: Stokes](sky: S, stencil: Stencil, rotation: Spin2Rotation 
     Returns:
         The sampled Stokes values, of the shape of the stencil minus its neighbour axis.
     """
-    gathered = type(sky).from_array(sky.data[..., stencil.indices])
-    if rotation is not None:
-        gathered = gathered.rotate_qu(*rotation)
-    return type(sky).from_array(jnp.sum(gathered.data * stencil.weights, axis=-1))
+    if stencil.n_neighbors == 1:
+        gathered = type(sky).from_array(sky.data[..., stencil.indices])
+        if rotation is not None:
+            gathered = gathered.rotate_qu(*rotation)
+        return type(sky).from_array(jnp.sum(gathered.data * stencil.weights, axis=-1))
+    # With several neighbours, each component is gathered, rotated and summed over them before
+    # the rows are stacked, so that XLA fuses the gathers into the sums instead of materialising
+    # every neighbour of every component, which `Stokes.rotate_qu` on the gathered map would
+    # force. With a single neighbour there is nothing to sum, and one gather of all the rows is
+    # faster.
+    rows = [sky.data[i][stencil.indices] for i in range(len(sky.stokes))]
+    qi = sky.stokes.find('Q')
+    if rotation is not None and qi >= 0:
+        cos_2a, sin_2a = rotation
+        q, u = rows[qi], rows[qi + 1]
+        rows[qi], rows[qi + 1] = q * cos_2a + u * sin_2a, -q * sin_2a + u * cos_2a
+    per_stokes = stencil.weights.ndim > stencil.indices.ndim
+    sums = [
+        jnp.sum(row * (stencil.weights[i] if per_stokes else stencil.weights), axis=-1)
+        for i, row in enumerate(rows)
+    ]
+    return type(sky).from_array(jnp.stack(sums))
 
 
 def rotated_scatter[S: Stokes](
@@ -146,8 +167,7 @@ def rotated_scatter[S: Stokes](
 
 def transport_rotation(
     stencil: Stencil,
-    theta: Float[Array, ' *dims'],
-    phi: Float[Array, ' *dims'],
+    target: ZSPhi,
     rotation: Spin2Rotation | None = None,
 ) -> Spin2Rotation:
     r"""The rotation of each neighbour's $(Q, U)$ into the basis of the sampled direction.
@@ -157,8 +177,8 @@ def transport_rotation(
 
     Args:
         stencil: The pixels each sample reads, with their positions.
-        theta: Target co-latitude, in radians.
-        phi: Target longitude, in radians.
+        target: The direction each sample is transported to, of shape `dims` (no neighbour
+            axis).
         rotation: The rotation by $\psi$ after the transport, or `None`.
 
     Returns:
@@ -170,10 +190,7 @@ def transport_rotation(
             'describes a grid that is not the sphere and can only sample an intensity map'
         )
     transport = spin2_cos_sin_zs(
-        *stencil.positions,
-        jnp.cos(theta)[..., None],
-        jnp.sin(theta)[..., None],
-        phi[..., None],
+        *stencil.positions, *(component[..., None] for component in target)
     )
     if rotation is None:
         return transport

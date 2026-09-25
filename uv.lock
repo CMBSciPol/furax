@@ -1101,7 +1101,7 @@ requires-dist = [
     { name = "healpy", specifier = ">=1.19.0" },
     { name = "jax", specifier = ">=0.11.0" },
     { name = "jax-cadre", marker = "extra == 'mapmaking'", specifier = ">=0.1.2" },
-    { name = "jax-healpy", extras = ["recommended"], specifier = ">=0.7.1" },
+    { name = "jax-healpy", extras = ["recommended"], specifier = ">=0.8" },
     { name = "jaxtyping", specifier = ">=0.3.9" },
     { name = "lineax", specifier = ">=0.1.1" },
     { name = "litebird-sim", marker = "extra == 'interfaces'", specifier = ">=0.17" },
@@ -1541,7 +1541,7 @@ with-cuda = [
 
 [[package]]
 name = "jax-healpy"
-version = "0.7.1"
+version = "0.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "equinox" },
@@ -1549,9 +1549,9 @@ dependencies = [
     { name = "jaxtyping" },
     { name = "optax" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/f2/a1368e3b58763e61f9227bdcb59fcf6f36b5fd58cf3af4b2efc373f6006a/jax_healpy-0.7.1.tar.gz", hash = "sha256:bd80c919ccba739d0db0ce83e17e90e4b7b8beba2dfec38867728b38c160449b", size = 1937046, upload-time = "2026-08-25T08:37:55.353Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/d7/ceff370cdad45767e837ba408c87080653464f1750972f204ca2d558057c/jax_healpy-0.8.tar.gz", hash = "sha256:123368be0917a77a614f14c248b44a90c36ab23e873b72c2d95efd19655209d4", size = 1938891, upload-time = "2026-09-24T16:14:20.725Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/6d/0d0309944cacfe117b862b6bd5b37ad2030c5b9d6d248e543d39598b1b8f/jax_healpy-0.7.1-py3-none-any.whl", hash = "sha256:8cac116feb8325773152970b34654e223a6467f8e8f52a3a09737ebbce8be608", size = 92857, upload-time = "2026-08-25T08:37:53.737Z" },
+    { url = "https://files.pythonhosted.org/packages/26/e1/6e42f0915e4cbdd76c9cd1d3897125bfa15619bcf31d4ac0049a6ad9db61/jax_healpy-0.8-py3-none-any.whl", hash = "sha256:7c5c5ddc16ef74b7523aef5f0a4e92b4e5e9af9fa7ae1fc4d4ac835e8028bcdc", size = 94140, upload-time = "2026-09-24T16:14:18.972Z" },
 ]
 
 [package.optional-dependencies]

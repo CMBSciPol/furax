@@ -203,6 +203,13 @@ class StokesLandscape(Landscape):
         angles = IsoAngles.from_quaternion(quat)
         return angles.theta, angles.phi
 
+    def quat2direction(self, quat: Quaternion) -> ZSPhi:
+        """The direction each quaternion looks at, as a [`ZSPhi`][furax.math.coords.ZSPhi].
+
+        The same direction as [`quat2world`][], in the form the spin-2 transport takes.
+        """
+        return ZSPhi.from_quaternion(quat)
+
     def index2world(
         self, indices: Integer[Array, ' *dims']
     ) -> tuple[Float[Array, ' *dims'], Float[Array, ' *dims']]:
@@ -380,12 +387,12 @@ class WCSLandscape(StokesLandscape):
             return Stencil.nearest(indices, theta_c, phi_c).astype(self.dtype)
 
         xs, ys, weights = _2d_bilinear_interp(*self.world2pixel(theta, phi))
-        theta_n, phi_n = self.pixel2world(xs, ys)
-        return Stencil.resolve(
-            self.pixel2index(xs, ys),
-            weights,
-            ZSPhi.from_angles(theta_n, phi_n),
-        )
+        return Stencil.resolve(self.pixel2index(xs, ys), weights, self._grid_positions(xs, ys))
+
+    def _grid_positions(self, xs: Float[Array, ' *dims'], ys: Float[Array, ' *dims']) -> ZSPhi:
+        """The positions of the pixel centres `(xs, ys)`, from [`pixel2world`][]."""
+        theta, phi = self.pixel2world(xs, ys)
+        return ZSPhi.from_angles(theta, phi)
 
     def to_wcs(self) -> WCS:
         """Reconstruct an astropy WCS object from the stored projection parameters."""
@@ -494,6 +501,21 @@ class CARLandscape(WCSLandscape):
         phi = jnp.radians(lon_deg) % (2 * jnp.pi)
         return theta, phi
 
+    def _grid_positions(self, xs: Float[Array, ' *dims'], ys: Float[Array, ' *dims']) -> ZSPhi:
+        """The positions of the pixel centres `(xs, ys)`, from [`pixel2world`][].
+
+        In CAR, the colatitude of a centre depends on its row alone and its longitude on its
+        column alone. One table per axis, looked up per neighbour, costs
+        less than a cosine and a sine per neighbour. Out-of-map neighbours read a clipped entry,
+        which their zero weight discards.
+        """
+        ny, nx = self.shape
+        theta_rows, _ = self.pixel2world(jnp.zeros(ny), jnp.arange(ny, dtype=xs.dtype))
+        _, phi_cols = self.pixel2world(jnp.arange(nx, dtype=xs.dtype), jnp.zeros(nx))
+        rows = jnp.clip(ys.astype(jnp.int32), 0, ny - 1)
+        cols = jnp.clip(xs.astype(jnp.int32), 0, nx - 1)
+        return ZSPhi(jnp.cos(theta_rows)[rows], jnp.sin(theta_rows)[rows], phi_cols[cols])
+
 
 def _2d_bilinear_interp(
     pix_x: Float[Array, ' *dims'], pix_y: Float[Array, ' *dims']
@@ -550,10 +572,21 @@ class HealpixLandscape(StokesLandscape):
         Returns:
             int: HEALPix pixel index.
         """
-        # we want the 3 dimensions on the left
-        vec = jnp.moveaxis(quat.rotate_vector(ZAXIS), -1, 0)
-        pix: Integer[Array, ' *dims'] = jhp.vec2pix(self.nside, *vec, nest=self.nested)
-        return pix
+        # what `vec2pix` computes from the direction vector, straight from the quaternion
+        return jhp.loc2pix(self.nside, *ZSPhi.from_quaternion(quat), nest=self.nested)
+
+    def index2stencil(self, indices: Integer[Array, ' *dims']) -> Stencil:
+        r"""Returns the one-neighbour [`Stencil`][] reading the pixels of `indices`.
+
+        The pixel centres come as $(\cos\theta, \sin\theta, \phi)$ straight from the pixel
+        scheme, without forming $\theta$. An index outside the map (negative) reads pixel 0 with
+        zero weight.
+        """
+        safe = jnp.where(indices < 0, 0, indices)
+        z, sin_theta, phi = jhp.pix2loc(self.nside, safe, nest=self.nested)
+        positions = ZSPhi(z[..., None], sin_theta[..., None], phi[..., None])
+        weights = jnp.ones((*indices.shape, 1), self.dtype)
+        return Stencil.resolve(indices[..., None], weights, positions).astype(self.dtype)
 
     def index2world(
         self, indices: Integer[Array, ' *dims']

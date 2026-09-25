@@ -8,7 +8,8 @@ from furax import tree
 from furax.math.coords import ZAXIS
 from furax.obs.landscapes import TangentialLandscape
 from furax.obs.pointing import PointingOperator, SampledPointing
-from furax.obs.stencil import Stencil
+from furax.obs.sampling import SamplingKernel
+from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, StokesI
 
 __all__ = [
@@ -42,7 +43,7 @@ class AtmospherePointingOperator(PointingOperator):
         wind_displacement: Pre-computed wind offset ``(vx * t_k, vy * t_k)`` for each
             sample, shape ``(n_samples, 2)``.
         batch_size: Detector batch size.
-        interpolate: If ``True``, use bilinear interpolation; otherwise nearest-neighbour.
+        kernel: The interpolation of the atmosphere map. Offsets are not supported.
         elevation_modulation: If ``True``, weight each sample by ``1 / sin(el)`` (airmass).
     """
 
@@ -54,7 +55,7 @@ class AtmospherePointingOperator(PointingOperator):
         super().__post_init__()
         # The wind displacement is added per sample, which only the (det, samp) pointing of an
         # un-offset detector lines up with.
-        if self.offsets is not None:
+        if self.kernel.offsets is not None:
             raise ValueError(f'{type(self).__name__} does not support offsets')
 
     @classmethod
@@ -93,7 +94,7 @@ class AtmospherePointingOperator(PointingOperator):
             qbore=boresight_quaternions,
             qdet=detector_quaternions,
             batch_size=batch_size,
-            interpolate=interpolate,
+            kernel=SamplingKernel(Interpolation.BILINEAR if interpolate else Interpolation.NEAREST),
             _out_structure=out_structure,
             wind_displacement=wind_displacement,
             elevation_modulation=elevation_modulation,
@@ -129,7 +130,7 @@ class AtmospherePointingOperator(PointingOperator):
         angles returned alongside are placeholders, and a caller that would read them is refused by
         the stencil's missing positions first.
         """
-        if self.interpolate:
+        if self.kernel.interpolation is Interpolation.BILINEAR:
             stencil = Stencil.unpositioned(*self.landscape.xy2interp(*self._wind_xy(qdet_full)))
         else:
             indices = self._quat2index(qdet_full)

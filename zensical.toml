@@ -30,6 +30,7 @@ nav = [
       ] },
       { "furax.obs" = [
           "api/obs/pointing.md",
+          "api/obs/sampling.md",
           "api/obs/polarization.md",
           "api/obs/beam.md",
           "api/obs/seds.md",

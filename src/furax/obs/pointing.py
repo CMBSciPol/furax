@@ -5,7 +5,6 @@ from typing import Literal, TypeVar
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from fastquat import Quaternion
 from jax import jit, lax
 from jaxtyping import Array, Float, Int, PyTree
@@ -267,14 +266,13 @@ class PointingOperator(AbstractLinearOperator):
             return tod
         return tod.rotate_qu(*pointing.polarization_rotation)
 
-    def _bin(self, tod_batch: _StokesT, index: Int[Array, ' batch']) -> _StokesT:
-        """Scatter-add a batch of samples into a sky map."""
+    def _bin(self, out: _StokesT, tod_batch: _StokesT, index: Int[Array, ' batch']) -> _StokesT:
+        """Scatter-add a batch of samples into the sky map `out`."""
         tod_batch = _scaled(tod_batch, self.sampler.scaling(index))
         sky_shape = self.landscape.shape
-        n_pixels = int(np.prod(sky_shape))
         # scatter-add per pixel while keeping the leading Stokes axis of the backing array.
         n_stokes = tod_batch.data.shape[0]
-        zeros = type(tod_batch).from_array(jnp.zeros((n_stokes, n_pixels), self.landscape.dtype))
+        flat = type(out).from_array(out.data.reshape(n_stokes, -1))
 
         pix = (
             None
@@ -285,13 +283,13 @@ class PointingOperator(AbstractLinearOperator):
             # fast path for nearest-neighbour: one pixel per sample, so no stencil is needed
             # the scatter wraps a -1 onto the last pixel, so such a sample must add nothing
             contrib = jnp.where(pix >= 0, tod_batch.data, 0)
-            binned = zeros.data.at[:, pix.ravel()].add(contrib.reshape(n_stokes, -1))
+            binned = flat.data.at[:, pix.ravel()].add(contrib.reshape(n_stokes, -1))
         else:
             pointing = self._pointing(index)
             if pointing.polarization_rotation is not None:
                 tod_batch = tod_batch.rotate_qu(*pointing.polarization_rotation.inverse())
-            binned = rotated_scatter(zeros, tod_batch, *pointing[:2]).data
-        return type(tod_batch).from_array(binned.reshape(n_stokes, *sky_shape))
+            binned = rotated_scatter(flat, tod_batch, *pointing[:2]).data
+        return type(out).from_array(binned.reshape(n_stokes, *sky_shape))
 
     def _pointing(self, index: Int[Array, ' batch']) -> PointingRows:
         pointing = self.sampler.pointing_rows(self.landscape, index)
@@ -325,8 +323,9 @@ class PointingTransposeOperator(TransposeOperator):
         # Loop over batches of rows
         n_rows = self.operator.sampler.shape[0]
         batch_size, n_batches = _batch_plan(self.operator.batch_size, n_rows)
+        sky_out: _StokesT = self.operator.landscape.zeros()
         if n_batches == 1:
-            return self.operator._bin(x, jnp.arange(n_rows))
+            return self.operator._bin(sky_out, x, jnp.arange(n_rows))
 
         def body(i: Int[Array, ''], sky: _StokesT) -> _StokesT:
             # Past n_rows, indices are out of range; `sky` is never indexed by `index` so we need to
@@ -336,12 +335,9 @@ class PointingTransposeOperator(TransposeOperator):
             unique = index < n_rows
             xbatch = x[index]
             unique = unique.reshape(-1, *(1,) * (xbatch.data.ndim - 2))
-            sky_batch = self.operator._bin(unique * xbatch, index)
+            # accumulate in place: a map per batch would cost a full-map write and add each
+            return self.operator._bin(sky, unique * xbatch, index)
 
-            # combine the results of the batches into one sky map
-            return sky + sky_batch
-
-        sky_out: _StokesT = self.operator.landscape.zeros()
         sky_out = lax.fori_loop(0, n_batches, body, sky_out)
         return sky_out
 

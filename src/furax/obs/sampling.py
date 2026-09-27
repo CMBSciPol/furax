@@ -25,11 +25,15 @@ __all__ = [
     'QuaternionSampler',
     'RotatedSampler',
     'PointingRows',
+    'SampleIndex',
 ]
 
 
 type PolarizationFrame = Literal['boresight', 'detector', 'sky']
 """The basis a [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler] returns Q and U in."""
+
+type SampleIndex = tuple[Int[Array, '...'], ...]
+"""A batch of samples, as one integer array per axis of the samples' shape."""
 
 
 @jax.tree_util.register_dataclass
@@ -107,8 +111,8 @@ class SamplingKernel:
         weights = self.weights.data if isinstance(self.weights, Stokes) else self.weights
         return stencil.integrated(weights)
 
-    def offsets_for(self, idet: Int[Array, ' batch']) -> Quaternion | None:
-        """Shape (batch, n_offsets), with shared offsets broadcast to every detector."""
+    def offsets_for(self, idet: Int[Array, '...']) -> Quaternion | None:
+        """Shape `(*idet.shape, n_offsets)`, with shared offsets broadcast to every detector."""
         if self.offsets is None:
             return None
         if len(self.offsets.shape) == 1:
@@ -202,9 +206,10 @@ class AbstractSampler(ABC):
     """Where each sample of a timestream, or of any array of samples, reads a map.
 
     A sampler has a [`shape`][furax.obs.sampling.AbstractSampler.shape], the shape of the samples
-    it produces, and answers for a batch of indices into its first axis. Nothing else about the
-    shape is assumed: a timestream has shape (n_detectors, n_samples), but a sampler may as well
-    read a map at a list of points, or at the pixels of another map.
+    it produces, and answers for any batch of them, given as a [`SampleIndex`][]. Nothing else
+    about the shape is assumed: a timestream has shape (n_detectors, n_samples), but a sampler may
+    as well read a map at a list of points, or at the pixels of another map. A batch may hold
+    several detectors, or part of one's samples.
 
     Attributes:
         kernel: What each sample integrates over.
@@ -222,26 +227,28 @@ class AbstractSampler(ABC):
     @property
     @abstractmethod
     def shape(self) -> tuple[int, ...]:
-        """The shape of the samples. Batches index its first axis."""
+        """The shape of the samples."""
+
+    def every_sample(self) -> SampleIndex:
+        """The [`SampleIndex`][] of all the samples, in a batch of the samples' shape."""
+        return tuple(jnp.indices(self.shape, sparse=True))
 
     @abstractmethod
-    def pointing_rows(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> PointingRows:
+    def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
         """How a batch of samples reads the map.
 
         Args:
             landscape: The map being read.
-            index: Indices into the first axis of the samples.
+            index: The samples of the batch.
 
         Returns:
-            The pointing rows, of shape `(batch, *shape[1:])`, with a rotation when the map is
+            The pointing rows, of the shape of the batch, with a rotation when the map is
             polarized.
         """
 
     def nearest_indices(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> Integer[Array, 'batch ...'] | None:
+        self, landscape: StokesLandscape, index: SampleIndex
+    ) -> Integer[Array, '...'] | None:
         """The pixel each sample reads, when it reads a single one, or `None`.
 
         A shortcut for reading a map with no polarization: when every sample reads one pixel, the
@@ -251,7 +258,7 @@ class AbstractSampler(ABC):
         """
         return None
 
-    def scaling(self, index: Int[Array, ' batch']) -> Float[Array, 'batch ...'] | None:
+    def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:
         """A factor multiplying each sample of a batch, or `None` (the default) for none.
 
         It is applied after the gather and before the scatter. It is diagonal, so the operator and
@@ -297,48 +304,46 @@ class QuaternionSampler(AbstractSampler):
     def shape(self) -> tuple[int, ...]:
         return self.qdet.shape[0], self.qbore.shape[0]
 
-    def quaternions(self, index: Int[Array, ' batch'] | None = None) -> Quaternion:
-        """The pointing of a batch of detectors, or of every detector, shape (batch, n_samples)."""
-        qdet = self.qdet if index is None else self.qdet[index]
-        return self.qbore * qdet[:, None]
+    def quaternions(self, index: SampleIndex | None = None) -> Quaternion:
+        """The pointing of a batch of samples, or by default of every sample."""
+        idet, isamp = self.every_sample() if index is None else index
+        return self.qbore[isamp] * self.qdet[idet]
 
-    def pointing_rows(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> PointingRows:
+    def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
         quats = self.quaternions(index)
-        offsets = self.kernel.offsets_for(index)
+        offsets = self.kernel.offsets_for(index[0])
         if offsets is None:
             stencil = self._stencil(landscape, quats)
         else:
             # Every read direction has its own stencil, and they fold into one stencil per
             # sample. The polarization of every pixel read is still transported to the line of
             # sight, so it is all in the same basis before the sum.
-            # (batch, samp, 1) x (batch, 1, n_offsets) -> (batch, samp, n_offsets)
-            offset_quats = quats[:, :, None] * offsets[:, None, :]
+            # (*batch, 1) x (*batch, n_offsets) -> (*batch, n_offsets)
+            offset_quats = quats[..., None] * offsets
             stencil = self.kernel.integrate(self._stencil(landscape, offset_quats))
         if not landscape.has_spin2:
             return PointingRows(stencil, None)
-        rotation = self._frame_rotation(quats, index)
+        rotation = self._frame_rotation(quats, index[0])
         line_of_sight = landscape.quat2direction(quats)
         return _polarized(stencil, line_of_sight, rotation, self.kernel)
 
     def nearest_indices(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> Integer[Array, 'batch samp'] | None:
+        self, landscape: StokesLandscape, index: SampleIndex
+    ) -> Integer[Array, '...'] | None:
         if not self.kernel.reads_one_pixel:
             return None
         return landscape.quat2index(self.quaternions(index))
 
     def to_angles(self, landscape: StokesLandscape) -> 'AngleSampler':
         """The same sampler, from the world angles of every direction, computed once."""
-        index = jnp.arange(self.shape[0])
-        quats = self.quaternions(index)
+        idet = self.every_sample()[0]
+        quats = self.quaternions()
         theta, phi = landscape.quat2world(quats)
-        rotation = self._frame_rotation(quats, index)
+        rotation = self._frame_rotation(quats, idet)
         offset_theta = offset_phi = None
-        offsets = self.kernel.offsets_for(index)
+        offsets = self.kernel.offsets_for(idet)
         if offsets is not None:
-            offset_theta, offset_phi = landscape.quat2world(quats[:, :, None] * offsets[:, None, :])
+            offset_theta, offset_phi = landscape.quat2world(quats[..., None] * offsets)
         return AngleSampler(
             kernel=self.kernel,
             theta=theta,
@@ -348,9 +353,7 @@ class QuaternionSampler(AbstractSampler):
             offset_phi=offset_phi,
         )
 
-    def _frame_rotation(
-        self, quats: Quaternion, index: Int[Array, ' batch']
-    ) -> Spin2Rotation | None:
+    def _frame_rotation(self, quats: Quaternion, idet: Int[Array, '...']) -> Spin2Rotation | None:
         """The rotation from the meridian basis to the frame, if any."""
         if self.frame == 'sky':
             return None
@@ -358,8 +361,8 @@ class QuaternionSampler(AbstractSampler):
         if self.frame == 'detector':
             return psi
         # psi - gamma, with gamma the angle of the detector about the boresight
-        gamma = Spin2Rotation.from_cos_sin(*gamma_angle_cos_sin(self.qdet[index]))
-        return psi.compose(gamma[:, None].inverse())
+        gamma = Spin2Rotation.from_cos_sin(*gamma_angle_cos_sin(self.qdet[idet]))
+        return psi.compose(gamma.inverse())
 
     def _stencil(self, landscape: StokesLandscape, quats: Quaternion) -> Stencil:
         """Read the map around each direction, with the kernel's interpolation."""
@@ -398,9 +401,7 @@ class AngleSampler(AbstractSampler):
     def shape(self) -> tuple[int, ...]:
         return self.theta.shape
 
-    def pointing_rows(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> PointingRows:
+    def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
         theta, phi = self.theta[index], self.phi[index]
         if self.offset_theta is None:
             stencil = self._stencil(landscape, theta, phi)
@@ -419,8 +420,8 @@ class AngleSampler(AbstractSampler):
         return _polarized(stencil, line_of_sight, rotation, self.kernel)
 
     def nearest_indices(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> Integer[Array, 'batch ...'] | None:
+        self, landscape: StokesLandscape, index: SampleIndex
+    ) -> Integer[Array, '...'] | None:
         if not self.kernel.reads_one_pixel:
             return None
         return landscape.world2index(self.theta[index], self.phi[index])
@@ -465,7 +466,7 @@ class PrecomputedSampler(AbstractSampler):
             sampler: The sampler whose rows to store.
             landscape: The map the rows will read.
         """
-        index = jnp.arange(sampler.shape[0])
+        index = sampler.every_sample()
         nearest = sampler.nearest_indices(landscape, index)
         if nearest is not None and not landscape.has_spin2:
             return cls(kernel=sampler.kernel, source=sampler, nearest=nearest)
@@ -484,17 +485,16 @@ class PrecomputedSampler(AbstractSampler):
     def shape(self) -> tuple[int, ...]:
         return self.source.shape
 
-    def pointing_rows(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> PointingRows:
+    def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
         if self.stencil is None:
             assert self.nearest is not None
             indices = self.nearest[index]
             weights = jnp.ones((*indices.shape, 1), landscape.dtype)
             return PointingRows(Stencil.unpositioned(indices[..., None], weights), None)
         if self.stencil.weights.ndim > self.stencil.indices.ndim:
-            # weights per Stokes component lead: the batch axis is the second one
-            stencil = Stencil(self.stencil.indices[index], self.stencil.weights[:, index], None)
+            # weights per Stokes component lead: the sample axes follow
+            weights = self.stencil.weights[(slice(None), *index)]
+            stencil = Stencil(self.stencil.indices[index], weights, None)
         else:
             stencil = Stencil(self.stencil.indices[index], self.stencil.weights[index], None)
         rotation = None if self.neighbour_rotation is None else self.neighbour_rotation[index]
@@ -504,11 +504,11 @@ class PrecomputedSampler(AbstractSampler):
         return PointingRows(stencil, rotation, polarization)
 
     def nearest_indices(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> Integer[Array, 'batch ...'] | None:
+        self, landscape: StokesLandscape, index: SampleIndex
+    ) -> Integer[Array, '...'] | None:
         return None if self.nearest is None else self.nearest[index]
 
-    def scaling(self, index: Int[Array, ' batch']) -> Float[Array, 'batch ...'] | None:
+    def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:
         return self.source.scaling(index)
 
     def with_kernel(self, kernel: SamplingKernel) -> AbstractSampler:
@@ -536,9 +536,7 @@ class RotatedSampler(AbstractSampler):
     def shape(self) -> tuple[int, ...]:
         return self.source.shape
 
-    def pointing_rows(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> PointingRows:
+    def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
         pointing = self.source.pointing_rows(landscape, index)
         if not landscape.has_spin2:
             return pointing
@@ -548,11 +546,11 @@ class RotatedSampler(AbstractSampler):
         return pointing._replace(polarization_rotation=rotation)
 
     def nearest_indices(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> Integer[Array, 'batch ...'] | None:
+        self, landscape: StokesLandscape, index: SampleIndex
+    ) -> Integer[Array, '...'] | None:
         return self.source.nearest_indices(landscape, index)
 
-    def scaling(self, index: Int[Array, ' batch']) -> Float[Array, 'batch ...'] | None:
+    def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:
         return self.source.scaling(index)
 
     def with_kernel(self, kernel: SamplingKernel) -> AbstractSampler:

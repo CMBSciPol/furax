@@ -21,7 +21,7 @@ def build_acquisition_operator(
     *,
     demodulated: bool = False,
     pointing_on_the_fly: bool = True,
-    pointing_batch_size: int = 16,
+    pointing_batch_samples: int | None = None,
     pointing_interpolate: bool = False,
     dtype: DTypeLike = jnp.float64,
 ) -> AbstractLinearOperator:
@@ -37,7 +37,7 @@ def build_acquisition_operator(
         landscape,
         boresight_quaternions,
         detector_quaternions,
-        batch_size=pointing_batch_size,
+        batch_samples=pointing_batch_samples,
         frame='boresight' if has_hwp else 'detector',
         interpolate=pointing_interpolate,
     )

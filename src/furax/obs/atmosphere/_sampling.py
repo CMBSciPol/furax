@@ -3,11 +3,11 @@ from typing import Self
 
 import jax.numpy as jnp
 from fastquat import Quaternion
-from jaxtyping import Array, Float, Int, Integer
+from jaxtyping import Array, Float, Integer
 
 from furax.math.coords import ZAXIS
 from furax.obs.landscapes import StokesLandscape, TangentialLandscape
-from furax.obs.sampling import AbstractSampler, PointingRows, SamplingKernel
+from furax.obs.sampling import AbstractSampler, PointingRows, SampleIndex, SamplingKernel
 from furax.obs.stencil import Interpolation, Stencil
 
 __all__ = [
@@ -89,9 +89,7 @@ class ScreenSampler(AbstractSampler):
     def shape(self) -> tuple[int, ...]:
         return self.qdet.shape[0], self.qbore.shape[0]
 
-    def pointing_rows(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> PointingRows:
+    def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
         """The screen stencil, which carries no sky positions and no rotation.
 
         The screen is a projection plane, not the sphere, so a neighbour has no co-latitude to
@@ -108,32 +106,32 @@ class ScreenSampler(AbstractSampler):
         return PointingRows(stencil, None)
 
     def nearest_indices(
-        self, landscape: StokesLandscape, index: Int[Array, ' batch']
-    ) -> Integer[Array, 'batch samp'] | None:
+        self, landscape: StokesLandscape, index: SampleIndex
+    ) -> Integer[Array, '...'] | None:
         if not self.kernel.reads_one_pixel:
             return None
         return self._indices(_screen(landscape), index)
 
-    def scaling(self, index: Int[Array, ' batch']) -> Float[Array, 'batch samp'] | None:
+    def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:
         """The airmass loading `1 / sin(el)` of each sample, when enabled."""
         if not self.elevation_modulation:
             return None
-        sin_el = self._quaternions(index).rotate_vector(ZAXIS)[..., 2]  # (batch, samp)
+        sin_el = self._quaternions(index).rotate_vector(ZAXIS)[..., 2]
         return 1 / sin_el
 
-    def _quaternions(self, index: Int[Array, ' batch']) -> Quaternion:
-        return self.qbore * self.qdet[index][:, None]
+    def _quaternions(self, index: SampleIndex) -> Quaternion:
+        idet, isamp = index
+        return self.qbore[isamp] * self.qdet[idet]
 
     def _wind_xy(
-        self, landscape: TangentialLandscape, index: Int[Array, ' batch']
-    ) -> tuple[Float[Array, 'batch samp'], Float[Array, 'batch samp']]:
+        self, landscape: TangentialLandscape, index: SampleIndex
+    ) -> tuple[Float[Array, '...'], Float[Array, '...']]:
         """Gnomonic projection onto the atmosphere screen, including wind displacement."""
         x, y = landscape.quat2xy(self._quaternions(index))
-        return x + self.wind_displacement[:, 0], y + self.wind_displacement[:, 1]
+        wind = self.wind_displacement[index[1]]
+        return x + wind[..., 0], y + wind[..., 1]
 
-    def _indices(
-        self, landscape: TangentialLandscape, index: Int[Array, ' batch']
-    ) -> Integer[Array, 'batch samp']:
+    def _indices(self, landscape: TangentialLandscape, index: SampleIndex) -> Integer[Array, '...']:
         return landscape.pixel2index(*landscape.xy2pixel(*self._wind_xy(landscape, index)))
 
 

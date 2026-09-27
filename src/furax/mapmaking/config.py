@@ -708,8 +708,12 @@ class PointingConfig:
     on_the_fly: bool = True
     """Compute pointing on the fly instead of pre-computing pixel indices/coordinates."""
 
-    batch_size: int = 32
-    """Detector batch size for on-the-fly pointing (set to 0 to use a full batch)."""
+    batch_samples: int | None = None
+    """Number of samples per batch of on-the-fly pointing.
+
+    This is an advanced option. See
+    [`PointingOperator.batch_samples`][furax.obs.pointing.PointingOperator.batch_samples].
+    """
 
     interpolation: Literal['nearest', 'bilinear'] = 'nearest'
     """Pixel interpolation scheme used when sampling the sky map.

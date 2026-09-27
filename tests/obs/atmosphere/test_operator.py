@@ -25,7 +25,7 @@ def _make_operator(
     times=None,
     ndet=NDET,
     nsamp=NSAMP,
-    batch_size=2,
+    batch_samples=2,
     seed=0,
     elevation_modulation=False,
 ) -> tuple[PointingOperator, TangentialLandscape, StokesI]:
@@ -60,7 +60,7 @@ def _make_operator(
         interpolate=False,
         elevation_modulation=elevation_modulation,
     )
-    op = PointingOperator.from_sampler(landscape, sampler, batch_size=batch_size)
+    op = PointingOperator.from_sampler(landscape, sampler, batch_samples=batch_samples)
     return op, landscape, atm_map
 
 

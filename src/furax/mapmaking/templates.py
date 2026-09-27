@@ -1063,7 +1063,7 @@ class GroundTemplateOperator(AbstractLinearOperator):
         stokes: ValidStokesLiteral,
         dtype: DTypeLike,
         landscape: HorizonLandscape | None = None,
-        batch_size: int = 0,
+        batch_samples: int | None = None,
     ) -> AbstractLinearOperator:
         # Compute landscape if not provided
         if landscape is None:
@@ -1091,7 +1091,7 @@ class GroundTemplateOperator(AbstractLinearOperator):
             horizon_landscape,
             boresight_quaternions,
             detector_quaternions,
-            batch_size=batch_size,
+            batch_samples=batch_samples,
         )
 
         polarizer = LinearPolarizerOperator.create(

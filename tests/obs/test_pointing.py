@@ -65,7 +65,7 @@ def test_precomputed_matches_on_the_fly(stokes, frame, landscape_type, interpola
     qbore = Quaternion.random(key1, (NSAMP,))
     qdet = Quaternion.random(key2, (NDET,))
     op = PointingOperator.create(
-        landscape, qbore, qdet, frame=frame, batch_size=2, interpolate=interpolate
+        landscape, qbore, qdet, frame=frame, batch_samples=7, interpolate=interpolate
     )
     precomputed = op.precomputed(store)
     sky = landscape.normal(key3)
@@ -73,6 +73,38 @@ def test_precomputed_matches_on_the_fly(stokes, frame, landscape_type, interpola
 
     assert tree_equal(precomputed(sky), op(sky), rtol=1e-10, atol=1e-13)
     assert tree_equal(precomputed.T(tod), op.T(tod), rtol=1e-10, atol=1e-13)
+
+
+@pytest.mark.parametrize(
+    'batch_samples',
+    [1, 7, NSAMP, 3 * NSAMP - 1, 100],
+    ids=['one-sample', 'part-of-a-detector', 'one-detector', 'two-detectors', 'more-than-all'],
+)
+@pytest.mark.parametrize('store', [None, 'rows', 'angles'], ids=['on-the-fly', 'rows', 'angles'])
+def test_batches_do_not_change_the_result(batch_samples, store) -> None:
+    """Batches of any size, within a detector or over several, give the single-batch result."""
+    assert NDET * NSAMP == 30  # the ids above assume it
+    landscape = HealpixLandscape(NSIDE, 'IQU')
+    k1, k2, k3, k4, k5 = jax.random.split(jax.random.key(50), 5)
+    offsets = XiEtaAngles(*jax.random.normal(k3, (3, NDET, 2)) * 0.01).to_quaternion()
+    weights = StokesIQU(jnp.array([0.5, 0.5]), jnp.array([0.3, 0.7]), jnp.array([0.6, 0.4]))
+    op = PointingOperator.create(
+        landscape,
+        Quaternion.random(k1, (NSAMP,)),
+        Quaternion.random(k2, (NDET,)),
+        interpolate=True,
+        offsets=offsets,
+        offset_weights=weights,
+        batch_samples=0,
+    )
+    if store is not None:
+        op = op.precomputed(store)
+    batched = PointingOperator.from_sampler(landscape, op.sampler, batch_samples=batch_samples)
+    sky = landscape.normal(k4)
+    tod = ftree.normal_like(op.out_structure, k5)
+
+    assert tree_equal(batched(sky), op(sky), rtol=1e-12, atol=1e-13)
+    assert tree_equal(batched.T(tod), op.T(tod), rtol=1e-12, atol=1e-13)
 
 
 class TestPrecomputed:
@@ -125,8 +157,7 @@ class TestPrecomputed:
         sky = local.normal(jax.random.key(22))
         assert tree_equal(op.precomputed()(sky), op(sky), rtol=1e-10, atol=1e-12)
         # half the pixels are unmapped, so some samples do sink: the test would pass vacuously
-        rows = jnp.arange(op.sampler.shape[0])
-        assert jnp.any(op.landscape.quat2index(op.sampler.quaternions(rows)) == local.sink)
+        assert jnp.any(op.landscape.quat2index(op.sampler.quaternions()) == local.sink)
 
 
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
@@ -346,11 +377,11 @@ class TestCustomSampler:
         return _PointsSampler(kernel=SamplingKernel(Interpolation.BILINEAR), theta=theta, phi=phi)
 
     @pytest.mark.parametrize('shape', [(7,), (5, 2, 3)], ids=['points', '3d'])
-    @pytest.mark.parametrize('batch_size', [3, 0], ids=['partial-batches', 'one-batch'])
-    def test_samples_of_any_shape(self, shape, batch_size) -> None:
+    @pytest.mark.parametrize('batch_samples', [3, 0], ids=['partial-batches', 'one-batch'])
+    def test_samples_of_any_shape(self, shape, batch_samples) -> None:
         landscape = HealpixLandscape(NSIDE, 'IQU')
         sampler = self._points(shape, 30)
-        op = PointingOperator.from_sampler(landscape, sampler, batch_size=batch_size)
+        op = PointingOperator.from_sampler(landscape, sampler, batch_samples=batch_samples)
         sky = landscape.normal(jax.random.key(31))
 
         assert op.out_structure == landscape.structure_for(shape)
@@ -363,7 +394,7 @@ class TestCustomSampler:
 
     def test_the_operator_is_a_pytree(self) -> None:
         landscape = HealpixLandscape(NSIDE, 'IQU')
-        op = PointingOperator.from_sampler(landscape, self._points((7,), 33), batch_size=3)
+        op = PointingOperator.from_sampler(landscape, self._points((7,), 33), batch_samples=3)
         sky = landscape.normal(jax.random.key(34))
         assert tree_equal(jax.jit(lambda op, sky: op(sky))(op, sky), op(sky))
 
@@ -394,7 +425,7 @@ class TestNearestIndexAgreement:
 
     def test_the_stencil_indexes_the_quat2index_pixel(self) -> None:
         op, qdet_full = self._setup(40)
-        stencil = op.sampler.pointing_rows(op.landscape, jnp.arange(op.sampler.shape[0])).stencil
+        stencil = op.sampler.pointing_rows(op.landscape, op.sampler.every_sample()).stencil
         assert_array_equal(stencil.indices[..., 0], op.landscape.quat2index(qdet_full))
 
     def test_the_hit_map_of_the_polarized_operator_is_the_intensity_one(self) -> None:
@@ -597,7 +628,7 @@ class TestOffsets:
             interpolate=interpolate,
             offsets=offsets,
             offset_weights=jnp.array([0.5, 0.5]),
-            batch_size=2,
+            batch_samples=2,
         )
         parts = [
             PointingOperator.create(
@@ -661,7 +692,7 @@ class TestOffsets:
             interpolate=interpolate,
             offsets=offsets,
             offset_weights=weights,
-            batch_size=2,
+            batch_samples=2,
         )
         parts = [
             PointingOperator.create(
@@ -713,7 +744,7 @@ class TestOffsets:
             interpolate=interpolate,
             offsets=self._offsets(),
             offset_weights=self._per_stokes_weights(stokes),
-            batch_size=2,
+            batch_samples=2,
         )
         assert_array_almost_equal(op.as_matrix().T, op.T.as_matrix(), decimal=12)
 
@@ -732,7 +763,7 @@ class TestOffsets:
             interpolate=interpolate,
             offsets=self._offsets(),
             offset_weights=self._per_stokes_weights(stokes),
-            batch_size=2,
+            batch_samples=2,
         )
         expanded = op.precomputed(store)
         sky = landscape.normal(jax.random.key(50))
@@ -905,7 +936,7 @@ def test_the_sky_frame_is_the_transported_sample(interpolate) -> None:
     op = TestFrames._ops(interpolate, offsets=False)['sky']
     quats = op.sampler.quaternions()
     theta, phi = op.landscape.quat2world(quats)
-    stencil = op.sampler.pointing_rows(op.landscape, jnp.arange(NDET)).stencil
+    stencil = op.sampler.pointing_rows(op.landscape, op.sampler.every_sample()).stencil
     sky = op.landscape.normal(jax.random.key(72))
     expected = transported_gather(sky.ravel(), stencil, theta, phi)
     assert tree_equal(op(sky), expected, rtol=1e-12, atol=1e-12)

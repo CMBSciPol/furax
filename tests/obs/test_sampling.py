@@ -132,7 +132,7 @@ class TestAngleSampler:
         sampler = AngleSampler(kernel=SamplingKernel(Interpolation.BILINEAR), theta=theta, phi=phi)
         sky = landscape.normal(jax.random.key(1))
 
-        tod = PointingOperator.from_sampler(landscape, sampler, batch_size=3)(sky)
+        tod = PointingOperator.from_sampler(landscape, sampler, batch_samples=3)(sky)
         stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
         expected = transported_gather(sky.ravel(), stencil, theta, phi)
         assert_allclose(tod.data, expected.data, rtol=1e-12, atol=1e-12)
@@ -168,7 +168,7 @@ class TestPrecomputedSampler:
         cached = PrecomputedSampler.from_sampler(sampler, landscape)
         sky = landscape.normal(jax.random.key(5))
         source_op = PointingOperator.from_sampler(landscape, sampler)
-        cached_op = PointingOperator.from_sampler(landscape, cached, batch_size=2)
+        cached_op = PointingOperator.from_sampler(landscape, cached, batch_samples=2)
         assert_allclose(cached_op(sky).data, source_op(sky).data, rtol=1e-12, atol=1e-13)
         tod = source_op(sky)
         assert_allclose(cached_op.T(tod).data, source_op.T(tod).data, rtol=1e-12, atol=1e-13)

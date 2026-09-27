@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `IsoAngles`, `LonLatAngles`, `AzElAngles`, `XiEtaAngles` and `gamma_angle_cos_sin` in `furax.math.coords` (#273)
 - `Spin2Rotation` in `furax.obs.operators`, a rotation of Q and U stored as the cosine and sine of twice its angle (#273)
 - `HealpixLandscape(nested=True)`, nearest neighbour only (#276)
+- `SampleIndex` and `AbstractSampler.every_sample` (#277)
 
 ### Changed
 
@@ -35,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `SkyPositions` is replaced by `ZSPhi` in `furax.math.coords`, its field `sth` renamed `s` (#273)
 - Faster on-the-fly pointing on HEALPix and CAR maps; the `PointingOperator` transpose holds one map less in memory (#274)
 - jax-healpy 0.8 is the minimum version (#274)
+- **Breaking:** `PointingOperator` batches by number of samples, `batch_samples`, instead of detectors, `batch_size`; the default depends on the backend. `PointingConfig.batch_size` and the `pointing_batch_size` argument of `build_acquisition_operator` are renamed likewise (#277)
+- **Breaking:** samplers take a batch as a `SampleIndex`, one index array per axis of the samples, instead of indices into the first axis (#277)
 - `transported_scatter` applies the stencil weights before rotating back into the pixel frames, which keeps it adjoint to `transported_gather` when the weights differ between Stokes components; results with equal weights change at round-off level only (#265)
 
 ### Removed

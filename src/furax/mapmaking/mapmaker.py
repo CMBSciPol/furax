@@ -887,7 +887,7 @@ class MapMaker:
                 landscape,
                 Quaternion.from_array(observation.get_boresight_quaternions()),
                 Quaternion.from_array(observation.get_detector_quaternions()),
-                batch_size=self.config.pointing.batch_size,
+                batch_samples=self.config.pointing.batch_samples,
                 interpolate=self.config.pointing.interpolation == 'bilinear',
             )
             return pointing

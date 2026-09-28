@@ -270,15 +270,18 @@ class AbstractSampler(ABC):
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
-    ) -> Integer[Array, '...'] | None:
-        """The pixel each sample reads, when it reads a single one, or `None`.
+    ) -> Integer[Array, '...']:
+        """The pixel each sample of a batch reads, for a kernel that reads a single one.
 
-        A shortcut for reading a map with no polarization: when every sample reads one pixel, the
-        gather needs its index alone, not a stencil. It must be the pixel of the
-        [`pointing_rows`][furax.obs.sampling.AbstractSampler.pointing_rows] stencil; samples
-        outside the map are negative. `None` (the default) means the stencil must be used.
+        A shortcut for reading a map with no polarization, which needs the pixel index alone, not
+        a stencil. It is the pixel of the
+        [`pointing_rows`][furax.obs.sampling.AbstractSampler.pointing_rows] stencil, negative for a
+        sample outside the map. It is only called when `kernel.reads_one_pixel`; the default takes
+        it from the stencil.
         """
-        return None
+        stencil = self.pointing_rows(landscape, index).stencil
+        # the stencil reads pixel 0 with zero weight for a sample outside the map
+        return jnp.where(stencil.weights[..., 0] > 0, stencil.indices[..., 0], -1)
 
     def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:
         """A factor multiplying each sample of a batch, or `None` (the default) for none.
@@ -353,9 +356,7 @@ class QuaternionSampler(AbstractSampler):
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
-    ) -> Integer[Array, '...'] | None:
-        if not self.kernel.reads_one_pixel:
-            return None
+    ) -> Integer[Array, '...']:
         return landscape.quat2index(self.quaternions(index))
 
     def to_angles(self, landscape: StokesLandscape) -> 'AngleSampler':
@@ -446,9 +447,7 @@ class AngleSampler(AbstractSampler):
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
-    ) -> Integer[Array, '...'] | None:
-        if not self.kernel.reads_one_pixel:
-            return None
+    ) -> Integer[Array, '...']:
         return landscape.world2index(self.theta[index], self.phi[index])
 
     def _stencil(
@@ -492,8 +491,8 @@ class PrecomputedSampler(AbstractSampler):
             landscape: The map the rows will read.
         """
         index = sampler.every_sample()
-        nearest = sampler.nearest_indices(landscape, index)
-        if nearest is not None and not landscape.has_spin2:
+        if sampler.kernel.reads_one_pixel and not landscape.has_spin2:
+            nearest = sampler.nearest_indices(landscape, index)
             return cls(kernel=sampler.kernel, source=sampler, nearest=nearest)
         pointing = sampler.pointing_rows(landscape, index)
         # the positions only served to compute the rotation, which is cached instead
@@ -530,8 +529,10 @@ class PrecomputedSampler(AbstractSampler):
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
-    ) -> Integer[Array, '...'] | None:
-        return None if self.nearest is None else self.nearest[index]
+    ) -> Integer[Array, '...']:
+        if self.nearest is None:
+            return super().nearest_indices(landscape, index)
+        return self.nearest[index]
 
     def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:
         return self.source.scaling(index)
@@ -572,7 +573,7 @@ class RotatedSampler(AbstractSampler):
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
-    ) -> Integer[Array, '...'] | None:
+    ) -> Integer[Array, '...']:
         return self.source.nearest_indices(landscape, index)
 
     def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:

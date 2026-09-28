@@ -245,22 +245,16 @@ class PointingOperator(AbstractLinearOperator):
     def _sample(self, x_flat: _StokesT, index: SampleIndex) -> _StokesT:
         """Sample the flat map for a batch of samples."""
         tod: _StokesT
-        pix = (
-            None
-            if self.landscape.has_spin2
-            else self.sampler.nearest_indices(self.landscape, index)
-        )
-        if pix is not None:
-            # fast path for nearest-neighbour: one pixel per sample, so no stencil is needed
-            sampled = x_flat[pix]
+        if self._reads_nearest:
             # the gather wraps a -1 onto the last pixel, which the sample never observed
-            tod = type(x_flat).from_array(jnp.where(pix >= 0, sampled.data, 0))
-            return _scaled(tod, self.sampler.scaling(index))
-        pointing = self._pointing(index)
-        tod = _scaled(rotated_gather(x_flat, *pointing[:2]), self.sampler.scaling(index))
-        if pointing.polarization_rotation is None:
-            return tod
-        return tod.rotate_qu(*pointing.polarization_rotation)
+            pix = self.sampler.nearest_indices(self.landscape, index)
+            tod = type(x_flat).from_array(jnp.where(pix >= 0, x_flat[pix].data, 0))
+        else:
+            pointing = self._pointing(index)
+            tod = rotated_gather(x_flat, *pointing[:2])
+            if pointing.polarization_rotation is not None:
+                tod = tod.rotate_qu(*pointing.polarization_rotation)
+        return _scaled(tod, self.sampler.scaling(index))
 
     def _bin(self, out: _StokesT, tod_batch: _StokesT, index: SampleIndex) -> _StokesT:
         """Scatter-add a batch of samples into the sky map `out`."""
@@ -270,13 +264,8 @@ class PointingOperator(AbstractLinearOperator):
         n_stokes = tod_batch.data.shape[0]
         flat = type(out).from_array(out.data.reshape(n_stokes, -1))
 
-        pix = (
-            None
-            if self.landscape.has_spin2
-            else self.sampler.nearest_indices(self.landscape, index)
-        )
-        if pix is not None:
-            # fast path for nearest-neighbour: one pixel per sample, so no stencil is needed
+        if self._reads_nearest:
+            pix = self.sampler.nearest_indices(self.landscape, index)
             # the scatter wraps a -1 onto the last pixel, so such a sample must add nothing
             contrib = jnp.where(pix >= 0, tod_batch.data, 0)
             binned = flat.data.at[:, pix.ravel()].add(contrib.reshape(n_stokes, -1))
@@ -286,6 +275,14 @@ class PointingOperator(AbstractLinearOperator):
                 tod_batch = tod_batch.rotate_qu(*pointing.polarization_rotation.inverse())
             binned = rotated_scatter(flat, tod_batch, *pointing[:2]).data
         return type(out).from_array(binned.reshape(n_stokes, *sky_shape))
+
+    @property
+    def _reads_nearest(self) -> bool:
+        """Whether every sample reads one pixel of a map without polarization.
+
+        Such a sample needs the pixel index alone, not a stencil and rotations.
+        """
+        return self.sampler.kernel.reads_one_pixel and not self.landscape.has_spin2
 
     def _pointing(self, index: SampleIndex) -> PointingRows:
         pointing = self.sampler.pointing_rows(self.landscape, index)

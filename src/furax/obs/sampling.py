@@ -162,6 +162,11 @@ class SamplingKernel:
         """Whether a sample reads a single pixel: nearest neighbour, without a beam."""
         return self.interpolation is Interpolation.NEAREST and self.beam is None
 
+    @property
+    def weighs_per_stokes(self) -> bool:
+        """Whether the beam weights differ between Stokes components."""
+        return self.beam is not None and isinstance(self.beam.weights, Stokes)
+
     def intensity_only(self) -> Self:
         """The kernel reading the intensity alone, see [`DiscretizedBeam.intensity_only`][]."""
         if self.beam is None:
@@ -192,20 +197,29 @@ class PointingRows(NamedTuple):
     neighbour_rotation: Spin2Rotation | None
     polarization_rotation: Spin2Rotation | None = None
 
+    @classmethod
+    def transported(
+        cls,
+        stencil: Stencil,
+        line_of_sight: ZSPhi,
+        rotation: Spin2Rotation | None,
+        *,
+        rotate_neighbours: bool = False,
+    ) -> Self:
+        r"""The rows of a stencil on the sphere, each neighbour transported to the line of sight.
 
-def _polarized(
-    stencil: Stencil,
-    line_of_sight: ZSPhi,
-    rotation: Spin2Rotation | None,
-    kernel: 'SamplingKernel',
-) -> PointingRows:
-    """The pointing rows of a map with polarization, transported to `line_of_sight`."""
-    if rotation is None:
-        return PointingRows(stencil, transport_rotation(stencil, line_of_sight))
-    if kernel.beam is not None and isinstance(kernel.beam.weights, Stokes):
-        # weights per component act on the rotated Q and U: turn every neighbour before the sum
-        return PointingRows(stencil, transport_rotation(stencil, line_of_sight, rotation))
-    return PointingRows(stencil, transport_rotation(stencil, line_of_sight), rotation)
+        Args:
+            stencil: The pixels each sample reads, with their positions.
+            line_of_sight: The direction each sample is transported to.
+            rotation: The rotation by $\psi$ into the frame the sample is returned in, or `None`.
+            rotate_neighbours: Fold $\psi$ into every neighbour's rotation instead of applying it
+                to the sum, for weights that differ between Stokes components.
+        """
+        if rotation is None:
+            return cls(stencil, transport_rotation(stencil, line_of_sight))
+        if rotate_neighbours:
+            return cls(stencil, transport_rotation(stencil, line_of_sight, rotation))
+        return cls(stencil, transport_rotation(stencil, line_of_sight), rotation)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -333,7 +347,9 @@ class QuaternionSampler(AbstractSampler):
             return PointingRows(stencil, None)
         rotation = self._frame_rotation(quats, index[0])
         line_of_sight = landscape.quat2direction(quats)
-        return _polarized(stencil, line_of_sight, rotation, self.kernel)
+        return PointingRows.transported(
+            stencil, line_of_sight, rotation, rotate_neighbours=self.kernel.weighs_per_stokes
+        )
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
@@ -424,7 +440,9 @@ class AngleSampler(AbstractSampler):
         if rotation is not None:
             rotation = rotation[index]
         line_of_sight = ZSPhi.from_angles(theta, phi)
-        return _polarized(stencil, line_of_sight, rotation, self.kernel)
+        return PointingRows.transported(
+            stencil, line_of_sight, rotation, rotate_neighbours=self.kernel.weighs_per_stokes
+        )
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex

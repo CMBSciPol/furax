@@ -239,6 +239,10 @@ class Stokes(ABC):
         """Reshape the batch axes of each Stokes component."""
         return self.from_array(self.data.reshape(self.data.shape[0], *shape))
 
+    def astype(self, dtype: DTypeLike) -> Self:
+        """Cast every Stokes component to `dtype`."""
+        return self.from_array(self.data.astype(dtype))
+
     def rotate_qu(self, cos_2angles: Float[Array, '...'], sin_2angles: Float[Array, '...']) -> Self:
         """Rotate the Q, U components by an angle whose double-angle cos/sin are given.
 

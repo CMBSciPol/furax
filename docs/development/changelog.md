@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Spin2Rotation` in `furax.obs.operators`, a rotation of Q and U stored as the cosine and sine of twice its angle (#273)
 - `HealpixLandscape(nested=True)`, nearest neighbour only (#276)
 - `SampleIndex` and `AbstractSampler.every_sample` (#277)
+- `Stokes.astype` (#279)
 
 ### Changed
 

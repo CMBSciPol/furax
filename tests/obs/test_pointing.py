@@ -107,6 +107,23 @@ def test_batches_do_not_change_the_result(batch_samples, store) -> None:
     assert tree_equal(batched.T(tod), op.T(tod), rtol=1e-12, atol=1e-13)
 
 
+@pytest.mark.parametrize('batch_samples', [0, 7], ids=['one-batch', 'batched'])
+def test_float64_pointing_keeps_the_map_dtype(batch_samples) -> None:
+    """float64 quaternions read a float32 map into float32 samples, and bin them back."""
+    landscape = HealpixLandscape(NSIDE, 'IQU', dtype=jnp.float32)
+    k1, k2, k3 = jax.random.split(jax.random.key(51), 3)
+    op = PointingOperator.create(
+        landscape,
+        Quaternion.random(k1, (NSAMP,)),
+        Quaternion.random(k2, (NDET,)),
+        batch_samples=batch_samples,
+    )
+    tod = op(landscape.normal(k3))
+
+    assert tod.dtype == op.out_structure.dtype == jnp.float32
+    assert op.T(tod).dtype == jnp.float32
+
+
 class TestPrecomputed:
     @staticmethod
     def _op(interpolate: bool, stokes: ValidStokesLiteral = 'IQU') -> PointingOperator:

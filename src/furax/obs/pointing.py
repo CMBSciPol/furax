@@ -243,7 +243,7 @@ class PointingOperator(AbstractLinearOperator):
         return PointingOperator.from_sampler(self.landscape, sampler, batch_samples=batch_samples)
 
     def _sample(self, x_flat: _StokesT, index: SampleIndex) -> _StokesT:
-        """Sample the flat map for a batch of samples."""
+        """Sample the flat map for a batch of samples, in the map's dtype."""
         tod: _StokesT
         if self._reads_nearest:
             # the gather wraps a -1 onto the last pixel, which the sample never observed
@@ -254,7 +254,9 @@ class PointingOperator(AbstractLinearOperator):
             tod = rotated_gather(x_flat, *pointing[:2])
             if pointing.polarization_rotation is not None:
                 tod = tod.rotate_qu(*pointing.polarization_rotation)
-        return _scaled(tod, self.sampler.scaling(index))
+        tod = _scaled(tod, self.sampler.scaling(index))
+        # float64 pointing (rotations, scaling) promotes the samples of a float32 map
+        return tod.astype(x_flat.dtype)
 
     def _bin(self, out: _StokesT, tod_batch: _StokesT, index: SampleIndex) -> _StokesT:
         """Scatter-add a batch of samples into the sky map `out`."""

@@ -19,6 +19,7 @@ from furax.obs.stokes import Stokes
 __all__ = [
     'AbstractSampler',
     'AngleSampler',
+    'DiscretizedBeam',
     'PolarizationFrame',
     'PrecomputedSampler',
     'SamplingKernel',
@@ -38,88 +39,104 @@ type SampleIndex = tuple[Int[Array, '...'], ...]
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
-class SamplingKernel:
-    r"""The integration kernel for one sample.
+class DiscretizedBeam:
+    r"""A detector beam, discretized as weighted nodes around the beam centre.
 
-    A sample reads the map at one or more directions and returns their weighted sum:
+    A sample is the weighted sum of the map read at each node:
 
     $$d = \sum_k w_k \, m(\hat{n}_k),$$
 
-    where $\hat{n}_k$, a read direction, is the line of sight of the sample composed with
-    offset $k$. Without offsets, the only read direction is the line of sight, with unit
-    weight. The offsets model an integration within a sample: a finite time integration, a
-    pixel window, or a beam.
+    where $\hat{n}_k$ is the detector's line of sight, the beam centre, rotated by node $k$.
 
-    Each value $m(\hat{n}_k)$ is then read from the pixelized map with the kernel's interpolation,
-    independently of the offsets: with bilinear interpolation, every direction reads its four
-    nearest pixels, so a kernel of $K$ offsets reads up to $4K$ pixels per sample.
+    The co-polar direction at a node is the beam-centre basis parallel-transported to the node.
+    Accordingly, the $(Q, U)$ read at every node is transported to the beam centre, and the
+    detector's polarization angle is applied once, at the centre.
 
-    Build one with [`SamplingKernel.create`][], which validates the offsets and weights against
-    the map and the number of detectors; the constructor does not.
+    Build one with [`DiscretizedBeam.create`][], which validates the nodes and weights; the
+    constructor does not.
 
     Attributes:
-        interpolation: How each direction is read from the map.
-        offsets: Rotations from the line of sight to each read direction, shape (n_offsets,)
-            for the same offsets on every detector, or (n_detectors, n_offsets). `None` to read
-            the line of sight alone.
-        weights: The non-negative weight of each offset, shape (n_offsets,), shared by every
-            Stokes component, or a [`Stokes`][] of the map's components, each of shape
-            (n_offsets,). `None` if `offsets` is `None`.
+        nodes: Rotations from the beam centre to each node, in the detector frame, shape
+            (n_nodes,) for the same nodes on every detector, or (n_detectors, n_nodes). Only the
+            direction each rotation points the line of sight to is used, not its roll.
+        weights: The non-negative weight of each node, shape (n_nodes,), shared by every Stokes
+            component, or a [`Stokes`][] of the map's components, each of shape (n_nodes,), for a
+            beam per component. A component's weights act on that component of the output, in the
+            detector's polarization frame, without leakage between components.
     """
 
-    interpolation: Interpolation = field(default=Interpolation.NEAREST, metadata={'static': True})
-    offsets: Quaternion | None = None
-    weights: Float[Array, ' n_offsets'] | Stokes | None = None
+    nodes: Quaternion
+    weights: Float[Array, ' n_nodes'] | Stokes
 
     @classmethod
-    def create(
-        cls,
-        landscape: StokesLandscape,
-        n_detectors: int,
-        *,
-        interpolation: Interpolation = Interpolation.NEAREST,
-        offsets: Quaternion | None = None,
-        weights: Float[Array, ' n_offsets'] | Stokes | None = None,
-    ) -> Self:
-        """Build a kernel, checking the offsets and weights against the map and detectors.
+    def create(cls, nodes: Quaternion, weights: Float[Array, ' n_nodes'] | Stokes) -> Self:
+        """Build a beam, checking that the nodes and weights agree.
 
-        The weights are cast to the map's dtype. They are normalized to sum to one, per Stokes
-        component, over the offsets whose pixels are in the map: a sample partly off a partial-sky
-        map is renormalized to the part in view, like a partly covered bilinear sample.
+        The weights are normalized to sum to one, per Stokes component, over the nodes whose
+        pixels are in the map: a sample partly off a partial-sky map is renormalized to the part in
+        view, like a partly covered bilinear sample.
+
+        Args:
+            nodes: Rotations from the beam centre to each node, see [`DiscretizedBeam`][].
+            weights: The weight of each node, see [`DiscretizedBeam`][].
         """
-        if (offsets is None) != (weights is None):
-            raise ValueError('offsets and their weights must be given together')
-        if offsets is None:
-            return cls(interpolation)
-        assert weights is not None
-        n_offsets = offsets.shape[-1]
-        if offsets.shape not in {(n_offsets,), (n_detectors, n_offsets)}:
+        if len(nodes.shape) not in (1, 2):
             raise ValueError(
-                f'offsets has shape {offsets.shape}, expected ({n_offsets},) or '
-                f'({n_detectors}, {n_offsets}) for {n_detectors} detectors'
+                f'beam nodes have shape {nodes.shape}, expected (n_nodes,) or '
+                '(n_detectors, n_nodes)'
             )
-        return cls(interpolation, offsets, _checked_weights(weights, landscape, n_offsets))
+        n_nodes = nodes.shape[-1]
+        if not isinstance(weights, Stokes):
+            weights = jnp.asarray(weights)
+            if weights.ndim == 2 and weights.shape[1] == n_nodes:
+                raise ValueError(
+                    f'beam weights have shape {weights.shape}, expected ({n_nodes},); give one '
+                    'set per Stokes component as a Stokes, e.g. StokesIQU(i=..., q=..., u=...)'
+                )
+        if weights.shape != (n_nodes,):
+            per_component = ' per component' if isinstance(weights, Stokes) else ''
+            raise ValueError(
+                f'beam weights have shape {weights.shape}{per_component}, expected ({n_nodes},) '
+                f'for {n_nodes} nodes'
+            )
+        return cls(nodes, weights)
 
-    @property
-    def reads_one_pixel(self) -> bool:
-        """Whether a sample reads a single pixel: nearest neighbour, without offsets."""
-        return self.interpolation is Interpolation.NEAREST and self.offsets is None
+    def checked(self, landscape: StokesLandscape, n_detectors: int) -> Self:
+        """The beam, checked against a map and detectors, with its weights in the map's dtype.
+
+        Args:
+            landscape: The map the beam reads.
+            n_detectors: The number of detectors, which per-detector nodes must match.
+        """
+        if len(self.nodes.shape) == 2 and self.nodes.shape[0] != n_detectors:
+            raise ValueError(
+                f'beam nodes have shape {self.nodes.shape}, expected (n_nodes,) or '
+                f'({n_detectors}, n_nodes) for {n_detectors} detectors'
+            )
+        weights = self.weights
+        if isinstance(weights, Stokes):
+            if weights.stokes != landscape.stokes:
+                raise ValueError(
+                    f'beam weights have Stokes components {weights.stokes!r}, expected those of '
+                    f'the landscape, {landscape.stokes!r}'
+                )
+            weights = type(weights).from_array(jnp.asarray(weights.data, landscape.dtype))
+        else:
+            weights = jnp.asarray(weights, landscape.dtype)
+        return dataclasses.replace(self, weights=weights)
+
+    def nodes_for(self, idet: Int[Array, '...']) -> Quaternion:
+        """The nodes of the given detectors, shape `(*idet.shape, n_nodes)`."""
+        if len(self.nodes.shape) == 1:
+            # shared by every detector
+            shape = (*idet.shape, *self.nodes.wxyz.shape)
+            return Quaternion.from_array(jnp.broadcast_to(self.nodes.wxyz, shape))
+        return self.nodes[idet]
 
     def integrate(self, stencil: Stencil) -> Stencil:
-        """Fold stencils of shape (..., n_offsets, neighbors) into (..., n_offsets * neighbors)."""
-        assert self.weights is not None
+        """Fold stencils `(..., n_nodes, neighbors)` into `(..., n_nodes * neighbors)`."""
         weights = self.weights.data if isinstance(self.weights, Stokes) else self.weights
         return stencil.integrated(weights)
-
-    def offsets_for(self, idet: Int[Array, '...']) -> Quaternion | None:
-        """Shape `(*idet.shape, n_offsets)`, with shared offsets broadcast to every detector."""
-        if self.offsets is None:
-            return None
-        if len(self.offsets.shape) == 1:
-            # shared by every detector
-            shape = (*idet.shape, *self.offsets.wxyz.shape)
-            return Quaternion.from_array(jnp.broadcast_to(self.offsets.wxyz, shape))
-        return self.offsets[idet]
 
     def intensity_only(self) -> Self:
         """Reduce per-Stokes weights to those of I, or to their mean when the map has no I."""
@@ -130,35 +147,34 @@ class SamplingKernel:
         return dataclasses.replace(self, weights=reduced)
 
 
-def _checked_weights(
-    weights: Float[Array, ' n_offsets'] | Stokes, landscape: StokesLandscape, n_offsets: int
-) -> Float[Array, ' n_offsets'] | Stokes:
-    """The offset weights in the landscape's dtype, after checking they fit the offsets and map."""
-    if isinstance(weights, Stokes):
-        if weights.stokes != landscape.stokes:
-            raise ValueError(
-                f'offset weights have Stokes components {weights.stokes!r}, expected those of '
-                f'the landscape, {landscape.stokes!r}'
-            )
-        if weights.shape != (n_offsets,):
-            raise ValueError(
-                f'offset weights have shape {weights.shape} per component, expected '
-                f'({n_offsets},) for {n_offsets} offsets'
-            )
-        return type(weights).from_array(jnp.asarray(weights.data, dtype=landscape.dtype))
-    weights = jnp.asarray(weights, dtype=landscape.dtype)
-    if weights.shape != (n_offsets,):
-        hint = (
-            ', or give one set per Stokes component as a Stokes, '
-            'e.g. StokesIQU(i=..., q=..., u=...)'
-            if weights.ndim == 2
-            else ''
-        )
-        raise ValueError(
-            f'offset weights have shape {weights.shape}, expected ({n_offsets},) for '
-            f'{n_offsets} offsets{hint}'
-        )
-    return weights
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class SamplingKernel:
+    r"""How one sample reads the map: the interpolation, and the beam, if any.
+
+    Without a beam, a sample reads the map along its line of sight. With a
+    [`DiscretizedBeam`][], it reads it at every node of the beam. Each read is interpolated
+    independently of the others: with bilinear interpolation, every node reads its four nearest
+    pixels, so a beam of $K$ nodes reads up to $4K$ pixels per sample.
+
+    Attributes:
+        interpolation: How the map is read along a line of sight.
+        beam: The beam each sample integrates over, or `None` to read the line of sight alone.
+    """
+
+    interpolation: Interpolation = field(default=Interpolation.NEAREST, metadata={'static': True})
+    beam: DiscretizedBeam | None = None
+
+    @property
+    def reads_one_pixel(self) -> bool:
+        """Whether a sample reads a single pixel: nearest neighbour, without a beam."""
+        return self.interpolation is Interpolation.NEAREST and self.beam is None
+
+    def intensity_only(self) -> Self:
+        """The kernel reading the intensity alone, see [`DiscretizedBeam.intensity_only`][]."""
+        if self.beam is None:
+            return self
+        return dataclasses.replace(self, beam=self.beam.intensity_only())
 
 
 class PointingRows(NamedTuple):
@@ -169,8 +185,8 @@ class PointingRows(NamedTuple):
     the sum rotated by $\psi$ into the frame the sample is returned in. For a sampler on the
     sphere, $\alpha$ is the parallel transport to the line of sight, see
     [`transport_rotation`][furax.obs.spin2.transport_rotation], and $\psi$ the polarization angle.
-    When the weights differ between Stokes components, they act on the rotated $Q$ and $U$, so
-    $\psi$ is folded into every $\alpha$ instead and `polarization_rotation` is `None`.
+    When the beam weights differ between Stokes components, they act on the rotated $Q$ and $U$,
+    so $\psi$ is folded into every $\alpha$ instead and `polarization_rotation` is `None`.
 
     Attributes:
         stencil: The pixels each sample reads and their weights.
@@ -194,7 +210,7 @@ def _polarized(
     """The pointing rows of a map with polarization, transported to `line_of_sight`."""
     if rotation is None:
         return PointingRows(stencil, transport_rotation(stencil, line_of_sight))
-    if isinstance(kernel.weights, Stokes):
+    if kernel.beam is not None and isinstance(kernel.beam.weights, Stokes):
         # weights per component act on the rotated Q and U: turn every neighbour before the sum
         return PointingRows(stencil, transport_rotation(stencil, line_of_sight, rotation))
     return PointingRows(stencil, transport_rotation(stencil, line_of_sight), rotation)
@@ -289,8 +305,8 @@ class QuaternionSampler(AbstractSampler):
     rotated (`'sky'`).
 
     Attributes:
-        kernel: What each sample integrates over. Offsets compose with `qdet`; per-Stokes weights
-            act on Q and U in the `frame` basis.
+        kernel: How each sample reads the map. Beam nodes compose with `qdet`; per-Stokes beam
+            weights act on Q and U in the `frame` basis.
         qbore: Boresight quaternions, shape (n_samples,).
         qdet: Detector quaternions, shape (n_detectors,).
         frame: The basis Q and U are returned in.
@@ -311,16 +327,16 @@ class QuaternionSampler(AbstractSampler):
 
     def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
         quats = self.quaternions(index)
-        offsets = self.kernel.offsets_for(index[0])
-        if offsets is None:
+        beam = self.kernel.beam
+        if beam is None:
             stencil = self._stencil(landscape, quats)
         else:
-            # Every read direction has its own stencil, and they fold into one stencil per
-            # sample. The polarization of every pixel read is still transported to the line of
-            # sight, so it is all in the same basis before the sum.
-            # (*batch, 1) x (*batch, n_offsets) -> (*batch, n_offsets)
-            offset_quats = quats[..., None] * offsets
-            stencil = self.kernel.integrate(self._stencil(landscape, offset_quats))
+            # Every node has its own stencil, and they fold into one stencil per sample. The
+            # polarization of every pixel read is still transported to the line of sight, the
+            # beam centre, so it is all in the same basis before the sum.
+            # (*batch, 1) x (*batch, n_nodes) -> (*batch, n_nodes)
+            node_quats = quats[..., None] * beam.nodes_for(index[0])
+            stencil = beam.integrate(self._stencil(landscape, node_quats))
         if not landscape.has_spin2:
             return PointingRows(stencil, None)
         rotation = self._frame_rotation(quats, index[0])
@@ -335,22 +351,22 @@ class QuaternionSampler(AbstractSampler):
         return landscape.quat2index(self.quaternions(index))
 
     def to_angles(self, landscape: StokesLandscape) -> 'AngleSampler':
-        """The same sampler, from the world angles of every direction, computed once."""
+        """The same sampler, from the world angles of every sample and beam node, computed once."""
         idet = self.every_sample()[0]
         quats = self.quaternions()
         theta, phi = landscape.quat2world(quats)
         rotation = self._frame_rotation(quats, idet)
-        offset_theta = offset_phi = None
-        offsets = self.kernel.offsets_for(idet)
-        if offsets is not None:
-            offset_theta, offset_phi = landscape.quat2world(quats[..., None] * offsets)
+        node_theta = node_phi = None
+        if self.kernel.beam is not None:
+            nodes = self.kernel.beam.nodes_for(idet)
+            node_theta, node_phi = landscape.quat2world(quats[..., None] * nodes)
         return AngleSampler(
             kernel=self.kernel,
             theta=theta,
             phi=phi,
             polarization_rotation=rotation,
-            offset_theta=offset_theta,
-            offset_phi=offset_phi,
+            node_theta=node_theta,
+            node_phi=node_phi,
         )
 
     def _frame_rotation(self, quats: Quaternion, idet: Int[Array, '...']) -> Spin2Rotation | None:
@@ -365,7 +381,7 @@ class QuaternionSampler(AbstractSampler):
         return psi.compose(gamma.inverse())
 
     def _stencil(self, landscape: StokesLandscape, quats: Quaternion) -> Stencil:
-        """Read the map around each direction, with the kernel's interpolation."""
+        """Read the map around each pointing, with the kernel's interpolation."""
         if self.kernel.interpolation is Interpolation.NEAREST:
             # index through `quat2index`, so that the pixel is the one the hit map counts
             return landscape.index2stencil(landscape.quat2index(quats))
@@ -381,21 +397,21 @@ class AngleSampler(AbstractSampler):
     [`QuaternionSampler.to_angles`][furax.obs.sampling.QuaternionSampler.to_angles] builds one.
 
     Attributes:
-        kernel: What each sample integrates over. With offsets, their directions are given by
-            `offset_theta` and `offset_phi`.
+        kernel: How each sample reads the map. With a beam, its nodes are given by `node_theta`
+            and `node_phi`.
         theta: Co-latitude of every sample, in radians.
         phi: Longitude of every sample, in radians.
         polarization_rotation: The rotation by $\psi$ of every sample, or `None` to return the
             meridian basis.
-        offset_theta: Co-latitude of every read direction, shape `(*shape, n_offsets)`, or `None`.
-        offset_phi: Longitude of every read direction, or `None`.
+        node_theta: Co-latitude of every beam node, shape `(*shape, n_nodes)`, or `None`.
+        node_phi: Longitude of every beam node, or `None`.
     """
 
     theta: Float[Array, '...']
     phi: Float[Array, '...']
     polarization_rotation: Spin2Rotation | None = None
-    offset_theta: Float[Array, '... n_offsets'] | None = None
-    offset_phi: Float[Array, '... n_offsets'] | None = None
+    node_theta: Float[Array, '... n_nodes'] | None = None
+    node_phi: Float[Array, '... n_nodes'] | None = None
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -403,14 +419,13 @@ class AngleSampler(AbstractSampler):
 
     def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
         theta, phi = self.theta[index], self.phi[index]
-        if self.offset_theta is None:
+        beam = self.kernel.beam
+        if beam is None:
             stencil = self._stencil(landscape, theta, phi)
         else:
-            assert self.offset_phi is not None
-            offset_stencil = self._stencil(
-                landscape, self.offset_theta[index], self.offset_phi[index]
-            )
-            stencil = self.kernel.integrate(offset_stencil)
+            assert self.node_theta is not None and self.node_phi is not None
+            node_stencil = self._stencil(landscape, self.node_theta[index], self.node_phi[index])
+            stencil = beam.integrate(node_stencil)
         if not landscape.has_spin2:
             return PointingRows(stencil, None)
         rotation = self.polarization_rotation

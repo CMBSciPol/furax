@@ -35,7 +35,7 @@ class ScreenSampler(AbstractSampler):
     [`PointingOperator.from_sampler`][furax.obs.pointing.PointingOperator.from_sampler].
 
     Attributes:
-        kernel: The interpolation of the screen. Offsets are not supported.
+        kernel: The interpolation of the screen. A beam is not supported.
         qbore: Boresight quaternions in the horizon frame (z-axis = zenith), shape (n_samples,).
         qdet: Detector offset quaternions, shape (n_detectors,).
         wind_displacement: Wind offset `(vx * t_k, vy * t_k)` of each sample, shape
@@ -51,8 +51,8 @@ class ScreenSampler(AbstractSampler):
     def __post_init__(self) -> None:
         # The wind displacement is added per sample, which only the (det, samp) pointing of an
         # un-offset detector lines up with.
-        if self.kernel.offsets is not None:
-            raise ValueError(f'{type(self).__name__} does not support offsets')
+        if self.kernel.beam is not None:
+            raise ValueError(f'{type(self).__name__} does not support a beam')
 
     @classmethod
     def from_wind(

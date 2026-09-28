@@ -8,7 +8,7 @@ from furax.math.coords import ZAXIS
 from furax.obs.atmosphere import ScreenSampler
 from furax.obs.landscapes import HealpixLandscape, TangentialLandscape
 from furax.obs.pointing import PointingOperator
-from furax.obs.sampling import SamplingKernel
+from furax.obs.sampling import DiscretizedBeam, SamplingKernel
 from furax.obs.stokes import StokesI
 
 # Small problem size for fast tests
@@ -65,12 +65,12 @@ def _make_operator(
 
 
 class TestScreenSamplerValidation:
-    def test_offsets_are_rejected(self) -> None:
+    def test_a_beam_is_rejected(self) -> None:
         op, _, _ = _make_operator()
-        offsets = Quaternion.ones((NDET, 1))
-        with pytest.raises(ValueError, match='does not support offsets'):
+        beam = DiscretizedBeam(Quaternion.ones((1,)), jnp.ones(1))
+        with pytest.raises(ValueError, match='does not support a beam'):
             ScreenSampler(
-                kernel=SamplingKernel(offsets=offsets),
+                kernel=SamplingKernel(beam=beam),
                 qbore=op.sampler.qbore,
                 qdet=op.sampler.qdet,
                 wind_displacement=op.sampler.wind_displacement,

@@ -21,6 +21,7 @@ from furax.obs.operators._qu_rotations import (
 )
 from furax.obs.sampling import (
     AbstractSampler,
+    DiscretizedBeam,
     PointingRows,
     PolarizationFrame,
     PrecomputedSampler,
@@ -89,8 +90,7 @@ class PointingOperator(AbstractLinearOperator):
         batch_samples: int | None = None,
         frame: PolarizationFrame = 'boresight',
         interpolate: bool = False,
-        offsets: Quaternion | None = None,
-        offset_weights: Float[Array, ' n_offsets'] | Stokes | None = None,
+        beam: DiscretizedBeam | None = None,
     ) -> 'PointingOperator':
         r"""Build the operator from the boresight pointing and the detector offsets.
 
@@ -103,18 +103,10 @@ class PointingOperator(AbstractLinearOperator):
                 [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler].
             interpolate: If True, bilinear interpolation over the four nearest pixels, otherwise
                 nearest neighbour.
-            offsets: Rotations from the line of sight to each read direction, in the detector
-                frame, shape (n_offsets,) for the same offsets on every detector, or
-                (n_detectors, n_offsets). Only their direction is used.
-                `None` reads the line of sight alone.
-            offset_weights: The weight of each offset, shape (n_offsets,), shared by every Stokes
-                component, or a [`Stokes`][] of the landscape's components, each of shape
-                (n_offsets,), to weigh them differently, e.g. with a beam per component. Required
-                with `offsets`. A component's weights act on that component of the output, i.e.
-                in the polarization frame chosen by `frame`, not in the sky's meridian basis. The
-                weights are normalized to sum to one, per component, over the offsets whose pixels
-                are in the map: a sample partly off a partial-sky map is renormalized to the part
-                in view, like a partly covered bilinear sample.
+            beam: The beam each sample integrates over, centred on the detector's line of sight,
+                or `None` to read the line of sight alone. Per-component weights act on the
+                components of the output, i.e. in the polarization frame chosen by `frame`, not in
+                the sky's meridian basis.
 
         Examples:
             A single detector at the boresight, pointing at random directions given as the ZYZ
@@ -135,15 +127,10 @@ class PointingOperator(AbstractLinearOperator):
             >>> pointing.out_structure.shape
             (1, 1000)
         """
-        ndet = detector_quaternions.shape[0]
-        kernel = SamplingKernel.create(
-            landscape,
-            ndet,
+        kernel = SamplingKernel(
             interpolation=Interpolation.BILINEAR if interpolate else Interpolation.NEAREST,
-            offsets=offsets,
-            weights=offset_weights,
+            beam=None if beam is None else beam.checked(landscape, detector_quaternions.shape[0]),
         )
-
         sampler = QuaternionSampler(
             kernel=kernel,
             qbore=boresight_quaternions,
@@ -199,8 +186,8 @@ class PointingOperator(AbstractLinearOperator):
     def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
         """Return a copy of this operator restricted to StokesI.
 
-        The offsets are kept. Offset weights given per Stokes component reduce to those of I, or
-        to their mean over the components when the operator has no I component.
+        The beam is kept. Beam weights given per Stokes component reduce to those of I, or to
+        their mean over the components when the operator has no I component.
 
         Args:
             interpolate: Override the interpolation: bilinear if True, nearest neighbour if
@@ -231,9 +218,9 @@ class PointingOperator(AbstractLinearOperator):
 
         - `'rows'`: the rows of the pointing matrix, i.e. the pixels, weights and polarization
           rotations, see [`PrecomputedSampler`][furax.obs.sampling.PrecomputedSampler]. The fastest apply;
-          the memory grows with the pixels each sample reads, four per direction with bilinear
+          the memory grows with the pixels each sample reads, four per beam node with bilinear
           interpolation.
-        - `'angles'`: the sky angles of each read direction, see
+        - `'angles'`: the sky angles of every sample and beam node, see
           [`AngleSampler`][furax.obs.sampling.AngleSampler]. The least memory; every apply
           recomputes the rows. Requires a [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler].
 

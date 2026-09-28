@@ -17,7 +17,7 @@ from jax.tree_util import register_dataclass
 from jaxtyping import Array, Bool, Float, Key, UInt32
 from numpy.typing import NDArray
 
-from furax.math.coords import LonLatAngles
+from furax.obs.coords import LonLatAngles
 from furax.obs.landscapes import ProjectionType, StokesLandscape
 from furax.obs.stokes import (
     StokesI,

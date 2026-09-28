@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from fastquat import Quaternion
 from jaxtyping import Array, Float, Integer
 
-from furax.math.coords import ZAXIS
+from furax.obs.coords import ZAXIS
 from furax.obs.landscapes import StokesLandscape, TangentialLandscape
 from furax.obs.sampling import AbstractSampler, PointingRows, SampleIndex, SamplingKernel
 from furax.obs.stencil import Interpolation, Stencil

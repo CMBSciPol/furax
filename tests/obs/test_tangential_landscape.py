@@ -4,7 +4,7 @@ import pytest
 from fastquat import Quaternion
 from numpy.testing import assert_array_almost_equal
 
-from furax.math.coords import IsoAngles
+from furax.obs.coords import IsoAngles
 from furax.obs.landscapes import TangentialLandscape
 
 # A small landscape used across most tests:

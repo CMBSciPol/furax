@@ -6,7 +6,7 @@ from numpy.testing import assert_allclose
 
 from furax.core import CompositionOperator
 from furax.mapmaking.acquisition import build_acquisition_operator
-from furax.math.coords import gamma_angle, polarization_angle
+from furax.obs.coords import gamma_angle, polarization_angle
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.spin2 import spin2_cos_sin

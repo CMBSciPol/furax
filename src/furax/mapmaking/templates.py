@@ -43,8 +43,8 @@ from jaxtyping import DTypeLike, Float, Int, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
-from furax.math import bspline, coords
-from furax.obs import HWPOperator, LinearPolarizerOperator
+from furax.math import bspline
+from furax.obs import HWPOperator, LinearPolarizerOperator, coords
 from furax.obs.landscapes import HorizonLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, ValidStokesLiteral

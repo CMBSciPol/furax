@@ -11,7 +11,7 @@ from fastquat import Quaternion
 from jaxtyping import Array, Float, Int, Integer
 
 from furax.core.utils import register_dataclass_with_keys
-from furax.math.coords import (
+from furax.obs.coords import (
     XiEtaAngles,
     ZSPhi,
     gamma_angle_cos_sin,

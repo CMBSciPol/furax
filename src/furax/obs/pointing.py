@@ -115,7 +115,7 @@ class PointingOperator(AbstractLinearOperator):
             >>> import jax
             >>> import jax.numpy as jnp
             >>> from fastquat import Quaternion
-            >>> from furax.math.coords import IsoAngles
+            >>> from furax.obs.coords import IsoAngles
             >>> from furax.obs.landscapes import HealpixLandscape
             >>> theta, phi, psi = jax.random.uniform(jax.random.key(0), (3, 1000)) * jnp.array(
             ...     [[jnp.pi], [2 * jnp.pi], [2 * jnp.pi]]

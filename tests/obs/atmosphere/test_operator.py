@@ -4,8 +4,8 @@ import pytest
 from fastquat import Quaternion
 from numpy.testing import assert_array_almost_equal
 
-from furax.math.coords import ZAXIS
 from furax.obs.atmosphere import ScreenSampler
+from furax.obs.coords import ZAXIS
 from furax.obs.landscapes import HealpixLandscape, TangentialLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.sampling import DiscretizedBeam, SamplingKernel

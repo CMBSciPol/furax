@@ -15,7 +15,7 @@ from fastquat import Quaternion
 from jax.tree_util import register_static
 from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
-from furax.math.coords import ZAXIS, IsoAngles, ZSPhi
+from furax.obs.coords import ZAXIS, IsoAngles, ZSPhi
 from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
@@ -204,7 +204,7 @@ class StokesLandscape(Landscape):
         return angles.theta, angles.phi
 
     def quat2direction(self, quat: Quaternion) -> ZSPhi:
-        """The direction each quaternion looks at, as a [`ZSPhi`][furax.math.coords.ZSPhi].
+        """The direction each quaternion looks at, as a [`ZSPhi`][furax.obs.coords.ZSPhi].
 
         The same direction as [`quat2world`][], in the form the spin-2 transport takes.
         """

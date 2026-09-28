@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from fastquat import Quaternion as Q
 
-from furax.math.coords import (
+from furax.obs.coords import (
     ZAXIS,
     AzElAngles,
     IsoAngles,

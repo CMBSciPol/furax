@@ -6,7 +6,7 @@ from equinox import tree_equal
 from fastquat import Quaternion
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.math.coords import ZAXIS, IsoAngles, XiEtaAngles
+from furax.obs.coords import ZAXIS, IsoAngles, XiEtaAngles
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.sampling import (

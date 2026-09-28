@@ -8,7 +8,7 @@ from jax.tree_util import register_static
 from numpy.testing import assert_allclose, assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
-from furax.math.coords import (
+from furax.obs.coords import (
     IsoAngles,
     XiEtaAngles,
     ZSPhi,

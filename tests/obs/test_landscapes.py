@@ -8,7 +8,7 @@ from fastquat import Quaternion
 from jax import Array
 from numpy.testing import assert_allclose, assert_array_almost_equal, assert_array_equal
 
-from furax.math.coords import IsoAngles, XiEtaAngles
+from furax.obs.coords import IsoAngles, XiEtaAngles
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     CARLandscape,

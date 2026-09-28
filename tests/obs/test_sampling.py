@@ -164,6 +164,16 @@ class TestAngleSampler:
         from_angles = PointingOperator.from_sampler(landscape, sampler.to_angles(landscape))(sky)
         assert_allclose(from_angles.data, on_the_fly.data, rtol=1e-12, atol=1e-13)
 
+    def test_nearest_is_not_stored_as_angles(self) -> None:
+        """Angles can put a sample on a pixel boundary in another pixel than `quat2index`."""
+        sampler = QuaternionSampler(
+            kernel=SamplingKernel(Interpolation.NEAREST),
+            qbore=Quaternion.random(jax.random.key(5), (7,)),
+            qdet=Quaternion.ones((NDET,)),
+        )
+        with pytest.raises(ValueError, match='cannot be stored as angles'):
+            sampler.to_angles(HealpixLandscape(NSIDE, 'IQU'))
+
 
 class TestPrecomputedSampler:
     @pytest.mark.parametrize('stokes', ['I', 'IQU'])

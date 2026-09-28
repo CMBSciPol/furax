@@ -59,8 +59,7 @@ def _make_landscape(landscape_type: str, stokes: ValidStokesLiteral) -> StokesLa
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
 @pytest.mark.parametrize('frame', ['boresight', 'detector'])
 @pytest.mark.parametrize('interpolate', [False, True], ids=['nearest', 'bilinear'])
-@pytest.mark.parametrize('store', ['rows', 'angles'])
-def test_precomputed_matches_on_the_fly(stokes, frame, landscape_type, interpolate, store) -> None:
+def test_precomputed_matches_on_the_fly(stokes, frame, landscape_type, interpolate) -> None:
     landscape = _make_landscape(landscape_type, stokes)
     key1, key2, key3, key4 = jax.random.split(jax.random.key(42), 4)
     qbore = Quaternion.random(key1, (NSAMP,))
@@ -68,7 +67,7 @@ def test_precomputed_matches_on_the_fly(stokes, frame, landscape_type, interpola
     op = PointingOperator.create(
         landscape, qbore, qdet, frame=frame, batch_samples=7, interpolate=interpolate
     )
-    precomputed = op.precomputed(store)
+    precomputed = op.precomputed()
     sky = landscape.normal(key3)
     tod = ftree.normal_like(op.out_structure, key4)
 
@@ -81,8 +80,8 @@ def test_precomputed_matches_on_the_fly(stokes, frame, landscape_type, interpola
     [1, 7, NSAMP, 3 * NSAMP - 1, 100],
     ids=['one-sample', 'part-of-a-detector', 'one-detector', 'two-detectors', 'more-than-all'],
 )
-@pytest.mark.parametrize('store', [None, 'rows', 'angles'], ids=['on-the-fly', 'rows', 'angles'])
-def test_batches_do_not_change_the_result(batch_samples, store) -> None:
+@pytest.mark.parametrize('precompute', [False, True], ids=['on-the-fly', 'precomputed'])
+def test_batches_do_not_change_the_result(batch_samples, precompute) -> None:
     """Batches of any size, within a detector or over several, give the single-batch result."""
     assert NDET * NSAMP == 30  # the ids above assume it
     landscape = HealpixLandscape(NSIDE, 'IQU')
@@ -97,8 +96,8 @@ def test_batches_do_not_change_the_result(batch_samples, store) -> None:
         beam=DiscretizedBeam.create(nodes, weights),
         batch_samples=0,
     )
-    if store is not None:
-        op = op.precomputed(store)
+    if precompute:
+        op = op.precomputed()
     batched = PointingOperator.from_sampler(landscape, op.sampler, batch_samples=batch_samples)
     sky = landscape.normal(k4)
     tod = ftree.normal_like(op.out_structure, k5)
@@ -137,9 +136,20 @@ class TestPrecomputed:
         [(False, PrecomputedSampler), (True, AngleSampler)],
         ids=['nearest', 'bilinear'],
     )
-    def test_the_default_store(self, interpolate, expected) -> None:
+    def test_what_is_stored(self, interpolate, expected) -> None:
         """Nearest stores its few indices; bilinear stores angles, not four neighbours."""
         assert isinstance(self._op(interpolate).precomputed().sampler, expected)
+
+    @pytest.mark.parametrize(
+        'derive',
+        [lambda op: op.precomputed(), lambda op: op.rotated(jnp.array(0.3))],
+        ids=['angles', 'rotated'],
+    )
+    def test_other_samplers_store_their_rows(self, derive) -> None:
+        """Only quaternions can be stored as angles, so any other sampler stores its rows."""
+        op = derive(self._op(True))
+        assert not isinstance(op.sampler, QuaternionSampler)  # the case under test
+        assert isinstance(op.precomputed().sampler, PrecomputedSampler)
 
     def test_a_map_without_polarization_stores_the_indices_alone(self) -> None:
         sampler = self._op(False, 'I').precomputed().sampler
@@ -155,18 +165,10 @@ class TestPrecomputed:
         assert sampler.nearest is not None and sampler.neighbour_rotation is not None
         assert sampler.neighbour_rotation.cos_2angles.shape == op.sampler.shape
 
-    def test_only_quaternions_are_stored_as_angles(self) -> None:
-        landscape = HealpixLandscape(NSIDE, 'I')
-        sampler = _PointsSampler(
-            kernel=SamplingKernel(), theta=jnp.array([0.5, 1.0]), phi=jnp.array([0.2, 3.0])
-        )
-        with pytest.raises(TypeError, match='only a QuaternionSampler'):
-            PointingOperator.from_sampler(landscape, sampler).precomputed('angles')
-
     def test_as_stokes_i_reads_the_source_again(self) -> None:
         """The cache holds the rotations of a polarized map, so the intensity one recomputes."""
         op = self._op(False)
-        op_i = op.precomputed('rows').as_stokes_i()
+        op_i = op.precomputed().as_stokes_i()
         assert isinstance(op_i.sampler, QuaternionSampler)
         tod = ftree.ones_like(op_i.out_structure)
         assert tree_equal(op_i.T(tod), op.as_stokes_i().T(tod))
@@ -765,10 +767,7 @@ class TestBeam:
         )
         assert_array_almost_equal(op.as_matrix().T, op.T.as_matrix(), decimal=12)
 
-    @pytest.mark.parametrize('store', ['rows', 'angles'])
-    def test_the_precomputed_operator_carries_the_beam(
-        self, stokes, frame, interpolate, store
-    ) -> None:
+    def test_the_precomputed_operator_carries_the_beam(self, stokes, frame, interpolate) -> None:
         """`precomputed` must not drop the beam, or the mapmaker loses it."""
         landscape = HealpixLandscape(NSIDE, stokes)
         qbore, qdet = self._quats(49)
@@ -781,7 +780,7 @@ class TestBeam:
             beam=DiscretizedBeam.create(self._nodes(), self._per_stokes_weights(stokes)),
             batch_samples=2,
         )
-        expanded = op.precomputed(store)
+        expanded = op.precomputed()
         sky = landscape.normal(jax.random.key(50))
         tod = ftree.normal_like(op.out_structure, jax.random.key(51))
         assert tree_equal(expanded(sky), op(sky), rtol=1e-11, atol=1e-12)
@@ -843,7 +842,7 @@ class TestRotationAbsorption:
     """A QU rotation after the pointing folds into it, so the two cost a single pass."""
 
     @staticmethod
-    def _op(store: str | None, per_stokes: bool) -> PointingOperator:
+    def _op(precompute: bool, per_stokes: bool) -> PointingOperator:
         k1, k2 = jax.random.split(jax.random.key(60))
         qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
         kwargs = {}
@@ -855,13 +854,13 @@ class TestRotationAbsorption:
             kwargs = {'beam': DiscretizedBeam.create(nodes, weights)}
         landscape = HealpixLandscape(NSIDE, 'IQU')
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=True, **kwargs)
-        return op if store is None else op.precomputed(store)
+        return op.precomputed() if precompute else op
 
     @pytest.mark.parametrize('per_stokes', [False, True], ids=['shared', 'per-stokes'])
-    @pytest.mark.parametrize('store', [None, 'rows', 'angles'], ids=['fly', 'rows', 'angles'])
+    @pytest.mark.parametrize('precompute', [False, True], ids=['fly', 'precomputed'])
     @pytest.mark.parametrize('transposed', [False, True], ids=['R', 'R.T'])
-    def test_reduces_to_one_pointing(self, store, per_stokes, transposed) -> None:
-        op = self._op(store, per_stokes)
+    def test_reduces_to_one_pointing(self, precompute, per_stokes, transposed) -> None:
+        op = self._op(precompute, per_stokes)
         rotation = QURotationOperator(
             angles=jax.random.normal(jax.random.key(61), (NSAMP,)), in_structure=op.out_structure
         )

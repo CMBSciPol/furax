@@ -2,7 +2,7 @@ import copy
 import dataclasses
 import math
 from dataclasses import field
-from typing import Literal, NamedTuple, Self, TypeVar
+from typing import NamedTuple, Self, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -204,42 +204,30 @@ class PointingOperator(AbstractLinearOperator):
         sampler = self.sampler.with_kernel(dataclasses.replace(kernel, interpolation=interpolation))
         return PointingOperator.from_sampler(landscape, sampler, batch_samples=self.batch_samples)
 
-    def precomputed(
-        self, store: Literal['rows', 'angles'] | None = None, *, batch_samples: int = 0
-    ) -> 'PointingOperator':
+    def precomputed(self, *, batch_samples: int = 0) -> 'PointingOperator':
         """Return the same operator, with its pointing computed once.
 
         Hoists the quaternion-to-sky computations out of repeated applies, e.g. every iteration of
-        an iterative solver, at the cost of storing the pointing. What is stored trades memory for
-        speed:
+        an iterative solver, at the cost of storing the pointing:
 
-        - `'rows'`: the rows of the pointing matrix, i.e. the pixels, weights and polarization
-          rotations, see [`PrecomputedSampler`][furax.obs.sampling.PrecomputedSampler]. The fastest apply;
-          the memory grows with the pixels each sample reads, four per beam node with bilinear
-          interpolation.
-        - `'angles'`: the sky angles of every sample and beam node, see
-          [`AngleSampler`][furax.obs.sampling.AngleSampler]. The least memory; every apply
-          recomputes the rows. Requires a [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler].
-
-        By default, `'rows'` when every sample reads a single pixel, where the rows take about as
-        much memory as the angles, and `'angles'` otherwise.
+        - With bilinear interpolation, a [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler]
+          stores the sky angles of every sample and beam node, see
+          [`AngleSampler`][furax.obs.sampling.AngleSampler]: every apply recomputes the rows, but
+          the four pixels each node reads are not stored.
+        - Otherwise, the rows of the pointing matrix are stored, i.e. the pixels, weights and
+          polarization rotations, see [`PrecomputedSampler`][furax.obs.sampling.PrecomputedSampler]:
+          the fastest apply.
 
         Args:
-            store: What to store, `'rows'` or `'angles'`. `None` (default) chooses as above.
             batch_samples: Number of samples processed per batch. The default, 0, processes them
                 all at once, which is fastest once the pointing is stored.
         """
-        if store is None:
-            store = 'rows' if self.sampler.kernel.reads_one_pixel else 'angles'
-        if store == 'rows':
-            sampler: AbstractSampler = PrecomputedSampler.from_sampler(self.sampler, self.landscape)
-        elif isinstance(self.sampler, QuaternionSampler):
+        sampler: AbstractSampler
+        bilinear = self.sampler.kernel.interpolation is Interpolation.BILINEAR
+        if bilinear and isinstance(self.sampler, QuaternionSampler):
             sampler = self.sampler.to_angles(self.landscape)
         else:
-            raise TypeError(
-                f'only a QuaternionSampler can be stored as angles, not a '
-                f'{type(self.sampler).__name__}'
-            )
+            sampler = PrecomputedSampler.from_sampler(self.sampler, self.landscape)
         return PointingOperator.from_sampler(self.landscape, sampler, batch_samples=batch_samples)
 
     def _sample(self, x_flat: _StokesT, index: SampleIndex) -> _StokesT:

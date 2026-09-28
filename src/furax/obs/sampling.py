@@ -360,7 +360,16 @@ class QuaternionSampler(AbstractSampler):
         return landscape.quat2index(self.quaternions(index))
 
     def to_angles(self, landscape: StokesLandscape) -> 'AngleSampler':
-        """The same sampler, from the world angles of every sample and beam node, computed once."""
+        """The same sampler, from the world angles of every sample and beam node, computed once.
+
+        Bilinear interpolation only: a nearest-neighbour sampler finds its pixels with
+        `quat2index`, and the angles of a sample on a pixel boundary can fall in a neighbour.
+        """
+        if self.kernel.interpolation is Interpolation.NEAREST:
+            raise ValueError(
+                'a nearest-neighbour sampler cannot be stored as angles, which may not find the '
+                'same pixels: store its rows instead'
+            )
         idet = self.every_sample()[0]
         quats = self.quaternions()
         theta, phi = landscape.quat2world(quats)

@@ -41,6 +41,7 @@ dependencies = [
     'jax-healpy[recommended]>=0.8',
     'lineax>=0.1.1',
     'numpy>=2.1',
+    'optimistix>=0.1.0',
     'scipy>=1.15',
     'typing-extensions; python_version < "3.13"',
     'wadler-lindig>=0.1.7',

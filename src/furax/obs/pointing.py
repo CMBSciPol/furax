@@ -193,18 +193,15 @@ class PointingOperator(AbstractLinearOperator):
             interpolate: Override the interpolation: bilinear if True, nearest neighbour if
                 False. If `None` (default), the kernel's interpolation is kept.
         """
-        effective_interpolate = self._interpolates if interpolate is None else interpolate
-        if self.landscape.stokes == 'I' and effective_interpolate == self._interpolates:
+        interpolation = self.sampler.kernel.interpolation
+        if interpolate is not None:
+            interpolation = Interpolation.BILINEAR if interpolate else Interpolation.NEAREST
+        if self.landscape.stokes == 'I' and interpolation is self.sampler.kernel.interpolation:
             return self
         landscape = copy.copy(self.landscape)
         landscape.stokes = 'I'
-        kernel = dataclasses.replace(
-            self.sampler.kernel.intensity_only(),
-            interpolation=Interpolation.BILINEAR
-            if effective_interpolate
-            else Interpolation.NEAREST,
-        )
-        sampler = self.sampler.with_kernel(kernel)
+        kernel = self.sampler.kernel.intensity_only()
+        sampler = self.sampler.with_kernel(dataclasses.replace(kernel, interpolation=interpolation))
         return PointingOperator.from_sampler(landscape, sampler, batch_samples=self.batch_samples)
 
     def precomputed(
@@ -244,10 +241,6 @@ class PointingOperator(AbstractLinearOperator):
                 f'{type(self.sampler).__name__}'
             )
         return PointingOperator.from_sampler(self.landscape, sampler, batch_samples=batch_samples)
-
-    @property
-    def _interpolates(self) -> bool:
-        return self.sampler.kernel.interpolation is Interpolation.BILINEAR
 
     def _sample(self, x_flat: _StokesT, index: SampleIndex) -> _StokesT:
         """Sample the flat map for a batch of samples."""

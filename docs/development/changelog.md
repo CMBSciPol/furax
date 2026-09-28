@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `azel_to_vec`, `vec_to_azel` and `tangent_basis` in `furax.obs.coords` (#XXX)
+
 ### Changed
 
 - `DenseBlockDiagonalOperator.T` supports any subscripts whose input axes appear in the blocks or the output (#297)

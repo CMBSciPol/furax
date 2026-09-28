@@ -24,6 +24,7 @@ from ._angles import (
     polarization_angle,
     polarization_angle_cos_sin,
 )
+from ._geometry import azel_to_vec, tangent_basis, vec_to_azel
 
 __all__ = [
     'XAXIS',
@@ -34,9 +35,12 @@ __all__ = [
     'LonLatAngles',
     'XiEtaAngles',
     'ZSPhi',
+    'azel_to_vec',
     'euler',
     'gamma_angle',
     'gamma_angle_cos_sin',
     'polarization_angle',
     'polarization_angle_cos_sin',
+    'tangent_basis',
+    'vec_to_azel',
 ]

@@ -52,17 +52,13 @@ class DiscretizedBeam:
     Accordingly, the $(Q, U)$ read at every node is transported to the beam centre, and the
     detector's polarization angle is applied once, at the centre.
 
-    Build one with [`DiscretizedBeam.create`][], which validates the nodes and weights; the
-    constructor does not.
-
     Attributes:
         nodes: Rotations from the beam centre to each node, in the detector frame, shape
             (n_nodes,) for the same nodes on every detector, or (n_detectors, n_nodes). Only the
             direction each rotation points the line of sight to is used, not its roll.
-        weights: The non-negative weight of each node, shape (n_nodes,), shared by every Stokes
-            component, or a [`Stokes`][] of the map's components, each of shape (n_nodes,), for a
-            beam per component. A component's weights act on that component of the output, in the
-            detector's polarization frame, without leakage between components.
+        weights: The weight of each node, shape (n_nodes,), shared by every Stokes component, or
+            a [`Stokes`][] of the map's components, each of shape (n_nodes,), for a beam per
+            component.
     """
 
     nodes: Quaternion
@@ -71,10 +67,6 @@ class DiscretizedBeam:
     @classmethod
     def create(cls, nodes: Quaternion, weights: Float[Array, ' n_nodes'] | Stokes) -> Self:
         """Build a beam, checking that the nodes and weights agree.
-
-        The weights are normalized to sum to one, per Stokes component, over the nodes whose
-        pixels are in the map: a sample partly off a partial-sky map is renormalized to the part in
-        view, like a partly covered bilinear sample.
 
         Args:
             nodes: Rotations from the beam centre to each node, see [`DiscretizedBeam`][].

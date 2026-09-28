@@ -91,7 +91,7 @@ class PointingOperator(AbstractLinearOperator):
         frame: PolarizationFrame = 'boresight',
         interpolate: bool = False,
         beam: DiscretizedBeam | None = None,
-    ) -> 'PointingOperator':
+    ) -> Self:
         r"""Build the operator from the boresight pointing and the detector offsets.
 
         Args:
@@ -146,7 +146,7 @@ class PointingOperator(AbstractLinearOperator):
         sampler: AbstractSampler,
         *,
         batch_samples: int | None = None,
-    ) -> 'PointingOperator':
+    ) -> Self:
         """Build the operator reading a map where a sampler says.
 
         Args:
@@ -183,7 +183,7 @@ class PointingOperator(AbstractLinearOperator):
         tod = lax.fori_loop(0, tiling.n_batches, body, tod)
         return type(x).from_array(tod.reshape(n_stokes, *shape))
 
-    def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
+    def as_stokes_i(self, *, interpolate: bool | None = None) -> Self:
         """Return a copy of this operator restricted to StokesI.
 
         The beam is kept. Beam weights given per Stokes component reduce to those of I, or to
@@ -202,9 +202,9 @@ class PointingOperator(AbstractLinearOperator):
         landscape.stokes = 'I'
         kernel = self.sampler.kernel.intensity_only()
         sampler = self.sampler.with_kernel(dataclasses.replace(kernel, interpolation=interpolation))
-        return PointingOperator.from_sampler(landscape, sampler, batch_samples=self.batch_samples)
+        return self.from_sampler(landscape, sampler, batch_samples=self.batch_samples)
 
-    def precomputed(self, *, batch_samples: int = 0) -> 'PointingOperator':
+    def precomputed(self, *, batch_samples: int = 0) -> Self:
         """Return the same operator, with its pointing computed once.
 
         Hoists the quaternion-to-sky computations out of repeated applies, e.g. every iteration of
@@ -228,7 +228,7 @@ class PointingOperator(AbstractLinearOperator):
             sampler = self.sampler.to_angles(self.landscape)
         else:
             sampler = PrecomputedSampler.from_sampler(self.sampler, self.landscape)
-        return PointingOperator.from_sampler(self.landscape, sampler, batch_samples=batch_samples)
+        return self.from_sampler(self.landscape, sampler, batch_samples=batch_samples)
 
     def _sample(self, x_flat: _StokesT, index: SampleIndex) -> _StokesT:
         """Sample the flat map for a batch of samples, in the map's dtype."""
@@ -283,7 +283,7 @@ class PointingOperator(AbstractLinearOperator):
             )
         return pointing
 
-    def rotated(self, angles: Float[Array, '...']) -> 'PointingOperator':
+    def rotated(self, angles: Float[Array, '...']) -> Self:
         """The operator followed by a rotation of Q and U by `angles`, in a single pass.
 
         Args:
@@ -291,9 +291,7 @@ class PointingOperator(AbstractLinearOperator):
                 the convention of [`QURotationOperator`][furax.obs.operators.QURotationOperator].
         """
         sampler = self.sampler.rotated(Spin2Rotation.from_angles(angles))
-        return PointingOperator.from_sampler(
-            self.landscape, sampler, batch_samples=self.batch_samples
-        )
+        return self.from_sampler(self.landscape, sampler, batch_samples=self.batch_samples)
 
     def transpose(self) -> AbstractLinearOperator:
         return PointingTransposeOperator(operator=self)

@@ -463,17 +463,19 @@ class PrecomputedSampler(AbstractSampler):
 
     Reading a map through it is a gather of stored indices, weights and rotations: the fastest
     apply, at the cost of storing them, per neighbour. It stores only what the map needs: no
-    rotation for a map without polarization, and the pixel index alone when every sample reads a
-    single pixel of such a map. The rows are valid for the map they were computed for only.
+    rotation for a map without polarization, and when every sample reads a single pixel, that
+    pixel and a single rotation per sample, without weights. The rows are valid for the map they
+    were computed for only.
 
     Attributes:
         kernel: The kernel of `source`.
         source: The sampler whose rows are stored, which still scales the samples (`scaling`).
-        stencil: The stored stencils, or `None` when `nearest` suffices.
-        neighbour_rotation: The stored rotation of each neighbour, or `None`.
+        stencil: The stored stencils, or `None` when `nearest` is stored.
+        neighbour_rotation: The stored rotation of each neighbour, or `None`. With `nearest`, the
+            rotation of each sample, the polarization rotation folded in.
         polarization_rotation: The stored rotation of each sample, or `None`.
-        nearest: The stored pixel of each sample, when every sample reads a single pixel of a map
-            without polarization, or `None`.
+        nearest: The stored pixel of each sample, negative outside the map, when every sample
+            reads a single pixel, or `None`.
     """
 
     source: AbstractSampler
@@ -495,6 +497,20 @@ class PrecomputedSampler(AbstractSampler):
             nearest = sampler.nearest_indices(landscape, index)
             return cls(kernel=sampler.kernel, source=sampler, nearest=nearest)
         pointing = sampler.pointing_rows(landscape, index)
+        if sampler.kernel.reads_one_pixel:
+            # A single neighbour, of weight one, or zero outside the map: store a negative pixel
+            # for the zero weight, and the neighbour's transport composed with the polarization
+            # rotation, rotations of one sample commuting.
+            weights, indices = pointing.stencil.weights[..., 0], pointing.stencil.indices[..., 0]
+            nearest = jnp.where(weights > 0, indices, -1)
+            rotation = pointing.neighbour_rotation
+            if rotation is not None:
+                rotation = rotation[..., 0]
+                if pointing.polarization_rotation is not None:
+                    rotation = rotation.compose(pointing.polarization_rotation)
+            return cls(
+                kernel=sampler.kernel, source=sampler, nearest=nearest, neighbour_rotation=rotation
+            )
         # the positions only served to compute the rotation, which is cached instead
         stencil = Stencil(pointing.stencil.indices, pointing.stencil.weights, None)
         return cls(
@@ -510,11 +526,13 @@ class PrecomputedSampler(AbstractSampler):
         return self.source.shape
 
     def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
-        if self.stencil is None:
-            assert self.nearest is not None
+        if self.nearest is not None:
             indices = self.nearest[index]
             weights = jnp.ones((*indices.shape, 1), landscape.dtype)
-            return PointingRows(Stencil.unpositioned(indices[..., None], weights), None)
+            stencil = Stencil.unpositioned(indices[..., None], weights)
+            rotation = self.neighbour_rotation
+            return PointingRows(stencil, None if rotation is None else rotation[index][..., None])
+        assert self.stencil is not None
         if self.stencil.weights.ndim > self.stencil.indices.ndim:
             # weights per Stokes component lead: the sample axes follow
             weights = self.stencil.weights[(slice(None), *index)]

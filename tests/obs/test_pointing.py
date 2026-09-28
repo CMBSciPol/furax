@@ -147,6 +147,14 @@ class TestPrecomputed:
         assert sampler.stencil is None and sampler.neighbour_rotation is None
         assert sampler.nearest is not None
 
+    def test_a_polarized_map_stores_the_indices_and_one_rotation(self) -> None:
+        op = self._op(False)
+        sampler = op.precomputed().sampler
+        assert isinstance(sampler, PrecomputedSampler)
+        assert sampler.stencil is None and sampler.polarization_rotation is None
+        assert sampler.nearest is not None and sampler.neighbour_rotation is not None
+        assert sampler.neighbour_rotation.cos_2angles.shape == op.sampler.shape
+
     def test_only_quaternions_are_stored_as_angles(self) -> None:
         landscape = HealpixLandscape(NSIDE, 'I')
         sampler = _PointsSampler(

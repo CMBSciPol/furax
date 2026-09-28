@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AbstractPointingModel`, `BasicPointingModel`, `SATV1PointingModel`, `SATV2PointingModel` and `fit` in `furax.obs.pointing`: telescope pointing models, fitted to point-source observations (#XXX)
 - `azel_to_vec`, `vec_to_azel` and `tangent_basis` in `furax.obs.coords` (#XXX)
 
 ### Changed

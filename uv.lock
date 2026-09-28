@@ -1003,14 +1003,14 @@ wheels = [
 
 [[package]]
 name = "fastquat"
-version = "1.0b4"
+version = "1.0b5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jax" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a7/2e/8ffb4df9254a7ac62a5f3f03a1ddee76389d4bc02943bca3cff1415733d4/fastquat-1.0b4.tar.gz", hash = "sha256:165fa0577e7713e8e8a0ada7578b7a22c545ed0eac2194fa7a7dfc3110011b5c", size = 213242, upload-time = "2026-09-28T12:21:39.023Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/79/fb/91eba1753d7a0358dc2befbf2e4f26b386da57526b56e78a4046ac0f5761/fastquat-1.0b5.tar.gz", hash = "sha256:ef59d98e22e8fc038c7c8ed1b7de1afd2f4382552926250cf3f46905e72cbd74", size = 175920, upload-time = "2026-10-01T10:31:00.603Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/90/98147de3a04d6e8d060a7cd433b57a966f0ff8103b8dab1a74a683d1c06f/fastquat-1.0b4-py3-none-any.whl", hash = "sha256:4b5406dffe9966e8914dbb66acd4ba33f62529080f20d821789937d405003b43", size = 8424, upload-time = "2026-09-28T12:21:37.753Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/0d/553399f81c9f96fcbdcc967d20386f67d33e3a184c4efee5b509f7cb1ade/fastquat-1.0b5-py3-none-any.whl", hash = "sha256:50ec995d7a174b188e49780f4a1d782ed94f4fdc7e3a7eba50ba419f9c57de2c", size = 9651, upload-time = "2026-10-01T10:30:59.147Z" },
 ]
 
 [[package]]
@@ -1170,7 +1170,7 @@ requires-dist = [
     { name = "cyclopts", marker = "extra == 'interfaces'", specifier = ">=4.6.0" },
     { name = "cyclopts", marker = "extra == 'so'", specifier = ">=4.6.0" },
     { name = "equinox", specifier = ">=0.13.8" },
-    { name = "fastquat", specifier = ">=1.0b2" },
+    { name = "fastquat", specifier = ">=1.0b5" },
     { name = "healpy", specifier = ">=1.19.0" },
     { name = "jax", specifier = ">=0.11.0" },
     { name = "jax-cadre", marker = "extra == 'mapmaking'", specifier = ">=0.1.2" },

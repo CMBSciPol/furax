@@ -7,45 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The pointing architecture has been overhauled. A `PointingOperator` now holds a *sampler* (`AbstractSampler`), which owns the entire pointing logic (line-of-sight computation and sampling of the pixels). The sampler's *kernel* (`SamplingKernel`) handles the actual sampling logic: nearest-neighbour or bilinear, beam, etc. On-the-fly pointing is also faster on HEALPix and CAR maps; on a GPU, bilinear pointing on a CAR map runs about 3 times faster whilst using a fraction of the memory (#274, #277).
+
 ### Added
 
-- `PointingOperator.create` takes a `beam`, a `DiscretizedBeam`: each sample reads the sky at the beam nodes around the detector's line of sight and returns their weighted sum; the weights are shared by every Stokes component, or given per component as a `Stokes`, acting on I, Q and U in the basis set by `frame` (#265, #278)
-- `transported_gather` and `transported_scatter` take a `rotation` applied after the transport and before the stencil weights (#265)
-- `Stencil.integrated`, folding a trailing axis of directions into the neighbour axis with a weight per direction (#265)
-- `Stencil` weights may carry a leading Stokes axis (#265)
-- `SamplingKernel` in the new `furax.obs.sampling` module (#266)
-- `AbstractSampler`, `QuaternionSampler`, `ScreenSampler` and `PointingOperator.from_sampler` (#267)
-- `PointingOperator.precomputed`, `PrecomputedSampler` and `AngleSampler` (#270)
-- `rotated_gather`, `rotated_scatter` and `transport_rotation` in `furax.obs.spin2` (#270)
-- `PointingOperator.rotated` and `RotatedSampler`; `QURotationOperator @ PointingOperator` reduces to a `PointingOperator` (#271)
+- `PointingOperator.create` takes a `beam`, a `DiscretizedBeam` (#265, #278)
+- `PointingOperator.rotated`; `QURotationOperator @ PointingOperator` reduces to a `PointingOperator` (#271)
 - `PointingOperator.create(frame='sky')` and the `PolarizationFrame` type (#272)
-- `IsoAngles`, `LonLatAngles`, `AzElAngles`, `XiEtaAngles` and `gamma_angle_cos_sin` in `furax.math.coords` (#273)
-- `Spin2Rotation` in `furax.obs.operators`, a rotation of Q and U stored as the cosine and sine of twice its angle (#273)
-- `HealpixLandscape(nested=True)`, nearest neighbour only (#276)
-- `SampleIndex` and `AbstractSampler.every_sample` (#277)
+- Support for NESTED ordering of `HealpixLandscape` (nearest neighbour pointing only) (#276)
 - `Stokes.astype` (#279)
 
 ### Changed
 
-- **Breaking:** `PointingOperator` holds a `sampler` instead of its pointing, interpolation and offset fields (#266, #267)
+- **Breaking:** `PointingOperator` holds a sampler instead of its pointing, interpolation and offset fields; `PointingOperator.from_sampler` takes a user-built `AbstractSampler` (#266, #267)
 - **Breaking:** `AtmospherePointingOperator` is replaced by `ScreenSampler` (#267)
-- **Breaking:** `LocalStokesLandscape.from_sampling` is renamed `from_sampler` and takes an `AbstractSampler`; `interpolate` is removed (#269)
-- `build_acquisition_operator(pointing_on_the_fly=False)` uses `PointingOperator.precomputed` (#270)
-- `PointingOperator.create` keeps the detector quaternions as given in every frame (#272)
-- **Breaking:** `spin2_cos_sin` and `spin2_cos_sin_zs` return a `Spin2Rotation`, and `transported_gather` and `transported_scatter` take one as `rotation` (#273)
-- `polarization_angle`, `gamma_angle` and their `_cos_sin` variants take the longitude 0 at the poles, as `IsoAngles` does (#273)
+- **Breaking:** `LocalStokesLandscape.from_sampling` is renamed `from_sampler` and takes an `AbstractSampler`; `interpolate` and `StokesLandscape.get_coverage` are removed (#269)
+- **Breaking:** `XSamplingOperator` and `PointingOperator.as_expanded_operator` are replaced by `PointingOperator.precomputed` (#270)
+- **Breaking:** `PointingOperator` batches by number of samples, `batch_samples`, instead of detectors, `batch_size`; `PointingConfig.batch_size` and the `pointing_batch_size` argument of `build_acquisition_operator` are renamed likewise (#277)
+- **Breaking:** the `to_*_angles` and `from_*_angles` functions of `furax.math.coords` are replaced by the classes `IsoAngles`, `LonLatAngles`, `AzElAngles` and `XiEtaAngles` (#273)
+- **Breaking:** `to_gamma_angles` and `to_polarization_angle(_cos_sin)` are renamed `gamma_angle` and `polarization_angle(_cos_sin)` (#273)
 - **Breaking:** `SkyPositions` is replaced by `ZSPhi` in `furax.math.coords`, its field `sth` renamed `s` (#273)
-- Faster on-the-fly pointing on HEALPix and CAR maps; the `PointingOperator` transpose holds one map less in memory (#274)
+- **Breaking:** `spin2_cos_sin` and `spin2_cos_sin_zs` return a `Spin2Rotation` (#273)
+- Faster on-the-fly pointing on HEALPix and CAR maps; the transpose holds one map less in memory (#274)
 - jax-healpy 0.8 is the minimum version (#274)
-- **Breaking:** `PointingOperator` batches by number of samples, `batch_samples`, instead of detectors, `batch_size`; the default depends on the backend. `PointingConfig.batch_size` and the `pointing_batch_size` argument of `build_acquisition_operator` are renamed likewise (#277)
-- **Breaking:** samplers take a batch as a `SampleIndex`, one index array per axis of the samples, instead of indices into the first axis (#277)
-- `transported_scatter` applies the stencil weights before rotating back into the pixel frames, which keeps it adjoint to `transported_gather` when the weights differ between Stokes components; results with equal weights change at round-off level only (#265)
 
-### Removed
+### Fixed
 
-- **Breaking:** the `to_*_angles` and `from_*_angles` functions of `furax.math.coords`, replaced by the coordinate classes; `to_gamma_angles` and `to_polarization_angle(_cos_sin)` are renamed `gamma_angle` and `polarization_angle(_cos_sin)` (#273)
-- **Breaking:** `XSamplingOperator` and `PointingOperator.as_expanded_operator` (#270)
-- `StokesLandscape.get_coverage` (#269)
+- `polarization_angle` and `gamma_angle` take longitude 0 at the poles (#273)
+- `transported_scatter` stays adjoint to `transported_gather` when stencil weights differ between Stokes components (#265)
 
 ## [0.14.0] - 2026-09-15
 

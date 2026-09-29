@@ -82,6 +82,15 @@ def test_reshape(stokes: ValidStokesLiteral) -> None:
         assert getattr(raveled_pytree, stoke.lower()).shape == new_shape
 
 
+def test_astype(stokes: ValidStokesLiteral) -> None:
+    pytree = Stokes.from_stokes(**{k.lower(): jnp.full(3, 1.5) for k in stokes})
+    cast_pytree = pytree.astype(jnp.float32)
+    assert type(cast_pytree) is type(pytree)
+    for stoke in stokes:
+        assert getattr(cast_pytree, stoke.lower()).dtype == jnp.float32
+    assert_array_equal(cast_pytree.data, pytree.data)
+
+
 @pytest.mark.parametrize('shape', [(10,), (2, 10)])
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
 @pytest.mark.parametrize(

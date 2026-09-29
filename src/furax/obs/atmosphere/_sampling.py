@@ -107,9 +107,7 @@ class ScreenSampler(AbstractSampler):
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
-    ) -> Integer[Array, '...'] | None:
-        if not self.kernel.reads_one_pixel:
-            return None
+    ) -> Integer[Array, '...']:
         return self._indices(_screen(landscape), index)
 
     def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:

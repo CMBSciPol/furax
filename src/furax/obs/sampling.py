@@ -162,6 +162,11 @@ class SamplingKernel:
         """Whether a sample reads a single pixel: nearest neighbour, without a beam."""
         return self.interpolation is Interpolation.NEAREST and self.beam is None
 
+    @property
+    def weighs_per_stokes(self) -> bool:
+        """Whether the beam weights differ between Stokes components."""
+        return self.beam is not None and isinstance(self.beam.weights, Stokes)
+
     def intensity_only(self) -> Self:
         """The kernel reading the intensity alone, see [`DiscretizedBeam.intensity_only`][]."""
         if self.beam is None:
@@ -192,20 +197,29 @@ class PointingRows(NamedTuple):
     neighbour_rotation: Spin2Rotation | None
     polarization_rotation: Spin2Rotation | None = None
 
+    @classmethod
+    def transported(
+        cls,
+        stencil: Stencil,
+        line_of_sight: ZSPhi,
+        rotation: Spin2Rotation | None,
+        *,
+        rotate_neighbours: bool = False,
+    ) -> Self:
+        r"""The rows of a stencil on the sphere, each neighbour transported to the line of sight.
 
-def _polarized(
-    stencil: Stencil,
-    line_of_sight: ZSPhi,
-    rotation: Spin2Rotation | None,
-    kernel: 'SamplingKernel',
-) -> PointingRows:
-    """The pointing rows of a map with polarization, transported to `line_of_sight`."""
-    if rotation is None:
-        return PointingRows(stencil, transport_rotation(stencil, line_of_sight))
-    if kernel.beam is not None and isinstance(kernel.beam.weights, Stokes):
-        # weights per component act on the rotated Q and U: turn every neighbour before the sum
-        return PointingRows(stencil, transport_rotation(stencil, line_of_sight, rotation))
-    return PointingRows(stencil, transport_rotation(stencil, line_of_sight), rotation)
+        Args:
+            stencil: The pixels each sample reads, with their positions.
+            line_of_sight: The direction each sample is transported to.
+            rotation: The rotation by $\psi$ into the frame the sample is returned in, or `None`.
+            rotate_neighbours: Fold $\psi$ into every neighbour's rotation instead of applying it
+                to the sum, for weights that differ between Stokes components.
+        """
+        if rotation is None:
+            return cls(stencil, transport_rotation(stencil, line_of_sight))
+        if rotate_neighbours:
+            return cls(stencil, transport_rotation(stencil, line_of_sight, rotation))
+        return cls(stencil, transport_rotation(stencil, line_of_sight), rotation)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -256,15 +270,18 @@ class AbstractSampler(ABC):
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
-    ) -> Integer[Array, '...'] | None:
-        """The pixel each sample reads, when it reads a single one, or `None`.
+    ) -> Integer[Array, '...']:
+        """The pixel each sample of a batch reads, for a kernel that reads a single one.
 
-        A shortcut for reading a map with no polarization: when every sample reads one pixel, the
-        gather needs its index alone, not a stencil. It must be the pixel of the
-        [`pointing_rows`][furax.obs.sampling.AbstractSampler.pointing_rows] stencil; samples
-        outside the map are negative. `None` (the default) means the stencil must be used.
+        A shortcut for reading a map with no polarization, which needs the pixel index alone, not
+        a stencil. It is the pixel of the
+        [`pointing_rows`][furax.obs.sampling.AbstractSampler.pointing_rows] stencil, negative for a
+        sample outside the map. It is only called when `kernel.reads_one_pixel`; the default takes
+        it from the stencil.
         """
-        return None
+        stencil = self.pointing_rows(landscape, index).stencil
+        # the stencil reads pixel 0 with zero weight for a sample outside the map
+        return jnp.where(stencil.weights[..., 0] > 0, stencil.indices[..., 0], -1)
 
     def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:
         """A factor multiplying each sample of a batch, or `None` (the default) for none.
@@ -333,17 +350,26 @@ class QuaternionSampler(AbstractSampler):
             return PointingRows(stencil, None)
         rotation = self._frame_rotation(quats, index[0])
         line_of_sight = landscape.quat2direction(quats)
-        return _polarized(stencil, line_of_sight, rotation, self.kernel)
+        return PointingRows.transported(
+            stencil, line_of_sight, rotation, rotate_neighbours=self.kernel.weighs_per_stokes
+        )
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
-    ) -> Integer[Array, '...'] | None:
-        if not self.kernel.reads_one_pixel:
-            return None
+    ) -> Integer[Array, '...']:
         return landscape.quat2index(self.quaternions(index))
 
     def to_angles(self, landscape: StokesLandscape) -> 'AngleSampler':
-        """The same sampler, from the world angles of every sample and beam node, computed once."""
+        """The same sampler, from the world angles of every sample and beam node, computed once.
+
+        Bilinear interpolation only: a nearest-neighbour sampler finds its pixels with
+        `quat2index`, and the angles of a sample on a pixel boundary can fall in a neighbour.
+        """
+        if self.kernel.interpolation is Interpolation.NEAREST:
+            raise ValueError(
+                'a nearest-neighbour sampler cannot be stored as angles, which may not find the '
+                'same pixels: store its rows instead'
+            )
         idet = self.every_sample()[0]
         quats = self.quaternions()
         theta, phi = landscape.quat2world(quats)
@@ -424,13 +450,13 @@ class AngleSampler(AbstractSampler):
         if rotation is not None:
             rotation = rotation[index]
         line_of_sight = ZSPhi.from_angles(theta, phi)
-        return _polarized(stencil, line_of_sight, rotation, self.kernel)
+        return PointingRows.transported(
+            stencil, line_of_sight, rotation, rotate_neighbours=self.kernel.weighs_per_stokes
+        )
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
-    ) -> Integer[Array, '...'] | None:
-        if not self.kernel.reads_one_pixel:
-            return None
+    ) -> Integer[Array, '...']:
         return landscape.world2index(self.theta[index], self.phi[index])
 
     def _stencil(
@@ -446,17 +472,19 @@ class PrecomputedSampler(AbstractSampler):
 
     Reading a map through it is a gather of stored indices, weights and rotations: the fastest
     apply, at the cost of storing them, per neighbour. It stores only what the map needs: no
-    rotation for a map without polarization, and the pixel index alone when every sample reads a
-    single pixel of such a map. The rows are valid for the map they were computed for only.
+    rotation for a map without polarization, and when every sample reads a single pixel, that
+    pixel and a single rotation per sample, without weights. The rows are valid for the map they
+    were computed for only.
 
     Attributes:
         kernel: The kernel of `source`.
         source: The sampler whose rows are stored, which still scales the samples (`scaling`).
-        stencil: The stored stencils, or `None` when `nearest` suffices.
-        neighbour_rotation: The stored rotation of each neighbour, or `None`.
+        stencil: The stored stencils, or `None` when `nearest` is stored.
+        neighbour_rotation: The stored rotation of each neighbour, or `None`. With `nearest`, the
+            rotation of each sample, the polarization rotation folded in.
         polarization_rotation: The stored rotation of each sample, or `None`.
-        nearest: The stored pixel of each sample, when every sample reads a single pixel of a map
-            without polarization, or `None`.
+        nearest: The stored pixel of each sample, negative outside the map, when every sample
+            reads a single pixel, or `None`.
     """
 
     source: AbstractSampler
@@ -474,10 +502,24 @@ class PrecomputedSampler(AbstractSampler):
             landscape: The map the rows will read.
         """
         index = sampler.every_sample()
-        nearest = sampler.nearest_indices(landscape, index)
-        if nearest is not None and not landscape.has_spin2:
+        if sampler.kernel.reads_one_pixel and not landscape.has_spin2:
+            nearest = sampler.nearest_indices(landscape, index)
             return cls(kernel=sampler.kernel, source=sampler, nearest=nearest)
         pointing = sampler.pointing_rows(landscape, index)
+        if sampler.kernel.reads_one_pixel:
+            # A single neighbour, of weight one, or zero outside the map: store a negative pixel
+            # for the zero weight, and the neighbour's transport composed with the polarization
+            # rotation, rotations of one sample commuting.
+            weights, indices = pointing.stencil.weights[..., 0], pointing.stencil.indices[..., 0]
+            nearest = jnp.where(weights > 0, indices, -1)
+            rotation = pointing.neighbour_rotation
+            if rotation is not None:
+                rotation = rotation[..., 0]
+                if pointing.polarization_rotation is not None:
+                    rotation = rotation.compose(pointing.polarization_rotation)
+            return cls(
+                kernel=sampler.kernel, source=sampler, nearest=nearest, neighbour_rotation=rotation
+            )
         # the positions only served to compute the rotation, which is cached instead
         stencil = Stencil(pointing.stencil.indices, pointing.stencil.weights, None)
         return cls(
@@ -493,11 +535,13 @@ class PrecomputedSampler(AbstractSampler):
         return self.source.shape
 
     def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
-        if self.stencil is None:
-            assert self.nearest is not None
+        if self.nearest is not None:
             indices = self.nearest[index]
             weights = jnp.ones((*indices.shape, 1), landscape.dtype)
-            return PointingRows(Stencil.unpositioned(indices[..., None], weights), None)
+            stencil = Stencil.unpositioned(indices[..., None], weights)
+            rotation = self.neighbour_rotation
+            return PointingRows(stencil, None if rotation is None else rotation[index][..., None])
+        assert self.stencil is not None
         if self.stencil.weights.ndim > self.stencil.indices.ndim:
             # weights per Stokes component lead: the sample axes follow
             weights = self.stencil.weights[(slice(None), *index)]
@@ -512,8 +556,10 @@ class PrecomputedSampler(AbstractSampler):
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
-    ) -> Integer[Array, '...'] | None:
-        return None if self.nearest is None else self.nearest[index]
+    ) -> Integer[Array, '...']:
+        if self.nearest is None:
+            return super().nearest_indices(landscape, index)
+        return self.nearest[index]
 
     def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:
         return self.source.scaling(index)
@@ -554,7 +600,7 @@ class RotatedSampler(AbstractSampler):
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
-    ) -> Integer[Array, '...'] | None:
+    ) -> Integer[Array, '...']:
         return self.source.nearest_indices(landscape, index)
 
     def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:

@@ -2,7 +2,7 @@ import copy
 import dataclasses
 import math
 from dataclasses import field
-from typing import Literal, NamedTuple, Self, TypeVar
+from typing import NamedTuple, Self, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -91,7 +91,7 @@ class PointingOperator(AbstractLinearOperator):
         frame: PolarizationFrame = 'boresight',
         interpolate: bool = False,
         beam: DiscretizedBeam | None = None,
-    ) -> 'PointingOperator':
+    ) -> Self:
         r"""Build the operator from the boresight pointing and the detector offsets.
 
         Args:
@@ -146,7 +146,7 @@ class PointingOperator(AbstractLinearOperator):
         sampler: AbstractSampler,
         *,
         batch_samples: int | None = None,
-    ) -> 'PointingOperator':
+    ) -> Self:
         """Build the operator reading a map where a sampler says.
 
         Args:
@@ -183,7 +183,7 @@ class PointingOperator(AbstractLinearOperator):
         tod = lax.fori_loop(0, tiling.n_batches, body, tod)
         return type(x).from_array(tod.reshape(n_stokes, *shape))
 
-    def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
+    def as_stokes_i(self, *, interpolate: bool | None = None) -> Self:
         """Return a copy of this operator restricted to StokesI.
 
         The beam is kept. Beam weights given per Stokes component reduce to those of I, or to
@@ -193,81 +193,58 @@ class PointingOperator(AbstractLinearOperator):
             interpolate: Override the interpolation: bilinear if True, nearest neighbour if
                 False. If `None` (default), the kernel's interpolation is kept.
         """
-        effective_interpolate = self._interpolates if interpolate is None else interpolate
-        if self.landscape.stokes == 'I' and effective_interpolate == self._interpolates:
+        interpolation = self.sampler.kernel.interpolation
+        if interpolate is not None:
+            interpolation = Interpolation.BILINEAR if interpolate else Interpolation.NEAREST
+        if self.landscape.stokes == 'I' and interpolation is self.sampler.kernel.interpolation:
             return self
         landscape = copy.copy(self.landscape)
         landscape.stokes = 'I'
-        kernel = dataclasses.replace(
-            self.sampler.kernel.intensity_only(),
-            interpolation=Interpolation.BILINEAR
-            if effective_interpolate
-            else Interpolation.NEAREST,
-        )
-        sampler = self.sampler.with_kernel(kernel)
-        return PointingOperator.from_sampler(landscape, sampler, batch_samples=self.batch_samples)
+        kernel = self.sampler.kernel.intensity_only()
+        sampler = self.sampler.with_kernel(dataclasses.replace(kernel, interpolation=interpolation))
+        return self.from_sampler(landscape, sampler, batch_samples=self.batch_samples)
 
-    def precomputed(
-        self, store: Literal['rows', 'angles'] | None = None, *, batch_samples: int = 0
-    ) -> 'PointingOperator':
+    def precomputed(self, *, batch_samples: int = 0) -> Self:
         """Return the same operator, with its pointing computed once.
 
         Hoists the quaternion-to-sky computations out of repeated applies, e.g. every iteration of
-        an iterative solver, at the cost of storing the pointing. What is stored trades memory for
-        speed:
+        an iterative solver, at the cost of storing the pointing:
 
-        - `'rows'`: the rows of the pointing matrix, i.e. the pixels, weights and polarization
-          rotations, see [`PrecomputedSampler`][furax.obs.sampling.PrecomputedSampler]. The fastest apply;
-          the memory grows with the pixels each sample reads, four per beam node with bilinear
-          interpolation.
-        - `'angles'`: the sky angles of every sample and beam node, see
-          [`AngleSampler`][furax.obs.sampling.AngleSampler]. The least memory; every apply
-          recomputes the rows. Requires a [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler].
-
-        By default, `'rows'` when every sample reads a single pixel, where the rows take about as
-        much memory as the angles, and `'angles'` otherwise.
+        - With bilinear interpolation, a [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler]
+          stores the sky angles of every sample and beam node, see
+          [`AngleSampler`][furax.obs.sampling.AngleSampler]: every apply recomputes the rows, but
+          the four pixels each node reads are not stored.
+        - Otherwise, the rows of the pointing matrix are stored, i.e. the pixels, weights and
+          polarization rotations, see [`PrecomputedSampler`][furax.obs.sampling.PrecomputedSampler]:
+          the fastest apply.
 
         Args:
-            store: What to store, `'rows'` or `'angles'`. `None` (default) chooses as above.
             batch_samples: Number of samples processed per batch. The default, 0, processes them
                 all at once, which is fastest once the pointing is stored.
         """
-        if store is None:
-            store = 'rows' if self.sampler.kernel.reads_one_pixel else 'angles'
-        if store == 'rows':
-            sampler: AbstractSampler = PrecomputedSampler.from_sampler(self.sampler, self.landscape)
-        elif isinstance(self.sampler, QuaternionSampler):
+        sampler: AbstractSampler
+        bilinear = self.sampler.kernel.interpolation is Interpolation.BILINEAR
+        if bilinear and isinstance(self.sampler, QuaternionSampler):
             sampler = self.sampler.to_angles(self.landscape)
         else:
-            raise TypeError(
-                f'only a QuaternionSampler can be stored as angles, not a '
-                f'{type(self.sampler).__name__}'
-            )
-        return PointingOperator.from_sampler(self.landscape, sampler, batch_samples=batch_samples)
-
-    @property
-    def _interpolates(self) -> bool:
-        return self.sampler.kernel.interpolation is Interpolation.BILINEAR
+            sampler = PrecomputedSampler.from_sampler(self.sampler, self.landscape)
+        return self.from_sampler(self.landscape, sampler, batch_samples=batch_samples)
 
     def _sample(self, x_flat: _StokesT, index: SampleIndex) -> _StokesT:
-        """Sample the flat map for a batch of samples."""
+        """Sample the flat map for a batch of samples, in the map's dtype."""
         tod: _StokesT
-        pix = (
-            None
-            if self.landscape.has_spin2
-            else self.sampler.nearest_indices(self.landscape, index)
-        )
-        if pix is not None:
-            # fast path for nearest-neighbour: one pixel per sample, so no stencil is needed
-            sampled = x_flat[pix]
+        if self._reads_nearest:
             # the gather wraps a -1 onto the last pixel, which the sample never observed
-            tod = type(x_flat).from_array(jnp.where(pix >= 0, sampled.data, 0))
-            return _scaled(tod, self.sampler.scaling(index))
-        pointing = self._pointing(index)
-        tod = _scaled(rotated_gather(x_flat, *pointing[:2]), self.sampler.scaling(index))
-        if pointing.polarization_rotation is None:
-            return tod
-        return tod.rotate_qu(*pointing.polarization_rotation)
+            pix = self.sampler.nearest_indices(self.landscape, index)
+            tod = type(x_flat).from_array(jnp.where(pix >= 0, x_flat[pix].data, 0))
+        else:
+            pointing = self._pointing(index)
+            tod = rotated_gather(x_flat, *pointing[:2])
+            if pointing.polarization_rotation is not None:
+                tod = tod.rotate_qu(*pointing.polarization_rotation)
+        tod = _scaled(tod, self.sampler.scaling(index))
+        # float64 pointing (rotations, scaling) promotes the samples of a float32 map
+        return tod.astype(x_flat.dtype)
 
     def _bin(self, out: _StokesT, tod_batch: _StokesT, index: SampleIndex) -> _StokesT:
         """Scatter-add a batch of samples into the sky map `out`."""
@@ -277,13 +254,8 @@ class PointingOperator(AbstractLinearOperator):
         n_stokes = tod_batch.data.shape[0]
         flat = type(out).from_array(out.data.reshape(n_stokes, -1))
 
-        pix = (
-            None
-            if self.landscape.has_spin2
-            else self.sampler.nearest_indices(self.landscape, index)
-        )
-        if pix is not None:
-            # fast path for nearest-neighbour: one pixel per sample, so no stencil is needed
+        if self._reads_nearest:
+            pix = self.sampler.nearest_indices(self.landscape, index)
             # the scatter wraps a -1 onto the last pixel, so such a sample must add nothing
             contrib = jnp.where(pix >= 0, tod_batch.data, 0)
             binned = flat.data.at[:, pix.ravel()].add(contrib.reshape(n_stokes, -1))
@@ -294,6 +266,14 @@ class PointingOperator(AbstractLinearOperator):
             binned = rotated_scatter(flat, tod_batch, *pointing[:2]).data
         return type(out).from_array(binned.reshape(n_stokes, *sky_shape))
 
+    @property
+    def _reads_nearest(self) -> bool:
+        """Whether every sample reads one pixel of a map without polarization.
+
+        Such a sample needs the pixel index alone, not a stencil and rotations.
+        """
+        return self.sampler.kernel.reads_one_pixel and not self.landscape.has_spin2
+
     def _pointing(self, index: SampleIndex) -> PointingRows:
         pointing = self.sampler.pointing_rows(self.landscape, index)
         if self.landscape.has_spin2 and pointing.neighbour_rotation is None:
@@ -303,7 +283,7 @@ class PointingOperator(AbstractLinearOperator):
             )
         return pointing
 
-    def rotated(self, angles: Float[Array, '...']) -> 'PointingOperator':
+    def rotated(self, angles: Float[Array, '...']) -> Self:
         """The operator followed by a rotation of Q and U by `angles`, in a single pass.
 
         Args:
@@ -311,9 +291,7 @@ class PointingOperator(AbstractLinearOperator):
                 the convention of [`QURotationOperator`][furax.obs.operators.QURotationOperator].
         """
         sampler = self.sampler.rotated(Spin2Rotation.from_angles(angles))
-        return PointingOperator.from_sampler(
-            self.landscape, sampler, batch_samples=self.batch_samples
-        )
+        return self.from_sampler(self.landscape, sampler, batch_samples=self.batch_samples)
 
     def transpose(self) -> AbstractLinearOperator:
         return PointingTransposeOperator(operator=self)

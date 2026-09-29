@@ -1,9 +1,11 @@
 # Furax
 
-[![PyPI version](https://badge.fury.io/py/furax.svg)](https://badge.fury.io/py/furax)
+[![PyPI version](https://img.shields.io/pypi/v/furax)](https://pypi.org/project/furax/)
 [![Python version](https://img.shields.io/pypi/pyversions/furax)](https://pypi.org/project/furax/)
-[![Documentation Status](https://readthedocs.org/projects/furax/badge/?version=latest)](https://furax.readthedocs.io/en/latest/?badge=latest)
-[![CI](https://github.com/CMBSciPol/furax/actions/workflows/ci.yml/badge.svg)](https://github.com/CMBSciPol/furax/actions/workflows/ci.yml)
+[![License](https://img.shields.io/pypi/l/furax)](https://github.com/CMBSciPol/furax/blob/main/LICENSE)
+[![arXiv](https://img.shields.io/badge/arXiv-2603.19600-b31b1b.svg)](https://arxiv.org/abs/2603.19600)
+[![Documentation Status](https://readthedocs.org/projects/furax/badge/?version=stable)](https://furax.readthedocs.io/en/stable/)
+[![CI](https://github.com/CMBSciPol/furax/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/CMBSciPol/furax/actions/workflows/ci.yml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 [**Docs**](https://furax.readthedocs.io/en/stable)

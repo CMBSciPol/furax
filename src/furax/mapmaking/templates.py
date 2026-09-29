@@ -29,6 +29,7 @@ into a single [`Basis`][] of any flavour.
 from abc import abstractmethod
 from collections.abc import Sequence
 from dataclasses import field, fields
+from functools import partial
 from itertools import chain
 from math import prod
 from typing import Any, Literal, NamedTuple, Self, cast
@@ -71,6 +72,10 @@ __all__ = [
     'StokesTemplateOperator',
     'GroundTemplateOperator',
 ]
+
+
+# Full float32 precision for basis contraction to ensure adjointness of `project` and `expand`
+_einsum = partial(jnp.einsum, precision=jax.lax.Precision.HIGHEST)
 
 
 StokesLeg = Literal['i', 'q', 'u', 'v']
@@ -365,7 +370,7 @@ class TensorBasis(Basis):
         # integer axis labels. Index axes are 0..n-1, sample axis is n.
         n = len(self.shape)
         idx = tuple(range(n))
-        out = jnp.einsum(coeffs, idx, self.values, (*idx, n), (n,))
+        out = _einsum(coeffs, idx, self.values, (*idx, n), (n,))
         return out if self.q == 1 else self._upsample(out)
 
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
@@ -373,7 +378,7 @@ class TensorBasis(Basis):
         idx = tuple(range(n))
         if self.q != 1:
             signal = self._downsample(signal)
-        return jnp.einsum(self.values, (*idx, n), signal, (n,), idx)
+        return _einsum(self.values, (*idx, n), signal, (n,), idx)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
         # Dense Gram over the (single) coupled amplitude axis: one block, no band (w=0).
@@ -382,7 +387,7 @@ class TensorBasis(Basis):
         if len(self.shape) != 1:
             raise NoStructuredView('gram supports 1-D TensorBasis amplitude only')
         v = self.values  # (k, samp)
-        return jnp.einsum('as,s,bs->ab', v, weights, v)[None, None]
+        return _einsum('as,s,bs->ab', v, weights, v)[None, None]
 
     def _support(self) -> _BasisColumns:
         # One global block, every sample in it (unit tap).
@@ -432,13 +437,13 @@ class KroneckerBasis(Basis):
     def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
         # explicit output (n,): sample axis n repeats across factors, name as output to keep it.
         n = len(self.shape)
-        return jnp.einsum(coeffs, tuple(range(n)), *self._factor_operands(), (n,))
+        return _einsum(coeffs, tuple(range(n)), *self._factor_operands(), (n,))
 
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
         # implicit output: repeated sample axis n is summed; index axes 0..n-1
         # each appear once and become the (sorted) output.
         n = len(self.shape)
-        return jnp.einsum(*self._factor_operands(), signal, (n,))
+        return _einsum(*self._factor_operands(), signal, (n,))
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
         # No block structure: the shared per-sample weight couples all factor indices, so the
@@ -446,13 +451,13 @@ class KroneckerBasis(Basis):
         # Materialise the product basis `V[k_0..k_{n-1}, t] = Π_i F_i[k_i, t]` (cheap for the
         # 2-factor bases here), flatten to `(K, samp)`, and contract the weighted self-Gram.
         n = len(self.shape)
-        v = jnp.einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
-        return jnp.einsum('kt,t,lt->kl', v, weights, v)[None, None]
+        v = _einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
+        return _einsum('kt,t,lt->kl', v, weights, v)[None, None]
 
     def _support(self) -> _BasisColumns:
         # One global block over the materialised product basis (flattened index k = prod(shape)).
         n = len(self.shape)
-        v = jnp.einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
+        v = _einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
         samp = self.n_points
         return _BasisColumns(
             blocks=jnp.zeros((samp, 1), jnp.int32),
@@ -499,7 +504,7 @@ class SegmentedBasis(Basis):
         # gather each sample's segment coefficients, then contract over the
         # sub-basis index against the shared per-sample values.
         picked = coeffs[self.segment]  # (n_points, k)
-        return jnp.einsum('sk,ks->s', picked, self.values)
+        return _einsum('sk,ks->s', picked, self.values)
 
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
         # adjoint of expand: per-sample contribution scatter-added into its segment.
@@ -512,7 +517,7 @@ class SegmentedBasis(Basis):
         # Block-diagonal (w=0) -> band axis of size 1. O(n_samples·k²), no full-TOD probe.
         n_seg, k = self.shape
         vw = self.values * weights[None, :]  # (k, samp)
-        per_sample = jnp.einsum('as,bs->sab', vw, self.values)  # (samp, k, k)
+        per_sample = _einsum('as,bs->sab', vw, self.values)  # (samp, k, k)
         blocks = jnp.zeros((n_seg, 1, k, k), self.dtype)
         return blocks.at[self.segment, 0].add(per_sample)
 
@@ -583,11 +588,11 @@ class WindowedBasis(Basis):
         # gather each sample's window of block coefficients, contract over the sub-basis
         # index against the shared values and over the window against its taper.
         gathered = coeffs[self._block_indices()]  # (samp, O, k)
-        return jnp.einsum('soj,os,js->s', gathered, self.block_weights, self.sub_values)
+        return _einsum('soj,os,js->s', gathered, self.block_weights, self.sub_values)
 
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
         # adjoint of expand: per-sample rank-one contribution scatter-added into its window.
-        contrib = jnp.einsum('os,js,s->soj', self.block_weights, self.sub_values, signal)
+        contrib = _einsum('os,js,s->soj', self.block_weights, self.sub_values, signal)
         zeros = jnp.zeros(self.shape, self.dtype)
         return zeros.at[self._block_indices()].add(contrib)
 
@@ -610,7 +615,7 @@ class WindowedBasis(Basis):
         # d = j'-j is static; slot o (block j = offset+o) couples to slot o+d (block j+d).
         for d in range(n_window):
             for o in range(n_window - d):
-                contrib = jnp.einsum('at,bt->tab', uw[o], u[o + d])  # (samp, k, k)
+                contrib = _einsum('at,bt->tab', uw[o], u[o + d])  # (samp, k, k)
                 bands = bands.at[self.offset + o, d].add(contrib)
         return bands
 

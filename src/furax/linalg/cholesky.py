@@ -18,6 +18,9 @@ __all__ = [
     'banded_cholesky_solve',
 ]
 
+# Full float32 precision for the block products to avoid TF32 rounding
+_matmul = partial(jnp.matmul, precision=jax.lax.Precision.HIGHEST)
+
 
 @symmetric
 class BandedCholeskyOperator(AbstractLinearOperator):
@@ -191,7 +194,7 @@ def _block_banded_cholesky(bands: Float[Array, 'n w1 k k']) -> Float[Array, 'n w
                 # L[j, i-a]: for the diagonal block (d0=0, j=i) it is this row's block ``cur[a]``,
                 # not yet written to ``lb``; for d0>0 (j<i) it is a finished earlier row.
                 l_ja = cur[a] if d0 == 0 else read(lb, j)[a - d0]
-                s = s - cur[a] @ jnp.swapaxes(l_ja, -1, -2)
+                s = s - _matmul(cur[a], jnp.swapaxes(l_ja, -1, -2))
             if d0 == 0:
                 cur = cur.at[0].set(jnp.linalg.cholesky(s))  # L[i,i] = chol(S)
             else:
@@ -235,7 +238,7 @@ def banded_cholesky_solve(
         rhs = read(b, i)
         lb_i = read(lb, i)
         for d in range(1, w + 1):
-            rhs = rhs - jnp.where(i - d >= 0, lb_i[d] @ read(y, i - d), 0.0)
+            rhs = rhs - jnp.where(i - d >= 0, _matmul(lb_i[d], read(y, i - d)), 0.0)
         yi = jax.scipy.linalg.solve_triangular(lb_i[0], rhs, lower=True)
         return jax.lax.dynamic_update_index_in_dim(y, yi, i, axis=0)
 
@@ -246,7 +249,9 @@ def banded_cholesky_solve(
         rhs = read(y, i)
         for d in range(1, w + 1):  # L[i+d, i] = lb[i+d, d]
             rhs = rhs - jnp.where(
-                i + d <= n - 1, jnp.swapaxes(read(lb, i + d)[d], -1, -2) @ read(x, i + d), 0.0
+                i + d <= n - 1,
+                _matmul(jnp.swapaxes(read(lb, i + d)[d], -1, -2), read(x, i + d)),
+                0.0,
             )
         xi = jax.scipy.linalg.solve_triangular(read(lb, i)[0].T, rhs, lower=False)
         return jax.lax.dynamic_update_index_in_dim(x, xi, i, axis=0)

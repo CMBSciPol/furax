@@ -963,6 +963,11 @@ class AbstractTemplateOperator(AbstractLinearOperator):
     def _amplitude_leaf(self, basis: Basis) -> jax.ShapeDtypeStruct:
         return jax.ShapeDtypeStruct((self.n_dets, *basis.shape), basis.dtype)
 
+    @property
+    def bases_by_leg(self) -> dict[str, Any]:
+        """`bases` keyed as the amplitudes are: a basis shared by several legs appears once per leg."""
+        return self.bases
+
     # ---- TOD side -------------------------------------------------------------------------------
     def _a_basis(self) -> Basis:
         """Any one of the bases: they agree on sample count and dtype."""
@@ -1031,32 +1036,56 @@ class StokesTemplateOperator(AbstractTemplateOperator):
     so a template fits an independent set of amplitudes on each leg it covers. It need not cover
     them all: temperature-to-polarization leakage is fitted on Q and U only.
 
+    Each template's bases are keyed by leg group: a key such as `'qu'` shares one basis between
+    those legs, stored once, while each leg keeps its own amplitudes. The amplitudes are keyed by
+    single leg whatever the grouping.
+
     Raises:
         TypeError: If a template is given as a bare basis rather than keyed by leg.
-        ValueError: If a template names a leg outside `stokes`.
+        ValueError: If a template names a leg outside `stokes`, or names one twice.
+
+    Examples:
+        >>> poly = TensorBasis(jnp.ones((2, 5)))
+        >>> leak = TensorBasis(jnp.ones((1, 5)))
+        >>> op = StokesTemplateOperator({'poly': {'iqu': poly}, 't2p': {'qu': leak}}, 3, 'IQU')
+        >>> {name: sorted(legs) for name, legs in op.in_structure.items()}
+        {'poly': ['i', 'q', 'u'], 't2p': ['q', 'u']}
     """
 
-    bases: dict[str, dict[StokesLeg, Basis]]
+    bases: dict[str, dict[str, Basis]]
     stokes: ValidStokesLiteral = field(metadata={'static': True})
 
     def __post_init__(self) -> None:
-        # `stokes` declares the leg axis: every template must be keyed by a subset of it.
+        # `stokes` declares the leg axis: every template must be keyed by groups of its legs.
         for name, legged in self.bases.items():
             if isinstance(legged, Basis):
-                msg = f'template {name!r} needs one basis per Stokes leg of {self.stokes!r}'
+                msg = f'template {name!r} needs its bases keyed by Stokes leg of {self.stokes!r}'
                 raise TypeError(msg)
-            if extra := sorted(leg for leg in legged if leg not in self.legs):
+            legs = ''.join(legged)
+            if extra := sorted({leg for leg in legs if leg not in self.legs}):
                 msg = (
                     f'template {name!r} has legs {extra} outside stokes={self.stokes!r} '
                     f'(expected {list(self.legs)})'
                 )
                 raise ValueError(msg)
+            if repeated := sorted({leg for leg in legs if legs.count(leg) > 1}):
+                raise ValueError(f'template {name!r} has legs {repeated} in several groups')
         super().__post_init__()
 
     @property
     def legs(self) -> tuple[StokesLeg, ...]:
-        """The Stokes legs the TOD carries, as the bases and amplitudes key them."""
+        """The Stokes legs the TOD carries, as the amplitudes key them."""
         return cast(tuple[StokesLeg, ...], tuple(s.lower() for s in self.stokes))
+
+    @property
+    def bases_by_leg(self) -> dict[str, dict[StokesLeg, Basis]]:
+        return {
+            name: {cast(StokesLeg, leg): basis for group, basis in legged.items() for leg in group}
+            for name, legged in self.bases.items()
+        }
+
+    def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        return jax.tree.map(self._amplitude_leaf, self.bases_by_leg, is_leaf=is_basis)
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -1068,7 +1097,7 @@ class StokesTemplateOperator(AbstractTemplateOperator):
 
     def mv(self, x: PyTree[Array]) -> PyTree[Array]:
         streams = dict.fromkeys(self.legs, self._zero_stream())
-        for name, legged in self.bases.items():
+        for name, legged in self.bases_by_leg.items():
             for leg, basis in legged.items():
                 streams[leg] = streams[leg] + self._expand(basis, x[name][leg])
         stacked = jnp.stack([streams[leg] for leg in self.legs], axis=0)
@@ -1078,7 +1107,7 @@ class StokesTemplateOperator(AbstractTemplateOperator):
         streams = self._streams(tod)
         return {
             name: {leg: self._project(basis, streams[leg]) for leg, basis in legged.items()}
-            for name, legged in self.bases.items()
+            for name, legged in self.bases_by_leg.items()
         }
 
 

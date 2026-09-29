@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `StokesTemplateOperator` uses groups of legs (e.g. `'qu'`), storing identical bases only once per group (#286)
+
 ### Changed
 
 - Faster `KroneckerBasis` expand and project for bases shared across detectors (#283)

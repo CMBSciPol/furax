@@ -156,7 +156,7 @@ def _structured_gram_inverse(
     return BlockDiagonalOperator(
         jax.tree.map_with_path(
             leg_inverse,
-            template.bases,
+            template.bases_by_leg,
             template.in_structure,
             is_leaf=is_basis,
         )
@@ -172,7 +172,7 @@ def _coupled_gram_inverse(
     # Flattening keeps the keys: `('poly', 'q')` for a Stokes-valued template, `('poly',)` without
     # a Stokes axis. The leg says which stream a basis is weighted by, and two bases on different
     # legs never share a weighted sample.
-    entries, _ = jax.tree.flatten_with_path(template.bases, is_leaf=is_basis)
+    entries, _ = jax.tree.flatten_with_path(template.bases_by_leg, is_leaf=is_basis)
     bases: list[Basis] = [basis for _, basis in entries]
     legs = [path[-1].key if len(path) > 1 else None for path, _ in entries]
     diags = tuple(diag if leg is None else getattr(diag, leg) for leg in legs)

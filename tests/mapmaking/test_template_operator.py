@@ -4,6 +4,8 @@ import jax.random as jr
 import pytest
 from numpy.testing import assert_allclose
 
+from furax import IdentityOperator
+from furax.mapmaking.gram import gram_inverse
 from furax.mapmaking.templates import (
     SegmentedBasis,
     StokesTemplateOperator,
@@ -119,7 +121,44 @@ def test_stokes_template_operator_rejects_legs_outside_stokes():
 
 
 def test_stokes_template_operator_rejects_a_basis_that_is_not_keyed_by_leg():
-    # a Stokes-valued operator needs one basis per leg, never a single shared one
+    # a bare basis does not say which legs it covers
     b = TensorBasis(jnp.ones((2, N_SAMPS)))
-    with pytest.raises(TypeError, match="template 'poly' needs one basis per Stokes leg"):
+    with pytest.raises(TypeError, match="template 'poly' needs its bases keyed by Stokes leg"):
         StokesTemplateOperator({'poly': b}, n_dets=N_DETS, stokes='QU')
+
+
+def test_stokes_template_operator_rejects_a_leg_in_two_groups():
+    b = TensorBasis(jnp.ones((2, N_SAMPS)))
+    with pytest.raises(ValueError, match=r"template 'p' has legs \['q'\] in several groups"):
+        StokesTemplateOperator({'p': {'q': b, 'qu': b}}, n_dets=N_DETS, stokes='QU')
+
+
+def test_stokes_template_operator_leg_group_acts_as_one_basis_per_leg():
+    # a leg group stores one basis for several legs, each keeping its own amplitudes: the operator,
+    # its transpose and its Gram inverse must be those of the basis repeated on every leg. Two
+    # templates, so the Gram takes the coupled path.
+    k = jr.split(jr.key(5), 4)
+    poly = SegmentedBasis(_seg(4), jr.normal(k[0], (2, N_SAMPS)), 4)
+    leak = TensorBasis(jr.normal(k[1], (1, N_SAMPS)))
+    grouped = StokesTemplateOperator(
+        {'poly': {'iqu': poly}, 't2p': {'qu': leak}}, n_dets=N_DETS, stokes='IQU'
+    )
+    per_leg = StokesTemplateOperator(
+        {'poly': dict.fromkeys('iqu', poly), 't2p': dict.fromkeys('qu', leak)},
+        n_dets=N_DETS,
+        stokes='IQU',
+    )
+    assert grouped.in_structure == per_leg.in_structure
+
+    amps = jax.tree.map(lambda s: jr.normal(k[2], s.shape), per_leg.in_structure)
+    assert_allclose(grouped(amps).data, per_leg(amps).data, rtol=1e-12)
+    tod = per_leg.out_structure.from_array(jr.normal(k[3], (3, N_DETS, N_SAMPS)))
+    jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-12), grouped.T(tod), per_leg.T(tod))
+
+    weight = IdentityOperator(in_structure=per_leg.out_structure)
+    expected = gram_inverse(per_leg, weight)(amps)
+    jax.tree.map(
+        lambda a, b: assert_allclose(a, b, rtol=1e-10),
+        gram_inverse(grouped, weight)(amps),
+        expected,
+    )

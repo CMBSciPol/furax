@@ -78,7 +78,7 @@ class ObservationModel:
             data.get(ReaderField.HWP_ANGLES),
             demodulated=config.demodulated,
             pointing_on_the_fly=config.pointing.on_the_fly,
-            pointing_batch_size=config.pointing.batch_size,
+            pointing_batch_samples=config.pointing.batch_samples,
             pointing_interpolate=config.pointing.interpolation == 'bilinear',
             dtype=config.dtype,
         )

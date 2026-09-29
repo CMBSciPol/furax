@@ -1,13 +1,14 @@
 import copy
 import dataclasses
+import math
 from dataclasses import field
-from typing import Literal, TypeVar
+from typing import Literal, NamedTuple, Self, TypeVar
 
 import jax
 import jax.numpy as jnp
 from fastquat import Quaternion
 from jax import jit, lax
-from jaxtyping import Array, Float, Int, PyTree
+from jaxtyping import Array, Bool, Float, Int, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
@@ -24,6 +25,7 @@ from furax.obs.sampling import (
     PolarizationFrame,
     PrecomputedSampler,
     QuaternionSampler,
+    SampleIndex,
     SamplingKernel,
 )
 from furax.obs.spin2 import rotated_gather, rotated_scatter
@@ -36,6 +38,17 @@ __all__ = [
 
 _StokesT = TypeVar('_StokesT', bound=Stokes)
 
+# Default number of samples per batch, per backend
+#
+# Intermediates grow with the number of samples per batch. These sizes were about the fastest in
+# benchmarks of CAR and HEALPix maps, nearest and bilinear (CPU: Intel Core i5-14400F, GPU: NVIDIA
+# GeForce RTX 4060).
+# On GPU, larger batches are slower because the intermediates no longer fit in the device cache.
+# On CPU, larger batches seem to keep getting faster, up to 1.5x for a single (nearest) batch.
+# 2^21 caps the intermediates at a few hundred MB.
+_GPU_BATCH_SAMPLES = 2**17
+_CPU_BATCH_SAMPLES = 2**21
+
 
 class PointingOperator(AbstractLinearOperator):
     r"""Operator that samples a sky map, e.g. into time-ordered data (TOD).
@@ -44,8 +57,10 @@ class PointingOperator(AbstractLinearOperator):
     [`AbstractSampler`][furax.obs.sampling.AbstractSampler], as one sparse row of the pointing
     matrix per sample: the pixels it reads, their weights, and the rotation of each pixel's
     $(Q, U)$ into the frame the sample is returned in, e.g. that of a detector. The operator loops
-    over the samples in batches and, for each batch, gathers the pixels, rotates and weighs them,
-    then multiplies the samples by the sampler's scaling, if it has one.
+    over the samples in batches of `batch_samples` consecutive samples, in the row-major order of
+    the samples' shape, and, for each batch, gathers the pixels, rotates and weighs them, then
+    multiplies the samples by the sampler's scaling, if it has one. A batch may span several
+    detectors, or part of one.
 
     The transpose accumulates samples into a sky map (binning), and is exact whatever the sampler.
 
@@ -56,12 +71,13 @@ class PointingOperator(AbstractLinearOperator):
     Attributes:
         landscape: The sky pixelization.
         sampler: Where each sample reads the map.
-        batch_size: Number of rows of samples processed per batch (memory/speed tradeoff).
+        batch_samples: Number of samples processed per batch. Leave `None` for a backend-dependent
+            default; set to 0 to process them all at once.
     """
 
     landscape: StokesLandscape
     sampler: AbstractSampler
-    batch_size: int = field(default=32, metadata={'static': True})
+    batch_samples: int | None = field(default=None, metadata={'static': True})
 
     @classmethod
     def create(
@@ -70,7 +86,7 @@ class PointingOperator(AbstractLinearOperator):
         boresight_quaternions: Quaternion,
         detector_quaternions: Quaternion,
         *,
-        batch_size: int = 32,
+        batch_samples: int | None = None,
         frame: PolarizationFrame = 'boresight',
         interpolate: bool = False,
         offsets: Quaternion | None = None,
@@ -82,7 +98,7 @@ class PointingOperator(AbstractLinearOperator):
             landscape: The sky pixelization.
             boresight_quaternions: Boresight quaternions, shape (n_samples,).
             detector_quaternions: Detector offset quaternions, shape (n_detectors,).
-            batch_size: Number of detectors processed per batch.
+            batch_samples: Number of samples processed per batch, see [`PointingOperator`][].
             frame: The basis Q and U are returned in, see
                 [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler].
             interpolate: If True, bilinear interpolation over the four nearest pixels, otherwise
@@ -134,21 +150,24 @@ class PointingOperator(AbstractLinearOperator):
             qdet=detector_quaternions,
             frame=frame,
         )
-        return cls.from_sampler(landscape, sampler, batch_size=batch_size)
+        return cls.from_sampler(landscape, sampler, batch_samples=batch_samples)
 
     @classmethod
     def from_sampler(
-        cls, landscape: StokesLandscape, sampler: AbstractSampler, *, batch_size: int = 32
+        cls,
+        landscape: StokesLandscape,
+        sampler: AbstractSampler,
+        *,
+        batch_samples: int | None = None,
     ) -> 'PointingOperator':
         """Build the operator reading a map where a sampler says.
 
         Args:
             landscape: The sky pixelization.
             sampler: Where each sample reads the map.
-            batch_size: Number of rows of samples (indices into the first axis of the sampler's
-                shape) processed per batch.
+            batch_samples: Number of samples processed per batch, see [`PointingOperator`][].
         """
-        return cls(landscape, sampler, batch_size, in_structure=landscape.structure)
+        return cls(landscape, sampler, batch_samples, in_structure=landscape.structure)
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -158,27 +177,24 @@ class PointingOperator(AbstractLinearOperator):
     def mv(self, x: _StokesT) -> _StokesT:
         """Performs the 'un-pointing' operation, i.e. map->tod."""
         x_flat = x.ravel()
-
-        # Loop over batches of rows.
-        # NB: lax.map was tried here (PR #172) instead of the fori_loop+scatter form
-        # It seemed faster on GPU, but there was a 3-4x perf regression on CPU
         shape = self.sampler.shape
-        batch_size, n_batches = _batch_plan(self.batch_size, shape[0])
-        if n_batches == 1:
+        tiling = _Tiling.plan(shape, self.batch_samples)
+        if tiling.n_batches == 1:
             # a single batch needs no loop, nor a copy into the output
-            return self._sample(x_flat, jnp.arange(shape[0]))
+            return self._sample(x_flat, self.sampler.every_sample())
 
-        def body(i: Int[Array, ''], tod: _StokesT) -> _StokesT:
-            # interval bounds must be static, so we shift the values afterwards
-            # jax indexing semantics automatically clip out-of-bounds indices
-            index = jnp.arange(batch_size) + i * batch_size
+        # NB: lax.map over the batches is slower than this loop, on GPU and CPU alike, and holds
+        # a second copy of the timestream to put its output in order
+        def body(i: Int[Array, ''], tod: Array) -> Array:
+            start, index, _ = tiling.batch(i)
             tod_batch = self._sample(x_flat, index)
-            return type(tod).from_array(tod.data.at[:, index].set(tod_batch.data))
+            return lax.dynamic_update_slice(tod, tod_batch.data, (0, *start))
 
         # Start from an empty timestream: every slot gets overwritten by body.
-        tod_out: _StokesT = type(x).empty(shape, dtype=x.dtype)
-        tod_out = lax.fori_loop(0, n_batches, body, tod_out)
-        return tod_out
+        n_stokes = x.data.shape[0]
+        tod = jnp.empty((n_stokes, tiling.n_rows, tiling.n_cols), x.dtype)
+        tod = lax.fori_loop(0, tiling.n_batches, body, tod)
+        return type(x).from_array(tod.reshape(n_stokes, *shape))
 
     def as_stokes_i(self, *, interpolate: bool | None = None) -> 'PointingOperator':
         """Return a copy of this operator restricted to StokesI.
@@ -202,10 +218,10 @@ class PointingOperator(AbstractLinearOperator):
             else Interpolation.NEAREST,
         )
         sampler = self.sampler.with_kernel(kernel)
-        return PointingOperator.from_sampler(landscape, sampler, batch_size=self.batch_size)
+        return PointingOperator.from_sampler(landscape, sampler, batch_samples=self.batch_samples)
 
     def precomputed(
-        self, store: Literal['rows', 'angles'] | None = None, *, batch_size: int = 0
+        self, store: Literal['rows', 'angles'] | None = None, *, batch_samples: int = 0
     ) -> 'PointingOperator':
         """Return the same operator, with its pointing computed once.
 
@@ -226,8 +242,8 @@ class PointingOperator(AbstractLinearOperator):
 
         Args:
             store: What to store, `'rows'` or `'angles'`. `None` (default) chooses as above.
-            batch_size: Number of rows of samples processed per batch. The default, 0, processes
-                them all at once, which is fastest once the pointing is stored.
+            batch_samples: Number of samples processed per batch. The default, 0, processes them
+                all at once, which is fastest once the pointing is stored.
         """
         if store is None:
             store = 'rows' if self.sampler.kernel.reads_one_pixel else 'angles'
@@ -240,14 +256,14 @@ class PointingOperator(AbstractLinearOperator):
                 f'only a QuaternionSampler can be stored as angles, not a '
                 f'{type(self.sampler).__name__}'
             )
-        return PointingOperator.from_sampler(self.landscape, sampler, batch_size=batch_size)
+        return PointingOperator.from_sampler(self.landscape, sampler, batch_samples=batch_samples)
 
     @property
     def _interpolates(self) -> bool:
         return self.sampler.kernel.interpolation is Interpolation.BILINEAR
 
-    def _sample(self, x_flat: _StokesT, index: Int[Array, ' batch']) -> _StokesT:
-        """Sample the flat map for a batch of rows of samples."""
+    def _sample(self, x_flat: _StokesT, index: SampleIndex) -> _StokesT:
+        """Sample the flat map for a batch of samples."""
         tod: _StokesT
         pix = (
             None
@@ -266,7 +282,7 @@ class PointingOperator(AbstractLinearOperator):
             return tod
         return tod.rotate_qu(*pointing.polarization_rotation)
 
-    def _bin(self, out: _StokesT, tod_batch: _StokesT, index: Int[Array, ' batch']) -> _StokesT:
+    def _bin(self, out: _StokesT, tod_batch: _StokesT, index: SampleIndex) -> _StokesT:
         """Scatter-add a batch of samples into the sky map `out`."""
         tod_batch = _scaled(tod_batch, self.sampler.scaling(index))
         sky_shape = self.landscape.shape
@@ -291,7 +307,7 @@ class PointingOperator(AbstractLinearOperator):
             binned = rotated_scatter(flat, tod_batch, *pointing[:2]).data
         return type(out).from_array(binned.reshape(n_stokes, *sky_shape))
 
-    def _pointing(self, index: Int[Array, ' batch']) -> PointingRows:
+    def _pointing(self, index: SampleIndex) -> PointingRows:
         pointing = self.sampler.pointing_rows(self.landscape, index)
         if self.landscape.has_spin2 and pointing.neighbour_rotation is None:
             raise ValueError(
@@ -308,7 +324,9 @@ class PointingOperator(AbstractLinearOperator):
                 the convention of [`QURotationOperator`][furax.obs.operators.QURotationOperator].
         """
         sampler = self.sampler.rotated(Spin2Rotation.from_angles(angles))
-        return PointingOperator.from_sampler(self.landscape, sampler, batch_size=self.batch_size)
+        return PointingOperator.from_sampler(
+            self.landscape, sampler, batch_samples=self.batch_samples
+        )
 
     def transpose(self) -> AbstractLinearOperator:
         return PointingTransposeOperator(operator=self)
@@ -320,25 +338,23 @@ class PointingTransposeOperator(TransposeOperator):
     @jit
     def mv(self, x: _StokesT) -> _StokesT:
         """Performs the 'pointing' operation, i.e. tod->map."""
-        # Loop over batches of rows
-        n_rows = self.operator.sampler.shape[0]
-        batch_size, n_batches = _batch_plan(self.operator.batch_size, n_rows)
+        sampler = self.operator.sampler
+        tiling = _Tiling.plan(sampler.shape, self.operator.batch_samples)
         sky_out: _StokesT = self.operator.landscape.zeros()
-        if n_batches == 1:
-            return self.operator._bin(sky_out, x, jnp.arange(n_rows))
+        if tiling.n_batches == 1:
+            return self.operator._bin(sky_out, x, sampler.every_sample())
+
+        n_stokes = x.data.shape[0]
+        x_tiled = x.data.reshape(n_stokes, tiling.n_rows, tiling.n_cols)
 
         def body(i: Int[Array, ''], sky: _StokesT) -> _StokesT:
-            # Past n_rows, indices are out of range; `sky` is never indexed by `index` so we need to
-            # use the `unique` indices to mask out redundant/repeated contributions from the last
-            # batch
-            index = jnp.arange(batch_size) + i * batch_size
-            unique = index < n_rows
-            xbatch = x[index]
-            unique = unique.reshape(-1, *(1,) * (xbatch.data.ndim - 2))
+            start, index, fresh = tiling.batch(i)
+            size = (n_stokes, tiling.rows, tiling.cols)
+            x_batch = jnp.where(fresh, lax.dynamic_slice(x_tiled, (0, *start), size), 0)
             # accumulate in place: a map per batch would cost a full-map write and add each
-            return self.operator._bin(sky, unique * xbatch, index)
+            return self.operator._bin(sky, type(x).from_array(x_batch), index)
 
-        sky_out = lax.fori_loop(0, n_batches, body, sky_out)
+        sky_out = lax.fori_loop(0, tiling.n_batches, body, sky_out)
         return sky_out
 
 
@@ -347,11 +363,78 @@ def _scaled[S: Stokes](tod: S, factor: Float[Array, '...'] | None) -> S:
     return tod if factor is None else type(tod).from_array(tod.data * factor)
 
 
-def _batch_plan(batch_size: int, n: int) -> tuple[int, int]:
-    """Resolve `(batch_size, n_batches)` for looping over `n` items in batches."""
-    batch_size = min(batch_size, n) if batch_size > 0 else n
-    n_batches = (n + batch_size - 1) // batch_size
-    return batch_size, n_batches
+class _Tiling(NamedTuple):
+    """How the operator splits the samples into batches.
+
+    The samples are treated as a 2D array: one row per detector (more generally, per index of all
+    axes but the last) and one column per time sample (the last axis). A batch is a rectangular
+    tile of `rows` x `cols` of it:
+
+    - if a detector has fewer samples than a batch holds, a tile is several whole detectors, e.g.
+      6 detectors of 20 000 samples for a batch of 2^17 = 131 072 samples;
+    - otherwise it is one detector and part of its samples, e.g. 131 072 of 720 000.
+
+    Rectangular tiles, rather than runs of consecutive samples, let the samplers compute what
+    depends only on the detector, such as its quaternion, once per detector instead of once per
+    sample.
+
+    Attributes:
+        shape: The shape of the samples.
+        rows: Number of rows (detectors) in a tile.
+        cols: Number of columns (samples of one detector) in a tile.
+    """
+
+    shape: tuple[int, ...]
+    rows: int
+    cols: int
+
+    @classmethod
+    def plan(cls, shape: tuple[int, ...], batch_samples: int | None) -> Self:
+        n_rows, n_cols = math.prod(shape[:-1]), shape[-1]
+        if batch_samples is None:
+            cpu = jax.default_backend() == 'cpu'
+            batch_samples = _CPU_BATCH_SAMPLES if cpu else _GPU_BATCH_SAMPLES
+        if batch_samples <= 0:
+            return cls(shape, n_rows, n_cols)
+        if batch_samples >= n_cols:
+            return cls(shape, min(batch_samples // n_cols, n_rows), n_cols)
+        return cls(shape, 1, batch_samples)
+
+    @property
+    def n_rows(self) -> int:
+        return math.prod(self.shape[:-1])
+
+    @property
+    def n_cols(self) -> int:
+        return self.shape[-1]
+
+    @property
+    def _grid(self) -> tuple[int, int]:
+        return -(-self.n_rows // self.rows), -(-self.n_cols // self.cols)
+
+    @property
+    def n_batches(self) -> int:
+        return math.prod(self._grid)
+
+    def batch(
+        self, i: Int[Array, '']
+    ) -> tuple[tuple[Int[Array, ''], Int[Array, '']], SampleIndex, Bool[Array, 'rows cols']]:
+        """Tile `i`: its first `(row, col)`, its samples, and which of them are fresh.
+
+        The last tile along each axis is moved back so that it ends at the last row or column
+        instead of running past it, so it overlaps the tile before. Its samples in that overlap
+        were already covered by the previous tile: they are not fresh, and the transpose must not
+        add them a second time.
+        """
+        tile_row, tile_col = jnp.divmod(i, self._grid[1])
+        row = jnp.minimum(tile_row * self.rows, self.n_rows - self.rows)
+        col = jnp.minimum(tile_col * self.cols, self.n_cols - self.cols)
+        rows = row + jnp.arange(self.rows)
+        cols = col + jnp.arange(self.cols)
+        outer = jnp.unravel_index(rows, self.shape[:-1]) if len(self.shape) > 1 else ()
+        index = (*(axis[:, None] for axis in outer), cols[None, :])
+        fresh = (rows >= tile_row * self.rows)[:, None] & (cols >= tile_col * self.cols)[None, :]
+        return (row, col), index, fresh
 
 
 def _rotation_angles(rotation: AbstractLinearOperator) -> Float[Array, '...']:

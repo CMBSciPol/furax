@@ -1265,7 +1265,7 @@ class LocalStokesLandscape(StokesLandscape):
             parent: The map the sampler reads.
             sampler: Where the samples read the map.
         """
-        stencil = sampler.pointing_rows(parent, jnp.arange(sampler.shape[0])).stencil
+        stencil = sampler.pointing_rows(parent, sampler.every_sample()).stencil
         # A resolved stencil parks the neighbours it drops on pixel 0 with a zero weight, so
         # select on the weight: taking the indices alone would enrol pixel 0 in every subset.
         read = stencil.weights > 0

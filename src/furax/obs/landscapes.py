@@ -3,7 +3,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -16,9 +16,11 @@ from jax.tree_util import register_static
 from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
 from furax.math.coords import ZAXIS, to_iso_angles
-from furax.obs._samplings import Sampling
 from furax.obs.stencil import Interpolation, SkyPositions, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
+
+if TYPE_CHECKING:  # the sampling module reads landscapes
+    from furax.obs.sampling import AbstractSampler
 
 _StokesT = TypeVar('_StokesT', bound=Stokes)
 
@@ -123,15 +125,6 @@ class StokesLandscape(Landscape):
     ) -> PyTree[Shaped[Array, ' {self.npixel}']]:
         cls = Stokes.class_for(self.stokes)
         return cls.uniform(self.shape, key, self.dtype, minval, maxval)
-
-    def get_coverage(self, arg: Sampling) -> Integer[Array, ' {self.npixel}']:
-        indices = self.world2index(arg.theta, arg.phi)
-        unique_indices, counts = jnp.unique(indices, return_counts=True)
-        coverage = jnp.zeros(len(self), dtype=np.int64)
-        coverage = coverage.at[unique_indices].add(
-            counts, indices_are_sorted=True, unique_indices=True
-        )
-        return coverage.reshape(self.shape)
 
     def world2index(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
@@ -1226,14 +1219,23 @@ class LocalStokesLandscape(StokesLandscape):
         return cls(parent, global_indices)
 
     @classmethod
-    def from_sampling(
-        cls, parent: StokesLandscape, sampling: Sampling, interpolate: bool = False
+    def from_sampler(
+        cls, parent: StokesLandscape, sampler: 'AbstractSampler'
     ) -> 'LocalStokesLandscape':
-        """Build from the pixels a [`Sampling`][furax.obs._samplings.Sampling] observes."""
-        if interpolate:
-            # bilinear reads the full 4-pixel stencil, so the subset must contain it
-            indices, weights = parent.world2interp(sampling.theta, sampling.phi)
-            # A resolved stencil parks the neighbours it drops on pixel 0 with a zero weight, so
-            # select on the weight: taking the indices alone would enrol pixel 0 in every subset.
-            return cls(parent, jnp.where(weights > 0, indices, -1))
-        return cls(parent, parent.world2index(sampling.theta, sampling.phi))
+        """Build from the pixels a sampler reads.
+
+        Every pixel of every sample's stencil is kept, so a map restricted to the subset is read
+        exactly as the parent map is, whatever the interpolation and offsets of the sampler.
+
+        Args:
+            parent: The map the sampler reads.
+            sampler: Where the samples read the map.
+        """
+        stencil = sampler.pointing_rows(parent, jnp.arange(sampler.shape[0])).stencil
+        # A resolved stencil parks the neighbours it drops on pixel 0 with a zero weight, so
+        # select on the weight: taking the indices alone would enrol pixel 0 in every subset.
+        read = stencil.weights > 0
+        if read.ndim > stencil.indices.ndim:
+            # weights per Stokes component: a pixel any component reads is kept
+            read = read.any(axis=0)
+        return cls(parent, jnp.where(read, stencil.indices, -1))

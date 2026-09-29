@@ -72,7 +72,7 @@ class PointingOperator(AbstractLinearOperator):
         offsets: Quaternion | None = None,
         offset_weights: Float[Array, ' n_offsets'] | Stokes | None = None,
     ) -> 'PointingOperator':
-        """Build the operator from the boresight pointing and the detector offsets.
+        r"""Build the operator from the boresight pointing and the detector offsets.
 
         Args:
             landscape: The sky pixelization.
@@ -96,6 +96,25 @@ class PointingOperator(AbstractLinearOperator):
                 weights are normalized to sum to one, per component, over the offsets whose pixels
                 are in the map: a sample partly off a partial-sky map is renormalized to the part
                 in view, like a partly covered bilinear sample.
+
+        Examples:
+            A single detector at the boresight, pointing at random directions given as the ZYZ
+            Euler angles $(\phi, \theta, \psi)$ of the boresight:
+
+            >>> import jax
+            >>> import jax.numpy as jnp
+            >>> from fastquat import Quaternion
+            >>> from furax.math.coords import from_iso_angles
+            >>> from furax.obs.landscapes import HealpixLandscape
+            >>> theta, phi, psi = jax.random.uniform(jax.random.key(0), (3, 1000)) * jnp.array(
+            ...     [[jnp.pi], [2 * jnp.pi], [2 * jnp.pi]]
+            ... )
+            >>> landscape = HealpixLandscape(nside=64, stokes='IQU')
+            >>> pointing = PointingOperator.create(
+            ...     landscape, from_iso_angles(theta, phi, psi), Quaternion.ones((1,))
+            ... )
+            >>> pointing.out_structure.shape
+            (1, 1000)
         """
         ndet = detector_quaternions.shape[0]
         kernel = SamplingKernel.create(

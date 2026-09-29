@@ -10,7 +10,7 @@ Both operators accept PyTree inputs whose leaves are 2-D arrays of shape
 ``jnp.atleast_2d`` before processing so that single-frequency inputs work
 without special-casing.
 
-[`SHTRule`][] registers an algebraic simplification so that the composition
+`_SHTRule` registers an algebraic simplification so that the composition
 ``Map2Alm @ Alm2Map`` (synthesis followed by analysis) is reduced to an
 [`IdentityOperator`][furax.IdentityOperator] at operator-construction time.
 """
@@ -219,7 +219,7 @@ class Alm2Map(AbstractLinearOperator):
         )
 
 
-class SHTRule(AbstractCompositionRule):
+class _SHTRule(AbstractCompositionRule):
     """Algebraic rule reducing ``Map2Alm @ Alm2Map`` to an identity.
 
     The composition *analysis after synthesis* (``Map2Alm @ Alm2Map``) is

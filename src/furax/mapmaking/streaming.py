@@ -27,14 +27,13 @@ from furax.core.rules import AbstractAdditionRule, AbstractCompositionRule, NoRe
 __all__ = [
     'StackSpec',
     'StreamOperator',
-    'StreamSegment',
 ]
 
 type StackSpec = bool | PyTree[bool]
 """Per-component stackedness of a structure: a bare bool (uniform) or a prefix pytree of bools."""
 
 
-class StreamSegment(eqx.Module):
+class _StreamSegment(eqx.Module):
     """One link of a stream body, and where its data goes in the scan.
 
     A *sliced* segment owns data carrying the batch axis, so the scan takes a slice of it each
@@ -74,11 +73,11 @@ class StreamSegment(eqx.Module):
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         return self.operator.out_structure
 
-    def transpose(self) -> 'StreamSegment':
-        return StreamSegment(self.operator.T, self.sliced)
+    def transpose(self) -> '_StreamSegment':
+        return _StreamSegment(self.operator.T, self.sliced)
 
-    def reduce(self) -> 'StreamSegment':
-        return StreamSegment(self.operator.reduce(), self.sliced)
+    def reduce(self) -> '_StreamSegment':
+        return _StreamSegment(self.operator.reduce(), self.sliced)
 
 
 class StreamOperator(AbstractLinearOperator):
@@ -86,7 +85,7 @@ class StreamOperator(AbstractLinearOperator):
 
     Two independent things carry the batch axis, and they are described separately:
 
-    - The *interior*: [`StreamSegment`][] links, held in composition order (segments[0] applied
+    - The *interior*: `_StreamSegment` links, held in composition order (segments[0] applied
       last, segments[-1] first), each *sliced* or *constant* according to whether its own data
       carries the batch axis.
     - The *boundary*: `in_stacked`/`out_stacked` ([`StackSpec`][]) say which input/output
@@ -114,7 +113,7 @@ class StreamOperator(AbstractLinearOperator):
     An active mesh context is required when calling `mv`; use `jax.set_mesh` beforehand.
     """
 
-    segments: tuple[StreamSegment, ...]
+    segments: tuple[_StreamSegment, ...]
     n_lead: int = field(kw_only=True, metadata={'static': True})
     in_stacked: StackSpec = field(kw_only=True, metadata={'static': True})
     out_stacked: StackSpec = field(kw_only=True, metadata={'static': True})
@@ -268,7 +267,7 @@ class StreamOperator(AbstractLinearOperator):
             block = (
                 BlockRowOperator(operators) if position == 0 else BlockDiagonalOperator(operators)
             )
-            segments.append(StreamSegment(block, position % 2 == 1))
+            segments.append(_StreamSegment(block, position % 2 == 1))
         return cls.create(
             tuple(segments),
             n_lead=n_lead,
@@ -300,7 +299,7 @@ class StreamOperator(AbstractLinearOperator):
     @classmethod
     def create(
         cls,
-        segments: tuple[StreamSegment, ...],
+        segments: tuple[_StreamSegment, ...],
         *,
         n_lead: int,
         in_stacked: StackSpec,
@@ -348,7 +347,7 @@ class StreamOperator(AbstractLinearOperator):
         if n_lead is None:
             n_lead = _leading_size(operator)
         return cls.create(
-            (StreamSegment(operator, True),),
+            (_StreamSegment(operator, True),),
             n_lead=n_lead,
             in_stacked=in_stacked,
             out_stacked=out_stacked,
@@ -446,7 +445,7 @@ class StreamOperator(AbstractLinearOperator):
         """How many segments carry the batch axis, i.e. how many sliced passes the body makes."""
         return sum(seg.sliced for seg in self.segments)
 
-    def _aligned_segments(self, n_sliced: int) -> tuple[StreamSegment, ...]:
+    def _aligned_segments(self, n_sliced: int) -> tuple[_StreamSegment, ...]:
         """Pad this body onto the canonical slot pattern ``[constant, sliced, ..., constant]``.
 
         Laying several bodies side by side needs them to agree slot for slot, which they do not:
@@ -460,7 +459,7 @@ class StreamOperator(AbstractLinearOperator):
         vacuous on an operator with no array leaves -- and a slot left identity across *all* the
         bodies folds back into its neighbour, since the block operator built from it is pure.
         """
-        slots: list[StreamSegment | None] = [None] * (2 * n_sliced + 1)
+        slots: list[_StreamSegment | None] = [None] * (2 * n_sliced + 1)
         seen = 0
         for seg in self.segments:
             if seg.sliced:
@@ -469,12 +468,12 @@ class StreamOperator(AbstractLinearOperator):
             else:
                 slots[2 * seen] = seg  # the constant slot just left of the next sliced one
         # walk right to left, the direction values flow, so each identity gets its slot's structure
-        filled: list[StreamSegment] = []
+        filled: list[_StreamSegment] = []
         structure = self.per_slice_in_structure
         for position, slot in reversed(list(enumerate(slots))):
             if slot is None:
                 filled.append(
-                    StreamSegment(IdentityOperator(in_structure=structure), position % 2 == 1)
+                    _StreamSegment(IdentityOperator(in_structure=structure), position % 2 == 1)
                 )
             else:
                 structure = slot.out_structure
@@ -501,7 +500,7 @@ class StreamOperator(AbstractLinearOperator):
         return tuple(dyn), tuple(stat)
 
 
-class StreamStreamFusionRule(AbstractCompositionRule):
+class _StreamStreamFusionRule(AbstractCompositionRule):
     """Fuse `left @ right` streams when the junction is entirely stacked.
 
     The *junction* is the intermediate structure the two streams meet at: `right`'s output, which
@@ -551,7 +550,7 @@ class StreamStreamFusionRule(AbstractCompositionRule):
         ]
 
 
-class HomothetyStreamRule(AbstractCompositionRule):
+class _HomothetyStreamRule(AbstractCompositionRule):
     """`Homothety @ Stream = Stream` with the scalar attached as a constant segment.
 
     The scalar becomes a constant segment -- never sliced -- leading for ``Homothety @ block`` and
@@ -590,10 +589,10 @@ class HomothetyStreamRule(AbstractCompositionRule):
         if on_output_side:  # homo @ block: leading constant segment
             # we need the per-block structure here, not the public one with the leading axis
             scalar = HomothetyOperator(homo.value, in_structure=block.per_slice_out_structure)
-            segments = (StreamSegment(scalar, False),) + block.segments
+            segments = (_StreamSegment(scalar, False),) + block.segments
         else:  # block @ homo: trailing constant segment
             scalar = HomothetyOperator(homo.value, in_structure=block.per_slice_in_structure)
-            segments = block.segments + (StreamSegment(scalar, False),)
+            segments = block.segments + (_StreamSegment(scalar, False),)
         return [
             StreamOperator.create(
                 segments,
@@ -604,7 +603,7 @@ class HomothetyStreamRule(AbstractCompositionRule):
         ]
 
 
-class StreamStreamAdditionRule(AbstractAdditionRule):
+class _StreamStreamAdditionRule(AbstractAdditionRule):
     """Fuse a sum of two matching stream operators into one stream.
 
     The two bodies are padded onto a common slot pattern (see `_aligned_segments`) and blocked
@@ -664,7 +663,7 @@ class StreamStreamAdditionRule(AbstractAdditionRule):
                 block = BlockColumnOperator(operators)
             else:
                 block = BlockDiagonalOperator(operators)
-            segments.append(StreamSegment(block, position % 2 == 1))
+            segments.append(_StreamSegment(block, position % 2 == 1))
         return [
             StreamOperator.create(
                 tuple(segments),
@@ -779,7 +778,7 @@ def _compose(
     return functools.reduce(lambda acc, operator: acc @ operator, operators).reduce()
 
 
-def _try_merge(left: StreamSegment, right: StreamSegment, n_lead: int) -> StreamSegment | None:
+def _try_merge(left: _StreamSegment, right: _StreamSegment, n_lead: int) -> _StreamSegment | None:
     """Compose two adjacent segments into one, or return None if that would change what they do.
 
     Segments of the same kind always compose. Across kinds, only a *pure* segment may join its
@@ -800,12 +799,12 @@ def _try_merge(left: StreamSegment, right: StreamSegment, n_lead: int) -> Stream
     operator = (left.operator @ right.operator).reduce()
     if sliced and not _is_sliceable(operator, n_lead):
         return None
-    return StreamSegment(operator, sliced)
+    return _StreamSegment(operator, sliced)
 
 
-def _normalize(segments: tuple[StreamSegment, ...], n_lead: int) -> tuple[StreamSegment, ...]:
+def _normalize(segments: tuple[_StreamSegment, ...], n_lead: int) -> tuple[_StreamSegment, ...]:
     """Drop constant identities and merge adjacent segments wherever that is legal."""
-    merged: list[StreamSegment] = []
+    merged: list[_StreamSegment] = []
     for seg in segments:
         if seg.is_identity:
             continue  # contributes nothing at all

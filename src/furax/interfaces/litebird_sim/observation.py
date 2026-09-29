@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from pathlib import Path
+from typing import Self
 
 import jax.numpy as jnp
 import litebird_sim as lbs
@@ -18,7 +19,7 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
     @classmethod
     def from_file(
         cls, filename: str | Path, requested_fields: Collection[str] | None = None
-    ) -> LBSObservation:
+    ) -> Self:
         # check that file exists
         file = Path(filename)
         if not file.exists():

@@ -4,7 +4,10 @@ import jax.random as jr
 import pytest
 from numpy.testing import assert_allclose
 
+from furax import IdentityOperator
+from furax.mapmaking.gram import gram_inverse
 from furax.mapmaking.templates import (
+    KroneckerBasis,
     SegmentedBasis,
     StokesTemplateOperator,
     TemplateOperator,
@@ -45,6 +48,30 @@ def test_template_operator_forward():
     got = T.T(tod)
     assert_allclose(got['scan'], _project(b1, tod), rtol=1e-5, atol=1e-6)
     assert_allclose(got['poly'], _project(b2, tod), rtol=1e-5, atol=1e-6)
+
+
+def test_template_operator_expands_dense_templates_together():
+    # dense templates are expanded in one matrix product and the others one by one; the sum must
+    # not depend on which is which: shared dense (tensor, kronecker), decimated and per-detector
+    # tensors (kept apart), and a segmented basis
+    k = jr.split(jr.key(6), 10)
+    bases = {
+        'tensor': TensorBasis(jr.normal(k[0], (3, N_SAMPS))),
+        'kron': KroneckerBasis((jr.normal(k[1], (2, N_SAMPS)), jr.normal(k[2], (3, N_SAMPS)))),
+        'coarse': TensorBasis(jr.normal(k[3], (2, N_SAMPS // 4)), q=4, n_full=N_SAMPS),
+        'per_det': TensorBasis.per_detector_stack(values=jr.normal(k[4], (N_DETS, 1, N_SAMPS))),
+        'poly': SegmentedBasis(_seg(4), jr.normal(k[5], (2, N_SAMPS)), 4),
+    }
+    T = TemplateOperator(bases, n_dets=N_DETS)
+    amps = {
+        name: jr.normal(jr.fold_in(k[6], i), s.shape)
+        for i, (name, s) in enumerate(T.in_structure.items())
+    }
+    ref = sum(
+        jax.vmap(lambda b, a: b.expand(a), in_axes=(0 if b.per_detector else None, 0))(b, amps[n])
+        for n, b in bases.items()
+    )
+    assert_allclose(T(amps), ref, rtol=1e-12, atol=1e-12)
 
 
 def test_stokes_template_operator_forward():
@@ -119,7 +146,44 @@ def test_stokes_template_operator_rejects_legs_outside_stokes():
 
 
 def test_stokes_template_operator_rejects_a_basis_that_is_not_keyed_by_leg():
-    # a Stokes-valued operator needs one basis per leg, never a single shared one
+    # a bare basis does not say which legs it covers
     b = TensorBasis(jnp.ones((2, N_SAMPS)))
-    with pytest.raises(TypeError, match="template 'poly' needs one basis per Stokes leg"):
+    with pytest.raises(TypeError, match="template 'poly' needs its bases keyed by Stokes leg"):
         StokesTemplateOperator({'poly': b}, n_dets=N_DETS, stokes='QU')
+
+
+def test_stokes_template_operator_rejects_a_leg_in_two_groups():
+    b = TensorBasis(jnp.ones((2, N_SAMPS)))
+    with pytest.raises(ValueError, match=r"template 'p' has legs \['q'\] in several groups"):
+        StokesTemplateOperator({'p': {'q': b, 'qu': b}}, n_dets=N_DETS, stokes='QU')
+
+
+def test_stokes_template_operator_leg_group_acts_as_one_basis_per_leg():
+    # a leg group stores one basis for several legs, each keeping its own amplitudes: the operator,
+    # its transpose and its Gram inverse must be those of the basis repeated on every leg. Two
+    # templates, so the Gram takes the coupled path.
+    k = jr.split(jr.key(5), 4)
+    poly = SegmentedBasis(_seg(4), jr.normal(k[0], (2, N_SAMPS)), 4)
+    leak = TensorBasis(jr.normal(k[1], (1, N_SAMPS)))
+    grouped = StokesTemplateOperator(
+        {'poly': {'iqu': poly}, 't2p': {'qu': leak}}, n_dets=N_DETS, stokes='IQU'
+    )
+    per_leg = StokesTemplateOperator(
+        {'poly': dict.fromkeys('iqu', poly), 't2p': dict.fromkeys('qu', leak)},
+        n_dets=N_DETS,
+        stokes='IQU',
+    )
+    assert grouped.in_structure == per_leg.in_structure
+
+    amps = jax.tree.map(lambda s: jr.normal(k[2], s.shape), per_leg.in_structure)
+    assert_allclose(grouped(amps).data, per_leg(amps).data, rtol=1e-12)
+    tod = per_leg.out_structure.from_array(jr.normal(k[3], (3, N_DETS, N_SAMPS)))
+    jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-12), grouped.T(tod), per_leg.T(tod))
+
+    weight = IdentityOperator(in_structure=per_leg.out_structure)
+    expected = gram_inverse(per_leg, weight)(amps)
+    jax.tree.map(
+        lambda a, b: assert_allclose(a, b, rtol=1e-10),
+        gram_inverse(grouped, weight)(amps),
+        expected,
+    )

@@ -1,6 +1,0 @@
-# Stencils
-
-Which pixels a sample reads, with what weights, and where those pixels sit on the sky.
-
-::: furax.obs.stencil.Interpolation
-::: furax.obs.stencil.Stencil

@@ -18,6 +18,27 @@ authors:
     orcid: "https://orcid.org/0000-0002-6039-8247"
 cff-version: 1.2.0
 type: software
-license: GPL-3.0
+license: MIT
 message: "If you use this software, please cite it using the metadata from this file."
 repository-code: "https://github.com/CMBSciPol/furax"
+preferred-citation:
+  type: article
+  title: "Furax: A Modular JAX Framework for Linear Operators in Astrophysical and Cosmological Data Analysis"
+  authors:
+    - {family-names: Chanial, given-names: Pierre}
+    - {family-names: Biquard, given-names: Simon}
+    - {family-names: Kabalan, given-names: Wassim}
+    - {family-names: Sohn, given-names: Wuhyun}
+    - {family-names: Basyrov, given-names: Artem}
+    - {family-names: Beringue, given-names: Benjamin}
+    - {family-names: Boucaud, given-names: Alexandre}
+    - {family-names: Landais, given-names: Andréa}
+    - {family-names: Morshed, given-names: Magdy}
+    - {family-names: Stompor, given-names: Radek}
+    - {family-names: Tsang King Sang, given-names: Ema}
+    - {family-names: Villarrubia-Aguilar, given-names: Amalia}
+    - {family-names: Errard, given-names: Josquin}
+  journal: "arXiv preprint"
+  year: 2026
+  doi: "10.48550/arXiv.2603.19600"
+  url: "https://arxiv.org/abs/2603.19600"

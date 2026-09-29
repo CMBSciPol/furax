@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `StokesTemplateOperator` uses groups of legs (e.g. `'qu'`), storing identical bases only once per group (#286)
+- `BorderedBandedCholeskyOperator`: inverse of a block-banded matrix with a dense border (#289)
+
+### Changed
+
+- Faster `KroneckerBasis` expand and project for bases shared across detectors (#283)
+- **Breaking:** `SegmentedBasis.segment` and `WindowedBasis.offset` must be non-decreasing; projection on bases shared across detectors is faster (#285)
+- Template Gram inverses are factored per Stokes leg, using a third of the memory for IQU (#287)
+- Faster template expansion when several dense templates (`TensorBasis`, `KroneckerBasis`) are enabled (#288)
+- Several templates on one stream keep the band structure of their largest time-local template (polynomial, spline) instead of a dense block, and `cross_gram` no longer builds per-sample outer products (#289)
+- Faster `banded_cholesky_solve` and `banded_cholesky` on GPU, and for block-diagonal matrices (#290)
+
+### Fixed
+
+- Template and `BandedCholeskyOperator` matmuls use full float32 precision on GPU (#282)
+- The Gram inverse of several templates is no longer NaN when some amplitude is seen by no weighted sample (#289)
+
+## [0.15.0] - 2026-09-29
+
 The pointing architecture has been overhauled. A `PointingOperator` now holds a *sampler* (`AbstractSampler`), which owns the entire pointing logic (line-of-sight computation and sampling of the pixels). The sampler's *kernel* (`SamplingKernel`) handles the actual sampling logic: nearest-neighbour or bilinear, beam, etc. On-the-fly pointing is also faster on HEALPix and CAR maps; on a GPU, bilinear pointing on a CAR map runs about 3 times faster whilst using a fraction of the memory (#274, #277).
 
 ### Added
@@ -31,6 +52,8 @@ The pointing architecture has been overhauled. A `PointingOperator` now holds a 
 - **Breaking:** `spin2_cos_sin` and `spin2_cos_sin_zs` return a `Spin2Rotation` (#273)
 - Faster on-the-fly pointing on HEALPix and CAR maps; the transpose holds one map less in memory (#274)
 - jax-healpy 0.8 is the minimum version (#274)
+- Make internal classes from `furax.obs.pointing` and `furax.mapmaking.streaming` private (#280)
+- Generate API reference from the source tree (#280)
 
 ### Fixed
 
@@ -393,7 +416,8 @@ Initial tagged release.
 
 - Project classifiers and editable-mode installation instructions
 
-[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.14.0...HEAD
+[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/CMBSciPol/furax/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/CMBSciPol/furax/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/CMBSciPol/furax/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/CMBSciPol/furax/compare/v0.12.0...v0.12.1

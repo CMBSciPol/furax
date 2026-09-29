@@ -6,14 +6,17 @@ requires = ['hatchling', 'hatch-vcs']
 name = 'furax'
 authors = [
     { name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' },
-    { name = 'Simon Biquard', email = 'biquard@apc.in2p3.fr' },
+    { name = 'Simon Biquard', email = 'simon.biquard@manchester.ac.uk' },
     { name = 'Wassim Kabalan' },
     { name = 'Wuhyun Sohn', email = 'sohn@apc.in2p3.fr' },
 ]
-maintainers = [{ name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' }]
-description = 'Operators and solvers for high-performance computing.'
+maintainers = [
+    { name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' },
+    { name = 'Simon Biquard', email = 'simon.biquard@manchester.ac.uk' },
+]
+description = 'A JAX framework for linear operators in astrophysical and cosmological data analysis.'
 readme = 'README.md'
-keywords = ['scientific computing']
+keywords = ['scientific computing', 'jax', 'linear operators', 'cosmology', 'CMB', 'mapmaking']
 classifiers = [
     'Programming Language :: Python',
     'Programming Language :: Python :: 3.12',
@@ -21,6 +24,8 @@ classifiers = [
     'Intended Audience :: Science/Research',
     'Operating System :: OS Independent',
     'Topic :: Scientific/Engineering',
+    'Topic :: Scientific/Engineering :: Astronomy',
+    'Topic :: Scientific/Engineering :: Physics',
 ]
 requires-python = '>=3.12'
 license = 'MIT'
@@ -67,7 +72,10 @@ interfaces = ["furax[so,toast,lbs]"]
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'
+documentation = 'https://furax.readthedocs.io/en/stable/'
 repository = 'https://github.com/CMBSciPol/furax'
+issues = 'https://github.com/CMBSciPol/furax/issues'
+changelog = 'https://furax.readthedocs.io/en/stable/development/changelog/'
 
 [project.scripts]
 furax-so-atomic-map = 'furax.interfaces.sotodlib.mapmaker:main_cli'
@@ -89,7 +97,7 @@ dev = [
     'pytest-xdist>=3.8.0',
 ]
 docs = [
-    'zensical>=0.0.50',
+    'zensical>=0.0.66',
     'mkdocstrings-python>=2.0.5',
 ]
 lint = ['prek>=0.4.12']

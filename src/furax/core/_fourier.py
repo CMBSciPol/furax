@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from dataclasses import field
+from typing import Self
 
 import jax
 import jax.numpy as jnp
@@ -152,7 +153,7 @@ class FourierOperator(AbstractLinearOperator):
         *,
         filter_type: str = 'square',
         apodize: bool = True,
-    ) -> 'FourierOperator':
+    ) -> Self:
         """Creates a bandpass filtering operator.
 
         Examples:

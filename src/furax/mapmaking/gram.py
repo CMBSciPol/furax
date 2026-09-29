@@ -15,8 +15,10 @@ Limitations:
   deprojection is not handled (also results in a non-diagonal effective weight).
 - When assembling the Gram, basis structure (column support) is only exploited if all bases of the
   template operator are shared over detectors.
-- With several shared bases, the per-detector Gram blocks are stored as dense objects, even where
-  the cross blocks are sparse (e.g. from the product of two time-local bases).
+- Several templates on one stream (the TOD, or one Stokes leg) are coupled through the weight.
+  The time-local template with the most amplitudes keeps its band structure, and the others
+  border it, eliminated by a Schur complement. A second time-local template in the border is
+  stored dense, even though its coupling to the banded one is sparse.
 
 A Gaussian prior $a \sim \mathcal{N}(0, \Sigma_a)$ on the amplitudes would generalise implicit
 deprojection to Wiener filtering:
@@ -30,8 +32,8 @@ $\lambda \cdot \mathrm{mean}(\mathrm{diag}\, G)$ added to each block before fact
 numerical safeguard rather than a statistical choice.
 """
 
+from dataclasses import field
 from math import prod
-from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -40,11 +42,16 @@ from jax import Array
 from jaxtyping import Float, PyTree
 
 import furax.tree
-from furax import AbstractLinearOperator
-from furax.core import BlockDiagonalOperator
-from furax.linalg import BandedCholeskyOperator
+from furax import AbstractLinearOperator, symmetric
+from furax.linalg import BandedCholeskyOperator, BorderedBandedCholeskyOperator
 
-from .templates import AbstractTemplateOperator, Basis, NoStructuredView, is_basis
+from .templates import (
+    AbstractTemplateOperator,
+    Basis,
+    NoStructuredView,
+    StokesTemplateOperator,
+    is_basis,
+)
 
 __all__ = [
     'cross_gram',
@@ -113,25 +120,42 @@ def cross_gram(a: Basis, b: Basis, weights: Float[Array, ' samp']) -> Float[Arra
     """
     ca, cb = a.support(), b.support()
     ka, kb = ca.values.shape[0], cb.values.shape[0]
-    if ka <= kb:  # fold the weight into whichever side is smaller, cheaper elementwise multiply
-        vwa, vwb = ca.values * weights[None, :], cb.values
-    else:
-        vwa, vwb = ca.values, cb.values * weights[None, :]
-    gram = jnp.zeros((ca.n_blocks, ka, cb.n_blocks, kb), a.dtype)
-    for wa in range(ca.blocks.shape[1]):  # window slots (single slot for non-overlapping bases)
-        lhs = ca.taps[:, wa][None, :] * vwa  # (k_a, samp)
-        for wb in range(cb.blocks.shape[1]):
-            rhs = cb.taps[:, wb][None, :] * vwb  # (k_b, samp)
-            contrib = jnp.einsum('at,bt->tab', lhs, rhs)  # (samp, k_a, k_b)
-            gram = gram.at[ca.blocks[:, wa], :, cb.blocks[:, wb], :].add(contrib)
-    return gram.reshape(ca.n_blocks * ka, cb.n_blocks * kb)
+    if ka < kb:  # step through the smaller side's sub-basis functions (below), keep the larger
+        return cross_gram(b, a, weights).T
+    vwa = (ca.values * weights[None, :]).T  # (samp, k_a)
+    if ca.blocks.shape[1] == cb.blocks.shape[1] == 1 and ca.n_blocks == cb.n_blocks == 1:
+        # both global: a plain matrix product, with no per-sample products at all
+        taps = ca.taps[:, 0] * cb.taps[:, 0]
+        return jnp.einsum(
+            'ta,bt->ab', taps[:, None] * vwa, cb.values, precision=jax.lax.Precision.HIGHEST
+        )
+
+    def column(values_b: Array) -> Array:
+        """The block for one sub-basis function of `b`, `(n_a, k_a, n_b)`.
+
+        One function at a time keeps the per-sample products at `(samp, k_a)`, rather than the
+        `(samp, k_a, k_b)` of all at once, which for a global template exceeds the TOD itself.
+        """
+        gram = jnp.zeros((ca.n_blocks, ka, cb.n_blocks), a.dtype)
+        for wa in range(ca.blocks.shape[1]):  # window slots (single slot for non-overlapping bases)
+            for wb in range(cb.blocks.shape[1]):
+                taps = ca.taps[:, wa] * cb.taps[:, wb] * values_b  # (samp,)
+                gram = gram.at[ca.blocks[:, wa], :, cb.blocks[:, wb]].add(taps[:, None] * vwa)
+        return gram
+
+    columns = jax.lax.map(column, cb.values)  # (k_b, n_a, k_a, n_b)
+    return jnp.moveaxis(columns, 0, -1).reshape(ca.n_blocks * ka, cb.n_blocks * kb)
 
 
-def _zero_sub_identity(diagonal_blocks: Float[Array, '*batch k k']) -> Float[Array, '*batch k k']:
-    """Substitute the identity for zero Gram blocks, which are singular and factor to NaN."""
-    k = diagonal_blocks.shape[-1]
-    unconstrained = jnp.all(diagonal_blocks == 0, axis=(-2, -1), keepdims=True)
-    return jnp.where(unconstrained, jnp.eye(k, dtype=diagonal_blocks.dtype), diagonal_blocks)
+def _unit_on_zero_rows(matrix: Float[Array, '*batch k k']) -> Float[Array, '*batch k k']:
+    """Put a unit diagonal on the zero rows of a Gram: amplitudes no weighted sample sees.
+
+    Such a row (and its column, by symmetry) makes the Gram singular and its factor NaN. The unit
+    diagonal leaves the other amplitudes' solution unchanged and returns the unseen ones as they
+    came in. An all-zero block, e.g. an interval no sample sees, becomes the identity.
+    """
+    unseen = jnp.all(matrix == 0, axis=-1)  # (*batch, k)
+    return matrix + unseen[..., None] * jnp.eye(matrix.shape[-1], dtype=matrix.dtype)
 
 
 def _structured_gram_inverse(
@@ -140,63 +164,153 @@ def _structured_gram_inverse(
     regularization: float,
     batch_size: int,
 ) -> AbstractLinearOperator:
-    if len(template.bases) > 1:
-        return _coupled_gram_inverse(template, diag, regularization, batch_size)
-
-    def leg_inverse(path: Any, basis: Basis, amp: PyTree[Any]) -> Any:
-        leg = path[-1].key if len(path) > 1 else None
-        leg_diag = diag if leg is None else getattr(diag, leg)
-        bands = jax.lax.map(basis.gram, leg_diag, batch_size=batch_size)
-        bands = bands.at[..., 0, :, :].set(_zero_sub_identity(bands[..., 0, :, :]))
-        return BandedCholeskyOperator.from_bands(bands, amp, regularization)
-
-    # one factored block per template and Stokes leg, keyed as the amplitudes are: legs are
-    # independent, and detectors are already the leading axis inside each block
-    return BlockDiagonalOperator(
-        jax.tree.map_with_path(
-            leg_inverse,
-            template.bases,
-            template.in_structure,
-            is_leaf=is_basis,
+    if not isinstance(template, StokesTemplateOperator):  # a single stream
+        return _stream_gram_inverse(
+            template.bases, diag, template.in_structure, regularization, batch_size
         )
-    )
+
+    # Two bases on different legs never share a weighted sample, so each leg is a stream of its
+    # own, with one block over the templates it carries rather than one block over every leg.
+    by_leg = {
+        leg: bases
+        for leg in template.legs
+        if (bases := {name: on[leg] for name, on in template.bases_by_leg.items() if leg in on})
+    }
+    blocks: dict[str, AbstractLinearOperator] = {
+        leg: _stream_gram_inverse(
+            bases,
+            getattr(diag, leg),
+            {name: template.in_structure[name][leg] for name in bases},
+            regularization,
+            batch_size,
+        )
+        for leg, bases in by_leg.items()
+    }
+    return _PerLegOperator(blocks, in_structure=template.in_structure)
 
 
-def _coupled_gram_inverse(
-    template: AbstractTemplateOperator,
-    diag: PyTree[Array],
+def _stream_gram_inverse(
+    bases: dict[str, Basis],
+    diag: Float[Array, 'det samp'],
+    in_structure: PyTree[jax.ShapeDtypeStruct],
     regularization: float,
     batch_size: int,
 ) -> AbstractLinearOperator:
-    # Flattening keeps the keys: `('poly', 'q')` for a Stokes-valued template, `('poly',)` without
-    # a Stokes axis. The leg says which stream a basis is weighted by, and two bases on different
-    # legs never share a weighted sample.
-    entries, _ = jax.tree.flatten_with_path(template.bases, is_leaf=is_basis)
-    bases: list[Basis] = [basis for _, basis in entries]
-    legs = [path[-1].key if len(path) > 1 else None for path, _ in entries]
-    diags = tuple(diag if leg is None else getattr(diag, leg) for leg in legs)
+    """Inverse of the Gram of every template on one stream, one block per detector.
 
-    # each basis owns a contiguous slice of the joint block, laid out in that same order
-    sizes = [basis.size for basis in bases]
-    offsets = np.cumsum([0, *sizes])
+    A single template keeps the band structure of its own Gram. Several are coupled through the
+    shared weight: the time-local one with the most amplitudes keeps its band structure, the
+    others bordering it. Without any time-local template, the few amplitudes share a dense block.
+    """
+    if len(bases) == 1:
+        (basis,) = bases.values()
+        bands = jax.lax.map(basis.gram, diag, batch_size=batch_size)
+        bands = bands.at[..., 0, :, :].set(_unit_on_zero_rows(bands[..., 0, :, :]))
+        return BandedCholeskyOperator.from_bands(bands, in_structure, regularization)
+
+    # a basis split into several blocks of time is time-local; one block sees every sample
+    local = [name for name, basis in bases.items() if basis._n_blocks > 1]
+    if local:
+        core = max(local, key=lambda name: bases[name].size)
+        return _bordered_gram_inverse(bases, core, diag, in_structure, regularization, batch_size)
+
+    ordered: list[Basis] = jax.tree.leaves(bases, is_leaf=is_basis)
+    blocks = jax.lax.map(lambda w: _dense_gram(ordered, w), diag, batch_size=batch_size)
+    blocks = _unit_on_zero_rows(blocks)
+    return BandedCholeskyOperator.from_dense(blocks, in_structure, regularization)
+
+
+def _dense_gram(bases: list[Basis], weights: Float[Array, ' samp']) -> Float[Array, 'k k']:
+    """One detector's joint Gram of `bases`, each owning a contiguous slice in the given order.
+
+    The lower blocks are the transposes of the upper ones, so each pair is computed once.
+    """
+    offsets = np.cumsum([0, *(basis.size for basis in bases)])
     n_amps = int(offsets[-1])
-    dtype = bases[0].dtype
+    block = jnp.zeros((n_amps, n_amps), bases[0].dtype)
+    for i, a in enumerate(bases):
+        rows = slice(offsets[i], offsets[i + 1])
+        for j in range(i, len(bases)):
+            cols = slice(offsets[j], offsets[j + 1])
+            cross = cross_gram(a, bases[j], weights)
+            block = block.at[rows, cols].set(cross)
+            if j > i:
+                block = block.at[cols, rows].set(cross.T)
+    return block
 
-    def build(per_basis_diags: tuple[Array, ...]) -> Array:
-        """One detector's joint block, filled in one basis pair at a time."""
-        block = jnp.zeros((n_amps, n_amps), dtype)
-        for i, a in enumerate(bases):
-            rows = slice(offsets[i], offsets[i + 1])
-            for j, b in enumerate(bases):
-                if legs[i] != legs[j]:  # different Stokes legs never share a weighted sample
-                    continue
-                cols = slice(offsets[j], offsets[j + 1])
-                block = block.at[rows, cols].set(cross_gram(a, b, per_basis_diags[i]))
-        return block
 
-    blocks = jax.lax.map(build, diags, batch_size=batch_size)  # (n_dets, n_amps, n_amps)
-    blocks = _zero_sub_identity(blocks)
-    return BandedCholeskyOperator.from_dense(blocks, template.in_structure, regularization)
+def _bordered_gram_inverse(
+    bases: dict[str, Basis],
+    core_name: str,
+    diag: Float[Array, 'det samp'],
+    in_structure: PyTree[jax.ShapeDtypeStruct],
+    regularization: float,
+    batch_size: int,
+) -> '_BorderedGramInverse':
+    """Inverse Gram of one time-local template bordered by the others, one per detector.
+
+    The core template's own Gram is block-banded; the others couple to it through a dense border
+    and to each other through a dense corner.
+    """
+    core = bases[core_name]
+    border_names = tuple(name for name in bases if name != core_name)
+    border_bases = [bases[name] for name in border_names]
+
+    def build(weights: Array) -> tuple[Array, Array, Array]:
+        border = [cross_gram(core, basis, weights) for basis in border_bases]
+        corner = _dense_gram(border_bases, weights)
+        return core.gram(weights), jnp.concatenate(border, axis=1), corner
+
+    bands, border, corner = jax.lax.map(build, diag, batch_size=batch_size)
+    bands = bands.at[..., 0, :, :].set(_unit_on_zero_rows(bands[..., 0, :, :]))
+    corner = _unit_on_zero_rows(corner)
+    factor = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner, regularization)
+    return _BorderedGramInverse(factor, core_name, border_names, in_structure=in_structure)
+
+
+@symmetric
+class _BorderedGramInverse(AbstractLinearOperator):
+    """A bordered banded Cholesky inverse, on template amplitudes.
+
+    One time-local template is the banded core of
+    [`BorderedBandedCholeskyOperator`][furax.linalg.BorderedBandedCholeskyOperator], the other
+    templates its border.
+    """
+
+    factor: BorderedBandedCholeskyOperator
+    core_name: str = field(metadata={'static': True})
+    border_names: tuple[str, ...] = field(metadata={'static': True})
+
+    def mv(self, x: PyTree[Array]) -> PyTree[Array]:
+        r_a = x[self.core_name]
+        n_dets = r_a.shape[0]
+        r_c = jnp.concatenate([x[name].reshape(n_dets, -1) for name in self.border_names], axis=1)
+        x_a, x_c = self.factor((r_a, r_c))
+
+        out = {self.core_name: x_a}
+        cuts = np.cumsum([prod(x[name].shape[1:]) for name in self.border_names])[:-1]
+        for name, part in zip(self.border_names, jnp.split(x_c, cuts, axis=1), strict=True):
+            out[name] = part.reshape(x[name].shape)
+        return {name: out[name] for name in x}
+
+
+@symmetric
+class _PerLegOperator(AbstractLinearOperator):
+    """Block diagonal over Stokes legs, each block acting on every template the leg carries.
+
+    The amplitudes are keyed by template, then leg, so a block's input is gathered across
+    templates and its output scattered back.
+    """
+
+    blocks: dict[str, AbstractLinearOperator]
+
+    def mv(self, x: PyTree[Array]) -> PyTree[Array]:
+        out: dict[str, dict[str, Array]] = {name: {} for name in x}
+        for leg, block in self.blocks.items():
+            y = block({name: amps[leg] for name, amps in x.items() if leg in amps})
+            for name, amp in y.items():
+                out[name][leg] = amp
+        return out
 
 
 def _probed_gram_inverse(
@@ -236,5 +350,5 @@ def _probed_gram_inverse(
 
     columns = jax.lax.map(probe, jnp.arange(n_amps))  # (col, n_dets, row)
     blocks = jnp.moveaxis(columns, 0, -1)  # (n_dets, row, col)
-    blocks = _zero_sub_identity(blocks)
+    blocks = _unit_on_zero_rows(blocks)
     return BandedCholeskyOperator.from_dense(blocks, in_structure, regularization)

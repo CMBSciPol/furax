@@ -411,7 +411,7 @@ def _rotation_angles(rotation: AbstractLinearOperator) -> Float[Array, '...']:
     raise NoReduction
 
 
-class QURotationPointingRule(AbstractCompositionRule):
+class _QURotationPointingRule(AbstractCompositionRule):
     """Absorb `R(theta) @ P` into `P`: the sampler rotates its samples further by `theta`."""
 
     left_operator_class = (QURotationOperator, QURotationTransposeOperator)
@@ -424,7 +424,7 @@ class QURotationPointingRule(AbstractCompositionRule):
         return [right.rotated(_rotation_angles(left))]
 
 
-class PointingTransposeQURotationRule(AbstractCompositionRule):
+class _PointingTransposeQURotationRule(AbstractCompositionRule):
     """Absorb `P.T @ R(theta).T`, the transpose of `R(theta) @ P`, into `P.T`."""
 
     left_operator_class = PointingTransposeOperator

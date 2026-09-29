@@ -4,7 +4,7 @@ import functools
 import threading
 from collections.abc import Collection
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import Any, Literal, Self, overload
 
 import jax.numpy as jnp
 import numpy as np
@@ -101,7 +101,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         filename: str | Path,
         requested_fields: Collection[str] | None = None,
         sotodlib_config: SotodlibConfig | None = None,
-    ) -> SOTODLibObservation:
+    ) -> Self:
         # check that file exists
         if not Path(filename).exists():
             raise FileNotFoundError(f'File {filename} does not exist')
@@ -161,7 +161,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         observation_id: str,
         detector_selection: dict[str, str] | None = None,
         sotodlib_config: SotodlibConfig | None = None,
-    ) -> SOTODLibObservation:
+    ) -> Self:
         """Loads and preprocesses an observation.
 
         Args:
@@ -194,7 +194,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         detector_selection: dict[str, str] | None = None,
         downsample: int = 1,
         sotodlib_config: SotodlibConfig | None = None,
-    ) -> SOTODLibObservation:
+    ) -> Self:
         """Loads a (already preprocessed) observation directly from the preprocessing db.
 
         This reads the saved preprocessing products from the archive and re-applies the

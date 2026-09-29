@@ -20,48 +20,6 @@ nav = [
       "examples/component_separation.md",
       "examples/mapmaking.md",
   ] },
-  { "API reference" = [
-      "api/furax.md",
-      { "furax.core" = [
-          "api/core/algebra.md",
-          "api/core/composite.md",
-          "api/core/structural.md",
-          "api/core/special.md",
-      ] },
-      { "furax.obs" = [
-          "api/obs/pointing.md",
-          "api/obs/sampling.md",
-          "api/obs/polarization.md",
-          "api/obs/beam.md",
-          "api/obs/seds.md",
-          "api/obs/likelihoods.md",
-          "api/obs/landscapes.md",
-          "api/obs/stencil.md",
-          "api/obs/stokes.md",
-          "api/obs/spin2.md",
-          "api/obs/atmosphere.md",
-      ] },
-      { "furax.mapmaking" = [
-          "api/mapmaking/observation.md",
-          "api/mapmaking/mapmaker.md",
-          "api/mapmaking/config.md",
-          "api/mapmaking/templates.md",
-          "api/mapmaking/pomme.md",
-          "api/mapmaking/preconditioner.md",
-          "api/mapmaking/streaming.md",
-          "api/mapmaking/layout.md",
-      ] },
-      { "Other subpackages" = [
-          "api/math.md",
-          "api/linalg.md",
-          "api/io.md",
-          "api/interfaces.md",
-          "api/tree.md",
-          "api/profiling.md",
-          "api/distributed.md",
-          "api/exceptions.md",
-      ] },
-  ] },
   { "Development" = [
       "development/contributing.md",
       "development/changelog.md",
@@ -74,8 +32,13 @@ extra_javascript = [
     "https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"
 ]
 
-# Enable API reference documentation
+# Generate the API reference from the source tree
 # https://zensical.org/docs/setup/extensions/mkdocstrings/
+[project.plugins.api-autonav]
+modules = ["src/furax"]
+nav_section_title = "API reference"
+api_root_uri = "api"
+
 [project.plugins.mkdocstrings.handlers.python]
 inventories = [
     "https://docs.python.org/3/objects.inv",

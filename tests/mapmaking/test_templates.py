@@ -227,7 +227,7 @@ class TestDecimatedTensorBasis:
 
 
 def _segmented(n_segments: int, k: int, n_points: int, seed: int):
-    segment = jr.randint(jr.key(seed), (n_points,), 0, n_segments)
+    segment = jnp.sort(jr.randint(jr.key(seed), (n_points,), 0, n_segments))
     values = jr.normal(jr.key(seed + 1), (k, n_points))
     return SegmentedBasis(segment.astype(jnp.int32), values, n_segments), segment, values
 
@@ -266,6 +266,15 @@ class TestSegmentedBasis:
         assert_allclose(diff[segment != 0], 0.0, atol=TOL)
         assert jnp.max(jnp.abs(diff[segment == 0])) > 0.0
 
+    def test_projects_every_detector_as_it_projects_each(self) -> None:
+        # the template operator projects all detectors in one pass, which must agree with
+        # projecting each stream on its own
+        n_dets, n_points = 5, 50
+        basis, _, _ = _segmented(3, 4, n_points, 640)
+        signals = jr.normal(jr.key(642), (n_dets, n_points))
+        expected = jnp.stack([basis.project(signal) for signal in signals])
+        assert_allclose(_wrap(basis, n_dets).T(signals)['t'], expected, rtol=TOL)
+
 
 # ---------------------------------------------------------------------------
 # WindowedBasis
@@ -274,7 +283,7 @@ class TestSegmentedBasis:
 
 def _windowed(n_blocks: int, n_window: int, k: int, n_points: int, seed: int):
     # offset kept in [0, n_blocks - n_window] so every window stays in range.
-    offset = jr.randint(jr.key(seed), (n_points,), 0, n_blocks - n_window + 1)
+    offset = jnp.sort(jr.randint(jr.key(seed), (n_points,), 0, n_blocks - n_window + 1))
     block_weights = jr.normal(jr.key(seed + 1), (n_window, n_points))
     sub_values = jr.normal(jr.key(seed + 2), (k, n_points))
     basis = WindowedBasis(offset.astype(jnp.int32), block_weights, sub_values, n_blocks)
@@ -312,7 +321,7 @@ class TestWindowedBasis:
     def test_reduces_to_segmented_when_window_is_one(self) -> None:
         # O=1 with unit weights is exactly SegmentedBasis (offset == segment id).
         n_seg, k, n_points = 4, 3, 50
-        segment = jr.randint(jr.key(820), (n_points,), 0, n_seg)
+        segment = jnp.sort(jr.randint(jr.key(820), (n_points,), 0, n_seg))
         values = jr.normal(jr.key(821), (k, n_points))
         segmented = SegmentedBasis(segment.astype(jnp.int32), values, n_seg)
         windowed = WindowedBasis(
@@ -344,6 +353,14 @@ class TestWindowedBasis:
         covers = (offset <= target) & (target < offset + n_window)
         assert_allclose(diff[~covers], 0.0, atol=TOL)
 
+    def test_projects_every_detector_as_it_projects_each(self) -> None:
+        # as for SegmentedBasis: one pass over all detectors agrees with one per detector
+        n_dets, n_points = 5, 50
+        basis, *_ = _windowed(6, 4, 3, n_points, 860)
+        signals = jr.normal(jr.key(861), (n_dets, n_points))
+        expected = jnp.stack([basis.project(signal) for signal in signals])
+        assert_allclose(_wrap(basis, n_dets).T(signals)['t'], expected, rtol=TOL)
+
 
 # ---------------------------------------------------------------------------
 # Basis.per_detector_stack
@@ -366,7 +383,8 @@ def _stacked_and_singles(flavour: str, n_dets: int, seed: int) -> tuple[Basis, l
         )
     if flavour == 'segmented':
         n_seg = 3
-        segment = jr.randint(k[0], (n_dets, n_points), 0, n_seg).astype(jnp.int32)
+        segment = jnp.sort(jr.randint(k[0], (n_dets, n_points), 0, n_seg), axis=-1)
+        segment = segment.astype(jnp.int32)
         values = jr.normal(k[1], (n_dets, 2, n_points))
         return (
             SegmentedBasis.per_detector_stack(segment=segment, values=values, n_segments=n_seg),
@@ -374,7 +392,8 @@ def _stacked_and_singles(flavour: str, n_dets: int, seed: int) -> tuple[Basis, l
         )
     if flavour == 'windowed':
         n_blocks, n_window = 6, 4
-        offset = jr.randint(k[0], (n_dets, n_points), 0, n_blocks - n_window + 1).astype(jnp.int32)
+        offset = jr.randint(k[0], (n_dets, n_points), 0, n_blocks - n_window + 1)
+        offset = jnp.sort(offset, axis=-1).astype(jnp.int32)
         weights = jr.normal(k[1], (n_dets, n_window, n_points))
         sub = jr.normal(k[2], (n_dets, 2, n_points))
         return (
@@ -640,6 +659,13 @@ class TestPolynomialStructure:
         gap = (jnp.arange(n_samps) >= 80) & (jnp.arange(n_samps) < 120)
         assert_allclose(out[gap], 0.0, atol=TOL)
 
+    def test_segments_are_sorted(self) -> None:
+        # `SegmentedBasis` requires non-decreasing segment ids, gaps included
+        intervals = jnp.array([[10, 80], [120, 160], [160, 190]])
+        times = jnp.arange(200, dtype=jnp.float64)
+        basis = polynomial_basis(3, intervals, times, jnp.float64)
+        assert jnp.all(jnp.diff(basis.segment) >= 0)
+
 
 # ---------------------------------------------------------------------------
 # polynomial_basis (masking)
@@ -857,6 +883,12 @@ class TestSplineHWPSynchronousTemplate:
         # WindowedBasis amplitudes: (K knots, 2 = cos/sin)
         assert basis.shape == (K, 2)
         assert basis.out_structure.shape == (n_samps,)
+
+    def test_offsets_are_sorted(self) -> None:
+        # `WindowedBasis` requires non-decreasing window offsets
+        t = jnp.linspace(0, 10, 100)
+        basis = spline_hwp_synchronous_basis(t, jnp.zeros(100), 6, (4,), jnp.float64)
+        assert jnp.all(jnp.diff(basis.offset) >= 0)
 
     def test_equivalent_to_dense_4f_basis(self) -> None:
         # WindowedBasis spline_hwp_synchronous reproduces the dense (2K, N) interleaved basis.

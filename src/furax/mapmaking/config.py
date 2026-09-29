@@ -3,7 +3,7 @@
 from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 import yaml
@@ -584,7 +584,7 @@ class TemplatesConfig:
     """Detector batch size for Gram inversion."""
 
     @classmethod
-    def full_defaults(cls) -> 'TemplatesConfig':
+    def full_defaults(cls) -> Self:
         """Create a template config with default values for all templates."""
         return cls(
             polynomial=PolynomialConfig(),
@@ -833,7 +833,7 @@ class MapMakingConfig:
                 raise ValueError('templates.polynomial.legendre_qu requires demodulated=True.')
 
     @classmethod
-    def for_method(cls, method: 'Methods | str') -> 'MapMakingConfig':
+    def for_method(cls, method: 'Methods | str') -> Self:
         """Return a default MapMakingConfig pre-configured for the given method.
 
         Args:
@@ -887,15 +887,15 @@ class MapMakingConfig:
             raise ValueError(f'Unknown method: {method}')
 
     @classmethod
-    def load_yaml(cls, path: str | Path) -> 'MapMakingConfig':
+    def load_yaml(cls, path: str | Path) -> Self:
         """Load and instantiate a ``MapMakingConfig`` from a YAML file."""
         data = yaml.safe_load(Path(path).read_text())
         return cls.load_dict(data)
 
     @classmethod
-    def load_dict(cls, data: dict[str, Any]) -> 'MapMakingConfig':
+    def load_dict(cls, data: dict[str, Any]) -> Self:
         """Load and instantiate a ``MapMakingConfig`` from a dictionary."""
-        return deserialize(MapMakingConfig, data)
+        return deserialize(cls, data)
 
     def dump_yaml(self, path: str | Path) -> None:
         """Dump the config to a YAML file.

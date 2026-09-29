@@ -14,9 +14,14 @@ from furax import AbstractLinearOperator, symmetric
 
 __all__ = [
     'BandedCholeskyOperator',
+    'BorderedBandedCholeskyOperator',
     'banded_cholesky',
     'banded_cholesky_solve',
 ]
+
+# Full float32 precision for the block products to avoid TF32 rounding
+_matmul = partial(jnp.matmul, precision=jax.lax.Precision.HIGHEST)
+_einsum = partial(jnp.einsum, precision=jax.lax.Precision.HIGHEST)
 
 
 @symmetric
@@ -102,6 +107,97 @@ class BandedCholeskyOperator(AbstractLinearOperator):
         return treedef.unflatten(out)
 
 
+@symmetric
+class BorderedBandedCholeskyOperator(AbstractLinearOperator):
+    r"""Inverse of a symmetric positive-definite matrix with a block-banded core and a dense border.
+
+    The matrix is split into a block-banded part $A$ over the first unknowns $x_a$ and a small
+    dense part $C$ over the last ones $x_c$, coupled by a dense border $B$:
+
+    $$ M = \begin{pmatrix} A & B \\ B^\top & C \end{pmatrix}. $$
+
+    Storing it whole would lose the band. Instead, $x_c$ is eliminated through the Schur
+    complement $S = C - B^\top A^{-1} B$: with $Z = A^{-1} B$, solving $M x = r$ is
+
+    $$ x_c = S^{-1} (r_c - Z^\top r_a), \qquad x_a = A^{-1} r_a - Z x_c, $$
+
+    which keeps only the band factor of $A$, $Z$ and the factor of $S$.
+
+    Calling `op((r_a, r_c))` solves $M x = r$ and returns `(x_a, x_c)`, with `r_a` of shape
+    `(*batch, n_blocks, k)` and `r_c` of shape `(*batch, k_c)`.
+
+    Examples:
+        >>> import jax.numpy as jnp
+        >>> from furax.linalg import BorderedBandedCholeskyOperator
+        >>> bands = jnp.array([[[[4.]], [[1.]]], [[[4.]], [[0.]]]])  # A = [[4, 1], [1, 4]]
+        >>> border = jnp.array([[1.], [1.]])  # B
+        >>> corner = jnp.array([[3.]])  # C
+        >>> op = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner)
+        >>> x_a, x_c = op((jnp.array([[6.], [6.]]), jnp.array([5.])))  # M x = r for x = 1
+        >>> x_a.ravel(), x_c
+        (Array([1., 1.], dtype=float32), Array([1.], dtype=float32))
+    """
+
+    banded: BandedCholeskyOperator
+    """$A^{-1}$, on `(*batch, n_blocks, k)`."""
+    coupling: Float[Array, '*batch ka kc']
+    """$Z = A^{-1} B$, with `ka = n_blocks * k`."""
+    schur: BandedCholeskyOperator
+    """$S^{-1}$, on `(*batch, k_c)`."""
+
+    @classmethod
+    def from_blocks(
+        cls,
+        bands: Float[Array, '*batch n w1 k k'],
+        border: Float[Array, '*batch ka kc'],
+        corner: Float[Array, '*batch kc kc'],
+        regularization: float = 0.0,
+    ) -> Self:
+        """Factor the matrix from its banded core, border and corner.
+
+        Args:
+            bands: Upper-band representation of $A$ (see [`banded_cholesky`][]), shape
+                `(*batch, n_blocks, w+1, k, k)`.
+            border: $B$, shape `(*batch, n_blocks * k, k_c)`, rows in the flattened
+                `(n_blocks, k)` order.
+            corner: $C$, shape `(*batch, k_c, k_c)`.
+            regularization: Relative ridge added to each diagonal block of $A$ and to $C$,
+                each scaled by its own mean diagonal, before factoring.
+        """
+        banded = BandedCholeskyOperator.from_bands(bands, regularization=regularization)
+        n_blocks, k, k_c = bands.shape[-4], bands.shape[-1], border.shape[-1]
+        batch = border.shape[:-2]
+
+        # Z = A⁻¹ B: one banded solve per column of B
+        columns = jnp.moveaxis(border.reshape(*batch, n_blocks, k, k_c), -1, -3)  # (.., kc, n, k)
+        coupling = banded_cholesky_solve(banded.lb[..., None, :, :, :, :], columns)
+        coupling = jnp.moveaxis(coupling, -3, -1).reshape(*batch, n_blocks * k, k_c)
+
+        if regularization:
+            scale = jnp.mean(jnp.diagonal(corner, axis1=-2, axis2=-1), axis=-1)
+            corner = corner + regularization * scale[..., None, None] * jnp.eye(k_c)
+        schur = corner - _einsum('...ac,...ab->...cb', border, coupling)
+        schur = 0.5 * (schur + jnp.swapaxes(schur, -1, -2))  # symmetric up to rounding
+
+        in_structure = (
+            jax.ShapeDtypeStruct((*batch, n_blocks, k), bands.dtype),
+            jax.ShapeDtypeStruct((*batch, k_c), bands.dtype),
+        )
+        return cls(
+            banded,
+            coupling,
+            BandedCholeskyOperator.from_dense(schur),
+            in_structure=in_structure,
+        )
+
+    def mv(self, x: tuple[Array, Array]) -> tuple[Array, Array]:
+        r_a, r_c = x
+        flat_a = r_a.reshape(*r_c.shape[:-1], -1)
+        x_c = self.schur(r_c - _einsum('...ac,...a->...c', self.coupling, flat_a))
+        x_a = self.banded(r_a) - _einsum('...ac,...c->...a', self.coupling, x_c).reshape(r_a.shape)
+        return x_a, x_c
+
+
 def banded_cholesky(
     bands: Float[Array, '*batch n w1 k k'], regularization: float = 0.0
 ) -> Float[Array, '*batch n w1 k k']:
@@ -159,6 +255,8 @@ def banded_cholesky(
         scale = jnp.mean(diag, axis=-1)[..., None, None]  # (*batch, n, 1, 1)
         ridge = regularization * scale * jnp.eye(k, dtype=bands.dtype)
         bands = bands.at[..., 0, :, :].add(ridge)
+    if bands.shape[-3] == 1:  # block diagonal: the blocks are independent, factor them all at once
+        return jnp.linalg.cholesky(bands)
     return _block_banded_cholesky(bands)
 
 
@@ -191,7 +289,7 @@ def _block_banded_cholesky(bands: Float[Array, 'n w1 k k']) -> Float[Array, 'n w
                 # L[j, i-a]: for the diagonal block (d0=0, j=i) it is this row's block ``cur[a]``,
                 # not yet written to ``lb``; for d0>0 (j<i) it is a finished earlier row.
                 l_ja = cur[a] if d0 == 0 else read(lb, j)[a - d0]
-                s = s - cur[a] @ jnp.swapaxes(l_ja, -1, -2)
+                s = s - _matmul(cur[a], jnp.swapaxes(l_ja, -1, -2))
             if d0 == 0:
                 cur = cur.at[0].set(jnp.linalg.cholesky(s))  # L[i,i] = chol(S)
             else:
@@ -225,6 +323,20 @@ def banded_cholesky_solve(
         >>> a @ x[0, 0]
         Array([1., 0.], dtype=float32)
     """
+    if lb.shape[1] == 1:  # block diagonal: the blocks are independent, solve them all at once
+        diagonal, rhs = lb[:, 0], b[..., None]
+        y = jax.lax.linalg.triangular_solve(diagonal, rhs, left_side=True, lower=True)
+        x = jax.lax.linalg.triangular_solve(
+            diagonal, y, left_side=True, lower=True, transpose_a=True
+        )
+        return x[..., 0]
+    # Each substitution is a recurrence along the blocks. A CPU steps through it fastest; on a GPU
+    # every step costs kernel launches, and a parallel scan over the blocks is far faster.
+    return jax.lax.platform_dependent(lb, b, cpu=_sequential_solve, default=_scan_solve)
+
+
+def _sequential_solve(lb: Float[Array, 'n w1 k k'], b: Float[Array, 'n k']) -> Float[Array, 'n k']:
+    """`banded_cholesky_solve` by forward and back substitution, one block at a time."""
     n, w1, k, _ = lb.shape
     w = w1 - 1
 
@@ -235,7 +347,7 @@ def banded_cholesky_solve(
         rhs = read(b, i)
         lb_i = read(lb, i)
         for d in range(1, w + 1):
-            rhs = rhs - jnp.where(i - d >= 0, lb_i[d] @ read(y, i - d), 0.0)
+            rhs = rhs - jnp.where(i - d >= 0, _matmul(lb_i[d], read(y, i - d)), 0.0)
         yi = jax.scipy.linalg.solve_triangular(lb_i[0], rhs, lower=True)
         return jax.lax.dynamic_update_index_in_dim(y, yi, i, axis=0)
 
@@ -246,10 +358,50 @@ def banded_cholesky_solve(
         rhs = read(y, i)
         for d in range(1, w + 1):  # L[i+d, i] = lb[i+d, d]
             rhs = rhs - jnp.where(
-                i + d <= n - 1, jnp.swapaxes(read(lb, i + d)[d], -1, -2) @ read(x, i + d), 0.0
+                i + d <= n - 1,
+                _matmul(jnp.swapaxes(read(lb, i + d)[d], -1, -2), read(x, i + d)),
+                0.0,
             )
         xi = jax.scipy.linalg.solve_triangular(read(lb, i)[0].T, rhs, lower=False)
         return jax.lax.dynamic_update_index_in_dim(x, xi, i, axis=0)
 
     solution: Array = jax.lax.fori_loop(0, n, bwd, jnp.zeros((n, k), b.dtype))
     return solution
+
+
+def _scan_solve(lb: Float[Array, 'n w1 k k'], b: Float[Array, 'n k']) -> Float[Array, 'n k']:
+    r"""`banded_cholesky_solve` by parallel scans over the blocks.
+
+    With $D_i = L_{ii}$, forward substitution $y_i = D_i^{-1} (b_i - \sum_{d=1}^w L_{i,i-d}\,
+    y_{i-d})$ is an affine recurrence $s_i = M_i s_{i-1} + c_i$ on the last $w$ blocks
+    $s_i = (y_i, \dots, y_{i-w+1})$. Affine maps compose associatively, so all $s_i$ follow from a
+    scan of depth $\log n$. Back substitution is the same recurrence run backwards.
+    """
+    n, w1, k, _ = lb.shape
+    w = w1 - 1
+    identity = jnp.broadcast_to(jnp.eye(k, dtype=lb.dtype), (n, k, k))
+    diag_inv = jax.lax.linalg.triangular_solve(lb[:, 0], identity, left_side=True, lower=True)
+
+    def recurrence(inv: Array, couplings: Array, rhs: Array, reverse: bool) -> Array:
+        # x_i = inv_i (rhs_i - Σ_d couplings[i, d-1] x_{i∓d}), as affine maps on the last w blocks
+        m = w * k
+        top = -_matmul(inv[:, None], couplings)  # (n, w, k, k)
+        maps = (
+            jnp.zeros((n, m, m), lb.dtype).at[:, :k].set(jnp.moveaxis(top, 1, 2).reshape(n, k, m))
+        )
+        maps = maps.at[:, k:, :-k].set(jnp.eye(m - k, dtype=lb.dtype))  # shift the older blocks
+        offsets = jnp.zeros((n, m), lb.dtype).at[:, :k].set(_einsum('nab,nb->na', inv, rhs))
+        _, states = jax.lax.associative_scan(_compose_affine, (maps, offsets), reverse=reverse)
+        return states[:, :k]
+
+    y = recurrence(diag_inv, lb[:, 1:], b, reverse=False)  # L[i, i-d] = lb[i, d]
+    # Lᵀ couples x_i to x_{i+d} through L[i+d, i]ᵀ = lb[i+d, d]ᵀ, zero past the last block
+    padded = jnp.concatenate([lb, jnp.zeros((w, w1, k, k), lb.dtype)])
+    below = jnp.stack([padded[d : d + n, d] for d in range(1, w1)], axis=1)
+    return recurrence(jnp.swapaxes(diag_inv, -1, -2), jnp.swapaxes(below, -1, -2), y, reverse=True)
+
+
+def _compose_affine(first: tuple[Array, Array], then: tuple[Array, Array]) -> tuple[Array, Array]:
+    """The affine map `s ↦ M s + c` applying `first`, then `then`."""
+    (m1, c1), (m2, c2) = first, then
+    return _matmul(m2, m1), _einsum('...ab,...b->...a', m2, c1) + c2

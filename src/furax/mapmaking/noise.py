@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import cadre
 import jax
@@ -110,7 +110,7 @@ class WhiteNoiseModel(NoiseModel):
         inv_var = jnp.where(self.sigma > 0, 1.0 / (self.sigma**2), 0.0)
         return DiagonalOperator(inv_var[..., None], in_structure=in_structure)
 
-    def to_white_noise_model(self) -> 'WhiteNoiseModel':
+    def to_white_noise_model(self) -> Self:
         return self
 
     @classmethod
@@ -121,7 +121,7 @@ class WhiteNoiseModel(NoiseModel):
         sample_rate: Array,
         hwp_frequency: Array,
         config: NoiseFitConfig | None = None,
-    ) -> 'WhiteNoiseModel':
+    ) -> Self:
         """Fit a white noise model to data."""
         sigma = fit_white_noise_model(
             f,
@@ -220,7 +220,7 @@ class AtmosphericNoiseModel(NoiseModel):
         sample_rate: Array,
         hwp_frequency: Array,
         config: NoiseFitConfig | None = None,
-    ) -> 'AtmosphericNoiseModel':
+    ) -> Self:
         """Fit a atmospheric (1/f) noise model to data."""
         result = fit_atmospheric_psd_model(
             f,

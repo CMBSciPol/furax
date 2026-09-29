@@ -24,9 +24,9 @@ class WeightOperator(AbstractLinearOperator):
     def create(cls, weight: AbstractLinearOperator, mask: MaskOperator) -> Self:
         return cls(weight, mask, in_structure=mask.in_structure)
 
-    def with_mask(self, mask: MaskOperator) -> 'WeightOperator':
+    def with_mask(self, mask: MaskOperator) -> Self:
         """Rebuild the weight around a new mask."""
-        return WeightOperator.create(self.weight, mask)
+        return type(self).create(self.weight, mask)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
         W, M = self.weight, self.mask
@@ -107,7 +107,7 @@ class NestedWeightOperator(AbstractLinearOperator):
             in_structure=mask.in_structure,
         )
 
-    def with_mask(self, mask: MaskOperator) -> 'NestedWeightOperator':
+    def with_mask(self, mask: MaskOperator) -> Self:
         """Rebuild the weight around a new mask, re-resolving the budget."""
         new_flag_max = _resolve_n_flag_max(mask, self.max_flag_fraction)
         return replace(self, mask=mask, n_flag_max=new_flag_max)

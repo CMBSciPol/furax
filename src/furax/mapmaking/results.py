@@ -1,7 +1,7 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import healpy as hp
 import jax.numpy as jnp
@@ -91,7 +91,7 @@ class MapMakingResults:
             )
 
     @classmethod
-    def load(cls, out_dir: str | Path, landscape: StokesLandscape) -> 'MapMakingResults':
+    def load(cls, out_dir: str | Path, landscape: StokesLandscape) -> Self:
         """Load a previously saved MapMakingResults from disk.
 
         The maps are required; every other product comes back as ``None`` when absent.

@@ -86,8 +86,8 @@ from .weight import WeightOperator
 
 @register_dataclass
 @dataclass(frozen=True)
-class BucketModel:
-    """One bucket's share of [`AccumulatedModel`][]: everything that is stacked over its slots."""
+class _BucketModel:
+    """One bucket's share of `_AccumulatedModel`: everything that is stacked over its slots."""
 
     model: ObservationModel
     """Per-slot observation model."""
@@ -99,18 +99,18 @@ class BucketModel:
 
 @register_dataclass
 @dataclass(frozen=True)
-class AccumulatedModel:
+class _AccumulatedModel:
     """Per-bucket observation models and the map-domain sums."""
 
-    buckets: tuple[BucketModel, ...]
-    """One [`BucketModel`][] per bucket of the layout, in bucket order."""
+    buckets: tuple[_BucketModel, ...]
+    """One `_BucketModel` per bucket of the layout, in bucket order."""
     hit_map: Int64[Array, '...']
     """Hit map over every observation, replicated on every device."""
     map_rhs: StokesType
     """Map RHS over every observation, replicated on every device."""
 
 
-class MapMakingSystem(NamedTuple):
+class _MapMakingSystem(NamedTuple):
     """The normal system handed to the solver."""
 
     A: AbstractLinearOperator
@@ -457,12 +457,12 @@ class MultiObservationMapMaker[T]:
 
     def _build_system(
         self,
-        acc: AccumulatedModel,
+        acc: _AccumulatedModel,
         H: Sequence[AbstractLinearOperator],
         W: Sequence[AbstractLinearOperator],
         S: AbstractLinearOperator,
         BJ: BJPreconditioner,
-    ) -> MapMakingSystem:
+    ) -> _MapMakingSystem:
         r"""Assembles the GLS normal system $H^T W' H x = H^T W' d$ over the selected pixels.
 
         Args:
@@ -499,7 +499,7 @@ class MultiObservationMapMaker[T]:
                 [((h @ S.T).T @ w @ (h @ S.T)).reduce() for h, w in zip(H, W, strict=True)],
                 sequential=True,
             )
-            return MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False)
+            return _MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False)
 
         Te = [StreamOperator.diagonal(e.operator) for e in explicit]
         Ge = [StreamOperator.diagonal(e.gram_inverse) for e in explicit]
@@ -519,7 +519,7 @@ class MultiObservationMapMaker[T]:
         rhs = [S(acc.map_rhs), [bm.amplitude_rhs for bm in acc.buckets]]
         M = BlockDiagonalOperator([M, Ge])
         A = AdditionOperator(terms, sequential=True)
-        return MapMakingSystem(A, rhs, M, has_amplitudes=True)
+        return _MapMakingSystem(A, rhs, M, has_amplitudes=True)
 
     def _gather(self, x: PyTree[Array]) -> PyTree[np.ndarray]:
         """Bring a pytree sharded over the 'obs' axis to the host, whole, on every process."""
@@ -540,7 +540,7 @@ class MultiObservationMapMaker[T]:
         failed = np.flatnonzero(gathered.any(axis=0))
         return [self.observations[int(i)].name for i in failed]
 
-    def build_model_and_accumulate(self) -> AccumulatedModel:
+    def build_model_and_accumulate(self) -> _AccumulatedModel:
         """Build the model and accumulate the hit map and map RHS in one pass over the data.
 
         Padding (or failed) slots are gated out using a zero-mask, so they drop from the system.
@@ -555,11 +555,11 @@ class MultiObservationMapMaker[T]:
             hit_map = hit_map + hits
             map_rhs = furax.tree.add(map_rhs, rhs)
             bucket_models.append(bucket_model)
-        return AccumulatedModel(buckets=tuple(bucket_models), hit_map=hit_map, map_rhs=map_rhs)
+        return _AccumulatedModel(buckets=tuple(bucket_models), hit_map=hit_map, map_rhs=map_rhs)
 
     def _accumulate_bucket(
         self, bucket_index: int, reader: ObservationReader[T]
-    ) -> tuple[Int64[Array, '...'], StokesType, BucketModel]:
+    ) -> tuple[Int64[Array, '...'], StokesType, _BucketModel]:
         """One bucket's pass over the data: its hit map and RHS partials, and its stacked model."""
         config = self.fit_config
         landscape = self.landscape
@@ -659,7 +659,7 @@ class MultiObservationMapMaker[T]:
             # The axis spans every device of the job, so this is the reduction over the bucket.
             hits, rhs = jax.lax.psum((hits, rhs), axis)
             model, templates, amp_rhs = stacked
-            return hits, rhs, BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
+            return hits, rhs, _BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
 
         # Both inputs are distributed over the observation axis; the mesh's axis types are `Auto`,
         # so the specs are given rather than inferred.
@@ -1424,7 +1424,7 @@ class PommeMapMaker(MapMaker):
         return output
 
 
-class IQUModulationOperator(AbstractLinearOperator):
+class _IQUModulationOperator(AbstractLinearOperator):
     """Add the input Stokes signals into a single HWP-modulated signal.
 
     Similar to ``LinearPolarizerOperator @ QURotationOperator(hwp_angle)``, except that
@@ -1449,7 +1449,7 @@ class IQUModulationOperator(AbstractLinearOperator):
         return x.i + self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u
 
 
-class QUModulationOperator(AbstractLinearOperator):
+class _QUModulationOperator(AbstractLinearOperator):
     """Add the input Stokes signals into a single HWP-modulated signal.
 
     Similar to ``LinearPolarizerOperator @ QURotationOperator(hwp_angle)``, except that

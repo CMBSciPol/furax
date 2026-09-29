@@ -1,3 +1,0 @@
-# Pomme
-
-::: furax.mapmaking.pomme

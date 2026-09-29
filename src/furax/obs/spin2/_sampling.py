@@ -31,7 +31,7 @@ def transported_gather[S: Stokes](
     Each neighbour's polarisation is carried into the meridian basis of the target direction before
     the weighted sum, so that the values being combined are components of one object. Without the
     transport the sum mixes bases and leaks $E$ into $B$. $I$ and $V$ are unaffected, and a
-    [`StokesI`][] map is interpolated exactly as a scalar one.
+    [`StokesI`][furax.obs.stokes.StokesI] map is interpolated exactly as a scalar one.
 
     A `rotation` by an angle $\psi$ turns every neighbour further, from the meridian basis into a
     basis rotated by $\psi$ from it, such as a detector's, before the weighted sum. Stencil weights

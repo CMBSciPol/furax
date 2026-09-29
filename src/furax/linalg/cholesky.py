@@ -14,12 +14,14 @@ from furax import AbstractLinearOperator, symmetric
 
 __all__ = [
     'BandedCholeskyOperator',
+    'BorderedBandedCholeskyOperator',
     'banded_cholesky',
     'banded_cholesky_solve',
 ]
 
 # Full float32 precision for the block products to avoid TF32 rounding
 _matmul = partial(jnp.matmul, precision=jax.lax.Precision.HIGHEST)
+_einsum = partial(jnp.einsum, precision=jax.lax.Precision.HIGHEST)
 
 
 @symmetric
@@ -103,6 +105,97 @@ class BandedCholeskyOperator(AbstractLinearOperator):
         chunks = jnp.split(yf, np.cumsum(sizes)[:-1], axis=-1)
         out = [c.reshape(leaf.shape) for c, leaf in zip(chunks, leaves, strict=True)]
         return treedef.unflatten(out)
+
+
+@symmetric
+class BorderedBandedCholeskyOperator(AbstractLinearOperator):
+    r"""Inverse of a symmetric positive-definite matrix with a block-banded core and a dense border.
+
+    The matrix is split into a block-banded part $A$ over the first unknowns $x_a$ and a small
+    dense part $C$ over the last ones $x_c$, coupled by a dense border $B$:
+
+    $$ M = \begin{pmatrix} A & B \\ B^\top & C \end{pmatrix}. $$
+
+    Storing it whole would lose the band. Instead, $x_c$ is eliminated through the Schur
+    complement $S = C - B^\top A^{-1} B$: with $Z = A^{-1} B$, solving $M x = r$ is
+
+    $$ x_c = S^{-1} (r_c - Z^\top r_a), \qquad x_a = A^{-1} r_a - Z x_c, $$
+
+    which keeps only the band factor of $A$, $Z$ and the factor of $S$.
+
+    Calling `op((r_a, r_c))` solves $M x = r$ and returns `(x_a, x_c)`, with `r_a` of shape
+    `(*batch, n_blocks, k)` and `r_c` of shape `(*batch, k_c)`.
+
+    Examples:
+        >>> import jax.numpy as jnp
+        >>> from furax.linalg import BorderedBandedCholeskyOperator
+        >>> bands = jnp.array([[[[4.]], [[1.]]], [[[4.]], [[0.]]]])  # A = [[4, 1], [1, 4]]
+        >>> border = jnp.array([[1.], [1.]])  # B
+        >>> corner = jnp.array([[3.]])  # C
+        >>> op = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner)
+        >>> x_a, x_c = op((jnp.array([[6.], [6.]]), jnp.array([5.])))  # M x = r for x = 1
+        >>> x_a.ravel(), x_c
+        (Array([1., 1.], dtype=float32), Array([1.], dtype=float32))
+    """
+
+    banded: BandedCholeskyOperator
+    """$A^{-1}$, on `(*batch, n_blocks, k)`."""
+    coupling: Float[Array, '*batch ka kc']
+    """$Z = A^{-1} B$, with `ka = n_blocks * k`."""
+    schur: BandedCholeskyOperator
+    """$S^{-1}$, on `(*batch, k_c)`."""
+
+    @classmethod
+    def from_blocks(
+        cls,
+        bands: Float[Array, '*batch n w1 k k'],
+        border: Float[Array, '*batch ka kc'],
+        corner: Float[Array, '*batch kc kc'],
+        regularization: float = 0.0,
+    ) -> Self:
+        """Factor the matrix from its banded core, border and corner.
+
+        Args:
+            bands: Upper-band representation of $A$ (see [`banded_cholesky`][]), shape
+                `(*batch, n_blocks, w+1, k, k)`.
+            border: $B$, shape `(*batch, n_blocks * k, k_c)`, rows in the flattened
+                `(n_blocks, k)` order.
+            corner: $C$, shape `(*batch, k_c, k_c)`.
+            regularization: Relative ridge added to each diagonal block of $A$ and to $C$,
+                each scaled by its own mean diagonal, before factoring.
+        """
+        banded = BandedCholeskyOperator.from_bands(bands, regularization=regularization)
+        n_blocks, k, k_c = bands.shape[-4], bands.shape[-1], border.shape[-1]
+        batch = border.shape[:-2]
+
+        # Z = A⁻¹ B: one banded solve per column of B
+        columns = jnp.moveaxis(border.reshape(*batch, n_blocks, k, k_c), -1, -3)  # (.., kc, n, k)
+        coupling = banded_cholesky_solve(banded.lb[..., None, :, :, :, :], columns)
+        coupling = jnp.moveaxis(coupling, -3, -1).reshape(*batch, n_blocks * k, k_c)
+
+        if regularization:
+            scale = jnp.mean(jnp.diagonal(corner, axis1=-2, axis2=-1), axis=-1)
+            corner = corner + regularization * scale[..., None, None] * jnp.eye(k_c)
+        schur = corner - _einsum('...ac,...ab->...cb', border, coupling)
+        schur = 0.5 * (schur + jnp.swapaxes(schur, -1, -2))  # symmetric up to rounding
+
+        in_structure = (
+            jax.ShapeDtypeStruct((*batch, n_blocks, k), bands.dtype),
+            jax.ShapeDtypeStruct((*batch, k_c), bands.dtype),
+        )
+        return cls(
+            banded,
+            coupling,
+            BandedCholeskyOperator.from_dense(schur),
+            in_structure=in_structure,
+        )
+
+    def mv(self, x: tuple[Array, Array]) -> tuple[Array, Array]:
+        r_a, r_c = x
+        flat_a = r_a.reshape(*r_c.shape[:-1], -1)
+        x_c = self.schur(r_c - _einsum('...ac,...a->...c', self.coupling, flat_a))
+        x_a = self.banded(r_a) - _einsum('...ac,...c->...a', self.coupling, x_c).reshape(r_a.shape)
+        return x_a, x_c
 
 
 def banded_cholesky(

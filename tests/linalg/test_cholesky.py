@@ -6,7 +6,12 @@ import jax.random as jr
 import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.linalg import BandedCholeskyOperator, banded_cholesky, banded_cholesky_solve
+from furax.linalg import (
+    BandedCholeskyOperator,
+    BorderedBandedCholeskyOperator,
+    banded_cholesky,
+    banded_cholesky_solve,
+)
 
 
 def _banded_spd(n: int, k: int, w: int, seed: int):
@@ -198,3 +203,65 @@ class TestBandedCholeskyOperator:
         op = BandedCholeskyOperator.from_dense(dense, in_structure=struct)
         b = jr.normal(jr.fold_in(key, 1), (n_dets, k))
         assert_allclose(jax.jit(lambda x: op(x))(b), op(b))
+
+
+def _bordered_spd(n: int, k: int, w: int, k_c: int, seed: int):
+    """A random SPD matrix with a block-banded core and a dense border, as (dense, blocks)."""
+    core, bands = _banded_spd(n, k, w, seed)
+    key = jr.key(seed + 1)
+    border = jr.normal(key, (n * k, k_c))
+    # C = Bᵀ A⁻¹ B + SPD keeps the Schur complement, hence M, positive definite
+    extra = jr.normal(jr.fold_in(key, 1), (k_c, k_c))
+    corner = border.T @ jnp.linalg.solve(core, border) + extra @ extra.T + k_c * jnp.eye(k_c)
+    dense = jnp.block([[core, border], [border.T, corner]])
+    return dense, bands, border, corner
+
+
+@pytest.mark.parametrize('w', [0, 1, 2])
+def test_bordered_banded_cholesky_solve_matches_dense(w):
+    n, k, k_c = 5, 2, 3
+    dense, bands, border, corner = _bordered_spd(n, k, w, k_c, seed=100 + w)
+    op = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner)
+    r = jr.normal(jr.key(110 + w), (n * k + k_c,))
+    x_a, x_c = op((r[: n * k].reshape(n, k), r[n * k :]))
+    expected = jnp.linalg.solve(dense, r)
+    assert_allclose(jnp.concatenate([x_a.ravel(), x_c]), expected, rtol=1e-10, atol=1e-12)
+
+
+def test_bordered_banded_cholesky_batches_over_leading_axes():
+    # a leading batch axis (detectors, in the template Gram) factors each matrix on its own
+    n, k, w, k_c = 4, 2, 1, 2
+    systems = [_bordered_spd(n, k, w, k_c, seed=120 + i) for i in range(3)]
+    dense, bands, border, corner = (jnp.stack(parts) for parts in zip(*systems, strict=True))
+    op = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner)
+    r = jr.normal(jr.key(130), (3, n * k + k_c))
+    x_a, x_c = op((r[:, : n * k].reshape(3, n, k), r[:, n * k :]))
+    expected = jnp.linalg.solve(dense, r[..., None])[..., 0]
+    got = jnp.concatenate([x_a.reshape(3, -1), x_c], axis=-1)
+    assert_allclose(got, expected, rtol=1e-10, atol=1e-12)
+
+
+def test_bordered_banded_cholesky_regularization_ridges_each_diagonal_block():
+    # the ridge on A is that of `banded_cholesky`, block by block; C gets its own, scaled by its
+    # mean diagonal
+    n, k, w, k_c, reg = 4, 2, 1, 3, 0.1
+    dense, bands, border, corner = _bordered_spd(n, k, w, k_c, seed=140)
+    ridged = dense
+    for j in range(n):
+        block = slice(j * k, (j + 1) * k)
+        scale = jnp.mean(jnp.diagonal(bands[j, 0]))
+        ridged = ridged.at[block, block].add(reg * scale * jnp.eye(k))
+    tail = slice(n * k, None)
+    ridged = ridged.at[tail, tail].add(reg * jnp.mean(jnp.diagonal(corner)) * jnp.eye(k_c))
+
+    op = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner, regularization=reg)
+    r = jr.normal(jr.key(141), (n * k + k_c,))
+    x_a, x_c = op((r[: n * k].reshape(n, k), r[n * k :]))
+    expected = jnp.linalg.solve(ridged, r)
+    assert_allclose(jnp.concatenate([x_a.ravel(), x_c]), expected, rtol=1e-10, atol=1e-12)
+
+
+def test_bordered_banded_cholesky_is_symmetric():
+    _, bands, border, corner = _bordered_spd(3, 2, 1, 2, seed=150)
+    op = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner)
+    assert op.T is op

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `StokesTemplateOperator` uses groups of legs (e.g. `'qu'`), storing identical bases only once per group (#286)
+- `BorderedBandedCholeskyOperator`: inverse of a block-banded matrix with a dense border (#289)
 
 ### Changed
 

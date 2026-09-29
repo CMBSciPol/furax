@@ -1,4 +1,4 @@
-"""Tests for Map2Alm, Alm2Map, and _SHTRule."""
+"""Tests for Map2Alm, Alm2Map, and SHTRule."""
 
 import jax
 import jax.numpy as jnp
@@ -208,7 +208,7 @@ class TestAlm2Map:
 
 
 class TestSHTRule:
-    """Tests for the _SHTRule algebraic simplification."""
+    """Tests for the SHTRule algebraic simplification."""
 
     def test_map2alm_at_alm2map_reduces_to_identity(self, map2alm, alm2map):
         """(Map2Alm @ Alm2Map).reduce() should yield an IdentityOperator."""

@@ -377,7 +377,7 @@ class WCSLandscape(StokesLandscape):
         """Returns the [`Stencil`][] a sample reads, positioned by [`pixel2world`][].
 
         At [`Interpolation.BILINEAR`][] it holds the four pixels around the sample; at
-        [`Interpolation.NEAREST`][] the one it falls in, whose index is that of [`world2index`][].
+        [`Interpolation.NEAREST`][] the one it falls in, whose index is that of [`world2index`][StokesLandscape.world2index].
         """
         if interpolation is Interpolation.NEAREST:
             pix_x, pix_y = self.world2pixel(theta, phi)
@@ -604,7 +604,7 @@ class HealpixLandscape(StokesLandscape):
 
         At [`Interpolation.BILINEAR`][] it holds the four neighbours ``get_interp_weights``
         returns, in RING pixel ordering only; at [`Interpolation.NEAREST`][] the pixel the sample
-        falls in, whose index is bit-identical to that of [`world2index`][].
+        falls in, whose index is bit-identical to that of [`world2index`][StokesLandscape.world2index].
         """
         if interpolation is Interpolation.NEAREST:
             indices = self.world2index(theta, phi)
@@ -740,8 +740,8 @@ class AstropyWCSLandscape(StokesLandscape):
     ) -> Stencil:
         """Returns the [`Stencil`][] holding the pixel the sample falls in.
 
-        Its index is that of [`world2index`][], and the pixel center comes from [`pixel2world`][].
-        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][].
+        Its index is that of [`world2index`][StokesLandscape.world2index], and the pixel center comes from [`pixel2world`][].
+        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][StokesLandscape.world2interp].
         """
         if interpolation is not Interpolation.NEAREST:
             raise NotImplementedError(
@@ -856,8 +856,8 @@ class HorizonLandscape(StokesLandscape):
     ) -> Stencil:
         """Returns the [`Stencil`][] holding the bin the sample falls in.
 
-        Its index is that of [`world2index`][], and the bin center comes from [`pixel2world`][].
-        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][].
+        Its index is that of [`world2index`][StokesLandscape.world2index], and the bin center comes from [`pixel2world`][].
+        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][StokesLandscape.world2interp].
         """
         if interpolation is not Interpolation.NEAREST:
             raise NotImplementedError(

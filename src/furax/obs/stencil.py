@@ -126,7 +126,7 @@ class Stencil(NamedTuple):
             indices: Neighbour pixel indices, negative for neighbours outside the map.
             weights: Interpolation weights, one per neighbour, not necessarily normalized.
             positions: Where the neighbours sit on the sphere, of the shape of the indices, or `None`
-            off the sphere.
+                off the sphere.
 
         Returns:
             The resolved stencil.

@@ -12,6 +12,7 @@ from furax.linalg import (
     banded_cholesky,
     banded_cholesky_solve,
 )
+from furax.linalg.cholesky import _scan_solve, _sequential_solve
 
 
 def _banded_spd(n: int, k: int, w: int, seed: int):
@@ -49,6 +50,19 @@ def test_banded_cholesky_solve_matches_dense(w):
     x = banded_cholesky_solve(lb, b)
     expected = jnp.linalg.solve(dense, b.reshape(-1)).reshape(n, k)
     assert_allclose(x, expected, rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize('w', [1, 2, 3])
+@pytest.mark.parametrize('solve', [_sequential_solve, _scan_solve], ids=['sequential', 'scan'])
+def test_both_banded_solves_match_dense(solve, w):
+    # the solve steps through the blocks on a CPU and scans them in parallel elsewhere: both must
+    # hold on every machine, whichever one the tests happen to run on
+    n, k = 7, 2
+    dense, bands = _banded_spd(n, k, w, seed=20 + w)
+    b = jr.normal(jr.key(30 + w), (n, k))
+    x = solve(banded_cholesky(bands), b)
+    expected = jnp.linalg.solve(dense, b.reshape(-1)).reshape(n, k)
+    assert_allclose(x, expected, rtol=1e-10, atol=1e-12)
 
 
 @pytest.mark.parametrize('w', [0, 1, 2])

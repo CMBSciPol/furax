@@ -255,6 +255,8 @@ def banded_cholesky(
         scale = jnp.mean(diag, axis=-1)[..., None, None]  # (*batch, n, 1, 1)
         ridge = regularization * scale * jnp.eye(k, dtype=bands.dtype)
         bands = bands.at[..., 0, :, :].add(ridge)
+    if bands.shape[-3] == 1:  # block diagonal: the blocks are independent, factor them all at once
+        return jnp.linalg.cholesky(bands)
     return _block_banded_cholesky(bands)
 
 
@@ -321,6 +323,20 @@ def banded_cholesky_solve(
         >>> a @ x[0, 0]
         Array([1., 0.], dtype=float32)
     """
+    if lb.shape[1] == 1:  # block diagonal: the blocks are independent, solve them all at once
+        diagonal, rhs = lb[:, 0], b[..., None]
+        y = jax.lax.linalg.triangular_solve(diagonal, rhs, left_side=True, lower=True)
+        x = jax.lax.linalg.triangular_solve(
+            diagonal, y, left_side=True, lower=True, transpose_a=True
+        )
+        return x[..., 0]
+    # Each substitution is a recurrence along the blocks. A CPU steps through it fastest; on a GPU
+    # every step costs kernel launches, and a parallel scan over the blocks is far faster.
+    return jax.lax.platform_dependent(lb, b, cpu=_sequential_solve, default=_scan_solve)
+
+
+def _sequential_solve(lb: Float[Array, 'n w1 k k'], b: Float[Array, 'n k']) -> Float[Array, 'n k']:
+    """`banded_cholesky_solve` by forward and back substitution, one block at a time."""
     n, w1, k, _ = lb.shape
     w = w1 - 1
 
@@ -351,3 +367,41 @@ def banded_cholesky_solve(
 
     solution: Array = jax.lax.fori_loop(0, n, bwd, jnp.zeros((n, k), b.dtype))
     return solution
+
+
+def _scan_solve(lb: Float[Array, 'n w1 k k'], b: Float[Array, 'n k']) -> Float[Array, 'n k']:
+    r"""`banded_cholesky_solve` by parallel scans over the blocks.
+
+    With $D_i = L_{ii}$, forward substitution $y_i = D_i^{-1} (b_i - \sum_{d=1}^w L_{i,i-d}\,
+    y_{i-d})$ is an affine recurrence $s_i = M_i s_{i-1} + c_i$ on the last $w$ blocks
+    $s_i = (y_i, \dots, y_{i-w+1})$. Affine maps compose associatively, so all $s_i$ follow from a
+    scan of depth $\log n$. Back substitution is the same recurrence run backwards.
+    """
+    n, w1, k, _ = lb.shape
+    w = w1 - 1
+    identity = jnp.broadcast_to(jnp.eye(k, dtype=lb.dtype), (n, k, k))
+    diag_inv = jax.lax.linalg.triangular_solve(lb[:, 0], identity, left_side=True, lower=True)
+
+    def recurrence(inv: Array, couplings: Array, rhs: Array, reverse: bool) -> Array:
+        # x_i = inv_i (rhs_i - Σ_d couplings[i, d-1] x_{i∓d}), as affine maps on the last w blocks
+        m = w * k
+        top = -_matmul(inv[:, None], couplings)  # (n, w, k, k)
+        maps = (
+            jnp.zeros((n, m, m), lb.dtype).at[:, :k].set(jnp.moveaxis(top, 1, 2).reshape(n, k, m))
+        )
+        maps = maps.at[:, k:, :-k].set(jnp.eye(m - k, dtype=lb.dtype))  # shift the older blocks
+        offsets = jnp.zeros((n, m), lb.dtype).at[:, :k].set(_einsum('nab,nb->na', inv, rhs))
+        _, states = jax.lax.associative_scan(_compose_affine, (maps, offsets), reverse=reverse)
+        return states[:, :k]
+
+    y = recurrence(diag_inv, lb[:, 1:], b, reverse=False)  # L[i, i-d] = lb[i, d]
+    # Lᵀ couples x_i to x_{i+d} through L[i+d, i]ᵀ = lb[i+d, d]ᵀ, zero past the last block
+    padded = jnp.concatenate([lb, jnp.zeros((w, w1, k, k), lb.dtype)])
+    below = jnp.stack([padded[d : d + n, d] for d in range(1, w1)], axis=1)
+    return recurrence(jnp.swapaxes(diag_inv, -1, -2), jnp.swapaxes(below, -1, -2), y, reverse=True)
+
+
+def _compose_affine(first: tuple[Array, Array], then: tuple[Array, Array]) -> tuple[Array, Array]:
+    """The affine map `s ↦ M s + c` applying `first`, then `then`."""
+    (m1, c1), (m2, c2) = first, then
+    return _matmul(m2, m1), _einsum('...ab,...b->...a', m2, c1) + c2

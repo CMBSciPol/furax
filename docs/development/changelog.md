@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-29
+
 The pointing architecture has been overhauled. A `PointingOperator` now holds a *sampler* (`AbstractSampler`), which owns the entire pointing logic (line-of-sight computation and sampling of the pixels). The sampler's *kernel* (`SamplingKernel`) handles the actual sampling logic: nearest-neighbour or bilinear, beam, etc. On-the-fly pointing is also faster on HEALPix and CAR maps; on a GPU, bilinear pointing on a CAR map runs about 3 times faster whilst using a fraction of the memory (#274, #277).
 
 ### Added
@@ -394,7 +396,8 @@ Initial tagged release.
 
 - Project classifiers and editable-mode installation instructions
 
-[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.14.0...HEAD
+[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/CMBSciPol/furax/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/CMBSciPol/furax/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/CMBSciPol/furax/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/CMBSciPol/furax/compare/v0.12.0...v0.12.1

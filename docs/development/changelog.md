@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AbstractSampler`, `QuaternionSampler`, `ScreenSampler` and `PointingOperator.from_sampler` (#267)
 - `PointingOperator.precomputed`, `PrecomputedSampler` and `AngleSampler` (#270)
 - `rotated_gather`, `rotated_scatter` and `transport_rotation` in `furax.obs.spin2` (#270)
+- `PointingOperator.rotated` and `RotatedSampler`; `QURotationOperator @ PointingOperator` reduces to a `PointingOperator` (#271)
 
 ### Changed
 

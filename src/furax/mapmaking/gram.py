@@ -122,7 +122,8 @@ def cross_gram(a: Basis, b: Basis, weights: Float[Array, ' samp']) -> Float[Arra
         lhs = ca.taps[:, wa][None, :] * vwa  # (k_a, samp)
         for wb in range(cb.blocks.shape[1]):
             rhs = cb.taps[:, wb][None, :] * vwb  # (k_b, samp)
-            contrib = jnp.einsum('at,bt->tab', lhs, rhs)  # (samp, k_a, k_b)
+            # (samp, k_a, k_b) with full precision to avoid TF32 rounding
+            contrib = jnp.einsum('at,bt->tab', lhs, rhs, precision=jax.lax.Precision.HIGHEST)
             gram = gram.at[ca.blocks[:, wa], :, cb.blocks[:, wb], :].add(contrib)
     return gram.reshape(ca.n_blocks * ka, cb.n_blocks * kb)
 

@@ -29,6 +29,7 @@ into a single [`Basis`][] of any flavour.
 from abc import abstractmethod
 from collections.abc import Sequence
 from dataclasses import field, fields
+from functools import partial
 from itertools import chain
 from math import prod
 from typing import Any, Literal, NamedTuple, Self, cast
@@ -71,6 +72,10 @@ __all__ = [
     'StokesTemplateOperator',
     'GroundTemplateOperator',
 ]
+
+
+# Full float32 precision for basis contraction to ensure adjointness of `project` and `expand`
+_einsum = partial(jnp.einsum, precision=jax.lax.Precision.HIGHEST)
 
 
 StokesLeg = Literal['i', 'q', 'u', 'v']
@@ -252,6 +257,15 @@ class Basis(AbstractLinearOperator):
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
         """Project signal onto basis."""
 
+    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det ...']:
+        """`project` of every detector's stream at once, detectors on the leading axis.
+
+        A per-detector stack projects each stream on its own basis, a shared basis projects them
+        all on the same one. Flavours override this where a joint pass is faster.
+        """
+        in_axes = (0 if self.per_detector else None, 0)
+        return jax.vmap(lambda op, s: op.project(s), in_axes=in_axes)(self, signals)
+
     def mv(self, x: Float[Array, '*shape']) -> Float[Array, ' samp']:
         return self.expand(x)
 
@@ -365,7 +379,7 @@ class TensorBasis(Basis):
         # integer axis labels. Index axes are 0..n-1, sample axis is n.
         n = len(self.shape)
         idx = tuple(range(n))
-        out = jnp.einsum(coeffs, idx, self.values, (*idx, n), (n,))
+        out = _einsum(coeffs, idx, self.values, (*idx, n), (n,))
         return out if self.q == 1 else self._upsample(out)
 
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
@@ -373,7 +387,7 @@ class TensorBasis(Basis):
         idx = tuple(range(n))
         if self.q != 1:
             signal = self._downsample(signal)
-        return jnp.einsum(self.values, (*idx, n), signal, (n,), idx)
+        return _einsum(self.values, (*idx, n), signal, (n,), idx)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
         # Dense Gram over the (single) coupled amplitude axis: one block, no band (w=0).
@@ -382,7 +396,7 @@ class TensorBasis(Basis):
         if len(self.shape) != 1:
             raise NoStructuredView('gram supports 1-D TensorBasis amplitude only')
         v = self.values  # (k, samp)
-        return jnp.einsum('as,s,bs->ab', v, weights, v)[None, None]
+        return _einsum('as,s,bs->ab', v, weights, v)[None, None]
 
     def _support(self) -> _BasisColumns:
         # One global block, every sample in it (unit tap).
@@ -403,8 +417,9 @@ class KroneckerBasis(Basis):
     Built from factor matrices `F_i` (e.g. an azimuth-polynomial set and an HWP-harmonic set), whose
     rows are the factor's functions of time. The basis function for multi-index `k = (k_0, ...)` is
     the elementwise product `b_k(t) = Π_i F_i[k_i, t]`. Equivalent to a `TensorBasis` holding the
-    full outer product, but kept factored: memory scales as `Σ_i d_i` rather than `Π_i d_i` columns
-    of length `n_points`.
+    full outer product, but stored factored: memory scales as `Σ_i d_i` rather than `Π_i d_i` columns
+    of length `n_points`. A basis shared by every detector still forms the full product transiently
+    when applied, as one product serves every detector.
 
     Use when the basis cleanly separates over independent variables.
     """
@@ -429,35 +444,42 @@ class KroneckerBasis(Basis):
         n = len(self.shape)
         return list(chain.from_iterable((f, (i, n)) for i, f in enumerate(self.factors)))
 
-    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
-        # explicit output (n,): sample axis n repeats across factors, name as output to keep it.
+    def _product_values(self) -> Float[Array, 'k samp']:
+        """The product basis `V[k, t] = Π_i F_i[k_i, t]`, flattened to `(size, n_points)`."""
         n = len(self.shape)
-        return jnp.einsum(coeffs, tuple(range(n)), *self._factor_operands(), (n,))
+        v = _einsum(*self._factor_operands(), (*range(n), n))
+        return v.reshape(self.size, self.n_points)
+
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        if self.per_detector:
+            # each detector has its own factors: forming every product would cost `size` TODs
+            n = len(self.shape)
+            return _einsum(coeffs, tuple(range(n)), *self._factor_operands(), (n,))
+        # Shared factors: one product, then a single GEMM over detectors once vmapped. The factored
+        # contraction instead materialises a `(det, d_1, samp)` intermediate.
+        return _einsum('k,ks->s', coeffs.reshape(self.size), self._product_values())
 
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
-        # implicit output: repeated sample axis n is summed; index axes 0..n-1
-        # each appear once and become the (sorted) output.
-        n = len(self.shape)
-        return jnp.einsum(*self._factor_operands(), signal, (n,))
+        if self.per_detector:
+            # implicit output: repeated sample axis n is summed; index axes 0..n-1
+            # each appear once and become the (sorted) output.
+            n = len(self.shape)
+            return _einsum(*self._factor_operands(), signal, (n,))
+        return _einsum('ks,s->k', self._product_values(), signal).reshape(self.shape)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
         # No block structure: the shared per-sample weight couples all factor indices, so the
         # Gram is dense over the flattened product index (one k×k block, k = prod(shape)).
-        # Materialise the product basis `V[k_0..k_{n-1}, t] = Π_i F_i[k_i, t]` (cheap for the
-        # 2-factor bases here), flatten to `(K, samp)`, and contract the weighted self-Gram.
-        n = len(self.shape)
-        v = jnp.einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
-        return jnp.einsum('kt,t,lt->kl', v, weights, v)[None, None]
+        v = self._product_values()
+        return _einsum('kt,t,lt->kl', v, weights, v)[None, None]
 
     def _support(self) -> _BasisColumns:
         # One global block over the materialised product basis (flattened index k = prod(shape)).
-        n = len(self.shape)
-        v = jnp.einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
         samp = self.n_points
         return _BasisColumns(
             blocks=jnp.zeros((samp, 1), jnp.int32),
             taps=jnp.ones((samp, 1), self.dtype),
-            values=v,
+            values=self._product_values(),
             n_blocks=1,
         )
 
@@ -475,8 +497,9 @@ class SegmentedBasis(Basis):
     polynomials); `KroneckerBasis` does not help here, as it assumes every factor is dense at every
     sample.
 
-    Samples in no segment must have their `values` column pre-zeroed by the builder; their segment
-    id is then irrelevant.
+    Segment ids must be non-decreasing along the samples, as they are for time intervals: the
+    projection relies on it and gives wrong results otherwise. Samples in no segment must have their
+    `values` column pre-zeroed by the builder; their segment id must still keep the order.
     """
 
     segment: Int[Array, ' samp']
@@ -499,7 +522,7 @@ class SegmentedBasis(Basis):
         # gather each sample's segment coefficients, then contract over the
         # sub-basis index against the shared per-sample values.
         picked = coeffs[self.segment]  # (n_points, k)
-        return jnp.einsum('sk,ks->s', picked, self.values)
+        return _einsum('sk,ks->s', picked, self.values)
 
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
         # adjoint of expand: per-sample contribution scatter-added into its segment.
@@ -507,12 +530,21 @@ class SegmentedBasis(Basis):
         zeros = jnp.zeros(self.shape, self.dtype)
         return zeros.at[self.segment].add(contrib.T)
 
+    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det ...']:
+        if self.per_detector:
+            return super()._project_detectors(signals)
+        # A shared basis scatters every detector at once, each sample adding a whole `(det, k)`
+        # row to its segment, instead of one scalar scatter per detector.
+        contrib = signals.T[:, :, None] * self.values.T[:, None, :]  # (samp, det, k)
+        sums = jax.ops.segment_sum(contrib, self.segment, self.n_segments, indices_are_sorted=True)
+        return jnp.moveaxis(sums, 1, 0)
+
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'seg 1 k k']:
         # Per-segment Gram in a single pass: bin each sample's rank-one w·vvᵀ into its segment.
         # Block-diagonal (w=0) -> band axis of size 1. O(n_samples·k²), no full-TOD probe.
         n_seg, k = self.shape
         vw = self.values * weights[None, :]  # (k, samp)
-        per_sample = jnp.einsum('as,bs->sab', vw, self.values)  # (samp, k, k)
+        per_sample = _einsum('as,bs->sab', vw, self.values)  # (samp, k, k)
         blocks = jnp.zeros((n_seg, 1, k, k), self.dtype)
         return blocks.at[self.segment, 0].add(per_sample)
 
@@ -541,8 +573,9 @@ class WindowedBasis(Basis):
     non-overlapping single-block-per-sample special case, kept separate to avoid storing its trivial
     unit window.
 
-    The builder must keep every window inside the block range, pre-zeroing the weights of any sample
-    whose window overhangs the ends.
+    Offsets must be non-decreasing along the samples, as they are for blocks laid out in time: the
+    projection relies on it and gives wrong results otherwise. The builder must keep every window
+    inside the block range, pre-zeroing the weights of any sample whose window overhangs the ends.
     """
 
     offset: Int[Array, ' samp']
@@ -583,13 +616,27 @@ class WindowedBasis(Basis):
         # gather each sample's window of block coefficients, contract over the sub-basis
         # index against the shared values and over the window against its taper.
         gathered = coeffs[self._block_indices()]  # (samp, O, k)
-        return jnp.einsum('soj,os,js->s', gathered, self.block_weights, self.sub_values)
+        return _einsum('soj,os,js->s', gathered, self.block_weights, self.sub_values)
 
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
         # adjoint of expand: per-sample rank-one contribution scatter-added into its window.
-        contrib = jnp.einsum('os,js,s->soj', self.block_weights, self.sub_values, signal)
+        contrib = _einsum('os,js,s->soj', self.block_weights, self.sub_values, signal)
         zeros = jnp.zeros(self.shape, self.dtype)
         return zeros.at[self._block_indices()].add(contrib)
+
+    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det ...']:
+        if self.per_detector:
+            return super()._project_detectors(signals)
+        # As for `SegmentedBasis`: every detector at once, one `(det, k)` row per sample. One
+        # scatter per window slot keeps each slot's block ids as sorted as `offset`.
+        sums = jnp.zeros((self.n_blocks, signals.shape[0], self.shape[1]), self.dtype)
+        for o in range(self.block_weights.shape[0]):  # window width is static
+            taps = self.block_weights[o][None, :] * self.sub_values  # (k, samp)
+            contrib = signals.T[:, :, None] * taps.T[:, None, :]  # (samp, det, k)
+            sums = sums + jax.ops.segment_sum(
+                contrib, self.offset + o, self.n_blocks, indices_are_sorted=True
+            )
+        return jnp.moveaxis(sums, 1, 0)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'block band k k']:
         """Block-banded `Bᵀ diag(weights) B` in one pass.
@@ -610,7 +657,7 @@ class WindowedBasis(Basis):
         # d = j'-j is static; slot o (block j = offset+o) couples to slot o+d (block j+d).
         for d in range(n_window):
             for o in range(n_window - d):
-                contrib = jnp.einsum('at,bt->tab', uw[o], u[o + d])  # (samp, k, k)
+                contrib = _einsum('at,bt->tab', uw[o], u[o + d])  # (samp, k, k)
                 bands = bands.at[self.offset + o, d].add(contrib)
         return bands
 
@@ -881,6 +928,8 @@ def spline_hwp_synchronous_basis(
     A cubic B-spline models the slowly time-varying amplitude of the HWP-synchronous signal: knot
     `j` carries a `(sin kχ, cos kχ)` pair for each harmonic `k`, so the amplitudes have shape `(K,
     2*n_harmonics)` with `K = n_knots + 2`.
+
+    Assumes `times` is non-decreasing.
     """
     offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
     sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False).astype(dtype)
@@ -944,10 +993,9 @@ class AbstractTemplateOperator(AbstractLinearOperator):
         vmapped = jax.vmap(lambda op, ai: op.expand(ai), in_axes=cls._in_axes(basis))
         return vmapped(basis, a)
 
-    @classmethod
-    def _project(cls, basis: Basis, s: Array) -> Array:
-        vmapped = jax.vmap(lambda op, si: op.project(si), in_axes=cls._in_axes(basis))
-        return vmapped(basis, s)
+    @staticmethod
+    def _project(basis: Basis, s: Array) -> Array:
+        return basis._project_detectors(s)
 
     # ---- adjoint --------------------------------------------------------------------------------
     @abstractmethod

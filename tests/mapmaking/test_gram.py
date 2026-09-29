@@ -37,7 +37,7 @@ def _segmented_template(key, n_seg, k):
 
 
 def _windowed_basis(key, n_blocks, k, O):
-    offset = (jr.uniform(key, (N_SAMPS,)) * (n_blocks - O + 1)).astype(jnp.int32)
+    offset = jnp.sort(jr.uniform(key, (N_SAMPS,)) * (n_blocks - O + 1)).astype(jnp.int32)
     ko, ks = jr.split(jr.fold_in(key, 1))
     return WindowedBasis(offset, jr.normal(ko, (O, N_SAMPS)), jr.normal(ks, (k, N_SAMPS)), n_blocks)
 
@@ -145,7 +145,7 @@ def test_gram_inverse_windowed_matches_dense_probe():
     # block-triangular solve) must act like the dense column-probe inverse.
     ko, kb, ks, kw, ka = jr.split(jr.key(12), 5)
     n_blocks, k, O = 6, 2, 3
-    offset = (jr.uniform(ko, (N_SAMPS,)) * (n_blocks - O + 1)).astype(jnp.int32)
+    offset = jnp.sort(jr.uniform(ko, (N_SAMPS,)) * (n_blocks - O + 1)).astype(jnp.int32)
     basis = WindowedBasis(
         offset, jr.normal(kb, (O, N_SAMPS)), jr.normal(ks, (k, N_SAMPS)), n_blocks
     )

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Faster `KroneckerBasis` expand and project for bases shared across detectors (#283)
+
 ### Fixed
 
 - Template and `BandedCholeskyOperator` matmuls use full float32 precision on GPU (#282)

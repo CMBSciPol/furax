@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Self
 
 import jax
 import numpy as np
@@ -31,7 +32,7 @@ class ToastObservationMatrixOperator(AbstractLinearOperator):
         )
 
     @classmethod
-    def from_file(cls, path: Path | str) -> 'ToastObservationMatrixOperator':
+    def from_file(cls, path: Path | str) -> Self:
         with np.load(path) as data:
             fmt = data['format']
             if isinstance(fmt, np.ndarray):

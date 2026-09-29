@@ -3,7 +3,7 @@ from __future__ import annotations
 import typing
 from collections.abc import Collection
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import jax.numpy as jnp
 import numpy as np
@@ -85,7 +85,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
     @classmethod
     def from_file(
         cls, filename: str | Path, requested_fields: Collection[str] | None = None
-    ) -> ToastObservation:
+    ) -> Self:
         # check that file exists
         if not Path(filename).exists():
             raise FileNotFoundError(f'File {filename} does not exist')
@@ -97,7 +97,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         data = toast.Data()
         if requested_fields is None:
             loader.apply(data)
-            return ToastObservation(data)
+            return cls(data)
 
         requested = set(requested_fields)
         # translate request to toast subfield names (sets dedup overlapping requests)
@@ -132,7 +132,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         loader.intervals = list(intervals)
 
         loader.apply(data)
-        return ToastObservation(data)
+        return cls(data)
 
     @property
     def name(self) -> str:

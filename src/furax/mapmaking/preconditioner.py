@@ -1,3 +1,5 @@
+from typing import Self
+
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
@@ -33,7 +35,7 @@ class BJPreconditioner(AbstractLinearOperator):
         super().__init__(in_structure=in_structure)
 
     @classmethod
-    def create(cls, op: AbstractLinearOperator) -> 'BJPreconditioner':
+    def create(cls, op: AbstractLinearOperator) -> Self:
         """Assemble the per-pixel blocks from a symmetric operator acting on Stokes sky maps.
 
         The operator is assumed diagonal over the pixel (map) axes. Each Stokes component is probed
@@ -64,6 +66,6 @@ class BJPreconditioner(AbstractLinearOperator):
         # directly, without physically transposing either array.
         return type(x).from_array(jnp.einsum('...ij,j...->i...', self.blocks, x.data))
 
-    def inverse(self) -> 'BJPreconditioner':
+    def inverse(self) -> Self:
         # Per-pixel matrix inverse; stays a BJPreconditioner (keeps the @symmetric tag).
-        return BJPreconditioner(jnp.linalg.inv(self.blocks), in_structure=self.in_structure)
+        return type(self)(jnp.linalg.inv(self.blocks), in_structure=self.in_structure)

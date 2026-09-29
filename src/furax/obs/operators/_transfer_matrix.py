@@ -8,7 +8,7 @@ Reference:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import NamedTuple, Self
 
 import jax.numpy as jnp
 import numpy as np
@@ -61,7 +61,7 @@ class Material:
     loss_e: float = 0.0
 
     @classmethod
-    def isotropic(cls, n: float, loss: float = 0.0) -> Material:
+    def isotropic(cls, n: float, loss: float = 0.0) -> Self:
         return cls(n_o=n, n_e=n, loss_o=loss, loss_e=loss)
 
 

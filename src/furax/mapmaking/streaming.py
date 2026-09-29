@@ -3,7 +3,7 @@
 import functools
 from collections.abc import Sequence
 from dataclasses import field
-from typing import Any
+from typing import Any, Self
 
 import equinox as eqx
 import jax
@@ -119,9 +119,7 @@ class StreamOperator(AbstractLinearOperator):
     out_stacked: StackSpec = field(kw_only=True, metadata={'static': True})
 
     @classmethod
-    def diagonal(
-        cls, operator: AbstractLinearOperator, *, n_lead: int | None = None
-    ) -> 'StreamOperator':
+    def diagonal(cls, operator: AbstractLinearOperator, *, n_lead: int | None = None) -> Self:
         """Block-diagonal stream: each block acts independently on its own slice of the input.
 
         Given a per-slice operator `(*in,) -> (*out,)` with `N` slices, maps
@@ -142,9 +140,7 @@ class StreamOperator(AbstractLinearOperator):
         return cls._single_segment(operator, n_lead, in_stacked=True, out_stacked=True)
 
     @classmethod
-    def column(
-        cls, operator: AbstractLinearOperator, *, n_lead: int | None = None
-    ) -> 'StreamOperator':
+    def column(cls, operator: AbstractLinearOperator, *, n_lead: int | None = None) -> Self:
         """Column stream: applies all blocks to the same input and stacks the results.
 
         Given a per-slice operator `(*in,) -> (*out,)` with `N` slices, maps `(*in,) -> (N, *out)`.
@@ -164,9 +160,7 @@ class StreamOperator(AbstractLinearOperator):
         return cls._single_segment(operator, n_lead, in_stacked=False, out_stacked=True)
 
     @classmethod
-    def row(
-        cls, operator: AbstractLinearOperator, *, n_lead: int | None = None
-    ) -> 'StreamOperator':
+    def row(cls, operator: AbstractLinearOperator, *, n_lead: int | None = None) -> Self:
         """Row stream: applies each block to its own input slice and sums the results.
 
         Given a per-slice operator `(*in,) -> (*out,)` with `N` slices, maps `(N, *in) -> (*out,)`.
@@ -186,9 +180,7 @@ class StreamOperator(AbstractLinearOperator):
         return cls._single_segment(operator, n_lead, in_stacked=True, out_stacked=False)
 
     @classmethod
-    def addition(
-        cls, operator: AbstractLinearOperator, *, n_lead: int | None = None
-    ) -> 'StreamOperator':
+    def addition(cls, operator: AbstractLinearOperator, *, n_lead: int | None = None) -> Self:
         """Addition stream: applies all blocks to the same input and sums the results.
 
         Given a per-slice operator `(*in,) -> (*out,)` with `N` slices, maps `(*in,) -> (*out,)`.
@@ -211,7 +203,7 @@ class StreamOperator(AbstractLinearOperator):
         return cls._single_segment(operator, n_lead, in_stacked=False, out_stacked=False)
 
     @classmethod
-    def block_row(cls, operands: Sequence[AbstractLinearOperator]) -> 'StreamOperator':
+    def block_row(cls, operands: Sequence[AbstractLinearOperator]) -> Self:
         """Fuse parallel streams ``[S₁ | S₂ | ...]`` sharing one batch axis into one stream.
 
         Where [`column`][furax.mapmaking.streaming.StreamOperator.column] and friends lay *one*
@@ -304,7 +296,7 @@ class StreamOperator(AbstractLinearOperator):
         n_lead: int,
         in_stacked: StackSpec,
         out_stacked: StackSpec,
-    ) -> 'StreamOperator':
+    ) -> Self:
         """Build a stream from an explicit segment chain; the general constructor.
 
         Args:
@@ -342,7 +334,7 @@ class StreamOperator(AbstractLinearOperator):
         *,
         in_stacked: bool,
         out_stacked: bool,
-    ) -> 'StreamOperator':
+    ) -> Self:
         """Wrap a freshly stacked operator as a stream with a single sliced segment."""
         if n_lead is None:
             n_lead = _leading_size(operator)

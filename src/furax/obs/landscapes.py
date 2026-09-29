@@ -3,7 +3,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Self, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -317,7 +317,7 @@ class WCSProjection:
             )
 
     @classmethod
-    def from_astropy(cls, wcs: WCS) -> 'WCSProjection':
+    def from_astropy(cls, wcs: WCS) -> Self:
         """Extract a WCSProjection from an astropy WCS object."""
         projection = ProjectionType[wcs.wcs.ctype[0].split('-')[-1]]
         return cls(
@@ -932,7 +932,7 @@ class TangentialLandscape(StokesLandscape):
         y0: float = 0.0,
         stokes: ValidStokesLiteral = 'I',
         dtype: DTypeLike = np.float64,
-    ) -> 'TangentialLandscape':
+    ) -> Self:
         """Create a landscape from physical extent and pixel spacing.
 
         The map is centered at ``(x0, y0)`` and covers
@@ -1247,15 +1247,13 @@ class LocalStokesLandscape(StokesLandscape):
     @classmethod
     def from_boolean_mask(
         cls, parent: StokesLandscape, mask: Bool[np.ndarray | Array, '...']
-    ) -> 'LocalStokesLandscape':
+    ) -> Self:
         """Build from a boolean mask over parent pixels."""
         global_indices = jnp.flatnonzero(mask)
         return cls(parent, global_indices)
 
     @classmethod
-    def from_sampler(
-        cls, parent: StokesLandscape, sampler: 'AbstractSampler'
-    ) -> 'LocalStokesLandscape':
+    def from_sampler(cls, parent: StokesLandscape, sampler: 'AbstractSampler') -> Self:
         """Build from the pixels a sampler reads.
 
         Every pixel of every sample's stencil is kept, so a map restricted to the subset is read

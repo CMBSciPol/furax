@@ -14,6 +14,8 @@ Both operators round-trip input pixel maps through a spherical harmonic transfor
 function is the product of both beams at construction time.
 """
 
+from typing import Self
+
 import jax
 import jax.numpy as jnp
 import jax_healpy as jhp
@@ -93,13 +95,13 @@ class BeamOperator(AbstractLinearOperator):
             out = jax.tree.map(lambda leaf: jnp.squeeze(leaf, axis=0), out)
         return out
 
-    def inverse(self) -> 'BeamOperator':
+    def inverse(self) -> Self:
         """Return a [`BeamOperator`][] with the reciprocal transfer function.
 
         Returns:
             A new [`BeamOperator`][] whose ``beam_fl`` equals ``1 / self.beam_fl``.
         """
-        return BeamOperator(
+        return type(self)(
             lmax=self.lmax, beam_fl=1.0 / self.beam_fl, in_structure=self.in_structure
         )
 
@@ -170,7 +172,7 @@ class BeamOperatorIQU(AbstractLinearOperator):
             out = jax.tree.map(lambda leaf: jnp.squeeze(leaf, axis=0), out)
         return out
 
-    def inverse(self) -> 'BeamOperatorIQU':
+    def inverse(self) -> Self:
         """Return a [`BeamOperatorIQU`][] with per-Stokes reciprocal transfer functions.
 
         Returns:
@@ -178,7 +180,7 @@ class BeamOperatorIQU(AbstractLinearOperator):
             ``1 / leaf`` for each leaf in ``self.beam_fl``.
         """
         inv_beam = jax.tree.map(lambda fl: 1.0 / fl, self.beam_fl)
-        return BeamOperatorIQU(lmax=self.lmax, beam_fl=inv_beam, in_structure=self.in_structure)
+        return type(self)(lmax=self.lmax, beam_fl=inv_beam, in_structure=self.in_structure)
 
 
 class BeamRule(AbstractCompositionRule):

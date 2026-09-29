@@ -255,6 +255,8 @@ def banded_cholesky(
         scale = jnp.mean(diag, axis=-1)[..., None, None]  # (*batch, n, 1, 1)
         ridge = regularization * scale * jnp.eye(k, dtype=bands.dtype)
         bands = bands.at[..., 0, :, :].add(ridge)
+    if bands.shape[-3] == 1:  # block diagonal: the blocks are independent, factor them all at once
+        return jnp.linalg.cholesky(bands)
     return _block_banded_cholesky(bands)
 
 
@@ -323,6 +325,13 @@ def banded_cholesky_solve(
     """
     n, w1, k, _ = lb.shape
     w = w1 - 1
+    if w == 0:  # block diagonal: the blocks are independent, solve them all at once
+        diagonal, rhs = lb[:, 0], b[..., None]
+        y = jax.lax.linalg.triangular_solve(diagonal, rhs, left_side=True, lower=True)
+        x = jax.lax.linalg.triangular_solve(
+            diagonal, y, left_side=True, lower=True, transpose_a=True
+        )
+        return x[..., 0]
 
     def read(arr: Array, idx: Array):
         return jax.lax.dynamic_index_in_dim(arr, jnp.clip(idx, 0, n - 1), axis=0, keepdims=False)

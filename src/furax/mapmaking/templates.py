@@ -408,8 +408,9 @@ class KroneckerBasis(Basis):
     Built from factor matrices `F_i` (e.g. an azimuth-polynomial set and an HWP-harmonic set), whose
     rows are the factor's functions of time. The basis function for multi-index `k = (k_0, ...)` is
     the elementwise product `b_k(t) = Π_i F_i[k_i, t]`. Equivalent to a `TensorBasis` holding the
-    full outer product, but kept factored: memory scales as `Σ_i d_i` rather than `Π_i d_i` columns
-    of length `n_points`.
+    full outer product, but stored factored: memory scales as `Σ_i d_i` rather than `Π_i d_i` columns
+    of length `n_points`. A basis shared by every detector still forms the full product transiently
+    when applied, as one product serves every detector.
 
     Use when the basis cleanly separates over independent variables.
     """
@@ -434,35 +435,42 @@ class KroneckerBasis(Basis):
         n = len(self.shape)
         return list(chain.from_iterable((f, (i, n)) for i, f in enumerate(self.factors)))
 
-    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
-        # explicit output (n,): sample axis n repeats across factors, name as output to keep it.
+    def _product_values(self) -> Float[Array, 'k samp']:
+        """The product basis `V[k, t] = Π_i F_i[k_i, t]`, flattened to `(size, n_points)`."""
         n = len(self.shape)
-        return _einsum(coeffs, tuple(range(n)), *self._factor_operands(), (n,))
+        v = _einsum(*self._factor_operands(), (*range(n), n))
+        return v.reshape(self.size, self.n_points)
+
+    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+        if self.per_detector:
+            # each detector has its own factors: forming every product would cost `size` TODs
+            n = len(self.shape)
+            return _einsum(coeffs, tuple(range(n)), *self._factor_operands(), (n,))
+        # Shared factors: one product, then a single GEMM over detectors once vmapped. The factored
+        # contraction instead materialises a `(det, d_1, samp)` intermediate.
+        return _einsum('k,ks->s', coeffs.reshape(self.size), self._product_values())
 
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
-        # implicit output: repeated sample axis n is summed; index axes 0..n-1
-        # each appear once and become the (sorted) output.
-        n = len(self.shape)
-        return _einsum(*self._factor_operands(), signal, (n,))
+        if self.per_detector:
+            # implicit output: repeated sample axis n is summed; index axes 0..n-1
+            # each appear once and become the (sorted) output.
+            n = len(self.shape)
+            return _einsum(*self._factor_operands(), signal, (n,))
+        return _einsum('ks,s->k', self._product_values(), signal).reshape(self.shape)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
         # No block structure: the shared per-sample weight couples all factor indices, so the
         # Gram is dense over the flattened product index (one k×k block, k = prod(shape)).
-        # Materialise the product basis `V[k_0..k_{n-1}, t] = Π_i F_i[k_i, t]` (cheap for the
-        # 2-factor bases here), flatten to `(K, samp)`, and contract the weighted self-Gram.
-        n = len(self.shape)
-        v = _einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
+        v = self._product_values()
         return _einsum('kt,t,lt->kl', v, weights, v)[None, None]
 
     def _support(self) -> _BasisColumns:
         # One global block over the materialised product basis (flattened index k = prod(shape)).
-        n = len(self.shape)
-        v = _einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
         samp = self.n_points
         return _BasisColumns(
             blocks=jnp.zeros((samp, 1), jnp.int32),
             taps=jnp.ones((samp, 1), self.dtype),
-            values=v,
+            values=self._product_values(),
             n_blocks=1,
         )
 

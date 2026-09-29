@@ -12,6 +12,7 @@ The pointing architecture has been overhauled. A `PointingOperator` now holds a 
 ### Added
 
 - `PointingOperator.create` takes a `beam`, a `DiscretizedBeam` (#265, #278)
+- `DiscretizedBeam.from_directions` builds a beam from node directions in the frame of a beam map, and `DiscretizedBeam.load` reads one from a `.npz` file (#291)
 - `PointingOperator.rotated`; `QURotationOperator @ PointingOperator` reduces to a `PointingOperator` (#271)
 - `PointingOperator.create(frame='sky')` and the `PolarizationFrame` type (#272)
 - Support for NESTED ordering of `HealpixLandscape` (nearest neighbour pointing only) (#276)

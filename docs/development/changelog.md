@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Template and `BandedCholeskyOperator` matmuls use full float32 precision on GPU (#282)
+
 ## [0.15.0] - 2026-09-29
 
 The pointing architecture has been overhauled. A `PointingOperator` now holds a *sampler* (`AbstractSampler`), which owns the entire pointing logic (line-of-sight computation and sampling of the pixels). The sampler's *kernel* (`SamplingKernel`) handles the actual sampling logic: nearest-neighbour or bilinear, beam, etc. On-the-fly pointing is also faster on HEALPix and CAR maps; on a GPU, bilinear pointing on a CAR map runs about 3 times faster whilst using a fraction of the memory (#274, #277).

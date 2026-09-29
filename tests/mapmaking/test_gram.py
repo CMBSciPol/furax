@@ -9,6 +9,7 @@ from furax.mapmaking.gram import cross_gram, gram_inverse
 from furax.mapmaking.templates import (
     KroneckerBasis,
     SegmentedBasis,
+    StokesTemplateOperator,
     TemplateOperator,
     TensorBasis,
     WindowedBasis,
@@ -156,3 +157,26 @@ def test_gram_inverse_windowed_matches_dense_probe():
     amps = {'t': jr.normal(ka, T.in_structure['t'].shape)}  # (N_DETS, n_blocks, k)
     dense = gram_inverse(T, W, allow_probe=True)
     assert_allclose(structured(amps)['t'], dense(amps)['t'], rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize('stokes', [None, 'IQU'])
+def test_coupled_gram_inverse_matches_dense_probe(stokes):
+    # several templates on one stream couple into a joint Gram block; with a Stokes axis each leg
+    # gets its own block over the templates it carries, here all three legs for 'poly' and only q
+    # and u for 'hwp', each leg weighted differently
+    kp, kh, kw, ka = jr.split(jr.key(14), 4)
+    segment = jnp.repeat(jnp.arange(4), N_SAMPS // 4).astype(jnp.int32)
+    poly = SegmentedBasis(segment, jr.normal(kp, (2, N_SAMPS)), 4)
+    hwp = TensorBasis(jr.normal(kh, (3, N_SAMPS)))
+    if stokes is None:
+        T = TemplateOperator({'poly': poly, 'hwp': hwp}, n_dets=N_DETS)
+        W = _weight(kw)
+    else:
+        T = StokesTemplateOperator({'poly': {'iqu': poly}, 'hwp': {'qu': hwp}}, N_DETS, stokes)
+        w = jr.uniform(kw, (3, N_DETS, N_SAMPS), minval=0.5, maxval=2.0)
+        W = DiagonalOperator(w, in_structure=T.out_structure)
+
+    amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
+    structured = gram_inverse(T, W)(amps)
+    dense = gram_inverse(T, W, allow_probe=True)(amps)
+    jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-4, atol=1e-5), structured, dense)

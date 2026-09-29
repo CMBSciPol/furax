@@ -1,6 +1,8 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
+from equinox import tree_equal
 from fastquat import Quaternion
 from numpy.testing import assert_allclose, assert_array_equal
 
@@ -16,7 +18,7 @@ from furax.obs.sampling import (
 )
 from furax.obs.spin2 import transported_gather
 from furax.obs.stencil import Interpolation, Stencil
-from furax.obs.stokes import StokesI, StokesIQU, StokesQU
+from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesQU
 
 NSIDE = 4
 NDET = 3
@@ -105,6 +107,62 @@ class TestDiscretizedBeamFromDirections:
     def test_rejects_inconsistent_directions_and_weights(self, directions, weights, match) -> None:
         with pytest.raises(ValueError, match=match):
             DiscretizedBeam.from_directions(directions, weights)
+
+
+class TestDiscretizedBeamLoad:
+    @staticmethod
+    def _per_detector_nodes() -> Quaternion:
+        xi, eta = 0.05 * jax.random.normal(jax.random.key(1), (2, NDET, 2))
+        return XiEtaAngles(xi, eta, jnp.zeros((NDET, 2))).to_quaternion()
+
+    @pytest.mark.parametrize(
+        'per_detector, weights, stokes',
+        [
+            (False, jnp.array([0.3, 0.7]), None),
+            (False, jnp.array([0.3, 0.7]), ''),
+            (True, jnp.array([0.3, 0.7]), None),
+            (False, StokesIQU(*jnp.array([[0.5, 0.5], [0.7, 0.3], [0.2, 0.8]])), 'IQU'),
+            (True, StokesQU(*jnp.array([[0.7, 0.3], [0.2, 0.8]])), 'QU'),
+        ],
+        ids=['shared', 'shared-empty-stokes', 'per-detector', 'per-stokes', 'per-both'],
+    )
+    def test_reads_the_beam_in_the_file(self, tmp_path, per_detector, weights, stokes) -> None:
+        nodes = self._per_detector_nodes() if per_detector else _nodes()
+        rows = weights.data if isinstance(weights, Stokes) else weights
+        if stokes is None:
+            np.savez(tmp_path / 'beam.npz', nodes=nodes.wxyz, weights=rows)
+        else:
+            np.savez(tmp_path / 'beam.npz', nodes=nodes.wxyz, weights=rows, stokes=stokes)
+
+        beam = DiscretizedBeam.load(tmp_path / 'beam.npz')
+        assert_array_equal(beam.nodes.wxyz, nodes.wxyz)
+        assert type(beam.weights) is type(weights)
+        assert tree_equal(beam.weights, weights)
+
+    def test_other_arrays_are_ignored(self, tmp_path) -> None:
+        np.savez(
+            tmp_path / 'beam.npz',
+            nodes=_nodes().wxyz,
+            weights=jnp.array([0.3, 0.7]),
+            directions=jnp.ones((2, 3)),
+        )
+        beam = DiscretizedBeam.load(tmp_path / 'beam.npz')
+        assert_array_equal(beam.weights, [0.3, 0.7])
+
+    @pytest.mark.parametrize(
+        'weights, stokes, match',
+        [
+            (jnp.ones((2, 2)), 'IQU', 'one row per Stokes component'),
+            (jnp.ones(2), 'QU', 'one row per Stokes component'),
+            (jnp.ones((2, 2)), 'IQ', 'Invalid Stokes'),
+            (jnp.ones((3, 2)), '', 'as a Stokes'),
+            (jnp.ones(3), '', 'beam weights have shape'),
+        ],
+    )
+    def test_rejects_an_inconsistent_file(self, tmp_path, weights, stokes, match) -> None:
+        np.savez(tmp_path / 'beam.npz', nodes=_nodes().wxyz, weights=weights, stokes=stokes)
+        with pytest.raises(ValueError, match=match):
+            DiscretizedBeam.load(tmp_path / 'beam.npz')
 
 
 class TestDiscretizedBeamChecked:

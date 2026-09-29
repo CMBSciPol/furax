@@ -1,10 +1,12 @@
 import dataclasses
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Literal, NamedTuple, Self, dataclass_transform
+from typing import Any, Literal, NamedTuple, Self, cast, dataclass_transform
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from fastquat import Quaternion
 from jaxtyping import Array, Float, Int, Integer
 
@@ -19,7 +21,7 @@ from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators import Spin2Rotation
 from furax.obs.spin2 import transport_rotation
 from furax.obs.stencil import Interpolation, Stencil
-from furax.obs.stokes import Stokes
+from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 __all__ = [
     'AbstractSampler',
@@ -148,6 +150,39 @@ class DiscretizedBeam:
         # detector-frame direction is (-z, y, x), whose orthographic coordinates are
         # (xi, eta) = (-y, z).
         nodes = XiEtaAngles(-y, z, jnp.zeros_like(y)).to_quaternion()
+        return cls.create(nodes, weights)
+
+    @classmethod
+    def load(cls, path: str | os.PathLike[str]) -> Self:
+        """Read a beam from a `.npz` file.
+
+        The file holds the arrays:
+
+        - `nodes`: the rotation of each node as a quaternion, scalar first, shape (n_nodes, 4), or
+          (n_detectors, n_nodes, 4) for a beam per detector, see [`DiscretizedBeam`][].
+        - `weights`: the weight of each node, shape (n_nodes,), or (n_components, n_nodes) for
+          one set of weights per Stokes component.
+        - `stokes`, optional: the Stokes components of per-component weights, e.g. `'IQU'`, one
+          per row of `weights`. Empty or absent for weights shared by every component.
+
+        Other arrays in the file are ignored.
+
+        Args:
+            path: The file to read.
+        """
+        with np.load(path) as data:
+            nodes = Quaternion.from_array(jnp.asarray(data['nodes']))
+            weights = jnp.asarray(data['weights'])
+            stokes = str(data['stokes']) if 'stokes' in data.files else ''
+        if stokes:
+            if weights.ndim != 2 or weights.shape[0] != len(stokes):
+                raise ValueError(
+                    f'beam weights have shape {weights.shape}, expected one row per Stokes '
+                    f'component of {stokes!r}'
+                )
+            # `class_for` rejects a string that is not a valid Stokes combination
+            stokes_cls = Stokes.class_for(cast(ValidStokesLiteral, stokes))
+            return cls.create(nodes, stokes_cls.from_array(weights))
         return cls.create(nodes, weights)
 
     def checked(self, landscape: StokesLandscape, n_detectors: int) -> Self:

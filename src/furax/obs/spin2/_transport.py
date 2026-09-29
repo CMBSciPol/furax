@@ -80,7 +80,7 @@ def spin2_cos_sin(
     A polarisation $P = Q + iU$ stored at a neighbour direction $\hat n$ is expressed in the local
     meridian basis at $\hat n$. Carrying it to the meridian basis at a target direction $\hat x$ is
     a rotation of the basis by the transport angle $\delta$, $P \to P e^{-2i\delta}$: applying the
-    returned rotation with [`Stokes.rotate_qu`][] performs the transport.
+    returned rotation with [`Stokes.rotate_qu`][furax.obs.stokes.Stokes.rotate_qu] performs the transport.
 
     The sign convention is that of HEALPix/COSMO maps. An IAU-convention map has $U$ flipped and
     would run the transport backwards.

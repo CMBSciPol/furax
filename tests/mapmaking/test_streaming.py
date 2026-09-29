@@ -11,7 +11,7 @@ from numpy.testing import assert_allclose
 
 from furax import AbstractLinearOperator, tree
 from furax.core import BlockColumnOperator, BlockRowOperator, DiagonalOperator, HomothetyOperator
-from furax.mapmaking.streaming import StreamOperator, StreamSegment
+from furax.mapmaking.streaming import StreamOperator, _StreamSegment
 
 # ---------------------------------------------------------------------------
 # Minimal stacked operator for testing
@@ -186,7 +186,7 @@ def test_homothety_stays_out_of_the_sliced_body(n_in: int, n_out: int, scalar_le
     # will not fold it into a sliced segment where `scan` would try to slice it.
     #
     # Which end it lands on is not decided by writing `c * block` rather than `block @ c`. The
-    # algebra commutes a scalar to whichever structure is smaller before `HomothetyStreamRule`
+    # algebra commutes a scalar to whichever structure is smaller before `_HomothetyStreamRule`
     # sees the composition, so the same expression reaches both of that rule's branches depending
     # only on the block shape -- and transposing then carries the segment across.
     blocks = _make_blocks(P('obs'), n_in=n_in, n_out=n_out)
@@ -290,7 +290,7 @@ def test_non_scalar_static_post_is_applied() -> None:
     post = DiagonalOperator(d, in_structure=jax.ShapeDtypeStruct((N_OUT,), jnp.float64))
     # composition order (post @ core): post is applied after the sliced core, so it comes first
     op = StreamOperator.create(
-        (StreamSegment(post, False), StreamSegment(blocks, True)),
+        (_StreamSegment(post, False), _StreamSegment(blocks, True)),
         n_lead=N_OBS,
         in_stacked=True,
         out_stacked=True,
@@ -401,7 +401,7 @@ def _constant_wrapped(op: StreamOperator, *, post: bool) -> StreamOperator:
     """
     structure = op.segments[0].out_structure if post else op.segments[-1].in_structure
     d = jax.device_put(RNG.standard_normal(structure.shape, dtype=np.float64), P())
-    shared = StreamSegment(DiagonalOperator(d, in_structure=structure), False)
+    shared = _StreamSegment(DiagonalOperator(d, in_structure=structure), False)
     segments = (shared,) + op.segments if post else op.segments + (shared,)
     return StreamOperator.create(
         segments, n_lead=op.n_lead, in_stacked=op.in_stacked, out_stacked=op.out_stacked
@@ -441,9 +441,9 @@ def _multi_stacked(n_in: int = N_IN) -> StreamOperator:
     d = jax.device_put(RNG.standard_normal((N_OUT,), dtype=np.float64), P())
     shared = DiagonalOperator(d, in_structure=jax.ShapeDtypeStruct((N_OUT,), jnp.float64))
     segments = (
-        StreamSegment(_make_blocks(P('obs'), n_in=N_OUT), True),
-        StreamSegment(shared, False),
-        StreamSegment(_make_blocks(P('obs'), n_in=n_in), True),
+        _StreamSegment(_make_blocks(P('obs'), n_in=N_OUT), True),
+        _StreamSegment(shared, False),
+        _StreamSegment(_make_blocks(P('obs'), n_in=n_in), True),
     )
     return StreamOperator.create(segments, n_lead=N_OBS, in_stacked=False, out_stacked=True)
 
@@ -480,7 +480,7 @@ def test_segment_structure_does_not_depend_on_trace_context() -> None:
     def build(scale: float | jax.Array) -> StreamOperator:
         homo = HomothetyOperator(scale, in_structure=jax.ShapeDtypeStruct((N_IN,), jnp.float64))
         return StreamOperator.create(
-            (StreamSegment(blocks, True), StreamSegment(homo, False)),
+            (_StreamSegment(blocks, True), _StreamSegment(homo, False)),
             n_lead=N_OBS,
             in_stacked=True,
             out_stacked=True,
@@ -507,7 +507,7 @@ def test_array_owning_shared_map_is_never_folded() -> None:
     d = jax.device_put(RNG.standard_normal((N_OBS,), dtype=np.float64), P())
     shared = DiagonalOperator(d, in_structure=jax.ShapeDtypeStruct((N_OBS,), jnp.float64))
     op = StreamOperator.create(
-        (StreamSegment(shared, False), StreamSegment(_make_blocks(P('obs'), n_out=N_OBS), True)),
+        (_StreamSegment(shared, False), _StreamSegment(_make_blocks(P('obs'), n_out=N_OBS), True)),
         n_lead=N_OBS,
         in_stacked=True,
         out_stacked=True,
@@ -676,7 +676,7 @@ def test_create_rejects_non_prefix_spec() -> None:
     # jax names the offending key path and subtree types, so no wrapping is needed
     with pytest.raises(ValueError, match='pytree structure error'):
         StreamOperator.create(
-            (StreamSegment(_make_blocks(), True),),
+            (_StreamSegment(_make_blocks(), True),),
             n_lead=N_OBS,
             in_stacked=[True, False],
             out_stacked=True,

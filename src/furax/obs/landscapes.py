@@ -3,7 +3,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Self, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -317,7 +317,7 @@ class WCSProjection:
             )
 
     @classmethod
-    def from_astropy(cls, wcs: WCS) -> 'WCSProjection':
+    def from_astropy(cls, wcs: WCS) -> Self:
         """Extract a WCSProjection from an astropy WCS object."""
         projection = ProjectionType[wcs.wcs.ctype[0].split('-')[-1]]
         return cls(
@@ -377,7 +377,7 @@ class WCSLandscape(StokesLandscape):
         """Returns the [`Stencil`][] a sample reads, positioned by [`pixel2world`][].
 
         At [`Interpolation.BILINEAR`][] it holds the four pixels around the sample; at
-        [`Interpolation.NEAREST`][] the one it falls in, whose index is that of [`world2index`][].
+        [`Interpolation.NEAREST`][] the one it falls in, whose index is that of [`world2index`][StokesLandscape.world2index].
         """
         if interpolation is Interpolation.NEAREST:
             pix_x, pix_y = self.world2pixel(theta, phi)
@@ -604,7 +604,7 @@ class HealpixLandscape(StokesLandscape):
 
         At [`Interpolation.BILINEAR`][] it holds the four neighbours ``get_interp_weights``
         returns, in RING pixel ordering only; at [`Interpolation.NEAREST`][] the pixel the sample
-        falls in, whose index is bit-identical to that of [`world2index`][].
+        falls in, whose index is bit-identical to that of [`world2index`][StokesLandscape.world2index].
         """
         if interpolation is Interpolation.NEAREST:
             indices = self.world2index(theta, phi)
@@ -740,8 +740,8 @@ class AstropyWCSLandscape(StokesLandscape):
     ) -> Stencil:
         """Returns the [`Stencil`][] holding the pixel the sample falls in.
 
-        Its index is that of [`world2index`][], and the pixel center comes from [`pixel2world`][].
-        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][].
+        Its index is that of [`world2index`][StokesLandscape.world2index], and the pixel center comes from [`pixel2world`][].
+        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][StokesLandscape.world2interp].
         """
         if interpolation is not Interpolation.NEAREST:
             raise NotImplementedError(
@@ -856,8 +856,8 @@ class HorizonLandscape(StokesLandscape):
     ) -> Stencil:
         """Returns the [`Stencil`][] holding the bin the sample falls in.
 
-        Its index is that of [`world2index`][], and the bin center comes from [`pixel2world`][].
-        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][].
+        Its index is that of [`world2index`][StokesLandscape.world2index], and the bin center comes from [`pixel2world`][].
+        Only [`Interpolation.NEAREST`][] is supported, as for [`world2interp`][StokesLandscape.world2interp].
         """
         if interpolation is not Interpolation.NEAREST:
             raise NotImplementedError(
@@ -932,7 +932,7 @@ class TangentialLandscape(StokesLandscape):
         y0: float = 0.0,
         stokes: ValidStokesLiteral = 'I',
         dtype: DTypeLike = np.float64,
-    ) -> 'TangentialLandscape':
+    ) -> Self:
         """Create a landscape from physical extent and pixel spacing.
 
         The map is centered at ``(x0, y0)`` and covers
@@ -1247,15 +1247,13 @@ class LocalStokesLandscape(StokesLandscape):
     @classmethod
     def from_boolean_mask(
         cls, parent: StokesLandscape, mask: Bool[np.ndarray | Array, '...']
-    ) -> 'LocalStokesLandscape':
+    ) -> Self:
         """Build from a boolean mask over parent pixels."""
         global_indices = jnp.flatnonzero(mask)
         return cls(parent, global_indices)
 
     @classmethod
-    def from_sampler(
-        cls, parent: StokesLandscape, sampler: 'AbstractSampler'
-    ) -> 'LocalStokesLandscape':
+    def from_sampler(cls, parent: StokesLandscape, sampler: 'AbstractSampler') -> Self:
         """Build from the pixels a sampler reads.
 
         Every pixel of every sample's stencil is kept, so a map restricted to the subset is read

@@ -1,4 +1,4 @@
-from typing import ClassVar, TypeVar
+from typing import ClassVar, Self, TypeVar
 
 import numpy as np
 from jax import Array
@@ -200,8 +200,8 @@ class NonIdealHWPOperator(AbstractLinearOperator):
             return x.from_array(jnp.concatenate([out, x.data[3:]]))  # append V
         return x.from_array(out)
 
-    def transpose(self) -> 'NonIdealHWPOperator':
-        return NonIdealHWPOperator(
+    def transpose(self) -> Self:
+        return type(self)(
             mueller=jnp.swapaxes(self.mueller, -2, -1),
             in_structure=self.in_structure,
         )

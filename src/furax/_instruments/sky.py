@@ -101,25 +101,23 @@ class FGBusterInstrument(eqx.Module):
         return cls(frequency, depth_i, depth_p)
 
     @classmethod
-    def from_depth_i(cls, frequency: Array, depth_i: Array) -> 'FGBusterInstrument':
+    def from_depth_i(cls, frequency: Array, depth_i: Array) -> Self:
         """Creates an instrument using intensity depth and derives polarization depth."""
         depth_p = depth_i * np.sqrt(2)
         return cls(frequency, depth_i, depth_p)
 
     @classmethod
-    def from_depth_p(cls, frequency: Array, depth_p: Array) -> 'FGBusterInstrument':
+    def from_depth_p(cls, frequency: Array, depth_p: Array) -> Self:
         """Creates an instrument using polarization depth and derives intensity depth."""
         depth_i = depth_p / np.sqrt(2)
         return cls(frequency, depth_i, depth_p)
 
     @classmethod
-    def from_params(cls, frequency: Array, depth_i: Array, depth_p: Array) -> 'FGBusterInstrument':
+    def from_params(cls, frequency: Array, depth_i: Array, depth_p: Array) -> Self:
         """Create an instrument from frequency, intensity depth, and polarization depth."""
         return cls(frequency, depth_i, depth_p)
 
-    def depth_conversion(
-        self, unit: str = 'uK_CMB', dtype: DTypeLike = jnp.float32
-    ) -> 'FGBusterInstrument':
+    def depth_conversion(self, unit: str = 'uK_CMB', dtype: DTypeLike = jnp.float32) -> Self:
         """Converts depths to a specified unit and dtype."""
         # Because we used @property, self.depth_i and self.frequency act like normal numpy arrays here!
         depth_i = self.depth_i * u.arcmin * u.uK_CMB  # ty: ignore[unresolved-attribute]
@@ -137,7 +135,7 @@ class FGBusterInstrument(eqx.Module):
         depth_i = np.array(depth_i, dtype=dtype).reshape(-1, 1)
         depth_p = np.array(depth_p, dtype=dtype).reshape(-1, 1)
 
-        return FGBusterInstrument(
+        return type(self)(
             frequency=self.frequency.reshape(-1, 1),
             depth_i=depth_i,
             depth_p=depth_p,

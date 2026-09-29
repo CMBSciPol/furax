@@ -54,7 +54,6 @@ __all__ = [
     'StokesLeg',
     'NoStructuredView',
     'Basis',
-    'BasisColumns',
     'TensorBasis',
     'KroneckerBasis',
     'SegmentedBasis',
@@ -82,7 +81,7 @@ class NoStructuredView(Exception):
     """Raised when a basis cannot expose a structured (column-support) view."""
 
 
-class BasisColumns(NamedTuple):
+class _BasisColumns(NamedTuple):
     """Column-support view of a basis, from which self- and cross-Grams are built in one pass.
 
     Examples:
@@ -280,8 +279,8 @@ class Basis(AbstractLinearOperator):
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n w1 k k']:
         """Flavours with no such form raise [`NoStructuredView`][]."""
 
-    def support(self) -> BasisColumns:
-        """Column-support view ([`BasisColumns`][]) used to build self- and cross-Grams in one pass.
+    def support(self) -> _BasisColumns:
+        """Column-support view (`_BasisColumns`) used to build self- and cross-Grams in one pass.
 
         Consumed by [`cross_gram`][furax.mapmaking.gram.cross_gram].
 
@@ -293,7 +292,7 @@ class Basis(AbstractLinearOperator):
         return self._support()
 
     @abstractmethod
-    def _support(self) -> BasisColumns:
+    def _support(self) -> _BasisColumns:
         """Flavours with no such view raise [`NoStructuredView`][]."""
 
 
@@ -385,12 +384,12 @@ class TensorBasis(Basis):
         v = self.values  # (k, samp)
         return jnp.einsum('as,s,bs->ab', v, weights, v)[None, None]
 
-    def _support(self) -> BasisColumns:
+    def _support(self) -> _BasisColumns:
         # One global block, every sample in it (unit tap).
         if self.q != 1 or len(self.shape) != 1:
             raise NoStructuredView('support view: 1-D undecimated TensorBasis only')
         samp = self.n_points
-        return BasisColumns(
+        return _BasisColumns(
             blocks=jnp.zeros((samp, 1), jnp.int32),
             taps=jnp.ones((samp, 1), self.dtype),
             values=self.values,
@@ -450,12 +449,12 @@ class KroneckerBasis(Basis):
         v = jnp.einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
         return jnp.einsum('kt,t,lt->kl', v, weights, v)[None, None]
 
-    def _support(self) -> BasisColumns:
+    def _support(self) -> _BasisColumns:
         # One global block over the materialised product basis (flattened index k = prod(shape)).
         n = len(self.shape)
         v = jnp.einsum(*self._factor_operands(), (*range(n), n)).reshape(self.size, self.n_points)
         samp = self.n_points
-        return BasisColumns(
+        return _BasisColumns(
             blocks=jnp.zeros((samp, 1), jnp.int32),
             taps=jnp.ones((samp, 1), self.dtype),
             values=v,
@@ -517,10 +516,10 @@ class SegmentedBasis(Basis):
         blocks = jnp.zeros((n_seg, 1, k, k), self.dtype)
         return blocks.at[self.segment, 0].add(per_sample)
 
-    def _support(self) -> BasisColumns:
+    def _support(self) -> _BasisColumns:
         # One block per sample: its segment. Out-of-range samples were pre-zeroed in `values`.
         samp = self.segment.shape[0]
-        return BasisColumns(
+        return _BasisColumns(
             blocks=self.segment[:, None],
             taps=jnp.ones((samp, 1), self.dtype),
             values=self.values,
@@ -615,9 +614,9 @@ class WindowedBasis(Basis):
                 bands = bands.at[self.offset + o, d].add(contrib)
         return bands
 
-    def _support(self) -> BasisColumns:
+    def _support(self) -> _BasisColumns:
         # Each sample reads a window of O overlapping blocks, tapered by block_weights.
-        return BasisColumns(
+        return _BasisColumns(
             blocks=self._block_indices(),  # (samp, O)
             taps=self.block_weights.T,  # (samp, O)
             values=self.sub_values,  # (k, samp)

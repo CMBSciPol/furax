@@ -9,7 +9,7 @@ from fastquat import Quaternion
 from jaxtyping import Array, Float, Int, Integer
 
 from furax.core.utils import register_dataclass_with_keys
-from furax.math.coords import gamma_angle_cos_sin, polarization_angle_cos_sin
+from furax.math.coords import ZSPhi, gamma_angle_cos_sin, polarization_angle_cos_sin
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators import Spin2Rotation
 from furax.obs.spin2 import transport_rotation
@@ -183,18 +183,17 @@ class PointingRows(NamedTuple):
 
 def _polarized(
     stencil: Stencil,
-    theta: Float[Array, '...'],
-    phi: Float[Array, '...'],
+    line_of_sight: ZSPhi,
     rotation: Spin2Rotation | None,
     kernel: 'SamplingKernel',
 ) -> PointingRows:
-    """The pointing rows of a polarized map, transported to the line of sight `(theta, phi)`."""
+    """The pointing rows of a map with polarization, transported to `line_of_sight`."""
     if rotation is None:
-        return PointingRows(stencil, transport_rotation(stencil, theta, phi))
+        return PointingRows(stencil, transport_rotation(stencil, line_of_sight))
     if isinstance(kernel.weights, Stokes):
         # weights per component act on the rotated Q and U: turn every neighbour before the sum
-        return PointingRows(stencil, transport_rotation(stencil, theta, phi, rotation))
-    return PointingRows(stencil, transport_rotation(stencil, theta, phi), rotation)
+        return PointingRows(stencil, transport_rotation(stencil, line_of_sight, rotation))
+    return PointingRows(stencil, transport_rotation(stencil, line_of_sight), rotation)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -320,8 +319,8 @@ class QuaternionSampler(AbstractSampler):
         if not landscape.has_spin2:
             return PointingRows(stencil, None)
         rotation = self._frame_rotation(quats, index)
-        theta, phi = landscape.quat2world(quats)
-        return _polarized(stencil, theta, phi, rotation, self.kernel)
+        line_of_sight = landscape.quat2direction(quats)
+        return _polarized(stencil, line_of_sight, rotation, self.kernel)
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: Int[Array, ' batch']
@@ -416,7 +415,8 @@ class AngleSampler(AbstractSampler):
         rotation = self.polarization_rotation
         if rotation is not None:
             rotation = rotation[index]
-        return _polarized(stencil, theta, phi, rotation, self.kernel)
+        line_of_sight = ZSPhi.from_angles(theta, phi)
+        return _polarized(stencil, line_of_sight, rotation, self.kernel)
 
     def nearest_indices(
         self, landscape: StokesLandscape, index: Int[Array, ' batch']

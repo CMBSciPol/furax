@@ -52,3 +52,12 @@ uvx prek install  # install pre-commit hooks; every commit will trigger them
 uvx prek run      # run hooks on demand (staged files)
 uvx prek run -a   # run hooks (all files)
 ```
+
+## Citing Furax
+
+If you use Furax in your work, please cite the [paper](https://arxiv.org/abs/2603.19600):
+
+> Chanial et al., *Furax: A Modular JAX Framework for Linear Operators in Astrophysical and
+> Cosmological Data Analysis*, arXiv:2603.19600 (2026).
+
+Citation metadata is also available in [`CITATION.cff`](CITATION.cff).

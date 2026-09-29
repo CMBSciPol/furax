@@ -11,9 +11,9 @@ authors = [
     { name = 'Wuhyun Sohn', email = 'sohn@apc.in2p3.fr' },
 ]
 maintainers = [{ name = 'Pierre Chanial', email = 'chanial@apc.in2p3.fr' }]
-description = 'Operators and solvers for high-performance computing.'
+description = 'A JAX framework for linear operators in astrophysical and cosmological data analysis.'
 readme = 'README.md'
-keywords = ['scientific computing']
+keywords = ['scientific computing', 'jax', 'linear operators', 'cosmology', 'CMB', 'mapmaking']
 classifiers = [
     'Programming Language :: Python',
     'Programming Language :: Python :: 3.12',
@@ -67,7 +67,10 @@ interfaces = ["furax[so,toast,lbs]"]
 
 [project.urls]
 homepage = 'https://scipol.in2p3.fr'
+documentation = 'https://furax.readthedocs.io/en/stable/'
 repository = 'https://github.com/CMBSciPol/furax'
+issues = 'https://github.com/CMBSciPol/furax/issues'
+changelog = 'https://furax.readthedocs.io/en/stable/development/changelog/'
 
 [project.scripts]
 furax-so-atomic-map = 'furax.interfaces.sotodlib.mapmaker:main_cli'

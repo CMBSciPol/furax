@@ -20,13 +20,18 @@ from furax.obs.landscapes import (
 from furax.obs.operators import QURotationOperator
 from furax.obs.operators._qu_rotations import rotate_qu_cs
 from furax.obs.pointing import PointingOperator, SampledPointing, XSamplingOperator
-from furax.obs.stokes import Stokes, StokesIQU, StokesQU, ValidStokesLiteral
+from furax.obs.stencil import Interpolation
+from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 NSIDE = 4
 NDET, NSAMP = 3, 10
 
 # Full-sphere CAR landscape (180×360 at 1°/pixel, crval at RA=180° to avoid wrap issues)
 _CAR_PROJECTION = WCSProjection(crpix=(180.5, 90.5), crval=(180.0, 0.0), cdelt=(-1.0, 1.0))
+
+
+def _interpolates(op: PointingOperator) -> bool:
+    return op.kernel.interpolation is Interpolation.BILINEAR
 
 
 def _make_landscape(landscape_type: str, stokes: ValidStokesLiteral) -> StokesLandscape:
@@ -251,7 +256,7 @@ class TestLocalLandscape:
     ) -> tuple[LocalStokesLandscape, PointingOperator]:
         local = LocalStokesLandscape(p_full.landscape, indices)
         p_local = PointingOperator.create(
-            local, p_full.qbore, p_full.qdet, interpolate=p_full.interpolate
+            local, p_full.qbore, p_full.qdet, interpolate=_interpolates(p_full)
         )
         return local, p_local
 
@@ -283,7 +288,7 @@ class TestLocalLandscape:
         local, p_local = half_coverage
         subset = local.global_indices
         binned_local = local.promote(p_local.T(tod)).data
-        if not p_full.interpolate:
+        if not _interpolates(p_full):
             # nearest: contributions to kept pixels are identical, sink ones are discarded
             # (bilinear renormalizes the weights over covered neighbors, so values differ)
             binned_full = p_full.T(tod).data
@@ -433,7 +438,7 @@ class TestTransportHooks:
             def _quat2pointing(self, qdet_full):
                 theta, phi = self.landscape.quat2world(qdet_full)
                 phi = phi + 0.05
-                stencil = self.landscape.world2stencil(theta, phi, self._interpolation)
+                stencil = self.landscape.world2stencil(theta, phi, self.kernel.interpolation)
                 return SampledPointing(stencil, theta, phi)
 
         landscape = HealpixLandscape(NSIDE, 'IQU')
@@ -625,7 +630,7 @@ class TestOffsets:
         landscape = HealpixLandscape(NSIDE, stokes)
         qbore, qdet = self._quats(40)
         op = PointingOperator.create(landscape, qbore, qdet, frame=frame, interpolate=interpolate)
-        assert op.offsets is None and op.offset_weights is None
+        assert op.kernel.offsets is None and op.kernel.weights is None
         assert len(jax.tree.leaves(op)) == 2  # qbore, qdet: no offset leaf sneaks in
 
     def test_the_origin_offset_with_unit_weight_is_the_plain_operator(
@@ -710,7 +715,7 @@ class TestOffsets:
             offsets=identity * offsets[None, :],
             offset_weights=weights,
         )
-        assert shared.offsets.shape == (NDET, 2)
+        assert shared.kernel.offsets.shape == (NDET, 2)
         assert tree_equal(per_detector(sky), shared(sky), rtol=1e-12, atol=1e-12)
 
     def test_per_stokes_weights_act_on_the_output_components(
@@ -829,9 +834,9 @@ class TestOffsets:
             offset_weights=self._per_stokes_weights('IQU'),
         )
         op_i = op.as_stokes_i(interpolate=not interpolate)
-        assert op_i.offsets is op.offsets
-        assert_array_equal(op_i.offset_weights, jnp.array([0.5, 0.5]))
-        assert op_i.landscape.stokes == 'I' and op_i.interpolate is (not interpolate)
+        assert op_i.kernel.offsets is op.kernel.offsets
+        assert_array_equal(op_i.kernel.weights, jnp.array([0.5, 0.5]))
+        assert op_i.landscape.stokes == 'I' and _interpolates(op_i) is (not interpolate)
 
     def test_as_stokes_i_averages_the_weights_of_a_map_without_intensity(
         self, frame, interpolate
@@ -847,35 +852,19 @@ class TestOffsets:
             offsets=self._offsets(),
             offset_weights=self._per_stokes_weights('QU'),
         )
-        assert_array_almost_equal(op.as_stokes_i().offset_weights, jnp.array([0.45, 0.55]))
+        assert_array_almost_equal(op.as_stokes_i().kernel.weights, jnp.array([0.45, 0.55]))
 
-    @pytest.mark.parametrize(
-        'kwargs, match',
-        [
-            ({'offsets': 'given'}, 'given together'),
-            ({'offset_weights': jnp.ones(2)}, 'given together'),
-            ({'offsets': 'given', 'offset_weights': jnp.ones(3)}, 'offset_weights has shape'),
-            ({'offsets': 'given', 'offset_weights': jnp.ones((3, 2))}, 'as a Stokes'),
-            (
-                {'offsets': 'given', 'offset_weights': StokesQU(jnp.ones(2), jnp.ones(2))},
-                'Stokes components',
-            ),
-            (
-                {'offsets': 'given', 'offset_weights': StokesIQU(*(jnp.ones(3),) * 3)},
-                'per component',
-            ),
-            ({'offsets': 'wrong_ndet', 'offset_weights': jnp.ones(2)}, 'offsets has shape'),
-        ],
-    )
-    def test_create_rejects_inconsistent_offsets(self, frame, interpolate, kwargs, match) -> None:
+    def test_create_validates_the_kernel(self, frame, interpolate) -> None:
+        """The offsets and weights are checked by `SamplingKernel.create`, see `test_sampling.py`."""
         landscape = HealpixLandscape(NSIDE, 'IQU')
         qbore, qdet = self._quats(54)
-        offsets = self._offsets()
-        if kwargs.get('offsets') == 'given':
-            kwargs = {**kwargs, 'offsets': offsets}
-        elif kwargs.get('offsets') == 'wrong_ndet':
-            kwargs = {**kwargs, 'offsets': Quaternion.ones((NDET + 1, 1)) * offsets[None, :]}
-        with pytest.raises(ValueError, match=match):
+        with pytest.raises(ValueError, match='offset weights have shape'):
             PointingOperator.create(
-                landscape, qbore, qdet, frame=frame, interpolate=interpolate, **kwargs
+                landscape,
+                qbore,
+                qdet,
+                frame=frame,
+                interpolate=interpolate,
+                offsets=self._offsets(),
+                offset_weights=jnp.ones(3),
             )

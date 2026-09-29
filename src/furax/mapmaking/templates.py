@@ -257,6 +257,15 @@ class Basis(AbstractLinearOperator):
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
         """Project signal onto basis."""
 
+    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det ...']:
+        """`project` of every detector's stream at once, detectors on the leading axis.
+
+        A per-detector stack projects each stream on its own basis, a shared basis projects them
+        all on the same one. Flavours override this where a joint pass is faster.
+        """
+        in_axes = (0 if self.per_detector else None, 0)
+        return jax.vmap(lambda op, s: op.project(s), in_axes=in_axes)(self, signals)
+
     def mv(self, x: Float[Array, '*shape']) -> Float[Array, ' samp']:
         return self.expand(x)
 
@@ -488,8 +497,9 @@ class SegmentedBasis(Basis):
     polynomials); `KroneckerBasis` does not help here, as it assumes every factor is dense at every
     sample.
 
-    Samples in no segment must have their `values` column pre-zeroed by the builder; their segment
-    id is then irrelevant.
+    Segment ids must be non-decreasing along the samples, as they are for time intervals: the
+    projection relies on it and gives wrong results otherwise. Samples in no segment must have their
+    `values` column pre-zeroed by the builder; their segment id must still keep the order.
     """
 
     segment: Int[Array, ' samp']
@@ -519,6 +529,15 @@ class SegmentedBasis(Basis):
         contrib = self.values * signal[None, :]  # (k, n_points)
         zeros = jnp.zeros(self.shape, self.dtype)
         return zeros.at[self.segment].add(contrib.T)
+
+    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det ...']:
+        if self.per_detector:
+            return super()._project_detectors(signals)
+        # A shared basis scatters every detector at once, each sample adding a whole `(det, k)`
+        # row to its segment, instead of one scalar scatter per detector.
+        contrib = signals.T[:, :, None] * self.values.T[:, None, :]  # (samp, det, k)
+        sums = jax.ops.segment_sum(contrib, self.segment, self.n_segments, indices_are_sorted=True)
+        return jnp.moveaxis(sums, 1, 0)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'seg 1 k k']:
         # Per-segment Gram in a single pass: bin each sample's rank-one w·vvᵀ into its segment.
@@ -554,8 +573,9 @@ class WindowedBasis(Basis):
     non-overlapping single-block-per-sample special case, kept separate to avoid storing its trivial
     unit window.
 
-    The builder must keep every window inside the block range, pre-zeroing the weights of any sample
-    whose window overhangs the ends.
+    Offsets must be non-decreasing along the samples, as they are for blocks laid out in time: the
+    projection relies on it and gives wrong results otherwise. The builder must keep every window
+    inside the block range, pre-zeroing the weights of any sample whose window overhangs the ends.
     """
 
     offset: Int[Array, ' samp']
@@ -603,6 +623,20 @@ class WindowedBasis(Basis):
         contrib = _einsum('os,js,s->soj', self.block_weights, self.sub_values, signal)
         zeros = jnp.zeros(self.shape, self.dtype)
         return zeros.at[self._block_indices()].add(contrib)
+
+    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det ...']:
+        if self.per_detector:
+            return super()._project_detectors(signals)
+        # As for `SegmentedBasis`: every detector at once, one `(det, k)` row per sample. One
+        # scatter per window slot keeps each slot's block ids as sorted as `offset`.
+        sums = jnp.zeros((self.n_blocks, signals.shape[0], self.shape[1]), self.dtype)
+        for o in range(self.block_weights.shape[0]):  # window width is static
+            taps = self.block_weights[o][None, :] * self.sub_values  # (k, samp)
+            contrib = signals.T[:, :, None] * taps.T[:, None, :]  # (samp, det, k)
+            sums = sums + jax.ops.segment_sum(
+                contrib, self.offset + o, self.n_blocks, indices_are_sorted=True
+            )
+        return jnp.moveaxis(sums, 1, 0)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'block band k k']:
         """Block-banded `Bᵀ diag(weights) B` in one pass.
@@ -894,6 +928,8 @@ def spline_hwp_synchronous_basis(
     A cubic B-spline models the slowly time-varying amplitude of the HWP-synchronous signal: knot
     `j` carries a `(sin kχ, cos kχ)` pair for each harmonic `k`, so the amplitudes have shape `(K,
     2*n_harmonics)` with `K = n_knots + 2`.
+
+    Assumes `times` is non-decreasing.
     """
     offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
     sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False).astype(dtype)
@@ -952,10 +988,9 @@ class AbstractTemplateOperator(AbstractLinearOperator):
         vmapped = jax.vmap(lambda op, ai: op.expand(ai), in_axes=cls._in_axes(basis))
         return vmapped(basis, a)
 
-    @classmethod
-    def _project(cls, basis: Basis, s: Array) -> Array:
-        vmapped = jax.vmap(lambda op, si: op.project(si), in_axes=cls._in_axes(basis))
-        return vmapped(basis, s)
+    @staticmethod
+    def _project(basis: Basis, s: Array) -> Array:
+        return basis._project_detectors(s)
 
     # ---- adjoint --------------------------------------------------------------------------------
     @abstractmethod

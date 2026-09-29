@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Faster `KroneckerBasis` expand and project for bases shared across detectors (#283)
+- **Breaking:** `SegmentedBasis.segment` and `WindowedBasis.offset` must be non-decreasing; projection on bases shared across detectors is faster (#285)
 
 ### Fixed
 

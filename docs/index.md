@@ -81,3 +81,10 @@ weighted_data = weight_op(stokes_data)
 - **API Reference**: generated from the [`furax`](api/furax/index.md) source tree, one page per public module
 - **Development**: [Contributing](development/contributing.md),
   [Changelog](development/changelog.md)
+
+## Citing Furax
+
+If you use Furax in your work, please cite the [paper](https://arxiv.org/abs/2603.19600):
+
+> Chanial et al., *Furax: A Modular JAX Framework for Linear Operators in Astrophysical and
+> Cosmological Data Analysis*, arXiv:2603.19600 (2026).

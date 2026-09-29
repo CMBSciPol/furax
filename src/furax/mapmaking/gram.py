@@ -40,7 +40,6 @@ from jaxtyping import Float, PyTree
 
 import furax.tree
 from furax import AbstractLinearOperator, symmetric
-from furax.core import BlockDiagonalOperator
 from furax.linalg import BandedCholeskyOperator
 
 from .templates import (
@@ -146,45 +145,20 @@ def _structured_gram_inverse(
     regularization: float,
     batch_size: int,
 ) -> AbstractLinearOperator:
-    if len(template.bases) > 1:
-        return _coupled_gram_inverse(template, diag, regularization, batch_size)
-
-    ((name, bases),) = template.bases_by_leg.items()  # a single template
-    amps = template.in_structure[name]
-
-    def inverse(basis: Basis, weights: Array, amp: jax.ShapeDtypeStruct) -> AbstractLinearOperator:
-        bands = jax.lax.map(basis.gram, weights, batch_size=batch_size)
-        bands = bands.at[..., 0, :, :].set(_zero_sub_identity(bands[..., 0, :, :]))
-        return BandedCholeskyOperator.from_bands(bands, amp, regularization)
-
-    if not isinstance(template, StokesTemplateOperator):
-        return BlockDiagonalOperator({name: inverse(bases, diag, amps)})
-    # one factored block per Stokes leg, keyed as the amplitudes are: legs are independent, and
-    # detectors are already the leading axis inside each block
-    legs = {leg: inverse(basis, getattr(diag, leg), amps[leg]) for leg, basis in bases.items()}
-    return BlockDiagonalOperator({name: legs})
-
-
-def _coupled_gram_inverse(
-    template: AbstractTemplateOperator,
-    diag: PyTree[Array],
-    regularization: float,
-    batch_size: int,
-) -> AbstractLinearOperator:
-    if not isinstance(template, StokesTemplateOperator):  # one stream, one joint block
-        return _joint_gram_inverse(
+    if not isinstance(template, StokesTemplateOperator):  # a single stream
+        return _stream_gram_inverse(
             template.bases, diag, template.in_structure, regularization, batch_size
         )
 
-    # Two bases on different legs never share a weighted sample, so each leg gets its own joint
-    # block over the templates it carries, rather than one block over every leg.
+    # Two bases on different legs never share a weighted sample, so each leg is a stream of its
+    # own, with one block over the templates it carries rather than one block over every leg.
     by_leg = {
         leg: bases
         for leg in template.legs
         if (bases := {name: on[leg] for name, on in template.bases_by_leg.items() if leg in on})
     }
     blocks: dict[str, AbstractLinearOperator] = {
-        leg: _joint_gram_inverse(
+        leg: _stream_gram_inverse(
             bases,
             getattr(diag, leg),
             {name: template.in_structure[name][leg] for name in bases},
@@ -196,14 +170,24 @@ def _coupled_gram_inverse(
     return _PerLegOperator(blocks, in_structure=template.in_structure)
 
 
-def _joint_gram_inverse(
+def _stream_gram_inverse(
     bases: dict[str, Basis],
     diag: Float[Array, 'det samp'],
     in_structure: PyTree[jax.ShapeDtypeStruct],
     regularization: float,
     batch_size: int,
 ) -> BandedCholeskyOperator:
-    """Inverse of the Gram coupling every template on one stream, one dense block per detector."""
+    """Inverse of the Gram of every template on one stream, one block per detector.
+
+    A single template keeps the band structure of its own Gram. Several are coupled through the
+    shared weight, and their joint block is stored dense.
+    """
+    if len(bases) == 1:
+        (basis,) = bases.values()
+        bands = jax.lax.map(basis.gram, diag, batch_size=batch_size)
+        bands = bands.at[..., 0, :, :].set(_zero_sub_identity(bands[..., 0, :, :]))
+        return BandedCholeskyOperator.from_bands(bands, in_structure, regularization)
+
     # each basis owns a contiguous slice of the joint block, in the order `in_structure` flattens
     ordered: list[Basis] = jax.tree.leaves(bases, is_leaf=is_basis)
     offsets = np.cumsum([0, *(basis.size for basis in ordered)])

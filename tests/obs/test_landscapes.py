@@ -22,7 +22,7 @@ from furax.obs.landscapes import (
     WCSProjection,
 )
 from furax.obs.pointing import PointingOperator
-from furax.obs.sampling import QuaternionSampler, SamplingKernel
+from furax.obs.sampling import DiscretizedBeam, QuaternionSampler, SamplingKernel
 from furax.obs.stencil import Interpolation
 from furax.obs.stokes import Stokes, StokesIQU, ValidStokesLiteral
 
@@ -830,12 +830,14 @@ class TestLocalStokesLandscape:
         assert_allclose(lweights[~mask], gweights[~mask] / gweights[~mask].sum(), rtol=1e-14)
 
     @staticmethod
-    def _sampler(interpolation: Interpolation, **kernel) -> QuaternionSampler:
+    def _sampler(
+        interpolation: Interpolation, beam: DiscretizedBeam | None = None
+    ) -> QuaternionSampler:
         """One detector at the boresight, pointing at three directions."""
         theta = jnp.array([1.2, 0.9, 2.0])
         phi = jnp.array([0.7, 3.1, 5.0])
         return QuaternionSampler(
-            kernel=SamplingKernel(interpolation, **kernel),
+            kernel=SamplingKernel(interpolation, beam),
             qbore=IsoAngles(theta, phi, jnp.zeros_like(theta)).to_quaternion(),
             qdet=Quaternion.ones((1,)),
         )
@@ -863,15 +865,15 @@ class TestLocalStokesLandscape:
 
     @pytest.mark.parametrize('stokes', ['I', 'IQU'])
     def test_from_sampler_reads_the_parent_map_exactly(self, stokes) -> None:
-        """Offsets and per-Stokes weights widen the subset to every pixel they read."""
+        """Beam nodes and per-Stokes weights widen the subset to every pixel they read."""
         parent = HealpixLandscape(2, stokes=stokes)
-        offsets = XiEtaAngles(
+        nodes = XiEtaAngles(
             jnp.array([0.2, -0.3]), jnp.array([0.1, 0.25]), jnp.zeros(2)
         ).to_quaternion()
         weights = jnp.array([0.4, 0.6])
         if stokes == 'IQU':
             weights = StokesIQU(weights, jnp.array([1.0, 0.0]), jnp.array([0.0, 1.0]))
-        sampler = self._sampler(Interpolation.BILINEAR, offsets=offsets, weights=weights)
+        sampler = self._sampler(Interpolation.BILINEAR, DiscretizedBeam.create(nodes, weights))
         local = LocalStokesLandscape.from_sampler(parent, sampler)
 
         sky = parent.normal(jax.random.key(0))

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `PointingOperator.create` takes `offsets` and `offset_weights`: each sample reads the sky at several directions around the detector's pointing and returns their weighted sum; the weights are shared by every Stokes component, or given per component as a `Stokes`, acting on I, Q and U in the basis set by `frame` (#265)
+- `PointingOperator.create` takes a `beam`, a `DiscretizedBeam`: each sample reads the sky at the beam nodes around the detector's line of sight and returns their weighted sum; the weights are shared by every Stokes component, or given per component as a `Stokes`, acting on I, Q and U in the basis set by `frame` (#265, #278)
 - `transported_gather` and `transported_scatter` take a `rotation` applied after the transport and before the stencil weights (#265)
 - `Stencil.integrated`, folding a trailing axis of directions into the neighbour axis with a weight per direction (#265)
 - `Stencil` weights may carry a leading Stokes axis (#265)

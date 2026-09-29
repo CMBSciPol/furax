@@ -3,6 +3,7 @@
 What each sample of a pointing reads from a map.
 
 ::: furax.obs.sampling.SamplingKernel
+::: furax.obs.sampling.DiscretizedBeam
 ::: furax.obs.sampling.AbstractSampler
 ::: furax.obs.sampling.SampleIndex
 ::: furax.obs.sampling.QuaternionSampler

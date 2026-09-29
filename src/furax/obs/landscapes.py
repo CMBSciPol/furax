@@ -1259,7 +1259,7 @@ class LocalStokesLandscape(StokesLandscape):
         """Build from the pixels a sampler reads.
 
         Every pixel of every sample's stencil is kept, so a map restricted to the subset is read
-        exactly as the parent map is, whatever the interpolation and offsets of the sampler.
+        exactly as the parent map is, whatever the interpolation and beam of the sampler.
 
         Args:
             parent: The map the sampler reads.

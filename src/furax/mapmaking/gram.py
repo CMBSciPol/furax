@@ -208,8 +208,8 @@ def _stream_gram_inverse(
         bands = bands.at[..., 0, :, :].set(_unit_on_zero_rows(bands[..., 0, :, :]))
         return BandedCholeskyOperator.from_bands(bands, in_structure, regularization)
 
-    # a basis spanning several blocks is time-local; one spanning a single block sees every sample
-    local = [name for name, basis in bases.items() if basis.support().n_blocks > 1]
+    # a basis split into several blocks of time is time-local; one block sees every sample
+    local = [name for name, basis in bases.items() if basis._n_blocks > 1]
     if local:
         core = max(local, key=lambda name: bases[name].size)
         return _bordered_gram_inverse(bases, core, diag, in_structure, regularization, batch_size)

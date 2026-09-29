@@ -30,6 +30,8 @@ The pointing architecture has been overhauled. A `PointingOperator` now holds a 
 - **Breaking:** `spin2_cos_sin` and `spin2_cos_sin_zs` return a `Spin2Rotation` (#273)
 - Faster on-the-fly pointing on HEALPix and CAR maps; the transpose holds one map less in memory (#274)
 - jax-healpy 0.8 is the minimum version (#274)
+- Make internal classes from `furax.obs.pointing`, `furax.mapmaking.streaming` and `furax.math.sht` private (#280)
+- Generate API reference from the source tree (#280)
 
 ### Fixed
 

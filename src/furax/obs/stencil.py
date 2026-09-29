@@ -1,7 +1,7 @@
 r"""Interpolation stencils: which pixels a sample reads, with what weights, and from where.
 
-The type in this module carries no notion of pixelization. A landscape produces a stencil, a
-sampler consumes one, and neither has to agree on anything else.
+The type in this module carries no notion of pixelization. A landscape produces a stencil, an
+operator consumes one, and neither has to agree on anything else.
 """
 
 from enum import IntEnum
@@ -54,7 +54,7 @@ def _resolve(
     Returns:
         The in-bounds indices and the normalized weights.
     """
-    # Every sampler must resolve a stencil the same way: the forward gather and the transposed
+    # Every operator must resolve a stencil the same way: the forward gather and the transposed
     # scatter are adjoint only if they normalize against identical weights.
     valid = indices >= 0
     indices = jnp.where(valid, indices, 0)
@@ -95,7 +95,7 @@ class Stencil(NamedTuple):
     trailing neighbour axis has length one and the weight is one.
 
     The weights may carry a leading Stokes axis that the indices and positions do not have, so
-    that each component reads the same pixels with its own weights. A sampler multiplies the
+    that each component reads the same pixels with its own weights. An operator multiplies the
     gathered values, whose Stokes axis leads, by the weights, and the two broadcast either way.
 
     A stencil on a grid that is not the sphere has no [`SkyPositions`][] and carries `None`, which
@@ -158,7 +158,7 @@ class Stencil(NamedTuple):
         theta_center: Float[Array, ' *dims'],
         phi_center: Float[Array, ' *dims'],
     ) -> Self:
-        """Build the one-neighbour stencil of a nearest-neighbour sampler.
+        """Build the one-neighbour stencil of a nearest-neighbour read.
 
         Args:
             indices: Index of the pixel each sample falls in, negative outside the map.

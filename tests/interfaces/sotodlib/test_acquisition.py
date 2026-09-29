@@ -17,7 +17,7 @@ from furax.core import IndexOperator, RavelOperator
 from furax.interfaces.sotodlib import LazySOTODLibObservation
 from furax.mapmaking.acquisition import build_acquisition_operator
 from furax.mapmaking.config import SotodlibConfig
-from furax.math.coords import to_polarization_angle
+from furax.math.coords import to_gamma_angles, to_polarization_angle
 from furax.obs import QURotationOperator
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.spin2 import spin2_cos_sin
@@ -65,9 +65,10 @@ def _in_pixel_frame(h: AbstractLinearOperator) -> AbstractLinearOperator:
     stokes_idx = jnp.arange(len(landscape.stokes))[:, None, None]
     pixels = landscape.quat2index(qdet_full)[None]
     gather = IndexOperator((stokes_idx, pixels), in_structure=ravel.out_structure)
-    rot = QURotationOperator(
-        angles=to_polarization_angle(qdet_full), in_structure=gather.out_structure
-    )
+    angles = to_polarization_angle(qdet_full)
+    if pointing.sampler.frame == 'boresight':
+        angles -= to_gamma_angles(pointing.sampler.qdet)[:, None]
+    rot = QURotationOperator(angles=angles, in_structure=gather.out_structure)
     return reduce(operator.matmul, h.operands[:-1]) @ rot @ gather @ ravel
 
 

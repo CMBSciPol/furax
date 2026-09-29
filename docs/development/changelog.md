@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Faster `KroneckerBasis` expand and project for bases shared across detectors (#283)
 - **Breaking:** `SegmentedBasis.segment` and `WindowedBasis.offset` must be non-decreasing; projection on bases shared across detectors is faster (#285)
 - Template Gram inverses are factored per Stokes leg, using a third of the memory for IQU (#287)
+- Faster template expansion when several dense templates (`TensorBasis`, `KroneckerBasis`) are enabled (#288)
 
 ### Fixed
 

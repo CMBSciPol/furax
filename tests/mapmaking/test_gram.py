@@ -5,7 +5,8 @@ import pytest
 from numpy.testing import assert_allclose
 
 from furax import DiagonalOperator
-from furax.mapmaking.gram import cross_gram, gram_inverse
+from furax.linalg import BandedCholeskyOperator
+from furax.mapmaking.gram import _BorderedGramInverse, cross_gram, gram_inverse
 from furax.mapmaking.templates import (
     KroneckerBasis,
     SegmentedBasis,
@@ -61,8 +62,24 @@ def _windowed_basis(key, n_blocks, k, O):
             lambda k: _windowed_basis(k, n_blocks=6, k=2, O=3),
             lambda k: TensorBasis(jr.normal(k, (3, N_SAMPS))),
         ),
+        # two windowed, each sample under several blocks of both
+        (
+            lambda k: _windowed_basis(k, n_blocks=6, k=2, O=3),
+            lambda k: _windowed_basis(k, n_blocks=5, k=3, O=2),
+        ),
+        # two global bases: a plain matrix product
+        (
+            lambda k: KroneckerBasis((jr.normal(k, (2, N_SAMPS)), jr.normal(k, (3, N_SAMPS)))),
+            lambda k: TensorBasis(jr.normal(k, (4, N_SAMPS))),
+        ),
     ],
-    ids=['segmented_x_tensor', 'segmented_x_segmented', 'windowed_x_tensor'],
+    ids=[
+        'segmented_x_tensor',
+        'segmented_x_segmented',
+        'windowed_x_tensor',
+        'windowed_x_windowed',
+        'kronecker_x_tensor',
+    ],
 )
 def test_cross_gram_matches_dense_cross_block(make_a, make_b):
     # cross_gram(A, B, w) == the (A, B) cross block of the dense Gram of [A | B], built from tags.
@@ -180,3 +197,53 @@ def test_coupled_gram_inverse_matches_dense_probe(stokes):
     structured = gram_inverse(T, W)(amps)
     dense = gram_inverse(T, W, allow_probe=True)(amps)
     jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-4, atol=1e-5), structured, dense)
+
+
+def _local_and_global_bases(key):
+    kw, ks, kt, kf0, kf1 = jr.split(key, 5)
+    segment = jnp.repeat(jnp.arange(4), N_SAMPS // 4).astype(jnp.int32)
+    return {
+        'spline': _windowed_basis(kw, n_blocks=6, k=2, O=3),
+        'poly': SegmentedBasis(segment, jr.normal(ks, (2, N_SAMPS)), 4),
+        'hwp': TensorBasis(jr.normal(kt, (3, N_SAMPS))),
+        'az_hwp': KroneckerBasis((jr.normal(kf0, (2, N_SAMPS)), jr.normal(kf1, (3, N_SAMPS)))),
+    }
+
+
+@pytest.mark.parametrize(
+    ('names', 'inverse_class'),
+    [
+        (('spline', 'hwp', 'az_hwp'), _BorderedGramInverse),
+        (('poly', 'hwp'), _BorderedGramInverse),
+        (('spline', 'poly', 'hwp'), _BorderedGramInverse),
+        (('hwp', 'az_hwp'), BandedCholeskyOperator),
+    ],
+    ids=['banded-core', 'block-diagonal-core', 'two-local', 'no-local'],
+)
+def test_stream_gram_inverse_matches_dense_probe(names, inverse_class):
+    # the time-local template with the most amplitudes keeps its band structure, the others
+    # bordering it; with no time-local template the few amplitudes share one dense block. Either
+    # way the inverse must act as the dense column-probe inverse.
+    kb, kw, ka = jr.split(jr.key(15), 3)
+    bases = _local_and_global_bases(kb)
+    T = TemplateOperator({name: bases[name] for name in names}, n_dets=N_DETS)
+    W = _weight(kw)
+
+    structured = gram_inverse(T, W)
+    assert type(structured) is inverse_class
+    amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
+    dense = gram_inverse(T, W, allow_probe=True)(amps)
+    jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-8, atol=1e-10), structured(amps), dense)
+
+
+@pytest.mark.parametrize('names', [('poly', 'hwp'), ('spline', 'poly', 'hwp')])
+def test_stream_gram_inverse_survives_unobserved_amplitudes(names):
+    # masking the first quarter of the samples leaves a polynomial interval, and a spline knot,
+    # seen by no weighted sample: their Gram rows are zero, which must not turn the solve into NaNs
+    kb, kw, ka = jr.split(jr.key(16), 3)
+    bases = _local_and_global_bases(kb)
+    T = TemplateOperator({name: bases[name] for name in names}, n_dets=N_DETS)
+    w = jr.uniform(kw, (N_DETS, N_SAMPS), minval=0.5, maxval=2.0).at[:, : N_SAMPS // 4].set(0.0)
+    W = DiagonalOperator(w, in_structure=jax.ShapeDtypeStruct((N_DETS, N_SAMPS), w.dtype))
+    amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
+    assert all(jnp.all(jnp.isfinite(leaf)) for leaf in jax.tree.leaves(gram_inverse(T, W)(amps)))

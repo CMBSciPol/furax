@@ -300,6 +300,11 @@ class Basis(AbstractLinearOperator):
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n w1 k k']:
         """Flavours with no such form raise [`NoStructuredView`][]."""
 
+    @property
+    @abstractmethod
+    def _n_blocks(self) -> int:
+        """How many blocks of time the amplitudes split into; 1 when every function spans the TOD."""
+
     def support(self) -> _BasisColumns:
         """Column-support view (`_BasisColumns`) used to build self- and cross-Grams in one pass.
 
@@ -410,6 +415,10 @@ class TensorBasis(Basis):
         v = self.values  # (k, samp)
         return _einsum('as,s,bs->ab', v, weights, v)[None, None]
 
+    @property
+    def _n_blocks(self) -> int:
+        return 1
+
     def _support(self) -> _BasisColumns:
         # One global block, every sample in it (unit tap).
         if self.q != 1 or len(self.shape) != 1:
@@ -419,7 +428,7 @@ class TensorBasis(Basis):
             blocks=jnp.zeros((samp, 1), jnp.int32),
             taps=jnp.ones((samp, 1), self.dtype),
             values=self.values,
-            n_blocks=1,
+            n_blocks=self._n_blocks,
         )
 
 
@@ -488,6 +497,10 @@ class KroneckerBasis(Basis):
         v = self._product_values()
         return _einsum('kt,t,lt->kl', v, weights, v)[None, None]
 
+    @property
+    def _n_blocks(self) -> int:
+        return 1
+
     def _support(self) -> _BasisColumns:
         # One global block over the materialised product basis (flattened index k = prod(shape)).
         samp = self.n_points
@@ -495,7 +508,7 @@ class KroneckerBasis(Basis):
             blocks=jnp.zeros((samp, 1), jnp.int32),
             taps=jnp.ones((samp, 1), self.dtype),
             values=self._product_values(),
-            n_blocks=1,
+            n_blocks=self._n_blocks,
         )
 
 
@@ -563,6 +576,10 @@ class SegmentedBasis(Basis):
         blocks = jnp.zeros((n_seg, 1, k, k), self.dtype)
         return blocks.at[self.segment, 0].add(per_sample)
 
+    @property
+    def _n_blocks(self) -> int:
+        return self.n_segments
+
     def _support(self) -> _BasisColumns:
         # One block per sample: its segment. Out-of-range samples were pre-zeroed in `values`.
         samp = self.segment.shape[0]
@@ -570,7 +587,7 @@ class SegmentedBasis(Basis):
             blocks=self.segment[:, None],
             taps=jnp.ones((samp, 1), self.dtype),
             values=self.values,
-            n_blocks=self.shape[0],
+            n_blocks=self._n_blocks,
         )
 
 
@@ -676,13 +693,17 @@ class WindowedBasis(Basis):
                 bands = bands.at[self.offset + o, d].add(contrib)
         return bands
 
+    @property
+    def _n_blocks(self) -> int:
+        return self.n_blocks
+
     def _support(self) -> _BasisColumns:
         # Each sample reads a window of O overlapping blocks, tapered by block_weights.
         return _BasisColumns(
             blocks=self._block_indices(),  # (samp, O)
             taps=self.block_weights.T,  # (samp, O)
             values=self.sub_values,  # (k, samp)
-            n_blocks=self.shape[0],
+            n_blocks=self._n_blocks,
         )
 
 

@@ -82,6 +82,7 @@ furax-so-atomic-map = 'furax.interfaces.sotodlib.mapmaker:main_cli'
 furax-so-prepare = 'so_mapmaking.prepare:app'
 furax-so-map = 'so_mapmaking.run:app'
 furax-so-stage = 'so_mapmaking.stage:app'
+furax-so-layout = 'so_mapmaking.layout:app'
 
 [dependency-groups]
 dev = [

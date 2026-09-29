@@ -160,7 +160,7 @@ operator base class, cross-cutting conventions, and entry points that are hard t
 - `mapmaking/acquisition.py` → `build_acquisition_operator`: the acquisition operator `A`, from observation metadata
 - `mapmaking/mapmaker.py`: `BinnedMapMaker` / `MLMapmaker` / `PommeMapMaker` are single-observation and reject a config with templates enabled. All solve `AᵀN⁻¹A x = AᵀN⁻¹d` via CG
 - `interfaces/lineax.py` → `as_lineax_operator`: wrap a furax operator as a lineax `LinearOperator`
-- CLI: `furax-so-atomic-map` (`interfaces/sotodlib/mapmaker.py:main_cli`), `furax-so-prepare` / `furax-so-map` / `furax-so-stage` (`so_mapmaking`)
+- CLI: `furax-so-atomic-map` (`interfaces/sotodlib/mapmaker.py:main_cli`), `furax-so-prepare` / `furax-so-map` / `furax-so-stage` / `furax-so-layout` (`so_mapmaking`)
 
 ## Designing operators from math
 

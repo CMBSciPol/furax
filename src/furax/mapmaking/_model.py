@@ -10,7 +10,7 @@ from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.stokes import Stokes, ValidStokesLiteral
+from furax.obs.stokes import Stokes
 
 from ._observation import ReaderField
 from .acquisition import build_acquisition_operator
@@ -19,6 +19,7 @@ from .config import (
     MapMakingConfig,
     Methods,
     NoiseSource,
+    PolynomialOrders,
     TemplatesConfig,
     WeightingMode,
 )
@@ -311,12 +312,6 @@ def _mask_projector(*valid_masks: Array | None, structure: jax.ShapeDtypeStruct)
     return MaskOperator.from_boolean_mask(combined, in_structure=structure)
 
 
-def _on_every_leg(basis: Basis, legs: ValidStokesLiteral | None) -> Basis | dict[str, Basis]:
-    if legs is None:
-        return basis
-    return {s.lower(): basis for s in legs}
-
-
 @register_dataclass
 @dataclass
 class TemplateBundle:
@@ -422,22 +417,29 @@ class ObservationTemplates:
         explicit_bases: dict[str, Any] = {}
         implicit_bases: dict[str, Any] = {}
 
-        def add(name: str, bases: Any, explicit: bool) -> None:
+        def add(name: str, bases: Basis | dict[str, Basis], explicit: bool) -> None:
+            if legs is not None and isinstance(bases, Basis):
+                bases = {legs.lower(): bases}  # one group: stored once for every leg
             (explicit_bases if explicit else implicit_bases)[name] = bases
 
         if (poly := tcfg.polynomial) is not None:
             if legs is not None:
                 legendre_qu = poly.legendre_qu if poly.legendre_qu is not None else poly.legendre
+                # legs fitted with the same orders share one basis
+                groups: dict[PolynomialOrders, str] = {}
+                for s in legs:
+                    orders = poly.legendre if s == 'I' else legendre_qu
+                    groups[orders] = groups.get(orders, '') + s.lower()
                 bases: Basis | dict[str, Basis] = {
-                    s.lower(): polynomial_basis(
-                        max_poly_order=(poly.legendre if s == 'I' else legendre_qu).max_order,
+                    group: polynomial_basis(
+                        max_poly_order=orders.max_order,
                         intervals=data[ReaderField.SCANNING_INTERVALS],
                         times=data[ReaderField.TIMESTAMPS],
                         dtype=dtype,
                         valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
-                        min_poly_order=(poly.legendre if s == 'I' else legendre_qu).min_order,
+                        min_poly_order=orders.min_order,
                     )
-                    for s in legs
+                    for orders, group in groups.items()
                 }
             else:
                 bases = polynomial_basis(
@@ -452,17 +454,17 @@ class ObservationTemplates:
 
         if (scan := tcfg.scan_synchronous) is not None:
             basis = scan_synchronous_basis(scan.legendre, data[ReaderField.AZIMUTH], dtype)
-            add('scan_synchronous', _on_every_leg(basis, legs), scan.explicit)
+            add('scan_synchronous', basis, scan.explicit)
 
         if (binned_az := tcfg.binned_azimuth_synchronous) is not None:
             basis = binned_azimuth_synchronous_basis(
                 binned_az.bins, data[ReaderField.AZIMUTH], dtype
             )
-            add('binned_azimuth_synchronous', _on_every_leg(basis, legs), binned_az.explicit)
+            add('binned_azimuth_synchronous', basis, binned_az.explicit)
 
         if (hwp := tcfg.hwp_synchronous) is not None:
             basis = hwp_synchronous_basis(hwp.n_harmonics, data[ReaderField.HWP_ANGLES], dtype)
-            add('hwp_synchronous', _on_every_leg(basis, legs), hwp.explicit)
+            add('hwp_synchronous', basis, hwp.explicit)
 
         if (az_hwp := tcfg.azimuth_hwp_synchronous) is not None:
             if az_hwp.split_scans:
@@ -478,11 +480,7 @@ class ObservationTemplates:
                         dtype,
                         scan_mask=data[scan_mask_field],
                     )
-                    add(
-                        f'azimuth_hwp_synchronous_{side}',
-                        _on_every_leg(basis, legs),
-                        az_hwp.explicit,
-                    )
+                    add(f'azimuth_hwp_synchronous_{side}', basis, az_hwp.explicit)
             else:
                 basis = azimuth_hwp_synchronous_basis(
                     az_hwp.legendre,
@@ -491,7 +489,7 @@ class ObservationTemplates:
                     data[ReaderField.HWP_ANGLES],
                     dtype,
                 )
-                add('azimuth_hwp_synchronous', _on_every_leg(basis, legs), az_hwp.explicit)
+                add('azimuth_hwp_synchronous', basis, az_hwp.explicit)
 
         if (binned_az_hwp := tcfg.binned_azimuth_hwp_synchronous) is not None:
             basis = binned_azimuth_hwp_synchronous_basis(
@@ -501,11 +499,7 @@ class ObservationTemplates:
                 data[ReaderField.HWP_ANGLES],
                 dtype,
             )
-            add(
-                'binned_azimuth_hwp_synchronous',
-                _on_every_leg(basis, legs),
-                binned_az_hwp.explicit,
-            )
+            add('binned_azimuth_hwp_synchronous', basis, binned_az_hwp.explicit)
 
         if (spline_hwp := tcfg.spline_hwp_synchronous) is not None:
             times = data[ReaderField.TIMESTAMPS]
@@ -516,23 +510,23 @@ class ObservationTemplates:
                 spline_hwp.harmonics,
                 dtype,
             )
-            add('spline_hwp_synchronous', _on_every_leg(basis, legs), spline_hwp.explicit)
+            add('spline_hwp_synchronous', basis, spline_hwp.explicit)
 
         if (t2p := tcfg.t2p) is not None:
             temperature = data[ReaderField.SAMPLE_DATA].i
             sample_rate = _sample_rate(data[ReaderField.TIMESTAMPS])
-            # Q and U each fit their own leakage amplitude from the same temperature stream.
-            bases = {
-                s.lower(): t2p_basis(
+            # Q and U each fit their own leakage amplitude from the same temperature stream, so
+            # they share one basis.
+            qu = ''.join(s.lower() for s in config.landscape.stokes if s in 'QU')
+            bases = {}
+            if qu:
+                bases[qu] = t2p_basis(
                     temperature,
                     dtype,
                     fit_band=t2p.fit_band,
                     sample_rate=sample_rate,
                     decimation_factor=t2p.decimation_factor,
                 )
-                for s in config.landscape.stokes
-                if s in 'QU'
-            }
             add('t2p', bases, t2p.explicit)
 
         if tcfg.ground is not None:

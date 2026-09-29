@@ -5,6 +5,7 @@ Backed by the file-free synthetic observations (no sotodlib/toast, no fixtures):
 ``FakeLazyGroundObservation`` for the azimuth/interval templates (azimuth, scanning intervals).
 """
 
+import jax
 import jax.numpy as jnp
 import pytest
 from numpy.testing import assert_allclose
@@ -17,6 +18,7 @@ from furax.mapmaking.config import (
     NoiseFitConfig,
     PointingConfig,
     PolynomialConfig,
+    PolynomialOrders,
     ScanSynchronousConfig,
     SotodlibConfig,
     TemplatesConfig,
@@ -117,3 +119,21 @@ def test_demodulated_polynomial_implicit_runs():
     cfg.sotodlib = SotodlibConfig(demodulated=True)
     res = MultiObservationMapMaker(_ground_obs(), config=cfg).run()
     assert jnp.all(jnp.isfinite(res.map.data))
+
+
+@pytest.mark.parametrize(
+    ('legendre_qu', 'groups'), [(None, ['iqu']), (PolynomialOrders(1, 3), ['i', 'qu'])]
+)
+def test_demodulated_legs_fitted_alike_share_a_basis(legendre_qu, groups):
+    # legs fitted with the same orders share one basis, so an observation stores it once rather
+    # than once per leg; the amplitudes stay one set per leg
+    polynomial = PolynomialConfig(explicit=False)
+    cfg = _config(TemplatesConfig(polynomial=polynomial))
+    cfg.sotodlib = SotodlibConfig(demodulated=True)
+    polynomial.legendre_qu = legendre_qu  # set after demodulation, which it requires
+    maker = MultiObservationMapMaker(_ground_obs(), config=cfg)
+    with jax.set_mesh(maker.mesh):
+        acc = maker.build_model_and_accumulate()
+    operator = acc.buckets[0].templates.implicit.operator
+    assert sorted(operator.bases['polynomial']) == groups
+    assert sorted(operator.in_structure['polynomial']) == ['i', 'q', 'u']

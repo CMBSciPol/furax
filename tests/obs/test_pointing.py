@@ -9,10 +9,10 @@ from numpy.testing import assert_allclose, assert_array_almost_equal, assert_arr
 
 import furax.tree as ftree
 from furax.math.coords import (
-    from_iso_angles,
-    from_xieta_angles,
-    to_gamma_angles,
-    to_polarization_angle_cos_sin,
+    IsoAngles,
+    XiEtaAngles,
+    gamma_angle,
+    polarization_angle_cos_sin,
 )
 from furax.obs.landscapes import (
     CARLandscape,
@@ -283,7 +283,7 @@ class TestTransport:
         op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
 
         qdet_full = op.sampler.quaternions()
-        cos_pa, sin_pa = to_polarization_angle_cos_sin(qdet_full)
+        cos_pa, sin_pa = polarization_angle_cos_sin(qdet_full)
         untransported = _untransported_sample(landscape, sky, qdet_full, interpolate)
         reference = rotate_qu_cs(untransported, cos_pa, sin_pa)
 
@@ -471,13 +471,13 @@ class TestNearestTransport:
         landscape = HealpixLandscape(NSIDE, 'IQU')
         pixels = jnp.arange(0, 12 * NSIDE**2, 7)
         theta, phi = jhp.pix2ang(NSIDE, pixels)
-        qbore = from_iso_angles(theta, phi, jnp.zeros_like(theta))
+        qbore = IsoAngles(theta, phi, jnp.zeros_like(theta)).to_quaternion()
         qdet = Quaternion.ones((1,))  # identity: the detector points at the boresight
 
         op = PointingOperator.create(landscape, qbore, qdet)
         sky = landscape.normal(jax.random.key(30))
         qdet_full = op.sampler.quaternions()
-        cos_pa, sin_pa = to_polarization_angle_cos_sin(qdet_full)
+        cos_pa, sin_pa = polarization_angle_cos_sin(qdet_full)
         expected = rotate_qu_cs(
             _untransported_sample(landscape, sky, qdet_full, False), cos_pa, sin_pa
         )
@@ -520,15 +520,17 @@ class TestOffsets:
     def _quats(seed: int) -> tuple[Quaternion, Quaternion]:
         # each detector has a gamma of its own: the boresight frame strips it from `qdet`, and the
         # offsets must not turn with it
-        return Quaternion.random(jax.random.key(seed), (NSAMP,)), from_xieta_angles(
+        return Quaternion.random(jax.random.key(seed), (NSAMP,)), XiEtaAngles(
             jnp.array([0.0, 0.02, -0.03]),
             jnp.array([0.0, -0.01, 0.02]),
             jnp.array([0.3, 0.1, -1.2]),
-        )
+        ).to_quaternion()
 
     @staticmethod
     def _offsets() -> Quaternion:
-        return from_xieta_angles(jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), jnp.zeros(2))
+        return XiEtaAngles(
+            jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), jnp.zeros(2)
+        ).to_quaternion()
 
     @staticmethod
     def _per_stokes_weights(stokes: ValidStokesLiteral) -> Stokes:
@@ -555,7 +557,7 @@ class TestOffsets:
         plain = PointingOperator.create(
             landscape, qbore, qdet, frame=frame, interpolate=interpolate
         )
-        origin = from_xieta_angles(jnp.zeros(1), jnp.zeros(1), jnp.zeros(1))
+        origin = XiEtaAngles(jnp.zeros(1), jnp.zeros(1), jnp.zeros(1)).to_quaternion()
         op = PointingOperator.create(
             landscape,
             qbore,
@@ -797,7 +799,9 @@ class TestRotationAbsorption:
         qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
         kwargs = {}
         if per_stokes:
-            offsets = from_xieta_angles(jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), 0.0)
+            offsets = XiEtaAngles(
+                jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), 0.0
+            ).to_quaternion()
             weights = StokesIQU(jnp.array([0.5, 0.5]), jnp.array([0.7, 0.3]), jnp.array([0.2, 0.8]))
             kwargs = {'offsets': offsets, 'offset_weights': weights}
         landscape = HealpixLandscape(NSIDE, 'IQU')
@@ -849,17 +853,17 @@ class TestFrames:
     def _ops(interpolate: bool, offsets: bool) -> dict[str, PointingOperator]:
         k1 = jax.random.key(70)
         qbore = Quaternion.random(k1, (NSAMP,))
-        qdet = from_xieta_angles(
+        qdet = XiEtaAngles(
             jnp.array([0.0, 0.02, -0.03]),
             jnp.array([0.0, -0.01, 0.02]),
             jnp.array([0.3, 0.1, -1.2]),
-        )
+        ).to_quaternion()
         kwargs = {}
         if offsets:
             kwargs = {
-                'offsets': from_xieta_angles(
+                'offsets': XiEtaAngles(
                     jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), 0.0
-                ),
+                ).to_quaternion(),
                 'offset_weights': jnp.array([0.3, 0.7]),
             }
         landscape = HealpixLandscape(NSIDE, 'IQU')
@@ -874,8 +878,8 @@ class TestFrames:
         ops = self._ops(interpolate, offsets)
         sampler = ops['detector'].sampler
         quats = sampler.quaternions()
-        cos_psi, sin_psi = to_polarization_angle_cos_sin(quats)
-        gamma = to_gamma_angles(sampler.qdet)[:, None]
+        cos_psi, sin_psi = polarization_angle_cos_sin(quats)
+        gamma = gamma_angle(sampler.qdet)[:, None]
         sky = ops['detector'].landscape.normal(jax.random.key(71))
 
         tods = {frame: op(sky) for frame, op in ops.items()}

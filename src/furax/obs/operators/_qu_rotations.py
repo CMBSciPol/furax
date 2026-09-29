@@ -16,8 +16,9 @@ which encodes successively (from right to left):
 - the rotation back to the original frame.
 """
 
-from dataclasses import field
-from typing import TypeVar
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from typing import Any, Self, TypeVar
 
 import jax
 import numpy as np
@@ -33,13 +34,67 @@ from furax.core.rules import AbstractCompositionRule, NoReduction
 from ..stokes import Stokes, ValidStokesLiteral
 
 
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class Spin2Rotation:
+    r"""The rotation $R(a)$ of [`QURotationOperator`][], stored as $(\cos 2a, \sin 2a)$.
+
+    It expresses $(Q, U)$ in a basis rotated by $a$, $P = Q + iU \to P e^{-2ia}$:
+
+    $$Q' = Q \cos 2a + U \sin 2a, \quad U' = -Q \sin 2a + U \cos 2a.$$
+
+    Storing the doubled angle lets rotations compose and invert without trigonometric functions.
+    The two arrays broadcast together, one rotation per element. Indexing a rotation indexes both,
+    and it unpacks into the arguments of [`Stokes.rotate_qu`][]: `x.rotate_qu(*rotation)`.
+
+    Attributes:
+        cos_2angles: $\cos 2a$.
+        sin_2angles: $\sin 2a$.
+    """
+
+    cos_2angles: Float[Array, '...']
+    sin_2angles: Float[Array, '...']
+
+    @classmethod
+    def from_angles(cls, angles: Float[Array, '...']) -> Self:
+        """The rotation by `angles`, in radians."""
+        return cls(jnp.cos(2 * angles), jnp.sin(2 * angles))
+
+    @classmethod
+    def from_cos_sin(cls, cos: Float[Array, '...'], sin: Float[Array, '...']) -> Self:
+        r"""The rotation by the angle $a$ of $(\cos a, \sin a)$, without evaluating $a$."""
+        return cls(cos**2 - sin**2, 2 * cos * sin)
+
+    def __iter__(self) -> Iterator[Float[Array, '...']]:
+        return iter((self.cos_2angles, self.sin_2angles))
+
+    def __getitem__(self, index: Any) -> Self:
+        return type(self)(self.cos_2angles[index], self.sin_2angles[index])
+
+    def compose(self, other: 'Spin2Rotation') -> Self:
+        """The rotation by this angle then by that of `other`: the angles add."""
+        c1, s1 = self
+        c2, s2 = other
+        return type(self)(c1 * c2 - s1 * s2, s1 * c2 + c1 * s2)
+
+    def inverse(self) -> Self:
+        """The rotation by the opposite angle, which is also the transpose."""
+        return type(self)(self.cos_2angles, -self.sin_2angles)
+
+    def broadcast_to(self, shape: tuple[int, ...]) -> Self:
+        """The rotations broadcast to `shape`."""
+        return type(self)(
+            jnp.broadcast_to(self.cos_2angles, shape), jnp.broadcast_to(self.sin_2angles, shape)
+        )
+
+
 @jax.jit
 def rotate_qu[StokesT: Stokes](x: StokesT, angles: Float[Array, '...']) -> StokesT:
     """Rotate QU Stokes parameters by the given angles (in radians).
 
     The transpose rotation is obtained by passing ``-angles``.
     """
-    return x.rotate_qu(jnp.cos(2 * angles), jnp.sin(2 * angles))
+    return x.rotate_qu(*Spin2Rotation.from_angles(angles))
 
 
 @jax.jit
@@ -52,10 +107,7 @@ def rotate_qu_cs[StokesT: Stokes](
 
     The transpose rotation is obtained by negating ``sin_angles``.
     """
-    # double angle formulas
-    cos_2angles = cos_angles**2 - sin_angles**2
-    sin_2angles = 2 * cos_angles * sin_angles
-    return x.rotate_qu(cos_2angles, sin_2angles)
+    return x.rotate_qu(*Spin2Rotation.from_cos_sin(cos_angles, sin_angles))
 
 
 _StokesT = TypeVar('_StokesT', bound=Stokes)

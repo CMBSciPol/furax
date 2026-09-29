@@ -1,7 +1,7 @@
 from ._beam_operator import BeamOperator, BeamOperatorIQU
 from ._hwp import HWPOperator, NonIdealHWPOperator, hwp_mueller_from_stack
 from ._polarizers import LinearPolarizerOperator
-from ._qu_rotations import QURotationOperator
+from ._qu_rotations import QURotationOperator, Spin2Rotation
 from ._seds import (
     AbstractSEDOperator,
     CMBOperator,
@@ -28,6 +28,7 @@ __all__ = [
     'LinearPolarizerOperator',
     # _qu_rotations
     'QURotationOperator',
+    'Spin2Rotation',
     # _seds
     'AbstractSEDOperator',
     'CMBOperator',

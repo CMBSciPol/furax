@@ -3,6 +3,7 @@ r"""Spin-2 transported gather and scatter over an interpolation stencil."""
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
+from furax.obs.operators._qu_rotations import Spin2Rotation
 from furax.obs.spin2._transport import spin2_cos_sin_zs
 from furax.obs.stencil import Stencil
 from furax.obs.stokes import Stokes
@@ -15,8 +16,6 @@ __all__ = [
     'transported_scatter',
 ]
 
-_Rotation = tuple[Float[Array, '...'], Float[Array, '...']]
-
 
 def transported_gather[S: Stokes](
     sky: S,
@@ -24,7 +23,7 @@ def transported_gather[S: Stokes](
     theta: Float[Array, ' *dims'],
     phi: Float[Array, ' *dims'],
     *,
-    rotation: tuple[Float[Array, ' *dims'], Float[Array, ' *dims']] | None = None,
+    rotation: Spin2Rotation | None = None,
 ) -> S:
     r"""Interpolate a flat sky map at world angles, transporting each neighbour's $(Q, U)$.
 
@@ -45,8 +44,8 @@ def transported_gather[S: Stokes](
         stencil: The pixels each sample reads, their weights and their positions.
         theta: Target co-latitude, in radians.
         phi: Target longitude, in radians.
-        rotation: $(\cos 2\psi, \sin 2\psi)$ of a rotation applied after the transport and before
-            the weights, or `None` to stay in the meridian basis of the target direction.
+        rotation: The rotation by $\psi$ applied after the transport and before the weights, or
+            `None` to stay in the meridian basis of the target direction.
 
     Returns:
         The interpolated Stokes values, of shape ``dims``.
@@ -63,7 +62,7 @@ def transported_scatter[S: Stokes](
     theta: Float[Array, ' *dims'],
     phi: Float[Array, ' *dims'],
     *,
-    rotation: tuple[Float[Array, ' *dims'], Float[Array, ' *dims']] | None = None,
+    rotation: Spin2Rotation | None = None,
 ) -> S:
     r"""Scatter-add samples into a flat sky map, adjoint to [`transported_gather`][].
 
@@ -77,8 +76,7 @@ def transported_scatter[S: Stokes](
         stencil: The pixels each sample is deposited in, their weights and their positions.
         theta: Target co-latitude, in radians.
         phi: Target longitude, in radians.
-        rotation: $(\cos 2\psi, \sin 2\psi)$ of the rotation given to [`transported_gather`][],
-            or `None`.
+        rotation: The rotation given to [`transported_gather`][], or `None`.
 
     Returns:
         The accumulated sky map.
@@ -88,7 +86,7 @@ def transported_scatter[S: Stokes](
     return rotated_scatter(out, tod, stencil, transport_rotation(stencil, theta, phi, rotation))
 
 
-def rotated_gather[S: Stokes](sky: S, stencil: Stencil, rotation: _Rotation | None) -> S:
+def rotated_gather[S: Stokes](sky: S, stencil: Stencil, rotation: Spin2Rotation | None) -> S:
     r"""Read a flat sky map through a stencil, rotating each neighbour's $(Q, U)$ by its own angle.
 
     Sample $s$ is $\sum_n w_{sn} R(\alpha_{sn}) m_{p_{sn}}$: each neighbour $n$ of the stencil is
@@ -100,7 +98,7 @@ def rotated_gather[S: Stokes](sky: S, stencil: Stencil, rotation: _Rotation | No
         sky: Sky map whose spatial axes are raveled, i.e. of shape `(n_pixels,)` per component.
         stencil: The pixels each sample reads and their weights, optionally one row per Stokes
             component. Its positions are not used.
-        rotation: $(\cos 2\alpha, \sin 2\alpha)$ for each neighbour, broadcastable to the stencil
+        rotation: The rotation by $\alpha$ of each neighbour, broadcastable to the stencil
             indices, or `None` to leave the neighbours unrotated.
 
     Returns:
@@ -112,7 +110,9 @@ def rotated_gather[S: Stokes](sky: S, stencil: Stencil, rotation: _Rotation | No
     return type(sky).from_array(jnp.sum(gathered.data * stencil.weights, axis=-1))
 
 
-def rotated_scatter[S: Stokes](out: S, tod: S, stencil: Stencil, rotation: _Rotation | None) -> S:
+def rotated_scatter[S: Stokes](
+    out: S, tod: S, stencil: Stencil, rotation: Spin2Rotation | None
+) -> S:
     """Scatter-add samples into a flat sky map, adjoint to [`rotated_gather`][].
 
     Args:
@@ -136,9 +136,8 @@ def rotated_scatter[S: Stokes](out: S, tod: S, stencil: Stencil, rotation: _Rota
         * stencil.weights
     )
     if rotation is not None:
-        # The transpose of rotate_qu(c, s) is rotate_qu(c, -s), which is what makes this the
-        # adjoint.
-        spread = spread.rotate_qu(rotation[0], -rotation[1])
+        # the transpose of a rotation is its inverse, which is what makes this the adjoint
+        spread = spread.rotate_qu(*rotation.inverse())
     n_stokes = out.data.shape[0]
     contrib = spread.data.reshape(n_stokes, -1)
     accumulated = out.data.at[..., stencil.indices.ravel()].add(contrib)
@@ -149,8 +148,8 @@ def transport_rotation(
     stencil: Stencil,
     theta: Float[Array, ' *dims'],
     phi: Float[Array, ' *dims'],
-    rotation: tuple[Float[Array, ' *dims'], Float[Array, ' *dims']] | None = None,
-) -> _Rotation:
+    rotation: Spin2Rotation | None = None,
+) -> Spin2Rotation:
     r"""The rotation of each neighbour's $(Q, U)$ into the basis of the sampled direction.
 
     The parallel transport $\delta$ from each neighbour's meridian basis to that of the target
@@ -160,27 +159,23 @@ def transport_rotation(
         stencil: The pixels each sample reads, with their positions.
         theta: Target co-latitude, in radians.
         phi: Target longitude, in radians.
-        rotation: $(\cos 2\psi, \sin 2\psi)$ of the rotation after the transport, or `None`.
+        rotation: The rotation by $\psi$ after the transport, or `None`.
 
     Returns:
-        $(\cos 2\alpha, \sin 2\alpha)$ for each neighbour, with $\alpha = \delta + \psi$.
+        The rotation by $\alpha = \delta + \psi$ of each neighbour.
     """
     if stencil.positions is None:
         raise ValueError(
             'the stencil carries no sky positions, so its Q and U cannot be transported; it '
             'describes a grid that is not the sphere and can only sample an intensity map'
         )
-    cos_2delta, sin_2delta = spin2_cos_sin_zs(
+    transport = spin2_cos_sin_zs(
         *stencil.positions,
         jnp.cos(theta)[..., None],
         jnp.sin(theta)[..., None],
         phi[..., None],
     )
     if rotation is None:
-        return cos_2delta, sin_2delta
-    # rotating by delta then by psi is rotating by delta + psi; psi is shared by the neighbours
-    cos_2psi, sin_2psi = rotation[0][..., None], rotation[1][..., None]
-    return (
-        cos_2delta * cos_2psi - sin_2delta * sin_2psi,
-        sin_2delta * cos_2psi + cos_2delta * sin_2psi,
-    )
+        return transport
+    # psi is shared by the neighbours of a sample
+    return transport.compose(rotation[..., None])

@@ -4,7 +4,7 @@ import pytest
 from fastquat import Quaternion
 from numpy.testing import assert_array_almost_equal
 
-from furax.math.coords import from_iso_angles
+from furax.math.coords import IsoAngles
 from furax.obs.landscapes import TangentialLandscape
 
 # A small landscape used across most tests:
@@ -122,7 +122,7 @@ class TestQuat2Pixel:
         rng = np.random.default_rng(7)
         theta = jnp.array(rng.uniform(0.01, 0.12, 30))
         phi = jnp.array(rng.uniform(0.0, 2 * np.pi, 30))
-        quats = from_iso_angles(theta, phi, jnp.zeros(30))
+        quats = IsoAngles(theta, phi, jnp.zeros(30)).to_quaternion()
 
         px_q, py_q = landscape.quat2pixel(quats)
         px_w, py_w = landscape.world2pixel(theta, phi)

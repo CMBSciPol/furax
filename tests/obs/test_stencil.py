@@ -4,15 +4,16 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.obs.stencil import Interpolation, SkyPositions, Stencil
+from furax.math.coords import ZSPhi
+from furax.obs.stencil import Interpolation, Stencil
 
 
-def _positions(shape: tuple[int, ...]) -> SkyPositions:
+def _positions(shape: tuple[int, ...]) -> ZSPhi:
     """Arbitrary but valid neighbour positions for a stencil of the given shape."""
     rng = np.random.default_rng(0)
     theta = jnp.asarray(rng.uniform(0.1, np.pi - 0.1, shape))
     phi = jnp.asarray(rng.uniform(0.0, 2 * np.pi, shape))
-    return SkyPositions(jnp.cos(theta), jnp.sin(theta), phi)
+    return ZSPhi(jnp.cos(theta), jnp.sin(theta), phi)
 
 
 class TestInterpolation:
@@ -82,7 +83,7 @@ class TestStencil:
         assert_array_equal(np.asarray(stencil.indices[..., 0]), [7, 9])
         assert_array_equal(np.asarray(stencil.weights), 1.0)
         assert_allclose(np.asarray(stencil.positions.z[..., 0]), np.cos(np.asarray(theta)))
-        assert_allclose(np.asarray(stencil.positions.sth[..., 0]), np.sin(np.asarray(theta)))
+        assert_allclose(np.asarray(stencil.positions.s[..., 0]), np.sin(np.asarray(theta)))
         assert_array_equal(np.asarray(stencil.positions.phi[..., 0]), np.asarray(phi))
 
     def test_nearest_outside_the_map_contributes_nothing(self):
@@ -134,10 +135,10 @@ class TestIntegrated:
             jnp.stack([p.weights for p in parts], axis=-2),
             None
             if parts[0].positions is None
-            else SkyPositions(
+            else ZSPhi(
                 *(
                     jnp.stack([getattr(p.positions, c) for p in parts], axis=-2)
-                    for c in ['z', 'sth', 'phi']
+                    for c in ZSPhi._fields
                 )
             ),
         )
@@ -152,7 +153,7 @@ class TestIntegrated:
         assert merged.n_neighbors == 4
         assert_array_equal(np.asarray(merged.indices), [[0, 1, 2, 3]])
         assert_allclose(np.asarray(merged.weights), [[0.2, 0.2, 0.15, 0.45]])
-        for component in SkyPositions._fields:
+        for component in ZSPhi._fields:
             assert_array_equal(
                 np.asarray(getattr(merged.positions, component)),
                 np.concatenate(

@@ -3,6 +3,8 @@ r"""Spin-2 frame rotation between two directions on the sphere."""
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
+from furax.obs.operators._qu_rotations import Spin2Rotation
+
 __all__ = [
     'spin2_cos_sin',
     'spin2_cos_sin_zs',
@@ -16,8 +18,8 @@ def spin2_cos_sin_zs(
     z_x: Float[Array, '...'],
     s_x: Float[Array, '...'],
     phi_x: Float[Array, '...'],
-) -> tuple[Float[Array, '...'], Float[Array, '...']]:
-    r"""Spin-2 transport pair between two directions given as $(\cos\theta, \sin\theta, \varphi)$.
+) -> Spin2Rotation:
+    r"""Spin-2 transport between two directions given as $(\cos\theta, \sin\theta, \varphi)$.
 
     Same as [`spin2_cos_sin`][], but takes the cosine and sine of each co-latitude instead of the
     co-latitude itself. Prefer this form when they are already available, as they are for HEALPix
@@ -32,8 +34,7 @@ def spin2_cos_sin_zs(
         phi_x: Target longitude, in radians.
 
     Returns:
-        The pair $(\cos 2\delta,\, -\sin 2\delta)$, as taken by [`Stokes.rotate_qu`][]. Broadcasts
-        over the six inputs.
+        The rotation by the transport angle $\delta$, broadcast over the six inputs.
     """
     # Haversine formulation. The textbook form -- two atan2 bearings -- is algebraically identical
     # but cancels catastrophically at the sub-pixel separations this is used at, losing about four
@@ -65,7 +66,7 @@ def spin2_cos_sin_zs(
     inv = 1.0 / jnp.where(norm > 0, norm, 1.0)
     cos_2delta = jnp.where(norm > 0, (den * den - num * num) * inv, 1.0)
     sin_2delta = jnp.where(norm > 0, 2.0 * num * den * inv, 0.0)
-    return cos_2delta, sin_2delta
+    return Spin2Rotation(cos_2delta, sin_2delta)
 
 
 def spin2_cos_sin(
@@ -73,22 +74,18 @@ def spin2_cos_sin(
     phi_n: Float[Array, '...'],
     theta_x: Float[Array, '...'],
     phi_x: Float[Array, '...'],
-) -> tuple[Float[Array, '...'], Float[Array, '...']]:
-    r"""Spin-2 transport pair between two directions, in the form taken by `rotate_qu`.
+) -> Spin2Rotation:
+    r"""Spin-2 transport between two directions, as a [`Spin2Rotation`][].
 
     A polarisation $P = Q + iU$ stored at a neighbour direction $\hat n$ is expressed in the local
-    meridian basis at $\hat n$. Carrying it to the basis at a target direction $\hat x$ turns it by
-    the transport angle $\delta$, as $P \to P e^{+2i\delta}$.
-
-    The returned pair is $(\cos 2\delta,\, -\sin 2\delta)$: [`Stokes.rotate_qu`][] applies
-    $P \to P e^{-2ia}$ to a pair $(\cos 2a,\, \sin 2a)$, so passing this pair there directly, with
-    no sign flip, performs the transport. It must not be passed to [`rotate_qu_cs`][], which expects
-    a single-angle pair and doubles it internally.
+    meridian basis at $\hat n$. Carrying it to the meridian basis at a target direction $\hat x$ is
+    a rotation of the basis by the transport angle $\delta$, $P \to P e^{-2i\delta}$: applying the
+    returned rotation with [`Stokes.rotate_qu`][] performs the transport.
 
     The sign convention is that of HEALPix/COSMO maps. An IAU-convention map has $U$ flipped and
     would run the transport backwards.
 
-    Coincident directions give $(1, 0)$ exactly. Directions sharing a meridian give it to
+    Coincident directions give $\delta = 0$ exactly. Directions sharing a meridian give it to
     round-off.
 
     Args:
@@ -98,8 +95,7 @@ def spin2_cos_sin(
         phi_x: Target longitude, in radians.
 
     Returns:
-        The pair $(\cos 2\delta,\, -\sin 2\delta)$, as taken by [`Stokes.rotate_qu`][]. Broadcasts
-        over the four inputs.
+        The rotation by the transport angle $\delta$, broadcast over the four inputs.
 
     Examples:
         Two directions on the same meridian need no rotation.

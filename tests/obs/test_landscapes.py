@@ -8,7 +8,7 @@ from fastquat import Quaternion
 from jax import Array
 from numpy.testing import assert_allclose, assert_array_almost_equal, assert_array_equal
 
-from furax.math.coords import from_iso_angles, from_xieta_angles
+from furax.math.coords import IsoAngles, XiEtaAngles
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     CARLandscape,
@@ -335,7 +335,7 @@ class TestBilinearStencil:
         centers = landscape.world2stencil(*angles, Interpolation.BILINEAR)
         theta_n, phi_n = jhp.pix2ang(landscape.nside, centers.indices)
         assert_array_almost_equal(centers.positions.z, np.cos(theta_n), decimal=12)
-        assert_array_almost_equal(centers.positions.sth, np.sin(theta_n), decimal=12)
+        assert_array_almost_equal(centers.positions.s, np.sin(theta_n), decimal=12)
         assert_array_almost_equal(
             centers.positions.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12
         )
@@ -349,7 +349,7 @@ class TestBilinearStencil:
         n_x = car.pixel_shape[0]
         theta_n, phi_n = car.pixel2world(indices % n_x, indices // n_x)
         assert_array_almost_equal(centers.positions.z, jnp.cos(theta_n), decimal=12)
-        assert_array_almost_equal(centers.positions.sth, jnp.sin(theta_n), decimal=12)
+        assert_array_almost_equal(centers.positions.s, jnp.sin(theta_n), decimal=12)
         assert_array_almost_equal(
             centers.positions.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12
         )
@@ -406,7 +406,7 @@ class TestNearestStencil:
         centers = landscape.world2stencil(*angles, Interpolation.NEAREST)
         theta_n, phi_n = jhp.pix2ang(landscape.nside, centers.indices)
         assert_array_almost_equal(centers.positions.z, np.cos(theta_n), decimal=12)
-        assert_array_almost_equal(centers.positions.sth, np.sin(theta_n), decimal=12)
+        assert_array_almost_equal(centers.positions.s, np.sin(theta_n), decimal=12)
         assert_array_almost_equal(
             centers.positions.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12
         )
@@ -420,7 +420,7 @@ class TestNearestStencil:
         n_x = car.pixel_shape[0]
         theta_n, phi_n = car.pixel2world(indices % n_x, indices // n_x)
         assert_array_almost_equal(centers.positions.z, jnp.cos(theta_n), decimal=12)
-        assert_array_almost_equal(centers.positions.sth, jnp.sin(theta_n), decimal=12)
+        assert_array_almost_equal(centers.positions.s, jnp.sin(theta_n), decimal=12)
         assert_array_almost_equal(
             centers.positions.phi % (2 * np.pi), phi_n % (2 * np.pi), decimal=12
         )
@@ -429,7 +429,7 @@ class TestNearestStencil:
         """The center reported for a sample is the center of the pixel the sample falls in."""
         theta, phi = angles
         centers = car.world2stencil(theta, phi, Interpolation.NEAREST)
-        theta_c = jnp.arctan2(centers.positions.sth[..., 0], centers.positions.z[..., 0])
+        theta_c = jnp.arctan2(centers.positions.s[..., 0], centers.positions.z[..., 0])
         dphi = (centers.positions.phi[..., 0] - phi + np.pi) % (2 * np.pi) - np.pi
         # the fixture grid is 1°/pixel, so no center sits more than half a degree away in either
         # coordinate
@@ -453,7 +453,7 @@ class TestNearestStencil:
 
         assert_array_equal(centers.indices, ref_centers.indices)
         assert_array_almost_equal(centers.positions.z, ref_centers.positions.z, decimal=12)
-        assert_array_almost_equal(centers.positions.sth, ref_centers.positions.sth, decimal=12)
+        assert_array_almost_equal(centers.positions.s, ref_centers.positions.s, decimal=12)
         assert_array_almost_equal(
             centers.positions.phi % (2 * np.pi), ref_centers.positions.phi % (2 * np.pi), decimal=12
         )
@@ -474,7 +474,7 @@ class TestNearestStencil:
         pix_i, pix_j = landscape.world2pixel(np.pi / 2 - altitude, -azimuth)
         centers = landscape.world2stencil(np.pi / 2 - altitude, -azimuth, Interpolation.NEAREST)
 
-        theta_c = jnp.arctan2(centers.positions.sth[..., 0], centers.positions.z[..., 0])
+        theta_c = jnp.arctan2(centers.positions.s[..., 0], centers.positions.z[..., 0])
         assert_array_almost_equal(np.pi / 2 - theta_c, alt_centers[pix_i], decimal=12)
         assert_array_almost_equal(-centers.positions.phi[..., 0], az_centers[pix_j], decimal=12)
 
@@ -517,7 +517,7 @@ class TestIndexStencil:
         assert_array_equal(stencil.indices, expected.indices)
         assert_array_equal(stencil.weights, expected.weights)
         assert_array_almost_equal(stencil.positions.z, expected.positions.z, decimal=12)
-        assert_array_almost_equal(stencil.positions.sth, expected.positions.sth, decimal=12)
+        assert_array_almost_equal(stencil.positions.s, expected.positions.s, decimal=12)
         assert_array_almost_equal(
             stencil.positions.phi % (2 * np.pi), expected.positions.phi % (2 * np.pi), decimal=12
         )
@@ -791,7 +791,7 @@ class TestLocalStokesLandscape:
         phi = jnp.array([0.7, 3.1, 5.0])
         return QuaternionSampler(
             kernel=SamplingKernel(interpolation, **kernel),
-            qbore=from_iso_angles(theta, phi, jnp.zeros_like(theta)),
+            qbore=IsoAngles(theta, phi, jnp.zeros_like(theta)).to_quaternion(),
             qdet=Quaternion.ones((1,)),
         )
 
@@ -820,7 +820,9 @@ class TestLocalStokesLandscape:
     def test_from_sampler_reads_the_parent_map_exactly(self, stokes) -> None:
         """Offsets and per-Stokes weights widen the subset to every pixel they read."""
         parent = HealpixLandscape(2, stokes=stokes)
-        offsets = from_xieta_angles(jnp.array([0.2, -0.3]), jnp.array([0.1, 0.25]), jnp.zeros(2))
+        offsets = XiEtaAngles(
+            jnp.array([0.2, -0.3]), jnp.array([0.1, 0.25]), jnp.zeros(2)
+        ).to_quaternion()
         weights = jnp.array([0.4, 0.6])
         if stokes == 'IQU':
             weights = StokesIQU(weights, jnp.array([1.0, 0.0]), jnp.array([0.0, 1.0]))

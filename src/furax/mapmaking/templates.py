@@ -266,6 +266,13 @@ class Basis(AbstractLinearOperator):
         in_axes = (0 if self.per_detector else None, 0)
         return jax.vmap(lambda op, s: op.project(s), in_axes=in_axes)(self, signals)
 
+    def _dense_values(self) -> Float[Array, 'k samp'] | None:
+        """The basis matrix, `(size, n_points)`, where forming it is cheap; `None` otherwise.
+
+        The template operators expand every basis that returns one in a single matrix product.
+        """
+        return None
+
     def mv(self, x: Float[Array, '*shape']) -> Float[Array, ' samp']:
         return self.expand(x)
 
@@ -389,6 +396,11 @@ class TensorBasis(Basis):
             signal = self._downsample(signal)
         return _einsum(self.values, (*idx, n), signal, (n,), idx)
 
+    def _dense_values(self) -> Float[Array, 'k samp'] | None:
+        if self.q != 1 or self.per_detector:
+            return None
+        return self.values.reshape(self.size, self.n_points)
+
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
         # Dense Gram over the (single) coupled amplitude axis: one block, no band (w=0).
         if self.q != 1:
@@ -449,6 +461,9 @@ class KroneckerBasis(Basis):
         n = len(self.shape)
         v = _einsum(*self._factor_operands(), (*range(n), n))
         return v.reshape(self.size, self.n_points)
+
+    def _dense_values(self) -> Float[Array, 'k samp'] | None:
+        return None if self.per_detector else self._product_values()
 
     def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
         if self.per_detector:
@@ -997,6 +1012,20 @@ class AbstractTemplateOperator(AbstractLinearOperator):
     def _project(basis: Basis, s: Array) -> Array:
         return basis._project_detectors(s)
 
+    def _expand_stream(self, bases: dict[str, Basis], x: dict[str, Array]) -> Array:
+        """The summed expansion of every template on one stream."""
+        # Each template would otherwise make its own pass over the stream. The dense ones are
+        # instead stacked into one `(K, samp)` matrix, applied in one product over all detectors.
+        dense = {n: v for n, basis in bases.items() if (v := basis._dense_values()) is not None}
+        stream = self._zero_stream()
+        if dense:
+            coeffs = jnp.concatenate([x[name].reshape(self.n_dets, -1) for name in dense], axis=1)
+            stream = _einsum('dk,ks->ds', coeffs, jnp.concatenate(list(dense.values())))
+        for name, basis in bases.items():
+            if name not in dense:
+                stream = stream + self._expand(basis, x[name])
+        return stream
+
     # ---- adjoint --------------------------------------------------------------------------------
     @abstractmethod
     def project(self, tod: PyTree[Array]) -> PyTree[Array]:
@@ -1020,10 +1049,7 @@ class TemplateOperator(AbstractTemplateOperator):
         return self._stream_structure()
 
     def mv(self, x: PyTree[Array]) -> PyTree[Array]:
-        stream = self._zero_stream()
-        for name, basis in self.bases.items():
-            stream = stream + self._expand(basis, x[name])
-        return stream
+        return self._expand_stream(self.bases, x)
 
     def project(self, tod: PyTree[Array]) -> PyTree[Array]:
         return {name: self._project(basis, tod) for name, basis in self.bases.items()}
@@ -1095,13 +1121,16 @@ class StokesTemplateOperator(AbstractTemplateOperator):
     def _streams(self, tod: PyTree[Array]) -> dict[StokesLeg, Array]:
         return dict(zip(self.legs, tod.data, strict=True))
 
+    def _bases_on(self, leg: StokesLeg) -> dict[str, Basis]:
+        """The templates covering one leg, keyed by name."""
+        return {name: on[leg] for name, on in self.bases_by_leg.items() if leg in on}
+
     def mv(self, x: PyTree[Array]) -> PyTree[Array]:
-        streams = dict.fromkeys(self.legs, self._zero_stream())
-        for name, legged in self.bases_by_leg.items():
-            for leg, basis in legged.items():
-                streams[leg] = streams[leg] + self._expand(basis, x[name][leg])
-        stacked = jnp.stack([streams[leg] for leg in self.legs], axis=0)
-        return Stokes.class_for(self.stokes).from_array(stacked)
+        streams = []
+        for leg in self.legs:
+            bases = self._bases_on(leg)
+            streams.append(self._expand_stream(bases, {name: x[name][leg] for name in bases}))
+        return Stokes.class_for(self.stokes).from_array(jnp.stack(streams, axis=0))
 
     def project(self, tod: PyTree[Array]) -> PyTree[Array]:
         streams = self._streams(tod)

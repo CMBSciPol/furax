@@ -9,7 +9,12 @@ from fastquat import Quaternion
 from jaxtyping import Array, Float, Int, Integer
 
 from furax.core.utils import register_dataclass_with_keys
-from furax.math.coords import ZSPhi, gamma_angle_cos_sin, polarization_angle_cos_sin
+from furax.math.coords import (
+    XiEtaAngles,
+    ZSPhi,
+    gamma_angle_cos_sin,
+    polarization_angle_cos_sin,
+)
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators import Spin2Rotation
 from furax.obs.spin2 import transport_rotation
@@ -92,6 +97,58 @@ class DiscretizedBeam:
                 f'for {n_nodes} nodes'
             )
         return cls(nodes, weights)
+
+    @classmethod
+    def from_directions(
+        cls,
+        directions: Float[Array, '*detectors n_nodes 3'],
+        weights: Float[Array, ' n_nodes'] | Stokes,
+    ) -> Self:
+        r"""Build a beam from the direction of each node, in the frame of a beam map.
+
+        A beam map gives the beam at offsets $(\alpha, \delta)$ in right ascension and declination
+        from the beam centre. The node at offset $(\alpha, \delta)$ has the direction
+        $(\cos\delta \cos\alpha, \cos\delta \sin\alpha, \sin\delta)$, so the beam centre is along
+        $+x$. When the detector's polarization angle is zero, $+\delta$ points north and
+        $+\alpha$ east: the detector is sensitive to polarization along $-\delta$, and the beam
+        turns with the detector.
+
+        The nodes may be any set of directions within 90 degrees of the centre, e.g. the pixels of
+        a gridded beam map or the centroids of a clustered one. The beam models the response to
+        directions around the line of sight; it does not model the motion of the pointing during a
+        sample.
+
+        Args:
+            directions: The direction of each node, shape (n_nodes, 3), or (n_detectors, n_nodes, 3)
+                for a beam per detector. Directions are normalized to unit length.
+            weights: The beam integrated over the solid angle of each node, e.g. $B \cos\delta$ on
+                a map with equal steps in $\alpha$ and $\delta$, shared or per Stokes component as
+                in [`DiscretizedBeam`][]. They are used as given.
+
+        Examples:
+            A beam of two nodes, 0.01 radians north and east of the centre:
+
+            >>> import jax.numpy as jnp
+            >>> directions = jnp.array([[jnp.cos(0.01), 0.0, jnp.sin(0.01)],
+            ...                         [jnp.cos(0.01), jnp.sin(0.01), 0.0]])
+            >>> beam = DiscretizedBeam.from_directions(directions, jnp.array([0.5, 0.5]))
+            >>> beam.nodes.shape
+            (2,)
+        """
+        directions = jnp.asarray(directions)
+        if directions.ndim not in (2, 3) or directions.shape[-1] != 3:
+            raise ValueError(
+                f'beam directions have shape {directions.shape}, expected (n_nodes, 3) or '
+                '(n_detectors, n_nodes, 3)'
+            )
+        unit = directions / jnp.linalg.norm(directions, axis=-1, keepdims=True)
+        y, z = unit[..., 1], unit[..., 2]
+        # The detector looks along its z axis and is sensitive to polarization along its x axis,
+        # which the beam map's -delta axis (-z) maps to; +alpha (+y) maps to its y axis. So the
+        # detector-frame direction is (-z, y, x), whose orthographic coordinates are
+        # (xi, eta) = (-y, z).
+        nodes = XiEtaAngles(-y, z, jnp.zeros_like(y)).to_quaternion()
+        return cls.create(nodes, weights)
 
     def checked(self, landscape: StokesLandscape, n_detectors: int) -> Self:
         """The beam, checked against a map and detectors, with its weights in the map's dtype.

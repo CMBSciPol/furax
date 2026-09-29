@@ -4,7 +4,7 @@ import pytest
 from fastquat import Quaternion
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.math.coords import XiEtaAngles
+from furax.math.coords import ZAXIS, IsoAngles, XiEtaAngles
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.sampling import (
@@ -47,6 +47,64 @@ class TestDiscretizedBeamCreate:
     def test_rejects_inconsistent_nodes_and_weights(self, nodes, weights, match) -> None:
         with pytest.raises(ValueError, match=match):
             DiscretizedBeam.create(_nodes() if nodes is None else nodes, weights)
+
+
+def _directions(alpha: jax.Array, delta: jax.Array) -> jax.Array:
+    """The directions of beam-map offsets in right ascension and declination."""
+    return jnp.stack(
+        [jnp.cos(delta) * jnp.cos(alpha), jnp.cos(delta) * jnp.sin(alpha), jnp.sin(delta)], -1
+    )
+
+
+class TestDiscretizedBeamFromDirections:
+    @pytest.mark.parametrize('psi', [0.0, jnp.pi / 2, 1.0])
+    def test_the_beam_map_turns_with_the_detector(self, psi) -> None:
+        """At zero polarization angle +delta points north and +alpha east, then both turn by psi.
+
+        The line of sight is +x on the equator, so north is +z and east +y, and the sky direction
+        of a node is the beam-map direction rotated about the line of sight by psi.
+        """
+        directions = _directions(jnp.array([0.02, 0.0, -0.01]), jnp.array([0.0, 0.03, -0.02]))
+        beam = DiscretizedBeam.from_directions(directions, jnp.ones(3) / 3)
+        pointing = IsoAngles(jnp.array(jnp.pi / 2), jnp.array(0.0), jnp.array(psi)).to_quaternion()
+        sky = (pointing * beam.nodes).rotate_vector(ZAXIS)
+        cos, sin = jnp.cos(psi), jnp.sin(psi)
+        x, y, z = directions.T
+        expected = jnp.stack([x, cos * y - sin * z, sin * y + cos * z], -1)
+        assert_allclose(sky, expected, atol=1e-15)
+
+    @pytest.mark.parametrize('shape', [(5,), (NDET, 5)], ids=['shared', 'per-detector'])
+    def test_nodes_hold_the_orthographic_offsets(self, shape) -> None:
+        alpha, delta = 0.05 * jax.random.normal(jax.random.key(0), (2, *shape))
+        directions = _directions(alpha, delta)
+        beam = DiscretizedBeam.from_directions(directions, jnp.ones(5) / 5)
+        xi, eta, gamma = XiEtaAngles.from_quaternion(beam.nodes)
+        assert beam.nodes.shape == shape
+        assert_allclose(xi, -directions[..., 1], atol=1e-15)
+        assert_allclose(eta, directions[..., 2], atol=1e-15)
+        assert_allclose(gamma, 0, atol=1e-15)
+
+    def test_the_beam_centre_is_the_line_of_sight(self) -> None:
+        beam = DiscretizedBeam.from_directions(jnp.array([[1.0, 0.0, 0.0]]), jnp.ones(1))
+        assert_allclose(beam.nodes.wxyz, [[1.0, 0.0, 0.0, 0.0]], atol=1e-15)
+
+    def test_directions_are_normalized(self) -> None:
+        directions = _directions(jnp.array([0.02, -0.01]), jnp.array([0.01, 0.03]))
+        unit = DiscretizedBeam.from_directions(directions, jnp.ones(2))
+        scaled = DiscretizedBeam.from_directions(3 * directions, jnp.ones(2))
+        assert_allclose(scaled.nodes.wxyz, unit.nodes.wxyz, atol=1e-15)
+
+    @pytest.mark.parametrize(
+        'directions, weights, match',
+        [
+            (jnp.ones((2, 2)), jnp.ones(2), 'beam directions have shape'),
+            (jnp.ones((1, 2, 2, 3)), jnp.ones(2), 'beam directions have shape'),
+            (jnp.ones((2, 3)), jnp.ones(3), 'beam weights have shape'),
+        ],
+    )
+    def test_rejects_inconsistent_directions_and_weights(self, directions, weights, match) -> None:
+        with pytest.raises(ValueError, match=match):
+            DiscretizedBeam.from_directions(directions, weights)
 
 
 class TestDiscretizedBeamChecked:

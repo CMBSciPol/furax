@@ -752,6 +752,32 @@ class TestBeam:
         sky = landscape.normal(jax.random.key(58))
         assert tree_equal(ops[1](sky), ops[0](sky), rtol=1e-12, atol=1e-12)
 
+    def test_the_order_of_the_nodes_does_not_matter(self, frame, interpolate) -> None:
+        """A beam is a set of nodes, e.g. a flattened beam map or the centroids of a clustered one."""
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        qbore, qdet = self._quats(59)
+        alpha, delta = jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04])
+        directions = jnp.stack(
+            [jnp.cos(delta) * jnp.cos(alpha), jnp.cos(delta) * jnp.sin(alpha), jnp.sin(delta)], -1
+        )
+        weights = self._per_stokes_weights('IQU')
+        reversed_weights = type(weights).from_array(weights.data[:, ::-1])
+        ops = [
+            PointingOperator.create(
+                landscape,
+                qbore,
+                qdet,
+                frame=frame,
+                interpolate=interpolate,
+                beam=DiscretizedBeam.from_directions(d, w),
+            )
+            for d, w in ((directions, weights), (directions[::-1], reversed_weights))
+        ]
+        sky = landscape.normal(jax.random.key(60))
+        tod = ftree.normal_like(ops[0].out_structure, jax.random.key(61))
+        assert tree_equal(ops[1](sky), ops[0](sky), rtol=1e-12, atol=1e-12)
+        assert tree_equal(ops[1].T(tod), ops[0].T(tod), rtol=1e-12, atol=1e-12)
+
     def test_adjoint_with_per_stokes_weights(self, stokes, frame, interpolate) -> None:
         """P^T is the transpose of P as matrices, with a weight of its own per Stokes component."""
         landscape = HealpixLandscape(NSIDE, stokes)

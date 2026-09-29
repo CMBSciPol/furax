@@ -7,6 +7,7 @@ from numpy.testing import assert_allclose
 from furax import IdentityOperator
 from furax.mapmaking.gram import gram_inverse
 from furax.mapmaking.templates import (
+    KroneckerBasis,
     SegmentedBasis,
     StokesTemplateOperator,
     TemplateOperator,
@@ -47,6 +48,30 @@ def test_template_operator_forward():
     got = T.T(tod)
     assert_allclose(got['scan'], _project(b1, tod), rtol=1e-5, atol=1e-6)
     assert_allclose(got['poly'], _project(b2, tod), rtol=1e-5, atol=1e-6)
+
+
+def test_template_operator_expands_dense_templates_together():
+    # dense templates are expanded in one matrix product and the others one by one; the sum must
+    # not depend on which is which: shared dense (tensor, kronecker), decimated and per-detector
+    # tensors (kept apart), and a segmented basis
+    k = jr.split(jr.key(6), 10)
+    bases = {
+        'tensor': TensorBasis(jr.normal(k[0], (3, N_SAMPS))),
+        'kron': KroneckerBasis((jr.normal(k[1], (2, N_SAMPS)), jr.normal(k[2], (3, N_SAMPS)))),
+        'coarse': TensorBasis(jr.normal(k[3], (2, N_SAMPS // 4)), q=4, n_full=N_SAMPS),
+        'per_det': TensorBasis.per_detector_stack(values=jr.normal(k[4], (N_DETS, 1, N_SAMPS))),
+        'poly': SegmentedBasis(_seg(4), jr.normal(k[5], (2, N_SAMPS)), 4),
+    }
+    T = TemplateOperator(bases, n_dets=N_DETS)
+    amps = {
+        name: jr.normal(jr.fold_in(k[6], i), s.shape)
+        for i, (name, s) in enumerate(T.in_structure.items())
+    }
+    ref = sum(
+        jax.vmap(lambda b, a: b.expand(a), in_axes=(0 if b.per_detector else None, 0))(b, amps[n])
+        for n, b in bases.items()
+    )
+    assert_allclose(T(amps), ref, rtol=1e-12, atol=1e-12)
 
 
 def test_stokes_template_operator_forward():

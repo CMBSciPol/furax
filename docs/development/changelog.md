@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `furax.math.coords` is moved to `furax.obs.coords` (#XXX)
 - **Breaking:** `furax.obs.sampling` is moved to `furax.obs.pointing.sampling` (#XXX)
 
+### Fixed
+
+- `XiEtaAngles.to_quaternion` has finite derivatives at the boresight (#XXX)
+
 ## [0.15.1] - 2026-09-30
 
 ### Added

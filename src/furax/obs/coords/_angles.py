@@ -184,9 +184,14 @@ class XiEtaAngles(NamedTuple):
 
     def to_quaternion(self) -> Quaternion:
         """The detector quaternion of these angles."""
-        theta = jnp.asin((self.xi**2 + self.eta**2) ** 0.5)
-        phi = jnp.atan2(-self.xi, -self.eta)
-        return IsoAngles(theta, phi, self.gamma - phi).to_quaternion()
+        # R_z(phi) R_y(theta) R_z(gamma - phi): the rotation by theta = asin(r), with
+        # r^2 = xi^2 + eta^2, about the axis (xi, -eta, 0) / r, then by gamma about z. Written
+        # without asin and atan2, whose derivatives are infinite at the boresight.
+        xi, eta = jnp.broadcast_arrays(self.xi, self.eta)
+        cos_theta = jnp.sqrt(1 - xi**2 - eta**2)
+        k = 1 / jnp.sqrt(2 * (1 + cos_theta))  # sin(theta / 2) / r
+        offset = Quaternion(jnp.sqrt((1 + cos_theta) / 2), xi * k, -eta * k, jnp.zeros_like(xi))
+        return offset * euler(2, self.gamma)
 
 
 class ZSPhi(NamedTuple):

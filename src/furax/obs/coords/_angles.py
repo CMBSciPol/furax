@@ -139,12 +139,12 @@ class AzElAngles(NamedTuple):
     Attributes:
         az: Azimuth $-\phi$.
         el: Elevation $\pi/2 - \theta$, in $[-\pi/2, \pi/2]$.
-        psi: Polarization angle, as in [`IsoAngles`][].
+        psi: Polarization angle, as in [`IsoAngles`][], zero by default.
     """
 
     az: Angle
     el: Angle
-    psi: Angle
+    psi: Angle | float = 0.0
 
     @classmethod
     def from_quaternion(cls, q: Quaternion) -> Self:
@@ -154,7 +154,7 @@ class AzElAngles(NamedTuple):
 
     def to_quaternion(self) -> Quaternion:
         """The rotation of these angles."""
-        return LonLatAngles(-self.az, self.el, self.psi).to_quaternion()
+        return LonLatAngles(-self.az, self.el, jnp.asarray(self.psi)).to_quaternion()
 
 
 class XiEtaAngles(NamedTuple):
@@ -169,12 +169,12 @@ class XiEtaAngles(NamedTuple):
     Attributes:
         xi: First orthographic coordinate, $-v_y$.
         eta: Second orthographic coordinate, $-v_x$.
-        gamma: Angle of the detector about the boresight.
+        gamma: Angle of the detector about the boresight, zero by default.
     """
 
     xi: Angle
     eta: Angle
-    gamma: Angle
+    gamma: Angle | float = 0.0
 
     @classmethod
     def from_quaternion(cls, q: Quaternion) -> Self:
@@ -191,7 +191,7 @@ class XiEtaAngles(NamedTuple):
         cos_theta = jnp.sqrt(1 - xi**2 - eta**2)
         k = 1 / jnp.sqrt(2 * (1 + cos_theta))  # sin(theta / 2) / r
         offset = Quaternion(jnp.sqrt((1 + cos_theta) / 2), xi * k, -eta * k, jnp.zeros_like(xi))
-        return offset * euler(2, self.gamma)
+        return offset * euler(2, jnp.asarray(self.gamma))
 
 
 class ZSPhi(NamedTuple):

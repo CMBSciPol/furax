@@ -149,7 +149,7 @@ class DiscretizedBeam:
         # which the beam map's -delta axis (-z) maps to; +alpha (+y) maps to its y axis. So the
         # detector-frame direction is (-z, y, x), whose orthographic coordinates are
         # (xi, eta) = (-y, z).
-        nodes = XiEtaAngles(-y, z, jnp.zeros_like(y)).to_quaternion()
+        nodes = XiEtaAngles(-y, z).to_quaternion()
         return cls.create(nodes, weights)
 
     @classmethod

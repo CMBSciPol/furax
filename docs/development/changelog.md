@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Stokes` component access (`.i`, `.q`, `.u`, `.v`) raises when the leading axis does not match the Stokes type, instead of returning the wrong component (#298)
 - **Breaking:** `furax.math.coords` is moved to `furax.obs.coords` (#XXX)
 - **Breaking:** `furax.obs.sampling` is moved to `furax.obs.pointing.sampling` (#XXX)
+- `AzElAngles.psi` and `XiEtaAngles.gamma` default to zero (#XXX)
 
 ### Fixed
 

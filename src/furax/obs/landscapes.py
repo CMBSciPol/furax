@@ -2,7 +2,7 @@ import math
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import Enum
 from typing import TYPE_CHECKING, Self, TypeVar
 
 import jax
@@ -287,10 +287,10 @@ def _index2pixel(
     return tuple(coords)
 
 
-class ProjectionType(IntEnum):
+class ProjectionType(Enum):
     """Supported WCS projection types."""
 
-    CAR = 0
+    CAR = 'CAR'
 
 
 @register_static

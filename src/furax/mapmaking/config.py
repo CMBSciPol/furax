@@ -7,17 +7,11 @@ from typing import Any, Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 import yaml
-from apischema import deserialize, deserializer, serialize, serializer
-from apischema.conversions import Conversion
 from jax.typing import DTypeLike
 
+from furax.mapmaking._serialization import deserialize, serialize
 from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import ValidStokesLiteral
-
-# apischema serializes IntEnum by value (integer) by default; override to use the name instead
-# so that YAML config files show e.g. 'CAR' rather than '0'.
-serializer(Conversion(lambda p: p.name, source=ProjectionType, target=str))
-deserializer(Conversion(lambda s: ProjectionType[s], source=str, target=ProjectionType))
 
 # Docs order: main config first, then its sub-configs grouped by topic.
 __all__ = [
@@ -158,7 +152,7 @@ class NoiseFitConfig:
     min_freq_nyquist: float = 1e-8
     r"""Only use $f \geq$ `min_freq_nyquist` $\times f_\mathrm{Nyquist}$ for noise fitting."""
 
-    max_freq_nyquist: float = 1
+    max_freq_nyquist: float = 1.0
     r"""Only use $f <$ `max_freq_nyquist` $\times f_\mathrm{Nyquist}$ for noise fitting."""
 
     low_freq_nyquist: float = 0.02
@@ -639,10 +633,10 @@ class NestedConfig:
     Set `rtol = atol = 0` to force exactly this number of steps.
     """
 
-    rtol: float = 0.0
+    rtol: float = 0
     """Relative tolerance."""
 
-    atol: float = 0.0
+    atol: float = 0
     """Absolute tolerance."""
 
     precondition: bool = False
@@ -908,7 +902,7 @@ class MapMakingConfig:
 
     def _to_yaml(self) -> str:
         """Serialize the config to a YAML string."""
-        data = serialize(MapMakingConfig, self)
+        data = serialize(self)
         return yaml.dump(data, indent=2)
 
     @property

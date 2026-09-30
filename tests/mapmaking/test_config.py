@@ -2,9 +2,10 @@ import inspect
 
 import pytest
 import yaml
-from apischema import deserialize
+from typedload.exceptions import TypedloadException
 
 from furax.mapmaking import config as config_module
+from furax.mapmaking._serialization import deserialize
 from furax.mapmaking.config import (
     GroundConfig,
     HealpixConfig,
@@ -16,6 +17,7 @@ from furax.mapmaking.config import (
     SotodlibConfig,
     T2PConfig,
     TemplatesConfig,
+    WCSConfig,
 )
 
 # Every config class whose docstring carries an `Examples:` block.
@@ -68,6 +70,37 @@ def test_docstring_example_parses_and_deserializes(cls: type, yaml_block: str):
     )
     (value,) = parsed.values()
     deserialize(cls, value)
+
+
+def test_yaml_round_trip_writes_projection_by_name():
+    config = MapMakingConfig(landscape=LandscapeConfig(wcs=WCSConfig()))
+    text = config._to_yaml()
+    assert 'projection: CAR' in text
+    assert MapMakingConfig.load_dict(yaml.safe_load(text)) == config
+
+
+def test_int_is_accepted_for_float_field():
+    config = MapMakingConfig.load_dict({'solver': {'rtol': 1}})
+    assert config.solver.rtol == 1.0
+    assert isinstance(config.solver.rtol, float)
+
+
+@pytest.mark.parametrize(
+    'data',
+    [
+        pytest.param({'solver': {'rtl': 1e-6}}, id='unknown-key'),
+        pytest.param({'solver': {'max_steps': '12'}}, id='str-for-int'),
+        pytest.param({'solver': {'max_steps': 1.5}}, id='float-for-int'),
+        pytest.param({'solver': {'max_steps': True}}, id='bool-for-int'),
+        pytest.param({'solver': {'rtol': '1e-6'}}, id='str-for-float'),
+        pytest.param({'solver': {'rtol': True}}, id='bool-for-float'),
+        pytest.param({'weighting': {'mode': 'bogus'}}, id='unknown-enum-value'),
+        pytest.param({'landscape': {'wcs': {'projection': 'BOGUS'}}}, id='unknown-projection'),
+    ],
+)
+def test_load_dict_rejects_invalid_input(data: dict):
+    with pytest.raises(TypedloadException):
+        MapMakingConfig.load_dict(data)
 
 
 @pytest.mark.parametrize(

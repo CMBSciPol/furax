@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Faster template expansion when several dense templates (`TensorBasis`, `KroneckerBasis`) are enabled (#288)
 - Several templates on one stream keep the band structure of their largest time-local template (polynomial, spline) instead of a dense block, and `cross_gram` no longer builds per-sample outer products (#289)
 - Faster `banded_cholesky_solve` and `banded_cholesky` on GPU, and for block-diagonal matrices (#290)
+- `apischema` replaced by `typedload` for mapmaking config (de)serialization (#294)
 
 ### Fixed
 

@@ -3,6 +3,7 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from jaxtyping import Array, Key
 from numpy.testing import assert_allclose
 
 from furax import BlockDiagonalOperator, DenseBlockDiagonalOperator, DiagonalOperator
@@ -10,7 +11,7 @@ from furax.linalg._lanczos import lanczos_eigh, lanczos_tr, lanczos_tridiag
 from furax.tree import as_structure, normal_like
 
 
-def _random_hermitian_operator(n: int, key: jax.Array, dtype=None, *, pd=False):
+def _random_hermitian_operator(n: int, key: Key[Array, ''], dtype=None, *, pd=False):
     """Random Hermitian operator of size n.
 
     Returns (A, v0, eigenvalues) with eigenvalues sorted ascending.

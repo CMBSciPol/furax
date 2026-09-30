@@ -7,7 +7,7 @@ import numpy as np
 import pysm3
 import pysm3.units as u
 from jax.typing import ArrayLike
-from jaxtyping import Array, DTypeLike, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Key
 from numpy.typing import NDArray
 
 from ..obs.landscapes import FrequencyLandscape
@@ -201,7 +201,7 @@ def get_observation(
     nside: int,
     tag: str = 'c1d0s0',
     noise_ratio: float = 0.0,
-    key: PRNGKeyArray | None = None,
+    key: Key[Array, ''] | None = None,
     stokes_type: ValidStokesLiteral = 'IQU',
     dtype: DTypeLike = np.float64,
     unit: str = 'uK_CMB',
@@ -227,7 +227,7 @@ def get_observation(
             the components of the sky model. Defaults to 'c1d0s0'.
         noise_ratio (float, optional): The ratio of noise to add to the observation.
             Defaults to 0.0.
-        key (PRNGKeyArray, optional): PRNG key for the Gaussian noise realization.
+        key (Key, optional): Random key for the Gaussian noise realization.
             Required when noise_ratio > 0. Defaults to None.
         stokes_type (ValidStokesLiteral, optional): The Stokes components
             to include ('I', 'QU', 'IQU'). Defaults to 'IQU'.
@@ -252,7 +252,7 @@ def get_observation(
     """
     pysm_sky = get_sky(nside, tag)
     if key is None:
-        key = jax.random.PRNGKey(0)
+        key = jax.random.key(0)
 
     landscapes = FrequencyLandscape(
         nside, jnp.asarray(instrument.frequency), stokes_type, dtype=dtype

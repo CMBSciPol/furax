@@ -47,7 +47,7 @@ def alm2map(alm_structure):
 @pytest.fixture(scope='module')
 def random_maps():
     """Random StokesIQU map with shape (NFREQ, NPIX)."""
-    key = jax.random.PRNGKey(0)
+    key = jax.random.key(0)
     return StokesIQU(
         i=jax.random.normal(key, (NFREQ, NPIX)),
         q=jax.random.normal(jax.random.fold_in(key, 1), (NFREQ, NPIX)),
@@ -57,7 +57,7 @@ def random_maps():
 
 def _random_alms(seed: int) -> StokesIQU:
     """Random complex StokesIQU alms with shape (NFREQ, NALM_ROWS, NALM_COLS)."""
-    key = jax.random.PRNGKey(seed)
+    key = jax.random.key(seed)
     shape = (NFREQ, NALM_ROWS, NALM_COLS)
     return StokesIQU(
         **{

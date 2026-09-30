@@ -193,7 +193,7 @@ class TestInterpolate:
         """<P x, y> = <x, P^T y> for the interpolated operator."""
         landscape = _make_landscape(landscape_type, stokes)
 
-        key = jax.random.PRNGKey(7)
+        key = jax.random.key(7)
         k1, k2, k3, k4 = jax.random.split(key, 4)
         qbore = Quaternion.random(k1, (NSAMP,))
         qdet = Quaternion.random(k2, (NDET,))
@@ -210,7 +210,7 @@ class TestInterpolate:
         """Sampling a uniform sky returns the same constant (weights always sum to 1)."""
         landscape = _make_landscape(landscape_type, 'I')
 
-        key = jax.random.PRNGKey(7)
+        key = jax.random.key(7)
         k1, k2 = jax.random.split(key)
         qbore = Quaternion.random(k1, (NSAMP,))
         qdet = Quaternion.random(k2, (NDET,))

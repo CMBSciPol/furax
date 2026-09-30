@@ -116,7 +116,7 @@ def test_full_like(x, expected_y) -> None:
     assert tree_equal(y, expected_y)
 
 
-key_from_seed = jax.random.PRNGKey(0)
+key_from_seed = jax.random.key(0)
 (key0,) = jax.random.split(key_from_seed, 1)
 key1, key2 = jax.random.split(key_from_seed)
 

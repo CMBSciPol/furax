@@ -5,7 +5,7 @@ from typing import Any, Literal, NamedTuple, get_args
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jaxtyping import Float, Num, PRNGKeyArray, PyTree
+from jaxtyping import Float, Key, Num, PyTree
 
 from furax import AbstractLinearOperator, symmetric
 from furax.tree import dot, normal_like
@@ -30,7 +30,7 @@ class LowRankTerms(NamedTuple):
 def low_rank(
     A: AbstractLinearOperator,
     rank: int,
-    key: PRNGKeyArray,
+    key: Key[Array, ''],
     *,
     method: LowRankMethod = 'lanczos_tr',
     **kwargs: Any,
@@ -66,7 +66,7 @@ def low_rank(
         >>> from furax.tree import as_structure
         >>> d = jnp.array([1., 2., 3., 4., 5.])
         >>> A = DiagonalOperator(d, in_structure=as_structure(d))
-        >>> terms = low_rank(A, rank=2, key=jax.random.PRNGKey(0), method='lanczos_tr')
+        >>> terms = low_rank(A, rank=2, key=jax.random.key(0), method='lanczos_tr')
         >>> terms.eigenvalues  # Should be approximately [4, 5] (which='LM' by default)
         Array([4., 5.], dtype=float32)
     """
@@ -100,7 +100,7 @@ def low_rank_mv(terms: LowRankTerms, x: PyTree[Num[Array, '...']]) -> PyTree[Num
         >>> from furax.tree import as_structure
         >>> d = jnp.array([1., 2., 3., 4., 5.])
         >>> A = DiagonalOperator(d, in_structure=as_structure(d))
-        >>> terms = low_rank(A, rank=5, key=jax.random.PRNGKey(0))  # Full rank
+        >>> terms = low_rank(A, rank=5, key=jax.random.key(0))  # Full rank
         >>> x = jnp.array([1., 0., 0., 0., 0.])
         >>> y = low_rank_mv(terms, x)
         >>> # Should be close to A @ x = [1, 0, 0, 0, 0]
@@ -130,7 +130,7 @@ class LowRankOperator(AbstractLinearOperator):
         >>> from furax.tree import as_structure
         >>> d = jnp.array([1., 2., 3., 4., 5.])
         >>> A = DiagonalOperator(d, in_structure=as_structure(d))
-        >>> terms = low_rank(A, rank=2, key=jax.random.PRNGKey(0))
+        >>> terms = low_rank(A, rank=2, key=jax.random.key(0))
         >>> B = LowRankOperator(terms)
         >>> x = jnp.ones(5)
         >>> y = B(x)  # Applies low-rank approximation

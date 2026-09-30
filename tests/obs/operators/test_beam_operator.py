@@ -62,13 +62,13 @@ def beam_iqu_op(flat_beam_fl, map_structure):
 @pytest.fixture(scope='module')
 def random_maps():
     """Random StokesIQU map with shape (NFREQ, NPIX)."""
-    return StokesIQU.normal(jax.random.PRNGKey(42), (NFREQ, NPIX))
+    return StokesIQU.normal(jax.random.key(42), (NFREQ, NPIX))
 
 
 @pytest.fixture(scope='module')
 def random_maps_dual():
     """Independent random StokesIQU map for the adjoint test's y vector."""
-    return StokesIQU.normal(jax.random.PRNGKey(43), (NFREQ, NPIX))
+    return StokesIQU.normal(jax.random.key(43), (NFREQ, NPIX))
 
 
 @pytest.fixture(scope='module')
@@ -181,7 +181,7 @@ class TestBeamOperator:
         structure_1d = StokesIQU.structure_for((NPIX,), jnp.float64)
         beam_fl = jnp.ones(LMAX + 1)
         op = BeamOperator(lmax=LMAX, beam_fl=beam_fl, in_structure=structure_1d)
-        x = StokesIQU.normal(jax.random.PRNGKey(0), (NPIX,))
+        x = StokesIQU.normal(jax.random.key(0), (NPIX,))
         out = op(x)
         assert out.shape == (NPIX,)
         # @symmetric demands out_structure == in_structure; that requires
@@ -258,7 +258,7 @@ class TestBeamOperatorIQU:
         fl = jnp.ones(LMAX + 1)
         beam_fl = StokesIQU(i=fl, q=fl, u=fl)
         op = BeamOperatorIQU(lmax=LMAX, beam_fl=beam_fl, in_structure=structure_1d)
-        x = StokesIQU.normal(jax.random.PRNGKey(0), (NPIX,))
+        x = StokesIQU.normal(jax.random.key(0), (NPIX,))
         out = op(x)
         assert out.shape == (NPIX,)
         assert op.out_structure == op.in_structure

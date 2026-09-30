@@ -214,7 +214,7 @@ class DiagonalOperator(BroadcastDiagonalOperator):
     Examples:
         >>> import furax as fx
         >>> from numpy.testing import assert_allclose
-        >>> key_gain, key_tod, key_common = jax.random.split(jax.random.PRNGKey(0), 3)
+        >>> key_gain, key_tod, key_common = jax.random.split(jax.random.key(0), 3)
         >>> detector_count = 3
         >>> sample_count = 10
         >>> x = {

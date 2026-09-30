@@ -826,21 +826,21 @@ class TestPommeProjectionOperator:
     def test_idempotent(self, n_samp: int, tau: int):
         """Test that op(op(x)) == op(x): operator is a projector."""
         n_det = 2
-        x = jax.random.normal(jax.random.PRNGKey(0), (n_det, n_samp))
+        x = jax.random.normal(jax.random.key(0), (n_det, n_samp))
         op = self.make_op(n_det, n_samp, tau)
         assert_allclose(op(op(x)), op(x), atol=1e-6)
 
     def test_tau_one(self):
         """With tau=1, every sample is its own interval, so output is all zeros."""
         n_det, n_samp = 2, 6
-        x = jax.random.normal(jax.random.PRNGKey(1), (n_det, n_samp))
+        x = jax.random.normal(jax.random.key(1), (n_det, n_samp))
         y = self.make_op(n_det, n_samp, tau=1)(x)
         assert_allclose(y, jnp.zeros((n_det, n_samp)), atol=1e-6)
 
     def test_tau_equals_n_samp(self):
         """With tau=n_samp, a single interval covers all samples; output sums to zero."""
         n_det, n_samp = 2, 8
-        x = jax.random.normal(jax.random.PRNGKey(2), (n_det, n_samp))
+        x = jax.random.normal(jax.random.key(2), (n_det, n_samp))
         y = self.make_op(n_det, n_samp, tau=n_samp)(x)
         assert_allclose(y.sum(axis=-1), jnp.zeros(n_det), atol=1e-6)
 

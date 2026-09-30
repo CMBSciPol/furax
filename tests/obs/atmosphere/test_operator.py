@@ -40,7 +40,7 @@ def _make_operator(
         x_size=5000.0, y_size=5000.0, dx=DX, dy=DY, height=HEIGHT, stokes='I'
     )
 
-    key = jax.random.PRNGKey(seed)
+    key = jax.random.key(seed)
     k1, k2, k3 = jax.random.split(key, 3)
 
     # Small zenith angles so all detectors land inside the map
@@ -147,7 +147,7 @@ class TestAtmosphereElevationModulation:
     def test_adjoint(self) -> None:
         """<A x, y> == <x, A^T y> with the modulation enabled."""
         op, _, atm = _make_operator(elevation_modulation=True)
-        key = jax.random.PRNGKey(11)
+        key = jax.random.key(11)
         tod_rand = StokesI(i=jax.random.normal(key, (NDET, NSAMP)))
 
         tod = op(atm)
@@ -162,7 +162,7 @@ class TestAtmosphereTranspose:
     def test_adjoint(self) -> None:
         """<A x, y> == <x, A^T y> to numerical precision."""
         op, _, atm = _make_operator()
-        key = jax.random.PRNGKey(7)
+        key = jax.random.key(7)
         tod_rand = StokesI(i=jax.random.normal(key, (NDET, NSAMP)))
 
         tod = op(atm)
@@ -177,7 +177,7 @@ class TestAtmosphereTranspose:
 
     def test_transpose_output_shape(self) -> None:
         op, landscape, _ = _make_operator()
-        key = jax.random.PRNGKey(3)
+        key = jax.random.key(3)
         tod = StokesI(i=jax.random.normal(key, (NDET, NSAMP)))
         atm_back = op.T(tod)
         assert isinstance(atm_back, StokesI)

@@ -29,7 +29,7 @@ def test_no_hwp_acquisition_formula() -> None:
     """
     landscape = HealpixLandscape(NSIDE, 'IQU')
 
-    key = jax.random.PRNGKey(0)
+    key = jax.random.key(0)
     k1, k2, k3 = jax.random.split(key, 3)
     qbore = Quaternion.random(k1, (NSAMP,))
     qdet = Quaternion.random(k2, (NDET,))
@@ -56,7 +56,7 @@ def test_no_hwp_acquisition_transpose_formula() -> None:
     """No-HWP acquisition transpose is A^T d: I += 0.5*d, Q += 0.5*cos(2pa)*d, U += 0.5*sin(2pa)*d."""
     landscape = HealpixLandscape(NSIDE, 'IQU')
 
-    key = jax.random.PRNGKey(1)
+    key = jax.random.key(1)
     k1, k2, k3 = jax.random.split(key, 3)
     qbore = Quaternion.random(k1, (NSAMP,))
     qdet = Quaternion.random(k2, (NDET,))
@@ -100,7 +100,7 @@ def test_hwp_acquisition_formula() -> None:
     """
     landscape = HealpixLandscape(NSIDE, 'IQU')
 
-    key = jax.random.PRNGKey(2)
+    key = jax.random.key(2)
     k1, k2, k3, k4 = jax.random.split(key, 4)
     qbore = Quaternion.random(k1, (NSAMP,))
     qdet = Quaternion.random(k2, (NDET,))
@@ -132,7 +132,7 @@ def test_hwp_acquisition_transpose_formula() -> None:
     """
     landscape = HealpixLandscape(NSIDE, 'IQU')
 
-    key = jax.random.PRNGKey(3)
+    key = jax.random.key(3)
     k1, k2, k3, k4 = jax.random.split(key, 4)
     qbore = Quaternion.random(k1, (NSAMP,))
     qdet = Quaternion.random(k2, (NDET,))
@@ -167,7 +167,7 @@ def test_hwp_acquisition_transpose_formula() -> None:
 
 def test_last_acquisition_operand_is_pointing() -> None:
     landscape = HealpixLandscape(NSIDE, 'IQU')
-    key = jax.random.PRNGKey(0)
+    key = jax.random.key(0)
     k1, k2 = jax.random.split(key)
     qbore = Quaternion.random(k1, (NSAMP,))
     qdet = Quaternion.random(k2, (NDET,))

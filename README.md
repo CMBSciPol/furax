@@ -28,6 +28,15 @@ uv add furax       # uv, recommended
 pip install furax  # pip, alternative
 ```
 
+> [!NOTE]
+> Transposing spherical harmonic transforms (`furax.math.sht`) requires an `s2fft` fix ([#380](https://github.com/astro-informatics/s2fft/pull/380)) that is not yet released.
+> Until the next release, install `s2fft` from GitHub alongside Furax:
+>
+> ```bash
+> uv add "s2fft @ git+https://github.com/astro-informatics/s2fft"
+> pip install "s2fft @ git+https://github.com/astro-informatics/s2fft"
+> ```
+
 ## Developing Furax
 
 We strongly recommend using [`uv`](https://docs.astral.sh/uv) to work on Furax.

@@ -1029,7 +1029,6 @@ dependencies = [
     { name = "jaxtyping" },
     { name = "lineax" },
     { name = "numpy" },
-    { name = "s2fft" },
     { name = "scipy" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
     { name = "wadler-lindig" },
@@ -1080,6 +1079,7 @@ dev = [
     { name = "pytest-insubprocess" },
     { name = "pytest-mock" },
     { name = "pytest-xdist" },
+    { name = "s2fft" },
     { name = "zensical" },
 ]
 docs = [
@@ -1111,7 +1111,6 @@ requires-dist = [
     { name = "pixell", marker = "extra == 'mapmaking'", specifier = ">=0.31.3" },
     { name = "pysm3", marker = "extra == 'comp-sep'" },
     { name = "pyyaml", marker = "extra == 'mapmaking'", specifier = ">=6.0.3" },
-    { name = "s2fft", git = "https://github.com/astro-informatics/s2fft" },
     { name = "scipy", specifier = ">=1.15" },
     { name = "so3g", marker = "python_full_version >= '3.13' and extra == 'interfaces'", specifier = ">=0.2.7" },
     { name = "so3g", marker = "python_full_version >= '3.13' and extra == 'so'", specifier = ">=0.2.7" },
@@ -1139,6 +1138,7 @@ dev = [
     { name = "pytest-insubprocess", specifier = ">=1.1" },
     { name = "pytest-mock" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
+    { name = "s2fft", git = "https://github.com/astro-informatics/s2fft" },
     { name = "zensical", specifier = ">=0.0.66" },
 ]
 docs = [

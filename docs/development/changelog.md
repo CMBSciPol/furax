@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Template and `BandedCholeskyOperator` matmuls use full float32 precision on GPU (#282)
 - The Gram inverse of several templates is no longer NaN when some amplitude is seen by no weighted sample (#289)
+- `pip install furax` and `uv add furax` work again: `0.14.0` and `0.15.0` required an unreleased `s2fft`
 
 ## [0.15.0] - 2026-09-29
 

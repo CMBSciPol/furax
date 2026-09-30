@@ -18,38 +18,38 @@ def _make_landscape():
 class TestSimulateKolmogorovScreen:
     def test_output_is_stokes_i(self):
         landscape = _make_landscape()
-        key = jax.random.PRNGKey(0)
+        key = jax.random.key(0)
         screen = simulate_kolmogorov_screen(landscape, key)
         assert isinstance(screen, StokesI)
 
     def test_output_shape_matches_landscape(self):
         landscape = _make_landscape()
-        key = jax.random.PRNGKey(0)
+        key = jax.random.key(0)
         screen = simulate_kolmogorov_screen(landscape, key)
         assert screen.shape == landscape.shape
 
     def test_output_dtype_matches_landscape(self):
         landscape = _make_landscape()
-        key = jax.random.PRNGKey(0)
+        key = jax.random.key(0)
         screen = simulate_kolmogorov_screen(landscape, key)
         assert screen.i.dtype == landscape.dtype
 
     def test_reproducible(self):
         landscape = _make_landscape()
-        key = jax.random.PRNGKey(42)
+        key = jax.random.key(42)
         s1 = simulate_kolmogorov_screen(landscape, key)
         s2 = simulate_kolmogorov_screen(landscape, key)
         assert_allclose(s1.i, s2.i)
 
     def test_different_keys_differ(self):
         landscape = _make_landscape()
-        s1 = simulate_kolmogorov_screen(landscape, jax.random.PRNGKey(0))
-        s2 = simulate_kolmogorov_screen(landscape, jax.random.PRNGKey(1))
+        s1 = simulate_kolmogorov_screen(landscape, jax.random.key(0))
+        s2 = simulate_kolmogorov_screen(landscape, jax.random.key(1))
         assert not jnp.allclose(s1.i, s2.i)
 
     def test_amplitude_scales_variance(self):
         landscape = _make_landscape()
-        key = jax.random.PRNGKey(7)
+        key = jax.random.key(7)
         s1 = simulate_kolmogorov_screen(landscape, key, amplitude=1.0)
         s4 = simulate_kolmogorov_screen(landscape, key, amplitude=4.0)
         # variance scales linearly with amplitude
@@ -59,6 +59,6 @@ class TestSimulateKolmogorovScreen:
     def test_dc_component_is_zero(self):
         """The (0,0) Fourier mode should be excluded (set to inf in k-space → zero power)."""
         landscape = _make_landscape()
-        screen = simulate_kolmogorov_screen(landscape, jax.random.PRNGKey(0))
+        screen = simulate_kolmogorov_screen(landscape, jax.random.key(0))
         # Mean is approximately zero (DC mode excluded)
         assert abs(float(jnp.mean(screen.i))) < 1.0  # loose check; DC exactly zero

@@ -173,15 +173,15 @@ def normal_like[P: ArrayPyTree](x: P, key: Key[Array, '']) -> P:
     Args:
         x: The pytree of array-like leaves with ``shape`` and ``dtype`` attributes, whose structure
             will be used to construct the output pytree of pseudo-random values.
-        key: The PRNGKey to use.
+        key: The random key to use.
 
     Examples:
         >>> normal_like({'a': jnp.array(1, jnp.float16),
-        ...            'b': jnp.array(2, jnp.float32)}, jax.random.PRNGKey(0))
+        ...            'b': jnp.array(2, jnp.float32)}, jax.random.key(0))
         {'a': Array(-1.34, dtype=float16), 'b': Array(-1.2515389, dtype=float32)}
 
         >>> normal_like({'a': jax.ShapeDtypeStruct((2,), jnp.float16),
-        ...            'b': jax.ShapeDtypeStruct((), jnp.float32)}, jax.random.PRNGKey(0))
+        ...            'b': jax.ShapeDtypeStruct((), jnp.float32)}, jax.random.key(0))
         {'a': Array([-1.34  ,  0.1431], dtype=float16), 'b': Array(-1.2515389, dtype=float32)}
     """
     key_leaves = jax.random.split(key, len(jax.tree.leaves(x)))
@@ -200,17 +200,17 @@ def uniform_like[P: ArrayPyTree](
     Args:
         x: The pytree of array-like leaves with ``shape`` and ``dtype`` attributes, whose structure
             will be used to construct the output pytree of pseudo-random values.
-        key: The PRNGKey to use.
+        key: The random key to use.
         low: The minimum value of the uniform distribution.
         high: The maximum value of the uniform distribution.
 
     Examples:
         >>> uniform_like({'a': jnp.array(1, jnp.float16),
-        ...            'b': jnp.array(2, jnp.float32)}, jax.random.PRNGKey(0))
+        ...            'b': jnp.array(2, jnp.float32)}, jax.random.key(0))
         {'a': Array(0.08984, dtype=float16), 'b': Array(0.10536897, dtype=float32)}
 
         >>> uniform_like({'a': jax.ShapeDtypeStruct((2,), jnp.float16),
-        ...            'b': jax.ShapeDtypeStruct((), jnp.float32)}, jax.random.PRNGKey(0))
+        ...            'b': jax.ShapeDtypeStruct((), jnp.float32)}, jax.random.key(0))
         {'a': Array([0.08984, 0.5566 ], dtype=float16),'b': Array(0.10536897, dtype=float32)}
     """
     key_leaves = jax.random.split(key, len(jax.tree.leaves(x)))

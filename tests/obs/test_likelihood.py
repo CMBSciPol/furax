@@ -26,9 +26,9 @@ def likelihood_setup(stokes: ValidStokesLiteral):
     nside = 4
     nu = jnp.arange(10.0, 50.0, 10.0)
     landscape = FrequencyLandscape(nside, nu, stokes)
-    d = landscape.normal(jax.random.PRNGKey(0))
-    n1 = landscape.normal(jax.random.PRNGKey(1))
-    n2 = landscape.normal(jax.random.PRNGKey(2))
+    d = landscape.normal(jax.random.key(0))
+    n1 = landscape.normal(jax.random.key(1))
+    n2 = landscape.normal(jax.random.key(2))
 
     op = HomothetyOperator(5.0, in_structure=d.structure)
     base_params = {

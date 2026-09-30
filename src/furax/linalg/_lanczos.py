@@ -225,7 +225,7 @@ def lanczos_eigh(
         >>> from furax.tree import as_structure, normal_like
         >>> d = jnp.array([1., 2., 3., 4., 5.])
         >>> A = DiagonalOperator(d, in_structure=as_structure(d))
-        >>> v0 = normal_like(as_structure(d), jax.random.PRNGKey(0))
+        >>> v0 = normal_like(as_structure(d), jax.random.key(0))
         >>> result = lanczos_eigh(A, v0, k=5)
         >>> result.eigenvalues
         Array([1., 2., 3., 4., 5.], dtype=float32)
@@ -425,7 +425,7 @@ def lanczos_tr(
         >>> from furax.tree import as_structure, normal_like
         >>> d = jnp.array([1., 2., 3., 4., 5.])
         >>> A = DiagonalOperator(d, in_structure=as_structure(d))
-        >>> v0 = normal_like(as_structure(d), jax.random.PRNGKey(0))
+        >>> v0 = normal_like(as_structure(d), jax.random.key(0))
         >>> result = lanczos_tr(A, v0, k=2, which='SA')
         >>> result.eigenvalues  # Should be approximately [1, 2]
         Array([1., 2.], dtype=float32)

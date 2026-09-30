@@ -26,7 +26,7 @@ def _make_landscape():
 
 
 def _make_operator(landscape, wind_velocity, seed=0):
-    key = jax.random.PRNGKey(seed)
+    key = jax.random.key(seed)
     k_bore, k_det = jax.random.split(key, 2)
     qbore = Quaternion.random(k_bore, (NSAMP,))
     qbore = Quaternion.from_array(qbore.wxyz.at[:, 1:3].multiply(0.02)).normalize()
@@ -43,7 +43,7 @@ class TestProfileNegLogLikelihood:
         landscape = _make_landscape()
         v = jnp.array([2.0, 1.0])
         P = _make_operator(landscape, v)
-        atm = simulate_kolmogorov_screen(landscape, jax.random.PRNGKey(1))
+        atm = simulate_kolmogorov_screen(landscape, jax.random.key(1))
         d = P(atm)
         N_inv = HomothetyOperator(1.0, in_structure=d.structure)
         val = profile_neg_log_likelihood(P, d, N_inv)
@@ -55,7 +55,7 @@ class TestProfileNegLogLikelihood:
         v_true = jnp.array([2.0, 1.0])
         v_wrong = jnp.array([5.0, -2.0])
 
-        key = jax.random.PRNGKey(3)
+        key = jax.random.key(3)
         atm = simulate_kolmogorov_screen(landscape, key)
 
         P_true = _make_operator(landscape, v_true)
@@ -73,7 +73,7 @@ class TestProfileNegLogLikelihood:
         landscape = _make_landscape()
         v_true = jnp.array([2.0, 1.0])
 
-        key = jax.random.PRNGKey(5)
+        key = jax.random.key(5)
         k_atm, k_bore, k_det = jax.random.split(key, 3)
 
         atm = simulate_kolmogorov_screen(landscape, k_atm)
@@ -106,7 +106,7 @@ class TestProfileNegLogLikelihood:
         landscape = _make_landscape()
         v = jnp.array([1.5, 0.5])
         P = _make_operator(landscape, v)
-        atm = simulate_kolmogorov_screen(landscape, jax.random.PRNGKey(9))
+        atm = simulate_kolmogorov_screen(landscape, jax.random.key(9))
         d = P(atm)
 
         N_inv_1 = HomothetyOperator(1.0, in_structure=d.structure)

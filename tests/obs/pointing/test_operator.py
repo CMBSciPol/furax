@@ -24,12 +24,13 @@ from furax.obs.landscapes import (
 )
 from furax.obs.operators import QURotationOperator
 from furax.obs.operators._qu_rotations import rotate_qu_cs
-from furax.obs.pointing import PointingOperator, PointingTransposeOperator
-from furax.obs.sampling import (
+from furax.obs.pointing import (
     AbstractSampler,
     AngleSampler,
     DiscretizedBeam,
+    PointingOperator,
     PointingRows,
+    PointingTransposeOperator,
     PrecomputedSampler,
     QuaternionSampler,
     RotatedSampler,

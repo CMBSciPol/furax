@@ -7,7 +7,7 @@ from jaxtyping import Array, Float, Integer
 
 from furax.obs.coords import ZAXIS
 from furax.obs.landscapes import StokesLandscape, TangentialLandscape
-from furax.obs.sampling import AbstractSampler, PointingRows, SampleIndex, SamplingKernel
+from furax.obs.pointing import AbstractSampler, PointingRows, SampleIndex, SamplingKernel
 from furax.obs.stencil import Interpolation, Stencil
 
 __all__ = [
@@ -31,8 +31,7 @@ class ScreenSampler(AbstractSampler):
        low elevation.
 
     The screen is a projection plane, not the sphere, so it holds intensity only. The samples
-    have shape (n_detectors, n_samples). Read it with
-    [`PointingOperator.from_sampler`][furax.obs.pointing.PointingOperator.from_sampler].
+    have shape (n_detectors, n_samples). Read it with [`PointingOperator.from_sampler`][].
 
     Attributes:
         kernel: The interpolation of the screen. A beam is not supported.

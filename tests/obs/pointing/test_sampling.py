@@ -8,10 +8,10 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.obs.coords import ZAXIS, IsoAngles, XiEtaAngles
 from furax.obs.landscapes import HealpixLandscape
-from furax.obs.pointing import PointingOperator
-from furax.obs.sampling import (
+from furax.obs.pointing import (
     AngleSampler,
     DiscretizedBeam,
+    PointingOperator,
     PrecomputedSampler,
     QuaternionSampler,
     SamplingKernel,

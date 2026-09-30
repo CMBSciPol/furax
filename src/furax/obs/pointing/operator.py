@@ -19,7 +19,11 @@ from furax.obs.operators._qu_rotations import (
     QURotationTransposeOperator,
     Spin2Rotation,
 )
-from furax.obs.sampling import (
+from furax.obs.spin2 import rotated_gather, rotated_scatter
+from furax.obs.stencil import Interpolation
+from furax.obs.stokes import Stokes
+
+from .sampling import (
     AbstractSampler,
     DiscretizedBeam,
     PointingRows,
@@ -29,9 +33,6 @@ from furax.obs.sampling import (
     SampleIndex,
     SamplingKernel,
 )
-from furax.obs.spin2 import rotated_gather, rotated_scatter
-from furax.obs.stencil import Interpolation
-from furax.obs.stokes import Stokes
 
 __all__ = [
     'PointingOperator',
@@ -54,9 +55,8 @@ _CPU_BATCH_SAMPLES = 2**21
 class PointingOperator(AbstractLinearOperator):
     r"""Operator that samples a sky map, e.g. into time-ordered data (TOD).
 
-    Where every sample reads the map is given by a
-    [`AbstractSampler`][furax.obs.sampling.AbstractSampler], as one sparse row of the pointing
-    matrix per sample: the pixels it reads, their weights, and the rotation of each pixel's
+    Where every sample reads the map is given by an [`AbstractSampler`][], as one sparse row of the
+    pointing matrix per sample: the pixels it reads, their weights, and the rotation of each pixel's
     $(Q, U)$ into the frame the sample is returned in, e.g. that of a detector. The operator loops
     over the samples in batches of `batch_samples` consecutive samples, in the row-major order of
     the samples' shape, and, for each batch, gathers the pixels, rotates and weighs them, then
@@ -99,8 +99,7 @@ class PointingOperator(AbstractLinearOperator):
             boresight_quaternions: Boresight quaternions, shape (n_samples,).
             detector_quaternions: Detector offset quaternions, shape (n_detectors,).
             batch_samples: Number of samples processed per batch, see [`PointingOperator`][].
-            frame: The basis Q and U are returned in, see
-                [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler].
+            frame: The basis Q and U are returned in, see [`QuaternionSampler`][].
             interpolate: If True, bilinear interpolation over the four nearest pixels, otherwise
                 nearest neighbour.
             beam: The beam each sample integrates over, centred on the detector's line of sight,
@@ -210,13 +209,11 @@ class PointingOperator(AbstractLinearOperator):
         Hoists the quaternion-to-sky computations out of repeated applies, e.g. every iteration of
         an iterative solver, at the cost of storing the pointing:
 
-        - With bilinear interpolation, a [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler]
-          stores the sky angles of every sample and beam node, see
-          [`AngleSampler`][furax.obs.sampling.AngleSampler]: every apply recomputes the rows, but
-          the four pixels each node reads are not stored.
+        - With bilinear interpolation, a [`QuaternionSampler`][] stores the sky angles of every
+          sample and beam node, see [`AngleSampler`][]: every apply recomputes the rows, but the
+          four pixels each node reads are not stored.
         - Otherwise, the rows of the pointing matrix are stored, i.e. the pixels, weights and
-          polarization rotations, see [`PrecomputedSampler`][furax.obs.sampling.PrecomputedSampler]:
-          the fastest apply.
+          polarization rotations, see [`PrecomputedSampler`][]: the fastest apply.
 
         Args:
             batch_samples: Number of samples processed per batch. The default, 0, processes them

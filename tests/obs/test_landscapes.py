@@ -21,8 +21,7 @@ from furax.obs.landscapes import (
     WCSLandscape,
     WCSProjection,
 )
-from furax.obs.pointing import PointingOperator
-from furax.obs.sampling import DiscretizedBeam, QuaternionSampler, SamplingKernel
+from furax.obs.pointing import DiscretizedBeam, PointingOperator, QuaternionSampler, SamplingKernel
 from furax.obs.stencil import Interpolation
 from furax.obs.stokes import Stokes, StokesIQU, ValidStokesLiteral
 

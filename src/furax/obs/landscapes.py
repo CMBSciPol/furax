@@ -20,7 +20,7 @@ from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 if TYPE_CHECKING:  # the sampling module reads landscapes
-    from furax.obs.sampling import AbstractSampler
+    from furax.obs.pointing import AbstractSampler
 
 _StokesT = TypeVar('_StokesT', bound=Stokes)
 
@@ -204,7 +204,7 @@ class StokesLandscape(Landscape):
         return angles.theta, angles.phi
 
     def quat2direction(self, quat: Quaternion) -> ZSPhi:
-        """The direction each quaternion looks at, as a [`ZSPhi`][furax.obs.coords.ZSPhi].
+        """The direction each quaternion looks at, as a [`ZSPhi`][].
 
         The same direction as [`quat2world`][], in the form the spin-2 transport takes.
         """

@@ -38,7 +38,7 @@ __all__ = [
 
 
 type PolarizationFrame = Literal['boresight', 'detector', 'sky']
-"""The basis a [`QuaternionSampler`][furax.obs.sampling.QuaternionSampler] returns Q and U in."""
+"""The basis a [`QuaternionSampler`][] returns Q and U in."""
 
 type SampleIndex = tuple[Int[Array, '...'], ...]
 """A batch of samples, as one integer array per axis of the samples' shape."""
@@ -319,11 +319,10 @@ class PointingRows(NamedTuple):
 class AbstractSampler(ABC):
     """Where each sample of a timestream, or of any array of samples, reads a map.
 
-    A sampler has a [`shape`][furax.obs.sampling.AbstractSampler.shape], the shape of the samples
-    it produces, and answers for any batch of them, given as a [`SampleIndex`][]. Nothing else
-    about the shape is assumed: a timestream has shape (n_detectors, n_samples), but a sampler may
-    as well read a map at a list of points, or at the pixels of another map. A batch may hold
-    several detectors, or part of one's samples.
+    A sampler has a [`shape`][], the shape of the samples it produces, and answers for any batch of
+    them, given as a [`SampleIndex`][]. Nothing else about the shape is assumed: a timestream has
+    shape (n_detectors, n_samples), but a sampler may as well read a map at a list of points, or at
+    the pixels of another map. A batch may hold several detectors, or part of one's samples.
 
     Attributes:
         kernel: What each sample integrates over.
@@ -366,10 +365,9 @@ class AbstractSampler(ABC):
         """The pixel each sample of a batch reads, for a kernel that reads a single one.
 
         A shortcut for reading a map with no polarization, which needs the pixel index alone, not
-        a stencil. It is the pixel of the
-        [`pointing_rows`][furax.obs.sampling.AbstractSampler.pointing_rows] stencil, negative for a
-        sample outside the map. It is only called when `kernel.reads_one_pixel`; the default takes
-        it from the stencil.
+        a stencil. It is the pixel of the [`pointing_rows`][] stencil, negative for a sample
+        outside the map. It is only called when `kernel.reads_one_pixel`; the default takes it from
+        the stencil.
         """
         stencil = self.pointing_rows(landscape, index).stencil
         # the stencil reads pixel 0 with zero weight for a sample outside the map
@@ -504,7 +502,7 @@ class AngleSampler(AbstractSampler):
     The lines of sight are the co-latitude $\theta$ and longitude $\phi$ of each sample, and the
     polarization is returned in a frame rotated by $\psi$ from the meridian basis of that direction.
     It holds the pointing as arrays, which costs memory but no trigonometry on every apply:
-    [`QuaternionSampler.to_angles`][furax.obs.sampling.QuaternionSampler.to_angles] builds one.
+    [`QuaternionSampler.to_angles`][] builds one.
 
     Attributes:
         kernel: How each sample reads the map. With a beam, its nodes are given by `node_theta`
@@ -664,7 +662,7 @@ class PrecomputedSampler(AbstractSampler):
 class RotatedSampler(AbstractSampler):
     r"""Another sampler, with the polarization of every sample rotated further by $\beta$.
 
-    What [`PointingOperator`][furax.obs.pointing.PointingOperator] builds when it absorbs a
+    What [`PointingOperator`][] builds when it absorbs a
     [`QURotationOperator`][furax.obs.operators.QURotationOperator] applied to its output, so
     that the two cost one pass over the samples instead of two.
 

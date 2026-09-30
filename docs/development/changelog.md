@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StokesTemplateOperator` uses groups of legs (e.g. `'qu'`), storing identical bases only once per group (#286)
 - `BorderedBandedCholeskyOperator`: inverse of a block-banded matrix with a dense border (#289)
 - `DiscretizedBeam.from_directions` builds a beam from node directions in the frame of a beam map, and `DiscretizedBeam.load` reads one from a `.npz` file (#291)
+- Python 3.14 support (#293)
 
 ### Changed
 

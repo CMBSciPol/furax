@@ -182,40 +182,45 @@ def lanczos_eigh(
     k: int = 20,
     m: int | None = None,
 ) -> LanczosResult:
-    """Lanczos algorithm for computing k eigenvalues via an m-dimensional Krylov subspace.
+    r"""Lanczos algorithm for computing k eigenvalues via an m-dimensional Krylov subspace.
 
-    Builds an m-dimensional Krylov subspace (m >= k) and computes all m Ritz pairs.
-    When m == k the method returns all m Ritz pairs sorted ascending.  When m > k,
-    only the k Ritz pairs with the smallest residual norms are returned.  Selecting
+    Builds an $m$-dimensional Krylov subspace ($m \ge k$) and computes all $m$ Ritz
+    pairs.  When $m = k$ the method returns all $m$ Ritz pairs sorted ascending.  When
+    $m > k$, only the $k$ Ritz pairs with the smallest residual norms are returned.  Selecting
     by residual norm (rather than by eigenvalue magnitude) picks the pairs that have
     converged most reliably within the subspace, which need not be the extremal ones.
 
     Note:
-        There is no ``which`` parameter (unlike ``lanczos_tr``).  Targeted selection
+        There is no `which` parameter (unlike [`lanczos_tr`][]).  Targeted selection
         of smallest/largest pairs would require either restarts or post-filtering of
         unconverged Ritz values, neither of which is meaningful for a single-shot
-        m-step factorization.  Use ``lanczos_tr`` if you need extremal eigenpairs.
+        m-step factorization.  Use [`lanczos_tr`][] if you need extremal eigenpairs.
 
     Note:
-        Early breakdown (``beta_j == 0``, i.e. invariant subspace reached) is not
+        Early breakdown ($\beta_j = 0$, i.e. invariant subspace reached) is not
         detected.  The corresponding Lanczos vector becomes zero and the remaining
         iterations produce zero contributions; affected Ritz pairs will have zero
         residual norms but their eigenvectors should not be trusted.
 
     The cheap Lanczos residual bound is used:
-        ||A y_i - θ_i y_i|| ≈ |β_m| |s_i[m-1]|
-    where s_i is the i-th eigenvector of the m×m tridiagonal T_m.
+
+    $$
+    \|A y_i - \theta_i y_i\| \approx |\beta_m| \cdot |s_i[m-1]|
+    $$
+
+    where $s_i$ is the $i$-th eigenvector of the $m \times m$ tridiagonal $T_m$.
 
     Args:
         A: A Hermitian linear operator.
         v0: Initial vector for the Krylov subspace.
         k: Number of eigenpairs to return.
-        m: Size of the Krylov subspace.  Must be >= k.  Defaults to min(2k, n).
-            Larger m builds a richer subspace and can yield more accurate Ritz
-            pairs, at the cost of m matrix-vector products and O(m) vector storage.
+        m: Size of the Krylov subspace.  Must be at least `k`.  Defaults to
+            `min(2*k, n)`, where n is the size of the operator input.  Larger m
+            builds a richer subspace and can yield more accurate Ritz pairs, at the
+            cost of m matrix-vector products and storage for m vectors.
 
     Returns:
-        LanczosResult containing the k best eigenvalues, eigenvectors, and their
+        [`LanczosResult`][] containing the k best eigenvalues, eigenvectors, and their
         residual norms, sorted by eigenvalue ascending.
 
     Examples:
@@ -277,7 +282,7 @@ def _build_bordered_tridiag(
 
     Args:
         theta_k: Ritz values retained from the thick-restart (k,).
-        h: Coupling vector ``beta_last * S[m-1, wanted_idx]`` (k,).
+        h: Coupling vector `beta_last * S[m-1, wanted_idx]` (k,).
         alpha_ext: Diagonal of the p×p extension block (p,).
         beta_ext: Off-diagonal of the p×p extension block (p-1,).
         k: Number of retained Ritz pairs.
@@ -370,7 +375,7 @@ def lanczos_tr(
     A V_m = V_m H + \beta_\text{last}\, v_\text{last}\, e_{m-1}^T
     $$
 
-    where H is a bordered tridiagonal inner matrix.
+    where $H$ is a bordered tridiagonal inner matrix.
 
     A pair is converged when the cheap Lanczos residual bound (ARPACK criterion)
 
@@ -378,44 +383,46 @@ def lanczos_tr(
     |\beta_\text{last}| \cdot |S[m-1, i]| \le \text{tol} \cdot \max(|\theta_i|, \epsilon \|A\|)
     $$
 
-    where ``S`` is the eigenvector matrix of the m×m inner matrix H, so
-    ``S[m-1, i]`` is the last component of the i-th eigenvector of H, and
-    ``max|theta|`` is used as an estimate of ``||A||``.
+    where $S$ is the eigenvector matrix of the $m \times m$ inner matrix $H$, so
+    $S[m-1, i]$ is the last component of the $i$-th eigenvector of $H$, and
+    $\max_i |\theta_i|$ is used as an estimate of $\|A\|$.  $\epsilon$ is the machine
+    epsilon of the eigenvalue dtype.
 
     Uses full reorthogonalization throughout.  No locking: all k pairs are
     recomputed at every restart regardless of convergence status.
 
     Note:
-        ``residual_norms`` is the cheap bound, not the true residual.  Exactly
-        ``0`` means "converged below the detectable coupling", not zero error.
+        `residual_norms` is the cheap bound, not the true residual.  Exactly
+        `0` means "converged below the detectable coupling", not zero error.
 
     Note:
         Lanczos converges fastest to *extremal* eigenvalues; interior ones
-        (near the middle of the spectrum) converge slowly.  This makes ``which``
-        targets that select interior pairs hard: ``'SM'`` for an indefinite
+        (near the middle of the spectrum) converge slowly.  This makes `which`
+        targets that select interior pairs hard: `'SM'` for an indefinite
         operator picks eigenvalues closest to zero, which are interior, and
-        restarts alone will not converge them unless ``m`` is a large fraction
-        of ``n`` (no shift-invert is implemented).  ``'LM'``, ``'LA'``, ``'SA'``
-        and the two ends of ``'BE'`` are extremal and converge with small ``m``.
+        restarts alone will not converge them unless `m` is a large fraction
+        of `n` (no shift-invert is implemented).  `'LM'`, `'LA'`, `'SA'`
+        and the two ends of `'BE'` are extremal and converge with small `m`.
 
     Args:
         A: A Hermitian linear operator.
         v0: Initial vector for the Krylov subspace.
         k: Number of eigenpairs to compute.
-        m: Size of the Krylov subspace.  Must be > k.
-            Defaults to min(2*k, n).
+        m: Size of the Krylov subspace.  Must be larger than `k`.
+            Defaults to `min(2*k, n)`, where n is the size of the operator input.
         which: Which k eigenpairs to target.  One of:
-            - 'LM' (default): k largest magnitude (|λ|).
-            - 'SM': k smallest magnitude (|λ|).
-            - 'LA': k largest algebraic.
-            - 'SA': k smallest algebraic.
-            - 'BE': half (k//2) from each end of the spectrum; for odd k the
+
+            - `'LM'` (default): k largest magnitude ($|\lambda|$).
+            - `'SM'`: k smallest magnitude ($|\lambda|$).
+            - `'LA'`: k largest algebraic.
+            - `'SA'`: k smallest algebraic.
+            - `'BE'`: half (`k//2`) from each end of the spectrum; for odd k the
               extra pair comes from the high (largest algebraic) end.
         max_restarts: Maximum number of restart cycles.
         tol: Convergence tolerance; see criterion above.
 
     Returns:
-        LanczosResult containing eigenvalues, eigenvectors, and residual norms,
+        [`LanczosResult`][] containing eigenvalues, eigenvectors, and residual norms,
         sorted by eigenvalue ascending.
 
     Examples:

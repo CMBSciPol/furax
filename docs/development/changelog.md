@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Docstring rendering of `lanczos_eigh` and `lanczos_tr` in API docs (#295)
+
 ## [0.15.1] - 2026-09-30
 
 ### Added

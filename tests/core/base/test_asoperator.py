@@ -110,10 +110,11 @@ def test_asoperator_inverse(capsys: pytest.CaptureFixture[str]) -> None:
 
     op = asoperator(func, in_structure=jax.ShapeDtypeStruct((), jnp.float64), y=2)
     assert op.I(1.0) == 0.5
+    assert 'tracing func' in capsys.readouterr().out
 
+    # A second call does not trace the function again
     _ = op.I(2.0)
-    captured = capsys.readouterr()
-    assert captured.out == 'tracing func\ntracing func\n'
+    assert capsys.readouterr().out == ''
 
 
 def test_asoperator_jit_cache(capsys: pytest.CaptureFixture[str]) -> None:

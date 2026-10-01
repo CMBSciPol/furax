@@ -697,6 +697,11 @@ class PointingConfig:
 
             pointing:
                 on_the_fly: false
+
+        Beam-convolved pointing, computed on the fly
+
+            pointing:
+                beam: beams/beam_30arcmin.npz
     """
 
     on_the_fly: bool = True
@@ -717,6 +722,22 @@ class PointingConfig:
     - ``'nearest'``: nearest-neighbor (default, fastest).
     - ``'bilinear'``: bilinear interpolation using the four nearest pixels.
     """
+
+    beam: str | None = None
+    """Path to a `.npz` beam file, read by
+    [`DiscretizedBeam.load`][furax.obs.sampling.DiscretizedBeam.load].
+
+    Each sample then integrates the sky over the beam, centred on the detector's line of sight.
+    `None` samples the sky along the line of sight only. A beam requires on-the-fly pointing
+    (`on_the_fly: true`): pre-computed pointing would store every beam node of every sample.
+    """
+
+    def __post_init__(self) -> None:
+        if self.beam is not None and not self.on_the_fly:
+            raise ValueError(
+                'A beam requires on-the-fly pointing (on_the_fly=True): pre-computed pointing '
+                'would store every beam node of every sample.'
+            )
 
 
 @dataclass

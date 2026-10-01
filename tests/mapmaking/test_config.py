@@ -12,6 +12,7 @@ from furax.mapmaking.config import (
     HWPSynchronousConfig,
     LandscapeConfig,
     MapMakingConfig,
+    PointingConfig,
     PolynomialConfig,
     PolynomialOrders,
     SotodlibConfig,
@@ -116,6 +117,20 @@ def test_load_dict_rejects_invalid_input(data: dict):
 def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig, enabled: bool):
     assert templates.empty == (not enabled)
     assert MapMakingConfig(templates=templates).use_templates == enabled
+
+
+def test_beam_round_trips_through_yaml():
+    config = MapMakingConfig(pointing=PointingConfig(beam='beam.npz'))
+    assert MapMakingConfig.load_dict(yaml.safe_load(config._to_yaml())) == config
+
+
+def test_pointing_has_no_beam_by_default():
+    assert PointingConfig().beam is None
+
+
+def test_beam_requires_on_the_fly_pointing():
+    with pytest.raises(ValueError, match='A beam requires on-the-fly pointing'):
+        PointingConfig(on_the_fly=False, beam='beam.npz')
 
 
 @pytest.mark.parametrize('max_buckets', [0, -1])

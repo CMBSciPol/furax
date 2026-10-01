@@ -1,15 +1,18 @@
 import jax
 import jax.numpy as jnp
 import jax_healpy as jhp
+import pytest
 from fastquat import Quaternion
 from numpy.testing import assert_allclose
 
 from furax.core import CompositionOperator
 from furax.mapmaking.acquisition import build_acquisition_operator
-from furax.math.coords import gamma_angle, polarization_angle
+from furax.math.coords import XiEtaAngles, gamma_angle, polarization_angle
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.pointing import PointingOperator
+from furax.obs.sampling import DiscretizedBeam
 from furax.obs.spin2 import spin2_cos_sin
+from furax.obs.stokes import Stokes, StokesIQU
 
 NSIDE = 4
 NDET, NSAMP = 3, 10
@@ -174,3 +177,67 @@ def test_last_acquisition_operand_is_pointing() -> None:
     acq = build_acquisition_operator(landscape, qbore, qdet)
     assert isinstance(acq, CompositionOperator)
     assert isinstance(acq.operands[-1], PointingOperator)
+
+
+@pytest.mark.parametrize('mode', ['no-hwp', 'hwp', 'demodulated'])
+class TestBeam:
+    """The acquisition reads the sky through the pointing's beam, whatever the HWP setup."""
+
+    @staticmethod
+    def _acquisition(mode: str, beam: DiscretizedBeam | None) -> CompositionOperator:
+        landscape = HealpixLandscape(NSIDE, 'IQU')
+        k1, k2, k3 = jax.random.split(jax.random.key(4), 3)
+        qbore = Quaternion.random(k1, (NSAMP,))
+        qdet = Quaternion.random(k2, (NDET,))
+        hwp_angles = jax.random.uniform(k3, (NSAMP,), maxval=jnp.pi) if mode == 'hwp' else None
+        acq = build_acquisition_operator(
+            landscape,
+            qbore,
+            qdet,
+            hwp_angles,
+            demodulated=mode == 'demodulated',
+            pointing_beam=beam,
+        )
+        assert isinstance(acq, CompositionOperator)
+        return acq
+
+    @staticmethod
+    def _sky() -> StokesIQU:
+        return HealpixLandscape(NSIDE, 'IQU').normal(jax.random.key(5))
+
+    @staticmethod
+    def _tod(acq: CompositionOperator, sky: StokesIQU) -> jax.Array:
+        # demodulated TOD hold one stream per Stokes component
+        tod = acq(sky)
+        return tod.data if isinstance(tod, Stokes) else tod
+
+    def test_a_unit_beam_on_the_line_of_sight_is_no_beam(self, mode) -> None:
+        beam = DiscretizedBeam.create(Quaternion.ones((1,)), jnp.ones(1))
+        acq = self._acquisition(mode, beam)
+
+        pointing = acq.operands[-1]
+        assert isinstance(pointing, PointingOperator)
+        assert pointing.sampler.kernel.beam is not None
+        sky = self._sky()
+        assert_allclose(
+            self._tod(acq, sky), self._tod(self._acquisition(mode, None), sky), rtol=1e-12
+        )
+
+    def test_the_beam_weighs_the_acquisition_of_each_node(self, mode) -> None:
+        # nodes far enough apart to read different pixels at NSIDE = 4
+        nodes = XiEtaAngles(
+            jnp.array([0.0, 0.3]), jnp.array([0.0, -0.2]), jnp.zeros(2)
+        ).to_quaternion()
+        weights = jnp.array([0.3, 0.7])
+        sky = self._sky()
+
+        tod = self._tod(self._acquisition(mode, DiscretizedBeam.create(nodes, weights)), sky)
+
+        node_tods = [
+            self._tod(
+                self._acquisition(mode, DiscretizedBeam.create(nodes[k : k + 1], jnp.ones(1))), sky
+            )
+            for k in range(2)
+        ]
+        assert not jnp.allclose(node_tods[0], node_tods[1])
+        assert_allclose(tod, weights[0] * node_tods[0] + weights[1] * node_tods[1], rtol=1e-12)

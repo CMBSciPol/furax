@@ -7,6 +7,7 @@ from furax.math.coords import gamma_angle
 from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.pointing import PointingOperator
+from furax.obs.sampling import DiscretizedBeam
 
 __all__ = [
     'build_acquisition_operator',
@@ -23,9 +24,14 @@ def build_acquisition_operator(
     pointing_on_the_fly: bool = True,
     pointing_batch_samples: int | None = None,
     pointing_interpolate: bool = False,
+    pointing_beam: DiscretizedBeam | None = None,
     dtype: DTypeLike = jnp.float64,
 ) -> AbstractLinearOperator:
-    """Build an acquisition operator for a single observation. Does not include masking."""
+    """Build an acquisition operator for a single observation. Does not include masking.
+
+    With `pointing_beam`, each sample integrates the sky over the beam, centred on the detector's
+    line of sight, see [`PointingOperator.create`][furax.obs.pointing.PointingOperator.create].
+    """
     # The TOD shape
     ndet = detector_quaternions.shape[0]
     nsamp = boresight_quaternions.shape[0]
@@ -40,6 +46,7 @@ def build_acquisition_operator(
         batch_samples=pointing_batch_samples,
         frame='boresight' if has_hwp else 'detector',
         interpolate=pointing_interpolate,
+        beam=pointing_beam,
     )
     if not pointing_on_the_fly:
         pointing = pointing.precomputed()

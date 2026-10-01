@@ -104,49 +104,31 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
         return left_subscripts, right_subscripts, result_subscripts
 
     @staticmethod
-    def _get_transposed_subscripts(subscripts: str) -> PyTree[jax.ShapeDtypeStruct]:
+    def _get_transposed_subscripts(subscripts: str) -> str:
         """Returns the einsum subscripts for the transpose operation.
 
+        The transpose of `einsum('L,R->O', blocks, x)` is `einsum('L,O->R', blocks, y)`: the blocks
+        are reused as they are, and the roles of the input and output subscripts are swapped.
+
         Examples:
-            ij...,j...->i...    gives ji...,j...->i...
-            hij...,hj...->hi... gives hji...,hj...->hi...
-            ikj,kj->ki          gives jki,kj->ki
+            ij...,j...->i...     gives ij...,i...->j...
+            hij...,hj...->hi...  gives hij...,hi...->hj...
+            fstqp,tfp->sfq       gives fstqp,sfq->tfp
         """
         lefts, rights, results = DenseBlockDiagonalOperator._parse_subscripts(subscripts)
-        lefts_as_set = set(lefts.replace('...', ''))
-        rights_as_set = set(rights.replace('...', ''))
-        results_as_set = set(results.replace('...', ''))
+        rights_as_list = list(rights.replace('...', ''))
+        if len(set(rights_as_list)) != len(rights_as_list):
+            raise ValueError(f'The input subscripts should not be repeated: {subscripts!r}.')
 
-        # the sum axis is in the subscripts left and right but not in result
-        sum_axis_as_set = lefts_as_set & rights_as_set - results_as_set
-        if len(sum_axis_as_set) != 1:
-            raise ValueError(f'The summation should be performed in one axis {subscripts!r}.')
-        sum_axis = sum_axis_as_set.pop()
-
-        # the transpose axis is in the subscripts left and result but not in right
-        transpose_axis_as_set = lefts_as_set & results_as_set - rights_as_set
-        if len(transpose_axis_as_set) == 0:
-            raise ValueError(f'No transposition axis has been specified {subscripts!r}.')
-        if len(transpose_axis_as_set) > 1:
-            raise ValueError(f'Several transposition axes have been specified: {subscripts!r}.')
-        transpose_axis = transpose_axis_as_set.pop()
-
-        # we swap the transpose and sum axes
-        sum_axis_number = lefts.index(sum_axis)
-        transpose_axis_number = lefts.index(transpose_axis)
-        lefts_as_list = list(lefts)
-        lefts_as_list[sum_axis_number] = transpose_axis
-        lefts_as_list[transpose_axis_number] = sum_axis
-        lefts = ''.join(lefts_as_list)
-
-        transpose_axis_number = results.index(transpose_axis)
-        results_as_list = list(results)
-        results_as_list[transpose_axis_number] = sum_axis
-        expected_results = ''.join(results_as_list)
-        if expected_results != rights:
+        # an input axis summed over without the blocks cannot be restored by the transpose,
+        # which would have to broadcast along it
+        missing_axes = set(rights_as_list) - set(lefts) - set(results)
+        if '...' in rights and '...' not in lefts + results:
+            missing_axes.add('...')
+        if missing_axes:
             raise ValueError(
-                f'The dimensions of the inputs {rights!r} cannot be reordered '
-                f'into {expected_results!r}.'
+                f'The input axes {sorted(missing_axes)} are neither in the blocks nor in the '
+                f'output, so the transpose cannot be expressed as an einsum: {subscripts!r}.'
             )
 
-        return f'{lefts},{rights}->{results}'
+        return f'{lefts},{results}->{rights}'

@@ -50,6 +50,16 @@ _StokesT = TypeVar('_StokesT', bound=Stokes)
 _GPU_BATCH_SAMPLES = 2**17
 _CPU_BATCH_SAMPLES = 2**21
 
+# Default cap on the pixel reads of a batch
+#
+# The intermediates of a batch hold about 30-120 bytes per pixel read, depending on the backend, dtype
+# and interpolation, so 2^25 reads take 1-4 GB.
+# Without a beam a sample reads 1 or 4 pixels and the defaults above stay under the cap. With a
+# beam it reads 1 or 4 pixels per node: at 6397 nodes, 2^17 samples would take ~180 GB. On an
+# A100 in float64, the time per read stops improving at 2.6e7 reads per batch at 6397 nodes, and
+# at 4e5 at 400 and 1600 nodes.
+_BATCH_READS = 2**25
+
 
 class PointingOperator(AbstractLinearOperator):
     r"""Operator that samples a sky map, e.g. into time-ordered data (TOD).
@@ -73,7 +83,8 @@ class PointingOperator(AbstractLinearOperator):
         landscape: The sky pixelization.
         sampler: Where each sample reads the map.
         batch_samples: Number of samples processed per batch. Leave `None` for a backend-dependent
-            default; set to 0 to process them all at once.
+            default, lowered when a beam makes every sample read many pixels, so that a batch
+            reads at most $2^{25}$ pixels; set to 0 to process them all at once.
     """
 
     landscape: StokesLandscape
@@ -165,7 +176,7 @@ class PointingOperator(AbstractLinearOperator):
         """Performs the 'un-pointing' operation, i.e. map->tod."""
         x_flat = x.ravel()
         shape = self.sampler.shape
-        tiling = _Tiling.plan(shape, self.batch_samples)
+        tiling = self._tiling()
         if tiling.n_batches == 1:
             # a single batch needs no loop, nor a copy into the output
             return self._sample(x_flat, self.sampler.every_sample())
@@ -229,6 +240,14 @@ class PointingOperator(AbstractLinearOperator):
         else:
             sampler = PrecomputedSampler.from_sampler(self.sampler, self.landscape)
         return self.from_sampler(self.landscape, sampler, batch_samples=batch_samples)
+
+    def _tiling(self) -> '_Tiling':
+        """The batches of the samples, for the number of pixels each sample reads."""
+        kernel = self.sampler.kernel
+        reads = kernel.interpolation.value
+        if kernel.beam is not None:
+            reads *= kernel.beam.nodes.shape[-1]
+        return _Tiling.plan(self.sampler.shape, self.batch_samples, reads)
 
     def _sample(self, x_flat: _StokesT, index: SampleIndex) -> _StokesT:
         """Sample the flat map for a batch of samples, in the map's dtype."""
@@ -304,7 +323,7 @@ class PointingTransposeOperator(TransposeOperator):
     def mv(self, x: _StokesT) -> _StokesT:
         """Performs the 'pointing' operation, i.e. tod->map."""
         sampler = self.operator.sampler
-        tiling = _Tiling.plan(sampler.shape, self.operator.batch_samples)
+        tiling = self.operator._tiling()
         sky_out: _StokesT = self.operator.landscape.zeros()
         if tiling.n_batches == 1:
             return self.operator._bin(sky_out, x, sampler.every_sample())
@@ -354,11 +373,18 @@ class _Tiling(NamedTuple):
     cols: int
 
     @classmethod
-    def plan(cls, shape: tuple[int, ...], batch_samples: int | None) -> Self:
+    def plan(
+        cls, shape: tuple[int, ...], batch_samples: int | None, reads_per_sample: int = 1
+    ) -> Self:
+        """Split samples of `shape` into batches of `batch_samples`, see [`PointingOperator`][].
+
+        `reads_per_sample`, the pixels each sample reads, only lowers the default batch size.
+        """
         n_rows, n_cols = math.prod(shape[:-1]), shape[-1]
         if batch_samples is None:
             cpu = jax.default_backend() == 'cpu'
             batch_samples = _CPU_BATCH_SAMPLES if cpu else _GPU_BATCH_SAMPLES
+            batch_samples = min(batch_samples, max(1, _BATCH_READS // reads_per_sample))
         if batch_samples <= 0:
             return cls(shape, n_rows, n_cols)
         if batch_samples >= n_cols:

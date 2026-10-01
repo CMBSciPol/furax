@@ -24,7 +24,7 @@ from furax.obs.landscapes import (
 )
 from furax.obs.operators import QURotationOperator
 from furax.obs.operators._qu_rotations import rotate_qu_cs
-from furax.obs.pointing import PointingOperator, PointingTransposeOperator
+from furax.obs.pointing import PointingOperator, PointingTransposeOperator, _Tiling
 from furax.obs.sampling import (
     AbstractSampler,
     AngleSampler,
@@ -104,6 +104,57 @@ def test_batches_do_not_change_the_result(batch_samples, precompute) -> None:
 
     assert tree_equal(batched(sky), op(sky), rtol=1e-12, atol=1e-13)
     assert tree_equal(batched.T(tod), op.T(tod), rtol=1e-12, atol=1e-13)
+
+
+@pytest.mark.parametrize('backend', ['cpu', 'gpu'])
+@pytest.mark.parametrize(
+    ('reads_per_sample', 'expected'),
+    [
+        (1, {'cpu': 2**21, 'gpu': 2**17}),
+        (4, {'cpu': 2**21, 'gpu': 2**17}),
+        (4 * 6397, {'cpu': 1311, 'gpu': 1311}),
+        (2**26, {'cpu': 1, 'gpu': 1}),
+    ],
+    ids=['nearest', 'bilinear', 'bilinear-beam', 'beam-wider-than-the-cap'],
+)
+def test_default_batch_is_capped_in_pixel_reads(
+    backend, reads_per_sample, expected, monkeypatch
+) -> None:
+    """Without a beam the default batch is the backend's; a wide beam lowers it to 2^25 reads."""
+    monkeypatch.setattr(jax, 'default_backend', lambda: backend)
+    n_samples = 2**22
+    tiling = _Tiling.plan((n_samples,), None, reads_per_sample)
+    assert tiling.cols == expected[backend]
+    # an explicit batch size is kept, whatever the beam
+    assert _Tiling.plan((n_samples,), 7, reads_per_sample).cols == 7
+    assert _Tiling.plan((n_samples,), 0, reads_per_sample).cols == n_samples
+
+
+def test_default_batch_bounds_the_memory_of_a_wide_beam() -> None:
+    """A beam of 2048 nodes, default batch: scratch stays near 2^25 reads, not all the samples."""
+    landscape = HealpixLandscape(NSIDE, 'IQU')
+    k1, k2 = jax.random.split(jax.random.key(60))
+    n_nodes, n_samples = 2048, 2**14
+    beam = DiscretizedBeam.create(
+        XiEtaAngles(
+            *jax.random.normal(k2, (2, n_nodes)) * 0.01, jnp.zeros(n_nodes)
+        ).to_quaternion(),
+        jnp.full(n_nodes, 1 / n_nodes),
+    )
+
+    def scratch(batch_samples: int | None) -> int:
+        op = PointingOperator.create(
+            landscape,
+            Quaternion.random(k1, (n_samples,)),
+            Quaternion.ones((1,)),
+            interpolate=True,
+            beam=beam,
+            batch_samples=batch_samples,
+        )
+        return op.T.profile().temp_bytes
+
+    # 2^14 samples x 8192 reads is 4 times the cap
+    assert scratch(None) < scratch(0) / 3
 
 
 @pytest.mark.parametrize('batch_samples', [0, 7], ids=['one-batch', 'batched'])

@@ -129,10 +129,11 @@ class BlockDiagonalOperator(AbstractBlockOperator):
         blocks: A pytree of operators.
 
     Examples:
+        >>> from furax import DenseBlockDiagonalOperator
         >>> x = jnp.array([1, 2], jnp.float32)
         >>> H = DenseBlockDiagonalOperator(
         ...     jnp.array([[0, 1], [1, 0]]),
-        ...     jax.ShapeDtypeStruct((2,), jnp.float32)
+        ...     in_structure=jax.ShapeDtypeStruct((2,), jnp.float32),
         ... )
         >>> H.as_matrix()
         Array([[0., 1.],

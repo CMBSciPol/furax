@@ -27,7 +27,8 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
 
         >>> blocks = jnp.arange(24).reshape(3, 2, 4)
         >>> op = DenseBlockDiagonalOperator(
-        ...     blocks, jax.ShapeDtypeStruct((3, 4), jnp.int32), 'imn,in->im')
+        ...     blocks, in_structure=jax.ShapeDtypeStruct((3, 4), jnp.int32), subscripts='imn,in->im'
+        ... )
         >>> op.as_matrix()
         Array([[ 0,  1,  2,  3,  0,  0,  0,  0,  0,  0,  0,  0],
                [ 4,  5,  6,  7,  0,  0,  0,  0,  0,  0,  0,  0],
@@ -43,7 +44,9 @@ class DenseBlockDiagonalOperator(AbstractLinearOperator):
         diagonal.
 
         >>> blocks = jnp.arange(24).reshape(3, 2, 4)
-        >>> op = DenseBlockDiagonalOperator(blocks, jax.ShapeDtypeStruct((2, 4), jnp.int32))
+        >>> op = DenseBlockDiagonalOperator(
+        ...     blocks, in_structure=jax.ShapeDtypeStruct((2, 4), jnp.int32)
+        ... )
         >>> op.as_matrix()
         Array([[ 0,  0,  0,  0,  4,  0,  0,  0],
                [ 0,  1,  0,  0,  0,  5,  0,  0],

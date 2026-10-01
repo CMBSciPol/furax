@@ -267,3 +267,13 @@ def test_from_array_preserves_numpy(stokes: ValidStokesLiteral) -> None:
 
     jax_pytree = cls.from_array(jnp.ones((len(stokes), 3)))
     assert isinstance(jax_pytree.data, jax.Array)
+
+
+@pytest.mark.parametrize('extra_rows', [-1, 1])
+def test_component_rejects_wrong_leading_axis(stokes: ValidStokesLiteral, extra_rows: int) -> None:
+    cls = Stokes.class_for(stokes)
+    treedef = jax.tree.structure(cls.zeros((3,)))
+    pytree = jax.tree.unflatten(treedef, [jnp.zeros((len(stokes) + extra_rows, 3))])
+    for letter in stokes:
+        with pytest.raises(ValueError, match='expects a leading axis'):
+            getattr(pytree, letter.lower())

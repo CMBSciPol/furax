@@ -4,23 +4,48 @@ import pytest
 from equinox import tree_equal
 from jax import Array
 from jaxtyping import Float
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_allclose, assert_array_equal
 
 from furax import DenseBlockDiagonalOperator
+from furax.obs.stokes import StokesQU
 from furax.tree import as_structure
 
 
 @pytest.mark.parametrize(
     'subscripts, expected_subscripts',
     [
-        ('ij...,j...->i...', 'ji...,j...->i...'),
-        ('hij...,hj...->hi...', 'hji...,hj...->hi...'),
-        ('ikj,kj->ki', 'jki,kj->ki'),
+        ('ij...,j...->i...', 'ij...,i...->j...'),
+        ('hij...,hj...->hi...', 'hij...,hi...->hj...'),
+        ('ikj,kj->ki', 'ikj,ki->kj'),
+        ('fstqp,tfp->sfq', 'fstqp,sfq->tfp'),
     ],
 )
 def test_get_transposed_subscripts(subscripts: str, expected_subscripts: str) -> None:
     actual_subscripts = DenseBlockDiagonalOperator._get_transposed_subscripts(subscripts)
     assert actual_subscripts == expected_subscripts
+
+
+@pytest.mark.parametrize(
+    'subscripts, match',
+    [
+        ('ij,jk->i', r"input axes \['k'\]"),
+        ('ij,j...->i', r"input axes \['...'\]"),
+        ('ij,jj->ij', 'should not be repeated'),
+    ],
+)
+def test_get_transposed_subscripts_invalid(subscripts: str, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        DenseBlockDiagonalOperator._get_transposed_subscripts(subscripts)
+
+
+def test_stokes_several_contracted_axes() -> None:
+    nfreq, npix_in, npix_out = 2, 3, 4
+    in_structure = StokesQU.structure_for((nfreq, npix_in), jnp.float64)
+    blocks = jax.random.normal(jax.random.key(0), (nfreq, 2, 2, npix_out, npix_in))
+    op = DenseBlockDiagonalOperator(blocks, in_structure=in_structure, subscripts='fstqp,tfp->sfq')
+    assert op.out_structure == StokesQU.structure_for((nfreq, npix_out), jnp.float64)
+    assert op.T.out_structure == in_structure
+    assert_allclose(op.T.as_matrix(), op.as_matrix().T)
 
 
 @pytest.mark.parametrize(

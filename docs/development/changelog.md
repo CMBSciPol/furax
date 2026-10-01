@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `DenseBlockDiagonalOperator.T` supports any subscripts whose input axes appear in the blocks or the output (#297)
+
 ### Fixed
 
 - Docstring rendering of `lanczos_eigh` and `lanczos_tr` in API docs (#295)

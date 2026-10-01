@@ -184,6 +184,81 @@ col_op(data)
 # }
 ```
 
+### Dense Operators on Stokes Parameters
+
+`DenseBlockDiagonalOperator` applies a stack of small dense matrices with `jnp.einsum`. It is the
+natural way to mix Stokes parameters, for instance with a rotation or a Mueller matrix, possibly
+different in each pixel or frequency.
+
+A `Stokes` container stores its components in a single array, stacked on the leading axis: a
+`StokesQU` map of 3 pixels holds an array of shape `(2, 3)`, with Q in row 0 and U in row 1.
+The operator applies the einsum to this array, and wraps the result in the same Stokes class. In the
+subscripts, the first axis of the input and of the output is therefore the Stokes axis.
+
+**Same matrix in every pixel**
+
+With the default subscripts `'ij...,j...->i...'`, the matrix contracts the Stokes axis and is
+broadcast over the remaining axes:
+
+```python
+import jax.numpy as jnp
+
+from furax import DenseBlockDiagonalOperator
+from furax.obs.stokes import StokesQU
+
+x = StokesQU.from_stokes(q=jnp.array([1.0, 2.0, 3.0]), u=jnp.zeros(3))
+
+# Rotation of the polarization angle by 45 degrees
+rotation = jnp.array([[0.0, -1.0], [1.0, 0.0]])
+op = DenseBlockDiagonalOperator(rotation, in_structure=x.structure)
+y = op(x)
+# y.q: Array([0., 0., 0.], dtype=float32)
+# y.u: Array([1., 2., 3.], dtype=float32)
+```
+
+**One matrix per pixel**
+
+A pixel axis that appears in the matrix, the input and the output, without being summed over, makes
+the operator block diagonal in pixels. Here `s` is the output Stokes axis, `t` the input Stokes axis
+and `p` the pixel axis:
+
+```python
+psi = jnp.array([0.0, jnp.pi / 4, jnp.pi / 2])
+c, s = jnp.cos(2 * psi), jnp.sin(2 * psi)
+rotations = jnp.array([[c, -s], [s, c]])  # shape (2, 2, 3)
+op = DenseBlockDiagonalOperator(rotations, in_structure=x.structure, subscripts='stp,tp->sp')
+y = op(x)
+# y.q: Array([ 1.,  0., -3.], dtype=float32)
+# y.u: Array([ 0.,  2.,  0.], dtype=float32)
+
+op.T(y)  # rotates back: q = [1., 2., 3.], u = [0., 0., 0.]
+```
+
+**Several contracted axes**
+
+The matrix can also mix pixels. In the example below, maps of `npix_in` pixels at each frequency are
+mapped to `npix_out` pixels, with a matrix that couples Q and U. The einsum contracts both the input
+Stokes axis `t` and the input pixel axis `p`. The axes of the matrix can come in any order:
+
+```python
+nfreq, npix_in, npix_out = 2, 3, 4
+x = StokesQU.ones((nfreq, npix_in))
+matrix = jnp.ones((nfreq, 2, 2, npix_out, npix_in))  # (f, s, t, q, p)
+op = DenseBlockDiagonalOperator(matrix, in_structure=x.structure, subscripts='fstqp,tfp->sfq')
+op.out_structure
+# StokesQU(ShapeDtypeStruct(shape=(2, 2, 4), dtype=float32))
+```
+
+The transpose reuses the same matrix with the input and output subscripts swapped, here
+`'fstqp,sfq->tfp'`. It maps `StokesQU` maps of shape `(nfreq, npix_out)` back to
+`(nfreq, npix_in)`.
+
+!!! warning
+    The output always has the same Stokes class as the input, so the Stokes axis must keep its size.
+    A `(2, 3)` matrix meant to project IQU onto QU would return a `StokesIQU` holding only two
+    components, without raising an error. To drop components, use a square matrix with zero rows
+    instead.
+
 ### Toeplitz Operators
 
 Efficient for convolution-like operations and correlated noise modeling.

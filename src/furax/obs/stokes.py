@@ -103,9 +103,7 @@ class Stokes(ABC):
         """
         if not isinstance(array, (jax.ShapeDtypeStruct, np.ndarray)):
             array = jnp.asarray(array)
-        if array.shape[0] != len(cls.stokes):
-            msg = f'{cls.__name__} expects a leading axis of {len(cls.stokes)}, got shape {array.shape}.'
-            raise ValueError(msg)
+        cls._check_leading_axis(array.shape)
         # Bypass __init__ to avoid device transfer
         instance = object.__new__(cls)
         instance.data = array  # ty: ignore[invalid-assignment]
@@ -119,10 +117,19 @@ class Stokes(ABC):
         return wl.pformat(self, width=80)
 
     # ---- component access -----------------------------------------------------------------------
+    @classmethod
+    def _check_leading_axis(cls, shape: tuple[int, ...]) -> None:
+        if shape[0] != len(cls.stokes):
+            msg = f'{cls.__name__} expects a leading axis of {len(cls.stokes)}, got shape {shape}.'
+            raise ValueError(msg)
+
     def _component(self, letter: str) -> Array:
         idx = self.stokes.find(letter)
         if idx < 0:
             raise AttributeError(f'{type(self).__name__} has no Stokes component {letter!r}.')
+        # instances rebuilt by pytree unflattening skip the check in `from_array`, and an
+        # out-of-range index would be clamped by JAX instead of raising
+        self._check_leading_axis(self.data.shape)
         return self.data[idx]
 
     @property

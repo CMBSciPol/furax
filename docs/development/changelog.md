@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Docstring rendering of `lanczos_eigh` and `lanczos_tr` in API docs (#295)
+- `Stokes` component access (`.i`, `.q`, `.u`, `.v`) raises when the leading axis does not match the Stokes type, instead of returning the wrong component (#298)
 
 ## [0.15.1] - 2026-09-30
 

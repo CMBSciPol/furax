@@ -55,10 +55,9 @@ _CPU_BATCH_SAMPLES = 2**21
 # The intermediates of a batch hold about 30-120 bytes per pixel read, depending on the backend, dtype
 # and interpolation, so 2^25 reads take 1-4 GB.
 # Without a beam a sample reads 1 or 4 pixels and the defaults above stay under the cap. With a
-# beam it reads 1 or 4 pixels per node: at 6397 nodes, 2^17 samples would take ~180 GB. On an
-# A100 in float64, the time per read stops improving at 2.6e7 reads per batch at 6397 nodes, and
-# at 4e5 at 400 and 1600 nodes.
-_BATCH_READS = 2**25
+# beam it reads 1 or 4 pixels per node, so for a beam of thousands of nodes, 2^17 samples would
+# take hundreds of GB. On an NVIDIA A100, throughput stops improving below 2^25 reads per batch.
+_MAX_BATCH_READS = 2**25
 
 
 class PointingOperator(AbstractLinearOperator):
@@ -384,7 +383,7 @@ class _Tiling(NamedTuple):
         if batch_samples is None:
             cpu = jax.default_backend() == 'cpu'
             batch_samples = _CPU_BATCH_SAMPLES if cpu else _GPU_BATCH_SAMPLES
-            batch_samples = min(batch_samples, max(1, _BATCH_READS // reads_per_sample))
+            batch_samples = min(batch_samples, max(1, _MAX_BATCH_READS // reads_per_sample))
         if batch_samples <= 0:
             return cls(shape, n_rows, n_cols)
         if batch_samples >= n_cols:

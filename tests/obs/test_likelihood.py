@@ -9,9 +9,9 @@ from furax.obs.landscapes import FrequencyLandscape
 from furax.obs.operators import (
     CMBOperator,
     DustOperator,
-    MixingMatrixOperator,
     NoiseDiagonalOperator,
     SynchrotronOperator,
+    mixing_matrix,
 )
 from furax.obs.stokes import ValidStokesLiteral
 
@@ -71,9 +71,9 @@ def likelihood_setup(stokes: ValidStokesLiteral):
         beta_pl_patch_indices=patch_indices['beta_pl_patches'],
     )
     # Mixing operators
-    A_cds = MixingMatrixOperator(cmb=cmb, dust=dust, synchrotron=synchrotron)
-    A_cd = MixingMatrixOperator(cmb=cmb, dust=dust)
-    A_cs = MixingMatrixOperator(cmb=cmb, synchrotron=synchrotron)
+    A_cds = mixing_matrix(cmb=cmb, dust=dust, synchrotron=synchrotron)
+    A_cd = mixing_matrix(cmb=cmb, dust=dust)
+    A_cs = mixing_matrix(cmb=cmb, synchrotron=synchrotron)
 
     # Noise operators
     N1 = NoiseDiagonalOperator(n1, in_structure=d.structure)

@@ -11,8 +11,8 @@ from furax.obs.operators._seds import (
     AbstractSEDOperator,
     CMBOperator,
     DustOperator,
-    MixingMatrixOperator,
     SynchrotronOperator,
+    mixing_matrix,
 )
 from furax.obs.stokes import Stokes
 from furax.tree import dot
@@ -119,8 +119,8 @@ def _get_mixing_matrix(
     synchrotron_nu0: float,
     patch_indices: PyTree[Array],
     in_structure: Stokes,
-) -> AbstractLinearOperator:  # Returns MixingMatrixOperator
-    """Helper to construct the MixingMatrixOperator from parameters."""
+) -> AbstractLinearOperator:
+    """Helper to construct the mixing matrix operator from parameters."""
     components: dict[str, AbstractSEDOperator] = {}
     for component in _get_available_components(params):
         components[component] = _create_component(
@@ -131,7 +131,7 @@ def _get_mixing_matrix(
             patch_indices,
             in_structure,
         )
-    return MixingMatrixOperator(**components)
+    return mixing_matrix(**components)
 
 
 @partial(jax.jit, static_argnums=(3, 4))
@@ -143,7 +143,7 @@ def preconditionner(
     synchrotron_nu0: float,
     patch_indices: PyTree[Array] = single_cluster_indices,
 ) -> AbstractLinearOperator:
-    """Constructs the MixingMatrixOperator for preconditioning purposes.
+    """Constructs the mixing matrix operator for preconditioning purposes.
 
     This function builds the mixing matrix operator based on the provided spectral parameters
     and frequencies, without directly involving the observed data or noise operators.
@@ -153,13 +153,13 @@ def preconditionner(
         params (PyTree[Array]): Dictionary of spectral parameters.
         nu (Array): Array of frequencies.
         d (Stokes): Data in Stokes parameters, used only to infer the `in_structure`
-                    for the MixingMatrixOperator. Its values are not used.
+                    for the mixing matrix operator. Its values are not used.
         dust_nu0 (float): Reference frequency for dust.
         synchrotron_nu0 (float): Reference frequency for synchrotron.
         patch_indices (PyTree[Array], optional): Patch indices for spatially varying parameters (default is single_cluster_indices).
 
     Returns:
-        MixingMatrixOperator: The constructed mixing matrix operator suitable for preconditioning.
+        The constructed mixing matrix operator suitable for preconditioning.
 
     Examples:
         >>> from furax.obs import preconditionner

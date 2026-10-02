@@ -6,9 +6,10 @@ from ._seds import (
     AbstractSEDOperator,
     CMBOperator,
     DustOperator,
-    MixingMatrixOperator,
+    MixingMatrixOperator,  # ty: ignore[deprecated]
     NoiseDiagonalOperator,  # ty: ignore[deprecated]
     SynchrotronOperator,
+    mixing_matrix,
 )
 from ._transfer_matrix import (
     SO_HF_HWP_STACK,
@@ -34,6 +35,7 @@ __all__ = [
     'CMBOperator',
     'DustOperator',
     'SynchrotronOperator',
+    'mixing_matrix',
     'MixingMatrixOperator',
     'NoiseDiagonalOperator',
     # _beam_operator

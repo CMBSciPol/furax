@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `MixingMatrixOperator` is renamed `mixing_matrix`; the old name is deprecated (#305)
 - `DenseBlockDiagonalOperator.T` supports any subscripts whose input axes appear in the blocks or the output (#297)
 - `PointingOperator` with a beam lowers its default `batch_samples` so that a batch reads at most $2^{25}$ pixels (#299)
 

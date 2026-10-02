@@ -1,3 +1,5 @@
+from importlib.metadata import version
+
 from . import tree
 from ._config import Config
 from .core import (
@@ -34,6 +36,8 @@ from .core import (
     upper_triangular,
 )
 from .interfaces.lineax import as_lineax_operator
+
+__version__ = version('furax')
 
 __all__ = [
     # core

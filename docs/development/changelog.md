@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Subclasses of `CMBOperator`, `DustOperator` and `SynchrotronOperator` that only override `sed` keep the parent constructor (#306)
+
 ## [0.15.2] - 2026-10-02
 
 ### Added

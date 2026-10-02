@@ -24,11 +24,12 @@ __all__ = [
     'CMBOperator',
     'DustOperator',
     'SynchrotronOperator',
+    'mixing_matrix',
     'MixingMatrixOperator',
 ]
 
 
-def K_RJ_2_K_CMB(nu: ArrayLike) -> Array:
+def k_rj_to_k_cmb(nu: ArrayLike) -> Array:
     r"""Conversion factor from Rayleigh-Jeans brightness temperature to CMB temperature.
 
     With $x = h \nu / k T_{CMB}$, the factor is
@@ -44,7 +45,7 @@ def K_RJ_2_K_CMB(nu: ArrayLike) -> Array:
         The factor that multiplies a temperature in $K_{RJ}$ to give it in $K_{CMB}$.
 
     Examples:
-        >>> [round(float(f), 3) for f in K_RJ_2_K_CMB(jnp.array([30.0, 100.0, 353.0]))]
+        >>> [round(float(f), 3) for f in k_rj_to_k_cmb(jnp.array([30.0, 100.0, 353.0]))]
         [1.023, 1.287, 12.905]
     """
     x = _H_OVER_K_GHZ * jnp.asarray(nu) / _T_CMB
@@ -110,7 +111,7 @@ class CMBOperator(AbstractSEDOperator):
     r"""Operator for the Cosmic Microwave Background (CMB) spectral energy distribution.
 
     The CMB has a blackbody spectrum at $T_{CMB} \approx 2.725$ K. In $K_{CMB}$ units, the SED is
-    unity at all frequencies. In $K_{RJ}$ units, it is the inverse of `K_RJ_2_K_CMB`.
+    unity at all frequencies. In $K_{RJ}$ units, it is the inverse of `k_rj_to_k_cmb`.
 
     Attributes:
         frequencies: Observation frequencies [GHz].
@@ -136,7 +137,7 @@ class CMBOperator(AbstractSEDOperator):
     def sed(self) -> Float[Array, 'freq 1']:
         sed = jnp.ones_like(self.frequencies)
         if self.units == 'K_RJ':
-            sed /= K_RJ_2_K_CMB(self.frequencies)
+            sed /= k_rj_to_k_cmb(self.frequencies)
         return sed[:, None]
 
 
@@ -208,7 +209,7 @@ class DustOperator(AbstractSEDOperator):
         sed *= jnp.expm1(_H_OVER_K_GHZ * self.frequency0 / temperature)
         sed /= jnp.expm1(_H_OVER_K_GHZ * nu / temperature)
         if self.units == 'K_CMB':
-            sed *= K_RJ_2_K_CMB(nu) / K_RJ_2_K_CMB(self.frequency0)
+            sed *= k_rj_to_k_cmb(nu) / k_rj_to_k_cmb(self.frequency0)
         return jnp.broadcast_to(sed, (nu.shape[0], sed.shape[-1]))
 
 
@@ -277,46 +278,41 @@ class SynchrotronOperator(AbstractSEDOperator):
         beta = _per_pixel(self.beta_pl, self.beta_pl_patch_indices)
         sed = (nu / self.frequency0) ** (beta + self.running * jnp.log(nu / self.nu_pivot))
         if self.units == 'K_CMB':
-            sed *= K_RJ_2_K_CMB(nu) / K_RJ_2_K_CMB(self.frequency0)
+            sed *= k_rj_to_k_cmb(nu) / k_rj_to_k_cmb(self.frequency0)
         return jnp.broadcast_to(sed, (nu.shape[0], sed.shape[-1]))
 
 
-def MixingMatrixOperator(**blocks: AbstractSEDOperator) -> AbstractLinearOperator:
-    """Constructs a mixing matrix operator from a set of SED operators.
-
-    This function combines multiple spectral energy distribution (SED) operators
-    into a single block row operator for use in linear models.
+def mixing_matrix(**blocks: AbstractSEDOperator) -> AbstractLinearOperator:
+    """Combine named SED operators into a mixing matrix.
 
     Args:
-        **blocks: Named SED operators to combine into the mixing matrix.
+        **blocks: SED operators, keyed by component name.
 
     Returns:
-        BlockRowOperator: A reduced block row operator representing the mixing matrix.
+        The operator mapping a dictionary of component maps, with the same keys as `blocks`, to the
+        sum of their frequency maps.
 
     Examples:
-        >>> from furax.obs import CMBOperator, DustOperator,\
-             SynchrotronOperator, MixingMatrixOperator
-        >>> nu = jnp.array([30, 40, 100])  # Frequencies in GHz
-        >>> in_structure = ...  # Define input structure (e.g., using HealpixLandscape)
-        >>> sky_map = ...  # Define sky map
-        >>> cmb = CMBOperator(nu, in_structure=in_structure)
-        >>> dust = DustOperator(
-        ...     nu,
-        ...     frequency0=150.0,
-        ...     temperature=20.0,
-        ...     beta=1.54,
-        ...     in_structure=in_structure
+        >>> from furax.obs.landscapes import HealpixLandscape
+        >>> landscape = HealpixLandscape(nside=8, stokes='IQU')
+        >>> nu = jnp.array([30.0, 40.0, 100.0])
+        >>> A = mixing_matrix(
+        ...     cmb=CMBOperator(nu, in_structure=landscape.structure),
+        ...     dust=DustOperator(
+        ...         nu, frequency0=150.0, temperature=20.0, beta=1.54,
+        ...         in_structure=landscape.structure,
+        ...     ),
         ... )
-        >>> synchrotron = SynchrotronOperator(
-        ...     nu,
-        ...     frequency0=20.0,
-        ...     beta_pl=-3.0,
-        ...     in_structure=in_structure
-        ... )
-        >>> A = MixingMatrixOperator(cmb=cmb, dust=dust, synchrotron=synchrotron)
-        >>> d = A(sky_map)
+        >>> A({'cmb': landscape.ones(), 'dust': landscape.ones()}).shape
+        (3, 768)
     """
     return BlockRowOperator(blocks).reduce()
+
+
+@deprecated('Use mixing_matrix')
+def MixingMatrixOperator(**blocks: AbstractSEDOperator) -> AbstractLinearOperator:
+    """Deprecated alias of `mixing_matrix`."""
+    return mixing_matrix(**blocks)
 
 
 @deprecated('Should use a DiagonalOperator')

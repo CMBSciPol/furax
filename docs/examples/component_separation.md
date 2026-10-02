@@ -23,7 +23,12 @@ import jax.numpy as jnp
 import jax.random as jr
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.stokes import StokesIQU
-from furax.obs import CMBOperator, DustOperator, SynchrotronOperator, MixingMatrixOperator
+from furax.obs.operators import (
+    CMBOperator,
+    DustOperator,
+    SynchrotronOperator,
+    mixing_matrix,
+)
 from furax import DiagonalOperator, BlockDiagonalOperator
 
 # Define observation frequencies (GHz)
@@ -56,10 +61,10 @@ The mixing matrix relates the observed data to the underlying components:
 ```python
 # Combine SED operators into a mixing matrix
 # Each column represents one component's frequency dependence
-mixing_matrix = MixingMatrixOperator(cmb=cmb_sed, dust=dust_sed, synchrotron=sync_sed)
+A = mixing_matrix(cmb=cmb_sed, dust=dust_sed, synchrotron=sync_sed)
 
-print(f'Mixing matrix in_structure: {mixing_matrix.in_structure}')
-print(f'Mixing matrix out_structure: {mixing_matrix.out_structure}')
+print(f'Mixing matrix in_structure: {A.in_structure}')
+print(f'Mixing matrix out_structure: {A.out_structure}')
 print(f'Components: CMB, Dust, Synchrotron')
 ```
 
@@ -77,8 +82,8 @@ sync_true = 0.05 * landscape.uniform(keys[2], minval=0, maxval=1)  # Synchrotron
 # Stack components into the mixing matrix's input structure
 true_components = {'cmb': cmb_true, 'dust': dust_true, 'synchrotron': sync_true}
 
-# Generate observed data: mixing_matrix(true_components)
-observed_data = mixing_matrix(true_components)
+# Generate observed data: A(true_components)
+observed_data = A(true_components)
 ```
 
 ### Add Realistic Noise
@@ -132,10 +137,10 @@ inv_noise_covariance = BlockDiagonalOperator(
 import lineax as lx
 
 # Set up the normal equations: (A^T N^-1 A) s = A^T N^-1 d
-# where A = mixing_matrix, N^-1 = inv_noise_covariance, d = data, s = components
+# where N^-1 = inv_noise_covariance, d = data, s = components
 
-At_Ninv = mixing_matrix.T @ inv_noise_covariance
-At_Ninv_A = At_Ninv @ mixing_matrix
+At_Ninv = A.T @ inv_noise_covariance
+At_Ninv_A = At_Ninv @ A
 
 At_Ninv_d = At_Ninv(noisy_observed_data.flatten())
 
@@ -265,7 +270,7 @@ val_freq_idx = jnp.array([2, 4, 6])  # Validate on held-out frequencies
 train_data, val_data = split_frequency_data(noisy_observed_data, train_freq_idx, val_freq_idx)
 
 # Train on subset
-train_mixing = MixingMatrixOperator(
+train_mixing = mixing_matrix(
     cmb=CMBOperator(frequencies[train_freq_idx], in_structure=landscape.structure),
     dust=DustOperator(
         frequencies[train_freq_idx],
@@ -288,7 +293,7 @@ train_mixing = MixingMatrixOperator(
 
 ```python
 # Analyze fit quality
-predicted_data = mixing_matrix(recovered_components)
+predicted_data = A(recovered_components)
 residuals = noisy_observed_data.flatten() - predicted_data
 
 # Chi-square per frequency

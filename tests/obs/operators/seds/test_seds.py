@@ -109,7 +109,7 @@ def test_broadcasts_sky_map_without_frequency_axis(fg_data):
 
     Regression guard: ``AbstractSEDOperator.__init__`` used to declare an ``in_structure`` with
     the frequency axis already baked in, making ``in_structure == out_structure`` and breaking
-    this exact call (component-separation's real usage, e.g. via ``MixingMatrixOperator``).
+    this exact call (component-separation's real usage, e.g. via `mixing_matrix`).
     """
     data, _, in_structure = fg_data
     nu = data['frequencies']

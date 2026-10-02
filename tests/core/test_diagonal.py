@@ -108,6 +108,42 @@ def test_broadcast_diagonal(
 
 
 @pytest.mark.parametrize(
+    'values_shape, input_shape, insert_axes, axes, values_index, input_index',
+    [
+        ((2,), (3,), 0, 0, [ꓽ, None], [None, ꓽ]),
+        ((2,), (3, 4), 1, 1, [None, ꓽ, None], [ꓽ, None, ꓽ]),
+        ((2,), (3, 4), -2, -2, [None, ꓽ, None], [ꓽ, None, ꓽ]),
+        ((2, 1), (3, 4), 1, (1, 2), [None, ꓽ, ꓽ], [ꓽ, None, ꓽ]),
+        ((2, 4), (3, 4), 1, (1, 2), [None, ꓽ, ꓽ], [ꓽ, None, ꓽ]),
+        ((2, 5), (3, 4), (1, 3), (1, 3), [None, ꓽ, None, ꓽ], [ꓽ, None, ꓽ, None]),
+    ],
+    ids=id_func,
+)
+def test_broadcast_diagonal_insert_axes(
+    values_shape: tuple[int, ...],
+    input_shape: tuple[int, ...],
+    insert_axes: int | tuple[int, ...],
+    axes: int | tuple[int, ...],
+    values_index: list[slice | None],
+    input_index: list[slice | None],
+) -> None:
+    input = arange(*input_shape)
+    values = arange(*values_shape)
+    op = BroadcastDiagonalOperator(
+        values, axis_destination=axes, insert_axes=insert_axes, in_structure=as_structure(input)
+    )
+    assert_allclose(op(input), values[tuple(values_index)] * input[tuple(input_index)])
+    assert_allclose(op.T.as_matrix(), op.as_matrix().T)
+
+
+def test_broadcast_diagonal_insert_axes_out_of_range() -> None:
+    x = arange(3, 4)
+    values = jnp.ones(2)
+    with pytest.raises(ValueError):
+        _ = BroadcastDiagonalOperator(values, in_structure=as_structure(x), insert_axes=3)
+
+
+@pytest.mark.parametrize(
     'values_shape, input_shape, axes',
     [
         ((2,), (2,), 0),

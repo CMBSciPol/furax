@@ -31,6 +31,10 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
             dimensions in the ``diagonal`` input. If the type is a non-negative scalar integer, the
             dimensions will be ``(axis, ..., axis + diagonal.ndim - 1)``. If the type is a negative
             scalar integer, the dimensions will be ``(axis - diagonal.ndim, ..., axis)``.
+            The axes refer to the input after the insertion of `insert_axes`.
+        insert_axes: Positions of new unit axes inserted into the input before the multiplication,
+            as in `jnp.expand_dims`. The diagonal values broadcast along them, which places new
+            axes in the middle of the output.
 
     Examples:
         >>> import furax as fx
@@ -77,18 +81,30 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
                [0, 0, 0, 1, 0, 0],
                [0, 0, 0, 0, 1, 0],
                [0, 0, 0, 0, 0, 1]], dtype=int32)
+
+        A new axis can be inserted between existing ones. Here, an input of shape (2, 3) is
+        broadcast to (2, 2, 3), the middle axis carrying the diagonal values:
+
+        >>> x = jnp.array([[1, 2, 3], [4, 5, 6]])
+        >>> values = jnp.array([1, 10])
+        >>> op = BroadcastDiagonalOperator(
+        ...     values, in_structure=fx.tree.as_structure(x), axis_destination=1, insert_axes=1
+        ... )
+        >>> assert_allclose(op(x), values[None, :, None] * x[:, None, :])
     """
 
     _diagonal: Inexact[Array, '...']
     axis_destination: int | tuple[int, ...] = field(
         default=-1, kw_only=True, metadata={'static': True}
     )
+    insert_axes: tuple[int, ...] = field(default=(), kw_only=True, metadata={'static': True})
 
     def __init__(
         self,
         diagonal: ArrayLike,
         *,
         axis_destination: int | Sequence[int] = -1,
+        insert_axes: int | Sequence[int] = (),
         in_structure: PyTree[jax.ShapeDtypeStruct] | None = None,
     ):
         # Validation
@@ -112,8 +128,12 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
         elif not isinstance(axis_destination, tuple):
             axis_destination = tuple(axis_destination)
 
+        if isinstance(insert_axes, int):
+            insert_axes = (insert_axes,)
+
         object.__setattr__(self, '_diagonal', diagonal)
         object.__setattr__(self, 'axis_destination', tuple(axis_destination))
+        object.__setattr__(self, 'insert_axes', tuple(insert_axes))
         super().__init__(in_structure=in_structure)
 
         # check dimensions by computing the actual output structure (not the @square shortcut)
@@ -127,6 +147,8 @@ class BroadcastDiagonalOperator(AbstractLinearOperator):
         self,
         input_leaf: Inexact[Array, '...'],
     ) -> tuple[Inexact[Array, '#b'], Inexact[Array, '#b']]:
+        if self.insert_axes:
+            input_leaf = jnp.expand_dims(input_leaf, self.insert_axes)
         axes = self._normalize_axes(input_leaf.shape)
         reshaped_diagonal = self._reshape_diagonal(axes, input_leaf.ndim)
         reshaped_input_leaf = self._reshape_input_leaf(axes, input_leaf)
@@ -278,6 +300,7 @@ class DiagonalInverseOperator(DiagonalOperator, AbstractLazyInverseOperator):
         object.__setattr__(self, 'operator', operator)
         object.__setattr__(self, '_diagonal', operator._diagonal)
         object.__setattr__(self, 'axis_destination', operator.axis_destination)
+        object.__setattr__(self, 'insert_axes', operator.insert_axes)
         object.__setattr__(self, 'in_structure', operator.in_structure)
 
     @property

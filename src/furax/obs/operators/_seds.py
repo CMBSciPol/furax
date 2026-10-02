@@ -74,29 +74,30 @@ class AbstractSEDOperator(BroadcastDiagonalOperator):
     `(n_stokes, n_pix)`; the output inserts a frequency axis before the pixel axis, giving a map
     of shape `(n_stokes, n_freq, n_pix)`.
 
-    Subclasses implement `sed`.
+    Subclasses declare their spectral parameters as fields and implement `sed`, which is
+    evaluated once, at construction.
 
     Attributes:
         frequencies: Observation frequencies [GHz].
         units: Output units, `'K_CMB'` or `'K_RJ'`.
     """
 
+    _diagonal: Float[Array, '...'] = field(init=False)
+    axis_destination: int | tuple[int, ...] = field(
+        default=(-2, -1), init=False, metadata={'static': True}
+    )
+    insert_axes: tuple[int, ...] = field(default=(-2,), init=False, metadata={'static': True})
     frequencies: Float[Array, ' freq']
-    units: str = field(metadata={'static': True})
+    units: str = field(default='K_CMB', kw_only=True, metadata={'static': True})
 
-    def __init__(
-        self,
-        frequencies: Float[ArrayLike, ' freq'],
-        *,
-        units: str,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ) -> None:
-        _check_units(units)
-        object.__setattr__(self, 'frequencies', jnp.asarray(frequencies, dtype=float))
-        object.__setattr__(self, 'units', units)
-        super().__init__(
-            self.sed(), axis_destination=(-2, -1), insert_axes=-2, in_structure=in_structure
-        )
+    # The operators are built by the generated dataclass `__init__` and finished here, so that a
+    # subclass overriding only `sed` keeps the constructor of its parent.
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        _check_units(self.units)
+        object.__setattr__(self, 'frequencies', jnp.asarray(self.frequencies, dtype=float))
+        object.__setattr__(self, '_diagonal', self.sed())
+        _ = jax.eval_shape(self.mv, self.in_structure)
 
     @abstractmethod
     def sed(self) -> Float[Array, 'freq pix'] | Float[Array, 'freq 1']:
@@ -124,15 +125,6 @@ class CMBOperator(AbstractSEDOperator):
         >>> cmb(landscape.ones()).shape
         (3, 768)
     """
-
-    def __init__(
-        self,
-        frequencies: Float[ArrayLike, ' freq'],
-        *,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-        units: str = 'K_CMB',
-    ) -> None:
-        super().__init__(frequencies, units=units, in_structure=in_structure)
 
     def sed(self) -> Float[Array, 'freq 1']:
         sed = jnp.ones_like(self.frequencies)
@@ -176,30 +168,16 @@ class DustOperator(AbstractSEDOperator):
         (4, 768)
     """
 
-    frequency0: float = field(metadata={'static': True})
-    temperature: Float[Array, '...']
-    temperature_patch_indices: Int[Array, ' pix'] | None
-    beta: Float[Array, '...']
-    beta_patch_indices: Int[Array, ' pix'] | None
+    frequency0: float = field(default=100, kw_only=True, metadata={'static': True})
+    temperature: Float[Array, '...'] = field(kw_only=True)
+    temperature_patch_indices: Int[Array, ' pix'] | None = field(default=None, kw_only=True)
+    beta: Float[Array, '...'] = field(kw_only=True)
+    beta_patch_indices: Int[Array, ' pix'] | None = field(default=None, kw_only=True)
 
-    def __init__(
-        self,
-        frequencies: Float[ArrayLike, ' freq'],
-        *,
-        frequency0: float = 100,
-        temperature: float | Float[Array, ' patch'],
-        units: str = 'K_CMB',
-        temperature_patch_indices: Int[Array, ' pix'] | None = None,
-        beta: float | Float[Array, ' patch'],
-        beta_patch_indices: Int[Array, ' pix'] | None = None,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ) -> None:
-        object.__setattr__(self, 'frequency0', frequency0)
-        object.__setattr__(self, 'temperature', jnp.asarray(temperature))
-        object.__setattr__(self, 'temperature_patch_indices', temperature_patch_indices)
-        object.__setattr__(self, 'beta', jnp.asarray(beta))
-        object.__setattr__(self, 'beta_patch_indices', beta_patch_indices)
-        super().__init__(frequencies, units=units, in_structure=in_structure)
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'temperature', jnp.asarray(self.temperature))
+        object.__setattr__(self, 'beta', jnp.asarray(self.beta))
+        super().__post_init__()
 
     def sed(self) -> Float[Array, 'freq pix'] | Float[Array, 'freq 1']:
         nu = self.frequencies[:, None]
@@ -248,30 +226,15 @@ class SynchrotronOperator(AbstractSEDOperator):
         (3, 768)
     """
 
-    frequency0: float = field(metadata={'static': True})
-    beta_pl: Float[Array, '...']
-    beta_pl_patch_indices: Int[Array, ' pix'] | None
-    nu_pivot: float = field(metadata={'static': True})
-    running: float = field(metadata={'static': True})
+    frequency0: float = field(default=100, kw_only=True, metadata={'static': True})
+    beta_pl: Float[Array, '...'] = field(kw_only=True)
+    beta_pl_patch_indices: Int[Array, ' pix'] | None = field(default=None, kw_only=True)
+    nu_pivot: float = field(default=1.0, kw_only=True, metadata={'static': True})
+    running: float = field(default=0.0, kw_only=True, metadata={'static': True})
 
-    def __init__(
-        self,
-        frequencies: Float[ArrayLike, ' freq'],
-        *,
-        frequency0: float = 100,
-        nu_pivot: float = 1.0,
-        running: float = 0.0,
-        units: str = 'K_CMB',
-        beta_pl: float | Float[Array, ' patch'],
-        beta_pl_patch_indices: Int[Array, ' pix'] | None = None,
-        in_structure: PyTree[jax.ShapeDtypeStruct],
-    ) -> None:
-        object.__setattr__(self, 'frequency0', frequency0)
-        object.__setattr__(self, 'beta_pl', jnp.asarray(beta_pl))
-        object.__setattr__(self, 'beta_pl_patch_indices', beta_pl_patch_indices)
-        object.__setattr__(self, 'nu_pivot', nu_pivot)
-        object.__setattr__(self, 'running', running)
-        super().__init__(frequencies, units=units, in_structure=in_structure)
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'beta_pl', jnp.asarray(self.beta_pl))
+        super().__post_init__()
 
     def sed(self) -> Float[Array, 'freq pix'] | Float[Array, 'freq 1']:
         nu = self.frequencies[:, None]

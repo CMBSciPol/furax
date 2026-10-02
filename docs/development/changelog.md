@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `AbstractSEDOperator` derives from `BroadcastDiagonalOperator` and precomputes its SED again, as before #165 (#303)
+- `SynchrotronOperator` applies `running` and `nu_pivot`, which were ignored (#303)
 - Docstring rendering of `lanczos_eigh` and `lanczos_tr` in API docs (#295)
 - `Stokes` component access (`.i`, `.q`, `.u`, `.v`) raises when the leading axis does not match the Stokes type, instead of returning the wrong component (#298)
 

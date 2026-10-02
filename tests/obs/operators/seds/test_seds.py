@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from numpy.testing import assert_allclose
 
 from furax.obs import CMBOperator, DustOperator, SynchrotronOperator
 from furax.obs.landscapes import HealpixLandscape
@@ -25,108 +26,82 @@ def fg_data() -> tuple[dict[str, np.ndarray], Stokes, jax.ShapeDtypeStruct]:
     return data, d, in_structure
 
 
-def test_cmb_k_cmb(fg_data):
-    data, d, in_structure = fg_data
+SED_FACTORIES = {
+    'CMB': lambda nu, units, s: CMBOperator(nu, in_structure=s, units=units),
+    'DUST': lambda nu, units, s: DustOperator(
+        nu, in_structure=s, frequency0=150.0, units=units, temperature=20.0, beta=1.54
+    ),
+    'SYNC': lambda nu, units, s: SynchrotronOperator(
+        nu, in_structure=s, frequency0=20.0, units=units, beta_pl=-3.0
+    ),
+}
+
+
+@pytest.mark.parametrize('units', ['K_CMB', 'K_RJ'])
+@pytest.mark.parametrize('component', SED_FACTORIES)
+def test_sed_matches_fgbuster(fg_data, component, units):
+    data, _, in_structure = fg_data
+    op = SED_FACTORIES[component](data['frequencies'], units, in_structure)
+    assert_allclose(op.sed()[:, 0], data[f'{component}_{units}'])
+
+
+@pytest.mark.parametrize('component', ['DUST', 'SYNC'])
+def test_sed_patch_indices(fg_data, component):
+    """Each pixel takes the SED of its patch."""
+    data, _, in_structure = fg_data
     nu = data['frequencies']
+    n_pix = in_structure.shape[-1]
+    patch_indices = jnp.arange(n_pix) % 2
+    if component == 'DUST':
+        op = DustOperator(
+            nu,
+            frequency0=150.0,
+            temperature=jnp.array([20.0, 15.0]),
+            temperature_patch_indices=patch_indices,
+            beta=jnp.array([1.54, 1.6]),
+            beta_patch_indices=patch_indices,
+            in_structure=in_structure,
+        )
+        patch1 = DustOperator(
+            nu, frequency0=150.0, temperature=15.0, beta=1.6, in_structure=in_structure
+        )
+    else:
+        op = SynchrotronOperator(
+            nu,
+            frequency0=20.0,
+            beta_pl=jnp.array([-3.0, -2.8]),
+            beta_pl_patch_indices=patch_indices,
+            in_structure=in_structure,
+        )
+        patch1 = SynchrotronOperator(nu, frequency0=20.0, beta_pl=-2.8, in_structure=in_structure)
+    patch0 = SED_FACTORIES[component](nu, 'K_CMB', in_structure)
 
-    # Calculate CMB with K_CMB unit in furax
-    cmb_fgbuster = data['CMB_K_CMB'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    cmb_fgbuster_tree = Stokes.from_stokes(
-        i=cmb_fgbuster[:, 0, :], q=cmb_fgbuster[:, 1, :], u=cmb_fgbuster[:, 2, :]
+    assert op.sed().shape == (len(nu), n_pix)
+    assert_allclose(op.sed()[:, 0::2], jnp.broadcast_to(patch0.sed(), (len(nu), n_pix // 2)))
+    assert_allclose(op.sed()[:, 1::2], jnp.broadcast_to(patch1.sed(), (len(nu), n_pix // 2)))
+
+
+def test_synchrotron_running(fg_data):
+    data, _, in_structure = fg_data
+    nu = jnp.asarray(data['frequencies'])
+    op = SynchrotronOperator(
+        nu,
+        frequency0=20.0,
+        nu_pivot=23.0,
+        running=0.1,
+        units='K_RJ',
+        beta_pl=-3.0,
+        in_structure=in_structure,
     )
-
-    cmb_operator = CMBOperator(nu, in_structure=in_structure, units='K_CMB')
-    cmb_furax = cmb_operator(d)
-
-    assert jax.tree.all(jax.tree.map(jnp.allclose, cmb_furax, cmb_fgbuster_tree))
+    expected = (nu / 20.0) ** (-3.0 + 0.1 * jnp.log(nu / 23.0))
+    assert_allclose(op.sed()[:, 0], expected)
 
 
-def test_cmb_k_rj(fg_data):
-    data, d, in_structure = fg_data
-    nu = data['frequencies']
-
-    # Calculate CMB with K_RJ unit in furax
-    cmb_fgbuster = data['CMB_K_RJ'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    cmb_fgbuster_tree = Stokes.from_stokes(
-        i=cmb_fgbuster[:, 0, :], q=cmb_fgbuster[:, 1, :], u=cmb_fgbuster[:, 2, :]
-    )
-
-    cmb_operator = CMBOperator(nu, in_structure=in_structure, units='K_RJ')
-    cmb_furax = cmb_operator(d)
-
-    assert jax.tree.all(jax.tree.map(jnp.allclose, cmb_furax, cmb_fgbuster_tree))
-
-
-def test_dust_k_cmb(fg_data):
-    data, d, in_structure = fg_data
-    nu = data['frequencies']
-
-    # Calculate Dust with K_CMB unit in furax
-    dust_fgbuster = data['DUST_K_CMB'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    dust_fgbuster_tree = Stokes.from_stokes(
-        i=dust_fgbuster[:, 0, :], q=dust_fgbuster[:, 1, :], u=dust_fgbuster[:, 2, :]
-    )
-
-    dust_operator = DustOperator(
-        nu, in_structure=in_structure, frequency0=150.0, units='K_CMB', temperature=20.0, beta=1.54
-    )
-    dust_furax = dust_operator(d)
-
-    assert jax.tree.all(jax.tree.map(jnp.allclose, dust_furax, dust_fgbuster_tree))
-
-
-def test_dust_k_rj(fg_data):
-    data, d, in_structure = fg_data
-    nu = data['frequencies']
-
-    # Calculate Dust with K_RJ unit in furax
-    dust_fgbuster = data['DUST_K_RJ'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    dust_fgbuster_tree = Stokes.from_stokes(
-        i=dust_fgbuster[:, 0, :], q=dust_fgbuster[:, 1, :], u=dust_fgbuster[:, 2, :]
-    )
-
-    dust_operator = DustOperator(
-        nu, in_structure=in_structure, frequency0=150.0, units='K_RJ', temperature=20.0, beta=1.54
-    )
-    dust_furax = dust_operator(d)
-
-    assert jax.tree.all(jax.tree.map(jnp.allclose, dust_furax, dust_fgbuster_tree))
-
-
-def test_synchrotron_k_cmb(fg_data):
-    data, d, in_structure = fg_data
-    nu = data['frequencies']
-
-    # Calculate Synchrotron with K_CMB unit in furax
-    synch_fgbuster = data['SYNC_K_CMB'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    synch_fgbuster_tree = Stokes.from_stokes(
-        i=synch_fgbuster[:, 0, :], q=synch_fgbuster[:, 1, :], u=synch_fgbuster[:, 2, :]
-    )
-
-    synch_operator = SynchrotronOperator(
-        nu, in_structure=in_structure, frequency0=20.0, units='K_CMB', beta_pl=-3.0
-    )
-    synch_furax = synch_operator(d)
-
-    assert jax.tree.all(jax.tree.map(jnp.allclose, synch_furax, synch_fgbuster_tree))
-
-
-def test_synchrotron_k_rj(fg_data):
-    data, d, in_structure = fg_data
-    nu = data['frequencies']
-
-    # Calculate Synchrotron with K_RJ unit in furax
-    synch_fgbuster = data['SYNC_K_RJ'][..., jnp.newaxis, jnp.newaxis] * data['freq_maps']
-    synch_fgbuster_tree = Stokes.from_stokes(
-        i=synch_fgbuster[:, 0, :], q=synch_fgbuster[:, 1, :], u=synch_fgbuster[:, 2, :]
-    )
-
-    synch_operator = SynchrotronOperator(
-        nu, in_structure=in_structure, frequency0=20.0, units='K_RJ', beta_pl=-3.0
-    )
-    synch_furax = synch_operator(d)
-
-    assert jax.tree.all(jax.tree.map(jnp.allclose, synch_furax, synch_fgbuster_tree))
+@pytest.mark.parametrize('component', SED_FACTORIES)
+def test_sed_invalid_units(fg_data, component):
+    data, _, in_structure = fg_data
+    with pytest.raises(ValueError, match='Unknown units: K'):
+        SED_FACTORIES[component](data['frequencies'], 'K', in_structure)
 
 
 def test_broadcasts_sky_map_without_frequency_axis(fg_data):

@@ -11,10 +11,10 @@ else:
 import jax
 import jax.numpy as jnp
 from astropy.cosmology import Planck15
-from jaxtyping import Array, Float, Inexact, Int, PyTree
+from jaxtyping import Array, ArrayLike, Float, Inexact, Int, PyTree
 from scipy import constants
 
-from furax import AbstractLinearOperator, BlockRowOperator, diagonal
+from furax import AbstractLinearOperator, BlockRowOperator, BroadcastDiagonalOperator, diagonal
 
 _H_OVER_K_GHZ = constants.h * 1e9 / constants.k
 _T_CMB = Planck15.Tcmb(0).value
@@ -28,328 +28,257 @@ __all__ = [
 ]
 
 
-def K_RK_2_K_CMB(nu: Array | float) -> Array:
-    r"""Convert Rayleigh-Jeans brightness temperature to CMB temperature.
+def K_RJ_2_K_CMB(nu: ArrayLike) -> Array:
+    r"""Conversion factor from Rayleigh-Jeans brightness temperature to CMB temperature.
+
+    With $x = h \nu / k T_{CMB}$, the factor is
 
     $$
-    T_{CMB} = \frac{(e^{\frac{h \nu}{k T_{CMB}}} - 1)^2}{(e^{\frac{h \nu}{k T_{CMB}}})
-    \left( \frac{h \nu}{k T_{CMB}} \right)^2}
+    \frac{(e^x - 1)^2}{e^x x^2}.
     $$
 
     Args:
-        nu (Array | float): Frequency in GHz.
+        nu: Frequency in GHz.
 
     Returns:
-        Array: Conversion factor from Rayleigh-Jeans to CMB temperature.
+        The factor that multiplies a temperature in $K_{RJ}$ to give it in $K_{CMB}$.
 
     Examples:
-        >>> nu = jnp.array([30, 40, 100])
-        >>> conversion = K_RK_2_K_CMB(nu)
-        >>> print(conversion)
+        >>> [round(float(f), 3) for f in K_RJ_2_K_CMB(jnp.array([30.0, 100.0, 353.0]))]
+        [1.023, 1.287, 12.905]
     """
-    res = jnp.expm1(_H_OVER_K_GHZ * nu / _T_CMB) ** 2 / (
-        jnp.exp(_H_OVER_K_GHZ * nu / _T_CMB) * (_H_OVER_K_GHZ * nu / _T_CMB) ** 2
-    )
-    return res
+    x = _H_OVER_K_GHZ * jnp.asarray(nu) / _T_CMB
+    return jnp.expm1(x) ** 2 / (jnp.exp(x) * x**2)
 
 
-class AbstractSEDOperator(AbstractLinearOperator):
+def _check_units(units: str) -> None:
+    if units not in ('K_CMB', 'K_RJ'):
+        raise ValueError(f"Unknown units: {units}. Expected 'K_CMB' or 'K_RJ'.")
+
+
+def _per_pixel(
+    value: Float[Array, '...'], patch_indices: Int[Array, ' pix'] | None
+) -> Float[Array, '...']:
+    """Expand a per-patch spectral parameter to one value per pixel."""
+    if patch_indices is None or value.ndim == 0:
+        return value
+    return value[patch_indices]
+
+
+class AbstractSEDOperator(BroadcastDiagonalOperator):
     """Abstract base class for Spectral Energy Distribution (SED) operators.
 
-    SED operators model how astrophysical components emit radiation across
-    frequencies. They broadcast sky maps to multiple frequency channels.
+    An SED operator scales the sky map of one astrophysical component to its emission in each
+    frequency channel. The input is a map without frequency axis, e.g. a Stokes map of shape
+    `(n_stokes, n_pix)`; the output inserts a frequency axis before the pixel axis, giving a map
+    of shape `(n_stokes, n_freq, n_pix)`.
 
-    Subclasses must implement the ``sed()`` method to define the spectral
-    energy distribution.
+    Subclasses implement `sed`.
 
     Attributes:
-        frequencies: Array of observation frequencies.
+        frequencies: Observation frequencies [GHz].
+        units: Output units, `'K_CMB'` or `'K_RJ'`.
     """
 
-    frequencies: Float[Array, ' a']
+    frequencies: Float[Array, ' freq']
+    units: str = field(metadata={'static': True})
 
     def __init__(
         self,
-        frequencies: Float[Array, '...'],
+        frequencies: Float[ArrayLike, ' freq'],
         *,
+        units: str,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
-        input_shape = self._get_input_shape(in_structure)
-        n_freq = len(frequencies)
-        # The operator broadcasts a map (no frequency axis) to a multi-frequency output: the new
-        # frequency axis lands just before the trailing spatial axis, with any leading batch axes
-        # (e.g. the leading Stokes axis of a single-array Stokes map) broadcasting through.
-        n_batch = len(input_shape) - 1
-        frequencies = frequencies.reshape((1,) * n_batch + (n_freq, 1))
-        object.__setattr__(self, 'frequencies', frequencies)
-        object.__setattr__(self, 'in_structure', in_structure)
-        # sanity-check shapes at construction time
-        _ = jax.eval_shape(self.mv, in_structure)
-
-    def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
-        # Insert the frequency axis before the trailing spatial axis, unless already present
-        # (e.g. a genuine multi-frequency map passed in directly).
-        def func(leaf: Inexact[Array, '...']) -> Inexact[Array, '...']:
-            if leaf.ndim < self.frequencies.ndim:
-                leaf = jnp.expand_dims(leaf, axis=-2)
-            return self.sed() * leaf
-
-        return jax.tree.map(func, x)
-
-    @staticmethod
-    def _get_input_shape(in_structure: PyTree[jax.ShapeDtypeStruct]) -> tuple[int, ...]:
-        """Determine the shape of the input leaves in the PyTree.
-
-        Args:
-            in_structure (PyTree): The PyTree structure.
-
-        Returns:
-            tuple[int, ...]: The common shape of the leaves.
-
-        Raises:
-            ValueError: If the shapes of the leaves are not consistent.
-        """
-        input_shapes = {leaf.shape for leaf in jax.tree.leaves(in_structure)}
-        if len(input_shapes) != 1:
-            raise ValueError(f'the leaves of the input do not have the same shape: {in_structure}')
-        return input_shapes.pop()
-
-    def _broadcast_over_maps(self, x: Any) -> Float[Array, '...']:
-        """Reshape a per-frequency (or scalar) array to broadcast like `frequencies`.
-
-        The frequency axis is placed just before the trailing spatial axis, with batch axes
-        broadcasting.
-        """
-        arr = jnp.asarray(x)
-        if arr.ndim == 0:
-            return arr.reshape((1,) * self.frequencies.ndim)
-        return arr.reshape(self.frequencies.shape)
+        _check_units(units)
+        object.__setattr__(self, 'frequencies', jnp.asarray(frequencies, dtype=float))
+        object.__setattr__(self, 'units', units)
+        super().__init__(
+            self.sed(), axis_destination=(-2, -1), insert_axes=-2, in_structure=in_structure
+        )
 
     @abstractmethod
-    def sed(self) -> Float[Array, '...']:
-        """Define the spectral energy distribution transformation.
+    def sed(self) -> Float[Array, 'freq pix'] | Float[Array, 'freq 1']:
+        """Return the SED, sampled at the operator frequencies.
 
         Returns:
-            Float[Array, '...']: The transformed SED.
+            The SED, with a trailing axis of length 1 when it does not depend on the pixel.
         """
-        ...
-
-    @staticmethod
-    def _get_at(
-        values: Float[Array, '...'], indices: Int[Array, '...'] | None
-    ) -> Float[Array, '...']:
-        """Retrieve values at specified indices, or return all values if indices are None.
-
-        Args:
-            values (Array): Input array.
-            indices (Array | None): Indices to retrieve values from.
-
-        Returns:
-            Array: Subset of values or the entire array.
-        """
-        if indices is None:
-            return values
-        return values[..., indices]
 
 
 class CMBOperator(AbstractSEDOperator):
-    """Operator for Cosmic Microwave Background (CMB) spectral energy distribution.
+    r"""Operator for the Cosmic Microwave Background (CMB) spectral energy distribution.
 
-    The CMB has a blackbody spectrum at T_CMB ~ 2.725 K. In K_CMB units, the
-    SED is constant (unity) across frequencies. In K_RJ units, a frequency-dependent
-    conversion factor is applied.
+    The CMB has a blackbody spectrum at $T_{CMB} \approx 2.725$ K. In $K_{CMB}$ units, the SED is
+    unity at all frequencies. In $K_{RJ}$ units, it is the inverse of `K_RJ_2_K_CMB`.
 
     Attributes:
         frequencies: Observation frequencies [GHz].
-        units: Output units ('K_CMB' or 'K_RJ').
-        factor: Unit conversion factor.
+        units: Output units, `'K_CMB'` or `'K_RJ'`.
 
     Examples:
-        >>> nu = jnp.array([30, 40, 100])  # GHz
-        >>> cmb_op = CMBOperator(frequencies=nu, in_structure=landscape.structure)
-        >>> tod = cmb_op(sky_map)  # Broadcasts CMB map to all frequencies
+        >>> from furax.obs.landscapes import HealpixLandscape
+        >>> landscape = HealpixLandscape(nside=8, stokes='IQU')
+        >>> cmb = CMBOperator(jnp.array([30.0, 40.0, 100.0]), in_structure=landscape.structure)
+        >>> cmb(landscape.ones()).shape
+        (3, 768)
     """
-
-    factor: Float[Array, '...'] | float
-    units: str = field(metadata={'static': True})
 
     def __init__(
         self,
-        frequencies: Float[Array, '...'],
+        frequencies: Float[ArrayLike, ' freq'],
         *,
         in_structure: PyTree[jax.ShapeDtypeStruct],
         units: str = 'K_CMB',
     ) -> None:
-        factor: Float[Array, ...] | float
-        if units == 'K_CMB':
-            factor = 1.0
-        elif units == 'K_RJ':
-            factor = K_RK_2_K_CMB(frequencies)
-        else:
-            raise ValueError(f"Unknown units: {units}. Expected 'K_CMB' or 'K_RJ'.")
-        object.__setattr__(self, 'factor', factor)
-        object.__setattr__(self, 'units', units)
-        super().__init__(frequencies, in_structure=in_structure)
+        super().__init__(frequencies, units=units, in_structure=in_structure)
 
-    def sed(self) -> Float[Array, '...']:
-        """Compute the spectral energy distribution for the CMB.
-
-        Returns:
-            Float[Array, '...']: The SED for the CMB.
-        """
-        return jnp.ones_like(self.frequencies) / self._broadcast_over_maps(self.factor)
+    def sed(self) -> Float[Array, 'freq 1']:
+        sed = jnp.ones_like(self.frequencies)
+        if self.units == 'K_RJ':
+            sed /= K_RJ_2_K_CMB(self.frequencies)
+        return sed[:, None]
 
 
 class DustOperator(AbstractSEDOperator):
-    """Operator for thermal dust spectral energy distribution.
+    r"""Operator for the thermal dust spectral energy distribution.
 
-    Models dust emission as a modified blackbody: a power law times a Planck
-    function. The SED is: (nu/nu0)^(1+beta) * B(nu,T)/B(nu0,T), where B is
-    the Planck function.
+    Dust emission is modelled as a modified blackbody. In $K_{RJ}$ units, the SED is
 
-    Supports spatially varying spectral parameters via patch indices.
+    $$
+    \left(\frac{\nu}{\nu_0}\right)^{1 + \beta} \frac{e^{h\nu_0/kT} - 1}{e^{h\nu/kT} - 1}.
+    $$
+
+    The temperature $T$ and spectral index $\beta$ may vary across the sky: given per-patch
+    values, the patch indices assign a patch to each pixel.
 
     Attributes:
         frequencies: Observation frequencies [GHz].
-        frequency0: Reference frequency [GHz].
-        temperature: Dust temperature [K].
-        beta: Spectral index (typically ~1.5).
-        units: Output units ('K_CMB' or 'K_RJ').
+        frequency0: Reference frequency $\nu_0$ [GHz].
+        temperature: Dust temperature [K], scalar or one value per patch.
+        temperature_patch_indices: Patch index of each pixel for `temperature`.
+        beta: Spectral index, scalar or one value per patch.
+        beta_patch_indices: Patch index of each pixel for `beta`.
+        units: Output units, `'K_CMB'` or `'K_RJ'`.
 
     Examples:
-        >>> nu = jnp.array([100, 143, 217, 353])  # GHz
-        >>> dust_op = DustOperator(
-        ...     frequencies=nu, frequency0=353, beta=1.54, temperature=20.0,
-        ...     in_structure=landscape.structure
+        >>> from furax.obs.landscapes import HealpixLandscape
+        >>> landscape = HealpixLandscape(nside=8, stokes='IQU')
+        >>> dust = DustOperator(
+        ...     jnp.array([100.0, 143.0, 217.0, 353.0]),
+        ...     frequency0=353.0,
+        ...     temperature=20.0,
+        ...     beta=1.54,
+        ...     in_structure=landscape.structure,
         ... )
-        >>> tod = dust_op(dust_map)
+        >>> dust(landscape.ones()).shape
+        (4, 768)
     """
 
-    temperature: Float[Array, '...']
-    temperature_patch_indices: Int[Array, '...'] | None
-    beta: Float[Array, '...']
-    beta_patch_indices: Int[Array, '...'] | None
-    factor: Float[Array, '...'] | float
-    units: str = field(metadata={'static': True})
     frequency0: float = field(metadata={'static': True})
+    temperature: Float[Array, '...']
+    temperature_patch_indices: Int[Array, ' pix'] | None
+    beta: Float[Array, '...']
+    beta_patch_indices: Int[Array, ' pix'] | None
 
     def __init__(
         self,
-        frequencies: Float[Array, '...'],
+        frequencies: Float[ArrayLike, ' freq'],
         *,
         frequency0: float = 100,
-        temperature: float | Float[Array, '...'],
+        temperature: float | Float[Array, ' patch'],
         units: str = 'K_CMB',
-        temperature_patch_indices: Int[Array, '...'] | None = None,
-        beta: float | Float[Array, '...'],
-        beta_patch_indices: Int[Array, '...'] | None = None,
+        temperature_patch_indices: Int[Array, ' pix'] | None = None,
+        beta: float | Float[Array, ' patch'],
+        beta_patch_indices: Int[Array, ' pix'] | None = None,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
-        factor: Float[Array, ...] | float
-        if units == 'K_CMB':
-            factor = K_RK_2_K_CMB(frequencies) / K_RK_2_K_CMB(frequency0)
-        elif units == 'K_RJ':
-            factor = 1.0
-        else:
-            raise ValueError(f"Unknown units: {units}. Expected 'K_CMB' or 'K_RJ'.")
+        object.__setattr__(self, 'frequency0', frequency0)
         object.__setattr__(self, 'temperature', jnp.asarray(temperature))
         object.__setattr__(self, 'temperature_patch_indices', temperature_patch_indices)
         object.__setattr__(self, 'beta', jnp.asarray(beta))
         object.__setattr__(self, 'beta_patch_indices', beta_patch_indices)
-        object.__setattr__(self, 'units', units)
-        object.__setattr__(self, 'frequency0', frequency0)
-        object.__setattr__(self, 'factor', factor)
-        super().__init__(frequencies, in_structure=in_structure)
+        super().__init__(frequencies, units=units, in_structure=in_structure)
 
-    def sed(self) -> Float[Array, '...']:
-        t = self._get_at(
-            jnp.expm1(self.frequency0 / self.temperature * _H_OVER_K_GHZ)
-            / jnp.expm1(self.frequencies / self.temperature * _H_OVER_K_GHZ),
-            self.temperature_patch_indices,
-        )
-        b = self._get_at(
-            (self.frequencies / self.frequency0) ** (1 + self.beta), self.beta_patch_indices
-        )
-        sed = (t * b) * self._broadcast_over_maps(self.factor)
-        return sed
+    def sed(self) -> Float[Array, 'freq pix'] | Float[Array, 'freq 1']:
+        nu = self.frequencies[:, None]
+        temperature = _per_pixel(self.temperature, self.temperature_patch_indices)
+        beta = _per_pixel(self.beta, self.beta_patch_indices)
+        sed = (nu / self.frequency0) ** (1 + beta)
+        sed *= jnp.expm1(_H_OVER_K_GHZ * self.frequency0 / temperature)
+        sed /= jnp.expm1(_H_OVER_K_GHZ * nu / temperature)
+        if self.units == 'K_CMB':
+            sed *= K_RJ_2_K_CMB(nu) / K_RJ_2_K_CMB(self.frequency0)
+        return jnp.broadcast_to(sed, (nu.shape[0], sed.shape[-1]))
 
 
 class SynchrotronOperator(AbstractSEDOperator):
-    """Operator for synchrotron spectral energy distribution.
+    r"""Operator for the synchrotron spectral energy distribution.
 
-    Models synchrotron emission as a power law: (nu/nu0)^beta, with optional
-    spectral index running: (nu/nu0)^(beta + running * log(nu/nu_pivot)).
+    Synchrotron emission is modelled as a power law with an optional running of the spectral
+    index. In $K_{RJ}$ units, the SED is
 
-    Supports spatially varying spectral parameters via patch indices.
+    $$
+    \left(\frac{\nu}{\nu_0}\right)^{\beta + r \log(\nu / \nu_{pivot})}.
+    $$
+
+    The spectral index $\beta$ may vary across the sky: given per-patch values, the patch indices
+    assign a patch to each pixel.
 
     Attributes:
         frequencies: Observation frequencies [GHz].
-        frequency0: Reference frequency [GHz].
-        beta_pl: Power-law spectral index (typically ~ -3).
-        nu_pivot: Pivot frequency for running [GHz].
-        running: Running of the spectral index.
-        units: Output units ('K_CMB' or 'K_RJ').
+        frequency0: Reference frequency $\nu_0$ [GHz].
+        beta_pl: Power-law spectral index, scalar or one value per patch.
+        beta_pl_patch_indices: Patch index of each pixel for `beta_pl`.
+        nu_pivot: Pivot frequency $\nu_{pivot}$ of the running [GHz].
+        running: Running $r$ of the spectral index.
+        units: Output units, `'K_CMB'` or `'K_RJ'`.
 
     Examples:
-        >>> nu = jnp.array([30, 44, 70])  # GHz
-        >>> sync_op = SynchrotronOperator(
-        ...     frequencies=nu, frequency0=30, beta_pl=-3.0,
-        ...     in_structure=landscape.structure
+        >>> from furax.obs.landscapes import HealpixLandscape
+        >>> landscape = HealpixLandscape(nside=8, stokes='IQU')
+        >>> synchrotron = SynchrotronOperator(
+        ...     jnp.array([30.0, 44.0, 70.0]),
+        ...     frequency0=30.0,
+        ...     beta_pl=-3.0,
+        ...     in_structure=landscape.structure,
         ... )
-        >>> tod = sync_op(synchrotron_map)
+        >>> synchrotron(landscape.ones()).shape
+        (3, 768)
     """
 
+    frequency0: float = field(metadata={'static': True})
     beta_pl: Float[Array, '...']
-    beta_pl_patch_indices: Int[Array, '...'] | None
+    beta_pl_patch_indices: Int[Array, ' pix'] | None
     nu_pivot: float = field(metadata={'static': True})
     running: float = field(metadata={'static': True})
-    units: str = field(metadata={'static': True})
-    frequency0: float = field(metadata={'static': True})
-    factor: Float[Array, '...'] | float
 
     def __init__(
         self,
-        frequencies: Float[Array, '...'],
+        frequencies: Float[ArrayLike, ' freq'],
         *,
         frequency0: float = 100,
         nu_pivot: float = 1.0,
         running: float = 0.0,
         units: str = 'K_CMB',
-        beta_pl: float | Float[Array, '...'],
-        beta_pl_patch_indices: Int[Array, '...'] | None = None,
+        beta_pl: float | Float[Array, ' patch'],
+        beta_pl_patch_indices: Int[Array, ' pix'] | None = None,
         in_structure: PyTree[jax.ShapeDtypeStruct],
     ) -> None:
-        factor: Float[Array, ...] | float
-        if units == 'K_CMB':
-            factor = K_RK_2_K_CMB(frequencies) / K_RK_2_K_CMB(frequency0)
-        elif units == 'K_RJ':
-            factor = 1.0
-        else:
-            raise ValueError(f"Unknown units: {units}. Expected 'K_CMB' or 'K_RJ'.")
+        object.__setattr__(self, 'frequency0', frequency0)
         object.__setattr__(self, 'beta_pl', jnp.asarray(beta_pl))
         object.__setattr__(self, 'beta_pl_patch_indices', beta_pl_patch_indices)
         object.__setattr__(self, 'nu_pivot', nu_pivot)
         object.__setattr__(self, 'running', running)
-        object.__setattr__(self, 'units', units)
-        object.__setattr__(self, 'frequency0', frequency0)
-        object.__setattr__(self, 'factor', factor)
-        super().__init__(frequencies, in_structure=in_structure)
+        super().__init__(frequencies, units=units, in_structure=in_structure)
 
-    def sed(self) -> Float[Array, '...']:
-        sed = self._get_at(
-            (
-                (self.frequencies / self.frequency0)
-                ** (self.beta_pl + self.running * jnp.log(self.frequencies / self.nu_pivot))
-            ),
-            self.beta_pl_patch_indices,
-        )
-
-        sed = self._get_at(
-            (self.frequencies / self.frequency0) ** self.beta_pl, self.beta_pl_patch_indices
-        )
-        sed *= self._broadcast_over_maps(self.factor)
-
-        return sed
+    def sed(self) -> Float[Array, 'freq pix'] | Float[Array, 'freq 1']:
+        nu = self.frequencies[:, None]
+        beta = _per_pixel(self.beta_pl, self.beta_pl_patch_indices)
+        sed = (nu / self.frequency0) ** (beta + self.running * jnp.log(nu / self.nu_pivot))
+        if self.units == 'K_CMB':
+            sed *= K_RJ_2_K_CMB(nu) / K_RJ_2_K_CMB(self.frequency0)
+        return jnp.broadcast_to(sed, (nu.shape[0], sed.shape[-1]))
 
 
 def MixingMatrixOperator(**blocks: AbstractSEDOperator) -> AbstractLinearOperator:

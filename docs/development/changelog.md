@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `BroadcastDiagonalOperator` accepts `insert_axes`, to broadcast the input along new axes inserted between existing ones (#302)
+
 ### Changed
 
 - `DenseBlockDiagonalOperator.T` supports any subscripts whose input axes appear in the blocks or the output (#297)

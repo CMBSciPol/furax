@@ -257,14 +257,26 @@ class Basis(AbstractLinearOperator):
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
         """Project signal onto basis."""
 
+    def _expand_detectors(self, coeffs: Float[Array, 'det ...']) -> Float[Array, 'det samp']:
+        """`expand` of every detector's amplitudes at once, detectors on the leading axis.
+
+        A per-detector stack expands each detector on its own basis, a shared basis expands them
+        all on the same one. Flavours override this where a joint pass is cheaper.
+        """
+        return jax.vmap(lambda op, a: op.expand(a), in_axes=self._detector_axes)(self, coeffs)
+
     def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det ...']:
         """`project` of every detector's stream at once, detectors on the leading axis.
 
         A per-detector stack projects each stream on its own basis, a shared basis projects them
-        all on the same one. Flavours override this where a joint pass is faster.
+        all on the same one. Flavours override this where a joint pass is cheaper.
         """
-        in_axes = (0 if self.per_detector else None, 0)
-        return jax.vmap(lambda op, s: op.project(s), in_axes=in_axes)(self, signals)
+        return jax.vmap(lambda op, s: op.project(s), in_axes=self._detector_axes)(self, signals)
+
+    @property
+    def _detector_axes(self) -> tuple[int | None, int]:
+        # map over the basis's own detector axis when it has one, broadcast it when shared
+        return (0 if self.per_detector else None, 0)
 
     def _dense_values(self) -> Float[Array, 'k samp'] | None:
         """The basis matrix, `(size, n_points)`, where forming it is cheap; `None` otherwise.
@@ -558,23 +570,50 @@ class SegmentedBasis(Basis):
         zeros = jnp.zeros(self.shape, self.dtype)
         return zeros.at[self.segment].add(contrib.T)
 
-    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det ...']:
+    def _expand_detectors(self, coeffs: Float[Array, 'det seg k']) -> Float[Array, 'det samp']:
+        if self.per_detector:
+            return super()._expand_detectors(coeffs)
+        # One sub-basis function at a time, so the largest intermediate is a `(det, samp)` stream:
+        # mapping `expand` over detectors would gather a `(samp, det, k)` array instead.
+        stream = jnp.zeros((coeffs.shape[0], self.n_points), self.dtype)
+        for k in range(self.values.shape[0]):  # sub-basis size is static
+            stream = stream + coeffs[:, self.segment, k] * self.values[k][None, :]
+        return stream
+
+    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det seg k']:
         if self.per_detector:
             return super()._project_detectors(signals)
-        # A shared basis scatters every detector at once, each sample adding a whole `(det, k)`
-        # row to its segment, instead of one scalar scatter per detector.
-        contrib = signals.T[:, :, None] * self.values.T[:, None, :]  # (samp, det, k)
-        sums = jax.ops.segment_sum(contrib, self.segment, self.n_segments, indices_are_sorted=True)
-        return jnp.moveaxis(sums, 1, 0)
+
+        # A shared basis scatters every detector at once, each sample adding a `det` row to its
+        # segment, instead of one scalar scatter per detector. Sub-basis functions go one at a
+        # time, so the largest intermediate is a `(samp, det)` product, not `(samp, det, k)`. The
+        # transpose stays inside the loop body, where it fuses into the product; hoisted out, it
+        # would be one more full copy of the signals.
+        def one_function(values: Float[Array, ' samp']) -> Float[Array, 'seg det']:
+            return jax.ops.segment_sum(
+                signals.T * values[:, None], self.segment, self.n_segments, indices_are_sorted=True
+            )
+
+        sums = jax.lax.map(one_function, self.values)  # (k, seg, det)
+        return jnp.transpose(sums, (2, 1, 0))
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'seg 1 k k']:
-        # Per-segment Gram in a single pass: bin each sample's rank-one w·vvᵀ into its segment.
-        # Block-diagonal (w=0) -> band axis of size 1. O(n_samples·k²), no full-TOD probe.
-        n_seg, k = self.shape
+        # Per-segment Gram: bin each sample's rank-one w·vvᵀ into its segment. Block-diagonal
+        # (w=0) -> band axis of size 1. O(n_samples·k²), no full-TOD probe. One row of the block
+        # at a time, so the per-sample products are `(samp, k)`, not `(samp, k, k)`: vmapped over a
+        # batch of detectors, the latter outgrows the TOD itself.
         vw = self.values * weights[None, :]  # (k, samp)
-        per_sample = _einsum('as,bs->sab', vw, self.values)  # (samp, k, k)
-        blocks = jnp.zeros((n_seg, 1, k, k), self.dtype)
-        return blocks.at[self.segment, 0].add(per_sample)
+
+        def row(vw_a: Float[Array, ' samp']) -> Float[Array, 'seg k']:
+            return jax.ops.segment_sum(
+                (vw_a[None, :] * self.values).T,
+                self.segment,
+                self.n_segments,
+                indices_are_sorted=True,
+            )
+
+        rows = jax.lax.map(row, vw)  # (k_a, seg, k_b)
+        return jnp.moveaxis(rows, 0, 1)[:, None]
 
     @property
     def _n_blocks(self) -> int:
@@ -844,6 +883,10 @@ def polynomial_basis(
     return SegmentedBasis(segment.astype(jnp.int32), legs, n_intervals)
 
 
+_T2P_BATCH_SIZE = 32
+"""Detectors band-passed at once by [`t2p_basis`][]."""
+
+
 def t2p_basis(
     temperature: Float[Array, 'det samp'],
     dtype: DTypeLike,
@@ -867,25 +910,32 @@ def t2p_basis(
     Assumes `temperature` is already deglitched/gap-filled upstream: a glitch left in it would smear
     across the band and bias the fitted amplitude.
     """
-    t = temperature
+    n_full = temperature.shape[-1]
+    q = decimation_factor
+    n_dec = -(-n_full // q)  # ceil
+
+    band = None
     if fit_band is not None:
         f0, f1 = fit_band
-        freqs = jnp.fft.rfftfreq(t.shape[-1], d=1.0 / sample_rate)
+        freqs = jnp.fft.rfftfreq(n_full, d=1.0 / sample_rate)
         band = (freqs > f0) & (freqs < f1)
-        t = jnp.fft.irfft(jnp.fft.rfft(t, axis=-1) * band, n=t.shape[-1], axis=-1)
-    n_dets, n_full = t.shape
-    q = decimation_factor
+
+    def filter_and_decimate(t: Float[Array, ' samp']) -> Float[Array, ' dec']:
+        if band is not None:
+            t = jnp.fft.irfft(jnp.fft.rfft(t) * band, n=n_full)
+        if q > 1:
+            # Block-average onto a q-times coarser grid: pad the tail to a whole block,
+            # reshape (n_dec, q) and mean. `TensorBasis` hold-upsamples back to `n_full` in
+            # synthesis (band-limits above sample_rate / 2q).
+            t = jnp.pad(t, (0, n_dec * q - n_full)).reshape(n_dec, q).mean(axis=-1)
+        return t.astype(dtype)
+
+    # A few detectors at a time, so the spectra and filtered streams stay batch-sized rather than
+    # TOD-sized.
+    t = jax.lax.map(filter_and_decimate, temperature, batch_size=_T2P_BATCH_SIZE)
+    values = t[:, None, :]  # (det, k=1, dec)
     if q > 1:
-        # Block-average onto a q-times coarser grid: pad the tail to a whole block,
-        # reshape (..., n_dec, q) and mean. `TensorBasis` hold-upsamples back to
-        # `n_full` in synthesis (band-limits above sample_rate / 2q).
-        n_dec = -(-n_full // q)  # ceil
-        pad = n_dec * q - n_full
-        tp = jnp.pad(t, [(0, 0), (0, pad)])
-        t_dec = tp.reshape(n_dets, n_dec, q).mean(axis=-1)
-        values = t_dec[:, None, :].astype(dtype)  # (det, k=1, dec)
         return TensorBasis.per_detector_stack(values=values, q=q, n_full=n_full)
-    values = t[:, None, :].astype(dtype)  # (det, k=1, samp)
     return TensorBasis.per_detector_stack(values=values)
 
 
@@ -1018,21 +1068,6 @@ class AbstractTemplateOperator(AbstractLinearOperator):
         s = self._stream_structure()
         return jnp.zeros(s.shape, s.dtype)
 
-    # ---- per-detector expand / project of one basis ---------------------------------------------
-    @staticmethod
-    def _in_axes(basis: Basis) -> tuple[int | None, int]:
-        # map over the basis's own detector axis when it has one, broadcast it when shared
-        return (0 if basis.per_detector else None, 0)
-
-    @classmethod
-    def _expand(cls, basis: Basis, a: Array) -> Array:
-        vmapped = jax.vmap(lambda op, ai: op.expand(ai), in_axes=cls._in_axes(basis))
-        return vmapped(basis, a)
-
-    @staticmethod
-    def _project(basis: Basis, s: Array) -> Array:
-        return basis._project_detectors(s)
-
     def _expand_stream(self, bases: dict[str, Basis], x: dict[str, Array]) -> Array:
         """The summed expansion of every template on one stream."""
         # Each template would otherwise make its own pass over the stream. The dense ones are
@@ -1044,7 +1079,7 @@ class AbstractTemplateOperator(AbstractLinearOperator):
             stream = _einsum('dk,ks->ds', coeffs, jnp.concatenate(list(dense.values())))
         for name, basis in bases.items():
             if name not in dense:
-                stream = stream + self._expand(basis, x[name])
+                stream = stream + basis._expand_detectors(x[name])
         return stream
 
     # ---- adjoint --------------------------------------------------------------------------------
@@ -1073,7 +1108,7 @@ class TemplateOperator(AbstractTemplateOperator):
         return self._expand_stream(self.bases, x)
 
     def project(self, tod: PyTree[Array]) -> PyTree[Array]:
-        return {name: self._project(basis, tod) for name, basis in self.bases.items()}
+        return {name: basis._project_detectors(tod) for name, basis in self.bases.items()}
 
 
 class StokesTemplateOperator(AbstractTemplateOperator):
@@ -1156,7 +1191,7 @@ class StokesTemplateOperator(AbstractTemplateOperator):
     def project(self, tod: PyTree[Array]) -> PyTree[Array]:
         streams = self._streams(tod)
         return {
-            name: {leg: self._project(basis, streams[leg]) for leg, basis in legged.items()}
+            name: {leg: basis._project_detectors(streams[leg]) for leg, basis in legged.items()}
             for name, legged in self.bases_by_leg.items()
         }
 

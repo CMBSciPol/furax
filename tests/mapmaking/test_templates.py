@@ -275,6 +275,23 @@ class TestSegmentedBasis:
         expected = jnp.stack([basis.project(signal) for signal in signals])
         assert_allclose(_wrap(basis, n_dets).T(signals)['t'], expected, rtol=TOL)
 
+    def test_gram_blocks_match_the_dense_gram(self) -> None:
+        # each segment's block of Bᵀ diag(w) B; blocks of different segments are zero
+        n_seg, k, n_points = 3, 4, 50
+        basis, _, _ = _segmented(n_seg, k, n_points, 660)
+        w = jr.uniform(jr.key(661), (n_points,), minval=0.5, maxval=2.0)
+        b = basis.as_matrix()  # (samp, seg*k)
+        dense = (b.T @ (w[:, None] * b)).reshape(n_seg, k, n_seg, k)
+        expected = jnp.stack([dense[j, :, j, :] for j in range(n_seg)])[:, None]
+        assert_allclose(basis.gram(w), expected, rtol=TOL)
+
+    def test_expands_every_detector_as_it_expands_each(self) -> None:
+        n_dets, n_points = 5, 50
+        basis, _, _ = _segmented(3, 4, n_points, 650)
+        coeffs = jr.normal(jr.key(651), (n_dets, *basis.shape))
+        expected = jnp.stack([basis.expand(c) for c in coeffs])
+        assert_allclose(_wrap(basis, n_dets)({'t': coeffs}), expected, rtol=TOL)
+
 
 # ---------------------------------------------------------------------------
 # WindowedBasis
@@ -764,6 +781,18 @@ class TestTemperatureTemplate:
         freqs = jnp.fft.rfftfreq(n_samps, d=1.0 / fs)
         out_of_band = (freqs <= f0) | (freqs >= f1)
         assert jnp.max(spec[:, out_of_band]) < TOL  # power confined to the band
+
+    def test_detector_batches_match_a_single_pass(self) -> None:
+        # more detectors than one batch, and not a multiple of it
+        n_dets, n_samps, fs, q = 70, 256, 10.0, 4
+        f0, f1 = 0.5, 2.0
+        T = jr.normal(jr.key(971), (n_dets, n_samps))
+        basis = t2p_basis(T, jnp.float64, fit_band=(f0, f1), sample_rate=fs, decimation_factor=q)
+        freqs = jnp.fft.rfftfreq(n_samps, d=1.0 / fs)
+        band = (freqs > f0) & (freqs < f1)
+        filtered = jnp.fft.irfft(jnp.fft.rfft(T, axis=-1) * band, n=n_samps, axis=-1)
+        expected = filtered.reshape(n_dets, n_samps // q, q).mean(axis=-1)
+        assert_allclose(basis.values[:, 0], expected, rtol=TOL, atol=TOL)
 
     def test_decimated_synthesis_is_block_averaged_and_held(self) -> None:
         # decimation_factor=q stores T on a q-coarser grid; lambda = 1 -> synthesis is the

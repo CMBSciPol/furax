@@ -32,7 +32,9 @@ $\lambda \cdot \mathrm{mean}(\mathrm{diag}\, G)$ added to each block before fact
 numerical safeguard rather than a statistical choice.
 """
 
+from collections.abc import Callable
 from dataclasses import field
+from functools import partial
 from math import prod
 
 import jax
@@ -50,6 +52,7 @@ from .templates import (
     Basis,
     NoStructuredView,
     StokesTemplateOperator,
+    TemplateOperator,
     is_basis,
 )
 
@@ -65,7 +68,7 @@ def gram_inverse(
     regularization: float = 0.0,
     *,
     allow_probe: bool = False,
-    batch_size: int = 32,
+    batch_size: int = 8,
 ) -> AbstractLinearOperator:
     """Inverse Gram matrix `(Tᵀ W T)⁻¹` for template operator `T` and weight `W`.
 
@@ -95,16 +98,20 @@ def gram_inverse(
     Raises:
         NotImplementedError: If the structured path does not apply and `allow_probe` is `False`.
     """
+    ones = furax.tree.ones_like(weight.in_structure)
+    diag = weight(ones)
+    # if we wanted to guard against a non-diagonal W, one extra application on a random
+    # vector `x` and a comparison against `diag * x` would catch it with very high probability
     try:
-        ones = furax.tree.ones_like(weight.in_structure)
-        diag = weight(ones)
-        # if we wanted to guard against a non-diagonal W, one extra application on a random
-        # vector `x` and a comparison against `diag * x` would catch it with very high probability
-        return _structured_gram_inverse(operator, diag, regularization, batch_size)
+        structured = partial(
+            _stream_gram_inverse, regularization=regularization, batch_size=batch_size
+        )
+        return _per_leg(operator, diag, structured)
     except NoStructuredView:
         pass  # fall back to dense probe, or raise below
     if allow_probe:
-        return _probed_gram_inverse(operator, weight, regularization)
+        probed = partial(_probed_stream_gram_inverse, regularization=regularization)
+        return _per_leg(operator, diag, probed)
     msg = f'structured Gram construction not possible for {operator}, pass `allow_probe=True`'
     raise NotImplementedError(msg)
 
@@ -158,16 +165,18 @@ def _unit_on_zero_rows(matrix: Float[Array, '*batch k k']) -> Float[Array, '*bat
     return matrix + unseen[..., None] * jnp.eye(matrix.shape[-1], dtype=matrix.dtype)
 
 
-def _structured_gram_inverse(
-    template: AbstractTemplateOperator,
-    diag: PyTree[Array],
-    regularization: float,
-    batch_size: int,
+type _StreamGramInverse = Callable[
+    [dict[str, Basis], Float[Array, 'det samp'], PyTree[jax.ShapeDtypeStruct]],
+    AbstractLinearOperator,
+]
+
+
+def _per_leg(
+    template: AbstractTemplateOperator, diag: PyTree[Array], stream_inverse: _StreamGramInverse
 ) -> AbstractLinearOperator:
+    """The inverse Gram of `template`, built by `stream_inverse` on each stream it covers."""
     if not isinstance(template, StokesTemplateOperator):  # a single stream
-        return _stream_gram_inverse(
-            template.bases, diag, template.in_structure, regularization, batch_size
-        )
+        return stream_inverse(template.bases, diag, template.in_structure)
 
     # Two bases on different legs never share a weighted sample, so each leg is a stream of its
     # own, with one block over the templates it carries rather than one block over every leg.
@@ -177,12 +186,10 @@ def _structured_gram_inverse(
         if (bases := {name: on[leg] for name, on in template.bases_by_leg.items() if leg in on})
     }
     blocks: dict[str, AbstractLinearOperator] = {
-        leg: _stream_gram_inverse(
+        leg: stream_inverse(
             bases,
             getattr(diag, leg),
             {name: template.in_structure[name][leg] for name in bases},
-            regularization,
-            batch_size,
         )
         for leg, bases in by_leg.items()
     }
@@ -313,21 +320,22 @@ class _PerLegOperator(AbstractLinearOperator):
         return out
 
 
-def _probed_gram_inverse(
-    operator: AbstractTemplateOperator,
-    weight: AbstractLinearOperator,
+def _probed_stream_gram_inverse(
+    bases: dict[str, Basis],
+    diag: Float[Array, 'det samp'],
+    in_structure: PyTree[jax.ShapeDtypeStruct],
     regularization: float,
 ) -> AbstractLinearOperator:
-    """The fallback: recover `G = Tᵀ W T` by applying it to one amplitude at a time.
+    """The fallback: recover `G = Tᵀ W T` on one stream by applying it to one amplitude at a time.
 
     Costs `O(K)` applications for `K` amplitudes, but needs nothing of the bases beyond `T` itself.
     Amplitudes carry detectors on their leading axis and `T` couples none of them, so `G` is
-    block-diagonal there and each detector's block is factored on its own.
+    block-diagonal there and each detector's block is factored on its own. Each application
+    expands to a single `(det, samp)` stream, not to every Stokes leg of the TOD.
     """
-    gram_op = (operator.T @ weight @ operator).reduce()
-    in_structure = gram_op.in_structure
+    n_dets = diag.shape[0]
+    operator = TemplateOperator(bases, n_dets)
     leaves, treedef = jax.tree.flatten(in_structure)
-    n_dets = leaves[0].shape[0]
     dtype = leaves[0].dtype
     # amplitudes of every template, concatenated into one index; each leaf owns a slice of it,
     # the same slice its column of `G` occupies
@@ -344,7 +352,7 @@ def _probed_gram_inverse(
             jnp.broadcast_to(part.reshape(s.shape[1:]), s.shape)
             for part, s in zip(jnp.split(flat, split_points), leaves, strict=True)
         ]
-        response = gram_op(treedef.unflatten(parts))
+        response = operator.T(diag * operator(treedef.unflatten(parts)))
         per_leaf = [leaf.reshape(n_dets, -1) for leaf in jax.tree.leaves(response)]
         return jnp.concatenate(per_leaf, axis=-1)  # (n_dets, n_amps)
 

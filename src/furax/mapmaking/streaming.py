@@ -1,9 +1,9 @@
 """Operators that stream a batched operator slice-by-slice across a sharded leading axis."""
 
 import functools
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import field
-from typing import Any, Self
+from typing import Any, NamedTuple, Self
 
 import equinox as eqx
 import jax
@@ -26,6 +26,7 @@ from furax.core.rules import AbstractAdditionRule, AbstractCompositionRule, NoRe
 
 __all__ = [
     'StackSpec',
+    'StreamLayout',
     'StreamOperator',
 ]
 
@@ -110,16 +111,28 @@ class StreamOperator(AbstractLinearOperator):
     shared -- which is this same class with prefix pytree specs. The reduction rules produce mixed
     streams too.
 
+    Consecutive slices may share data: with `group_size > 1`, a sliced segment's array leaves lead
+    either with `slice_count`, one slice each, or with `slice_count // group_size`, one slice per
+    run of `group_size` consecutive slices. The latter is stored once per run rather than repeated
+    for every slice.
+
     An active mesh context is required when calling `mv`; use `jax.set_mesh` beforehand.
     """
 
     segments: tuple[_StreamSegment, ...]
     slice_count: int = field(kw_only=True, metadata={'static': True})
+    group_size: int = field(default=1, kw_only=True, metadata={'static': True})
     in_stacked: StackSpec = field(kw_only=True, metadata={'static': True})
     out_stacked: StackSpec = field(kw_only=True, metadata={'static': True})
 
     @classmethod
-    def diagonal(cls, operator: AbstractLinearOperator, *, slice_count: int | None = None) -> Self:
+    def diagonal(
+        cls,
+        operator: AbstractLinearOperator,
+        *,
+        slice_count: int | None = None,
+        group_size: int = 1,
+    ) -> Self:
         """Block-diagonal stream: each block acts independently on its own slice of the input.
 
         Given a per-slice operator `(*in,) -> (*out,)` with `N` slices, maps
@@ -128,7 +141,9 @@ class StreamOperator(AbstractLinearOperator):
         Args:
             operator: The per-slice operator, stacked along a leading (slice) axis.
             slice_count: The number of slices. Inferred from the operator leaves if omitted;
-                required if the operator has no array leaves.
+                required if the operator has no array leaves, or if `group_size > 1`.
+            group_size: Number of consecutive slices sharing the leaves that lead with
+                `slice_count // group_size`.
 
         Examples:
             Per-slice noise weighting (square blocks, `*in == *out`):
@@ -137,10 +152,18 @@ class StreamOperator(AbstractLinearOperator):
             ...     W = StreamOperator.diagonal(noise_op)  # leaves: (N, *in)
             ...     weighted = W(samples)                  # (N, *in) -> (N, *out)
         """
-        return cls._single_segment(operator, slice_count, in_stacked=True, out_stacked=True)
+        return cls._single_segment(
+            operator, slice_count, in_stacked=True, out_stacked=True, group_size=group_size
+        )
 
     @classmethod
-    def column(cls, operator: AbstractLinearOperator, *, slice_count: int | None = None) -> Self:
+    def column(
+        cls,
+        operator: AbstractLinearOperator,
+        *,
+        slice_count: int | None = None,
+        group_size: int = 1,
+    ) -> Self:
         """Column stream: applies all blocks to the same input and stacks the results.
 
         Given a per-slice operator `(*in,) -> (*out,)` with `N` slices, maps `(*in,) -> (N, *out)`.
@@ -148,7 +171,9 @@ class StreamOperator(AbstractLinearOperator):
         Args:
             operator: The per-slice operator, stacked along a leading (slice) axis.
             slice_count: The number of slices. Inferred from the operator leaves if omitted;
-                required if the operator has no array leaves.
+                required if the operator has no array leaves, or if `group_size > 1`.
+            group_size: Number of consecutive slices sharing the leaves that lead with
+                `slice_count // group_size`.
 
         Examples:
             Pointing matrix from pixel map to time-ordered data:
@@ -157,10 +182,18 @@ class StreamOperator(AbstractLinearOperator):
             ...     H = StreamOperator.column(pointing_op)  # leaves: (N, *out)
             ...     tod = H(pixel_map)                      # (*in,) -> (N, *out)
         """
-        return cls._single_segment(operator, slice_count, in_stacked=False, out_stacked=True)
+        return cls._single_segment(
+            operator, slice_count, in_stacked=False, out_stacked=True, group_size=group_size
+        )
 
     @classmethod
-    def row(cls, operator: AbstractLinearOperator, *, slice_count: int | None = None) -> Self:
+    def row(
+        cls,
+        operator: AbstractLinearOperator,
+        *,
+        slice_count: int | None = None,
+        group_size: int = 1,
+    ) -> Self:
         """Row stream: applies each block to its own input slice and sums the results.
 
         Given a per-slice operator `(*in,) -> (*out,)` with `N` slices, maps `(N, *in) -> (*out,)`.
@@ -168,7 +201,9 @@ class StreamOperator(AbstractLinearOperator):
         Args:
             operator: The per-slice operator, stacked along a leading (slice) axis.
             slice_count: The number of slices. Inferred from the operator leaves if omitted;
-                required if the operator has no array leaves.
+                required if the operator has no array leaves, or if `group_size > 1`.
+            group_size: Number of consecutive slices sharing the leaves that lead with
+                `slice_count // group_size`.
 
         Examples:
             Co-addition of time-ordered data back to a pixel map:
@@ -177,10 +212,18 @@ class StreamOperator(AbstractLinearOperator):
             ...     HT = StreamOperator.row(pointing_op_T)  # leaves: (N, *in)
             ...     pixel_map = HT(tod)                     # (N, *in) -> (*out,)
         """
-        return cls._single_segment(operator, slice_count, in_stacked=True, out_stacked=False)
+        return cls._single_segment(
+            operator, slice_count, in_stacked=True, out_stacked=False, group_size=group_size
+        )
 
     @classmethod
-    def addition(cls, operator: AbstractLinearOperator, *, slice_count: int | None = None) -> Self:
+    def addition(
+        cls,
+        operator: AbstractLinearOperator,
+        *,
+        slice_count: int | None = None,
+        group_size: int = 1,
+    ) -> Self:
         """Addition stream: applies all blocks to the same input and sums the results.
 
         Given a per-slice operator `(*in,) -> (*out,)` with `N` slices, maps `(*in,) -> (*out,)`.
@@ -191,7 +234,9 @@ class StreamOperator(AbstractLinearOperator):
         Args:
             operator: The per-slice operator, stacked along a leading (slice) axis.
             slice_count: The number of slices. Inferred from the operator leaves if omitted;
-                required if the operator has no array leaves.
+                required if the operator has no array leaves, or if `group_size > 1`.
+            group_size: Number of consecutive slices sharing the leaves that lead with
+                `slice_count // group_size`.
 
         Examples:
             Normal equations from a pointing and weighting operator:
@@ -200,7 +245,9 @@ class StreamOperator(AbstractLinearOperator):
             ...     A = (H.T @ W @ H).reduce()  # in_stacked and out_stacked both False
             ...     rhs = A(pixel_map)          # (*in,) -> (*out,)
         """
-        return cls._single_segment(operator, slice_count, in_stacked=False, out_stacked=False)
+        return cls._single_segment(
+            operator, slice_count, in_stacked=False, out_stacked=False, group_size=group_size
+        )
 
     @classmethod
     def block_row(cls, operands: Sequence[AbstractLinearOperator]) -> Self:
@@ -238,8 +285,8 @@ class StreamOperator(AbstractLinearOperator):
         per_slice_out = ops[0].per_slice_out_structure
         ref_mask = jax.tree.leaves(jax.tree.broadcast(ops[0].out_stacked, per_slice_out))
         for op in ops[1:]:
-            if op.slice_count != slice_count:
-                raise ValueError('stream block operands must share slice_count')
+            if op.slice_count != slice_count or op.group_size != ops[0].group_size:
+                raise ValueError('stream block operands must share slice_count and group_size')
             if not structure_equal(op.per_slice_out_structure, per_slice_out):
                 raise ValueError(
                     'stream block operands must share their per-slice junction structure'
@@ -263,6 +310,7 @@ class StreamOperator(AbstractLinearOperator):
         return cls.create(
             tuple(segments),
             slice_count=slice_count,
+            group_size=ops[0].group_size,
             in_stacked=[op.in_stacked for op in ops],
             out_stacked=ops[0].out_stacked,
         )
@@ -296,6 +344,7 @@ class StreamOperator(AbstractLinearOperator):
         slice_count: int,
         in_stacked: StackSpec,
         out_stacked: StackSpec,
+        group_size: int = 1,
     ) -> Self:
         """Build a stream from an explicit segment chain; the general constructor.
 
@@ -304,24 +353,32 @@ class StreamOperator(AbstractLinearOperator):
             slice_count: The number of slices.
             in_stacked: Which input components carry the slice axis.
             out_stacked: Which output components carry the slice axis.
+            group_size: Number of consecutive slices sharing the leaves that lead with
+                `slice_count // group_size`.
 
         Raises:
-            ValueError: If ``segments`` is empty, if a sliced segment has an array leaf that does
-                not lead with ``slice_count``, or a spec is not a prefix of the structure it
-                applies to.
+            ValueError: If `segments` is empty, if `group_size` does not divide `slice_count`, if a
+                sliced segment has an array leaf that leads with neither `slice_count` nor
+                `slice_count // group_size`, or a spec is not a prefix of the structure it applies
+                to.
         """
         if not segments:
             raise ValueError('a stream needs at least one segment')
-        segments = _normalize(segments, slice_count)
+        if group_size < 1 or slice_count % group_size:
+            raise ValueError(
+                f'group_size {group_size} does not divide the slice axis {slice_count}'
+            )
+        segments = _normalize(segments, slice_count, group_size)
         for seg in segments:
             if seg.sliced:
-                _check_sliceable(seg.operator, slice_count)
+                _check_sliceable(seg.operator, slice_count, group_size)
         per_slice_in = segments[-1].in_structure  # rightmost segment is applied first
         in_stacked = _canonical_spec(in_stacked, per_slice_in)
         out_stacked = _canonical_spec(out_stacked, segments[0].out_structure)
         return cls(
             segments,
             slice_count=slice_count,
+            group_size=group_size,
             in_stacked=in_stacked,
             out_stacked=out_stacked,
             in_structure=_expand_structure(per_slice_in, in_stacked, slice_count),
@@ -335,15 +392,19 @@ class StreamOperator(AbstractLinearOperator):
         *,
         in_stacked: bool,
         out_stacked: bool,
+        group_size: int = 1,
     ) -> Self:
         """Wrap a freshly stacked operator as a stream with a single sliced segment."""
         if slice_count is None:
+            if group_size > 1:
+                raise ValueError('slice_count must be given for a grouped stream')
             slice_count = _leading_size(operator)
         return cls.create(
             (_StreamSegment(operator, True),),
             slice_count=slice_count,
             in_stacked=in_stacked,
             out_stacked=out_stacked,
+            group_size=group_size,
         )
 
     @property
@@ -376,6 +437,7 @@ class StreamOperator(AbstractLinearOperator):
         return type(self).create(
             tuple(seg.reduce() for seg in self.segments),
             slice_count=self.slice_count,
+            group_size=self.group_size,
             in_stacked=self.in_stacked,
             out_stacked=self.out_stacked,
         )
@@ -386,6 +448,7 @@ class StreamOperator(AbstractLinearOperator):
         return type(self).create(
             segments=tuple(seg.transpose() for seg in reversed(self.segments)),
             slice_count=self.slice_count,
+            group_size=self.group_size,
             in_stacked=self.out_stacked,
             out_stacked=self.in_stacked,
         )
@@ -403,10 +466,18 @@ class StreamOperator(AbstractLinearOperator):
                 f'of mesh axis {axis!r}'
             )
 
+        if length % self.group_size:
+            raise ValueError(
+                f'the {length} slices of a shard do not split into groups of {self.group_size}'
+            )
+
         # Stacked inputs ride the scan, shared ones are closed over. `eqx.partition` broadcasts a
         # prefix spec itself, so the input side needs no per-leaf mask.
         x_stacked, x_shared = eqx.partition(x, self.in_stacked)
         dyn, static = self._partition()
+        # Per-slice data rides the scan too; per-group data is closed over and indexed by group.
+        dyn, dyn_grouped = _split_per_slice(dyn, self.slice_count)
+        group_size = self.group_size
 
         # Stacked outputs are emitted per step; shared ones accumulate in the carry, then psum.
         per_slice_out = self.per_slice_out_structure
@@ -416,22 +487,29 @@ class StreamOperator(AbstractLinearOperator):
 
         # Explicitly give the input specs so the mesh can use an `Auto` axis.
         # JAX may gather values per device here if they are sharded over the axis.
-        in_pspecs = (P(axis), P(), P(axis), P())
+        in_pspecs = (P(axis), P(axis), P(), P(axis), P())
 
         @jax.shard_map(in_specs=in_pspecs, out_specs=out_pspecs, check_vma=False)
-        def kernel(dyn, static, x_stacked, x_shared):
+        def kernel(dyn, dyn_grouped, static, x_stacked, x_shared):
             def step(carry, args):
-                dyn_i, xs_i = args
-                y = _apply_chain(dyn_i, static, eqx.combine(xs_i, x_shared))
+                i, dyn_i, xs_i = args
+                dyn_g = jax.tree.map(
+                    lambda leaf: jax.lax.dynamic_index_in_dim(
+                        leaf, i // group_size, keepdims=False
+                    ),
+                    dyn_grouped,
+                )
+                y = _apply_chain(eqx.combine(dyn_i, dyn_g), static, eqx.combine(xs_i, x_shared))
                 ys_i, y_shared = eqx.partition(y, out_mask)
                 return tree.add(carry, y_shared), ys_i
 
             # pcast makes the replicated zeros match the varying carry type inside shard_map
             init = jax.lax.pcast(tree.zeros_like(shared_out_structure), axis, to='varying')
-            carry, ys = jax.lax.scan(step, init, (dyn, x_stacked), length=length)
+            xs = (jnp.arange(length), dyn, x_stacked)
+            carry, ys = jax.lax.scan(step, init, xs, length=length)
             return eqx.combine(ys, jax.lax.psum(carry, axis_name=axis))
 
-        return kernel(dyn, static, x_stacked, x_shared)
+        return kernel(dyn, dyn_grouped, static, x_stacked, x_shared)
 
     @property
     def sliced_count(self) -> int:
@@ -518,7 +596,7 @@ class _StreamStreamFusionRule(AbstractCompositionRule):
         # slice_count must be checked explicitly: the all-stacked test below is vacuous on a
         # leafless junction (no leaves to disagree), so it cannot catch a slot-count mismatch on its
         # own.
-        if left.slice_count != right.slice_count:
+        if left.slice_count != right.slice_count or left.group_size != right.group_size:
             raise NoReduction
         junction = right.per_slice_out_structure  # == left.per_slice_in_structure if it fuses
         if not structure_equal(left.per_slice_in_structure, junction):
@@ -538,6 +616,7 @@ class _StreamStreamFusionRule(AbstractCompositionRule):
             StreamOperator.create(
                 segments,
                 slice_count=left.slice_count,
+                group_size=left.group_size,
                 in_stacked=right.in_stacked,
                 out_stacked=left.out_stacked,
             )
@@ -591,6 +670,7 @@ class _HomothetyStreamRule(AbstractCompositionRule):
             StreamOperator.create(
                 segments,
                 slice_count=block.slice_count,
+                group_size=block.group_size,
                 in_stacked=block.in_stacked,
                 out_stacked=block.out_stacked,
             )
@@ -622,7 +702,7 @@ class _StreamStreamAdditionRule(AbstractAdditionRule):
         # An addition stream's structures are per-slice, so `__add__`'s structure check does not
         # force equal n; a mismatched-n sum is legal algebra that must stay unreduced. Mixed specs
         # (previously guaranteed equal by same-class dispatch) must now be checked explicitly too.
-        if left.slice_count != right.slice_count:
+        if left.slice_count != right.slice_count or left.group_size != right.group_size:
             raise NoReduction
         per_slice_in = left.per_slice_in_structure
         per_slice_out = left.per_slice_out_structure
@@ -662,6 +742,7 @@ class _StreamStreamAdditionRule(AbstractAdditionRule):
             StreamOperator.create(
                 tuple(segments),
                 slice_count=left.slice_count,
+                group_size=left.group_size,
                 in_stacked=left.in_stacked,
                 out_stacked=left.out_stacked,
             )
@@ -736,25 +817,28 @@ def _specs_equal(a: StackSpec, b: StackSpec, structure: PyTree[Any]) -> bool:
 
 
 def _unsliceable_leaf_shape(
-    operator: AbstractLinearOperator, slice_count: int
+    operator: AbstractLinearOperator, slice_count: int, group_size: int
 ) -> tuple[int, ...] | None:
-    """Shape of the first array leaf that does not lead with the slice axis, else None."""
+    """Shape of the first array leaf leading with neither the slice axis nor its groups, or None."""
+    leading = {slice_count, slice_count // group_size}
     for leaf in jax.tree.leaves(operator):
-        if eqx.is_array(leaf) and (jnp.ndim(leaf) < 1 or jnp.shape(leaf)[0] != slice_count):
+        if eqx.is_array(leaf) and (jnp.ndim(leaf) < 1 or jnp.shape(leaf)[0] not in leading):
             return jnp.shape(leaf)
     return None
 
 
-def _is_sliceable(operator: AbstractLinearOperator, slice_count: int) -> bool:
-    """Whether every array leaf leads with the slice axis, i.e. the operator can be sliced."""
-    return _unsliceable_leaf_shape(operator, slice_count) is None
+def _is_sliceable(operator: AbstractLinearOperator, slice_count: int, group_size: int) -> bool:
+    """Whether every array leaf leads with the slice axis or its groups, i.e. can be sliced."""
+    return _unsliceable_leaf_shape(operator, slice_count, group_size) is None
 
 
-def _check_sliceable(operator: AbstractLinearOperator, slice_count: int) -> None:
-    """Assert an operator may be sliced: every array leaf leads with the slice axis."""
+def _check_sliceable(operator: AbstractLinearOperator, slice_count: int, group_size: int) -> None:
+    """Assert an operator may be sliced: every array leaf leads with the slice axis or groups."""
     # `is not None`, not truthiness: a 0-d leaf has shape `()`, which is falsy but is a failure
-    if (shape := _unsliceable_leaf_shape(operator, slice_count)) is not None:
-        raise ValueError(f'expected leading axis size {slice_count=}, got shape {shape}')
+    if (shape := _unsliceable_leaf_shape(operator, slice_count, group_size)) is not None:
+        raise ValueError(
+            f'expected leading axis size {slice_count=} ({group_size=}), got shape {shape}'
+        )
 
 
 def _compose(
@@ -773,7 +857,7 @@ def _compose(
 
 
 def _try_merge(
-    left: _StreamSegment, right: _StreamSegment, slice_count: int
+    left: _StreamSegment, right: _StreamSegment, slice_count: int, group_size: int
 ) -> _StreamSegment | None:
     """Compose two adjacent segments into one, or return None if that would change what they do.
 
@@ -793,20 +877,20 @@ def _try_merge(
         return None
     sliced = left.sliced or right.sliced
     operator = (left.operator @ right.operator).reduce()
-    if sliced and not _is_sliceable(operator, slice_count):
+    if sliced and not _is_sliceable(operator, slice_count, group_size):
         return None
     return _StreamSegment(operator, sliced)
 
 
 def _normalize(
-    segments: tuple[_StreamSegment, ...], slice_count: int
+    segments: tuple[_StreamSegment, ...], slice_count: int, group_size: int
 ) -> tuple[_StreamSegment, ...]:
     """Drop constant identities and merge adjacent segments wherever that is legal."""
     merged: list[_StreamSegment] = []
     for seg in segments:
         if seg.is_identity:
             continue  # contributes nothing at all
-        candidate = _try_merge(merged[-1], seg, slice_count) if merged else None
+        candidate = _try_merge(merged[-1], seg, slice_count, group_size) if merged else None
         if candidate is not None:
             merged[-1] = candidate
         else:
@@ -828,3 +912,82 @@ def _apply_chain(
     for dyn_i, static_i in zip(reversed(dyn), reversed(static), strict=True):
         y = eqx.combine(dyn_i, static_i)(y)
     return y
+
+
+def _split_per_slice[T](tree: T, slice_count: int) -> tuple[T, T]:
+    """`tree`'s array leaves leading with `slice_count` (one per slice), and the others."""
+    return eqx.partition(
+        tree, lambda leaf: eqx.is_array(leaf) and jnp.shape(leaf)[0] == slice_count
+    )
+
+
+class StreamLayout(NamedTuple):
+    """How stacked data lies along a stream's slice axis.
+
+    There are `slice_count` slices. Leaves leading with `slice_count` hold one slice each; with
+    `group_size > 1`, leaves leading with `slice_count // group_size` hold one slice per run of
+    `group_size` consecutive slices, which share it. The methods build streams over data laid out
+    this way.
+
+    Examples:
+        Pointing and weights stacked over 3 observations of 2 detector batches each, the
+        boresight stored once per observation:
+
+        >>> layout = StreamLayout(slice_count=6, group_size=2)
+        >>> with jax.set_mesh(jax.make_mesh((1,), ('batch',))):
+        ...     H = layout.column(pointing_op)  # (*in,) -> (6, *out)
+        ...     W = layout.diagonal(weight_op)  # (6, *out) -> (6, *out)
+    """
+
+    slice_count: int
+    """The number of slices."""
+    group_size: int = 1
+    """How many consecutive slices share the leaves leading with `slice_count // group_size`."""
+
+    def diagonal(self, operator: AbstractLinearOperator) -> StreamOperator:
+        """[`StreamOperator.diagonal`][] over this layout."""
+        return StreamOperator.diagonal(
+            operator, slice_count=self.slice_count, group_size=self.group_size
+        )
+
+    def column(self, operator: AbstractLinearOperator) -> StreamOperator:
+        """[`StreamOperator.column`][] over this layout."""
+        return StreamOperator.column(
+            operator, slice_count=self.slice_count, group_size=self.group_size
+        )
+
+    def row(self, operator: AbstractLinearOperator) -> StreamOperator:
+        """[`StreamOperator.row`][] over this layout."""
+        return StreamOperator.row(
+            operator, slice_count=self.slice_count, group_size=self.group_size
+        )
+
+    def addition(self, operator: AbstractLinearOperator) -> StreamOperator:
+        """[`StreamOperator.addition`][] over this layout."""
+        return StreamOperator.addition(
+            operator, slice_count=self.slice_count, group_size=self.group_size
+        )
+
+    def vmap[T](self, fn: Callable[[T], PyTree[Any]], tree: T) -> PyTree[Any]:
+        """`fn` mapped over the slices of `tree`, outputs stacked over the slices.
+
+        Each slice sees its own slice of the per-slice leaves and its group's slice of the
+        others. The mapping is compiled, so only the leaves `fn` reads are sliced.
+        """
+        per_slice, per_group = _split_per_slice(tree, self.slice_count)
+        group_size = self.group_size
+
+        @eqx.filter_jit
+        def mapped(per_slice: T, per_group: T) -> PyTree[Any]:
+            def one(slice_i: T, i: Array) -> PyTree[Any]:
+                group_i = jax.tree.map(
+                    lambda leaf: jax.lax.dynamic_index_in_dim(
+                        leaf, i // group_size, keepdims=False
+                    ),
+                    per_group,
+                )
+                return fn(eqx.combine(slice_i, group_i))
+
+            return eqx.filter_vmap(one)(per_slice, jnp.arange(self.slice_count))
+
+        return mapped(per_slice, per_group)

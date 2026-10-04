@@ -78,6 +78,7 @@ def test_bucket_detector_batches(n_dets, batch_size, n_batches, per_batch):
     bucket = Bucket.create(shapes, [0, 1, 2], n_devices=2, detector_batch_size=batch_size)
     assert (bucket.n_batches, bucket.batch_size) == (n_batches, per_batch)
     assert bucket.n_entries == bucket.n_slots * n_batches == 4 * n_batches
+    assert bucket.stream_layout == (bucket.n_entries, n_batches)
 
 
 def test_bucket_rejects_an_envelope_of_partial_batches():

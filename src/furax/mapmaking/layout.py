@@ -66,6 +66,7 @@ from typing import Self
 import numpy as np
 
 from ._observation import ObservationBufferShape
+from .streaming import StreamLayout
 
 __all__ = [
     'Bucket',
@@ -179,6 +180,11 @@ class Bucket:
     def n_entries(self) -> int:
         """Number of entries, one per detector batch of each slot."""
         return self.n_slots * self.n_batches
+
+    @property
+    def stream_layout(self) -> StreamLayout:
+        """The entries as a stream lays them out, the batches of a slot sharing its common data."""
+        return StreamLayout(self.n_entries, self.n_batches)
 
     def merge_detector_batches(self, per_entry: np.ndarray) -> np.ndarray:
         """Per-slot values from per-entry ones: `(n_entries, batch_size, ...)` to `(n_slots, ...)`.

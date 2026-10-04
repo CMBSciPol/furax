@@ -11,7 +11,7 @@ from numpy.testing import assert_allclose
 
 from furax import AbstractLinearOperator, tree
 from furax.core import BlockColumnOperator, BlockRowOperator, DiagonalOperator, HomothetyOperator
-from furax.mapmaking.streaming import StreamOperator, _StreamSegment
+from furax.mapmaking.streaming import StreamLayout, StreamOperator, _StreamSegment
 
 # ---------------------------------------------------------------------------
 # Minimal stacked operator for testing
@@ -88,9 +88,9 @@ def _spec(stacked: bool) -> P:
     return P('obs', None) if stacked else P(None)
 
 
-def _boundary(stacked: bool, size: int) -> jax.Array:
+def _boundary(stacked: bool, size: int, *, slice_count: int = N_OBS) -> jax.Array:
     """Random input/output for a boundary component, shaped and sharded to match its spec."""
-    shape = (N_OBS, size) if stacked else (size,)
+    shape = (slice_count, size) if stacked else (size,)
     return jax.device_put(
         RNG.standard_normal(shape, dtype=np.float64), P('obs') if stacked else P()
     )
@@ -153,6 +153,71 @@ def test_layout_transpose(
         out_stacked=in_stacked,
     )
     assert_allclose(op_T(y), expected, rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Grouped slices: data shared by runs of consecutive slices is stored once per run
+# ---------------------------------------------------------------------------
+
+GROUP = 2
+N_MID = 4
+
+
+def _grouped_and_repeated() -> tuple[AbstractLinearOperator, AbstractLinearOperator]:
+    """`A_i @ B_g` with `B` stored once per group of slices, and the same with `B` repeated."""
+    slice_count = GROUP * N_OBS
+    per_slice = _make_blocks(P('obs'), slice_count=slice_count, n_in=N_MID)
+    per_group = _make_blocks(P('obs'), slice_count=N_OBS, n_out=N_MID)
+    matrices = np.repeat(np.asarray(jax.device_get(per_group.matrix)), GROUP, axis=0)
+    repeated = _TestOp(jax.device_put(matrices, P('obs')), in_structure=per_group.in_structure)
+    return per_slice @ per_group, per_slice @ repeated
+
+
+@pytest.mark.parametrize('make_stream, in_stacked, out_stacked', _LAYOUTS)
+def test_grouped_slices_share_their_group_data(
+    make_stream: Callable[..., StreamOperator], in_stacked: bool, out_stacked: bool
+) -> None:
+    grouped, repeated = _grouped_and_repeated()
+    slice_count = GROUP * N_OBS
+    op = make_stream(grouped, slice_count=slice_count, group_size=GROUP)
+    reference = make_stream(repeated, slice_count=slice_count)
+    x = _boundary(in_stacked, N_IN, slice_count=slice_count)
+    assert_allclose(op(x), reference(x), rtol=1e-10)
+    y = _boundary(out_stacked, N_OUT, slice_count=slice_count)
+    assert_allclose(op.T(y), reference.T(y), rtol=1e-10)
+
+
+def test_grouped_streams_fuse() -> None:
+    grouped, repeated = _grouped_and_repeated()
+    slice_count = GROUP * N_OBS
+    H = StreamOperator.column(grouped, slice_count=slice_count, group_size=GROUP)
+    reduced = (H.T @ H).reduce()
+    assert isinstance(reduced, StreamOperator)
+    assert reduced.group_size == GROUP
+    reference = StreamOperator.column(repeated, slice_count=slice_count)
+    x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
+    assert_allclose(reduced(x), (reference.T @ reference)(x), rtol=1e-10)
+
+
+def test_layout_vmap_sees_each_slice_and_its_group() -> None:
+    layout = StreamLayout(slice_count=GROUP * N_OBS, group_size=GROUP)
+    per_slice = RNG.standard_normal((layout.slice_count, N_IN))
+    per_group = RNG.standard_normal((N_OBS, N_IN))
+    out = layout.vmap(lambda t: t[0] * t[1], (jnp.asarray(per_slice), jnp.asarray(per_group)))
+    assert_allclose(out, per_slice * np.repeat(per_group, GROUP, axis=0))
+
+
+def test_layout_builds_grouped_streams() -> None:
+    grouped, _ = _grouped_and_repeated()
+    layout = StreamLayout(slice_count=GROUP * N_OBS, group_size=GROUP)
+    op = layout.column(grouped)
+    assert (op.slice_count, op.group_size) == (layout.slice_count, layout.group_size)
+    assert (op.in_stacked, op.out_stacked) == (False, True)
+
+
+def test_group_must_divide_the_batch_axis() -> None:
+    with pytest.raises(ValueError, match='does not divide'):
+        StreamOperator.diagonal(_make_blocks(), slice_count=N_OBS, group_size=3)
 
 
 # ---------------------------------------------------------------------------
@@ -763,6 +828,16 @@ class TestSharded:
         )
         assert 'obs' not in y[0].sharding.spec  # sky leg reduced, hence replicated
         assert y[1].sharding.spec == P('obs', None)  # amplitude leg still sharded
+
+    def test_grouped_slices(self) -> None:
+        # each shard holds whole groups, which it indexes locally
+        grouped, repeated = _grouped_and_repeated()
+        slice_count = GROUP * N_OBS
+        op = StreamOperator.column(grouped, slice_count=slice_count, group_size=GROUP)
+        reference = StreamOperator.column(repeated, slice_count=slice_count)
+        x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
+        assert_allclose(op(x), reference(x), rtol=1e-10)
+        assert_allclose((op.T @ op).reduce()(x), (reference.T @ reference)(x), rtol=1e-10)
 
     def test_indivisible_slice_axis_is_rejected(self) -> None:
         # the scan length is per shard, so a slice axis the shards do not divide has no valid one.

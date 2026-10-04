@@ -1,6 +1,6 @@
 import pickle
 from abc import abstractmethod
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 from logging import Logger
@@ -20,6 +20,7 @@ from astropy.wcs import WCS
 from fastquat import Quaternion
 from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils as mhu
+from jax.extend.core import Literal as JaxprLiteral
 from jax.sharding import AxisType, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jax.tree_util import register_dataclass
@@ -389,20 +390,26 @@ class MultiObservationMapMaker[T]:
 
             # Per-bucket stream operators. Everything below sums over the buckets: each is a
             # stream of its own length, so the sums stay plain additions of stream operators.
-            H = [StreamOperator.column(bm.model.H) for bm in acc.buckets]
-            W = [StreamOperator.diagonal(bm.model.W) for bm in acc.buckets]
+            layouts = [bucket.stream_layout for bucket in self.layout.buckets]
+            H = [layout.column(bm.model.H) for bm, layout in zip(acc.buckets, layouts, strict=True)]
+            W = [
+                layout.diagonal(bm.model.W) for bm, layout in zip(acc.buckets, layouts, strict=True)
+            ]
             W_diag = (
                 W
                 if self.config.binned
                 else [
-                    StreamOperator.diagonal(eqx.filter_vmap(ObservationModel.diag_W)(bm.model))
-                    for bm in acc.buckets
+                    layout.diagonal(
+                        # Map only the inverse noise: the mask is W's own, used as it is.
+                        WeightOperator.create(
+                            layout.vmap(lambda m: m.diag_W().weight, bm.model), bm.model.M
+                        )
+                    )
+                    for bm, layout in zip(acc.buckets, layouts, strict=True)
                 ]
             )
-            # Specify leading axis dimension because F can be trivial (no array leaves)
             F = [
-                StreamOperator.diagonal(bm.model.F, slice_count=bucket.n_entries)
-                for bm, bucket in zip(acc.buckets, self.layout.buckets, strict=True)
+                layout.diagonal(bm.model.F) for bm, layout in zip(acc.buckets, layouts, strict=True)
             ]
 
             # Diagonal pixel system for the block-Jacobi preconditioner
@@ -493,12 +500,14 @@ class MultiObservationMapMaker[T]:
         Returns:
             The system to solve, in the unknowns described above.
         """
+        layouts = [bucket.stream_layout for bucket in self.layout.buckets]
         # Implicit templates fold into the weight (marginal deprojection).
         W = list(W)
         for b, bm in enumerate(acc.buckets):
             if bm.templates is not None and (implicit := bm.templates.implicit) is not None:
-                Ti = StreamOperator.diagonal(implicit.operator)
-                G = StreamOperator.diagonal(implicit.gram_inverse)
+                layout = layouts[b]
+                Ti = layout.diagonal(implicit.operator)
+                G = layout.diagonal(implicit.gram_inverse)
                 W[b] = (W[b] - W[b] @ Ti @ G @ Ti.T @ W[b]).reduce()
 
         # Explicit templates are configured for the run, so every bucket carries them or none.
@@ -519,8 +528,8 @@ class MultiObservationMapMaker[T]:
             )
             return _MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False)
 
-        Te = [StreamOperator.diagonal(e.operator) for e in explicit]
-        Ge = [StreamOperator.diagonal(e.gram_inverse) for e in explicit]
+        Te = [layout.diagonal(e.operator) for e, layout in zip(explicit, layouts, strict=True)]
+        Ge = [layout.diagonal(e.gram_inverse) for e, layout in zip(explicit, layouts, strict=True)]
         amplitudes_structure = [te.in_structure for te in Te]
 
         # Joint sky + explicit-amplitude system. The unknowns are the selected sky pixels and one
@@ -623,13 +632,29 @@ class MultiObservationMapMaker[T]:
 
                 # One detector batch at a time: nothing computed from the TOD outlives its batch,
                 # each batch contributing to the sums and stacking its own model and templates.
-                def detector_step(carry, j):
+                def batch(carry, j):
                     start = j * batch_size
                     data = slice_detectors(observation, start, batch_size)
                     tod_j = slice_detector_axis(tod, start, batch_size)
                     return accumulate(carry, data, tod_j, padding, use)
 
-                return jax.lax.scan(detector_step, carry, jnp.arange(n_batches))
+                # What the batches share (boresight pointing, shared template bases, ...) is kept
+                # once per observation rather than once per batch.
+                # The shared leaves ride the carry, each batch writing the same values, and come
+                # out once; the others are stacked per batch.
+                per_batch, out_shape = _depends_on_argument(lambda j: batch(carry, j)[1], 0)
+                shared_shape = eqx.filter(out_shape, per_batch, inverse=True)
+                shared = jax.lax.pcast(furax.tree.zeros_like(shared_shape), axis, to='varying')
+
+                def detector_step(carry, j):
+                    carry, _ = carry
+                    carry, out = batch(carry, j)
+                    batched, shared = eqx.partition(out, per_batch)
+                    return (carry, shared), batched
+
+                init = (carry, shared)
+                (carry, shared), batched = jax.lax.scan(detector_step, init, jnp.arange(n_batches))
+                return carry, (batched, shared)
 
             def fill_observation_gaps(data, padding):
                 obs = ObservationModel.create(data, padding, config, landscape)
@@ -695,8 +720,11 @@ class MultiObservationMapMaker[T]:
             # The axis spans every device of the job, so this is the reduction over the bucket.
             hits, rhs = jax.lax.psum((hits, rhs), axis)
             if n_batches > 1:
-                # (slot, batch, ...) -> (slot·batch, ...): each detector batch an entry of its own
-                stacked = jax.tree.map(lambda x: x.reshape(-1, *x.shape[2:]), stacked)
+                # (slot, batch, ...) -> (slot·batch, ...): each detector batch an entry of its own,
+                # the shared data staying one per slot (see `Bucket.stream_layout`)
+                batched, shared = stacked
+                batched = jax.tree.map(lambda x: x.reshape(-1, *x.shape[2:]), batched)
+                stacked = eqx.combine(batched, shared)
             model, templates, amp_rhs = stacked
             return hits, rhs, _BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
 
@@ -1511,3 +1539,24 @@ class _QUModulationOperator(AbstractLinearOperator):
 
     def mv(self, x: StokesType) -> Float[Array, '...']:
         return self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u
+
+
+def _depends_on_argument(
+    fn: Callable[[Any], PyTree[Any]], arg: Any
+) -> tuple[PyTree[bool], PyTree[jax.ShapeDtypeStruct]]:
+    """Which output leaves of `fn` depend on its argument, and the output structure.
+
+    Dependence is followed through the traced program: a leaf computed only from values `fn`
+    closes over is the same whatever the argument. It is conservative, an operation with any
+    dependent input making all its outputs dependent, so a leaf is at worst reported dependent
+    when it is not. Closed-over values count as fixed, so `fn` must close over nothing that its
+    caller later varies.
+    """
+    closed, out_shape = jax.make_jaxpr(fn, return_shape=True)(arg)
+    jaxpr = closed.jaxpr
+    dependent = set(jaxpr.invars)
+    for eqn in jaxpr.eqns:
+        if any(not isinstance(v, JaxprLiteral) and v in dependent for v in eqn.invars):
+            dependent.update(eqn.outvars)
+    flags = [not isinstance(v, JaxprLiteral) and v in dependent for v in jaxpr.outvars]
+    return jax.tree.unflatten(jax.tree.structure(out_shape), flags), out_shape

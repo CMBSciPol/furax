@@ -422,6 +422,24 @@ class ObservationBufferShape(NamedTuple):
         """
         return self.detector_count * self.sample_count
 
+    def whole_detector_batches(self, batch_size: int | None) -> Self:
+        """This shape with its detector count padded up to whole batches of `batch_size`.
+
+        An observation with no more detectors than one batch is a single batch, left unpadded.
+
+        Args:
+            batch_size: Detectors per batch; `None` for a single batch of every detector.
+
+        Examples:
+            >>> ObservationBufferShape(100, 10).whole_detector_batches(64).detector_count
+            128
+            >>> ObservationBufferShape(50, 10).whole_detector_batches(64).detector_count
+            50
+        """
+        if batch_size is None or self.detector_count <= batch_size:
+            return self
+        return self._replace(detector_count=-(-self.detector_count // batch_size) * batch_size)
+
 
 class AbstractLazyObservation[T](ABC):
     """Deferred handle to an observation: opens its backing store only when read.

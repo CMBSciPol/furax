@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Collection, Sequence
+from dataclasses import replace
 from typing import Any, Self
 
 import jax
@@ -428,3 +429,37 @@ class ObservationReader[T](AbstractReader):
         data = observation.get_data(data_field_names)
         field_reader = self._get_data_field_readers()
         return {field: field_reader[field](data) for field in data_field_names}
+
+
+_PER_DETECTOR_FIELDS = (
+    ReaderField.SAMPLE_DATA,
+    ReaderField.VALID_SAMPLE_MASKS,
+    ReaderField.DETECTOR_QUATERNIONS,
+    ReaderField.NOISE_MODEL_FITS,
+)
+"""Fields with a detector axis, always their second-to-last: `(..., det, samp)` or `(..., det, 4)`.
+
+Every other field except the metadata is shared by all detectors.
+"""
+
+
+def slice_detector_axis(field: PyTree[Array], start: Array, size: int) -> PyTree[Array]:
+    """`size` detectors from `start` of a per-detector field, such as the TOD."""
+    return jax.tree.map(
+        lambda x: jax.lax.dynamic_slice_in_dim(x, start, size, axis=x.ndim - 2), field
+    )
+
+
+def slice_detectors(data: dict[str, Any], start: Array, size: int) -> dict[str, Any]:
+    """The fields read for one observation, restricted to `size` detectors from `start`.
+
+    Shared fields (timestamps, boresight, scan masks, ...) are kept whole.
+    """
+    sliced = dict(data)
+    for field in _PER_DETECTOR_FIELDS:
+        if field in data:
+            sliced[field] = slice_detector_axis(data[field], start, size)
+    if (metadata := data.get(ReaderField.METADATA)) is not None:
+        detector_uids = jax.lax.dynamic_slice_in_dim(metadata.detector_uids, start, size)
+        sliced[ReaderField.METADATA] = replace(metadata, detector_uids=detector_uids)
+    return sliced

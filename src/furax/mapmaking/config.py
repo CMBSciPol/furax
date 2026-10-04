@@ -625,8 +625,12 @@ class TemplatesConfig:
     regularization: float = field(default=0.0, metadata={'template': False})
     """Ridge regularization strength applied to the template regression."""
 
-    gram_batch_size: int = field(default=32, metadata={'template': False})
-    """Detector batch size for Gram inversion."""
+    gram_batch_size: int = field(default=8, metadata={'template': False})
+    """Number of detectors whose Grams are assembled together.
+
+    Each detector's Gram takes temporary memory comparable to a few of its own timestreams, so this
+    stays small; it is applied within each of [`MapMakingConfig.detector_batch_size`][]'s batches.
+    """
 
     @classmethod
     def full_defaults(cls) -> Self:
@@ -854,6 +858,17 @@ class MapMakingConfig:
     [`furax.mapmaking.layout`][] for how to choose it.
     """
 
+    detector_batch_size: int | None = 64
+    """Number of an observation's detectors processed together by the multi-observation mapmaker.
+
+    Each observation is split into batches of this many detectors, handled like observations of
+    their own: everything computed from the TOD, beyond the TOD itself, then takes memory in
+    proportion to the batch rather than to the whole observation. An observation with more
+    detectors is padded up to whole batches; one with fewer is a single batch. `None` processes
+    every detector of an observation at once, as is always done under the nested gap treatment,
+    whose weight spans every detector of an observation.
+    """
+
     sotodlib: SotodlibConfig | None = None
     """Options specific to the sotodlib interface. `None` when not using sotodlib data."""
 
@@ -861,6 +876,10 @@ class MapMakingConfig:
         """Validate cross-field constraints that hold regardless of which mapmaker runs."""
         if self.max_buckets < 1:
             raise ValueError(f'max_buckets must be >= 1, got {self.max_buckets}')
+        if self.detector_batch_size is not None and self.detector_batch_size < 1:
+            raise ValueError(
+                f'detector_batch_size must be >= 1 or None, got {self.detector_batch_size}'
+            )
         if (templates := self.templates) is not None:
             if templates.t2p is not None:
                 if not self.demodulated:

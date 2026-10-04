@@ -126,6 +126,12 @@ def test_max_buckets_must_be_positive(max_buckets: int):
         MapMakingConfig(max_buckets=max_buckets)
 
 
+@pytest.mark.parametrize('detector_batch_size', [0, -1])
+def test_detector_batch_size_must_be_positive(detector_batch_size: int):
+    with pytest.raises(ValueError, match='detector_batch_size must be >= 1'):
+        MapMakingConfig(detector_batch_size=detector_batch_size)
+
+
 class TestExplicitOnlyTemplates:
     """T2P and ground templates don't support implicit deprojection."""
 

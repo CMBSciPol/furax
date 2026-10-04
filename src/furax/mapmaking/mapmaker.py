@@ -64,7 +64,7 @@ from ._observation import (
     ObservationBufferShape,
     ReaderField,
 )
-from ._reader import ObservationReader
+from ._reader import ObservationReader, slice_detector_axis, slice_detectors
 from .config import (
     GapTreatment,
     LandscapeConfig,
@@ -214,8 +214,8 @@ class MultiObservationMapMaker[T]:
         out. After the gather, they inherit the largest successful probe shape so they cannot form
         an undersized bucket of their own.
 
-        The sample count is raised to `_minimum_buffer_samples`, so the buckets and the readers
-        size their buffers identically.
+        The sample count is raised to `_minimum_buffer_samples`, and the detector count to whole
+        detector batches, so the buckets and the readers size their buffers identically.
         """
         n_obs = self.n_observations
         n_proc = jax.process_count()
@@ -235,7 +235,9 @@ class MultiObservationMapMaker[T]:
             rows[failed, :3] = rows[~failed, :3].max(axis=0)
         minimum_samples = self._minimum_buffer_samples
         shapes = [
-            ObservationBufferShape(int(row[0]), max(int(row[1]), minimum_samples), int(row[2]))
+            ObservationBufferShape(
+                int(row[0]), max(int(row[1]), minimum_samples), int(row[2])
+            ).whole_detector_batches(self._detector_batch_size)
             for row in rows
         ]
         return shapes, failed
@@ -252,12 +254,25 @@ class MultiObservationMapMaker[T]:
             minimum = max(minimum, correlation_length)
         return minimum
 
+    @property
+    def _detector_batch_size(self) -> int | None:
+        """`config.detector_batch_size`, or `None` where the weight spans every detector."""
+        config = self.config
+        # The nested weight's inner solve and flagged-sample budget span the detectors it is
+        # given: on a batch, it would no longer be the observation's weight.
+        if config.gaps.treatment == GapTreatment.NESTED and not config.binned:
+            return None
+        return config.detector_batch_size
+
     @cached_property
     def layout(self) -> SlotLayout:
         """How the observations are bucketed and laid out over the devices."""
         shapes, _ = self._probe_shapes
         return SlotLayout.create(
-            shapes, n_devices=jax.device_count(), max_buckets=self.config.max_buckets
+            shapes,
+            n_devices=jax.device_count(),
+            max_buckets=self.config.max_buckets,
+            detector_batch_size=self._detector_batch_size,
         )
 
     @cached_property
@@ -386,7 +401,7 @@ class MultiObservationMapMaker[T]:
             )
             # Specify leading axis dimension because F can be trivial (no array leaves)
             F = [
-                StreamOperator.diagonal(bm.model.F, n_lead=bucket.n_slots)
+                StreamOperator.diagonal(bm.model.F, n_lead=bucket.n_entries)
                 for bm, bucket in zip(acc.buckets, self.layout.buckets, strict=True)
             ]
 
@@ -440,7 +455,10 @@ class MultiObservationMapMaker[T]:
                 sky_estimate, per_bucket = result.solution
                 # Every device holds the same replicated copy after the gather, so the host
                 # array is complete on every process; then back to observation order.
-                gathered = [self._gather(a) for a in per_bucket]
+                gathered = [
+                    jax.tree.map(bucket.merge_detector_batches, self._gather(a))
+                    for bucket, a in zip(self.layout.buckets, per_bucket, strict=True)
+                ]
                 amplitudes = jax.tree.map(
                     lambda *leaves: self.layout.to_observation_order(leaves), *gathered
                 )
@@ -574,23 +592,73 @@ class MultiObservationMapMaker[T]:
         items = self.distribute(bucket.item_of_slot[local])
         is_real = self.distribute(bucket.is_real[local])
         axis = jax.sharding.get_abstract_mesh().axis_names[0]
+        n_batches, batch_size = bucket.n_batches, bucket.batch_size
 
         def kernel(items, is_real):
             def step(carry, args):
-                hits_acc, rhs_acc = carry
                 i, real = args
 
                 # Skip the load for padding slots: only the real branch hits the io_callback,
                 # so a padded observation is never read or preprocessed just to be masked away.
-                data, padding, valid = jax.lax.cond(
+                observation, padding, valid = jax.lax.cond(
                     real,
                     lambda: reader.read(i),
                     lambda: reader.read_filler(),
                 )
+
+                use = real & valid
+                tod = raw = observation[ReaderField.SAMPLE_DATA]
+                if fill_gaps:
+                    # The fill solves for every detector of the observation at once, ahead of the
+                    # detector batches, so that they all see the same solve. The models are still
+                    # built from the raw TOD.
+                    tod = jax.lax.cond(
+                        use,
+                        lambda: fill_observation_gaps(observation, padding),
+                        lambda: raw,  # nothing to fill
+                    )
+
+                if n_batches == 1:
+                    return accumulate(carry, observation, tod, padding, use)
+
+                # One detector batch at a time: nothing computed from the TOD outlives its batch,
+                # each batch contributing to the sums and stacking its own model and templates.
+                def detector_step(carry, j):
+                    start = j * batch_size
+                    data = slice_detectors(observation, start, batch_size)
+                    tod_j = slice_detector_axis(tod, start, batch_size)
+                    return accumulate(carry, data, tod_j, padding, use)
+
+                return jax.lax.scan(detector_step, carry, jnp.arange(n_batches))
+
+            def fill_observation_gaps(data, padding):
+                obs = ObservationModel.create(data, padding, config, landscape)
+                # Only reached under GapTreatment.FILL, where W is the plain inner-mask weight.
+                assert isinstance(obs.W, WeightOperator)
+                # Optional M_b N M_b preconditioner (covariance from the noise model).
+                preconditioner = None
+                if config.gaps.fill_options.precondition:
+                    cov = obs.noise_operator(config.weighting.correlation_length, inverse=False)
+                    m_bad = obs.M.complement()
+                    preconditioner = (m_bad @ cov @ m_bad).reduce()
+                return gap_fill(
+                    jax.random.key(config.gaps.fill_options.seed),
+                    data[ReaderField.SAMPLE_DATA],
+                    obs.W.weight,
+                    obs.M,
+                    rate=obs.sample_rate,
+                    max_cg_steps=config.gaps.fill_options.max_steps,
+                    rtol=config.gaps.fill_options.rtol,
+                    preconditioner=preconditioner,
+                    metadata=data[ReaderField.METADATA],
+                )
+
+            def accumulate(carry, data, tod, padding, use):
+                hits_acc, rhs_acc = carry
                 obs = ObservationModel.create(data, padding, config, landscape)
 
                 # Padding/failed observations contribute nothing
-                obs.M = obs.M.restrict(real & valid)
+                obs.M = obs.M.restrict(use)
 
                 # Hit map = nearest-neighbour coverage of the sample mask
                 hit_pointing = PointingOperator.create(
@@ -603,38 +671,6 @@ class MultiObservationMapMaker[T]:
                 # The mask is (ndet, nsamp) even in the demodulated case (all legs share the same)
                 masked = masked_tod.data if isinstance(masked_tod, Stokes) else masked_tod
                 hits_i = jnp.int64(hit_pointing.T(StokesI(masked)).i)
-
-                # RHS contribution (optionally gap-filled).
-                def func_gapfill(tod):
-                    # Only reached under GapTreatment.FILL, where W is the plain inner-mask weight.
-                    assert isinstance(obs.W, WeightOperator)
-                    # Optional M_b N M_b preconditioner (covariance from the noise model).
-                    preconditioner = None
-                    if config.gaps.fill_options.precondition:
-                        cov = obs.noise_operator(config.weighting.correlation_length, inverse=False)
-                        m_bad = obs.M.complement()
-                        preconditioner = (m_bad @ cov @ m_bad).reduce()
-                    return gap_fill(
-                        jax.random.key(config.gaps.fill_options.seed),
-                        tod,
-                        obs.W.weight,
-                        obs.M,
-                        rate=obs.sample_rate,
-                        max_cg_steps=config.gaps.fill_options.max_steps,
-                        rtol=config.gaps.fill_options.rtol,
-                        preconditioner=preconditioner,
-                        metadata=data[ReaderField.METADATA],
-                    )
-
-                # Use Python `if` for static conditions, so inactive branches are not traced.
-                tod = data[ReaderField.SAMPLE_DATA]
-                if fill_gaps:
-                    tod = jax.lax.cond(
-                        real & valid,
-                        func_gapfill,
-                        lambda _: _,  # return raw data as-is
-                        tod,
-                    )
 
                 if not build_templates:
                     if fill_gaps:
@@ -658,6 +694,9 @@ class MultiObservationMapMaker[T]:
             (hits, rhs), stacked = jax.lax.scan(step, (init_hits, init_rhs), (items, is_real))
             # The axis spans every device of the job, so this is the reduction over the bucket.
             hits, rhs = jax.lax.psum((hits, rhs), axis)
+            if n_batches > 1:
+                # (slot, batch, ...) -> (slot·batch, ...): each detector batch an entry of its own
+                stacked = jax.tree.map(lambda x: x.reshape(-1, *x.shape[2:]), stacked)
             model, templates, amp_rhs = stacked
             return hits, rhs, _BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
 

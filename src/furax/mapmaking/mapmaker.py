@@ -401,7 +401,7 @@ class MultiObservationMapMaker[T]:
             )
             # Specify leading axis dimension because F can be trivial (no array leaves)
             F = [
-                StreamOperator.diagonal(bm.model.F, n_lead=bucket.n_entries)
+                StreamOperator.diagonal(bm.model.F, slice_count=bucket.n_entries)
                 for bm, bucket in zip(acc.buckets, self.layout.buckets, strict=True)
             ]
 

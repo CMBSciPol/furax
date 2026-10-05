@@ -625,7 +625,7 @@ class TemplatesConfig:
     regularization: float = field(default=0.0, metadata={'template': False})
     """Ridge regularization strength applied to the template regression."""
 
-    gram_batch_size: int = field(default=8, metadata={'template': False})
+    gram_batch_size: int = field(default=4, metadata={'template': False})
     """Number of detectors whose Grams are assembled together.
 
     Each detector's Gram takes temporary memory comparable to a few of its own timestreams, so this
@@ -858,7 +858,7 @@ class MapMakingConfig:
     [`furax.mapmaking.layout`][] for how to choose it.
     """
 
-    detector_batch_size: int | None = 64
+    detector_batch_size: int | None = 16
     """Number of an observation's detectors processed together by the multi-observation mapmaker.
 
     Each observation is split into batches of this many detectors, handled like observations of

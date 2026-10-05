@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PolynomialConfig.legendre` and `ScanSynchronousConfig.legendre` accept orders per group of Stokes legs of demodulated data; legs left out have no template (#309)
 - `furax.linalg.CGSolver`: solve operator inverses (`A.I(solver=...)`, `Config(solver=...)`) with `furax.linalg.cg` instead of lineax (#313)
 - `furax.linalg.CGResult.converged`: whether the CG solve met its tolerance (#313)
-- `MapMakingConfig.detector_batch_size` tells the mapmaker to split observations in batches of detectors (16 by default) during RHS accumulation, to reduce peak memory usage (#308)
+- `MapMakingConfig.detector_batch_size` splits observations into batches of detectors (16 by default) to reduce peak memory usage (#308)
 - `StreamOperator` constructors accept `group_size`, for data shared by consecutive slices; `StreamLayout` builds streams over such data (#308)
 
 ### Changed

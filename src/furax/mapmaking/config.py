@@ -859,12 +859,12 @@ class MapMakingConfig:
     """
 
     detector_batch_size: int = 16
-    """Size of detector batches for RHS accumulation.
+    """Size of detector batches.
 
     Using detector batches reduces peak memory: beyond the TOD itself, everything computed from it
     only takes memory in proportion to the batch rather than to the whole observation. Detector
-    counts are padded to whole batches. A size of 0 processes all detectors at once (this is
-    required for gap-filling and nested gap treatment).
+    counts are padded to whole batches. A size of 0 processes all detectors at once (required for
+    gap-filling and nested gap treatment with a non-diagonal noise model).
     """
 
     sotodlib: SotodlibConfig | None = None

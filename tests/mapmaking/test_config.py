@@ -160,42 +160,12 @@ class TestT2PRequiresDemodulated:
         )
 
 
-def _demodulated(templates: TemplatesConfig, stokes: str = 'IQU') -> MapMakingConfig:
+def _demodulated(templates: TemplatesConfig) -> MapMakingConfig:
     return MapMakingConfig(
         sotodlib=SotodlibConfig(demodulated=True),
-        landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig()),
+        landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig()),
         templates=templates,
     )
-
-
-class TestPolynomialLegendreQUIsDeprecated:
-    def test_becomes_per_leg_legendre(self):
-        poly = PolynomialConfig(legendre=PolynomialOrders(0, 9), legendre_qu=PolynomialOrders(0, 1))
-        with pytest.warns(DeprecationWarning, match='legendre_qu is deprecated'):
-            config = _demodulated(TemplatesConfig(polynomial=poly), stokes='QU')
-        assert config.templates.polynomial.legendre == {
-            'q': PolynomialOrders(0, 1),
-            'u': PolynomialOrders(0, 1),
-        }
-        assert config.templates.polynomial.legendre_qu is None
-
-    def test_raises_without_demodulated(self):
-        poly = PolynomialConfig(legendre_qu=PolynomialOrders(0, 2))
-        with (
-            pytest.warns(DeprecationWarning),
-            pytest.raises(ValueError, match='legendre_qu requires demodulated=True'),
-        ):
-            MapMakingConfig(templates=TemplatesConfig(polynomial=poly))
-
-    def test_raises_with_per_leg_legendre(self):
-        poly = PolynomialConfig(
-            legendre={'i': PolynomialOrders(0, 9)}, legendre_qu=PolynomialOrders(0, 1)
-        )
-        with (
-            pytest.warns(DeprecationWarning),
-            pytest.raises(ValueError, match='cannot be combined with a per-leg legendre'),
-        ):
-            _demodulated(TemplatesConfig(polynomial=poly))
 
 
 @pytest.mark.parametrize('template', [PolynomialConfig, ScanSynchronousConfig])

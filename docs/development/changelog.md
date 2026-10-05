@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `PolynomialConfig.legendre_qu` is deprecated; give `legendre` per Stokes leg instead (#309)
+- **Breaking:** `PolynomialConfig.legendre_qu` is removed; give `legendre` per Stokes leg instead (#309)
 
 ## [0.15.3] - 2026-10-02
 

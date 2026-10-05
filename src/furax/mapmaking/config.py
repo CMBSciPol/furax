@@ -1,6 +1,5 @@
 """Hierarchical configuration system for mapmaking runs."""
 
-import warnings
 from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
@@ -419,8 +418,6 @@ class PolynomialConfig:
     own orders; the legs of a group are still fitted independently, and a leg left out has no
     polynomial template.
     """
-    legendre_qu: PolynomialOrders | None = None
-    """Deprecated: give `legendre` per Stokes leg instead, e.g. `{'i': ..., 'qu': ...}`."""
     explicit: bool = False
     """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
@@ -876,24 +873,6 @@ class MapMakingConfig:
                         "The T2P template requires an 'I' leg in landscape.stokes (got "
                         f'{self.landscape.stokes!r}).'
                     )
-            if (poly := templates.polynomial) is not None and poly.legendre_qu is not None:
-                warnings.warn(
-                    'PolynomialConfig.legendre_qu is deprecated; give legendre per Stokes leg '
-                    "instead, e.g. {'i': ..., 'qu': ...}",
-                    DeprecationWarning,
-                    stacklevel=3,
-                )
-                if not self.demodulated:
-                    raise ValueError('templates.polynomial.legendre_qu requires demodulated=True.')
-                if isinstance(poly.legendre, dict):
-                    raise ValueError(
-                        'templates.polynomial.legendre_qu cannot be combined with a per-leg legendre.'
-                    )
-                poly.legendre = {
-                    leg.lower(): poly.legendre if leg == 'I' else poly.legendre_qu
-                    for leg in self.landscape.stokes
-                }
-                poly.legendre_qu = None
             for name in ('polynomial', 'scan_synchronous'):
                 template = getattr(templates, name)
                 if template is not None and isinstance(template.legendre, dict):

@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `ScanSynchronousConfig.stokes` restricts the scan-synchronous template to some Stokes legs of demodulated data (#309)
+- `PolynomialConfig.legendre` and `ScanSynchronousConfig.legendre` accept orders per group of Stokes legs of demodulated data; legs left out have no template (#309)
+
+### Changed
+
+- `PolynomialConfig.legendre_qu` is deprecated; give `legendre` per Stokes leg instead (#309)
 
 ## [0.15.3] - 2026-10-02
 

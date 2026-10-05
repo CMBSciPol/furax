@@ -22,6 +22,7 @@ from .config import (
     PolynomialOrders,
     TemplatesConfig,
     WeightingMode,
+    _legendre_leg_groups,
 )
 from .gram import gram_inverse
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
@@ -423,42 +424,40 @@ class ObservationTemplates:
             (explicit_bases if explicit else implicit_bases)[name] = bases
 
         if (poly := tcfg.polynomial) is not None:
-            if legs is not None:
-                legendre_qu = poly.legendre_qu if poly.legendre_qu is not None else poly.legendre
-                # legs fitted with the same orders share one basis
-                groups: dict[PolynomialOrders, str] = {}
-                for s in legs:
-                    orders = poly.legendre if s == 'I' else legendre_qu
-                    groups[orders] = groups.get(orders, '') + s.lower()
-                bases: Basis | dict[str, Basis] = {
-                    group: polynomial_basis(
-                        max_poly_order=orders.max_order,
-                        intervals=data[ReaderField.SCANNING_INTERVALS],
-                        times=data[ReaderField.TIMESTAMPS],
-                        dtype=dtype,
-                        valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
-                        min_poly_order=orders.min_order,
-                    )
-                    for orders, group in groups.items()
-                }
-            else:
-                bases = polynomial_basis(
-                    max_poly_order=poly.legendre.max_order,
+
+            def poly_basis(orders: PolynomialOrders) -> Basis:
+                return polynomial_basis(
+                    max_poly_order=orders.max_order,
                     intervals=data[ReaderField.SCANNING_INTERVALS],
                     times=data[ReaderField.TIMESTAMPS],
                     dtype=dtype,
                     valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
-                    min_poly_order=poly.legendre.min_order,
+                    min_poly_order=orders.min_order,
                 )
-            add('polynomial', bases, poly.explicit)
+
+            if legs is not None:
+                # legs fitted with the same orders share one basis
+                groups = _legendre_leg_groups(poly.legendre, legs)
+                add('polynomial', {g: poly_basis(o) for g, o in groups.items()}, poly.explicit)
+            else:
+                assert isinstance(poly.legendre, PolynomialOrders)  # per-leg needs demodulation
+                add('polynomial', poly_basis(poly.legendre), poly.explicit)
 
         if (scan := tcfg.scan_synchronous) is not None:
-            scan_basis = scan_synchronous_basis(scan.legendre, data[ReaderField.AZIMUTH], dtype)
-            if legs is not None and scan.stokes is not None:
-                group = ''.join(s.lower() for s in legs if s in scan.stokes)
-                add('scan_synchronous', {group: scan_basis}, scan.explicit)
+            azimuth = data[ReaderField.AZIMUTH]
+            if legs is not None:
+                groups = _legendre_leg_groups(scan.legendre, legs)
+                bases: dict[str, Basis] = {
+                    g: scan_synchronous_basis(o, azimuth, dtype) for g, o in groups.items()
+                }
+                add('scan_synchronous', bases, scan.explicit)
             else:
-                add('scan_synchronous', scan_basis, scan.explicit)
+                assert isinstance(scan.legendre, PolynomialOrders)  # per-leg needs demodulation
+                add(
+                    'scan_synchronous',
+                    scan_synchronous_basis(scan.legendre, azimuth, dtype),
+                    scan.explicit,
+                )
 
         if (binned_az := tcfg.binned_azimuth_synchronous) is not None:
             basis = binned_azimuth_synchronous_basis(

@@ -1,5 +1,6 @@
 """Hierarchical configuration system for mapmaking runs."""
 
+import warnings
 from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
@@ -344,6 +345,30 @@ class PolynomialOrders(NamedTuple):
         return self.max_order - self.min_order + 1
 
 
+def _legendre_leg_groups(
+    legendre: PolynomialOrders | dict[str, PolynomialOrders], stokes: str
+) -> dict[str, PolynomialOrders]:
+    """The orders of each group of legs fitted alike, keyed by its lowercase legs.
+
+    Legs with the same orders are grouped, in the order of `stokes`, whatever groups `legendre`
+    names them in; legs it leaves out are absent.
+
+    Examples:
+        >>> _legendre_leg_groups(PolynomialOrders(0, 3), 'IQU')
+        {'iqu': PolynomialOrders(min_order=0, max_order=3)}
+        >>> _legendre_leg_groups({'u': PolynomialOrders(0, 1), 'Q': PolynomialOrders(0, 1)}, 'IQU')
+        {'qu': PolynomialOrders(min_order=0, max_order=1)}
+    """
+    if not isinstance(legendre, dict):
+        return {stokes.lower(): legendre}
+    per_leg = {leg: orders for group, orders in legendre.items() for leg in group.lower()}
+    groups: dict[PolynomialOrders, str] = {}
+    for leg in stokes.lower():
+        if (orders := per_leg.get(leg)) is not None:
+            groups[orders] = groups.get(orders, '') + leg
+    return {group: orders for orders, group in groups.items()}
+
+
 @dataclass
 class BinsConfig:
     """Configuration for binning a variable into `n_bins` intervals."""
@@ -363,16 +388,39 @@ class BinsConfig:
 
 @dataclass
 class PolynomialConfig:
-    """Polynomial drift template (per-detector low-order Legendre polynomial in time)."""
+    """Polynomial drift template (per-detector low-order Legendre polynomial in time).
 
-    legendre: PolynomialOrders = field(default_factory=lambda: PolynomialOrders(0, 3))
-    """Legendre orders for the polynomial drift template."""
-    legendre_qu: PolynomialOrders | None = None
-    """Legendre orders for the Q/U legs, demodulated data only.
+    Examples:
+        Orders 0 to 3 on every leg
 
-    Overrides ``legendre`` for the Q and U legs (fitted independently from each other and
-    from I). ``None`` reuses ``legendre`` for every leg. Requires ``demodulated=True``.
+            polynomial:
+                legendre:
+                    min_order: 0
+                    max_order: 3
+
+        Demodulated data: orders 0 to 9 on I, 0 to 1 on Q and U
+
+            polynomial:
+                legendre:
+                    i:
+                        min_order: 0
+                        max_order: 9
+                    qu:
+                        min_order: 0
+                        max_order: 1
     """
+
+    legendre: PolynomialOrders | dict[str, PolynomialOrders] = field(
+        default_factory=lambda: PolynomialOrders(0, 3)
+    )
+    """Legendre orders, for every leg or per group of Stokes legs.
+
+    On demodulated data, a mapping such as `{'i': ..., 'qu': ...}` gives each group of legs its
+    own orders; the legs of a group are still fitted independently, and a leg left out has no
+    polynomial template.
+    """
+    legendre_qu: PolynomialOrders | None = None
+    """Deprecated: give `legendre` per Stokes leg instead, e.g. `{'i': ..., 'qu': ...}`."""
     explicit: bool = False
     """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
@@ -384,16 +432,16 @@ class ScanSynchronousConfig:
     Represents signals that depend only on the telescope's azimuth.
     """
 
-    legendre: PolynomialOrders = field(default_factory=lambda: PolynomialOrders(3, 7))
-    """Legendre orders for the azimuth-dependent basis."""
+    legendre: PolynomialOrders | dict[str, PolynomialOrders] = field(
+        default_factory=lambda: PolynomialOrders(3, 7)
+    )
+    """Legendre orders of the azimuth-dependent basis, for every leg or per group of Stokes legs.
 
-    stokes: str | None = None
-    """Stokes legs the template is fitted on, e.g. `'QU'`; `None` fits it on every leg.
-
-    Requires `demodulated=True`. Within a constant-speed subscan, a Legendre polynomial in azimuth
-    is a polynomial in time, so the template is redundant on a leg whose per-subscan
-    [`PolynomialConfig`][] reaches its orders. Such redundant templates make the Gram singular
-    and stall the solver.
+    Takes the same per-leg form as [`PolynomialConfig.legendre`][], e.g. `{'qu': ...}` for the
+    Q and U legs only. Within a constant-speed subscan, a Legendre polynomial in azimuth is a
+    polynomial in time, so this template is redundant on a leg whose per-subscan
+    [`PolynomialConfig`][] reaches its orders. Redundant templates make the Gram singular and
+    stall the solver.
     """
 
     explicit: bool = False
@@ -828,20 +876,42 @@ class MapMakingConfig:
                         "The T2P template requires an 'I' leg in landscape.stokes (got "
                         f'{self.landscape.stokes!r}).'
                     )
-            if (
-                templates.polynomial is not None
-                and templates.polynomial.legendre_qu is not None
-                and not self.demodulated
-            ):
-                raise ValueError('templates.polynomial.legendre_qu requires demodulated=True.')
-            if (scan := templates.scan_synchronous) is not None and scan.stokes is not None:
+            if (poly := templates.polynomial) is not None and poly.legendre_qu is not None:
+                warnings.warn(
+                    'PolynomialConfig.legendre_qu is deprecated; give legendre per Stokes leg '
+                    "instead, e.g. {'i': ..., 'qu': ...}",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
                 if not self.demodulated:
-                    raise ValueError('templates.scan_synchronous.stokes requires demodulated=True.')
-                if not scan.stokes or not set(scan.stokes) <= set(self.landscape.stokes):
+                    raise ValueError('templates.polynomial.legendre_qu requires demodulated=True.')
+                if isinstance(poly.legendre, dict):
                     raise ValueError(
-                        f'templates.scan_synchronous.stokes={scan.stokes!r} must name legs of '
-                        f'landscape.stokes={self.landscape.stokes!r}.'
+                        'templates.polynomial.legendre_qu cannot be combined with a per-leg legendre.'
                     )
+                poly.legendre = {
+                    leg.lower(): poly.legendre if leg == 'I' else poly.legendre_qu
+                    for leg in self.landscape.stokes
+                }
+                poly.legendre_qu = None
+            for name in ('polynomial', 'scan_synchronous'):
+                template = getattr(templates, name)
+                if template is not None and isinstance(template.legendre, dict):
+                    self._check_leg_groups(f'templates.{name}.legendre', template.legendre)
+
+    def _check_leg_groups(self, name: str, legendre: dict[str, PolynomialOrders]) -> None:
+        """Check that per-leg orders name each leg of the landscape at most once."""
+        if not self.demodulated:
+            raise ValueError(f'{name} per Stokes leg requires demodulated=True.')
+        legs = ''.join(legendre).upper()
+        if not legs:
+            raise ValueError(f'{name} names no Stokes leg.')
+        if extra := sorted(set(legs) - set(self.landscape.stokes)):
+            raise ValueError(
+                f'{name} names legs {extra} outside landscape.stokes={self.landscape.stokes!r}.'
+            )
+        if repeated := sorted({leg for leg in legs if legs.count(leg) > 1}):
+            raise ValueError(f'{name} names legs {repeated} more than once.')
 
     @classmethod
     def for_method(cls, method: 'Methods | str') -> Self:

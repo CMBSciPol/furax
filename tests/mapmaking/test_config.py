@@ -19,6 +19,7 @@ from furax.mapmaking.config import (
     T2PConfig,
     TemplatesConfig,
     WCSConfig,
+    _legendre_leg_groups,
 )
 
 # Every config class whose docstring carries an `Examples:` block.
@@ -159,39 +160,88 @@ class TestT2PRequiresDemodulated:
         )
 
 
-class TestPolynomialLegendreQURequiresDemodulated:
+def _demodulated(templates: TemplatesConfig, stokes: str = 'IQU') -> MapMakingConfig:
+    return MapMakingConfig(
+        sotodlib=SotodlibConfig(demodulated=True),
+        landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig()),
+        templates=templates,
+    )
+
+
+class TestPolynomialLegendreQUIsDeprecated:
+    def test_becomes_per_leg_legendre(self):
+        poly = PolynomialConfig(legendre=PolynomialOrders(0, 9), legendre_qu=PolynomialOrders(0, 1))
+        with pytest.warns(DeprecationWarning, match='legendre_qu is deprecated'):
+            config = _demodulated(TemplatesConfig(polynomial=poly), stokes='QU')
+        assert config.templates.polynomial.legendre == {
+            'q': PolynomialOrders(0, 1),
+            'u': PolynomialOrders(0, 1),
+        }
+        assert config.templates.polynomial.legendre_qu is None
+
     def test_raises_without_demodulated(self):
         poly = PolynomialConfig(legendre_qu=PolynomialOrders(0, 2))
-        with pytest.raises(ValueError, match='legendre_qu requires demodulated=True'):
+        with (
+            pytest.warns(DeprecationWarning),
+            pytest.raises(ValueError, match='legendre_qu requires demodulated=True'),
+        ):
             MapMakingConfig(templates=TemplatesConfig(polynomial=poly))
 
-    def test_accepts_demodulated(self):
-        poly = PolynomialConfig(legendre_qu=PolynomialOrders(0, 2))
-        MapMakingConfig(
-            sotodlib=SotodlibConfig(demodulated=True),
-            templates=TemplatesConfig(polynomial=poly),
+    def test_raises_with_per_leg_legendre(self):
+        poly = PolynomialConfig(
+            legendre={'i': PolynomialOrders(0, 9)}, legendre_qu=PolynomialOrders(0, 1)
         )
+        with (
+            pytest.warns(DeprecationWarning),
+            pytest.raises(ValueError, match='cannot be combined with a per-leg legendre'),
+        ):
+            _demodulated(TemplatesConfig(polynomial=poly))
 
 
-class TestScanSynchronousStokes:
-    def test_raises_without_demodulated(self):
-        scan = ScanSynchronousConfig(stokes='QU')
-        with pytest.raises(ValueError, match='stokes requires demodulated=True'):
-            MapMakingConfig(templates=TemplatesConfig(scan_synchronous=scan))
+@pytest.mark.parametrize('template', [PolynomialConfig, ScanSynchronousConfig])
+class TestLegendrePerLeg:
+    def test_raises_without_demodulated(self, template):
+        name = 'polynomial' if template is PolynomialConfig else 'scan_synchronous'
+        templates = TemplatesConfig(**{name: template(legendre={'qu': PolynomialOrders(0, 1)})})
+        with pytest.raises(ValueError, match='per Stokes leg requires demodulated=True'):
+            MapMakingConfig(templates=templates)
 
-    @pytest.mark.parametrize('stokes', ['', 'IV', 'X'])
-    def test_raises_on_legs_outside_the_landscape(self, stokes: str):
-        scan = ScanSynchronousConfig(stokes=stokes)
-        with pytest.raises(ValueError, match='must name legs of landscape.stokes'):
-            MapMakingConfig(
-                sotodlib=SotodlibConfig(demodulated=True),
-                landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig()),
-                templates=TemplatesConfig(scan_synchronous=scan),
-            )
+    @pytest.mark.parametrize(
+        ('legs', 'match'),
+        [
+            ([], 'names no Stokes leg'),
+            (['iv'], r"names legs \['V'\] outside landscape.stokes"),
+            (['qu', 'U'], r"names legs \['U'\] more than once"),
+        ],
+    )
+    def test_raises_on_invalid_legs(self, template, legs: list[str], match: str):
+        name = 'polynomial' if template is PolynomialConfig else 'scan_synchronous'
+        legendre = {group: PolynomialOrders(0, 1) for group in legs}
+        with pytest.raises(ValueError, match=match):
+            _demodulated(TemplatesConfig(**{name: template(legendre=legendre)}))
 
-    def test_accepts_demodulated(self):
-        MapMakingConfig(
-            sotodlib=SotodlibConfig(demodulated=True),
-            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig()),
-            templates=TemplatesConfig(scan_synchronous=ScanSynchronousConfig(stokes='QU')),
-        )
+    def test_round_trips_through_yaml(self, template):
+        name = 'polynomial' if template is PolynomialConfig else 'scan_synchronous'
+        legendre = {'i': PolynomialOrders(0, 9), 'qu': PolynomialOrders(2, 5)}
+        config = _demodulated(TemplatesConfig(**{name: template(legendre=legendre)}))
+        assert MapMakingConfig.load_dict(yaml.safe_load(config._to_yaml())) == config
+
+
+@pytest.mark.parametrize(
+    ('legendre', 'expected'),
+    [
+        (PolynomialOrders(0, 3), {'iqu': PolynomialOrders(0, 3)}),
+        (
+            {'i': PolynomialOrders(0, 9), 'qu': PolynomialOrders(0, 1)},
+            {'i': PolynomialOrders(0, 9), 'qu': PolynomialOrders(0, 1)},
+        ),
+        # legs fitted alike are grouped whatever groups they are given in
+        (
+            {'U': PolynomialOrders(0, 1), 'i': PolynomialOrders(0, 1), 'q': PolynomialOrders(2, 3)},
+            {'iu': PolynomialOrders(0, 1), 'q': PolynomialOrders(2, 3)},
+        ),
+        ({'qu': PolynomialOrders(2, 5)}, {'qu': PolynomialOrders(2, 5)}),
+    ],
+)
+def test_legendre_leg_groups(legendre, expected):
+    assert _legendre_leg_groups(legendre, 'IQU') == expected

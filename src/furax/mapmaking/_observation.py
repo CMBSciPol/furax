@@ -54,6 +54,20 @@ class ReaderField(StrEnum):
     RIGHT_SCAN_MASK = 'right_scan_mask'
     SCANNING_INTERVALS = 'scanning_intervals'
 
+    @property
+    def per_detector(self) -> bool:
+        """Whether the field has a detector axis, always its second-to-last.
+
+        Such a field is `(..., det, samp)` or `(..., det, 4)`. Every other field except the
+        metadata is shared by all detectors.
+        """
+        return self in {
+            ReaderField.SAMPLE_DATA,
+            ReaderField.VALID_SAMPLE_MASKS,
+            ReaderField.DETECTOR_QUATERNIONS,
+            ReaderField.NOISE_MODEL_FITS,
+        }
+
 
 @register_dataclass
 @dataclass

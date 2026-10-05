@@ -431,18 +431,6 @@ class ObservationReader[T](AbstractReader):
         return {field: field_reader[field](data) for field in data_field_names}
 
 
-_PER_DETECTOR_FIELDS = (
-    ReaderField.SAMPLE_DATA,
-    ReaderField.VALID_SAMPLE_MASKS,
-    ReaderField.DETECTOR_QUATERNIONS,
-    ReaderField.NOISE_MODEL_FITS,
-)
-"""Fields with a detector axis, always their second-to-last: `(..., det, samp)` or `(..., det, 4)`.
-
-Every other field except the metadata is shared by all detectors.
-"""
-
-
 def slice_detector_axis(field: PyTree[Array], start: Array, size: int) -> PyTree[Array]:
     """`size` detectors from `start` of a per-detector field, such as the TOD."""
     return jax.tree.map(
@@ -455,10 +443,10 @@ def slice_detectors(data: dict[str, Any], start: Array, size: int) -> dict[str, 
 
     Shared fields (timestamps, boresight, scan masks, ...) are kept whole.
     """
-    sliced = dict(data)
-    for field in _PER_DETECTOR_FIELDS:
-        if field in data:
-            sliced[field] = slice_detector_axis(data[field], start, size)
+    sliced = {
+        field: slice_detector_axis(value, start, size) if ReaderField(field).per_detector else value
+        for field, value in data.items()
+    }
     if (metadata := data.get(ReaderField.METADATA)) is not None:
         detector_uids = jax.lax.dynamic_slice_in_dim(metadata.detector_uids, start, size)
         sliced[ReaderField.METADATA] = replace(metadata, detector_uids=detector_uids)

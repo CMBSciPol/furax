@@ -265,10 +265,9 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return (self.n_samples - 1) / duration
 
     def get_tods(self) -> Float[np.ndarray, 'dets samps']:
-        """Returns the timestream data."""
+        """Returns the timestream data, in the precision it is stored in."""
         # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
-        tods = np.asarray(self.data.signal, dtype=np.float64)
-        return 0.5 * np.atleast_2d(tods)
+        return 0.5 * np.atleast_2d(np.asarray(self.data.signal))
 
     @overload
     def get_demodulated_tods(self, stokes: Literal['I']) -> StokesI: ...
@@ -279,20 +278,20 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     @overload
     def get_demodulated_tods(self, stokes: Literal['IQUV']) -> StokesIQUV: ...
     def get_demodulated_tods(self, stokes: ValidStokesLiteral = 'IQU') -> StokesType:
-        """Returns the demodulated timestream data as a Stokes pytree.
+        """Returns the demodulated timestream data as a Stokes pytree, in the stored precision.
 
         'IQUV' is not supported.
         """
         if stokes == 'IQUV':
             raise NotImplementedError
-        kls = Stokes.class_for(stokes)
-        tods = [self._get_demodulated_tod(s) for s in stokes]
-        return kls.from_array(np.stack(tods, axis=0))
-
-    def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> NDArray[np.float64]:
-        attr = {'I': 'dsT', 'Q': 'demodQ', 'U': 'demodU'}[stoke]
-        tod = np.asarray(getattr(self.data, attr), dtype=np.float64)
-        return 0.5 * np.atleast_2d(tod)
+        attrs = {'I': 'dsT', 'Q': 'demodQ', 'U': 'demodU'}
+        legs = [np.atleast_2d(np.asarray(getattr(self.data, attrs[s]))) for s in stokes]
+        # Scale each leg straight into the stacked array
+        tods = np.empty((len(legs), *legs[0].shape), dtype=np.result_type(*legs))
+        for out, leg in zip(tods, legs, strict=True):
+            # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
+            np.multiply(leg, 0.5, out=out)
+        return Stokes.class_for(stokes).from_array(tods)
 
     def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
         """Returns the detector offset angles."""

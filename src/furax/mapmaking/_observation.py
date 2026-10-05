@@ -184,11 +184,12 @@ class AbstractObservation[T](ABC):
 
     @abstractmethod
     def get_tods(self) -> Float[np.ndarray, 'dets samps']:
-        """Returns the timestream data.
+        """Returns the timestream data, in the precision it is stored in.
 
-        Returns a host (numpy) array: getters feed the reader's io_callback, which
-        performs a single host->device transfer. Returning a device (jax) array would
-        force a wasteful device->host->device round trip at the callback boundary.
+        The reader casts it to its sample dtype. Returns a host (numpy) array: getters feed the
+        reader's io_callback, which performs a single host->device transfer. Returning a device
+        (jax) array would force a wasteful device->host->device round trip at the callback
+        boundary.
         """
 
     @overload
@@ -200,7 +201,7 @@ class AbstractObservation[T](ABC):
     @overload
     def get_demodulated_tods(self, stokes: Literal['IQUV']) -> StokesIQUV: ...
     def get_demodulated_tods(self, stokes: ValidStokesLiteral = 'IQU') -> StokesType:
-        """Returns demodulated timestream data as a Stokes pytree.
+        """Returns demodulated timestream data as a Stokes pytree, in the precision it is stored in.
 
         Subclasses that support demodulated data should override this method.
         """

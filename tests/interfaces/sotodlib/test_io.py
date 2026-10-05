@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from numpy.testing import assert_array_equal
 
 from furax.interfaces.sotodlib import (
     LazyPreprocSOTODLibObservation,
@@ -15,6 +16,7 @@ from furax.mapmaking import (
     MapMakingConfig,
     MultiObservationMapMaker,
     ObservationReader,
+    ReaderField,
 )
 from furax.mapmaking.config import (
     HealpixConfig,
@@ -44,6 +46,15 @@ def observations():
 def demod_observations():
     sotodlib_config = SotodlibConfig(demodulated=True)
     return [LazySOTODLibObservation(FOLDER / f, sotodlib_config=sotodlib_config) for f in FILES]
+
+
+def test_demodulated_tods_keep_their_stored_precision(demod_observations) -> None:
+    data = demod_observations[0].get_data([ReaderField.SAMPLE_DATA])
+    tods = data.get_demodulated_tods(stokes='IQU')
+    stored = [np.asarray(getattr(data.data, attr)) for attr in ('dsT', 'demodQ', 'demodU')]
+    assert tods.data.dtype == stored[0].dtype
+    for leg, raw in zip((tods.i, tods.q, tods.u), stored, strict=True):
+        assert_array_equal(leg, 0.5 * raw)
 
 
 def test_reader_all_fields(observations) -> None:

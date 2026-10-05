@@ -823,7 +823,11 @@ class MapMakingConfig:
     """Drop pixels whose weight matrix rcond is smaller than this threshold."""
 
     double_precision: bool = True
-    """Run the pipeline in float64 (`True`) or float32 (`False`); see [`dtype`][]."""
+    """Run the pipeline in float64 (`True`) or float32 (`False`); see [`dtype`][].
+
+    The multi-observation mapmaker always reads the TOD in float32, and converts each detector
+    batch to [`dtype`][] before using it.
+    """
 
     pointing: PointingConfig = field(default_factory=PointingConfig)
     """Pointing computation options."""

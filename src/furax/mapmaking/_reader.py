@@ -53,6 +53,7 @@ class ObservationReader[T](AbstractReader):
         demodulated: Whether the reader loads demodulated TODs.
         stokes: Stokes components loaded when demodulated.
         dtype: Floating-point dtype every floating-point field is cast to.
+        sample_dtype: Floating-point dtype the sample data is cast to instead.
     """
 
     def __init__(
@@ -61,6 +62,7 @@ class ObservationReader[T](AbstractReader):
         demodulated: bool,
         stokes: ValidStokesLiteral,
         dtype: DTypeLike = jnp.float64,
+        sample_dtype: DTypeLike | None = None,
         common_keywords: dict[str, Any] | None = None,
         shapes: list[tuple[int, ...]] | None = None,
         known_failures: Sequence[int] | None = None,
@@ -77,6 +79,8 @@ class ObservationReader[T](AbstractReader):
             demodulated: Whether to read demodulated TODs.
             stokes: Stokes components to read when demodulated.
             dtype: Floating-point dtype applied to every floating-point field the reader returns.
+            sample_dtype: Floating-point dtype applied to the sample data instead; `None` for
+                `dtype`.
             common_keywords: Keyword arguments shared by all observations, in particular
                 `data_field_names`, the fields to read.
             shapes: Per-observation buffer shapes `(n_detectors, n_samples, n_intervals)`, in the
@@ -91,6 +95,7 @@ class ObservationReader[T](AbstractReader):
         self.demodulated = demodulated
         self.stokes = stokes
         self.dtype = dtype
+        self.sample_dtype = sample_dtype or dtype
         # Distributed mode passes pre-gathered (n_detectors, n_samples) shapes; turn them into
         # structures here, now that self carries demodulated/stokes/dtype. Otherwise leave them
         # unset and super() opens every observation via _read_structure_impure.
@@ -115,6 +120,7 @@ class ObservationReader[T](AbstractReader):
         demodulated: bool = False,
         stokes: ValidStokesLiteral = 'IQU',
         dtype: DTypeLike = jnp.float64,
+        sample_dtype: DTypeLike | None = None,
         shapes: Sequence[ObservationBufferShape] | None = None,
         known_failures: Sequence[int] | None = None,
     ) -> Self:
@@ -134,6 +140,9 @@ class ObservationReader[T](AbstractReader):
                 illegal, so no field may stay float64. Timestamps are rebased to a
                 per-observation zero origin (in float64, before the downcast) so the float32
                 cast does not collapse the absolute POSIX epoch onto a single value.
+            sample_dtype: Floating-point dtype applied to the sample data instead; `None` for
+                `dtype`. A float32 TOD takes half the memory of a float64 one, and loses nothing
+                when it was recorded in float32.
             shapes: Per-observation buffer shapes, in the order of `observations`. When given,
                 no observation is opened to size the buffers (the caller has already probed them,
                 see [`AbstractLazyObservation.probe_shape`][]); otherwise every observation is
@@ -151,6 +160,7 @@ class ObservationReader[T](AbstractReader):
             demodulated=demodulated,
             stokes=stokes,
             dtype=dtype,
+            sample_dtype=sample_dtype,
             shapes=list(shapes) if shapes is not None else None,
             known_failures=known_failures,
         )
@@ -283,9 +293,9 @@ class ObservationReader[T](AbstractReader):
         dtype = self.dtype
         tod_shape = (n_detectors, n_samples)
         sample_data_structure = (
-            Stokes.class_for(stokes).structure_for(tod_shape, dtype)
+            Stokes.class_for(stokes).structure_for(tod_shape, self.sample_dtype)
             if demodulated
-            else jax.ShapeDtypeStruct(tod_shape, dtype)
+            else jax.ShapeDtypeStruct(tod_shape, self.sample_dtype)
         )
 
         structures: dict[str, PyTree[jax.ShapeDtypeStruct]] = {
@@ -323,6 +333,7 @@ class ObservationReader[T](AbstractReader):
         demodulated = self.demodulated
         stokes = self.stokes
         target_dtype = self.dtype
+        sample_dtype = self.sample_dtype
 
         def cast(x: Any) -> Any:
             return x.astype(target_dtype, copy=False)
@@ -336,7 +347,7 @@ class ObservationReader[T](AbstractReader):
                 tods = obs.get_demodulated_tods(stokes=stokes)
             else:
                 tods = obs.get_tods()
-            return jax.tree.map(cast, tods)
+            return jax.tree.map(lambda x: x.astype(sample_dtype, copy=False), tods)
 
         def get_noise_model_fits(obs: AbstractObservation[T]) -> Any:
             if demodulated:

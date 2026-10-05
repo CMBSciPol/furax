@@ -163,7 +163,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         return self._focal_plane.sample_rate.to_value(u.Hz)
 
     def get_tods(self) -> Float[np.ndarray, 'dets samps']:
-        """Returns the timestream data."""
+        """Returns the timestream data, in the precision it is stored in."""
         # furax's LinearPolarizerOperator assumes power, TOAST assumes temperature
         tods = 0.5 * np.asarray(self.data.detdata[self._det_data][self.detectors, :])
         return np.atleast_2d(tods)

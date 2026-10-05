@@ -310,6 +310,7 @@ class MultiObservationMapMaker[T]:
                 demodulated=self.config.demodulated,
                 stokes=self.config.landscape.stokes,
                 dtype=self.config.dtype,
+                sample_dtype=jnp.float32,
                 shapes=[shapes[i] for i in bucket.observations],
                 known_failures=np.flatnonzero(failed[bucket.observations]).tolist(),
             )
@@ -593,6 +594,13 @@ class MultiObservationMapMaker[T]:
         axis = jax.sharding.get_abstract_mesh().axis_names[0]
         n_batches, batch_size = bucket.n_batches, bucket.batch_size
 
+        def computable(data):
+            # The TOD is read in float32, whatever the pipeline's dtype
+            return {**data, ReaderField.SAMPLE_DATA: as_dtype(data[ReaderField.SAMPLE_DATA])}
+
+        def as_dtype(tod):
+            return jax.tree.map(lambda x: x.astype(config.dtype), tod)
+
         def kernel(items, is_real):
             def step(carry, args):
                 i, real = args
@@ -607,6 +615,7 @@ class MultiObservationMapMaker[T]:
 
                 use = real & valid
                 if n_batches == 1:
+                    observation = computable(observation)
                     tod = raw = observation[ReaderField.SAMPLE_DATA]
                     if fill_gaps:
                         # The RHS uses the filled TOD; the models are still built from the raw one.
@@ -621,7 +630,7 @@ class MultiObservationMapMaker[T]:
                 # gets here): nothing computed from the TOD outlives its batch, each batch
                 # contributing to the sums and stacking its own model and templates.
                 def batch(carry, j):
-                    data = slice_detectors(observation, j * batch_size, batch_size)
+                    data = computable(slice_detectors(observation, j * batch_size, batch_size))
                     return accumulate(carry, data, data[ReaderField.SAMPLE_DATA], padding, use)
 
                 # What the batches share (boresight pointing, shared template bases, ...) is kept

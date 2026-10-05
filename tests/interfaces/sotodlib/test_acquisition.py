@@ -93,6 +93,8 @@ def _assert_binning_matches_sotodlib(
     cancel as the polarisation angle turns, by a factor of several hundred here, so the sum has to
     be accumulated separately, through the intensity operator.
     """
+    # The getters return the TODs as stored, in float32; the operator is float64
+    tods = jax.tree.map(lambda x: x.astype(np.float64), tods)
     # Furax TODs assume power, so they are 2x smaller
     furax_map = 2 * h.T(tods)
     assert_allclose(furax_map.i, sotodlib_map[0], rtol=1e-5, atol=0)

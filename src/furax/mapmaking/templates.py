@@ -488,11 +488,10 @@ class KroneckerBasis(Basis):
 
     def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
         if self.per_detector:
-            # each detector has its own factors: forming every product would cost `size` TODs
+            # each detector's own product would cost `size` TODs
             n = len(self.shape)
             return _einsum(coeffs, tuple(range(n)), *self._factor_operands(), (n,))
-        # Shared factors: one product, then a single GEMM over detectors once vmapped. The factored
-        # contraction instead materialises a `(det, d_1, samp)` intermediate.
+        # one product for every detector: the factored contraction would form `(det, d_1, samp)`
         return _einsum('k,ks->s', coeffs.reshape(self.size), self._product_values())
 
     def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
@@ -573,8 +572,7 @@ class SegmentedBasis(Basis):
     def _expand_detectors(self, coeffs: Float[Array, 'det seg k']) -> Float[Array, 'det samp']:
         if self.per_detector:
             return super()._expand_detectors(coeffs)
-        # One sub-basis function at a time, so the largest intermediate is a `(det, samp)` stream:
-        # mapping `expand` over detectors would gather a `(samp, det, k)` array instead.
+        # a loop over `k`: mapping `expand` over detectors would gather `(samp, det, k)`
         stream = jnp.zeros((coeffs.shape[0], self.n_points), self.dtype)
         for k in range(self.values.shape[0]):  # sub-basis size is static
             stream = stream + coeffs[:, self.segment, k] * self.values[k][None, :]
@@ -584,11 +582,8 @@ class SegmentedBasis(Basis):
         if self.per_detector:
             return super()._project_detectors(signals)
 
-        # A shared basis scatters every detector at once, each sample adding a `det` row to its
-        # segment, instead of one scalar scatter per detector. Sub-basis functions go one at a
-        # time, so the largest intermediate is a `(samp, det)` product, not `(samp, det, k)`. The
-        # transpose stays inside the loop body, where it fuses into the product; hoisted out, it
-        # would be one more full copy of the signals.
+        # The transpose stays in the loop body, where it fuses into the product: hoisted out, it
+        # would copy the signals.
         def one_function(values: Float[Array, ' samp']) -> Float[Array, 'seg det']:
             return jax.ops.segment_sum(
                 signals.T * values[:, None], self.segment, self.n_segments, indices_are_sorted=True
@@ -598,10 +593,7 @@ class SegmentedBasis(Basis):
         return jnp.transpose(sums, (2, 1, 0))
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'seg 1 k k']:
-        # Per-segment Gram: bin each sample's rank-one w·vvᵀ into its segment. Block-diagonal
-        # (w=0) -> band axis of size 1. O(n_samples·k²), no full-TOD probe. One row of the block
-        # at a time, so the per-sample products are `(samp, k)`, not `(samp, k, k)`: vmapped over a
-        # batch of detectors, the latter outgrows the TOD itself.
+        # Each sample's rank-one w·vvᵀ binned into its segment: block-diagonal, so w = 0.
         vw = self.values * weights[None, :]  # (k, samp)
 
         def row(vw_a: Float[Array, ' samp']) -> Float[Array, 'seg k']:
@@ -698,8 +690,7 @@ class WindowedBasis(Basis):
     def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det ...']:
         if self.per_detector:
             return super()._project_detectors(signals)
-        # As for `SegmentedBasis`: every detector at once, one `(det, k)` row per sample. One
-        # scatter per window slot keeps each slot's block ids as sorted as `offset`.
+        # one scatter per window slot keeps each slot's block ids sorted, as `offset` is
         sums = jnp.zeros((self.n_blocks, signals.shape[0], self.shape[1]), self.dtype)
         for o in range(self.block_weights.shape[0]):  # window width is static
             taps = self.block_weights[o][None, :] * self.sub_values  # (k, samp)
@@ -930,8 +921,6 @@ def t2p_basis(
             t = jnp.pad(t, (0, n_dec * q - n_full)).reshape(n_dec, q).mean(axis=-1)
         return t.astype(dtype)
 
-    # A few detectors at a time, so the spectra and filtered streams stay batch-sized rather than
-    # TOD-sized.
     t = jax.lax.map(filter_and_decimate, temperature, batch_size=_T2P_BATCH_SIZE)
     values = t[:, None, :]  # (det, k=1, dec)
     if q > 1:

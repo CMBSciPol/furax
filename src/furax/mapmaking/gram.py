@@ -139,11 +139,7 @@ def cross_gram(a: Basis, b: Basis, weights: Float[Array, ' samp']) -> Float[Arra
         )
 
     def column(values_b: Array) -> Array:
-        """The block for one sub-basis function of `b`, `(n_a, k_a, n_b)`.
-
-        One function at a time keeps the per-sample products at `(samp, k_a)`, rather than the
-        `(samp, k_a, k_b)` of all at once, which for a global template exceeds the TOD itself.
-        """
+        """The block for one sub-basis function of `b`, `(n_a, k_a, n_b)`."""
         gram = jnp.zeros((ca.n_blocks, ka, cb.n_blocks), a.dtype)
         for wa in range(ca.blocks.shape[1]):  # window slots (single slot for non-overlapping bases)
             for wb in range(cb.blocks.shape[1]):

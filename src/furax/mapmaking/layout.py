@@ -145,8 +145,9 @@ class Bucket:
                 f'{envelope.detector_count} detectors do not split into batches of '
                 f'{detector_batch_size}: pad the shapes with `whole_detector_batches` first'
             )
-        n_dets = envelope.detector_count
-        n_batches = n_dets // min(detector_batch_size or n_dets, n_dets)
+        batch_size = detector_batch_size or envelope.detector_count
+        # an envelope no wider than one batch is a single batch
+        n_batches = max(1, envelope.detector_count // batch_size)
         observations = np.sort(np.asarray(group, dtype=np.int64))
         n_slots = cls.slot_count(len(group), n_devices)
         return cls(observations, n_slots, envelope, n_batches)

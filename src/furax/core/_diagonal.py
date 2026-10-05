@@ -286,8 +286,7 @@ class DiagonalOperator(BroadcastDiagonalOperator):
             ).ravel()
             for leaf in jax.tree.leaves(self.in_structure)
         ]
-        matrix = jnp.diag(jnp.concatenate(diagonals, dtype=self.out_promoted_dtype))
-        return matrix
+        return jnp.diag(jnp.concatenate(diagonals, dtype=self.out_promoted_dtype))
 
 
 class DiagonalInverseOperator(DiagonalOperator, AbstractLazyInverseOperator):

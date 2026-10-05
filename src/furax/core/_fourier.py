@@ -130,7 +130,7 @@ class FourierOperator(AbstractLinearOperator):
             return matrix
 
         x = jnp.zeros(self.in_structure.shape, self.in_structure.dtype)
-        blocks: Array = func(x)
+        blocks = func(x)
 
         # Handle multidimensional case
         if blocks.ndim > 2:
@@ -138,8 +138,7 @@ class FourierOperator(AbstractLinearOperator):
             import jax.scipy.linalg as jsl
 
             blocks = blocks.reshape(-1, blocks.shape[-1], blocks.shape[-1])
-            matrix: Array = jsl.block_diag(*blocks)
-            return matrix
+            return jsl.block_diag(*blocks)
 
         return blocks
 

@@ -176,13 +176,10 @@ class AbstractLinearOperator(ABC):
         if not structure_equal(self.out_structure, other.out_structure):
             raise ValueError('Incompatible linear operator output structures')
 
-        result: AbstractLinearOperator = self + (-other)
-        return result
+        return self + (-other)
 
     def __mul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
-        result = other * self
-        assert isinstance(result, AbstractLinearOperator)  # ty assert
-        return result
+        return other * self
 
     def __rmul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
         other = jnp.asarray(other)
@@ -547,10 +544,9 @@ class CompositionOperator(AbstractLinearOperator):
     # Tag propagation properties
     @property
     def is_square(self) -> bool:
-        result: bool = super().is_square or structure_equal(
+        return super().is_square or structure_equal(
             self.operands[0].out_structure, self.operands[-1].in_structure
         )
-        return result
 
     @property
     def is_diagonal(self) -> bool:
@@ -657,8 +653,7 @@ class AbstractLazyInverseOperator(_AbstractLazyDualOperator):
         return self.operator
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        matrix: Array = jnp.linalg.inv(self.operator.as_matrix())
-        return matrix
+        return jnp.linalg.inv(self.operator.as_matrix())
 
 
 MISSING = object()

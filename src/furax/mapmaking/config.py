@@ -435,10 +435,7 @@ class ScanSynchronousConfig:
     """Legendre orders of the azimuth-dependent basis, for every leg or per group of Stokes legs.
 
     Takes the same per-leg form as [`PolynomialConfig.legendre`][], e.g. `{'qu': ...}` for the
-    Q and U legs only. Within a constant-speed subscan, a Legendre polynomial in azimuth is a
-    polynomial in time, so this template is redundant on a leg whose per-subscan
-    [`PolynomialConfig`][] reaches its orders. Redundant templates make the Gram singular and
-    stall the solver.
+    Q and U legs only.
     """
 
     explicit: bool = False

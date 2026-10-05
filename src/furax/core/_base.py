@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import IntFlag, auto
 from typing import TYPE_CHECKING, Any, ClassVar, dataclass_transform, overload
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import lineax as lx
@@ -21,6 +22,7 @@ from furax.tree import zeros_like
 from .utils import register_dataclass_with_keys
 
 if TYPE_CHECKING:
+    from furax.linalg import CGResult, CGSolver
     from furax.profiling import ProfileReport
 
 
@@ -174,13 +176,10 @@ class AbstractLinearOperator(ABC):
         if not structure_equal(self.out_structure, other.out_structure):
             raise ValueError('Incompatible linear operator output structures')
 
-        result: AbstractLinearOperator = self + (-other)
-        return result
+        return self + (-other)
 
     def __mul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
-        result = other * self
-        assert isinstance(result, AbstractLinearOperator)  # ty assert
-        return result
+        return other * self
 
     def __rmul__(self, other: ScalarLike) -> 'AbstractLinearOperator':
         other = jnp.asarray(other)
@@ -545,10 +544,9 @@ class CompositionOperator(AbstractLinearOperator):
     # Tag propagation properties
     @property
     def is_square(self) -> bool:
-        result: bool = super().is_square or structure_equal(
+        return super().is_square or structure_equal(
             self.operands[0].out_structure, self.operands[-1].in_structure
         )
-        return result
 
     @property
     def is_diagonal(self) -> bool:
@@ -655,8 +653,7 @@ class AbstractLazyInverseOperator(_AbstractLazyDualOperator):
         return self.operator
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        matrix: Array = jnp.linalg.inv(self.operator.as_matrix())
-        return matrix
+        return jnp.linalg.inv(self.operator.as_matrix())
 
 
 MISSING = object()
@@ -678,9 +675,9 @@ class InverseOperator(AbstractLazyInverseOperator):
         x: PyTree[jax.ShapeDtypeStruct] | None = None,
         /,
         *,
-        solver: lx.AbstractLinearSolver[Any] | None = None,
+        solver: 'lx.AbstractLinearSolver[Any] | CGSolver | None' = None,
         throw: bool | None = None,
-        callback: Callable[[lx.Solution], None] | object = MISSING,
+        callback: 'Callable[[lx.Solution | CGResult], None] | object' = MISSING,
         **options: Any,
     ) -> AbstractLinearOperator | PyTree[jax.ShapeDtypeStruct]:
         config_options = {}
@@ -701,11 +698,22 @@ class InverseOperator(AbstractLazyInverseOperator):
         return super().__call__(x, **config_options)
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
-        from furax.interfaces.lineax import as_lineax_operator
-
         solver = self.config.solver
         throw = self.config.solver_throw
         options = self.config.solver_options.copy()
+        if isinstance(solver, lx.AbstractLinearSolver):
+            return self._lineax_solve(solver, x, throw, options)
+        return self._furax_solve(solver, x, throw, options)
+
+    def _lineax_solve(
+        self,
+        solver: lx.AbstractLinearSolver[Any],
+        x: PyTree[Inexact[Array, ' _a']],
+        throw: bool,
+        options: dict[str, Any],
+    ) -> PyTree[Inexact[Array, ' _b']]:
+        from furax.interfaces.lineax import as_lineax_operator
+
         A = as_lineax_operator(self.operator, OperatorTag.POSITIVE_SEMIDEFINITE)
         if preconditioner := options.get('preconditioner'):
             if not isinstance(preconditioner, AbstractLinearOperator):
@@ -716,6 +724,31 @@ class InverseOperator(AbstractLazyInverseOperator):
         solution = lx.linear_solve(A, x, solver=solver, throw=throw, options=options)
         jax.debug.callback(self.config.solver_callback, solution)
         return solution.value
+
+    def _furax_solve(
+        self,
+        solver: 'CGSolver',
+        x: PyTree[Inexact[Array, ' _a']],
+        throw: bool,
+        options: dict[str, Any],
+    ) -> PyTree[Inexact[Array, ' _b']]:
+        # Accept the lineax option names, so that switching solvers needs no other change.
+        x0 = options.pop('y0', None)
+        preconditioner = options.pop('preconditioner', None)
+        if options:
+            raise ValueError(f'Unsupported options for {type(solver).__name__}: {sorted(options)}')
+        if preconditioner is not None and not isinstance(preconditioner, AbstractLinearOperator):
+            raise TypeError('The preconditioner must be an instance of AbstractLinearOperator.')
+        result = solver(self.operator, x, x0, preconditioner=preconditioner)
+        if throw:
+            # A solve truncated on negative curvature stops early without converging: not an error.
+            result = eqx.error_if(
+                result,
+                ~result.converged & (result.num_steps >= solver.max_steps),
+                'The maximum number of solver steps was reached. Try increasing `max_steps`.',
+            )
+        jax.debug.callback(self.config.solver_callback, result)
+        return result.solution
 
 
 @orthogonal

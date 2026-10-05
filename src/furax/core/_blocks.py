@@ -8,7 +8,6 @@ import jax
 import jax.numpy as jnp
 import jax.scipy.linalg as jsl
 from jax import Array
-from jax.tree_util import PyTreeDef
 from jaxtyping import Inexact, PyTree
 
 from ..tree import add
@@ -98,7 +97,7 @@ class BlockRowOperator(AbstractBlockOperator):
             )
 
     def mv(self, x: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
-        treedef: PyTreeDef = jax.tree.structure(
+        treedef = jax.tree.structure(
             self.blocks, is_leaf=lambda op: isinstance(op, AbstractLinearOperator)
         )
         output_leaves = (

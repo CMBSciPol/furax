@@ -130,7 +130,7 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         if overlap <= 0:
             return 2
         min_power = int(np.ceil(np.log2(overlap + 1)))
-        best_f: int = 2**min_power
+        best_f = 2**min_power
         best_cost = best_f * min_power / (best_f - overlap)
         for p in range(min_power + 1, min_power + 30):
             f = 2**p
@@ -249,11 +249,10 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
             return dense_symmetric_band_toeplitz(x.size, band_values)
 
         x = jnp.zeros(self.in_structure.shape, self.in_structure.dtype)
-        blocks: Array = func(x, self.band_values)
+        blocks = func(x, self.band_values)
         if blocks.ndim > 2:
             blocks = blocks.reshape(-1, blocks.shape[-1], blocks.shape[-1])
-            matrix: Array = jsl.block_diag(*blocks)
-            return matrix
+            return jsl.block_diag(*blocks)
         return blocks
 
 

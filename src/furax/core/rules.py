@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
 import jax.numpy as jnp
-from jaxtyping import Scalar
 
 from ._base import (
     AbstractLazyInverseOperator,
@@ -110,7 +109,7 @@ class HomothetyRule(AbstractNaryRule):
 
         first, *_, last = operands
         homothety_number = 0
-        value: Scalar = jnp.array(1)
+        value = jnp.array(1)
         new_operands = []
         for operand in operands:
             if isinstance(operand, HomothetyOperator):

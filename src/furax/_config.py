@@ -2,21 +2,28 @@ import contextvars
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from types import TracebackType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import lineax as lx
 import yaml
 
+if TYPE_CHECKING:
+    from furax.linalg import CGResult, CGSolver
+
 __all__ = ['Config']
 
 
-def default_solver_callback(solution: lx.Solution) -> None:
+def default_solver_callback(solution: 'lx.Solution | CGResult') -> None:
     pass
 
 
-def verbose_solver_callback(solution: lx.Solution) -> None:
-    num_steps = solution.stats['num_steps']
-    ok = num_steps < solution.stats['max_steps']
+def verbose_solver_callback(solution: 'lx.Solution | CGResult') -> None:
+    if isinstance(solution, lx.Solution):
+        num_steps = solution.stats['num_steps']
+        ok = num_steps < solution.stats['max_steps']
+    else:
+        num_steps = solution.num_steps
+        ok = solution.converged
     if ok:
         print(f'Converged in {num_steps} iterations')
     else:
@@ -29,10 +36,10 @@ def default_solver() -> lx.AbstractLinearSolver[Any]:
 
 @dataclass(frozen=True)
 class ConfigState:
-    solver: lx.AbstractLinearSolver[Any] = field(default_factory=default_solver)
+    solver: 'lx.AbstractLinearSolver[Any] | CGSolver' = field(default_factory=default_solver)
     solver_throw: bool = False
     solver_options: dict[str, Any] = field(default_factory=dict)
-    solver_callback: Callable[[lx.Solution], None] = default_solver_callback
+    solver_callback: 'Callable[[lx.Solution | CGResult], None]' = default_solver_callback
 
     def tree_flatten(self):
         return (), asdict(self)

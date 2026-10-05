@@ -208,8 +208,17 @@ class ObservationReader[T](AbstractReader):
         Returns:
             The padded fields.
         """
+        # The sample data already sits in the leading corner of a zeroed buffer of the padded
+        # shape (see `get_sample_data`): the corner view's base is that buffer.
+        sample_data = data.get(ReaderField.SAMPLE_DATA)
+        others = [field for field in data if field != ReaderField.SAMPLE_DATA]
+
         # First, pad them with 0 by default
-        data = super()._pad(data, padding)
+        data = super()._pad(
+            {field: data[field] for field in others}, {field: padding[field] for field in others}
+        )
+        if sample_data is not None:
+            data[ReaderField.SAMPLE_DATA] = jax.tree.map(lambda tod: tod.base, sample_data)
 
         # Handle fields with non-zero padding
         data_field_names = self.common_keywords['data_field_names']
@@ -342,12 +351,23 @@ class ObservationReader[T](AbstractReader):
             return x.astype(bool, copy=False)
 
         def get_sample_data(obs: AbstractObservation[T]) -> Any:
+            # The getter writes straight into a zeroed buffer of the padded shape, at the sample
+            # dtype, so that the TOD is copied once. `_pad` takes the whole buffer back.
+            (struct,) = jax.tree.leaves(self.out_structure[ReaderField.SAMPLE_DATA])
+            buffer = np.zeros(struct.shape, sample_dtype)
             tods: Stokes | np.ndarray
             if demodulated:
-                tods = obs.get_demodulated_tods(stokes=stokes)
+                tods = obs.get_demodulated_tods(stokes=stokes, out=buffer)
             else:
-                tods = obs.get_tods()
-            return jax.tree.map(lambda x: x.astype(sample_dtype, copy=False), tods)
+                tods = obs.get_tods(out=buffer)
+
+            def in_buffer(tod: np.ndarray) -> np.ndarray:
+                corner = buffer[tuple(slice(n) for n in tod.shape)]
+                if not np.may_share_memory(corner, tod):  # a getter that ignored `out`
+                    corner[...] = tod
+                return corner
+
+            return jax.tree.map(in_buffer, tods)
 
         def get_noise_model_fits(obs: AbstractObservation[T]) -> Any:
             if demodulated:

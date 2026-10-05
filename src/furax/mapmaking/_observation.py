@@ -183,29 +183,72 @@ class AbstractObservation[T](ABC):
         """Returns the sampling rate (in Hz) of the data."""
 
     @abstractmethod
-    def get_tods(self) -> Float[np.ndarray, 'dets samps']:
+    def get_tods(
+        self, out: Float[np.ndarray, 'dets samps'] | None = None
+    ) -> Float[np.ndarray, 'dets samps']:
         """Returns the timestream data, in the precision it is stored in.
 
-        The reader casts it to its sample dtype. Returns a host (numpy) array: getters feed the
-        reader's io_callback, which performs a single host->device transfer. Returning a device
-        (jax) array would force a wasteful device->host->device round trip at the callback
-        boundary.
+        Returns a host (numpy) array: getters feed the reader's io_callback, which performs a
+        single host->device transfer. Returning a device (jax) array would force a wasteful
+        device->host->device round trip at the callback boundary.
+
+        Args:
+            out: Array to write the data into, cast to its dtype, at least as large as the data.
+                The data fills its leading corner `out[:n_detectors, :n_samples]`, and the
+                rest is left as it is.
+
+        Returns:
+            The data, as the corner of `out` it was written to when `out` is given.
         """
 
     @overload
-    def get_demodulated_tods(self, stokes: Literal['I']) -> StokesI: ...
+    def get_demodulated_tods(
+        self, stokes: Literal['I'], out: np.ndarray | None = None
+    ) -> StokesI: ...
     @overload
-    def get_demodulated_tods(self, stokes: Literal['QU']) -> StokesQU: ...
+    def get_demodulated_tods(
+        self, stokes: Literal['QU'], out: np.ndarray | None = None
+    ) -> StokesQU: ...
     @overload
-    def get_demodulated_tods(self, stokes: Literal['IQU']) -> StokesIQU: ...
+    def get_demodulated_tods(
+        self, stokes: Literal['IQU'], out: np.ndarray | None = None
+    ) -> StokesIQU: ...
     @overload
-    def get_demodulated_tods(self, stokes: Literal['IQUV']) -> StokesIQUV: ...
-    def get_demodulated_tods(self, stokes: ValidStokesLiteral = 'IQU') -> StokesType:
+    def get_demodulated_tods(
+        self, stokes: Literal['IQUV'], out: np.ndarray | None = None
+    ) -> StokesIQUV: ...
+    def get_demodulated_tods(
+        self, stokes: ValidStokesLiteral = 'IQU', out: np.ndarray | None = None
+    ) -> StokesType:
         """Returns demodulated timestream data as a Stokes pytree, in the precision it is stored in.
 
         Subclasses that support demodulated data should override this method.
+
+        Args:
+            stokes: The Stokes legs to return.
+            out: Array of shape `(len(stokes), dets, samps)` to write the legs into, as in
+                [`get_tods`][furax.mapmaking.AbstractObservation.get_tods].
         """
         raise NotImplementedError(f'{type(self).__name__} does not support demodulated TODs')
+
+    @staticmethod
+    def _scaled_tods(
+        legs: list[np.ndarray], scale: float, out: np.ndarray | None
+    ) -> Float[np.ndarray, 'legs dets samps']:
+        """`scale` times each of the `(dets, samps)` `legs`, stacked, as `get_tods` lays them out.
+
+        Each leg is scaled straight into the result, so that the data is copied once.
+        """
+        shape = legs[0].shape
+        if out is None:
+            tods = np.empty((len(legs), *shape), np.result_type(*legs))
+        elif out.shape[0] != len(legs) or any(o < n for o, n in zip(out.shape[1:], shape)):
+            raise ValueError(f'out has shape {out.shape}, too small for {len(legs)} x {shape}')
+        else:
+            tods = out[:, : shape[0], : shape[1]]
+        for leg_out, leg in zip(tods, legs, strict=True):
+            np.multiply(leg, scale, out=leg_out)
+        return tods
 
     def get_demodulated_noise_model(self, stokes: ValidStokesLiteral = 'IQU') -> NoiseModel:
         """Returns a single noise model covering every requested Stokes leg.

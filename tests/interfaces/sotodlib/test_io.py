@@ -57,6 +57,24 @@ def test_demodulated_tods_keep_their_stored_precision(demod_observations) -> Non
         assert_array_equal(leg, 0.5 * raw)
 
 
+def test_demodulated_tods_are_written_into_the_corner_of_out(demod_observations) -> None:
+    data = demod_observations[0].get_data([ReaderField.SAMPLE_DATA])
+    expected = data.get_demodulated_tods(stokes='IQU').data
+    n_dets, n_samples = expected.shape[1:]
+    out = np.full((3, n_dets + 1, n_samples + 2), np.nan, np.float32)
+    tods = data.get_demodulated_tods(stokes='IQU', out=out)
+    assert np.shares_memory(tods.data, out)
+    assert_array_equal(out[:, :n_dets, :n_samples], expected.astype(np.float32))
+    assert np.isnan(out[:, n_dets:]).all()
+    assert np.isnan(out[..., n_samples:]).all()
+
+
+def test_demodulated_tods_reject_a_small_out(demod_observations) -> None:
+    data = demod_observations[0].get_data([ReaderField.SAMPLE_DATA])
+    with pytest.raises(ValueError, match='too small'):
+        data.get_demodulated_tods(stokes='IQU', out=np.empty((3, 1, 1), np.float32))
+
+
 def test_reader_all_fields(observations) -> None:
     """Test consistency for all available fields."""
     reader = ObservationReader.from_observations(

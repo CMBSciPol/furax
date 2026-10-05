@@ -57,9 +57,14 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
     def sample_rate(self) -> float:
         return self.data.sampling_rate_hz
 
-    def get_tods(self) -> Float[np.ndarray, 'dets samps']:
+    def get_tods(
+        self, out: Float[np.ndarray, 'dets samps'] | None = None
+    ) -> Float[np.ndarray, 'dets samps']:
         """Returns the timestream data, in the precision it is stored in."""
-        return np.atleast_2d(np.asarray(self.data.tod))
+        tods = np.atleast_2d(np.asarray(self.data.tod))
+        if out is None:
+            return tods
+        return self._scaled_tods([tods], 1.0, out[None])[0]
 
     def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
         return np.asarray(self.data.pol_angle_rad, dtype=np.float64)

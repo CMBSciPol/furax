@@ -80,19 +80,21 @@ class FakeObservation(AbstractObservation[None]):
     def sample_rate(self) -> float:
         return self._sample_rate
 
-    def get_tods(self) -> Float[np.ndarray, 'dets samps']:
+    def get_tods(self, out: np.ndarray | None = None) -> Float[np.ndarray, 'dets samps']:
         # Non-zero data so the white-noise PSD fit yields a finite sigma.
         rng = np.random.default_rng(self._seed)
-        return rng.normal(size=(self._n_dets, self._n_samples)).astype(np.float32)
+        tods = rng.normal(size=(self._n_dets, self._n_samples)).astype(np.float32)
+        return self._scaled_tods([tods], 1.0, None if out is None else out[None])[0]
 
-    def get_demodulated_tods(self, stokes: ValidStokesLiteral = 'IQU') -> Any:
+    def get_demodulated_tods(
+        self, stokes: ValidStokesLiteral = 'IQU', out: np.ndarray | None = None
+    ) -> Any:
         # One synthetic (dets, samps) stream per requested Stokes component.
-        kls = Stokes.class_for(stokes)
         rng = np.random.default_rng(self._seed + 1)
         streams = [
             rng.normal(size=(self._n_dets, self._n_samples)).astype(np.float32) for _ in stokes
         ]
-        return kls.from_stokes(*streams)
+        return Stokes.class_for(stokes).from_array(self._scaled_tods(streams, 1.0, out))
 
     def get_demodulated_noise_model(self, stokes: ValidStokesLiteral = 'IQU') -> NoiseModel:
         # One white-noise fit per Stokes component. Rows match AtmosphericNoiseModel's

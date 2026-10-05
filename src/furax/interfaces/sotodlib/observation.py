@@ -264,20 +264,33 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         duration: float = self.data.timestamps[-1] - self.data.timestamps[0]
         return (self.n_samples - 1) / duration
 
-    def get_tods(self) -> Float[np.ndarray, 'dets samps']:
+    def get_tods(
+        self, out: Float[np.ndarray, 'dets samps'] | None = None
+    ) -> Float[np.ndarray, 'dets samps']:
         """Returns the timestream data, in the precision it is stored in."""
         # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
-        return 0.5 * np.atleast_2d(np.asarray(self.data.signal))
+        signal = np.atleast_2d(np.asarray(self.data.signal))
+        return self._scaled_tods([signal], 0.5, None if out is None else out[None])[0]
 
     @overload
-    def get_demodulated_tods(self, stokes: Literal['I']) -> StokesI: ...
+    def get_demodulated_tods(
+        self, stokes: Literal['I'], out: np.ndarray | None = None
+    ) -> StokesI: ...
     @overload
-    def get_demodulated_tods(self, stokes: Literal['QU']) -> StokesQU: ...
+    def get_demodulated_tods(
+        self, stokes: Literal['QU'], out: np.ndarray | None = None
+    ) -> StokesQU: ...
     @overload
-    def get_demodulated_tods(self, stokes: Literal['IQU']) -> StokesIQU: ...
+    def get_demodulated_tods(
+        self, stokes: Literal['IQU'], out: np.ndarray | None = None
+    ) -> StokesIQU: ...
     @overload
-    def get_demodulated_tods(self, stokes: Literal['IQUV']) -> StokesIQUV: ...
-    def get_demodulated_tods(self, stokes: ValidStokesLiteral = 'IQU') -> StokesType:
+    def get_demodulated_tods(
+        self, stokes: Literal['IQUV'], out: np.ndarray | None = None
+    ) -> StokesIQUV: ...
+    def get_demodulated_tods(
+        self, stokes: ValidStokesLiteral = 'IQU', out: np.ndarray | None = None
+    ) -> StokesType:
         """Returns the demodulated timestream data as a Stokes pytree, in the stored precision.
 
         'IQUV' is not supported.
@@ -286,12 +299,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             raise NotImplementedError
         attrs = {'I': 'dsT', 'Q': 'demodQ', 'U': 'demodU'}
         legs = [np.atleast_2d(np.asarray(getattr(self.data, attrs[s]))) for s in stokes]
-        # Scale each leg straight into the stacked array
-        tods = np.empty((len(legs), *legs[0].shape), dtype=np.result_type(*legs))
-        for out, leg in zip(tods, legs, strict=True):
-            # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
-            np.multiply(leg, 0.5, out=out)
-        return Stokes.class_for(stokes).from_array(tods)
+        # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
+        return Stokes.class_for(stokes).from_array(self._scaled_tods(legs, 0.5, out))
 
     def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
         """Returns the detector offset angles."""

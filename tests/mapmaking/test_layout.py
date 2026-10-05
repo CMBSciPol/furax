@@ -61,7 +61,7 @@ def test_bucket_slot_bookkeeping():
 
 @pytest.mark.parametrize(
     ('n_dets', 'batch_size', 'padded'),
-    [(100, 64, 128), (128, 64, 128), (64, 64, 64), (50, 64, 50), (100, None, 100)],
+    [(100, 64, 128), (128, 64, 128), (64, 64, 64), (50, 64, 50), (100, 0, 100)],
 )
 def test_whole_detector_batches(n_dets, batch_size, padded):
     # a single batch is never padded; more detectors fill whole batches
@@ -71,7 +71,7 @@ def test_whole_detector_batches(n_dets, batch_size, padded):
 
 @pytest.mark.parametrize(
     ('n_dets', 'batch_size', 'n_batches', 'per_batch'),
-    [(100, 64, 2, 64), (50, 64, 1, 50), (100, None, 1, 100)],
+    [(100, 64, 2, 64), (50, 64, 1, 50), (100, 0, 1, 100)],
 )
 def test_bucket_detector_batches(n_dets, batch_size, n_batches, per_batch):
     shapes = [Shape(n_dets, 10).whole_detector_batches(batch_size)] * 3

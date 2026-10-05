@@ -632,7 +632,7 @@ class MultiObservationMapMaker[T]:
                 del inputs
                 hits = round_hits if hits is None else _add(hits, round_hits)
                 rhs = round_rhs if rhs is None else _add(rhs, round_rhs)
-                stacked = out if n_rounds == 1 else _store_round(stacked, out, r, n_rounds)
+                stacked = _store_round(stacked, out, r, n_rounds)
                 last = r + 1 == n_rounds
                 if self._prefetches_reads and not last:
                     per_device = read_round(r + 1)  # while the devices compute
@@ -649,13 +649,12 @@ class MultiObservationMapMaker[T]:
         # (device, round, ...) -> (slot, ...), and for detector batches (slot·batch, ...): each
         # detector batch an entry of its own, the shared data staying one per slot (see
         # `Bucket.stream_layout`)
-        lead = 1 if n_rounds == 1 else 2
         if bucket.n_batches == 1:
-            stacked = self._merge_leading_axes(stacked, lead)
+            stacked = self._merge_leading_axes(stacked, 2)
         else:
             batched, shared = stacked
-            batched = self._merge_leading_axes(batched, lead + 1)
-            shared = self._merge_leading_axes(shared, lead)
+            batched = self._merge_leading_axes(batched, 3)
+            shared = self._merge_leading_axes(shared, 2)
             stacked = eqx.combine(batched, shared)
         model, templates, amp_rhs = stacked
         return hits, rhs, _BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
@@ -693,8 +692,6 @@ class MultiObservationMapMaker[T]:
 
     def _merge_leading_axes(self, tree: PyTree[Array], n: int) -> PyTree[Array]:
         """Merge the `n` leading axes of every array, keeping it sharded over the merged axis."""
-        if n == 1:
-            return tree
         merge = jax.jit(
             partial(jax.tree.map, lambda x: x.reshape(-1, *x.shape[n:])),
             out_shardings=self.sharding,

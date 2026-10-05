@@ -205,7 +205,6 @@ class AbstractReader(ABC):
         Returns:
             A triple ``(data, padding, valid)``, as for [`read`][].
         """
-        padding_structure = self._padding_structure()
         if data_index in self.known_failures:
             # skip load entirely
             logger.info('read item %d: skipped (known failure)', data_index)
@@ -223,7 +222,7 @@ class AbstractReader(ABC):
                 data_index,
                 time.perf_counter() - start,
             )
-            return self._failure_filler(), zeros_like(padding_structure), np.array(False)
+            return self.read_filler_host()
         # Pad from the actual loaded shape (not the precomputed, probe-based padding): the result
         # must match ``out_structure`` exactly, and ``probe_shape`` is only an upper bound, so the
         # load may be smaller than probed.
@@ -246,6 +245,10 @@ class AbstractReader(ABC):
     @jax.jit
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array], Array]:
         """Read the data at the given index.
+
+        The data goes through `io_callback`, which copies it into buffers that XLA allocates. A
+        read outside `jit`, [`read_host`][furax.io.readers.AbstractReader.read_host] then
+        `jax.device_put`, lets a CPU device use a suitably aligned host buffer without a copy.
 
         Returns:
             A triple ``(data, padding, valid)``: the padded data pytree (matching

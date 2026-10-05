@@ -4,8 +4,9 @@ import lineax as lx
 import pytest
 from numpy.testing import assert_allclose
 
-from furax import AbstractLinearOperator, HomothetyOperator, IdentityOperator
+from furax import AbstractLinearOperator, DiagonalOperator, HomothetyOperator, IdentityOperator
 from furax.core import AbstractLazyInverseOperator
+from furax.linalg import CGResult, CGSolver
 
 
 def test_inverse(base_op) -> None:
@@ -91,3 +92,48 @@ def test_parametrized_inverse() -> None:
     inv_op = op.I(solver=solver, throw=True)
     with pytest.raises(RuntimeError, match='The maximum number of solver steps was reached'):
         inv_op(b)
+
+
+def _spd_op_and_matrix() -> tuple[AbstractLinearOperator, jax.Array]:
+    m = jnp.array([[4.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 2.0]])
+
+    class Op(AbstractLinearOperator):
+        def mv(self, x):
+            return m @ x
+
+    return Op(in_structure=jax.ShapeDtypeStruct((3,), jnp.float64)), m
+
+
+def test_inverse_cg_solver() -> None:
+    op, m = _spd_op_and_matrix()
+    b = jnp.array([1.0, 2.0, 3.0])
+    results = []
+    inv_op = op.I(solver=CGSolver(rtol=1e-12), callback=results.append)
+    assert_allclose(inv_op(b), jnp.linalg.solve(m, b), rtol=1e-10)
+    (result,) = results
+    assert isinstance(result, CGResult)
+    assert result.num_steps <= 3
+
+
+def test_inverse_cg_solver_options() -> None:
+    op, m = _spd_op_and_matrix()
+    b = jnp.array([1.0, 2.0, 3.0])
+    expected = jnp.linalg.solve(m, b)
+    preconditioner = DiagonalOperator(1 / jnp.diag(m), in_structure=op.in_structure)
+    solver = CGSolver(rtol=0, max_steps=1)
+
+    # Starting from the solution, a single step keeps it
+    actual = op.I(solver=solver, y0=expected, preconditioner=preconditioner)(b)
+    assert_allclose(actual, expected, rtol=1e-10)
+
+    with pytest.raises(ValueError, match='Unsupported options'):
+        op.I(solver=solver, foo=1)(b)
+    with pytest.raises(TypeError, match='preconditioner'):
+        op.I(solver=solver, preconditioner=jnp.ones(3))(b)
+
+
+def test_inverse_cg_solver_throw() -> None:
+    op, _ = _spd_op_and_matrix()
+    b = jnp.array([1.0, 2.0, 3.0])
+    with pytest.raises(RuntimeError, match='The maximum number of solver steps was reached'):
+        op.I(solver=CGSolver(max_steps=1), throw=True)(b)

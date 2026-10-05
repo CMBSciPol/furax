@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from dataclasses import dataclass, fields
 from typing import Literal, NamedTuple
 
 import equinox as eqx
@@ -240,3 +241,43 @@ def cg(
     )
 
     return CGResult(solution=out.x, residuals=out.residuals, num_steps=out.step)
+
+
+@dataclass(frozen=True)
+class CGSolver:
+    """Conjugate Gradient settings, usable as the solver of an operator inverse.
+
+    Pass it where a lineax solver is accepted, e.g. `A.I(solver=CGSolver(rtol=1e-8))` or
+    `Config(solver=CGSolver())`, to solve with [`cg`][] instead of `lineax.CG`. The fields are the
+    keyword arguments of [`cg`][]; see there for their meaning.
+
+    Examples:
+        >>> import jax.numpy as jnp
+        >>> from furax import DiagonalOperator
+        >>> from furax.tree import as_structure
+        >>> from furax.linalg import CGSolver
+        >>> d = jnp.array([1., 2., 4.])
+        >>> A = DiagonalOperator(d, in_structure=as_structure(d))
+        >>> A.I(solver=CGSolver(max_steps=10))(jnp.ones(3)).tolist()
+        [1.0, 0.5, 0.25]
+    """
+
+    max_steps: int = 500
+    atol: float = 0.0
+    rtol: float = 1e-5
+    stabilise_every: int = 10
+    negative_curvature: Literal['ignore', 'error', 'truncate'] = 'ignore'
+    loop_kind: Literal['lax', 'checkpointed', 'bounded'] = 'lax'
+    iteration_callback: Callable[[Array, Array], None] | None = None
+
+    def __call__(
+        self,
+        A: AbstractLinearOperator,
+        b: PyTree[Num[Array, '...']],
+        x0: PyTree[Num[Array, '...']] | None = None,
+        *,
+        preconditioner: AbstractLinearOperator | None = None,
+    ) -> CGResult:
+        """Solve `A x = b` with [`cg`][] using these settings."""
+        options = {f.name: getattr(self, f.name) for f in fields(self)}
+        return cg(A, b, x0, preconditioner=preconditioner, **options)

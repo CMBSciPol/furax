@@ -65,7 +65,7 @@ from ._observation import (
     ObservationBufferShape,
     ReaderField,
 )
-from ._reader import ObservationReader, slice_detector_axis, slice_detectors
+from ._reader import ObservationReader, slice_detectors
 from .config import (
     GapTreatment,
     LandscapeConfig,
@@ -606,27 +606,23 @@ class MultiObservationMapMaker[T]:
                 )
 
                 use = real & valid
-                tod = raw = observation[ReaderField.SAMPLE_DATA]
-                if fill_gaps:
-                    # The fill solves for every detector of the observation at once, ahead of the
-                    # detector batches, so that they all see the same solve. The models are still
-                    # built from the raw TOD.
-                    tod = jax.lax.cond(
-                        use,
-                        lambda: fill_observation_gaps(observation, padding),
-                        lambda: raw,  # nothing to fill
-                    )
-
                 if n_batches == 1:
+                    tod = raw = observation[ReaderField.SAMPLE_DATA]
+                    if fill_gaps:
+                        # The RHS uses the filled TOD; the models are still built from the raw one.
+                        tod = jax.lax.cond(
+                            use,
+                            lambda: fill_observation_gaps(observation, padding),
+                            lambda: raw,  # nothing to fill
+                        )
                     return accumulate(carry, observation, tod, padding, use)
 
-                # One detector batch at a time: nothing computed from the TOD outlives its batch,
-                # each batch contributing to the sums and stacking its own model and templates.
+                # One detector batch at a time (gap filling, which needs whole observations, never
+                # gets here): nothing computed from the TOD outlives its batch, each batch
+                # contributing to the sums and stacking its own model and templates.
                 def batch(carry, j):
-                    start = j * batch_size
-                    data = slice_detectors(observation, start, batch_size)
-                    tod_j = slice_detector_axis(tod, start, batch_size)
-                    return accumulate(carry, data, tod_j, padding, use)
+                    data = slice_detectors(observation, j * batch_size, batch_size)
+                    return accumulate(carry, data, data[ReaderField.SAMPLE_DATA], padding, use)
 
                 # What the batches share (boresight pointing, shared template bases, ...) is kept
                 # once per observation rather than once per batch.

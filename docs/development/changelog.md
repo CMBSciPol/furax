@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StreamOperator` constructors accept `group_size`, for data shared by consecutive slices; `StreamLayout` builds streams over such data (#308)
 - `AbstractObservation.get_tods` and `get_demodulated_tods` accept `out`, an array to write the TOD into (#310)
 - `AbstractReader.read_host` and `read_filler_host` read an item on the host, as numpy arrays (#312)
+- `MapMakingConfig.read_stokes`, the demodulated legs read: those of the map, and I for the T2P template (#314)
 
 ### Changed
 
@@ -24,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TemplatesConfig.gram_batch_size` defaults to 4 instead of 32 (#308)
 - `MultiObservationMapMaker` always reads the TOD in float32 (#310)
 - `get_tods` and `get_demodulated_tods` return the TOD in its stored precision (#310)
+- The T2P template requires Q and U legs in `landscape.stokes`, rather than I (#314)
 
 ## [0.15.3] - 2026-10-02
 

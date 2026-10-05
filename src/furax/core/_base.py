@@ -741,10 +741,10 @@ class InverseOperator(AbstractLazyInverseOperator):
             raise TypeError('The preconditioner must be an instance of AbstractLinearOperator.')
         result = solver(self.operator, x, x0, preconditioner=preconditioner)
         if throw:
-            # `num_steps` reaches `max_steps` only when CG did not converge earlier.
+            # A solve truncated on negative curvature stops early without converging: not an error.
             result = eqx.error_if(
                 result,
-                result.num_steps >= solver.max_steps,
+                ~result.converged & (result.num_steps >= solver.max_steps),
                 'The maximum number of solver steps was reached. Try increasing `max_steps`.',
             )
         jax.debug.callback(self.config.solver_callback, result)

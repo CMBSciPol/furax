@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `PolynomialConfig.legendre` and `ScanSynchronousConfig.legendre` accept orders per group of Stokes legs of demodulated data; legs left out have no template (#309)
 - `furax.linalg.CGSolver`: solve operator inverses (`A.I(solver=...)`, `Config(solver=...)`) with `furax.linalg.cg` instead of lineax (#313)
+- `furax.linalg.CGResult.converged`: whether the CG solve met its tolerance (#313)
 
 ### Changed
 

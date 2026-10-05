@@ -94,14 +94,17 @@ def test_parametrized_inverse() -> None:
         inv_op(b)
 
 
-def _spd_op_and_matrix() -> tuple[AbstractLinearOperator, jax.Array]:
-    m = jnp.array([[4.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 2.0]])
-
+def _matrix_op(m: jax.Array) -> AbstractLinearOperator:
     class Op(AbstractLinearOperator):
         def mv(self, x):
             return m @ x
 
-    return Op(in_structure=jax.ShapeDtypeStruct((3,), jnp.float64)), m
+    return Op(in_structure=jax.ShapeDtypeStruct(m.shape[1:], m.dtype))
+
+
+def _spd_op_and_matrix() -> tuple[AbstractLinearOperator, jax.Array]:
+    m = jnp.array([[4.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 2.0]])
+    return _matrix_op(m), m
 
 
 def test_inverse_cg_solver() -> None:
@@ -137,3 +140,25 @@ def test_inverse_cg_solver_throw() -> None:
     b = jnp.array([1.0, 2.0, 3.0])
     with pytest.raises(RuntimeError, match='The maximum number of solver steps was reached'):
         op.I(solver=CGSolver(max_steps=1), throw=True)(b)
+
+
+def test_inverse_cg_solver_throw_converged_on_last_step() -> None:
+    op, m = _spd_op_and_matrix()
+    b = jnp.array([1.0, 2.0, 3.0])
+    results = []
+    # CG solves a 3x3 SPD system exactly in 3 steps
+    inv_op = op.I(solver=CGSolver(max_steps=3, rtol=1e-8), throw=True, callback=results.append)
+    assert_allclose(inv_op(b), jnp.linalg.solve(m, b), rtol=1e-10)
+    (result,) = results
+    assert result.num_steps == 3
+    assert result.converged
+
+
+def test_inverse_cg_solver_throw_negative_curvature() -> None:
+    op = _matrix_op(jnp.diag(jnp.array([1.0, -1.0])))
+    results = []
+    solver = CGSolver(negative_curvature='truncate')
+    op.I(solver=solver, throw=True, callback=results.append)(jnp.array([1.0, 2.0]))
+    (result,) = results
+    assert result.num_steps == 1
+    assert not result.converged

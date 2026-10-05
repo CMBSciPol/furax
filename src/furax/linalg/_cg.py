@@ -18,11 +18,14 @@ class CGResult(NamedTuple):
         solution: The approximate solution x to Ax = b.
         residuals: Norm of the residual at each iteration, shape (max_steps,).
         num_steps: Number of CG steps taken.
+        converged: Whether the residual norm met the tolerance `atol + rtol * ||b||`. False
+            when the solve ran out of steps or stopped on negative curvature.
     """
 
     solution: PyTree[Num[Array, '...']]
     residuals: Float[Array, ' max_steps']
     num_steps: Array
+    converged: Array
 
 
 class _CGCarry(NamedTuple):
@@ -240,7 +243,9 @@ def cg(
         kind=loop_kind,
     )
 
-    return CGResult(solution=out.x, residuals=out.residuals, num_steps=out.step)
+    return CGResult(
+        solution=out.x, residuals=out.residuals, num_steps=out.step, converged=out.converged
+    )
 
 
 @dataclass(frozen=True)

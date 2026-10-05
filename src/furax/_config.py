@@ -20,11 +20,10 @@ def default_solver_callback(solution: 'lx.Solution | CGResult') -> None:
 def verbose_solver_callback(solution: 'lx.Solution | CGResult') -> None:
     if isinstance(solution, lx.Solution):
         num_steps = solution.stats['num_steps']
-        max_steps = solution.stats['max_steps']
+        ok = num_steps < solution.stats['max_steps']
     else:
         num_steps = solution.num_steps
-        max_steps = solution.residuals.shape[0]
-    ok = num_steps < max_steps
+        ok = solution.converged
     if ok:
         print(f'Converged in {num_steps} iterations')
     else:

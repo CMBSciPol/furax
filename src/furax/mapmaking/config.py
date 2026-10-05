@@ -893,7 +893,7 @@ class MapMakingConfig:
             if templates.t2p is not None:
                 if not self.demodulated:
                     raise ValueError('The T2P template requires demodulated=True.')
-                if 'Q' not in self.landscape.stokes:
+                if 'QU' not in self.landscape.stokes:
                     raise ValueError(
                         'The T2P template requires Q and U legs in landscape.stokes (got '
                         f'{self.landscape.stokes!r}).'

@@ -195,6 +195,54 @@ class AbstractReader(ABC):
             lambda leaf: jax.ShapeDtypeStruct((len(leaf.shape),), np.int32), self.out_structure
         )
 
+    def read_host(
+        self, data_index: int
+    ) -> tuple[PyTree[np.ndarray], PyTree[np.ndarray], np.ndarray]:
+        """Read the data at the given index on the host, as [`read`][] returns it but in numpy.
+
+        A failed read is logged and recorded in ``failed_indices``, and returns filler data.
+
+        Returns:
+            A triple ``(data, padding, valid)``, as for [`read`][].
+        """
+        padding_structure = self._padding_structure()
+        if data_index in self.known_failures:
+            # skip load entirely
+            logger.info('read item %d: skipped (known failure)', data_index)
+            return self.read_filler_host()
+        logger.info('read item %d: start', data_index)
+        start = time.perf_counter()
+        try:
+            data = self._read_data_impure(
+                *self.args[data_index], **self.keywords[data_index], **self.common_keywords
+            )
+        except Exception:
+            self.failed_indices.add(data_index)
+            logger.exception(
+                'read item %d: failed after %.1fs; substituting filler data',
+                data_index,
+                time.perf_counter() - start,
+            )
+            return self._failure_filler(), zeros_like(padding_structure), np.array(False)
+        # Pad from the actual loaded shape (not the precomputed, probe-based padding): the result
+        # must match ``out_structure`` exactly, and ``probe_shape`` is only an upper bound, so the
+        # load may be smaller than probed.
+        actual_padding = self._actual_padding(data)
+        result = (
+            self._pad(data, actual_padding),
+            self._padding_to_arrays(actual_padding),
+            np.array(True),
+        )
+        logger.info('read item %d: ok (%.1fs)', data_index, time.perf_counter() - start)
+        return result
+
+    def read_filler_host(self) -> tuple[PyTree[np.ndarray], PyTree[np.ndarray], np.ndarray]:
+        """Finite filler data, as [`read_filler`][] returns it but in numpy."""
+        return self._failure_filler(), zeros_like(self._padding_structure()), np.array(False)
+
+    def _result_shape(self) -> tuple[PyTree[jax.ShapeDtypeStruct], ...]:
+        return (self.out_structure, self._padding_structure(), jax.ShapeDtypeStruct((), bool))
+
     @jax.jit
     def read(self, data_index: int) -> tuple[PyTree[Array], PyTree[Array], Array]:
         """Read the data at the given index.
@@ -204,63 +252,20 @@ class AbstractReader(ABC):
             ``out_structure``), the padding pytree, and a scalar boolean that is ``False`` when the
             read failed.
         """
-        padding_structure = self._padding_structure()
 
-        def callback(
-            i_arr: Array,
-        ) -> tuple[PyTree[np.ndarray], PyTree[np.ndarray], np.ndarray]:
-            i = int(i_arr)  # io_callback passes the index as a (host) array
-            if i in self.known_failures:
-                # skip load entirely
-                logger.info('read item %d: skipped (known failure)', i)
-                return self._failure_filler(), zeros_like(padding_structure), np.array(False)
-            logger.info('read item %d: start', i)
-            start = time.perf_counter()
-            try:
-                data = self._read_data_impure(
-                    *self.args[i], **self.keywords[i], **self.common_keywords
-                )
-            except Exception:
-                self.failed_indices.add(i)
-                logger.exception(
-                    'read item %d: failed after %.1fs; substituting filler data',
-                    i,
-                    time.perf_counter() - start,
-                )
-                return self._failure_filler(), zeros_like(padding_structure), np.array(False)
-            # Pad from the actual loaded shape (not the precomputed, probe-based padding): the
-            # io_callback contract requires the result to match ``out_structure`` exactly, and
-            # ``probe_shape`` is only an upper bound, so the load may be smaller than probed.
-            actual_padding = self._actual_padding(data)
-            result = (
-                self._pad(data, actual_padding),
-                self._padding_to_arrays(actual_padding),
-                np.array(True),
-            )
-            logger.info('read item %d: ok (%.1fs)', i, time.perf_counter() - start)
-            return result
+        def callback(i_arr: Array) -> tuple[PyTree[np.ndarray], PyTree[np.ndarray], np.ndarray]:
+            return self.read_host(int(i_arr))  # io_callback passes the index as a (host) array
 
-        result_shape = (
-            self.out_structure,
-            padding_structure,
-            jax.ShapeDtypeStruct((), bool),
-        )
-        data, padding, valid = jax.lax.switch(
+        result_shape = self._result_shape()
+        return jax.lax.switch(
             data_index,
             [lambda i=i: io_callback(callback, result_shape, i) for i in range(self.count)],
         )
-        return data, padding, valid
 
     @jax.jit
     def read_filler(self) -> tuple[PyTree[Array], PyTree[Array], Array]:
         """Return finite filler data without touching any backing store."""
-        padding_structure = self._padding_structure()
-
-        def callback():
-            return self._failure_filler(), zeros_like(padding_structure), np.array(False)
-
-        result_shape = (self.out_structure, padding_structure, jax.ShapeDtypeStruct((), bool))
-        return io_callback(callback, result_shape)
+        return io_callback(self.read_filler_host, self._result_shape())
 
     @staticmethod
     def _padding_to_arrays(padding: PyTree[tuple[int, ...]]) -> PyTree[np.ndarray]:

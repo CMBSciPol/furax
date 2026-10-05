@@ -606,7 +606,7 @@ class MultiObservationMapMaker[T]:
             )
         )
 
-        def load(slot: int) -> tuple[Any, Any, np.ndarray]:
+        def load(slot):
             if bucket.is_real[slot]:
                 return reader.read_host(int(bucket.item_of_slot[slot]))
             # A padding slot is never read or preprocessed just to be masked away
@@ -614,18 +614,32 @@ class MultiObservationMapMaker[T]:
 
         hits = rhs = None
         stacked: Any = None
+        # The pool reads the observations of a round's devices concurrently
         with ThreadPoolExecutor(len(devices)) as pool:
-            for r in range(n_rounds):
+
+            def read_round(r):
                 # device k holds slots `local.start + k * n_rounds + r`, as the global sharding
                 slots = [local.start + k * n_rounds + r for k in range(len(devices))]
-                inputs = self._to_devices(list(pool.map(load, slots)))
-                round_hits, round_rhs, out = launch(*inputs)
-                del inputs  # this round's host buffers
+                return list(pool.map(load, slots))
+
+            per_device = read_round(0)
+            for r in range(n_rounds):
+                inputs = self._to_devices(per_device)
+                # Hold this round's buffers only as long as its launch: on a CPU device they are
+                # its TOD, which the next read must not find still in memory.
+                per_device = []
+                round_hits, round_rhs, out = launch(*inputs)  # dispatched without waiting
+                del inputs
                 hits = round_hits if hits is None else _add(hits, round_hits)
                 rhs = round_rhs if rhs is None else _add(rhs, round_rhs)
                 stacked = out if n_rounds == 1 else _store_round(stacked, out, r, n_rounds)
-                # wait for the round, so that its working memory is freed before the next read
+                last = r + 1 == n_rounds
+                if self._prefetches_reads and not last:
+                    per_device = read_round(r + 1)  # while the devices compute
+                # wait for the round, so that its working memory is freed
                 jax.block_until_ready((hits, rhs, stacked))
+                if not self._prefetches_reads and not last:
+                    per_device = read_round(r + 1)
 
         # every device's partial sums, over the job
         sum_devices = partial(jax.tree.map, lambda x: x.sum(axis=0))
@@ -645,6 +659,16 @@ class MultiObservationMapMaker[T]:
             stacked = eqx.combine(batched, shared)
         model, templates, amp_rhs = stacked
         return hits, rhs, _BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
+
+    @cached_property
+    def _prefetches_reads(self) -> bool:
+        """Whether to read the next observations while the devices accumulate the current ones.
+
+        Only where the devices have memory of their own: on a CPU device, the reads would hold the
+        next TOD in the same memory as the current one's working set, and compete with it for
+        the cores.
+        """
+        return self._local_devices[0].platform != 'cpu'
 
     @cached_property
     def _local_devices(self) -> list[jax.Device]:

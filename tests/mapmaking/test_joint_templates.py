@@ -220,9 +220,12 @@ def test_only_observations_larger_than_a_batch_are_padded(batch, n_buffered):
     assert maker.readers[0].out_structure[ReaderField.DETECTOR_QUATERNIONS].shape[0] == n_buffered
 
 
-def test_several_observations_per_device_match_single_observations():
-    # More observations than devices: each device accumulates several, one round at a time.
+@pytest.mark.parametrize('prefetch', [False, True], ids=['read-after-round', 'prefetch'])
+def test_several_observations_per_device_match_single_observations(monkeypatch, prefetch: bool):
+    # More observations than devices: each device accumulates several, one round at a time,
+    # reading the next round after the current one or, as with a GPU, while it computes.
     # Each observation's sums and outputs must be those of a run over it alone.
+    monkeypatch.setattr(MultiObservationMapMaker, '_prefetches_reads', prefetch)
     cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)))
     observations = _hwp_obs(n_obs=10)
 

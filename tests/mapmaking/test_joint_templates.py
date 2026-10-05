@@ -122,18 +122,28 @@ def test_demodulated_polynomial_implicit_runs():
 
 
 @pytest.mark.parametrize(
-    ('legendre_qu', 'groups'), [(None, ['iqu']), (PolynomialOrders(1, 3), ['i', 'qu'])]
+    ('name', 'legendre', 'groups', 'legs'),
+    [
+        ('polynomial', PolynomialOrders(0, 3), ['iqu'], ['i', 'q', 'u']),
+        (
+            'polynomial',
+            {'i': PolynomialOrders(0, 3), 'q': PolynomialOrders(1, 3), 'u': PolynomialOrders(1, 3)},
+            ['i', 'qu'],
+            ['i', 'q', 'u'],
+        ),
+        ('scan_synchronous', {'qu': PolynomialOrders(2, 5)}, ['qu'], ['q', 'u']),
+    ],
 )
-def test_demodulated_legs_fitted_alike_share_a_basis(legendre_qu, groups):
+def test_demodulated_legs_fitted_alike_share_a_basis(name, legendre, groups, legs):
     # legs fitted with the same orders share one basis, so an observation stores it once rather
-    # than once per leg; the amplitudes stay one set per leg
-    polynomial = PolynomialConfig(explicit=False)
-    cfg = _config(TemplatesConfig(polynomial=polynomial))
+    # than once per leg; the amplitudes stay one set per leg, on the legs given orders only
+    template = PolynomialConfig() if name == 'polynomial' else ScanSynchronousConfig()
+    cfg = _config(TemplatesConfig(**{name: template}))
     cfg.sotodlib = SotodlibConfig(demodulated=True)
-    polynomial.legendre_qu = legendre_qu  # set after demodulation, which it requires
+    template.legendre = legendre  # set after demodulation, which per-leg orders require
     maker = MultiObservationMapMaker(_ground_obs(), config=cfg)
     with jax.set_mesh(maker.mesh):
         acc = maker.build_model_and_accumulate()
     operator = acc.buckets[0].templates.implicit.operator
-    assert sorted(operator.bases['polynomial']) == groups
-    assert sorted(operator.in_structure['polynomial']) == ['i', 'q', 'u']
+    assert sorted(operator.bases[name]) == groups
+    assert sorted(operator.in_structure[name]) == legs

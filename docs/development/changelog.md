@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ScanSynchronousConfig.stokes` restricts the scan-synchronous template to some Stokes legs of demodulated data (#309)
+
 ## [0.15.3] - 2026-10-02
 
 ### Added

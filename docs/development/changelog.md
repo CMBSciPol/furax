@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MapMakingConfig.detector_batch_size` splits observations into batches of detectors (16 by default) to reduce peak memory usage (#308)
 - `StreamOperator` constructors accept `group_size`, for data shared by consecutive slices; `StreamLayout` builds streams over such data (#308)
 - `AbstractObservation.get_tods` and `get_demodulated_tods` accept `out`, an array to write the TOD into (#310)
+- `AbstractReader.read_host` and `read_filler_host` read an item on the host, as numpy arrays (#312)
 
 ### Changed
 

@@ -453,8 +453,12 @@ class ObservationTemplates:
             add('polynomial', bases, poly.explicit)
 
         if (scan := tcfg.scan_synchronous) is not None:
-            basis = scan_synchronous_basis(scan.legendre, data[ReaderField.AZIMUTH], dtype)
-            add('scan_synchronous', basis, scan.explicit)
+            scan_basis = scan_synchronous_basis(scan.legendre, data[ReaderField.AZIMUTH], dtype)
+            if legs is not None and scan.stokes is not None:
+                group = ''.join(s.lower() for s in legs if s in scan.stokes)
+                add('scan_synchronous', {group: scan_basis}, scan.explicit)
+            else:
+                add('scan_synchronous', scan_basis, scan.explicit)
 
         if (binned_az := tcfg.binned_azimuth_synchronous) is not None:
             basis = binned_azimuth_synchronous_basis(

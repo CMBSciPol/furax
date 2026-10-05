@@ -137,3 +137,18 @@ def test_demodulated_legs_fitted_alike_share_a_basis(legendre_qu, groups):
     operator = acc.buckets[0].templates.implicit.operator
     assert sorted(operator.bases['polynomial']) == groups
     assert sorted(operator.in_structure['polynomial']) == ['i', 'q', 'u']
+
+
+@pytest.mark.parametrize(
+    ('stokes', 'groups', 'legs'), [(None, ['iqu'], ['i', 'q', 'u']), ('UQ', ['qu'], ['q', 'u'])]
+)
+def test_demodulated_scan_synchronous_on_chosen_legs(stokes, groups, legs):
+    cfg = _config(TemplatesConfig(scan_synchronous=ScanSynchronousConfig(stokes=None)))
+    cfg.sotodlib = SotodlibConfig(demodulated=True)
+    cfg.templates.scan_synchronous.stokes = stokes  # set after demodulation, which it requires
+    maker = MultiObservationMapMaker(_ground_obs(), config=cfg)
+    with jax.set_mesh(maker.mesh):
+        acc = maker.build_model_and_accumulate()
+    operator = acc.buckets[0].templates.implicit.operator
+    assert sorted(operator.bases['scan_synchronous']) == groups
+    assert sorted(operator.in_structure['scan_synchronous']) == legs

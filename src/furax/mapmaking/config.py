@@ -387,6 +387,15 @@ class ScanSynchronousConfig:
     legendre: PolynomialOrders = field(default_factory=lambda: PolynomialOrders(3, 7))
     """Legendre orders for the azimuth-dependent basis."""
 
+    stokes: str | None = None
+    """Stokes legs the template is fitted on, e.g. `'QU'`; `None` fits it on every leg.
+
+    Requires `demodulated=True`. Within a constant-speed subscan, a Legendre polynomial in azimuth
+    is a polynomial in time, so the template is redundant on a leg whose per-subscan
+    [`PolynomialConfig`][] reaches its orders. Such redundant templates make the Gram singular
+    and stall the solver.
+    """
+
     explicit: bool = False
     """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
@@ -825,6 +834,14 @@ class MapMakingConfig:
                 and not self.demodulated
             ):
                 raise ValueError('templates.polynomial.legendre_qu requires demodulated=True.')
+            if (scan := templates.scan_synchronous) is not None and scan.stokes is not None:
+                if not self.demodulated:
+                    raise ValueError('templates.scan_synchronous.stokes requires demodulated=True.')
+                if not scan.stokes or not set(scan.stokes) <= set(self.landscape.stokes):
+                    raise ValueError(
+                        f'templates.scan_synchronous.stokes={scan.stokes!r} must name legs of '
+                        f'landscape.stokes={self.landscape.stokes!r}.'
+                    )
 
     @classmethod
     def for_method(cls, method: 'Methods | str') -> Self:

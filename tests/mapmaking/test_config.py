@@ -14,6 +14,7 @@ from furax.mapmaking.config import (
     MapMakingConfig,
     PolynomialConfig,
     PolynomialOrders,
+    ScanSynchronousConfig,
     SotodlibConfig,
     T2PConfig,
     TemplatesConfig,
@@ -169,4 +170,28 @@ class TestPolynomialLegendreQURequiresDemodulated:
         MapMakingConfig(
             sotodlib=SotodlibConfig(demodulated=True),
             templates=TemplatesConfig(polynomial=poly),
+        )
+
+
+class TestScanSynchronousStokes:
+    def test_raises_without_demodulated(self):
+        scan = ScanSynchronousConfig(stokes='QU')
+        with pytest.raises(ValueError, match='stokes requires demodulated=True'):
+            MapMakingConfig(templates=TemplatesConfig(scan_synchronous=scan))
+
+    @pytest.mark.parametrize('stokes', ['', 'IV', 'X'])
+    def test_raises_on_legs_outside_the_landscape(self, stokes: str):
+        scan = ScanSynchronousConfig(stokes=stokes)
+        with pytest.raises(ValueError, match='must name legs of landscape.stokes'):
+            MapMakingConfig(
+                sotodlib=SotodlibConfig(demodulated=True),
+                landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig()),
+                templates=TemplatesConfig(scan_synchronous=scan),
+            )
+
+    def test_accepts_demodulated(self):
+        MapMakingConfig(
+            sotodlib=SotodlibConfig(demodulated=True),
+            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig()),
+            templates=TemplatesConfig(scan_synchronous=ScanSynchronousConfig(stokes='QU')),
         )

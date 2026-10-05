@@ -188,9 +188,8 @@ class AbstractObservation[T](ABC):
     ) -> Float[np.ndarray, 'dets samps']:
         """Returns the timestream data, in the precision it is stored in.
 
-        Returns a host (numpy) array: getters feed the reader's io_callback, which performs a
-        single host->device transfer. Returning a device (jax) array would force a wasteful
-        device->host->device round trip at the callback boundary.
+        Returns a host (numpy) array, which the reader moves to the device once. Returning a device
+        (jax) array would force a wasteful device->host->device round trip.
 
         Args:
             out: Array to write the data into, cast to its dtype, at least as large as the data.
@@ -230,6 +229,13 @@ class AbstractObservation[T](ABC):
                 [`get_tods`][furax.mapmaking.AbstractObservation.get_tods].
         """
         raise NotImplementedError(f'{type(self).__name__} does not support demodulated TODs')
+
+    @classmethod
+    def _scaled_tod(
+        cls, tod: Float[np.ndarray, 'dets samps'], scale: float, out: np.ndarray | None
+    ) -> Float[np.ndarray, 'dets samps']:
+        """`scale` times `tod`, written into `out` as `get_tods` does; see `_scaled_tods`."""
+        return cls._scaled_tods([tod], scale, None if out is None else out[None])[0]
 
     @staticmethod
     def _scaled_tods(

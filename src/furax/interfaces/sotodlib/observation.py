@@ -269,8 +269,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     ) -> Float[np.ndarray, 'dets samps']:
         """Returns the timestream data, in the precision it is stored in."""
         # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
-        signal = np.atleast_2d(np.asarray(self.data.signal))
-        return self._scaled_tods([signal], 0.5, None if out is None else out[None])[0]
+        return self._scaled_tod(np.atleast_2d(np.asarray(self.data.signal)), 0.5, out)
 
     @overload
     def get_demodulated_tods(

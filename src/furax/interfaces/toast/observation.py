@@ -168,7 +168,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         """Returns the timestream data, in the precision it is stored in."""
         tods = np.atleast_2d(np.asarray(self.data.detdata[self._det_data][self.detectors, :]))
         # furax's LinearPolarizerOperator assumes power, TOAST assumes temperature
-        return self._scaled_tods([tods], 0.5, None if out is None else out[None])[0]
+        return self._scaled_tod(tods, 0.5, out)
 
     def _get_detector_angles(self) -> Array:
         """Returns the detector angles on the sky."""

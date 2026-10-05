@@ -84,7 +84,7 @@ class FakeObservation(AbstractObservation[None]):
         # Non-zero data so the white-noise PSD fit yields a finite sigma.
         rng = np.random.default_rng(self._seed)
         tods = rng.normal(size=(self._n_dets, self._n_samples)).astype(np.float32)
-        return self._scaled_tods([tods], 1.0, None if out is None else out[None])[0]
+        return self._scaled_tod(tods, 1.0, out)
 
     def get_demodulated_tods(
         self, stokes: ValidStokesLiteral = 'IQU', out: np.ndarray | None = None

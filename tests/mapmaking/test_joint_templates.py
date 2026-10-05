@@ -184,7 +184,7 @@ def test_detector_batches_give_the_same_result(observations, templates, demodula
     cfg = replace(_config(None), templates=templates, sotodlib=sotodlib)
     makers = [
         MultiObservationMapMaker(obs, config=replace(cfg, detector_batch_size=batch))
-        for batch in (None, 3)
+        for batch in (0, 3)
     ]
 
     accumulated = []
@@ -210,7 +210,7 @@ def test_detector_batches_give_the_same_result(observations, templates, demodula
         )
 
 
-@pytest.mark.parametrize(('batch', 'n_buffered'), [(None, 8), (64, 8), (3, 9)])
+@pytest.mark.parametrize(('batch', 'n_buffered'), [(0, 8), (64, 8), (3, 9)])
 def test_only_observations_larger_than_a_batch_are_padded(batch, n_buffered):
     # 8 detectors: a batch of 64 holds them all, unpadded; batches of 3 need a ninth
     maker = MultiObservationMapMaker(

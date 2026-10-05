@@ -1,5 +1,4 @@
 import importlib.util
-from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -538,18 +537,6 @@ class TestGapTreatmentMapMaker:
         assert bool(jnp.all(jnp.isfinite(results.icov)))
         assert jnp.all(results.hit_map >= 0)
         assert results.solver_stats is not None
-
-    @pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])
-    def test_gaps_are_unaffected_by_detector_batches(self, treatment):
-        """Gaps are treated per observation, whatever the detector batches."""
-        observations = [GappyLazyGroundObservation(seed=0, n_dets=7)]
-        rhs = []
-        for batch in (None, 3):
-            config = replace(self._config(treatment), detector_batch_size=batch)
-            maker = MultiObservationMapMaker(observations, config=config)
-            with jax.set_mesh(maker.mesh):
-                rhs.append(maker.build_model_and_accumulate().map_rhs)
-        assert eqx.tree_equal(rhs[1], rhs[0], rtol=1e-10, atol=1e-10)
 
     def test_gap_fill_skips_failed_observation(self):
         """The ``real & valid`` gate: a failed load is read as filler and never gap-filled."""

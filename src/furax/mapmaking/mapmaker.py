@@ -238,7 +238,7 @@ class MultiObservationMapMaker[T]:
         shapes = [
             ObservationBufferShape(
                 int(row[0]), max(int(row[1]), minimum_samples), int(row[2])
-            ).whole_detector_batches(self._detector_batch_size)
+            ).whole_detector_batches(self.config.detector_batch_size)
             for row in rows
         ]
         return shapes, failed
@@ -255,16 +255,6 @@ class MultiObservationMapMaker[T]:
             minimum = max(minimum, correlation_length)
         return minimum
 
-    @property
-    def _detector_batch_size(self) -> int | None:
-        """`config.detector_batch_size`, or `None` where the weight spans every detector."""
-        config = self.config
-        # The nested weight's inner solve and flagged-sample budget span the detectors it is
-        # given: on a batch, it would no longer be the observation's weight.
-        if config.gaps.treatment == GapTreatment.NESTED and not config.binned:
-            return None
-        return config.detector_batch_size
-
     @cached_property
     def layout(self) -> SlotLayout:
         """How the observations are bucketed and laid out over the devices."""
@@ -273,7 +263,7 @@ class MultiObservationMapMaker[T]:
             shapes,
             n_devices=jax.device_count(),
             max_buckets=self.config.max_buckets,
-            detector_batch_size=self._detector_batch_size,
+            detector_batch_size=self.config.detector_batch_size,
         )
 
     @cached_property

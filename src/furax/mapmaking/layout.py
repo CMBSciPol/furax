@@ -105,7 +105,7 @@ class Bucket:
         shapes: Sequence[ObservationBufferShape],
         group: Collection[int],
         n_devices: int = 1,
-        detector_batch_size: int | None = None,
+        detector_batch_size: int = 0,
     ) -> Self:
         """Bucket a group of observations, padding them to their common envelope.
 
@@ -113,7 +113,7 @@ class Bucket:
             shapes: Per-observation buffer shapes.
             group: Indices of the observations in the bucket.
             n_devices: Number of devices the bucket is sharded over.
-            detector_batch_size: Detectors per batch; `None` for a single batch. The shapes must
+            detector_batch_size: Detectors per batch; 0 for a single batch. The shapes must
                 then be padded by [`ObservationBufferShape.whole_detector_batches`][].
 
         Returns:
@@ -362,7 +362,7 @@ class SlotLayout:
         *,
         n_devices: int,
         max_buckets: int,
-        detector_batch_size: int | None = None,
+        detector_batch_size: int = 0,
     ) -> Self:
         """Choose the layout to minimise padding; see [`partition_padded`][].
 
@@ -372,7 +372,7 @@ class SlotLayout:
                 `detector_batch_size` is given.
             n_devices: Number of devices (`jax.device_count()`).
             max_buckets: Largest number of buckets allowed.
-            detector_batch_size: Detectors per batch; `None` for a single batch.
+            detector_batch_size: Detectors per batch; 0 for a single batch.
 
         Examples:
             Three short scans and one long one on two devices.

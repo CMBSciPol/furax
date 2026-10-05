@@ -858,15 +858,13 @@ class MapMakingConfig:
     [`furax.mapmaking.layout`][] for how to choose it.
     """
 
-    detector_batch_size: int | None = 16
-    """Number of an observation's detectors processed together by the multi-observation mapmaker.
+    detector_batch_size: int = 16
+    """Size of detector batches for RHS accumulation.
 
-    Each observation is split into batches of this many detectors, handled like observations of
-    their own: everything computed from the TOD, beyond the TOD itself, then takes memory in
-    proportion to the batch rather than to the whole observation. An observation with more
-    detectors is padded up to whole batches; one with fewer is a single batch. `None` processes
-    every detector of an observation at once, as is always done under the nested gap treatment,
-    whose weight spans every detector of an observation.
+    Using detector batches reduces peak memory: beyond the TOD itself, everything computed from it
+    only takes memory in proportion to the batch rather than to the whole observation. Detector
+    counts are padded to whole batches. A size of 0 processes all detectors at once (this is
+    required for gap-filling and nested gap treatment).
     """
 
     sotodlib: SotodlibConfig | None = None
@@ -876,9 +874,16 @@ class MapMakingConfig:
         """Validate cross-field constraints that hold regardless of which mapmaker runs."""
         if self.max_buckets < 1:
             raise ValueError(f'max_buckets must be >= 1, got {self.max_buckets}')
-        if self.detector_batch_size is not None and self.detector_batch_size < 1:
+        if self.detector_batch_size < 0:
+            raise ValueError(f'detector_batch_size must be >= 0, got {self.detector_batch_size}')
+        if (
+            self.detector_batch_size
+            and not self.binned
+            and self.gaps.treatment in (GapTreatment.FILL, GapTreatment.NESTED)
+        ):
             raise ValueError(
-                f'detector_batch_size must be >= 1 or None, got {self.detector_batch_size}'
+                f'the {self.gaps.treatment.value} gap treatment works on whole observations: set '
+                f'detector_batch_size to 0 (got {self.detector_batch_size})'
             )
         if (templates := self.templates) is not None:
             if templates.t2p is not None:
@@ -946,6 +951,7 @@ class MapMakingConfig:
                     max_steps=1_000,
                 ),
                 templates=None,
+                detector_batch_size=0,  # the default gap filling works on whole observations
             )
         elif method == Methods.POMME:
             return cls(

@@ -7,6 +7,8 @@ from typedload.exceptions import TypedloadException
 from furax.mapmaking import config as config_module
 from furax.mapmaking._serialization import deserialize
 from furax.mapmaking.config import (
+    GapsConfig,
+    GapTreatment,
     GroundConfig,
     HealpixConfig,
     HWPSynchronousConfig,
@@ -19,6 +21,8 @@ from furax.mapmaking.config import (
     T2PConfig,
     TemplatesConfig,
     WCSConfig,
+    WeightingConfig,
+    WeightingMode,
     _legendre_leg_groups,
 )
 
@@ -126,10 +130,21 @@ def test_max_buckets_must_be_positive(max_buckets: int):
         MapMakingConfig(max_buckets=max_buckets)
 
 
-@pytest.mark.parametrize('detector_batch_size', [0, -1])
-def test_detector_batch_size_must_be_positive(detector_batch_size: int):
-    with pytest.raises(ValueError, match='detector_batch_size must be >= 1'):
-        MapMakingConfig(detector_batch_size=detector_batch_size)
+def test_detector_batch_size_must_not_be_negative():
+    with pytest.raises(ValueError, match='detector_batch_size must be >= 0'):
+        MapMakingConfig(detector_batch_size=-1)
+
+
+@pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])
+def test_correlated_gap_treatments_reject_detector_batches(treatment: GapTreatment):
+    correlated = WeightingConfig(mode=WeightingMode.TOEPLITZ)
+    with pytest.raises(ValueError, match='set detector_batch_size to 0'):
+        MapMakingConfig(weighting=correlated, gaps=GapsConfig(treatment=treatment))
+    MapMakingConfig(
+        weighting=correlated, gaps=GapsConfig(treatment=treatment), detector_batch_size=0
+    )
+    # with diagonal weights, gaps need no special treatment
+    MapMakingConfig(gaps=GapsConfig(treatment=treatment), detector_batch_size=16)
 
 
 class TestExplicitOnlyTemplates:

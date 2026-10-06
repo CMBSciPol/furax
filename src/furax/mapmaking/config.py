@@ -42,6 +42,7 @@ __all__ = [
     'BinnedAzimuthHWPSynchronousConfig',
     'SplineHWPSynchronousConfig',
     'T2PConfig',
+    'CommonModeConfig',
     'GroundConfig',
     'SotodlibConfig',
 ]
@@ -520,18 +521,50 @@ class SplineHWPSynchronousConfig:
     """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
     def __post_init__(self) -> None:
-        if self.n_knots is None and self.samples_per_knot is None:
-            raise ValueError("one of 'n_knots' or 'samples_per_knot' must be provided")
+        _check_knots(self.n_knots, self.samples_per_knot)
 
     def resolve_n_knots(self, n_samples: int) -> int:
         """Number of spline knots for `n_samples` samples (at least 2).
 
         Uses `n_knots` directly when set, otherwise derives it from `samples_per_knot`.
         """
-        if self.n_knots is not None:
-            return max(2, self.n_knots)
-        assert self.samples_per_knot is not None  # guaranteed by __post_init__
-        return max(2, n_samples // self.samples_per_knot)
+        return _resolve_n_knots(self.n_knots, self.samples_per_knot, n_samples)
+
+
+@dataclass
+class CommonModeConfig:
+    """Signal common to every detector, varying in time as a cubic B-spline.
+
+    Every detector sees the same signal, with unit coupling; each Stokes leg has a common mode of
+    its own. The amplitudes are shared by the detectors, and always solved jointly with the map.
+    """
+
+    n_knots: int | None = None
+    """Number of spline knots. If set, takes precedence over `samples_per_knot`."""
+    samples_per_knot: int | None = 4000
+    """Number of samples per knot."""
+
+    def __post_init__(self) -> None:
+        _check_knots(self.n_knots, self.samples_per_knot)
+
+    def resolve_n_knots(self, n_samples: int) -> int:
+        """Number of spline knots for `n_samples` samples (at least 2).
+
+        Uses `n_knots` directly when set, otherwise derives it from `samples_per_knot`.
+        """
+        return _resolve_n_knots(self.n_knots, self.samples_per_knot, n_samples)
+
+
+def _check_knots(n_knots: int | None, samples_per_knot: int | None) -> None:
+    if n_knots is None and samples_per_knot is None:
+        raise ValueError("one of 'n_knots' or 'samples_per_knot' must be provided")
+
+
+def _resolve_n_knots(n_knots: int | None, samples_per_knot: int | None, n_samples: int) -> int:
+    if n_knots is not None:
+        return max(2, n_knots)
+    assert samples_per_knot is not None  # guaranteed by `_check_knots`
+    return max(2, n_samples // samples_per_knot)
 
 
 @dataclass
@@ -619,6 +652,9 @@ class TemplatesConfig:
     t2p: T2PConfig | None = None
     """Temperature-to-polarization leakage template (demodulated data only)."""
 
+    common_mode: CommonModeConfig | None = None
+    """Signal common to every detector, with amplitudes shared by the detectors."""
+
     ground: GroundConfig | None = None
     """Ground pickup template, binned in (azimuth, elevation)."""
 
@@ -644,6 +680,7 @@ class TemplatesConfig:
             binned_azimuth_hwp_synchronous=BinnedAzimuthHWPSynchronousConfig(),
             t2p=T2PConfig(),
             spline_hwp_synchronous=SplineHWPSynchronousConfig(),
+            common_mode=CommonModeConfig(),
             ground=GroundConfig(),
         )
 

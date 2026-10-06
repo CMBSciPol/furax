@@ -6,10 +6,11 @@ from numpy.testing import assert_allclose
 
 from furax import DiagonalOperator
 from furax.linalg import BandedCholeskyOperator
-from furax.mapmaking.gram import _BorderedGramInverse, cross_gram, gram_inverse
+from furax.mapmaking.gram import _BorderedGramInverse, cross_gram, gram_inverse, shared_gram
 from furax.mapmaking.templates import (
     KroneckerBasis,
     SegmentedBasis,
+    SharedBasis,
     StokesTemplateOperator,
     TemplateOperator,
     TensorBasis,
@@ -267,3 +268,20 @@ def test_stream_gram_inverse_survives_unobserved_amplitudes(names):
     W = DiagonalOperator(w, in_structure=jax.ShapeDtypeStruct((N_DETS, N_SAMPS), w.dtype))
     amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
     assert all(jnp.all(jnp.isfinite(leaf)) for leaf in jax.tree.leaves(gram_inverse(T, W)(amps)))
+
+
+@pytest.mark.parametrize('flavour', ['tensor', 'segmented'])
+def test_shared_gram_matches_dense(flavour):
+    n_dets, n_samps = 4, 40
+    k = jr.split(jr.key(70), 3)
+    time_basis = {
+        'tensor': lambda: TensorBasis(jr.normal(k[0], (3, n_samps))),
+        'segmented': lambda: SegmentedBasis(
+            jnp.repeat(jnp.arange(4), 10).astype(jnp.int32), jr.normal(k[0], (2, n_samps)), 4
+        ),
+    }[flavour]()
+    basis = SharedBasis(jr.normal(k[1], (n_dets, 2)), time_basis)
+    weights = jr.uniform(k[2], (n_dets, n_samps))
+    T = basis.as_matrix()  # (det·samp, size)
+    expected = T.T @ (weights.ravel()[:, None] * T)
+    assert_allclose(shared_gram(basis, weights), expected, rtol=1e-12, atol=1e-12)

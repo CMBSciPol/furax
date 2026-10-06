@@ -15,6 +15,7 @@ from numpy.testing import assert_allclose
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
+    CommonModeConfig,
     HealpixConfig,
     HWPSynchronousConfig,
     LandscapeConfig,
@@ -173,8 +174,22 @@ def test_demodulated_legs_fitted_alike_share_a_basis(name, legendre, groups, leg
             ),
             True,
         ),
+        # amplitudes shared by the detectors, so by the batches of an observation
+        (_hwp_obs, TemplatesConfig(common_mode=CommonModeConfig(n_knots=4)), False),
+        (
+            _ground_obs,
+            TemplatesConfig(common_mode=CommonModeConfig(n_knots=4), t2p=T2PConfig()),
+            True,
+        ),
     ],
-    ids=['no-templates', 'explicit', 'demodulated-polynomial-and-t2p', 'demodulated-azss-and-t2p'],
+    ids=[
+        'no-templates',
+        'explicit',
+        'demodulated-polynomial-and-t2p',
+        'demodulated-azss-and-t2p',
+        'common-mode',
+        'demodulated-common-mode-and-t2p',
+    ],
 )
 def test_detector_batches_give_the_same_result(observations, templates, demodulated):
     # Processing an observation's detectors in batches is a memory layout, not a change of model:

@@ -30,7 +30,7 @@ common to the detectors (atmosphere, readout pickup), with one set of amplitudes
 """
 
 from abc import abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import field, fields
 from functools import partial
 from itertools import chain
@@ -71,6 +71,7 @@ __all__ = [
     'azimuth_hwp_synchronous_basis',
     'binned_azimuth_hwp_synchronous_basis',
     'spline_hwp_synchronous_basis',
+    'common_mode_basis',
     'AbstractTemplateOperator',
     'TemplateOperator',
     'StokesTemplateOperator',
@@ -1104,6 +1105,25 @@ def spline_hwp_synchronous_basis(
     return WindowedBasis(offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2)
 
 
+def common_mode_basis(
+    times: Float[Array, ' samp'],
+    n_knots: int,
+    n_dets: int,
+    dtype: DTypeLike,
+) -> SharedBasis:
+    """Basis for a signal common to every detector, a cubic B-spline in time.
+
+    Every detector sees it with unit coupling. The amplitudes are the `n_knots + 2` spline
+    coefficients.
+
+    Assumes `times` is non-decreasing.
+    """
+    offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
+    ones = jnp.ones((1, times.size), dtype)
+    time_basis = WindowedBasis(offset, weights.T.astype(dtype), ones, n_blocks=n_knots + 2)
+    return SharedBasis(jnp.ones((n_dets, 1), dtype), time_basis)
+
+
 def is_basis(x: Any) -> bool:
     return isinstance(x, Basis | SharedBasis)
 
@@ -1156,7 +1176,9 @@ class AbstractTemplateOperator(AbstractLinearOperator):
         s = self._stream_structure()
         return jnp.zeros(s.shape, s.dtype)
 
-    def _expand_stream(self, bases: dict[str, Basis], x: dict[str, Array]) -> Array:
+    def _expand_stream(
+        self, bases: Mapping[str, Basis | SharedBasis], x: dict[str, Array]
+    ) -> Array:
         """The summed expansion of every template on one stream."""
         # Each template would otherwise make its own pass over the stream. The dense ones are
         # instead stacked into one `(K, samp)` matrix, applied in one product over all detectors.
@@ -1186,7 +1208,7 @@ class TemplateOperator(AbstractTemplateOperator):
     expansion.
     """
 
-    bases: dict[str, Basis]
+    bases: Mapping[str, Basis | SharedBasis]
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -1222,7 +1244,7 @@ class StokesTemplateOperator(AbstractTemplateOperator):
         {'poly': ['i', 'q', 'u'], 't2p': ['q', 'u']}
     """
 
-    bases: dict[str, dict[str, Basis]]
+    bases: dict[str, dict[str, Basis | SharedBasis]]
     stokes: ValidStokesLiteral = field(metadata={'static': True})
 
     def __post_init__(self) -> None:
@@ -1248,7 +1270,7 @@ class StokesTemplateOperator(AbstractTemplateOperator):
         return cast(tuple[StokesLeg, ...], tuple(s.lower() for s in self.stokes))
 
     @property
-    def bases_by_leg(self) -> dict[str, dict[StokesLeg, Basis]]:
+    def bases_by_leg(self) -> dict[str, dict[StokesLeg, Basis | SharedBasis]]:
         return {
             name: {cast(StokesLeg, leg): basis for group, basis in legged.items() for leg in group}
             for name, legged in self.bases.items()
@@ -1265,7 +1287,7 @@ class StokesTemplateOperator(AbstractTemplateOperator):
     def _streams(self, tod: PyTree[Array]) -> dict[StokesLeg, Array]:
         return dict(zip(self.legs, tod.data, strict=True))
 
-    def _bases_on(self, leg: StokesLeg) -> dict[str, Basis]:
+    def _bases_on(self, leg: StokesLeg) -> dict[str, Basis | SharedBasis]:
         """The templates covering one leg, keyed by name."""
         return {name: on[leg] for name, on in self.bases_by_leg.items() if leg in on}
 

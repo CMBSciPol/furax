@@ -59,6 +59,8 @@ from .templates import (
 __all__ = [
     'cross_gram',
     'gram_inverse',
+    'shared_gram',
+    'shared_gram_inverse',
 ]
 
 
@@ -114,7 +116,12 @@ def gram_inverse(
     # own, with one block over the templates it carries rather than one block over every leg.
     blocks = {}
     for leg in operator.legs:
-        bases = {name: on[leg] for name, on in operator.bases_by_leg.items() if leg in on}
+        # narrows the type only: shared templates were rejected above
+        bases = {
+            name: basis
+            for name, on in operator.bases_by_leg.items()
+            if isinstance(basis := on.get(leg), Basis)
+        }
         if bases:
             structure = {name: operator.in_structure[name][leg] for name in bases}
             stream = _Stream(bases, getattr(diag, leg), structure)
@@ -154,6 +161,58 @@ def cross_gram(a: Basis, b: Basis, weights: Float[Array, ' samp']) -> Float[Arra
 
     columns = jax.lax.map(column, cb.values)  # (k_b, n_a, k_a, n_b)
     return jnp.moveaxis(columns, 0, -1).reshape(ca.n_blocks * ka, cb.n_blocks * kb)
+
+
+def shared_gram(
+    basis: SharedBasis, weights: Float[Array, 'det samp'], batch_size: int = 8
+) -> Float[Array, 'a a']:
+    r"""The Gram `Tᵀ diag(weights) T` of a shared template over the given detectors.
+
+    The block coupling modes $m$ and $n$ is $B^\top W_{mn} B$, with $B$ the time basis and
+    $W_{mn} = \sum_i P_{im} P_{in} W_i$ the detector weights folded through the couplings $P$. The
+    Gram over a set of detectors is the sum of the Grams over its parts, so an observation's Gram
+    can be accumulated over batches of its detectors.
+
+    Args:
+        basis: The shared template.
+        weights: The diagonal weights, one `(samp,)` row per detector.
+        batch_size: Number of mode pairs whose time-basis Grams are computed together.
+
+    Returns:
+        The Gram over the flattened amplitudes, `(size, size)` with `size = prod(basis.shape)`.
+
+    Raises:
+        NoStructuredView: If the time basis has no [`Basis.support`][] view.
+    """
+    time_basis = basis.time_basis
+    n_modes = basis.couplings.shape[1]
+    folded = jnp.einsum(
+        'im,in,is->mns', basis.couplings, basis.couplings, weights, precision='highest'
+    ).reshape(n_modes * n_modes, -1)
+    grams = jax.lax.map(
+        lambda w: cross_gram(time_basis, time_basis, w), folded, batch_size=batch_size
+    )  # (m * n, k, k)
+    k = time_basis.size
+    gram = grams.reshape(n_modes, n_modes, k, k).transpose(0, 2, 1, 3)
+    size = prod(basis.shape)
+    return gram.reshape(size, size)
+
+
+def shared_gram_inverse(
+    gram: Float[Array, '*batch a a'],
+    in_structure: PyTree[jax.ShapeDtypeStruct],
+    regularization: float = 0.0,
+) -> AbstractLinearOperator:
+    """Inverse of shared-template Grams, one for each index of the leading axes.
+
+    Amplitudes that no weighted sample sees are returned unchanged.
+
+    Args:
+        gram: The Grams, from [`shared_gram`][] (summed over an observation's detectors).
+        in_structure: The amplitudes the inverse acts on, with the same leading axes.
+        regularization: Relative ridge added to each Gram before factoring.
+    """
+    return BandedCholeskyOperator.from_dense(_unit_on_zero_rows(gram), in_structure, regularization)
 
 
 def _unit_on_zero_rows(matrix: Float[Array, '*batch k k']) -> Float[Array, '*batch k k']:

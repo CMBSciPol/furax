@@ -7,6 +7,7 @@ from typedload.exceptions import TypedloadException
 from furax.mapmaking import config as config_module
 from furax.mapmaking._serialization import deserialize
 from furax.mapmaking.config import (
+    CommonModeConfig,
     GapsConfig,
     GapTreatment,
     GroundConfig,
@@ -241,3 +242,8 @@ class TestLegendrePerLeg:
 )
 def test_legendre_leg_groups(legendre, expected):
     assert _legendre_leg_groups(legendre, 'IQU') == expected
+
+
+def test_common_mode_needs_knots():
+    with pytest.raises(ValueError, match='must be provided'):
+        CommonModeConfig(n_knots=None, samples_per_knot=None)

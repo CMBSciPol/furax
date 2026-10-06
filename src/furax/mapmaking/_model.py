@@ -24,18 +24,21 @@ from .config import (
     WeightingMode,
     _legendre_leg_groups,
 )
-from .gram import gram_inverse
+from .gram import gram_inverse, shared_gram
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .pomme import PommeProjectionOperator
 from .templates import (
     AbstractTemplateOperator,
     Basis,
+    SharedBasis,
     StokesTemplateOperator,
     TemplateOperator,
     azimuth_hwp_synchronous_basis,
     binned_azimuth_hwp_synchronous_basis,
     binned_azimuth_synchronous_basis,
+    common_mode_basis,
     hwp_synchronous_basis,
+    is_basis,
     polynomial_basis,
     scan_synchronous_basis,
     spline_hwp_synchronous_basis,
@@ -350,6 +353,43 @@ class TemplateBundle:
 
 @register_dataclass
 @dataclass
+class SharedTemplates:
+    """Templates whose amplitudes are shared by the detectors, with their Gram on some of them.
+
+    The Gram covers the detectors the templates were built for, one batch of an observation's
+    detectors for instance: the observation's Gram is the sum over its batches.
+    """
+
+    operator: AbstractTemplateOperator
+    gram: PyTree[Array]
+    """Per template (and Stokes leg), the Gram over the flattened amplitudes."""
+
+    @classmethod
+    def create(
+        cls,
+        operator: AbstractTemplateOperator,
+        weight: AbstractLinearOperator,
+        config: TemplatesConfig,
+    ) -> Self:
+        """Pair shared templates with their Gram, given the diagonal weight matrix `weight`."""
+        diag = weight(tree.ones_like(weight.in_structure))
+
+        def gram_of(basis, weights):
+            assert isinstance(basis, SharedBasis)  # the operator holds shared templates only
+            return shared_gram(basis, weights, config.gram_batch_size)
+
+        if isinstance(operator, StokesTemplateOperator):
+            gram = {
+                name: {leg: gram_of(basis, getattr(diag, leg)) for leg, basis in legged.items()}
+                for name, legged in operator.bases_by_leg.items()
+            }
+        else:
+            gram = {name: gram_of(basis, diag) for name, basis in operator.bases.items()}
+        return cls(operator, gram)
+
+
+@register_dataclass
+@dataclass
 class ObservationTemplates:
     """One observation's templates, stackable across observations via ``jax.lax.scan``.
 
@@ -362,6 +402,9 @@ class ObservationTemplates:
 
     implicit: TemplateBundle | None
     """Templates whose amplitudes are marginalised over."""
+
+    shared: SharedTemplates | None
+    """Templates whose amplitudes are shared by the detectors, solved jointly with the map."""
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
@@ -392,6 +435,8 @@ class ObservationTemplates:
             fields |= {ReaderField.TIMESTAMPS, ReaderField.HWP_ANGLES}
         if tcfg.t2p is not None:
             fields |= {ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS}
+        if tcfg.common_mode is not None:
+            fields |= {ReaderField.TIMESTAMPS}
         if tcfg.ground is not None:
             raise NotImplementedError(
                 'Ground templates are not supported in the multi-observation path.'
@@ -428,10 +473,13 @@ class ObservationTemplates:
         explicit_bases: dict[str, Any] = {}
         implicit_bases: dict[str, Any] = {}
 
+        def grouped(bases):
+            if legs is not None and is_basis(bases):
+                return {legs.lower(): bases}  # one group: stored once for every leg
+            return bases
+
         def add(name: str, bases: Basis | dict[str, Basis], explicit: bool) -> None:
-            if legs is not None and isinstance(bases, Basis):
-                bases = {legs.lower(): bases}  # one group: stored once for every leg
-            (explicit_bases if explicit else implicit_bases)[name] = bases
+            (explicit_bases if explicit else implicit_bases)[name] = grouped(bases)
 
         if (poly := tcfg.polynomial) is not None:
 
@@ -543,12 +591,19 @@ class ObservationTemplates:
                 )
             add('t2p', bases, t2p.explicit)
 
+        # Templates whose amplitudes are shared by the detectors enter the system on their own.
+        shared_bases: dict[str, Any] = {}
+        if (common := tcfg.common_mode) is not None:
+            times = data[ReaderField.TIMESTAMPS]
+            n_knots = common.resolve_n_knots(times.size)
+            shared_bases['common_mode'] = grouped(common_mode_basis(times, n_knots, n_dets, dtype))
+
         if tcfg.ground is not None:
             raise NotImplementedError(
                 'Ground templates are not supported in the multi-observation path.'
             )
 
-        if not explicit_bases and not implicit_bases:
+        if not explicit_bases and not implicit_bases and not shared_bases:
             raise ValueError('config.templates is set but no template is active.')
 
         def build(bases: dict[str, Any]) -> AbstractTemplateOperator | None:
@@ -574,7 +629,11 @@ class ObservationTemplates:
             # T2P templates are always explicit and per-detector, so we need to allow probing.
             explicit = TemplateBundle.create(op, model.W, tcfg, allow_probe=True)
 
-        return cls(explicit=explicit, implicit=implicit), wd
+        shared = None
+        if (op := build(shared_bases)) is not None:
+            shared = SharedTemplates.create(op, model.W, tcfg)
+
+        return cls(explicit=explicit, implicit=implicit, shared=shared), wd
 
 
 def restrict_legs(

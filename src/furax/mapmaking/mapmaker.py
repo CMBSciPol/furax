@@ -2,7 +2,7 @@ import pickle
 from abc import abstractmethod
 from collections.abc import Callable, Collection, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import cached_property, partial
 from logging import Logger
 from math import prod
@@ -43,6 +43,7 @@ from furax.core import (
     BlockDiagonalOperator,
     BlockSelectOperator,
     IndexOperator,
+    TransposeOperator,
 )
 from furax.interfaces.lineax import as_lineax_operator
 from furax.obs.landscapes import (
@@ -77,6 +78,7 @@ from .config import (
     WeightingMode,
 )
 from .gap_filling import gap_fill
+from .gram import shared_gram_inverse
 from .layout import Bucket, SlotLayout
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pomme import PommeProjectionOperator
@@ -97,6 +99,11 @@ class _BucketModel:
     """Per-slot templates (None for a run without any)."""
     amplitude_rhs: PyTree[Array] | None
     """Explicit-template RHS per slot (None without explicit templates)."""
+    shared_rhs: PyTree[Array] | None
+    """Shared-template RHS per detector batch (None without shared templates).
+
+    Each batch holds its share of its observation's RHS, which the system sums.
+    """
 
 
 @register_dataclass
@@ -121,8 +128,24 @@ class _MapMakingSystem(NamedTuple):
     """The right-hand side, in the same unknowns."""
     preconditioner: AbstractLinearOperator
     """Approximate inverse of `A`."""
-    has_amplitudes: bool
-    """Whether the unknowns include explicit-template amplitudes."""
+    per_batch: tuple[bool, ...]
+    """For each kind of template amplitudes among the unknowns, in order, whether it holds one block
+    per detector batch (explicit templates) or one per observation (shared templates)."""
+
+
+class _JointAmplitudes(NamedTuple):
+    """One kind of template amplitudes solved jointly with the map, as one entry per bucket."""
+
+    operators: list[StreamOperator]
+    """The stream template operator, on the amplitudes of each entry."""
+    embeddings: Sequence[AbstractLinearOperator]
+    """Maps the unknowns of the bucket to the amplitudes of its entries."""
+    rhs: list[PyTree[Array]]
+    """The right-hand side, in the unknowns."""
+    inverses: Sequence[AbstractLinearOperator]
+    """The preconditioner block, in the unknowns."""
+    per_batch: bool
+    """Whether the unknowns are per detector batch rather than per observation."""
 
 
 class MultiObservationMapMaker[T]:
@@ -447,20 +470,24 @@ class MultiObservationMapMaker[T]:
             )
             logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
 
-            if not system.has_amplitudes:
+            if not system.per_batch:
                 sky_estimate = result.solution
                 amplitudes = None
             else:
-                sky_estimate, per_bucket = result.solution
-                # Every device holds the same replicated copy after the gather, so the host
-                # array is complete on every process; then back to observation order.
-                gathered = [
-                    jax.tree.map(bucket.merge_detector_batches, self._gather(a))
-                    for bucket, a in zip(self.layout.buckets, per_bucket, strict=True)
-                ]
-                amplitudes = jax.tree.map(
-                    lambda *leaves: self.layout.to_observation_order(leaves), *gathered
-                )
+                sky_estimate, *per_kind = result.solution
+                amplitudes = {}
+                for per_batch, per_bucket in zip(system.per_batch, per_kind, strict=True):
+                    # Every device holds the same replicated copy after the gather, so the host
+                    # array is complete on every process; then back to observation order.
+                    gathered = [self._gather(a) for a in per_bucket]
+                    if per_batch:  # back to whole observations
+                        gathered = [
+                            jax.tree.map(bucket.merge_detector_batches, a)
+                            for bucket, a in zip(self.layout.buckets, gathered, strict=True)
+                        ]
+                    amplitudes |= jax.tree.map(
+                        lambda *leaves: self.layout.to_observation_order(leaves), *gathered
+                    )
 
         return MapMakingResults(
             map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)
@@ -502,43 +529,81 @@ class MultiObservationMapMaker[T]:
                 G = layout.diagonal(implicit.gram_inverse)
                 W[b] = (W[b] - W[b] @ Ti @ G @ Ti.T @ W[b]).reduce()
 
-        # Explicit templates are configured for the run, so every bucket carries them or none.
-        explicit = [
-            bm.templates.explicit
-            for bm in acc.buckets
-            if bm.templates is not None and bm.templates.explicit is not None
-        ]
-        assert len(explicit) in (0, len(acc.buckets))
-
         # Restrict BJ preconditioner to selected pixels
         M = (S @ BJ.I @ S.T).reduce()
 
-        if not explicit:
+        # Amplitudes solved jointly with the map, by kind. Templates are configured for the run, so
+        # every bucket carries a kind or none does.
+        kinds: list[_JointAmplitudes] = []
+        explicit = [e for bm in acc.buckets if bm.templates and (e := bm.templates.explicit)]
+        if len(explicit) == len(acc.buckets):
+            operators = [lay.diagonal(e.operator) for e, lay in zip(explicit, layouts, strict=True)]
+            kinds.append(
+                _JointAmplitudes(
+                    operators=operators,
+                    embeddings=[IdentityOperator(in_structure=t.in_structure) for t in operators],
+                    rhs=[bm.amplitude_rhs for bm in acc.buckets],
+                    inverses=[
+                        lay.diagonal(e.gram_inverse)
+                        for e, lay in zip(explicit, layouts, strict=True)
+                    ],
+                    per_batch=True,
+                )
+            )
+        shared = [sh for bm in acc.buckets if bm.templates and (sh := bm.templates.shared)]
+        if len(shared) == len(acc.buckets):
+            # One set of amplitudes per observation, repeated for each of its detector batches
+            assert self.config.templates is not None  # shared templates come from its config
+            invert = partial(
+                shared_gram_inverse, regularization=self.config.templates.regularization
+            )
+            operators = [lay.diagonal(sh.operator) for sh, lay in zip(shared, layouts, strict=True)]
+            sums = [
+                _BatchSumOperator(bucket.n_batches, in_structure=op.in_structure)
+                for op, bucket in zip(operators, self.layout.buckets, strict=True)
+            ]
+            kinds.append(
+                _JointAmplitudes(
+                    operators=operators,
+                    embeddings=[total.T for total in sums],
+                    rhs=[total(bm.shared_rhs) for total, bm in zip(sums, acc.buckets, strict=True)],
+                    # The Grams over an observation's batches sum the same way as its amplitudes
+                    inverses=[
+                        BlockDiagonalOperator(
+                            jax.tree.map(invert, total(sh.gram), total.out_structure)
+                        )
+                        for total, sh in zip(sums, shared, strict=True)
+                    ],
+                    per_batch=False,
+                )
+            )
+
+        if not kinds:
             A = AdditionOperator(
                 [((h @ S.T).T @ w @ (h @ S.T)).reduce() for h, w in zip(H, W, strict=True)],
                 sequential=True,
             )
-            return _MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False)
+            return _MapMakingSystem(A, S(acc.map_rhs), M, per_batch=())
 
-        Te = [layout.diagonal(e.operator) for e, layout in zip(explicit, layouts, strict=True)]
-        Ge = [layout.diagonal(e.gram_inverse) for e, layout in zip(explicit, layouts, strict=True)]
-        amplitudes_structure = [te.in_structure for te in Te]
-
-        # Joint sky + explicit-amplitude system. The unknowns are the selected sky pixels and one
-        # amplitude block per bucket; each bucket's system sees the full sky grid and its own
-        # amplitudes, picked out of the list and embedded back by `E`.
+        # Joint sky + amplitude system. The unknowns are the selected sky pixels and, for each kind,
+        # one amplitude block per bucket; each bucket's system sees the full sky grid and its own
+        # amplitudes, picked out of the lists and embedded back by `E`.
+        unknowns = [[e.in_structure for e in kind.embeddings] for kind in kinds]
         terms = []
-        for b, (h, te, w) in enumerate(zip(H, Te, W, strict=True)):
-            h_joint = StreamOperator.block_row([h, te])
+        for b, (h, w) in enumerate(zip(H, W, strict=True)):
+            h_joint = StreamOperator.block_row([h, *(kind.operators[b] for kind in kinds)])
             A_joint = (h_joint.T @ w @ h_joint).reduce()
-            pick = BlockSelectOperator(b, in_structure=amplitudes_structure)
-            E = BlockDiagonalOperator([S.T, pick])
+            picks = [
+                kind.embeddings[b] @ BlockSelectOperator(b, in_structure=structure)
+                for kind, structure in zip(kinds, unknowns, strict=True)
+            ]
+            E = BlockDiagonalOperator([S.T, *picks])
             terms.append((E.T @ A_joint @ E).reduce())
 
-        rhs = [S(acc.map_rhs), [bm.amplitude_rhs for bm in acc.buckets]]
-        M = BlockDiagonalOperator([M, Ge])
+        b_joint = [S(acc.map_rhs), *(kind.rhs for kind in kinds)]
+        M = BlockDiagonalOperator([M, *(kind.inverses for kind in kinds)])
         A = AdditionOperator(terms, sequential=True)
-        return _MapMakingSystem(A, rhs, M, has_amplitudes=True)
+        return _MapMakingSystem(A, b_joint, M, per_batch=tuple(kind.per_batch for kind in kinds))
 
     def _gather(self, x: PyTree[Array]) -> PyTree[np.ndarray]:
         """Bring a pytree sharded over the 'obs' axis to the host, whole, on every process."""
@@ -656,8 +721,9 @@ class MultiObservationMapMaker[T]:
             batched = self._merge_leading_axes(batched, 3)
             shared = self._merge_leading_axes(shared, 2)
             stacked = eqx.combine(batched, shared)
-        model, templates, amp_rhs = stacked
-        return hits, rhs, _BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
+        model, templates, amp_rhs, shared_rhs = stacked
+        bucket_model = _BucketModel(model, templates, amplitude_rhs=amp_rhs, shared_rhs=shared_rhs)
+        return hits, rhs, bucket_model
 
     @cached_property
     def _prefetches_reads(self) -> bool:
@@ -816,15 +882,17 @@ class MultiObservationMapMaker[T]:
                 else:
                     rhs_i = obs.rhs_operator(tod)
                 carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
-                return carry, (obs, None, None)
+                return carry, (obs, None, None, None)
 
             # Templates require config.binned=True, so fill_gaps never applies here.
             templates, wd = ObservationTemplates.create(data, config, obs, tod, temperature)
             explicit = templates.explicit
             rhs_i = obs.H.T(wd)
             amp_i = explicit.operator.T(wd) if explicit is not None else None
+            shared = templates.shared
+            shared_i = shared.operator.T(wd) if shared is not None else None
             carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
-            return carry, (obs, templates, amp_i)
+            return carry, (obs, templates, amp_i, shared_i)
 
         return kernel
 
@@ -1652,6 +1720,29 @@ def _store_round(
             out,
         )
     return _set_round(store, out, r)
+
+
+class _BatchSumOperator(AbstractLinearOperator):
+    """Sums the detector batches of each observation: `(n_slots · n_batches, ...)` to `(n_slots, ...)`.
+
+    The batches of a slot are consecutive entries (see `Bucket.stream_layout`). The transpose
+    repeats each observation's values for each of its batches.
+    """
+
+    n_batches: int = field(metadata={'static': True})
+
+    def mv(self, x: PyTree[Array]) -> PyTree[Array]:
+        return jax.tree.map(lambda a: a.reshape(-1, self.n_batches, *a.shape[1:]).sum(axis=1), x)
+
+    def transpose(self) -> AbstractLinearOperator:
+        return _BatchRepeatOperator(self)
+
+
+class _BatchRepeatOperator(TransposeOperator):
+    operator: _BatchSumOperator
+
+    def mv(self, x: PyTree[Array]) -> PyTree[Array]:
+        return jax.tree.map(lambda a: jnp.repeat(a, self.operator.n_batches, axis=0), x)
 
 
 def _depends_on_argument(

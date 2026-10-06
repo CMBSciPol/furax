@@ -6,6 +6,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
+from numpy.testing import assert_allclose
 
 from furax.core._base import structure_equal
 from furax.mapmaking import (
@@ -34,6 +35,7 @@ from furax.mapmaking.mapmaker import (
     MapMaker,
     MLMapmaker,
     PommeMapMaker,
+    _BatchSumOperator,
 )
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
@@ -550,3 +552,11 @@ class TestGapTreatmentMapMaker:
         expected = MultiObservationMapMaker(good_only, config=config).run()
         assert eqx.tree_equal(results.hit_map, expected.hit_map)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
+
+
+def test_batch_sum_adds_each_observation_and_repeats_back():
+    structure = {'common': jax.ShapeDtypeStruct((12, 2), jnp.float64)}  # 3 slots × 4 batches
+    total = _BatchSumOperator(4, in_structure=structure)
+    x = {'common': jnp.arange(24.0).reshape(12, 2)}
+    assert_allclose(total(x)['common'], x['common'].reshape(3, 4, 2).sum(axis=1))
+    assert_allclose(total.T.as_matrix(), total.as_matrix().T)

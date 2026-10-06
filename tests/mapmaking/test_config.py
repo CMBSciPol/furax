@@ -165,20 +165,25 @@ class TestT2PRequiresDemodulated:
         with pytest.raises(ValueError, match='T2P template requires demodulated=True'):
             MapMakingConfig(templates=TemplatesConfig(t2p=T2PConfig()))
 
-    def test_raises_without_i_leg(self):
-        with pytest.raises(ValueError, match="T2P template requires an 'I' leg"):
+    def test_raises_without_qu_legs(self):
+        with pytest.raises(ValueError, match='T2P template requires Q and U legs'):
             MapMakingConfig(
                 sotodlib=SotodlibConfig(demodulated=True),
-                landscape=LandscapeConfig(stokes='QU', healpix=HealpixConfig()),
+                landscape=LandscapeConfig(stokes='I', healpix=HealpixConfig()),
                 templates=TemplatesConfig(t2p=T2PConfig()),
             )
 
-    def test_accepts_demodulated_with_i_leg(self):
-        MapMakingConfig(
+    @pytest.mark.parametrize(
+        ('stokes', 't2p', 'read_stokes'),
+        [('IQU', True, 'IQU'), ('QU', True, 'IQU'), ('QU', False, 'QU'), ('IQU', False, 'IQU')],
+    )
+    def test_reads_i_for_t2p_only(self, stokes: str, t2p: bool, read_stokes: str):
+        config = MapMakingConfig(
             sotodlib=SotodlibConfig(demodulated=True),
-            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig()),
-            templates=TemplatesConfig(t2p=T2PConfig()),
+            landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig()),
+            templates=TemplatesConfig(t2p=T2PConfig() if t2p else None),
         )
+        assert config.read_stokes == read_stokes
 
 
 def _demodulated(templates: TemplatesConfig) -> MapMakingConfig:

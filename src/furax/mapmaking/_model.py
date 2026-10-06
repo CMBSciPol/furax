@@ -10,7 +10,7 @@ from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.stokes import Stokes
+from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 from ._observation import ReaderField
 from .acquisition import build_acquisition_operator
@@ -405,8 +405,18 @@ class ObservationTemplates:
         config: MapMakingConfig,
         model: ObservationModel,
         tod: PyTree[Array],
+        temperature: Float[Array, 'det samp'] | None = None,
     ) -> tuple[Self, PyTree[Array]]:
-        """Build one observation's templates and weight its TOD, implicit templates folded in."""
+        """Build one observation's templates and weight its TOD, implicit templates folded in.
+
+        Args:
+            data: The fields read for the observation.
+            config: The mapmaking configuration, whose templates are built.
+            model: The observation's model.
+            tod: The TOD to weight.
+            temperature: The I timestream, from which the T2P template is built; by default, the
+                I leg of the sample data.
+        """
         if (tcfg := config.templates) is None:
             raise ValueError('templates config required to build template operators')
         n_dets = model.tod_structure.shape[0]
@@ -516,7 +526,8 @@ class ObservationTemplates:
             add('spline_hwp_synchronous', basis, spline_hwp.explicit)
 
         if (t2p := tcfg.t2p) is not None:
-            temperature = data[ReaderField.SAMPLE_DATA].i
+            if temperature is None:
+                temperature = data[ReaderField.SAMPLE_DATA].i
             sample_rate = _sample_rate(data[ReaderField.TIMESTAMPS])
             # Q and U each fit their own leakage amplitude from the same temperature stream, so
             # they share one basis.
@@ -564,3 +575,22 @@ class ObservationTemplates:
             explicit = TemplateBundle.create(op, model.W, tcfg, allow_probe=True)
 
         return cls(explicit=explicit, implicit=implicit), wd
+
+
+def restrict_legs(
+    data: dict[str, Any], tod: Stokes, legs: ValidStokesLiteral
+) -> tuple[dict[str, Any], Stokes]:
+    """An observation's sample data, noise fits and TOD, restricted to the Stokes `legs`.
+
+    The reader may load more demodulated legs than the map has (see
+    [`MapMakingConfig.read_stokes`][furax.mapmaking.config.MapMakingConfig.read_stokes]).
+    """
+    index = jnp.array([tod.stokes.index(leg) for leg in legs])
+
+    def select(x: Stokes) -> Stokes:
+        return Stokes.class_for(legs).from_array(x.data[index])
+
+    data = {**data, ReaderField.SAMPLE_DATA: select(data[ReaderField.SAMPLE_DATA])}
+    if (fits := data.get(ReaderField.NOISE_MODEL_FITS)) is not None:
+        data[ReaderField.NOISE_MODEL_FITS] = fits[index]  # one row per leg
+    return data, select(tod)

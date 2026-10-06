@@ -893,9 +893,9 @@ class MapMakingConfig:
             if templates.t2p is not None:
                 if not self.demodulated:
                     raise ValueError('The T2P template requires demodulated=True.')
-                if 'I' not in self.landscape.stokes:
+                if 'QU' not in self.landscape.stokes:
                     raise ValueError(
-                        "The T2P template requires an 'I' leg in landscape.stokes (got "
+                        'The T2P template requires Q and U legs in landscape.stokes (got '
                         f'{self.landscape.stokes!r}).'
                     )
             for name in ('polynomial', 'scan_synchronous'):
@@ -1011,6 +1011,15 @@ class MapMakingConfig:
     def use_templates(self) -> bool:
         """True when at least one template is enabled."""
         return (self.templates is not None) and (not self.templates.empty)
+
+    @property
+    def read_stokes(self) -> ValidStokesLiteral:
+        """The demodulated legs read: those of the map, and I for the T2P template.
+
+        The T2P template is built from the I timestream, which is read even when the map has no I.
+        """
+        t2p = self.templates is not None and self.templates.t2p is not None
+        return 'IQU' if t2p and self.landscape.stokes == 'QU' else self.landscape.stokes
 
     @property
     def dtype(self) -> DTypeLike:

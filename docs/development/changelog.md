@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TemplatesConfig.gram_batch_size` defaults to 4 instead of 32 (#308)
 - `MultiObservationMapMaker` always reads the TOD in float32 (#310)
 - `get_tods` and `get_demodulated_tods` return the TOD in its stored precision (#310)
+- Stokes I is no longer required in `landscape.stokes` when T2P template is active (only Q and U are) (#314)
 
 ## [0.15.3] - 2026-10-02
 

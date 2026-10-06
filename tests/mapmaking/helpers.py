@@ -14,6 +14,7 @@ from furax.mapmaking import (
     ObservationBufferShape,
 )
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
+from furax.math.coords import XiEtaAngles
 from furax.obs.landscapes import ProjectionType, StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
@@ -47,6 +48,7 @@ class FakeObservation(AbstractObservation[None]):
         sample_rate: float = 100.0,
         hwp_frequency: float = 2.0,
         seed: int = 0,
+        focal_plane_radius: float = 0.0,
     ) -> None:
         # Bypass AbstractObservation.__init__: there is no underlying
         # ``data`` container for an in-memory observation.
@@ -55,6 +57,7 @@ class FakeObservation(AbstractObservation[None]):
         self._sample_rate = sample_rate
         self._hwp_frequency = hwp_frequency
         self._seed = seed
+        self._focal_plane_radius = focal_plane_radius
 
     @classmethod
     def from_file(cls, filename, requested_fields=None) -> FakeObservation:
@@ -136,9 +139,16 @@ class FakeObservation(AbstractObservation[None]):
         return q
 
     def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
-        q = np.zeros((self._n_dets, 4), dtype=np.float64)
-        q[:, 0] = 1.0
-        return q
+        if self._focal_plane_radius == 0:
+            q = np.zeros((self._n_dets, 4), dtype=np.float64)
+            q[:, 0] = 1.0
+            return q
+        # on a sunflower spiral filling the focal-plane disc
+        k = np.arange(self._n_dets)
+        r = self._focal_plane_radius * np.sqrt((k + 0.5) / self._n_dets)
+        phi = k * np.pi * (3 - np.sqrt(5))
+        angles = XiEtaAngles(jnp.asarray(r * np.cos(phi)), jnp.asarray(r * np.sin(phi)), 0.0)
+        return np.stack(angles.to_quaternion().to_components(), axis=-1).astype(np.float64)
 
 
 class FakeLazyObservation(AbstractLazyObservation[None]):
@@ -149,7 +159,7 @@ class FakeLazyObservation(AbstractLazyObservation[None]):
     ``ObservationReader.from_observations([...])``). Only the on-the-fly pointing
     path with a healpix landscape is supported. ``kwargs`` are forwarded to
     :class:`FakeObservation` (``n_dets``, ``n_samples``,
-    ``sample_rate``, ``hwp_frequency``, ``seed``).
+    ``sample_rate``, ``hwp_frequency``, ``seed``, ``focal_plane_radius``).
     """
 
     interface_class = FakeObservation

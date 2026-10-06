@@ -24,6 +24,7 @@ from furax.mapmaking.templates import (
     azimuth_hwp_synchronous_basis,
     binned_azimuth_hwp_synchronous_basis,
     binned_azimuth_synchronous_basis,
+    focal_plane_modes_basis,
     hwp_synchronous_basis,
     polynomial_basis,
     scan_synchronous_basis,
@@ -462,6 +463,29 @@ class TestSharedBasis:
     def test_rejects_couplings_without_a_mode_axis(self) -> None:
         with pytest.raises(ValueError, match=r'expected \(det, mode\)'):
             SharedBasis(jnp.ones(4), TensorBasis(jnp.ones((2, 10))))
+
+
+@pytest.mark.parametrize(
+    ('orders', 'expected'),
+    [
+        # columns, by total degree: (a, b) = (1, 0), (0, 1) then (2, 0), (1, 1), (0, 2)
+        (
+            PolynomialOrders(1, 2),
+            lambda x, y: [x, y, (3 * x**2 - 1) / 2, x * y, (3 * y**2 - 1) / 2],
+        ),
+        (PolynomialOrders(0, 0), lambda x, y: [jnp.ones_like(x)]),
+    ],
+)
+def test_focal_plane_mode_couplings(orders, expected) -> None:
+    # Each detector's coordinates are scaled by the fixed radius, whatever the other detectors
+    radius = 0.3
+    xi, eta = jnp.array([0.0, 0.15, -0.3, 0.45]), jnp.array([0.3, -0.06, 0.09, 0.0])
+    times = jnp.linspace(0.0, 1.0, 40)
+    basis = focal_plane_modes_basis(times, 3, xi, eta, orders, radius, jnp.float64)
+    assert_allclose(
+        basis.couplings, jnp.stack(expected(xi / radius, eta / radius), axis=1), rtol=TOL
+    )
+    assert basis.shape[:2] == (len(expected(xi, eta)), 5)  # n_knots + 2 spline coefficients
 
 
 class TestPerDetectorStack:

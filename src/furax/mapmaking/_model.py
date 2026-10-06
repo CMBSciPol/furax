@@ -9,6 +9,7 @@ from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
+from furax.math.coords import XiEtaAngles
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
@@ -37,6 +38,7 @@ from .templates import (
     binned_azimuth_hwp_synchronous_basis,
     binned_azimuth_synchronous_basis,
     common_mode_basis,
+    focal_plane_modes_basis,
     hwp_synchronous_basis,
     is_basis,
     polynomial_basis,
@@ -437,6 +439,8 @@ class ObservationTemplates:
             fields |= {ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS}
         if tcfg.common_mode is not None:
             fields |= {ReaderField.TIMESTAMPS}
+        if tcfg.focal_plane_modes is not None:
+            fields |= {ReaderField.TIMESTAMPS, ReaderField.DETECTOR_QUATERNIONS}
         if tcfg.ground is not None:
             raise NotImplementedError(
                 'Ground templates are not supported in the multi-observation path.'
@@ -597,6 +601,22 @@ class ObservationTemplates:
             times = data[ReaderField.TIMESTAMPS]
             n_knots = common.resolve_n_knots(times.size)
             shared_bases['common_mode'] = grouped(common_mode_basis(times, n_knots, n_dets, dtype))
+        if (modes := tcfg.focal_plane_modes) is not None:
+            times = data[ReaderField.TIMESTAMPS]
+            # padded detectors sit on the boresight, with zero weight
+            angles = XiEtaAngles.from_quaternion(
+                Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS])
+            )
+            basis = focal_plane_modes_basis(
+                times,
+                modes.resolve_n_knots(times.size),
+                angles.xi,
+                angles.eta,
+                modes.orders,
+                modes.radius,
+                dtype,
+            )
+            shared_bases['focal_plane_modes'] = grouped(basis)
 
         if tcfg.ground is not None:
             raise NotImplementedError(

@@ -8,6 +8,7 @@ from furax.mapmaking import config as config_module
 from furax.mapmaking._serialization import deserialize
 from furax.mapmaking.config import (
     CommonModeConfig,
+    FocalPlaneModesConfig,
     GapsConfig,
     GapTreatment,
     GroundConfig,
@@ -244,6 +245,16 @@ def test_legendre_leg_groups(legendre, expected):
     assert _legendre_leg_groups(legendre, 'IQU') == expected
 
 
-def test_common_mode_needs_knots():
-    with pytest.raises(ValueError, match='must be provided'):
-        CommonModeConfig(n_knots=None, samples_per_knot=None)
+@pytest.mark.parametrize(
+    ('make', 'match'),
+    [
+        (lambda: CommonModeConfig(n_knots=None, samples_per_knot=None), 'must be provided'),
+        (lambda: FocalPlaneModesConfig(n_knots=None, samples_per_knot=None), 'must be provided'),
+        (lambda: FocalPlaneModesConfig(orders=PolynomialOrders(2, 1)), 'invalid orders'),
+        (lambda: FocalPlaneModesConfig(orders=PolynomialOrders(-1, 1)), 'invalid orders'),
+        (lambda: FocalPlaneModesConfig(radius=0.0), 'must be positive'),
+    ],
+)
+def test_shared_template_config_rejects(make, match):
+    with pytest.raises(ValueError, match=match):
+        make()

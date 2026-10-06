@@ -43,6 +43,7 @@ __all__ = [
     'SplineHWPSynchronousConfig',
     'T2PConfig',
     'CommonModeConfig',
+    'FocalPlaneModesConfig',
     'GroundConfig',
     'SotodlibConfig',
 ]
@@ -555,6 +556,58 @@ class CommonModeConfig:
         return _resolve_n_knots(self.n_knots, self.samples_per_knot, n_samples)
 
 
+@dataclass
+class FocalPlaneModesConfig:
+    r"""Signals varying smoothly across the focal plane, each a cubic B-spline in time.
+
+    Detector $i$ sees mode $(a, b)$ with coupling $P_a(\xi_i / R)\,P_b(\eta_i / R)$, a product of
+    Legendre polynomials in its focal-plane coordinates, for every total degree $a + b$ in
+    `orders`. Each Stokes leg has modes of its own. The amplitudes are shared by the detectors,
+    and always solved jointly with the map.
+
+    The default orders start at degree 1, leaving the constant mode to [`CommonModeConfig`][], so
+    that the two templates can be enabled together.
+
+    Examples:
+        Gradients and curvature across the focal plane, with knots every 2000 samples
+
+            focal_plane_modes:
+                orders:
+                    min_order: 1
+                    max_order: 2
+                samples_per_knot: 2000
+    """
+
+    orders: PolynomialOrders = field(default_factory=lambda: PolynomialOrders(1, 1))
+    """The range of total degrees $a + b$ of the modes."""
+
+    radius: float = 0.31
+    """Focal-plane radius $R$ in radians, scaling the detector coordinates.
+
+    The default covers the Simons Observatory SATs, whose detectors lie within 17.5 degrees of the
+    boresight.
+    """
+
+    n_knots: int | None = None
+    """Number of spline knots. If set, takes precedence over `samples_per_knot`."""
+    samples_per_knot: int | None = 4000
+    """Number of samples per knot."""
+
+    def __post_init__(self) -> None:
+        _check_knots(self.n_knots, self.samples_per_knot)
+        if not 0 <= self.orders.min_order <= self.orders.max_order:
+            raise ValueError(f'invalid orders {self.orders}')
+        if self.radius <= 0:
+            raise ValueError(f"'radius' must be positive, got {self.radius}")
+
+    def resolve_n_knots(self, n_samples: int) -> int:
+        """Number of spline knots for `n_samples` samples (at least 2).
+
+        Uses `n_knots` directly when set, otherwise derives it from `samples_per_knot`.
+        """
+        return _resolve_n_knots(self.n_knots, self.samples_per_knot, n_samples)
+
+
 def _check_knots(n_knots: int | None, samples_per_knot: int | None) -> None:
     if n_knots is None and samples_per_knot is None:
         raise ValueError("one of 'n_knots' or 'samples_per_knot' must be provided")
@@ -655,6 +708,9 @@ class TemplatesConfig:
     common_mode: CommonModeConfig | None = None
     """Signal common to every detector, with amplitudes shared by the detectors."""
 
+    focal_plane_modes: FocalPlaneModesConfig | None = None
+    """Signals varying smoothly across the focal plane, with amplitudes shared by the detectors."""
+
     ground: GroundConfig | None = None
     """Ground pickup template, binned in (azimuth, elevation)."""
 
@@ -681,6 +737,7 @@ class TemplatesConfig:
             t2p=T2PConfig(),
             spline_hwp_synchronous=SplineHWPSynchronousConfig(),
             common_mode=CommonModeConfig(),
+            focal_plane_modes=FocalPlaneModesConfig(),
             ground=GroundConfig(),
         )
 

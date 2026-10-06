@@ -6,6 +6,7 @@ Backed by the file-free synthetic observations (no sotodlib/toast, no fixtures):
 """
 
 from dataclasses import replace
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +17,7 @@ from numpy.testing import assert_allclose
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
     CommonModeConfig,
+    FocalPlaneModesConfig,
     HealpixConfig,
     HWPSynchronousConfig,
     LandscapeConfig,
@@ -47,8 +49,11 @@ def _config(templates: TemplatesConfig) -> MapMakingConfig:
     )
 
 
-def _hwp_obs(n_obs: int = 2, n_dets: int = 8, n_samples: int = 1024):
-    return [FakeLazyObservation(seed=i, n_dets=n_dets, n_samples=n_samples) for i in range(n_obs)]
+def _hwp_obs(n_obs: int = 2, n_dets: int = 8, n_samples: int = 1024, **kwargs):
+    return [
+        FakeLazyObservation(seed=i, n_dets=n_dets, n_samples=n_samples, **kwargs)
+        for i in range(n_obs)
+    ]
 
 
 def _ground_obs(n_obs: int = 2, n_dets: int = 8, n_samples: int = 1024):
@@ -181,6 +186,14 @@ def test_demodulated_legs_fitted_alike_share_a_basis(name, legendre, groups, leg
             TemplatesConfig(common_mode=CommonModeConfig(n_knots=4), t2p=T2PConfig()),
             True,
         ),
+        (
+            partial(_hwp_obs, focal_plane_radius=0.2),
+            TemplatesConfig(
+                common_mode=CommonModeConfig(n_knots=4),
+                focal_plane_modes=FocalPlaneModesConfig(PolynomialOrders(1, 2), 0.2, n_knots=4),
+            ),
+            False,
+        ),
     ],
     ids=[
         'no-templates',
@@ -189,6 +202,7 @@ def test_demodulated_legs_fitted_alike_share_a_basis(name, legendre, groups, leg
         'demodulated-azss-and-t2p',
         'common-mode',
         'demodulated-common-mode-and-t2p',
+        'common-and-focal-plane-modes',
     ],
 )
 def test_detector_batches_give_the_same_result(observations, templates, demodulated):

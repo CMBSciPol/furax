@@ -72,6 +72,7 @@ __all__ = [
     'binned_azimuth_hwp_synchronous_basis',
     'spline_hwp_synchronous_basis',
     'common_mode_basis',
+    'focal_plane_modes_basis',
     'AbstractTemplateOperator',
     'TemplateOperator',
     'StokesTemplateOperator',
@@ -1100,9 +1101,8 @@ def spline_hwp_synchronous_basis(
 
     Assumes `times` is non-decreasing.
     """
-    offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
     sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False).astype(dtype)
-    return WindowedBasis(offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2)
+    return _spline_in_time(times, n_knots, dtype, sub_values)
 
 
 def common_mode_basis(
@@ -1118,10 +1118,58 @@ def common_mode_basis(
 
     Assumes `times` is non-decreasing.
     """
+    return SharedBasis(jnp.ones((n_dets, 1), dtype), _spline_in_time(times, n_knots, dtype))
+
+
+def focal_plane_modes_basis(
+    times: Float[Array, ' samp'],
+    n_knots: int,
+    xi: Float[Array, ' det'],
+    eta: Float[Array, ' det'],
+    orders: PolynomialOrders,
+    radius: float,
+    dtype: DTypeLike,
+) -> SharedBasis:
+    r"""Basis for signals varying smoothly across the focal plane, cubic B-splines in time.
+
+    Detector $i$ sees mode $(a, b)$ with coupling $P_a(\xi_i / R)\,P_b(\eta_i / R)$, a product of
+    Legendre polynomials in its focal-plane coordinates, for every total degree $a + b$ in
+    `orders`. Each mode's amplitudes are `n_knots + 2` spline coefficients.
+
+    The coordinates are scaled by the fixed `radius` $R$, not by the range of the detectors given,
+    so detectors of one observation passed in separate batches see the same modes.
+
+    Assumes `times` is non-decreasing.
+
+    Args:
+        times: The sample times.
+        n_knots: Number of spline knots.
+        xi: The detectors' first focal-plane coordinate, in radians.
+        eta: The detectors' second focal-plane coordinate, in radians.
+        orders: The range of total degrees $a + b$.
+        radius: The focal-plane radius $R$, in radians.
+        dtype: The dtype of the basis.
+    """
+    p_xi = _legendre_values(xi / radius, 0, orders.max_order, dtype)  # (order, det)
+    p_eta = _legendre_values(eta / radius, 0, orders.max_order, dtype)
+    degrees = range(orders.min_order, orders.max_order + 1)
+    couplings = jnp.stack(
+        [p_xi[a] * p_eta[n - a] for n in degrees for a in range(n, -1, -1)], axis=1
+    )
+    return SharedBasis(couplings, _spline_in_time(times, n_knots, dtype))
+
+
+def _spline_in_time(
+    times: Float[Array, ' samp'],
+    n_knots: int,
+    dtype: DTypeLike,
+    sub_values: Float[Array, 'sub samp'] | None = None,
+) -> WindowedBasis:
+    """The `n_knots + 2` cubic B-splines over `times`, each times every row of `sub_values`."""
     offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
-    ones = jnp.ones((1, times.size), dtype)
-    time_basis = WindowedBasis(offset, weights.T.astype(dtype), ones, n_blocks=n_knots + 2)
-    return SharedBasis(jnp.ones((n_dets, 1), dtype), time_basis)
+    if sub_values is None:
+        sub_values = jnp.ones((1, times.size), dtype)
+    return WindowedBasis(offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2)
 
 
 def is_basis(x: Any) -> bool:

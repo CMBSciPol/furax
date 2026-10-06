@@ -24,6 +24,9 @@ A few [`Basis`][] flavours trade memory for structure:
 A basis is normally shared by every detector. When the functions differ from detector to detector,
 as for the T-to-P leakage template, [`Basis.per_detector_stack`][] stacks one basis per detector
 into a single [`Basis`][] of any flavour.
+
+Each detector fits its own amplitudes on a [`Basis`][]. A [`SharedBasis`][] instead models a signal
+common to the detectors (atmosphere, readout pickup), with one set of amplitudes for all of them.
 """
 
 from abc import abstractmethod
@@ -59,6 +62,7 @@ __all__ = [
     'KroneckerBasis',
     'SegmentedBasis',
     'WindowedBasis',
+    'SharedBasis',
     'polynomial_basis',
     't2p_basis',
     'scan_synchronous_basis',
@@ -737,6 +741,95 @@ class WindowedBasis(Basis):
         )
 
 
+class SharedBasis(AbstractLinearOperator):
+    r"""Template of modes shared by every detector, each a function of time.
+
+    Detector $i$ sees mode $m$ with coupling $P_{im}$, and each mode is a combination of the
+    functions of `time_basis`:
+
+    $$ d_i(t) = \sum_m P_{im} \sum_k c_{mk}\, b_k(t). $$
+
+    The amplitudes $c$ have shape `(n_modes, *time_basis.shape)` and no detector axis: a single set
+    serves every detector. The couplings choose the modes: a column of ones for a common mode, low
+    order polynomials of the detectors' focal-plane coordinates for spatial gradients, or
+    indicators of detector groups (wafer, readout line) for modes shared within each group.
+
+    Args:
+        couplings: How strongly each detector sees each mode, `(n_dets, n_modes)`.
+        time_basis: The functions of time each mode is built from, shared by every detector.
+
+    Examples:
+        A common mode, a cubic in time seen by three detectors with gains 1, 2 and 3:
+
+        >>> time_basis = TensorBasis(jnp.vander(jnp.linspace(-1.0, 1.0, 5), 4).T)
+        >>> common = SharedBasis(jnp.array([[1.0], [2.0], [3.0]]), time_basis)
+        >>> common.in_structure.shape, common.out_structure.shape
+        ((1, 4), (3, 5))
+    """
+
+    couplings: Float[Array, 'det m']
+    time_basis: Basis
+
+    def __post_init__(self) -> None:
+        # `in_structure` is derived, never passed: it can then never disagree with the arrays.
+        if self.in_structure is not None:
+            raise ValueError('in_structure is derived from the couplings; do not pass it')
+        if self.time_basis.per_detector:
+            raise ValueError('the time basis of a shared template is common to every detector')
+        if self.couplings.ndim != 2:
+            raise ValueError(f'couplings have shape {self.couplings.shape}, expected (det, mode)')
+        # Construction is the only caller, so the couplings are still those of one observation.
+        shape = (self.couplings.shape[1], *self.time_basis.shape)
+        object.__setattr__(self, 'in_structure', ShapeDtypeStruct(shape, self.time_basis.dtype))
+        super().__post_init__()
+
+    @property
+    def n_dets(self) -> int:
+        return self.couplings.shape[-2]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """Shape of the amplitudes, `(n_modes, *time_basis.shape)`."""
+        return self.in_structure.shape
+
+    @property
+    def n_points(self) -> int:
+        return self.time_basis.n_points
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return self.time_basis.dtype
+
+    @property
+    def out_structure(self) -> jax.ShapeDtypeStruct:
+        return jax.ShapeDtypeStruct((self.n_dets, self.n_points), self.dtype)
+
+    def mv(self, x: Float[Array, 'm ...']) -> Float[Array, 'det samp']:
+        modes = jax.vmap(self.time_basis.expand)(x)  # (m, samp)
+        return _einsum('dm,ms->ds', self.couplings, modes)
+
+    def transpose(self) -> AbstractLinearOperator:
+        return _SharedBasisTranspose(self)
+
+    def _dense_values(self) -> None:
+        # never expanded together with the per-detector bases: its amplitudes are not per detector
+        return None
+
+    def _expand_detectors(self, x: Float[Array, 'm ...']) -> Float[Array, 'det samp']:
+        return self.mv(x)
+
+    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'm ...']:
+        modes = _einsum('dm,ds->ms', self.couplings, signals)
+        return jax.vmap(self.time_basis.project)(modes)
+
+
+class _SharedBasisTranspose(TransposeOperator):
+    operator: SharedBasis
+
+    def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'm ...']:
+        return self.operator._project_detectors(x)
+
+
 def _bin_weights(
     x: Float[Array, ' samp'],
     n_bins: int,
@@ -1012,7 +1105,7 @@ def spline_hwp_synchronous_basis(
 
 
 def is_basis(x: Any) -> bool:
-    return isinstance(x, Basis)
+    return isinstance(x, Basis | SharedBasis)
 
 
 class AbstractTemplateOperator(AbstractLinearOperator):
@@ -1027,6 +1120,10 @@ class AbstractTemplateOperator(AbstractLinearOperator):
         # `in_structure` is derived, never passed: it can then never disagree with the bases.
         if self.in_structure is not None:
             raise ValueError('in_structure is derived from the bases; do not pass it')
+        for basis in jax.tree.leaves(self.bases, is_leaf=is_basis):
+            if isinstance(basis, SharedBasis) and basis.n_dets != self.n_dets:
+                msg = f'a shared template couples {basis.n_dets} detectors, not {self.n_dets}'
+                raise ValueError(msg)
         object.__setattr__(self, 'in_structure', self._amplitude_structure())
         super().__post_init__()
 
@@ -1035,7 +1132,9 @@ class AbstractTemplateOperator(AbstractLinearOperator):
         """`bases` with each basis replaced by the amplitudes it takes."""
         return jax.tree.map(self._amplitude_leaf, self.bases, is_leaf=is_basis)
 
-    def _amplitude_leaf(self, basis: Basis) -> jax.ShapeDtypeStruct:
+    def _amplitude_leaf(self, basis: Basis | SharedBasis) -> jax.ShapeDtypeStruct:
+        if isinstance(basis, SharedBasis):  # one set of amplitudes for every detector
+            return basis.in_structure
         return jax.ShapeDtypeStruct((self.n_dets, *basis.shape), basis.dtype)
 
     @property

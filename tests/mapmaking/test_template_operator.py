@@ -9,6 +9,7 @@ from furax.mapmaking.gram import gram_inverse
 from furax.mapmaking.templates import (
     KroneckerBasis,
     SegmentedBasis,
+    SharedBasis,
     StokesTemplateOperator,
     TemplateOperator,
     TensorBasis,
@@ -187,3 +188,59 @@ def test_stokes_template_operator_leg_group_acts_as_one_basis_per_leg():
         gram_inverse(grouped, weight)(amps),
         expected,
     )
+
+
+def _shared(key, n_modes=2):
+    k = jr.split(key, 2)
+    return SharedBasis(
+        jr.normal(k[0], (N_DETS, n_modes)), TensorBasis(jr.normal(k[1], (3, N_SAMPS)))
+    )
+
+
+def test_template_operator_with_a_shared_template():
+    # a shared template adds its expansion to the per-detector ones, and has one set of amplitudes
+    k = jr.split(jr.key(20), 5)
+    poly = SegmentedBasis(_seg(4), jr.normal(k[0], (2, N_SAMPS)), 4)
+    shared = _shared(k[1])
+    T = TemplateOperator({'poly': poly, 'common': shared}, n_dets=N_DETS)
+    assert T.in_structure['common'].shape == (2, 3)
+    amps = {'poly': jr.normal(k[2], (N_DETS, 4, 2)), 'common': jr.normal(k[3], (2, 3))}
+    assert_allclose(T(amps), _expand(poly, amps['poly']) + shared(amps['common']), rtol=1e-12)
+
+    tod = jr.normal(k[4], (N_DETS, N_SAMPS))
+    back = T.T(tod)
+    rhs = jnp.vdot(amps['poly'], back['poly']) + jnp.vdot(amps['common'], back['common'])
+    assert_allclose(jnp.vdot(T(amps), tod), rhs, rtol=1e-12)
+
+
+def test_stokes_template_operator_with_a_shared_template_on_some_legs():
+    k = jr.split(jr.key(21), 4)
+    shared = _shared(k[0])
+    T = StokesTemplateOperator({'common': {'qu': shared}}, n_dets=N_DETS, stokes='IQU')
+    amps = {'common': {'q': jr.normal(k[1], (2, 3)), 'u': jr.normal(k[2], (2, 3))}}
+    out = T(amps)
+    assert_allclose(out.i, jnp.zeros((N_DETS, N_SAMPS)))
+    assert_allclose(out.q, shared(amps['common']['q']), rtol=1e-12)
+    assert_allclose(out.u, shared(amps['common']['u']), rtol=1e-12)
+
+
+def test_template_operator_rejects_a_shared_template_of_other_detectors():
+    with pytest.raises(ValueError, match='couples 3 detectors, not 4'):
+        TemplateOperator({'common': _shared(jr.key(22))}, n_dets=N_DETS + 1)
+
+
+def test_template_operator_with_a_shared_template_stacks_under_vmap():
+    # stacking gives the couplings a leading observation axis, which must leave the amplitude
+    # structure alone
+    t0, t1 = (TemplateOperator({'common': _shared(k)}, n_dets=N_DETS) for k in jr.split(jr.key(23)))
+    stacked = jax.tree.map(lambda a, b: jnp.stack([a, b]), t0, t1)
+    assert stacked.in_structure == t0.in_structure
+    amps = {'common': jr.normal(jr.key(24), (2, 2, 3))}
+    out = jax.vmap(lambda op, x: op(x))(stacked, amps)
+    assert_allclose(out[1], t1({'common': amps['common'][1]}), rtol=1e-12)
+
+
+def test_gram_inverse_rejects_a_shared_template():
+    T = TemplateOperator({'common': _shared(jr.key(25))}, n_dets=N_DETS)
+    with pytest.raises(NotImplementedError, match='shared template'):
+        gram_inverse(T, IdentityOperator(in_structure=T.out_structure))

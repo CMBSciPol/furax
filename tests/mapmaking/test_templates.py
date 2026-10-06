@@ -14,6 +14,7 @@ from furax.mapmaking.templates import (
     KroneckerBasis,
     NoStructuredView,
     SegmentedBasis,
+    SharedBasis,
     TemplateOperator,
     TensorBasis,
     WindowedBasis,
@@ -429,6 +430,38 @@ def _stacked_and_singles(flavour: str, n_dets: int, seed: int) -> tuple[Basis, l
 
 
 FLAVOURS = ['tensor', 'kronecker', 'segmented', 'windowed']
+
+
+class TestSharedBasis:
+    @pytest.mark.parametrize('flavour', ['tensor', 'segmented', 'windowed'])
+    def test_matrix_is_couplings_times_time_basis(self, flavour: str) -> None:
+        # entry (detector i, sample t; mode m, function k) is P[i, m] * b_k(t)
+        n_points = 50
+        time_basis = {
+            'tensor': lambda: TensorBasis(jr.normal(jr.key(1300), (3, n_points))),
+            'segmented': lambda: SegmentedBasis(
+                jnp.repeat(jnp.arange(5), 10).astype(jnp.int32),
+                jr.normal(jr.key(1301), (2, n_points)),
+                5,
+            ),
+            'windowed': lambda: _windowed(6, 4, 2, n_points, 1302)[0],
+        }[flavour]()
+        couplings = jr.normal(jr.key(1303), (4, 2))
+        shared = SharedBasis(couplings, time_basis)
+        expected = jnp.einsum('im,tk->itmk', couplings, time_basis.as_matrix())
+        expected = expected.reshape(4 * n_points, 2 * time_basis.size)
+        assert_allclose(shared.as_matrix(), expected, rtol=TOL, atol=TOL)
+        assert_allclose(shared.T.as_matrix(), expected.T, rtol=TOL, atol=TOL)
+
+    def test_rejects_a_per_detector_time_basis(self) -> None:
+        values = jr.normal(jr.key(1310), (4, 2, 10))
+        time_basis = TensorBasis.per_detector_stack(values=values)
+        with pytest.raises(ValueError, match='common to every detector'):
+            SharedBasis(jnp.ones((4, 1)), time_basis)
+
+    def test_rejects_couplings_without_a_mode_axis(self) -> None:
+        with pytest.raises(ValueError, match=r'expected \(det, mode\)'):
+            SharedBasis(jnp.ones(4), TensorBasis(jnp.ones((2, 10))))
 
 
 class TestPerDetectorStack:

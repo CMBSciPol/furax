@@ -50,6 +50,7 @@ from .templates import (
     AbstractTemplateOperator,
     Basis,
     NoStructuredView,
+    SharedBasis,
     StokesTemplateOperator,
     TemplateOperator,
     is_basis,
@@ -95,7 +96,11 @@ def gram_inverse(
 
     Raises:
         NotImplementedError: If the structured path does not apply and `allow_probe` is `False`.
+            Also for a template whose amplitudes are shared by the detectors ([`SharedBasis`][]).
     """
+    if any(isinstance(b, SharedBasis) for b in jax.tree.leaves(operator.bases, is_leaf=is_basis)):
+        # its Gram couples the detectors, which the per-detector blocks below cannot hold
+        raise NotImplementedError('the Gram of a shared template is not supported')
     ones = furax.tree.ones_like(weight.in_structure)
     diag = weight(ones)
     # if we wanted to guard against a non-diagonal W, one extra application on a random

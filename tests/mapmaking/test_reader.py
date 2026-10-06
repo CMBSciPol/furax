@@ -48,3 +48,15 @@ def test_sample_data_is_zero_padded(lazy, demodulated: bool):
     assert not np.any(tods[..., 500:])
     (sample_padding,) = jax.tree.leaves(padding['sample_data'])
     assert tuple(sample_padding[-2:]) == (1, 100)
+
+
+@pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])
+def test_sample_data_reaches_a_cpu_device_without_a_copy(demodulated: bool):
+    observations = [FakeLazyObservation(n_dets=2, n_samples=500), FakeLazyObservation(n_dets=3)]
+    reader = ObservationReader.from_observations(
+        observations, requested_fields=['sample_data'], demodulated=demodulated
+    )
+    data, _, _ = reader.read_host(0)
+    (tod,) = jax.tree.leaves(data['sample_data'])
+    on_device = jax.device_put(tod[None], jax.devices('cpu')[0], may_alias=True)
+    assert on_device.unsafe_buffer_pointer() == tod.ctypes.data

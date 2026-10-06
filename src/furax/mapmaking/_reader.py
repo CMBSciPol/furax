@@ -1,6 +1,8 @@
 import logging
+import mmap
 from collections.abc import Collection, Sequence
 from dataclasses import replace
+from math import prod
 from typing import Any, Self
 
 import jax
@@ -209,7 +211,8 @@ class ObservationReader[T](AbstractReader):
             The padded fields.
         """
         # The sample data already sits in the leading corner of a zeroed buffer of the padded
-        # shape (see `get_sample_data`): the corner view's base is that buffer.
+        # shape (see `get_sample_data`): the corner starts the buffer and has its strides, so a
+        # view of the padded shape from there spans the whole buffer.
         sample_data = data.get(ReaderField.SAMPLE_DATA)
         others = [field for field in data if field != ReaderField.SAMPLE_DATA]
 
@@ -218,7 +221,11 @@ class ObservationReader[T](AbstractReader):
             {field: data[field] for field in others}, {field: padding[field] for field in others}
         )
         if sample_data is not None:
-            data[ReaderField.SAMPLE_DATA] = jax.tree.map(lambda tod: tod.base, sample_data)
+            (struct,) = jax.tree.leaves(self.out_structure[ReaderField.SAMPLE_DATA])
+            data[ReaderField.SAMPLE_DATA] = jax.tree.map(
+                lambda tod: np.lib.stride_tricks.as_strided(tod, struct.shape, tod.strides),
+                sample_data,
+            )
 
         # Handle fields with non-zero padding
         data_field_names = self.common_keywords['data_field_names']
@@ -354,7 +361,7 @@ class ObservationReader[T](AbstractReader):
             # The getter writes straight into a zeroed buffer of the padded shape, at the sample
             # dtype, so that the TOD is copied once. `_pad` takes the whole buffer back.
             (struct,) = jax.tree.leaves(self.out_structure[ReaderField.SAMPLE_DATA])
-            buffer = np.zeros(struct.shape, sample_dtype)
+            buffer = _aligned_zeros(struct.shape, sample_dtype)
             tods: Stokes | np.ndarray
             if demodulated:
                 tods = obs.get_demodulated_tods(stokes=stokes, out=buffer)
@@ -460,6 +467,17 @@ class ObservationReader[T](AbstractReader):
         data = observation.get_data(data_field_names)
         field_reader = self._get_data_field_readers()
         return {field: field_reader[field](data) for field in data_field_names}
+
+
+def _aligned_zeros(shape: tuple[int, ...], dtype: DTypeLike) -> np.ndarray:
+    """A zeroed array on fresh memory pages, which a CPU device can use without copying it.
+
+    The device copies a host buffer unless it is suitably aligned (64 bytes), which a NumPy
+    allocation is not guaranteed to be; a page-aligned one always is.
+    """
+    dtype = np.dtype(dtype)
+    pages = mmap.mmap(-1, prod(shape) * dtype.itemsize)  # anonymous: zeroed by the system
+    return np.frombuffer(pages, dtype).reshape(shape)
 
 
 def slice_detector_axis(field: PyTree[Array], start: Array, size: int) -> PyTree[Array]:

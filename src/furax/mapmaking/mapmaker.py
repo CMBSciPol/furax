@@ -1,8 +1,9 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Callable, Collection, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from functools import cached_property
+from functools import cached_property, partial
 from logging import Logger
 from math import prod
 from pathlib import Path
@@ -76,7 +77,7 @@ from .config import (
     WeightingMode,
 )
 from .gap_filling import gap_fill
-from .layout import SlotLayout
+from .layout import Bucket, SlotLayout
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pomme import PommeProjectionOperator
 from .preconditioner import BJPreconditioner
@@ -578,20 +579,137 @@ class MultiObservationMapMaker[T]:
     def _accumulate_bucket(
         self, bucket_index: int, reader: ObservationReader[T]
     ) -> tuple[Int64[Array, '...'], StokesType, _BucketModel]:
-        """One bucket's pass over the data: its hit map and RHS partials, and its stacked model."""
+        """One bucket's pass over the data: its hit map and RHS partials, and its stacked model.
+
+        The observations are accumulated in rounds, each round launching one observation on each
+        of this process's devices. A launch frees its working memory (the TOD and what is
+        computed from it) when it returns, so only one observation per device is in memory at a
+        time, and the processes need not keep in step until the bucket is assembled at the end.
+        """
+        reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
+        bucket = self.layout.buckets[bucket_index]
+        devices = self._local_devices
+        n_rounds = bucket.n_slots // self.layout.n_devices  # slots per device
+        local = self.layout.local_slots(
+            bucket_index, process_index=jax.process_index(), n_local=len(devices)
+        )
+        axis = self.mesh.axis_names[0]
+        # The launch has no collective, so each process runs it on its own devices without
+        # waiting for the others. It still spans the job's mesh: the operators it builds record
+        # the mesh they were traced under, and the solve uses them under that mesh.
+        launch = jax.jit(
+            jax.shard_map(
+                self._observation_kernel(bucket, axis),
+                in_specs=P(axis),
+                out_specs=P(axis),
+                check_vma=False,
+            )
+        )
+
+        def load(slot):
+            if bucket.is_real[slot]:
+                return reader.read_host(int(bucket.item_of_slot[slot]))
+            # A padding slot is never read or preprocessed just to be masked away
+            return reader.read_filler_host()
+
+        hits = rhs = None
+        stacked: Any = None
+        # The pool reads the observations of a round's devices concurrently
+        with ThreadPoolExecutor(len(devices)) as pool:
+
+            def read_round(r):
+                # device k holds slots `local.start + k * n_rounds + r`, as the global sharding
+                slots = [local.start + k * n_rounds + r for k in range(len(devices))]
+                return list(pool.map(load, slots))
+
+            per_device = read_round(0)
+            for r in range(n_rounds):
+                inputs = self._to_devices(per_device)
+                # Hold this round's buffers only as long as its launch: on a CPU device they are
+                # its TOD, which the next read must not find still in memory.
+                per_device = []
+                round_hits, round_rhs, out = launch(*inputs)  # dispatched without waiting
+                del inputs
+                hits = round_hits if hits is None else _add(hits, round_hits)
+                rhs = round_rhs if rhs is None else _add(rhs, round_rhs)
+                stacked = _store_round(stacked, out, r, n_rounds)
+                last = r + 1 == n_rounds
+                if self._prefetches_reads and not last:
+                    per_device = read_round(r + 1)  # while the devices compute
+                # wait for the round, so that its working memory is freed
+                jax.block_until_ready((hits, rhs, stacked))
+                if not self._prefetches_reads and not last:
+                    per_device = read_round(r + 1)
+
+        # every device's partial sums, over the job
+        sum_devices = partial(jax.tree.map, lambda x: x.sum(axis=0))
+        replicated = NamedSharding(self.mesh, P())
+        hits, rhs = jax.jit(sum_devices, out_shardings=replicated)((hits, rhs))
+
+        # (device, round, ...) -> (slot, ...), and for detector batches (slot·batch, ...): each
+        # detector batch an entry of its own, the shared data staying one per slot (see
+        # `Bucket.stream_layout`)
+        if bucket.n_batches == 1:
+            stacked = self._merge_leading_axes(stacked, 2)
+        else:
+            batched, shared = stacked
+            batched = self._merge_leading_axes(batched, 3)
+            shared = self._merge_leading_axes(shared, 2)
+            stacked = eqx.combine(batched, shared)
+        model, templates, amp_rhs = stacked
+        return hits, rhs, _BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
+
+    @cached_property
+    def _prefetches_reads(self) -> bool:
+        """Whether to read the next observations while the devices accumulate the current ones.
+
+        Only where the devices have memory of their own: on a CPU device, the reads would hold the
+        next TOD in the same memory as the current one's working set, and compete with it for
+        the cores.
+        """
+        return self._local_devices[0].platform != 'cpu'
+
+    @cached_property
+    def _local_devices(self) -> list[jax.Device]:
+        """This process's devices, in the order of the mesh."""
+        return [d for d in self.mesh.devices.flat if d.process_index == jax.process_index()]
+
+    def _to_devices(self, per_device: Sequence[PyTree[Any]]) -> Any:
+        """Host pytrees, one per local device, as arrays sharded over a leading device axis.
+
+        On a CPU device, a suitably aligned host buffer is used in place rather than copied.
+        """
+
+        def stack(*leaves: Any) -> Array:
+            shards = [
+                jax.device_put(np.asarray(leaf)[None], device, may_alias=True)
+                for leaf, device in zip(leaves, self._local_devices, strict=True)
+            ]
+            shape = (self.layout.n_devices, *np.shape(leaves[0]))
+            return jax.make_array_from_single_device_arrays(shape, self.sharding, shards)
+
+        return jax.tree.map(stack, *per_device)
+
+    def _merge_leading_axes(self, tree: PyTree[Array], n: int) -> PyTree[Array]:
+        """Merge the `n` leading axes of every array, keeping it sharded over the merged axis."""
+        merge = jax.jit(
+            partial(jax.tree.map, lambda x: x.reshape(-1, *x.shape[n:])),
+            out_shardings=self.sharding,
+            donate_argnums=0,
+        )
+        return merge(tree)
+
+    def _observation_kernel(
+        self, bucket: Bucket, axis: str
+    ) -> Callable[[Any, Any, Array], tuple[Array, StokesType, Any]]:
+        """Accumulate one observation per device: its hit map, RHS and model.
+
+        The arguments and results carry a leading axis of size one, the device's.
+        """
         config = self.fit_config
         landscape = self.landscape
-        reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
         build_templates = config.use_templates
-
-        bucket = self.layout.buckets[bucket_index]
-        local = self.layout.local_slots(
-            bucket_index, process_index=jax.process_index(), n_local=jax.local_device_count()
-        )
-        items = self.distribute(bucket.item_of_slot[local])
-        is_real = self.distribute(bucket.is_real[local])
-        axis = jax.sharding.get_abstract_mesh().axis_names[0]
         n_batches, batch_size = bucket.n_batches, bucket.batch_size
 
         def cast(tod):
@@ -601,134 +719,109 @@ class MultiObservationMapMaker[T]:
         def cast_tod(data):
             return {**data, ReaderField.SAMPLE_DATA: cast(data[ReaderField.SAMPLE_DATA])}
 
-        def kernel(items, is_real):
-            def step(carry, args):
-                i, real = args
+        def kernel(observation, padding, valid):
+            observation, padding, use = jax.tree.map(lambda x: x[0], (observation, padding, valid))
+            carry = (jnp.zeros(landscape.shape, jnp.int64), landscape.zeros())
+            (hits, rhs), out = step(carry, observation, padding, use)
+            return jax.tree.map(lambda x: x[None], (hits, rhs, out))
 
-                # Skip the load for padding slots: only the real branch hits the io_callback,
-                # so a padded observation is never read or preprocessed just to be masked away.
-                observation, padding, valid = jax.lax.cond(
-                    real,
-                    lambda: reader.read(i),
-                    lambda: reader.read_filler(),
-                )
+        def step(carry, observation, padding, use):
+            if n_batches == 1:
+                observation = cast_tod(observation)
+                tod = raw = observation[ReaderField.SAMPLE_DATA]
+                if fill_gaps:
+                    # The RHS uses the filled TOD; the models are still built from the raw one.
+                    tod = jax.lax.cond(
+                        use,
+                        lambda: fill_observation_gaps(observation, padding),
+                        lambda: raw,  # nothing to fill
+                    )
+                return accumulate(carry, observation, tod, padding, use)
 
-                use = real & valid
-                if n_batches == 1:
-                    observation = cast_tod(observation)
-                    tod = raw = observation[ReaderField.SAMPLE_DATA]
-                    if fill_gaps:
-                        # The RHS uses the filled TOD; the models are still built from the raw one.
-                        tod = jax.lax.cond(
-                            use,
-                            lambda: fill_observation_gaps(observation, padding),
-                            lambda: raw,  # nothing to fill
-                        )
-                    return accumulate(carry, observation, tod, padding, use)
+            # One detector batch at a time (gap filling, which needs whole observations, never
+            # gets here): nothing computed from the TOD outlives its batch, each batch
+            # contributing to the sums and stacking its own model and templates.
+            def batch(carry, j):
+                data = cast_tod(slice_detectors(observation, j * batch_size, batch_size))
+                return accumulate(carry, data, data[ReaderField.SAMPLE_DATA], padding, use)
 
-                # One detector batch at a time (gap filling, which needs whole observations, never
-                # gets here): nothing computed from the TOD outlives its batch, each batch
-                # contributing to the sums and stacking its own model and templates.
-                def batch(carry, j):
-                    data = cast_tod(slice_detectors(observation, j * batch_size, batch_size))
-                    return accumulate(carry, data, data[ReaderField.SAMPLE_DATA], padding, use)
+            # What the batches share (boresight pointing, shared template bases, ...) is kept
+            # once per observation rather than once per batch.
+            # The shared leaves ride the carry, each batch writing the same values, and come
+            # out once; the others are stacked per batch.
+            per_batch, out_shape = _depends_on_argument(lambda j: batch(carry, j)[1], 0)
+            shared_shape = eqx.filter(out_shape, per_batch, inverse=True)
+            shared = jax.lax.pcast(furax.tree.zeros_like(shared_shape), axis, to='varying')
 
-                # What the batches share (boresight pointing, shared template bases, ...) is kept
-                # once per observation rather than once per batch.
-                # The shared leaves ride the carry, each batch writing the same values, and come
-                # out once; the others are stacked per batch.
-                per_batch, out_shape = _depends_on_argument(lambda j: batch(carry, j)[1], 0)
-                shared_shape = eqx.filter(out_shape, per_batch, inverse=True)
-                shared = jax.lax.pcast(furax.tree.zeros_like(shared_shape), axis, to='varying')
+            def detector_step(carry, j):
+                carry, _ = carry
+                carry, out = batch(carry, j)
+                batched, shared = eqx.partition(out, per_batch)
+                return (carry, shared), batched
 
-                def detector_step(carry, j):
-                    carry, _ = carry
-                    carry, out = batch(carry, j)
-                    batched, shared = eqx.partition(out, per_batch)
-                    return (carry, shared), batched
+            init = (carry, shared)
+            (carry, shared), batched = jax.lax.scan(detector_step, init, jnp.arange(n_batches))
+            return carry, (batched, shared)
 
-                init = (carry, shared)
-                (carry, shared), batched = jax.lax.scan(detector_step, init, jnp.arange(n_batches))
-                return carry, (batched, shared)
+        def fill_observation_gaps(data, padding):
+            obs = ObservationModel.create(data, padding, config, landscape)
+            # Only reached under GapTreatment.FILL, where W is the plain inner-mask weight.
+            assert isinstance(obs.W, WeightOperator)
+            # Optional M_b N M_b preconditioner (covariance from the noise model).
+            preconditioner = None
+            if config.gaps.fill_options.precondition:
+                cov = obs.noise_operator(config.weighting.correlation_length, inverse=False)
+                m_bad = obs.M.complement()
+                preconditioner = (m_bad @ cov @ m_bad).reduce()
+            return gap_fill(
+                jax.random.key(config.gaps.fill_options.seed),
+                data[ReaderField.SAMPLE_DATA],
+                obs.W.weight,
+                obs.M,
+                rate=obs.sample_rate,
+                max_cg_steps=config.gaps.fill_options.max_steps,
+                rtol=config.gaps.fill_options.rtol,
+                preconditioner=preconditioner,
+                metadata=data[ReaderField.METADATA],
+            )
 
-            def fill_observation_gaps(data, padding):
-                obs = ObservationModel.create(data, padding, config, landscape)
-                # Only reached under GapTreatment.FILL, where W is the plain inner-mask weight.
-                assert isinstance(obs.W, WeightOperator)
-                # Optional M_b N M_b preconditioner (covariance from the noise model).
-                preconditioner = None
-                if config.gaps.fill_options.precondition:
-                    cov = obs.noise_operator(config.weighting.correlation_length, inverse=False)
-                    m_bad = obs.M.complement()
-                    preconditioner = (m_bad @ cov @ m_bad).reduce()
-                return gap_fill(
-                    jax.random.key(config.gaps.fill_options.seed),
-                    data[ReaderField.SAMPLE_DATA],
-                    obs.W.weight,
-                    obs.M,
-                    rate=obs.sample_rate,
-                    max_cg_steps=config.gaps.fill_options.max_steps,
-                    rtol=config.gaps.fill_options.rtol,
-                    preconditioner=preconditioner,
-                    metadata=data[ReaderField.METADATA],
-                )
+        def accumulate(carry, data, tod, padding, use):
+            hits_acc, rhs_acc = carry
+            obs = ObservationModel.create(data, padding, config, landscape)
 
-            def accumulate(carry, data, tod, padding, use):
-                hits_acc, rhs_acc = carry
-                obs = ObservationModel.create(data, padding, config, landscape)
+            # Padding/failed observations contribute nothing
+            obs.M = obs.M.restrict(use)
 
-                # Padding/failed observations contribute nothing
-                obs.M = obs.M.restrict(use)
+            # Hit map = nearest-neighbour coverage of the sample mask
+            hit_pointing = PointingOperator.create(
+                landscape,
+                Quaternion.from_array(data[ReaderField.BORESIGHT_QUATERNIONS]),
+                Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS]),
+            ).as_stokes_i(interpolate=False)
+            # Read the mask directly: M(ones) = M.to_boolean_mask()
+            masked_tod = obs.M.to_boolean_mask()
+            # The mask is (ndet, nsamp) even in the demodulated case (all legs share the same)
+            masked = masked_tod.data if isinstance(masked_tod, Stokes) else masked_tod
+            hits_i = jnp.int64(hit_pointing.T(StokesI(masked)).i)
 
-                # Hit map = nearest-neighbour coverage of the sample mask
-                hit_pointing = PointingOperator.create(
-                    landscape,
-                    Quaternion.from_array(data[ReaderField.BORESIGHT_QUATERNIONS]),
-                    Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS]),
-                ).as_stokes_i(interpolate=False)
-                # Read the mask directly: M(ones) = M.to_boolean_mask()
-                masked_tod = obs.M.to_boolean_mask()
-                # The mask is (ndet, nsamp) even in the demodulated case (all legs share the same)
-                masked = masked_tod.data if isinstance(masked_tod, Stokes) else masked_tod
-                hits_i = jnp.int64(hit_pointing.T(StokesI(masked)).i)
-
-                if not build_templates:
-                    if fill_gaps:
-                        # Gaps filled: skip the data-side mask so the fill survives N⁻¹.
-                        rhs_i = obs.rhs_operator_prefilled(tod)
-                    else:
-                        rhs_i = obs.rhs_operator(tod)
-                    carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
-                    return carry, (obs, None, None)
-
-                # Templates require config.binned=True, so fill_gaps never applies here.
-                templates, wd = ObservationTemplates.create(data, config, obs, tod)
-                explicit = templates.explicit
-                rhs_i = obs.H.T(wd)
-                amp_i = explicit.operator.T(wd) if explicit is not None else None
+            if not build_templates:
+                if fill_gaps:
+                    # Gaps filled: skip the data-side mask so the fill survives N⁻¹.
+                    rhs_i = obs.rhs_operator_prefilled(tod)
+                else:
+                    rhs_i = obs.rhs_operator(tod)
                 carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
-                return carry, (obs, templates, amp_i)
+                return carry, (obs, None, None)
 
-            init_hits = jax.lax.pcast(jnp.zeros(landscape.shape, jnp.int64), axis, to='varying')
-            init_rhs = jax.lax.pcast(landscape.zeros(), axis, to='varying')
-            (hits, rhs), stacked = jax.lax.scan(step, (init_hits, init_rhs), (items, is_real))
-            # The axis spans every device of the job, so this is the reduction over the bucket.
-            hits, rhs = jax.lax.psum((hits, rhs), axis)
-            if n_batches > 1:
-                # (slot, batch, ...) -> (slot·batch, ...): each detector batch an entry of its own,
-                # the shared data staying one per slot (see `Bucket.stream_layout`)
-                batched, shared = stacked
-                batched = jax.tree.map(lambda x: x.reshape(-1, *x.shape[2:]), batched)
-                stacked = eqx.combine(batched, shared)
-            model, templates, amp_rhs = stacked
-            return hits, rhs, _BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
+            # Templates require config.binned=True, so fill_gaps never applies here.
+            templates, wd = ObservationTemplates.create(data, config, obs, tod)
+            explicit = templates.explicit
+            rhs_i = obs.H.T(wd)
+            amp_i = explicit.operator.T(wd) if explicit is not None else None
+            carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
+            return carry, (obs, templates, amp_i)
 
-        # Both inputs are distributed over the observation axis; the mesh's axis types are `Auto`,
-        # so the specs are given rather than inferred.
-        in_specs = (P(axis), P(axis))
-        out_specs = (P(), P(), P(axis))
-        skernel = jax.shard_map(in_specs=in_specs, out_specs=out_specs, check_vma=False)(kernel)
-        return skernel(items, is_real)
+        return kernel
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -1534,6 +1627,26 @@ class _QUModulationOperator(AbstractLinearOperator):
 
     def mv(self, x: StokesType) -> Float[Array, '...']:
         return self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u
+
+
+_add = jax.jit(furax.tree.add, donate_argnums=0)
+
+
+@partial(jax.jit, donate_argnums=0)
+def _set_round(store: PyTree[Array], out: PyTree[Array], r: Array) -> PyTree[Array]:
+    return jax.tree.map(lambda a, b: a.at[:, r].set(b), store, out)
+
+
+def _store_round(
+    store: PyTree[Array] | None, out: PyTree[Array], r: int, n_rounds: int
+) -> PyTree[Array]:
+    """Write a round's outputs, leading with the device axis, as round `r` of the store."""
+    if store is None:
+        store = jax.tree.map(
+            lambda x: jnp.zeros((x.shape[0], n_rounds, *x.shape[1:]), x.dtype, device=x.sharding),
+            out,
+        )
+    return _set_round(store, out, r)
 
 
 def _depends_on_argument(

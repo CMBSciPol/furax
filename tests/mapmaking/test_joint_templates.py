@@ -9,6 +9,7 @@ from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
@@ -217,3 +218,31 @@ def test_only_observations_larger_than_a_batch_are_padded(batch, n_buffered):
         _hwp_obs(), config=replace(_config(None), detector_batch_size=batch)
     )
     assert maker.readers[0].out_structure[ReaderField.DETECTOR_QUATERNIONS].shape[0] == n_buffered
+
+
+@pytest.mark.parametrize('prefetch', [False, True], ids=['read-after-round', 'prefetch'])
+def test_several_observations_per_device_match_single_observations(monkeypatch, prefetch: bool):
+    # More observations than devices: each device accumulates several, one round at a time,
+    # reading the next round after the current one or, as with a GPU, while it computes.
+    # Each observation's sums and outputs must be those of a run over it alone.
+    monkeypatch.setattr(MultiObservationMapMaker, '_prefetches_reads', prefetch)
+    cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)))
+    observations = _hwp_obs(n_obs=10)
+
+    def accumulate(observations):
+        maker = MultiObservationMapMaker(observations, config=cfg)
+        with jax.set_mesh(maker.mesh):
+            return maker, maker.build_model_and_accumulate()
+
+    maker, together = accumulate(observations)
+    assert maker.layout.buckets[0].n_slots // maker.layout.n_devices >= 2
+    alone = [accumulate([obs])[1] for obs in observations]
+
+    assert_allclose(together.hit_map, sum(acc.hit_map for acc in alone))
+    assert_allclose(
+        together.map_rhs.data, sum(acc.map_rhs.data for acc in alone), rtol=1e-12, atol=1e-12
+    )
+    amplitude_rhs = together.buckets[0].amplitude_rhs['hwp_synchronous']
+    per_observation = maker.layout.to_observation_order([np.asarray(amplitude_rhs)])
+    for got, acc in zip(per_observation, alone, strict=True):
+        assert_allclose(got, np.asarray(acc.buckets[0].amplitude_rhs['hwp_synchronous'])[0])

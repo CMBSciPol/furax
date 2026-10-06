@@ -1,6 +1,6 @@
 import pickle
 from abc import abstractmethod
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 from logging import Logger
@@ -20,6 +20,7 @@ from astropy.wcs import WCS
 from fastquat import Quaternion
 from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils as mhu
+from jax.extend.core import Literal as JaxprLiteral
 from jax.sharding import AxisType, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jax.tree_util import register_dataclass
@@ -64,7 +65,7 @@ from ._observation import (
     ObservationBufferShape,
     ReaderField,
 )
-from ._reader import ObservationReader
+from ._reader import ObservationReader, slice_detectors
 from .config import (
     GapTreatment,
     LandscapeConfig,
@@ -214,8 +215,8 @@ class MultiObservationMapMaker[T]:
         out. After the gather, they inherit the largest successful probe shape so they cannot form
         an undersized bucket of their own.
 
-        The sample count is raised to `_minimum_buffer_samples`, so the buckets and the readers
-        size their buffers identically.
+        The sample count is raised to `_minimum_buffer_samples`, and the detector count to whole
+        detector batches, so the buckets and the readers size their buffers identically.
         """
         n_obs = self.n_observations
         n_proc = jax.process_count()
@@ -235,7 +236,9 @@ class MultiObservationMapMaker[T]:
             rows[failed, :3] = rows[~failed, :3].max(axis=0)
         minimum_samples = self._minimum_buffer_samples
         shapes = [
-            ObservationBufferShape(int(row[0]), max(int(row[1]), minimum_samples), int(row[2]))
+            ObservationBufferShape(
+                int(row[0]), max(int(row[1]), minimum_samples), int(row[2])
+            ).whole_detector_batches(self.config.detector_batch_size)
             for row in rows
         ]
         return shapes, failed
@@ -257,7 +260,10 @@ class MultiObservationMapMaker[T]:
         """How the observations are bucketed and laid out over the devices."""
         shapes, _ = self._probe_shapes
         return SlotLayout.create(
-            shapes, n_devices=jax.device_count(), max_buckets=self.config.max_buckets
+            shapes,
+            n_devices=jax.device_count(),
+            max_buckets=self.config.max_buckets,
+            detector_batch_size=self.config.detector_batch_size,
         )
 
     @cached_property
@@ -374,20 +380,26 @@ class MultiObservationMapMaker[T]:
 
             # Per-bucket stream operators. Everything below sums over the buckets: each is a
             # stream of its own length, so the sums stay plain additions of stream operators.
-            H = [StreamOperator.column(bm.model.H) for bm in acc.buckets]
-            W = [StreamOperator.diagonal(bm.model.W) for bm in acc.buckets]
+            layouts = [bucket.stream_layout for bucket in self.layout.buckets]
+            H = [layout.column(bm.model.H) for bm, layout in zip(acc.buckets, layouts, strict=True)]
+            W = [
+                layout.diagonal(bm.model.W) for bm, layout in zip(acc.buckets, layouts, strict=True)
+            ]
             W_diag = (
                 W
                 if self.config.binned
                 else [
-                    StreamOperator.diagonal(eqx.filter_vmap(ObservationModel.diag_W)(bm.model))
-                    for bm in acc.buckets
+                    layout.diagonal(
+                        # Map only the inverse noise: the mask is W's own, used as it is.
+                        WeightOperator.create(
+                            layout.vmap(lambda m: m.diag_W().weight, bm.model), bm.model.M
+                        )
+                    )
+                    for bm, layout in zip(acc.buckets, layouts, strict=True)
                 ]
             )
-            # Specify leading axis dimension because F can be trivial (no array leaves)
             F = [
-                StreamOperator.diagonal(bm.model.F, n_lead=bucket.n_slots)
-                for bm, bucket in zip(acc.buckets, self.layout.buckets, strict=True)
+                layout.diagonal(bm.model.F) for bm, layout in zip(acc.buckets, layouts, strict=True)
             ]
 
             # Diagonal pixel system for the block-Jacobi preconditioner
@@ -440,7 +452,10 @@ class MultiObservationMapMaker[T]:
                 sky_estimate, per_bucket = result.solution
                 # Every device holds the same replicated copy after the gather, so the host
                 # array is complete on every process; then back to observation order.
-                gathered = [self._gather(a) for a in per_bucket]
+                gathered = [
+                    jax.tree.map(bucket.merge_detector_batches, self._gather(a))
+                    for bucket, a in zip(self.layout.buckets, per_bucket, strict=True)
+                ]
                 amplitudes = jax.tree.map(
                     lambda *leaves: self.layout.to_observation_order(leaves), *gathered
                 )
@@ -475,12 +490,14 @@ class MultiObservationMapMaker[T]:
         Returns:
             The system to solve, in the unknowns described above.
         """
+        layouts = [bucket.stream_layout for bucket in self.layout.buckets]
         # Implicit templates fold into the weight (marginal deprojection).
         W = list(W)
         for b, bm in enumerate(acc.buckets):
             if bm.templates is not None and (implicit := bm.templates.implicit) is not None:
-                Ti = StreamOperator.diagonal(implicit.operator)
-                G = StreamOperator.diagonal(implicit.gram_inverse)
+                layout = layouts[b]
+                Ti = layout.diagonal(implicit.operator)
+                G = layout.diagonal(implicit.gram_inverse)
                 W[b] = (W[b] - W[b] @ Ti @ G @ Ti.T @ W[b]).reduce()
 
         # Explicit templates are configured for the run, so every bucket carries them or none.
@@ -501,8 +518,8 @@ class MultiObservationMapMaker[T]:
             )
             return _MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False)
 
-        Te = [StreamOperator.diagonal(e.operator) for e in explicit]
-        Ge = [StreamOperator.diagonal(e.gram_inverse) for e in explicit]
+        Te = [layout.diagonal(e.operator) for e, layout in zip(explicit, layouts, strict=True)]
+        Ge = [layout.diagonal(e.gram_inverse) for e, layout in zip(explicit, layouts, strict=True)]
         amplitudes_structure = [te.in_structure for te in Te]
 
         # Joint sky + explicit-amplitude system. The unknowns are the selected sky pixels and one
@@ -574,23 +591,85 @@ class MultiObservationMapMaker[T]:
         items = self.distribute(bucket.item_of_slot[local])
         is_real = self.distribute(bucket.is_real[local])
         axis = jax.sharding.get_abstract_mesh().axis_names[0]
+        n_batches, batch_size = bucket.n_batches, bucket.batch_size
 
         def kernel(items, is_real):
             def step(carry, args):
-                hits_acc, rhs_acc = carry
                 i, real = args
 
                 # Skip the load for padding slots: only the real branch hits the io_callback,
                 # so a padded observation is never read or preprocessed just to be masked away.
-                data, padding, valid = jax.lax.cond(
+                observation, padding, valid = jax.lax.cond(
                     real,
                     lambda: reader.read(i),
                     lambda: reader.read_filler(),
                 )
+
+                use = real & valid
+                if n_batches == 1:
+                    tod = raw = observation[ReaderField.SAMPLE_DATA]
+                    if fill_gaps:
+                        # The RHS uses the filled TOD; the models are still built from the raw one.
+                        tod = jax.lax.cond(
+                            use,
+                            lambda: fill_observation_gaps(observation, padding),
+                            lambda: raw,  # nothing to fill
+                        )
+                    return accumulate(carry, observation, tod, padding, use)
+
+                # One detector batch at a time (gap filling, which needs whole observations, never
+                # gets here): nothing computed from the TOD outlives its batch, each batch
+                # contributing to the sums and stacking its own model and templates.
+                def batch(carry, j):
+                    data = slice_detectors(observation, j * batch_size, batch_size)
+                    return accumulate(carry, data, data[ReaderField.SAMPLE_DATA], padding, use)
+
+                # What the batches share (boresight pointing, shared template bases, ...) is kept
+                # once per observation rather than once per batch.
+                # The shared leaves ride the carry, each batch writing the same values, and come
+                # out once; the others are stacked per batch.
+                per_batch, out_shape = _depends_on_argument(lambda j: batch(carry, j)[1], 0)
+                shared_shape = eqx.filter(out_shape, per_batch, inverse=True)
+                shared = jax.lax.pcast(furax.tree.zeros_like(shared_shape), axis, to='varying')
+
+                def detector_step(carry, j):
+                    carry, _ = carry
+                    carry, out = batch(carry, j)
+                    batched, shared = eqx.partition(out, per_batch)
+                    return (carry, shared), batched
+
+                init = (carry, shared)
+                (carry, shared), batched = jax.lax.scan(detector_step, init, jnp.arange(n_batches))
+                return carry, (batched, shared)
+
+            def fill_observation_gaps(data, padding):
+                obs = ObservationModel.create(data, padding, config, landscape)
+                # Only reached under GapTreatment.FILL, where W is the plain inner-mask weight.
+                assert isinstance(obs.W, WeightOperator)
+                # Optional M_b N M_b preconditioner (covariance from the noise model).
+                preconditioner = None
+                if config.gaps.fill_options.precondition:
+                    cov = obs.noise_operator(config.weighting.correlation_length, inverse=False)
+                    m_bad = obs.M.complement()
+                    preconditioner = (m_bad @ cov @ m_bad).reduce()
+                return gap_fill(
+                    jax.random.key(config.gaps.fill_options.seed),
+                    data[ReaderField.SAMPLE_DATA],
+                    obs.W.weight,
+                    obs.M,
+                    rate=obs.sample_rate,
+                    max_cg_steps=config.gaps.fill_options.max_steps,
+                    rtol=config.gaps.fill_options.rtol,
+                    preconditioner=preconditioner,
+                    metadata=data[ReaderField.METADATA],
+                )
+
+            def accumulate(carry, data, tod, padding, use):
+                hits_acc, rhs_acc = carry
                 obs = ObservationModel.create(data, padding, config, landscape)
 
                 # Padding/failed observations contribute nothing
-                obs.M = obs.M.restrict(real & valid)
+                obs.M = obs.M.restrict(use)
 
                 # Hit map = nearest-neighbour coverage of the sample mask
                 hit_pointing = PointingOperator.create(
@@ -603,38 +682,6 @@ class MultiObservationMapMaker[T]:
                 # The mask is (ndet, nsamp) even in the demodulated case (all legs share the same)
                 masked = masked_tod.data if isinstance(masked_tod, Stokes) else masked_tod
                 hits_i = jnp.int64(hit_pointing.T(StokesI(masked)).i)
-
-                # RHS contribution (optionally gap-filled).
-                def func_gapfill(tod):
-                    # Only reached under GapTreatment.FILL, where W is the plain inner-mask weight.
-                    assert isinstance(obs.W, WeightOperator)
-                    # Optional M_b N M_b preconditioner (covariance from the noise model).
-                    preconditioner = None
-                    if config.gaps.fill_options.precondition:
-                        cov = obs.noise_operator(config.weighting.correlation_length, inverse=False)
-                        m_bad = obs.M.complement()
-                        preconditioner = (m_bad @ cov @ m_bad).reduce()
-                    return gap_fill(
-                        jax.random.key(config.gaps.fill_options.seed),
-                        tod,
-                        obs.W.weight,
-                        obs.M,
-                        rate=obs.sample_rate,
-                        max_cg_steps=config.gaps.fill_options.max_steps,
-                        rtol=config.gaps.fill_options.rtol,
-                        preconditioner=preconditioner,
-                        metadata=data[ReaderField.METADATA],
-                    )
-
-                # Use Python `if` for static conditions, so inactive branches are not traced.
-                tod = data[ReaderField.SAMPLE_DATA]
-                if fill_gaps:
-                    tod = jax.lax.cond(
-                        real & valid,
-                        func_gapfill,
-                        lambda _: _,  # return raw data as-is
-                        tod,
-                    )
 
                 if not build_templates:
                     if fill_gaps:
@@ -658,6 +705,12 @@ class MultiObservationMapMaker[T]:
             (hits, rhs), stacked = jax.lax.scan(step, (init_hits, init_rhs), (items, is_real))
             # The axis spans every device of the job, so this is the reduction over the bucket.
             hits, rhs = jax.lax.psum((hits, rhs), axis)
+            if n_batches > 1:
+                # (slot, batch, ...) -> (slot·batch, ...): each detector batch an entry of its own,
+                # the shared data staying one per slot (see `Bucket.stream_layout`)
+                batched, shared = stacked
+                batched = jax.tree.map(lambda x: x.reshape(-1, *x.shape[2:]), batched)
+                stacked = eqx.combine(batched, shared)
             model, templates, amp_rhs = stacked
             return hits, rhs, _BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
 
@@ -1472,3 +1525,24 @@ class _QUModulationOperator(AbstractLinearOperator):
 
     def mv(self, x: StokesType) -> Float[Array, '...']:
         return self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u
+
+
+def _depends_on_argument(
+    fn: Callable[[Any], PyTree[Any]], arg: Any
+) -> tuple[PyTree[bool], PyTree[jax.ShapeDtypeStruct]]:
+    """Which output leaves of `fn` depend on its argument, and the output structure.
+
+    Dependence is followed through the traced program: a leaf computed only from values `fn`
+    closes over is the same whatever the argument. It is conservative, an operation with any
+    dependent input making all its outputs dependent, so a leaf is at worst reported dependent
+    when it is not. Closed-over values count as fixed, so `fn` must close over nothing that its
+    caller later varies.
+    """
+    closed, out_shape = jax.make_jaxpr(fn, return_shape=True)(arg)
+    jaxpr = closed.jaxpr
+    dependent = set(jaxpr.invars)
+    for eqn in jaxpr.eqns:
+        if any(not isinstance(v, JaxprLiteral) and v in dependent for v in eqn.invars):
+            dependent.update(eqn.outvars)
+    flags = [not isinstance(v, JaxprLiteral) and v in dependent for v in jaxpr.outvars]
+    return jax.tree.unflatten(jax.tree.structure(out_shape), flags), out_shape

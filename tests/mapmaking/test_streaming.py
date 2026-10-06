@@ -11,7 +11,7 @@ from numpy.testing import assert_allclose
 
 from furax import AbstractLinearOperator, tree
 from furax.core import BlockColumnOperator, BlockRowOperator, DiagonalOperator, HomothetyOperator
-from furax.mapmaking.streaming import StreamOperator, _StreamSegment
+from furax.mapmaking.streaming import StreamLayout, StreamOperator, _StreamSegment
 
 # ---------------------------------------------------------------------------
 # Minimal stacked operator for testing
@@ -58,9 +58,9 @@ def set_mesh(mesh):
 
 
 def _make_blocks(
-    sharding: P | None = None, *, n_lead: int = N_OBS, n_in: int = N_IN, n_out: int = N_OUT
+    sharding: P | None = None, *, slice_count: int = N_OBS, n_in: int = N_IN, n_out: int = N_OUT
 ) -> _TestOp:
-    matrices = RNG.standard_normal((n_lead, n_out, n_in), dtype=np.float64)
+    matrices = RNG.standard_normal((slice_count, n_out, n_in), dtype=np.float64)
     arr = jax.device_put(matrices, sharding)
     return _TestOp(arr, in_structure=jax.ShapeDtypeStruct((n_in,), jnp.float64))
 
@@ -88,9 +88,9 @@ def _spec(stacked: bool) -> P:
     return P('obs', None) if stacked else P(None)
 
 
-def _boundary(stacked: bool, size: int) -> jax.Array:
+def _boundary(stacked: bool, size: int, *, slice_count: int = N_OBS) -> jax.Array:
     """Random input/output for a boundary component, shaped and sharded to match its spec."""
-    shape = (N_OBS, size) if stacked else (size,)
+    shape = (slice_count, size) if stacked else (size,)
     return jax.device_put(
         RNG.standard_normal(shape, dtype=np.float64), P('obs') if stacked else P()
     )
@@ -156,6 +156,71 @@ def test_layout_transpose(
 
 
 # ---------------------------------------------------------------------------
+# Grouped slices: data shared by runs of consecutive slices is stored once per run
+# ---------------------------------------------------------------------------
+
+GROUP = 2
+N_MID = 4
+
+
+def _grouped_and_repeated() -> tuple[AbstractLinearOperator, AbstractLinearOperator]:
+    """`A_i @ B_g` with `B` stored once per group of slices, and the same with `B` repeated."""
+    slice_count = GROUP * N_OBS
+    per_slice = _make_blocks(P('obs'), slice_count=slice_count, n_in=N_MID)
+    per_group = _make_blocks(P('obs'), slice_count=N_OBS, n_out=N_MID)
+    matrices = np.repeat(np.asarray(jax.device_get(per_group.matrix)), GROUP, axis=0)
+    repeated = _TestOp(jax.device_put(matrices, P('obs')), in_structure=per_group.in_structure)
+    return per_slice @ per_group, per_slice @ repeated
+
+
+@pytest.mark.parametrize('make_stream, in_stacked, out_stacked', _LAYOUTS)
+def test_grouped_slices_share_their_group_data(
+    make_stream: Callable[..., StreamOperator], in_stacked: bool, out_stacked: bool
+) -> None:
+    grouped, repeated = _grouped_and_repeated()
+    slice_count = GROUP * N_OBS
+    op = make_stream(grouped, slice_count=slice_count, group_size=GROUP)
+    reference = make_stream(repeated, slice_count=slice_count)
+    x = _boundary(in_stacked, N_IN, slice_count=slice_count)
+    assert_allclose(op(x), reference(x), rtol=1e-10)
+    y = _boundary(out_stacked, N_OUT, slice_count=slice_count)
+    assert_allclose(op.T(y), reference.T(y), rtol=1e-10)
+
+
+def test_grouped_streams_fuse() -> None:
+    grouped, repeated = _grouped_and_repeated()
+    slice_count = GROUP * N_OBS
+    H = StreamOperator.column(grouped, slice_count=slice_count, group_size=GROUP)
+    reduced = (H.T @ H).reduce()
+    assert isinstance(reduced, StreamOperator)
+    assert reduced.group_size == GROUP
+    reference = StreamOperator.column(repeated, slice_count=slice_count)
+    x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
+    assert_allclose(reduced(x), (reference.T @ reference)(x), rtol=1e-10)
+
+
+def test_layout_vmap_sees_each_slice_and_its_group() -> None:
+    layout = StreamLayout(slice_count=GROUP * N_OBS, group_size=GROUP)
+    per_slice = RNG.standard_normal((layout.slice_count, N_IN))
+    per_group = RNG.standard_normal((N_OBS, N_IN))
+    out = layout.vmap(lambda t: t[0] * t[1], (jnp.asarray(per_slice), jnp.asarray(per_group)))
+    assert_allclose(out, per_slice * np.repeat(per_group, GROUP, axis=0))
+
+
+def test_layout_builds_grouped_streams() -> None:
+    grouped, _ = _grouped_and_repeated()
+    layout = StreamLayout(slice_count=GROUP * N_OBS, group_size=GROUP)
+    op = layout.column(grouped)
+    assert (op.slice_count, op.group_size) == (layout.slice_count, layout.group_size)
+    assert (op.in_stacked, op.out_stacked) == (False, True)
+
+
+def test_group_must_divide_the_batch_axis() -> None:
+    with pytest.raises(ValueError, match='does not divide'):
+        StreamOperator.diagonal(_make_blocks(), slice_count=N_OBS, group_size=3)
+
+
+# ---------------------------------------------------------------------------
 # Fusion rules
 # ---------------------------------------------------------------------------
 
@@ -170,7 +235,7 @@ def test_sharded_fusion_ht_w_h() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Constant segments: data that does not carry the batch axis stays out of the sliced body
+# Constant segments: data that does not carry the slice axis stays out of the sliced body
 # ---------------------------------------------------------------------------
 
 
@@ -276,7 +341,7 @@ def test_fused_block_composes_with_sharded_block() -> None:
 def test_create_carries_explicit_obs_size() -> None:
     # n is declared, not re-inferred from leaf shapes downstream; create starts with one stacked seg.
     W = StreamOperator.diagonal(_make_blocks(P('obs')))
-    assert W.n_lead == N_OBS
+    assert W.slice_count == N_OBS
     assert len(W.segments) == 1
     assert W.segments[0].sliced
     assert W.segments[0].operator.matrix.shape[0] == N_OBS
@@ -291,7 +356,7 @@ def test_non_scalar_static_post_is_applied() -> None:
     # composition order (post @ core): post is applied after the sliced core, so it comes first
     op = StreamOperator.create(
         (_StreamSegment(post, False), _StreamSegment(blocks, True)),
-        n_lead=N_OBS,
+        slice_count=N_OBS,
         in_stacked=True,
         out_stacked=True,
     )
@@ -321,7 +386,7 @@ def test_stacked_segment_must_lead_with_obs_axis() -> None:
     # a sliced segment leaf that does not lead with the obs axis is a mis-tagged operator: raise.
     bad = _make_blocks()  # leaves lead with N_OBS
     with pytest.raises(ValueError, match='leading axis size'):
-        StreamOperator.diagonal(bad, n_lead=N_OBS + 1)
+        StreamOperator.diagonal(bad, slice_count=N_OBS + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +469,7 @@ def _constant_wrapped(op: StreamOperator, *, post: bool) -> StreamOperator:
     shared = _StreamSegment(DiagonalOperator(d, in_structure=structure), False)
     segments = (shared,) + op.segments if post else op.segments + (shared,)
     return StreamOperator.create(
-        segments, n_lead=op.n_lead, in_stacked=op.in_stacked, out_stacked=op.out_stacked
+        segments, slice_count=op.slice_count, in_stacked=op.in_stacked, out_stacked=op.out_stacked
     )
 
 
@@ -445,7 +510,7 @@ def _multi_stacked(n_in: int = N_IN) -> StreamOperator:
         _StreamSegment(shared, False),
         _StreamSegment(_make_blocks(P('obs'), n_in=n_in), True),
     )
-    return StreamOperator.create(segments, n_lead=N_OBS, in_stacked=False, out_stacked=True)
+    return StreamOperator.create(segments, slice_count=N_OBS, in_stacked=False, out_stacked=True)
 
 
 def test_block_row_aligns_bodies_of_unequal_shape() -> None:
@@ -481,7 +546,7 @@ def test_segment_structure_does_not_depend_on_trace_context() -> None:
         homo = HomothetyOperator(scale, in_structure=jax.ShapeDtypeStruct((N_IN,), jnp.float64))
         return StreamOperator.create(
             (_StreamSegment(blocks, True), _StreamSegment(homo, False)),
-            n_lead=N_OBS,
+            slice_count=N_OBS,
             in_stacked=True,
             out_stacked=True,
         )
@@ -502,13 +567,13 @@ def test_segment_structure_does_not_depend_on_trace_context() -> None:
 
 def test_array_owning_shared_map_is_never_folded() -> None:
     # a shared array is applied whole to every slice, so folding it into the sliced core would
-    # compute something else -- even here, where its leading axis matches n_lead and the
+    # compute something else -- even here, where its leading axis matches slice_count and the
     # sliceability check alone would wave it through
     d = jax.device_put(RNG.standard_normal((N_OBS,), dtype=np.float64), P())
     shared = DiagonalOperator(d, in_structure=jax.ShapeDtypeStruct((N_OBS,), jnp.float64))
     op = StreamOperator.create(
         (_StreamSegment(shared, False), _StreamSegment(_make_blocks(P('obs'), n_out=N_OBS), True)),
-        n_lead=N_OBS,
+        slice_count=N_OBS,
         in_stacked=True,
         out_stacked=True,
     )
@@ -631,8 +696,8 @@ def _not_a_stream() -> AbstractLinearOperator:
     return DiagonalOperator(jnp.ones(N_IN), in_structure=jax.ShapeDtypeStruct((N_IN,), jnp.float64))
 
 
-def _other_n_lead() -> AbstractLinearOperator:
-    return StreamOperator.column(_make_blocks(n_lead=N_OBS + 1))
+def _other_slice_count() -> AbstractLinearOperator:
+    return StreamOperator.column(_make_blocks(slice_count=N_OBS + 1))
 
 
 def _other_out_structure() -> AbstractLinearOperator:
@@ -648,7 +713,7 @@ def _other_out_stacked() -> AbstractLinearOperator:
     'make_operand, error, match',
     [
         (_not_a_stream, TypeError, 'must be stream operators'),
-        (_other_n_lead, ValueError, 'share n_lead'),
+        (_other_slice_count, ValueError, 'share slice_count'),
         (_other_out_structure, ValueError, 'per-slice junction structure'),
         (_other_out_stacked, ValueError, 'junction stack spec'),
     ],
@@ -677,7 +742,7 @@ def test_create_rejects_non_prefix_spec() -> None:
     with pytest.raises(ValueError, match='pytree structure error'):
         StreamOperator.create(
             (_StreamSegment(_make_blocks(), True),),
-            n_lead=N_OBS,
+            slice_count=N_OBS,
             in_stacked=[True, False],
             out_stacked=True,
         )
@@ -693,8 +758,8 @@ class TestSharded:
     """Exercises `mv` on a mesh with more than one shard.
 
     On the single-device mesh of a default run the sharded machinery is invisible: `psum` is the
-    identity, the per-shard scan length equals `n_lead`, and every output spec describes the whole
-    array. The parts that only mean something across shards -- per-component `out_specs`, the
+    identity, the per-shard scan length equals `slice_count`, and every output spec describes the
+    whole array. The parts that only mean something across shards -- per-component `out_specs`, the
     shared-output carry and its reduction, the scan length -- are covered here.
 
     The mesh is built from the first `N_SHARDS` devices rather than all of them, so the class does
@@ -764,10 +829,20 @@ class TestSharded:
         assert 'obs' not in y[0].sharding.spec  # sky leg reduced, hence replicated
         assert y[1].sharding.spec == P('obs', None)  # amplitude leg still sharded
 
-    def test_indivisible_batch_axis_is_rejected(self) -> None:
-        # the scan length is per shard, so a batch axis the shards do not divide has no valid one.
+    def test_grouped_slices(self) -> None:
+        # each shard holds whole groups, which it indexes locally
+        grouped, repeated = _grouped_and_repeated()
+        slice_count = GROUP * N_OBS
+        op = StreamOperator.column(grouped, slice_count=slice_count, group_size=GROUP)
+        reference = StreamOperator.column(repeated, slice_count=slice_count)
+        x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
+        assert_allclose(op(x), reference(x), rtol=1e-10)
+        assert_allclose((op.T @ op).reduce()(x), (reference.T @ reference)(x), rtol=1e-10)
+
+    def test_indivisible_slice_axis_is_rejected(self) -> None:
+        # the scan length is per shard, so a slice axis the shards do not divide has no valid one.
         # Blocks stay unsharded here: `P('obs')` could not place them over the mesh to begin with.
-        n_lead = self.N_SHARDS + 1
-        op = StreamOperator.diagonal(_make_blocks(n_lead=n_lead))
+        slice_count = self.N_SHARDS + 1
+        op = StreamOperator.diagonal(_make_blocks(slice_count=slice_count))
         with pytest.raises(ValueError, match='not divisible'):
-            op(jnp.zeros((n_lead, N_IN)))
+            op(jnp.zeros((slice_count, N_IN)))

@@ -54,6 +54,20 @@ class ReaderField(StrEnum):
     RIGHT_SCAN_MASK = 'right_scan_mask'
     SCANNING_INTERVALS = 'scanning_intervals'
 
+    @property
+    def per_detector(self) -> bool:
+        """Whether the field has a detector axis, always its second-to-last.
+
+        Such a field is `(..., det, samp)` or `(..., det, 4)`. Every other field except the
+        metadata is shared by all detectors.
+        """
+        return self in {
+            ReaderField.SAMPLE_DATA,
+            ReaderField.VALID_SAMPLE_MASKS,
+            ReaderField.DETECTOR_QUATERNIONS,
+            ReaderField.NOISE_MODEL_FITS,
+        }
+
 
 @register_dataclass
 @dataclass
@@ -421,6 +435,24 @@ class ObservationBufferShape(NamedTuple):
         Scanning intervals are metadata rather than samples, so the interval axis does not count.
         """
         return self.detector_count * self.sample_count
+
+    def whole_detector_batches(self, batch_size: int) -> Self:
+        """This shape with its detector count padded up to whole batches of `batch_size`.
+
+        An observation with no more detectors than one batch is a single batch, left unpadded.
+
+        Args:
+            batch_size: Detectors per batch; 0 for a single batch of every detector.
+
+        Examples:
+            >>> ObservationBufferShape(100, 10).whole_detector_batches(64).detector_count
+            128
+            >>> ObservationBufferShape(50, 10).whole_detector_batches(64).detector_count
+            50
+        """
+        if batch_size == 0 or self.detector_count <= batch_size:
+            return self
+        return self._replace(detector_count=-(-self.detector_count // batch_size) * batch_size)
 
 
 class AbstractLazyObservation[T](ABC):

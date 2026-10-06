@@ -20,6 +20,10 @@ mapmaker. Within a bucket, the local index of that observation is called the **i
 A **slot** is where one observation's data lives once the bucket is sharded over the devices.
 A slot may contain a fake observation with the same bucket-level envelope (slot padding).
 
+A slot's detectors may further be split into **detector batches**, processed one after the other.
+Each batch of each slot is then an **entry** of its own in what the mapmaker stacks per bucket:
+`n_slots × n_batches` entries, batch `j` of slot `s` at entry `s · n_batches + j`.
+
 !!! example
 
     Six observations of two very different lengths, in two buckets, on four devices held by two
@@ -62,6 +66,7 @@ from typing import Self
 import numpy as np
 
 from ._observation import ObservationBufferShape
+from .streaming import StreamLayout
 
 __all__ = [
     'Bucket',
@@ -86,15 +91,21 @@ class Bucket:
         observations: Observation indices (global), sorted.
         n_slots: The number of slots; a multiple of the device count.
         envelope: The per-axis maximum buffer shape over the group.
+        n_batches: The number of detector batches each slot is split into.
     """
 
     observations: np.ndarray
     n_slots: int
     envelope: ObservationBufferShape
+    n_batches: int = 1
 
     @classmethod
     def create(
-        cls, shapes: Sequence[ObservationBufferShape], group: Collection[int], n_devices: int = 1
+        cls,
+        shapes: Sequence[ObservationBufferShape],
+        group: Collection[int],
+        n_devices: int = 1,
+        detector_batch_size: int = 0,
     ) -> Self:
         """Bucket a group of observations, padding them to their common envelope.
 
@@ -102,12 +113,14 @@ class Bucket:
             shapes: Per-observation buffer shapes.
             group: Indices of the observations in the bucket.
             n_devices: Number of devices the bucket is sharded over.
+            detector_batch_size: Detectors per batch; 0 for a single batch. The shapes must
+                then be padded by [`ObservationBufferShape.whole_detector_batches`][].
 
         Returns:
             The bucket, with its observations sorted.
 
         Raises:
-            ValueError: If `group` is empty.
+            ValueError: If `group` is empty, or the envelope's detectors are not whole batches.
 
         Examples:
             A short and a long observation bucketed together: both slots are as long as the
@@ -127,8 +140,17 @@ class Bucket:
             max(shapes[i].sample_count for i in group),
             max(shapes[i].interval_count for i in group),
         )
+        if envelope != envelope.whole_detector_batches(detector_batch_size):
+            raise ValueError(
+                f'{envelope.detector_count} detectors do not split into batches of '
+                f'{detector_batch_size}: pad the shapes with `whole_detector_batches` first'
+            )
+        batch_size = detector_batch_size or envelope.detector_count
+        # an envelope no wider than one batch is a single batch
+        n_batches = max(1, envelope.detector_count // batch_size)
         observations = np.sort(np.asarray(group, dtype=np.int64))
-        return cls(observations, cls.slot_count(len(group), n_devices), envelope)
+        n_slots = cls.slot_count(len(group), n_devices)
+        return cls(observations, n_slots, envelope, n_batches)
 
     @staticmethod
     def slot_count(size: int, n_devices: int = 1) -> int:
@@ -150,6 +172,31 @@ class Bucket:
         """Time-ordered elements the bucket occupies once padded."""
         return self.n_slots * self.envelope.volume
 
+    @property
+    def batch_size(self) -> int:
+        """Detectors per batch."""
+        return self.envelope.detector_count // self.n_batches
+
+    @property
+    def n_entries(self) -> int:
+        """Number of entries, one per detector batch of each slot."""
+        return self.n_slots * self.n_batches
+
+    @property
+    def stream_layout(self) -> StreamLayout:
+        """The entries as a stream lays them out, the batches of a slot sharing its common data."""
+        return StreamLayout(self.n_entries, self.n_batches)
+
+    def merge_detector_batches(self, per_entry: np.ndarray) -> np.ndarray:
+        """Per-slot values from per-entry ones: `(n_entries, batch_size, ...)` to `(n_slots, ...)`.
+
+        The detector axis follows the entry axis; batch `j` of a slot holds its detectors from
+        `j · batch_size` on.
+        """
+        return per_entry.reshape(
+            self.n_slots, self.n_batches * per_entry.shape[1], *per_entry.shape[2:]
+        )
+
     @cached_property
     def is_real(self) -> np.ndarray:
         """Per slot, whether it holds an observation (`False` for the empty slots at the end)."""
@@ -157,10 +204,11 @@ class Bucket:
 
     def summary(self, n_devices: int = 1) -> str:
         """The bucket's slot bookkeeping, as `obs=... slots=... pad=... envelope=...`."""
+        batches = f' det_batches={self.n_batches}' if self.n_batches > 1 else ''
         return (
             f'obs={self.n_real} slots={self.n_slots} pad={self.n_pad} '
             f'slots_per_dev={self.n_slots // n_devices} '
-            f'envelope=({self.envelope.detector_count}, {self.envelope.sample_count})'
+            f'envelope=({self.envelope.detector_count}, {self.envelope.sample_count}){batches}'
         )
 
     @cached_property
@@ -309,14 +357,22 @@ class SlotLayout:
 
     @classmethod
     def create(
-        cls, shapes: Sequence[ObservationBufferShape], *, n_devices: int, max_buckets: int
+        cls,
+        shapes: Sequence[ObservationBufferShape],
+        *,
+        n_devices: int,
+        max_buckets: int,
+        detector_batch_size: int = 0,
     ) -> Self:
         """Choose the layout to minimise padding; see [`partition_padded`][].
 
         Args:
-            shapes: Per-observation buffer shapes.
+            shapes: Per-observation buffer shapes, padded by
+                [`ObservationBufferShape.whole_detector_batches`][] when
+                `detector_batch_size` is given.
             n_devices: Number of devices (`jax.device_count()`).
             max_buckets: Largest number of buckets allowed.
+            detector_batch_size: Detectors per batch; 0 for a single batch.
 
         Examples:
             Three short scans and one long one on two devices.
@@ -336,7 +392,9 @@ class SlotLayout:
             1.67
         """
         groups = partition_padded(shapes, max_buckets, n_devices=n_devices)
-        buckets = tuple(Bucket.create(shapes, group, n_devices) for group in groups)
+        buckets = tuple(
+            Bucket.create(shapes, group, n_devices, detector_batch_size) for group in groups
+        )
         return cls(buckets, len(shapes), n_devices)
 
     @property

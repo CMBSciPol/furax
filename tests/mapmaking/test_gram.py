@@ -102,6 +102,26 @@ def _per_det_template(key, k):
     return TemplateOperator({'t': basis}, n_dets=N_DETS)
 
 
+@pytest.mark.parametrize('stokes', [None, 'IQU'])
+def test_probed_gram_inverse_inverts_the_gram(stokes):
+    # a per-detector basis takes the probe path; with a Stokes axis it sits on q and u only, each
+    # leg weighted differently
+    kt, kw, ka = jr.split(jr.key(7), 3)
+    basis = TensorBasis.per_detector_stack(values=jr.normal(kt, (N_DETS, 2, N_SAMPS)))
+    if stokes is None:
+        T = TemplateOperator({'t': basis}, n_dets=N_DETS)
+        W = _weight(kw)
+    else:
+        T = StokesTemplateOperator({'t': {'qu': basis}}, N_DETS, stokes)
+        w = jr.uniform(kw, (3, N_DETS, N_SAMPS), minval=0.5, maxval=2.0)
+        W = DiagonalOperator(w, in_structure=T.out_structure)
+
+    amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
+    gram = T.T @ W @ T
+    recovered = gram_inverse(T, W, allow_probe=True)(gram(amps))
+    jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-8, atol=1e-10), recovered, amps)
+
+
 @pytest.mark.parametrize('n_seg,k', [(4, 3), (8, 1)])
 def test_gram_inverse_matches_dense_probe_segmented(n_seg, k):
     # The structured (block-per-segment) inverse Gram must act identically to the dense

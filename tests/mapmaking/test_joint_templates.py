@@ -5,11 +5,14 @@ Backed by the file-free synthetic observations (no sotodlib/toast, no fixtures):
 ``FakeLazyGroundObservation`` for the azimuth/interval templates (azimuth, scanning intervals).
 """
 
+from dataclasses import replace
+
 import jax
 import jax.numpy as jnp
 import pytest
 from numpy.testing import assert_allclose
 
+from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
     HealpixConfig,
     HWPSynchronousConfig,
@@ -21,6 +24,7 @@ from furax.mapmaking.config import (
     PolynomialOrders,
     ScanSynchronousConfig,
     SotodlibConfig,
+    T2PConfig,
     TemplatesConfig,
     WeightingConfig,
     WeightingMode,
@@ -147,3 +151,69 @@ def test_demodulated_legs_fitted_alike_share_a_basis(name, legendre, groups, leg
     operator = acc.buckets[0].templates.implicit.operator
     assert sorted(operator.bases[name]) == groups
     assert sorted(operator.in_structure[name]) == legs
+
+
+@pytest.mark.parametrize(
+    ('observations', 'templates', 'demodulated'),
+    [
+        (_hwp_obs, None, False),
+        (_hwp_obs, TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)), False),
+        # Polynomial and scan-synchronous templates together are nearly degenerate on these short
+        # scans, too ill-conditioned for any two runs to agree closely, so they come separately.
+        (
+            _ground_obs,
+            TemplatesConfig(polynomial=PolynomialConfig(explicit=False), t2p=T2PConfig()),
+            True,
+        ),
+        (
+            _ground_obs,
+            TemplatesConfig(
+                scan_synchronous=ScanSynchronousConfig(explicit=False), t2p=T2PConfig()
+            ),
+            True,
+        ),
+    ],
+    ids=['no-templates', 'explicit', 'demodulated-polynomial-and-t2p', 'demodulated-azss-and-t2p'],
+)
+def test_detector_batches_give_the_same_result(observations, templates, demodulated):
+    # Processing an observation's detectors in batches is a memory layout, not a change of model:
+    # every template, weight and Gram is per detector. 7 detectors in batches of 3 also pads two.
+    n_dets = 7
+    obs = observations(n_dets=n_dets)
+    sotodlib = SotodlibConfig(demodulated=True) if demodulated else None
+    cfg = replace(_config(None), templates=templates, sotodlib=sotodlib)
+    makers = [
+        MultiObservationMapMaker(obs, config=replace(cfg, detector_batch_size=batch))
+        for batch in (0, 3)
+    ]
+
+    accumulated = []
+    for maker in makers:
+        with jax.set_mesh(maker.mesh):
+            accumulated.append(maker.build_model_and_accumulate())
+    whole, batched = accumulated
+    assert_allclose(batched.hit_map, whole.hit_map)
+    assert_allclose(batched.map_rhs.data, whole.map_rhs.data, rtol=1e-12, atol=1e-12)
+
+    # The template-marginalised systems are ill-conditioned enough that the solves agree only to
+    # about the solver tolerance.
+    whole, batched = [maker.run() for maker in makers]
+    scale = jnp.max(jnp.abs(whole.map.data))
+    assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
+    if whole.template_amplitudes is not None:
+        # batching pads 2 more detectors, whose amplitudes trail the real ones
+        got = jax.tree.map(lambda a: a[:, :n_dets], batched.template_amplitudes)
+        jax.tree.map(
+            lambda a, b: assert_allclose(a, b, atol=1e-4 * jnp.max(jnp.abs(b))),
+            got,
+            whole.template_amplitudes,
+        )
+
+
+@pytest.mark.parametrize(('batch', 'n_buffered'), [(0, 8), (64, 8), (3, 9)])
+def test_only_observations_larger_than_a_batch_are_padded(batch, n_buffered):
+    # 8 detectors: a batch of 64 holds them all, unpadded; batches of 3 need a ninth
+    maker = MultiObservationMapMaker(
+        _hwp_obs(), config=replace(_config(None), detector_batch_size=batch)
+    )
+    assert maker.readers[0].out_structure[ReaderField.DETECTOR_QUATERNIONS].shape[0] == n_buffered

@@ -59,6 +59,41 @@ def test_bucket_slot_bookkeeping():
     np.testing.assert_array_equal(bucket.item_of_slot, [0, 1, 1, 1])
 
 
+@pytest.mark.parametrize(
+    ('n_dets', 'batch_size', 'padded'),
+    [(100, 64, 128), (128, 64, 128), (64, 64, 64), (50, 64, 50), (100, 0, 100)],
+)
+def test_whole_detector_batches(n_dets, batch_size, padded):
+    # a single batch is never padded; more detectors fill whole batches
+    shape = Shape(n_dets, 10, 3).whole_detector_batches(batch_size)
+    assert shape == Shape(padded, 10, 3)
+
+
+@pytest.mark.parametrize(
+    ('n_dets', 'batch_size', 'n_batches', 'per_batch'),
+    [(100, 64, 2, 64), (50, 64, 1, 50), (100, 0, 1, 100)],
+)
+def test_bucket_detector_batches(n_dets, batch_size, n_batches, per_batch):
+    shapes = [Shape(n_dets, 10).whole_detector_batches(batch_size)] * 3
+    bucket = Bucket.create(shapes, [0, 1, 2], n_devices=2, detector_batch_size=batch_size)
+    assert (bucket.n_batches, bucket.batch_size) == (n_batches, per_batch)
+    assert bucket.n_entries == bucket.n_slots * n_batches == 4 * n_batches
+    assert bucket.stream_layout == (bucket.n_entries, n_batches)
+
+
+def test_bucket_rejects_an_envelope_of_partial_batches():
+    with pytest.raises(ValueError, match='do not split into batches'):
+        Bucket.create([Shape(100, 10)], [0], detector_batch_size=64)
+
+
+def test_merge_detector_batches_restores_the_slots():
+    # entry s·n_batches + j holds detectors j·batch_size on of slot s
+    bucket = Bucket.create([Shape(6, 10)] * 2, [0, 1], detector_batch_size=2)
+    per_slot = np.arange(2 * 6 * 4).reshape(2, 6, 4)
+    per_entry = per_slot.reshape(2 * 3, 2, 4)
+    np.testing.assert_array_equal(bucket.merge_detector_batches(per_entry), per_slot)
+
+
 def test_bucket_and_layout_use_identity_equality():
     bucket = Bucket.create([Shape(2, 10)], [0])
     equivalent = Bucket.create([Shape(2, 10)], [0])

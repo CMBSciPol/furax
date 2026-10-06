@@ -264,35 +264,42 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         duration: float = self.data.timestamps[-1] - self.data.timestamps[0]
         return (self.n_samples - 1) / duration
 
-    def get_tods(self) -> Float[np.ndarray, 'dets samps']:
-        """Returns the timestream data."""
+    def get_tods(
+        self, out: Float[np.ndarray, 'dets samps'] | None = None
+    ) -> Float[np.ndarray, 'dets samps']:
+        """Returns the timestream data, in the precision it is stored in."""
         # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
-        tods = np.asarray(self.data.signal, dtype=np.float64)
-        return 0.5 * np.atleast_2d(tods)
+        return self._scaled_tod(np.atleast_2d(np.asarray(self.data.signal)), 0.5, out)
 
     @overload
-    def get_demodulated_tods(self, stokes: Literal['I']) -> StokesI: ...
+    def get_demodulated_tods(
+        self, stokes: Literal['I'], out: np.ndarray | None = None
+    ) -> StokesI: ...
     @overload
-    def get_demodulated_tods(self, stokes: Literal['QU']) -> StokesQU: ...
+    def get_demodulated_tods(
+        self, stokes: Literal['QU'], out: np.ndarray | None = None
+    ) -> StokesQU: ...
     @overload
-    def get_demodulated_tods(self, stokes: Literal['IQU']) -> StokesIQU: ...
+    def get_demodulated_tods(
+        self, stokes: Literal['IQU'], out: np.ndarray | None = None
+    ) -> StokesIQU: ...
     @overload
-    def get_demodulated_tods(self, stokes: Literal['IQUV']) -> StokesIQUV: ...
-    def get_demodulated_tods(self, stokes: ValidStokesLiteral = 'IQU') -> StokesType:
-        """Returns the demodulated timestream data as a Stokes pytree.
+    def get_demodulated_tods(
+        self, stokes: Literal['IQUV'], out: np.ndarray | None = None
+    ) -> StokesIQUV: ...
+    def get_demodulated_tods(
+        self, stokes: ValidStokesLiteral = 'IQU', out: np.ndarray | None = None
+    ) -> StokesType:
+        """Returns the demodulated timestream data as a Stokes pytree, in the stored precision.
 
         'IQUV' is not supported.
         """
         if stokes == 'IQUV':
             raise NotImplementedError
-        kls = Stokes.class_for(stokes)
-        tods = [self._get_demodulated_tod(s) for s in stokes]
-        return kls.from_array(np.stack(tods, axis=0))
-
-    def _get_demodulated_tod(self, stoke: Literal['I', 'Q', 'U']) -> NDArray[np.float64]:
-        attr = {'I': 'dsT', 'Q': 'demodQ', 'U': 'demodU'}[stoke]
-        tod = np.asarray(getattr(self.data, attr), dtype=np.float64)
-        return 0.5 * np.atleast_2d(tod)
+        attrs = {'I': 'dsT', 'Q': 'demodQ', 'U': 'demodU'}
+        legs = [np.atleast_2d(np.asarray(getattr(self.data, attrs[s]))) for s in stokes]
+        # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
+        return Stokes.class_for(stokes).from_array(self._scaled_tods(legs, 0.5, out))
 
     def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
         """Returns the detector offset angles."""

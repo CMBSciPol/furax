@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from numpy.testing import assert_array_equal
 
 from furax.interfaces.sotodlib import (
     LazyPreprocSOTODLibObservation,
@@ -15,6 +16,7 @@ from furax.mapmaking import (
     MapMakingConfig,
     MultiObservationMapMaker,
     ObservationReader,
+    ReaderField,
 )
 from furax.mapmaking.config import (
     HealpixConfig,
@@ -44,6 +46,33 @@ def observations():
 def demod_observations():
     sotodlib_config = SotodlibConfig(demodulated=True)
     return [LazySOTODLibObservation(FOLDER / f, sotodlib_config=sotodlib_config) for f in FILES]
+
+
+def test_demodulated_tods_keep_their_stored_precision(demod_observations) -> None:
+    data = demod_observations[0].get_data([ReaderField.SAMPLE_DATA])
+    tods = data.get_demodulated_tods(stokes='IQU')
+    stored = [np.asarray(getattr(data.data, attr)) for attr in ('dsT', 'demodQ', 'demodU')]
+    assert tods.data.dtype == stored[0].dtype
+    for leg, raw in zip((tods.i, tods.q, tods.u), stored, strict=True):
+        assert_array_equal(leg, 0.5 * raw)
+
+
+def test_demodulated_tods_are_written_into_the_corner_of_out(demod_observations) -> None:
+    data = demod_observations[0].get_data([ReaderField.SAMPLE_DATA])
+    expected = data.get_demodulated_tods(stokes='IQU').data
+    n_dets, n_samples = expected.shape[1:]
+    out = np.full((3, n_dets + 1, n_samples + 2), np.nan, np.float32)
+    tods = data.get_demodulated_tods(stokes='IQU', out=out)
+    assert np.shares_memory(tods.data, out)
+    assert_array_equal(out[:, :n_dets, :n_samples], expected.astype(np.float32))
+    assert np.isnan(out[:, n_dets:]).all()
+    assert np.isnan(out[..., n_samples:]).all()
+
+
+def test_demodulated_tods_reject_a_small_out(demod_observations) -> None:
+    data = demod_observations[0].get_data([ReaderField.SAMPLE_DATA])
+    with pytest.raises(ValueError, match='too small'):
+        data.get_demodulated_tods(stokes='IQU', out=np.empty((3, 1, 1), np.float32))
 
 
 def test_reader_all_fields(observations) -> None:

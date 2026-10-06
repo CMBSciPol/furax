@@ -14,12 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax.linalg.CGResult.converged`: whether the CG solve met its tolerance (#313)
 - `MapMakingConfig.detector_batch_size` splits observations into batches of detectors (16 by default) to reduce peak memory usage (#308)
 - `StreamOperator` constructors accept `group_size`, for data shared by consecutive slices; `StreamLayout` builds streams over such data (#308)
+- `AbstractObservation.get_tods` and `get_demodulated_tods` accept `out`, an array to write the TOD into (#310)
 
 ### Changed
 
 - **Breaking:** `PolynomialConfig.legendre_qu` is removed; give `legendre` per Stokes leg instead (#309)
 - **Breaking:** `StreamOperator.n_lead` and the `n_lead` argument of its constructors are renamed `slice_count` (#308)
 - `TemplatesConfig.gram_batch_size` defaults to 4 instead of 32 (#308)
+- `MultiObservationMapMaker` always reads the TOD in float32 (#310)
+- `get_tods` and `get_demodulated_tods` return the TOD in its stored precision (#310)
 
 ## [0.15.3] - 2026-10-02
 

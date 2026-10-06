@@ -153,7 +153,10 @@ operator base class, cross-cutting conventions, and entry points that are hard t
 ### Conventions
 
 - `Stokes` and its I/QU/IQU/IQUV variants (`obs/stokes.py`) are single-array containers stacking the components on the *leading* axis.
-- `double_precision=False` → float32 on every float field, including geometry (timestamps, HWP angles, quaternions); the pipeline then runs under `jax_enable_x64=False`, where float64 arrays are illegal. Timestamps are an exception in form only: the reader rebases them to a per-observation zero origin (in float64, before the downcast) so the absolute POSIX epoch does not exhaust the float32 range. The pipeline uses only time differences, so this is exact; absolute UTC is still read from the interface where needed (e.g. pointing).
+- Precision: `MapMakingConfig.double_precision` sets `config.dtype`, the dtype of every floating-point field and computation.
+  - `False` runs the whole pipeline in float32 under `jax_enable_x64=False`, where float64 arrays are illegal, so geometry (timestamps, HWP angles, quaternions) is float32 too.
+  - The TOD is the one exception: the multi-observation mapmaker always reads it in float32 (`ObservationReader(sample_dtype=...)`) and converts each detector batch to `config.dtype` before use. Interface getters (`get_tods`, `get_demodulated_tods`) return it in its stored precision.
+  - Timestamps are rebased to a per-observation zero origin, in float64 before any downcast, so float32 keeps the samples resolved. The pipeline uses only time differences; absolute UTC is read from the interface where needed (e.g. pointing).
 
 ### Entry points
 

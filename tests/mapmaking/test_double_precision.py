@@ -20,6 +20,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import pytest
+from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking import (
     MultiObservationMapMaker,
@@ -88,6 +89,16 @@ class TestObservationReaderDtype:
             assert reader.out_structure[field].dtype == jnp.float32, (
                 f'expected float32 for {field}, got {reader.out_structure[field].dtype}'
             )
+
+    def test_sample_dtype_applies_to_the_sample_data_only(self) -> None:
+        reader = ObservationReader.from_observations(
+            [FakeLazyObservation()], requested_fields=REQUIRED_FIELDS, sample_dtype=jnp.float32
+        )
+        data, _, _ = reader.read(0)
+        assert data['sample_data'].dtype == jnp.float32
+        for field in REQUIRED_FIELDS:
+            expected = jnp.float32 if field == 'sample_data' else jnp.float64
+            assert reader.out_structure[field].dtype == expected
 
     def test_bool_masks_remain_bool(self) -> None:
         """Sanity check: changing ``dtype`` must not affect boolean masks."""
@@ -160,7 +171,43 @@ class TestMapMakerForwardsDtype:
         (reader,) = maker.get_readers(REQUIRED_FIELDS)
         assert reader.dtype == expected_dtype
         for field in REQUIRED_FIELDS:
-            assert reader.out_structure[field].dtype == expected_dtype
+            # the TOD is always read in float32
+            expected = jnp.float32 if field == 'sample_data' else expected_dtype
+            assert reader.out_structure[field].dtype == expected
+
+
+@pytest.mark.parametrize('detector_batch_size', [0, 3])
+def test_float32_tod_accumulates_like_float64(detector_batch_size: int) -> None:
+    # The TOD is read in float32 and converted to float64 before use, whole or one detector
+    # batch at a time. The fake TOD is float32 at the source, so a float64 read gives the same sums.
+    observations = [FakeLazyObservation(n_dets=7)]
+    config = MapMakingConfig(
+        method=Methods.BINNED,
+        landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
+        weighting=WeightingConfig(fitting=NoiseFitConfig(nperseg=256)),
+        pointing=PointingConfig(on_the_fly=True),
+        detector_batch_size=detector_batch_size,
+    )
+    maker = MultiObservationMapMaker(observations, config=config)
+    reference = MultiObservationMapMaker(observations, config=config)
+    shapes, _ = reference._probe_shapes
+    reference.readers = (
+        ObservationReader.from_observations(
+            observations,
+            requested_fields=reference.reader_fields,
+            stokes='IQU',
+            sample_dtype=jnp.float64,
+            shapes=shapes,
+        ),
+    )
+    accumulated = []
+    for m in (reference, maker):
+        with jax.set_mesh(m.mesh):
+            accumulated.append(m.build_model_and_accumulate())
+    float64, float32 = accumulated
+    assert float32.map_rhs.data.dtype == jnp.float64
+    assert_array_equal(float32.hit_map, float64.hit_map)
+    assert_allclose(float32.map_rhs.data, float64.map_rhs.data, rtol=1e-12)
 
 
 class TestMapMakerRunsX64OnDoublePrecisionFalse:

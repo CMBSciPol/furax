@@ -1,7 +1,7 @@
 import functools
 import inspect
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from enum import IntFlag, auto
 from typing import TYPE_CHECKING, Any, ClassVar, dataclass_transform, overload
@@ -10,6 +10,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import lineax as lx
+import numpy as np
 from jax import Array
 from jax._src.typing import DType
 from jax.tree_util import Partial
@@ -325,6 +326,32 @@ class AbstractLinearOperator(ABC):
         leaves = jax.tree.leaves(self.out_structure)
         return jnp.result_type(*leaves)
 
+    @property
+    def _static_signature(self) -> Hashable:
+        """A hashable fingerprint of what makes two operators compile to the same `jit` kernel.
+
+        Two operators share a signature iff they would reuse the same compiled kernel when passed
+        as `jax.jit(lambda op, x: op(x))(op, x)` on inputs of equal shape and dtype. "Static" is
+        used here in the JAX sense: the signature includes the fields marked
+        `metadata={'static': True}`, the pytree leaves that are not arrays (Python scalars, `...`,
+        `slice` objects) by value, and the abstract shape/dtype of each array leaf, with the array
+        values deliberately stripped. Two `DiagonalOperator(d1)` and `DiagonalOperator(d2)`
+        therefore share a signature as long as `d1.shape == d2.shape` and `d1.dtype == d2.dtype`,
+        whereas `HomothetyOperator(2.0)` and `HomothetyOperator(3.0)` do not.
+
+        Caveat: a static field holding a Python callable (lambda, function, bound method) is
+        compared by identity through its hash, so two instances built from two syntactically
+        distinct lambdas get different signatures even when the lambdas compute the same thing.
+        For dedup-friendly operators, prefer hashable-by-value static fields (enum, tuple, frozen
+        dataclass).
+        """
+        leaves, treedef = jax.tree.flatten(self)
+        aval = tuple(
+            ('array', leaf.shape, leaf.dtype) if _is_array(leaf) else _hashable(leaf)
+            for leaf in leaves
+        )
+        return (type(self), treedef, aval)
+
 
 def square[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     """Mark an operator as square."""
@@ -398,19 +425,6 @@ def idempotent[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
     return cls
 
 
-def _apply_sequential(x: PyTree[Array], operands: list[AbstractLinearOperator]) -> PyTree[Array]:
-    # dispatch operands through a `lax.switch` inside a `fori_loop` so only one is live at a time
-    if len(operands) == 1:
-        return operands[0](x)
-    branches = [lambda x, operand=operand: operand(x) for operand in operands]
-    return jax.lax.fori_loop(
-        0,
-        len(branches),
-        lambda i, acc: tree_add(acc, jax.lax.switch(i, branches, x)),
-        zeros_like(operands[0].out_structure),
-    )
-
-
 class AdditionOperator(AbstractLinearOperator):
     """An operator that adds two operators, as in C = A + B.
 
@@ -418,6 +432,11 @@ class AdditionOperator(AbstractLinearOperator):
     of them at once. Set `sequential` to sum them one at a time instead. The result is the same
     linear map, but the peak memory of an application is set by the largest operand rather than
     by all of them together.
+
+    A `sequential` sum applies operands that only differ by the values of their arrays (same
+    class, static fields, array shapes and dtypes) through a single traced body, a loop that
+    selects one operand's arrays at a time, so the compiled program does not grow with their
+    number.
 
     A `sequential` sum is not reduced pairwise by `reduce`.
     """
@@ -459,15 +478,17 @@ class AdditionOperator(AbstractLinearOperator):
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         operands = self.operand_leaves
-        if self.sequential:
-            return _apply_sequential(x, operands)
-
-        y = operands[0](x)
-
-        for operand in operands[1:]:
-            y = jax.tree.map(jnp.add, y, operand(x))
-
-        return y
+        if not self.sequential:
+            return functools.reduce(tree_add, (operand(x) for operand in operands))
+        contributions = (
+            operands[group[0]](x)
+            if len(group) == 1
+            else _sequential_sum(
+                [operands[i] for i in group], lambda op: op(x), operands[group[0]].out_structure
+            )
+            for group in _group_by_signature(operands)
+        )
+        return functools.reduce(tree_add, contributions)
 
     def transpose(self) -> AbstractLinearOperator:
         return AdditionOperator(self._tree_map(lambda operand: operand.T), self.sequential)
@@ -530,6 +551,68 @@ class AdditionOperator(AbstractLinearOperator):
             *args,
             is_leaf=lambda x: isinstance(x, AbstractLinearOperator),
         )
+
+
+def _sequential_sum(
+    members: list[PyTree[Any]],
+    apply: Callable[[PyTree[Any]], PyTree[Array]],
+    out_structure: PyTree[jax.ShapeDtypeStruct],
+) -> PyTree[Array]:
+    """Sum `apply(member)` over members of one structure, one at a time, through one traced body.
+
+    The members are pytrees -- an operator, or an operator paired with its input -- that share
+    their treedef and their non-array leaves and only differ by the values of their arrays, as
+    the members of a `_static_signature` group do.
+
+    `lax.switch` acts as a multiplexer: like the electronic component, it routes one of N inputs
+    to a single output according to a selector. The selector is the loop index, the inputs are
+    the array leaves of each member, and the output feeds the one compute body. Each branch only
+    selects the arrays of one member, so nothing is computed in it and nothing is copied or
+    stacked; the compute body appears once in the compiled program and reuses its buffers from
+    one iteration to the next. This differs from switching between N bodies, which compiles N
+    copies of the computation. Peak memory is that of one member.
+    """
+    treedef = jax.tree.structure(members[0])
+    per_member = [jax.tree.leaves(member) for member in members]
+    template = per_member[0]
+    is_array = [_is_array(leaf) for leaf in template]
+    arrays = [[leaf for leaf, flag in zip(leaves, is_array) if flag] for leaves in per_member]
+    branches = [lambda k=k: arrays[k] for k in range(len(members))]
+
+    def rebuild(selected: list[Array]) -> PyTree[Any]:
+        it = iter(selected)
+        leaves = [next(it) if flag else leaf for leaf, flag in zip(template, is_array)]
+        return jax.tree.unflatten(treedef, leaves)
+
+    def body(i: Array, acc: PyTree[Array]) -> PyTree[Array]:
+        member = rebuild(jax.lax.switch(i, branches)) if arrays[0] else members[0]
+        return tree_add(acc, apply(member))
+
+    return jax.lax.fori_loop(0, len(members), body, zeros_like(out_structure))
+
+
+def _group_by_signature(operands: list[AbstractLinearOperator]) -> list[list[int]]:
+    """Partition the positions of a flat list into runs sharing a `_static_signature`.
+
+    Order within and across groups is preserved: the first group is the one of the first operand,
+    and the k-th position of the j-th group is the k-th occurrence of its signature in the list.
+    """
+    groups: dict[Hashable, list[int]] = {}
+    for i, op in enumerate(operands):
+        groups.setdefault(op._static_signature, []).append(i)
+    return list(groups.values())
+
+
+def _is_array(leaf: Any) -> bool:
+    return isinstance(leaf, jax.Array | np.ndarray)
+
+
+def _hashable(leaf: Any) -> Hashable:
+    try:
+        hash(leaf)
+    except TypeError:
+        return ('id', id(leaf))
+    return leaf
 
 
 class CompositionOperator(AbstractLinearOperator):

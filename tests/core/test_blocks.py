@@ -1,3 +1,4 @@
+import re
 from collections.abc import Callable
 
 import equinox
@@ -378,3 +379,80 @@ def test_rule_block_select_block_diagonal_nested(op_23: AbstractLinearOperator) 
     reduced_op = op.reduce()
     assert isinstance(reduced_op, CompositionOperator)
     assert isinstance(reduced_op.operands[0], BlockSelectOperator)
+
+
+# ---------------------------------------------------------------------------
+# A block row sums blocks sharing a `_static_signature` through a single
+# traced body, selecting one block and its input at a time.
+# ---------------------------------------------------------------------------
+
+
+def _diag_block(values: list[float]) -> AbstractLinearOperator:
+    return fx.DiagonalOperator(jnp.asarray(values))
+
+
+def test_block_row_homogeneous_blocks() -> None:
+    d1 = _diag_block([1.0, 2.0, 3.0])
+    d2 = _diag_block([4.0, 5.0, 6.0])
+    d3 = _diag_block([7.0, 8.0, 9.0])
+    op = BlockRowOperator([d1, d2, d3])
+    x = [jnp.arange(3.0), jnp.arange(3.0, 6.0), jnp.arange(6.0, 9.0)]
+    expected = d1.diagonal * x[0] + d2.diagonal * x[1] + d3.diagonal * x[2]
+    assert_array_equal(op(x), expected)
+
+
+def test_block_row_mixed_blocks() -> None:
+    structure = jax.ShapeDtypeStruct((3,), jnp.float64)
+    d1 = _diag_block([1.0, 2.0, 3.0])
+    d2 = _diag_block([4.0, 5.0, 6.0])
+    h = HomothetyOperator(2.0, in_structure=structure)
+    op = BlockRowOperator([d1, d2, h])
+    x = [jnp.arange(3.0), jnp.arange(3.0, 6.0), jnp.arange(6.0, 9.0)]
+    expected = d1.diagonal * x[0] + d2.diagonal * x[1] + 2.0 * x[2]
+    assert_array_equal(op(x), expected)
+
+
+def test_block_row_dict_input() -> None:
+    d1 = _diag_block([1.0, 2.0, 3.0])
+    d2 = _diag_block([4.0, 5.0, 6.0])
+    op = BlockRowOperator({'a': d1, 'b': d2})
+    x = {'a': jnp.arange(3.0), 'b': jnp.arange(3.0, 6.0)}
+    expected = d1.diagonal * x['a'] + d2.diagonal * x['b']
+    assert_array_equal(op(x), expected)
+
+
+def test_block_row_index_operators_with_non_array_leaves() -> None:
+    structure = jax.ShapeDtypeStruct((8, 8), jnp.float64)
+    keys = jax.random.split(jax.random.key(0), 3)
+    blocks = [
+        fx.IndexOperator((..., jax.random.randint(k, (5,), 0, 8)), in_structure=structure)
+        for k in keys
+    ]
+    op = BlockRowOperator(blocks)
+    x = [jax.random.normal(k, (8, 8)) for k in jax.random.split(jax.random.key(1), 3)]
+    expected = sum(block(leaf) for block, leaf in zip(blocks, x, strict=True))
+    assert_array_equal(op(x), expected)
+
+
+def test_block_row_peak_memory_does_not_grow_with_blocks() -> None:
+    """With traced blocks and inputs, one block's buffers are live at a time."""
+
+    def temp_bytes(n: int) -> int:
+        keys = jax.random.split(jax.random.key(0), n)
+        op = BlockRowOperator([fx.DiagonalOperator(jax.random.normal(k, (4096,))) for k in keys])
+        x = [jnp.ones(4096) for _ in range(n)]
+        compiled = jax.jit(lambda op, v: op(v)).lower(op, x).compile()
+        return compiled.memory_analysis().temp_size_in_bytes
+
+    small, large = temp_bytes(2), temp_bytes(16)
+    assert large < 2 * small, f'temporaries scale with N: {small} -> {large} bytes'
+
+
+@pytest.mark.parametrize('n_blocks', [2, 16])
+def test_block_row_compiles_the_body_once(n_blocks: int) -> None:
+    """The diagonal multiply appears once in the compiled program, whatever the block count."""
+    blocks = [_diag_block([float(k), float(k + 1), float(k + 2)]) for k in range(n_blocks)]
+    op = BlockRowOperator(blocks)
+    x = [jnp.ones(3) for _ in range(n_blocks)]
+    hlo = jax.jit(lambda v: op(v)).lower(x).compile().as_text()
+    assert len(re.findall(r'\bmultiply\(', hlo)) == 1

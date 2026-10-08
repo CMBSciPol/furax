@@ -37,6 +37,22 @@ def _initial_vector(
     return tree.normal_like(A.in_structure, key)
 
 
+def _orthogonalize(w: PyTree, V: PyTree, n: int | Array) -> PyTree:
+    """Project w onto the orthogonal complement of the first n vectors of block PyTree V."""
+
+    def step(i, w):
+        v_i = jax.tree.map(lambda V_leaf: V_leaf[i], V)
+        return tree.add(tree.mul(-tree.dot(v_i, w), v_i), w)  # w -= <v_i, w> v_i
+
+    return jax.lax.fori_loop(0, n, step, w)
+
+
+def _check_krylov_size(A: AbstractLinearOperator, m: int) -> None:
+    n = sum(leaf.size for leaf in jax.tree.leaves(A.in_structure))
+    if m > n:
+        raise ValueError(f'm ({m}) must be <= the operator size ({n})')
+
+
 class LanczosResult(NamedTuple):
     """Result of Lanczos eigenvalue computation.
 
@@ -97,27 +113,34 @@ def _lanczos_loop(
     """
 
     def body_fn(j, carry):
-        V_m, alpha, beta, v, v_prev, beta_prev = carry
+        V_m, alpha, beta, v, v_prev, beta_prev, a_norm = carry
 
-        w = A(v)  # w = A v_j
-        alpha_j = jnp.real(tree.dot(v, w))  # α_j = <v_j, w>
+        Av = A(v)
+        a_norm = jnp.maximum(a_norm, jnp.real(tree.norm(Av)))  # running estimate of ||A||
+        alpha_j = jnp.real(tree.dot(v, Av))  # α_j = <v_j, A v_j>
         alpha = alpha.at[j].set(alpha_j)
 
-        w = tree.add(tree.mul(-alpha_j, v), w)  # w -= α_j v_j
+        w = tree.add(tree.mul(-alpha_j, v), Av)  # w = A v_j - α_j v_j
         w = tree.add(tree.mul(-beta_prev, v_prev), w)  # w -= β_{j-1} v_{j-1}
-
-        def reorth_step(k, w):
-            v_k = jax.tree.map(lambda V_leaf: V_leaf[k], V_m)
-            coeff = tree.dot(v_k, w)
-            return tree.add(tree.mul(-coeff, v_k), w)  # w -= <v_k, w> v_k
-
-        w = jax.lax.fori_loop(0, j + 1, reorth_step, w)  # full reorthogonalization
+        w = _orthogonalize(w, V_m, j + 1)  # full reorthogonalization
 
         beta_j = jnp.real(tree.norm(w))  # β_j = ||w||
-        # β_j ≈ 0 means invariant subspace; leave w unscaled (already ~0) so the
-        # arbitrary direction is not amplified. Caller should check beta_last.
+
+        # Breakdown: span(V_m[:j+1]) is invariant under A and w is rounding noise. Normalizing
+        # it would not yield a valid Lanczos vector, and keeping it would leave a zero vector
+        # whose spurious Ritz value 0 looks converged. Instead set β_j = 0, which decouples T
+        # into exact blocks, and continue from a random unit vector orthogonal to V_m[:j+1].
         eps = jnp.finfo(beta_j.dtype).eps
-        v_next = jax.lax.cond(beta_j < eps, lambda: w, lambda: tree.mul(1.0 / beta_j, w))
+        breakdown = beta_j <= m * eps * a_norm
+
+        def restart():
+            r = tree.normal_like(v, jax.random.fold_in(jax.random.key(0), j))
+            # The second pass restores orthogonality lost when r is nearly in span(V_m[:j+1]).
+            r = _orthogonalize(_orthogonalize(r, V_m, j + 1), V_m, j + 1)
+            return tree.mul(1.0 / tree.norm(r), r)
+
+        v_next = jax.lax.cond(breakdown, restart, lambda: tree.mul(1.0 / beta_j, w))
+        beta_j = jnp.where(breakdown, 0.0, beta_j)
 
         beta = jnp.where(j < m - 1, beta.at[j].set(beta_j), beta)
         V_m = jax.tree.map(
@@ -126,10 +149,10 @@ def _lanczos_loop(
             v_next,
         )
 
-        return V_m, alpha, beta, v_next, v, beta_j
+        return V_m, alpha, beta, v_next, v, beta_j, a_norm
 
-    init_carry = (V_m, alpha, beta, v_start, v_prev, beta_prev)
-    V_m, alpha, beta, v_last, _, beta_last = jax.lax.fori_loop(j_start, m, body_fn, init_carry)
+    init_carry = (V_m, alpha, beta, v_start, v_prev, beta_prev, jnp.zeros_like(beta_prev))
+    V_m, alpha, beta, v_last, _, beta_last, _ = jax.lax.fori_loop(j_start, m, body_fn, init_carry)
     return V_m, alpha, beta, beta_last, v_last
 
 
@@ -156,10 +179,14 @@ def lanczos_tridiag(
     A V = V T + \beta_\text{last}\, v_\text{last}\, e_{m-1}^T
     $$
 
+    If the Krylov subspace becomes invariant under A after j < m steps, beta[j-1] is set
+    to 0 and the iteration continues from a random unit vector orthogonal to the basis
+    built so far, so that V stays orthonormal and the factorization above holds exactly.
+
     Args:
         A: A Hermitian linear operator.
         v0: Initial vector (will be normalized).
-        m: Number of Lanczos iterations (size of Krylov subspace).
+        m: Number of Lanczos iterations (size of Krylov subspace), at most the operator size.
 
     Returns:
         alpha: Diagonal of the tridiagonal matrix (m,).
@@ -211,10 +238,11 @@ def lanczos_eigh(
         m-step factorization.  Use [`lanczos_tr`][] if you need extremal eigenpairs.
 
     Note:
-        Early breakdown ($\beta_j = 0$, i.e. invariant subspace reached) is not
-        detected.  The corresponding Lanczos vector becomes zero and the remaining
-        iterations produce zero contributions; affected Ritz pairs will have zero
-        residual norms but their eigenvectors should not be trusted.
+        If the Krylov subspace becomes invariant under $A$ before $m$ steps (e.g. when
+        $v_0$ misses some eigenvectors, or $A$ has repeated eigenvalues), the iteration
+        continues from a random vector orthogonal to the current basis.  The pairs
+        computed so far are then exact, and later pairs can include further copies of
+        repeated eigenvalues.
 
     The cheap Lanczos residual bound is used:
 
@@ -229,7 +257,7 @@ def lanczos_eigh(
         v0: Initial vector for the Krylov subspace. If not given, it is drawn from `key`.
         key: Random key used to draw a standard normal `v0` when `v0` is not given.
         k: Number of eigenpairs to return.
-        m: Size of the Krylov subspace.  Must be at least `k`.  Defaults to
+        m: Size of the Krylov subspace.  Must be at least `k` and at most n.  Defaults to
             `min(2*k, n)`, where n is the size of the operator input.  Larger m
             builds a richer subspace and can yield more accurate Ritz pairs, at the
             cost of m matrix-vector products and storage for m vectors.
@@ -253,6 +281,7 @@ def lanczos_eigh(
     m = m or _default_m(A, k)
     if m < k:
         raise ValueError(f'm ({m}) must be >= k ({k})')
+    _check_krylov_size(A, m)
 
     # Run Lanczos to build tridiagonal matrix in m-dimensional Krylov subspace
     alpha, beta, V, beta_last, _ = lanczos_tridiag(A, v0, m)
@@ -420,12 +449,19 @@ def lanczos_tr(
         of `n` (no shift-invert is implemented).  `'LM'`, `'LA'`, `'SA'`
         and the two ends of `'BE'` are extremal and converge with small `m`.
 
+    Note:
+        A Krylov subspace built from a single vector contains one eigenvector per
+        distinct eigenvalue.  Further copies of a repeated eigenvalue are only
+        found when the iteration restarts from a random vector after the
+        subspace becomes invariant, so they can be missed: for `diag(1, 1, 2, 2, 3, 3)`,
+        `which='LA'` with `k=2` may return the exact pairs for 2 and 3, not 3 twice.
+
     Args:
         A: A Hermitian linear operator.
         v0: Initial vector for the Krylov subspace. If not given, it is drawn from `key`.
         key: Random key used to draw a standard normal `v0` when `v0` is not given.
         k: Number of eigenpairs to compute.
-        m: Size of the Krylov subspace.  Must be larger than `k`.
+        m: Size of the Krylov subspace.  Must be larger than `k` and at most n.
             Defaults to `min(2*k, n)`, where n is the size of the operator input.
         which: Which k eigenpairs to target.  One of:
 
@@ -459,6 +495,7 @@ def lanczos_tr(
     m = m or _default_m(A, k)
     if m <= k:
         raise ValueError(f'm ({m}) must be > k ({k})')
+    _check_krylov_size(A, m)
 
     def _select_wanted(theta):
         if which == 'LM':  # largest magnitude

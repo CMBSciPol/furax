@@ -44,6 +44,15 @@ class TestLanczosTridiag:
         eigenvalues = jax.scipy.linalg.eigh_tridiagonal(alpha, beta, eigvals_only=True)
         assert_allclose(eigenvalues, true_eigenvalues, atol=1e-10)
 
+    def test_lanczos_tridiag_breakdown(self):
+        """An invariant Krylov subspace gives β = 0 and the basis stays orthonormal."""
+        d = jnp.array([1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
+        A = DiagonalOperator(d, in_structure=as_structure(d))
+        v0 = normal_like(as_structure(d), jax.random.key(0))
+        _, beta, V, _, _ = lanczos_tridiag(A, v0, m=6)
+        assert beta[2] == 0  # the Krylov subspace of v0 has dimension 3
+        assert_allclose(V @ V.T, jnp.eye(6), atol=1e-10)
+
 
 class TestLanczosEigh:
     """Integration tests for Lanczos eigenvalue solver."""
@@ -80,6 +89,24 @@ class TestLanczosEigh:
 
         G = result.eigenvectors @ result.eigenvectors.T
         assert_allclose(G, jnp.eye(4), atol=1e-10)
+
+    def test_lanczos_eigh_repeated_eigenvalues(self):
+        """With m == n, repeated eigenvalues are recovered with their multiplicity."""
+        d = jnp.array([1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
+        A = DiagonalOperator(d, in_structure=as_structure(d))
+        v0 = normal_like(as_structure(d), jax.random.key(0))
+        result = lanczos_eigh(A, v0, k=6, m=6)
+
+        assert_allclose(result.eigenvalues, d, atol=1e-10)
+        G = result.eigenvectors @ result.eigenvectors.T
+        assert_allclose(G, jnp.eye(6), atol=1e-10)
+
+    @pytest.mark.parametrize('solver', [lanczos_eigh, lanczos_tr])
+    def test_lanczos_m_larger_than_n(self, solver):
+        """m larger than the operator size is rejected."""
+        A, v0, _ = _random_hermitian_operator(5, jax.random.key(0), pd=True)
+        with pytest.raises(ValueError, match='must be <= the operator size'):
+            solver(A, v0, k=2, m=6)
 
 
 @pytest.mark.parametrize('solver', [lanczos_eigh, lanczos_tr])
@@ -191,6 +218,23 @@ class TestLanczosThickRestart:
         true_eigs = jnp.concatenate([d1, d2])
         min_dist = jnp.min(jnp.abs(result.eigenvalues[:, None] - true_eigs[None, :]), axis=1)
         assert_allclose(min_dist, jnp.zeros(2), atol=1e-10)
+
+    @pytest.mark.parametrize('which', ['SA', 'SM', 'LA', 'LM', 'BE'])
+    def test_tr_repeated_eigenvalues(self, which):
+        """With repeated eigenvalues, TR returns genuine eigenpairs, not spurious zeros."""
+        d = jnp.array([1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
+        A = DiagonalOperator(d, in_structure=as_structure(d))
+        v0 = normal_like(as_structure(d), jax.random.key(0))
+        result = lanczos_tr(A, v0, k=2, m=4, which=which)
+
+        min_dist = jnp.min(jnp.abs(result.eigenvalues[:, None] - d[None, :]), axis=1)
+        assert_allclose(min_dist, jnp.zeros(2), atol=1e-10)
+        G = result.eigenvectors @ result.eigenvectors.T
+        assert_allclose(G, jnp.eye(2), atol=1e-10)
+        residuals = (
+            A.as_matrix() @ result.eigenvectors.T - result.eigenvectors.T * result.eigenvalues
+        )
+        assert_allclose(residuals, 0, atol=1e-10)
 
     def test_tr_requires_m_greater_than_k(self):
         """TR raises when m <= k."""

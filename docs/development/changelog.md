@@ -11,9 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `lanczos_eigh` and `lanczos_tr` accept a random `key` to draw the starting vector `v0`, which becomes optional (#321)
 
+### Changed
+
+- `lanczos_eigh` and `lanczos_tr` reject a Krylov size `m` larger than the operator size (#317)
+
 ### Fixed
 
 - `tree.normal_like` and `tree.uniform_like` keep the sharding of their input, like `tree.full_like` (#320)
+- `lanczos_eigh` and `lanczos_tr` no longer return spurious zero eigenpairs when the Krylov subspace becomes invariant, e.g. for repeated eigenvalues (#317)
 
 ## [0.15.4] - 2026-10-06
 

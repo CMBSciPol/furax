@@ -23,6 +23,7 @@ __all__ = [
     'NoiseSource',
     'NoiseFitConfig',
     'SolverConfig',
+    'TwoLevelConfig',
     'GapsConfig',
     'GapTreatment',
     'GapFillingConfig',
@@ -107,6 +108,51 @@ class GapTreatment(Enum):
 
 
 @dataclass
+class TwoLevelConfig:
+    """Options for the two-level (deflation) preconditioner.
+
+    The smallest eigenpairs of the block-Jacobi preconditioned system matrix (or of the system
+    matrix itself) are estimated by thick-restart Lanczos
+    ([`lanczos_tr`][furax.linalg.lanczos_tr]) before the solve, and deflated by
+    [`make_two_level_preconditioner`][furax.mapmaking.preconditioner.make_two_level_preconditioner].
+    Each Lanczos step costs one product with the system matrix, like a CG iteration.
+
+    Examples:
+        YAML config section, under `solver`
+
+            two_level:
+                rank: 20
+    """
+
+    rank: int = 20
+    """Number of eigenpairs to deflate."""
+
+    spectrum: Literal['preconditioned', 'system'] = 'preconditioned'
+    r"""Spectrum whose smallest eigenvalues are deflated.
+
+    - `'preconditioned'`: that of $M A$, with $A$ the system matrix and $M$ the block-Jacobi
+      preconditioner. It is the operator conjugate gradient iterates on.
+    - `'system'`: that of $A$.
+    """
+
+    krylov_size: int | None = None
+    """Size of the Lanczos Krylov subspace, larger than `rank`. Defaults to `2 * rank`."""
+
+    max_restarts: int = 20
+    """Maximum number of Lanczos restart cycles."""
+
+    tol: float = 1e-6
+    """Relative tolerance on the Lanczos residual bound of each eigenpair."""
+
+    seed: int = 0
+    """Seed of the random Lanczos starting vector."""
+
+    def __post_init__(self) -> None:
+        if self.rank < 1:
+            raise ValueError(f'rank must be >= 1, got {self.rank}')
+
+
+@dataclass
 class SolverConfig:
     """Options for the iterative (conjugate gradient) solver.
 
@@ -130,10 +176,16 @@ class SolverConfig:
     verbose: bool = False
     """Log the residual norm at every iteration."""
 
+    two_level: TwoLevelConfig | None = None
+    """Two-level preconditioner options. `None` uses the block-Jacobi preconditioner alone.
+
+    Only the multi-observation mapmaker supports it.
+    """
+
     @property
     def options(self) -> dict[str, Any]:
-        """Dictionary of solver options, minus `verbose`."""
-        return {k: v for k, v in asdict(self).items() if k != 'verbose'}
+        """Dictionary of solver options, minus `verbose` and `two_level`."""
+        return {k: v for k, v in asdict(self).items() if k not in ('verbose', 'two_level')}
 
 
 @dataclass

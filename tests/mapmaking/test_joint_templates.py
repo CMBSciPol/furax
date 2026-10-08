@@ -24,9 +24,11 @@ from furax.mapmaking.config import (
     PolynomialConfig,
     PolynomialOrders,
     ScanSynchronousConfig,
+    SolverConfig,
     SotodlibConfig,
     T2PConfig,
     TemplatesConfig,
+    TwoLevelConfig,
     WeightingConfig,
     WeightingMode,
 )
@@ -105,6 +107,19 @@ def test_mixed_explicit_and_implicit():
     res = MultiObservationMapMaker(_ground_obs(), config=cfg).run()
     assert set(res.template_amplitudes) == {'hwp_synchronous'}
     assert jnp.all(jnp.isfinite(res.template_amplitudes['hwp_synchronous']))
+
+
+@pytest.mark.parametrize('spectrum', ['preconditioned', 'system'])
+def test_two_level_preconditioner_with_explicit_templates(spectrum):
+    cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)))
+    cfg.solver = SolverConfig(rtol=1e-10, max_steps=500)
+    expected = MultiObservationMapMaker(_hwp_obs(), config=cfg).run()
+    cfg.solver.two_level = TwoLevelConfig(rank=4, spectrum=spectrum, tol=1e-8, max_restarts=50)
+    res = MultiObservationMapMaker(_hwp_obs(), config=cfg).run()
+    assert_allclose(res.map.data, expected.map.data, rtol=1e-6, atol=1e-8)
+    amplitudes = res.template_amplitudes['hwp_synchronous']
+    expected_amplitudes = expected.template_amplitudes['hwp_synchronous']
+    assert_allclose(amplitudes, expected_amplitudes, rtol=1e-6, atol=1e-8)
 
 
 @pytest.mark.parametrize('explicit', [True, False], ids=['explicit', 'implicit'])

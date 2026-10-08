@@ -45,6 +45,7 @@ from furax.core import (
     IndexOperator,
 )
 from furax.interfaces.lineax import as_lineax_operator
+from furax.linalg._lanczos import LanczosWhich
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
@@ -73,6 +74,7 @@ from .config import (
     MapMakingConfig,
     Methods,
     NoiseSource,
+    TwoLevelConfig,
     WCSConfig,
     WeightingMode,
 )
@@ -80,7 +82,7 @@ from .gap_filling import gap_fill
 from .layout import Bucket, SlotLayout
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .pomme import PommeProjectionOperator
-from .preconditioner import BJPreconditioner
+from .preconditioner import BJPreconditioner, make_two_level_preconditioner
 from .results import MapMakingResults
 from .streaming import StreamOperator
 from .weight import WeightOperator
@@ -433,6 +435,8 @@ class MultiObservationMapMaker[T]:
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
             system = self._build_system(acc, H, W_prime, S, BJ)
+            if (two_level := self.config.solver.two_level) is not None:
+                system = self._deflate(system, two_level)
 
             def log_iteration(step: Array, r_norm: Array) -> None:
                 if rank == 0:  # log from rank 0 only
@@ -539,6 +543,35 @@ class MultiObservationMapMaker[T]:
         M = BlockDiagonalOperator([M, Ge])
         A = AdditionOperator(terms, sequential=True)
         return _MapMakingSystem(A, rhs, M, has_amplitudes=True)
+
+    def _deflate(self, system: _MapMakingSystem, config: TwoLevelConfig) -> _MapMakingSystem:
+        """Replaces the system's preconditioner by a two-level one deflating some of its modes."""
+        preconditioned = config.spectrum == 'preconditioned'
+        # The spectrum is positive, so its smallest and largest eigenvalues are its algebraic ends.
+        lanczos_which: dict[str, LanczosWhich] = {'small': 'SA', 'large': 'LA', 'both': 'BE'}
+        result = furax.linalg.lanczos_tr(
+            system.A,
+            key=jax.random.key(config.seed),
+            k=config.rank,
+            m=config.krylov_size,
+            which=lanczos_which[config.which],
+            max_restarts=config.max_restarts,
+            tol=config.tol,
+            preconditioner=system.preconditioner if preconditioned else None,
+        )
+        theta = result.eigenvalues
+        self.logger.info(
+            f'MultiObsMapMaker: Deflating {config.rank} eigenpairs ({config.which}) of the '
+            f'{config.spectrum} spectrum, eigenvalues in '
+            f'[{float(theta[0]):.6e}, {float(theta[-1]):.6e}], '
+            f'max residual bound {float(jnp.max(result.residual_norms)):.3e}'
+        )
+        M = make_two_level_preconditioner(
+            system.preconditioner,
+            furax.linalg.LowRankTerms(theta, result.eigenvectors),
+            preconditioned=preconditioned,
+        )
+        return system._replace(preconditioner=M)
 
     def _gather(self, x: PyTree[Array]) -> PyTree[np.ndarray]:
         """Bring a pytree sharded over the 'obs' axis to the host, whole, on every process."""

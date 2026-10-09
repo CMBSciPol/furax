@@ -56,7 +56,8 @@ from jax import Array
 from jaxtyping import Float, PyTree
 
 import furax.tree
-from furax import AbstractLinearOperator, symmetric
+from furax import AbstractLinearOperator, DiagonalOperator, symmetric
+from furax.core import BlockDiagonalOperator
 from furax.linalg import BandedCholeskyOperator, BorderedBandedCholeskyOperator
 
 from .pomme import PommeIntervals, PommeProjectionOperator
@@ -117,6 +118,31 @@ def gram_inverse(
         NotImplementedError: If the structured path does not apply and `allow_probe` is `False`.
         ValueError: If `pomme_tau` is given for a Stokes TOD rather than a single stream.
     """
+    inverse, _ = _gram_inverse_and_ridge(
+        operator,
+        weight,
+        regularization,
+        pomme_tau=pomme_tau,
+        allow_probe=allow_probe,
+        batch_size=batch_size,
+    )
+    return inverse
+
+
+def _gram_inverse_and_ridge(
+    operator: AbstractTemplateOperator,
+    weight: AbstractLinearOperator,
+    regularization: float = 0.0,
+    *,
+    pomme_tau: int | None = None,
+    allow_probe: bool = False,
+    batch_size: int = 8,
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
+    """[`gram_inverse`][], paired with the ridge added to the Gram before factoring it.
+
+    The explicit normal system is built from the Gram itself, not from its factor, so it must add
+    the same ridge to stay consistent with the preconditioner. `None` when `regularization` is 0.
+    """
     ones = furax.tree.ones_like(weight.in_structure)
     diag = weight(ones)
     # if we wanted to guard against a non-diagonal W, one extra application on a random
@@ -134,13 +160,20 @@ def gram_inverse(
     # Two bases on different legs never share a weighted sample, so each leg is a stream of its
     # own, with one block over the templates it carries rather than one block over every leg.
     blocks = {}
+    ridges = {}
     for leg in operator.legs:
         bases = {name: on[leg] for name, on in operator.bases_by_leg.items() if leg in on}
         if bases:
             structure = {name: operator.in_structure[name][leg] for name in bases}
             stream = _Stream(bases, getattr(diag, leg), structure, None)
-            blocks[leg] = _stream_gram_inverse(stream, regularization, batch_size, allow_probe)
-    return _PerLegOperator(blocks, in_structure=operator.in_structure)
+            blocks[leg], ridges[leg] = _stream_gram_inverse(
+                stream, regularization, batch_size, allow_probe
+            )
+    inverse = _PerLegOperator(blocks, in_structure=operator.in_structure)
+    if not regularization:
+        return inverse, None
+    ridge = _PerLegOperator(ridges, in_structure=operator.in_structure)
+    return inverse, ridge
 
 
 def cross_gram(a: Basis, b: Basis, weights: Float[Array, ' samp']) -> Float[Array, 'a_size b_size']:
@@ -214,11 +247,11 @@ def _intervals(bases: dict[str, Basis], pomme_tau: int | None) -> PommeIntervals
 
 def _stream_gram_inverse(
     stream: _Stream, regularization: float, batch_size: int, allow_probe: bool
-) -> AbstractLinearOperator:
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
     """Inverse of the Gram of every template on one stream, one block per detector.
 
     The bases' structure is used when every one of them exposes it; otherwise the Gram is probed,
-    if allowed.
+    if allowed. Paired with the ridge added before factoring, `None` without one.
     """
     try:
         return _structured_gram_inverse(stream, regularization, batch_size)
@@ -231,7 +264,7 @@ def _stream_gram_inverse(
 
 def _structured_gram_inverse(
     stream: _Stream, regularization: float, batch_size: int
-) -> AbstractLinearOperator:
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
     """The Gram inverse built from the bases' structure.
 
     A single template keeps the band structure of its own Gram. Several are coupled through the
@@ -246,7 +279,14 @@ def _structured_gram_inverse(
         (basis,) = bases.values()
         gram = _pomme_banded_gram(basis, stream)
         bands = _unit_on_zero_bands(jax.lax.map(gram, weights, batch_size=batch_size))
-        return BandedCholeskyOperator.from_bands(bands, stream.in_structure, regularization)
+        if not regularization:
+            return BandedCholeskyOperator.from_bands(bands, stream.in_structure), None
+        (name,) = bases
+        structure = stream.in_structure[name]
+        bands, ridge = _ridge_bands(bands, regularization)
+        inverse = BandedCholeskyOperator.from_bands(bands, stream.in_structure)
+        diagonal = DiagonalOperator(ridge.reshape(structure.shape), in_structure=structure)
+        return inverse, BlockDiagonalOperator({name: diagonal})
 
     # a basis split into several blocks of time is time-local; one block sees every sample
     local = [name for name, basis in bases.items() if basis._n_blocks > 1]
@@ -259,7 +299,42 @@ def _structured_gram_inverse(
         lambda w: _dense_gram(ordered, w, stream.intervals), weights, batch_size=batch_size
     )
     blocks = _unit_on_zero_rows(blocks)
-    return BandedCholeskyOperator.from_dense(blocks, stream.in_structure, regularization)
+    if not regularization:
+        return BandedCholeskyOperator.from_dense(blocks, stream.in_structure), None
+    blocks, ridge = _ridge_dense(blocks, regularization)
+    inverse = BandedCholeskyOperator.from_dense(blocks, stream.in_structure)
+    diagonal = DiagonalOperator(ridge, axis_destination=0, in_structure=stream.in_structure)
+    return inverse, diagonal
+
+
+def _ridge_bands(
+    bands: Float[Array, '*batch n w1 k k'], regularization: float
+) -> tuple[Float[Array, '*batch n w1 k k'], Float[Array, '*batch n k']]:
+    """Add the relative ridge to a block-banded Gram, and return it alongside.
+
+    Each diagonal block takes a multiple of its own mean diagonal, so the ridge is constant over
+    the amplitudes of one block and varies from block to block. This is the same ridge
+    [`banded_cholesky`][furax.linalg.banded_cholesky] applies, added here instead so that the
+    factored matrix and the returned ridge cannot drift apart: the factor is then given an
+    already-ridged Gram and no regularization of its own.
+    """
+    k = bands.shape[-1]
+    diagonal = jnp.diagonal(bands[..., 0, :, :], axis1=-2, axis2=-1)  # (*batch, n, k)
+    ridge = jnp.broadcast_to(
+        regularization * jnp.mean(diagonal, axis=-1, keepdims=True), diagonal.shape
+    )
+    bands = bands.at[..., 0, :, :].add(ridge[..., None] * jnp.eye(k, dtype=bands.dtype))
+    return bands, ridge
+
+
+def _ridge_dense(
+    blocks: Float[Array, '*batch k k'], regularization: float
+) -> tuple[Float[Array, '*batch k k'], Float[Array, ' *batch']]:
+    """[`_ridge_bands`][] for a single dense block: one multiple of its mean diagonal."""
+    k = blocks.shape[-1]
+    ridge = regularization * jnp.mean(jnp.diagonal(blocks, axis1=-2, axis2=-1), axis=-1)
+    blocks = blocks + ridge[..., None, None] * jnp.eye(k, dtype=blocks.dtype)
+    return blocks, ridge
 
 
 def _pomme_banded_gram(basis: Basis, stream: _Stream):
@@ -328,7 +403,7 @@ def _pomme_sums(
 
 def _bordered_gram_inverse(
     stream: _Stream, core_name: str, regularization: float, batch_size: int
-) -> '_BorderedGramInverse':
+) -> tuple['_BorderedGramInverse', AbstractLinearOperator | None]:
     """Inverse Gram of one time-local template bordered by the others, one per detector.
 
     The core template's own Gram is block-banded; the others couple to it through a dense border
@@ -356,8 +431,28 @@ def _bordered_gram_inverse(
 
     bands, border, corner = jax.lax.map(build, stream.weights, batch_size=batch_size)
     bands, corner = _unit_on_zero_bands(bands), _unit_on_zero_rows(corner)
-    factor = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner, regularization)
-    return _BorderedGramInverse(factor, core_name, border_names, in_structure=stream.in_structure)
+
+    structure = stream.in_structure
+    ridge: AbstractLinearOperator | None = None
+    if regularization:
+        # the core's diagonal blocks and the corner are ridged separately, as the factor would
+        bands, core_ridge = _ridge_bands(bands, regularization)
+        corner, corner_ridge = _ridge_dense(corner, regularization)
+        core_structure = structure[core_name]
+        ridges: dict[str, AbstractLinearOperator] = {
+            core_name: DiagonalOperator(
+                core_ridge.reshape(core_structure.shape), in_structure=core_structure
+            )
+        }
+        for name in border_names:
+            ridges[name] = DiagonalOperator(
+                corner_ridge, axis_destination=0, in_structure=structure[name]
+            )
+        ridge = BlockDiagonalOperator(ridges)
+
+    factor = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner)
+    inverse = _BorderedGramInverse(factor, core_name, border_names, in_structure=structure)
+    return inverse, ridge
 
 
 @symmetric
@@ -412,7 +507,9 @@ class _PerLegOperator(AbstractLinearOperator):
         return out
 
 
-def _probed_gram_inverse(stream: _Stream, regularization: float) -> AbstractLinearOperator:
+def _probed_gram_inverse(
+    stream: _Stream, regularization: float
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
     """The Gram inverse from `G = Tᵀ W T` applied to one amplitude at a time.
 
     Costs `O(K)` applications for `K` amplitudes, but needs nothing of the bases beyond `T` itself.
@@ -449,4 +546,9 @@ def _probed_gram_inverse(stream: _Stream, regularization: float) -> AbstractLine
     columns = jax.lax.map(probe, jnp.arange(n_amps))  # (col, n_dets, row)
     blocks = jnp.moveaxis(columns, 0, -1)  # (n_dets, row, col)
     blocks = _unit_on_zero_rows(blocks)
-    return BandedCholeskyOperator.from_dense(blocks, in_structure, regularization)
+    if not regularization:
+        return BandedCholeskyOperator.from_dense(blocks, in_structure), None
+    blocks, ridge = _ridge_dense(blocks, regularization)
+    inverse = BandedCholeskyOperator.from_dense(blocks, in_structure)
+    diagonal = DiagonalOperator(ridge, axis_destination=0, in_structure=in_structure)
+    return inverse, diagonal

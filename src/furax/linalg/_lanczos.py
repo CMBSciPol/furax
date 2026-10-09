@@ -1,5 +1,6 @@
 """Lanczos eigenvalue solver for PyTree-aware linear operators."""
 
+from collections.abc import Callable
 from functools import reduce
 from typing import Literal, NamedTuple, get_args
 
@@ -12,19 +13,6 @@ from furax import tree
 from furax.core import AbstractLinearOperator
 
 LanczosWhich = Literal['LM', 'SM', 'LA', 'SA', 'BE']
-
-
-def _block_zeros_like(x: PyTree, k: int) -> PyTree:
-    """Return a block PyTree of k zero vectors with leading dimension k prepended.
-
-    The new leading axis is replicated; the other axes keep the sharding of x.
-    """
-    return jax.tree.map(lambda z: jnp.broadcast_to(z, (k, *z.shape)), tree.zeros_like(x))
-
-
-def _vecmat(X: PyTree, C: Float[Array, 'm k']) -> PyTree:
-    """Compute Y = X @ C for block PyTree X with m vectors, returning k vectors."""
-    return jax.tree.map(lambda leaf: jnp.einsum('mk,m...->k...', C, leaf), X)
 
 
 def _initial_vector(
@@ -49,14 +37,29 @@ def _restart_key(key: Key[Array, ''] | None) -> Key[Array, '']:
     return jax.random.fold_in(jax.random.key(0) if key is None else key, 1)
 
 
-def _orthogonalize(w: PyTree, V: PyTree, n: int | Array) -> PyTree:
-    """Project w onto the orthogonal complement of the first n vectors of block PyTree V."""
+def _orthogonalize(
+    w: PyTree, V: PyTree, n: int | Array, P: PyTree | None = None
+) -> tuple[PyTree, Float[Array, '']]:
+    """Remove from w its components along the first n vectors of block PyTree V.
 
-    def step(i, w):
-        v_i = jax.tree.map(lambda V_leaf: V_leaf[i], V)
-        return tree.add(tree.mul(-tree.dot(v_i, w), v_i), w)  # w -= <v_i, w> v_i
+    Without P, V is orthonormal. With P, w is a dual vector (an image under M⁻¹) and P = M⁻¹ V
+    is the dual of the M⁻¹-orthonormal V: w loses its components along P, so that M w is
+    M⁻¹-orthogonal to V.
 
-    return jax.lax.fori_loop(0, n, step, w)
+    Also returns the sum of the squared components removed, which is the squared norm lost
+    by w (by M w in the M⁻¹ norm, with P).
+    """
+    P = V if P is None else P
+
+    def step(i, carry):
+        w, removed = carry
+        v_i, p_i = tree.stacked_get((V, P), i)
+        c_i = tree.dot(v_i, w)
+        w = tree.add(tree.mul(-c_i, p_i), w)  # w -= <v_i, w> p_i
+        return w, removed + jnp.abs(c_i) ** 2
+
+    real_dtype = jnp.finfo(jax.tree.leaves(w)[0].dtype).dtype
+    return jax.lax.fori_loop(0, n, step, (w, jnp.zeros((), real_dtype)))
 
 
 class LanczosResult(NamedTuple):
@@ -78,31 +81,54 @@ class LanczosResult(NamedTuple):
 # =============================================================================
 
 
+class _Basis(NamedTuple):
+    """Lanczos vectors V, with their duals P = M⁻¹ V when preconditioned (None otherwise)."""
+
+    V: PyTree[Num[Array, 'n ...']]
+    P: PyTree[Num[Array, 'n ...']] | None
+
+
+def _normalize(
+    w: PyTree, M: AbstractLinearOperator | None
+) -> tuple[Float[Array, ''], Callable[[], _Basis]]:
+    r"""Norm of the vector whose dual is w, and a thunk returning that vector, unit norm.
+
+    Without M, the vector is w itself, in the Euclidean norm. With M, it is M w, in the M⁻¹
+    norm: $\|M w\|_{M^{-1}} = \sqrt{w^T M w}$. A zero w gives a zero vector, not NaN.
+    """
+    if M is None:
+        norm = jnp.real(tree.norm(w))
+        inv = 1.0 / jnp.where(norm > 0, norm, 1.0)
+        return norm, lambda: _Basis(tree.mul(inv, w), None)
+    Mw = M(w)
+    norm = jnp.sqrt(jnp.real(tree.dot(w, Mw)))
+    inv = 1.0 / jnp.where(norm > 0, norm, 1.0)
+    return norm, lambda: _Basis(tree.mul(inv, Mw), tree.mul(inv, w))
+
+
 def _lanczos_loop(
     A: AbstractLinearOperator,
-    V_m: PyTree[Num[Array, 'm ...']],
+    M: AbstractLinearOperator | None,
+    basis: _Basis,
     alpha: Float[Array, ' m'],
     beta: Float[Array, ' m-1'],
-    v_start: PyTree[Num[Array, '...']],
-    v_prev: PyTree[Num[Array, '...']],
+    v_start: _Basis,
+    v_prev: _Basis,
     beta_prev: Float[Array, ''],
     j_start: int,
     m: int,
     key: Key[Array, ''],
-) -> tuple[
-    PyTree[Num[Array, 'm ...']],
-    Float[Array, ' m'],
-    Float[Array, ' m-1'],
-    Float[Array, ''],
-    PyTree[Num[Array, '...']],
-]:
+) -> tuple[_Basis, Float[Array, ' m'], Float[Array, ' m-1'], Float[Array, ''], _Basis]:
     """Run Lanczos iterations from absolute position j_start to m-1.
 
-    V_m[j_start] must already be set to v_start before calling.
+    basis[j_start] must already be set to v_start before calling. With a preconditioner M, the
+    iteration is on M A, which is self-adjoint in the M⁻¹ inner product: the vectors are
+    M⁻¹-orthonormal, and their duals M⁻¹ v are carried along so that M⁻¹ is never applied.
 
     Args:
         A: A Hermitian linear operator.
-        V_m: Pre-allocated m-vector basis with V_m[j_start] = v_start.
+        M: Optional Hermitian positive definite preconditioner.
+        basis: Pre-allocated m-vector basis with basis[j_start] = v_start.
         alpha: Diagonal array (m,), may be pre-filled for j < j_start.
         beta: Off-diagonal array (m-1,), may be pre-filled for j < j_start.
         v_start: Starting vector for the first iteration.
@@ -113,7 +139,7 @@ def _lanczos_loop(
         key: Random key for the restart vectors drawn on breakdown.
 
     Returns:
-        V_m: Updated m-vector basis.
+        basis: Updated m-vector basis.
         alpha: Updated diagonal (m,).
         beta: Updated off-diagonal (m-1,).
         beta_last: Residual norm after the final step.
@@ -123,62 +149,66 @@ def _lanczos_loop(
     # norm has cancelled enough to lose orthogonality, and is repeated.
     eta = 1 / jnp.sqrt(2)
 
-    def body_fn(j, carry):
-        V_m, alpha, beta, v, v_prev, beta_prev = carry
+    def dual(v: _Basis) -> PyTree:
+        return v.V if v.P is None else v.P
 
-        Av = A(v)
-        alpha_j = jnp.real(tree.dot(v, Av))  # α_j = <v_j, A v_j>
+    def body_fn(j, carry):
+        basis, alpha, beta, v, v_prev, beta_prev = carry
+
+        Av = A(v.V)
+        alpha_j = jnp.real(tree.dot(v.V, Av))  # α_j = <v_j, A v_j>
         alpha = alpha.at[j].set(alpha_j)
 
-        w = tree.add(tree.mul(-alpha_j, v), Av)  # w = A v_j - α_j v_j
-        w = tree.add(tree.mul(-beta_prev, v_prev), w)  # w -= β_{j-1} v_{j-1}
-        w_norm = jnp.real(tree.norm(w))
-        w = _orthogonalize(w, V_m, j + 1)  # full reorthogonalization
-        beta_j = jnp.real(tree.norm(w))  # β_j = ||w||
+        # The residual is formed in the dual space: w = A v_j - α_j v_j - β_{j-1} v_{j-1} without
+        # M, w = A v_j - α_j M⁻¹ v_j - β_{j-1} M⁻¹ v_{j-1} with M (the next vector is then M w).
+        w = tree.add(tree.mul(-alpha_j, dual(v)), Av)
+        w = tree.add(tree.mul(-beta_prev, dual(v_prev)), w)
+        w, removed = _orthogonalize(w, basis.V, j + 1, basis.P)  # full reorthogonalization
+        beta_j, normalized = _normalize(w, M)  # β_j = ||w|| (||M w||_M⁻¹ with M)
+        # Norm before the pass, from the components it removed; this needs no extra M.
+        w_norm = jnp.sqrt(beta_j**2 + removed)
+
+        def keep():
+            return normalized(), beta_j
 
         def refine():
-            w2 = _orthogonalize(w, V_m, j + 1)
-            beta2 = jnp.real(tree.norm(w2))
+            w2, _ = _orthogonalize(w, basis.V, j + 1, basis.P)
+            beta2, normalized2 = _normalize(w2, M)
             # A second pass that keeps more than eta of the norm leaves w orthogonal to
-            # V_m[:j+1] to working precision, even when w is mere rounding noise.
+            # V[:j+1] to working precision, even when w is mere rounding noise.
             # Breakdown: the second pass cancels again (or w is exactly zero), so w lies in
-            # span(V_m[:j+1]) up to rounding and that span is invariant under A. Normalizing w
-            # would not give a vector orthogonal to the basis, and keeping a zero vector would
-            # add a spurious Ritz value 0 that looks converged. Instead set β_j = 0, which
-            # decouples T into exact blocks, and continue from a random vector orthogonal to
-            # V_m[:j+1]. At the last step the residual term vanishes and v_last is left zero.
+            # span(V[:j+1]) up to rounding and that span is invariant. Normalizing w would not
+            # give a vector orthogonal to the basis, and keeping a zero vector would add a
+            # spurious Ritz value 0 that looks converged. Instead set β_j = 0, which decouples
+            # T into exact blocks, and continue from a random vector orthogonal to V[:j+1].
+            # At the last step the residual term vanishes and v_last is left zero.
             breakdown = beta2 <= eta * beta_j
             restart = breakdown & (j < m - 1)
-            r = tree.normal_like(v, jax.random.fold_in(key, j))
-            # The second pass restores orthogonality lost when r is nearly in span(V_m[:j+1]).
-            r = _orthogonalize(_orthogonalize(r, V_m, j + 1), V_m, j + 1)
+            r = tree.normal_like(w, jax.random.fold_in(key, j))
+            # The second pass restores orthogonality lost when r is nearly in span(V[:j+1]).
+            for _ in range(2):
+                r, _ = _orthogonalize(r, basis.V, j + 1, basis.P)
+            r = _normalize(r, M)[1]()
             x = jax.tree.map(
                 lambda r_leaf, w_leaf: jnp.where(
                     restart, r_leaf, jnp.where(breakdown, jnp.zeros_like(w_leaf), w_leaf)
                 ),
                 r,
-                w2,
+                normalized2(),
             )
             return x, jnp.where(breakdown, 0.0, beta2).astype(beta_j.dtype)
 
-        w, beta_j = jax.lax.cond(beta_j <= eta * w_norm, refine, lambda: (w, beta_j))
-
-        # On breakdown at the last step w is zero; avoid 0/0 so that v_last stays zero.
-        w_norm = jnp.real(tree.norm(w))
-        v_next = tree.mul(1.0 / jnp.where(w_norm > 0, w_norm, 1.0), w)
+        v_next, beta_j = jax.lax.cond(beta_j <= eta * w_norm, refine, keep)
 
         beta = jnp.where(j < m - 1, beta.at[j].set(beta_j), beta)
-        V_m = jax.tree.map(
-            lambda V_leaf, v_leaf: jnp.where(j < m - 1, V_leaf.at[j + 1].set(v_leaf), V_leaf),
-            V_m,
-            v_next,
-        )
+        # The last step has no slot for v_next (j + 1 = m), which is returned as v_last instead.
+        basis = tree.stacked_set(basis, j + 1, v_next, mode='drop')
 
-        return V_m, alpha, beta, v_next, v, beta_j
+        return basis, alpha, beta, v_next, v, beta_j
 
-    init_carry = (V_m, alpha, beta, v_start, v_prev, beta_prev)
-    V_m, alpha, beta, v_last, _, beta_last = jax.lax.fori_loop(j_start, m, body_fn, init_carry)
-    return V_m, alpha, beta, beta_last, v_last
+    init_carry = (basis, alpha, beta, v_start, v_prev, beta_prev)
+    basis, alpha, beta, v_last, _, beta_last = jax.lax.fori_loop(j_start, m, body_fn, init_carry)
+    return basis, alpha, beta, beta_last, v_last
 
 
 def lanczos_tridiag(
@@ -186,6 +216,8 @@ def lanczos_tridiag(
     v0: PyTree[Num[Array, '...']],
     m: int,
     key: Key[Array, ''] | None = None,
+    *,
+    preconditioner: AbstractLinearOperator | None = None,
 ) -> tuple[
     Float[Array, ' m'],
     Float[Array, ' m-1'],
@@ -210,12 +242,18 @@ def lanczos_tridiag(
     built so far (a random one if the residual vanishes numerically), so that V stays
     orthonormal and the factorization above holds up to rounding.
 
+    With a `preconditioner` $M$, the same holds with $M A$ in place of $A$, which is
+    self-adjoint in the $M^{-1}$ inner product: $V$ is $M^{-1}$-orthonormal and spans the
+    Krylov subspace of $M A$ from $M v_0$. Each step applies $M$ once; $M^{-1}$ is never
+    applied.
+
     Args:
         A: A Hermitian linear operator.
         v0: Initial vector (will be normalized).
         m: Number of Lanczos iterations (size of Krylov subspace), at most the operator size.
         key: Random key for the vectors that continue the iteration after an invariant
             subspace is found. Defaults to `jax.random.key(0)`.
+        preconditioner: Optional Hermitian positive definite operator $M$.
 
     Returns:
         alpha: Diagonal of the tridiagonal matrix (m,).
@@ -225,23 +263,35 @@ def lanczos_tridiag(
         v_last: Residual direction after m steps (the (m+1)-th Lanczos vector), or zero
             if beta_last is 0.
     """
+    if key is None:
+        key = jax.random.key(0)
+    alpha, beta, basis, beta_last, v_last = _lanczos_tridiag(A, preconditioner, v0, m, key)
+    return alpha, beta, basis.V, beta_last, v_last.V
+
+
+def _lanczos_tridiag(
+    A: AbstractLinearOperator,
+    M: AbstractLinearOperator | None,
+    v0: PyTree,
+    m: int,
+    key: Key[Array, ''],
+) -> tuple[Float[Array, ' m'], Float[Array, ' m-1'], _Basis, Float[Array, ''], _Basis]:
+    """[`lanczos_tridiag`][], returning the bases with their duals."""
     n = A.in_size
     if m > n:
         raise ValueError(f'm ({m}) must be <= the operator size ({n})')
-    if key is None:
-        key = jax.random.key(0)
 
-    v = tree.mul(1.0 / tree.norm(v0), v0)
+    _, normalized = _normalize(v0, M)
+    v = normalized()
 
-    V = _block_zeros_like(v0, m)
-    V = jax.tree.map(lambda V_leaf, v_leaf: V_leaf.at[0].set(v_leaf), V, v)
+    basis = tree.stacked_set(tree.stacked_zeros_like(v, m), 0, v)
     alpha = jnp.zeros(m)
     beta = jnp.zeros(m - 1)
 
-    V, alpha, beta, beta_last, v_last = _lanczos_loop(
-        A, V, alpha, beta, v, tree.zeros_like(v), jnp.array(0.0), 0, m, key
+    basis, alpha, beta, beta_last, v_last = _lanczos_loop(
+        A, M, basis, alpha, beta, v, tree.zeros_like(v), jnp.array(0.0), 0, m, key
     )
-    return alpha, beta, V, beta_last, v_last
+    return alpha, beta, basis, beta_last, v_last
 
 
 def _default_m(A: AbstractLinearOperator, k: int) -> int:
@@ -322,7 +372,7 @@ def lanczos_eigh(
     alpha, beta, V, beta_last, _ = lanczos_tridiag(A, v0, m, _restart_key(key))
     ritz_values, ritz_vectors = jax.scipy.linalg.eigh_tridiagonal(alpha, beta, eigvals_only=False)
 
-    eigenvectors = _vecmat(V, ritz_vectors)  # y_i = V s_i
+    eigenvectors = tree.stacked_combine(V, ritz_vectors)  # y_i = V s_i
 
     # ||A y_i - θ_i y_i|| ≈ |β_m| |s_i[-1]|
     residual_norms = jnp.abs(beta_last) * jnp.abs(ritz_vectors[-1, :])
@@ -332,7 +382,7 @@ def lanczos_eigh(
     best_idx = best_idx[jnp.argsort(ritz_values[best_idx])]
     return LanczosResult(
         eigenvalues=ritz_values[best_idx],
-        eigenvectors=jax.tree.map(lambda leaf: leaf[best_idx], eigenvectors),
+        eigenvectors=tree.stacked_get(eigenvectors, best_idx),
         residual_norms=residual_norms[best_idx],
     )
 
@@ -381,18 +431,13 @@ def _build_bordered_tridiag(
 
 def _tr_extend(
     A: AbstractLinearOperator,
-    V_k: PyTree[Num[Array, 'k ...']],
-    v_start: PyTree[Num[Array, '...']],
+    M: AbstractLinearOperator | None,
+    V_k: _Basis,
+    v_start: _Basis,
     k: int,
     m: int,
     key: Key[Array, ''],
-) -> tuple[
-    Float[Array, ' p'],
-    Float[Array, ' p-1'],
-    PyTree[Num[Array, 'm ...']],
-    Float[Array, ''],
-    PyTree[Num[Array, '...']],
-]:
+) -> tuple[Float[Array, ' p'], Float[Array, ' p-1'], _Basis, Float[Array, ''], _Basis]:
     """Extend a k-step thick-restart factorization to m steps.
 
     Runs p = m - k Lanczos iterations starting from v_start with full
@@ -400,6 +445,7 @@ def _tr_extend(
 
     Args:
         A: A Hermitian linear operator.
+        M: Optional Hermitian positive definite preconditioner.
         V_k: k Ritz vectors from the thick-restart, block PyTree with shape (k, ...).
         v_start: Starting vector for the extension (the residual direction from
             the previous Lanczos run, already unit norm).
@@ -418,22 +464,22 @@ def _tr_extend(
     real_dtype = jnp.empty((), dtype=dtype).real.dtype
 
     # Pre-allocate m-vector basis; fill first k slots with Ritz vectors
-    V_m = _block_zeros_like(v_start, m)
-    V_m = jax.tree.map(lambda Vm_l, Vk_l: Vm_l.at[:k].set(Vk_l), V_m, V_k)
-    V_m = jax.tree.map(lambda Vm_l, vn_l: Vm_l.at[k].set(vn_l), V_m, v_start)
+    V_m = tree.stacked_zeros_like(v_start, m)
+    V_m = tree.stacked_set(V_m, slice(0, k), V_k)
+    V_m = tree.stacked_set(V_m, k, v_start)
 
     # Set beta_prev=0 so the explicit `-beta_prev * v_prev` term in _lanczos_loop
     # vanishes; v_prev itself is unused (any vector would do). Coupling between the
     # new Lanczos vector and the k retained Ritz vectors is instead handled by the
     # full reorthogonalization loop, which projects against V_m[:j+1] (= all Ritz
     # vectors plus the current extension vectors).
-    v_prev = jax.tree.map(lambda leaf: leaf[k - 1], V_m)
+    v_prev = tree.stacked_get(V_m, k - 1)
 
     alpha = jnp.zeros(m, dtype=real_dtype)
     beta = jnp.zeros(m - 1, dtype=real_dtype)
 
     V_m, alpha, beta, beta_last, v_last = _lanczos_loop(
-        A, V_m, alpha, beta, v_start, v_prev, jnp.array(0.0, dtype=real_dtype), k, m, key
+        A, M, V_m, alpha, beta, v_start, v_prev, jnp.array(0.0, dtype=real_dtype), k, m, key
     )
     return alpha[k:], beta[k:], V_m, beta_last, v_last
 
@@ -448,6 +494,7 @@ def lanczos_tr(
     which: LanczosWhich = 'LM',
     max_restarts: int = 300,
     tol: float = 1e-10,
+    preconditioner: AbstractLinearOperator | None = None,
 ) -> LanczosResult:
     r"""Thick-restart Lanczos for computing k eigenpairs of a Hermitian operator.
 
@@ -472,6 +519,12 @@ def lanczos_tr(
 
     Uses full reorthogonalization throughout.  No locking: all k pairs are
     recomputed at every restart regardless of convergence status.
+
+    With a `preconditioner` $M$, computes eigenpairs of $M A$ instead, which is
+    self-adjoint in the $M^{-1}$ inner product.  The eigenvectors $Z$ are then
+    $M^{-1}$-orthonormal ($Z^T M^{-1} Z = I$, hence $Z^T A Z = \operatorname{diag}(\theta)$),
+    and the criterion above holds with $M A$ in place of $A$.  Each step applies $M$ once;
+    $M^{-1}$ is never applied.
 
     Note:
         `residual_norms` is the cheap bound, not the true residual.  Exactly
@@ -512,6 +565,7 @@ def lanczos_tr(
               extra pair comes from the high (largest algebraic) end.
         max_restarts: Maximum number of restart cycles.
         tol: Convergence tolerance; see criterion above.
+        preconditioner: Optional Hermitian positive definite operator $M$.
 
     Returns:
         [`LanczosResult`][] containing eigenvalues, eigenvectors, and residual norms,
@@ -563,8 +617,9 @@ def lanczos_tr(
     # Each cycle draws its restart vectors from its own key, so that a breakdown at the same
     # step in two cycles does not retry a direction already in the retained Ritz vectors.
     restart_key = _restart_key(key)
-    alpha, beta, V, beta_last, v_last = lanczos_tridiag(
-        A, v0, m, jax.random.fold_in(restart_key, 0)
+    M = preconditioner
+    alpha, beta, V, beta_last, v_last = _lanczos_tridiag(
+        A, M, v0, m, jax.random.fold_in(restart_key, 0)
     )
     theta, S = jax.scipy.linalg.eigh_tridiagonal(alpha, beta, eigvals_only=False)
     wanted_idx = _select_wanted(theta)
@@ -577,12 +632,12 @@ def lanczos_tr(
     def body_fn(state):
         V, beta_last, v_last, iteration, _converged, theta, S, wanted_idx = state
 
-        V_k = _vecmat(V, S[:, wanted_idx])  # U_k = V S[:,wanted]  (Ritz vectors)
+        V_k = tree.stacked_combine(V, S[:, wanted_idx])  # U_k = V S[:,wanted]  (Ritz vectors)
         theta_k = theta[wanted_idx]  # θ_k
         h = beta_last * S[-1, wanted_idx]  # h_i = β_m s_i[-1]  (coupling)
 
         alpha_ext, beta_ext, V, beta_last, v_last = _tr_extend(
-            A, V_k, v_last, k, m, jax.random.fold_in(restart_key, iteration + 1)
+            A, M, V_k, v_last, k, m, jax.random.fold_in(restart_key, iteration + 1)
         )
 
         H = _build_bordered_tridiag(theta_k, h, alpha_ext, beta_ext, k, m)
@@ -601,7 +656,7 @@ def lanczos_tr(
     # Sort selected pairs by eigenvalue ascending
     wanted_idx = wanted_idx[jnp.argsort(theta[wanted_idx])]
     eigenvalues = theta[wanted_idx]
-    eigenvectors = _vecmat(V, S[:, wanted_idx])  # y_i = V s_i
+    eigenvectors = tree.stacked_combine(V.V, S[:, wanted_idx])  # y_i = V s_i
     residual_norms = jnp.abs(beta_last) * jnp.abs(S[-1, wanted_idx])  # |β_m| |s_i[-1]|
 
     return LanczosResult(

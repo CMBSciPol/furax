@@ -282,3 +282,18 @@ def test_pomme_explicit_and_implicit_give_the_same_map(observations, template):
     explicit = MultiObservationMapMaker(obs, config=_pomme_config(template(True))).run()
     implicit = MultiObservationMapMaker(obs, config=_pomme_config(template(False))).run()
     assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
+
+
+def test_explicit_and_implicit_agree_under_a_ridge():
+    # Pomme removes the constant part of every template, so a polynomial starting at order 0 has
+    # a singular Gram and only the ridge makes it invertible. Marginalising the amplitudes uses
+    # the ridged Gram, so the joint system must carry the same ridge on its amplitude block,
+    # otherwise the two solves estimate different maps.
+    def run(explicit: bool):
+        config = _pomme_config(TemplatesConfig(polynomial=PolynomialConfig(explicit=explicit)))
+        config.templates.regularization = 1e-3  # large enough to tell the two systems apart
+        observations = _ground_obs(n_obs=1, n_dets=2, n_samples=256)
+        return MultiObservationMapMaker(observations, config=config).run()
+
+    explicit, implicit = run(True), run(False)
+    assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)

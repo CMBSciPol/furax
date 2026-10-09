@@ -13,10 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `lanczos_eigh` and `lanczos_tr` accept a random `key` to draw the starting vector `v0`, which becomes optional (#321)
 - `SotodlibConfig.downsample` downsamples every sotodlib observation after loading (#329)
 - `lanczos_tr` and `lanczos_tridiag` accept a `preconditioner` `M`, to compute eigenpairs of `M A` (#318)
+- `furax.linalg.cg` and `CGSolver` accept `differentiation`; `'unrolled'` differentiates through the CG iterations, as before (#328)
 
 ### Changed
 
 - `lanczos_eigh` and `lanczos_tr` reject a Krylov size `m` larger than the operator size (#317)
+- `furax.linalg.cg` differentiates the exact solution $A^{-1} b$ implicitly by default, so reverse mode works with any `loop_kind` (#328)
 
 ### Fixed
 

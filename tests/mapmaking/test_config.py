@@ -130,6 +130,12 @@ def test_max_buckets_must_be_positive(max_buckets: int):
         MapMakingConfig(max_buckets=max_buckets)
 
 
+@pytest.mark.parametrize('downsample', [0, -1])
+def test_downsample_must_be_positive(downsample: int):
+    with pytest.raises(ValueError, match='downsample must be >= 1'):
+        SotodlibConfig(downsample=downsample)
+
+
 def test_detector_batch_size_must_not_be_negative():
     with pytest.raises(ValueError, match='detector_batch_size must be >= 0'):
         MapMakingConfig(detector_batch_size=-1)

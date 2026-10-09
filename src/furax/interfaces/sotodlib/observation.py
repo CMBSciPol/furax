@@ -92,8 +92,13 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     """Class for interfacing with sotodlib's AxisManager."""
 
     def __init__(self, data: AxisManager, sotodlib_config: SotodlibConfig | None = None) -> None:
+        config = sotodlib_config or SotodlibConfig()
+        if config.downsample > 1:
+            # downsample_obs only Fourier-resamples 'signal' by default
+            timestreams = ['signal', 'dsT', 'demodQ', 'demodU']
+            data = downsample_obs(data, config.downsample, fft_resample=timestreams)
         super().__init__(data)
-        self._sotodlib_config = sotodlib_config or SotodlibConfig()
+        self._sotodlib_config = config
 
     @classmethod
     def from_file(
@@ -192,7 +197,6 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         init_config: str | Path,
         proc_config: str | Path | None = None,
         detector_selection: dict[str, str] | None = None,
-        downsample: int = 1,
         sotodlib_config: SotodlibConfig | None = None,
     ) -> Self:
         """Loads a (already preprocessed) observation directly from the preprocessing db.
@@ -210,7 +214,6 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 two-layer (init+proc) load path is used.
             detector_selection: Optional detector restriction
                 (e.g. {'wafer_slot': 'ws0', 'wafer.bandpass': 'f150'}).
-            downsample: Integer downsampling factor applied after preprocessing.
             sotodlib_config: Optional sotodlib-specific configuration.
 
         Returns:
@@ -234,8 +237,6 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             aman = result[0] if isinstance(result, tuple) else result
         if aman is None:
             raise RuntimeError(f'no detectors left after cuts for {observation_id}')
-        if downsample > 1:
-            aman = downsample_obs(aman, downsample)
         return cls(aman, sotodlib_config)
 
     @property
@@ -548,14 +549,12 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         init_config: str | Path,
         proc_config: str | Path | None = None,
         detector_selection: dict[str, str] | None = None,
-        downsample: int = 1,
         sotodlib_config: SotodlibConfig | None = None,
     ) -> None:
         self.observation_id = observation_id
         self.init_config = Path(init_config).resolve()
         self.proc_config = Path(proc_config).resolve() if proc_config else None
         self.detector_selection = detector_selection
-        self.downsample = downsample
         self._sotodlib_config = sotodlib_config
 
     @property
@@ -570,7 +569,6 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             self.init_config,
             self.proc_config,
             self.detector_selection,
-            downsample=self.downsample,
             sotodlib_config=self._sotodlib_config,
         )
 
@@ -591,7 +589,8 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         # (str, not Path: sotodlib and the cache key expect a posix string)
         _, context = pu.get_preprocess_context(self.init_config.as_posix())
         meta = context.get_meta(self.observation_id, dets=self.detector_selection)
-        n_samps_ub = -(-meta.samps.count // self.downsample)  # ceil, matches downsample_obs
+        downsample = (self._sotodlib_config or SotodlibConfig()).downsample
+        n_samps_ub = -(-meta.samps.count // downsample)  # ceil, matches downsample_obs
         return ObservationBufferShape(
             meta.dets.count,
             n_samps_ub,

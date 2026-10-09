@@ -170,10 +170,29 @@ def test_lazy_preproc_observation(tmp_path) -> None:
     )
 
 
+@pytest.mark.parametrize('demodulated', [False, True])
+def test_downsample(demodulated: bool) -> None:
+    """The file-backed observation is downsampled by `downsample`, sizing included."""
+    sotodlib_config = SotodlibConfig(demodulated=demodulated, downsample=3)
+    lazy = LazySOTODLibObservation(FOLDER / FILES[0], sotodlib_config=sotodlib_config)
+
+    # ceil(1000 / 3) == 334
+    expected_nsamp = -(-OBS_NSAMPLE[0] // 3)
+    assert lazy.probe_shape() == (OBS_NDET[0], expected_nsamp, 0)
+    obs = lazy.get_data()
+    assert obs.n_samples == expected_nsamp
+    if demodulated:
+        assert obs.get_demodulated_tods().shape == (OBS_NDET[0], expected_nsamp)
+    else:
+        assert obs.get_tods().shape == (OBS_NDET[0], expected_nsamp)
+
+
 def test_lazy_preproc_probe_shape_downsample(tmp_path) -> None:
     """probe_shape ceils the sample bound by the downsample factor, matching downsample_obs."""
     config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
-    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config, downsample=3)
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[0], config, sotodlib_config=SotodlibConfig(downsample=3)
+    )
 
     # ceil(1000 / 3) == 334, the same count downsample_obs produces in the real load
     expected_nsamp = -(-OBS_NSAMPLE[0] // 3)

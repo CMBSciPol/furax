@@ -796,11 +796,22 @@ class SotodlibConfig:
     demodulated: bool = False
     """Use demodulated TODs (HWP-specific data from sotodlib preprocessing)."""
 
+    downsample: int = 1
+    """Integer factor by which each observation is downsampled (useful with `demodulated`).
+
+    Every sample-axis field is downsampled after loading; timestreams are Fourier-resampled to
+    avoid aliasing.
+    """
+
     wobble_correction: bool = False
     """Apply HWP wobble correction to the line of sight."""
 
     noise_source: Literal['preprocess', 'mapmaking'] = 'preprocess'
     """Precomputed noise model to use: preprocessing fits, or the mapmaking white-noise estimate."""
+
+    def __post_init__(self) -> None:
+        if self.downsample < 1:
+            raise ValueError(f'downsample must be >= 1, got {self.downsample}')
 
 
 @dataclass

@@ -22,7 +22,6 @@ def run(
     mapmaking_config: Path | None = None,
     wafer: str = 'ws0',
     band: str = 'f090',
-    downsample: int = 1,
     obsdir: Path | None = None,
     loglevel: str = 'info',
     log_path: Path | None = None,
@@ -41,7 +40,6 @@ def run(
         mapmaking_config: Mapmaking config file.
         wafer: Wafer slot selection.
         band: Wafer bandpass selection.
-        downsample: Downsampling factor applied after preprocessing.
         obsdir: Legacy mode: directory of prepared .h5 files. Mutually exclusive with
             ``init_config``.
         loglevel: Logging level (debug, info, warning, error).
@@ -104,7 +102,6 @@ def run(
                 init_config,
                 proc_config,
                 det_select,
-                downsample,
                 sotodlib_config=config.sotodlib,
             )
             for obs_id in obsids

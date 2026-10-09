@@ -1,11 +1,14 @@
 from collections.abc import Callable
 from dataclasses import dataclass, fields
-from typing import Literal, NamedTuple
+from functools import partial
+from typing import Any, Literal, NamedTuple
 
 import equinox as eqx
 import equinox.internal as eqxi
 import jax
 import jax.numpy as jnp
+import numpy as np
+from jax.custom_derivatives import SymbolicZero
 from jaxtyping import Array, Float, Num, PyTree
 
 from furax import AbstractLinearOperator, tree
@@ -57,14 +60,15 @@ def cg(
     stabilise_every: int = 10,
     negative_curvature: Literal['ignore', 'error', 'truncate'] = 'ignore',
     loop_kind: Literal['lax', 'checkpointed', 'bounded'] = 'lax',
+    differentiation: Literal['implicit', 'unrolled'] = 'implicit',
     iteration_callback: Callable[[Array, Array], None] | None = None,
 ) -> CGResult:
-    """Conjugate Gradient solver for symmetric positive definite systems Ax = b.
+    r"""Conjugate Gradient solver for symmetric positive definite systems Ax = b.
 
     The residual norm is recorded at every iteration (see ``CGResult.residuals``)
     so convergence can be monitored. Inputs may be sharded along their contracting
-    dimensions. The solve is forward-mode differentiable by default; reverse-mode
-    (``grad``/``vjp``) requires ``loop_kind='bounded'`` or ``'checkpointed'``.
+    dimensions. The solution is differentiable in forward and reverse mode with
+    respect to ``A`` and ``b``; see ``differentiation``.
 
     Convergence is declared when ``||r|| <= atol + rtol * ||b||``. With ``atol``
     and ``rtol`` both 0 the criterion is never met and the solver runs for exactly
@@ -96,10 +100,25 @@ def cg(
             - ``'truncate'``: stop and return the last iterate before the bad
                 direction (truncated CG, as used by Newton-CG on indefinite Hessians).
         loop_kind: Lowering for the iteration loop (``equinox.internal.while_loop``).
+            Only matters with ``differentiation='unrolled'``, which differentiates the loop.
             ``'lax'`` (default) is fastest and forward-mode differentiable only.
             ``'bounded'`` adds reverse-mode AD but its cost scales with ``max_steps``
             (the checkpoint structure runs to the ceiling regardless of early exit),
             so keep ``max_steps`` tight. ``'checkpointed'`` is reverse-mode only.
+        differentiation: How derivatives of the solution are computed. One of:
+
+            - ``'implicit'`` (default): differentiate the exact solution $x = A^{-1} b$ at
+                the computed one, $\dot{x} = A^{-1} (\dot{b} - \dot{A} x)$. Each derivative
+                costs one more CG solve with the same settings, in constant memory, and is
+                as accurate as the solves are converged. The derivatives with respect to
+                ``x0`` and ``preconditioner`` are zero, and so are those of
+                ``CGResult.residuals``. A solve stopped by ``negative_curvature='truncate'``
+                does not return $A^{-1} b$, so its implicit derivatives are not those of
+                the returned solution.
+            - ``'unrolled'``: differentiate through the CG iterations, which gives the exact
+                derivative of the returned iterate, converged or not, including its
+                dependence on ``x0`` and ``preconditioner``. Reverse mode requires
+                ``loop_kind='bounded'`` or ``'checkpointed'``.
         iteration_callback: Optional host callback called after each step with
             ``(step, r_norm)`` as 0-d JAX arrays.  Runs via
             ``jax.debug.callback`` so it is JIT-compatible and ordered.
@@ -124,6 +143,129 @@ def cg(
         raise ValueError(
             f'negative_curvature must be ignore/error/truncate, got {negative_curvature!r}'
         )
+    if differentiation not in ('implicit', 'unrolled'):
+        raise ValueError(f'differentiation must be implicit/unrolled, got {differentiation!r}')
+    solve = partial(
+        _cg_loop,
+        max_steps=max_steps,
+        atol=atol,
+        rtol=rtol,
+        stabilise_every=stabilise_every,
+        negative_curvature=negative_curvature,
+        loop_kind=loop_kind,
+    )
+    if differentiation == 'unrolled':
+        return solve(A, b, x0, preconditioner, iteration_callback)
+    return _implicit_cg(solve, A, b, x0, preconditioner, iteration_callback)
+
+
+def _implicit_cg(
+    solve: Callable[..., CGResult],
+    A: AbstractLinearOperator,
+    b: PyTree[Num[Array, '...']],
+    x0: PyTree[Num[Array, '...']] | None,
+    preconditioner: AbstractLinearOperator | None,
+    iteration_callback: Callable[[Array, Array], None] | None,
+) -> CGResult:
+    r"""Run `solve` with the derivative of the exact solution $A^{-1} b$.
+
+    The tangent $\dot{x} = A^{-1} (\dot{b} - \dot{A} x)$ is solved through
+    `jax.lax.custom_linear_solve`, which JAX knows how to transpose (into a solve with the
+    symmetric `A`). The same rule therefore serves forward and reverse mode, and since it calls
+    the differentiable solve again, higher-order derivatives too.
+    """
+    # `custom_jvp` accepts only JAX values, but operators may hold other leaves, such as the
+    # `Ellipsis` in the indices of an `IndexOperator`: pass the arrays and close over the rest.
+    dynamic, static = eqx.partition((A, b, x0, preconditioner), eqx.is_array)
+    A_static = static[0]
+
+    @jax.custom_jvp
+    def implicit_solve(dynamic: PyTree[Array]) -> CGResult:
+        A, b, x0, preconditioner = eqx.combine(dynamic, static)
+        return solve(A, b, x0, preconditioner, iteration_callback)
+
+    @partial(implicit_solve.defjvp, symbolic_zeros=True)
+    def implicit_solve_jvp(
+        primals: tuple[Any, ...], tangents: tuple[Any, ...]
+    ) -> tuple[CGResult, CGResult]:
+        (dynamic,) = primals
+        A, _, _, preconditioner = eqx.combine(dynamic, static)
+        A_dynamic, b_dynamic, _, _ = dynamic
+        # `A^{-1} b` does not depend on the initial guess or the preconditioner.
+        A_dot, b_dot, _, _ = tangents[0]
+        result = implicit_solve(dynamic)
+        x = result.solution
+
+        # Inputs that are not differentiated have symbolic zero tangents: skip their terms, in
+        # particular the matvec `A_dot x` when only `b` is differentiated.
+        b_tangents, A_tangents = _differentiated_leaves(b_dot), _differentiated_leaves(A_dot)
+        if not b_tangents and not A_tangents:
+            # Only `x0` or `preconditioner` is differentiated.
+            return result, jax.tree.map(_zero_tangent, result)
+        rhs = _instantiate_zeros(b_dynamic, b_dot) if b_tangents else None
+        if A_tangents:
+            _, A_dot_x = jax.jvp(
+                lambda op: eqx.combine(op, A_static)(x),
+                (A_dynamic,),
+                (_instantiate_zeros(A_dynamic, A_dot),),
+            )
+            rhs = tree.mul(-1, A_dot_x) if rhs is None else tree.sub(rhs, A_dot_x)
+
+        # `custom_linear_solve` transposes only if every leaf of its right-hand side depends on
+        # the input tangents. A leaf fed only by undifferentiated inputs, e.g. one block of a
+        # block-diagonal `A`, is a constant zero, so tie every leaf to a differentiated tangent.
+        anchor = 0 * jnp.sum((b_tangents + A_tangents)[0]).real
+        rhs = jax.tree.map(lambda leaf: leaf + anchor.astype(leaf.dtype), rhs)
+
+        def tangent_solve(_: Any, rhs: PyTree[Num[Array, '...']]) -> PyTree[Num[Array, '...']]:
+            return solve(A, rhs, None, preconditioner, None).solution
+
+        x_dot = jax.lax.custom_linear_solve(A, rhs, tangent_solve, symmetric=True)
+        # The convergence diagnostics are not differentiated, and integer and boolean outputs
+        # take `float0` tangents.
+        result_dot = jax.tree.map(_zero_tangent, result)._replace(solution=x_dot)
+        return result, result_dot
+
+    return implicit_solve(dynamic)
+
+
+def _differentiated_leaves(tangent: PyTree[Any]) -> list[Array]:
+    """Return the leaves of a `custom_jvp` tangent that are neither symbolic nor `float0` zeros."""
+    return [
+        leaf
+        for leaf in jax.tree.leaves(tangent)
+        if not isinstance(leaf, SymbolicZero) and leaf.dtype != jax.dtypes.float0
+    ]
+
+
+def _instantiate_zeros[P](primal: P, tangent: PyTree[Any]) -> P:
+    """Replace the symbolic zeros in `tangent` by zero tangents shaped and sharded like `primal`."""
+    return jax.tree.map(
+        lambda p, t: _zero_tangent(p) if isinstance(t, SymbolicZero) else t, primal, tangent
+    )
+
+
+def _zero_tangent(x: Array) -> Array | np.ndarray:
+    if jnp.issubdtype(x.dtype, jnp.inexact):
+        return jnp.zeros_like(x)
+    return np.zeros(x.shape, jax.dtypes.float0)
+
+
+def _cg_loop(
+    A: AbstractLinearOperator,
+    b: PyTree[Num[Array, '...']],
+    x0: PyTree[Num[Array, '...']] | None,
+    preconditioner: AbstractLinearOperator | None,
+    iteration_callback: Callable[[Array, Array], None] | None,
+    *,
+    max_steps: int,
+    atol: float,
+    rtol: float,
+    stabilise_every: int,
+    negative_curvature: Literal['ignore', 'error', 'truncate'],
+    loop_kind: Literal['lax', 'checkpointed', 'bounded'],
+) -> CGResult:
+    """The CG iteration of [`cg`][], differentiable only by unrolling."""
     truncate = negative_curvature == 'truncate'
     check_curvature = negative_curvature == 'error'
 
@@ -273,6 +415,7 @@ class CGSolver:
     stabilise_every: int = 10
     negative_curvature: Literal['ignore', 'error', 'truncate'] = 'ignore'
     loop_kind: Literal['lax', 'checkpointed', 'bounded'] = 'lax'
+    differentiation: Literal['implicit', 'unrolled'] = 'implicit'
     iteration_callback: Callable[[Array, Array], None] | None = None
 
     def __call__(

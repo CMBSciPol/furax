@@ -37,6 +37,15 @@ def _initial_vector(
     return tree.normal_like(A.in_structure, key)
 
 
+def _restart_key(key: Key[Array, ''] | None) -> Key[Array, '']:
+    """Key for the vectors that continue the iteration after an invariant subspace is found.
+
+    It is derived from the caller's key, independently of the draw of v0, or is fixed when
+    no key is given so that a call with only v0 stays deterministic.
+    """
+    return jax.random.fold_in(jax.random.key(0) if key is None else key, 1)
+
+
 def _orthogonalize(w: PyTree, V: PyTree, n: int | Array) -> PyTree:
     """Project w onto the orthogonal complement of the first n vectors of block PyTree V."""
 
@@ -277,7 +286,9 @@ def lanczos_eigh(
     Args:
         A: A Hermitian linear operator.
         v0: Initial vector for the Krylov subspace. If not given, it is drawn from `key`.
-        key: Random key used to draw a standard normal `v0` when `v0` is not given.
+        key: Random key used to draw a standard normal `v0` when `v0` is not given, and
+            the vectors that continue the iteration after an invariant subspace is found.
+            If not given, those vectors are drawn from a fixed key.
         k: Number of eigenpairs to return.
         m: Size of the Krylov subspace.  Must be at least `k` and at most n.  Defaults to
             `min(2*k, n)`, where n is the size of the operator input.  Larger m
@@ -305,7 +316,7 @@ def lanczos_eigh(
         raise ValueError(f'm ({m}) must be >= k ({k})')
 
     # Run Lanczos to build tridiagonal matrix in m-dimensional Krylov subspace
-    alpha, beta, V, beta_last, _ = lanczos_tridiag(A, v0, m)
+    alpha, beta, V, beta_last, _ = lanczos_tridiag(A, v0, m, _restart_key(key))
     ritz_values, ritz_vectors = jax.scipy.linalg.eigh_tridiagonal(alpha, beta, eigvals_only=False)
 
     eigenvectors = _vecmat(V, ritz_vectors)  # y_i = V s_i
@@ -482,7 +493,9 @@ def lanczos_tr(
     Args:
         A: A Hermitian linear operator.
         v0: Initial vector for the Krylov subspace. If not given, it is drawn from `key`.
-        key: Random key used to draw a standard normal `v0` when `v0` is not given.
+        key: Random key used to draw a standard normal `v0` when `v0` is not given, and
+            the vectors that continue the iteration after an invariant subspace is found.
+            If not given, those vectors are drawn from a fixed key.
         k: Number of eigenpairs to compute.
         m: Size of the Krylov subspace.  Must be larger than `k` and at most n.
             Defaults to `min(2*k, n)`, where n is the size of the operator input.
@@ -546,8 +559,10 @@ def lanczos_tr(
     # Initial m-step factorization
     # Each cycle draws its restart vectors from its own key, so that a breakdown at the same
     # step in two cycles does not retry a direction already in the retained Ritz vectors.
-    key = jax.random.key(0)
-    alpha, beta, V, beta_last, v_last = lanczos_tridiag(A, v0, m, jax.random.fold_in(key, 0))
+    restart_key = _restart_key(key)
+    alpha, beta, V, beta_last, v_last = lanczos_tridiag(
+        A, v0, m, jax.random.fold_in(restart_key, 0)
+    )
     theta, S = jax.scipy.linalg.eigh_tridiagonal(alpha, beta, eigvals_only=False)
     wanted_idx = _select_wanted(theta)
     init_converged = _check_converged(theta, beta_last, S, wanted_idx)
@@ -564,7 +579,7 @@ def lanczos_tr(
         h = beta_last * S[-1, wanted_idx]  # h_i = β_m s_i[-1]  (coupling)
 
         alpha_ext, beta_ext, V, beta_last, v_last = _tr_extend(
-            A, V_k, v_last, k, m, jax.random.fold_in(key, iteration + 1)
+            A, V_k, v_last, k, m, jax.random.fold_in(restart_key, iteration + 1)
         )
 
         H = _build_bordered_tridiag(theta_k, h, alpha_ext, beta_ext, k, m)

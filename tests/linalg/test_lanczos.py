@@ -149,6 +149,12 @@ class TestLanczosEigh:
             solver(A, v0)
 
 
+_UNCONVERGED = {
+    lanczos_eigh: {'k': 5},
+    lanczos_tr: {'k': 2, 'which': 'SA', 'max_restarts': 0},
+}
+
+
 @pytest.mark.parametrize('solver', [lanczos_eigh, lanczos_tr])
 class TestLanczosStartingVector:
     """The starting vector is either given or drawn from a random key."""
@@ -172,6 +178,17 @@ class TestLanczosStartingVector:
         result = solver(A, v0, key=jax.random.key(1), k=2, m=4)
         assert_allclose(result.eigenvalues, expected.eigenvalues)
         assert_allclose(result.eigenvectors, expected.eigenvectors)
+
+    def test_key_draws_restart_vectors(self, solver):
+        """After an invariant subspace is found, the iteration continues from the key."""
+        d = jnp.array([1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
+        A = DiagonalOperator(d, in_structure=as_structure(d))
+        v0 = jnp.array([1.0, 0.0, 1.0, 0.0, 1.0, 0.0])  # Krylov subspace of dimension 3
+        # Unconverged Ritz values from the 2 vectors after the restart depend on its direction.
+        kwargs = _UNCONVERGED[solver]
+        result1 = solver(A, v0, key=jax.random.key(0), m=5, **kwargs)
+        result2 = solver(A, v0, key=jax.random.key(1), m=5, **kwargs)
+        assert not jnp.allclose(result1.eigenvalues, result2.eigenvalues)
 
     def test_requires_v0_or_key(self, solver):
         """Without v0 or key there is no starting vector."""

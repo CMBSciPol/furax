@@ -1,11 +1,14 @@
 import operator
 from collections.abc import Callable
+from functools import partial
 from math import prod
 from typing import Any
 
 import jax
 from jax import Array
 from jax import numpy as jnp
+from jax.core import Tracer
+from jax.sharding import AbstractMesh, NamedSharding
 from jax.tree_util import PyTreeDef
 from jaxtyping import Key, Num, PyTree, ScalarLike
 
@@ -167,8 +170,33 @@ def full_like[P: ArrayPyTree](x: P, fill_value: ScalarLike) -> P:
     return result
 
 
+def _sample_like(sample: Callable[..., Array], leaf: Any, key: Key[Array, '']) -> Array:
+    """Return `sample(key, shape, dtype, ...)` placed as `jnp.full_like(leaf, 0)` would be.
+
+    The output takes the sharding of leaf: under tracing its abstract sharding, otherwise the
+    sharding of a committed array or of a `ShapeDtypeStruct`. An abstract sharding needs a mesh
+    context, without which the output gets the default placement, as in `jnp.full_like`.
+    """
+    shape, dtype = leaf.shape, leaf.dtype
+    if isinstance(leaf, Tracer):
+        sharding = jax.typeof(leaf).sharding
+    elif getattr(leaf, '_committed', True):  # a ShapeDtypeStruct has no `_committed`
+        sharding = getattr(leaf, 'sharding', None)
+    else:
+        sharding = None
+    if sharding is None:
+        return sample(key, shape, dtype)
+    if isinstance(sharding, NamedSharding) and isinstance(sharding.mesh, AbstractMesh):
+        if jax.sharding.get_abstract_mesh().empty:
+            return sample(key, shape, dtype)
+        return sample(key, shape, dtype, out_sharding=sharding)
+    return jax.jit(lambda key: sample(key, shape, dtype), out_shardings=sharding)(key)
+
+
 def normal_like[P: ArrayPyTree](x: P, key: Key[Array, '']) -> P:
     """Returns a pytrees of a normal values with the same structure as x.
+
+    Each leaf of the output has the sharding of the matching leaf of x.
 
     Args:
         x: The pytree of array-like leaves with ``shape`` and ``dtype`` attributes, whose structure
@@ -186,9 +214,7 @@ def normal_like[P: ArrayPyTree](x: P, key: Key[Array, '']) -> P:
     """
     key_leaves = jax.random.split(key, len(jax.tree.leaves(x)))
     keys = jax.tree.unflatten(jax.tree.structure(x), key_leaves)
-    result: P = jax.tree.map(
-        lambda leaf, key: jax.random.normal(key, leaf.shape, leaf.dtype), x, keys
-    )
+    result: P = jax.tree.map(lambda leaf, key: _sample_like(jax.random.normal, leaf, key), x, keys)
     return result
 
 
@@ -196,6 +222,8 @@ def uniform_like[P: ArrayPyTree](
     x: P, key: Key[Array, ''], low: float = 0.0, high: float = 1.0
 ) -> P:
     """Returns a pytrees of a uniform values with the same structure as x.
+
+    Each leaf of the output has the sharding of the matching leaf of x.
 
     Args:
         x: The pytree of array-like leaves with ``shape`` and ``dtype`` attributes, whose structure
@@ -216,7 +244,11 @@ def uniform_like[P: ArrayPyTree](
     key_leaves = jax.random.split(key, len(jax.tree.leaves(x)))
     keys = jax.tree.unflatten(jax.tree.structure(x), key_leaves)
     result: P = jax.tree.map(
-        lambda leaf, key: jax.random.uniform(key, leaf.shape, leaf.dtype, low, high), x, keys
+        lambda leaf, key: _sample_like(
+            partial(jax.random.uniform, minval=low, maxval=high), leaf, key
+        ),
+        x,
+        keys,
     )
     return result
 

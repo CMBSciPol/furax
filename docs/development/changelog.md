@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tree.normal_like` and `tree.uniform_like` keep the sharding of their input, like `tree.full_like` (#320)
 - `lanczos_eigh` and `lanczos_tr` no longer return spurious zero eigenpairs when the Krylov subspace becomes invariant, e.g. for repeated eigenvalues (#317)
 - `lanczos_eigh` and `lanczos_tr` accept vectors sharded over explicit mesh axes (#322)
+- `tree.stack`, `tree.unstack` and `tree.stacked_*` functions for pytrees stacked along a leading axis (#325)
 
 ## [0.15.4] - 2026-10-06
 

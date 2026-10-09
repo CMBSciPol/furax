@@ -549,10 +549,9 @@ class MultiObservationMapMaker[T]:
         # The spectrum is positive, so its smallest algebraic eigenvalues are the ones closest to
         # zero: they set the condition number that slows CG down, and, at the end of the spectrum,
         # Lanczos converges them with a small Krylov subspace ('SM' would select the same pairs).
-        v0 = furax.tree.normal_like(system.A.in_structure, jax.random.key(config.seed))
         result = furax.linalg.lanczos_tr(
             system.A,
-            v0,
+            key=jax.random.key(config.seed),
             k=config.rank,
             m=config.krylov_size,
             which='SA',

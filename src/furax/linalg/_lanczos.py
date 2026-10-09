@@ -15,8 +15,11 @@ LanczosWhich = Literal['LM', 'SM', 'LA', 'SA', 'BE']
 
 
 def _block_zeros_like(x: PyTree, k: int) -> PyTree:
-    """Return a block PyTree of k zero vectors with leading dimension k prepended."""
-    return jax.tree.map(lambda leaf: jnp.zeros((k, *leaf.shape), leaf.dtype), x)
+    """Return a block PyTree of k zero vectors with leading dimension k prepended.
+
+    The new leading axis is replicated; the other axes keep the sharding of x.
+    """
+    return jax.tree.map(lambda z: jnp.broadcast_to(z, (k, *z.shape)), tree.zeros_like(x))
 
 
 def _vecmat(X: PyTree, C: Float[Array, 'm k']) -> PyTree:

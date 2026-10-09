@@ -14,19 +14,6 @@ from furax.core import AbstractLinearOperator
 LanczosWhich = Literal['LM', 'SM', 'LA', 'SA', 'BE']
 
 
-def _block_zeros_like(x: PyTree, k: int) -> PyTree:
-    """Return a block PyTree of k zero vectors with leading dimension k prepended.
-
-    The new leading axis is replicated; the other axes keep the sharding of x.
-    """
-    return jax.tree.map(lambda z: jnp.broadcast_to(z, (k, *z.shape)), tree.zeros_like(x))
-
-
-def _vecmat(X: PyTree, C: Float[Array, 'm k']) -> PyTree:
-    """Compute Y = X @ C for block PyTree X with m vectors, returning k vectors."""
-    return jax.tree.map(lambda leaf: jnp.einsum('mk,m...->k...', C, leaf), X)
-
-
 def _initial_vector(
     A: AbstractLinearOperator,
     v0: PyTree[Num[Array, '...']] | None,
@@ -53,7 +40,7 @@ def _orthogonalize(w: PyTree, V: PyTree, n: int | Array) -> PyTree:
     """Project w onto the orthogonal complement of the first n vectors of block PyTree V."""
 
     def step(i, w):
-        v_i = jax.tree.map(lambda V_leaf: V_leaf[i], V)
+        v_i = tree.stacked_get(V, i)
         return tree.add(tree.mul(-tree.dot(v_i, w), v_i), w)  # w -= <v_i, w> v_i
 
     return jax.lax.fori_loop(0, n, step, w)
@@ -168,11 +155,8 @@ def _lanczos_loop(
         v_next = tree.mul(1.0 / jnp.where(w_norm > 0, w_norm, 1.0), w)
 
         beta = jnp.where(j < m - 1, beta.at[j].set(beta_j), beta)
-        V_m = jax.tree.map(
-            lambda V_leaf, v_leaf: jnp.where(j < m - 1, V_leaf.at[j + 1].set(v_leaf), V_leaf),
-            V_m,
-            v_next,
-        )
+        # The last step has no slot for v_next (j + 1 = m), which is returned as v_last instead.
+        V_m = tree.stacked_set(V_m, j + 1, v_next, mode='drop')
 
         return V_m, alpha, beta, v_next, v, beta_j
 
@@ -233,8 +217,7 @@ def lanczos_tridiag(
 
     v = tree.mul(1.0 / tree.norm(v0), v0)
 
-    V = _block_zeros_like(v0, m)
-    V = jax.tree.map(lambda V_leaf, v_leaf: V_leaf.at[0].set(v_leaf), V, v)
+    V = tree.stacked_set(tree.stacked_zeros_like(v0, m), 0, v)
     alpha = jnp.zeros(m)
     beta = jnp.zeros(m - 1)
 
@@ -322,7 +305,7 @@ def lanczos_eigh(
     alpha, beta, V, beta_last, _ = lanczos_tridiag(A, v0, m, _restart_key(key))
     ritz_values, ritz_vectors = jax.scipy.linalg.eigh_tridiagonal(alpha, beta, eigvals_only=False)
 
-    eigenvectors = _vecmat(V, ritz_vectors)  # y_i = V s_i
+    eigenvectors = tree.stacked_combine(V, ritz_vectors)  # y_i = V s_i
 
     # ||A y_i - θ_i y_i|| ≈ |β_m| |s_i[-1]|
     residual_norms = jnp.abs(beta_last) * jnp.abs(ritz_vectors[-1, :])
@@ -332,7 +315,7 @@ def lanczos_eigh(
     best_idx = best_idx[jnp.argsort(ritz_values[best_idx])]
     return LanczosResult(
         eigenvalues=ritz_values[best_idx],
-        eigenvectors=jax.tree.map(lambda leaf: leaf[best_idx], eigenvectors),
+        eigenvectors=tree.stacked_get(eigenvectors, best_idx),
         residual_norms=residual_norms[best_idx],
     )
 
@@ -418,16 +401,16 @@ def _tr_extend(
     real_dtype = jnp.empty((), dtype=dtype).real.dtype
 
     # Pre-allocate m-vector basis; fill first k slots with Ritz vectors
-    V_m = _block_zeros_like(v_start, m)
-    V_m = jax.tree.map(lambda Vm_l, Vk_l: Vm_l.at[:k].set(Vk_l), V_m, V_k)
-    V_m = jax.tree.map(lambda Vm_l, vn_l: Vm_l.at[k].set(vn_l), V_m, v_start)
+    V_m = tree.stacked_zeros_like(v_start, m)
+    V_m = tree.stacked_set(V_m, slice(0, k), V_k)
+    V_m = tree.stacked_set(V_m, k, v_start)
 
     # Set beta_prev=0 so the explicit `-beta_prev * v_prev` term in _lanczos_loop
     # vanishes; v_prev itself is unused (any vector would do). Coupling between the
     # new Lanczos vector and the k retained Ritz vectors is instead handled by the
     # full reorthogonalization loop, which projects against V_m[:j+1] (= all Ritz
     # vectors plus the current extension vectors).
-    v_prev = jax.tree.map(lambda leaf: leaf[k - 1], V_m)
+    v_prev = tree.stacked_get(V_m, k - 1)
 
     alpha = jnp.zeros(m, dtype=real_dtype)
     beta = jnp.zeros(m - 1, dtype=real_dtype)
@@ -577,7 +560,7 @@ def lanczos_tr(
     def body_fn(state):
         V, beta_last, v_last, iteration, _converged, theta, S, wanted_idx = state
 
-        V_k = _vecmat(V, S[:, wanted_idx])  # U_k = V S[:,wanted]  (Ritz vectors)
+        V_k = tree.stacked_combine(V, S[:, wanted_idx])  # U_k = V S[:,wanted]  (Ritz vectors)
         theta_k = theta[wanted_idx]  # θ_k
         h = beta_last * S[-1, wanted_idx]  # h_i = β_m s_i[-1]  (coupling)
 
@@ -601,7 +584,7 @@ def lanczos_tr(
     # Sort selected pairs by eigenvalue ascending
     wanted_idx = wanted_idx[jnp.argsort(theta[wanted_idx])]
     eigenvalues = theta[wanted_idx]
-    eigenvectors = _vecmat(V, S[:, wanted_idx])  # y_i = V s_i
+    eigenvectors = tree.stacked_combine(V, S[:, wanted_idx])  # y_i = V s_i
     residual_norms = jnp.abs(beta_last) * jnp.abs(S[-1, wanted_idx])  # |β_m| |s_i[-1]|
 
     return LanczosResult(

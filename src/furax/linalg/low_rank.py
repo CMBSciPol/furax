@@ -8,7 +8,7 @@ from jax import Array
 from jaxtyping import Float, Key, Num, PyTree
 
 from furax import AbstractLinearOperator, symmetric
-from furax.tree import dot, normal_like
+from furax.tree import dot
 
 from ._lanczos import lanczos_eigh, lanczos_tr
 
@@ -73,8 +73,7 @@ def low_rank(
     solvers = {'lanczos': lanczos_eigh, 'lanczos_tr': lanczos_tr}
     if method not in solvers:
         raise ValueError(f'Unknown method: {method!r}. Use one of {get_args(LowRankMethod)}.')
-    v0 = normal_like(A.in_structure, key)
-    result = solvers[method](A, v0, k=rank, **kwargs)
+    result = solvers[method](A, key=key, k=rank, **kwargs)
     return LowRankTerms(
         eigenvalues=result.eigenvalues,
         eigenvectors=result.eigenvectors,

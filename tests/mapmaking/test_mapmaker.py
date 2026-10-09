@@ -23,8 +23,10 @@ from furax.mapmaking.config import (
     NoiseSource,
     PointingConfig,
     SkyPatch,
+    SolverConfig,
     SotodlibConfig,
     TemplatesConfig,
+    TwoLevelConfig,
     WCSConfig,
     WeightingConfig,
     WeightingMode,
@@ -352,6 +354,20 @@ class TestNoiseModelSelection:
         results = maker.run()
         assert results.icov.shape == (3, 3, *maker.landscape.shape)
         assert results.solver_stats is not None
+
+
+@pytest.mark.parametrize('spectrum', ['preconditioned', 'system'])
+def test_two_level_preconditioner_solves_the_same_system(spectrum):
+    config = _config('healpix', 'IQU', method=Methods.MAXL)
+    config.weighting = WeightingConfig(
+        mode=WeightingMode.TOEPLITZ, source=NoiseSource.PRECOMPUTED, correlation_length=64
+    )
+    config.solver = SolverConfig(rtol=1e-10, max_steps=500)
+    observations = [GappyLazyGroundObservation(seed=i, n_samples=256) for i in range(2)]
+    expected = MultiObservationMapMaker(observations, config=config).run()
+    config.solver.two_level = TwoLevelConfig(rank=4, spectrum=spectrum, tol=1e-8, max_restarts=50)
+    results = MultiObservationMapMaker(observations, config=config).run()
+    assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-8)
 
 
 POMME_PARAMS = [

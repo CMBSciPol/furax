@@ -20,6 +20,7 @@ from furax.mapmaking.config import (
     SotodlibConfig,
     T2PConfig,
     TemplatesConfig,
+    TwoLevelConfig,
     WCSConfig,
     WeightingConfig,
     WeightingMode,
@@ -83,6 +84,12 @@ def test_yaml_round_trip_writes_projection_by_name():
     text = config._to_yaml()
     assert 'projection: CAR' in text
     assert MapMakingConfig.load_dict(yaml.safe_load(text)) == config
+
+
+def test_two_level_is_not_a_cg_option():
+    config = MapMakingConfig.load_dict({'solver': {'two_level': {'rank': 5}}})
+    assert config.solver.two_level == TwoLevelConfig(rank=5)
+    assert 'two_level' not in config.solver.options
 
 
 def test_int_is_accepted_for_float_field():

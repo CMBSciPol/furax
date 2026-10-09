@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `tree.normal_like` and `tree.uniform_like` keep the sharding of their input, like `tree.full_like` (#320)
+
 ## [0.15.4] - 2026-10-06
 
 ### Added

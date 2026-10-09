@@ -1,3 +1,4 @@
+import contextlib
 import itertools
 
 import jax
@@ -5,6 +6,8 @@ import pytest
 from equinox import tree_equal
 from jax import Array
 from jax import numpy as jnp
+from jax.sharding import AxisType, NamedSharding
+from jax.sharding import PartitionSpec as P
 from jax.tree_util import PyTreeDef
 from jaxtyping import PyTree
 from numpy.testing import assert_array_equal
@@ -145,6 +148,31 @@ key1, key2 = jax.random.split(key_from_seed)
 def test_normal_like(x, expected_y) -> None:
     y = fx.tree.normal_like(x, key_from_seed)
     assert tree_equal(y, expected_y)
+
+
+@pytest.mark.distributed
+@pytest.mark.parametrize('mesh_context', [True, False], ids=['in-mesh', 'no-mesh'])
+@pytest.mark.parametrize('call', ['eager', 'structure', 'jit'])
+@pytest.mark.parametrize('axis_type', [AxisType.Explicit, AxisType.Auto], ids=['explicit', 'auto'])
+@pytest.mark.parametrize('random_like', [fx.tree.normal_like, fx.tree.uniform_like])
+def test_random_like_sharding_matches_full_like(
+    random_like, axis_type: AxisType, call: str, mesh_context: bool
+) -> None:
+    if call == 'jit' and axis_type == AxisType.Explicit and not mesh_context:
+        pytest.skip('jit of an explicitly sharded input requires a mesh context')
+    n = jax.device_count()
+    mesh = jax.make_mesh((n,), ('i',), axis_types=(axis_type,))
+    x = {'a': jax.device_put(jnp.ones((n, 2)), NamedSharding(mesh, P('i'))), 'b': jnp.ones(3)}
+    if call == 'structure':
+        x = fx.tree.as_structure(x)
+
+    def both(x):
+        return fx.tree.full_like(x, 0), random_like(x, key_from_seed)
+
+    with jax.set_mesh(mesh) if mesh_context else contextlib.nullcontext():
+        expected, y = jax.jit(both)(x) if call == 'jit' else both(x)
+    for leaf, expected_leaf in zip(jax.tree.leaves(y), jax.tree.leaves(expected)):
+        assert leaf.sharding.is_equivalent_to(expected_leaf.sharding, leaf.ndim)
 
 
 @pytest.mark.parametrize(

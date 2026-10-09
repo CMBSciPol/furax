@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jaxtyping import Array, Key
-from numpy.testing import assert_allclose
+from numpy.testing import assert_allclose, assert_array_equal
 
 from furax import BlockDiagonalOperator, DenseBlockDiagonalOperator, DiagonalOperator
 from furax.linalg._lanczos import lanczos_eigh, lanczos_tr, lanczos_tridiag
@@ -45,13 +45,45 @@ class TestLanczosTridiag:
         assert_allclose(eigenvalues, true_eigenvalues, atol=1e-10)
 
     def test_lanczos_tridiag_breakdown(self):
-        """An invariant Krylov subspace gives β = 0 and the basis stays orthonormal."""
+        """An invariant Krylov subspace gives β ≈ 0 and the basis stays orthonormal."""
         d = jnp.array([1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
         A = DiagonalOperator(d, in_structure=as_structure(d))
         v0 = normal_like(as_structure(d), jax.random.key(0))
         _, beta, V, _, _ = lanczos_tridiag(A, v0, m=6)
-        assert beta[2] == 0  # the Krylov subspace of v0 has dimension 3
+        assert_allclose(beta[2], 0, atol=1e-14)  # the Krylov subspace of v0 has dimension 3
         assert_allclose(V @ V.T, jnp.eye(6), atol=1e-10)
+
+    def test_lanczos_tridiag_exact_breakdown(self):
+        """An exactly zero residual gives β = 0 and a random continuation vector."""
+        d = jnp.ones(3)
+        A = DiagonalOperator(d, in_structure=as_structure(d))
+        v0 = jnp.array([1.0, 0.0, 0.0])
+        alpha, beta, V, _, _ = lanczos_tridiag(A, v0, m=2)
+        assert_allclose(alpha, jnp.ones(2))
+        assert_array_equal(beta, jnp.zeros(1))
+        assert_allclose(V @ V.T, jnp.eye(2), atol=1e-14)
+
+    def test_lanczos_tridiag_breakdown_last_step(self):
+        """With m == n, a breakdown at the last step leaves a zero residual, not NaN."""
+        d = jnp.ones(2)
+        A = DiagonalOperator(d, in_structure=as_structure(d))
+        v0 = jnp.array([1.0, 0.0])
+        with jax.debug_nans(True):
+            alpha, beta, V, beta_last, v_last = lanczos_tridiag(A, v0, m=2)
+        assert_allclose(alpha, jnp.ones(2))
+        assert_array_equal(beta, jnp.zeros(1))
+        assert_allclose(V @ V.T, jnp.eye(2), atol=1e-14)
+        assert beta_last == 0
+        assert_array_equal(v_last, jnp.zeros(2))
+
+    def test_lanczos_tridiag_key(self):
+        """The restart vector after a breakdown depends on the key."""
+        d = jnp.ones(3)
+        A = DiagonalOperator(d, in_structure=as_structure(d))
+        v0 = jnp.array([1.0, 0.0, 0.0])
+        _, _, V1, _, _ = lanczos_tridiag(A, v0, m=2, key=jax.random.key(0))
+        _, _, V2, _, _ = lanczos_tridiag(A, v0, m=2, key=jax.random.key(1))
+        assert not jnp.allclose(V1[1], V2[1])
 
 
 class TestLanczosEigh:
@@ -101,12 +133,20 @@ class TestLanczosEigh:
         G = result.eigenvectors @ result.eigenvectors.T
         assert_allclose(G, jnp.eye(6), atol=1e-10)
 
-    @pytest.mark.parametrize('solver', [lanczos_eigh, lanczos_tr])
+    @pytest.mark.parametrize(
+        'solver',
+        [
+            lambda A, v0: lanczos_tridiag(A, v0, m=6),
+            lambda A, v0: lanczos_eigh(A, v0, k=2, m=6),
+            lambda A, v0: lanczos_tr(A, v0, k=2, m=6),
+        ],
+        ids=['tridiag', 'eigh', 'tr'],
+    )
     def test_lanczos_m_larger_than_n(self, solver):
         """m larger than the operator size is rejected."""
         A, v0, _ = _random_hermitian_operator(5, jax.random.key(0), pd=True)
         with pytest.raises(ValueError, match='must be <= the operator size'):
-            solver(A, v0, k=2, m=6)
+            solver(A, v0)
 
 
 @pytest.mark.parametrize('solver', [lanczos_eigh, lanczos_tr])

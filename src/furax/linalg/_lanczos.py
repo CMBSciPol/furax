@@ -47,12 +47,6 @@ def _orthogonalize(w: PyTree, V: PyTree, n: int | Array) -> PyTree:
     return jax.lax.fori_loop(0, n, step, w)
 
 
-def _check_krylov_size(A: AbstractLinearOperator, m: int) -> None:
-    n = sum(leaf.size for leaf in jax.tree.leaves(A.in_structure))
-    if m > n:
-        raise ValueError(f'm ({m}) must be <= the operator size ({n})')
-
-
 class LanczosResult(NamedTuple):
     """Result of Lanczos eigenvalue computation.
 
@@ -82,6 +76,7 @@ def _lanczos_loop(
     beta_prev: Float[Array, ''],
     j_start: int,
     m: int,
+    key: Key[Array, ''],
 ) -> tuple[
     PyTree[Num[Array, 'm ...']],
     Float[Array, ' m'],
@@ -103,44 +98,62 @@ def _lanczos_loop(
         beta_prev: Previous beta (0 for a fresh start).
         j_start: Absolute index of the first iteration.
         m: Total number of Lanczos vectors.
+        key: Random key for the restart vectors drawn on breakdown.
 
     Returns:
         V_m: Updated m-vector basis.
         alpha: Updated diagonal (m,).
         beta: Updated off-diagonal (m-1,).
         beta_last: Residual norm after the final step.
-        v_last: Residual direction after the final step.
+        v_last: Residual direction after the final step, or zero if beta_last is 0.
     """
+    # DGKS criterion: an orthogonalization pass that keeps less than this fraction of the
+    # norm has cancelled enough to lose orthogonality, and is repeated.
+    eta = 1 / jnp.sqrt(2)
 
     def body_fn(j, carry):
-        V_m, alpha, beta, v, v_prev, beta_prev, a_norm = carry
+        V_m, alpha, beta, v, v_prev, beta_prev = carry
 
         Av = A(v)
-        a_norm = jnp.maximum(a_norm, jnp.real(tree.norm(Av)))  # running estimate of ||A||
         alpha_j = jnp.real(tree.dot(v, Av))  # α_j = <v_j, A v_j>
         alpha = alpha.at[j].set(alpha_j)
 
         w = tree.add(tree.mul(-alpha_j, v), Av)  # w = A v_j - α_j v_j
         w = tree.add(tree.mul(-beta_prev, v_prev), w)  # w -= β_{j-1} v_{j-1}
+        w_norm = jnp.real(tree.norm(w))
         w = _orthogonalize(w, V_m, j + 1)  # full reorthogonalization
-
         beta_j = jnp.real(tree.norm(w))  # β_j = ||w||
 
-        # Breakdown: span(V_m[:j+1]) is invariant under A and w is rounding noise. Normalizing
-        # it would not yield a valid Lanczos vector, and keeping it would leave a zero vector
-        # whose spurious Ritz value 0 looks converged. Instead set β_j = 0, which decouples T
-        # into exact blocks, and continue from a random unit vector orthogonal to V_m[:j+1].
-        eps = jnp.finfo(beta_j.dtype).eps
-        breakdown = beta_j <= m * eps * a_norm
-
-        def restart():
-            r = tree.normal_like(v, jax.random.fold_in(jax.random.key(0), j))
+        def refine():
+            w2 = _orthogonalize(w, V_m, j + 1)
+            beta2 = jnp.real(tree.norm(w2))
+            # A second pass that keeps more than eta of the norm leaves w orthogonal to
+            # V_m[:j+1] to working precision, even when w is mere rounding noise.
+            # Breakdown: the second pass cancels again (or w is exactly zero), so w lies in
+            # span(V_m[:j+1]) up to rounding and that span is invariant under A. Normalizing w
+            # would not give a vector orthogonal to the basis, and keeping a zero vector would
+            # add a spurious Ritz value 0 that looks converged. Instead set β_j = 0, which
+            # decouples T into exact blocks, and continue from a random vector orthogonal to
+            # V_m[:j+1]. At the last step the residual term vanishes and v_last is left zero.
+            breakdown = beta2 <= eta * beta_j
+            restart = breakdown & (j < m - 1)
+            r = tree.normal_like(v, jax.random.fold_in(key, j))
             # The second pass restores orthogonality lost when r is nearly in span(V_m[:j+1]).
             r = _orthogonalize(_orthogonalize(r, V_m, j + 1), V_m, j + 1)
-            return tree.mul(1.0 / tree.norm(r), r)
+            x = jax.tree.map(
+                lambda r_leaf, w_leaf: jnp.where(
+                    restart, r_leaf, jnp.where(breakdown, jnp.zeros_like(w_leaf), w_leaf)
+                ),
+                r,
+                w2,
+            )
+            return x, jnp.where(breakdown, 0.0, beta2).astype(beta_j.dtype)
 
-        v_next = jax.lax.cond(breakdown, restart, lambda: tree.mul(1.0 / beta_j, w))
-        beta_j = jnp.where(breakdown, 0.0, beta_j)
+        w, beta_j = jax.lax.cond(beta_j <= eta * w_norm, refine, lambda: (w, beta_j))
+
+        # On breakdown at the last step w is zero; avoid 0/0 so that v_last stays zero.
+        w_norm = jnp.real(tree.norm(w))
+        v_next = tree.mul(1.0 / jnp.where(w_norm > 0, w_norm, 1.0), w)
 
         beta = jnp.where(j < m - 1, beta.at[j].set(beta_j), beta)
         V_m = jax.tree.map(
@@ -149,10 +162,10 @@ def _lanczos_loop(
             v_next,
         )
 
-        return V_m, alpha, beta, v_next, v, beta_j, a_norm
+        return V_m, alpha, beta, v_next, v, beta_j
 
-    init_carry = (V_m, alpha, beta, v_start, v_prev, beta_prev, jnp.zeros_like(beta_prev))
-    V_m, alpha, beta, v_last, _, beta_last, _ = jax.lax.fori_loop(j_start, m, body_fn, init_carry)
+    init_carry = (V_m, alpha, beta, v_start, v_prev, beta_prev)
+    V_m, alpha, beta, v_last, _, beta_last = jax.lax.fori_loop(j_start, m, body_fn, init_carry)
     return V_m, alpha, beta, beta_last, v_last
 
 
@@ -160,6 +173,7 @@ def lanczos_tridiag(
     A: AbstractLinearOperator,
     v0: PyTree[Num[Array, '...']],
     m: int,
+    key: Key[Array, ''] | None = None,
 ) -> tuple[
     Float[Array, ' m'],
     Float[Array, ' m-1'],
@@ -179,22 +193,32 @@ def lanczos_tridiag(
     A V = V T + \beta_\text{last}\, v_\text{last}\, e_{m-1}^T
     $$
 
-    If the Krylov subspace becomes invariant under A after j < m steps, beta[j-1] is set
-    to 0 and the iteration continues from a random unit vector orthogonal to the basis
-    built so far, so that V stays orthonormal and the factorization above holds exactly.
+    If the Krylov subspace becomes invariant under A after j < m steps, beta[j-1] is 0 up
+    to rounding and the iteration continues from a unit vector orthogonal to the basis
+    built so far (a random one if the residual vanishes numerically), so that V stays
+    orthonormal and the factorization above holds up to rounding.
 
     Args:
         A: A Hermitian linear operator.
         v0: Initial vector (will be normalized).
         m: Number of Lanczos iterations (size of Krylov subspace), at most the operator size.
+        key: Random key for the vectors that continue the iteration after an invariant
+            subspace is found. Defaults to `jax.random.key(0)`.
 
     Returns:
         alpha: Diagonal of the tridiagonal matrix (m,).
         beta: Off-diagonal of the tridiagonal matrix (m-1,).
         V: Orthonormal Lanczos vectors as a block PyTree with shape (m, ...).
         beta_last: Norm of the residual after m steps (the m-th beta).
-        v_last: Residual direction after m steps (the (m+1)-th Lanczos vector).
+        v_last: Residual direction after m steps (the (m+1)-th Lanczos vector), or zero
+            if beta_last is 0.
     """
+    n = A.in_size
+    if m > n:
+        raise ValueError(f'm ({m}) must be <= the operator size ({n})')
+    if key is None:
+        key = jax.random.key(0)
+
     v = tree.mul(1.0 / tree.norm(v0), v0)
 
     V = _block_zeros_like(v0, m)
@@ -203,16 +227,14 @@ def lanczos_tridiag(
     beta = jnp.zeros(m - 1)
 
     V, alpha, beta, beta_last, v_last = _lanczos_loop(
-        A, V, alpha, beta, v, tree.zeros_like(v), jnp.array(0.0), 0, m
+        A, V, alpha, beta, v, tree.zeros_like(v), jnp.array(0.0), 0, m, key
     )
     return alpha, beta, V, beta_last, v_last
 
 
 def _default_m(A: AbstractLinearOperator, k: int) -> int:
     """Default Krylov subspace size: min(2k, n)."""
-    leaves = jax.tree.leaves(A.in_structure)
-    n = sum(leaf.size for leaf in leaves)
-    return min(2 * k, n)
+    return min(2 * k, A.in_size)
 
 
 def lanczos_eigh(
@@ -281,7 +303,6 @@ def lanczos_eigh(
     m = m or _default_m(A, k)
     if m < k:
         raise ValueError(f'm ({m}) must be >= k ({k})')
-    _check_krylov_size(A, m)
 
     # Run Lanczos to build tridiagonal matrix in m-dimensional Krylov subspace
     alpha, beta, V, beta_last, _ = lanczos_tridiag(A, v0, m)
@@ -350,6 +371,7 @@ def _tr_extend(
     v_start: PyTree[Num[Array, '...']],
     k: int,
     m: int,
+    key: Key[Array, ''],
 ) -> tuple[
     Float[Array, ' p'],
     Float[Array, ' p-1'],
@@ -369,13 +391,14 @@ def _tr_extend(
             the previous Lanczos run, already unit norm).
         k: Number of existing Ritz pairs.
         m: Target number of Lanczos vectors.
+        key: Random key for the restart vectors drawn on breakdown.
 
     Returns:
         alpha_ext: Diagonal of the p×p extension block (p,).
         beta_ext: Off-diagonal of the p×p extension block (p-1,).
         V_m: Full m-vector basis [V_k | Lanczos extension] as a block PyTree.
         beta_last: Residual norm after m steps.
-        v_last: Residual direction after m steps (unit norm).
+        v_last: Residual direction after m steps (unit norm, or zero if beta_last is 0).
     """
     dtype = jax.tree.leaves(v_start)[0].dtype
     real_dtype = jnp.empty((), dtype=dtype).real.dtype
@@ -396,7 +419,7 @@ def _tr_extend(
     beta = jnp.zeros(m - 1, dtype=real_dtype)
 
     V_m, alpha, beta, beta_last, v_last = _lanczos_loop(
-        A, V_m, alpha, beta, v_start, v_prev, jnp.array(0.0, dtype=real_dtype), k, m
+        A, V_m, alpha, beta, v_start, v_prev, jnp.array(0.0, dtype=real_dtype), k, m, key
     )
     return alpha[k:], beta[k:], V_m, beta_last, v_last
 
@@ -450,8 +473,8 @@ def lanczos_tr(
         and the two ends of `'BE'` are extremal and converge with small `m`.
 
     Note:
-        A Krylov subspace built from a single vector contains one eigenvector per
-        distinct eigenvalue.  Further copies of a repeated eigenvalue are only
+        A Krylov subspace built from a single vector contains at most one eigenvector
+        per distinct eigenvalue.  Further copies of a repeated eigenvalue are only
         found when the iteration restarts from a random vector after the
         subspace becomes invariant, so they can be missed: for `diag(1, 1, 2, 2, 3, 3)`,
         `which='LA'` with `k=2` may return the exact pairs for 2 and 3, not 3 twice.
@@ -495,7 +518,6 @@ def lanczos_tr(
     m = m or _default_m(A, k)
     if m <= k:
         raise ValueError(f'm ({m}) must be > k ({k})')
-    _check_krylov_size(A, m)
 
     def _select_wanted(theta):
         if which == 'LM':  # largest magnitude
@@ -522,7 +544,10 @@ def lanczos_tr(
         return jnp.all(ritz_res <= tol * scale)
 
     # Initial m-step factorization
-    alpha, beta, V, beta_last, v_last = lanczos_tridiag(A, v0, m)
+    # Each cycle draws its restart vectors from its own key, so that a breakdown at the same
+    # step in two cycles does not retry a direction already in the retained Ritz vectors.
+    key = jax.random.key(0)
+    alpha, beta, V, beta_last, v_last = lanczos_tridiag(A, v0, m, jax.random.fold_in(key, 0))
     theta, S = jax.scipy.linalg.eigh_tridiagonal(alpha, beta, eigvals_only=False)
     wanted_idx = _select_wanted(theta)
     init_converged = _check_converged(theta, beta_last, S, wanted_idx)
@@ -538,7 +563,9 @@ def lanczos_tr(
         theta_k = theta[wanted_idx]  # θ_k
         h = beta_last * S[-1, wanted_idx]  # h_i = β_m s_i[-1]  (coupling)
 
-        alpha_ext, beta_ext, V, beta_last, v_last = _tr_extend(A, V_k, v_last, k, m)
+        alpha_ext, beta_ext, V, beta_last, v_last = _tr_extend(
+            A, V_k, v_last, k, m, jax.random.fold_in(key, iteration + 1)
+        )
 
         H = _build_bordered_tridiag(theta_k, h, alpha_ext, beta_ext, k, m)
         theta, S = jnp.linalg.eigh(H)  # H S = S diag(θ)

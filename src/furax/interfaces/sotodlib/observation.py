@@ -92,13 +92,13 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     """Class for interfacing with sotodlib's AxisManager."""
 
     def __init__(self, data: AxisManager, sotodlib_config: SotodlibConfig | None = None) -> None:
-        config = sotodlib_config or SotodlibConfig()
-        if config.downsample > 1:
+        sotodlib_config = sotodlib_config or SotodlibConfig()
+        if sotodlib_config.downsample > 1:
             # downsample_obs only Fourier-resamples 'signal' by default
             timestreams = ['signal', 'dsT', 'demodQ', 'demodU']
-            data = downsample_obs(data, config.downsample, fft_resample=timestreams)
+            data = downsample_obs(data, sotodlib_config.downsample, fft_resample=timestreams)
         super().__init__(data)
-        self._sotodlib_config = config
+        self._sotodlib_config = sotodlib_config
 
     @classmethod
     def from_file(
@@ -113,11 +113,11 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if isinstance(filename, Path):
             filename = filename.as_posix()
 
-        config = sotodlib_config or SotodlibConfig()
+        sotodlib_config = sotodlib_config or SotodlibConfig()
         if requested_fields is None:
             # default is to load everything
             data = AxisManager.load(filename, fields=None)
-            return cls(data, config)
+            return cls(data, sotodlib_config)
 
         requested = set(requested_fields)
         # minimum information needed to determine buffer shapes
@@ -126,7 +126,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if ReaderField.METADATA in requested:
             fields.add('obs_info')
         if ReaderField.SAMPLE_DATA in requested:
-            if config.demodulated:
+            if sotodlib_config.demodulated:
                 fields |= {'dsT', 'demodQ', 'demodU'}
             else:
                 fields.add('signal')
@@ -146,18 +146,18 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             fields.add('hwp_angle')
         if ReaderField.BORESIGHT_QUATERNIONS in requested:
             fields |= {'boresight', 'timestamps'}
-            if config.wobble_correction:
+            if sotodlib_config.wobble_correction:
                 fields |= {'wobble_params', 'det_info', 'hwp_angle'}
         if ReaderField.DETECTOR_QUATERNIONS in requested:
             fields.add('focal_plane')
         if ReaderField.NOISE_MODEL_FITS in requested:
-            if config.noise_source == 'mapmaking':
+            if sotodlib_config.noise_source == 'mapmaking':
                 fields.add('preprocess.noiseQ_mapmaking')
             else:
                 fields |= {'preprocess.noiseT', 'preprocess.noiseQ', 'preprocess.noiseU'}
 
         data = AxisManager.load(filename, fields=list(fields))
-        return cls(data, config)
+        return cls(data, sotodlib_config)
 
     @classmethod
     def from_preprocess(
@@ -181,13 +181,13 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             An instance of SOTODLibObservation.
         """
         if isinstance(preprocess_config, dict):
-            config = preprocess_config
+            preprocess_dict = preprocess_config
         else:
             # load the preprocessing config from a yaml file
             with open(preprocess_config) as file:
-                config = yaml.safe_load(file)
+                preprocess_dict = yaml.safe_load(file)
 
-        data = pu.load_and_preprocess(observation_id, config, dets=detector_selection)
+        data = pu.load_and_preprocess(observation_id, preprocess_dict, dets=detector_selection)
         return cls(data, sotodlib_config)
 
     @classmethod

@@ -11,6 +11,11 @@ The constant-weight requirement is what the mapmaker's mask widening provides: e
 a flagged sample is flagged whole (and so is the partial tail interval), so per-detector white
 noise gives a weight that commutes with $F$. Then $W F$ is symmetric positive semidefinite and
 the normal equations $P^\top W F P\, m = P^\top W F\, d$ are a valid GLS system.
+
+Other templates $T$ combine with Pomme through the effective weight $W F$: the joint deprojector
+of $[Z\ T]$ factorises exactly as $D_{FT} D_Z$ (block Gram-Schmidt in the $W$ metric), so the
+only new ingredient is the Gram of the Pomme-filtered templates $T^\top W F T$, which
+[`furax.mapmaking.gram`][] assembles by Schur-eliminating $Z$.
 """
 
 from dataclasses import field

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Pomme can be combined with templates in `MultiObservationMapMaker` (#257)
 - `OffsetBasis`: one offset per interval of a fixed number of samples, the Pomme template returned by `PommeProjectionOperator.template` (#332)
 
 ### Fixed

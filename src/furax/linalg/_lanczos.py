@@ -6,6 +6,7 @@ from typing import Literal, NamedTuple, get_args
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Float, Key, Num, PyTree
 
 from furax import tree
@@ -15,8 +16,17 @@ LanczosWhich = Literal['LM', 'SM', 'LA', 'SA', 'BE']
 
 
 def _block_zeros_like(x: PyTree, k: int) -> PyTree:
-    """Return a block PyTree of k zero vectors with leading dimension k prepended."""
-    return jax.tree.map(lambda leaf: jnp.zeros((k, *leaf.shape), leaf.dtype), x)
+    """Return a block PyTree of k zero vectors with leading dimension k prepended.
+
+    The new leading axis is replicated; the other axes keep the sharding of x.
+    """
+
+    def zeros(leaf):
+        sharding = jax.typeof(leaf).sharding
+        sharding = sharding.update(spec=P(None, *sharding.spec))
+        return jnp.zeros((k, *leaf.shape), leaf.dtype, out_sharding=sharding)
+
+    return jax.tree.map(zeros, x)
 
 
 def _vecmat(X: PyTree, C: Float[Array, 'm k']) -> PyTree:

@@ -2,7 +2,10 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
+from jax.sharding import AxisType, NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Key
 from numpy.testing import assert_allclose, assert_array_equal
 
@@ -358,3 +361,21 @@ class TestLanczosComplexHermitian:
 
         G = result.eigenvectors @ result.eigenvectors.conj().T
         assert_allclose(G, jnp.eye(3), atol=1e-10)
+
+
+@pytest.mark.distributed
+@pytest.mark.parametrize('solver', [lanczos_eigh, lanczos_tr])
+def test_lanczos_sharded(solver):
+    """Eigenvectors keep the explicit sharding of the operator input, across a breakdown."""
+    n = jax.device_count()
+    mesh = jax.make_mesh((n,), ('i',), axis_types=(AxisType.Explicit,))
+    d = jnp.repeat(jnp.arange(1.0, 4.0), n)  # 3 distinct values: breakdown after 3 steps
+    with jax.set_mesh(mesh):
+        d_s = jax.device_put(d, NamedSharding(mesh, P('i')))
+        A = DiagonalOperator(d_s, in_structure=as_structure(d_s))
+        result = jax.jit(lambda key: solver(A, key=key, k=2, m=5))(jax.random.key(0))
+
+    assert result.eigenvectors.sharding.spec == P(None, 'i'), result.eigenvectors.sharding.spec
+    U = np.asarray(result.eigenvectors)
+    assert_allclose(U @ U.T, np.eye(2), atol=1e-10)
+    assert_allclose(U * np.asarray(d), U * np.asarray(result.eigenvalues)[:, None], atol=1e-10)

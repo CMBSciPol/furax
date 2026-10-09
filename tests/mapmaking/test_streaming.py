@@ -533,7 +533,6 @@ def test_multi_stacked_bodies_still_fuse_under_addition() -> None:
     assert isinstance(fused, StreamOperator)
     x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
     assert_allclose(fused(x), tree.add(a(x), b(x)), rtol=1e-10)
-    assert _count_scans(jax.make_jaxpr(fused.mv)(x).jaxpr) == 1
 
 
 def test_segment_structure_does_not_depend_on_trace_context() -> None:

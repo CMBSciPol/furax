@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `lanczos_eigh` and `lanczos_tr` reject a Krylov size `m` larger than the operator size (#317)
+- `AdditionOperator` with `sequential=True` and `BlockRowOperator` apply operands sharing a static signature through a single traced body, one operand at a time, so compiling a sum of N structurally identical terms no longer scales linearly with N (#315)
 
 ### Fixed
 

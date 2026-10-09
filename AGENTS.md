@@ -12,6 +12,8 @@ Do not mention discarded alternatives, intermediate edits, private instructions,
 
 Preserve useful human-written comments unless the code change makes them inaccurate.
 
+In replies to the user, do not write LaTeX unless they explicitly ask for it: write mathematics with Unicode, which the terminal renders — operators and relations (×, ≈, ∈, ∘, Σ), and the subscript and superscript blocks for indices and exponents: Σᵢ Hᵢᵀ N⁻¹ Hᵢ, xₙ₊₁, scanₖ, never `H_i^T`, `x_{n+1}` or `scan_K`. The blocks cover digits, ₊₋₌₍₎, most lowercase letters and ᵀ but no capitals; when a capital index is the convention, keep it and write an underscore followed by a small capital (shard_ᴅ, scan_ɢ, vmap_ᴋ) rather than switching to lowercase. Docstrings are the exception, their `$…$` math is rendered by the docs site.
+
 ## Commands
 
 - `uv run path/to/script.py|command`: Run a Python file/snippet using the project environment
@@ -40,6 +42,7 @@ Preserve useful human-written comments unless the code change makes them inaccur
 - Prefer `furax.tree` over `jax.tree` and `jax.tree_util`. In particular use the elementwise helpers (`tree.add`, `tree.sub`, `tree.mul`, `tree.dot`, `tree.zeros_like` etc.) instead `jax.tree.map(jnp.add, ...)` and friends.
 - Call operators directly (`op(x)`), not `op.mv(x)`. Reserve `mv` for the method definition in an operator subclass.
 - Use new-style typed key arrays `jax.random.key()` instead of legacy uint32 `jax.random.PRNGKey()`.
+- Order the methods of a class, and the functions of a module, so the file reads top-down from interface to implementation: dunder methods first, then the public ones, then the private helpers, each helper placed after the code that calls it (callers before callees). This applies to new code; do not reorder existing code just to comply.
 
 ### Docstrings
 
@@ -73,6 +76,11 @@ def foo(x: Float[jax.Array, ' n'], scale: float = 1.0) -> Float[jax.Array, ' n']
         Array([2., 2.], dtype=float32)
     """
 ```
+
+## Pull Requests
+
+- A PR branch carries a single commit. Before pushing to it, squash the branch (e.g. `git reset --soft origin/main && git commit`) and force-push with `--force-with-lease`. This is the one case where force-pushing is expected; it never applies to `main`.
+- The commit message and the PR description describe the final change as a whole, the way it will read in `main`'s history: subject = PR title, body = what changed and why. Rewrite them when the change evolves; do not narrate review rounds or superseded versions.
 
 ## Changelog
 

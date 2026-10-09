@@ -19,6 +19,7 @@ from furax.mapmaking.config import (
     HWPSynchronousConfig,
     LandscapeConfig,
     MapMakingConfig,
+    Methods,
     NoiseFitConfig,
     PointingConfig,
     PolynomialConfig,
@@ -246,3 +247,38 @@ def test_several_observations_per_device_match_single_observations(monkeypatch, 
     per_observation = maker.layout.to_observation_order([np.asarray(amplitude_rhs)])
     for got, acc in zip(per_observation, alone, strict=True):
         assert_allclose(got, np.asarray(acc.buckets[0].amplitude_rhs['hwp_synchronous'])[0])
+
+
+# ---------------------------------------------------------------------------
+# Pomme combined with templates
+# ---------------------------------------------------------------------------
+
+
+def _pomme_config(templates: TemplatesConfig) -> MapMakingConfig:
+    cfg = _config(templates)
+    cfg.method = Methods.POMME
+    cfg.pomme_tau = 37
+    cfg.landscape.stokes = 'QU'
+    templates.regularization = 1e-10
+    return cfg
+
+
+@pytest.mark.parametrize(
+    'observations, template',
+    [
+        (_hwp_obs, lambda e: TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=e))),
+        (
+            _ground_obs,
+            lambda e: TemplatesConfig(scan_synchronous=ScanSynchronousConfig(explicit=e)),
+        ),
+    ],
+    ids=['hwp_synchronous', 'scan_synchronous'],
+)
+def test_pomme_explicit_and_implicit_give_the_same_map(observations, template):
+    # Under Pomme the effective weight is W F; marginalising the amplitudes under it must still
+    # match the joint solve. Both paths use the Pomme-filtered Gram (as weight fold and as
+    # preconditioner respectively).
+    obs = observations()
+    explicit = MultiObservationMapMaker(obs, config=_pomme_config(template(True))).run()
+    implicit = MultiObservationMapMaker(obs, config=_pomme_config(template(False))).run()
+    assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)

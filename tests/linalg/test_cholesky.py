@@ -256,26 +256,6 @@ def test_bordered_banded_cholesky_batches_over_leading_axes():
     assert_allclose(got, expected, rtol=1e-10, atol=1e-12)
 
 
-def test_bordered_banded_cholesky_regularization_ridges_each_diagonal_block():
-    # the ridge on A is that of `banded_cholesky`, block by block; C gets its own, scaled by its
-    # mean diagonal
-    n, k, w, k_c, reg = 4, 2, 1, 3, 0.1
-    dense, bands, border, corner = _bordered_spd(n, k, w, k_c, seed=140)
-    ridged = dense
-    for j in range(n):
-        block = slice(j * k, (j + 1) * k)
-        scale = jnp.mean(jnp.diagonal(bands[j, 0]))
-        ridged = ridged.at[block, block].add(reg * scale * jnp.eye(k))
-    tail = slice(n * k, None)
-    ridged = ridged.at[tail, tail].add(reg * jnp.mean(jnp.diagonal(corner)) * jnp.eye(k_c))
-
-    op = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner, regularization=reg)
-    r = jr.normal(jr.key(141), (n * k + k_c,))
-    x_a, x_c = op((r[: n * k].reshape(n, k), r[n * k :]))
-    expected = jnp.linalg.solve(ridged, r)
-    assert_allclose(jnp.concatenate([x_a.ravel(), x_c]), expected, rtol=1e-10, atol=1e-12)
-
-
 def test_bordered_banded_cholesky_is_symmetric():
     _, bands, border, corner = _bordered_spd(3, 2, 1, 2, seed=150)
     op = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner)

@@ -32,7 +32,7 @@ class BandedCholeskyOperator(AbstractLinearOperator):
     a banded matrix (zero away from the diagonal, [`from_bands`][]) and so is stored
     compactly instead of as the full matrix.
 
-    Calling ``A(b)`` solves ``A x = b``.
+    Calling `A(b)` solves `A x = b`.
 
     Examples:
         >>> import jax.numpy as jnp
@@ -51,42 +51,38 @@ class BandedCholeskyOperator(AbstractLinearOperator):
         cls,
         bands: Float[Array, '*batch n w1 k k'],
         in_structure: PyTree[jax.ShapeDtypeStruct] | None = None,
-        regularization: float = 0.0,
     ) -> Self:
         """Factor a block-banded matrix (see [`banded_cholesky`][]) and wrap it as an operator.
 
         Args:
             bands: Upper-band representation of the block-banded matrix, shape
-                ``(*batch, n_blocks, w+1, k, k)``.
+                `(*batch, n_blocks, w+1, k, k)`.
             in_structure: Structure of the values the operator is called with.
-                Defaults to a plain array of shape ``(*batch, n_blocks, k)``.
+                Defaults to a plain array of shape `(*batch, n_blocks, k)`.
                 Pass a PyTree explicitly to solve for several arrays at once instead.
-            regularization: Relative ridge added to each diagonal block before factoring.
         """
         if in_structure is None:
             n, k = bands.shape[-4], bands.shape[-1]
             in_structure = jax.ShapeDtypeStruct((*bands.shape[:-4], n, k), bands.dtype)
-        return cls(banded_cholesky(bands, regularization), in_structure=in_structure)
+        return cls(banded_cholesky(bands), in_structure=in_structure)
 
     @classmethod
     def from_dense(
         cls,
         matrix: Float[Array, '*batch k k'],
         in_structure: PyTree[jax.ShapeDtypeStruct] | None = None,
-        regularization: float = 0.0,
     ) -> Self:
-        """Factor a fully dense matrix (the degenerate ``n_blocks=1, w=0`` band case).
+        """Factor a fully dense matrix (the degenerate `n_blocks=1, w=0` band case).
 
         Args:
-            matrix: The dense matrix, shape ``(*batch, k, k)``.
+            matrix: The dense matrix, shape `(*batch, k, k)`.
             in_structure: Structure of the values the operator is called with.
-                Defaults to a plain array of shape ``(*batch, k)``.
+                Defaults to a plain array of shape `(*batch, k)`.
                 Pass a PyTree explicitly to solve for several arrays at once instead.
-            regularization: Relative ridge added to the diagonal before factoring.
         """
         if in_structure is None:
             in_structure = jax.ShapeDtypeStruct(matrix.shape[:-1], matrix.dtype)
-        return cls.from_bands(matrix[..., None, None, :, :], in_structure, regularization)
+        return cls.from_bands(matrix[..., None, None, :, :], in_structure)
 
     def mv(self, x: PyTree[Array]) -> PyTree[Array]:
         batch_ndim = self.lb.ndim - 4
@@ -151,7 +147,6 @@ class BorderedBandedCholeskyOperator(AbstractLinearOperator):
         bands: Float[Array, '*batch n w1 k k'],
         border: Float[Array, '*batch ka kc'],
         corner: Float[Array, '*batch kc kc'],
-        regularization: float = 0.0,
     ) -> Self:
         """Factor the matrix from its banded core, border and corner.
 
@@ -161,10 +156,8 @@ class BorderedBandedCholeskyOperator(AbstractLinearOperator):
             border: $B$, shape `(*batch, n_blocks * k, k_c)`, rows in the flattened
                 `(n_blocks, k)` order.
             corner: $C$, shape `(*batch, k_c, k_c)`.
-            regularization: Relative ridge added to each diagonal block of $A$ and to $C$,
-                each scaled by its own mean diagonal, before factoring.
         """
-        banded = BandedCholeskyOperator.from_bands(bands, regularization=regularization)
+        banded = BandedCholeskyOperator.from_bands(bands)
         n_blocks, k, k_c = bands.shape[-4], bands.shape[-1], border.shape[-1]
         batch = border.shape[:-2]
 
@@ -173,9 +166,6 @@ class BorderedBandedCholeskyOperator(AbstractLinearOperator):
         coupling = banded_cholesky_solve(banded.lb[..., None, :, :, :, :], columns)
         coupling = jnp.moveaxis(coupling, -3, -1).reshape(*batch, n_blocks * k, k_c)
 
-        if regularization:
-            scale = jnp.mean(jnp.diagonal(corner, axis1=-2, axis2=-1), axis=-1)
-            corner = corner + regularization * scale[..., None, None] * jnp.eye(k_c)
         schur = corner - _einsum('...ac,...ab->...cb', border, coupling)
         schur = 0.5 * (schur + jnp.swapaxes(schur, -1, -2))  # symmetric up to rounding
 
@@ -198,13 +188,11 @@ class BorderedBandedCholeskyOperator(AbstractLinearOperator):
         return x_a, x_c
 
 
-def banded_cholesky(
-    bands: Float[Array, '*batch n w1 k k'], regularization: float = 0.0
-) -> Float[Array, '*batch n w1 k k']:
+def banded_cholesky(bands: Float[Array, '*batch n w1 k k']) -> Float[Array, '*batch n w1 k k']:
     """Block Cholesky factor of a symmetric positive-(semi)definite block-banded matrix.
 
-    "Block-banded" means ``A`` is made of ``k×k`` blocks, and only the blocks within ``w``
-    of the diagonal can be non-zero. E.g., for ``n_blocks = 4`` and bandwidth ``w = 1``:
+    "Block-banded" means `A` is made of `k×k` blocks, and only the blocks within `w`
+    of the diagonal can be non-zero. E.g., for `n_blocks = 4` and bandwidth `w = 1`:
 
         A = [ A00  A01   0    0  ]
             [ A01ᵀ A11  A12   0  ]
@@ -212,28 +200,24 @@ def banded_cholesky(
             [  0    0   A23ᵀ A33 ]
 
     Only the diagonal and upper blocks are stored (symmetry gives the rest) packed as
-    ``bands[..., j, d, :, :] = A[j, j+d]`` for ``d = 0..w`` (``d=0`` the diagonal blocks,
-    ``d=w`` the furthest off-diagonal ones still inside the band)::
+    `bands[..., j, d, :, :] = A[j, j+d]` for `d = 0..w` (`d=0` the diagonal blocks,
+    `d=w` the furthest off-diagonal ones still inside the band):
 
         bands[:, 0] = [A00, A11, A22, A33]  (d=0: the diagonal blocks)
         bands[:, 1] = [A01, A12, A23,  · ]  (d=1: one block off the diagonal; the trailing
                                                entry is unused padding, since block 3 has no
                                                block 4 to pair with)
 
-    Returns the lower factor in the same band layout, ``lb[..., i, d, :, :] = L[i, i-d]`` with
-    ``L Lᵀ = A``. Batched over arbitrary leading dims. Band ``w = 0`` is the block-diagonal case
-    (every off-diagonal block is zero); ``n_blocks = 1`` is the fully dense case.
-
-    ``regularization`` adds a relative ridge to each diagonal block before factoring, scaled by
-    that block's own mean diagonal. This is purely intended as a numerical safeguard.
+    Returns the lower factor in the same band layout, `lb[..., i, d, :, :] = L[i, i-d]` with
+    `L Lᵀ = A`. Batched over arbitrary leading dims. Band `w = 0` is the block-diagonal case
+    (every off-diagonal block is zero); `n_blocks = 1` is the fully dense case.
 
     Args:
         bands: Upper-band representation of the block-banded matrix, shape
-            ``(*batch, n_blocks, w+1, k, k)``.
-        regularization: Relative ridge added to each diagonal block before factoring.
+            `(*batch, n_blocks, w+1, k, k)`.
 
     Returns:
-        The lower band factor, same shape as ``bands``.
+        The lower band factor, same shape as `bands`.
 
     Examples:
         >>> import jax.numpy as jnp
@@ -249,12 +233,6 @@ def banded_cholesky(
                [1.9321835 , 0.5163978 ],
                [1.9318755 , 0.51754916]], dtype=float32)
     """
-    if regularization:
-        k = bands.shape[-1]
-        diag = jnp.diagonal(bands[..., 0, :, :], axis1=-2, axis2=-1)  # (*batch, n, k)
-        scale = jnp.mean(diag, axis=-1)[..., None, None]  # (*batch, n, 1, 1)
-        ridge = regularization * scale * jnp.eye(k, dtype=bands.dtype)
-        bands = bands.at[..., 0, :, :].add(ridge)
     if bands.shape[-3] == 1:  # block diagonal: the blocks are independent, factor them all at once
         return jnp.linalg.cholesky(bands)
     return _block_banded_cholesky(bands)
@@ -264,14 +242,14 @@ def banded_cholesky(
 def _block_banded_cholesky(bands: Float[Array, 'n w1 k k']) -> Float[Array, 'n w1 k k']:
     """Block Cholesky of a symmetric positive-definite block-banded matrix.
 
-    Batched over arbitrary leading dims via the ``jnp.vectorize`` signature.
+    Batched over arbitrary leading dims via the `jnp.vectorize` signature.
 
-    ``bands[j, d, :, :]`` is the upper block ``A[j, j+d]`` (``d = 0..w``, ``w = w1-1`` the block
-    bandwidth; ``d=0`` the symmetric diagonal block). Returns the lower factor in the same band
-    layout, ``lb[i, d, :, :] = L[i, i-d]`` with ``L Lᵀ = A``.
+    `bands[j, d, :, :]` is the upper block `A[j, j+d]` (`d = 0..w`, `w = w1-1` the block
+    bandwidth; `d=0` the symmetric diagonal block). Returns the lower factor in the same band
+    layout, `lb[i, d, :, :] = L[i, i-d]` with `L Lᵀ = A`.
 
-    Band ``w = 0`` degenerates to an independent Cholesky of each diagonal ``k×k`` block (the
-    block-diagonal case); ``n_blocks = 1`` further degenerates to a single plain Cholesky.
+    Band `w = 0` degenerates to an independent Cholesky of each diagonal `k×k` block (the
+    block-diagonal case); `n_blocks = 1` further degenerates to a single plain Cholesky.
     """
     n, w1, k, _ = bands.shape
     w = w1 - 1
@@ -286,8 +264,8 @@ def _block_banded_cholesky(bands: Float[Array, 'n w1 k k']) -> Float[Array, 'n w
             j = i - d0
             s = jnp.swapaxes(read(bands, j)[d0], -1, -2)  # A[i, j] = A[j, i]ᵀ = bands[j, d0]ᵀ
             for a in range(d0 + 1, w + 1):  # Schur update: − Σ L[i, i-a] L[j, i-a]ᵀ
-                # L[j, i-a]: for the diagonal block (d0=0, j=i) it is this row's block ``cur[a]``,
-                # not yet written to ``lb``; for d0>0 (j<i) it is a finished earlier row.
+                # L[j, i-a]: for the diagonal block (d0=0, j=i) it is this row's block `cur[a]`,
+                # not yet written to `lb`; for d0>0 (j<i) it is a finished earlier row.
                 l_ja = cur[a] if d0 == 0 else read(lb, j)[a - d0]
                 s = s - _matmul(cur[a], jnp.swapaxes(l_ja, -1, -2))
             if d0 == 0:
@@ -309,10 +287,10 @@ def _block_banded_cholesky(bands: Float[Array, 'n w1 k k']) -> Float[Array, 'n w
 def banded_cholesky_solve(
     lb: Float[Array, '*batch n w1 k k'], b: Float[Array, '*batch n k']
 ) -> Float[Array, '*batch n k']:
-    """Solve ``L Lᵀ x = b`` given the lower band factor ``lb`` from [`banded_cholesky`][].
+    """Solve `L Lᵀ x = b` given the lower band factor `lb` from [`banded_cholesky`][].
 
-    Batched over arbitrary leading dims (matching ``lb``'s, excluding its trailing
-    ``(n, w1, k, k)`` core).
+    Batched over arbitrary leading dims (matching `lb`'s, excluding its trailing
+    `(n, w1, k, k)` core).
 
     Examples:
         >>> import jax.numpy as jnp

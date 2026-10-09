@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Banded Cholesky solves with a single off-diagonal block no longer crash on GPU (#331)
+- Apply template ridge regularization to explicit map-making normal systems (#264)
 
 ## [0.15.5] - 2026-10-12
 

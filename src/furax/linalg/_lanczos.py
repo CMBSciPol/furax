@@ -6,7 +6,6 @@ from typing import Literal, NamedTuple, get_args
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jax.sharding import PartitionSpec as P
 from jaxtyping import Float, Key, Num, PyTree
 
 from furax import tree
@@ -20,13 +19,7 @@ def _block_zeros_like(x: PyTree, k: int) -> PyTree:
 
     The new leading axis is replicated; the other axes keep the sharding of x.
     """
-
-    def zeros(leaf):
-        sharding = jax.typeof(leaf).sharding
-        sharding = sharding.update(spec=P(None, *sharding.spec))
-        return jnp.zeros((k, *leaf.shape), leaf.dtype, out_sharding=sharding)
-
-    return jax.tree.map(zeros, x)
+    return jax.tree.map(lambda z: jnp.broadcast_to(z, (k, *z.shape)), tree.zeros_like(x))
 
 
 def _vecmat(X: PyTree, C: Float[Array, 'm k']) -> PyTree:

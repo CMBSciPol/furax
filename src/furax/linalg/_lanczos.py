@@ -6,7 +6,7 @@ from typing import Literal, NamedTuple, get_args
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jaxtyping import Float, Num, PyTree
+from jaxtyping import Float, Key, Num, PyTree
 
 from furax import tree
 from furax.core import AbstractLinearOperator
@@ -22,6 +22,19 @@ def _block_zeros_like(x: PyTree, k: int) -> PyTree:
 def _vecmat(X: PyTree, C: Float[Array, 'm k']) -> PyTree:
     """Compute Y = X @ C for block PyTree X with m vectors, returning k vectors."""
     return jax.tree.map(lambda leaf: jnp.einsum('mk,m...->k...', C, leaf), X)
+
+
+def _initial_vector(
+    A: AbstractLinearOperator,
+    v0: PyTree[Num[Array, '...']] | None,
+    key: Key[Array, ''] | None,
+) -> PyTree[Num[Array, '...']]:
+    """Return v0, or a standard normal vector drawn from key if v0 is not given."""
+    if v0 is not None:
+        return v0
+    if key is None:
+        raise ValueError('Either a starting vector v0 or a random key must be given')
+    return tree.normal_like(A.in_structure, key)
 
 
 class LanczosResult(NamedTuple):
@@ -177,8 +190,9 @@ def _default_m(A: AbstractLinearOperator, k: int) -> int:
 
 def lanczos_eigh(
     A: AbstractLinearOperator,
-    v0: PyTree[Num[Array, '...']],
+    v0: PyTree[Num[Array, '...']] | None = None,
     *,
+    key: Key[Array, ''] | None = None,
     k: int = 20,
     m: int | None = None,
 ) -> LanczosResult:
@@ -212,7 +226,8 @@ def lanczos_eigh(
 
     Args:
         A: A Hermitian linear operator.
-        v0: Initial vector for the Krylov subspace.
+        v0: Initial vector for the Krylov subspace. If not given, it is drawn from `key`.
+        key: Random key used to draw a standard normal `v0` when `v0` is not given.
         k: Number of eigenpairs to return.
         m: Size of the Krylov subspace.  Must be at least `k`.  Defaults to
             `min(2*k, n)`, where n is the size of the operator input.  Larger m
@@ -227,14 +242,14 @@ def lanczos_eigh(
         >>> import jax
         >>> import jax.numpy as jnp
         >>> from furax import DiagonalOperator
-        >>> from furax.tree import as_structure, normal_like
+        >>> from furax.tree import as_structure
         >>> d = jnp.array([1., 2., 3., 4., 5.])
         >>> A = DiagonalOperator(d, in_structure=as_structure(d))
-        >>> v0 = normal_like(as_structure(d), jax.random.key(0))
-        >>> result = lanczos_eigh(A, v0, k=5)
+        >>> result = lanczos_eigh(A, key=jax.random.key(0), k=5)
         >>> result.eigenvalues
         Array([1., 2., 3., 4., 5.], dtype=float32)
     """
+    v0 = _initial_vector(A, v0, key)
     m = m or _default_m(A, k)
     if m < k:
         raise ValueError(f'm ({m}) must be >= k ({k})')
@@ -359,8 +374,9 @@ def _tr_extend(
 
 def lanczos_tr(
     A: AbstractLinearOperator,
-    v0: PyTree[Num[Array, '...']],
+    v0: PyTree[Num[Array, '...']] | None = None,
     *,
+    key: Key[Array, ''] | None = None,
     k: int = 20,
     m: int | None = None,
     which: LanczosWhich = 'LM',
@@ -406,7 +422,8 @@ def lanczos_tr(
 
     Args:
         A: A Hermitian linear operator.
-        v0: Initial vector for the Krylov subspace.
+        v0: Initial vector for the Krylov subspace. If not given, it is drawn from `key`.
+        key: Random key used to draw a standard normal `v0` when `v0` is not given.
         k: Number of eigenpairs to compute.
         m: Size of the Krylov subspace.  Must be larger than `k`.
             Defaults to `min(2*k, n)`, where n is the size of the operator input.
@@ -429,16 +446,16 @@ def lanczos_tr(
         >>> import jax
         >>> import jax.numpy as jnp
         >>> from furax import DiagonalOperator
-        >>> from furax.tree import as_structure, normal_like
+        >>> from furax.tree import as_structure
         >>> d = jnp.array([1., 2., 3., 4., 5.])
         >>> A = DiagonalOperator(d, in_structure=as_structure(d))
-        >>> v0 = normal_like(as_structure(d), jax.random.key(0))
-        >>> result = lanczos_tr(A, v0, k=2, which='SA')
+        >>> result = lanczos_tr(A, key=jax.random.key(0), k=2, which='SA')
         >>> result.eigenvalues  # Should be approximately [1, 2]
         Array([1., 2.], dtype=float32)
     """
     if which not in get_args(LanczosWhich):
         raise ValueError(f'which must be one of {get_args(LanczosWhich)}, got {which!r}')
+    v0 = _initial_vector(A, v0, key)
     m = m or _default_m(A, k)
     if m <= k:
         raise ValueError(f'm ({m}) must be > k ({k})')

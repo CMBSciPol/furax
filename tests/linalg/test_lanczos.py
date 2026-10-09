@@ -82,6 +82,37 @@ class TestLanczosEigh:
         assert_allclose(G, jnp.eye(4), atol=1e-10)
 
 
+@pytest.mark.parametrize('solver', [lanczos_eigh, lanczos_tr])
+class TestLanczosStartingVector:
+    """The starting vector is either given or drawn from a random key."""
+
+    def test_key_only(self, solver):
+        """With only a key, the solver finds eigenpairs of the operator."""
+        A, _, true_eigenvalues = _random_hermitian_operator(10, jax.random.key(0), pd=True)
+        result = solver(A, key=jax.random.key(1), k=2, m=10)
+
+        min_dist = jnp.min(jnp.abs(result.eigenvalues[:, None] - true_eigenvalues), axis=1)
+        assert_allclose(min_dist, jnp.zeros(2), atol=1e-10)
+        residuals = (
+            A.as_matrix() @ result.eigenvectors.T - result.eigenvectors.T * result.eigenvalues
+        )
+        assert_allclose(residuals, 0, atol=1e-10)
+
+    def test_v0_takes_precedence(self, solver):
+        """With both, the given v0 is used and the key does not draw another one."""
+        A, v0, _ = _random_hermitian_operator(10, jax.random.key(0), pd=True)
+        expected = solver(A, v0, k=2, m=4)
+        result = solver(A, v0, key=jax.random.key(1), k=2, m=4)
+        assert_allclose(result.eigenvalues, expected.eigenvalues)
+        assert_allclose(result.eigenvectors, expected.eigenvectors)
+
+    def test_requires_v0_or_key(self, solver):
+        """Without v0 or key there is no starting vector."""
+        A, _, _ = _random_hermitian_operator(10, jax.random.key(0), pd=True)
+        with pytest.raises(ValueError, match='v0 or a random key'):
+            solver(A, k=2, m=4)
+
+
 class TestLanczosThickRestart:
     """Tests for the thick-restart Lanczos method."""
 

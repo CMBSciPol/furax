@@ -1,8 +1,8 @@
 import operator
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from math import prod
-from typing import Any
+from typing import Any, Literal
 
 import jax
 from jax import Array
@@ -33,6 +33,14 @@ __all__ = [
     'matvec',
     'vecmat',
     'matmat',
+    'stack',
+    'unstack',
+    'stacked_zeros_like',
+    'stacked_get',
+    'stacked_set',
+    'stacked_combine',
+    'stacked_dot',
+    'stacked_gram',
 ]
 
 
@@ -355,6 +363,197 @@ def norm(x: PyTree[Num[Array, '...']]) -> Num[Array, '']:
     # `dot(x, x) = sum(|x|^2)` is already real-valued
     # explicit `.real` keeps the result real-dtyped for complex inputs
     return jnp.sqrt(dot(x, x).real)
+
+
+# Stacked pytrees: k vectors with the same structure, stacked along a new leading axis of every
+# leaf. The leading axis is never sharded; reductions over the other axes use the same
+# `sum(conj(x) * y)` form as `dot`, so they stay valid when those axes are sharded.
+
+
+def stack[P: ArrayPyTree](xs: Sequence[P]) -> P:
+    """Stacks pytrees with the same structure along a new leading axis of every leaf.
+
+    Args:
+        xs: The pytrees to stack.
+
+    Examples:
+        >>> stack([{'a': jnp.array([1., 2.])}, {'a': jnp.array([3., 4.])}])
+        {'a': Array([[1., 2.],
+               [3., 4.]], dtype=float32)}
+    """
+    return jax.tree.map(lambda *leaves: jnp.stack(leaves), *xs)
+
+
+def unstack[P: ArrayPyTree](X: P) -> list[P]:
+    """Splits a stacked pytree into the list of pytrees along the leading axis of its leaves.
+
+    Args:
+        X: The stacked pytree.
+
+    Raises:
+        StructureError: If the leaves do not share the same leading dimension.
+
+    Examples:
+        >>> unstack({'a': jnp.array([[1., 2.], [3., 4.]])})
+        [{'a': Array([1., 2.], dtype=float32)}, {'a': Array([3., 4.], dtype=float32)}]
+    """
+    return [stacked_get(X, i) for i in range(_stack_size(X))]
+
+
+def _stack_size(X: PyTree[Num[Array, 'k ...']]) -> int:
+    """Return the common leading dimension of the leaves of a stacked pytree."""
+    shapes = [leaf.shape for leaf in jax.tree.leaves(X)]
+    sizes = {shape[0] for shape in shapes if shape}
+    if len(sizes) != 1 or not all(shapes):
+        raise StructureError(f'The leaves do not share a leading stack axis: {shapes}')
+    return sizes.pop()
+
+
+def stacked_zeros_like[P: ArrayPyTree](x: P, k: int) -> P:
+    """Returns k zero pytrees with the structure of x, stacked along a new leading axis.
+
+    The leaves have the dtype of the leaves of x and are placed like `zeros_like(x)`, with the
+    new leading axis replicated.
+
+    Args:
+        x: The pytree of array-like leaves with `shape` and `dtype` attributes, whose structure
+            is repeated.
+        k: The number of stacked pytrees.
+
+    Examples:
+        >>> stacked_zeros_like({'a': jax.ShapeDtypeStruct((2,), jnp.float32)}, 3)
+        {'a': Array([[0., 0.],
+               [0., 0.],
+               [0., 0.]], dtype=float32)}
+    """
+    return jax.tree.map(lambda z: jnp.broadcast_to(z, (k, *z.shape)), zeros_like(x))
+
+
+def stacked_get[P: ArrayPyTree](X: P, i: int | slice | Array) -> P:
+    """Returns the pytree at index i of a stacked pytree, or a stacked pytree for several indices.
+
+    Args:
+        X: The stacked pytree.
+        i: An index along the leading axis, which may be traced, or a slice or an integer array
+            of indices, which return a stacked pytree.
+
+    Examples:
+        >>> X = {'a': jnp.array([[1., 2.], [3., 4.], [5., 6.]])}
+        >>> stacked_get(X, 1)
+        {'a': Array([3., 4.], dtype=float32)}
+        >>> stacked_get(X, jnp.array([2, 0]))
+        {'a': Array([[5., 6.],
+               [1., 2.]], dtype=float32)}
+    """
+    return jax.tree.map(lambda leaf: leaf[i], X)
+
+
+def stacked_set[P: ArrayPyTree](
+    X: P,
+    i: int | slice | Array,
+    x: PyTree[Num[Array, '...']],
+    *,
+    mode: Literal['promise_in_bounds', 'clip', 'drop'] | None = None,
+) -> P:
+    """Returns a copy of a stacked pytree with the pytree at index i replaced by x.
+
+    Args:
+        X: The stacked pytree.
+        i: An index along the leading axis, which may be traced, or a slice or an integer array
+            of indices, for which x is a stacked pytree.
+        x: The pytree to store, with the structure of the pytrees in X, or a stacked pytree
+            when i selects several indices.
+        mode: How out-of-bounds indices are handled, as in `jax.numpy.ndarray.at`. With
+            `'drop'`, an out-of-bounds index leaves X unchanged. By default, indices are assumed
+            to be in bounds.
+
+    Examples:
+        >>> stacked_set({'a': jnp.zeros((2, 2))}, 0, {'a': jnp.array([1., 2.])})
+        {'a': Array([[1., 2.],
+               [0., 0.]], dtype=float32)}
+        >>> stacked_set({'a': jnp.zeros((2, 2))}, 2, {'a': jnp.array([1., 2.])}, mode='drop')
+        {'a': Array([[0., 0.],
+               [0., 0.]], dtype=float32)}
+    """
+    return jax.tree.map(lambda leaf, x_leaf: leaf.at[i].set(x_leaf, mode=mode), X, x)
+
+
+def stacked_combine(
+    X: PyTree[Num[Array, 'k ...']], c: Num[Array, ' k'] | Num[Array, 'k l']
+) -> PyTree[Num[Array, '...']]:
+    r"""Linear combinations of the pytrees of a stacked pytree.
+
+    For coefficients $c$ of shape `(k,)`, returns the pytree $\sum_i c_i X_i$. For coefficients
+    of shape `(k, l)`, returns the stacked pytree of the $l$ combinations
+    $Y_j = \sum_i c_{ij} X_i$, i.e. the matrix product $X C$ with the pytrees as columns.
+
+    Args:
+        X: The stacked pytree of k pytrees.
+        c: The coefficients, of shape `(k,)` or `(k, l)`.
+
+    Examples:
+        >>> X = {'a': jnp.array([[1., 0.], [0., 1.]])}
+        >>> stacked_combine(X, jnp.array([2., 3.]))
+        {'a': Array([2., 3.], dtype=float32)}
+        >>> stacked_combine(X, jnp.array([[1., 1.], [1., -1.]]))
+        {'a': Array([[ 1.,  1.],
+               [ 1., -1.]], dtype=float32)}
+    """
+    # The contraction runs over the leading axis, which is never sharded.
+    return jax.tree.map(lambda leaf: jnp.tensordot(c, leaf, axes=(0, 0)), X)
+
+
+def stacked_dot(X: PyTree[Num[Array, 'k ...']], y: PyTree[Num[Array, '...']]) -> Num[Array, ' k']:
+    """Scalar products of the pytrees of a stacked pytree with a pytree.
+
+    Returns the array of `dot(X_i, y)`, the hermitian scalar product if a leaf is complex.
+
+    Args:
+        X: The stacked pytree of k pytrees.
+        y: The pytree, with the structure of the pytrees in X.
+
+    Examples:
+        >>> X = {'a': jnp.array([[1., 0.], [1., 1.]])}
+        >>> stacked_dot(X, {'a': jnp.array([2., 3.])})
+        Array([2., 5.], dtype=float32)
+    """
+    Xy = jax.tree.map(
+        lambda X_leaf, y_leaf: jnp.sum(
+            jnp.conj(X_leaf) * y_leaf, axis=tuple(range(1, X_leaf.ndim))
+        ),
+        X,
+        y,
+    )
+    return sum(jax.tree.leaves(Xy), start=jnp.array(0))
+
+
+def stacked_gram(
+    X: PyTree[Num[Array, 'k ...']], Y: PyTree[Num[Array, 'l ...']]
+) -> Num[Array, 'k l']:
+    """Matrix of the scalar products of the pytrees of two stacked pytrees.
+
+    Returns the `(k, l)` array of `dot(X_i, Y_j)`, i.e. the matrix product $X^H Y$ with the
+    pytrees as columns. With `Y = jax.vmap(A)(X)`, this is the projection $X^H A X$ of an
+    operator $A$.
+
+    Args:
+        X: The stacked pytree of k pytrees.
+        Y: The stacked pytree of l pytrees, with the same structure as X.
+
+    Examples:
+        >>> X = {'a': jnp.array([[1., 0.], [1., 1.]])}
+        >>> stacked_gram(X, X)
+        Array([[1., 1.],
+               [1., 2.]], dtype=float32)
+    """
+
+    def gram(X_leaf: Array, Y_leaf: Array) -> Array:
+        # The broadcast product is fused into the reduction: no (k, l, ...) temporary.
+        product = jnp.conj(X_leaf)[:, None] * Y_leaf[None]
+        return jnp.sum(product, axis=tuple(range(2, product.ndim)))
+
+    XY = jax.tree.map(gram, X, Y)
+    return sum(jax.tree.leaves(XY), start=jnp.array(0))
 
 
 def matvec(

@@ -18,6 +18,8 @@ A few [`Basis`][] flavours trade memory for structure:
   factored to save memory.
 - [`SegmentedBasis`][]: each sample belongs to one segment (e.g. one scan interval),
   stored sparsely instead of as a mostly-zero dense array.
+- [`OffsetBasis`][]: one offset per interval of a fixed number of samples, the regular case of
+  [`SegmentedBasis`][], which stores nothing.
 - [`WindowedBasis`][]: each sample reads a fixed window of overlapping blocks, the
   overlapping generalisation of [`SegmentedBasis`][].
 
@@ -58,6 +60,7 @@ __all__ = [
     'TensorBasis',
     'KroneckerBasis',
     'SegmentedBasis',
+    'OffsetBasis',
     'WindowedBasis',
     'polynomial_basis',
     't2p_basis',
@@ -618,6 +621,85 @@ class SegmentedBasis(Basis):
             blocks=self.segment[:, None],
             taps=jnp.ones((samp, 1), self.dtype),
             values=self.values,
+            n_blocks=self._n_blocks,
+        )
+
+
+class OffsetBasis(Basis):
+    """One constant offset per interval of `tau` consecutive samples.
+
+    The amplitude index is the interval. The samples past the last whole interval (the tail) belong
+    to none. This is the Pomme template
+    ([`PommeProjectionOperator`][furax.mapmaking.pomme.PommeProjectionOperator]).
+
+    Nothing is stored. As the intervals are regular, `project` and `expand` reshape the samples into
+    `(interval, tau)` rather than scattering or gathering by interval like the equivalent
+    [`SegmentedBasis`][], and the Gram is each interval's weighted sample count.
+
+    Examples:
+        >>> basis = OffsetBasis(2, 5, jnp.float32)
+        >>> basis.expand(jnp.array([1.0, 2.0]))
+        Array([1., 1., 2., 2., 0.], dtype=float32)
+        >>> basis.project(jnp.arange(5.0))
+        Array([1., 5.], dtype=float32)
+    """
+
+    tau: int = field(metadata={'static': True})
+    n_samples: int = field(metadata={'static': True})
+    value_dtype: DTypeLike = field(metadata={'static': True})
+
+    @property
+    def _index_shape(self) -> tuple[int, ...]:
+        return (self.n_intervals,)
+
+    @property
+    def _array_dtype(self) -> DTypeLike:
+        return self.value_dtype
+
+    @property
+    def n_points(self) -> int:
+        return self.n_samples
+
+    @property
+    def n_intervals(self) -> int:
+        """Number of whole intervals."""
+        return self.n_samples // self.tau
+
+    def expand(self, coeffs: Float[Array, ' n']) -> Float[Array, ' samp']:
+        return self._expand_detectors(coeffs)
+
+    def project(self, signal: Float[Array, ' samp']) -> Float[Array, ' n']:
+        return self._project_detectors(signal)
+
+    def _expand_detectors(self, coeffs: Float[Array, '*det n']) -> Float[Array, '*det samp']:
+        # any number of leading axes: each interval's offset broadcast over its samples
+        *batch, n = coeffs.shape
+        steps = jnp.broadcast_to(coeffs[..., None], (*batch, n, self.tau)).reshape(*batch, -1)
+        tail = self.n_samples - n * self.tau
+        return jnp.pad(steps, [(0, 0)] * len(batch) + [(0, tail)])
+
+    def _project_detectors(self, signals: Float[Array, '*det samp']) -> Float[Array, '*det n']:
+        # any number of leading axes: each interval's samples summed, the tail dropped
+        end = self.n_intervals * self.tau
+        intervals = signals[..., :end].reshape(*signals.shape[:-1], self.n_intervals, self.tau)
+        return intervals.sum(axis=-1)
+
+    def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n 1 1 1']:
+        # the indicators never overlap: a diagonal Gram, each interval's weighted sample count
+        return self.project(weights)[:, None, None, None]
+
+    @property
+    def _n_blocks(self) -> int:
+        return self.n_intervals
+
+    def _support(self) -> _BasisColumns:
+        # one block per sample, its interval; the tail is in none, so its values are zero
+        samples = jnp.arange(self.n_samples)
+        last = max(self.n_intervals - 1, 0)
+        return _BasisColumns(
+            blocks=jnp.minimum(samples // self.tau, last).astype(jnp.int32)[:, None],
+            taps=jnp.ones((self.n_samples, 1), self.dtype),
+            values=(samples < self.n_intervals * self.tau)[None].astype(self.dtype),
             n_blocks=self._n_blocks,
         )
 

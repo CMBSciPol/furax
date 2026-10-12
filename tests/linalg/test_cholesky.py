@@ -56,11 +56,12 @@ def test_banded_cholesky_solve_matches_dense(w):
 @pytest.mark.parametrize('solve', [_sequential_solve, _scan_solve], ids=['sequential', 'scan'])
 def test_both_banded_solves_match_dense(solve, w):
     # the solve steps through the blocks on a CPU and scans them in parallel elsewhere: both must
-    # hold on every machine, whichever one the tests happen to run on
+    # hold on every machine, whichever one the tests happen to run on. Jitted, as the solve is in
+    # use: compiled op by op, w = 1 would miss https://github.com/jax-ml/jax/issues/41497.
     n, k = 7, 2
     dense, bands = _banded_spd(n, k, w, seed=20 + w)
     b = jr.normal(jr.key(30 + w), (n, k))
-    x = solve(banded_cholesky(bands), b)
+    x = jax.jit(solve)(banded_cholesky(bands), b)
     expected = jnp.linalg.solve(dense, b.reshape(-1)).reshape(n, k)
     assert_allclose(x, expected, rtol=1e-10, atol=1e-12)
 

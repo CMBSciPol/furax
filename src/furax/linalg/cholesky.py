@@ -386,11 +386,14 @@ def _scan_solve(lb: Float[Array, 'n w1 k k'], b: Float[Array, 'n k']) -> Float[A
         # x_i = inv_i (rhs_i - Σ_d couplings[i, d-1] x_{i∓d}), as affine maps on the last w blocks
         m = w * k
         top = -_matmul(inv[:, None], couplings)  # (n, w, k, k)
-        maps = (
-            jnp.zeros((n, m, m), lb.dtype).at[:, :k].set(jnp.moveaxis(top, 1, 2).reshape(n, k, m))
-        )
-        maps = maps.at[:, k:, :-k].set(jnp.eye(m - k, dtype=lb.dtype))  # shift the older blocks
-        offsets = jnp.zeros((n, m), lb.dtype).at[:, :k].set(_einsum('nab,nb->na', inv, rhs))
+        maps = jnp.moveaxis(top, 1, 2).reshape(n, k, m)
+        offsets = _einsum('nab,nb->na', inv, rhs)
+        # The older blocks shift down by one. The rows are stacked rather than written into zero
+        # arrays: with w = 1 that write covers the whole array, and XLA aborts compiling it ahead
+        # of a reverse scan (https://github.com/jax-ml/jax/issues/41497).
+        shift = jnp.broadcast_to(jnp.eye(m - k, m, dtype=lb.dtype), (n, m - k, m))
+        maps = jnp.concatenate([maps, shift], axis=1)
+        offsets = jnp.concatenate([offsets, jnp.zeros((n, m - k), lb.dtype)], axis=1)
         _, states = jax.lax.associative_scan(_compose_affine, (maps, offsets), reverse=reverse)
         return states[:, :k]
 

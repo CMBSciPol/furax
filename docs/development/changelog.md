@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `SolverConfig.two_level` enables a two-level preconditioner in `MultiObservationMapMaker`; built by `make_two_level_preconditioner` (#319)
 - `lanczos_eigh` and `lanczos_tr` accept a random `key` to draw the starting vector `v0`, which becomes optional (#321)
 - `SotodlibConfig.downsample` downsamples every sotodlib observation after loading (#329)
 - `lanczos_tr` and `lanczos_tridiag` accept a `preconditioner` `M`, to compute eigenpairs of `M A` (#318)

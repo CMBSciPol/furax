@@ -379,3 +379,46 @@ def test_lanczos_sharded(solver):
     U = np.asarray(result.eigenvectors)
     assert_allclose(U @ U.T, np.eye(2), atol=1e-10)
     assert_allclose(U * np.asarray(d), U * np.asarray(result.eigenvalues)[:, None], atol=1e-10)
+
+
+class TestLanczosPreconditioned:
+    """Tests for Lanczos on M A, with a Hermitian positive definite preconditioner M."""
+
+    @staticmethod
+    def _problem(n: int, key: Key[Array, '']):
+        """SPD A and M, with the eigenvalues of M A sorted ascending."""
+        key_a, key_m = jax.random.split(key)
+        A, v0, _ = _random_hermitian_operator(n, key_a, pd=True)
+        M, _, _ = _random_hermitian_operator(n, key_m, pd=True)
+        eigenvalues = jnp.sort(jnp.linalg.eigvals(M.as_matrix() @ A.as_matrix()).real)
+        return A, M, v0, eigenvalues
+
+    def test_tridiag_basis_is_m_inverse_orthonormal(self):
+        A, M, v0, true_eigenvalues = self._problem(15, jax.random.key(0))
+        alpha, beta, V, _, _ = lanczos_tridiag(A, v0, m=15, preconditioner=M)
+        assert_allclose(V @ jnp.linalg.solve(M.as_matrix(), V.T), jnp.eye(15), atol=1e-10)
+        eigenvalues = jax.scipy.linalg.eigh_tridiagonal(alpha, beta, eigvals_only=True)
+        assert_allclose(eigenvalues, true_eigenvalues, rtol=1e-10)
+
+    @pytest.mark.parametrize('which', ['SA', 'LA'])
+    def test_tr_eigenpairs(self, which):
+        A, M, v0, true_eigenvalues = self._problem(30, jax.random.key(1))
+        result = lanczos_tr(A, v0, k=3, m=10, which=which, preconditioner=M)
+        expected = true_eigenvalues[:3] if which == 'SA' else true_eigenvalues[-3:]
+        assert_allclose(result.eigenvalues, expected, rtol=1e-8)
+        Z = result.eigenvectors.T
+        assert_allclose(Z.T @ A.as_matrix() @ Z, jnp.diag(result.eigenvalues), atol=1e-8)
+        assert_allclose(Z.T @ jnp.linalg.solve(M.as_matrix(), Z), jnp.eye(3), atol=1e-8)
+
+    def test_tr_breakdown(self):
+        """M A = diag(1, 1, 2, 2, 3, 3) has an invariant Krylov subspace of dimension 3."""
+        d = jnp.array([1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
+        m = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        A = DiagonalOperator(d / m, in_structure=as_structure(d))
+        M = DiagonalOperator(m, in_structure=as_structure(d))
+        v0 = normal_like(as_structure(d), jax.random.key(0))
+        result = lanczos_tr(A, v0, k=2, m=4, which='LA', preconditioner=M)
+        min_dist = jnp.min(jnp.abs(result.eigenvalues[:, None] - d[None, :]), axis=1)
+        assert_allclose(min_dist, jnp.zeros(2), atol=1e-10)
+        Z = result.eigenvectors.T
+        assert_allclose(Z.T @ (Z / m[:, None]), jnp.eye(2), atol=1e-10)

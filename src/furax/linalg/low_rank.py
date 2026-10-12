@@ -3,12 +3,10 @@
 from typing import Any, Literal, NamedTuple, get_args
 
 import jax
-import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Float, Key, Num, PyTree
 
-from furax import AbstractLinearOperator, symmetric
-from furax.tree import dot
+from furax import AbstractLinearOperator, symmetric, tree
 
 from ._lanczos import lanczos_eigh, lanczos_tr
 
@@ -105,9 +103,8 @@ def low_rank_mv(terms: LowRankTerms, x: PyTree[Num[Array, '...']]) -> PyTree[Num
         >>> # Should be close to A @ x = [1, 0, 0, 0, 0]
     """
     U = terms.eigenvectors
-    coeffs = jax.vmap(dot, (0, None), 0)(U, x)  # U^T x
-    scaled = terms.eigenvalues * coeffs  # S (U^T x)
-    return jax.tree.map(lambda a: jnp.einsum('k,k...->...', scaled, a), U)  # U (S U^T x)
+    coeffs = tree.stacked_dot(U, x)  # U^T x
+    return tree.stacked_combine(U, terms.eigenvalues * coeffs)  # U (S U^T x)
 
 
 @symmetric

@@ -14,6 +14,7 @@ from furax import (
     DenseBlockDiagonalOperator,
     DiagonalOperator,
     IdentityOperator,
+    IndexOperator,
 )
 from furax.linalg import CGResult, cg
 from furax.tree import as_structure
@@ -205,15 +206,16 @@ class TestCGJit:
 class TestCGGrad:
     """Gradient tests for the CG solver.
 
-    Forward-mode (jvp/jacfwd) works with the default loop; reverse-mode (grad/vjp)
-    needs loop_kind='bounded'.
+    With the default implicit differentiation, both modes work on the default loop. Unrolled
+    differentiation is forward-mode only unless loop_kind='bounded' or 'checkpointed'.
 
     For f(b) = h(cg(A, b).solution), the Jacobian is A^{-1}: each column of
     jacfwd(solve)(b) is A^{-1} applied to the corresponding standard basis
     vector, by the implicit function theorem.
     """
 
-    def test_jvp_wrt_b(self):
+    @pytest.mark.parametrize('differentiation', ['implicit', 'unrolled'])
+    def test_jvp_wrt_b(self, differentiation):
         """Directional derivative of the solution w.r.t. b equals A^{-1} v."""
         d = jnp.arange(1.0, 6.0)
         A = DiagonalOperator(d, in_structure=as_structure(d))
@@ -221,27 +223,29 @@ class TestCGGrad:
         v = jax.random.normal(jax.random.key(42), b.shape)
 
         def solve(b):
-            return cg(A, b, max_steps=20).solution
+            return cg(A, b, max_steps=20, differentiation=differentiation).solution
 
         _, jvp_val = jax.jvp(solve, (b,), (v,))
         # d(A^{-1} b)/db · v = A^{-1} v = v / d
         expected = v / d
         assert_allclose(jvp_val, expected, rtol=1e-10)
 
-    def test_jacfwd_wrt_b_equals_inverse(self):
+    @pytest.mark.parametrize('differentiation', ['implicit', 'unrolled'])
+    def test_jacfwd_wrt_b_equals_inverse(self, differentiation):
         """Full Jacobian of the solution w.r.t. b is A^{-1}."""
         d = jnp.arange(1.0, 6.0)
         A = DiagonalOperator(d, in_structure=as_structure(d))
         b = jnp.ones(5)
 
         def solve(b):
-            return cg(A, b, max_steps=20).solution
+            return cg(A, b, max_steps=20, differentiation=differentiation).solution
 
         jac = jax.jacfwd(solve)(b)
         expected = jnp.diag(1.0 / d)
         assert_allclose(jac, expected, atol=1e-10)
 
-    def test_jvp_with_preconditioner(self):
+    @pytest.mark.parametrize('differentiation', ['implicit', 'unrolled'])
+    def test_jvp_with_preconditioner(self, differentiation):
         """JVP still equals A^{-1} v when using a preconditioner."""
         d = jnp.arange(1.0, 6.0)
         A = DiagonalOperator(d, in_structure=as_structure(d))
@@ -250,47 +254,153 @@ class TestCGGrad:
         v = jax.random.normal(jax.random.key(7), b.shape)
 
         def solve(b):
-            return cg(A, b, max_steps=20, preconditioner=M).solution
+            return cg(
+                A, b, max_steps=20, preconditioner=M, differentiation=differentiation
+            ).solution
 
         _, jvp_val = jax.jvp(solve, (b,), (v,))
         expected = v / d
         assert_allclose(jvp_val, expected, rtol=1e-10)
 
-    def test_grad_wrt_b(self):
-        """Reverse-mode AD with loop_kind='bounded': grad sum(A^{-1} b) = A^{-T} 1 = 1/d."""
+    @pytest.mark.parametrize(
+        'differentiation, loop_kind', [('implicit', 'lax'), ('unrolled', 'bounded')]
+    )
+    def test_grad_wrt_b(self, differentiation, loop_kind):
+        """Reverse-mode AD: grad sum(A^{-1} b) = A^{-T} 1 = 1/d."""
         d = jnp.arange(1.0, 6.0)
         A = DiagonalOperator(d, in_structure=as_structure(d))
         b = jnp.ones(5)
 
         def f(b):
-            return jnp.sum(cg(A, b, max_steps=20, loop_kind='bounded').solution)
+            result = cg(A, b, max_steps=20, loop_kind=loop_kind, differentiation=differentiation)
+            return jnp.sum(result.solution)
 
         grad = jax.grad(f)(b)
         assert_allclose(grad, 1.0 / d, rtol=1e-10)
 
-    def test_jacrev_wrt_b_equals_inverse(self):
+    @pytest.mark.parametrize(
+        'differentiation, loop_kind', [('implicit', 'lax'), ('unrolled', 'bounded')]
+    )
+    def test_jacrev_wrt_b_equals_inverse(self, differentiation, loop_kind):
         """Full reverse-mode Jacobian of the solution w.r.t. b is A^{-1}."""
         d = jnp.arange(1.0, 6.0)
         A = DiagonalOperator(d, in_structure=as_structure(d))
         b = jnp.ones(5)
 
         def solve(b):
-            return cg(A, b, max_steps=20, loop_kind='bounded').solution
+            return cg(
+                A, b, max_steps=20, loop_kind=loop_kind, differentiation=differentiation
+            ).solution
 
         jac = jax.jacrev(solve)(b)
         assert_allclose(jac, jnp.diag(1.0 / d), atol=1e-10)
 
-    def test_grad_raises_with_default_lax_loop(self):
-        """The default loop_kind='lax' is forward-mode only; reverse-mode raises."""
+    @pytest.mark.parametrize(
+        'differentiation, loop_kind', [('implicit', 'lax'), ('unrolled', 'bounded')]
+    )
+    def test_grad_wrt_operator(self, differentiation, loop_kind):
+        """The gradient w.r.t. the operator's matrix matches a dense solve on symmetric matrices.
+
+        CG only sees the symmetric part of A, so the gradients are compared after projecting
+        them onto symmetric matrices.
+        """
+        A, matrix, b, _ = _dense_spd_system(6, condition=100.0, seed=0)
+
+        def f(matrix):
+            op = DenseBlockDiagonalOperator(matrix, in_structure=A.in_structure)
+            result = cg(
+                op,
+                b,
+                rtol=1e-12,
+                max_steps=50,
+                loop_kind=loop_kind,
+                differentiation=differentiation,
+            )
+            return jnp.sum(result.solution**2)
+
+        grad = jax.grad(f)(matrix)
+        expected = jax.grad(lambda m: jnp.sum(jnp.linalg.solve(m, b) ** 2))(matrix)
+        assert_allclose(grad + grad.T, expected + expected.T, rtol=1e-8)
+
+    @pytest.mark.parametrize('differentiated', ['operator', 'rhs'])
+    def test_implicit_grad_wrt_one_block(self, differentiated):
+        """Differentiating one block of a block system leaves the other block constant."""
+        d1, d2 = jnp.array([1.0, 2.0, 3.0]), jnp.array([4.0, 5.0])
+        b1, b2 = jnp.ones(3), jnp.ones(2)
+
+        def f(d1, b1):
+            A = BlockDiagonalOperator(
+                {
+                    'a': DiagonalOperator(d1, in_structure=as_structure(d1)),
+                    'b': DiagonalOperator(d2, in_structure=as_structure(d2)),
+                }
+            )
+            x = cg(A, {'a': b1, 'b': b2}, rtol=1e-12).solution
+            return jnp.sum(x['a']) + jnp.sum(x['b'])
+
+        if differentiated == 'operator':
+            grad, expected = jax.grad(f, argnums=0)(d1, b1), -b1 / d1**2
+        else:
+            grad, expected = jax.grad(f, argnums=1)(d1, b1), 1 / d1
+        assert_allclose(grad, expected, rtol=1e-10)
+
+    def test_implicit_grad_with_non_array_operator_leaves(self):
+        """Operator leaves that are not JAX values, like an `Ellipsis` index, are supported."""
+        d = jnp.array([1.0, 2.0, 3.0])
+        b = jnp.array([1.0, -1.0, 2.0])
+        permutation = jnp.array([2, 0, 1])
+        index = IndexOperator((..., permutation), in_structure=as_structure(d))
+
+        def f(d):
+            A = index.T @ DiagonalOperator(d, in_structure=as_structure(d)) @ index
+            return jnp.sum(cg(A, b, rtol=1e-12).solution ** 2)
+
+        def expected(d):
+            # `index.T @ D @ index` is diagonal, with `d` permuted back.
+            return jnp.sum((b / d[jnp.argsort(permutation)]) ** 2)
+
+        assert_allclose(jax.grad(f)(d), jax.grad(expected)(d), rtol=1e-10)
+
+    def test_implicit_hessian_wrt_b(self):
+        """The implicit rule is itself differentiable: Hess ||A^{-1} b||^2 = 2 A^{-2}."""
+        A, matrix, b, _ = _dense_spd_system(6, condition=100.0, seed=0)
+
+        def f(b):
+            return jnp.sum(cg(A, b, rtol=1e-12, max_steps=50).solution ** 2)
+
+        inverse = jnp.linalg.inv(matrix)
+        assert_allclose(jax.hessian(f)(b), 2 * inverse @ inverse, rtol=1e-8)
+
+    def test_implicit_ignores_x0_and_preconditioner(self):
+        """Implicit derivatives are those of A^{-1} b, which depends on neither."""
+        d = jnp.arange(1.0, 6.0)
+        A = DiagonalOperator(d, in_structure=as_structure(d))
+        b = jnp.ones(5)
+
+        def f(x0, p):
+            M = DiagonalOperator(p, in_structure=as_structure(d))
+            return jnp.sum(cg(A, b, x0, preconditioner=M, max_steps=2).solution)
+
+        grad_x0, grad_p = jax.grad(f, argnums=(0, 1))(jnp.zeros(5), 1.0 / d)
+        assert_allclose(grad_x0, 0.0)
+        assert_allclose(grad_p, 0.0)
+
+    def test_unrolled_grad_raises_with_lax_loop(self):
+        """Unrolled differentiation of the default loop_kind='lax' is forward-mode only."""
         d = jnp.arange(1.0, 6.0)
         A = DiagonalOperator(d, in_structure=as_structure(d))
         b = jnp.ones(5)
 
         def f(b):
-            return jnp.sum(cg(A, b, max_steps=20).solution)
+            return jnp.sum(cg(A, b, max_steps=20, differentiation='unrolled').solution)
 
         with pytest.raises(ValueError, match='[Rr]everse-mode'):
             jax.grad(f)(b)
+
+    def test_invalid_differentiation_raises(self):
+        A, b, _ = _diagonal_system()
+        with pytest.raises(ValueError, match='differentiation'):
+            cg(A, b, differentiation='finite')
 
 
 class TestCGCurvature:

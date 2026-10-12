@@ -9,21 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `SolverConfig.two_level` enables a two-level preconditioner in `MultiObservationMapMaker`; built by `make_two_level_preconditioner` (#319)
 - `lanczos_eigh` and `lanczos_tr` accept a random `key` to draw the starting vector `v0`, which becomes optional (#321)
 - `SotodlibConfig.downsample` downsamples every sotodlib observation after loading (#329)
+- `tree.stack`, `tree.unstack` and `tree.stacked_*` functions for pytrees stacked along a leading axis (#325)
 - `lanczos_tr` and `lanczos_tridiag` accept a `preconditioner` `M`, to compute eigenpairs of `M A` (#318)
+- `SolverConfig.two_level` enables a two-level preconditioner in `MultiObservationMapMaker`; built by `make_two_level_preconditioner` (#319)
+- `furax.linalg.cg` and `CGSolver` accept `differentiation`; `'unrolled'` differentiates through the CG iterations, as before (#328)
 
 ### Changed
 
 - `lanczos_eigh` and `lanczos_tr` reject a Krylov size `m` larger than the operator size (#317)
+- `furax.linalg.cg` differentiates the exact solution $A^{-1} b$ implicitly by default, so reverse mode works with any `loop_kind` (#328)
 
 ### Fixed
 
 - `tree.normal_like` and `tree.uniform_like` keep the sharding of their input, like `tree.full_like` (#320)
 - `lanczos_eigh` and `lanczos_tr` no longer return spurious zero eigenpairs when the Krylov subspace becomes invariant, e.g. for repeated eigenvalues (#317)
 - `lanczos_eigh` and `lanczos_tr` accept vectors sharded over explicit mesh axes (#322)
-- `tree.stack`, `tree.unstack` and `tree.stacked_*` functions for pytrees stacked along a leading axis (#325)
 
 ## [0.15.4] - 2026-10-06
 

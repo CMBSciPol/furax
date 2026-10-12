@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Banded Cholesky solves with a single off-diagonal block no longer crash on GPU (#???)
+
 ## [0.15.5] - 2026-10-12
 
 ### Added

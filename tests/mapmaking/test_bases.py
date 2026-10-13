@@ -11,6 +11,7 @@ from numpy.testing import assert_allclose
 
 from furax.mapmaking.bases import (
     Basis,
+    CoupledBasis,
     DecimatedBasis,
     KroneckerBasis,
     OffsetBasis,
@@ -447,10 +448,22 @@ def _batched_and_singles(
         ]
         inner = SegmentedBasis(segment, values, n_seg, batch_shape=batch_shape)
         return DecimatedBasis(inner, q, n_points), singles
+    if flavour == 'coupled':  # two modes of one windowed basis, stored once for the batch
+        n_blocks, n_window = 6, 3
+        offset = jr.randint(k[0], (n_points,), 0, n_blocks - n_window + 1)
+        inner = WindowedBasis(
+            jnp.sort(offset).astype(jnp.int32),
+            jr.normal(k[1], (n_points, n_window)),
+            jr.normal(k[2], (2, n_points)),
+            n_blocks,
+        )
+        couplings = jr.normal(k[3], (*batch_shape, 2))
+        singles = [CoupledBasis(p, inner) for (p,) in split(couplings)]
+        return CoupledBasis(couplings, inner), singles
     raise AssertionError(flavour)
 
 
-FLAVOURS = ['tensor', 'kronecker', 'segmented', 'windowed', 'decimated']
+FLAVOURS = ['tensor', 'kronecker', 'segmented', 'windowed', 'decimated', 'coupled']
 BATCH_SHAPES = [(3,), (2, 3)]
 
 
@@ -498,6 +511,11 @@ class TestBatchedBasis:
     def test_rejects_arrays_without_the_batch_axes(self) -> None:
         with pytest.raises(ValueError, match=r'batch_shape=\(2,\) must lead every array'):
             SegmentedBasis(jnp.zeros((3, 30), jnp.int32), jnp.ones((2, 2, 30)), 3, batch_shape=(2,))
+
+    def test_coupled_rejects_a_batch_of_inner_bases(self) -> None:
+        inner = TensorBasis(jnp.ones((3, 1, 30)), batch_shape=(3,))
+        with pytest.raises(ValueError, match='the inner basis is shared by the batch'):
+            CoupledBasis(jnp.ones((3, 2)), inner)
 
     def test_rejects_a_batch_of_bases_with_no_array(self) -> None:
         with pytest.raises(ValueError, match='OffsetBasis stores no array to batch'):

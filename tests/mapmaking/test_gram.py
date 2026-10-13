@@ -13,6 +13,7 @@ from furax import (
 )
 from furax.linalg import BandedCholeskyOperator
 from furax.mapmaking.bases import (
+    CoupledBasis,
     DecimatedBasis,
     KroneckerBasis,
     SegmentedBasis,
@@ -279,6 +280,44 @@ def test_correlated_gram_rejects_blocks_shorter_than_the_correlation_length():
     W = _toeplitz_weight(jr.key(52), T.out_structure)
     with pytest.raises(Exception, match='too short for the weight correlation length'):
         gram_inverse(T, W, bandwidth=BANDWIDTH)
+
+
+def _shared_bases(kind, key):
+    """One set of bases per layout of the Gram of amplitudes shared by the detectors."""
+    k1, k2, k3 = jr.split(key, 3)
+    windowed = _regular_windowed_basis(k1, n_blocks=12, k=2, O=2)
+    segmented = SegmentedBasis(_seg(8), jr.normal(k1, (1, N_SAMPS)), 8)
+    tensor = TensorBasis(jr.normal(k2, (3, N_SAMPS)))
+    couplings = jr.normal(k3, (N_DETS, 2))
+    return {
+        'common': {'t': windowed},
+        'coupled': {'t': CoupledBasis(couplings, segmented)},
+        'bordered': {'c': CoupledBasis(couplings, windowed), 't': tensor},
+        'dense': {'t': tensor, 'p': _per_det_basis(k3, 2)},
+    }[kind]
+
+
+@pytest.mark.parametrize('correlated', [False, True], ids=['diagonal', 'toeplitz'])
+@pytest.mark.parametrize('kind', ['common', 'coupled', 'bordered', 'dense'])
+def test_shared_gram_inverse_inverts_the_gram(kind, correlated):
+    # amplitudes shared by the detectors: a single Gram, summed over them
+    kb, kw, ka = jr.split(jr.key(53), 3)
+    bases = _shared_bases(kind, kb)
+    T = TemplateOperator(bases, n_dets=N_DETS, shared=tuple(bases))
+    if correlated:
+        W, bandwidth = _toeplitz_weight(kw, T.out_structure), BANDWIDTH
+    else:
+        W, bandwidth = _weight(kw), 0
+    amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
+    recovered = gram_inverse(T, W, bandwidth=bandwidth)[0](T.T(W(T(amps))))
+    assert_allclose_tree(recovered, amps, rtol=1e-8, atol=1e-10)
+
+
+def test_gram_inverse_rejects_shared_and_per_detector_amplitudes_together():
+    bases = _shared_bases('bordered', jr.key(54))
+    T = TemplateOperator(bases, n_dets=N_DETS, shared=('c',))
+    with pytest.raises(ValueError, match='shared and per-detector amplitudes are coupled'):
+        gram_inverse(T, _weight(jr.key(55)))
 
 
 # ---------------------------------------------------------------------------

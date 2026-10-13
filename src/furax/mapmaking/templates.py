@@ -7,13 +7,15 @@ lines, T-to-P leakage).
 Each template is described by a [`Basis`][furax.mapmaking.bases.Basis] of functions of time, built
 here from the observation's data (`polynomial_basis`, `t2p_basis`, ...). A
 [`TemplateOperator`][] combines every enabled template into one operator, keyed by template name,
-giving each detector its own amplitudes; [`StokesTemplateOperator`][] does the same for a
-[`Stokes`][] TOD, one amplitude set per leg.
+giving each detector its own amplitudes, or one set shared by every detector for a signal common
+to them; [`StokesTemplateOperator`][] does the same for a [`Stokes`][] TOD, one amplitude set per
+leg.
 """
 
 from abc import abstractmethod
 from collections.abc import Sequence
 from dataclasses import field
+from functools import partial
 from typing import Any, Literal, cast
 
 import jax
@@ -338,31 +340,49 @@ def _is_basis(x: Any) -> bool:
 
 
 class AbstractTemplateOperator(AbstractLinearOperator):
-    """Every enabled template as one operator, from amplitudes keyed by template name to a TOD."""
+    """Every enabled template as one operator, from amplitudes keyed by template name to a TOD.
+
+    Each detector fits its own amplitudes, with a leading detector axis. The templates named in
+    `shared` instead have amplitudes shared by every detector, their leading axis of size 1, for
+    signals common to the detectors, such as a common mode, or one seen with a gain per detector
+    ([`CoupledBasis`][furax.mapmaking.bases.CoupledBasis]).
+    """
 
     # The bases must stay the only dynamic leaves: an operator then stacks under a scan over
     # observations by gaining a leading axis on the basis arrays, everything else being static.
     bases: dict[str, Any]
     n_dets: int = field(metadata={'static': True})
+    shared: tuple[str, ...] = field(metadata={'static': True}, default=(), kw_only=True)
+    """The templates whose amplitudes are shared by every detector."""
 
     def __post_init__(self) -> None:
         # `in_structure` is derived, never passed: it can then never disagree with the bases.
         if self.in_structure is not None:
             raise ValueError('in_structure is derived from the bases; do not pass it')
+        if unknown := sorted(set(self.shared) - set(self.bases)):
+            raise ValueError(f'shared templates {unknown} are not among the bases')
         object.__setattr__(self, 'in_structure', self._amplitude_structure())
         super().__post_init__()
 
     # ---- amplitude side -------------------------------------------------------------------------
     def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         """`bases` with each basis replaced by the amplitudes it takes."""
-        return jax.tree.map(self._amplitude_leaf, self.bases, is_leaf=_is_basis)
+        return self._amplitudes_of(self.bases)
 
-    def _amplitude_leaf(self, basis: Basis) -> jax.ShapeDtypeStruct:
+    def _amplitudes_of(self, bases: dict[str, Any]) -> PyTree[jax.ShapeDtypeStruct]:
+        """The amplitudes of the bases of each template, keyed by template name."""
+        return {
+            name: jax.tree.map(partial(self._amplitude_leaf, name), on, is_leaf=_is_basis)
+            for name, on in bases.items()
+        }
+
+    def _amplitude_leaf(self, name: str, basis: Basis) -> jax.ShapeDtypeStruct:
         # a basis is shared by every detector, or one per detector
         if basis.batch_shape not in {(), (self.n_dets,)}:
             msg = f'basis batch_shape {basis.batch_shape} is neither () nor ({self.n_dets},)'
             raise ValueError(msg)
-        return jax.ShapeDtypeStruct((self.n_dets, *basis.shape), basis.dtype)
+        n_sets = 1 if name in self.shared else self.n_dets
+        return jax.ShapeDtypeStruct((n_sets, *basis.shape), basis.dtype)
 
     # ---- TOD side -------------------------------------------------------------------------------
     def _stream_structure(self) -> jax.ShapeDtypeStruct:
@@ -383,7 +403,12 @@ class AbstractTemplateOperator(AbstractLinearOperator):
         """The summed expansion of every template on one stream."""
         # Each template would otherwise make its own pass over the stream. The dense ones are
         # instead stacked into one `(K, samp)` matrix, applied in one product over all detectors.
-        dense = {n: v for n, basis in bases.items() if (v := basis._dense_values()) is not None}
+        # Shared amplitudes broadcast over the detectors as their basis expands them.
+        dense = {
+            name: v
+            for name, basis in bases.items()
+            if name not in self.shared and (v := basis._dense_values()) is not None
+        }
         stream = self._zero_stream()
         if dense:
             coeffs = jnp.concatenate([x[name].reshape(self.n_dets, -1) for name in dense], axis=1)
@@ -392,6 +417,14 @@ class AbstractTemplateOperator(AbstractLinearOperator):
             if name not in dense:
                 stream = stream + basis(x[name])
         return stream
+
+    def _project_basis(self, name: str, basis: Basis, stream: Array) -> Array:
+        """One template's amplitudes, from one stream."""
+        if name not in self.shared:
+            return basis.T(stream)
+        if not basis.batch_shape:  # the same functions for every detector: sum them first
+            return basis.T(stream.sum(axis=0, keepdims=True))
+        return basis.T(stream).sum(axis=0, keepdims=True)
 
     # ---- adjoint --------------------------------------------------------------------------------
     @abstractmethod
@@ -405,8 +438,8 @@ class AbstractTemplateOperator(AbstractLinearOperator):
 class TemplateOperator(AbstractTemplateOperator):
     """Templates over a TOD with no Stokes axis, producing one `(n_dets, n_points)` array.
 
-    Each template contributes `(n_dets, *basis.shape)` amplitudes, and the TOD is their summed
-    expansion.
+    Each template contributes `(n_dets, *basis.shape)` amplitudes, or `(1, *basis.shape)` when
+    shared, and the TOD is their summed expansion.
     """
 
     bases: dict[str, Basis]
@@ -419,7 +452,7 @@ class TemplateOperator(AbstractTemplateOperator):
         return self._expand_stream(self.bases, x)
 
     def _project(self, tod: PyTree[Array]) -> PyTree[Array]:
-        return {name: basis.T(tod) for name, basis in self.bases.items()}
+        return {name: self._project_basis(name, basis, tod) for name, basis in self.bases.items()}
 
 
 class StokesTemplateOperator(AbstractTemplateOperator):
@@ -479,7 +512,7 @@ class StokesTemplateOperator(AbstractTemplateOperator):
         }
 
     def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.tree.map(self._amplitude_leaf, self.bases_by_leg, is_leaf=_is_basis)
+        return self._amplitudes_of(self.bases_by_leg)
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -503,7 +536,9 @@ class StokesTemplateOperator(AbstractTemplateOperator):
     def _project(self, tod: PyTree[Array]) -> PyTree[Array]:
         streams = self._streams(tod)
         return {
-            name: {leg: basis.T(streams[leg]) for leg, basis in legged.items()}
+            name: {
+                leg: self._project_basis(name, basis, streams[leg]) for leg, basis in legged.items()
+            }
             for name, legged in self.bases_by_leg.items()
         }
 

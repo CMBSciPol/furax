@@ -5,7 +5,13 @@ import pytest
 from numpy.testing import assert_allclose
 
 from furax import IdentityOperator
-from furax.mapmaking.bases import DecimatedBasis, KroneckerBasis, SegmentedBasis, TensorBasis
+from furax.mapmaking.bases import (
+    CoupledBasis,
+    DecimatedBasis,
+    KroneckerBasis,
+    SegmentedBasis,
+    TensorBasis,
+)
 from furax.mapmaking.gram import gram_inverse
 from furax.mapmaking.templates import StokesTemplateOperator, TemplateOperator
 
@@ -127,6 +133,58 @@ def test_template_operator_stacks_under_vmap():
     assert out.shape == (2, N_DETS, N_SAMPS)
     assert_allclose(out[0], t0({'poly': amps['poly'][0]}), rtol=1e-5, atol=1e-6)
     assert_allclose(out[1], t1({'poly': amps['poly'][1]}), rtol=1e-5, atol=1e-6)
+
+
+def _mixed_bases(key):
+    """Bases whose amplitudes can be shared: dense, local and per detector; and one that is not."""
+    k = jr.split(key, 5)
+    segmented = SegmentedBasis(_seg(4), jr.normal(k[0], (2, N_SAMPS)), 4)
+    bases = {
+        'dense': TensorBasis(jr.normal(k[1], (3, N_SAMPS))),
+        'common': segmented,
+        'per_det': TensorBasis(jr.normal(k[2], (N_DETS, 2, N_SAMPS)), batch_shape=(N_DETS,)),
+        'coupled': CoupledBasis(jr.normal(k[3], (N_DETS, 2)), segmented),
+        'own': TensorBasis(jr.normal(k[4], (2, N_SAMPS))),  # dense, expanded on its own
+    }
+    return bases, ('dense', 'common', 'per_det', 'coupled')
+
+
+@pytest.mark.parametrize('stokes', [None, 'QU'])
+def test_shared_amplitudes_are_those_of_every_detector(stokes):
+    # Shared amplitudes are one set, broadcast to every detector; the transpose sums the
+    # detectors' own projections. The other templates keep their own amplitudes.
+    bases, names = _mixed_bases(jr.key(20))
+    if stokes is None:
+        mixed = TemplateOperator(bases, n_dets=N_DETS, shared=names)
+        own = TemplateOperator(bases, n_dets=N_DETS)
+    else:
+        legged = {name: {'qu': basis} for name, basis in bases.items()}
+        mixed = StokesTemplateOperator(legged, N_DETS, stokes, shared=names)
+        own = StokesTemplateOperator(legged, N_DETS, stokes)
+    amps = jax.tree.map(lambda s: jr.normal(jr.key(21), s.shape), mixed.in_structure)
+    assert all(leaf.shape[0] == 1 for name in names for leaf in jax.tree.leaves(amps[name]))
+    broadcast = jax.tree.map(lambda a: jnp.broadcast_to(a, (N_DETS, *a.shape[1:])), amps)
+    assert_allclose_tree(mixed(amps), own(broadcast))
+
+    tod = jax.tree.map(lambda s: jr.normal(jr.key(22), s.shape), mixed.out_structure)
+    projected = own.T(tod)
+    summed = {
+        name: jax.tree.map(lambda a: a.sum(axis=0, keepdims=True), value)
+        if name in names
+        else value
+        for name, value in projected.items()
+    }
+    assert_allclose_tree(mixed.T(tod), summed)
+
+
+def test_template_operator_rejects_unknown_shared_templates():
+    with pytest.raises(ValueError, match=r"shared templates \['x'\] are not among the bases"):
+        TemplateOperator({'t': TensorBasis(jnp.ones((1, N_SAMPS)))}, n_dets=N_DETS, shared=('x',))
+
+
+def assert_allclose_tree(actual, desired):
+    for a, b in zip(jax.tree.leaves(actual), jax.tree.leaves(desired), strict=True):
+        assert_allclose(a, b, rtol=1e-10, atol=1e-10)
 
 
 def test_template_operator_rejects_a_basis_batch_other_than_detectors():

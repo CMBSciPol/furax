@@ -89,7 +89,9 @@ def gram_inverse(
     `T` maps amplitudes to TOD, per detector. `W` is *assumed* not to couple detectors, nor
     samples more than `bandwidth` apart: a weight that does not respect that contract silently
     changes the result. `G = Tᵀ W T` thus does not couple different detectors: each gets its own
-    block, making `G` block-diagonal.
+    block, making `G` block-diagonal. Templates whose amplitudes are shared by the detectors
+    (`operator.shared`) have a single block instead, summed over the detectors; their Gram couples
+    them to every per-detector block, so the two kinds cannot be mixed in one operator.
 
     Each stream (the TOD, or each Stokes leg of a demodulated one) is inverted on its own. For a
     diagonal `W` (`bandwidth=0`), read off by applying it to a vector of ones, the Gram is
@@ -123,7 +125,8 @@ def gram_inverse(
 
     Raises:
         ValueError: If `pomme_tau` is given for a Stokes TOD rather than a single stream, or
-            together with a nonzero `bandwidth`.
+            together with a nonzero `bandwidth`, or if `operator` mixes templates with shared and
+            per-detector amplitudes.
     """
     is_stokes = isinstance(operator, StokesTemplateOperator)
     # Pomme acts on the modulated TOD, which demodulation splits into one stream per leg.
@@ -131,6 +134,9 @@ def gram_inverse(
         raise ValueError('Pomme filtering applies to a single stream, not a Stokes TOD')
     if pomme_tau is not None and bandwidth:
         raise ValueError('Pomme filtering requires a diagonal weight')
+    shared = bool(operator.shared)
+    if shared and set(operator.shared) != set(operator.bases):
+        raise ValueError('templates with shared and per-detector amplitudes are coupled')
 
     # Two bases on different legs never share a weighted sample, so each leg is a stream of its
     # own, with one block over the templates it carries rather than one over every leg.
@@ -155,11 +161,10 @@ def gram_inverse(
             if leg is None:
                 n_samps = diag.shape[-1]
                 pomme = None if pomme_tau is None else OffsetBasis(pomme_tau, n_samps, diag.dtype)
-                stream = _Stream(bases, diag, operator.in_structure, pomme)
+                stream = _Stream(bases, diag, operator.in_structure, pomme, shared)
             else:
-                stream = _Stream(
-                    bases, getattr(diag, leg), _on_leg(operator.in_structure, bases, leg)
-                )
+                structure = _on_leg(operator.in_structure, bases, leg)
+                stream = _Stream(bases, getattr(diag, leg), structure, shared=shared)
             results[leg] = _stream_gram_inverse(stream, regularization, batch_size)
 
     ridges: PyTree[Array]
@@ -231,6 +236,8 @@ class _Stream(NamedTuple):
     """The amplitudes of `bases`."""
     pomme: OffsetBasis | None = None
     """The Pomme template to eliminate from the Gram, when Pomme is enabled."""
+    shared: bool = False
+    """Whether the amplitudes are shared by the detectors, their Gram summed over them."""
 
 
 def _ridge_operator(
@@ -340,16 +347,29 @@ def _map_detectors[T](
 ) -> T:
     """`f(bases, weights)` for each detector, results stacked on a leading detector axis.
 
-    A basis batched over detectors is passed as that detector's own; a shared one as is.
+    A basis batched over detectors is passed as that detector's own; a shared one as is. With
+    amplitudes shared by the detectors, the results are summed instead, keeping an axis of size 1.
     """
     batched = {name: basis for name, basis in stream.bases.items() if basis.batch_shape}
+    parts = {name: basis._partition_batch() for name, basis in batched.items()}
 
     def one(args: tuple[Array, dict[str, Basis]]) -> T:
         weights, own = args
-        own = {name: basis._with_batch_shape(basis.batch_shape[1:]) for name, basis in own.items()}
+        own = {
+            name: eqx.combine(part, parts[name][1])._with_batch_shape(batched[name].batch_shape[1:])
+            for name, part in own.items()
+        }
         return f(stream.bases | own, weights)
 
-    return jax.lax.map(one, (stream.weights, batched), batch_size=batch_size)
+    weights = stream.weights
+    if stream.shared and not batched:
+        # every detector sees the same functions, and a Gram is linear in the weights
+        weights = weights.sum(axis=0, keepdims=True)
+    own = {name: part for name, (part, _) in parts.items()}
+    results = jax.lax.map(one, (weights, own), batch_size=batch_size)
+    if stream.shared:
+        return jax.tree.map(lambda a: a.sum(axis=0, keepdims=True), results)
+    return results
 
 
 def _regularize_bands(

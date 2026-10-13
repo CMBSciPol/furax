@@ -18,6 +18,8 @@ A few [`Basis`][] flavours trade memory for structure:
   overlapping generalisation of [`SegmentedBasis`][].
 - [`DecimatedBasis`][]: any of the above, stored on a coarser time grid to trade resolution for
   memory.
+- [`CoupledBasis`][]: modes of any of the above, each seen with its own coupling, such as the
+  gain of each detector to a signal common to the focal plane.
 
 A basis is normally shared by every detector. When the functions differ from detector to detector,
 as for the T-to-P leakage template, a basis of any flavour can instead hold a batch of bases, one
@@ -32,6 +34,7 @@ from itertools import chain
 from math import prod
 from typing import Any, Self
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import Array, ShapeDtypeStruct
@@ -48,6 +51,7 @@ __all__ = [
     'OffsetBasis',
     'WindowedBasis',
     'DecimatedBasis',
+    'CoupledBasis',
 ]
 
 # Full float32 precision for basis contraction, so that a basis and its transpose stay adjoint
@@ -103,7 +107,7 @@ class Basis(AbstractLinearOperator):
         super().__post_init__()
 
     def _check_batch_axes(self) -> None:
-        shapes = [leaf.shape for leaf in jax.tree.leaves(self)]
+        shapes = [leaf.shape for leaf in jax.tree.leaves(self._partition_batch()[0])]
         if not shapes:
             raise ValueError(f'{type(self).__name__} stores no array to batch')
         n = len(self.batch_shape)
@@ -163,10 +167,19 @@ class Basis(AbstractLinearOperator):
         x = jnp.broadcast_to(x, (*batch, *x.shape[len(x_batch) :]))
         # the basis's batch axes are the trailing ones of `batch`, mapped one at a time
         n_extra = len(batch) - len(self.batch_shape)
-        g = lambda basis, y: f(basis._with_batch_shape(()), y)
+        batched, shared = self._partition_batch()
+        g = lambda part, y: f(eqx.combine(part, shared)._with_batch_shape(()), y)
         for _ in self.batch_shape:
             g = jax.vmap(g, in_axes=(0, n_extra), out_axes=n_extra)
-        return g(self, x)
+        return g(batched, x)
+
+    def _partition_batch(self) -> tuple[Self, Self]:
+        """This basis split into the arrays that carry the batch axes, and those it shares.
+
+        Each part is this basis with the other part's arrays replaced by `None`, recombined by
+        `eqx.combine`. By default, every array carries the batch axes.
+        """
+        return eqx.partition(self, eqx.is_array)
 
     def _with_batch_shape(self, batch_shape: tuple[int, ...]) -> Self:
         """This basis, rebuilt on arrays that carry only `batch_shape` leading axes.
@@ -730,4 +743,86 @@ class DecimatedBasis(Basis):
             support.taps[coarse],
             support.values[:, coarse],
             support.n_blocks,
+        )
+
+
+class CoupledBasis(Basis):
+    r"""Modes built from one basis, each seen with its own coupling.
+
+    Each of the `m` modes is a combination of the functions of `inner`, seen with coupling $P_m$:
+
+    $$ s(t) = \sum_m P_m \sum_k a_{km}\, b_k(t). $$
+
+    The amplitudes have shape `(*inner.shape, m)`, keeping the time blocks of a time-local `inner`
+    in front. A batch of couplings, such as one row per detector, makes a batch of bases sharing
+    `inner`, stored once: the batch is that of the couplings, and `inner` must be a single basis.
+    With amplitudes shared by the batch (see
+    [`TemplateOperator`][furax.mapmaking.templates.TemplateOperator]), detector $i$ sees mode $m$
+    of a signal common to every detector with gain $P_{im}$.
+
+    Examples:
+        A gradient across three detectors, as a cubic in time:
+
+        >>> inner = TensorBasis(jnp.vander(jnp.linspace(-1.0, 1.0, 5), 4).T)
+        >>> basis = CoupledBasis(jnp.array([[-1.0], [0.0], [1.0]]), inner)
+        >>> basis.batch_shape, basis.shape
+        ((3,), (4, 1))
+    """
+
+    couplings: Float[Array, '*batch m']
+    inner: Basis
+
+    def __post_init__(self) -> None:
+        if self.inner.batch_shape:
+            msg = (
+                f'the inner basis is shared by the batch, got batch_shape {self.inner.batch_shape}'
+            )
+            raise ValueError(msg)
+        batch_shape = self.couplings.shape[:-1]
+        if self.batch_shape and self.batch_shape != batch_shape:
+            msg = f'batch_shape {self.batch_shape} differs from the couplings {batch_shape}'
+            raise ValueError(msg)
+        object.__setattr__(self, 'batch_shape', batch_shape)
+        super().__post_init__()
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return (*self.inner.shape, self.couplings.shape[-1])
+
+    @property
+    def _array_dtype(self) -> DTypeLike:
+        return self.inner.dtype
+
+    @property
+    def n_points(self) -> int:
+        return self.inner.n_points
+
+    def _partition_batch(self) -> tuple[Self, Self]:
+        # the couplings carry the batch, the inner basis is shared
+        spec = eqx.tree_at(lambda b: b.couplings, jax.tree.map(lambda _: False, self), True)
+        return eqx.partition(self, spec)
+
+    def _expand(self, coeffs: Float[Array, '...']) -> Float[Array, '*batch samp']:
+        # the modes share `inner`: weigh them first, then expand once
+        return self.inner(_einsum('...m,m->...', coeffs, self.couplings))
+
+    def _project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '...']:
+        return self.inner.T(signal)[..., None] * self.couplings
+
+    def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n w1 k k']:
+        # the Gram of `inner`, each block times `P Pᵀ`, in the (sub-basis, mode) order of a block
+        bands = self.inner.gram(weights)
+        n, w1, k, _ = bands.shape
+        p = self.couplings
+        return _einsum('ndab,m,l->ndambl', bands, p, p).reshape(n, w1, k * p.size, k * p.size)
+
+    @property
+    def _n_blocks(self) -> int:
+        return self.inner._n_blocks
+
+    def support(self) -> WindowedBasis:
+        support = self.inner.support()
+        values = support.values[:, None, :] * self.couplings[:, None]  # (k, m, samp)
+        return WindowedBasis(
+            support.offset, support.taps, values.reshape(-1, self.n_points), support.n_blocks
         )

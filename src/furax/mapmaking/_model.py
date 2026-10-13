@@ -25,7 +25,7 @@ from .config import (
     WeightingMode,
     _legendre_leg_groups,
 )
-from .gram import _gram_inverse_and_ridge
+from .gram import gram_inverse
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .pomme import PommeProjectionOperator
 from .templates import (
@@ -345,7 +345,7 @@ class TemplateBundle:
             pomme_tau: Pomme interval length, when the templates are combined with Pomme; the
                 Gram is then taken under the effective weight $W F$ (see [`gram_inverse`][]).
         """
-        ginv, ridge = _gram_inverse_and_ridge(
+        ginv, ridge = gram_inverse(
             operator,
             weight,
             config.regularization,

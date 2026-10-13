@@ -62,7 +62,11 @@ class MapMakingResults:
     """Names of observations that failed to load and were excluded from the maps"""
 
     template_amplitudes: dict[str, Any] | None = None
-    """Estimated amplitudes of the explicit templates, keyed by template name"""
+    """Estimated amplitudes of the explicit templates, keyed by template name.
+
+    Each is `(n_obs, n_dets, *shape)`, or `(n_obs, *shape)` for amplitudes shared by the detectors
+    (such as a T2P leakage following a polarization field over the focal plane).
+    """
 
     def save(self, out_dir: str | Path) -> None:
         """Write every product that is set, into the files listed above."""

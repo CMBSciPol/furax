@@ -9,6 +9,7 @@ from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
+from furax.math.coords import XiEtaAngles
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
@@ -25,7 +26,7 @@ from .config import (
     WeightingMode,
     _legendre_leg_groups,
 )
-from .gram import gram_inverse
+from .gram import _template_grams, _TemplateGram
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .pomme import PommeProjectionOperator
 from .templates import (
@@ -40,6 +41,7 @@ from .templates import (
     scan_synchronous_basis,
     spline_hwp_synchronous_basis,
     t2p_basis,
+    t2p_zernike_couplings,
 )
 from .weight import NestedWeightOperator, WeightOperator
 
@@ -321,11 +323,20 @@ class TemplateBundle:
     The effective weight $W_\text{eff}$ is the weight $W$, or $W F$ with $F$ the Pomme deprojector
     when the templates are combined with Pomme. The ridge uses the amplitude structure
     and scaling of the Gram factorization.
+
+    The templates whose amplitudes are shared by the detectors (`operator.shared`) are left out of
+    the inverse: their Gram is kept unfactored instead, over the detectors the templates were built
+    for, such as one batch of an observation's detectors. The observation's Gram is the sum over
+    its batches, factored once it is complete.
     """
 
     operator: AbstractTemplateOperator
-    gram_inverse: AbstractLinearOperator
+    gram_inverse: AbstractLinearOperator | None
+    """On the amplitudes of the templates with per-detector amplitudes; `None` without any."""
     ridge: AbstractLinearOperator | None
+    """Added to those amplitudes' Gram before factoring; `None` without regularization."""
+    shared_gram: _TemplateGram | None
+    """The Gram of the templates with shared amplitudes; `None` without any."""
 
     @classmethod
     def create(
@@ -348,15 +359,17 @@ class TemplateBundle:
             pomme_tau: Pomme interval length, when the templates are combined with Pomme; the
                 Gram is then taken under the effective weight $W F$ (see [`gram_inverse`][]).
         """
-        ginv, ridge = gram_inverse(
+        own, shared = _template_grams(
             operator,
             weight,
-            config.regularization,
             bandwidth=bandwidth,
             pomme_tau=pomme_tau,
             batch_size=config.gram_batch_size,
         )
-        return cls(operator, ginv, ridge)
+        ginv = ridge = None
+        if own is not None:
+            ginv, ridge = own.inverse(operator, config.regularization)
+        return cls(operator, ginv, ridge, shared)
 
 
 @register_dataclass
@@ -403,6 +416,8 @@ class ObservationTemplates:
             fields |= {ReaderField.TIMESTAMPS, ReaderField.HWP_ANGLES}
         if tcfg.t2p is not None:
             fields |= {ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS}
+            if tcfg.t2p.zernike_order is not None:
+                fields |= {ReaderField.DETECTOR_QUATERNIONS}
         if tcfg.ground is not None:
             raise NotImplementedError(
                 'Ground templates are not supported in the multi-observation path.'
@@ -439,10 +454,15 @@ class ObservationTemplates:
         explicit_bases: dict[str, Any] = {}
         implicit_bases: dict[str, Any] = {}
 
-        def add(name: str, bases: Basis | dict[str, Basis], explicit: bool) -> None:
+        shared: list[str] = []  # the templates whose amplitudes are shared by the detectors
+
+        def grouped(bases: Basis | dict[str, Basis]) -> Basis | dict[str, Basis]:
             if legs is not None and isinstance(bases, Basis):
-                bases = {legs.lower(): bases}  # one group: stored once for every leg
-            (explicit_bases if explicit else implicit_bases)[name] = bases
+                return {legs.lower(): bases}  # one group: stored once for every leg
+            return bases
+
+        def add(name: str, bases: Basis | dict[str, Basis], explicit: bool) -> None:
+            (explicit_bases if explicit else implicit_bases)[name] = grouped(bases)
 
         if (poly := tcfg.polynomial) is not None:
 
@@ -543,6 +563,22 @@ class ObservationTemplates:
             # Q and U each fit their own leakage amplitude from the same temperature stream, so
             # they share one basis.
             qu = ''.join(s.lower() for s in config.landscape.stokes if s in 'QU')
+            couplings = None
+            if t2p.zernike_order is not None:
+                # the leakage follows a polarization field over the focal plane, its amplitudes
+                # shared by the detectors; padded detectors sit on the boresight, with zero weight
+                angles = XiEtaAngles.from_quaternion(
+                    Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS])
+                )
+                couplings = t2p_zernike_couplings(
+                    angles.xi,
+                    angles.eta,
+                    angles.gamma,
+                    t2p.zernike_order,
+                    t2p.zernike_radius,
+                    dtype,
+                )
+                shared.append('t2p')
             bases = {}
             if qu:
                 bases[qu] = t2p_basis(
@@ -551,6 +587,7 @@ class ObservationTemplates:
                     fit_band=t2p.fit_band,
                     sample_rate=sample_rate,
                     decimation_factor=t2p.decimation_factor,
+                    couplings=couplings,
                 )
             add('t2p', bases, t2p.explicit)
 
@@ -565,9 +602,12 @@ class ObservationTemplates:
         def build(bases: dict[str, Any]) -> AbstractTemplateOperator | None:
             if not bases:
                 return None
+            # Implicit deprojection would couple the detector batches through shared amplitudes,
+            # so their templates are explicit (see their configs).
+            on = tuple(name for name in shared if name in bases)
             if config.demodulated:
-                return StokesTemplateOperator(bases, n_dets, config.landscape.stokes)
-            return TemplateOperator(bases, n_dets)
+                return StokesTemplateOperator(bases, n_dets, config.landscape.stokes, shared=on)
+            return TemplateOperator(bases, n_dets, shared=on)
 
         # `Weff` bundles the sample mask (via `model.W`) and the Pomme deprojector `model.F`; the
         # Grams are taken under the same effective weight, from `model.W` and `tau`.
@@ -582,6 +622,7 @@ class ObservationTemplates:
         if (op := build(implicit_bases)) is not None:
             implicit = bundle(op, model.W, tcfg)
             ginv = implicit.gram_inverse
+            assert ginv is not None  # shared amplitudes are explicit
             wd = wd - Weff(op(ginv(op.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
 
         explicit = None

@@ -27,6 +27,7 @@ from jaxtyping import DTypeLike, Float, PyTree
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
 from furax.math import bspline
+from furax.math.zernike import zernike
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 from .bases import (
@@ -50,6 +51,7 @@ __all__ = [
     'azimuth_hwp_synchronous_basis',
     'binned_azimuth_hwp_synchronous_basis',
     'spline_hwp_synchronous_basis',
+    't2p_zernike_couplings',
     'AbstractTemplateOperator',
     'TemplateOperator',
     'StokesTemplateOperator',
@@ -207,11 +209,15 @@ def t2p_basis(
     fit_band: tuple[float, float] | None = None,
     sample_rate: Float[Array, ''] | float = 1.0,
     decimation_factor: int = 1,
+    couplings: Float[Array, 'det ...'] | None = None,
 ) -> Basis:
     """Per-detector basis for a temperature-to-polarization leakage template.
 
     Each detector's basis is just its own temperature stream, so fitting one amplitude per detector
-    estimates how much temperature leaks into its polarization.
+    estimates how much temperature leaks into its polarization. With `couplings`, each detector's
+    basis is instead its temperature stream times each of its couplings, one function per coupling:
+    with amplitudes shared by the detectors, the couplings then set each detector's leakage from a
+    few amplitudes (see [`t2p_zernike_couplings`][]).
 
     `fit_band=(f0, f1)` restricts the temperature basis to that frequency band (Hz), so the leakage
     is both estimated and removed only there, keeping the template a clean linear operator. The
@@ -248,8 +254,47 @@ def t2p_basis(
         return t.astype(dtype)
 
     t = jax.lax.map(filter_and_decimate, temperature, batch_size=_T2P_BATCH_SIZE)
-    basis = TensorBasis(t[:, None, :], batch_shape=t.shape[:1])  # (det, k=1, dec)
+    if couplings is None:
+        values = t[:, None, :]  # (det, k=1, dec)
+    else:
+        # each coupling times the detector's temperature: (det, *couplings, dec)
+        values = couplings.astype(dtype)[..., None] * jnp.expand_dims(
+            t, tuple(range(1, couplings.ndim))
+        )
+    basis = TensorBasis(values, batch_shape=t.shape[:1])
     return basis if q == 1 else DecimatedBasis(basis, q, n_full)
+
+
+def t2p_zernike_couplings(
+    xi: Float[Array, ' det'],
+    eta: Float[Array, ' det'],
+    gamma: Float[Array, ' det'],
+    max_order: int,
+    radius: float,
+    dtype: DTypeLike,
+) -> Float[Array, 'det k 2']:
+    r"""Couplings of a leakage that follows a polarization field over the focal plane.
+
+    The field, $P = \sum_k c_k Z_k(\xi / R, \eta / R)$ with complex $c_k$ over the Zernike
+    polynomials up to radial order `max_order`, reaches detector $i$, of polarization angle
+    $\gamma_i$, as the leakage coefficient $e^{2i\gamma_i} P(\xi_i, \eta_i)$. On either Q or U,
+    that coefficient is a real combination of $\cos 2\gamma_i \, Z_k$ and $\sin 2\gamma_i \, Z_k$:
+    the couplings, `(det, k, 2)` with the Zernike polynomials in the standard (ANSI) order. The
+    span of these does not depend on the sign or origin conventions of the angles and coordinates.
+
+    Args:
+        xi: The detectors' first focal-plane coordinate, in radians.
+        eta: The detectors' second focal-plane coordinate, in radians.
+        gamma: The detectors' polarization angle, in radians.
+        max_order: The highest radial order of the field.
+        radius: The focal-plane radius $R$, in radians.
+        dtype: The dtype of the couplings.
+    """
+    x, y = xi / radius, eta / radius
+    modes = [(n, m) for n in range(max_order + 1) for m in range(-n, n + 1, 2)]
+    fields = jnp.stack([zernike(n, m, x, y) for n, m in modes], axis=1)  # (det, k)
+    rotation = jnp.stack([jnp.cos(2 * gamma), jnp.sin(2 * gamma)], axis=-1)  # (det, 2)
+    return (fields[..., None] * rotation[:, None, :]).astype(dtype)
 
 
 def scan_synchronous_basis(
@@ -343,9 +388,10 @@ class AbstractTemplateOperator(AbstractLinearOperator):
     """Every enabled template as one operator, from amplitudes keyed by template name to a TOD.
 
     Each detector fits its own amplitudes, with a leading detector axis. The templates named in
-    `shared` instead have amplitudes shared by every detector, their leading axis of size 1, for
-    signals common to the detectors, such as a common mode, or one seen with a gain per detector
-    ([`CoupledBasis`][furax.mapmaking.bases.CoupledBasis]).
+    `shared` instead have amplitudes shared by every detector, their leading axis of size 1: a
+    signal common to the detectors, or one whose per-detector coefficients follow from a few
+    amplitudes, such as a temperature-to-polarization leakage set by the optics (see
+    [`t2p_zernike_couplings`][]).
     """
 
     # The bases must stay the only dynamic leaves: an operator then stacks under a scan over

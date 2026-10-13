@@ -50,8 +50,8 @@ $\lambda \cdot \mathrm{mean}(\mathrm{diag}\, G)$ added to each block before fact
 numerical safeguard rather than a statistical choice.
 """
 
-from collections.abc import Callable
-from dataclasses import field
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from math import prod
 from typing import Any, NamedTuple, Self
 
@@ -60,6 +60,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from jax.tree_util import register_dataclass
 from jaxtyping import Float, Int, PyTree
 
 import furax.tree
@@ -128,59 +129,158 @@ def gram_inverse(
             together with a nonzero `bandwidth`, or if `operator` mixes templates with shared and
             per-detector amplitudes.
     """
+    own, shared = _template_grams(
+        operator, weight, bandwidth=bandwidth, pomme_tau=pomme_tau, batch_size=batch_size
+    )
+    if own is not None and shared is not None:
+        raise ValueError('templates with shared and per-detector amplitudes are coupled')
+    gram = own if own is not None else shared
+    assert gram is not None  # an operator has at least one template
+    return gram.inverse(operator, regularization)
+
+
+def _template_grams(
+    operator: AbstractTemplateOperator,
+    weight: AbstractLinearOperator,
+    *,
+    bandwidth: int = 0,
+    pomme_tau: int | None = None,
+    batch_size: int = 8,
+) -> tuple['_TemplateGram | None', '_TemplateGram | None']:
+    """The Grams `Tᵀ W T` of the templates with per-detector and with shared amplitudes.
+
+    Each is assembled as [`gram_inverse`][] factors it (see there for the arguments), leaving out
+    the coupling between the two; `None` for a kind without any template.
+    """
     is_stokes = isinstance(operator, StokesTemplateOperator)
     # Pomme acts on the modulated TOD, which demodulation splits into one stream per leg.
     if pomme_tau is not None and is_stokes:
         raise ValueError('Pomme filtering applies to a single stream, not a Stokes TOD')
     if pomme_tau is not None and bandwidth:
         raise ValueError('Pomme filtering requires a diagonal weight')
-    shared = bool(operator.shared)
-    if shared and set(operator.shared) != set(operator.bases):
-        raise ValueError('templates with shared and per-detector amplitudes are coupled')
 
     # Two bases on different legs never share a weighted sample, so each leg is a stream of its
     # own, with one block over the templates it carries rather than one over every leg.
     streams: dict[str | None, dict[str, Basis]]
     if is_stokes:
         streams = {
-            leg: bases
+            leg: {name: on[leg] for name, on in operator.bases_by_leg.items() if leg in on}
             for leg in operator.legs
-            if (bases := {name: on[leg] for name, on in operator.bases_by_leg.items() if leg in on})
         }
     else:
         streams = {None: operator.bases}
 
-    if bandwidth:
-        results = _banded_weight_gram_inverses(operator, weight, streams, regularization, bandwidth)
-    else:
-        diag = weight(furax.tree.ones_like(weight.in_structure))
-        # if we wanted to guard against a non-diagonal W, one extra application on a random
-        # vector `x` and a comparison against `diag * x` would catch it with very high probability
-        results = {}
-        for leg, bases in streams.items():
+    diag = None if bandwidth else weight(furax.tree.ones_like(weight.in_structure))
+    # if we wanted to guard against a non-diagonal W, one extra application on a random
+    # vector `x` and a comparison against `diag * x` would catch it with very high probability
+
+    def gram(shared: bool) -> _TemplateGram | None:
+        kind = {
+            leg: on
+            for leg, bases in streams.items()
+            if (on := {n: b for n, b in bases.items() if (n in operator.shared) == shared})
+        }
+        if not kind:
+            return None
+        if diag is None:
+            return _TemplateGram(_banded_weight_grams(operator, weight, kind, bandwidth))
+        grams = {}
+        for leg, bases in kind.items():
             if leg is None:
                 n_samps = diag.shape[-1]
                 pomme = None if pomme_tau is None else OffsetBasis(pomme_tau, n_samps, diag.dtype)
-                stream = _Stream(bases, diag, operator.in_structure, pomme, shared)
+                stream = _Stream(bases, diag, pomme, shared)
             else:
-                structure = _on_leg(operator.in_structure, bases, leg)
-                stream = _Stream(bases, getattr(diag, leg), structure, shared=shared)
-            results[leg] = _stream_gram_inverse(stream, regularization, batch_size)
+                stream = _Stream(bases, getattr(diag, leg), shared=shared)
+            grams[leg] = _stream_gram(stream, batch_size)
+        return _TemplateGram(grams)
 
-    ridges: PyTree[Array]
-    if not is_stokes:  # a single stream
-        inverse, ridges = results[None]
-    else:
-        ridges = {name: {} for name in operator.bases_by_leg}
-        for leg, (_, leg_ridges) in results.items():
-            for name, ridge in leg_ridges.items():
-                ridges[name][leg] = ridge
-        blocks = {leg: block for leg, (block, _) in results.items() if leg is not None}
-        inverse = _PerLegOperator(blocks, in_structure=operator.in_structure)
+    return gram(shared=False), gram(shared=True)
 
-    if not regularization:
-        return inverse, None
-    return inverse, _ridge_operator(ridges, operator.in_structure)
+
+@register_dataclass
+@dataclass(frozen=True)
+class _TemplateGram:
+    """The Gram `Tᵀ W T` of some templates of an operator, assembled but not factored.
+
+    For amplitudes shared by the detectors, the Grams over disjoint sets of detectors (the batches
+    of an observation) add up to the Gram over their union.
+    """
+
+    streams: dict[str | None, '_StreamGram']
+    """Per stream: the TOD (`None`), or each Stokes leg of a demodulated one."""
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """The templates the Gram covers."""
+        return tuple(dict.fromkeys(name for gram in self.streams.values() for name in gram.names))
+
+    def inverse(
+        self, operator: AbstractTemplateOperator, regularization: float
+    ) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
+        """The inverse Gram on the amplitudes of these templates of `operator`, and its ridge.
+
+        See [`gram_inverse`][].
+        """
+        structure = {name: operator.in_structure[name] for name in self.names}
+        ridges: PyTree[Array]
+        if not isinstance(operator, StokesTemplateOperator):  # a single stream
+            inverse, ridges = self.streams[None].inverse(structure, regularization)
+        else:
+            blocks = {}
+            ridges = {name: {} for name in structure}
+            for leg, gram in self.streams.items():
+                assert leg is not None
+                blocks[leg], leg_ridges = gram.inverse(
+                    _on_leg(structure, gram.names, leg), regularization
+                )
+                for name, ridge in leg_ridges.items():
+                    ridges[name][leg] = ridge
+            inverse = _PerLegOperator(blocks, in_structure=structure)
+        if not regularization:
+            return inverse, None
+        return inverse, _ridge_operator(ridges, structure)
+
+
+@register_dataclass
+@dataclass(frozen=True)
+class _StreamGram:
+    """The Gram of the templates on one stream, in the layout of `_layout`, one per detector.
+
+    A banded core alone has `bands`; templates sharing one dense block have `corner`; a core
+    bordered by the others has all three.
+    """
+
+    bands: Float[Array, 'det n w1 k k'] | None
+    border: Float[Array, 'det nk m'] | None
+    corner: Float[Array, 'det m m'] | None
+    core: str | None = field(metadata={'static': True})
+    border_names: tuple[str, ...] = field(metadata={'static': True})
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return self.border_names if self.core is None else (self.core, *self.border_names)
+
+    def inverse(
+        self, structure: PyTree[jax.ShapeDtypeStruct], regularization: float
+    ) -> tuple[AbstractLinearOperator, PyTree[Array]]:
+        """The factored inverse, and the ridge added to each amplitude before factoring."""
+        if self.core is None:
+            assert self.corner is not None
+            return _dense_inverse(self.corner, structure, regularization)
+        assert self.bands is not None
+        if not self.border_names:
+            return _banded_inverse(self.bands, self.core, structure, regularization)
+        assert self.border is not None and self.corner is not None
+        return _bordered_inverse(
+            self.bands,
+            self.border,
+            self.corner,
+            self.core,
+            self.border_names,
+            structure,
+            regularization,
+        )
 
 
 def _cross_gram(
@@ -232,8 +332,6 @@ class _Stream(NamedTuple):
 
     bases: dict[str, Basis]
     weights: Float[Array, 'det samp']
-    in_structure: PyTree[jax.ShapeDtypeStruct]
-    """The amplitudes of `bases`."""
     pomme: OffsetBasis | None = None
     """The Pomme template to eliminate from the Gram, when Pomme is enabled."""
     shared: bool = False
@@ -265,16 +363,12 @@ def _per_detector(
     )
 
 
-def _stream_gram_inverse(
-    stream: _Stream, regularization: float, batch_size: int
-) -> tuple[AbstractLinearOperator, PyTree[Array]]:
-    """Inverse of the Gram of every template on one stream, one block per detector.
+def _stream_gram(stream: _Stream, batch_size: int) -> _StreamGram:
+    """The Gram of every template on one stream, one per detector.
 
     A single template keeps the band structure of its own Gram. Several are coupled through the
     shared weight: the time-local one with the most amplitudes keeps its band structure, the
     others bordering it. Without any time-local template, the few amplitudes share a dense block.
-    Paired with the ridge added before factoring, on each amplitude of `stream.in_structure` (zero
-    without regularization).
     """
     bases, pomme = stream.bases, stream.pomme
     core, border = _layout(bases)
@@ -283,16 +377,15 @@ def _stream_gram_inverse(
         bands = _map_detectors(
             lambda b, w: _banded_gram(b[core], pomme, w), stream, batch_size=batch_size
         )
-        return _banded_inverse(bands, core, stream.in_structure, regularization)
+        return _StreamGram(bands, None, None, core, ())
     if core is not None:
-        return _bordered_gram_inverse(stream, core, border, regularization, batch_size)
+        return _bordered_gram(stream, core, border, batch_size)
 
     def dense(bases: dict[str, Basis], weights: Array) -> Array:
         ordered = [bases[name] for name in border]
         return _dense_gram(ordered, weights, _pomme_sums(ordered, weights, pomme))
 
-    blocks = _map_detectors(dense, stream, batch_size=batch_size)
-    return _dense_inverse(blocks, stream.in_structure, regularization)
+    return _StreamGram(None, None, _map_detectors(dense, stream, batch_size), None, border)
 
 
 def _layout(bases: dict[str, Basis]) -> tuple[str | None, tuple[str, ...]]:
@@ -335,11 +428,9 @@ def _dense_inverse(
     return inverse, _per_detector(ridge, structure)
 
 
-def _on_leg(
-    structure: PyTree[jax.ShapeDtypeStruct], bases: dict[str, Basis], leg: str
-) -> PyTree[jax.ShapeDtypeStruct]:
-    """The part of a Stokes template operator's amplitude tree on one leg, for `bases`."""
-    return {name: structure[name][leg] for name in bases}
+def _on_leg(structure: PyTree[Any], names: Iterable[str], leg: str) -> PyTree[Any]:
+    """The part of a Stokes template operator's amplitude tree on one leg, for templates `names`."""
+    return {name: structure[name][leg] for name in names}
 
 
 def _map_detectors[T](
@@ -561,14 +652,10 @@ def _inverse_counts(pomme: OffsetBasis, weights: Float[Array, ' samp']) -> Float
     return 1.0 / jnp.where(counts > 0, counts, jnp.inf)
 
 
-def _bordered_gram_inverse(
-    stream: _Stream,
-    core_name: str,
-    border_names: tuple[str, ...],
-    regularization: float,
-    batch_size: int,
-) -> tuple['_BorderedGramInverse', PyTree[Array]]:
-    """Inverse Gram of one time-local template bordered by the others, one per detector.
+def _bordered_gram(
+    stream: _Stream, core_name: str, border_names: tuple[str, ...], batch_size: int
+) -> _StreamGram:
+    """Gram of one time-local template bordered by the others, one per detector.
 
     The core template's own Gram is block-banded; the others couple to it through a dense border
     and to each other through a dense corner.
@@ -593,9 +680,7 @@ def _bordered_gram_inverse(
         return bands, jnp.concatenate(border, axis=1), corner
 
     bands, border, corner = _map_detectors(build, stream, batch_size=batch_size)
-    return _bordered_inverse(
-        bands, border, corner, core_name, border_names, stream.in_structure, regularization
-    )
+    return _StreamGram(bands, border, corner, core_name, border_names)
 
 
 def _bordered_inverse(
@@ -690,14 +775,13 @@ than the estimate; the margin absorbs one such block.
 """
 
 
-def _banded_weight_gram_inverses(
+def _banded_weight_grams(
     operator: AbstractTemplateOperator,
     weight: AbstractLinearOperator,
     streams: dict[str | None, dict[str, Basis]],
-    regularization: float,
     bandwidth: int,
-) -> dict[str | None, tuple[AbstractLinearOperator, PyTree[Array]]]:
-    """The inverse Gram of every stream, and its ridge, under a weight of the given bandwidth.
+) -> dict[str | None, _StreamGram]:
+    """The Gram of every stream, under a weight of the given bandwidth.
 
     Each probe sets amplitudes on every stream at once, and its response `Tᵀ W T x` costs one
     application of `W` to the whole TOD, every detector included.
@@ -723,9 +807,7 @@ def _banded_weight_gram_inverses(
 
     n_probes = max(plan.n_probes for plan in probes.values())
     responses = jax.lax.map(respond, jnp.arange(n_probes))
-    return {
-        leg: plan.gram_inverse(part(responses, leg), regularization) for leg, plan in probes.items()
-    }
+    return {leg: plan.gram(part(responses, leg)) for leg, plan in probes.items()}
 
 
 class _Probes(NamedTuple):
@@ -806,26 +888,21 @@ class _Probes(NamedTuple):
                 amps[name] = jnp.broadcast_to(part.reshape(s.shape[1:]), s.shape).astype(s.dtype)
         return amps
 
-    def gram_inverse(
-        self, responses: dict[str, Array], regularization: float
-    ) -> tuple[AbstractLinearOperator, PyTree[Array]]:
-        """The inverse Gram, and its ridge, from the responses to every probe of every stream."""
+    def gram(self, responses: dict[str, Array]) -> _StreamGram:
+        """The Gram, from the responses to every probe of every stream."""
         # stacked over the probes of every stream: those past this one's are zero
         responses = {name: r[: self.n_probes] for name, r in responses.items()}
         if self.core is None:
-            corner = self._border_columns(responses)
-            return _dense_inverse(corner, self.structure, regularization)
+            return _StreamGram(None, None, self._border_columns(responses), None, self.border)
 
         bands = self._core_bands(responses[self.core][: self.n_core])
         if not self.border:
-            return _banded_inverse(bands, self.core, self.structure, regularization)
+            return _StreamGram(bands, None, None, self.core, ())
         n_dets = bands.shape[0]
         core_columns = responses[self.core][self.n_core :].reshape(self.n_border, n_dets, -1)
         border = jnp.moveaxis(core_columns, 0, -1)  # (det, n·k, m)
         corner = self._border_columns(responses)
-        return _bordered_inverse(
-            bands, border, corner, self.core, self.border, self.structure, regularization
-        )
+        return _StreamGram(bands, border, corner, self.core, self.border)
 
     def _core_bands(self, responses: Float[Array, 'probe det ...']) -> Float[Array, 'det n w1 k k']:
         """The core's Gram bands: `bands[i, d, a, b]` couples `(i, a)` to `(i + d, b)`."""

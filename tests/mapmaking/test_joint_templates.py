@@ -358,3 +358,64 @@ def test_toeplitz_templates_require_inner_mask_gaps(treatment):
     config.detector_batch_size = 0  # gap treatments other than the inner mask need every detector
     with pytest.raises(NotImplementedError, match='inner_mask'):
         MultiObservationMapMaker(_hwp_obs(), config=config)
+
+
+def _t2p_zernike(order: int = 1, **kwargs) -> TemplatesConfig:
+    return TemplatesConfig(t2p=T2PConfig(zernike_order=order), **kwargs)
+
+
+def _spread_obs(n_obs: int = 2, n_dets: int = 8, n_samples: int = 1024):
+    """Ground observations whose detectors fill a focal-plane disc, with varied angles."""
+    return [
+        FakeLazyGroundObservation(
+            seed=i, n_dets=n_dets, n_samples=n_samples, focal_plane_radius=0.2
+        )
+        for i in range(n_obs)
+    ]
+
+
+def test_t2p_zernike_returns_one_set_per_observation():
+    cfg = replace(
+        _config(None), templates=_t2p_zernike(), sotodlib=SotodlibConfig(demodulated=True)
+    )
+    res = MultiObservationMapMaker(_spread_obs(), config=cfg).run()
+    assert res.template_amplitudes is not None
+    for leg, amps in res.template_amplitudes['t2p'].items():
+        # (n_obs, n_zernike, 2): order 1 has the offset and the two gradients
+        assert amps.shape == (2, 3, 2), leg
+        assert jnp.all(jnp.isfinite(amps))
+
+
+@pytest.mark.parametrize(
+    'templates',
+    [
+        _t2p_zernike(),
+        _t2p_zernike(0),
+        # from order 1: the offsets of the intervals are degenerate with the intensity map
+        _t2p_zernike(polynomial=PolynomialConfig(legendre=PolynomialOrders(1, 2), explicit=True)),
+        _t2p_zernike(regularization=1e-3),
+    ],
+    ids=['t2p-zernike', 'uniform-field', 'with-explicit', 'ridge'],
+)
+def test_shared_amplitudes_do_not_depend_on_detector_batches(templates):
+    # One set of amplitudes per observation: its right-hand side and Gram are summed over the
+    # detector batches. 7 detectors in batches of 3 also pads two.
+    n_dets = 7
+    obs = _spread_obs(n_dets=n_dets)
+    sotodlib = SotodlibConfig(demodulated=True)
+    cfg = replace(_config(None), templates=templates, sotodlib=sotodlib)
+    cfg.solver = SolverConfig(rtol=1e-10, max_steps=1000)
+    whole, batched = [
+        MultiObservationMapMaker(obs, config=replace(cfg, detector_batch_size=batch)).run()
+        for batch in (0, 3)
+    ]
+    scale = jnp.max(jnp.abs(whole.map.data))
+    assert_allclose(batched.map.data, whole.map.data, atol=1e-6 * scale)
+    assert whole.template_amplitudes is not None and batched.template_amplitudes is not None
+    for name, expected in whole.template_amplitudes.items():
+        got = batched.template_amplitudes[name]
+        if name != 't2p':  # batching pads 2 more detectors, trailing the real ones
+            got = jax.tree.map(lambda a: a[:, :n_dets], got)
+        jax.tree.map(
+            lambda a, b: assert_allclose(a, b, atol=1e-6 * jnp.max(jnp.abs(b))), got, expected
+        )

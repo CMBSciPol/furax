@@ -7,7 +7,12 @@ from jaxtyping import Float
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking.bases import Basis, TensorBasis
-from furax.mapmaking.config import BinsConfig, PolynomialOrders, SplineHWPSynchronousConfig
+from furax.mapmaking.config import (
+    BinsConfig,
+    PolynomialOrders,
+    SplineHWPSynchronousConfig,
+    T2PConfig,
+)
 from furax.mapmaking.pomme import PommeProjectionOperator
 from furax.mapmaking.templates import (
     TemplateOperator,
@@ -22,8 +27,10 @@ from furax.mapmaking.templates import (
     scan_synchronous_basis,
     spline_hwp_synchronous_basis,
     t2p_basis,
+    t2p_zernike_couplings,
 )
 from furax.math import bspline
+from furax.math.zernike import zernike
 
 
 def _wrap(basis: Basis, n_dets: int) -> TemplateOperator:
@@ -484,3 +491,49 @@ class TestSplineHWPSynchronousTemplate:
         basis = spline_hwp_synchronous_basis(t, hwp, 4, 3, jnp.float64)
         # 1..3 -> 3 harmonics -> 2 * 3 = 6 columns; K = 4 + 2 = 6
         assert basis.shape == (6, 6)
+
+
+class TestT2PZernike:
+    XI = (0.1, -0.2, 0.3)
+    ETA = (0.2, 0.05, -0.4)
+    GAMMA = (0.3, 1.2, -0.7)
+
+    def test_couplings_are_zernike_polynomials_rotated_by_the_detector_angle(self) -> None:
+        xi, eta, gamma = (jnp.array(v) for v in (self.XI, self.ETA, self.GAMMA))
+        couplings = t2p_zernike_couplings(xi, eta, gamma, 2, 0.5, jnp.float64)
+        modes = [(n, m) for n in range(3) for m in range(-n, n + 1, 2)]
+        assert couplings.shape == (3, len(modes), 2)
+        fields = jnp.stack([zernike(n, m, xi / 0.5, eta / 0.5) for n, m in modes], axis=1)
+        assert_allclose(couplings[..., 0], fields * jnp.cos(2 * gamma)[:, None], rtol=TOL)
+        assert_allclose(couplings[..., 1], fields * jnp.sin(2 * gamma)[:, None], rtol=TOL)
+
+    def test_a_polarization_field_leaks_into_each_detector_rotated_by_its_angle(self) -> None:
+        # the field P = Σ c_k Z_k reaches detector i as e^(2iγ_i) P(x_i): its real part on Q, whose
+        # amplitudes are (Re c_k, -Im c_k) on the (cos 2γ Z_k, sin 2γ Z_k) couplings
+        xi, eta, gamma = (jnp.array(v) for v in (self.XI, self.ETA, self.GAMMA))
+        temperature = jr.normal(jr.key(30), (3, 50))
+        couplings = t2p_zernike_couplings(xi, eta, gamma, 1, 0.5, jnp.float64)
+        basis = t2p_basis(temperature, jnp.float64, couplings=couplings)
+        assert basis.batch_shape == (3,)
+        assert basis.shape == (3, 2)
+
+        c = jr.normal(jr.key(31), (3,)) + 1j * jr.normal(jr.key(32), (3,))
+        modes = [(0, 0), (1, -1), (1, 1)]
+        field = sum(ck * zernike(n, m, xi / 0.5, eta / 0.5) for ck, (n, m) in zip(c, modes))
+        leakage = jnp.exp(2j * gamma) * field  # each detector's coefficient, Q + iU
+        amps = jnp.stack([c.real, -c.imag], axis=-1)
+        assert_allclose(basis(amps), leakage.real[:, None] * temperature, rtol=TOL, atol=TOL)
+
+
+class TestT2PConfig:
+    @pytest.mark.parametrize(
+        ('kwargs', 'match'),
+        [
+            ({'zernike_order': -1}, "'zernike_order' must be >= 0"),
+            ({'zernike_radius': 0.0}, "'zernike_radius' must be positive"),
+            ({'explicit': False}, 'requires explicit=True'),
+        ],
+    )
+    def test_rejects(self, kwargs, match) -> None:
+        with pytest.raises(ValueError, match=match):
+            T2PConfig(**kwargs)

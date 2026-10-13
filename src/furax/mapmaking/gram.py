@@ -24,9 +24,15 @@ straddling two blocks of a time-local basis couples them, so the Gram band widen
 $F$ annihilates constant columns, so a template containing one (polynomial order 0, a DC harmonic,
 binned azimuth) makes $\tilde G$ singular: a `regularization` ridge is then required.
 
+A correlated weight, such as the masked Toeplitz $M N^{-1} M$ of a $1/f$ noise model, still
+couples only samples a bounded distance apart, so a time-local template keeps a banded Gram, only
+wider. Its entries are read off the responses $T^\top W T x$ to a few probe amplitudes $x$, each
+probe setting blocks spaced far enough apart that their responses do not overlap.
+
 Limitations:
 
-- $W$ must be *diagonal*. Correlated (Toeplitz) weights are not supported.
+- $W$ must not couple detectors, nor the Stokes legs of a demodulated TOD.
+- Pomme requires a diagonal $W$.
 - Several templates on one stream (the TOD, or one Stokes leg) are coupled through the weight.
   The time-local template with the most amplitudes keeps its band structure, and the others
   border it, eliminated by a Schur complement. A second time-local template in the border is
@@ -47,7 +53,7 @@ numerical safeguard rather than a statistical choice.
 from collections.abc import Callable
 from dataclasses import field
 from math import prod
-from typing import NamedTuple
+from typing import Any, NamedTuple, Self
 
 import equinox as eqx
 import jax
@@ -62,11 +68,7 @@ from furax.core import BlockDiagonalOperator
 from furax.linalg import BandedCholeskyOperator, BorderedBandedCholeskyOperator
 
 from .bases import Basis, OffsetBasis, WindowedBasis
-from .templates import (
-    AbstractTemplateOperator,
-    StokesTemplateOperator,
-    _is_basis,
-)
+from .templates import AbstractTemplateOperator, StokesTemplateOperator
 
 __all__ = [
     'gram_inverse',
@@ -78,19 +80,23 @@ def gram_inverse(
     weight: AbstractLinearOperator,
     regularization: float = 0.0,
     *,
+    bandwidth: int = 0,
     pomme_tau: int | None = None,
     batch_size: int = 8,
 ) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
     """Inverse Gram matrix `(Tᵀ W T)⁻¹` for template operator `T` and weight `W`, and its ridge.
 
-    `T` maps amplitudes to TOD, per detector. `W` is *assumed* diagonal, in both detector and
-    sample space, and its diagonal is read off by applying it to a vector of ones: a weight that
-    does not respect that contract silently changes the result. `G = Tᵀ W T` thus does not couple
-    different detectors: each gets its own block, making `G` block-diagonal.
+    `T` maps amplitudes to TOD, per detector. `W` is *assumed* not to couple detectors, nor
+    samples more than `bandwidth` apart: a weight that does not respect that contract silently
+    changes the result. `G = Tᵀ W T` thus does not couple different detectors: each gets its own
+    block, making `G` block-diagonal.
 
-    Each stream (the TOD, or each Stokes leg of a demodulated one) is inverted on its own, its
-    Gram assembled from the structure ([`Basis.gram`][], [`Basis.support`][]) of the bases it
-    carries.
+    Each stream (the TOD, or each Stokes leg of a demodulated one) is inverted on its own. For a
+    diagonal `W` (`bandwidth=0`), read off by applying it to a vector of ones, the Gram is
+    assembled from the structure ([`Basis.gram`][], [`Basis.support`][]) of the bases it carries.
+    Otherwise, it is read off the responses `Tᵀ W T x` to a few probe amplitudes `x`, as many as a
+    time-local template has blocks within reach of one another (`bandwidth` samples, plus its
+    window), times its sub-basis functions, plus one per amplitude of the other templates.
 
     With `pomme_tau`, the effective weight is `W F` with `F` the
     [`PommeProjectionOperator`][furax.mapmaking.pomme.PommeProjectionOperator] of that interval
@@ -104,46 +110,67 @@ def gram_inverse(
 
     Args:
         operator: The template operator `T`.
-        weight: The diagonal weights `W`.
+        weight: The weights `W`.
         regularization: Relative ridge added to each detector's Gram block before factoring.
+        bandwidth: The largest distance, in samples, between two samples that `W` couples.
         pomme_tau: Pomme interval length, when the templates are combined with Pomme.
-        batch_size: Detector batch size, bounding the transient memory of the Gram assembly.
+        batch_size: Detector batch size, bounding the transient memory of the Gram assembly of a
+            diagonal `W`.
 
     Returns:
         The per-detector inverse Gram operator, and the ridge added to the Gram before factoring
         it, as a diagonal operator on the amplitudes; `None` when `regularization` is 0.
 
     Raises:
-        ValueError: If `pomme_tau` is given for a Stokes TOD rather than a single stream.
+        ValueError: If `pomme_tau` is given for a Stokes TOD rather than a single stream, or
+            together with a nonzero `bandwidth`.
     """
     is_stokes = isinstance(operator, StokesTemplateOperator)
     # Pomme acts on the modulated TOD, which demodulation splits into one stream per leg.
     if pomme_tau is not None and is_stokes:
         raise ValueError('Pomme filtering applies to a single stream, not a Stokes TOD')
+    if pomme_tau is not None and bandwidth:
+        raise ValueError('Pomme filtering requires a diagonal weight')
 
-    ones = furax.tree.ones_like(weight.in_structure)
-    diag = weight(ones)
-    # if we wanted to guard against a non-diagonal W, one extra application on a random
-    # vector `x` and a comparison against `diag * x` would catch it with very high probability
+    # Two bases on different legs never share a weighted sample, so each leg is a stream of its
+    # own, with one block over the templates it carries rather than one over every leg.
+    streams: dict[str | None, dict[str, Basis]]
+    if is_stokes:
+        streams = {
+            leg: bases
+            for leg in operator.legs
+            if (bases := {name: on[leg] for name, on in operator.bases_by_leg.items() if leg in on})
+        }
+    else:
+        streams = {None: operator.bases}
+
+    if bandwidth:
+        results = _banded_weight_gram_inverses(operator, weight, streams, regularization, bandwidth)
+    else:
+        diag = weight(furax.tree.ones_like(weight.in_structure))
+        # if we wanted to guard against a non-diagonal W, one extra application on a random
+        # vector `x` and a comparison against `diag * x` would catch it with very high probability
+        results = {}
+        for leg, bases in streams.items():
+            if leg is None:
+                n_samps = diag.shape[-1]
+                pomme = None if pomme_tau is None else OffsetBasis(pomme_tau, n_samps, diag.dtype)
+                stream = _Stream(bases, diag, operator.in_structure, pomme)
+            else:
+                stream = _Stream(
+                    bases, getattr(diag, leg), _on_leg(operator.in_structure, bases, leg)
+                )
+            results[leg] = _stream_gram_inverse(stream, regularization, batch_size)
 
     ridges: PyTree[Array]
     if not is_stokes:  # a single stream
-        pomme = None if pomme_tau is None else OffsetBasis(pomme_tau, diag.shape[-1], diag.dtype)
-        stream = _Stream(operator.bases, diag, operator.in_structure, pomme)
-        inverse, ridges = _stream_gram_inverse(stream, regularization, batch_size)
+        inverse, ridges = results[None]
     else:
-        # Two bases on different legs never share a weighted sample, so each leg is a stream of
-        # its own, with one block over the templates it carries rather than one over every leg.
-        blocks = {}
         ridges = {name: {} for name in operator.bases_by_leg}
-        for leg in operator.legs:
-            bases = {name: on[leg] for name, on in operator.bases_by_leg.items() if leg in on}
-            if bases:
-                structure = {name: operator.in_structure[name][leg] for name in bases}
-                stream = _Stream(bases, getattr(diag, leg), structure)
-                blocks[leg], leg_ridges = _stream_gram_inverse(stream, regularization, batch_size)
-                for name, ridge in leg_ridges.items():
-                    ridges[name][leg] = ridge
+        for leg, (_, leg_ridges) in results.items():
+            for name, ridge in leg_ridges.items():
+                ridges[name][leg] = ridge
+        blocks = {leg: block for leg, (block, _) in results.items() if leg is not None}
         inverse = _PerLegOperator(blocks, in_structure=operator.in_structure)
 
     if not regularization:
@@ -243,28 +270,69 @@ def _stream_gram_inverse(
     without regularization).
     """
     bases, pomme = stream.bases, stream.pomme
-    if len(bases) == 1:
-        (name,) = bases
+    core, border = _layout(bases)
+    if not border:
+        assert core is not None
         bands = _map_detectors(
-            lambda b, w: _banded_gram(b[name], pomme, w), stream, batch_size=batch_size
+            lambda b, w: _banded_gram(b[core], pomme, w), stream, batch_size=batch_size
         )
-        bands, ridge = _regularize_bands(bands, regularization)
-        return BandedCholeskyOperator.from_bands(bands, stream.in_structure), {name: ridge}
-
-    # a basis split into several blocks of time is time-local; one block sees every sample
-    local = [name for name, basis in bases.items() if basis._n_blocks > 1]
-    if local:
-        core = max(local, key=lambda name: bases[name].size)
-        return _bordered_gram_inverse(stream, core, regularization, batch_size)
+        return _banded_inverse(bands, core, stream.in_structure, regularization)
+    if core is not None:
+        return _bordered_gram_inverse(stream, core, border, regularization, batch_size)
 
     def dense(bases: dict[str, Basis], weights: Array) -> Array:
-        ordered: list[Basis] = jax.tree.leaves(bases, is_leaf=_is_basis)
+        ordered = [bases[name] for name in border]
         return _dense_gram(ordered, weights, _pomme_sums(ordered, weights, pomme))
 
     blocks = _map_detectors(dense, stream, batch_size=batch_size)
+    return _dense_inverse(blocks, stream.in_structure, regularization)
+
+
+def _layout(bases: dict[str, Basis]) -> tuple[str | None, tuple[str, ...]]:
+    """How the Gram of the templates on one stream is laid out: a banded core, and a border.
+
+    A single template is its own core. Among several, the time-local one with the most amplitudes
+    is the core, bordered by the others. Without any time-local template, every template is in the
+    border, in the order of the amplitude tree, sharing one dense block.
+    """
+    if len(bases) == 1:
+        (name,) = bases
+        return name, ()
+    # a basis split into several blocks of time is time-local; one block sees every sample
+    local = [name for name, basis in bases.items() if basis._n_blocks > 1]
+    if not local:
+        return None, tuple(sorted(bases))  # the key order of the amplitude tree
+    core = max(local, key=lambda name: bases[name].size)
+    return core, tuple(name for name in bases if name != core)
+
+
+def _banded_inverse(
+    bands: Float[Array, 'det n w1 k k'],
+    name: str,
+    structure: PyTree[jax.ShapeDtypeStruct],
+    regularization: float,
+) -> tuple[AbstractLinearOperator, PyTree[Array]]:
+    """Factor the banded Gram of a single template, and its ridge."""
+    bands, ridge = _regularize_bands(bands, regularization)
+    return BandedCholeskyOperator.from_bands(bands, structure), {name: ridge}
+
+
+def _dense_inverse(
+    blocks: Float[Array, 'det k k'],
+    structure: PyTree[jax.ShapeDtypeStruct],
+    regularization: float,
+) -> tuple[AbstractLinearOperator, PyTree[Array]]:
+    """Factor the dense Gram of templates sharing one block, and its ridge."""
     blocks, ridge = _regularize_dense(blocks, regularization)
-    inverse = BandedCholeskyOperator.from_dense(blocks, stream.in_structure)
-    return inverse, _per_detector(ridge, stream.in_structure)
+    inverse = BandedCholeskyOperator.from_dense(blocks, structure)
+    return inverse, _per_detector(ridge, structure)
+
+
+def _on_leg(
+    structure: PyTree[jax.ShapeDtypeStruct], bases: dict[str, Basis], leg: str
+) -> PyTree[jax.ShapeDtypeStruct]:
+    """The part of a Stokes template operator's amplitude tree on one leg, for `bases`."""
+    return {name: structure[name][leg] for name in bases}
 
 
 def _map_detectors[T](
@@ -474,7 +542,11 @@ def _inverse_counts(pomme: OffsetBasis, weights: Float[Array, ' samp']) -> Float
 
 
 def _bordered_gram_inverse(
-    stream: _Stream, core_name: str, regularization: float, batch_size: int
+    stream: _Stream,
+    core_name: str,
+    border_names: tuple[str, ...],
+    regularization: float,
+    batch_size: int,
 ) -> tuple['_BorderedGramInverse', PyTree[Array]]:
     """Inverse Gram of one time-local template bordered by the others, one per detector.
 
@@ -482,7 +554,6 @@ def _bordered_gram_inverse(
     and to each other through a dense corner.
     """
     pomme = stream.pomme
-    border_names = tuple(name for name in stream.bases if name != core_name)
 
     def build(bases: dict[str, Basis], weights: Array) -> tuple[Array, Array, Array]:
         core = bases[core_name]
@@ -502,12 +573,26 @@ def _bordered_gram_inverse(
         return bands, jnp.concatenate(border, axis=1), corner
 
     bands, border, corner = _map_detectors(build, stream, batch_size=batch_size)
+    return _bordered_inverse(
+        bands, border, corner, core_name, border_names, stream.in_structure, regularization
+    )
+
+
+def _bordered_inverse(
+    bands: Float[Array, 'det n w1 k k'],
+    border: Float[Array, 'det nk m'],
+    corner: Float[Array, 'det m m'],
+    core_name: str,
+    border_names: tuple[str, ...],
+    structure: PyTree[jax.ShapeDtypeStruct],
+    regularization: float,
+) -> tuple['_BorderedGramInverse', PyTree[Array]]:
+    """Factor the bordered banded Gram of one stream, and its ridge."""
     # the core's diagonal blocks and the corner are ridged separately, each scaled by its own
     # diagonal
     bands, core_ridge = _regularize_bands(bands, regularization)
     corner, corner_ridge = _regularize_dense(corner, regularization)
 
-    structure = stream.in_structure
     ridges = {core_name: core_ridge}
     ridges |= {name: _per_detector(corner_ridge, structure[name]) for name in border_names}
     factor = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner)
@@ -575,3 +660,205 @@ class _PerLegOperator(AbstractLinearOperator):
             for name, amp in y.items():
                 out[name][leg] = amp
         return out
+
+
+_BAND_MARGIN = 1
+"""Blocks added to the band half-width estimated from the mean block length.
+
+Blocks shorter than the mean, such as a partial scan interval, let a sample couple one more block
+than the estimate; the margin absorbs one such block.
+"""
+
+
+def _banded_weight_gram_inverses(
+    operator: AbstractTemplateOperator,
+    weight: AbstractLinearOperator,
+    streams: dict[str | None, dict[str, Basis]],
+    regularization: float,
+    bandwidth: int,
+) -> dict[str | None, tuple[AbstractLinearOperator, PyTree[Array]]]:
+    """The inverse Gram of every stream, and its ridge, under a weight of the given bandwidth.
+
+    Each probe sets amplitudes on every stream at once, and its response `Tᵀ W T x` costs one
+    application of `W` to the whole TOD, every detector included.
+    """
+
+    def part(tree: PyTree[Any], leg: str | None) -> PyTree[Any]:
+        return tree if leg is None else _on_leg(tree, streams[leg], leg)
+
+    probes = {
+        leg: _Probes.create(bases, part(operator.in_structure, leg), bandwidth)
+        for leg, bases in streams.items()
+    }
+
+    def respond(p: Array) -> PyTree[Array]:
+        x = furax.tree.zeros_like(operator.in_structure)
+        for leg, plan in probes.items():
+            for name, amps in plan.probe(p).items():
+                if leg is None:
+                    x[name] = amps
+                else:
+                    x[name][leg] = amps
+        return operator.T(weight(operator(x)))
+
+    n_probes = max(plan.n_probes for plan in probes.values())
+    responses = jax.lax.map(respond, jnp.arange(n_probes))
+    return {
+        leg: plan.gram_inverse(part(responses, leg), regularization) for leg, plan in probes.items()
+    }
+
+
+class _Probes(NamedTuple):
+    """Probe amplitudes for the templates on one stream, and how to read their Gram off.
+
+    The response `Tᵀ W T x` to a probe `x` is a sum of Gram columns. A border template is probed
+    one amplitude at a time, its response the Gram column itself. A core template is probed one
+    sub-basis function at a time, but on every block of one color: the blocks `n_colors` apart.
+    A block couples to those at most `half_width` away, so with `n_colors = 2·half_width + 1` the
+    response on a block within reach of a colored one holds that block's coupling alone.
+    """
+
+    structure: dict[str, jax.ShapeDtypeStruct]
+    """The amplitudes of every template on the stream, with a leading detector axis."""
+    core: str | None
+    border: tuple[str, ...]
+    n_blocks: int
+    """Blocks of the core template, 0 without one."""
+    k: int
+    """Sub-basis functions of the core template on each of its blocks."""
+    half_width: int
+    """Blocks the core couples a block to, on either side."""
+    reach: Array
+    """The half-width the core actually needs, checked against `half_width`."""
+
+    @classmethod
+    def create(
+        cls, bases: dict[str, Basis], structure: dict[str, jax.ShapeDtypeStruct], bandwidth: int
+    ) -> Self:
+        core, border = _layout(bases)
+        if core is None:
+            return cls(structure, None, border, 0, 0, 0, jnp.array(0))
+        basis = bases[core]
+        n_blocks = basis._n_blocks
+        if n_blocks == 1:
+            return cls(structure, core, border, 1, basis.size, 0, jnp.array(0))
+        # Static, the half-width is estimated from the mean block length: a sample reaches the
+        # blocks of its window, and those started within `bandwidth` samples of it.
+        crossed = -(-bandwidth * n_blocks // basis.n_points)
+        half_width = min(n_blocks - 1, _support_window(basis) - 1 + crossed + _BAND_MARGIN)
+        reach = _support_reach(basis, bandwidth)
+        return cls(structure, core, border, n_blocks, basis.size // n_blocks, half_width, reach)
+
+    @property
+    def n_colors(self) -> int:
+        return min(self.n_blocks, 2 * self.half_width + 1)
+
+    @property
+    def n_core(self) -> int:
+        """Probes of the core template."""
+        return self.n_colors * self.k
+
+    @property
+    def n_border(self) -> int:
+        """Probes of the border templates: their amplitudes per detector."""
+        return sum(prod(self.structure[name].shape[1:]) for name in self.border)
+
+    @property
+    def n_probes(self) -> int:
+        return self.n_core + self.n_border
+
+    def probe(self, p: Array) -> dict[str, Array]:
+        """Probe `p`, the same on every detector; zero past `n_probes`."""
+        amps = {}
+        if self.core is not None:
+            s = self.structure[self.core]
+            color, a = p // self.k, p % self.k  # no block has a color past `n_colors`
+            blocks = jnp.arange(self.n_blocks) % self.n_colors == color
+            pattern = blocks[:, None] & (jnp.arange(self.k) == a)
+            amps[self.core] = jnp.broadcast_to(pattern.reshape(s.shape[1:]), s.shape).astype(
+                s.dtype
+            )
+        if self.border:
+            unit = jax.nn.one_hot(p - self.n_core, self.n_border)  # zero outside the border probes
+            cuts = np.cumsum([prod(self.structure[name].shape[1:]) for name in self.border])[:-1]
+            for name, part in zip(self.border, jnp.split(unit, cuts), strict=True):
+                s = self.structure[name]
+                amps[name] = jnp.broadcast_to(part.reshape(s.shape[1:]), s.shape).astype(s.dtype)
+        return amps
+
+    def gram_inverse(
+        self, responses: dict[str, Array], regularization: float
+    ) -> tuple[AbstractLinearOperator, PyTree[Array]]:
+        """The inverse Gram, and its ridge, from the responses to every probe of every stream."""
+        # stacked over the probes of every stream: those past this one's are zero
+        responses = {name: r[: self.n_probes] for name, r in responses.items()}
+        if self.core is None:
+            corner = self._border_columns(responses)
+            return _dense_inverse(corner, self.structure, regularization)
+
+        bands = self._core_bands(responses[self.core][: self.n_core])
+        if not self.border:
+            return _banded_inverse(bands, self.core, self.structure, regularization)
+        n_dets = bands.shape[0]
+        core_columns = responses[self.core][self.n_core :].reshape(self.n_border, n_dets, -1)
+        border = jnp.moveaxis(core_columns, 0, -1)  # (det, n·k, m)
+        corner = self._border_columns(responses)
+        return _bordered_inverse(
+            bands, border, corner, self.core, self.border, self.structure, regularization
+        )
+
+    def _core_bands(self, responses: Float[Array, 'probe det ...']) -> Float[Array, 'det n w1 k k']:
+        """The core's Gram bands: `bands[i, d, a, b]` couples `(i, a)` to `(i + d, b)`."""
+        n, k, w1 = self.n_blocks, self.k, self.half_width + 1
+        y = responses.reshape(self.n_colors, k, -1, n, k)  # (color, b, det, i, a)
+        y = y.transpose(2, 3, 0, 4, 1)  # (det, i, color, a, b)
+        i, d = jnp.arange(n)[:, None], jnp.arange(w1)[None, :]
+        # block `i + d` has color `(i + d) % n_colors`, the only one of that color within reach
+        bands = jnp.where((i + d < n)[..., None, None], y[:, i, (i + d) % self.n_colors], 0)
+        # the diagonal blocks are symmetric, up to the rounding of the responses
+        diagonal = bands[:, :, 0]
+        bands = bands.at[:, :, 0].set((diagonal + jnp.swapaxes(diagonal, -1, -2)) / 2)
+        return eqx.error_if(
+            bands,
+            self.reach > self.half_width,
+            'template blocks (scan intervals, spline knots) are too short for the weight '
+            'correlation length: a sample couples more blocks than the Gram band can hold',
+        )
+
+    def _border_columns(self, responses: dict[str, Array]) -> Float[Array, 'det m m']:
+        """The Gram block of the border templates, from their probes."""
+        probed = [responses[name][self.n_core :] for name in self.border]
+        columns = jnp.concatenate(
+            [r.reshape(self.n_border, r.shape[1], -1) for r in probed], axis=-1
+        )  # (column, det, row)
+        corner = jnp.moveaxis(columns, 0, -1)
+        return (corner + jnp.swapaxes(corner, -1, -2)) / 2
+
+
+def _support_window(basis: Basis) -> int:
+    """How many consecutive blocks each sample of `basis` reads."""
+
+    def taps(b: Basis) -> Array:
+        return b._map_batch(lambda single, _: single.support().taps, jnp.zeros(b.batch_shape), 0)
+
+    return jax.eval_shape(taps, basis).shape[-1]
+
+
+def _support_reach(basis: Basis, bandwidth: int) -> Int[Array, '']:
+    """How many blocks apart two blocks are that samples at most `bandwidth` apart read.
+
+    Only samples where some function is nonzero count. The largest over a batch of bases. Assumes
+    blocks are non-decreasing in time.
+    """
+
+    def single(b: Basis, _: Array) -> Array:
+        support = b.support()
+        n = support.n_points
+        active = jnp.any(support.values != 0, axis=0)
+        t = jnp.arange(n)
+        last = jax.lax.cummax(jnp.where(active, t, -1))  # the last active sample up to each
+        ahead = last[jnp.minimum(t + bandwidth, n - 1)]
+        span = support.offset[ahead] - support.offset + support.taps.shape[-1] - 1
+        return jnp.max(jnp.where(active, span, 0))
+
+    return jnp.max(basis._map_batch(single, jnp.zeros(basis.batch_shape), 0))

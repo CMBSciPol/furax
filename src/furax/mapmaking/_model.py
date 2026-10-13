@@ -318,8 +318,8 @@ def _mask_projector(*valid_masks: Array | None, structure: jax.ShapeDtypeStruct)
 class TemplateBundle:
     r"""One template operator $T$, its Gram inverse, and any configured ridge.
 
-    The effective weight $W_\text{eff}$ is the diagonal weight $W$, or $W F$ with $F$ the Pomme
-    deprojector when the templates are combined with Pomme. The ridge uses the amplitude structure
+    The effective weight $W_\text{eff}$ is the weight $W$, or $W F$ with $F$ the Pomme deprojector
+    when the templates are combined with Pomme. The ridge uses the amplitude structure
     and scaling of the Gram factorization.
     """
 
@@ -334,14 +334,17 @@ class TemplateBundle:
         weight: AbstractLinearOperator,
         config: TemplatesConfig,
         *,
+        bandwidth: int = 0,
         pomme_tau: int | None = None,
     ) -> Self:
-        r"""Pair a template operator $T$ with its Gram inverse given a diagonal weight $W$.
+        r"""Pair a template operator $T$ with its Gram inverse given a weight $W$.
 
         Args:
             operator: The template operator.
-            weight: The diagonal weight matrix.
+            weight: The weight matrix.
             config: Supplies the Gram regularization and batch size.
+            bandwidth: The largest distance, in samples, between two samples that $W$ couples; 0
+                for a diagonal $W$.
             pomme_tau: Pomme interval length, when the templates are combined with Pomme; the
                 Gram is then taken under the effective weight $W F$ (see [`gram_inverse`][]).
         """
@@ -349,6 +352,7 @@ class TemplateBundle:
             operator,
             weight,
             config.regularization,
+            bandwidth=bandwidth,
             pomme_tau=pomme_tau,
             batch_size=config.gram_batch_size,
         )
@@ -566,20 +570,23 @@ class ObservationTemplates:
             return TemplateOperator(bases, n_dets)
 
         # `Weff` bundles the sample mask (via `model.W`) and the Pomme deprojector `model.F`; the
-        # Grams are taken under the same effective weight, from the diagonal `model.W` and `tau`.
+        # Grams are taken under the same effective weight, from `model.W` and `tau`.
         Weff = (model.W @ model.F).reduce()
         wd = Weff(tod)
         pomme_tau = config.pomme_tau if config.method == Methods.POMME else None
+        # the Toeplitz band of a correlated weight holds lags 0 to `correlation_length - 1`
+        bandwidth = 0 if config.binned else config.weighting.correlation_length - 1
+        bundle = functools.partial(TemplateBundle.create, bandwidth=bandwidth, pomme_tau=pomme_tau)
 
         implicit = None
         if (op := build(implicit_bases)) is not None:
-            implicit = TemplateBundle.create(op, model.W, tcfg, pomme_tau=pomme_tau)
+            implicit = bundle(op, model.W, tcfg)
             ginv = implicit.gram_inverse
             wd = wd - Weff(op(ginv(op.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
 
         explicit = None
         if (op := build(explicit_bases)) is not None:
-            explicit = TemplateBundle.create(op, model.W, tcfg, pomme_tau=pomme_tau)
+            explicit = bundle(op, model.W, tcfg)
 
         return cls(explicit=explicit, implicit=implicit), wd
 

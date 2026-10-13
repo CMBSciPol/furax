@@ -15,6 +15,8 @@ from numpy.testing import assert_allclose
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
+    GapsConfig,
+    GapTreatment,
     HealpixConfig,
     HWPSynchronousConfig,
     LandscapeConfig,
@@ -315,3 +317,44 @@ def test_explicit_and_implicit_agree_under_a_ridge(batch):
 
     explicit, implicit = run(True), run(False)
     assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
+
+
+def _toeplitz_config(templates: TemplatesConfig) -> MapMakingConfig:
+    cfg = _config(templates)
+    cfg.method = Methods.MAXL
+    cfg.weighting = replace(cfg.weighting, mode=WeightingMode.TOEPLITZ, correlation_length=64)
+    cfg.gaps = GapsConfig(treatment=GapTreatment.INNER_MASK)
+    cfg.solver = SolverConfig(rtol=1e-10, max_steps=1000)
+    return cfg
+
+
+@pytest.mark.parametrize(
+    'observations, template',
+    [
+        (_hwp_obs, lambda e: TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=e))),
+        # from order 1: the offsets of the intervals are degenerate with the intensity map
+        (
+            _ground_obs,
+            lambda e: TemplatesConfig(
+                polynomial=PolynomialConfig(legendre=PolynomialOrders(1, 2), explicit=e)
+            ),
+        ),
+    ],
+    ids=['hwp_synchronous', 'polynomial'],
+)
+def test_toeplitz_explicit_and_implicit_give_the_same_map(observations, template):
+    # Under a correlated weight, marginalising the amplitudes needs the exact Gram, probed from the
+    # weight; the joint solve only uses it as a preconditioner.
+    obs = observations()
+    explicit = MultiObservationMapMaker(obs, config=_toeplitz_config(template(True))).run()
+    implicit = MultiObservationMapMaker(obs, config=_toeplitz_config(template(False))).run()
+    assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-6, atol=1e-8)
+
+
+@pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])
+def test_toeplitz_templates_require_inner_mask_gaps(treatment):
+    config = _toeplitz_config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2)))
+    config.gaps = GapsConfig(treatment=treatment)
+    config.detector_batch_size = 0  # gap treatments other than the inner mask need every detector
+    with pytest.raises(NotImplementedError, match='inner_mask'):
+        MultiObservationMapMaker(_hwp_obs(), config=config)

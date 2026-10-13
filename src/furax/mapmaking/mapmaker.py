@@ -169,8 +169,16 @@ class MultiObservationMapMaker[T]:
                 self.config.landscape.stokes = 'QU'
             if self.config.demodulated:
                 raise ValueError('Pomme acts on the HWP-modulated TOD, not on demodulated data.')
-        if self.config.use_templates and not self.config.binned:
-            raise NotImplementedError('Using templates requires diagonal weighting.')
+        if (
+            self.config.use_templates
+            and not self.config.binned
+            and self.config.gaps.treatment != GapTreatment.INNER_MASK
+        ):
+            # gap filling bypasses the template path, and the nested weight couples samples
+            # across whole gaps, beyond the band of the template Grams
+            raise NotImplementedError(
+                'Templates with correlated weighting require gaps.treatment=inner_mask.'
+            )
 
     @cached_property
     def mesh(self) -> Mesh:
@@ -860,7 +868,7 @@ class MultiObservationMapMaker[T]:
                 carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
                 return carry, (obs, None, None)
 
-            # Templates require config.binned=True, so fill_gaps never applies here.
+            # Templates are rejected with gap filling (see `_check_config`).
             templates, wd = ObservationTemplates.create(data, config, obs, tod, temperature)
             explicit = templates.explicit
             rhs_i = obs.H.T(wd)

@@ -4,7 +4,13 @@ import jax.random as jr
 import pytest
 from numpy.testing import assert_allclose
 
-from furax import DiagonalOperator, tree
+from furax import (
+    AbstractLinearOperator,
+    DiagonalOperator,
+    MaskOperator,
+    SymmetricBandToeplitzOperator,
+    tree,
+)
 from furax.linalg import BandedCholeskyOperator
 from furax.mapmaking.bases import (
     DecimatedBasis,
@@ -20,6 +26,8 @@ from furax.mapmaking.gram import (
 )
 from furax.mapmaking.pomme import PommeProjectionOperator
 from furax.mapmaking.templates import StokesTemplateOperator, TemplateOperator
+from furax.mapmaking.weight import WeightOperator
+from furax.obs.stokes import Stokes
 
 N_DETS = 3
 N_SAMPS = 64
@@ -171,6 +179,106 @@ def test_stream_gram_inverse_survives_unobserved_amplitudes(names):
     W = DiagonalOperator(w, in_structure=jax.ShapeDtypeStruct((N_DETS, N_SAMPS), w.dtype))
     amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
     assert all(jnp.all(jnp.isfinite(leaf)) for leaf in jax.tree.leaves(gram_inverse(T, W)[0](amps)))
+
+
+# ---------------------------------------------------------------------------
+# Correlated weight: a masked band Toeplitz, its Gram read off probes
+# ---------------------------------------------------------------------------
+
+BANDWIDTH = 3
+
+
+def _toeplitz_weight(key, structure):
+    """A masked band Toeplitz weight `M K M` coupling samples up to `BANDWIDTH` apart."""
+    band = jnp.array([3.0, -0.6, 0.3, -0.1])  # diagonally dominant, so positive definite
+    mask = jr.bernoulli(key, 0.9, (N_DETS, N_SAMPS))
+    if isinstance(structure, Stokes):
+        inner = SymmetricBandToeplitzOperator(band, in_structure=structure.data)
+        toeplitz = _OnStokesData(inner, in_structure=structure)
+    else:
+        toeplitz = SymmetricBandToeplitzOperator(band, in_structure=structure)
+    mask = MaskOperator.from_boolean_mask(mask, in_structure=structure)
+    return WeightOperator.create(toeplitz, mask)
+
+
+class _OnStokesData(AbstractLinearOperator):
+    """An operator on the array of a Stokes TOD, every leg alike."""
+
+    operator: AbstractLinearOperator
+
+    def mv(self, x):
+        return type(x).from_array(self.operator(x.data))
+
+
+def _regular_windowed_basis(key, n_blocks, k, O):
+    offset = (jnp.arange(N_SAMPS) * (n_blocks - O + 1) // N_SAMPS).astype(jnp.int32)
+    ko, ks = jr.split(key)
+    return WindowedBasis(offset, jr.normal(ko, (N_SAMPS, O)), jr.normal(ks, (k, N_SAMPS)), n_blocks)
+
+
+def _correlated_bases(kind, key):
+    """One set of bases per layout of the Gram; the local ones have more blocks than probes."""
+    k1, k2 = jr.split(key)
+    windowed = _regular_windowed_basis(k1, n_blocks=12, k=2, O=2)
+    segmented = SegmentedBasis(_seg(8), jr.normal(k1, (2, N_SAMPS)), 8)
+    tensor = TensorBasis(jr.normal(k2, (3, N_SAMPS)))
+    return {
+        'windowed': {'t': windowed},
+        'segmented': {'t': segmented},
+        'tensor': {'t': tensor},
+        'per_det': {'t': _per_det_basis(k1, 2)},
+        'decimated_per_det': {'t': _decimated_per_det_basis(k1, 2)},
+        'bordered': {'p': segmented, 't': tensor},
+        'local_border': {'s': windowed, 'p': segmented, 't': _per_det_basis(k2, 2)},
+        'dense': {
+            't': tensor,
+            'h': KroneckerBasis((jr.normal(k1, (2, N_SAMPS)), jr.normal(k2, (2, N_SAMPS)))),
+        },
+    }[kind]
+
+
+@pytest.mark.parametrize(
+    'kind',
+    [
+        'windowed',
+        'segmented',
+        'tensor',
+        'per_det',
+        'decimated_per_det',
+        'bordered',
+        'local_border',
+        'dense',
+    ],
+)
+def test_correlated_gram_inverse_inverts_the_gram(kind):
+    kb, kw, ka = jr.split(jr.key(50), 3)
+    T = TemplateOperator(_correlated_bases(kind, kb), n_dets=N_DETS)
+    W = _toeplitz_weight(kw, T.out_structure)
+    amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
+    recovered = gram_inverse(T, W, bandwidth=BANDWIDTH)[0](T.T(W(T(amps))))
+    assert_allclose_tree(recovered, amps, rtol=1e-8, atol=1e-10)
+
+
+def test_correlated_gram_inverse_inverts_the_gram_of_each_leg():
+    # the legs carry different templates, so they need different numbers of probes
+    kb, kw, ka = jr.split(jr.key(51), 3)
+    bases = _correlated_bases('bordered', kb)
+    T = StokesTemplateOperator({'p': {'qu': bases['p']}, 't': {'iqu': bases['t']}}, N_DETS, 'IQU')
+    W = _toeplitz_weight(kw, T.out_structure)
+    amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
+    recovered = gram_inverse(T, W, bandwidth=BANDWIDTH)[0](T.T(W(T(amps))))
+    assert_allclose_tree(recovered, amps, rtol=1e-8, atol=1e-10)
+
+
+def test_correlated_gram_rejects_blocks_shorter_than_the_correlation_length():
+    # three one-sample segments in a row: a sample couples four segments, more than the band
+    # estimated from the mean segment length holds
+    segment = jnp.searchsorted(jnp.array([30, 31, 32]), jnp.arange(N_SAMPS), side='right')
+    basis = SegmentedBasis(segment.astype(jnp.int32), jnp.ones((1, N_SAMPS)), 4)
+    T = TemplateOperator({'t': basis}, n_dets=N_DETS)
+    W = _toeplitz_weight(jr.key(52), T.out_structure)
+    with pytest.raises(Exception, match='too short for the weight correlation length'):
+        gram_inverse(T, W, bandwidth=BANDWIDTH)
 
 
 # ---------------------------------------------------------------------------
@@ -412,16 +520,20 @@ def _ridge_bases(kind, key):
     return {'p': segmented, 't': _per_det_basis(k2, 2)}
 
 
+@pytest.mark.parametrize('correlated', [False, True], ids=['diagonal', 'toeplitz'])
 @pytest.mark.parametrize('kind', ['banded', 'dense', 'coupled', 'bordered', 'per_det_bordered'])
-def test_gram_ridge_is_the_one_added_before_factoring(kind):
+def test_gram_ridge_is_the_one_added_before_factoring(kind, correlated):
     # The explicit normal system adds the returned ridge to the Gram it assembles itself, so the
     # ridge must be exactly the one the inverse was factored from, on every assembly path:
     # applying the inverse to the ridged Gram must give back the amplitudes.
     kb, kw, ka = jr.split(jr.key(40), 3)
     bases = _ridge_bases(kind, kb)
     T = TemplateOperator(bases, n_dets=N_DETS)
-    W = _weight(kw)
-    inverse, ridge = gram_inverse(T, W, REGULARIZATION)
+    if correlated:
+        W, bandwidth = _toeplitz_weight(kw, T.out_structure), BANDWIDTH
+    else:
+        W, bandwidth = _weight(kw), 0
+    inverse, ridge = gram_inverse(T, W, REGULARIZATION, bandwidth=bandwidth)
     assert ridge is not None
 
     amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)

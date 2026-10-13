@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Breaking:** `Basis` and its flavours move from `furax.mapmaking.templates` to `furax.mapmaking.bases` (#334)
 - **Breaking:** `Basis.batch_shape` replaces `Basis.per_detector_stack`: a basis can hold a batch of bases of any shape, broadcast against the batch axes of the amplitudes and of the signal (#335)
+- T2P templates (`T2PConfig`) assemble their Gram from the basis structure instead of probing it one amplitude at a time, also when decimated (#335, #336)
 
 ### Fixed
 

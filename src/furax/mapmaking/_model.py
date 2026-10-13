@@ -582,10 +582,7 @@ class ObservationTemplates:
 
         explicit = None
         if (op := build(explicit_bases)) is not None:
-            # A decimated T2P basis has no structured view, so we need to allow probing.
-            explicit = TemplateBundle.create(
-                op, model.W, tcfg, pomme_tau=pomme_tau, allow_probe=True
-            )
+            explicit = TemplateBundle.create(op, model.W, tcfg, pomme_tau=pomme_tau)
 
         return cls(explicit=explicit, implicit=implicit), wd
 

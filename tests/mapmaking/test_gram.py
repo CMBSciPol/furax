@@ -6,7 +6,13 @@ from numpy.testing import assert_allclose
 
 from furax import DiagonalOperator, tree
 from furax.linalg import BandedCholeskyOperator
-from furax.mapmaking.bases import KroneckerBasis, SegmentedBasis, TensorBasis, WindowedBasis
+from furax.mapmaking.bases import (
+    DecimatedBasis,
+    KroneckerBasis,
+    SegmentedBasis,
+    TensorBasis,
+    WindowedBasis,
+)
 from furax.mapmaking.gram import (
     _BorderedGramInverse,
     _gram_inverse_and_ridge,
@@ -83,9 +89,9 @@ def _seg(n_seg):
     return jnp.repeat(jnp.arange(n_seg), N_SAMPS // n_seg).astype(jnp.int32)
 
 
-def _decimated_basis(key, k, n_samps=N_SAMPS, q=4):
-    # a decimated basis has no structured view: its Gram is probed
-    return TensorBasis(jr.normal(key, (k, -(-n_samps // q))), q=q, n_full=n_samps)
+def _unstructured_basis(key, k, n_samps=N_SAMPS):
+    # a two-dimensional TensorBasis index has no structured view: its Gram is probed
+    return TensorBasis(jr.normal(key, (k, 1, n_samps)))
 
 
 def _per_det_basis(key, k, n_samps=N_SAMPS):
@@ -93,11 +99,31 @@ def _per_det_basis(key, k, n_samps=N_SAMPS):
     return TensorBasis(jr.normal(key, (N_DETS, k, n_samps)), batch_shape=(N_DETS,))
 
 
+def _decimated_per_det_basis(key, k, n_samps=N_SAMPS, q=4):
+    # one basis per detector on a coarser grid, as for decimated T2P
+    values = jr.normal(key, (N_DETS, k, -(-n_samps // q)))
+    return DecimatedBasis(TensorBasis(values, batch_shape=(N_DETS,)), q, n_samps)
+
+
+def _detector_matrix(basis, d):
+    """Detector `d`'s basis matrix, `(samp, size)`."""
+    if not basis.batch_shape:
+        return basis.as_matrix()
+    return basis.as_matrix().reshape(N_DETS, basis.n_points, N_DETS, basis.size)[d, :, d]
+
+
+PER_DET_OR_PROBED = pytest.mark.parametrize(
+    'make',
+    [_per_det_basis, _decimated_per_det_basis, _unstructured_basis],
+    ids=['per_det', 'decimated_per_det', 'probed'],
+)
+
+
 @pytest.mark.parametrize('stokes', [None, 'IQU'])
-@pytest.mark.parametrize('make', [_per_det_basis, _decimated_basis], ids=['per_det', 'probed'])
+@PER_DET_OR_PROBED
 def test_gram_inverse_inverts_the_gram(make, stokes):
-    # a per-detector basis takes the structured path, a decimated one the probe; with a Stokes
-    # axis the basis sits on q and u only, each leg weighted differently
+    # per-detector bases take the structured path, a basis with no structured view the probe;
+    # with a Stokes axis the basis sits on q and u only, each leg weighted differently
     kt, kw, ka = jr.split(jr.key(7), 3)
     basis = make(kt, 2)
     if stokes is None:
@@ -110,7 +136,7 @@ def test_gram_inverse_inverts_the_gram(make, stokes):
 
     amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
     gram = T.T @ W @ T
-    recovered = gram_inverse(T, W, allow_probe=make is _decimated_basis)(gram(amps))
+    recovered = gram_inverse(T, W, allow_probe=make is _unstructured_basis)(gram(amps))
     jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-8, atol=1e-10), recovered, amps)
 
 
@@ -118,14 +144,13 @@ def test_gram_inverse_probes_only_when_allowed():
     kt, kw, ka = jr.split(jr.key(6), 3)
     W = _weight(kw)
 
-    # A decimated basis has no structured Gram: raises by default (the O(K) probe is never used
-    # silently on the implicit path) but works when allow_probe=True is passed explicitly (the
-    # explicit/small-K path).
-    decimated = TemplateOperator({'t': _decimated_basis(kt, 2)}, n_dets=N_DETS)
+    # A basis with no structured Gram raises by default (the O(K) probe is never used silently)
+    # but works when allow_probe=True is passed explicitly.
+    unstructured = TemplateOperator({'t': _unstructured_basis(kt, 2)}, n_dets=N_DETS)
     with pytest.raises(NotImplementedError, match='structured Gram construction not possible'):
-        gram_inverse(decimated, W)
-    probed = gram_inverse(decimated, W, allow_probe=True)
-    amps_pd = {'t': jr.normal(ka, decimated.in_structure['t'].shape)}
+        gram_inverse(unstructured, W)
+    probed = gram_inverse(unstructured, W, allow_probe=True)
+    amps_pd = {'t': jr.normal(ka, unstructured.in_structure['t'].shape)}
     assert jnp.all(jnp.isfinite(probed(amps_pd)['t']))
 
 
@@ -292,23 +317,22 @@ def test_pomme_gram_inverse_coupled_matches_filtered_dense(make):
         assert_allclose(got, jnp.linalg.solve(gram, rhs), rtol=1e-8, atol=1e-10)
 
 
-@pytest.mark.parametrize('make', [_per_det_basis, _decimated_basis], ids=['per_det', 'probed'])
+@PER_DET_OR_PROBED
 def test_pomme_gram_inverse_per_det_and_probed_match_filtered_dense(make):
-    # the structured path for a per-detector basis, and the column probe, recover Tᵀ W F T
+    # the structured path for per-detector bases, and the column probe, recover Tᵀ W F T
     kt, kw, ka = jr.split(jr.key(32), 3)
     n_samps = 73
     basis = make(kt, 2, n_samps)
     T = TemplateOperator({'t': basis}, n_dets=N_DETS)
     diag, W = _pomme_weight(kw, n_samps)
     amps = jr.normal(ka, T.in_structure['t'].shape)
-    probe = make is _decimated_basis
+    probe = make is _unstructured_basis
     actual = gram_inverse(T, W, pomme_tau=TAU, allow_probe=probe)({'t': amps})['t']
     f = PommeProjectionOperator(
         TAU, in_structure=jax.ShapeDtypeStruct((1, n_samps), diag.dtype)
     ).as_matrix()
     for d in range(N_DETS):
-        own = basis if probe else TensorBasis(basis.values[d])
-        fb = f @ own.as_matrix()
+        fb = f @ _detector_matrix(basis, d)
         gram = fb.T @ (diag[d][:, None] * fb)
         assert_allclose(actual[d], jnp.linalg.solve(gram, amps[d]), rtol=1e-8, atol=1e-10)
 
@@ -412,7 +436,7 @@ def _ridge_bases(kind, key):
     if kind == 'per_det_bordered':  # the same, the border one basis per detector
         return {'p': segmented, 't': _per_det_basis(k2, 2)}
     assert kind == 'probed'
-    return {'t': _decimated_basis(k1, 2)}
+    return {'t': _unstructured_basis(k1, 2)}
 
 
 @pytest.mark.parametrize(

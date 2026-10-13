@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pomme can be combined with templates in `MultiObservationMapMaker` (#257)
 - `OffsetBasis`: one offset per interval of a fixed number of samples, the Pomme template returned by `PommeProjectionOperator.template` (#332)
 
+### Changed
+
+- **Breaking:** `Basis` and its flavours move from `furax.mapmaking.templates` to `furax.mapmaking.bases` (#334)
+
 ### Fixed
 
 - Banded Cholesky solves with a single off-diagonal block no longer crash on GPU (#331)

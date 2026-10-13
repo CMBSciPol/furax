@@ -61,15 +61,12 @@ from furax import AbstractLinearOperator, DiagonalOperator, IdentityOperator, sy
 from furax.core import BlockDiagonalOperator
 from furax.linalg import BandedCholeskyOperator, BorderedBandedCholeskyOperator
 
+from .bases import Basis, NoStructuredView, OffsetBasis, _BasisColumns
 from .pomme import PommeProjectionOperator
 from .templates import (
     AbstractTemplateOperator,
-    Basis,
-    NoStructuredView,
-    OffsetBasis,
     StokesTemplateOperator,
     TemplateOperator,
-    _BasisColumns,
     is_basis,
 )
 

@@ -56,7 +56,7 @@ def spline_window(
 
     A cubic B-spline reaches only 4 consecutive knots, so each sample's column of
     `spline_basis` has just 4 nonzero entries. This returns those directly, avoiding the
-    mostly-zero ``(K, N) matrix (see `furax.mapmaking.templates.WindowedBasis`).
+    mostly-zero ``(K, N) matrix.
 
     Returns:
         offset: (N,) index of the first of the 4 knots, clamped to ``[0, K - 4]``.

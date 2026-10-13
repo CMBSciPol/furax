@@ -14,6 +14,7 @@ from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 from ._observation import ReaderField
 from .acquisition import build_acquisition_operator
+from .bases import Basis
 from .config import (
     GapTreatment,
     MapMakingConfig,
@@ -29,7 +30,6 @@ from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_a
 from .pomme import PommeProjectionOperator
 from .templates import (
     AbstractTemplateOperator,
-    Basis,
     StokesTemplateOperator,
     TemplateOperator,
     azimuth_hwp_synchronous_basis,

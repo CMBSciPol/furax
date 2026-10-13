@@ -5,14 +5,9 @@ import pytest
 from numpy.testing import assert_allclose
 
 from furax import IdentityOperator
+from furax.mapmaking.bases import KroneckerBasis, SegmentedBasis, TensorBasis
 from furax.mapmaking.gram import gram_inverse
-from furax.mapmaking.templates import (
-    KroneckerBasis,
-    SegmentedBasis,
-    StokesTemplateOperator,
-    TemplateOperator,
-    TensorBasis,
-)
+from furax.mapmaking.templates import StokesTemplateOperator, TemplateOperator
 
 N_DETS = 3
 N_SAMPS = 64

@@ -2,7 +2,7 @@ r"""Pomme: implicit deprojection of the mean of every short interval of the TOD.
 
 Pomme fits and removes one offset per detector and per interval of `tau` consecutive samples. It
 is a template in the sense of [`furax.mapmaking.templates`][], with the indicator template $Z$
-(one column per detector and interval, an [`OffsetBasis`][furax.mapmaking.templates.OffsetBasis]),
+(one column per detector and interval, an [`OffsetBasis`][furax.mapmaking.bases.OffsetBasis]),
 whose matrix is never formed: with a diagonal weight $W$ that is constant on each interval, the
 marginalised weight $W' = W D_Z$ reduces to $W F$ with $F = I - Z (Z^\top Z)^{-1} Z^\top$ the plain
 interval-mean remover, [`PommeProjectionOperator`][].
@@ -26,7 +26,7 @@ from jaxtyping import Float, PyTree
 
 from furax import AbstractLinearOperator, square
 
-from .templates import OffsetBasis
+from .bases import OffsetBasis
 
 __all__ = [
     'PommeProjectionOperator',

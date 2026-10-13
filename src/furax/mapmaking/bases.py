@@ -7,8 +7,7 @@ over a TOD.
 
 A few [`Basis`][] flavours trade memory for structure:
 
-- [`TensorBasis`][]: stores every basis function value directly, as a dense array
-  (optionally on a coarser time grid, `q > 1`, to trade resolution for memory).
+- [`TensorBasis`][]: stores every basis function value directly, as a dense array.
 - [`KroneckerBasis`][]: a product of independent factors (e.g. azimuth x HWP), stored
   factored to save memory.
 - [`SegmentedBasis`][]: each sample belongs to one segment (e.g. one scan interval),
@@ -17,6 +16,8 @@ A few [`Basis`][] flavours trade memory for structure:
   [`SegmentedBasis`][], which stores nothing.
 - [`WindowedBasis`][]: each sample reads a fixed window of overlapping blocks, the
   overlapping generalisation of [`SegmentedBasis`][].
+- [`DecimatedBasis`][]: any of the above, stored on a coarser time grid to trade resolution for
+  memory.
 
 A basis is normally shared by every detector. When the functions differ from detector to detector,
 as for the T-to-P leakage template, a basis of any flavour can instead hold a batch of bases, one
@@ -47,6 +48,7 @@ __all__ = [
     'SegmentedBasis',
     'OffsetBasis',
     'WindowedBasis',
+    'DecimatedBasis',
 ]
 
 # Full float32 precision for basis contraction to ensure adjointness of `project` and `expand`
@@ -315,19 +317,11 @@ class TensorBasis(Basis):
     Holds `values[k, t] = b_k(t)` as a single dense array, with no assumed structure. When `B`
     factorises over independent variables, `KroneckerBasis` represents the same map with less
     memory; when each sample belongs to one interval, `SegmentedBasis` avoids storing the
-    mostly-zero per-interval blocks.
-
-    With `q > 1` the values are stored on a `q`-times coarser time grid to save memory: synthesis
-    (`expand`) holds each coarse value over its block of `q` samples and analysis (`project`) sums
-    each block back down. The two are exact transposes. Hold/block-sum is a zeroth-order resampler,
-    exact only for content well below the coarse-grid Nyquist frequency `sample_rate / 2q`, so
-    choose `q` to keep that above the template's band edge. The default `q = 1` is the plain dense
-    basis with no resampling.
+    mostly-zero per-interval blocks. To store the values on a coarser time grid, wrap the basis in
+    a [`DecimatedBasis`][].
     """
 
-    values: Float[Array, '*shape samp_dec']
-    q: int = field(metadata={'static': True}, default=1)
-    n_full: int = field(metadata={'static': True}, default=0)
+    values: Float[Array, '*shape samp']
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -337,60 +331,27 @@ class TensorBasis(Basis):
     def _array_dtype(self) -> DTypeLike:
         return self.values.dtype
 
-    def __post_init__(self) -> None:
-        if self.n_full == 0:
-            # q == 1: the stored grid is already the full grid.
-            object.__setattr__(self, 'n_full', self.values.shape[-1])
-        super().__post_init__()
-        if self.q < 1:
-            raise ValueError(f'q must be >= 1, got {self.q}.')
-        n_dec = self.values.shape[-1]
-        # the coarse grid must be the q-block count covering n_full, i.e. n_dec = ceil(n_full / q).
-        if not (n_dec - 1) * self.q < self.n_full <= n_dec * self.q:
-            raise ValueError(f'n_dec={n_dec} inconsistent with n_full={self.n_full}, q={self.q}.')
-
     @property
     def n_points(self) -> int:
-        return self.n_full
-
-    @property
-    def n_dec(self) -> int:
         return self.values.shape[-1]
 
-    def _upsample(self, x: Float[Array, '... dec']) -> Float[Array, '... full']:
-        # hold-interpolation: repeat each coarse sample q times, trim the padding tail.
-        return jnp.repeat(x, self.q, axis=-1)[..., : self.n_full]
-
-    def _downsample(self, s: Float[Array, '... full']) -> Float[Array, '... dec']:
-        # adjoint of _upsample: sum each q-sample block. Pad the tail to a full block.
-        pad = self.n_dec * self.q - self.n_full
-        s = jnp.pad(s, [(0, 0)] * (s.ndim - 1) + [(0, pad)])
-        return s.reshape(*s.shape[:-1], self.n_dec, self.q).sum(axis=-1)
-
-    def _flat_values(self) -> Float[Array, 'k dec']:
-        return self.values.reshape(self.size, self.n_dec)
+    def _flat_values(self) -> Float[Array, 'k samp']:
+        return self.values.reshape(self.size, self.n_points)
 
     def _expand(self, coeffs: Float[Array, '...']) -> Float[Array, '*batch samp']:
         batch = coeffs.shape[: coeffs.ndim - len(self.shape)]
         flat = coeffs.reshape(*batch, self.size)
-        out = _einsum('...k,ks->...s', flat, self._flat_values())
-        return out if self.q == 1 else self._upsample(out)
+        return _einsum('...k,ks->...s', flat, self._flat_values())
 
     def _project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '...']:
-        if self.q != 1:
-            signal = self._downsample(signal)
         out = _einsum('...s,ks->...k', signal, self._flat_values())
         return out.reshape(*signal.shape[:-1], *self.shape)
 
     def _dense_values(self) -> Float[Array, 'k samp'] | None:
-        if self.q != 1 or self.batch_shape:
-            return None
-        return self._flat_values()
+        return None if self.batch_shape else self._flat_values()
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
         # Dense Gram over the (single) coupled amplitude axis: one block, no band (w=0).
-        if self.q != 1:
-            raise NoStructuredView('gram unsupported for decimated (q>1) TensorBasis')
         if len(self.shape) != 1:
             raise NoStructuredView('gram supports 1-D TensorBasis amplitude only')
         v = self.values  # (k, samp)
@@ -402,8 +363,8 @@ class TensorBasis(Basis):
 
     def _support(self) -> _BasisColumns:
         # One global block, every sample in it (unit tap).
-        if self.q != 1 or len(self.shape) != 1:
-            raise NoStructuredView('support view: 1-D undecimated TensorBasis only')
+        if len(self.shape) != 1:
+            raise NoStructuredView('support view: 1-D TensorBasis only')
         samp = self.n_points
         return _BasisColumns(
             blocks=jnp.zeros((samp, 1), jnp.int32),
@@ -761,4 +722,96 @@ class WindowedBasis(Basis):
             taps=self.block_weights.T,  # (samp, O)
             values=self.sub_values,  # (k, samp)
             n_blocks=self._n_blocks,
+        )
+
+
+class DecimatedBasis(Basis):
+    """A basis stored on a coarser time grid, constant over each block of samples.
+
+    Wraps any basis evaluated on the coarse grid, `inner`, of `ceil(n_samples / decimation_factor)`
+    points. Synthesis (`expand`) holds each coarse value over its block of `decimation_factor`
+    samples, trimming the last block to `n_samples`, and analysis (`project`) sums each block back
+    down; the two are exact transposes. Hold/block-sum is a zeroth-order resampler, exact only for
+    content well below the coarse-grid Nyquist frequency `sample_rate / (2 * decimation_factor)`, so
+    choose `decimation_factor` to keep that above the template's band edge.
+
+    The amplitudes, and the batch of bases, are those of `inner`.
+
+    Examples:
+        >>> inner = TensorBasis(jnp.array([[1.0, 2.0, 3.0]]))
+        >>> basis = DecimatedBasis(inner, decimation_factor=2, n_samples=5)
+        >>> basis.expand(jnp.array([1.0]))
+        Array([1., 1., 2., 2., 3.], dtype=float32)
+        >>> basis.project(jnp.arange(5.0))
+        Array([23.], dtype=float32)
+    """
+
+    inner: Basis
+    decimation_factor: int = field(metadata={'static': True})
+    n_samples: int = field(metadata={'static': True})
+
+    def __post_init__(self) -> None:
+        if self.decimation_factor < 1:
+            raise ValueError(f'decimation_factor must be >= 1, got {self.decimation_factor}')
+        n_dec, factor = self.inner.n_points, self.decimation_factor
+        # the coarse grid is the count of blocks covering the samples
+        if not (n_dec - 1) * factor < self.n_samples <= n_dec * factor:
+            msg = (
+                f'inner basis of {n_dec} points does not cover {self.n_samples} samples, '
+                f'decimation_factor={factor}'
+            )
+            raise ValueError(msg)
+        # the batch is the inner basis's
+        if self.batch_shape and self.batch_shape != self.inner.batch_shape:
+            msg = f'batch_shape {self.batch_shape} differs from the inner {self.inner.batch_shape}'
+            raise ValueError(msg)
+        object.__setattr__(self, 'batch_shape', self.inner.batch_shape)
+        super().__post_init__()
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.inner.shape
+
+    @property
+    def _array_dtype(self) -> DTypeLike:
+        return self.inner.dtype
+
+    @property
+    def n_points(self) -> int:
+        return self.n_samples
+
+    def _with_batch_shape(self, batch_shape: tuple[int, ...]) -> Self:
+        inner = self.inner._with_batch_shape(batch_shape)
+        return type(self)(inner, self.decimation_factor, self.n_samples)
+
+    def _upsample(self, x: Float[Array, '*batch dec']) -> Float[Array, '*batch samp']:
+        return jnp.repeat(x, self.decimation_factor, axis=-1)[..., : self.n_samples]
+
+    def _downsample(self, s: Float[Array, '*batch samp']) -> Float[Array, '*batch dec']:
+        # adjoint of `_upsample`: the tail is padded to a whole block
+        n_dec, factor = self.inner.n_points, self.decimation_factor
+        s = jnp.pad(s, [(0, 0)] * (s.ndim - 1) + [(0, n_dec * factor - self.n_samples)])
+        return s.reshape(*s.shape[:-1], n_dec, factor).sum(axis=-1)
+
+    def _expand(self, coeffs: Float[Array, '...']) -> Float[Array, '*batch samp']:
+        return self._upsample(self.inner.expand(coeffs))
+
+    def _project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '...']:
+        return self.inner.project(self._downsample(signal))
+
+    def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n w1 k k']:
+        # each sample reads exactly one coarse point, so Uᵀ diag(w) U = diag(block-summed w), with
+        # U the hold upsampling: the Gram never leaves the coarse grid
+        return self.inner.gram(self._downsample(weights))
+
+    @property
+    def _n_blocks(self) -> int:
+        return self.inner._n_blocks
+
+    def _support(self) -> _BasisColumns:
+        # each sample reads the inner view at its coarse point
+        view = self.inner.support()
+        coarse = jnp.arange(self.n_samples) // self.decimation_factor
+        return view._replace(
+            blocks=view.blocks[coarse], taps=view.taps[coarse], values=view.values[:, coarse]
         )

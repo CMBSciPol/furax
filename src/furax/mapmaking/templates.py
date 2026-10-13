@@ -26,7 +26,15 @@ from furax.core import TransposeOperator
 from furax.math import bspline
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
-from .bases import Basis, KroneckerBasis, SegmentedBasis, TensorBasis, WindowedBasis, _einsum
+from .bases import (
+    Basis,
+    DecimatedBasis,
+    KroneckerBasis,
+    SegmentedBasis,
+    TensorBasis,
+    WindowedBasis,
+    _einsum,
+)
 from .config import BinsConfig, PolynomialOrders
 
 __all__ = [
@@ -228,14 +236,14 @@ def t2p_basis(
             t = jnp.fft.irfft(jnp.fft.rfft(t) * band, n=n_full)
         if q > 1:
             # Block-average onto a q-times coarser grid: pad the tail to a whole block,
-            # reshape (n_dec, q) and mean. `TensorBasis` hold-upsamples back to `n_full` in
+            # reshape (n_dec, q) and mean. `DecimatedBasis` hold-upsamples back to `n_full` in
             # synthesis (band-limits above sample_rate / 2q).
             t = jnp.pad(t, (0, n_dec * q - n_full)).reshape(n_dec, q).mean(axis=-1)
         return t.astype(dtype)
 
     t = jax.lax.map(filter_and_decimate, temperature, batch_size=_T2P_BATCH_SIZE)
-    values = t[:, None, :]  # (det, k=1, dec)
-    return TensorBasis(values, q=q, n_full=n_full, batch_shape=t.shape[:1])
+    basis = TensorBasis(t[:, None, :], batch_shape=t.shape[:1])  # (det, k=1, dec)
+    return basis if q == 1 else DecimatedBasis(basis, q, n_full)
 
 
 def scan_synchronous_basis(

@@ -11,6 +11,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking.bases import (
     Basis,
+    DecimatedBasis,
     KroneckerBasis,
     OffsetBasis,
     SegmentedBasis,
@@ -134,29 +135,28 @@ class TestKroneckerBasis:
 
 
 # ---------------------------------------------------------------------------
-# TensorBasis (decimated: q > 1)
+# DecimatedBasis
 # ---------------------------------------------------------------------------
 
 
-def _decimated(shape: tuple[int, ...], n_dec: int, q: int, n_full: int, seed: int):
+def _decimated(shape: tuple[int, ...], n_dec: int, q: int, n_samples: int, seed: int):
     values = jr.normal(jr.key(seed), (*shape, n_dec))
-    return TensorBasis(values, q=q, n_full=n_full)
+    return DecimatedBasis(TensorBasis(values), q, n_samples)
 
 
-class TestDecimatedTensorBasis:
+class TestDecimatedBasis:
     @pytest.mark.parametrize('shape', [(4,), (2, 3)])
     def test_structure(self, shape: tuple[int, ...]) -> None:
-        n_dec, q, n_full = 5, 4, 18
-        basis = _decimated(shape, n_dec, q, n_full, 500)
+        n_dec, q, n_samples = 5, 4, 18
+        basis = _decimated(shape, n_dec, q, n_samples, 500)
         assert basis.shape == shape
-        assert basis.n_dec == n_dec
-        assert basis.n_points == n_full
-        assert basis.out_structure == jax.ShapeDtypeStruct((n_full,), basis.dtype)
+        assert basis.n_points == n_samples
+        assert basis.out_structure == jax.ShapeDtypeStruct((n_samples,), basis.dtype)
 
     def test_holds_each_coarse_value_over_its_block(self) -> None:
         # one basis function [1, 2, 3] on a q=2 grid covering 5 samples: each coarse value is
         # held over its 2 samples, and the last block is trimmed to fit.
-        basis = TensorBasis(jnp.array([[1.0, 2.0, 3.0]]), q=2, n_full=5)
+        basis = DecimatedBasis(TensorBasis(jnp.array([[1.0, 2.0, 3.0]])), 2, 5)
         assert_allclose(basis.expand(jnp.array([1.0])), [1.0, 1.0, 2.0, 2.0, 3.0], rtol=TOL)
         # project is its transpose: [0,1,2,3,4] block-sums to [1, 5, 4], then weights by the
         # basis function -> 1*1 + 2*5 + 3*4.
@@ -164,30 +164,37 @@ class TestDecimatedTensorBasis:
 
     @pytest.mark.parametrize('shape', [(4,), (2, 3)])
     def test_expand_project_adjoint(self, shape: tuple[int, ...]) -> None:
-        n_dec, q, n_full = 5, 4, 18
-        basis = _decimated(shape, n_dec, q, n_full, 505)
+        n_dec, q, n_samples = 5, 4, 18
+        basis = _decimated(shape, n_dec, q, n_samples, 505)
         coeffs = jr.normal(jr.key(506), shape)
-        signal = jr.normal(jr.key(507), (n_full,))
+        signal = jr.normal(jr.key(507), (n_samples,))
         assert _adjoint_residual(basis, coeffs, signal) < TOL
 
-    def test_q_one_matches_plain_dense_basis(self) -> None:
-        # q=1 stores the full grid: decimation collapses to the plain dense basis.
+    def test_q_one_matches_the_inner_basis(self) -> None:
         values = jr.normal(jr.key(509), (4, 18))
-        decimated = TensorBasis(values, q=1, n_full=18)
         plain = TensorBasis(values)
+        decimated = DecimatedBasis(plain, 1, 18)
         coeffs = jr.normal(jr.key(510), (4,))
         signal = jr.normal(jr.key(511), (18,))
         assert_allclose(decimated.expand(coeffs), plain.expand(coeffs), rtol=TOL)
         assert_allclose(decimated.project(signal), plain.project(signal), rtol=TOL)
 
-    def test_create_rejects_bad_q(self) -> None:
-        with pytest.raises(ValueError, match='q must be >= 1'):
-            TensorBasis(jr.normal(jr.key(512), (4, 5)), q=0)
+    def test_gram_matches_the_dense_gram(self) -> None:
+        # taken on the coarse grid, from block-summed weights, the Gram is still exact
+        basis = _decimated((3,), 5, 4, 18, 512)
+        weights = jr.uniform(jr.key(513), (18,), minval=0.5, maxval=2.0)
+        matrix = basis.as_matrix()
+        expected = matrix.T @ (weights[:, None] * matrix)
+        assert_allclose(basis.gram(weights)[0, 0], expected, rtol=TOL, atol=TOL)
 
-    @pytest.mark.parametrize('n_full', [4, 21])  # 5*4=20: n_full must be in (16, 20]
-    def test_create_rejects_inconsistent_n_full(self, n_full: int) -> None:
-        with pytest.raises(ValueError, match='inconsistent'):
-            TensorBasis(jr.normal(jr.key(513), (4, 5)), q=4, n_full=n_full)
+    def test_create_rejects_bad_q(self) -> None:
+        with pytest.raises(ValueError, match='decimation_factor must be >= 1'):
+            DecimatedBasis(TensorBasis(jr.normal(jr.key(514), (4, 5))), 0, 5)
+
+    @pytest.mark.parametrize('n_samples', [16, 21])  # 5*4=20: n_samples must be in (16, 20]
+    def test_create_rejects_an_inner_basis_not_covering_the_samples(self, n_samples: int) -> None:
+        with pytest.raises(ValueError, match='does not cover'):
+            DecimatedBasis(TensorBasis(jr.normal(jr.key(515), (4, 5))), 4, n_samples)
 
 
 # ---------------------------------------------------------------------------
@@ -438,10 +445,22 @@ def _batched_and_singles(
         sub = jr.normal(k[2], (*batch_shape, 2, n_points))
         singles = [WindowedBasis(o, w, v, n_blocks) for o, w, v in split(offset, weights, sub)]
         return WindowedBasis(offset, weights, sub, n_blocks, batch_shape=batch_shape), singles
+    if flavour == 'decimated':  # a segmented basis on a 4-times coarser grid
+        n_seg, q = 3, 4
+        n_dec = -(-n_points // q)
+        segment = jnp.sort(jr.randint(k[0], (*batch_shape, n_dec), 0, n_seg), axis=-1)
+        segment = segment.astype(jnp.int32)
+        values = jr.normal(k[1], (*batch_shape, 2, n_dec))
+        singles = [
+            DecimatedBasis(SegmentedBasis(g, v, n_seg), q, n_points)
+            for g, v in split(segment, values)
+        ]
+        inner = SegmentedBasis(segment, values, n_seg, batch_shape=batch_shape)
+        return DecimatedBasis(inner, q, n_points), singles
     raise AssertionError(flavour)
 
 
-FLAVOURS = ['tensor', 'kronecker', 'segmented', 'windowed']
+FLAVOURS = ['tensor', 'kronecker', 'segmented', 'windowed', 'decimated']
 BATCH_SHAPES = [(3,), (2, 3)]
 
 

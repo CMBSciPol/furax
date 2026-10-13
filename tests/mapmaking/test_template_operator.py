@@ -5,7 +5,7 @@ import pytest
 from numpy.testing import assert_allclose
 
 from furax import IdentityOperator
-from furax.mapmaking.bases import KroneckerBasis, SegmentedBasis, TensorBasis
+from furax.mapmaking.bases import DecimatedBasis, KroneckerBasis, SegmentedBasis, TensorBasis
 from furax.mapmaking.gram import gram_inverse
 from furax.mapmaking.templates import StokesTemplateOperator, TemplateOperator
 
@@ -53,7 +53,7 @@ def test_template_operator_expands_dense_templates_together():
     bases = {
         'tensor': TensorBasis(jr.normal(k[0], (3, N_SAMPS))),
         'kron': KroneckerBasis((jr.normal(k[1], (2, N_SAMPS)), jr.normal(k[2], (3, N_SAMPS)))),
-        'coarse': TensorBasis(jr.normal(k[3], (2, N_SAMPS // 4)), q=4, n_full=N_SAMPS),
+        'coarse': DecimatedBasis(TensorBasis(jr.normal(k[3], (2, N_SAMPS // 4))), 4, N_SAMPS),
         'per_det': TensorBasis(jr.normal(k[4], (N_DETS, 1, N_SAMPS)), batch_shape=(N_DETS,)),
         'poly': SegmentedBasis(_seg(4), jr.normal(k[5], (2, N_SAMPS)), 4),
     }

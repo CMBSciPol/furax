@@ -331,7 +331,7 @@ class TestTemperatureTemplate:
         band = (freqs > f0) & (freqs < f1)
         filtered = jnp.fft.irfft(jnp.fft.rfft(T, axis=-1) * band, n=n_samps, axis=-1)
         expected = filtered.reshape(n_dets, n_samps // q, q).mean(axis=-1)
-        assert_allclose(basis.values[:, 0], expected, rtol=TOL, atol=TOL)
+        assert_allclose(basis.inner.values[:, 0], expected, rtol=TOL, atol=TOL)
 
     def test_decimated_synthesis_is_block_averaged_and_held(self) -> None:
         # decimation_factor=q stores T on a q-coarser grid; lambda = 1 -> synthesis is the

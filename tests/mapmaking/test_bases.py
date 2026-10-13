@@ -533,6 +533,14 @@ class TestStructuredViews:
         basis = singles[0]
         assert_allclose(basis.support().as_matrix(), basis.as_matrix(), rtol=TOL, atol=TOL)
 
+    def test_tensor_views_flatten_a_multidimensional_index(self) -> None:
+        basis = TensorBasis(jr.normal(jr.key(1105), (2, 3, 40)))
+        weights = jr.uniform(jr.key(1106), (40,), minval=0.5, maxval=2.0)
+        matrix = basis.as_matrix()  # (samp, 6), columns in the row-major order of (2, 3)
+        assert_allclose(basis.support().as_matrix(), matrix, rtol=TOL, atol=TOL)
+        expected = matrix.T @ (weights[:, None] * matrix)
+        assert_allclose(basis.gram(weights)[0, 0], expected, rtol=TOL, atol=TOL)
+
     def test_windowed_gram_bands_match_the_dense_gram(self) -> None:
         # overlapping windows make the Gram block-banded of half-width O-1; the one-pass banded
         # build must match the dense Bᵀ diag(w) B block for block within the band.

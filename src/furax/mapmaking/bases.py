@@ -41,7 +41,6 @@ from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
 
 __all__ = [
-    'NoStructuredView',
     'Basis',
     'TensorBasis',
     'KroneckerBasis',
@@ -53,10 +52,6 @@ __all__ = [
 
 # Full float32 precision for basis contraction to ensure adjointness of `project` and `expand`
 _einsum = partial(jnp.einsum, precision=jax.lax.Precision.HIGHEST)
-
-
-class NoStructuredView(Exception):
-    """Raised when a basis cannot expose a structured (column-support) view."""
 
 
 class _BasisColumns(NamedTuple):
@@ -265,9 +260,6 @@ class Basis(AbstractLinearOperator):
 
         For a batch of bases, `weights` broadcasts against `batch_shape` and the bands carry the
         batch axes, one Gram per basis.
-
-        Raises:
-            NoStructuredView: If this basis has no such form. Flavours implement `_gram`.
         """
         if not self.batch_shape:
             return self._gram(weights)
@@ -275,7 +267,7 @@ class Basis(AbstractLinearOperator):
 
     @abstractmethod
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n w1 k k']:
-        """Flavours with no such form raise [`NoStructuredView`][]."""
+        """`gram` for a single basis."""
 
     @property
     @abstractmethod
@@ -287,9 +279,6 @@ class Basis(AbstractLinearOperator):
 
         Consumed by [`cross_gram`][furax.mapmaking.gram.cross_gram]. For a batch of bases, the
         view's arrays carry the batch axes.
-
-        Raises:
-            NoStructuredView: If this basis has no such view. Flavours implement `_support`.
         """
         if not self.batch_shape:
             return self._support()
@@ -301,7 +290,7 @@ class Basis(AbstractLinearOperator):
 
     @abstractmethod
     def _support(self) -> _BasisColumns:
-        """Flavours with no such view raise [`NoStructuredView`][]."""
+        """`support` for a single basis."""
 
 
 class _BasisTranspose(TransposeOperator):
@@ -351,10 +340,8 @@ class TensorBasis(Basis):
         return None if self.batch_shape else self._flat_values()
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
-        # Dense Gram over the (single) coupled amplitude axis: one block, no band (w=0).
-        if len(self.shape) != 1:
-            raise NoStructuredView('gram supports 1-D TensorBasis amplitude only')
-        v = self.values  # (k, samp)
+        # Dense Gram over the flattened amplitude index: one block, no band (w=0).
+        v = self._flat_values()
         return _einsum('as,s,bs->ab', v, weights, v)[None, None]
 
     @property
@@ -362,14 +349,12 @@ class TensorBasis(Basis):
         return 1
 
     def _support(self) -> _BasisColumns:
-        # One global block, every sample in it (unit tap).
-        if len(self.shape) != 1:
-            raise NoStructuredView('support view: 1-D TensorBasis only')
+        # One global block over the flattened amplitude index, every sample in it (unit tap).
         samp = self.n_points
         return _BasisColumns(
             blocks=jnp.zeros((samp, 1), jnp.int32),
             taps=jnp.ones((samp, 1), self.dtype),
-            values=self.values,
+            values=self._flat_values(),
             n_blocks=self._n_blocks,
         )
 
@@ -694,8 +679,7 @@ class WindowedBasis(Basis):
         Overlapping windows couple block `j` only to `|j'-j| < O` (`O` = window width), so the Gram
         is block-banded of half-width `O-1`, dense `k×k` within the band. Returns the upper band
         `bands[j, d] = G[(j,·), (j+d,·)]` for `d = 0..O-1` (`d=0` the symmetric diagonal block; the
-        lower band is `bands[j, d]ᵀ` by symmetry). Cost `O(n_samples · O² · k²)` — no full-TOD
-        column probe.
+        lower band is `bands[j, d]ᵀ` by symmetry). Cost `O(n_samples · O² · k²)`.
         """
         n_window = self.block_weights.shape[0]
         n_blocks, k = self.shape

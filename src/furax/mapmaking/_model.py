@@ -335,7 +335,6 @@ class TemplateBundle:
         config: TemplatesConfig,
         *,
         pomme_tau: int | None = None,
-        allow_probe: bool = False,
     ) -> Self:
         r"""Pair a template operator $T$ with its Gram inverse given a diagonal weight $W$.
 
@@ -345,14 +344,12 @@ class TemplateBundle:
             config: Supplies the Gram regularization and batch size.
             pomme_tau: Pomme interval length, when the templates are combined with Pomme; the
                 Gram is then taken under the effective weight $W F$ (see [`gram_inverse`][]).
-            allow_probe: See [`gram_inverse`][].
         """
         ginv, ridge = _gram_inverse_and_ridge(
             operator,
             weight,
             config.regularization,
             pomme_tau=pomme_tau,
-            allow_probe=allow_probe,
             batch_size=config.gram_batch_size,
         )
         return cls(operator, ginv, ridge)

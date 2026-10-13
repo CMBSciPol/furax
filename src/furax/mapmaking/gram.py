@@ -9,10 +9,23 @@ the $W$-metric projector off $\mathrm{range}(T)$.
 This module assembles the Gram matrix $G \equiv T^\top W T$ from the bases of an
 [`AbstractTemplateOperator`][]. Inversion is performed via [`furax.linalg.cholesky`][].
 
+Combined with Pomme (`pomme_tau`), the effective weight is $W F$ with $F$ the
+[`PommeProjectionOperator`][], and the Gram becomes $\tilde G = T^\top W F T = (FT)^\top W (FT)$:
+the Gram of the Pomme-filtered templates. It is assembled without forming $FT$, by
+Schur-eliminating the Pomme template $Z$ (the interval indicators) from the joint Gram of $[Z\ T]$:
+
+$$ \tilde G = T^\top W T - C^\top D^{-1} C, \qquad C = Z^\top W T, \quad D = Z^\top W Z, $$
+
+with $D$ diagonal (weighted interval sample counts) and $C$ the weighted per-interval sums of the
+basis columns. This equals $T^\top W D_Z T$ for any diagonal $W$, and $T^\top W F T$ when $W$
+and $F$ commute, which the whole-interval masking of the Pomme path guarantees. An interval
+straddling two blocks of a time-local basis couples them, so the Gram band widens by one block.
+$F$ annihilates constant columns, so a template containing one (polynomial order 0, a DC harmonic,
+binned azimuth) makes $\tilde G$ singular: a `regularization` ridge is then required.
+
 Limitations:
 
-- $W$ must be *diagonal*. Correlated (Toeplitz) weights are not supported. Interaction with Pomme
-  deprojection is not handled (also results in a non-diagonal effective weight).
+- $W$ must be *diagonal*. Correlated (Toeplitz) weights are not supported.
 - When assembling the Gram, basis structure (column support) is only exploited if all bases of the
   template operator are shared over detectors.
 - Several templates on one stream (the TOD, or one Stokes leg) are coupled through the weight.
@@ -36,22 +49,26 @@ from dataclasses import field
 from math import prod
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from jaxtyping import Float, PyTree
+from jaxtyping import Float, Int, PyTree
 
 import furax.tree
-from furax import AbstractLinearOperator, symmetric
+from furax import AbstractLinearOperator, IdentityOperator, symmetric
 from furax.linalg import BandedCholeskyOperator, BorderedBandedCholeskyOperator
 
+from .pomme import PommeProjectionOperator
 from .templates import (
     AbstractTemplateOperator,
     Basis,
     NoStructuredView,
+    OffsetBasis,
     StokesTemplateOperator,
     TemplateOperator,
+    _BasisColumns,
     is_basis,
 )
 
@@ -66,6 +83,7 @@ def gram_inverse(
     weight: AbstractLinearOperator,
     regularization: float = 0.0,
     *,
+    pomme_tau: int | None = None,
     allow_probe: bool = False,
     batch_size: int = 8,
 ) -> AbstractLinearOperator:
@@ -82,10 +100,15 @@ def gram_inverse(
     column probe: correct for any `T`, but `O(K)` in the amplitude count `K`. This requires
     `allow_probe` to be `True`.
 
+    With `pomme_tau`, the effective weight is `W F` with `F` the [`PommeProjectionOperator`][] of
+    that interval length, and the inverse of `Tᵀ W F T` is returned instead (see the module
+    docstring). `W` itself stays the diagonal weight.
+
     Args:
         operator: The template operator `T`.
         weight: The diagonal weights `W`.
         regularization: Relative ridge added to each detector's Gram block before factoring.
+        pomme_tau: Pomme interval length, when the templates are combined with Pomme.
         allow_probe: Allow the `O(K)` dense-probe fallback.
         batch_size: Detector batch size to bound transient memory usage in the structured
             per-detector Gram assembly path.
@@ -95,14 +118,21 @@ def gram_inverse(
 
     Raises:
         NotImplementedError: If the structured path does not apply and `allow_probe` is `False`.
+        ValueError: If `pomme_tau` is given for a Stokes TOD rather than a single stream.
     """
+    is_stokes = isinstance(operator, StokesTemplateOperator)
+    # Pomme acts on the modulated TOD, which demodulation splits into one stream per leg.
+    if pomme_tau is not None and is_stokes:
+        raise ValueError('Pomme filtering applies to a single stream, not a Stokes TOD')
+
     ones = furax.tree.ones_like(weight.in_structure)
     diag = weight(ones)
     # if we wanted to guard against a non-diagonal W, one extra application on a random
     # vector `x` and a comparison against `diag * x` would catch it with very high probability
 
-    if not isinstance(operator, StokesTemplateOperator):  # a single stream
-        stream = _Stream(operator.bases, diag, operator.in_structure)
+    if not is_stokes:  # a single stream
+        pomme = None if pomme_tau is None else OffsetBasis(pomme_tau, diag.shape[-1], diag.dtype)
+        stream = _Stream(operator.bases, diag, operator.in_structure, pomme)
         return _stream_gram_inverse(stream, regularization, batch_size, allow_probe)
 
     # Two bases on different legs never share a weighted sample, so each leg is a stream of its
@@ -174,6 +204,8 @@ class _Stream(NamedTuple):
     weights: Float[Array, 'det samp']
     in_structure: PyTree[jax.ShapeDtypeStruct]
     """The amplitudes of `bases`."""
+    pomme: OffsetBasis | None = None
+    """The Pomme template to eliminate from the Gram, when Pomme is enabled."""
 
 
 def _stream_gram_inverse(
@@ -205,10 +237,11 @@ def _structured_gram_inverse(
     Raises:
         NoStructuredView: If a basis has no structured view.
     """
-    bases, weights = stream.bases, stream.weights
+    bases, weights, pomme = stream.bases, stream.weights, stream.pomme
     if len(bases) == 1:
         (basis,) = bases.values()
-        bands = _unit_on_zero_bands(jax.lax.map(basis.gram, weights, batch_size=batch_size))
+        bands = jax.lax.map(lambda w: _banded_gram(basis, pomme, w), weights, batch_size=batch_size)
+        bands = _unit_on_zero_bands(bands)
         return BandedCholeskyOperator.from_bands(bands, stream.in_structure, regularization)
 
     # a basis split into several blocks of time is time-local; one block sees every sample
@@ -218,15 +251,129 @@ def _structured_gram_inverse(
         return _bordered_gram_inverse(stream, core, regularization, batch_size)
 
     ordered: list[Basis] = jax.tree.leaves(bases, is_leaf=is_basis)
-    blocks = jax.lax.map(lambda w: _dense_gram(ordered, w), weights, batch_size=batch_size)
+    blocks = jax.lax.map(
+        lambda w: _dense_gram(ordered, w, _pomme_sums(ordered, w, pomme)),
+        weights,
+        batch_size=batch_size,
+    )
     blocks = _unit_on_zero_rows(blocks)
     return BandedCholeskyOperator.from_dense(blocks, stream.in_structure, regularization)
 
 
-def _dense_gram(bases: list[Basis], weights: Float[Array, ' samp']) -> Float[Array, 'k k']:
+def _banded_gram(
+    basis: Basis, pomme: OffsetBasis | None, weights: Float[Array, ' samp']
+) -> Float[Array, 'n w1 k k']:
+    """One detector's `basis.gram`, Pomme-corrected when Pomme is enabled."""
+    if pomme is None:
+        return basis.gram(weights)
+    if basis._n_blocks > 1:
+        bands, _ = _pomme_local_gram(basis, pomme, weights)
+        return bands
+    # a global basis: one dense block, with no band for an interval to widen
+    sums = _interval_sums(pomme, basis, weights)
+    correction = sums.T @ (_inverse_counts(pomme, weights)[:, None] * sums)
+    return basis.gram(weights) - correction[None, None]
+
+
+class _PommeCoreSums(NamedTuple):
+    """One detector's factors of the Pomme Schur correction for a time-local basis.
+
+    `C = Zᵀ W B` is kept in the band layout: an interval reads at most `w1` consecutive blocks, so
+    the dense `(n_int, n_blocks·k)` matrix is never formed.
+    """
+
+    first: Int[Array, ' n_int']
+    """The first block each interval couples."""
+    sums: Float[Array, 'n_int w1 k']
+    """`C` on each interval's `w1` consecutive blocks, from `first`."""
+    inverse_counts: Float[Array, ' n_int']
+    """`D⁻¹ = (Zᵀ W Z)⁻¹`."""
+
+
+def _pomme_local_gram(
+    basis: Basis, pomme: OffsetBasis, weights: Float[Array, ' samp']
+) -> tuple[Float[Array, 'n w1 k k'], _PommeCoreSums]:
+    """One detector's Pomme-corrected Gram of a time-local basis, and the factors it used.
+
+    An interval straddles at most two of the basis's blocks, so the corrected Gram needs one more
+    band than the plain one. The factors are returned for the bordered path to reuse.
+    """
+    view = basis.support()
+    bands = basis.gram(weights)
+    w1 = min(bands.shape[1] + 1, view.n_blocks)
+    bands = jnp.pad(bands, [(0, 0), (0, w1 - bands.shape[1]), (0, 0), (0, 0)])
+    core = _pomme_core_sums(pomme, view, weights, w1)
+    return bands - _pomme_band_correction(core, view.n_blocks), core
+
+
+def _pomme_core_sums(
+    pomme: OffsetBasis, view: _BasisColumns, weights: Float[Array, ' samp'], w1: int
+) -> _PommeCoreSums:
+    """`C = Zᵀ W B` in the band layout, and `D⁻¹`.
+
+    Interval `i` couples the consecutive blocks its weighted samples read, `first[i] + s` for
+    `s < w1`. A wider span means a block shorter than an interval, which the band cannot hold; it
+    is reported as a runtime error. Masked samples couple nothing, so a short block reached only
+    by them passes. No `(samp, k, k)` intermediate is formed.
+    """
+    intervals = pomme.support()
+    n_int, n_blocks, k = intervals.n_blocks, view.n_blocks, view.values.shape[0]
+    ids = intervals.blocks[:, 0]
+    zw = weights * intervals.values[0]  # each sample's entry of Zᵀ W, zero past the last interval
+
+    # the blocks each interval couples; the accumulators take the block index dtype, which varies
+    # with the basis flavour
+    dtype = view.blocks.dtype
+    first, last = jnp.full(n_int, n_blocks, dtype), jnp.full(n_int, -1, dtype)
+    active = (zw != 0) & jnp.any(view.values != 0, axis=0)
+    for slot in range(view.blocks.shape[1]):  # window width is static
+        reads = active & (view.taps[:, slot] != 0)
+        block = view.blocks[:, slot]
+        first = first.at[ids].min(jnp.where(reads, block, n_blocks).astype(dtype))
+        last = last.at[ids].max(jnp.where(reads, block, -1).astype(dtype))
+    first = eqx.error_if(
+        first,
+        jnp.any(last - first >= w1),
+        'a Pomme interval spans more template blocks than the Gram band can hold: '
+        'template blocks (scan intervals, spline knots) must be longer than pomme_tau',
+    )
+
+    wv = (view.values * zw[None, :]).T  # (samp, k)
+    sums = jnp.zeros((n_int, w1, k), view.values.dtype)
+    for slot in range(view.blocks.shape[1]):
+        s = jnp.clip(view.blocks[:, slot] - first[ids], 0, w1 - 1)
+        sums = sums.at[ids, s].add(view.taps[:, slot][:, None] * wv)
+    return _PommeCoreSums(first, sums, _inverse_counts(pomme, weights))
+
+
+def _pomme_band_correction(core: _PommeCoreSums, n_blocks: int) -> Float[Array, 'n_blocks w1 k k']:
+    """The Pomme Schur correction `Cᵀ D⁻¹ C` of a banded Gram, in its band layout.
+
+    Interval `i`'s outer product lands in the band at `(first[i] + s, s' − s)`.
+    """
+    _, w1, k = core.sums.shape
+    bands = jnp.zeros((n_blocks, w1, k, k), core.sums.dtype)
+    for s in range(w1):
+        # an interval coupling fewer than w1 blocks has zero sums past its last: clip the index
+        rows = jnp.clip(core.first + s, 0, n_blocks - 1)
+        for s2 in range(s, w1):
+            contrib = jnp.einsum(
+                'ia,ib,i->iab', core.sums[:, s], core.sums[:, s2], core.inverse_counts
+            )
+            bands = bands.at[rows, s2 - s].add(contrib)
+    return bands
+
+
+def _dense_gram(
+    bases: list[Basis],
+    weights: Float[Array, ' samp'],
+    sums: tuple[Float[Array, ' n_int'], list[Float[Array, 'n_int k']]] | None = None,
+) -> Float[Array, 'k k']:
     """One detector's joint Gram of `bases`, each owning a contiguous slice in the given order.
 
-    The lower blocks are the transposes of the upper ones, so each pair is computed once.
+    The lower blocks are the transposes of the upper ones, so each pair is computed once. With the
+    Pomme factors `sums` (`D⁻¹` and each basis's `C`, see `_pomme_sums`), every block carries the
+    Schur correction that eliminates the Pomme template.
     """
     offsets = np.cumsum([0, *(basis.size for basis in bases)])
     n_amps = int(offsets[-1])
@@ -236,10 +383,44 @@ def _dense_gram(bases: list[Basis], weights: Float[Array, ' samp']) -> Float[Arr
         for j in range(i, len(bases)):
             cols = slice(offsets[j], offsets[j + 1])
             cross = cross_gram(a, bases[j], weights)
+            if sums is not None:
+                inverse_counts, per_basis = sums
+                cross = cross - per_basis[i].T @ (inverse_counts[:, None] * per_basis[j])
             block = block.at[rows, cols].set(cross)
             if j > i:
                 block = block.at[cols, rows].set(cross.T)
     return block
+
+
+def _pomme_sums(
+    bases: list[Basis],
+    weights: Float[Array, ' samp'],
+    pomme: OffsetBasis | None,
+) -> tuple[Float[Array, ' n_int'], list[Float[Array, 'n_int k']]] | None:
+    """`D⁻¹` and each basis's `C = Zᵀ W B`, the factors of the Pomme Schur correction."""
+    if pomme is None:
+        return None
+    sums = [_interval_sums(pomme, basis, weights) for basis in bases]
+    return _inverse_counts(pomme, weights), sums
+
+
+def _interval_sums(
+    pomme: OffsetBasis, basis: Basis, weights: Float[Array, ' samp']
+) -> Float[Array, 'n_int k']:
+    """`C = Zᵀ W B` for one basis: its weighted columns summed over each interval."""
+    if basis._n_blocks > 1:
+        return cross_gram(pomme, basis, weights)
+    # a global basis: its few columns span every sample, so weighting them and projecting each
+    # onto the regular intervals avoids scattering a `(samp, k)` copy by interval
+    view = basis.support()
+    columns = view.values * (view.taps.sum(axis=1) * weights)[None, :]
+    return pomme._project_detectors(columns).T
+
+
+def _inverse_counts(pomme: OffsetBasis, weights: Float[Array, ' samp']) -> Float[Array, ' n_int']:
+    """`D⁻¹ = (Zᵀ W Z)⁻¹`, zero on intervals of zero weight, whose rows of `C` vanish too."""
+    counts = pomme.gram(weights)[:, 0, 0, 0]  # Z is block diagonal: one weighted count each
+    return 1.0 / jnp.where(counts > 0, counts, jnp.inf)
 
 
 def _bordered_gram_inverse(
@@ -250,20 +431,47 @@ def _bordered_gram_inverse(
     The core template's own Gram is block-banded; the others couple to it through a dense border
     and to each other through a dense corner.
     """
-    bases = stream.bases
+    bases, pomme = stream.bases, stream.pomme
     core = bases[core_name]
     border_names = tuple(name for name in bases if name != core_name)
     border_bases = [bases[name] for name in border_names]
 
     def build(weights: Array) -> tuple[Array, Array, Array]:
         border = [cross_gram(core, basis, weights) for basis in border_bases]
-        corner = _dense_gram(border_bases, weights)
-        return core.gram(weights), jnp.concatenate(border, axis=1), corner
+        if pomme is None:
+            corner = _dense_gram(border_bases, weights)
+            return core.gram(weights), jnp.concatenate(border, axis=1), corner
+
+        bands, core_sums = _pomme_local_gram(core, pomme, weights)
+        border_sums = [_interval_sums(pomme, basis, weights) for basis in border_bases]
+        border = [
+            block - _pomme_border_correction(core_sums, sums, core._n_blocks)
+            for block, sums in zip(border, border_sums, strict=True)
+        ]
+        corner = _dense_gram(border_bases, weights, (core_sums.inverse_counts, border_sums))
+        return bands, jnp.concatenate(border, axis=1), corner
 
     bands, border, corner = jax.lax.map(build, stream.weights, batch_size=batch_size)
     bands, corner = _unit_on_zero_bands(bands), _unit_on_zero_rows(corner)
     factor = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner, regularization)
     return _BorderedGramInverse(factor, core_name, border_names, in_structure=stream.in_structure)
+
+
+def _pomme_border_correction(
+    core: _PommeCoreSums, border_sums: Float[Array, 'n_int m'], n_blocks: int
+) -> Float[Array, 'n_blocks_k m']:
+    """The Pomme Schur correction `C_coreᵀ D⁻¹ C_border` of a border block, dense.
+
+    Interval `i` adds the outer product of its core sums and its border sums to the rows of the
+    `w1` blocks from `first[i]`, in the core's `(block, k)` amplitude order.
+    """
+    _, w1, k = core.sums.shape
+    scaled = core.inverse_counts[:, None] * border_sums  # (n_int, m)
+    out = jnp.zeros((n_blocks, k, border_sums.shape[1]), core.sums.dtype)
+    for s in range(w1):
+        rows = jnp.clip(core.first + s, 0, n_blocks - 1)
+        out = out.at[rows].add(jnp.einsum('ia,ib->iab', core.sums[:, s], scaled))
+    return out.reshape(n_blocks * k, -1)
 
 
 @symmetric
@@ -317,11 +525,15 @@ def _probed_gram_inverse(stream: _Stream, regularization: float) -> AbstractLine
     Costs `O(K)` applications for `K` amplitudes, but needs nothing of the bases beyond `T` itself.
     Amplitudes carry detectors on their leading axis and `T` couples none of them, so `G` is
     block-diagonal there and each detector's block is factored on its own. Each application
-    expands to a single `(det, samp)` stream, not to every Stokes leg of the TOD.
+    expands to a single `(det, samp)` stream, not to every Stokes leg of the TOD. With Pomme the
+    probed operator is `Tᵀ W F T`, exact for any `T`.
     """
     diag, in_structure = stream.weights, stream.in_structure
     n_dets = diag.shape[0]
     operator = TemplateOperator(stream.bases, n_dets)
+    filter_: AbstractLinearOperator = IdentityOperator(in_structure=operator.out_structure)
+    if stream.pomme is not None:
+        filter_ = PommeProjectionOperator(stream.pomme.tau, in_structure=operator.out_structure)
     leaves, treedef = jax.tree.flatten(in_structure)
     dtype = leaves[0].dtype
     # amplitudes of every template, concatenated into one index; each leaf owns a slice of it,
@@ -339,7 +551,7 @@ def _probed_gram_inverse(stream: _Stream, regularization: float) -> AbstractLine
             jnp.broadcast_to(part.reshape(s.shape[1:]), s.shape)
             for part, s in zip(jnp.split(flat, split_points), leaves, strict=True)
         ]
-        response = operator.T(diag * operator(treedef.unflatten(parts)))
+        response = operator.T(diag * filter_(operator(treedef.unflatten(parts))))
         per_leaf = [leaf.reshape(n_dets, -1) for leaf in jax.tree.leaves(response)]
         return jnp.concatenate(per_leaf, axis=-1)  # (n_dets, n_amps)
 

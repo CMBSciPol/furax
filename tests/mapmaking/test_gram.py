@@ -15,8 +15,7 @@ from furax.mapmaking.bases import (
 )
 from furax.mapmaking.gram import (
     _BorderedGramInverse,
-    _gram_inverse_and_ridge,
-    cross_gram,
+    _cross_gram,
     gram_inverse,
 )
 from furax.mapmaking.pomme import PommeProjectionOperator
@@ -34,7 +33,7 @@ def _weight(key):
 def _windowed_basis(key, n_blocks, k, O):
     offset = jnp.sort(jr.uniform(key, (N_SAMPS,)) * (n_blocks - O + 1)).astype(jnp.int32)
     ko, ks = jr.split(jr.fold_in(key, 1))
-    return WindowedBasis(offset, jr.normal(ko, (O, N_SAMPS)), jr.normal(ks, (k, N_SAMPS)), n_blocks)
+    return WindowedBasis(offset, jr.normal(ko, (N_SAMPS, O)), jr.normal(ks, (k, N_SAMPS)), n_blocks)
 
 
 @pytest.mark.parametrize(
@@ -75,14 +74,14 @@ def _windowed_basis(key, n_blocks, k, O):
     ],
 )
 def test_cross_gram_matches_dense_cross_block(make_a, make_b):
-    # cross_gram(A, B, w) == the (A, B) cross block of the dense Gram of [A | B], built from tags.
+    # _cross_gram(A, B, w) == the (A, B) cross block of the dense Gram of [A | B], built from tags.
     ka, kb, kw = jr.split(jr.key(20), 3)
     A, B = make_a(ka), make_b(kb)
     w = jr.uniform(kw, (N_SAMPS,), minval=0.5, maxval=2.0)
     b_a, b_b = A.as_matrix(), B.as_matrix()  # (samp, n_a*k_a), (samp, n_b*k_b)
-    assert_allclose(cross_gram(A, B, w), b_a.T @ (w[:, None] * b_b), rtol=1e-5, atol=1e-6)
+    assert_allclose(_cross_gram(A, B, w), b_a.T @ (w[:, None] * b_b), rtol=1e-5, atol=1e-6)
     # self-Gram consistency: pairwise(A, A) is the dense self-Gram
-    assert_allclose(cross_gram(A, A, w), b_a.T @ (w[:, None] * b_a), rtol=1e-5, atol=1e-6)
+    assert_allclose(_cross_gram(A, A, w), b_a.T @ (w[:, None] * b_a), rtol=1e-5, atol=1e-6)
 
 
 def _seg(n_seg):
@@ -127,7 +126,7 @@ def test_gram_inverse_inverts_the_gram(make, stokes):
 
     amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
     gram = T.T @ W @ T
-    recovered = gram_inverse(T, W)(gram(amps))
+    recovered = gram_inverse(T, W)[0](gram(amps))
     jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-8, atol=1e-10), recovered, amps)
 
 
@@ -158,7 +157,7 @@ def test_stream_gram_inverse_borders_the_time_local_core(names, inverse_class):
     kb, kw = jr.split(jr.key(15))
     bases = _local_and_global_bases(kb)
     T = TemplateOperator({name: bases[name] for name in names}, n_dets=N_DETS)
-    assert type(gram_inverse(T, _weight(kw))) is inverse_class
+    assert type(gram_inverse(T, _weight(kw))[0]) is inverse_class
 
 
 @pytest.mark.parametrize('names', [('poly', 'hwp'), ('spline', 'poly', 'hwp')])
@@ -171,7 +170,7 @@ def test_stream_gram_inverse_survives_unobserved_amplitudes(names):
     w = jr.uniform(kw, (N_DETS, N_SAMPS), minval=0.5, maxval=2.0).at[:, : N_SAMPS // 4].set(0.0)
     W = DiagonalOperator(w, in_structure=jax.ShapeDtypeStruct((N_DETS, N_SAMPS), w.dtype))
     amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
-    assert all(jnp.all(jnp.isfinite(leaf)) for leaf in jax.tree.leaves(gram_inverse(T, W)(amps)))
+    assert all(jnp.all(jnp.isfinite(leaf)) for leaf in jax.tree.leaves(gram_inverse(T, W)[0](amps)))
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +222,7 @@ def _straddling_windowed(key, n_samps):
     n_blocks, O = 6, 3
     offset = jnp.minimum(jnp.arange(n_samps) // 9, n_blocks - O).astype(jnp.int32)
     ko, ks = jr.split(key)
-    return WindowedBasis(offset, jr.normal(ko, (O, n_samps)), jr.normal(ks, (2, n_samps)), n_blocks)
+    return WindowedBasis(offset, jr.normal(ko, (n_samps, O)), jr.normal(ks, (2, n_samps)), n_blocks)
 
 
 @pytest.mark.parametrize('n_samps', [70, 73], ids=['no_tail', 'tail'])
@@ -245,7 +244,7 @@ def test_pomme_gram_inverse_matches_filtered_dense(make, n_samps):
     diag, W = _pomme_weight(kw, n_samps)
     amps = jr.normal(ka, T.in_structure['t'].shape)
 
-    actual = gram_inverse(T, W, pomme_tau=TAU)({'t': amps})['t']
+    actual = gram_inverse(T, W, pomme_tau=TAU)[0]({'t': amps})['t']
     assert_allclose(actual, _pomme_reference(basis, diag, amps), rtol=1e-8, atol=1e-10)
 
 
@@ -281,7 +280,7 @@ def test_pomme_gram_inverse_coupled_matches_filtered_dense(make):
         for i, name in enumerate(bases)
     }
 
-    actual = gram_inverse(T, W, pomme_tau=TAU)(amps)
+    actual = gram_inverse(T, W, pomme_tau=TAU)[0](amps)
     # reference: the joint basis of every template as one dense matrix
     f = PommeProjectionOperator(
         TAU, in_structure=jax.ShapeDtypeStruct((1, n_samps), diag.dtype)
@@ -303,7 +302,7 @@ def test_pomme_gram_inverse_per_det_matches_filtered_dense(make):
     T = TemplateOperator({'t': basis}, n_dets=N_DETS)
     diag, W = _pomme_weight(kw, n_samps)
     amps = jr.normal(ka, T.in_structure['t'].shape)
-    actual = gram_inverse(T, W, pomme_tau=TAU)({'t': amps})['t']
+    actual = gram_inverse(T, W, pomme_tau=TAU)[0]({'t': amps})['t']
     f = PommeProjectionOperator(
         TAU, in_structure=jax.ShapeDtypeStruct((1, n_samps), diag.dtype)
     ).as_matrix()
@@ -323,7 +322,7 @@ def test_pomme_marginal_weight_deprojects_templates_and_intervals():
     T = TemplateOperator({'t': TensorBasis(values)}, n_dets=N_DETS)
     _, W = _pomme_weight(kw, n_samps)
     F = PommeProjectionOperator(TAU, in_structure=W.in_structure)
-    G = gram_inverse(T, W, regularization=1e-10, pomme_tau=TAU)
+    G, _ = gram_inverse(T, W, regularization=1e-10, pomme_tau=TAU)
     WF = (W @ F).reduce()
     W_prime = (WF - WF @ T @ G @ T.T @ WF).reduce()
 
@@ -347,7 +346,7 @@ def test_pomme_gram_inverse_handles_a_fully_masked_block():
     assert jnp.all(diag[:, 2 * TAU : 4 * TAU] == 0)  # the segment really is fully masked
     amps = jr.normal(jr.key(37), T.in_structure['t'].shape)
 
-    actual = gram_inverse(T, W, pomme_tau=TAU)({'t': amps})['t']
+    actual = gram_inverse(T, W, pomme_tau=TAU)[0]({'t': amps})['t']
     assert jnp.all(jnp.isfinite(actual))
     assert_allclose(actual[:, 1], amps[:, 1], rtol=1e-12)
 
@@ -374,7 +373,7 @@ def test_pomme_gram_accepts_a_short_block_reached_only_by_masked_samples():
     diag, W = _pomme_weight(jr.key(39), n_samps)  # masks samples 10 to 19
     amps = jr.normal(jr.key(40), T.in_structure['t'].shape)
 
-    actual = gram_inverse(T, W, pomme_tau=TAU)({'t': amps})['t']
+    actual = gram_inverse(T, W, pomme_tau=TAU)[0]({'t': amps})['t']
 
     f = PommeProjectionOperator(
         TAU, in_structure=jax.ShapeDtypeStruct((1, n_samps), diag.dtype)
@@ -422,7 +421,7 @@ def test_gram_ridge_is_the_one_added_before_factoring(kind):
     bases = _ridge_bases(kind, kb)
     T = TemplateOperator(bases, n_dets=N_DETS)
     W = _weight(kw)
-    inverse, ridge = _gram_inverse_and_ridge(T, W, REGULARIZATION)
+    inverse, ridge = gram_inverse(T, W, REGULARIZATION)
     assert ridge is not None
 
     amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
@@ -450,7 +449,7 @@ def test_gram_ridge_scales_with_the_data_alone(kind):
 
     def ridge_of(weights):
         W = DiagonalOperator(weights, in_structure=structure)
-        _, ridge = _gram_inverse_and_ridge(T, W, REGULARIZATION)
+        _, ridge = gram_inverse(T, W, REGULARIZATION)
         return ridge(ones)['t']
 
     assert_allclose(ridge_of(1e-3 * w), 1e-3 * ridge_of(w), rtol=1e-12)
@@ -460,7 +459,7 @@ def test_gram_ridge_scales_with_the_data_alone(kind):
 def test_gram_ridge_is_none_without_regularization(kind):
     kb, kw = jr.split(jr.key(41))
     T = TemplateOperator(_ridge_bases(kind, kb), n_dets=N_DETS)
-    inverse, ridge = _gram_inverse_and_ridge(T, _weight(kw), 0.0)
+    inverse, ridge = gram_inverse(T, _weight(kw), 0.0)
     assert ridge is None
     assert inverse is not None
 

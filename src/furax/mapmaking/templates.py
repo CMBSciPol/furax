@@ -326,10 +326,10 @@ def spline_hwp_synchronous_basis(
     """
     offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
     sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False).astype(dtype)
-    return WindowedBasis(offset, weights.T.astype(dtype), sub_values, n_blocks=n_knots + 2)
+    return WindowedBasis(offset, weights.astype(dtype), sub_values, n_blocks=n_knots + 2)
 
 
-def is_basis(x: Any) -> bool:
+def _is_basis(x: Any) -> bool:
     return isinstance(x, Basis)
 
 
@@ -351,7 +351,7 @@ class AbstractTemplateOperator(AbstractLinearOperator):
     # ---- amplitude side -------------------------------------------------------------------------
     def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         """`bases` with each basis replaced by the amplitudes it takes."""
-        return jax.tree.map(self._amplitude_leaf, self.bases, is_leaf=is_basis)
+        return jax.tree.map(self._amplitude_leaf, self.bases, is_leaf=_is_basis)
 
     def _amplitude_leaf(self, basis: Basis) -> jax.ShapeDtypeStruct:
         # a basis is shared by every detector, or one per detector
@@ -360,20 +360,16 @@ class AbstractTemplateOperator(AbstractLinearOperator):
             raise ValueError(msg)
         return jax.ShapeDtypeStruct((self.n_dets, *basis.shape), basis.dtype)
 
-    @property
-    def bases_by_leg(self) -> dict[str, Any]:
-        """`bases` keyed as the amplitudes are: a basis shared by several legs appears once per leg."""
-        return self.bases
-
     # ---- TOD side -------------------------------------------------------------------------------
-    def _a_basis(self) -> Basis:
-        """Any one of the bases: they agree on sample count and dtype."""
-        return jax.tree.leaves(self.bases, is_leaf=is_basis)[0]
-
     def _stream_structure(self) -> jax.ShapeDtypeStruct:
-        """One detector-by-sample stream, the shape every Stokes leg of the TOD takes."""
-        b = self._a_basis()
-        return jax.ShapeDtypeStruct((self.n_dets, b.n_points), b.dtype)
+        """One detector-by-sample stream, the shape every Stokes leg of the TOD takes.
+
+        Read off static metadata rather than traced through `mv`, which would see the extra
+        leading axis of an operator stacked across observations.
+        """
+        # the bases agree on sample count and dtype: any one of them will do
+        basis = jax.tree.leaves(self.bases, is_leaf=_is_basis)[0]
+        return jax.ShapeDtypeStruct((self.n_dets, basis.n_points), basis.dtype)
 
     def _zero_stream(self) -> Array:
         s = self._stream_structure()
@@ -390,12 +386,12 @@ class AbstractTemplateOperator(AbstractLinearOperator):
             stream = _einsum('dk,ks->ds', coeffs, jnp.concatenate(list(dense.values())))
         for name, basis in bases.items():
             if name not in dense:
-                stream = stream + basis.expand(x[name])
+                stream = stream + basis(x[name])
         return stream
 
     # ---- adjoint --------------------------------------------------------------------------------
     @abstractmethod
-    def project(self, tod: PyTree[Array]) -> PyTree[Array]:
+    def _project(self, tod: PyTree[Array]) -> PyTree[Array]:
         """Every template's amplitudes, from a TOD. This is the transpose's `mv`."""
 
     def transpose(self) -> AbstractLinearOperator:
@@ -418,8 +414,8 @@ class TemplateOperator(AbstractTemplateOperator):
     def mv(self, x: PyTree[Array]) -> PyTree[Array]:
         return self._expand_stream(self.bases, x)
 
-    def project(self, tod: PyTree[Array]) -> PyTree[Array]:
-        return {name: basis.project(tod) for name, basis in self.bases.items()}
+    def _project(self, tod: PyTree[Array]) -> PyTree[Array]:
+        return {name: basis.T(tod) for name, basis in self.bases.items()}
 
 
 class StokesTemplateOperator(AbstractTemplateOperator):
@@ -472,13 +468,14 @@ class StokesTemplateOperator(AbstractTemplateOperator):
 
     @property
     def bases_by_leg(self) -> dict[str, dict[StokesLeg, Basis]]:
+        """`bases` keyed as the amplitudes are: a basis shared by several legs appears once per leg."""
         return {
             name: {cast(StokesLeg, leg): basis for group, basis in legged.items() for leg in group}
             for name, legged in self.bases.items()
         }
 
     def _amplitude_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.tree.map(self._amplitude_leaf, self.bases_by_leg, is_leaf=is_basis)
+        return jax.tree.map(self._amplitude_leaf, self.bases_by_leg, is_leaf=_is_basis)
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -499,10 +496,10 @@ class StokesTemplateOperator(AbstractTemplateOperator):
             streams.append(self._expand_stream(bases, {name: x[name][leg] for name in bases}))
         return Stokes.class_for(self.stokes).from_array(jnp.stack(streams, axis=0))
 
-    def project(self, tod: PyTree[Array]) -> PyTree[Array]:
+    def _project(self, tod: PyTree[Array]) -> PyTree[Array]:
         streams = self._streams(tod)
         return {
-            name: {leg: basis.project(streams[leg]) for leg, basis in legged.items()}
+            name: {leg: basis.T(streams[leg]) for leg, basis in legged.items()}
             for name, legged in self.bases_by_leg.items()
         }
 
@@ -511,4 +508,4 @@ class _TemplateOperatorTranspose(TransposeOperator):
     operator: AbstractTemplateOperator
 
     def mv(self, x: PyTree[Array]) -> PyTree[Array]:
-        return self.operator.project(x)
+        return self.operator._project(x)

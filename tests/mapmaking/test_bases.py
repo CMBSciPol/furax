@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from jax import Array
 from jaxtyping import Float
-from numpy.testing import assert_allclose, assert_array_equal
+from numpy.testing import assert_allclose
 
 from furax.mapmaking.bases import (
     Basis,
@@ -34,8 +34,8 @@ TOL = 1e-12
 
 def _adjoint_residual(basis, coeffs: Array, signal: Array) -> float:
     """|<expand(coeffs), signal> - <coeffs, project(signal)>|."""
-    lhs = jnp.vdot(basis.expand(coeffs), signal)
-    rhs = jnp.vdot(coeffs, basis.project(signal))
+    lhs = jnp.vdot(basis(coeffs), signal)
+    rhs = jnp.vdot(coeffs, basis.T(signal))
     return float(jnp.abs(lhs - rhs))
 
 
@@ -88,7 +88,7 @@ class TestTensorBasis:
         values = jr.normal(jr.key(9), (3, 5))
         basis = TensorBasis(values)
         coeffs = jr.normal(jr.key(10), (3,))
-        assert as_structure(basis.expand(coeffs)) == basis.out_structure
+        assert as_structure(basis(coeffs)) == basis.out_structure
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +121,8 @@ class TestKroneckerBasis:
 
         coeffs = jr.normal(jr.key(210), shape)
         signal = jr.normal(jr.key(211), (n_points,))
-        assert_allclose(kron.expand(coeffs), dense.expand(coeffs), rtol=TOL)
-        assert_allclose(kron.project(signal), dense.project(signal), rtol=TOL)
+        assert_allclose(kron(coeffs), dense(coeffs), rtol=TOL)
+        assert_allclose(kron.T(signal), dense.T(signal), rtol=TOL)
 
     @pytest.mark.parametrize('shape', [(4,), (3, 5), (2, 3, 4)])
     def test_expand_project_adjoint(self, shape: tuple[int, ...]) -> None:
@@ -157,10 +157,10 @@ class TestDecimatedBasis:
         # one basis function [1, 2, 3] on a q=2 grid covering 5 samples: each coarse value is
         # held over its 2 samples, and the last block is trimmed to fit.
         basis = DecimatedBasis(TensorBasis(jnp.array([[1.0, 2.0, 3.0]])), 2, 5)
-        assert_allclose(basis.expand(jnp.array([1.0])), [1.0, 1.0, 2.0, 2.0, 3.0], rtol=TOL)
+        assert_allclose(basis(jnp.array([1.0])), [1.0, 1.0, 2.0, 2.0, 3.0], rtol=TOL)
         # project is its transpose: [0,1,2,3,4] block-sums to [1, 5, 4], then weights by the
         # basis function -> 1*1 + 2*5 + 3*4.
-        assert_allclose(basis.project(jnp.arange(5.0)), [23.0], rtol=TOL)
+        assert_allclose(basis.T(jnp.arange(5.0)), [23.0], rtol=TOL)
 
     @pytest.mark.parametrize('shape', [(4,), (2, 3)])
     def test_expand_project_adjoint(self, shape: tuple[int, ...]) -> None:
@@ -176,8 +176,8 @@ class TestDecimatedBasis:
         decimated = DecimatedBasis(plain, 1, 18)
         coeffs = jr.normal(jr.key(510), (4,))
         signal = jr.normal(jr.key(511), (18,))
-        assert_allclose(decimated.expand(coeffs), plain.expand(coeffs), rtol=TOL)
-        assert_allclose(decimated.project(signal), plain.project(signal), rtol=TOL)
+        assert_allclose(decimated(coeffs), plain(coeffs), rtol=TOL)
+        assert_allclose(decimated.T(signal), plain.T(signal), rtol=TOL)
 
     def test_gram_matches_the_dense_gram(self) -> None:
         # taken on the coarse grid, from block-summed weights, the Gram is still exact
@@ -223,8 +223,8 @@ class TestSegmentedBasis:
         dense = TensorBasis(onehot[:, None, :] * values[None, :, :])
         coeffs = jr.normal(jr.key(611), (n_seg, k))
         signal = jr.normal(jr.key(612), (n_points,))
-        assert_allclose(basis.expand(coeffs), dense.expand(coeffs), rtol=TOL)
-        assert_allclose(basis.project(signal), dense.project(signal), rtol=TOL)
+        assert_allclose(basis(coeffs), dense(coeffs), rtol=TOL)
+        assert_allclose(basis.T(signal), dense.T(signal), rtol=TOL)
 
     def test_expand_project_adjoint(self) -> None:
         basis, _, _ = _segmented(3, 4, 50, 620)
@@ -238,7 +238,7 @@ class TestSegmentedBasis:
         basis, segment, _ = _segmented(n_seg, k, n_points, 630)
         coeffs = jr.normal(jr.key(631), (n_seg, k))
         bumped = coeffs.at[0].add(1.0)
-        diff = basis.expand(bumped) - basis.expand(coeffs)
+        diff = basis(bumped) - basis(coeffs)
         assert_allclose(diff[segment != 0], 0.0, atol=TOL)
         assert jnp.max(jnp.abs(diff[segment == 0])) > 0.0
 
@@ -248,24 +248,14 @@ class TestSegmentedBasis:
         n_dets, n_points = 5, 50
         basis, _, _ = _segmented(3, 4, n_points, 640)
         signals = jr.normal(jr.key(642), (n_dets, n_points))
-        expected = jnp.stack([basis.project(signal) for signal in signals])
+        expected = jnp.stack([basis.T(signal) for signal in signals])
         assert_allclose(_wrap(basis, n_dets).T(signals)['t'], expected, rtol=TOL)
-
-    def test_gram_blocks_match_the_dense_gram(self) -> None:
-        # each segment's block of Bᵀ diag(w) B; blocks of different segments are zero
-        n_seg, k, n_points = 3, 4, 50
-        basis, _, _ = _segmented(n_seg, k, n_points, 660)
-        w = jr.uniform(jr.key(661), (n_points,), minval=0.5, maxval=2.0)
-        b = basis.as_matrix()  # (samp, seg*k)
-        dense = (b.T @ (w[:, None] * b)).reshape(n_seg, k, n_seg, k)
-        expected = jnp.stack([dense[j, :, j, :] for j in range(n_seg)])[:, None]
-        assert_allclose(basis.gram(w), expected, rtol=TOL)
 
     def test_expands_every_detector_as_it_expands_each(self) -> None:
         n_dets, n_points = 5, 50
         basis, _, _ = _segmented(3, 4, n_points, 650)
         coeffs = jr.normal(jr.key(651), (n_dets, *basis.shape))
-        expected = jnp.stack([basis.expand(c) for c in coeffs])
+        expected = jnp.stack([basis(c) for c in coeffs])
         assert_allclose(_wrap(basis, n_dets)({'t': coeffs}), expected, rtol=TOL)
 
 
@@ -294,8 +284,8 @@ class TestOffsetBasis:
         signal = jr.normal(jr.key(671), (n_points,))
         w = jr.uniform(jr.key(672), (n_points,), minval=0.5, maxval=2.0)
         assert basis.shape == (n_points // tau,)
-        assert_allclose(basis.expand(coeffs), segmented.expand(coeffs[:, None]), rtol=TOL)
-        assert_allclose(basis.project(signal), segmented.project(signal).ravel(), rtol=TOL)
+        assert_allclose(basis(coeffs), segmented(coeffs[:, None]), rtol=TOL)
+        assert_allclose(basis.T(signal), segmented.T(signal).ravel(), rtol=TOL)
         assert_allclose(basis.gram(w), segmented.gram(w), rtol=TOL)
         assert_allclose(basis.support().as_matrix(), basis.as_matrix(), rtol=TOL, atol=TOL)
         assert_allclose(basis.as_matrix(), segmented.as_matrix(), rtol=TOL, atol=TOL)
@@ -312,8 +302,8 @@ class TestOffsetBasis:
         coeffs = jr.normal(jr.key(690), (n_dets, *basis.shape))
         signals = jr.normal(jr.key(691), (n_dets, n_points))
         op = _wrap(basis, n_dets)
-        assert_allclose(op({'t': coeffs}), jnp.stack([basis.expand(c) for c in coeffs]), rtol=TOL)
-        expected = jnp.stack([basis.project(signal) for signal in signals])
+        assert_allclose(op({'t': coeffs}), jnp.stack([basis(c) for c in coeffs]), rtol=TOL)
+        expected = jnp.stack([basis.T(signal) for signal in signals])
         assert_allclose(op.T(signals)['t'], expected, rtol=TOL)
 
 
@@ -327,7 +317,7 @@ def _windowed(n_blocks: int, n_window: int, k: int, n_points: int, seed: int):
     offset = jnp.sort(jr.randint(jr.key(seed), (n_points,), 0, n_blocks - n_window + 1))
     block_weights = jr.normal(jr.key(seed + 1), (n_window, n_points))
     sub_values = jr.normal(jr.key(seed + 2), (k, n_points))
-    basis = WindowedBasis(offset.astype(jnp.int32), block_weights, sub_values, n_blocks)
+    basis = WindowedBasis(offset.astype(jnp.int32), block_weights.T, sub_values, n_blocks)
     return basis, offset, block_weights, sub_values
 
 
@@ -356,8 +346,8 @@ class TestWindowedBasis:
         dense = TensorBasis(_windowed_dense_values(offset, bw, sv, n_blocks))
         coeffs = jr.normal(jr.key(811), (n_blocks, k))
         signal = jr.normal(jr.key(812), (n_points,))
-        assert_allclose(basis.expand(coeffs), dense.expand(coeffs), rtol=TOL)
-        assert_allclose(basis.project(signal), dense.project(signal), rtol=TOL)
+        assert_allclose(basis(coeffs), dense(coeffs), rtol=TOL)
+        assert_allclose(basis.T(signal), dense.T(signal), rtol=TOL)
 
     def test_reduces_to_segmented_when_window_is_one(self) -> None:
         # O=1 with unit weights is exactly SegmentedBasis (offset == segment id).
@@ -367,14 +357,14 @@ class TestWindowedBasis:
         segmented = SegmentedBasis(segment.astype(jnp.int32), values, n_seg)
         windowed = WindowedBasis(
             segment.astype(jnp.int32),
-            jnp.ones((1, n_points), values.dtype),
+            jnp.ones((n_points, 1), values.dtype),
             values,
             n_seg,
         )
         coeffs = jr.normal(jr.key(822), (n_seg, k))
         signal = jr.normal(jr.key(823), (n_points,))
-        assert_allclose(windowed.expand(coeffs), segmented.expand(coeffs), rtol=TOL)
-        assert_allclose(windowed.project(signal), segmented.project(signal), rtol=TOL)
+        assert_allclose(windowed(coeffs), segmented(coeffs), rtol=TOL)
+        assert_allclose(windowed.T(signal), segmented.T(signal), rtol=TOL)
 
     @pytest.mark.parametrize(('n_window', 'k'), [(4, 1), (4, 3), (1, 5)])
     def test_expand_project_adjoint(self, n_window: int, k: int) -> None:
@@ -390,7 +380,7 @@ class TestWindowedBasis:
         coeffs = jr.normal(jr.key(851), (n_blocks, k))
         target = 2
         bumped = coeffs.at[target].add(1.0)
-        diff = basis.expand(bumped) - basis.expand(coeffs)
+        diff = basis(bumped) - basis(coeffs)
         covers = (offset <= target) & (target < offset + n_window)
         assert_allclose(diff[~covers], 0.0, atol=TOL)
 
@@ -399,7 +389,7 @@ class TestWindowedBasis:
         n_dets, n_points = 5, 50
         basis, *_ = _windowed(6, 4, 3, n_points, 860)
         signals = jr.normal(jr.key(861), (n_dets, n_points))
-        expected = jnp.stack([basis.project(signal) for signal in signals])
+        expected = jnp.stack([basis.T(signal) for signal in signals])
         assert_allclose(_wrap(basis, n_dets).T(signals)['t'], expected, rtol=TOL)
 
 
@@ -441,7 +431,7 @@ def _batched_and_singles(
         n_blocks, n_window = 6, 4
         offset = jr.randint(k[0], (*batch_shape, n_points), 0, n_blocks - n_window + 1)
         offset = jnp.sort(offset, axis=-1).astype(jnp.int32)
-        weights = jr.normal(k[1], (*batch_shape, n_window, n_points))
+        weights = jr.normal(k[1], (*batch_shape, n_points, n_window))
         sub = jr.normal(k[2], (*batch_shape, 2, n_points))
         singles = [WindowedBasis(o, w, v, n_blocks) for o, w, v in split(offset, weights, sub)]
         return WindowedBasis(offset, weights, sub, n_blocks, batch_shape=batch_shape), singles
@@ -484,8 +474,8 @@ class TestBatchedBasis:
         signal = jr.normal(jr.key(912), basis.out_structure.shape)
         flat_amps = amps.reshape(-1, *basis.shape)
         flat_signal = signal.reshape(-1, basis.n_points)
-        expanded = [b.expand(a) for b, a in zip(singles, flat_amps, strict=True)]
-        projected = [b.project(s) for b, s in zip(singles, flat_signal, strict=True)]
+        expanded = [b(a) for b, a in zip(singles, flat_amps, strict=True)]
+        projected = [b.T(s) for b, s in zip(singles, flat_signal, strict=True)]
         assert_allclose(basis(amps), jnp.stack(expanded).reshape(signal.shape), rtol=TOL)
         assert_allclose(basis.T(signal), jnp.stack(projected).reshape(amps.shape), rtol=TOL)
         assert _adjoint_residual(basis, amps, signal) < TOL
@@ -495,20 +485,15 @@ class TestBatchedBasis:
         # shared amplitudes broadcast over the bases; extra leading axes over everything
         basis, singles = _batched_and_singles(flavour, (3,), 920)
         amps = jr.normal(jr.key(921), (2, 1, *basis.shape))
-        expected = jnp.stack([jnp.stack([b.expand(a[0]) for b in singles]) for a in amps])
-        assert_allclose(basis.expand(amps), expected, rtol=TOL)
+        expected = jnp.stack([jnp.stack([b(a[0]) for b in singles]) for a in amps])
+        assert_allclose(basis(amps), expected, rtol=TOL)
 
     @pytest.mark.parametrize('flavour', FLAVOURS)
-    def test_structured_views_are_each_basis_own(self, flavour: str) -> None:
+    def test_grams_are_each_basis_own(self, flavour: str) -> None:
         basis, singles = _batched_and_singles(flavour, (3,), 930)
         weights = jr.uniform(jr.key(931), (3, basis.n_points), minval=0.5, maxval=2.0)
         expected = jnp.stack([b.gram(w) for b, w in zip(singles, weights, strict=True)])
         assert_allclose(basis.gram(weights), expected, rtol=TOL)
-        view = basis.support()
-        assert view.n_blocks == singles[0].support().n_blocks
-        for i, single in enumerate(singles):
-            assert_allclose(view.values[i], single.support().values, rtol=TOL)
-            assert_array_equal(view.blocks[i], single.support().blocks)
 
     def test_rejects_arrays_without_the_batch_axes(self) -> None:
         with pytest.raises(ValueError, match=r'batch_shape=\(2,\) must lead every array'):
@@ -541,17 +526,19 @@ class TestStructuredViews:
         expected = matrix.T @ (weights[:, None] * matrix)
         assert_allclose(basis.gram(weights)[0, 0], expected, rtol=TOL, atol=TOL)
 
-    def test_windowed_gram_bands_match_the_dense_gram(self) -> None:
-        # overlapping windows make the Gram block-banded of half-width O-1; the one-pass banded
-        # build must match the dense Bᵀ diag(w) B block for block within the band.
-        n_blocks, n_window, k, n_points = 6, 3, 2, 40
-        basis, *_ = _windowed(n_blocks, n_window, k, n_points, 1110)
-        weights = jr.uniform(jr.key(1111), (n_points,), minval=0.5, maxval=2.0)
+    @pytest.mark.parametrize('flavour', FLAVOURS)
+    def test_gram_bands_match_the_dense_gram(self, flavour: str) -> None:
+        # the banded build must match the dense Bᵀ diag(w) B block for block within the band,
+        # whether a flavour takes the default from its support view or overrides it
+        _, singles = _batched_and_singles(flavour, (1,), 1110)
+        basis = singles[0]
+        weights = jr.uniform(jr.key(1111), (basis.n_points,), minval=0.5, maxval=2.0)
 
-        bands = basis.gram(weights)  # (n_blocks, n_window, k, k), upper band
+        bands = basis.gram(weights)  # (n_blocks, w1, k, k), upper band
+        n_blocks, w1, k, _ = bands.shape
         matrix = basis.as_matrix()  # (samp, n_blocks * k), columns ordered (block, sub)
         dense = (matrix.T @ (weights[:, None] * matrix)).reshape(n_blocks, k, n_blocks, k)
         for j in range(n_blocks):
-            for d in range(n_window):
+            for d in range(w1):
                 if j + d < n_blocks:
                     assert_allclose(bands[j, d], dense[j, :, j + d, :], rtol=TOL, atol=TOL)

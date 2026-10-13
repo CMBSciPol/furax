@@ -18,18 +18,18 @@ def _seg(n):
 
 
 def _expand(basis, a):
-    """Per-detector reference: broadcast a shared basis's expand over the detector axis."""
-    return jax.vmap(basis.expand)(a)
+    """Per-detector reference: map a shared basis over the detector axis."""
+    return jax.vmap(basis)(a)
 
 
 def _project(basis, s):
-    """Per-detector reference: broadcast a shared basis's project over the detector axis."""
-    return jax.vmap(basis.project)(s)
+    """Per-detector reference: map a shared basis's transpose over the detector axis."""
+    return jax.vmap(basis.T)(s)
 
 
 def test_template_operator_forward():
-    # mv/transpose == the sum / per-template split of the equivalent per-detector
-    # expand/project.
+    # mv/transpose == the sum / per-template split of the equivalent per-detector bases and
+    # transposes.
     k = jr.split(jr.key(0), 4)
     b1 = TensorBasis(jr.normal(k[0], (3, N_SAMPS)))
     b2 = SegmentedBasis(_seg(4), jr.normal(k[1], (2, N_SAMPS)), 4)
@@ -62,7 +62,7 @@ def test_template_operator_expands_dense_templates_together():
         name: jr.normal(jr.fold_in(k[6], i), s.shape)
         for i, (name, s) in enumerate(T.in_structure.items())
     }
-    ref = sum(b.expand(amps[n]) for n, b in bases.items())
+    ref = sum(b(amps[n]) for n, b in bases.items())
     assert_allclose(T(amps), ref, rtol=1e-12, atol=1e-12)
 
 
@@ -179,9 +179,9 @@ def test_stokes_template_operator_leg_group_acts_as_one_basis_per_leg():
     jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-12), grouped.T(tod), per_leg.T(tod))
 
     weight = IdentityOperator(in_structure=per_leg.out_structure)
-    expected = gram_inverse(per_leg, weight)(amps)
+    expected = gram_inverse(per_leg, weight)[0](amps)
     jax.tree.map(
         lambda a, b: assert_allclose(a, b, rtol=1e-10),
-        gram_inverse(grouped, weight)(amps),
+        gram_inverse(grouped, weight)[0](amps),
         expected,
     )

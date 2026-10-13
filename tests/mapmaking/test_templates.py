@@ -57,8 +57,8 @@ TOL = 1e-12
 
 def _adjoint_residual(basis, coeffs: Array, signal: Array) -> float:
     """|<expand(coeffs), signal> - <coeffs, project(signal)>|."""
-    lhs = jnp.vdot(basis.expand(coeffs), signal)
-    rhs = jnp.vdot(coeffs, basis.project(signal))
+    lhs = jnp.vdot(basis(coeffs), signal)
+    rhs = jnp.vdot(coeffs, basis.T(signal))
     return float(jnp.abs(lhs - rhs))
 
 
@@ -469,7 +469,7 @@ class TestSplineHWPSynchronousTemplate:
         K = n_knots + 2
         a = jr.normal(jr.key(1010), (K, 2))  # WindowedBasis amplitudes a[j] = (sin amp, cos amp)
         # dense uses the same interleaved order [sin_0, cos_0, sin_1, cos_1, ...]
-        assert_allclose(basis.expand(a), dense.expand(a.reshape(-1)), rtol=TOL)
+        assert_allclose(basis(a), dense(a.reshape(-1)), rtol=TOL)
 
     def test_adjoint(self) -> None:
         n_samps, n_knots = 100, 3

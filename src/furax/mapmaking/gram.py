@@ -61,15 +61,14 @@ from furax import AbstractLinearOperator, DiagonalOperator, symmetric
 from furax.core import BlockDiagonalOperator
 from furax.linalg import BandedCholeskyOperator, BorderedBandedCholeskyOperator
 
-from .bases import Basis, OffsetBasis, _BasisColumns
+from .bases import Basis, OffsetBasis, WindowedBasis
 from .templates import (
     AbstractTemplateOperator,
     StokesTemplateOperator,
-    is_basis,
+    _is_basis,
 )
 
 __all__ = [
-    'cross_gram',
     'gram_inverse',
 ]
 
@@ -81,8 +80,8 @@ def gram_inverse(
     *,
     pomme_tau: int | None = None,
     batch_size: int = 8,
-) -> AbstractLinearOperator:
-    """Inverse Gram matrix `(Tᵀ W T)⁻¹` for template operator `T` and weight `W`.
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
+    """Inverse Gram matrix `(Tᵀ W T)⁻¹` for template operator `T` and weight `W`, and its ridge.
 
     `T` maps amplitudes to TOD, per detector. `W` is *assumed* diagonal, in both detector and
     sample space, and its diagonal is read off by applying it to a vector of ones: a weight that
@@ -98,6 +97,11 @@ def gram_inverse(
     length, and the inverse of `Tᵀ W F T` is returned instead (see the module
     docstring). `W` itself stays the diagonal weight.
 
+    The ridge is returned alongside the inverse because a system built from the Gram itself, not
+    from its factor, must add the same ridge to stay consistent with it. Where the Gram is
+    singular, as under Pomme with a constant template column, that ridge is also what makes the
+    system well posed.
+
     Args:
         operator: The template operator `T`.
         weight: The diagonal weights `W`.
@@ -106,35 +110,11 @@ def gram_inverse(
         batch_size: Detector batch size, bounding the transient memory of the Gram assembly.
 
     Returns:
-        The per-detector inverse Gram operator.
+        The per-detector inverse Gram operator, and the ridge added to the Gram before factoring
+        it, as a diagonal operator on the amplitudes; `None` when `regularization` is 0.
 
     Raises:
         ValueError: If `pomme_tau` is given for a Stokes TOD rather than a single stream.
-    """
-    inverse, _ = _gram_inverse_and_ridge(
-        operator,
-        weight,
-        regularization,
-        pomme_tau=pomme_tau,
-        batch_size=batch_size,
-    )
-    return inverse
-
-
-def _gram_inverse_and_ridge(
-    operator: AbstractTemplateOperator,
-    weight: AbstractLinearOperator,
-    regularization: float = 0.0,
-    *,
-    pomme_tau: int | None = None,
-    batch_size: int = 8,
-) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
-    """[`gram_inverse`][], paired with the ridge added to the Gram before factoring it.
-
-    The explicit normal system is built from the Gram itself, not from its factor, so it must add
-    the same ridge to stay consistent with the preconditioner. Where the Gram is singular, as under
-    Pomme with a constant template column, that ridge is also what makes the system well posed.
-    `None` when `regularization` is 0.
     """
     is_stokes = isinstance(operator, StokesTemplateOperator)
     # Pomme acts on the modulated TOD, which demodulation splits into one stream per leg.
@@ -171,7 +151,9 @@ def _gram_inverse_and_ridge(
     return inverse, _ridge_operator(ridges, operator.in_structure)
 
 
-def cross_gram(a: Basis, b: Basis, weights: Float[Array, ' samp']) -> Float[Array, 'a_size b_size']:
+def _cross_gram(
+    a: Basis, b: Basis, weights: Float[Array, ' samp']
+) -> Float[Array, 'a_size b_size']:
     """The weighted cross Gram `B_aᵀ diag(weights) B_b`, as one `(n_a·k_a, n_b·k_b)` block.
 
     `a is b` recovers the self-Gram, though [`Basis.gram`][] is cheaper for a single template,
@@ -180,7 +162,7 @@ def cross_gram(a: Basis, b: Basis, weights: Float[Array, ' samp']) -> Float[Arra
     ca, cb = a.support(), b.support()
     ka, kb = ca.values.shape[0], cb.values.shape[0]
     if ka < kb:  # step through the smaller side's sub-basis functions (below), keep the larger
-        return cross_gram(b, a, weights).T
+        return _cross_gram(b, a, weights).T
     vwa = (ca.values * weights[None, :]).T  # (samp, k_a)
     if ca.blocks.shape[1] == cb.blocks.shape[1] == 1 and ca.n_blocks == cb.n_blocks == 1:
         # both global: a plain matrix product, with no per-sample products at all
@@ -276,7 +258,7 @@ def _stream_gram_inverse(
         return _bordered_gram_inverse(stream, core, regularization, batch_size)
 
     def dense(bases: dict[str, Basis], weights: Array) -> Array:
-        ordered: list[Basis] = jax.tree.leaves(bases, is_leaf=is_basis)
+        ordered: list[Basis] = jax.tree.leaves(bases, is_leaf=_is_basis)
         return _dense_gram(ordered, weights, _pomme_sums(ordered, weights, pomme))
 
     blocks = _map_detectors(dense, stream, batch_size=batch_size)
@@ -375,7 +357,7 @@ def _pomme_local_gram(
 
 
 def _pomme_core_sums(
-    pomme: OffsetBasis, view: _BasisColumns, weights: Float[Array, ' samp'], w1: int
+    pomme: OffsetBasis, view: WindowedBasis, weights: Float[Array, ' samp'], w1: int
 ) -> _PommeCoreSums:
     """`C = Zᵀ W B` in the band layout, and `D⁻¹`.
 
@@ -450,7 +432,7 @@ def _dense_gram(
         rows = slice(offsets[i], offsets[i + 1])
         for j in range(i, len(bases)):
             cols = slice(offsets[j], offsets[j + 1])
-            cross = cross_gram(a, bases[j], weights)
+            cross = _cross_gram(a, bases[j], weights)
             if sums is not None:
                 inverse_counts, per_basis = sums
                 cross = cross - per_basis[i].T @ (inverse_counts[:, None] * per_basis[j])
@@ -477,12 +459,12 @@ def _interval_sums(
 ) -> Float[Array, 'n_int k']:
     """`C = Zᵀ W B` for one basis: its weighted columns summed over each interval."""
     if basis._n_blocks > 1:
-        return cross_gram(pomme, basis, weights)
+        return _cross_gram(pomme, basis, weights)
     # a global basis: its few columns span every sample, so weighting them and projecting each
     # onto the regular intervals avoids scattering a `(samp, k)` copy by interval
     view = basis.support()
     columns = view.values * (view.taps.sum(axis=1) * weights)[None, :]
-    return pomme.project(columns).T
+    return pomme.T(columns).T  # (n_int, k)
 
 
 def _inverse_counts(pomme: OffsetBasis, weights: Float[Array, ' samp']) -> Float[Array, ' n_int']:
@@ -505,7 +487,7 @@ def _bordered_gram_inverse(
     def build(bases: dict[str, Basis], weights: Array) -> tuple[Array, Array, Array]:
         core = bases[core_name]
         border_bases = [bases[name] for name in border_names]
-        border = [cross_gram(core, basis, weights) for basis in border_bases]
+        border = [_cross_gram(core, basis, weights) for basis in border_bases]
         if pomme is None:
             corner = _dense_gram(border_bases, weights)
             return core.gram(weights), jnp.concatenate(border, axis=1), corner

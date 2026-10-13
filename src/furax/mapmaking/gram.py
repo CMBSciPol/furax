@@ -57,7 +57,8 @@ from jax import Array
 from jaxtyping import Float, Int, PyTree
 
 import furax.tree
-from furax import AbstractLinearOperator, IdentityOperator, symmetric
+from furax import AbstractLinearOperator, DiagonalOperator, IdentityOperator, symmetric
+from furax.core import BlockDiagonalOperator
 from furax.linalg import BandedCholeskyOperator, BorderedBandedCholeskyOperator
 
 from .pomme import PommeProjectionOperator
@@ -120,6 +121,33 @@ def gram_inverse(
         NotImplementedError: If the structured path does not apply and `allow_probe` is `False`.
         ValueError: If `pomme_tau` is given for a Stokes TOD rather than a single stream.
     """
+    inverse, _ = _gram_inverse_and_ridge(
+        operator,
+        weight,
+        regularization,
+        pomme_tau=pomme_tau,
+        allow_probe=allow_probe,
+        batch_size=batch_size,
+    )
+    return inverse
+
+
+def _gram_inverse_and_ridge(
+    operator: AbstractTemplateOperator,
+    weight: AbstractLinearOperator,
+    regularization: float = 0.0,
+    *,
+    pomme_tau: int | None = None,
+    allow_probe: bool = False,
+    batch_size: int = 8,
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
+    """[`gram_inverse`][], paired with the ridge added to the Gram before factoring it.
+
+    The explicit normal system is built from the Gram itself, not from its factor, so it must add
+    the same ridge to stay consistent with the preconditioner. Where the Gram is singular, as under
+    Pomme with a constant template column, that ridge is also what makes the system well posed.
+    `None` when `regularization` is 0.
+    """
     is_stokes = isinstance(operator, StokesTemplateOperator)
     # Pomme acts on the modulated TOD, which demodulation splits into one stream per leg.
     if pomme_tau is not None and is_stokes:
@@ -130,21 +158,31 @@ def gram_inverse(
     # if we wanted to guard against a non-diagonal W, one extra application on a random
     # vector `x` and a comparison against `diag * x` would catch it with very high probability
 
+    ridges: PyTree[Array]
     if not is_stokes:  # a single stream
         pomme = None if pomme_tau is None else OffsetBasis(pomme_tau, diag.shape[-1], diag.dtype)
         stream = _Stream(operator.bases, diag, operator.in_structure, pomme)
-        return _stream_gram_inverse(stream, regularization, batch_size, allow_probe)
+        inverse, ridges = _stream_gram_inverse(stream, regularization, batch_size, allow_probe)
+    else:
+        # Two bases on different legs never share a weighted sample, so each leg is a stream of
+        # its own, with one block over the templates it carries rather than one over every leg.
+        blocks = {}
+        ridges = {name: {} for name in operator.bases_by_leg}
+        for leg in operator.legs:
+            bases = {name: on[leg] for name, on in operator.bases_by_leg.items() if leg in on}
+            if bases:
+                structure = {name: operator.in_structure[name][leg] for name in bases}
+                stream = _Stream(bases, getattr(diag, leg), structure)
+                blocks[leg], leg_ridges = _stream_gram_inverse(
+                    stream, regularization, batch_size, allow_probe
+                )
+                for name, ridge in leg_ridges.items():
+                    ridges[name][leg] = ridge
+        inverse = _PerLegOperator(blocks, in_structure=operator.in_structure)
 
-    # Two bases on different legs never share a weighted sample, so each leg is a stream of its
-    # own, with one block over the templates it carries rather than one block over every leg.
-    blocks = {}
-    for leg in operator.legs:
-        bases = {name: on[leg] for name, on in operator.bases_by_leg.items() if leg in on}
-        if bases:
-            structure = {name: operator.in_structure[name][leg] for name in bases}
-            stream = _Stream(bases, getattr(diag, leg), structure)
-            blocks[leg] = _stream_gram_inverse(stream, regularization, batch_size, allow_probe)
-    return _PerLegOperator(blocks, in_structure=operator.in_structure)
+    if not regularization:
+        return inverse, None
+    return inverse, _ridge_operator(ridges, operator.in_structure)
 
 
 def cross_gram(a: Basis, b: Basis, weights: Float[Array, ' samp']) -> Float[Array, 'a_size b_size']:
@@ -192,11 +230,6 @@ def _unit_on_zero_rows(matrix: Float[Array, '*batch k k']) -> Float[Array, '*bat
     return matrix + unseen[..., None] * jnp.eye(matrix.shape[-1], dtype=matrix.dtype)
 
 
-def _unit_on_zero_bands(bands: Float[Array, '*batch n w1 k k']) -> Float[Array, '*batch n w1 k k']:
-    """`_unit_on_zero_rows` on the diagonal blocks of a banded Gram (`d = 0`)."""
-    return bands.at[..., 0, :, :].set(_unit_on_zero_rows(bands[..., 0, :, :]))
-
-
 class _Stream(NamedTuple):
     """The templates on one stream (the TOD, or one Stokes leg of it) and its diagonal weights."""
 
@@ -208,13 +241,39 @@ class _Stream(NamedTuple):
     """The Pomme template to eliminate from the Gram, when Pomme is enabled."""
 
 
+def _ridge_operator(
+    ridges: PyTree[Array], structure: PyTree[jax.ShapeDtypeStruct]
+) -> AbstractLinearOperator:
+    """The ridge added to the Gram before factoring, as a diagonal operator on the amplitudes.
+
+    `ridges` matches `structure`, each leaf holding one value per amplitude, in any shape.
+    """
+    diagonals = jax.tree.map(
+        lambda ridge, s: DiagonalOperator(ridge.reshape(s.shape), in_structure=s),
+        ridges,
+        structure,
+    )
+    return BlockDiagonalOperator(diagonals)
+
+
+def _per_detector(
+    ridge: Float[Array, ' det'], structure: PyTree[jax.ShapeDtypeStruct]
+) -> PyTree[Array]:
+    """A ridge of one value per detector, spread over every amplitude of that detector."""
+    return jax.tree.map(
+        lambda s: jnp.broadcast_to(ridge.reshape(-1, *(1,) * (len(s.shape) - 1)), s.shape),
+        structure,
+    )
+
+
 def _stream_gram_inverse(
     stream: _Stream, regularization: float, batch_size: int, allow_probe: bool
-) -> AbstractLinearOperator:
+) -> tuple[AbstractLinearOperator, PyTree[Array]]:
     """Inverse of the Gram of every template on one stream, one block per detector.
 
     The bases' structure is used when every one of them exposes it; otherwise the Gram is probed,
-    if allowed.
+    if allowed. Paired with the ridge added before factoring, on each amplitude of
+    `stream.in_structure` (zero without regularization).
     """
     try:
         return _structured_gram_inverse(stream, regularization, batch_size)
@@ -227,7 +286,7 @@ def _stream_gram_inverse(
 
 def _structured_gram_inverse(
     stream: _Stream, regularization: float, batch_size: int
-) -> AbstractLinearOperator:
+) -> tuple[AbstractLinearOperator, PyTree[Array]]:
     """The Gram inverse built from the bases' structure.
 
     A single template keeps the band structure of its own Gram. Several are coupled through the
@@ -239,10 +298,10 @@ def _structured_gram_inverse(
     """
     bases, weights, pomme = stream.bases, stream.weights, stream.pomme
     if len(bases) == 1:
-        (basis,) = bases.values()
+        ((name, basis),) = bases.items()
         bands = jax.lax.map(lambda w: _banded_gram(basis, pomme, w), weights, batch_size=batch_size)
-        bands = _unit_on_zero_bands(bands)
-        return BandedCholeskyOperator.from_bands(bands, stream.in_structure, regularization)
+        bands, ridge = _regularize_bands(bands, regularization)
+        return BandedCholeskyOperator.from_bands(bands, stream.in_structure), {name: ridge}
 
     # a basis split into several blocks of time is time-local; one block sees every sample
     local = [name for name, basis in bases.items() if basis._n_blocks > 1]
@@ -256,8 +315,35 @@ def _structured_gram_inverse(
         weights,
         batch_size=batch_size,
     )
-    blocks = _unit_on_zero_rows(blocks)
-    return BandedCholeskyOperator.from_dense(blocks, stream.in_structure, regularization)
+    blocks, ridge = _regularize_dense(blocks, regularization)
+    inverse = BandedCholeskyOperator.from_dense(blocks, stream.in_structure)
+    return inverse, _per_detector(ridge, stream.in_structure)
+
+
+def _regularize_bands(
+    bands: Float[Array, '*batch n w1 k k'], regularization: float
+) -> tuple[Float[Array, '*batch n w1 k k'], Float[Array, '*batch n k']]:
+    """Make a banded Gram factorable: a unit diagonal on unseen amplitudes, then the ridge.
+
+    Each diagonal block takes `regularization` times its mean diagonal, so that the ridge is in the
+    units of the Gram. It is scaled from the Gram as assembled, before the unit placeholders go in,
+    so that it depends on the data alone. The ridge is returned for the explicit normal system to
+    add the same one.
+    """
+    diagonal = bands[..., 0, :, :]
+    scale = jnp.mean(jnp.diagonal(diagonal, axis1=-2, axis2=-1), axis=-1, keepdims=True)
+    ridge = jnp.broadcast_to(regularization * scale, diagonal.shape[:-1])
+    eye = jnp.eye(diagonal.shape[-1], dtype=bands.dtype)
+    diagonal = _unit_on_zero_rows(diagonal) + ridge[..., None] * eye
+    return bands.at[..., 0, :, :].set(diagonal), ridge
+
+
+def _regularize_dense(
+    blocks: Float[Array, '*batch k k'], regularization: float
+) -> tuple[Float[Array, '*batch k k'], Float[Array, ' *batch']]:
+    """`_regularize_bands` for dense blocks, whose ridge is one value per block."""
+    bands, ridge = _regularize_bands(blocks[..., None, None, :, :], regularization)
+    return bands[..., 0, 0, :, :], ridge[..., 0, 0]
 
 
 def _banded_gram(
@@ -425,7 +511,7 @@ def _inverse_counts(pomme: OffsetBasis, weights: Float[Array, ' samp']) -> Float
 
 def _bordered_gram_inverse(
     stream: _Stream, core_name: str, regularization: float, batch_size: int
-) -> '_BorderedGramInverse':
+) -> tuple['_BorderedGramInverse', PyTree[Array]]:
     """Inverse Gram of one time-local template bordered by the others, one per detector.
 
     The core template's own Gram is block-banded; the others couple to it through a dense border
@@ -452,9 +538,17 @@ def _bordered_gram_inverse(
         return bands, jnp.concatenate(border, axis=1), corner
 
     bands, border, corner = jax.lax.map(build, stream.weights, batch_size=batch_size)
-    bands, corner = _unit_on_zero_bands(bands), _unit_on_zero_rows(corner)
-    factor = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner, regularization)
-    return _BorderedGramInverse(factor, core_name, border_names, in_structure=stream.in_structure)
+    # the core's diagonal blocks and the corner are ridged separately, each scaled by its own
+    # diagonal
+    bands, core_ridge = _regularize_bands(bands, regularization)
+    corner, corner_ridge = _regularize_dense(corner, regularization)
+
+    structure = stream.in_structure
+    ridges = {core_name: core_ridge}
+    ridges |= {name: _per_detector(corner_ridge, structure[name]) for name in border_names}
+    factor = BorderedBandedCholeskyOperator.from_blocks(bands, border, corner)
+    inverse = _BorderedGramInverse(factor, core_name, border_names, in_structure=structure)
+    return inverse, ridges
 
 
 def _pomme_border_correction(
@@ -519,7 +613,9 @@ class _PerLegOperator(AbstractLinearOperator):
         return out
 
 
-def _probed_gram_inverse(stream: _Stream, regularization: float) -> AbstractLinearOperator:
+def _probed_gram_inverse(
+    stream: _Stream, regularization: float
+) -> tuple[AbstractLinearOperator, PyTree[Array]]:
     """The Gram inverse from `G = Tᵀ W T` applied to one amplitude at a time.
 
     Costs `O(K)` applications for `K` amplitudes, but needs nothing of the bases beyond `T` itself.
@@ -557,5 +653,6 @@ def _probed_gram_inverse(stream: _Stream, regularization: float) -> AbstractLine
 
     columns = jax.lax.map(probe, jnp.arange(n_amps))  # (col, n_dets, row)
     blocks = jnp.moveaxis(columns, 0, -1)  # (n_dets, row, col)
-    blocks = _unit_on_zero_rows(blocks)
-    return BandedCholeskyOperator.from_dense(blocks, in_structure, regularization)
+    blocks, ridge = _regularize_dense(blocks, regularization)
+    inverse = BandedCholeskyOperator.from_dense(blocks, in_structure)
+    return inverse, _per_detector(ridge, in_structure)

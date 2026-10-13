@@ -4,9 +4,14 @@ import jax.random as jr
 import pytest
 from numpy.testing import assert_allclose
 
-from furax import DiagonalOperator
+from furax import DiagonalOperator, tree
 from furax.linalg import BandedCholeskyOperator
-from furax.mapmaking.gram import _BorderedGramInverse, cross_gram, gram_inverse
+from furax.mapmaking.gram import (
+    _BorderedGramInverse,
+    _gram_inverse_and_ridge,
+    cross_gram,
+    gram_inverse,
+)
 from furax.mapmaking.pomme import PommeProjectionOperator
 from furax.mapmaking.templates import (
     KroneckerBasis,
@@ -481,3 +486,87 @@ def test_pomme_gram_accepts_a_short_block_reached_only_by_masked_samples():
         observed = jnp.linalg.solve(fb.T @ (diag[d][:, None] * fb), amps[d, jnp.array([0, 2]), 0])
         assert_allclose(actual[d, jnp.array([0, 2]), 0], observed, rtol=1e-10)
     assert_allclose(actual[:, 1], amps[:, 1], rtol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Ridge regularization
+# ---------------------------------------------------------------------------
+
+REGULARIZATION = 1e-3
+
+
+def _ridge_bases(kind, key):
+    """One set of bases per structural path of the Gram assembly."""
+    k1, k2 = jr.split(key)
+    segment = jnp.repeat(jnp.arange(4), N_SAMPS // 4).astype(jnp.int32)
+    segmented = SegmentedBasis(segment, jr.normal(k1, (2, N_SAMPS)), 4)
+    if kind == 'banded':
+        return {'p': segmented}
+    if kind == 'dense':
+        return {'t': TensorBasis(jr.normal(k1, (3, N_SAMPS)))}
+    if kind == 'coupled':  # two global bases share one dense block
+        return {
+            't': TensorBasis(jr.normal(k1, (3, N_SAMPS))),
+            'h': TensorBasis(jr.normal(k2, (2, N_SAMPS))),
+        }
+    if kind == 'bordered':  # a time-local core bordered by a global template
+        return {'p': segmented, 't': TensorBasis(jr.normal(k2, (3, N_SAMPS)))}
+    assert kind == 'probed'  # a per-detector basis has no structured view
+    return {'t': TensorBasis.per_detector_stack(values=jr.normal(k1, (N_DETS, 2, N_SAMPS)))}
+
+
+@pytest.mark.parametrize('kind', ['banded', 'dense', 'coupled', 'bordered', 'probed'])
+def test_gram_ridge_is_the_one_added_before_factoring(kind):
+    # The explicit normal system adds the returned ridge to the Gram it assembles itself, so the
+    # ridge must be exactly the one the inverse was factored from, on every assembly path:
+    # applying the inverse to the ridged Gram must give back the amplitudes.
+    kb, kw, ka = jr.split(jr.key(40), 3)
+    bases = _ridge_bases(kind, kb)
+    T = TemplateOperator(bases, n_dets=N_DETS)
+    W = _weight(kw)
+    inverse, ridge = _gram_inverse_and_ridge(T, W, REGULARIZATION, allow_probe=(kind == 'probed'))
+    assert ridge is not None
+
+    amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
+    gram = T.T(W(T(amps)))  # G a, without any ridge
+    ridged = tree.add(gram, ridge(amps))
+    assert_allclose_tree(inverse(ridged), amps, rtol=1e-8, atol=1e-10)
+
+
+@pytest.mark.parametrize('kind', ['banded', 'dense'])
+def test_gram_ridge_scales_with_the_data_alone(kind):
+    # An amplitude no weighted sample sees gets a unit placeholder on the Gram's diagonal. The
+    # ridge must be scaled from the Gram before the placeholder goes in, otherwise it depends on
+    # that arbitrary 1: scaling the weights must scale the ridge by the same factor.
+    kb, kw = jr.split(jr.key(42))
+    if kind == 'banded':  # one sub-basis function vanishes on segment 2
+        segment = jnp.repeat(jnp.arange(4), N_SAMPS // 4).astype(jnp.int32)
+        values = jr.normal(kb, (2, N_SAMPS)).at[1, segment == 2].set(0.0)
+        basis = SegmentedBasis(segment, values, 4)
+    else:  # one function vanishes everywhere
+        basis = TensorBasis(jr.normal(kb, (3, N_SAMPS)).at[2].set(0.0))
+    T = TemplateOperator({'t': basis}, n_dets=N_DETS)
+    w = jr.uniform(kw, (N_DETS, N_SAMPS), minval=0.5, maxval=2.0)
+    structure = jax.ShapeDtypeStruct(w.shape, w.dtype)
+    ones = tree.ones_like(T.in_structure)
+
+    def ridge_of(weights):
+        W = DiagonalOperator(weights, in_structure=structure)
+        _, ridge = _gram_inverse_and_ridge(T, W, REGULARIZATION)
+        return ridge(ones)['t']
+
+    assert_allclose(ridge_of(1e-3 * w), 1e-3 * ridge_of(w), rtol=1e-12)
+
+
+@pytest.mark.parametrize('kind', ['banded', 'coupled', 'bordered'])
+def test_gram_ridge_is_none_without_regularization(kind):
+    kb, kw = jr.split(jr.key(41))
+    T = TemplateOperator(_ridge_bases(kind, kb), n_dets=N_DETS)
+    inverse, ridge = _gram_inverse_and_ridge(T, _weight(kw), 0.0)
+    assert ridge is None
+    assert inverse is not None
+
+
+def assert_allclose_tree(actual, desired, **kwargs):
+    for a, b in zip(jax.tree.leaves(actual), jax.tree.leaves(desired), strict=True):
+        assert_allclose(a, b, **kwargs)

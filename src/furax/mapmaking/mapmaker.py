@@ -539,6 +539,15 @@ class MultiObservationMapMaker[T]:
             E = BlockDiagonalOperator([S.T, pick])
             terms.append((E.T @ A_joint @ E).reduce())
 
+        # The ridge the Gram inverses were factored with acts on the amplitudes alone, so it is
+        # one term over them all, outside the per-bucket streams over the TOD.
+        ridged = [e.ridge for e in explicit if e.ridge is not None]
+        assert len(ridged) in (0, len(explicit))
+        if ridged:
+            ridges = [layout.diagonal(r) for r, layout in zip(ridged, layouts, strict=True)]
+            amplitudes = BlockSelectOperator(1, in_structure=terms[0].in_structure)
+            terms.append((amplitudes.T @ BlockDiagonalOperator(ridges) @ amplitudes).reduce())
+
         rhs = [S(acc.map_rhs), [bm.amplitude_rhs for bm in acc.buckets]]
         M = BlockDiagonalOperator([M, Ge])
         A = AdditionOperator(terms, sequential=True)

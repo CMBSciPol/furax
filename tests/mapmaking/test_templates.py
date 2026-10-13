@@ -13,6 +13,7 @@ from furax.mapmaking.templates import (
     Basis,
     KroneckerBasis,
     NoStructuredView,
+    OffsetBasis,
     SegmentedBasis,
     TemplateOperator,
     TensorBasis,
@@ -291,6 +292,54 @@ class TestSegmentedBasis:
         coeffs = jr.normal(jr.key(651), (n_dets, *basis.shape))
         expected = jnp.stack([basis.expand(c) for c in coeffs])
         assert_allclose(_wrap(basis, n_dets)({'t': coeffs}), expected, rtol=TOL)
+
+
+# ---------------------------------------------------------------------------
+# OffsetBasis
+# ---------------------------------------------------------------------------
+
+
+def _offset_as_segmented(tau: int, n_points: int) -> SegmentedBasis:
+    """The `SegmentedBasis` an `OffsetBasis` stands for: unit values, the tail in no segment."""
+    n_int = n_points // tau
+    samples = jnp.arange(n_points)
+    segment = jnp.minimum(samples // tau, n_int - 1).astype(jnp.int32)
+    values = (samples < n_int * tau)[None].astype(jnp.float64)
+    return SegmentedBasis(segment, values, n_int)
+
+
+class TestOffsetBasis:
+    @pytest.mark.parametrize('n_points', [12, 14], ids=['no_tail', 'tail'])
+    def test_equivalent_to_segmented_basis(self, n_points: int) -> None:
+        # one constant per interval of tau samples, the tail in none: the regular SegmentedBasis
+        tau = 4
+        basis = OffsetBasis(tau, n_points, jnp.float64)
+        segmented = _offset_as_segmented(tau, n_points)
+        coeffs = jr.normal(jr.key(670), (n_points // tau,))
+        signal = jr.normal(jr.key(671), (n_points,))
+        w = jr.uniform(jr.key(672), (n_points,), minval=0.5, maxval=2.0)
+        assert basis.shape == (n_points // tau,)
+        assert_allclose(basis.expand(coeffs), segmented.expand(coeffs[:, None]), rtol=TOL)
+        assert_allclose(basis.project(signal), segmented.project(signal).ravel(), rtol=TOL)
+        assert_allclose(basis.gram(w), segmented.gram(w), rtol=TOL)
+        assert_allclose(basis.support().as_matrix(), basis.as_matrix(), rtol=TOL, atol=TOL)
+        assert_allclose(basis.as_matrix(), segmented.as_matrix(), rtol=TOL, atol=TOL)
+
+    def test_expand_project_adjoint(self) -> None:
+        basis = OffsetBasis(4, 14, jnp.float64)
+        coeffs = jr.normal(jr.key(680), basis.shape)
+        signal = jr.normal(jr.key(681), (14,))
+        assert _adjoint_residual(basis, coeffs, signal) < TOL
+
+    def test_expands_and_projects_every_detector_as_each(self) -> None:
+        n_dets, n_points = 5, 14
+        basis = OffsetBasis(4, n_points, jnp.float64)
+        coeffs = jr.normal(jr.key(690), (n_dets, *basis.shape))
+        signals = jr.normal(jr.key(691), (n_dets, n_points))
+        op = _wrap(basis, n_dets)
+        assert_allclose(op({'t': coeffs}), jnp.stack([basis.expand(c) for c in coeffs]), rtol=TOL)
+        expected = jnp.stack([basis.project(signal) for signal in signals])
+        assert_allclose(op.T(signals)['t'], expected, rtol=TOL)
 
 
 # ---------------------------------------------------------------------------

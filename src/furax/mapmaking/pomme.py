@@ -2,10 +2,10 @@ r"""Pomme: implicit deprojection of the mean of every short interval of the TOD.
 
 Pomme fits and removes one offset per detector and per interval of `tau` consecutive samples. It
 is a template in the sense of [`furax.mapmaking.templates`][], with the indicator template $Z$
-(one column per detector and interval), but the template matrix is never formed: with a diagonal
-weight $W$ that is constant on each interval, the marginalised weight $W' = W D_Z$ reduces to
-$W F$ with $F = I - Z (Z^\top Z)^{-1} Z^\top$ the plain interval-mean remover,
-[`PommeProjectionOperator`][].
+(one column per detector and interval, an [`OffsetBasis`][furax.mapmaking.templates.OffsetBasis]),
+whose matrix is never formed: with a diagonal weight $W$ that is constant on each interval, the
+marginalised weight $W' = W D_Z$ reduces to $W F$ with $F = I - Z (Z^\top Z)^{-1} Z^\top$ the plain
+interval-mean remover, [`PommeProjectionOperator`][].
 
 The constant-weight requirement is what the mapmaker's mask widening provides: every interval with
 a flagged sample is flagged whole (and so is the partial tail interval), so per-detector white
@@ -16,11 +16,12 @@ the normal equations $P^\top W F P\, m = P^\top W F\, d$ are a valid GLS system.
 from dataclasses import field
 
 import jax
-import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Float, PyTree
 
 from furax import AbstractLinearOperator, square
+
+from .templates import OffsetBasis
 
 __all__ = [
     'PommeProjectionOperator',
@@ -48,12 +49,12 @@ class PommeProjectionOperator(AbstractLinearOperator):
         object.__setattr__(self, 'tau', tau)
         object.__setattr__(self, 'in_structure', in_structure)
 
+    @property
+    def template(self) -> OffsetBasis:
+        """The Pomme template $Z$, shared by every detector."""
+        return OffsetBasis(self.tau, self.in_structure.shape[-1], self.in_structure.dtype)
+
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
-        n_det, n_samp = self.in_structure.shape
-        n_int, n_rem = divmod(n_samp, self.tau)
-        y = x[:, : n_int * self.tau].reshape(n_det, n_int, self.tau)
-        y = y - jnp.mean(y, axis=-1, keepdims=True)
-        y = y.reshape(n_det, n_int * self.tau)
-        if n_rem == 0:
-            return y
-        return jnp.concatenate([y, x[:, -n_rem:]], axis=1)
+        z = self.template
+        # Zᵀ Z = tau on every interval: each interval's mean, spread back over its samples
+        return x - z._expand_detectors(z._project_detectors(x) / self.tau)

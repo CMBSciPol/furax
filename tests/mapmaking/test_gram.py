@@ -20,22 +20,9 @@ N_DETS = 3
 N_SAMPS = 64
 
 
-def _template(key, k):
-    values = jr.normal(key, (k, N_SAMPS))
-    return TemplateOperator({'t': TensorBasis(values)}, n_dets=N_DETS)
-
-
 def _weight(key):
     w = jr.uniform(key, (N_DETS, N_SAMPS), minval=0.5, maxval=2.0)
     return DiagonalOperator(w, in_structure=jax.ShapeDtypeStruct((N_DETS, N_SAMPS), w.dtype))
-
-
-def _segmented_template(key, n_seg, k):
-    # contiguous partition of the samples into n_seg equal segments
-    segment = jnp.repeat(jnp.arange(n_seg), N_SAMPS // n_seg).astype(jnp.int32)
-    values = jr.normal(key, (k, N_SAMPS))
-    basis = SegmentedBasis(segment, values, n_seg)
-    return TemplateOperator({'t': basis}, n_dets=N_DETS)
 
 
 def _windowed_basis(key, n_blocks, k, O):
@@ -96,18 +83,23 @@ def _seg(n_seg):
     return jnp.repeat(jnp.arange(n_seg), N_SAMPS // n_seg).astype(jnp.int32)
 
 
-def _per_det_template(key, k):
-    # per-detector basis (as in T2P) -> no shared structured Gram.
-    basis = TensorBasis.per_detector_stack(values=jr.normal(key, (N_DETS, k, N_SAMPS)))
-    return TemplateOperator({'t': basis}, n_dets=N_DETS)
+def _decimated_basis(key, k, n_samps=N_SAMPS, q=4):
+    # a decimated basis has no structured view: its Gram is probed
+    return TensorBasis(jr.normal(key, (k, -(-n_samps // q))), q=q, n_full=n_samps)
+
+
+def _per_det_basis(key, k, n_samps=N_SAMPS):
+    # one basis per detector, as for T2P
+    return TensorBasis(jr.normal(key, (N_DETS, k, n_samps)), batch_shape=(N_DETS,))
 
 
 @pytest.mark.parametrize('stokes', [None, 'IQU'])
-def test_probed_gram_inverse_inverts_the_gram(stokes):
-    # a per-detector basis takes the probe path; with a Stokes axis it sits on q and u only, each
-    # leg weighted differently
+@pytest.mark.parametrize('make', [_per_det_basis, _decimated_basis], ids=['per_det', 'probed'])
+def test_gram_inverse_inverts_the_gram(make, stokes):
+    # a per-detector basis takes the structured path, a decimated one the probe; with a Stokes
+    # axis the basis sits on q and u only, each leg weighted differently
     kt, kw, ka = jr.split(jr.key(7), 3)
-    basis = TensorBasis.per_detector_stack(values=jr.normal(kt, (N_DETS, 2, N_SAMPS)))
+    basis = make(kt, 2)
     if stokes is None:
         T = TemplateOperator({'t': basis}, n_dets=N_DETS)
         W = _weight(kw)
@@ -118,105 +110,23 @@ def test_probed_gram_inverse_inverts_the_gram(stokes):
 
     amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
     gram = T.T @ W @ T
-    recovered = gram_inverse(T, W, allow_probe=True)(gram(amps))
+    recovered = gram_inverse(T, W, allow_probe=make is _decimated_basis)(gram(amps))
     jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-8, atol=1e-10), recovered, amps)
 
 
-@pytest.mark.parametrize('n_seg,k', [(4, 3), (8, 1)])
-def test_gram_inverse_matches_dense_probe_segmented(n_seg, k):
-    # The structured (block-per-segment) inverse Gram must act identically to the dense
-    # column-probe fallback, which lumps the segment axis into the coupled index.
-    kt, kw, ka = jr.split(jr.key(5), 3)
-    T = _segmented_template(kt, n_seg, k)
-    W = _weight(kw)
-
-    dense = gram_inverse(T, W, allow_probe=True)  # K = n_seg * k probes
-    structured = gram_inverse(T, W)  # segmented + diagonal weight -> fast path taken
-
-    amps = {'t': jr.normal(ka, T.in_structure['t'].shape)}  # (N_DETS, n_seg, k)
-    assert_allclose(structured(amps)['t'], dense(amps)['t'], rtol=1e-5, atol=1e-6)
-
-
-def test_gram_inverse_dense_tensorbasis_matches_and_raises_without_dense_probe():
+def test_gram_inverse_probes_only_when_allowed():
     kt, kw, ka = jr.split(jr.key(6), 3)
     W = _weight(kw)
 
-    # Dense TensorBasis (block_ndim=0, one k×k block per detector) is supported and matches.
-    T = _template(kt, 4)
-    structured = gram_inverse(T, W)
-    amps = {'t': jr.normal(ka, T.in_structure['t'].shape)}
-    assert_allclose(
-        structured(amps)['t'],
-        gram_inverse(T, W, allow_probe=True)(amps)['t'],
-        rtol=1e-5,
-        atol=1e-6,
-    )
-
-    # A per-detector basis has no shared structured Gram: raises by
-    # default (the O(K) probe is never used silently on the implicit path) but works when
-    # allow_probe=True is passed explicitly (the explicit/small-K path).
-    per_det = _per_det_template(kt, 2)
+    # A decimated basis has no structured Gram: raises by default (the O(K) probe is never used
+    # silently on the implicit path) but works when allow_probe=True is passed explicitly (the
+    # explicit/small-K path).
+    decimated = TemplateOperator({'t': _decimated_basis(kt, 2)}, n_dets=N_DETS)
     with pytest.raises(NotImplementedError, match='structured Gram construction not possible'):
-        gram_inverse(per_det, W)
-    probed = gram_inverse(per_det, W, allow_probe=True)
-    amps_pd = {'t': jr.normal(ka, per_det.in_structure['t'].shape)}
+        gram_inverse(decimated, W)
+    probed = gram_inverse(decimated, W, allow_probe=True)
+    amps_pd = {'t': jr.normal(ka, decimated.in_structure['t'].shape)}
     assert jnp.all(jnp.isfinite(probed(amps_pd)['t']))
-
-
-def test_gram_inverse_kronecker_matches_dense_probe():
-    # KroneckerBasis (the azimuth_hwp_synchronous / binned_azimuth_hwp_synchronous templates):
-    # dense Gram over the flattened product index.
-    kf0, kf1, kw, ka = jr.split(jr.key(13), 4)
-    d0, d1 = 3, 4
-    basis = KroneckerBasis((jr.normal(kf0, (d0, N_SAMPS)), jr.normal(kf1, (d1, N_SAMPS))))
-    T = TemplateOperator({'t': basis}, n_dets=N_DETS)
-    W = _weight(kw)
-
-    structured = gram_inverse(T, W)
-    amps = {'t': jr.normal(ka, T.in_structure['t'].shape)}  # (N_DETS, d0, d1)
-    dense = gram_inverse(T, W, allow_probe=True)
-    assert_allclose(structured(amps)['t'], dense(amps)['t'], rtol=1e-4, atol=1e-5)
-
-
-def test_gram_inverse_windowed_matches_dense_probe():
-    # Full banded path as an operator (WindowedBasis.gram -> block-banded Cholesky ->
-    # block-triangular solve) must act like the dense column-probe inverse.
-    ko, kb, ks, kw, ka = jr.split(jr.key(12), 5)
-    n_blocks, k, O = 6, 2, 3
-    offset = jnp.sort(jr.uniform(ko, (N_SAMPS,)) * (n_blocks - O + 1)).astype(jnp.int32)
-    basis = WindowedBasis(
-        offset, jr.normal(kb, (O, N_SAMPS)), jr.normal(ks, (k, N_SAMPS)), n_blocks
-    )
-    T = TemplateOperator({'t': basis}, n_dets=N_DETS)
-    W = _weight(kw)
-
-    structured = gram_inverse(T, W)
-    amps = {'t': jr.normal(ka, T.in_structure['t'].shape)}  # (N_DETS, n_blocks, k)
-    dense = gram_inverse(T, W, allow_probe=True)
-    assert_allclose(structured(amps)['t'], dense(amps)['t'], rtol=1e-4, atol=1e-5)
-
-
-@pytest.mark.parametrize('stokes', [None, 'IQU'])
-def test_coupled_gram_inverse_matches_dense_probe(stokes):
-    # several templates on one stream couple into a joint Gram block; with a Stokes axis each leg
-    # gets its own block over the templates it carries, here all three legs for 'poly' and only q
-    # and u for 'hwp', each leg weighted differently
-    kp, kh, kw, ka = jr.split(jr.key(14), 4)
-    segment = jnp.repeat(jnp.arange(4), N_SAMPS // 4).astype(jnp.int32)
-    poly = SegmentedBasis(segment, jr.normal(kp, (2, N_SAMPS)), 4)
-    hwp = TensorBasis(jr.normal(kh, (3, N_SAMPS)))
-    if stokes is None:
-        T = TemplateOperator({'poly': poly, 'hwp': hwp}, n_dets=N_DETS)
-        W = _weight(kw)
-    else:
-        T = StokesTemplateOperator({'poly': {'iqu': poly}, 'hwp': {'qu': hwp}}, N_DETS, stokes)
-        w = jr.uniform(kw, (3, N_DETS, N_SAMPS), minval=0.5, maxval=2.0)
-        W = DiagonalOperator(w, in_structure=T.out_structure)
-
-    amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
-    structured = gram_inverse(T, W)(amps)
-    dense = gram_inverse(T, W, allow_probe=True)(amps)
-    jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-4, atol=1e-5), structured, dense)
 
 
 def _local_and_global_bases(key):
@@ -240,20 +150,13 @@ def _local_and_global_bases(key):
     ],
     ids=['banded-core', 'block-diagonal-core', 'two-local', 'no-local'],
 )
-def test_stream_gram_inverse_matches_dense_probe(names, inverse_class):
+def test_stream_gram_inverse_borders_the_time_local_core(names, inverse_class):
     # the time-local template with the most amplitudes keeps its band structure, the others
-    # bordering it; with no time-local template the few amplitudes share one dense block. Either
-    # way the inverse must act as the dense column-probe inverse.
-    kb, kw, ka = jr.split(jr.key(15), 3)
+    # bordering it; with no time-local template the few amplitudes share one dense block
+    kb, kw = jr.split(jr.key(15))
     bases = _local_and_global_bases(kb)
     T = TemplateOperator({name: bases[name] for name in names}, n_dets=N_DETS)
-    W = _weight(kw)
-
-    structured = gram_inverse(T, W)
-    assert type(structured) is inverse_class
-    amps = jax.tree.map(lambda s: jr.normal(ka, s.shape), T.in_structure)
-    dense = gram_inverse(T, W, allow_probe=True)(amps)
-    jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-8, atol=1e-10), structured(amps), dense)
+    assert type(gram_inverse(T, _weight(kw))) is inverse_class
 
 
 @pytest.mark.parametrize('names', [('poly', 'hwp'), ('spline', 'poly', 'hwp')])
@@ -389,22 +292,23 @@ def test_pomme_gram_inverse_coupled_matches_filtered_dense(make):
         assert_allclose(got, jnp.linalg.solve(gram, rhs), rtol=1e-8, atol=1e-10)
 
 
-def test_pomme_gram_inverse_probe_matches_filtered_dense():
-    # per-detector basis: the column probe recovers Tᵀ W F T
+@pytest.mark.parametrize('make', [_per_det_basis, _decimated_basis], ids=['per_det', 'probed'])
+def test_pomme_gram_inverse_per_det_and_probed_match_filtered_dense(make):
+    # the structured path for a per-detector basis, and the column probe, recover Tᵀ W F T
     kt, kw, ka = jr.split(jr.key(32), 3)
     n_samps = 73
-    T = TemplateOperator(
-        {'t': TensorBasis.per_detector_stack(values=jr.normal(kt, (N_DETS, 2, n_samps)))},
-        n_dets=N_DETS,
-    )
+    basis = make(kt, 2, n_samps)
+    T = TemplateOperator({'t': basis}, n_dets=N_DETS)
     diag, W = _pomme_weight(kw, n_samps)
     amps = jr.normal(ka, T.in_structure['t'].shape)
-    actual = gram_inverse(T, W, pomme_tau=TAU, allow_probe=True)({'t': amps})['t']
+    probe = make is _decimated_basis
+    actual = gram_inverse(T, W, pomme_tau=TAU, allow_probe=probe)({'t': amps})['t']
     f = PommeProjectionOperator(
         TAU, in_structure=jax.ShapeDtypeStruct((1, n_samps), diag.dtype)
     ).as_matrix()
     for d in range(N_DETS):
-        fb = f @ T.bases['t'].values[d].T
+        own = basis if probe else TensorBasis(basis.values[d])
+        fb = f @ own.as_matrix()
         gram = fb.T @ (diag[d][:, None] * fb)
         assert_allclose(actual[d], jnp.linalg.solve(gram, amps[d]), rtol=1e-8, atol=1e-10)
 
@@ -505,11 +409,15 @@ def _ridge_bases(kind, key):
         }
     if kind == 'bordered':  # a time-local core bordered by a global template
         return {'p': segmented, 't': TensorBasis(jr.normal(k2, (3, N_SAMPS)))}
-    assert kind == 'probed'  # a per-detector basis has no structured view
-    return {'t': TensorBasis.per_detector_stack(values=jr.normal(k1, (N_DETS, 2, N_SAMPS)))}
+    if kind == 'per_det_bordered':  # the same, the border one basis per detector
+        return {'p': segmented, 't': _per_det_basis(k2, 2)}
+    assert kind == 'probed'
+    return {'t': _decimated_basis(k1, 2)}
 
 
-@pytest.mark.parametrize('kind', ['banded', 'dense', 'coupled', 'bordered', 'probed'])
+@pytest.mark.parametrize(
+    'kind', ['banded', 'dense', 'coupled', 'bordered', 'per_det_bordered', 'probed']
+)
 def test_gram_ridge_is_the_one_added_before_factoring(kind):
     # The explicit normal system adds the returned ridge to the Gram it assembles itself, so the
     # ridge must be exactly the one the inverse was factored from, on every assembly path:

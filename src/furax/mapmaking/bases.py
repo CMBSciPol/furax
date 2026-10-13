@@ -19,11 +19,12 @@ A few [`Basis`][] flavours trade memory for structure:
   overlapping generalisation of [`SegmentedBasis`][].
 
 A basis is normally shared by every detector. When the functions differ from detector to detector,
-as for the T-to-P leakage template, [`Basis.per_detector_stack`][] stacks one basis per detector
-into a single [`Basis`][] of any flavour.
+as for the T-to-P leakage template, a basis of any flavour can instead hold a batch of bases, one
+per detector (see `batch_shape` in [`Basis`][]).
 """
 
 from abc import abstractmethod
+from collections.abc import Callable
 from dataclasses import field, fields
 from functools import partial
 from itertools import chain
@@ -120,15 +121,30 @@ class Basis(AbstractLinearOperator):
 
     - `expand` (synthesis, amplitudes to signal): `s = B(a)`.
     - `project` (analysis, signal to amplitudes): `a = B.T(s)`.
+
+    Both accept any number of leading batch axes, e.g. one set of amplitudes per detector, and apply
+    the basis to each batch element.
+
+    A basis can also hold a batch of bases of one flavour and shape, for functions that differ from
+    detector to detector, such as the temperature-to-polarization leakage template, whose basis is
+    each detector's own temperature stream. Pass `batch_shape` to the constructor, with every array
+    argument carrying these leading axes. They then broadcast against the batch axes of the
+    amplitudes and of the signal, as in NumPy: with `batch_shape=(n_dets,)`, basis `i` expands
+    amplitudes `i`.
+
+    Examples:
+        >>> temperature = jnp.arange(6.0).reshape(3, 2)  # 3 detectors, 2 samples
+        >>> basis = TensorBasis(temperature[:, None], batch_shape=(3,))
+        >>> basis.shape, basis.in_structure.shape, basis.out_structure.shape
+        ((1,), (3, 1), (3, 2))
+        >>> basis(jnp.array([[1.0], [2.0], [0.0]]))
+        Array([[0., 1.],
+               [4., 6.],
+               [0., 0.]], dtype=float32)
     """
 
-    per_detector: bool = field(metadata={'static': True}, default=False, kw_only=True)
-    """Whether the stored arrays carry a leading detector axis."""
-
-    @property
-    @abstractmethod
-    def _index_shape(self) -> tuple[int, ...]:
-        """Single-detector amplitude index shape, read off the stored arrays."""
+    batch_shape: tuple[int, ...] = field(metadata={'static': True}, default=(), kw_only=True)
+    """Leading axes of the stored arrays, one basis per index; empty for a single basis."""
 
     @property
     @abstractmethod
@@ -139,67 +155,25 @@ class Basis(AbstractLinearOperator):
         # `in_structure` is derived, never passed: it can then never disagree with the arrays.
         if self.in_structure is not None:
             raise ValueError('in_structure is derived from the basis arrays; do not pass it')
-        # `per_detector_stack` marks its result after unflattening, which does not run this,
-        # so reaching here with the marker set means a stack built by hand: `shape` would
-        # describe one detector while the arrays hold many.
-        if self.per_detector:
-            raise ValueError('per_detector is set by per_detector_stack, not by the constructor')
-        # Construction is the only caller, so `_index_shape` always sees one detector's arrays.
-        object.__setattr__(
-            self, 'in_structure', ShapeDtypeStruct(self._index_shape, self._array_dtype)
-        )
+        if self.batch_shape:
+            self._check_batch_axes()
+        structure = ShapeDtypeStruct((*self.batch_shape, *self.shape), self._array_dtype)
+        object.__setattr__(self, 'in_structure', structure)
         super().__post_init__()
 
-    @classmethod
-    def per_detector_stack(cls, **attributes: Any) -> Self:
-        """One basis per detector, stacked into a single basis.
-
-        Use this for a template whose functions differ from detector to detector, such as the
-        temperature-to-polarization leakage template, whose basis is each detector's own temperature
-        stream. Available on every flavour.
-
-        Call it as you would the constructor, with every array argument carrying a leading detector
-        axis. All detectors then share one index shape, dtype and static metadata, read off detector
-        0, and differ only in their array values. The result keeps that single-detector metadata, so
-        `shape` and `in_structure` still describe one detector's amplitudes, which is what the
-        template operators map over.
-
-        Args:
-            attributes: The constructor arguments. Array arguments carry a leading detector
-                axis; static ones (`q`, `n_segments`, ...) are passed as usual.
-
-        Returns:
-            A basis whose arrays carry a leading detector axis.
-
-        Raises:
-            ValueError: If an array argument is missing, or they disagree on the detector count.
-
-        Examples:
-            >>> temperature = jnp.arange(6.0).reshape(3, 2)  # 3 detectors, 2 samples
-            >>> basis = TensorBasis.per_detector_stack(values=temperature[:, None])
-            >>> basis.shape, basis.values.shape, basis.per_detector
-            ((1,), (3, 1, 2), True)
-        """
-        array_names = [f.name for f in fields(cls) if not f.metadata.get('static', False)]
-        if missing := [name for name in array_names if name not in attributes]:
-            raise ValueError(f'{cls.__name__} needs a detector-stacked {", ".join(missing)}')
-
-        stacked = [attributes[name] for name in array_names]
-        if len(n_dets := {leaf.shape[0] for leaf in jax.tree.leaves(stacked)}) != 1:
-            raise ValueError(f'detector axes disagree: {sorted(n_dets)}')
-
-        # Detector 0 fixes the metadata; unflatten then carries it over to the stack untouched,
-        # which is the point: the single-detector index shape must survive the stacking.
-        first = lambda x: jax.tree.map(lambda leaf: leaf[0], x)
-        proto = cls(**{k: first(v) if k in array_names else v for k, v in attributes.items()})
-        basis: Self = jax.tree.unflatten(jax.tree.structure(proto), jax.tree.leaves(stacked))
-        object.__setattr__(basis, 'per_detector', True)
-        return basis
+    def _check_batch_axes(self) -> None:
+        shapes = [leaf.shape for leaf in jax.tree.leaves(self)]
+        if not shapes:
+            raise ValueError(f'{type(self).__name__} stores no array to batch')
+        n = len(self.batch_shape)
+        if any(shape[:n] != self.batch_shape for shape in shapes):
+            msg = f'batch_shape={self.batch_shape} must lead every array, got shapes {shapes}'
+            raise ValueError(msg)
 
     @property
+    @abstractmethod
     def shape(self) -> tuple[int, ...]:
-        """Shape of the basis index, for a single detector."""
-        return self.in_structure.shape
+        """Shape of the amplitude index, of one basis of the batch."""
 
     @property
     @abstractmethod
@@ -217,36 +191,52 @@ class Basis(AbstractLinearOperator):
 
     @property
     def out_structure(self) -> jax.ShapeDtypeStruct:
-        return jax.ShapeDtypeStruct((self.n_points,), self.dtype)
+        return jax.ShapeDtypeStruct((*self.batch_shape, self.n_points), self.dtype)
 
-    @abstractmethod
-    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+    def expand(self, coeffs: Float[Array, '...']) -> Float[Array, '*batch samp']:
         """Synthesize signal from coefficients."""
+        if not self.batch_shape:
+            return self._expand(coeffs)
+        return self._map_batch(lambda basis, a: basis._expand(a), coeffs, len(self.shape))
+
+    def project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '...']:
+        """Project signal onto basis."""
+        if not self.batch_shape:
+            return self._project(signal)
+        return self._map_batch(lambda basis, s: basis._project(s), signal, 1)
 
     @abstractmethod
-    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
-        """Project signal onto basis."""
+    def _expand(self, coeffs: Float[Array, '...']) -> Float[Array, '*batch samp']:
+        """`expand` for a single basis."""
 
-    def _expand_detectors(self, coeffs: Float[Array, 'det ...']) -> Float[Array, 'det samp']:
-        """`expand` of every detector's amplitudes at once, detectors on the leading axis.
+    @abstractmethod
+    def _project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '...']:
+        """`project` for a single basis."""
 
-        A per-detector stack expands each detector on its own basis, a shared basis expands them
-        all on the same one. Flavours override this where a joint pass is cheaper.
+    def _map_batch(self, f: Callable[[Self, Array], Array], x: Array, core_ndim: int) -> Array:
+        """`f(basis, x)` for each basis of the batch, `x` broadcast against `batch_shape`.
+
+        `x` has `core_ndim` trailing axes that `f` consumes, after its batch axes. The output
+        carries the broadcast batch axes in front of what `f` returns.
         """
-        return jax.vmap(lambda op, a: op.expand(a), in_axes=self._detector_axes)(self, coeffs)
+        x_batch = x.shape[: x.ndim - core_ndim]
+        batch = jnp.broadcast_shapes(x_batch, self.batch_shape)
+        x = jnp.broadcast_to(x, (*batch, *x.shape[len(x_batch) :]))
+        # the basis's batch axes are the trailing ones of `batch`, mapped one at a time
+        n_extra = len(batch) - len(self.batch_shape)
+        g = lambda basis, y: f(basis._with_batch_shape(()), y)
+        for _ in self.batch_shape:
+            g = jax.vmap(g, in_axes=(0, n_extra), out_axes=n_extra)
+        return g(self, x)
 
-    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det ...']:
-        """`project` of every detector's stream at once, detectors on the leading axis.
+    def _with_batch_shape(self, batch_shape: tuple[int, ...]) -> Self:
+        """This basis, rebuilt on arrays that carry only `batch_shape` leading axes.
 
-        A per-detector stack projects each stream on its own basis, a shared basis projects them
-        all on the same one. Flavours override this where a joint pass is cheaper.
+        `vmap` and `lax.map` pass the arrays that way, once they have sliced the other axes off.
         """
-        return jax.vmap(lambda op, s: op.project(s), in_axes=self._detector_axes)(self, signals)
-
-    @property
-    def _detector_axes(self) -> tuple[int | None, int]:
-        # map over the basis's own detector axis when it has one, broadcast it when shared
-        return (0 if self.per_detector else None, 0)
+        excluded = {'in_structure', 'batch_shape'}
+        names = [f.name for f in fields(self) if f.init and f.name not in excluded]
+        return type(self)(**{name: getattr(self, name) for name in names}, batch_shape=batch_shape)
 
     def _dense_values(self) -> Float[Array, 'k samp'] | None:
         """The basis matrix, `(size, n_points)`, where forming it is cheap; `None` otherwise.
@@ -255,13 +245,13 @@ class Basis(AbstractLinearOperator):
         """
         return None
 
-    def mv(self, x: Float[Array, '*shape']) -> Float[Array, ' samp']:
+    def mv(self, x: Float[Array, '...']) -> Float[Array, '*batch samp']:
         return self.expand(x)
 
     def transpose(self) -> AbstractLinearOperator:
         return _BasisTranspose(self)
 
-    def gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n w1 k k']:
+    def gram(self, weights: Float[Array, '*batch samp']) -> Float[Array, '*batch n w1 k k']:
         """The weighted Gram `Bᵀ diag(weights) B`, keeping only the blocks that can be nonzero.
 
         Two amplitudes interact only where some sample sees both, so blocks far enough apart never
@@ -271,12 +261,15 @@ class Basis(AbstractLinearOperator):
         dense basis is the single block `(1, 1, k, k)`. Consumed by
         [`BandedCholeskyOperator.from_bands`][furax.linalg.BandedCholeskyOperator.from_bands].
 
+        For a batch of bases, `weights` broadcasts against `batch_shape` and the bands carry the
+        batch axes, one Gram per basis.
+
         Raises:
             NoStructuredView: If this basis has no such form. Flavours implement `_gram`.
         """
-        if self.per_detector:
-            raise NoStructuredView
-        return self._gram(weights)
+        if not self.batch_shape:
+            return self._gram(weights)
+        return self._map_batch(lambda basis, w: basis._gram(w), weights, 1)
 
     @abstractmethod
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n w1 k k']:
@@ -290,14 +283,19 @@ class Basis(AbstractLinearOperator):
     def support(self) -> _BasisColumns:
         """Column-support view (`_BasisColumns`) used to build self- and cross-Grams in one pass.
 
-        Consumed by [`cross_gram`][furax.mapmaking.gram.cross_gram].
+        Consumed by [`cross_gram`][furax.mapmaking.gram.cross_gram]. For a batch of bases, the
+        view's arrays carry the batch axes.
 
         Raises:
             NoStructuredView: If this basis has no such view. Flavours implement `_support`.
         """
-        if self.per_detector:
-            raise NoStructuredView
-        return self._support()
+        if not self.batch_shape:
+            return self._support()
+        # `n_blocks` is static, the same for every basis: only the arrays are mapped
+        g = lambda basis: basis._with_batch_shape(())._support()._replace(n_blocks=None)
+        for _ in self.batch_shape:
+            g = jax.vmap(g)
+        return g(self)._replace(n_blocks=self._n_blocks)
 
     @abstractmethod
     def _support(self) -> _BasisColumns:
@@ -307,7 +305,7 @@ class Basis(AbstractLinearOperator):
 class _BasisTranspose(TransposeOperator):
     operator: Basis
 
-    def mv(self, x: Float[Array, ' samp']) -> Float[Array, '*shape']:
+    def mv(self, x: Float[Array, '*batch samp']) -> Float[Array, '...']:
         return self.operator.project(x)
 
 
@@ -332,8 +330,8 @@ class TensorBasis(Basis):
     n_full: int = field(metadata={'static': True}, default=0)
 
     @property
-    def _index_shape(self) -> tuple[int, ...]:
-        return self.values.shape[:-1]
+    def shape(self) -> tuple[int, ...]:
+        return self.values.shape[len(self.batch_shape) : -1]
 
     @property
     def _array_dtype(self) -> DTypeLike:
@@ -369,24 +367,25 @@ class TensorBasis(Basis):
         s = jnp.pad(s, [(0, 0)] * (s.ndim - 1) + [(0, pad)])
         return s.reshape(*s.shape[:-1], self.n_dec, self.q).sum(axis=-1)
 
-    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
-        # integer axis labels. Index axes are 0..n-1, sample axis is n.
-        n = len(self.shape)
-        idx = tuple(range(n))
-        out = _einsum(coeffs, idx, self.values, (*idx, n), (n,))
+    def _flat_values(self) -> Float[Array, 'k dec']:
+        return self.values.reshape(self.size, self.n_dec)
+
+    def _expand(self, coeffs: Float[Array, '...']) -> Float[Array, '*batch samp']:
+        batch = coeffs.shape[: coeffs.ndim - len(self.shape)]
+        flat = coeffs.reshape(*batch, self.size)
+        out = _einsum('...k,ks->...s', flat, self._flat_values())
         return out if self.q == 1 else self._upsample(out)
 
-    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
-        n = len(self.shape)
-        idx = tuple(range(n))
+    def _project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '...']:
         if self.q != 1:
             signal = self._downsample(signal)
-        return _einsum(self.values, (*idx, n), signal, (n,), idx)
+        out = _einsum('...s,ks->...k', signal, self._flat_values())
+        return out.reshape(*signal.shape[:-1], *self.shape)
 
     def _dense_values(self) -> Float[Array, 'k samp'] | None:
-        if self.q != 1 or self.per_detector:
+        if self.q != 1 or self.batch_shape:
             return None
-        return self.values.reshape(self.size, self.n_points)
+        return self._flat_values()
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
         # Dense Gram over the (single) coupled amplitude axis: one block, no band (w=0).
@@ -430,8 +429,8 @@ class KroneckerBasis(Basis):
     factors: tuple[Float[Array, 'd samp'], ...]
 
     @property
-    def _index_shape(self) -> tuple[int, ...]:
-        return tuple(f.shape[0] for f in self.factors)
+    def shape(self) -> tuple[int, ...]:
+        return tuple(f.shape[-2] for f in self.factors)
 
     @property
     def _array_dtype(self) -> DTypeLike:
@@ -454,23 +453,28 @@ class KroneckerBasis(Basis):
         return v.reshape(self.size, self.n_points)
 
     def _dense_values(self) -> Float[Array, 'k samp'] | None:
-        return None if self.per_detector else self._product_values()
+        return None if self.batch_shape else self._product_values()
 
-    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
-        if self.per_detector:
-            # each detector's own product would cost `size` TODs
-            n = len(self.shape)
+    def _expand(self, coeffs: Float[Array, '...']) -> Float[Array, '*batch samp']:
+        n = len(self.shape)
+        batch = coeffs.shape[: coeffs.ndim - n]
+        if not batch:
+            # a single amplitude set, as each basis of a batch gets: the factored contraction
+            # never forms the `size`-TOD product
             return _einsum(coeffs, tuple(range(n)), *self._factor_operands(), (n,))
-        # one product for every detector: the factored contraction would form `(det, d_1, samp)`
-        return _einsum('k,ks->s', coeffs.reshape(self.size), self._product_values())
+        # one product for every batch element: the factored contraction would form
+        # `(*batch, d_1, samp)`
+        flat = coeffs.reshape(*batch, self.size)
+        return _einsum('...k,ks->...s', flat, self._product_values())
 
-    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
-        if self.per_detector:
+    def _project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '...']:
+        if signal.ndim == 1:
             # implicit output: repeated sample axis n is summed; index axes 0..n-1
             # each appear once and become the (sorted) output.
             n = len(self.shape)
             return _einsum(*self._factor_operands(), signal, (n,))
-        return _einsum('ks,s->k', self._product_values(), signal).reshape(self.shape)
+        out = _einsum('...s,ks->...k', signal, self._product_values())
+        return out.reshape(*signal.shape[:-1], *self.shape)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, '1 1 k k']:
         # No block structure: the shared per-sample weight couples all factor indices, so the
@@ -516,8 +520,8 @@ class SegmentedBasis(Basis):
     n_segments: int = field(metadata={'static': True})
 
     @property
-    def _index_shape(self) -> tuple[int, ...]:
-        return (self.n_segments, self.values.shape[0])
+    def shape(self) -> tuple[int, ...]:
+        return (self.n_segments, self.values.shape[-2])
 
     @property
     def _array_dtype(self) -> DTypeLike:
@@ -527,40 +531,26 @@ class SegmentedBasis(Basis):
     def n_points(self) -> int:
         return self.values.shape[-1]
 
-    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
-        # gather each sample's segment coefficients, then contract over the
-        # sub-basis index against the shared per-sample values.
-        picked = coeffs[self.segment]  # (n_points, k)
-        return _einsum('sk,ks->s', picked, self.values)
-
-    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
-        # adjoint of expand: per-sample contribution scatter-added into its segment.
-        contrib = self.values * signal[None, :]  # (k, n_points)
-        zeros = jnp.zeros(self.shape, self.dtype)
-        return zeros.at[self.segment].add(contrib.T)
-
-    def _expand_detectors(self, coeffs: Float[Array, 'det seg k']) -> Float[Array, 'det samp']:
-        if self.per_detector:
-            return super()._expand_detectors(coeffs)
-        # a loop over `k`: mapping `expand` over detectors would gather `(samp, det, k)`
-        stream = jnp.zeros((coeffs.shape[0], self.n_points), self.dtype)
+    def _expand(self, coeffs: Float[Array, '*batch seg k']) -> Float[Array, '*batch samp']:
+        # a loop over `k`: gathering whole segment rows would form `(*batch, samp, k)`
+        stream = jnp.zeros((*coeffs.shape[:-2], self.n_points), self.dtype)
         for k in range(self.values.shape[0]):  # sub-basis size is static
-            stream = stream + coeffs[:, self.segment, k] * self.values[k][None, :]
+            stream = stream + coeffs[..., self.segment, k] * self.values[k]
         return stream
 
-    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det seg k']:
-        if self.per_detector:
-            return super()._project_detectors(signals)
+    def _project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '*batch seg k']:
+        batch = signal.shape[:-1]
+        signals = signal.reshape(-1, self.n_points)
 
         # The transpose stays in the loop body, where it fuses into the product: hoisted out, it
         # would copy the signals.
-        def one_function(values: Float[Array, ' samp']) -> Float[Array, 'seg det']:
+        def one_function(values: Float[Array, ' samp']) -> Float[Array, 'seg batch']:
             return jax.ops.segment_sum(
                 signals.T * values[:, None], self.segment, self.n_segments, indices_are_sorted=True
             )
 
-        sums = jax.lax.map(one_function, self.values)  # (k, seg, det)
-        return jnp.transpose(sums, (2, 1, 0))
+        sums = jax.lax.map(one_function, self.values)  # (k, seg, batch)
+        return jnp.transpose(sums, (2, 1, 0)).reshape(*batch, *self.shape)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'seg 1 k k']:
         # Each sample's rank-one w·vvᵀ binned into its segment: block-diagonal, so w = 0.
@@ -616,7 +606,7 @@ class OffsetBasis(Basis):
     value_dtype: DTypeLike = field(metadata={'static': True})
 
     @property
-    def _index_shape(self) -> tuple[int, ...]:
+    def shape(self) -> tuple[int, ...]:
         return (self.n_intervals,)
 
     @property
@@ -632,23 +622,17 @@ class OffsetBasis(Basis):
         """Number of whole intervals."""
         return self.n_samples // self.tau
 
-    def expand(self, coeffs: Float[Array, ' n']) -> Float[Array, ' samp']:
-        return self._expand_detectors(coeffs)
-
-    def project(self, signal: Float[Array, ' samp']) -> Float[Array, ' n']:
-        return self._project_detectors(signal)
-
-    def _expand_detectors(self, coeffs: Float[Array, '*det n']) -> Float[Array, '*det samp']:
-        # any number of leading axes: each interval's offset broadcast over its samples
+    def _expand(self, coeffs: Float[Array, '*batch n']) -> Float[Array, '*batch samp']:
+        # each interval's offset broadcast over its samples
         *batch, n = coeffs.shape
         steps = jnp.broadcast_to(coeffs[..., None], (*batch, n, self.tau)).reshape(*batch, -1)
         tail = self.n_samples - n * self.tau
         return jnp.pad(steps, [(0, 0)] * len(batch) + [(0, tail)])
 
-    def _project_detectors(self, signals: Float[Array, '*det samp']) -> Float[Array, '*det n']:
-        # any number of leading axes: each interval's samples summed, the tail dropped
+    def _project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '*batch n']:
+        # each interval's samples summed, the tail dropped
         end = self.n_intervals * self.tau
-        intervals = signals[..., :end].reshape(*signals.shape[:-1], self.n_intervals, self.tau)
+        intervals = signal[..., :end].reshape(*signal.shape[:-1], self.n_intervals, self.tau)
         return intervals.sum(axis=-1)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n 1 1 1']:
@@ -696,8 +680,8 @@ class WindowedBasis(Basis):
     n_blocks: int = field(metadata={'static': True})
 
     @property
-    def _index_shape(self) -> tuple[int, ...]:
-        return (self.n_blocks, self.sub_values.shape[0])
+    def shape(self) -> tuple[int, ...]:
+        return (self.n_blocks, self.sub_values.shape[-2])
 
     @property
     def _array_dtype(self) -> DTypeLike:
@@ -705,8 +689,8 @@ class WindowedBasis(Basis):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        n_window, n_points = self.block_weights.shape
-        if self.offset.shape != (n_points,) or self.sub_values.shape[1] != n_points:
+        n_window, n_points = self.block_weights.shape[-2:]
+        if self.offset.shape[-1] != n_points or self.sub_values.shape[-1] != n_points:
             msg = (
                 f'sample axes disagree: offset {self.offset.shape}, block_weights '
                 f'{self.block_weights.shape}, sub_values {self.sub_values.shape}'
@@ -724,30 +708,24 @@ class WindowedBasis(Basis):
         n_window = self.block_weights.shape[0]
         return self.offset[:, None] + jnp.arange(n_window)
 
-    def expand(self, coeffs: Float[Array, '*shape']) -> Float[Array, ' samp']:
+    def _expand(self, coeffs: Float[Array, '*batch block k']) -> Float[Array, '*batch samp']:
         # gather each sample's window of block coefficients, contract over the sub-basis
         # index against the shared values and over the window against its taper.
-        gathered = coeffs[self._block_indices()]  # (samp, O, k)
-        return _einsum('soj,os,js->s', gathered, self.block_weights, self.sub_values)
+        gathered = coeffs[..., self._block_indices(), :]  # (*batch, samp, O, k)
+        return _einsum('...soj,os,js->...s', gathered, self.block_weights, self.sub_values)
 
-    def project(self, signal: Float[Array, ' samp']) -> Float[Array, '*shape']:
-        # adjoint of expand: per-sample rank-one contribution scatter-added into its window.
-        contrib = _einsum('os,js,s->soj', self.block_weights, self.sub_values, signal)
-        zeros = jnp.zeros(self.shape, self.dtype)
-        return zeros.at[self._block_indices()].add(contrib)
-
-    def _project_detectors(self, signals: Float[Array, 'det samp']) -> Float[Array, 'det ...']:
-        if self.per_detector:
-            return super()._project_detectors(signals)
+    def _project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '*batch block k']:
+        batch = signal.shape[:-1]
+        signals = signal.reshape(-1, self.n_points)
         # one scatter per window slot keeps each slot's block ids sorted, as `offset` is
         sums = jnp.zeros((self.n_blocks, signals.shape[0], self.shape[1]), self.dtype)
         for o in range(self.block_weights.shape[0]):  # window width is static
             taps = self.block_weights[o][None, :] * self.sub_values  # (k, samp)
-            contrib = signals.T[:, :, None] * taps.T[:, None, :]  # (samp, det, k)
+            contrib = signals.T[:, :, None] * taps.T[:, None, :]  # (samp, batch, k)
             sums = sums + jax.ops.segment_sum(
                 contrib, self.offset + o, self.n_blocks, indices_are_sorted=True
             )
-        return jnp.moveaxis(sums, 1, 0)
+        return jnp.moveaxis(sums, 1, 0).reshape(*batch, *self.shape)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'block band k k']:
         """Block-banded `Bᵀ diag(weights) B` in one pass.

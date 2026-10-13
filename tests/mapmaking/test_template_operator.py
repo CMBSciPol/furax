@@ -54,7 +54,7 @@ def test_template_operator_expands_dense_templates_together():
         'tensor': TensorBasis(jr.normal(k[0], (3, N_SAMPS))),
         'kron': KroneckerBasis((jr.normal(k[1], (2, N_SAMPS)), jr.normal(k[2], (3, N_SAMPS)))),
         'coarse': TensorBasis(jr.normal(k[3], (2, N_SAMPS // 4)), q=4, n_full=N_SAMPS),
-        'per_det': TensorBasis.per_detector_stack(values=jr.normal(k[4], (N_DETS, 1, N_SAMPS))),
+        'per_det': TensorBasis(jr.normal(k[4], (N_DETS, 1, N_SAMPS)), batch_shape=(N_DETS,)),
         'poly': SegmentedBasis(_seg(4), jr.normal(k[5], (2, N_SAMPS)), 4),
     }
     T = TemplateOperator(bases, n_dets=N_DETS)
@@ -62,10 +62,7 @@ def test_template_operator_expands_dense_templates_together():
         name: jr.normal(jr.fold_in(k[6], i), s.shape)
         for i, (name, s) in enumerate(T.in_structure.items())
     }
-    ref = sum(
-        jax.vmap(lambda b, a: b.expand(a), in_axes=(0 if b.per_detector else None, 0))(b, amps[n])
-        for n, b in bases.items()
-    )
+    ref = sum(b.expand(amps[n]) for n, b in bases.items())
     assert_allclose(T(amps), ref, rtol=1e-12, atol=1e-12)
 
 
@@ -101,7 +98,7 @@ def test_template_operator_transpose_is_adjoint():
     # <T(amps), tod> == <amps, T.T(tod)> for several templates, shared + per-detector mix.
     k = jr.split(jr.key(4), 6)
     shared = TensorBasis(jr.normal(k[0], (3, N_SAMPS)))
-    per_det = TensorBasis.per_detector_stack(values=jr.normal(k[1], (N_DETS, 2, N_SAMPS)))
+    per_det = TensorBasis(jr.normal(k[1], (N_DETS, 2, N_SAMPS)), batch_shape=(N_DETS,))
     T = TemplateOperator({'shared': shared, 'per_det': per_det}, n_dets=N_DETS)
     amps = {
         'shared': jr.normal(k[2], (N_DETS, 3)),
@@ -130,6 +127,12 @@ def test_template_operator_stacks_under_vmap():
     assert out.shape == (2, N_DETS, N_SAMPS)
     assert_allclose(out[0], t0({'poly': amps['poly'][0]}), rtol=1e-5, atol=1e-6)
     assert_allclose(out[1], t1({'poly': amps['poly'][1]}), rtol=1e-5, atol=1e-6)
+
+
+def test_template_operator_rejects_a_basis_batch_other_than_detectors():
+    basis = TensorBasis(jnp.ones((2, 1, N_SAMPS)), batch_shape=(2,))
+    with pytest.raises(ValueError, match=r'batch_shape \(2,\) is neither \(\) nor \(3,\)'):
+        TemplateOperator({'t': basis}, n_dets=N_DETS)
 
 
 def test_stokes_template_operator_rejects_legs_outside_stokes():

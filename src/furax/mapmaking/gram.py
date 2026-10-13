@@ -26,8 +26,6 @@ binned azimuth) makes $\tilde G$ singular: a `regularization` ridge is then requ
 Limitations:
 
 - $W$ must be *diagonal*. Correlated (Toeplitz) weights are not supported.
-- When assembling the Gram, basis structure (column support) is only exploited if all bases of the
-  template operator are shared over detectors.
 - Several templates on one stream (the TOD, or one Stokes leg) are coupled through the weight.
   The time-local template with the most amplitudes keeps its band structure, and the others
   border it, eliminated by a Schur complement. A second time-local template in the border is
@@ -45,6 +43,7 @@ $\lambda \cdot \mathrm{mean}(\mathrm{diag}\, G)$ added to each block before fact
 numerical safeguard rather than a statistical choice.
 """
 
+from collections.abc import Callable
 from dataclasses import field
 from math import prod
 from typing import NamedTuple
@@ -293,10 +292,12 @@ def _structured_gram_inverse(
     Raises:
         NoStructuredView: If a basis has no structured view.
     """
-    bases, weights, pomme = stream.bases, stream.weights, stream.pomme
+    bases, pomme = stream.bases, stream.pomme
     if len(bases) == 1:
-        ((name, basis),) = bases.items()
-        bands = jax.lax.map(lambda w: _banded_gram(basis, pomme, w), weights, batch_size=batch_size)
+        (name,) = bases
+        bands = _map_detectors(
+            lambda b, w: _banded_gram(b[name], pomme, w), stream, batch_size=batch_size
+        )
         bands, ridge = _regularize_bands(bands, regularization)
         return BandedCholeskyOperator.from_bands(bands, stream.in_structure), {name: ridge}
 
@@ -306,15 +307,31 @@ def _structured_gram_inverse(
         core = max(local, key=lambda name: bases[name].size)
         return _bordered_gram_inverse(stream, core, regularization, batch_size)
 
-    ordered: list[Basis] = jax.tree.leaves(bases, is_leaf=is_basis)
-    blocks = jax.lax.map(
-        lambda w: _dense_gram(ordered, w, _pomme_sums(ordered, w, pomme)),
-        weights,
-        batch_size=batch_size,
-    )
+    def dense(bases: dict[str, Basis], weights: Array) -> Array:
+        ordered: list[Basis] = jax.tree.leaves(bases, is_leaf=is_basis)
+        return _dense_gram(ordered, weights, _pomme_sums(ordered, weights, pomme))
+
+    blocks = _map_detectors(dense, stream, batch_size=batch_size)
     blocks, ridge = _regularize_dense(blocks, regularization)
     inverse = BandedCholeskyOperator.from_dense(blocks, stream.in_structure)
     return inverse, _per_detector(ridge, stream.in_structure)
+
+
+def _map_detectors[T](
+    f: Callable[[dict[str, Basis], Float[Array, ' samp']], T], stream: _Stream, batch_size: int
+) -> T:
+    """`f(bases, weights)` for each detector, results stacked on a leading detector axis.
+
+    A basis batched over detectors is passed as that detector's own; a shared one as is.
+    """
+    batched = {name: basis for name, basis in stream.bases.items() if basis.batch_shape}
+
+    def one(args: tuple[Array, dict[str, Basis]]) -> T:
+        weights, own = args
+        own = {name: basis._with_batch_shape(basis.batch_shape[1:]) for name, basis in own.items()}
+        return f(stream.bases | own, weights)
+
+    return jax.lax.map(one, (stream.weights, batched), batch_size=batch_size)
 
 
 def _regularize_bands(
@@ -497,7 +514,7 @@ def _interval_sums(
     # onto the regular intervals avoids scattering a `(samp, k)` copy by interval
     view = basis.support()
     columns = view.values * (view.taps.sum(axis=1) * weights)[None, :]
-    return pomme._project_detectors(columns).T
+    return pomme.project(columns).T
 
 
 def _inverse_counts(pomme: OffsetBasis, weights: Float[Array, ' samp']) -> Float[Array, ' n_int']:
@@ -514,12 +531,12 @@ def _bordered_gram_inverse(
     The core template's own Gram is block-banded; the others couple to it through a dense border
     and to each other through a dense corner.
     """
-    bases, pomme = stream.bases, stream.pomme
-    core = bases[core_name]
-    border_names = tuple(name for name in bases if name != core_name)
-    border_bases = [bases[name] for name in border_names]
+    pomme = stream.pomme
+    border_names = tuple(name for name in stream.bases if name != core_name)
 
-    def build(weights: Array) -> tuple[Array, Array, Array]:
+    def build(bases: dict[str, Basis], weights: Array) -> tuple[Array, Array, Array]:
+        core = bases[core_name]
+        border_bases = [bases[name] for name in border_names]
         border = [cross_gram(core, basis, weights) for basis in border_bases]
         if pomme is None:
             corner = _dense_gram(border_bases, weights)
@@ -534,7 +551,7 @@ def _bordered_gram_inverse(
         corner = _dense_gram(border_bases, weights, (core_sums.inverse_counts, border_sums))
         return bands, jnp.concatenate(border, axis=1), corner
 
-    bands, border, corner = jax.lax.map(build, stream.weights, batch_size=batch_size)
+    bands, border, corner = _map_detectors(build, stream, batch_size=batch_size)
     # the core's diagonal blocks and the corner are ridged separately, each scaled by its own
     # diagonal
     bands, core_ridge = _regularize_bands(bands, regularization)

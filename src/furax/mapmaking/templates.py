@@ -235,9 +235,7 @@ def t2p_basis(
 
     t = jax.lax.map(filter_and_decimate, temperature, batch_size=_T2P_BATCH_SIZE)
     values = t[:, None, :]  # (det, k=1, dec)
-    if q > 1:
-        return TensorBasis.per_detector_stack(values=values, q=q, n_full=n_full)
-    return TensorBasis.per_detector_stack(values=values)
+    return TensorBasis(values, q=q, n_full=n_full, batch_shape=t.shape[:1])
 
 
 def scan_synchronous_basis(
@@ -348,6 +346,10 @@ class AbstractTemplateOperator(AbstractLinearOperator):
         return jax.tree.map(self._amplitude_leaf, self.bases, is_leaf=is_basis)
 
     def _amplitude_leaf(self, basis: Basis) -> jax.ShapeDtypeStruct:
+        # a basis is shared by every detector, or one per detector
+        if basis.batch_shape not in {(), (self.n_dets,)}:
+            msg = f'basis batch_shape {basis.batch_shape} is neither () nor ({self.n_dets},)'
+            raise ValueError(msg)
         return jax.ShapeDtypeStruct((self.n_dets, *basis.shape), basis.dtype)
 
     @property
@@ -380,7 +382,7 @@ class AbstractTemplateOperator(AbstractLinearOperator):
             stream = _einsum('dk,ks->ds', coeffs, jnp.concatenate(list(dense.values())))
         for name, basis in bases.items():
             if name not in dense:
-                stream = stream + basis._expand_detectors(x[name])
+                stream = stream + basis.expand(x[name])
         return stream
 
     # ---- adjoint --------------------------------------------------------------------------------
@@ -409,7 +411,7 @@ class TemplateOperator(AbstractTemplateOperator):
         return self._expand_stream(self.bases, x)
 
     def project(self, tod: PyTree[Array]) -> PyTree[Array]:
-        return {name: basis._project_detectors(tod) for name, basis in self.bases.items()}
+        return {name: basis.project(tod) for name, basis in self.bases.items()}
 
 
 class StokesTemplateOperator(AbstractTemplateOperator):
@@ -492,7 +494,7 @@ class StokesTemplateOperator(AbstractTemplateOperator):
     def project(self, tod: PyTree[Array]) -> PyTree[Array]:
         streams = self._streams(tod)
         return {
-            name: {leg: basis._project_detectors(streams[leg]) for leg, basis in legged.items()}
+            name: {leg: basis.project(streams[leg]) for leg, basis in legged.items()}
             for name, legged in self.bases_by_leg.items()
         }
 

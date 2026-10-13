@@ -62,4 +62,4 @@ class PommeProjectionOperator(AbstractLinearOperator):
     def mv(self, x: Float[Array, 'det samp']) -> Float[Array, 'det samp']:
         z = self.template
         # Zᵀ Z = tau on every interval: each interval's mean, spread back over its samples
-        return x - z._expand_detectors(z._project_detectors(x) / self.tau)
+        return x - z.expand(z.project(x) / self.tau)

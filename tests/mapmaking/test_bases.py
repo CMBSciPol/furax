@@ -1,3 +1,5 @@
+from math import prod
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -5,12 +7,11 @@ import numpy as np
 import pytest
 from jax import Array
 from jaxtyping import Float
-from numpy.testing import assert_allclose
+from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking.bases import (
     Basis,
     KroneckerBasis,
-    NoStructuredView,
     OffsetBasis,
     SegmentedBasis,
     TensorBasis,
@@ -396,108 +397,107 @@ class TestWindowedBasis:
 
 
 # ---------------------------------------------------------------------------
-# Basis.per_detector_stack
+# Batches of bases (batch_shape)
 # ---------------------------------------------------------------------------
 
 
-def _stacked_and_singles(flavour: str, n_dets: int, seed: int) -> tuple[Basis, list[Basis]]:
-    """A per-detector stack and the equivalent list of single-detector bases, same arrays."""
+def _batched_and_singles(
+    flavour: str, batch_shape: tuple[int, ...], seed: int
+) -> tuple[Basis, list[Basis]]:
+    """A batch of bases and the equivalent flat list of single bases, on the same arrays."""
     n_points = 30
+    n = prod(batch_shape)
     k = jr.split(jr.key(seed), 4)
+
+    def split(*arrays: Array) -> list[tuple[Array, ...]]:
+        """Each single basis's arrays, batch axes flattened."""
+        flat = [a.reshape(n, *a.shape[len(batch_shape) :]) for a in arrays]
+        return list(zip(*flat, strict=True))
+
     if flavour == 'tensor':
-        values = jr.normal(k[0], (n_dets, 2, n_points))
-        return TensorBasis.per_detector_stack(values=values), [TensorBasis(v) for v in values]
+        values = jr.normal(k[0], (*batch_shape, 2, n_points))
+        singles = [TensorBasis(v) for (v,) in split(values)]
+        return TensorBasis(values, batch_shape=batch_shape), singles
     if flavour == 'kronecker':
-        f0 = jr.normal(k[0], (n_dets, 2, n_points))
-        f1 = jr.normal(k[1], (n_dets, 3, n_points))
-        return (
-            KroneckerBasis.per_detector_stack(factors=(f0, f1)),
-            [KroneckerBasis((a, b)) for a, b in zip(f0, f1, strict=True)],
-        )
+        f0 = jr.normal(k[0], (*batch_shape, 2, n_points))
+        f1 = jr.normal(k[1], (*batch_shape, 3, n_points))
+        singles = [KroneckerBasis((a, b)) for a, b in split(f0, f1)]
+        return KroneckerBasis((f0, f1), batch_shape=batch_shape), singles
     if flavour == 'segmented':
         n_seg = 3
-        segment = jnp.sort(jr.randint(k[0], (n_dets, n_points), 0, n_seg), axis=-1)
+        segment = jnp.sort(jr.randint(k[0], (*batch_shape, n_points), 0, n_seg), axis=-1)
         segment = segment.astype(jnp.int32)
-        values = jr.normal(k[1], (n_dets, 2, n_points))
-        return (
-            SegmentedBasis.per_detector_stack(segment=segment, values=values, n_segments=n_seg),
-            [SegmentedBasis(g, v, n_seg) for g, v in zip(segment, values, strict=True)],
-        )
+        values = jr.normal(k[1], (*batch_shape, 2, n_points))
+        singles = [SegmentedBasis(g, v, n_seg) for g, v in split(segment, values)]
+        return SegmentedBasis(segment, values, n_seg, batch_shape=batch_shape), singles
     if flavour == 'windowed':
         n_blocks, n_window = 6, 4
-        offset = jr.randint(k[0], (n_dets, n_points), 0, n_blocks - n_window + 1)
+        offset = jr.randint(k[0], (*batch_shape, n_points), 0, n_blocks - n_window + 1)
         offset = jnp.sort(offset, axis=-1).astype(jnp.int32)
-        weights = jr.normal(k[1], (n_dets, n_window, n_points))
-        sub = jr.normal(k[2], (n_dets, 2, n_points))
-        return (
-            WindowedBasis.per_detector_stack(
-                offset=offset,
-                block_weights=weights,
-                sub_values=sub,
-                n_blocks=n_blocks,
-            ),
-            [
-                WindowedBasis(o, w, v, n_blocks)
-                for o, w, v in zip(offset, weights, sub, strict=True)
-            ],
-        )
+        weights = jr.normal(k[1], (*batch_shape, n_window, n_points))
+        sub = jr.normal(k[2], (*batch_shape, 2, n_points))
+        singles = [WindowedBasis(o, w, v, n_blocks) for o, w, v in split(offset, weights, sub)]
+        return WindowedBasis(offset, weights, sub, n_blocks, batch_shape=batch_shape), singles
     raise AssertionError(flavour)
 
 
 FLAVOURS = ['tensor', 'kronecker', 'segmented', 'windowed']
+BATCH_SHAPES = [(3,), (2, 3)]
 
 
-class TestPerDetectorStack:
+class TestBatchedBasis:
     @pytest.mark.parametrize('flavour', FLAVOURS)
-    def test_keeps_the_single_detector_index(self, flavour: str) -> None:
-        # the stack describes one detector's amplitudes; only the arrays gain a detector axis.
-        stacked, singles = _stacked_and_singles(flavour, 3, 900)
-        assert stacked.per_detector
-        assert stacked.shape == singles[0].shape
-        assert stacked.in_structure == singles[0].in_structure
-        assert stacked.n_points == singles[0].n_points
-        assert [leaf.shape for leaf in jax.tree.leaves(stacked)] == [
-            (3, *leaf.shape) for leaf in jax.tree.leaves(singles[0])
-        ]
+    def test_structures_carry_the_batch_axes(self, flavour: str) -> None:
+        # `shape` stays one basis's amplitude index; the operator structures gain the batch axes
+        basis, singles = _batched_and_singles(flavour, (3,), 900)
+        assert basis.shape == singles[0].shape
+        assert basis.n_points == singles[0].n_points
+        assert basis.in_structure.shape == (3, *singles[0].shape)
+        assert basis.out_structure.shape == (3, singles[0].n_points)
+
+    @pytest.mark.parametrize('batch_shape', BATCH_SHAPES)
+    @pytest.mark.parametrize('flavour', FLAVOURS)
+    def test_expand_and_project_apply_each_basis_to_its_own_batch_element(
+        self, flavour: str, batch_shape: tuple[int, ...]
+    ) -> None:
+        basis, singles = _batched_and_singles(flavour, batch_shape, 910)
+        amps = jr.normal(jr.key(911), basis.in_structure.shape)
+        signal = jr.normal(jr.key(912), basis.out_structure.shape)
+        flat_amps = amps.reshape(-1, *basis.shape)
+        flat_signal = signal.reshape(-1, basis.n_points)
+        expanded = [b.expand(a) for b, a in zip(singles, flat_amps, strict=True)]
+        projected = [b.project(s) for b, s in zip(singles, flat_signal, strict=True)]
+        assert_allclose(basis(amps), jnp.stack(expanded).reshape(signal.shape), rtol=TOL)
+        assert_allclose(basis.T(signal), jnp.stack(projected).reshape(amps.shape), rtol=TOL)
+        assert _adjoint_residual(basis, amps, signal) < TOL
 
     @pytest.mark.parametrize('flavour', FLAVOURS)
-    def test_expands_each_detector_with_its_own_basis(self, flavour: str) -> None:
-        n_dets = 3
-        stacked, singles = _stacked_and_singles(flavour, n_dets, 910)
-        op = _wrap(stacked, n_dets)
-        amps = jr.normal(jr.key(911), (n_dets, *singles[0].shape))
-        expected = jnp.stack([b.expand(a) for b, a in zip(singles, amps, strict=True)])
-        assert_allclose(op({'t': amps}), expected, rtol=TOL)
+    def test_batch_axes_broadcast(self, flavour: str) -> None:
+        # shared amplitudes broadcast over the bases; extra leading axes over everything
+        basis, singles = _batched_and_singles(flavour, (3,), 920)
+        amps = jr.normal(jr.key(921), (2, 1, *basis.shape))
+        expected = jnp.stack([jnp.stack([b.expand(a[0]) for b in singles]) for a in amps])
+        assert_allclose(basis.expand(amps), expected, rtol=TOL)
 
     @pytest.mark.parametrize('flavour', FLAVOURS)
-    def test_projects_each_detector_with_its_own_basis(self, flavour: str) -> None:
-        n_dets = 3
-        stacked, singles = _stacked_and_singles(flavour, n_dets, 920)
-        op = _wrap(stacked, n_dets)
-        signal = jr.normal(jr.key(921), (n_dets, singles[0].n_points))
-        expected = jnp.stack([b.project(s) for b, s in zip(singles, signal, strict=True)])
-        assert_allclose(op.T(signal)['t'], expected, rtol=TOL)
+    def test_structured_views_are_each_basis_own(self, flavour: str) -> None:
+        basis, singles = _batched_and_singles(flavour, (3,), 930)
+        weights = jr.uniform(jr.key(931), (3, basis.n_points), minval=0.5, maxval=2.0)
+        expected = jnp.stack([b.gram(w) for b, w in zip(singles, weights, strict=True)])
+        assert_allclose(basis.gram(weights), expected, rtol=TOL)
+        view = basis.support()
+        assert view.n_blocks == singles[0].support().n_blocks
+        for i, single in enumerate(singles):
+            assert_allclose(view.values[i], single.support().values, rtol=TOL)
+            assert_array_equal(view.blocks[i], single.support().blocks)
 
-    def test_rejects_a_missing_array(self) -> None:
-        with pytest.raises(ValueError, match='WindowedBasis needs a detector-stacked sub_values'):
-            WindowedBasis.per_detector_stack(
-                offset=jnp.zeros((3, 30), jnp.int32),
-                block_weights=jnp.ones((3, 4, 30)),
-                n_blocks=6,
-            )
+    def test_rejects_arrays_without_the_batch_axes(self) -> None:
+        with pytest.raises(ValueError, match=r'batch_shape=\(2,\) must lead every array'):
+            SegmentedBasis(jnp.zeros((3, 30), jnp.int32), jnp.ones((2, 2, 30)), 3, batch_shape=(2,))
 
-    def test_constructor_rejects_a_hand_set_marker(self) -> None:
-        # a hand-built stack would keep the one-detector shape, silently breaking expand/project
-        with pytest.raises(ValueError, match='per_detector is set by per_detector_stack'):
-            TensorBasis(jnp.ones((3, 2, 30)), per_detector=True)
-
-    def test_rejects_disagreeing_detector_counts(self) -> None:
-        with pytest.raises(ValueError, match=r'detector axes disagree: \[2, 3\]'):
-            SegmentedBasis.per_detector_stack(
-                segment=jnp.zeros((3, 30), jnp.int32),
-                values=jnp.ones((2, 2, 30)),
-                n_segments=3,
-            )
+    def test_rejects_a_batch_of_bases_with_no_array(self) -> None:
+        with pytest.raises(ValueError, match='OffsetBasis stores no array to batch'):
+            OffsetBasis(2, 5, jnp.float32, batch_shape=(3,))
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +510,7 @@ class TestStructuredViews:
     def test_support_encodes_the_same_matrix_as_the_basis(self, flavour: str) -> None:
         # the column-support view and expand/project are two encodings of one basis: they must
         # agree, or every Gram built from the view is silently wrong.
-        _, singles = _stacked_and_singles(flavour, 1, 1100)
+        _, singles = _batched_and_singles(flavour, (1,), 1100)
         basis = singles[0]
         assert_allclose(basis.support().as_matrix(), basis.as_matrix(), rtol=TOL, atol=TOL)
 
@@ -528,12 +528,3 @@ class TestStructuredViews:
             for d in range(n_window):
                 if j + d < n_blocks:
                     assert_allclose(bands[j, d], dense[j, :, j + d, :], rtol=TOL, atol=TOL)
-
-    @pytest.mark.parametrize('flavour', FLAVOURS)
-    def test_per_detector_stacks_have_no_structured_view(self, flavour: str) -> None:
-        # the views describe one detector; a stack holds many, so both must refuse
-        stacked, _ = _stacked_and_singles(flavour, 3, 1120)
-        with pytest.raises(NoStructuredView):
-            stacked.support()
-        with pytest.raises(NoStructuredView):
-            stacked.gram(jnp.ones(stacked.n_points))

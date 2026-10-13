@@ -8,6 +8,7 @@ preprocess archive (ManifestDb + hdf5), wired together by a Context.
 
 from pathlib import Path
 
+import numpy as np
 import sotodlib.io.metadata  # noqa: F401  registers the hdf5 metadata loaders (AxisManagerHdf)
 import yaml
 from sotodlib.core import OBSLOADER_REGISTRY, AxisManager, metadata
@@ -38,11 +39,12 @@ def _furax_test_loader(_obsfiledb, obs_id, dets=None, samples=None, no_signal=No
 OBSLOADER_REGISTRY.setdefault('furax_test', _furax_test_loader)
 
 
-def build_preproc_db(root: Path, files: list[Path]) -> Path:
+def build_preproc_db(root: Path, files: list[Path], n_detsets: int = 1) -> Path:
     """Materialise a minimal preproc db for ``files`` under ``root``; return the config path.
 
     The returned config is exactly what ``from_preproc_group`` / ``furax-so-map
-    --init-config`` consume.
+    --init-config`` consume. The detectors of each observation are split into ``n_detsets``
+    detsets, its preprocessing groups.
     """
     obsfiledb = metadata.ObsFileDb(map_file=(root / 'obsfiledb.sqlite').as_posix())
     obsdb = metadata.ObsDb()
@@ -60,8 +62,11 @@ def build_preproc_db(root: Path, files: list[Path]) -> Path:
         obs_id = str(am.obs_info.obs_id)
         _RAW_FILES[obs_id] = Path(file).resolve().as_posix()
 
-        obsfiledb.add_detset(f'detset{i}', [str(v) for v in am.dets.vals])
-        obsfiledb.add_obsfile(_RAW_FILES[obs_id], obs_id, f'detset{i}', 0, am.samps.count)
+        for j, dets in enumerate(np.array_split([str(v) for v in am.dets.vals], n_detsets)):
+            obsfiledb.add_detset(f'detset{i}_{j}', list(dets))
+            # one file per detset, by name only: the test loader reads _RAW_FILES
+            name = f'{_RAW_FILES[obs_id]}#{j}'
+            obsfiledb.add_obsfile(name, obs_id, f'detset{i}_{j}', 0, am.samps.count)
         obsdb.update_obs(
             obs_id,
             {'timestamp': float(am.timestamps[0]), 'telescope': str(am.obs_info.telescope)},
@@ -93,6 +98,7 @@ def build_preproc_db(root: Path, files: list[Path]) -> Path:
     config = {
         'context_file': (root / 'context.yaml').as_posix(),
         'archive': {'index': (root / 'preprocess.sqlite').as_posix()},
+        'subobs': {'use': 'detset'},
         'process_pipe': [],
     }
     config_path = root / 'config.yaml'

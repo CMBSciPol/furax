@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import threading
 from collections.abc import Collection
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, Self, overload
 
@@ -238,6 +239,58 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if aman is None:
             raise RuntimeError(f'no detectors left after cuts for {observation_id}')
         return cls(aman, sotodlib_config)
+
+    @classmethod
+    def from_preproc_groups(
+        cls,
+        observation_id: str,
+        init_config: str | Path,
+        proc_config: str | Path | None = None,
+        detector_selection: dict[str, str] | None = None,
+        sotodlib_config: SotodlibConfig | None = None,
+    ) -> Self:
+        """Loads every preprocessing group of an observation as a single observation.
+
+        The preprocessing runs per group of detectors (the config's `subobs.use`, e.g. wafer slot
+        and bandpass). Each group matching `detector_selection` is loaded as by
+        [`from_preproc_group`][furax.interfaces.sotodlib.observation.SOTODLibObservation.from_preproc_group], so it is preprocessed exactly as on its own,
+        and the groups are joined along the detectors: with a bandpass selection, the observation
+        spans the whole focal plane. Groups with no detectors left after cuts are skipped.
+
+        Args:
+            observation_id: Observation id (e.g. 'obs_1714550584_satp3_1111111').
+            init_config: Base-layer preprocessing config (path or posix string).
+            proc_config: Optional second-layer preprocessing config.
+            detector_selection: Optional detector restriction (e.g. {'wafer.bandpass': 'f150'}).
+            sotodlib_config: Optional sotodlib-specific configuration.
+
+        Returns:
+            An instance of SOTODLibObservation.
+
+        Raises:
+            RuntimeError: If the groups cannot be listed, or no detectors remain in any of them.
+            ValueError: If the groups do not share their samples.
+        """
+        sotodlib_config = sotodlib_config or SotodlibConfig()
+        parts = []
+        for selection in _group_selections(observation_id, init_config, detector_selection):
+            try:
+                part = cls.from_preproc_group(
+                    observation_id, init_config, proc_config, selection, sotodlib_config
+                )
+            except RuntimeError:  # all the group's detectors are cut
+                continue
+            parts.append(part.data)
+        if not parts:
+            raise RuntimeError(f'no detectors left after cuts for {observation_id}')
+        first = parts[0]
+        for part in parts[1:]:
+            if part.samps != first.samps or not np.array_equal(part.timestamps, first.timestamps):
+                raise ValueError(f'the preprocessing groups of {observation_id} differ in samples')
+        # the samples are shared: the fields without a detector axis are the same in every group
+        data = AxisManager.concatenate(parts, 'dets', other_fields='first')
+        # each group is already downsampled
+        return cls(data, replace(sotodlib_config, downsample=1))
 
     @property
     def name(self) -> str:
@@ -539,6 +592,11 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
 
     Loads on demand via ``SOTODLibObservation.from_preproc_group``, so observations are
     streamed straight from the preproc archive at mapmaking time and never copied to disk.
+
+    With ``join_groups``, every preprocessing group matching ``detector_selection`` is loaded and
+    the groups are joined into one observation (see
+    [`SOTODLibObservation.from_preproc_groups`][furax.interfaces.sotodlib.observation.SOTODLibObservation.from_preproc_groups]),
+    e.g. all the wafers of a bandpass. Otherwise the selection must match a single group.
     """
 
     interface_class = SOTODLibObservation
@@ -550,11 +608,13 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         proc_config: str | Path | None = None,
         detector_selection: dict[str, str] | None = None,
         sotodlib_config: SotodlibConfig | None = None,
+        join_groups: bool = False,
     ) -> None:
         self.observation_id = observation_id
         self.init_config = Path(init_config).resolve()
         self.proc_config = Path(proc_config).resolve() if proc_config else None
         self.detector_selection = detector_selection
+        self.join_groups = join_groups
         self._sotodlib_config = sotodlib_config
 
     @property
@@ -564,7 +624,12 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
     def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
         # A preproc load cannot be field-subset: the full observation is always returned,
         # which satisfies any requested fields. The cheap shape path lives in probe_shape.
-        return SOTODLibObservation.from_preproc_group(
+        load = (
+            SOTODLibObservation.from_preproc_groups
+            if self.join_groups
+            else SOTODLibObservation.from_preproc_group
+        )
+        return load(
             self.observation_id,
             self.init_config,
             self.proc_config,
@@ -583,16 +648,42 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
           but before the process pipeline, which only ever restricts detectors further.
         - ``n_samples`` is ``ceil(meta.samps.count / downsample)``. The process pipeline only trims
           samples (e.g. edge cuts) before downsampling, so this bounds the actual samps count.
+
+        With ``join_groups``, the detectors are summed over the groups.
         """
         _enable_preproc_context_cache()
         # call get_preprocess_context through the module so the cached get_preprocess_context is used
         # (str, not Path: sotodlib and the cache key expect a posix string)
         _, context = pu.get_preprocess_context(self.init_config.as_posix())
-        meta = context.get_meta(self.observation_id, dets=self.detector_selection)
+        if self.join_groups:
+            selections = _group_selections(
+                self.observation_id, self.init_config, self.detector_selection
+            )
+        else:
+            selections = [self.detector_selection]
+        metas = [context.get_meta(self.observation_id, dets=s) for s in selections]
         downsample = (self._sotodlib_config or SotodlibConfig()).downsample
-        n_samps_ub = -(-meta.samps.count // downsample)  # ceil, matches downsample_obs
+        n_samps = max(meta.samps.count for meta in metas)
         return ObservationBufferShape(
-            meta.dets.count,
-            n_samps_ub,
-            meta.subscans.count if intervals else 0,
+            sum(meta.dets.count for meta in metas),
+            -(-n_samps // downsample),  # ceil, matches downsample_obs
+            max(meta.subscans.count for meta in metas) if intervals else 0,
         )
+
+
+def _group_selections(
+    observation_id: str, init_config: str | Path, detector_selection: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """The detector selection of each preprocessing group of the observation that it matches."""
+    _enable_preproc_context_cache()
+    configs, context = pu.get_preprocess_context(Path(init_config).as_posix())
+    group_by, groups, (error, message, _) = pu.get_groups(observation_id, configs, context)
+    if error is not None:
+        raise RuntimeError(f'cannot list the preprocessing groups of {observation_id}: {message}')
+    selection = detector_selection or {}
+    selections = []
+    for values in groups:
+        group = dict(zip(group_by, values, strict=True))
+        if all(v in np.atleast_1d(selection.get(k, v)) for k, v in group.items()):
+            selections.append(selection | group)
+    return selections

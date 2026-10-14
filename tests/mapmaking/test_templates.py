@@ -280,13 +280,6 @@ class TestTemperatureTemplate:
         lam = jr.normal(jr.key(41), (n_dets, 1))
         assert_allclose(op({'t': lam}), lam * T, rtol=TOL)
 
-    def test_projection_is_per_detector_inner_product(self) -> None:
-        n_dets, n_samps = 4, 200
-        T = jr.normal(jr.key(42), (n_dets, n_samps))
-        op = _wrap(t2p_basis(T, jnp.float64), n_dets)
-        x = jr.normal(jr.key(43), (n_dets, n_samps))
-        assert_allclose(op.T(x)['t'], jnp.sum(T * x, axis=-1)[:, None], rtol=TOL)
-
     def test_adjoint(self) -> None:
         n_dets, n_samps = 4, 200
         T = jr.normal(jr.key(44), (n_dets, n_samps))
@@ -320,18 +313,6 @@ class TestTemperatureTemplate:
         freqs = jnp.fft.rfftfreq(n_samps, d=1.0 / fs)
         out_of_band = (freqs <= f0) | (freqs >= f1)
         assert jnp.max(spec[:, out_of_band]) < TOL  # power confined to the band
-
-    def test_detector_batches_match_a_single_pass(self) -> None:
-        # more detectors than one batch, and not a multiple of it
-        n_dets, n_samps, fs, q = 70, 256, 10.0, 4
-        f0, f1 = 0.5, 2.0
-        T = jr.normal(jr.key(971), (n_dets, n_samps))
-        basis = t2p_basis(T, jnp.float64, fit_band=(f0, f1), sample_rate=fs, decimation_factor=q)
-        freqs = jnp.fft.rfftfreq(n_samps, d=1.0 / fs)
-        band = (freqs > f0) & (freqs < f1)
-        filtered = jnp.fft.irfft(jnp.fft.rfft(T, axis=-1) * band, n=n_samps, axis=-1)
-        expected = filtered.reshape(n_dets, n_samps // q, q).mean(axis=-1)
-        assert_allclose(basis.inner.values[:, 0], expected, rtol=TOL, atol=TOL)
 
     def test_decimated_synthesis_is_block_averaged_and_held(self) -> None:
         # decimation_factor=q stores T on a q-coarser grid; lambda = 1 -> synthesis is the

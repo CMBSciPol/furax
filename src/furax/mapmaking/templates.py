@@ -19,6 +19,7 @@ from typing import Any, Literal, cast
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jax.scipy.signal import detrend
 from jaxtyping import DTypeLike, Float, PyTree
 
 from furax import AbstractLinearOperator
@@ -211,7 +212,10 @@ def t2p_basis(
     estimates how much temperature leaks into its polarization.
 
     `fit_band=(f0, f1)` restricts the temperature basis to that frequency band (Hz), so the leakage
-    is both estimated and removed only there, keeping the template a clean linear operator.
+    is both estimated and removed only there, keeping the template a clean linear operator. The
+    band-pass treats the stream as periodic, so each stream is first detrended (its least-squares
+    line removed): the mismatch between the two ends of a drifting stream would otherwise ring
+    into the band.
 
     `decimation_factor=q` stores the basis on a `q`-times coarser grid to cut memory; the
     coarse-grid Nyquist frequency `sample_rate / 2q` must stay above `f1`. As a rule of thumb keep
@@ -233,7 +237,7 @@ def t2p_basis(
 
     def filter_and_decimate(t: Float[Array, ' samp']) -> Float[Array, ' dec']:
         if band is not None:
-            t = jnp.fft.irfft(jnp.fft.rfft(t) * band, n=n_full)
+            t = jnp.fft.irfft(jnp.fft.rfft(detrend(t)) * band, n=n_full)
         if q > 1:
             # Block-average onto a q-times coarser grid: pad the tail to a whole block,
             # reshape (n_dec, q) and mean. `DecimatedBasis` hold-upsamples back to `n_full` in

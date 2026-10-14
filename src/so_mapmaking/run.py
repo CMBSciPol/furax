@@ -38,7 +38,8 @@ def run(
         obsids_file: Text file with one obsid per line.
         outdir: Output directory for maps.
         mapmaking_config: Mapmaking config file.
-        wafer: Wafer slot selection.
+        wafer: Wafer slot selection, or 'all' to map every wafer of an observation as one
+            observation, so that the whole focal plane is fitted at once (preproc-db mode).
         band: Wafer bandpass selection.
         obsdir: Legacy mode: directory of prepared .h5 files. Mutually exclusive with
             ``init_config``.
@@ -95,7 +96,8 @@ def run(
         atexit.register(shutil.rmtree, stage_dir, ignore_errors=True)
         init_config = pp.normalize_config(init_config, stage_dir)
         proc_config = pp.normalize_config(proc_config, stage_dir) if proc_config else None
-        det_select = detector_selection(wafer, band)
+        join_groups = wafer == 'all'
+        det_select = detector_selection(None if join_groups else wafer, band)
         observations = [
             LazyPreprocSOTODLibObservation(
                 obs_id,
@@ -103,6 +105,7 @@ def run(
                 proc_config,
                 det_select,
                 sotodlib_config=config.sotodlib,
+                join_groups=join_groups,
             )
             for obs_id in obsids
         ]

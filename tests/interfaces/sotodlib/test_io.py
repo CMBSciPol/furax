@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.interfaces.sotodlib import (
     LazyPreprocSOTODLibObservation,
@@ -198,6 +198,37 @@ def test_lazy_preproc_probe_shape_downsample(tmp_path) -> None:
     expected_nsamp = -(-OBS_NSAMPLE[0] // 3)
     assert lazy.probe_shape() == (OBS_NDET[0], expected_nsamp, 0)
     assert lazy.get_data().n_samples == expected_nsamp
+
+
+@pytest.mark.parametrize('downsample', [1, 3])
+def test_lazy_preproc_join_groups(tmp_path, downsample: int) -> None:
+    """Joining the preprocessing groups gives the observation loaded as a whole."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    sotodlib_config = SotodlibConfig(downsample=downsample)
+    whole = LazyPreprocSOTODLibObservation(OBS_IDS[1], config, sotodlib_config=sotodlib_config)
+    joined = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, sotodlib_config=sotodlib_config, join_groups=True
+    )
+
+    assert joined.probe_shape() == whole.probe_shape()
+    expected, actual = whole.get_data(), joined.get_data()
+    assert actual.n_samples == expected.n_samples == -(-OBS_NSAMPLE[1] // downsample)
+    assert_array_equal(actual.detectors, expected.detectors)
+    # downsampling Fourier-resamples a group at a time: equal up to rounding
+    tods = expected.get_tods()
+    assert_allclose(actual.get_tods(), tods, rtol=0, atol=1e-6 * np.abs(tods).max())
+    assert_array_equal(actual.get_timestamps(), expected.get_timestamps())
+
+
+def test_lazy_preproc_join_selected_groups(tmp_path) -> None:
+    """Only the groups matching the detector selection are joined."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, detector_selection={'detset': 'detset0_1'}, join_groups=True
+    )
+
+    assert lazy.probe_shape() == (OBS_NDET[1] // 2, OBS_NSAMPLE[1], 0)
+    assert lazy.get_data().n_detectors == OBS_NDET[1] // 2
 
 
 def test_reader_with_preproc_observations(tmp_path) -> None:

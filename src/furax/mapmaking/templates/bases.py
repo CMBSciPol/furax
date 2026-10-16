@@ -2,8 +2,8 @@
 
 A [`Basis`][] is a small set of functions of time (Legendre polynomials, HWP harmonics, ...) used to
 model a structured signal. As an operator, it maps amplitudes to a signal; its transpose maps a
-signal back to amplitudes. The template operators of [`furax.mapmaking.templates`][] combine several bases into one operator
-over a TOD.
+signal back to amplitudes. A [`Template`][furax.mapmaking.templates.Template] sees a basis through
+the detectors and streams of a TOD.
 
 A few [`Basis`][] flavours trade memory for structure:
 

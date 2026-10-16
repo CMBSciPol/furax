@@ -6,8 +6,8 @@ import pytest
 from numpy.testing import assert_allclose
 
 from furax import tree
-from furax.mapmaking._template_model import Template, TemplateOperator
-from furax.mapmaking.bases import OffsetBasis, SegmentedBasis, TensorBasis
+from furax.mapmaking.templates import Template, TemplateOperator
+from furax.mapmaking.templates.bases import OffsetBasis, SegmentedBasis, TensorBasis
 from furax.obs import TODFormat
 
 N_DETS = 6
@@ -16,7 +16,7 @@ DET_GROUPS = np.eye(2, dtype=bool)[[0, 1, 0, 1, 1, 0]]
 N_MODES = 2
 
 
-def _tod(stokes, det_shape=(N_DETS,)):
+def _tod_format(stokes, det_shape=(N_DETS,)):
     return TODFormat((*det_shape, N_SAMPS), jnp.float64, stokes=stokes)
 
 
@@ -56,7 +56,7 @@ def _templates(sets, coupling, stokes, key):
     """One template per basis, each with the amplitude sets and the coupling of the case; on a
     demodulated TOD, the templates cover different streams."""
     per, grouped = SETS[sets]
-    tod = _tod(stokes)
+    tod_format = _tod_format(stokes)
     templates = {}
     for i, (name, basis) in enumerate(_bases(key).items()):
         on = LEGS[name] if stokes else None
@@ -65,7 +65,9 @@ def _templates(sets, coupling, stokes, key):
             streams_axis = () if on is None else (min(shape[0], len(on)),)  # only if demodulated
             c = jr.normal(jr.fold_in(key, 10 + i), (*streams_axis, shape[1], N_MODES))
         groups = jnp.asarray(DET_GROUPS) if grouped else None
-        templates[name] = Template(basis, tod, streams=on, per=per, coupling=c, det_groups=groups)
+        templates[name] = Template(
+            basis, tod_format, streams=on, per=per, coupling=c, det_groups=groups
+        )
     return templates
 
 
@@ -145,9 +147,9 @@ def test_template_alone_is_zero_off_its_streams():
     assert_allclose(tree.dot(tod, y), tree.dot(a, template.T(y)), rtol=1e-10)
 
 
-def _on_detector_axes(template, tod):
+def _on_detector_axes(template, tod_format):
     """The same template on a TOD whose detectors span several axes."""
-    det = tod.det_shape
+    det = tod_format.det_shape
     basis, coupling, groups = template.basis, template.coupling, template.det_groups
     if basis.batch_shape:
         basis = TensorBasis(basis.values.reshape(*det, *basis.shape, N_SAMPS), batch_shape=det)
@@ -156,14 +158,14 @@ def _on_detector_axes(template, tod):
         coupling = coupling.reshape(*coupling.shape[:-2], *(det if n > 1 else (1,) * len(det)), -1)
     if groups is not None:
         groups = groups.reshape(*det, -1)
-    return Template(basis, tod, template.streams, template.per, coupling, groups)
+    return Template(basis, tod_format, template.streams, template.per, coupling, groups)
 
 
 @pytest.mark.parametrize('sets', ['per_stream_and_det', 'shared', 'per_stream_and_group'])
 def test_detector_axes_are_those_of_a_flat_detector_axis(sets):
     flat = _templates(sets, 'full', 'IQU', jr.key(6))
-    tod = _tod('IQU', (2, 3))
-    shaped = {name: _on_detector_axes(t, tod) for name, t in flat.items()}
+    tod_format = _tod_format('IQU', (2, 3))
+    shaped = {name: _on_detector_axes(t, tod_format) for name, t in flat.items()}
     op_flat, op = TemplateOperator(flat), TemplateOperator(shaped)
     x = tree.normal_like(op_flat.in_structure, jr.key(7))
     x_shaped = {name: a.reshape(op.in_structure[name].shape) for name, a in x.items()}
@@ -176,8 +178,8 @@ def test_detector_axes_are_those_of_a_flat_detector_axis(sets):
 
 
 def test_single_timestream_has_no_detector_axis():
-    tod = TODFormat((N_SAMPS,), jnp.float64, stokes='QU')
-    template = Template(TensorBasis(jnp.ones((2, N_SAMPS))), tod, streams='qu')
+    tod_format = TODFormat((N_SAMPS,), jnp.float64, stokes='QU')
+    template = Template(TensorBasis(jnp.ones((2, N_SAMPS))), tod_format, streams='qu')
     assert template.per == ('stream',)
     assert template.in_structure.shape == (2, 2)
     assert template(jnp.ones((2, 2))).q.shape == (N_SAMPS,)
@@ -199,7 +201,7 @@ def test_single_timestream_has_no_detector_axis():
 )
 def test_amplitudes_put_sets_then_basis_then_modes(kwargs, per, shape):
     basis = SegmentedBasis(jnp.zeros(N_SAMPS, jnp.int32), jnp.ones((2, N_SAMPS)), 4)
-    template = Template(basis, _tod('QU' if 'streams' in kwargs else None), **kwargs)
+    template = Template(basis, _tod_format('QU' if 'streams' in kwargs else None), **kwargs)
     assert template.per == per
     assert template.in_structure.shape == shape
 
@@ -213,7 +215,7 @@ def test_canonical_amplitudes_have_fixed_axes(sets, coupled):
     coupling = jnp.ones((2, N_DETS, N_MODES)) if coupled else None
     det_groups = jnp.asarray(DET_GROUPS) if grouped else None
     template = Template(
-        basis, _tod('QU'), streams='qu', per=per, coupling=coupling, det_groups=det_groups
+        basis, _tod_format('QU'), streams='qu', per=per, coupling=coupling, det_groups=det_groups
     )
     a = jr.normal(jr.key(0), template.in_structure.shape)
 
@@ -244,7 +246,7 @@ def test_operator_stacks_under_vmap():
 
 def _template(stokes='QU', n_samps=N_SAMPS, dtype=jnp.float64, **kwargs):
     basis = TensorBasis(jnp.ones((1, n_samps), dtype))
-    return Template(basis, _tod(stokes), **kwargs)
+    return Template(basis, _tod_format(stokes), **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -275,7 +277,7 @@ def test_template_rejects(kwargs, match):
 def test_template_rejects_a_basis_batch_other_than_the_detectors():
     basis = TensorBasis(jnp.ones((2, 1, N_SAMPS)), batch_shape=(2,))
     with pytest.raises(ValueError, match=r'batch \(2,\), not the detectors \(6,\)'):
-        Template(basis, _tod('QU'), streams='q')
+        Template(basis, _tod_format('QU'), streams='q')
 
 
 def test_operator_rejects_no_template_and_different_tods():

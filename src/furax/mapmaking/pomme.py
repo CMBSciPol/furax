@@ -2,7 +2,8 @@ r"""Pomme: implicit deprojection of the mean of every short interval of the TOD.
 
 Pomme fits and removes one offset per detector and per interval of `tau` consecutive samples. It
 is a template in the sense of [`furax.mapmaking.templates`][], with the indicator template $Z$
-(one column per detector and interval, an [`OffsetBasis`][furax.mapmaking.bases.OffsetBasis]),
+(one column per detector and interval, an
+[`OffsetBasis`][furax.mapmaking.templates.bases.OffsetBasis]),
 whose matrix is never formed: with a diagonal weight $W$ that is constant on each interval, the
 marginalised weight $W' = W D_Z$ reduces to $W F$ with $F = I - Z (Z^\top Z)^{-1} Z^\top$ the plain
 interval-mean remover, [`PommeProjectionOperator`][].
@@ -14,8 +15,8 @@ the normal equations $P^\top W F P\, m = P^\top W F\, d$ are a valid GLS system.
 
 Other templates $T$ combine with Pomme through the effective weight $W F$: the joint deprojector
 of $[Z\ T]$ factorises exactly as $D_{FT} D_Z$ (block Gram-Schmidt in the $W$ metric), so the
-only new ingredient is the Gram of the Pomme-filtered templates $T^\top W F T$, which
-[`furax.mapmaking.gram`][] assembles by Schur-eliminating $Z$.
+only new ingredient is the Gram of the Pomme-filtered templates $T^\top W F T$, which the template
+Gram assembles by Schur-eliminating $Z$.
 """
 
 from dataclasses import field
@@ -26,7 +27,7 @@ from jaxtyping import Float, PyTree
 
 from furax import AbstractLinearOperator, square
 
-from .bases import OffsetBasis
+from .templates.bases import OffsetBasis
 
 __all__ = [
     'PommeProjectionOperator',

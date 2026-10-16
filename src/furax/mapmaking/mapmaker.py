@@ -85,6 +85,7 @@ from .pomme import PommeProjectionOperator
 from .preconditioner import BJPreconditioner, make_two_level_preconditioner
 from .results import MapMakingResults
 from .streaming import StreamOperator
+from .templates import TemplateOperator
 from .weight import WeightOperator
 
 
@@ -457,9 +458,16 @@ class MultiObservationMapMaker[T]:
                 sky_estimate, per_bucket = result.solution
                 # Every device holds the same replicated copy after the gather, so the host
                 # array is complete on every process; then back to observation order.
+                operators = [
+                    bm.templates.explicit.operator
+                    for bm in acc.buckets
+                    if bm.templates is not None and bm.templates.explicit is not None
+                ]
                 gathered = [
-                    jax.tree.map(bucket.merge_detector_batches, self._gather(a))
-                    for bucket, a in zip(self.layout.buckets, per_bucket, strict=True)
+                    _merge_detector_batches(bucket, self._gather(a), operator)
+                    for bucket, a, operator in zip(
+                        self.layout.buckets, per_bucket, operators, strict=True
+                    )
                 ]
                 amplitudes = jax.tree.map(
                     lambda *leaves: self.layout.to_observation_order(leaves), *gathered
@@ -1714,3 +1722,19 @@ def _depends_on_argument(
             dependent.update(eqn.outvars)
     flags = [not isinstance(v, JaxprLiteral) and v in dependent for v in jaxpr.outvars]
     return jax.tree.unflatten(jax.tree.structure(out_shape), flags), out_shape
+
+
+def _merge_detector_batches(
+    bucket: Bucket, amplitudes: dict[str, Array], operator: TemplateOperator
+) -> dict[str, np.ndarray]:
+    """Each template's amplitudes per slot of `bucket`, from those of its detector batches.
+
+    A template's amplitudes carry its detector axis after its stream axis, if it has one (see
+    [`Template`][furax.mapmaking.templates.Template]).
+    """
+    out = {}
+    for name, a in amplitudes.items():
+        axis = 1 + operator.templates[name].per.index('det')  # after the axis of entries
+        per_entry = np.moveaxis(np.asarray(a), axis, 1)
+        out[name] = np.moveaxis(bucket.merge_detector_batches(per_entry), 1, axis)
+    return out

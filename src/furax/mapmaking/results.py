@@ -35,7 +35,7 @@ class MapMakingResults:
         map / hit_map / icov     one file each, named after the field
                                  FITS for HEALPix or WCS, .npy otherwise
         noise_fits               noise_fits.npy
-        template_amplitudes      amplitudes.npz  (<template> or <template>/<leg>)
+        template_amplitudes      amplitudes.npz, one array per template
         solver_stats             solver_stats.json
         failed_observations      failed_observations.txt, one name per line
     """
@@ -62,7 +62,8 @@ class MapMakingResults:
     """Names of observations that failed to load and were excluded from the maps"""
 
     template_amplitudes: dict[str, Any] | None = None
-    """Estimated amplitudes of the explicit templates, keyed by template name"""
+    """Estimated amplitudes of the explicit templates, keyed by template name: per observation, the
+    amplitudes of [`Template`][furax.mapmaking.templates.Template], streams then detectors first"""
 
     def save(self, out_dir: str | Path) -> None:
         """Write every product that is set, into the files listed above."""
@@ -75,13 +76,7 @@ class MapMakingResults:
         if self.noise_fits is not None:
             np.save(out_dir / 'noise_fits.npy', np.array(self.noise_fits))
         if self.template_amplitudes:
-            # One entry per array: `<template>`, or `<template>/<leg>` when Stokes-valued.
-            entries: dict[str, np.ndarray] = {}
-            for name, value in self.template_amplitudes.items():
-                legs = value if isinstance(value, dict) else {'': value}
-                for leg, amplitudes in legs.items():
-                    key = f'{name}/{leg}' if leg else name
-                    entries[key] = np.array(amplitudes)
+            entries = {name: np.array(a) for name, a in self.template_amplitudes.items()}
             np.savez(out_dir / _AMPLITUDES_FILE, **entries)  # ty: ignore[invalid-argument-type]
         if self.solver_stats is not None:
             (out_dir / 'solver_stats.json').write_text(json.dumps(self.solver_stats, indent=2))
@@ -199,18 +194,12 @@ class MapMakingResults:
 
     @staticmethod
     def _load_amplitudes(out_dir: Path) -> dict[str, Any] | None:
-        """Rebuild the per-template mapping from the `<template>[/<leg>]` archive keys."""
+        """The amplitudes of each template, from the archive."""
         path = out_dir / _AMPLITUDES_FILE
         if not path.exists():
             return None
-        amplitudes: dict[str, Any] = {}
         with np.load(path) as archive:
-            for key in archive.files:
-                name, is_stokes_valued, leg = key.partition('/')
-                if is_stokes_valued:
-                    amplitudes.setdefault(name, {})[leg] = jnp.array(archive[key])
-                else:
-                    amplitudes[name] = jnp.array(archive[key])
+            amplitudes = {name: jnp.array(archive[name]) for name in archive.files}
         return amplitudes or None
 
     @staticmethod

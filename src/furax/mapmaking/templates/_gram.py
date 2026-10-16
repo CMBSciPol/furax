@@ -1,13 +1,13 @@
 r"""The Gram $T^\top W T$ of a template operator, its assembly and its inverse.
 
 Under a weight $W$ diagonal in time and in streams, the Gram is assembled from the structure of the
-bases (see `_template_structure`). Otherwise it is assembled by probing: applying $T^\top W T$ to a
+bases (see `_structure`). Otherwise it is assembled by probing: applying $T^\top W T$ to a
 few probe amplitudes and reading its entries off the responses. That needs no structure from the
 weight beyond its reach: it must not couple detectors, nor samples more than `bandwidth` apart, nor
 streams unless declared. Both lay out the Gram alike, the probed bands possibly wider.
 
 The amplitudes split in two. The **local** ones belong to templates with a set per detector
-([`Template.per_detector`][furax.mapmaking._template_model.Template.per_detector]): a detector's
+([`Template.per_detector`][furax.mapmaking.templates.Template.per_detector]): a detector's
 amplitudes interact with no other detector's, so their Gram is block diagonal, one block per
 detector, or per detector and stream when every local template has a set per stream and the weight
 does not couple streams. Every other amplitude is **global**, in one block, or one per stream
@@ -32,17 +32,17 @@ from typing import Literal, NamedTuple, Self
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jaxtyping import Float
+from jaxtyping import Float, PyTree
 
-from furax import AbstractLinearOperator, tree
+from furax import AbstractLinearOperator, DiagonalOperator, symmetric, tree
+from furax.core import BlockDiagonalOperator
 from furax.core.utils import register_dataclass_with_keys
 from furax.linalg import ArrowheadCholeskyOperator, BorderedBandedMatrix, probe_bordered_banded
 
-from . import _template_structure
-from ._template_model import TemplateOperator
+from ..pomme import PommeProjectionOperator
+from . import _structure
+from ._operator import TemplateOperator
 from .bases import OffsetBasis
-from .gram import _ridge_operator
-from .pomme import PommeProjectionOperator
 
 __all__ = [
     'BlockGram',
@@ -138,12 +138,12 @@ def template_gram(
             instead, as it is from the structure when a time-local template has blocks shorter
             than a Pomme interval.
     """
-    tod = operator.tod
+    tod_format = operator.tod_format
     pomme = None
     if pomme_tau is not None:
-        if tod.stokes is not None:
+        if tod_format.stokes is not None:
             raise ValueError('Pomme filtering applies to a TOD that is not demodulated')
-        pomme = OffsetBasis(pomme_tau, tod.n_samples, tod.dtype)
+        pomme = OffsetBasis(pomme_tau, tod_format.n_samples, tod_format.dtype)
     diagonal = bandwidth == 0 and not streams_coupled
     if method is None:
         method = 'structure' if diagonal else 'probe'
@@ -163,17 +163,19 @@ def template_gram(
 
     diagonal_weights = None
     if method == 'structure':
-        weights = tod.as_array(weight(tod.ones()))
-        diagonal_weights = tuple(weights.reshape(tod.n_streams, tod.n_dets, tod.n_samples))
+        weights = tod_format.as_array(weight(tod_format.ones()))
+        diagonal_weights = tuple(
+            weights.reshape(tod_format.n_streams, tod_format.n_dets, tod_format.n_samples)
+        )
     elif pomme is not None:  # W F couples the samples of an interval
-        weight = weight @ PommeProjectionOperator(pomme.tau, in_structure=tod.structure)
+        weight = weight @ PommeProjectionOperator(pomme.tau, in_structure=tod_format.structure)
         bandwidth = max(bandwidth, pomme.tau - 1)
 
     def assemble(layout, reading):
         if diagonal_weights is None:
             matrix, cross = _probe(operator, weight, layout, reading, bandwidth, batch_size)
         else:
-            matrix, cross = _template_structure.assemble(
+            matrix, cross = _structure.assemble(
                 operator, diagonal_weights, layout, reading, batch_size, pomme
             )
         return _Part(matrix, layout), cross
@@ -229,7 +231,8 @@ def factor(
     if local is not None:
         parts.append(local)
 
-    structure = tree.as_structure(ridges)
+    # shapes and dtypes only: the ridges may be laid out over a mesh the inverse is not used on
+    structure = {name: jax.ShapeDtypeStruct(r.shape, r.dtype) for name, r in ridges.items()}
     inverse = _GramInverse(tuple(parts), exact, in_structure=structure)
     if not regularization:
         return inverse, None
@@ -316,7 +319,7 @@ class _Layout(NamedTuple):
             # the time blocks lead the amplitudes of a time-local basis
             assert basis.shape[0] == basis._n_blocks, f'{name!r}: no leading axis of time blocks'
             core = entries.pop(name)
-        return cls(local, per_stream, operator.tod.n_streams, core, tuple(entries.values()))
+        return cls(local, per_stream, operator.tod_format.n_streams, core, tuple(entries.values()))
 
     @property
     def entries(self) -> tuple['_Entry', ...]:
@@ -477,12 +480,12 @@ def _probe(
             pass  # traced: the bands are made NaN below instead
     matrix, cross = probe_bordered_banded(
         apply,
-        batch_shape=(layout.n_units(operator.tod.n_dets),),
+        batch_shape=(layout.n_units(operator.tod_format.n_dets),),
         n_blocks=layout.n_blocks,
         k=layout.k,
         n_border=layout.n_border,
         half_width=half_width,
-        dtype=operator.tod.dtype,
+        dtype=operator.tod_format.dtype,
         batch_size=batch_size,
     )
     if matrix.bands is not None:  # so that a band too narrow cannot pass unnoticed
@@ -519,6 +522,7 @@ class _Exact:
         return out | self.global_.scatter(*self.global_.unflat(x_global[None]))
 
 
+@symmetric
 class _GramInverse(AbstractLinearOperator):
     """The inverse of a block Gram, on the amplitudes of its templates."""
 
@@ -532,3 +536,18 @@ class _GramInverse(AbstractLinearOperator):
         for part in self.parts:
             out |= part.solve(x)
         return {name: out[name] for name in x}
+
+
+def _ridge_operator(
+    ridges: PyTree[Array], structure: PyTree[jax.ShapeDtypeStruct]
+) -> AbstractLinearOperator:
+    """The ridge added to the Gram before factoring, as a diagonal operator on the amplitudes.
+
+    `ridges` matches `structure`, each leaf holding one value per amplitude, in any shape.
+    """
+    diagonals = jax.tree.map(
+        lambda ridge, s: DiagonalOperator(ridge.reshape(s.shape), in_structure=s),
+        ridges,
+        structure,
+    )
+    return BlockDiagonalOperator(diagonals)

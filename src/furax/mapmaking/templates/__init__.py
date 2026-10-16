@@ -1,0 +1,39 @@
+"""Templates of structured signals in the TOD: their bases, operator and Gram.
+
+A [`Template`][furax.mapmaking.templates.Template] is a
+[`Basis`][furax.mapmaking.templates.bases.Basis] of functions of time, seen by the detectors and
+streams of a TOD through a coupling. [`build_templates`][furax.mapmaking.templates.build_templates]
+makes the templates a configuration enables from an observation's data, through the builders of
+each kind of template, and [`TemplateOperator`][furax.mapmaking.templates.TemplateOperator] sums
+the templates of one TOD.
+"""
+
+from ._builders import (
+    azimuth_hwp_synchronous_templates,
+    binned_azimuth_hwp_synchronous_templates,
+    binned_azimuth_synchronous_templates,
+    build_templates,
+    hwp_synchronous_templates,
+    polynomial_templates,
+    required_reader_fields,
+    scan_synchronous_templates,
+    spline_hwp_synchronous_templates,
+    t2p_templates,
+)
+from ._operator import PerAxis, Template, TemplateOperator
+
+__all__ = [
+    'PerAxis',
+    'Template',
+    'TemplateOperator',
+    'build_templates',
+    'required_reader_fields',
+    'polynomial_templates',
+    'scan_synchronous_templates',
+    'binned_azimuth_synchronous_templates',
+    'hwp_synchronous_templates',
+    'azimuth_hwp_synchronous_templates',
+    'binned_azimuth_hwp_synchronous_templates',
+    'spline_hwp_synchronous_templates',
+    't2p_templates',
+]

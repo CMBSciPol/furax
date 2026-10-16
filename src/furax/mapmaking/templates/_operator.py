@@ -1,7 +1,7 @@
 """Templates of structured signals in the TOD, and the operator that sums them.
 
-A [`Template`][] is a [`Basis`][furax.mapmaking.bases.Basis] of functions of time, seen by each
-detector and stream of a TOD through a coupling, with independent amplitudes along some of
+A [`Template`][] is a [`Basis`][furax.mapmaking.templates.bases.Basis] of functions of time, seen by
+each detector and stream of a TOD through a coupling, with independent amplitudes along some of
 these axes. Amplitudes per detector or per stream, shared across them, or seen through a pattern
 over the focal plane are all choices of these ingredients. As an operator, a template maps its
 amplitudes to the TOD that a [`TODFormat`][furax.obs.TODFormat] describes, and
@@ -64,23 +64,24 @@ class Template(AbstractLinearOperator):
         A common mode, one offset per block of 4 samples, seen by 3 detectors with known gains,
         the coupling. With `per=()`, the detectors share one timestream of offsets:
 
-        >>> from furax.mapmaking.bases import OffsetBasis, TensorBasis
-        >>> tod = TODFormat((3, 16), jnp.float32)
+        >>> from furax.mapmaking.templates.bases import OffsetBasis, TensorBasis
+        >>> tod_format = TODFormat((3, 16), jnp.float32)
         >>> offsets = OffsetBasis(4, 16, jnp.float32)
         >>> gains = jnp.array([[1.0], [0.5], [-1.0]])  # (det, mode)
-        >>> Template(offsets, tod, per=(), coupling=gains).in_structure.shape  # (block, mode)
+        >>> common = Template(offsets, tod_format, per=(), coupling=gains)
+        >>> common.in_structure.shape  # (block, mode)
         (4, 1)
 
         With `per=('det',)`, each detector fits its own offsets, which the gains only rescale:
 
-        >>> Template(offsets, tod, per=('det',), coupling=gains).in_structure.shape
+        >>> Template(offsets, tod_format, per=('det',), coupling=gains).in_structure.shape
         (3, 4, 1)
 
         With `det_groups`, the detectors of each wafer share their offsets, here the first two
         detectors on one wafer and the third on another:
 
         >>> wafers = jnp.array([[True, False], [True, False], [False, True]])  # (det, group)
-        >>> Template(offsets, tod, per=('det',), det_groups=wafers).in_structure.shape
+        >>> Template(offsets, tod_format, per=('det',), det_groups=wafers).in_structure.shape
         (2, 4)
 
         A temperature-to-polarization leakage, one coefficient per stream and detector on Q and U.
@@ -106,9 +107,10 @@ class Template(AbstractLinearOperator):
     """
 
     basis: Basis
-    """The functions of time: one basis, or one per detector (`batch_shape=tod.det_shape`)."""
-    tod: TODFormat = field(metadata={'static': True})
-    """The TOD the template adds to."""
+    """The functions of time: one basis, or one per detector, of batch shape the detector shape of
+    the TOD."""
+    tod_format: TODFormat = field(metadata={'static': True})
+    """The format of the TOD the template adds to."""
     streams: str | None = field(default=None, metadata={'static': True})
     """The streams covered, as Stokes parameters in lower case, such as `'qu'`; `None` unless the
     TOD is demodulated."""
@@ -135,12 +137,12 @@ class Template(AbstractLinearOperator):
             for axis in _PER_AXES
             if axis in self.per
             and (axis != 'stream' or self.streams is not None)
-            and (axis != 'det' or self.tod.det_shape)
+            and (axis != 'det' or self.tod_format.det_shape)
         )
         object.__setattr__(self, 'per', per)
         self._check_streams()
         self._check_arrays()
-        structure = jax.ShapeDtypeStruct(self._amplitude_shape(), self.tod.dtype)
+        structure = jax.ShapeDtypeStruct(self._amplitude_shape(), self.tod_format.dtype)
         object.__setattr__(self, 'in_structure', structure)
         super().__post_init__()
 
@@ -148,7 +150,7 @@ class Template(AbstractLinearOperator):
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         # Read off static metadata rather than traced through `mv`, which would see the extra
         # leading axis of a template stacked across observations.
-        return self.tod.structure
+        return self.tod_format.structure
 
     @property
     def n_det_groups(self) -> int | None:
@@ -161,13 +163,13 @@ class Template(AbstractLinearOperator):
         return 'det' in self.per and self.det_groups is None
 
     def mv(self, x: Array) -> TOD:
-        return _sum_into(self.tod, [(self._stream_indices, self._expand_streams(x))])
+        return _sum_into(self.tod_format, [(self._stream_indices, self._expand_streams(x))])
 
     def transpose(self) -> AbstractLinearOperator:
         return _TemplateTranspose(self)
 
     def _check_streams(self) -> None:
-        streams, stokes = self.streams, self.tod.stokes
+        streams, stokes = self.streams, self.tod_format.stokes
         if streams is None:
             if stokes is not None:
                 raise ValueError(f'the template covers no stream of stokes={stokes!r}')
@@ -182,12 +184,12 @@ class Template(AbstractLinearOperator):
         """The indices along the TOD's stream axis of the streams covered."""
         if self.streams is None:
             return (0,)
-        assert self.tod.stokes is not None  # streams are those of a demodulated TOD
-        return tuple(self.tod.stokes.lower().index(stream) for stream in self.streams)
+        assert self.tod_format.stokes is not None  # streams are those of a demodulated TOD
+        return tuple(self.tod_format.stokes.lower().index(stream) for stream in self.streams)
 
     def _check_arrays(self) -> None:
-        tod = self.tod
-        det_shape = tod.det_shape
+        tod_format = self.tod_format
+        det_shape = tod_format.det_shape
         if self.det_groups is not None and (
             'det' not in self.per or self.det_groups.shape[:-1] != det_shape
         ):
@@ -210,13 +212,13 @@ class Template(AbstractLinearOperator):
         if basis.batch_shape not in {(), det_shape}:
             msg = f'the basis has a batch {basis.batch_shape}, not the detectors {det_shape}'
             raise ValueError(msg)
-        if basis.n_points != tod.n_samples:
-            raise ValueError(f'the basis has {basis.n_points} samples, not {tod.n_samples}')
-        if jnp.dtype(basis.dtype) != tod.dtype:
-            raise ValueError(f'the basis has dtype {basis.dtype}, not {tod.dtype}')
+        if basis.n_points != tod_format.n_samples:
+            raise ValueError(f'the basis has {basis.n_points} samples, not {tod_format.n_samples}')
+        if jnp.dtype(basis.dtype) != tod_format.dtype:
+            raise ValueError(f'the basis has dtype {basis.dtype}, not {tod_format.dtype}')
 
     def _amplitude_shape(self) -> tuple[int, ...]:
-        sets = {'stream': (len(self._stream_indices),), 'det': self.tod.det_shape}
+        sets = {'stream': (len(self._stream_indices),), 'det': self.tod_format.det_shape}
         if self.n_det_groups is not None:
             sets['det'] = (self.n_det_groups,)
         modes = () if self.coupling is None else self.coupling.shape[-1:]
@@ -235,7 +237,7 @@ class Template(AbstractLinearOperator):
         """The shape of the amplitudes in the canonical layout."""
         n_sets = 1
         if 'det' in self.per:
-            n_sets = self.tod.n_dets if self.n_det_groups is None else self.n_det_groups
+            n_sets = self.tod_format.n_dets if self.n_det_groups is None else self.n_det_groups
         n_modes = 1 if self.coupling is None else self.coupling.shape[-1]
         n_streams = len(self._stream_indices) if 'stream' in self.per else 1
         return (n_streams, n_sets, *self.basis.shape, n_modes)
@@ -260,7 +262,7 @@ class Template(AbstractLinearOperator):
             terms = []
             for stream in range(n_streams):
                 coefficients = self._coefficients(self._rows(a, stream), stream)
-                terms.append(_DenseTerm(coefficients.reshape(self.tod.n_dets, -1), dense))
+                terms.append(_DenseTerm(coefficients.reshape(self.tod_format.n_dets, -1), dense))
             return terms
         if self._stream_free:
             return n_streams * [self._expand(a, 0)]
@@ -326,38 +328,38 @@ class Template(AbstractLinearOperator):
         """The basis on coefficients `(n_dets or 1, *basis.shape)`: `(n_dets or 1, samp)`."""
         if not self.basis.batch_shape:
             return self.basis(coefficients)
-        tod = self.tod
-        shaped = jnp.broadcast_to(coefficients, (tod.n_dets, *coefficients.shape[1:]))
-        signal = self.basis(shaped.reshape(*tod.det_shape, *self.basis.shape))
-        return signal.reshape(tod.n_dets, tod.n_samples)
+        tod_format = self.tod_format
+        shaped = jnp.broadcast_to(coefficients, (tod_format.n_dets, *coefficients.shape[1:]))
+        signal = self.basis(shaped.reshape(*tod_format.det_shape, *self.basis.shape))
+        return signal.reshape(tod_format.n_dets, tod_format.n_samples)
 
     def _project_basis(self, signal: Float[Array, 'det samp']) -> Array:
         """The transpose of `_expand_basis` for `n_dets` rows."""
         if not self.basis.batch_shape:
             return self.basis.T(signal)
-        tod = self.tod
-        coefficients = self.basis.T(signal.reshape(tod.shape))
-        return coefficients.reshape(tod.n_dets, *self.basis.shape)
+        tod_format = self.tod_format
+        coefficients = self.basis.T(signal.reshape(tod_format.shape))
+        return coefficients.reshape(tod_format.n_dets, *self.basis.shape)
 
     def _weights(self, stream: int) -> Float[Array, 'det set mode']:
         """`W[d, o, m]` on stream number `stream`, for templates without a set per detector."""
         coupling = self._coupling_on(stream)[:, None, :]  # every detector sees the single set
         if self.det_groups is None:
             return coupling
-        groups = self.det_groups.reshape(self.tod.n_dets, -1)
+        groups = self.det_groups.reshape(self.tod_format.n_dets, -1)
         return groups[..., None] * coupling
 
     def _coupling_on(self, stream: int) -> Float[Array, 'det mode']:
         """The coupling on stream number `stream`: `(n_dets or 1, n_modes)`."""
         if self.coupling is None:
-            return jnp.ones((1, 1), self.tod.dtype)
+            return jnp.ones((1, 1), self.tod_format.dtype)
         coupling = self.coupling
         if self.streams is not None:
             coupling = coupling[stream if coupling.shape[0] > 1 else 0]
         if prod(coupling.shape[:-1]) == 1:  # the same on every detector
             return coupling.reshape(1, -1)
-        shape = (*self.tod.det_shape, coupling.shape[-1])
-        return jnp.broadcast_to(coupling, shape).reshape(self.tod.n_dets, -1)
+        shape = (*self.tod_format.det_shape, coupling.shape[-1])
+        return jnp.broadcast_to(coupling, shape).reshape(self.tod_format.n_dets, -1)
 
 
 class _TemplateTranspose(TransposeOperator):
@@ -365,8 +367,10 @@ class _TemplateTranspose(TransposeOperator):
 
     def mv(self, x: TOD) -> Array:
         template = self.operator
-        tod = template.tod
-        streams = tod.as_array(x).reshape(tod.n_streams, tod.n_dets, tod.n_samples)
+        tod_format = template.tod_format
+        streams = tod_format.as_array(x).reshape(
+            tod_format.n_streams, tod_format.n_dets, tod_format.n_samples
+        )
         return template._project_streams([streams[i] for i in template._stream_indices])
 
 
@@ -383,12 +387,12 @@ class TemplateOperator(BlockRowOperator):
         A polynomial per stream and detector, and a leakage on Q and U of one shared amplitude, seen
         with a gain per stream and detector:
 
-        >>> from furax.mapmaking.bases import TensorBasis
-        >>> tod = TODFormat((3, 5), jnp.float32, stokes='IQU')
-        >>> poly = Template(TensorBasis(jnp.ones((2, 5))), tod, streams='iqu')
+        >>> from furax.mapmaking.templates.bases import TensorBasis
+        >>> tod_format = TODFormat((3, 5), jnp.float32, stokes='IQU')
+        >>> poly = Template(TensorBasis(jnp.ones((2, 5))), tod_format, streams='iqu')
         >>> gains = jnp.ones((2, 3, 1))  # (stream, det, mode)
         >>> constant = TensorBasis(jnp.ones((1, 5)))
-        >>> leak = Template(constant, tod, streams='qu', per=(), coupling=gains)
+        >>> leak = Template(constant, tod_format, streams='qu', per=(), coupling=gains)
         >>> op = TemplateOperator({'poly': poly, 'leak': leak})
         >>> {name: s.shape for name, s in op.in_structure.items()}
         {'leak': (1, 1), 'poly': (3, 3, 2)}
@@ -399,7 +403,7 @@ class TemplateOperator(BlockRowOperator):
     def __init__(self, templates: dict[str, Template]) -> None:
         if not templates:
             raise ValueError('a template operator needs at least one template')
-        if len({template.tod for template in templates.values()}) > 1:
+        if len({template.tod_format for template in templates.values()}) > 1:
             raise ValueError('the templates add to different TODs')
         super().__init__(templates)
 
@@ -409,13 +413,13 @@ class TemplateOperator(BlockRowOperator):
         return self.blocks
 
     @property
-    def tod(self) -> TODFormat:
+    def tod_format(self) -> TODFormat:
         """The TOD the templates add to."""
-        return next(iter(self.templates.values())).tod
+        return next(iter(self.templates.values())).tod_format
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.tod.structure
+        return self.tod_format.structure
 
     def mv(self, x: dict[str, Array]) -> TOD:
         # The block row would add up each template's whole TOD. Instead, each stream of the TOD sums
@@ -423,7 +427,7 @@ class TemplateOperator(BlockRowOperator):
         terms = [
             (t._stream_indices, t._expand_streams(x[name])) for name, t in self.templates.items()
         ]
-        return _sum_into(self.tod, terms)
+        return _sum_into(self.tod_format, terms)
 
 
 class _DenseTerm(NamedTuple):
@@ -433,19 +437,23 @@ class _DenseTerm(NamedTuple):
     values: Float[Array, 'k samp']
 
 
-def _sum_into(tod: TODFormat, terms: list[tuple[tuple[int, ...], list[Array | _DenseTerm]]]) -> TOD:
+def _sum_into(
+    tod_format: TODFormat, terms: list[tuple[tuple[int, ...], list[Array | _DenseTerm]]]
+) -> TOD:
     """The TOD summing the signals of templates, given with the streams they cover, by index."""
-    by_stream: list[list[Array | _DenseTerm]] = [[] for _ in range(tod.n_streams)]
+    by_stream: list[list[Array | _DenseTerm]] = [[] for _ in range(tod_format.n_streams)]
     for streams, signals in terms:
         for stream, signal in zip(streams, signals, strict=True):
             by_stream[stream].append(signal)
-    streams = jnp.stack([_sum_stream(tod, signals) for signals in by_stream])
-    return tod.from_array(streams.reshape(tod.n_streams, *tod.shape))
+    streams = jnp.stack([_sum_stream(tod_format, signals) for signals in by_stream])
+    return tod_format.from_array(streams.reshape(tod_format.n_streams, *tod_format.shape))
 
 
-def _sum_stream(tod: TODFormat, signals: list[Array | _DenseTerm]) -> Float[Array, 'det samp']:
+def _sum_stream(
+    tod_format: TODFormat, signals: list[Array | _DenseTerm]
+) -> Float[Array, 'det samp']:
     """One stream's sum of signals, `(n_dets, samp)`."""
-    stream = jnp.zeros((tod.n_dets, tod.n_samples), tod.dtype)
+    stream = jnp.zeros((tod_format.n_dets, tod_format.n_samples), tod_format.dtype)
     dense = [signal for signal in signals if isinstance(signal, _DenseTerm)]
     for signal in signals:
         if not isinstance(signal, _DenseTerm):

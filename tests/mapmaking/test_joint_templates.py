@@ -143,21 +143,20 @@ def test_demodulated_polynomial_implicit_runs():
 
 
 @pytest.mark.parametrize(
-    ('name', 'legendre', 'groups', 'legs'),
+    ('name', 'legendre', 'templates'),
     [
-        ('polynomial', PolynomialOrders(0, 3), ['iqu'], ['i', 'q', 'u']),
+        ('polynomial', PolynomialOrders(0, 3), {'polynomial': 'iqu'}),
         (
             'polynomial',
             {'i': PolynomialOrders(0, 3), 'q': PolynomialOrders(1, 3), 'u': PolynomialOrders(1, 3)},
-            ['i', 'qu'],
-            ['i', 'q', 'u'],
+            {'polynomial_i': 'i', 'polynomial_qu': 'qu'},
         ),
-        ('scan_synchronous', {'qu': PolynomialOrders(2, 5)}, ['qu'], ['q', 'u']),
+        ('scan_synchronous', {'qu': PolynomialOrders(2, 5)}, {'scan_synchronous_qu': 'qu'}),
     ],
 )
-def test_demodulated_legs_fitted_alike_share_a_basis(name, legendre, groups, legs):
-    # legs fitted with the same orders share one basis, so an observation stores it once rather
-    # than once per leg; the amplitudes stay one set per leg, on the legs given orders only
+def test_demodulated_streams_fitted_alike_form_one_template(name, legendre, templates):
+    # the streams fitted with the same orders share one template, so an observation stores its
+    # basis once; the amplitudes stay one set per stream, on the streams given orders only
     template = PolynomialConfig() if name == 'polynomial' else ScanSynchronousConfig()
     cfg = _config(TemplatesConfig(**{name: template}))
     cfg.sotodlib = SotodlibConfig(demodulated=True)
@@ -166,8 +165,7 @@ def test_demodulated_legs_fitted_alike_share_a_basis(name, legendre, groups, leg
     with jax.set_mesh(maker.mesh):
         acc = maker.build_model_and_accumulate()
     operator = acc.buckets[0].templates.implicit.operator
-    assert sorted(operator.bases[name]) == groups
-    assert sorted(operator.in_structure[name]) == legs
+    assert {key: t.streams for key, t in operator.templates.items()} == templates
 
 
 @pytest.mark.parametrize(
@@ -218,8 +216,12 @@ def test_detector_batches_give_the_same_result(observations, templates, demodula
     scale = jnp.max(jnp.abs(whole.map.data))
     assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
     if whole.template_amplitudes is not None:
-        # batching pads 2 more detectors, whose amplitudes trail the real ones
-        got = jax.tree.map(lambda a: a[:, :n_dets], batched.template_amplitudes)
+        # batching pads 2 more detectors, whose amplitudes trail the real ones; the amplitudes
+        # are (obs, stream, det, ...) on a demodulated TOD, (obs, det, ...) otherwise
+        axis = 2 if demodulated else 1
+        got = jax.tree.map(
+            lambda a: jnp.take(a, jnp.arange(n_dets), axis=axis), batched.template_amplitudes
+        )
         jax.tree.map(
             lambda a, b: assert_allclose(a, b, atol=1e-4 * jnp.max(jnp.abs(b))),
             got,
@@ -301,13 +303,14 @@ def test_pomme_explicit_and_implicit_give_the_same_map(observations, template):
 
 @pytest.mark.parametrize('batch', [0, 1], ids=['one_batch', 'per_detector'])
 def test_explicit_and_implicit_agree_under_a_ridge(batch):
-    # Pomme removes the constant part of every template, so a polynomial starting at order 0 has
-    # a singular Gram and only the ridge makes it invertible. Marginalising the amplitudes uses
-    # the ridged Gram, so the joint system must carry the same ridge on its amplitude block,
-    # otherwise the two solves estimate different maps. With one detector per batch, the ridge is
-    # laid out over several slices per observation.
+    # Pomme removes the constant part of every template, so a scan-synchronous template starting
+    # at order 0 has a singular Gram and only the ridge makes it invertible. Marginalising the
+    # amplitudes uses the ridged Gram, so the joint system must carry the same ridge on its
+    # amplitude block, otherwise the two solves estimate different maps. With one detector per
+    # batch, the ridge is laid out over several slices per observation.
     def run(explicit: bool):
-        config = _pomme_config(TemplatesConfig(polynomial=PolynomialConfig(explicit=explicit)))
+        scan = ScanSynchronousConfig(legendre=PolynomialOrders(0, 3), explicit=explicit)
+        config = _pomme_config(TemplatesConfig(scan_synchronous=scan))
         config.templates.regularization = 1e-3  # large enough to tell the two systems apart
         config = replace(config, detector_batch_size=batch)
         observations = _ground_obs(n_obs=1, n_dets=2, n_samples=256)

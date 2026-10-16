@@ -9,7 +9,8 @@ from jax import Array
 from jaxtyping import Float
 from numpy.testing import assert_allclose
 
-from furax.mapmaking.bases import (
+from furax.mapmaking.templates import Template, TemplateOperator
+from furax.mapmaking.templates.bases import (
     Basis,
     DecimatedBasis,
     KroneckerBasis,
@@ -18,14 +19,15 @@ from furax.mapmaking.bases import (
     TensorBasis,
     WindowedBasis,
 )
-from furax.mapmaking.templates import TemplateOperator
+from furax.obs import TODFormat
 from furax.tree import as_structure
 
 
 def _wrap(basis: Basis, n_dets: int) -> TemplateOperator:
     """Wrap a bare basis as a single-template TemplateOperator: amplitudes are {'t': ...},
     output is a bare (n_dets, samp) array."""
-    return TemplateOperator({'t': basis}, n_dets)
+    tod_format = TODFormat((n_dets, basis.n_points), basis.dtype)
+    return TemplateOperator({'t': Template(basis, tod_format)})
 
 
 # float64 everywhere: structural/adjoint residuals run ~1e-14, so one tight tolerance fits all.

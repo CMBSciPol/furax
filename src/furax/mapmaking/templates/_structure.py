@@ -5,9 +5,9 @@ to a template $h$ only through the weighted Grams of their bases on each detecto
 
 $$ L^{ld}_{gh} = B_{g,d}^\top\, \mathrm{diag}(w_{ld})\, B_{h,d}, $$
 
-which [`Basis.gram`][furax.mapmaking.bases.Basis.gram] gives in bands and `_cross_gram` as a
-dense block. The Gram is then their contraction with the weights through which each detector sees
-the amplitude sets of each template (see [`Template`][furax.mapmaking._template_model.Template]):
+which [`Basis.gram`][furax.mapmaking.templates.bases.Basis.gram] gives in bands and `_cross_gram` as
+a dense block. The Gram is then their contraction with the weights through which each detector sees
+the amplitude sets of each template (see [`Template`][furax.mapmaking.templates.Template]):
 
 $$ G_{gh}[(o, m), (o', m')] = \sum_{l, d} W_{g, ld}[o, m]\, W_{h, ld}[o', m']\, L^{ld}_{gh}. $$
 
@@ -28,12 +28,11 @@ from jaxtyping import Float
 from furax import tree
 from furax.linalg import BorderedBandedMatrix
 
-from ._template_model import Template, TemplateOperator
+from ._operator import Template, TemplateOperator
 from .bases import Basis, OffsetBasis, WindowedBasis, _einsum
-from .gram import _cross_gram
 
 if TYPE_CHECKING:  # the Gram module calls this one
-    from ._template_gram import _Entry, _Layout
+    from ._gram import _Entry, _Layout
 
 
 def assemble(
@@ -113,19 +112,19 @@ class _GramInputs(NamedTuple):
 
     @classmethod
     def of(cls, template: Template) -> Self:
-        tod = template.tod
+        tod_format = template.tod_format
         on_streams = []
         for j in range(len(template._stream_indices)):
             w = template._weights(j)
-            on_streams.append(jnp.broadcast_to(w, (tod.n_dets, *w.shape[1:])))
+            on_streams.append(jnp.broadcast_to(w, (tod_format.n_dets, *w.shape[1:])))
         weights = jnp.stack(on_streams, axis=1)
         basis = template.basis
         if not basis.batch_shape:
             return cls(basis, basis.support(), weights)
         # one per detector, over the flattened detectors
         n_axes = len(basis.batch_shape)
-        basis = jax.tree.map(lambda a: a.reshape(tod.n_dets, *a.shape[n_axes:]), basis)
-        basis = basis._with_batch_shape((tod.n_dets,))
+        basis = jax.tree.map(lambda a: a.reshape(tod_format.n_dets, *a.shape[n_axes:]), basis)
+        basis = basis._with_batch_shape((tod_format.n_dets,))
         return cls(basis, basis, weights)
 
     @property
@@ -162,10 +161,10 @@ class _Pair(NamedTuple):
         rows, g, columns, h = self
         tg, th = operator.templates[g.name], operator.templates[h.name]
         shape = (*inputs[g.name].set_shape, *inputs[h.name].set_shape)
-        lead = (tg.tod.n_dets,) if rows.local else ()
+        lead = (tg.tod_format.n_dets,) if rows.local else ()
         n_slots = rows.n_streams if rows.per_stream else tg._canonical_shape[0]
         n_column_slots = 1 if columns.per_stream else th._canonical_shape[0]
-        out = jnp.zeros((*lead, n_slots, n_column_slots, *shape), tg.tod.dtype)
+        out = jnp.zeros((*lead, n_slots, n_column_slots, *shape), tg.tod_format.dtype)
         for stream, block in parts.get(self, []):
             slot = stream if rows.per_stream else tg._stream_set(g.streams.index(stream))
             column_slot = 0 if columns.per_stream else th._stream_set(h.streams.index(stream))
@@ -291,17 +290,17 @@ def _place_bands(
     """
     assert layout.core is not None
     template = operator.templates[layout.core.name]
-    lead = (template.tod.n_dets,) if layout.local else ()
+    lead = (template.tod_format.n_dets,) if layout.local else ()
     block_shape = parts[0][1].shape[len(lead) :]  # (i, w, o, r, m, o', s, n)
     n_blocks, n_w1 = block_shape[:2]
     k = prod(block_shape[2:5])
     if layout.per_stream:  # one unit per stream: the streams on the diagonal
-        out = jnp.zeros((*lead, layout.n_streams, *block_shape), template.tod.dtype)
+        out = jnp.zeros((*lead, layout.n_streams, *block_shape), template.tod_format.dtype)
         for stream, block in parts:
             out = out.at[..., stream, *(slice(None),) * len(block_shape)].add(block)
         return out.reshape(-1, n_blocks, n_w1, k, k)
     n_sets = template._canonical_shape[0]
-    out = jnp.zeros((*lead, n_sets, n_sets, *block_shape), template.tod.dtype)
+    out = jnp.zeros((*lead, n_sets, n_sets, *block_shape), template.tod_format.dtype)
     for stream, block in parts:
         s = template._stream_set(layout.core.streams.index(stream))
         out = out.at[..., s, s, *(slice(None),) * len(block_shape)].add(block)
@@ -427,3 +426,36 @@ class _BandedSums(NamedTuple):
             rows = jnp.clip(self.first + s, 0, self.n_blocks - 1)
             out = out.at[rows].add(_einsum('ia,ib->iab', self.sums[:, s], other))
         return out.reshape(self.n_blocks * k, -1)
+
+
+def _cross_gram(
+    a: Basis, b: Basis, weights: Float[Array, ' samp']
+) -> Float[Array, 'a_size b_size']:
+    """The weighted cross Gram `B_aᵀ diag(weights) B_b`, as one `(n_a·k_a, n_b·k_b)` block.
+
+    `a is b` recovers the self-Gram, though [`Basis.gram`][] is cheaper for a single template,
+    returning bands instead.
+    """
+    ca, cb = a.support(), b.support()
+    ka, kb = ca.values.shape[0], cb.values.shape[0]
+    if ka < kb:  # step through the smaller side's sub-basis functions (below), keep the larger
+        return _cross_gram(b, a, weights).T
+    vwa = (ca.values * weights[None, :]).T  # (samp, k_a)
+    if ca.blocks.shape[1] == cb.blocks.shape[1] == 1 and ca.n_blocks == cb.n_blocks == 1:
+        # both global: a plain matrix product, with no per-sample products at all
+        taps = ca.taps[:, 0] * cb.taps[:, 0]
+        return jnp.einsum(
+            'ta,bt->ab', taps[:, None] * vwa, cb.values, precision=jax.lax.Precision.HIGHEST
+        )
+
+    def column(values_b: Array) -> Array:
+        """The block for one sub-basis function of `b`, `(n_a, k_a, n_b)`."""
+        gram = jnp.zeros((ca.n_blocks, ka, cb.n_blocks), a.dtype)
+        for wa in range(ca.blocks.shape[1]):  # window slots (single slot for non-overlapping bases)
+            for wb in range(cb.blocks.shape[1]):
+                taps = ca.taps[:, wa] * cb.taps[:, wb] * values_b  # (samp,)
+                gram = gram.at[ca.blocks[:, wa], :, cb.blocks[:, wb]].add(taps[:, None] * vwa)
+        return gram
+
+    columns = jax.lax.map(column, cb.values)  # (k_b, n_a, k_a, n_b)
+    return jnp.moveaxis(columns, 0, -1).reshape(ca.n_blocks * ka, cb.n_blocks * kb)

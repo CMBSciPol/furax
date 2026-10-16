@@ -7,10 +7,10 @@ from jax.flatten_util import ravel_pytree
 from numpy.testing import assert_allclose
 
 from furax import AbstractLinearOperator, symmetric, tree
-from furax.mapmaking._template_gram import BlockGram, factor, template_gram
-from furax.mapmaking._template_model import Template, TemplateOperator
-from furax.mapmaking.bases import OffsetBasis, SegmentedBasis, TensorBasis, _einsum
 from furax.mapmaking.pomme import PommeProjectionOperator
+from furax.mapmaking.templates import Template, TemplateOperator
+from furax.mapmaking.templates._gram import BlockGram, factor, template_gram
+from furax.mapmaking.templates.bases import OffsetBasis, SegmentedBasis, TensorBasis, _einsum
 from furax.obs import TODFormat
 
 N_DETS = 4
@@ -21,7 +21,7 @@ ALL = np.arange(N_DETS)
 TAU = 5  # Pomme intervals, straddling the blocks of 8 samples of the offsets
 
 
-def _tod(dets=ALL):
+def _tod_format(dets=ALL):
     return TODFormat((len(dets), N_SAMPS), jnp.float64, stokes=STOKES)
 
 
@@ -29,15 +29,15 @@ def _local(key, dets=ALL):
     """Templates with a set per detector: a polynomial per interval (time-local), harmonics, and
     a leakage of each detector's own stream."""
     k = jr.split(key, 3)
-    tod = _tod(dets)
+    tod_format = _tod_format(dets)
     segment = jnp.repeat(jnp.arange(4), N_SAMPS // 4).astype(jnp.int32)
     stream = jr.normal(k[2], (N_DETS, 1, N_SAMPS))[dets]
     return {
         'poly': Template(
-            SegmentedBasis(segment, jr.normal(k[0], (2, N_SAMPS)), 4), tod, streams='iqu'
+            SegmentedBasis(segment, jr.normal(k[0], (2, N_SAMPS)), 4), tod_format, streams='iqu'
         ),
-        'hwp': Template(TensorBasis(jr.normal(k[1], (3, N_SAMPS))), tod, streams='qu'),
-        't2p': Template(TensorBasis(stream, batch_shape=(len(dets),)), tod, streams='qu'),
+        'hwp': Template(TensorBasis(jr.normal(k[1], (3, N_SAMPS))), tod_format, streams='qu'),
+        't2p': Template(TensorBasis(stream, batch_shape=(len(dets),)), tod_format, streams='qu'),
     }
 
 
@@ -45,26 +45,26 @@ def _global(key, dets=ALL):
     """Templates shared by detectors: a common mode seen with gains (time-local), a field of a
     polarization common to Q and U, and offsets per wafer."""
     k = jr.split(key, 3)
-    tod = _tod(dets)
+    tod_format = _tod_format(dets)
     offsets = OffsetBasis(8, N_SAMPS, jnp.float64)
     stream = jr.normal(k[1], (N_DETS, 1, N_SAMPS))[dets]
     wafers = jnp.asarray(WAFERS[dets][:, None] == np.arange(2))
     return {
         'common': Template(
             offsets,
-            tod,
+            tod_format,
             streams='qu',
             per=('stream',),
             coupling=jr.normal(k[0], (1, N_DETS, 1))[:, dets],
         ),
         'field': Template(
             TensorBasis(stream, batch_shape=(len(dets),)),
-            tod,
+            tod_format,
             streams='qu',
             per=(),
             coupling=jr.normal(k[2], (2, N_DETS, 2))[:, dets],
         ),
-        'wafer': Template(offsets, tod, streams='i', per=('det',), det_groups=wafers),
+        'wafer': Template(offsets, tod_format, streams='i', per=('det',), det_groups=wafers),
     }
 
 
@@ -94,7 +94,7 @@ def _weight(op, key, bandwidth=0, streams=False, dets=ALL):
     """A positive definite weight that couples no two detectors, nor samples more than
     `bandwidth` apart, and couples the streams of a detector if `streams`. Each detector's own block
     depends on that detector only."""
-    n_streams = len(op.tod.stokes or 'x')  # a single stream unless demodulated
+    n_streams = len(op.tod_format.stokes or 'x')  # a single stream unless demodulated
     stream, det, samp = (a.ravel() for a in np.indices((n_streams, N_DETS, N_SAMPS)))
     reach = (det[:, None] == det) & (np.abs(samp[:, None] - samp) <= bandwidth)
     if not streams:
@@ -176,12 +176,12 @@ def _check_gram(op, W, bandwidth, streams_coupled, method, batch_size=1, effecti
     assert_allclose(_dense(blocks, op), _dense(coupled, op, cross=False), rtol=1e-8, atol=1e-8)
 
 
-def _templates_on(tod, key):
+def _templates_on(tod_format, key):
     """A template of each kind on any TOD: per detector (time-local, and with a basis per
     detector), and shared (a field, a common mode per stream, offsets per wafer)."""
     k = jr.split(key, 5)
-    det = tod.det_shape
-    streams = 'iqu' if tod.stokes else None
+    det = tod_format.det_shape
+    streams = 'iqu' if tod_format.stokes else None
     stream_axis = (len(streams),) if streams else ()
     same_on_every_stream = (1,) if streams else ()
     segment = jnp.repeat(jnp.arange(4), N_SAMPS // 4).astype(jnp.int32)
@@ -189,19 +189,25 @@ def _templates_on(tod, key):
     stream = TensorBasis(jr.normal(k[1], (*det, 1, N_SAMPS)), batch_shape=det)
     wafers = jnp.asarray(WAFERS.reshape(det)[..., None] == np.arange(2))
     return {
-        'poly': Template(SegmentedBasis(segment, jr.normal(k[0], (2, N_SAMPS)), 4), tod, streams),
-        't2p': Template(stream, tod, streams),
+        'poly': Template(
+            SegmentedBasis(segment, jr.normal(k[0], (2, N_SAMPS)), 4), tod_format, streams
+        ),
+        't2p': Template(stream, tod_format, streams),
         'field': Template(
-            stream, tod, streams, per=(), coupling=jr.normal(k[2], (*stream_axis, *det, 2))
+            stream,
+            tod_format,
+            streams,
+            per=(),
+            coupling=jr.normal(k[2], (*stream_axis, *det, 2)),
         ),
         'common': Template(
             offsets,
-            tod,
+            tod_format,
             streams,
             per=('stream',),
             coupling=jr.normal(k[3], (*same_on_every_stream, *det, 1)),
         ),
-        'wafer': Template(offsets, tod, streams, per=('det',), det_groups=wafers),
+        'wafer': Template(offsets, tod_format, streams, per=('det',), det_groups=wafers),
     }
 
 
@@ -210,8 +216,8 @@ def _templates_on(tod, key):
     ('stokes', 'det_shape'), [('IQU', (2, 2)), (None, (N_DETS,))], ids=['det_axes', 'no_streams']
 )
 def test_gram_on_other_tods_is_the_dense_gram(stokes, det_shape, method):
-    tod = TODFormat((*det_shape, N_SAMPS), jnp.float64, stokes=stokes)
-    op = TemplateOperator(_templates_on(tod, jr.key(14)))
+    tod_format = TODFormat((*det_shape, N_SAMPS), jnp.float64, stokes=stokes)
+    op = TemplateOperator(_templates_on(tod_format, jr.key(14)))
     W = _weight(op, jr.key(15))
     # batches of 3 of the 4 detectors: the last one overlaps the first
     _check_gram(op, W, 0, False, method, batch_size=3)
@@ -228,10 +234,10 @@ def _pomme_weight(op, key):
 
 @pytest.mark.parametrize('method', ['probe', 'structure'])
 def test_gram_under_pomme_is_the_dense_gram(method):
-    tod = TODFormat((N_DETS, N_SAMPS), jnp.float64)
-    op = TemplateOperator(_templates_on(tod, jr.key(18)))
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64)
+    op = TemplateOperator(_templates_on(tod_format, jr.key(18)))
     W = _pomme_weight(op, jr.key(19))
-    F = PommeProjectionOperator(TAU, in_structure=tod.structure).as_matrix()
+    F = PommeProjectionOperator(TAU, in_structure=tod_format.structure).as_matrix()
     effective = _DenseWeight(W.matrix @ F, in_structure=op.out_structure)
     _check_gram(op, W, 0, False, method, batch_size=3, effective=effective, pomme_tau=TAU)
 
@@ -246,8 +252,8 @@ def test_blocks_shorter_than_a_pomme_interval_give_a_nan_gram():
     # blocks of 2 samples: an interval of 5 spans 3 of them, beyond the band
     segment = jnp.arange(N_SAMPS, dtype=jnp.int32) // 2
     basis = SegmentedBasis(segment, jnp.ones((1, N_SAMPS)), N_SAMPS // 2)
-    tod = TODFormat((N_DETS, N_SAMPS), jnp.float64)
-    op = TemplateOperator({'poly': Template(basis, tod)})
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64)
+    op = TemplateOperator({'poly': Template(basis, tod_format)})
     gram = template_gram(op, _pomme_weight(op, jr.key(22)), pomme_tau=TAU)
     assert jnp.all(jnp.isnan(gram.local.matrix.bands))
 
@@ -331,7 +337,7 @@ def test_blocks_too_short_for_the_probes_are_rejected():
         jnp.arange(4), jnp.array([1, 1, 1, N_SAMPS - 3]), total_repeat_length=N_SAMPS
     )
     basis = SegmentedBasis(segment.astype(jnp.int32), jnp.ones((1, N_SAMPS)), 4)
-    op = TemplateOperator({'poly': Template(basis, _tod(), streams='iqu')})
+    op = TemplateOperator({'poly': Template(basis, _tod_format(), streams='iqu')})
     W = _weight(op, jr.key(13), bandwidth=3)
     with pytest.raises(ValueError, match='beyond the 2 probed'):
         template_gram(op, W, bandwidth=3)

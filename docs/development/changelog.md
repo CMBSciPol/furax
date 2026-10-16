@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Pomme can be combined with templates in `MultiObservationMapMaker` (#257)
 - `OffsetBasis`: one offset per interval of a fixed number of samples, the Pomme template returned by `PommeProjectionOperator.template` (#332)
+- `TOD` and `TODFormat` in `furax.obs`: time-ordered data format conventions (normal/demodulated) in a single place (#342)
 
 ### Changed
 
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `Basis.batch_shape` replaces `Basis.per_detector_stack`: a basis can hold a batch of bases of any shape, broadcast against the batch axes of the amplitudes and of the signal (#335)
 - T2P templates (`T2PConfig`) assemble their Gram from the basis structure instead of probing it one amplitude at a time, also when decimated (#335, #336)
 - Spline HWP-synchronous templates (`SplineHWPSynchronousConfig`) need far less memory to assemble their Gram (#338)
+- **Breaking:** `ObservationReader` reads demodulated TODs when given `stokes`, and drops its `demodulated` argument (#342)
 
 ### Fixed
 

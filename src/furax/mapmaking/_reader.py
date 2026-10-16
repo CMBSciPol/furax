@@ -14,6 +14,7 @@ from jax.typing import DTypeLike
 from jaxtyping import PyTree
 
 from furax.io.readers import AbstractReader
+from furax.obs import TODFormat
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 from ._observation import (
@@ -52,8 +53,7 @@ class ObservationReader[T](AbstractReader):
     - `scanning_intervals`: per-scan [start, end) sample-index pairs (ground observations).
 
     Attributes:
-        demodulated: Whether the reader loads demodulated TODs.
-        stokes: Stokes components loaded when demodulated.
+        stokes: Stokes components of the demodulated TOD; `None` for detector timestreams.
         dtype: Floating-point dtype every floating-point field is cast to.
         sample_dtype: Floating-point dtype the sample data is cast to instead.
     """
@@ -61,8 +61,7 @@ class ObservationReader[T](AbstractReader):
     def __init__(
         self,
         *args: Sequence[Any],
-        demodulated: bool,
-        stokes: ValidStokesLiteral,
+        stokes: ValidStokesLiteral | None = None,
         dtype: DTypeLike = jnp.float64,
         sample_dtype: DTypeLike | None = None,
         common_keywords: dict[str, Any] | None = None,
@@ -78,8 +77,7 @@ class ObservationReader[T](AbstractReader):
         Args:
             *args: One list per positional argument to the read function, one element per
                 observation.
-            demodulated: Whether to read demodulated TODs.
-            stokes: Stokes components to read when demodulated.
+            stokes: Stokes components of the demodulated TOD; `None` for detector timestreams.
             dtype: Floating-point dtype applied to every floating-point field the reader returns.
             sample_dtype: Floating-point dtype applied to the sample data instead; `None` for
                 `dtype`.
@@ -94,13 +92,12 @@ class ObservationReader[T](AbstractReader):
                 observation.
         """
         # Set before super().__init__ so the structure/reader builders can use them
-        self.demodulated = demodulated
         self.stokes = stokes
         self.dtype = dtype
         self.sample_dtype = sample_dtype or dtype
         # Distributed mode passes pre-gathered (n_detectors, n_samples) shapes; turn them into
-        # structures here, now that self carries demodulated/stokes/dtype. Otherwise leave them
-        # unset and super() opens every observation via _read_structure_impure.
+        # structures here, now that self carries stokes/dtype. Otherwise leave them unset and
+        # super() opens every observation via _read_structure_impure.
         structures = None
         if shapes is not None:
             fields = (common_keywords or {})['data_field_names']
@@ -119,8 +116,7 @@ class ObservationReader[T](AbstractReader):
         observations: Sequence[AbstractLazyObservation[T]],
         *,
         requested_fields: Collection[str] | None = None,
-        demodulated: bool = False,
-        stokes: ValidStokesLiteral = 'IQU',
+        stokes: ValidStokesLiteral | None = None,
         dtype: DTypeLike = jnp.float64,
         sample_dtype: DTypeLike | None = None,
         shapes: Sequence[ObservationBufferShape] | None = None,
@@ -132,8 +128,7 @@ class ObservationReader[T](AbstractReader):
             observations: The lazy observations to read, one item each.
             requested_fields: Optional list of fields to load. If None, read all non-optional
                 fields.
-            demodulated: Whether to read demodulated TODs.
-            stokes: Stokes components to read when demodulated.
+            stokes: Stokes components of the demodulated TOD; `None` for detector timestreams.
             dtype: Floating-point dtype applied to every floating-point field the reader
                 returns: sample data, noise model fits and the geometry (timestamps, HWP
                 angles, quaternions). Use `jnp.float32` to run a float32 mapmaking pipeline
@@ -159,7 +154,6 @@ class ObservationReader[T](AbstractReader):
         return cls(
             observations,
             common_keywords={'data_field_names': fields},
-            demodulated=demodulated,
             stokes=stokes,
             dtype=dtype,
             sample_dtype=sample_dtype,
@@ -304,19 +298,13 @@ class ObservationReader[T](AbstractReader):
         Restricted to `fields` when given, else returns every supported field.
         """
         n_detectors, n_samples, n_intervals = shape
-        demodulated = self.demodulated
         stokes = self.stokes
         dtype = self.dtype
-        tod_shape = (n_detectors, n_samples)
-        sample_data_structure = (
-            Stokes.class_for(stokes).structure_for(tod_shape, self.sample_dtype)
-            if demodulated
-            else jax.ShapeDtypeStruct(tod_shape, self.sample_dtype)
-        )
+        tod_format = TODFormat((n_detectors, n_samples), self.sample_dtype, stokes=stokes)
 
         structures: dict[str, PyTree[jax.ShapeDtypeStruct]] = {
             ReaderField.METADATA: HashedObservationMetadata.structure_for(n_detectors),
-            ReaderField.SAMPLE_DATA: sample_data_structure,
+            ReaderField.SAMPLE_DATA: tod_format.structure,
             ReaderField.VALID_SAMPLE_MASKS: jax.ShapeDtypeStruct(
                 (n_detectors, n_samples), jnp.bool
             ),
@@ -326,9 +314,9 @@ class ObservationReader[T](AbstractReader):
             ReaderField.DETECTOR_QUATERNIONS: jax.ShapeDtypeStruct((n_detectors, 4), dtype),
             ReaderField.BORESIGHT_QUATERNIONS: jax.ShapeDtypeStruct((n_samples, 4), dtype),
             ReaderField.NOISE_MODEL_FITS: (
-                jax.ShapeDtypeStruct((len(stokes), n_detectors, 4), dtype)
-                if demodulated
-                else jax.ShapeDtypeStruct((n_detectors, 4), dtype)
+                jax.ShapeDtypeStruct((n_detectors, 4), dtype)
+                if stokes is None
+                else jax.ShapeDtypeStruct((len(stokes), n_detectors, 4), dtype)
             ),
             ReaderField.AZIMUTH: jax.ShapeDtypeStruct((n_samples,), dtype),
             ReaderField.ELEVATION: jax.ShapeDtypeStruct((n_samples,), dtype),
@@ -346,7 +334,6 @@ class ObservationReader[T](AbstractReader):
                 raise ValueError('Data field not available')
             return x
 
-        demodulated = self.demodulated
         stokes = self.stokes
         target_dtype = self.dtype
         sample_dtype = self.sample_dtype
@@ -363,10 +350,10 @@ class ObservationReader[T](AbstractReader):
             (struct,) = jax.tree.leaves(self.out_structure[ReaderField.SAMPLE_DATA])
             buffer = _aligned_zeros(struct.shape, sample_dtype)
             tods: Stokes | np.ndarray
-            if demodulated:
-                tods = obs.get_demodulated_tods(stokes=stokes, out=buffer)
-            else:
+            if stokes is None:
                 tods = obs.get_tods(out=buffer)
+            else:
+                tods = obs.get_demodulated_tods(stokes=stokes, out=buffer)
 
             def in_buffer(tod: np.ndarray) -> np.ndarray:
                 corner = buffer[tuple(slice(n) for n in tod.shape)]
@@ -377,10 +364,10 @@ class ObservationReader[T](AbstractReader):
             return jax.tree.map(in_buffer, tods)
 
         def get_noise_model_fits(obs: AbstractObservation[T]) -> Any:
-            if demodulated:
-                model = obs.get_demodulated_noise_model(stokes=stokes)
-            else:
+            if stokes is None:
                 model = if_none_raise_error(obs.get_noise_model())
+            else:
+                model = obs.get_demodulated_noise_model(stokes=stokes)
             fits = model.to_array()
             return jax.tree.map(cast, fits)
 

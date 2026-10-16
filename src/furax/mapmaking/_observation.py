@@ -562,3 +562,9 @@ class FileBackedLazyObservation[T](AbstractLazyObservation[T]):
 
     def get_data(self, requested_fields: Collection[str] | None = None) -> AbstractObservation[T]:
         return self.interface_class.from_file(self.file, requested_fields)
+
+
+def _sample_rate(timestamps: Float[Array, ...]) -> Float[Array, '']:
+    """The sample rate of an observation, from its timestamps."""
+    # the reader extrapolates the timestamps over the padding, keeping the sample rate constant
+    return (timestamps.size - 1) / jnp.ptp(timestamps)

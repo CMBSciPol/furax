@@ -363,7 +363,6 @@ def test_reader_all_fields_demod(demod_observations) -> None:
     reader = ObservationReader.from_observations(
         demod_observations,
         requested_fields=AbstractGroundObservation.AVAILABLE_READER_FIELDS,
-        demodulated=True,
         stokes=stokes,
     )
     ndet_max, nsample_max, nint_max = max(OBS_NDET), max(OBS_NSAMPLE), max(OBS_NINTERVAL)
@@ -432,6 +431,6 @@ def test_reader_subset_of_data_fields_demod(
 ) -> None:
     """Test that passing a subset of data fields loads only those fields in demodulated mode."""
     reader = ObservationReader.from_observations(
-        demod_observations, requested_fields=requested_fields, demodulated=True
+        demod_observations, requested_fields=requested_fields, stokes='IQU'
     )
     assert set(reader.out_structure.keys()) == set(requested_fields)

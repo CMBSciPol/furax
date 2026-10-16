@@ -9,10 +9,11 @@ from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
+from furax.obs import TODFormat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
-from ._observation import ReaderField
+from ._observation import ReaderField, _sample_rate
 from .acquisition import build_acquisition_operator
 from .bases import Basis
 from .config import (
@@ -84,14 +85,12 @@ class ObservationModel:
             pointing_interpolate=config.pointing.interpolation == 'bilinear',
             dtype=config.dtype,
         )
-        tod_struct = H.out_structure
-        M = _mask_projector(_sample_mask(data, config), structure=tod_struct)
-        noise_model, sample_rate = _noise_model(
-            data, config, tod_structure=tod_struct, padding=padding
-        )
+        tod_format = _tod_format(H)
+        M = _mask_projector(_sample_mask(data, config), tod_format=tod_format)
+        noise_model, sample_rate = _noise_model(data, config, tod_format, padding=padding)
         Ninv = _noise_operator(
             noise_model,
-            tod_struct,
+            tod_format,
             sample_rate,
             config.weighting.correlation_length,
             inverse=True,
@@ -104,7 +103,7 @@ class ObservationModel:
                 # Precondition inner flagged-subspace CG using covariance N
                 cov = _noise_operator(
                     noise_model,
-                    tod_struct,
+                    tod_format,
                     sample_rate,
                     config.weighting.correlation_length,
                     inverse=False,
@@ -114,9 +113,9 @@ class ObservationModel:
             # Plain masked weights, only exact for diagonal W
             W = WeightOperator.create(Ninv, M)
         F = (
-            PommeProjectionOperator(config.pomme_tau, in_structure=tod_struct)
+            PommeProjectionOperator(config.pomme_tau, in_structure=tod_format.structure)
             if config.method == Methods.POMME
-            else IdentityOperator(in_structure=tod_struct)
+            else IdentityOperator(in_structure=tod_format.structure)
         )
         return cls(H, W, F, noise_model, sample_rate)
 
@@ -144,8 +143,9 @@ class ObservationModel:
         return fields
 
     @property
-    def tod_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return self.H.out_structure
+    def tod_format(self) -> TODFormat:
+        """The format of the observation's TOD."""
+        return _tod_format(self.H)
 
     @property
     def map_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
@@ -183,7 +183,7 @@ class ObservationModel:
         """Build the (inverse) noise covariance operator."""
         return _noise_operator(
             self.noise_model,
-            self.tod_structure,
+            self.tod_format,
             self.sample_rate,
             correlation_length,
             inverse=inverse,
@@ -193,45 +193,45 @@ class ObservationModel:
         """Build the inverse white-noise weight for a *single* observation.
 
         Assumes ``self`` is a single-observation model (single-observation ``noise_model`` and
-        ``tod_structure``). The observation-stacked preconditioner is obtained by mapping this over
+        ``tod_format``). The observation-stacked preconditioner is obtained by mapping this over
         the observation axis in [`MultiObservationMapMaker.make_maps`][], mirroring how ``W`` is
         stacked inside the accumulation scan.
         """
         white = self.noise_model.to_white_noise_model()
-        inv = _noise_operator(white, self.tod_structure, self.sample_rate, inverse=True)
+        inv = _noise_operator(white, self.tod_format, self.sample_rate, inverse=True)
         return WeightOperator.create(inv, self.M)
 
 
 def _noise_model(
     data: Any,
     config: MapMakingConfig,
-    tod_structure: jax.ShapeDtypeStruct | None = None,
+    tod_format: TODFormat,
     padding: Any | None = None,
 ) -> tuple[PyTree[NoiseModel], Array]:
     """Compute the noise model and sample rate for a single observation block."""
     fs = _sample_rate(data[ReaderField.TIMESTAMPS])
+    nsamp = tod_format.n_samples
 
-    # The demodulated TOD is a single-array Stokes; the noise model runs on its backing array, with
-    # per-detector parameters carrying any leading axes (the Stokes axis) so a single model covers
-    # every leg. The sample axis is always last.
-    def _as_array(x: Any) -> Array:
-        return x.data if isinstance(x, Stokes) else x
-
+    # One noise model covers every stream of a demodulated TOD: its per-detector parameters carry
+    # the leading stream axis.
+    lead = (
+        tod_format.det_shape
+        if tod_format.stokes is None
+        else (tod_format.n_streams, *tod_format.det_shape)
+    )
     if config.weighting.mode == WeightingMode.IDENTITY:
-        if tod_structure is None:
-            raise ValueError('tod_structure is required when config.weighting.mode is IDENTITY')
-        struct = _as_array(tod_structure)
-        return WhiteNoiseModel(sigma=jnp.ones(struct.shape[:-1], dtype=struct.dtype)), fs
+        return WhiteNoiseModel(sigma=jnp.ones(lead, dtype=tod_format.dtype)), fs
     if config.weighting.source == NoiseSource.FIT:
         fit_config = config.weighting.fitting
         noise_model_class = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
         fhwp = _hwp_frequency(data[ReaderField.TIMESTAMPS], data[ReaderField.HWP_ANGLES])
 
-        tod = _as_array(data[ReaderField.SAMPLE_DATA])  # (*lead, nsamp)
-        lead = tod.shape[:-1]
-        sample_padding = 0 if padding is None else _as_array(padding[ReaderField.SAMPLE_DATA])[-1]
+        samples = tod_format.as_array(data[ReaderField.SAMPLE_DATA]).reshape(-1, nsamp)
+        sample_padding = 0
+        if padding is not None:  # one padding per axis of the TOD's array, the samples last
+            sample_padding = jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0][-1]
         f, Pxx = padding_aware_welch(
-            tod.reshape(-1, tod.shape[-1]),
+            samples,
             sample_padding,
             fs=fs,
             nperseg=fit_config.nperseg,
@@ -277,7 +277,7 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
 
 def _noise_operator(
     noise_model: NoiseModel,
-    tod_structure: jax.ShapeDtypeStruct,
+    tod_format: TODFormat,
     sample_rate: Array,
     correlation_length: int | None = None,
     *,
@@ -289,12 +289,9 @@ def _noise_operator(
     by white-noise models and may be omitted for them.
     """
     build = noise_model.inverse_operator if inverse else noise_model.operator
-    return build(tod_structure, sample_rate=sample_rate, correlation_length=correlation_length)
-
-
-def _sample_rate(timestamps: Float[Array, '...']) -> Float[Array, '']:
-    # Note that the reader extrapolates timestamps in the padded region, keeping sample rate constant
-    return (timestamps.size - 1) / jnp.ptp(timestamps)
+    return build(
+        tod_format.structure, sample_rate=sample_rate, correlation_length=correlation_length
+    )
 
 
 def _hwp_frequency(
@@ -304,13 +301,21 @@ def _hwp_frequency(
     return (jnp.unwrap(hwp_angles)[-1] - hwp_angles[0]) / jnp.ptp(timestamps) / (2 * jnp.pi)
 
 
-def _mask_projector(*valid_masks: Array | None, structure: jax.ShapeDtypeStruct) -> MaskOperator:
+def _mask_projector(*valid_masks: Array | None, tod_format: TODFormat) -> MaskOperator:
     """Mask operator combining a series of boolean masks (logical AND)."""
     masks = [mask for mask in valid_masks if mask is not None]
     combined = functools.reduce(jnp.logical_and, masks) if masks else jnp.array(True)
     # A per-sample mask (ndet, nsamp) broadcasts right-aligned over a demodulated Stokes TOD's
     # leading Stokes axis (n, ndet, nsamp), and the sample axis stays last (packed by MaskOperator).
-    return MaskOperator.from_boolean_mask(combined, in_structure=structure)
+    return MaskOperator.from_boolean_mask(combined, in_structure=tod_format.structure)
+
+
+def _tod_format(H: AbstractLinearOperator) -> TODFormat:
+    """The format of the TOD the acquisition operator `H` maps the sky to."""
+    structure = H.out_structure
+    if isinstance(structure, Stokes):
+        return TODFormat(structure.shape, structure.dtype, structure.stokes)
+    return TODFormat(structure.shape, structure.dtype)
 
 
 @register_dataclass
@@ -426,7 +431,7 @@ class ObservationTemplates:
         """
         if (tcfg := config.templates) is None:
             raise ValueError('templates config required to build template operators')
-        n_dets = model.tod_structure.shape[0]
+        n_dets = model.tod_format.shape[0]
         dtype = config.dtype
         # Demodulation splits the raw stream into differently filtered I/Q/U streams, so a template
         # covering several legs fits an independent amplitude on each.

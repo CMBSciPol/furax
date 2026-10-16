@@ -53,8 +53,8 @@ def test_demodulated_tods_keep_their_stored_precision(demod_observations) -> Non
     tods = data.get_demodulated_tods(stokes='IQU')
     stored = [np.asarray(getattr(data.data, attr)) for attr in ('dsT', 'demodQ', 'demodU')]
     assert tods.data.dtype == stored[0].dtype
-    for leg, raw in zip((tods.i, tods.q, tods.u), stored, strict=True):
-        assert_array_equal(leg, 0.5 * raw)
+    for stream, raw in zip((tods.i, tods.q, tods.u), stored, strict=True):
+        assert_array_equal(stream, 0.5 * raw)
 
 
 def test_demodulated_tods_are_written_into_the_corner_of_out(demod_observations) -> None:

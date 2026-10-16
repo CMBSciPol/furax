@@ -24,7 +24,7 @@ from furax.mapmaking.config import (
     WCSConfig,
     WeightingConfig,
     WeightingMode,
-    _legendre_leg_groups,
+    _legendre_stream_groups,
 )
 
 # Every config class whose docstring carries an `Examples:` block.
@@ -189,8 +189,8 @@ class TestT2PRequiresDemodulated:
         with pytest.raises(ValueError, match='T2P template requires demodulated=True'):
             MapMakingConfig(templates=TemplatesConfig(t2p=T2PConfig()))
 
-    def test_raises_without_qu_legs(self):
-        with pytest.raises(ValueError, match='T2P template requires Q and U legs'):
+    def test_raises_without_qu_streams(self):
+        with pytest.raises(ValueError, match='T2P template requires Q and U streams'):
             MapMakingConfig(
                 sotodlib=SotodlibConfig(demodulated=True),
                 landscape=LandscapeConfig(stokes='I', healpix=HealpixConfig()),
@@ -223,20 +223,20 @@ class TestLegendrePerLeg:
     def test_raises_without_demodulated(self, template):
         name = 'polynomial' if template is PolynomialConfig else 'scan_synchronous'
         templates = TemplatesConfig(**{name: template(legendre={'qu': PolynomialOrders(0, 1)})})
-        with pytest.raises(ValueError, match='per Stokes leg requires demodulated=True'):
+        with pytest.raises(ValueError, match='per stream requires demodulated=True'):
             MapMakingConfig(templates=templates)
 
     @pytest.mark.parametrize(
-        ('legs', 'match'),
+        ('streams', 'match'),
         [
-            ([], 'names no Stokes leg'),
-            (['iv'], r"names legs \['V'\] outside landscape.stokes"),
-            (['qu', 'U'], r"names legs \['U'\] more than once"),
+            ([], 'names no stream'),
+            (['iv'], r"names streams \['V'\] outside landscape.stokes"),
+            (['qu', 'U'], r"names streams \['U'\] more than once"),
         ],
     )
-    def test_raises_on_invalid_legs(self, template, legs: list[str], match: str):
+    def test_raises_on_invalid_streams(self, template, streams: list[str], match: str):
         name = 'polynomial' if template is PolynomialConfig else 'scan_synchronous'
-        legendre = {group: PolynomialOrders(0, 1) for group in legs}
+        legendre = {group: PolynomialOrders(0, 1) for group in streams}
         with pytest.raises(ValueError, match=match):
             _demodulated(TemplatesConfig(**{name: template(legendre=legendre)}))
 
@@ -255,7 +255,7 @@ class TestLegendrePerLeg:
             {'i': PolynomialOrders(0, 9), 'qu': PolynomialOrders(0, 1)},
             {'i': PolynomialOrders(0, 9), 'qu': PolynomialOrders(0, 1)},
         ),
-        # legs fitted alike are grouped whatever groups they are given in
+        # streams fitted alike are grouped whatever groups they are given in
         (
             {'U': PolynomialOrders(0, 1), 'i': PolynomialOrders(0, 1), 'q': PolynomialOrders(2, 3)},
             {'iu': PolynomialOrders(0, 1), 'q': PolynomialOrders(2, 3)},
@@ -263,5 +263,5 @@ class TestLegendrePerLeg:
         ({'qu': PolynomialOrders(2, 5)}, {'qu': PolynomialOrders(2, 5)}),
     ],
 )
-def test_legendre_leg_groups(legendre, expected):
-    assert _legendre_leg_groups(legendre, 'IQU') == expected
+def test_legendre_stream_groups(legendre, expected):
+    assert _legendre_stream_groups(legendre, 'IQU') == expected

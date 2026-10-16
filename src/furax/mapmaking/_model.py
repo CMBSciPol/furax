@@ -381,7 +381,7 @@ class ObservationTemplates:
             model: The observation's model.
             tod: The TOD to weight.
             temperature: The I timestream, from which the T2P template is built; by default, the
-                I leg of the sample data.
+                I stream of the sample data.
         """
         if (tcfg := config.templates) is None:
             raise ValueError('templates config required to build template operators')
@@ -410,20 +410,20 @@ class ObservationTemplates:
         return cls(explicit=explicit, implicit=implicit), wd
 
 
-def restrict_legs(
-    data: dict[str, Any], tod: Stokes, legs: ValidStokesLiteral
+def restrict_streams(
+    data: dict[str, Any], tod: Stokes, stokes: ValidStokesLiteral
 ) -> tuple[dict[str, Any], Stokes]:
-    """An observation's sample data, noise fits and TOD, restricted to the Stokes `legs`.
+    """An observation's sample data, noise fits and TOD, restricted to the streams `stokes`.
 
-    The reader may load more demodulated legs than the map has (see
+    The reader may load more demodulated streams than the map has (see
     [`MapMakingConfig.read_stokes`][furax.mapmaking.config.MapMakingConfig.read_stokes]).
     """
-    index = jnp.array([tod.stokes.index(leg) for leg in legs])
+    index = jnp.array([tod.stokes.index(s) for s in stokes])
 
     def select(x: Stokes) -> Stokes:
-        return Stokes.class_for(legs).from_array(x.data[index])
+        return Stokes.class_for(stokes).from_array(x.data[index])
 
     data = {**data, ReaderField.SAMPLE_DATA: select(data[ReaderField.SAMPLE_DATA])}
     if (fits := data.get(ReaderField.NOISE_MODEL_FITS)) is not None:
-        data[ReaderField.NOISE_MODEL_FITS] = fits[index]  # one row per leg
+        data[ReaderField.NOISE_MODEL_FITS] = fits[index]  # one row per stream
     return data, select(tod)

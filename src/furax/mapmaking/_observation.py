@@ -224,8 +224,8 @@ class AbstractObservation[T](ABC):
         Subclasses that support demodulated data should override this method.
 
         Args:
-            stokes: The Stokes legs to return.
-            out: Array of shape `(len(stokes), dets, samps)` to write the legs into, as in
+            stokes: The streams to return, by Stokes parameter.
+            out: Array of shape `(len(stokes), dets, samps)` to write the streams into, as in
                 [`get_tods`][furax.mapmaking.AbstractObservation.get_tods].
         """
         raise NotImplementedError(f'{type(self).__name__} does not support demodulated TODs')
@@ -239,25 +239,25 @@ class AbstractObservation[T](ABC):
 
     @staticmethod
     def _scaled_tods(
-        legs: list[np.ndarray], scale: float, out: np.ndarray | None
-    ) -> Float[np.ndarray, 'legs dets samps']:
-        """`scale` times each of the `(dets, samps)` `legs`, stacked, as `get_tods` lays them out.
+        streams: list[np.ndarray], scale: float, out: np.ndarray | None
+    ) -> Float[np.ndarray, 'streams dets samps']:
+        """`scale` times each `(dets, samps)` stream of `streams`, stacked as `get_tods` lays them.
 
-        Each leg is scaled straight into the result, so that the data is copied once.
+        Each stream is scaled straight into the result, so that the data is copied once.
         """
-        shape = legs[0].shape
+        shape = streams[0].shape
         if out is None:
-            tods = np.empty((len(legs), *shape), np.result_type(*legs))
-        elif out.shape[0] != len(legs) or any(o < n for o, n in zip(out.shape[1:], shape)):
-            raise ValueError(f'out has shape {out.shape}, too small for {len(legs)} x {shape}')
+            tods = np.empty((len(streams), *shape), np.result_type(*streams))
+        elif out.shape[0] != len(streams) or any(o < n for o, n in zip(out.shape[1:], shape)):
+            raise ValueError(f'out has shape {out.shape}, too small for {len(streams)} x {shape}')
         else:
             tods = out[:, : shape[0], : shape[1]]
-        for leg_out, leg in zip(tods, legs, strict=True):
-            np.multiply(leg, scale, out=leg_out)
+        for stream_out, stream in zip(tods, streams, strict=True):
+            np.multiply(stream, scale, out=stream_out)
         return tods
 
     def get_demodulated_noise_model(self, stokes: ValidStokesLiteral = 'IQU') -> NoiseModel:
-        """Returns a single noise model covering every requested Stokes leg.
+        """Returns a single noise model covering every requested stream.
 
         Its per-detector parameters carry a leading Stokes axis, so I/Q/U may have distinct
         fit values without being separate models.

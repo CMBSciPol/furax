@@ -39,11 +39,11 @@ _PER_AXES: tuple[PerAxis, ...] = get_args(PerAxis)
 class Template(AbstractLinearOperator):
     r"""Functions of time, seen by each detector and stream of a TOD through a coupling.
 
-    Stream $l$ of detector $d$ sees
+    Stream $s$ of detector $d$ sees
 
-    $$ s_{ld}(t) = \sum_m C_{ldm} \sum_k b_{dk}(t)\, a_{o(l, d)\, km}, $$
+    $$ y_{sd}(t) = \sum_m C_{sdm} \sum_k b_{dk}(t)\, a_{o(s, d)\, km}, $$
 
-    with $b_{dk}$ the basis functions, $C_{ldm}$ the coupling to mode $m$, and $a_{o(l, d)}$ the
+    with $b_{dk}$ the basis functions, $C_{sdm}$ the coupling to mode $m$, and $a_{o(s, d)}$ the
     amplitude set it sees. `per` names the axes with independent sets:
 
     - `'stream'`: one set per stream of `streams`;
@@ -227,7 +227,7 @@ class Template(AbstractLinearOperator):
     # Internally, the amplitudes take a canonical layout with fixed axes, whatever `per` and the
     # coupling: `(stream set, detector set, *basis.shape, mode)`, an axis of size 1 where the sets
     # are shared, and a single mode without coupling. The detector axes are flattened into one, here
-    # as in the signals, `(detector, samp)`. The amplitudes stream `l` sees are then the rows `[l]`:
+    # as in the signals, `(detector, samp)`. The amplitudes stream `s` sees are then the rows `[s]`:
     # one row per detector, per group, or a single one. Detector `d` sees row `o` through the weight
     # `W[d, o, m]`, the coupling of mode `m` where `d` belongs to `o`, and zero elsewhere. With a
     # set per detector, the weight is diagonal: the coupling alone.

@@ -33,7 +33,7 @@ from ..config import (
     SplineHWPSynchronousConfig,
     T2PConfig,
     TemplatesConfig,
-    _legendre_leg_groups,
+    _legendre_stream_groups,
 )
 from ._operator import Template
 from .bases import (
@@ -312,7 +312,7 @@ def _stream_groups(
         name if group == streams else f'{name}_{group}': Template(
             basis(orders), tod_format, streams=group
         )
-        for group, orders in _legendre_leg_groups(legendre, streams).items()
+        for group, orders in _legendre_stream_groups(legendre, streams).items()
     }
 
 
@@ -370,8 +370,8 @@ def _legendre_values(
 
     Evaluated on `u`, already rescaled to `[-1, 1]`.
     """
-    legs = jax.scipy.special.lpmn_values(max_order, max_order, u, is_normalized=False)
-    return legs[0, min_order:, :].astype(dtype)
+    values = jax.scipy.special.lpmn_values(max_order, max_order, u, is_normalized=False)
+    return values[0, min_order:, :].astype(dtype)
 
 
 def _legendre(
@@ -445,12 +445,12 @@ def polynomial_basis(
     # rescale each sample to [-1, 1] within its own interval; out-of-range
     # samples sit at 0 and are zeroed by `in_range` below.
     u = jnp.where(in_range, -1.0 + 2.0 * (times - t0) / span, 0.0)
-    legs = _legendre_values(u, min_poly_order, max_poly_order, dtype)  # (k, n_samps)
-    legs = legs * in_range[None, :]
+    values = _legendre_values(u, min_poly_order, max_poly_order, dtype)  # (k, n_samps)
+    values = values * in_range[None, :]
     if valid_mask is not None:
-        legs = legs * valid_mask[None, :].astype(dtype)
+        values = values * valid_mask[None, :].astype(dtype)
 
-    return SegmentedBasis(segment.astype(jnp.int32), legs, n_intervals)
+    return SegmentedBasis(segment.astype(jnp.int32), values, n_intervals)
 
 
 _T2P_BATCH_SIZE = 32
@@ -514,8 +514,8 @@ def scan_synchronous_basis(
     dtype: DTypeLike,
 ) -> Basis:
     """Scan-synchronous (azimuth-only) basis on a global Legendre basis."""
-    legs = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)
-    return TensorBasis(legs)
+    values = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)
+    return TensorBasis(values)
 
 
 def binned_azimuth_synchronous_basis(
@@ -548,7 +548,7 @@ def azimuth_hwp_synchronous_basis(
 ) -> Basis:
     """Azimuth-Legendre x HWP-harmonic basis (Kronecker product of the two).
 
-    `scan_mask` optionally zeroes the azimuth leg on flagged samples (e.g. to fit separate
+    `scan_mask` optionally zeroes the azimuth factor on flagged samples (e.g. to fit separate
     amplitudes per scan direction).
     """
     poly = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)

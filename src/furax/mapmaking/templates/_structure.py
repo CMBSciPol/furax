@@ -1,15 +1,15 @@
 r"""The Gram $T^\top W T$ of templates under a diagonal weight, assembled from their bases.
 
-Under a weight diagonal in time and in streams, $W = \mathrm{diag}(w_{ld})$, a template $g$ couples
+Under a weight diagonal in time and in streams, $W = \mathrm{diag}(w_{sd})$, a template $g$ couples
 to a template $h$ only through the weighted Grams of their bases on each detector and stream,
 
-$$ L^{ld}_{gh} = B_{g,d}^\top\, \mathrm{diag}(w_{ld})\, B_{h,d}, $$
+$$ L^{sd}_{gh} = B_{g,d}^\top\, \mathrm{diag}(w_{sd})\, B_{h,d}, $$
 
 which [`Basis.gram`][furax.mapmaking.templates.bases.Basis.gram] gives in bands and `_cross_gram` as
 a dense block. The Gram is then their contraction with the weights through which each detector sees
 the amplitude sets of each template (see [`Template`][furax.mapmaking.templates.Template]):
 
-$$ G_{gh}[(o, m), (o', m')] = \sum_{l, d} W_{g, ld}[o, m]\, W_{h, ld}[o', m']\, L^{ld}_{gh}. $$
+$$ G_{gh}[(o, m), (o', m')] = \sum_{s, d} W_{g, sd}[o, m]\, W_{h, sd}[o', m']\, L^{sd}_{gh}. $$
 
 The streams are assembled one after the other, so that the transient memory is that of one stream.
 Each block is then laid out as the probed one, for the same layout.

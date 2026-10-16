@@ -59,7 +59,7 @@ from furax.profiling import format_bytes
 
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel, ObservationTemplates, restrict_legs
+from ._model import ObservationModel, ObservationTemplates, restrict_streams
 from ._observation import (
     AbstractGroundObservation,
     AbstractLazyObservation,
@@ -838,9 +838,9 @@ class MultiObservationMapMaker[T]:
             hits_acc, rhs_acc = carry
             temperature = None
             if config.read_stokes != landscape.stokes:
-                # The extra legs read, the I timestream for the T2P template, stay out of the model
+                # The extra streams read, the I one for the T2P template, stay out of the model
                 temperature = data[ReaderField.SAMPLE_DATA].i
-                data, tod = restrict_legs(data, tod, landscape.stokes)
+                data, tod = restrict_streams(data, tod, landscape.stokes)
             obs = ObservationModel.create(data, padding, config, landscape)
 
             # Padding/failed observations contribute nothing
@@ -854,7 +854,7 @@ class MultiObservationMapMaker[T]:
             ).as_stokes_i(interpolate=False)
             # Read the mask directly: M(ones) = M.to_boolean_mask()
             masked_tod = obs.M.to_boolean_mask()
-            # The mask is (ndet, nsamp) even in the demodulated case (all legs share the same)
+            # The mask is (ndet, nsamp) even in the demodulated case (all streams share the same)
             masked = masked_tod.data if isinstance(masked_tod, Stokes) else masked_tod
             hits_i = jnp.int64(hit_pointing.T(StokesI(masked)).i)
 

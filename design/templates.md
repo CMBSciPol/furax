@@ -2,7 +2,7 @@
 
 ## Summary
 
-A template models a structured nuisance signal in the TOD as `s = T a`. The mapmaker either solves
+A template models a structured nuisance signal in the TOD as `y = T a`. The mapmaker either solves
 for the amplitudes `a` together with the map (explicit templates), or marginalizes them out of the
 weight, `W' = W − W T (Tᵀ W T)⁻¹ Tᵀ W` (implicit templates). Both need the Gram `G = Tᵀ W T`: the
 preconditioner of the explicit system is its inverse, and the implicit weight is built from it.
@@ -53,7 +53,7 @@ A `TODFormat` (`furax.obs`) describes the data the templates add to:
 - `stokes` is set only for demodulated data, which is then a `Stokes` of such arrays, one per
   stream.
 
-A TOD sample is indexed by `(l, d, t)`: stream `l`, detector `d`, time `t`. Inside the template
+A TOD sample is indexed by `(s, d, t)`: stream `s`, detector `d`, time `t`. Inside the template
 code, the streams are an axis like the others, of size 1 unless the TOD is demodulated, and the
 detector axes are flattened into one: the TOD is a `(stream, det, samp)` array, and a template
 covers some indices along the stream axis. Only the edges (amplitudes, coupling, groups, basis
@@ -66,16 +66,16 @@ gives `zeros`, `normal` and the other fills of the landscapes.
 ### A template
 
 ```
-s[l, d, t] = Σₘ Σₖ C[l, d, m] · B_d[k, t] · a[o(l, d), k, m]
+y[s, d, t] = Σₘ Σₖ C[s, d, m] · B_d[k, t] · a[o(s, d), k, m]
 ```
 
 - `B_d[k, t]`: the time basis. It is one basis shared by every detector, or a batch with one basis
   per detector (`batch_shape=tod_format.det_shape`, as for T2P, whose basis is the detector's own
   temperature stream). `k` is the basis's amplitude index, including its time blocks for a
   time-local basis.
-- `C[l, d, m]`: the coupling of detector `d` on stream `l` to mode `m`. Absent, it is 1 with a
+- `C[s, d, m]`: the coupling of detector `d` on stream `s` to mode `m`. Absent, it is 1 with a
   single mode, and the mode axis is dropped.
-- `o(l, d)`: the set of amplitudes that sample `(l, d)` sees. `per` lists the axes that index the
+- `o(s, d)`: the set of amplitudes that sample `(s, d)` sees. `per` lists the axes that index the
   sets: `('stream', 'det')` gives every detector and stream its own amplitudes, `()` gives one set
   for the whole observation, `('det',)` with detector groups gives one set per group (wafer).
 
@@ -108,7 +108,7 @@ then the modes when there is a coupling.
 Internally, the amplitudes take a canonical layout with fixed axes, `(stream set, detector set,
 *basis.shape, mode)`, an axis of size 1 where the sets are shared and a single mode without
 coupling, so that every later step finds each axis at the same place for every template. The rows
-`[l]` are the amplitudes stream `l` sees, and detector `d` sees row `o` through the weight
+`[s]` are the amplitudes stream `s` sees, and detector `d` sees row `o` through the weight
 `W[d, o, m]`: the coupling of mode `m` where `d` belongs to `o`, zero elsewhere. Every choice of
 `per` is then the same two contractions, one per direction, with a set per detector keeping the
 weight diagonal.
@@ -146,7 +146,7 @@ replaces the current `TemplateOperator`, `StokesTemplateOperator`, stream groups
 `CoupledBasis`.
 
 - **Synthesis**, for each stream: contract each detector's amplitude set with the coupling,
-  `c[d, k] = Σₘ C[l, d, m] a[o(l, d), k, m]`, then expand with the basis. A template whose
+  `c[d, k] = Σₘ C[s, d, m] a[o(s, d), k, m]`, then expand with the basis. A template whose
   detectors share the basis but not one set each is expanded once per (set, mode), then weighted
   per detector, so the expansion does not scale with the detectors. A signal the same on every
   stream is expanded once.
@@ -164,11 +164,11 @@ A basis is stored once, whatever its coupling. For the T2P field this replaces t
 
 ### Its sparsity
 
-Write `L^{d}_{ll'} = B_{g,d}ᵀ W^{d}_{ll'} B_{h,d}` for the local Gram of templates `g` and `h` on
-detector `d` and streams `l, l'`. The Gram is then
+Write `L^{d}_{ss'} = B_{g,d}ᵀ W^{d}_{ss'} B_{h,d}` for the local Gram of templates `g` and `h` on
+detector `d` and streams `s, s'`. The Gram is then
 
 ```
-G_gh[(o, m), (o', m')] = Σ_{d, l, l'} [o_g(l, d) = o] [o_h(l', d) = o'] C_g[l, d, m] C_h[l', d, m'] L^{d}_{ll'}
+G_gh[(o, m), (o', m')] = Σ_{d, s, s'} [o_g(s, d) = o] [o_h(s', d) = o'] C_g[s, d, m] C_h[s', d, m'] L^{d}_{ss'}
 ```
 
 Its sparsity follows from the template description and from what the weight couples. The weight may

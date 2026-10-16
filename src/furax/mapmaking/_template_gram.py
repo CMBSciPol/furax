@@ -40,7 +40,9 @@ from furax.linalg import ArrowheadCholeskyOperator, BorderedBandedMatrix, probe_
 
 from . import _template_structure
 from ._template_model import TemplateOperator
+from .bases import OffsetBasis
 from .gram import _ridge_operator
+from .pomme import PommeProjectionOperator
 
 __all__ = [
     'BlockGram',
@@ -96,14 +98,23 @@ def template_gram(
     bandwidth: int = 0,
     streams_coupled: bool = False,
     coupled: bool = False,
+    pomme_tau: int | None = None,
     method: Literal['structure', 'probe'] | None = None,
     batch_size: int = 1,
 ) -> BlockGram:
-    r"""Assemble the Gram $T^\top W T$.
+    r"""Assemble the Gram $T^\top W T$, or $T^\top W F T$ with the Pomme projector $F$.
 
     A weight diagonal in time and in streams (`bandwidth=0`, `streams_coupled=False`) is read off by
     applying it to ones, and the Gram assembled from the structure of the bases. Any other weight
     is probed.
+
+    With `pomme_tau`, the Gram is that under $W F$, with $F$ the
+    [`PommeProjectionOperator`][furax.mapmaking.pomme.PommeProjectionOperator] removing the mean
+    of each interval of `pomme_tau` samples. $W$ must then be constant on each interval, as the
+    Pomme path makes it by masking intervals whole: $W F$ is the weight with the interval offsets
+    marginalized. Probed, $W F$ is a weight reaching `pomme_tau` samples; from the structure, the
+    offsets are eliminated from the Gram. A time-local template next to Pomme must have blocks
+    longer than an interval.
 
     Args:
         operator: The template operator $T$.
@@ -113,6 +124,7 @@ def template_gram(
         streams_coupled: Whether $W$ couples the streams of a detector, such as Q and U.
         coupled: Whether to also assemble the coupling of the local and the global amplitudes,
             for an exact inverse.
+        pomme_tau: The length of the Pomme intervals, when the templates are combined with Pomme.
         method: `'structure'` or `'probe'` to choose the assembly; by default, from the
             structure when the weight is diagonal, by probing otherwise.
         batch_size: The number of probes applied at once, or of detectors assembled at once
@@ -120,10 +132,18 @@ def template_gram(
 
     Raises:
         ValueError: If the assembly from the structure is asked for a weight that is not
-            diagonal. If, when probing, the time blocks of a template are too short for the
-            probes to resolve its banded Gram; under a transformation such as `jax.jit`, where
-            this cannot be checked, the Gram is NaN instead.
+            diagonal, or Pomme for a demodulated TOD. If, when probing, the time blocks of a
+            template are too short for the probes to resolve its banded Gram; under a
+            transformation such as `jax.jit`, where this cannot be checked, the Gram is NaN
+            instead, as it is from the structure when a time-local template has blocks shorter
+            than a Pomme interval.
     """
+    tod = operator.tod
+    pomme = None
+    if pomme_tau is not None:
+        if tod.stokes is not None:
+            raise ValueError('Pomme filtering applies to a TOD that is not demodulated')
+        pomme = OffsetBasis(pomme_tau, tod.n_samples, tod.dtype)
     diagonal = bandwidth == 0 and not streams_coupled
     if method is None:
         method = 'structure' if diagonal else 'probe'
@@ -143,16 +163,18 @@ def template_gram(
 
     diagonal_weights = None
     if method == 'structure':
-        tod = operator.tod
-        diagonal = tod.as_array(weight(tod.ones()))
-        diagonal_weights = tuple(diagonal.reshape(tod.n_streams, tod.n_dets, tod.n_samples))
+        weights = tod.as_array(weight(tod.ones()))
+        diagonal_weights = tuple(weights.reshape(tod.n_streams, tod.n_dets, tod.n_samples))
+    elif pomme is not None:  # W F couples the samples of an interval
+        weight = weight @ PommeProjectionOperator(pomme.tau, in_structure=tod.structure)
+        bandwidth = max(bandwidth, pomme.tau - 1)
 
     def assemble(layout, reading):
         if diagonal_weights is None:
             matrix, cross = _probe(operator, weight, layout, reading, bandwidth, batch_size)
         else:
             matrix, cross = _template_structure.assemble(
-                operator, diagonal_weights, layout, reading, batch_size
+                operator, diagonal_weights, layout, reading, batch_size, pomme
             )
         return _Part(matrix, layout), cross
 

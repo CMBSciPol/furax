@@ -29,7 +29,7 @@ from furax import tree
 from furax.linalg import BorderedBandedMatrix
 
 from ._template_model import Template, TemplateOperator
-from .bases import Basis, _einsum
+from .bases import Basis, OffsetBasis, WindowedBasis, _einsum
 from .gram import _cross_gram
 
 if TYPE_CHECKING:  # the Gram module calls this one
@@ -42,12 +42,14 @@ def assemble(
     layout: _Layout,
     reading: _Layout | None,
     batch_size: int,
+    pomme: OffsetBasis | None = None,
 ) -> tuple[BorderedBandedMatrix, Array | None]:
     """One block of the Gram, and its coupling to the local amplitudes of `reading` if given.
 
-    `weights` is the diagonal of the weight, one `(n_dets, n_samples)` stream per stream of the TOD.
+    `weights` is the diagonal of the weight, one `(n_dets, n_samples)` array per stream of the TOD.
     The coupling has the shape of the probed one: `(n_global, n_units, n_local)`, the block being
-    all border.
+    all border. With the Pomme offsets `pomme`, the Gram is that under the weight times the Pomme
+    projector, the offsets eliminated from the weighted Grams of the bases.
     """
     names = layout.names + (() if reading is None else reading.names)
     inputs = {name: _GramInputs.of(operator.templates[name]) for name in names}
@@ -69,10 +71,10 @@ def assemble(
         done = {}
         if on_stream or core is not None:
             done |= _on_stream(
-                inputs, on_stream, core, stream, w, batch_size, total=not layout.local
+                inputs, on_stream, core, stream, w, batch_size, pomme, total=not layout.local
             )
         if crossing:
-            done |= _on_stream(inputs, crossing, None, stream, w, batch_size, total=False)
+            done |= _on_stream(inputs, crossing, None, stream, w, batch_size, pomme, total=False)
         for key, block in done.items():
             parts.setdefault(key, []).append((stream, block))
 
@@ -189,6 +191,7 @@ def _on_stream(
     stream: int,
     w: Float[Array, 'det samp'],
     batch_size: int,
+    pomme: OffsetBasis | None,
     *,
     total: bool,
 ) -> dict[Any, Array]:
@@ -211,14 +214,13 @@ def _on_stream(
     def grams(w_d, own):
         """One detector's Grams of the bases of each pair, and the bands of the core's."""
         bases = {name: basis._with_batch_shape(()) for name, basis in own.items()}
-        blocks = []
-        for p in pairs:
-            g = bases.get(p.g.name, inputs[p.g.name].support)
-            h = bases.get(p.h.name, inputs[p.h.name].support)
-            blocks.append(_cross_gram(g, h, w_d))
+        supports = {name: bases.get(name, inputs[name].support) for name in names}
+        blocks = [_cross_gram(supports[p.g.name], supports[p.h.name], w_d) for p in pairs]
         bands = None
         if core is not None:
             bands = bases.get(core.name, inputs[core.name].basis).gram(w_d)
+        if pomme is not None:
+            blocks, bands = _pomme_corrected(pomme, pairs, core, supports, blocks, bands, w_d)
         return blocks, bands
 
     def by_key(blocks, bands):
@@ -308,3 +310,120 @@ def _place_bands(
     n_lead = len(lead)
     out = jnp.moveaxis(out, (n_lead, n_lead + 1), (n_lead + 2, n_lead + 6))
     return out.reshape(-1, n_blocks, n_w1, n_sets * k, n_sets * k)
+
+
+def _pomme_corrected(
+    pomme: OffsetBasis,
+    pairs: list[_Pair],
+    core: _Entry | None,
+    supports: dict[str, Basis],
+    blocks: list[Array],
+    bands: Array | None,
+    w: Float[Array, ' samp'],
+) -> tuple[list[Array], Array | None]:
+    """One detector's Grams of the bases, the Pomme offsets `Z` eliminated.
+
+    Each Gram of two bases loses `Cᵀ D⁻¹ C'`, with `D = Zᵀ W Z` the weighted counts of the
+    intervals and `C = Zᵀ W B` each basis summed over them. The sums of a time-local core are kept
+    in its band layout; the core's bands gain one, an interval straddling two of its blocks. They
+    are NaN if an interval spans more blocks still: the core's blocks must be longer than one.
+    """
+    counts = pomme.gram(w)[:, 0, 0, 0]  # the offsets do not overlap: their Gram is diagonal
+    inverse = 1 / jnp.where(counts > 0, counts, jnp.inf)  # no correction from a masked interval
+    cores = {p.g.name for p in pairs if p.g == p.rows.core} | (
+        set() if core is None else {core.name}
+    )
+    banded = {name: _BandedSums.of(pomme, supports[name].support(), w) for name in cores}
+    names = {p.h.name for p in pairs} | {p.g.name for p in pairs if p.g.name not in cores}
+    dense = {name: _interval_sums(pomme, supports[name], w) for name in names}
+
+    corrected = []
+    for p, gram in zip(pairs, blocks, strict=True):
+        scaled = inverse[:, None] * dense[p.h.name]
+        if p.g.name in cores:
+            gram = gram - banded[p.g.name].times(scaled)
+        else:
+            gram = gram - dense[p.g.name].T @ scaled
+        corrected.append(gram)
+    if core is not None:
+        assert bands is not None
+        sums = banded[core.name]
+        width = sums.sums.shape[1]
+        bands = jnp.pad(bands, [(0, 0), (0, width - bands.shape[1]), (0, 0), (0, 0)])
+        bands = bands - sums.band_correction(inverse)
+        bands = jnp.where(sums.too_long, jnp.nan, bands)
+    return corrected, bands
+
+
+def _interval_sums(
+    pomme: OffsetBasis, basis: Basis, w: Float[Array, ' samp']
+) -> Float[Array, 'int k']:
+    """`C = Zᵀ W B`: the weighted basis functions summed over each interval of the offsets."""
+    if basis._n_blocks > 1:
+        return _cross_gram(pomme.support(), basis, w)
+    # A basis spanning the observation: its few functions are weighted, then summed by the offsets'
+    # transpose, rather than scattered by interval.
+    support = basis.support()
+    functions = support.values * (support.taps.sum(axis=1) * w)[None, :]
+    return pomme.T(functions).T
+
+
+class _BandedSums(NamedTuple):
+    """`C = Zᵀ W B` for a time-local basis `B`, in its band layout.
+
+    An interval reads at most `width` consecutive blocks, from `first`, so the dense
+    `(n_intervals, n_blocks·k)` matrix is never formed.
+    """
+
+    first: Array
+    """The first block each interval reads."""
+    sums: Float[Array, 'int width k']
+    """`C` on the `width` consecutive blocks of each interval, from `first`."""
+    n_blocks: int
+    too_long: Array
+    """Whether an interval reads more than `width` blocks, which the band cannot hold."""
+
+    @classmethod
+    def of(cls, pomme: OffsetBasis, support: WindowedBasis, w: Float[Array, ' samp']) -> Self:
+        intervals = pomme.support()
+        n_intervals, n_blocks, k = intervals.n_blocks, support.n_blocks, support.values.shape[0]
+        width = min(support.taps.shape[1] + 1, n_blocks)
+        ids = intervals.blocks[:, 0]
+        zw = w * intervals.values[0]  # each sample's entry of Zᵀ W, zero past the last interval
+        dtype = support.blocks.dtype
+        first = jnp.full(n_intervals, n_blocks, dtype)
+        last = jnp.full(n_intervals, -1, dtype)
+        # only the samples of nonzero weight and value read a block
+        active = (zw != 0) & jnp.any(support.values != 0, axis=0)
+        for slot in range(support.blocks.shape[1]):  # the window width is static
+            reads = active & (support.taps[:, slot] != 0)
+            block = support.blocks[:, slot]
+            first = first.at[ids].min(jnp.where(reads, block, n_blocks).astype(dtype))
+            last = last.at[ids].max(jnp.where(reads, block, -1).astype(dtype))
+        weighted = (support.values * zw[None, :]).T  # (samp, k)
+        sums = jnp.zeros((n_intervals, width, k), support.values.dtype)
+        for slot in range(support.blocks.shape[1]):
+            s = jnp.clip(support.blocks[:, slot] - first[ids], 0, width - 1)
+            sums = sums.at[ids, s].add(support.taps[:, slot][:, None] * weighted)
+        return cls(first, sums, n_blocks, jnp.any(last - first >= width))
+
+    def band_correction(self, inverse: Float[Array, ' int']) -> Float[Array, 'n width k k']:
+        """`Cᵀ D⁻¹ C` in the band layout: interval `i` adds to the band at `(first + s, s' − s)`."""
+        _, width, k = self.sums.shape
+        bands = jnp.zeros((self.n_blocks, width, k, k), self.sums.dtype)
+        for s in range(width):
+            # an interval reading fewer than `width` blocks has zero sums past its last
+            rows = jnp.clip(self.first + s, 0, self.n_blocks - 1)
+            for s2 in range(s, width):
+                contribution = _einsum('ia,ib,i->iab', self.sums[:, s], self.sums[:, s2], inverse)
+                bands = bands.at[rows, s2 - s].add(contribution)
+        return bands
+
+    def times(self, other: Float[Array, 'int m']) -> Float[Array, 'nk m']:
+        """`Cᵀ X`, rows in the basis's `(block, k)` order."""
+        _, width, k = self.sums.shape
+        out = jnp.zeros((self.n_blocks, k, other.shape[1]), self.sums.dtype)
+        for s in range(width):
+            rows = jnp.clip(self.first + s, 0, self.n_blocks - 1)
+            out = out.at[rows].add(_einsum('ia,ib->iab', self.sums[:, s], other))
+        return out.reshape(self.n_blocks * k, -1)

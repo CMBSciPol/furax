@@ -10,6 +10,7 @@ from furax import AbstractLinearOperator, symmetric, tree
 from furax.mapmaking._template_gram import BlockGram, factor, template_gram
 from furax.mapmaking._template_model import Template, TemplateOperator
 from furax.mapmaking.bases import OffsetBasis, SegmentedBasis, TensorBasis, _einsum
+from furax.mapmaking.pomme import PommeProjectionOperator
 from furax.obs import TODFormat
 
 N_DETS = 4
@@ -17,6 +18,7 @@ N_SAMPS = 64
 STOKES = 'IQU'
 WAFERS = np.array([0, 0, 1, 1])  # the group of each detector
 ALL = np.arange(N_DETS)
+TAU = 5  # Pomme intervals, straddling the blocks of 8 samples of the offsets
 
 
 def _tod(dets=ALL):
@@ -159,12 +161,14 @@ def test_gram_is_the_dense_gram(templates, weight, method):
     _check_gram(op, W, WEIGHTS[weight]['bandwidth'], weight == 'streams_coupled', method)
 
 
-def _check_gram(op, W, bandwidth, streams_coupled, method, batch_size=1):
-    """The Gram assembled with and without the local-global coupling, against the dense one."""
+def _check_gram(op, W, bandwidth, streams_coupled, method, batch_size=1, effective=None, **kw):
+    """The Gram assembled with and without the local-global coupling, against the dense one, under
+    the weight `effective` if given."""
     reach = {'bandwidth': bandwidth, 'streams_coupled': streams_coupled, 'method': method}
-    reach['batch_size'] = batch_size
+    reach |= {'batch_size': batch_size} | kw
     coupled = template_gram(op, W, coupled=True, **reach)
-    assert_allclose(_dense(coupled, op), _dense_gram(op, W), rtol=1e-8, atol=1e-8)
+    expected = _dense_gram(op, W if effective is None else effective)
+    assert_allclose(_dense(coupled, op), expected, rtol=1e-8, atol=1e-8)
 
     # the blocks alone, without their coupling
     blocks = template_gram(op, W, **reach)
@@ -211,6 +215,41 @@ def test_gram_on_other_tods_is_the_dense_gram(stokes, det_shape, method):
     W = _weight(op, jr.key(15))
     # batches of 3 of the 4 detectors: the last one overlaps the first
     _check_gram(op, W, 0, False, method, batch_size=3)
+
+
+def _pomme_weight(op, key):
+    """A diagonal weight constant on each Pomme interval: one value per detector, two intervals
+    and the tail masked."""
+    w = np.repeat(np.asarray(jr.uniform(key, (N_DETS, 1), minval=0.5, maxval=2.0)), N_SAMPS, 1)
+    w[:, 2 * TAU : 4 * TAU] = 0
+    w[:, N_SAMPS // TAU * TAU :] = 0
+    return _DenseWeight(jnp.diag(jnp.asarray(w.ravel())), in_structure=op.out_structure)
+
+
+@pytest.mark.parametrize('method', ['probe', 'structure'])
+def test_gram_under_pomme_is_the_dense_gram(method):
+    tod = TODFormat((N_DETS, N_SAMPS), jnp.float64)
+    op = TemplateOperator(_templates_on(tod, jr.key(18)))
+    W = _pomme_weight(op, jr.key(19))
+    F = PommeProjectionOperator(TAU, in_structure=tod.structure).as_matrix()
+    effective = _DenseWeight(W.matrix @ F, in_structure=op.out_structure)
+    _check_gram(op, W, 0, False, method, batch_size=3, effective=effective, pomme_tau=TAU)
+
+
+def test_pomme_is_for_a_tod_that_is_not_demodulated():
+    op = _operator('local', jr.key(20))
+    with pytest.raises(ValueError, match='not demodulated'):
+        template_gram(op, _weight(op, jr.key(21)), pomme_tau=TAU)
+
+
+def test_blocks_shorter_than_a_pomme_interval_give_a_nan_gram():
+    # blocks of 2 samples: an interval of 5 spans 3 of them, beyond the band
+    segment = jnp.arange(N_SAMPS, dtype=jnp.int32) // 2
+    basis = SegmentedBasis(segment, jnp.ones((1, N_SAMPS)), N_SAMPS // 2)
+    tod = TODFormat((N_DETS, N_SAMPS), jnp.float64)
+    op = TemplateOperator({'poly': Template(basis, tod)})
+    gram = template_gram(op, _pomme_weight(op, jr.key(22)), pomme_tau=TAU)
+    assert jnp.all(jnp.isnan(gram.local.matrix.bands))
 
 
 def test_structure_is_for_a_diagonal_weight_only():

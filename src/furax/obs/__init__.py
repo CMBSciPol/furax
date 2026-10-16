@@ -17,6 +17,7 @@ from .operators import (
     SynchrotronOperator,
 )
 from .pointing import PointingOperator
+from .tod import TOD, TODFormat
 
 __all__ = [
     'PointingOperator',
@@ -34,4 +35,6 @@ __all__ = [
     'preconditionner',
     'BeamOperator',
     'BeamOperatorIQU',
+    'TOD',
+    'TODFormat',
 ]

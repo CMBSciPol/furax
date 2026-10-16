@@ -310,8 +310,7 @@ class MultiObservationMapMaker[T]:
             ObservationReader.from_observations(
                 [self.observations[i] for i in bucket.observations],
                 requested_fields=required_fields,
-                demodulated=self.config.demodulated,
-                stokes=self.config.read_stokes,
+                stokes=self.config.read_stokes if self.config.demodulated else None,
                 dtype=self.config.dtype,
                 sample_dtype=jnp.float32,
                 shapes=[shapes[i] for i in bucket.observations],

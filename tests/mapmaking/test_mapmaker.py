@@ -93,7 +93,7 @@ class TestMultiObsMapMaker:
         config = _config(landscape_type, stokes, demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         reader = ObservationReader.from_observations(
-            observations, demodulated=demodulated, stokes=stokes
+            observations, stokes=stokes if demodulated else None
         )
         with jax.set_mesh(maker.mesh):
             model = maker.build_model_and_accumulate().buckets[0].model
@@ -101,7 +101,7 @@ class TestMultiObsMapMaker:
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
         assert structure_equal(model.map_structure, maker.landscape.structure)
-        assert structure_equal(model.tod_structure, reader.out_structure['sample_data'])
+        assert structure_equal(model.tod_format.structure, reader.out_structure['sample_data'])
 
     def test_full_mapmaker(self, name, demodulated, stokes, landscape_type):
         observations = _observations(name, demodulated)
@@ -145,7 +145,7 @@ class TestFakeObsMapMaker:
         config = _config('healpix', stokes, demodulated=demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         reader = ObservationReader.from_observations(
-            observations, demodulated=demodulated, stokes=stokes
+            observations, stokes=stokes if demodulated else None
         )
         with jax.set_mesh(maker.mesh):
             model = maker.build_model_and_accumulate().buckets[0].model
@@ -153,7 +153,7 @@ class TestFakeObsMapMaker:
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
         assert structure_equal(model.map_structure, maker.landscape.structure)
-        assert structure_equal(model.tod_structure, reader.out_structure['sample_data'])
+        assert structure_equal(model.tod_format.structure, reader.out_structure['sample_data'])
 
     def test_full_binned_mapmaker_multi_obs(self, stokes, demodulated):
         # Two observations (distinct noise seeds) so the multi-observation

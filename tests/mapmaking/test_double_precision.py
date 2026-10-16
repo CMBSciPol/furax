@@ -195,7 +195,6 @@ def test_float32_tod_accumulates_like_float64(detector_batch_size: int) -> None:
         ObservationReader.from_observations(
             observations,
             requested_fields=reference.reader_fields,
-            stokes='IQU',
             sample_dtype=jnp.float64,
             shapes=shapes,
         ),

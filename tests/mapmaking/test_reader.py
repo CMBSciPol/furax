@@ -35,7 +35,7 @@ def test_sample_data_is_zero_padded(lazy, demodulated: bool):
     reader = ObservationReader.from_observations(
         observations,
         requested_fields=['sample_data'],
-        demodulated=demodulated,
+        stokes='IQU' if demodulated else None,
         sample_dtype=np.float32,
     )
     data, padding, _ = reader.read(0)
@@ -54,7 +54,7 @@ def test_sample_data_is_zero_padded(lazy, demodulated: bool):
 def test_sample_data_reaches_a_cpu_device_without_a_copy(demodulated: bool):
     observations = [FakeLazyObservation(n_dets=2, n_samples=500), FakeLazyObservation(n_dets=3)]
     reader = ObservationReader.from_observations(
-        observations, requested_fields=['sample_data'], demodulated=demodulated
+        observations, requested_fields=['sample_data'], stokes='IQU' if demodulated else None
     )
     data, _, _ = reader.read_host(0)
     (tod,) = jax.tree.leaves(data['sample_data'])

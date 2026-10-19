@@ -13,12 +13,15 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+from fastquat import Quaternion
 from jax import Array
 from jax.scipy.signal import detrend
 from jaxtyping import DTypeLike, Float
 
 from furax.math import bspline
+from furax.math.coords import XiEtaAngles
 from furax.math.legendre import legvander
+from furax.math.zernike import zernike_vander
 from furax.obs import TODFormat
 
 from .._observation import ReaderField, _sample_rate
@@ -57,6 +60,7 @@ __all__ = [
     'binned_azimuth_hwp_synchronous_templates',
     'spline_hwp_synchronous_templates',
     't2p_templates',
+    'zernike_couplings',
 ]
 
 
@@ -134,6 +138,8 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
         fields |= {ReaderField.TIMESTAMPS, ReaderField.HWP_ANGLES}
     if config.t2p is not None:
         fields |= {ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS}
+        if config.t2p.zernike_order is not None:
+            fields |= {ReaderField.DETECTOR_QUATERNIONS}
     if config.ground is not None:
         raise NotImplementedError(
             'Ground templates are not supported in the multi-observation path.'
@@ -264,7 +270,9 @@ def t2p_templates(
     """The temperature-to-polarization leakage on the Q and U streams of the TOD, none without.
 
     Each detector's leakage is its own temperature stream, `temperature`, by default the I stream
-    of the sample data. Q and U each fit their own amplitudes.
+    of the sample data. Q and U each fit their own amplitudes per detector, or, with
+    `config.zernike_order`, a few amplitudes shared by the detectors: the leakage follows a
+    polarization field over the focal plane, from the detector quaternions in `data`.
     """
     streams = (
         ''
@@ -282,7 +290,79 @@ def t2p_templates(
         sample_rate=_sample_rate(data[ReaderField.TIMESTAMPS]),
         decimation_factor=config.decimation_factor,
     )
-    return {'t2p': Template(basis, tod_format, streams=streams)}
+    if config.zernike_order is None:
+        return {'t2p': Template(basis, tod_format, streams=streams)}
+    angles = XiEtaAngles.from_quaternion(
+        Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS])
+    )
+    joint = config.joint_qu
+    coupling = zernike_couplings(
+        angles.xi,
+        angles.eta,
+        angles.gamma,
+        config.zernike_order,
+        config.zernike_radius,
+        streams=streams if joint else None,
+    ).astype(tod_format.dtype)
+    # one common field for the detectors; its own for each stream unless Q and U share one
+    template = Template(
+        basis,
+        tod_format,
+        streams=streams,
+        per=() if joint else ('stream',),
+        coupling=coupling if joint else coupling[None],
+    )
+    return {'t2p': template}
+
+
+def zernike_couplings(
+    xi: Float[Array, ' det'],
+    eta: Float[Array, ' det'],
+    gamma: Float[Array, ' det'],
+    order: int,
+    radius: float,
+    *,
+    streams: str | None = None,
+) -> Float[Array, '*stream det mode']:
+    r"""Couplings of a leakage that follows a polarization field over the focal plane.
+
+    The field $P = \sum_k c_k Z_k(\xi / R, \eta / R)$, with complex $c_k$ over the Zernike
+    polynomials up to radial order `order`, reaches detector $i$, of polarization angle $\gamma_i$,
+    as the leakage coefficient $e^{2i\gamma_i} P(\xi_i, \eta_i)$. On Q or U alone, that is a real
+    combination of $\cos 2\gamma_i Z_k$ and $\sin 2\gamma_i Z_k$: the couplings, `(det, mode)`
+    with the modes ordered by Zernike polynomial in the standard (ANSI) order, each with its
+    $(\cos, \sin)$ pair.
+
+    With `streams`, such as `'qu'`, the couplings are those of Q and U together, `(stream, det,
+    mode)`: the modes are then $(\mathrm{Re}\, c_k, \mathrm{Im}\, c_k)$, common to the streams,
+    seen as $\mathrm{Re}(c_k e^{2i\gamma})$ on Q and $\mathrm{Im}(c_k e^{2i\gamma})$ on U.
+
+    Args:
+        xi: The detectors' first focal-plane coordinate, in radians.
+        eta: The detectors' second focal-plane coordinate, in radians.
+        gamma: The detectors' polarization angle, in radians.
+        order: The highest radial order of the field.
+        radius: The focal-plane radius $R$, in radians.
+        streams: The streams `'q'` and `'u'` to couple together; `None` for the couplings of one
+            stream.
+
+    Raises:
+        ValueError: If `streams` names a stream other than `'q'` and `'u'`.
+    """
+    if streams is not None and not set(streams) <= set('qu'):
+        raise ValueError(f"'streams' must name Q and U streams only, got {streams!r}")
+    x, y = xi / radius, eta / radius
+    fields = zernike_vander(x, y, order)  # (det, k)
+    rotation = jnp.stack([jnp.cos(2 * gamma), jnp.sin(2 * gamma)], axis=-1)  # (det, 2)
+    if streams is not None:
+        # Q sees (cos, -sin) of the complex amplitude, U sees (sin, cos)
+        rotation = jnp.stack(
+            [
+                rotation * jnp.array([1.0, -1.0]) if s == 'q' else rotation[..., ::-1]
+                for s in streams
+            ]
+        )  # (stream, det, 2)
+    return (fields[..., None] * rotation[..., None, :]).reshape(*rotation.shape[:-2], len(x), -1)
 
 
 def _on_every_stream(basis: Basis, tod_format: TODFormat) -> Template:

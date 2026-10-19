@@ -55,9 +55,10 @@ def _hwp_obs(n_obs: int = 2, n_dets: int = 8, n_samples: int = 1024):
     return [FakeLazyObservation(seed=i, n_dets=n_dets, n_samples=n_samples) for i in range(n_obs)]
 
 
-def _ground_obs(n_obs: int = 2, n_dets: int = 8, n_samples: int = 1024):
+def _ground_obs(n_obs: int = 2, n_dets: int = 8, n_samples: int = 1024, **kwargs):
     return [
-        FakeLazyGroundObservation(seed=i, n_dets=n_dets, n_samples=n_samples) for i in range(n_obs)
+        FakeLazyGroundObservation(seed=i, n_dets=n_dets, n_samples=n_samples, **kwargs)
+        for i in range(n_obs)
     ]
 
 
@@ -253,6 +254,39 @@ def test_amplitudes_shared_by_the_detectors_are_the_same_in_detector_batches(mon
     assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
     assert_allclose(
         batched.template_amplitudes['common'], amplitudes, atol=1e-4 * jnp.max(jnp.abs(amplitudes))
+    )
+
+
+@pytest.mark.parametrize(
+    ('joint_qu', 'polynomial'),
+    [(True, False), (False, False), (True, True)],
+    ids=['joint', 'per-stream', 'with-polynomial'],
+)
+def test_t2p_field_is_the_same_in_detector_batches(joint_qu, polynomial):
+    # The amplitudes of a leakage field are shared by an observation's detectors, so its batches
+    # solve for them together: batching changes the memory layout, not the model. With a
+    # polynomial, the unknowns hold both kinds of amplitudes.
+    # 6 amplitudes per stream (3 Zernike polynomials, each with its cos and sin) for 7 detectors
+    templates = TemplatesConfig(
+        t2p=T2PConfig(zernike_order=1, joint_qu=joint_qu),
+        polynomial=PolynomialConfig(legendre=PolynomialOrders(0, 1)) if polynomial else None,
+    )
+    cfg = replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
+    results = [
+        MultiObservationMapMaker(
+            _ground_obs(n_dets=7, focal_plane_radius=0.2),
+            config=replace(cfg, detector_batch_size=batch),
+        ).run()
+        for batch in (0, 3)
+    ]
+    whole, batched = results
+    scale = jnp.max(jnp.abs(whole.map.data))
+    assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
+    amplitudes = whole.template_amplitudes['t2p']
+    assert jnp.all(jnp.isfinite(amplitudes)) and jnp.max(jnp.abs(amplitudes)) > 0
+    assert amplitudes.shape[0] == 2  # one set of amplitudes per observation
+    assert_allclose(
+        batched.template_amplitudes['t2p'], amplitudes, atol=1e-4 * jnp.max(jnp.abs(amplitudes))
     )
 
 

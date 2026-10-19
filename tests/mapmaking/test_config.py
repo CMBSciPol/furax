@@ -184,6 +184,19 @@ class TestExplicitOnlyTemplates:
         cls(explicit=True)
 
 
+class TestT2PField:
+    @pytest.mark.parametrize(
+        ('kwargs', 'match'),
+        [
+            ({'zernike_order': -1}, 'zernike_order'),
+            ({'zernike_radius': 0.0}, 'zernike_radius'),
+        ],
+    )
+    def test_rejects_invalid_values(self, kwargs, match):
+        with pytest.raises(ValueError, match=match):
+            T2PConfig(**kwargs)
+
+
 class TestT2PRequiresDemodulated:
     def test_raises_without_demodulated(self):
         with pytest.raises(ValueError, match='T2P template requires demodulated=True'):

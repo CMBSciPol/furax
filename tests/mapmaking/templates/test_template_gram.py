@@ -8,13 +8,13 @@ from numpy.testing import assert_allclose
 
 from furax import AbstractLinearOperator, symmetric, tree
 from furax.linalg import BorderedBandedMatrix
+from furax.mapmaking.templates import Template, TemplateOperator
 from furax.mapmaking.templates._gram import (
     BlockGram,
     _regularized,
     factor,
     template_gram,
 )
-from furax.mapmaking.templates._operator import Template, TemplateOperator
 from furax.mapmaking.templates.bases import OffsetBasis, SegmentedBasis, TensorBasis, _einsum
 from furax.mapmaking.templates.pomme import PommeProjectionOperator
 from furax.obs import TODFormat
@@ -200,7 +200,11 @@ def _templates_on(tod_format, key):
         ),
         't2p': Template(stream, tod_format, streams),
         'field': Template(
-            stream, tod_format, streams, per=(), coupling=jr.normal(k[2], (*stream_axis, *det, 2))
+            stream,
+            tod_format,
+            streams,
+            per=(),
+            coupling=jr.normal(k[2], (*stream_axis, *det, 2)),
         ),
         'common': Template(
             offsets,

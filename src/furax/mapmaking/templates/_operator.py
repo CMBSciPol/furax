@@ -1,7 +1,7 @@
 """Templates of structured signals in the TOD, and the operator that sums them.
 
-A [`Template`][] is a [`Basis`][furax.mapmaking.templates.bases.Basis] of functions of time, seen by each
-detector and stream of a TOD through a coupling, with independent amplitudes along some of
+A [`Template`][] is a [`Basis`][furax.mapmaking.templates.bases.Basis] of functions of time, seen by
+each detector and stream of a TOD through a coupling, with independent amplitudes along some of
 these axes. Amplitudes per detector or per stream, shared across them, or seen through a pattern
 over the focal plane are all choices of these ingredients. As an operator, a template maps its
 amplitudes to the TOD that a [`TODFormat`][furax.obs.TODFormat] describes, and
@@ -68,7 +68,8 @@ class Template(AbstractLinearOperator):
         >>> tod_format = TODFormat((3, 16), jnp.float32)
         >>> offsets = OffsetBasis(4, 16, jnp.float32)
         >>> gains = jnp.array([[1.0], [0.5], [-1.0]])  # (det, mode)
-        >>> Template(offsets, tod_format, per=(), coupling=gains).in_structure.shape  # (block, mode)
+        >>> common = Template(offsets, tod_format, per=(), coupling=gains)
+        >>> common.in_structure.shape  # (block, mode)
         (4, 1)
 
         With `per=('det',)`, each detector fits its own offsets, which the gains only rescale:
@@ -106,9 +107,10 @@ class Template(AbstractLinearOperator):
     """
 
     basis: Basis
-    """The functions of time: one basis, or one per detector (`batch_shape=tod_format.det_shape`)."""
+    """The functions of time: one basis, or one per detector, of batch shape the detector shape of
+    the TOD."""
     tod_format: TODFormat = field(metadata={'static': True})
-    """The TOD the template adds to."""
+    """The format of the TOD the template adds to."""
     streams: str | None = field(default=None, metadata={'static': True})
     """The streams covered, as Stokes parameters in lower case, such as `'qu'`; `None` unless the
     TOD is demodulated."""

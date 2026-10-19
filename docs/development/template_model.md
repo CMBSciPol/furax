@@ -329,6 +329,10 @@ to the diagonal of its block, and turns deprojection into Wiener filtering,
   detector's batch. Every other amplitude, grouped ones included, is summed over the batches of
   its observation. The mapmaker reads this from `Template.per_detector`, not from a list of
   template names.
+- **The weight.** A diagonal weight gives the Gram from the structure of the bases. A banded
+  Toeplitz weight gives it by probing, with `bandwidth = correlation_length - 1`; the same
+  bandwidth applies to the templates of each detector and to the shared ones, whose Gram is summed
+  over the batches of an observation after being probed in each.
 - **The system** keeps its form: `A = [H T]ᵀ W' [H T]` plus the priors, preconditioned by the
   block-Jacobi map preconditioner and `factor(gram)` on the amplitudes.
 - **The amplitudes** are saved as one array per template, with the axes of `per` in front:
@@ -385,9 +389,11 @@ the others as couplings. Each step leaves the test suite green.
    a `TODFormat`, one template per group of streams fitted alike (`polynomial`, or
    `polynomial_<streams>`), amplitudes saved as one array per template, `(obs, stream, det, ...)`.
    `StokesTemplateOperator` and the old Gram are removed, and the template modules gathered in the
-   `furax.mapmaking.templates` subpackage (bases, builders, operator, Gram). Templates under a
-   correlated weight follow, with the Gram probed with the weight's correlation length as its
-   bandwidth; until then the mapmaker requires a diagonal weight with templates.
+   `furax.mapmaking.templates` subpackage (bases, builders, operator, Gram). Templates also work under
+   a correlated (Toeplitz) weight: their Gram is probed with the weight's correlation length as its
+   bandwidth. The gaps are then handled by the inner mask (`gaps.treatment=inner_mask`), since gap
+   filling bypasses the templates and the nested weight couples samples across whole gaps, beyond
+   any band.
 6. The first features on the new base: the T2P field (`T2PConfig.zernike_order`), common to Q
    and U unless `T2PConfig.joint_qu` is false, and common modes coupled to the detectors.
 

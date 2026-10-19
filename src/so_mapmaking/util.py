@@ -25,7 +25,20 @@ def setup_logger(loglevel: str, log_path: Path | None, process_index: int = 0) -
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(formatter)
         logger.addHandler(fh)
+    _quiet_sotodlib(level)
     return logger
+
+
+def _quiet_sotodlib(level: str) -> None:
+    """Keep sotodlib out of the logs, unless the run is debugged.
+
+    sotodlib prints its INFO records on import, and its metadata loader logs the error of a missing
+    record before raising it, which furax handles and reports itself (e.g. a skipped group).
+    """
+    debug = logging.getLevelNamesMapping()[level] <= logging.DEBUG
+    logging.getLogger('sotodlib').setLevel(logging.DEBUG if debug else logging.WARNING)
+    loader = logging.getLogger('sotodlib.core.metadata.loader')
+    loader.setLevel(logging.DEBUG if debug else logging.CRITICAL)
 
 
 def detector_selection(wafer: str | None, band: str | None) -> dict[str, str] | None:

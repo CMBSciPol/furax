@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `furax-so-*` commands no longer print sotodlib's INFO messages or metadata loader errors unless `--loglevel debug` (#364)
 - `SymmetricBandToeplitzOperator` acts on any pytree, block-diagonally over its leaves (#359)
 - **Breaking:** `Basis` and its flavours move from `furax.mapmaking.templates` to `furax.mapmaking.bases` (#334)
 - **Breaking:** `Basis.batch_shape` replaces `Basis.per_detector_stack`: a basis can hold a batch of bases of any shape, broadcast against the batch axes of the amplitudes and of the signal (#335)

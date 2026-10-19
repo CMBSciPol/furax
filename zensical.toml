@@ -22,6 +22,7 @@ nav = [
   ] },
   { "Development" = [
       "development/contributing.md",
+      "development/template_model.md",
       "development/changelog.md",
   ] },
 ]

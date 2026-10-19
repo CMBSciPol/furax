@@ -32,7 +32,7 @@ from ._operator import Template, TemplateOperator
 from .bases import Basis, OffsetBasis, WindowedBasis, _einsum
 
 if TYPE_CHECKING:  # the Gram module calls this one
-    from ._gram import _Entry, _Layout
+    from .gram import _Entry, _Layout
 
 
 def assemble(

@@ -357,9 +357,9 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if stokes == 'IQUV':
             raise NotImplementedError
         attrs = {'I': 'dsT', 'Q': 'demodQ', 'U': 'demodU'}
-        legs = [np.atleast_2d(np.asarray(getattr(self.data, attrs[s]))) for s in stokes]
+        streams = [np.atleast_2d(np.asarray(getattr(self.data, attrs[s]))) for s in stokes]
         # furax's LinearPolarizerOperator assumes power, sotodlib assumes temperature
-        return Stokes.class_for(stokes).from_array(self._scaled_tods(legs, 0.5, out))
+        return Stokes.class_for(stokes).from_array(self._scaled_tods(streams, 0.5, out))
 
     def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
         """Returns the detector offset angles."""
@@ -470,9 +470,9 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return AtmosphericNoiseModel(*fit)
 
     def get_demodulated_noise_model(self, stokes: ValidStokesLiteral = 'IQU') -> NoiseModel:
-        """Returns a single noise model covering every requested Stokes leg.
+        """Returns a single noise model covering every requested stream.
 
-        Each Stokes leg is fit independently (I/Q/U noise properties genuinely differ), so the
+        Each stream is fit independently (I/Q/U noise properties genuinely differ), so the
         per-detector parameters carry a leading Stokes axis rather than being separate models.
         """
         if stokes == 'IQUV':
@@ -481,7 +481,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return AtmosphericNoiseModel(*fits)
 
     def _get_noise_fit_for_stoke(self, stoke: Literal['I', 'Q', 'U']) -> NDArray[np.floating]:
-        """Returns the (sigma, alpha, fk, f0) fit rows for one Stokes leg, shape ``(4, dets)``."""
+        """Returns the (sigma, alpha, fk, f0) fit rows for one stream, shape ``(4, dets)``."""
         preproc = self.data.get('preprocess')
         if preproc is None:
             raise ValueError('No preprocess data available')

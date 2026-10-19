@@ -6,20 +6,20 @@ from numpy.testing import assert_allclose
 
 from furax import DiagonalOperator, tree
 from furax.linalg import BandedCholeskyOperator
-from furax.mapmaking.bases import (
+from furax.mapmaking.templates import StokesTemplateOperator, TemplateOperator
+from furax.mapmaking.templates.bases import (
     DecimatedBasis,
     KroneckerBasis,
     SegmentedBasis,
     TensorBasis,
     WindowedBasis,
 )
-from furax.mapmaking.gram import (
+from furax.mapmaking.templates.gram import (
     _BorderedGramInverse,
     _cross_gram,
     gram_inverse,
 )
-from furax.mapmaking.pomme import PommeProjectionOperator
-from furax.mapmaking.templates import StokesTemplateOperator, TemplateOperator
+from furax.mapmaking.templates.pomme import PommeProjectionOperator
 
 N_DETS = 3
 N_SAMPS = 64

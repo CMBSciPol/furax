@@ -133,9 +133,8 @@ def test_runs_and_produces_a_map(explicit):
 
 
 def test_demodulated_polynomial_implicit_runs():
-    # Regression: with demodulated data the implicit polynomial template is a per-Stokes-leg
-    # TemplateOperator (a Family per leg), not a single-leg one. The structured Gram must
-    # recurse into each Stokes leg; before that it raised NotImplementedError.
+    # With demodulated data, the implicit polynomial template has a set of amplitudes per stream,
+    # and its Gram one block per detector and stream.
     cfg = _config(TemplatesConfig(polynomial=PolynomialConfig(explicit=False)))
     cfg.sotodlib = SotodlibConfig(demodulated=True)
     res = MultiObservationMapMaker(_ground_obs(), config=cfg).run()
@@ -161,7 +160,7 @@ def test_demodulated_legs_fitted_alike_share_a_basis(name, legendre, groups, leg
     template = PolynomialConfig() if name == 'polynomial' else ScanSynchronousConfig()
     cfg = _config(TemplatesConfig(**{name: template}))
     cfg.sotodlib = SotodlibConfig(demodulated=True)
-    template.legendre = legendre  # set after demodulation, which per-leg orders require
+    template.legendre = legendre  # set after demodulation, which per-stream orders require
     maker = MultiObservationMapMaker(_ground_obs(), config=cfg)
     with jax.set_mesh(maker.mesh):
         acc = maker.build_model_and_accumulate()

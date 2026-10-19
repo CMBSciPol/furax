@@ -405,27 +405,28 @@ class PolynomialOrders(NamedTuple):
         return self.max_order - self.min_order + 1
 
 
-def _legendre_leg_groups(
+def _legendre_stream_groups(
     legendre: PolynomialOrders | dict[str, PolynomialOrders], stokes: str
 ) -> dict[str, PolynomialOrders]:
-    """The orders of each group of legs fitted alike, keyed by its lowercase legs.
+    """The orders of each group of streams fitted alike, keyed by its lowercase streams.
 
-    Legs with the same orders are grouped, in the order of `stokes`, whatever groups `legendre`
-    names them in; legs it leaves out are absent.
+    Streams with the same orders are grouped, in the order of `stokes`, whatever groups `legendre`
+    names them in; streams it leaves out are absent.
 
     Examples:
-        >>> _legendre_leg_groups(PolynomialOrders(0, 3), 'IQU')
+        >>> _legendre_stream_groups(PolynomialOrders(0, 3), 'IQU')
         {'iqu': PolynomialOrders(min_order=0, max_order=3)}
-        >>> _legendre_leg_groups({'u': PolynomialOrders(0, 1), 'Q': PolynomialOrders(0, 1)}, 'IQU')
+        >>> orders = PolynomialOrders(0, 1)
+        >>> _legendre_stream_groups({'u': orders, 'Q': orders}, 'IQU')
         {'qu': PolynomialOrders(min_order=0, max_order=1)}
     """
     if not isinstance(legendre, dict):
         return {stokes.lower(): legendre}
-    per_leg = {leg: orders for group, orders in legendre.items() for leg in group.lower()}
+    per_stream = {s: orders for group, orders in legendre.items() for s in group.lower()}
     groups: dict[PolynomialOrders, str] = {}
-    for leg in stokes.lower():
-        if (orders := per_leg.get(leg)) is not None:
-            groups[orders] = groups.get(orders, '') + leg
+    for s in stokes.lower():
+        if (orders := per_stream.get(s)) is not None:
+            groups[orders] = groups.get(orders, '') + s
     return {group: orders for orders, group in groups.items()}
 
 
@@ -451,7 +452,7 @@ class PolynomialConfig:
     """Polynomial drift template (per-detector low-order Legendre polynomial in time).
 
     Examples:
-        Orders 0 to 3 on every leg
+        Orders 0 to 3 on every stream
 
             polynomial:
                 legendre:
@@ -473,10 +474,10 @@ class PolynomialConfig:
     legendre: PolynomialOrders | dict[str, PolynomialOrders] = field(
         default_factory=lambda: PolynomialOrders(0, 3)
     )
-    """Legendre orders, for every leg or per group of Stokes legs.
+    """Legendre orders, for every stream or per group of streams of demodulated data.
 
-    On demodulated data, a mapping such as `{'i': ..., 'qu': ...}` gives each group of legs its
-    own orders; the legs of a group are still fitted independently, and a leg left out has no
+    On demodulated data, a mapping such as `{'i': ..., 'qu': ...}` gives each group of streams its
+    own orders; the streams of a group are still fitted independently, and a stream left out has no
     polynomial template.
     """
     explicit: bool = False
@@ -493,10 +494,10 @@ class ScanSynchronousConfig:
     legendre: PolynomialOrders | dict[str, PolynomialOrders] = field(
         default_factory=lambda: PolynomialOrders(3, 7)
     )
-    """Legendre orders of the azimuth-dependent basis, for every leg or per group of Stokes legs.
+    """Legendre orders of the azimuth-dependent basis, for every stream or per group of streams.
 
-    Takes the same per-leg form as [`PolynomialConfig.legendre`][], e.g. `{'qu': ...}` for the
-    Q and U legs only.
+    Takes the same per-stream form as [`PolynomialConfig.legendre`][], e.g. `{'qu': ...}` for the
+    Q and U streams only.
     """
 
     explicit: bool = False
@@ -967,27 +968,27 @@ class MapMakingConfig:
                     raise ValueError('The T2P template requires demodulated=True.')
                 if 'QU' not in self.landscape.stokes:
                     raise ValueError(
-                        'The T2P template requires Q and U legs in landscape.stokes (got '
+                        'The T2P template requires Q and U streams in landscape.stokes (got '
                         f'{self.landscape.stokes!r}).'
                     )
             for name in ('polynomial', 'scan_synchronous'):
                 template = getattr(templates, name)
                 if template is not None and isinstance(template.legendre, dict):
-                    self._check_leg_groups(f'templates.{name}.legendre', template.legendre)
+                    self._check_stream_groups(f'templates.{name}.legendre', template.legendre)
 
-    def _check_leg_groups(self, name: str, legendre: dict[str, PolynomialOrders]) -> None:
-        """Check that per-leg orders name each leg of the landscape at most once."""
+    def _check_stream_groups(self, name: str, legendre: dict[str, PolynomialOrders]) -> None:
+        """Check that per-stream orders name each stream of the landscape at most once."""
         if not self.demodulated:
-            raise ValueError(f'{name} per Stokes leg requires demodulated=True.')
-        legs = ''.join(legendre).upper()
-        if not legs:
-            raise ValueError(f'{name} names no Stokes leg.')
-        if extra := sorted(set(legs) - set(self.landscape.stokes)):
+            raise ValueError(f'{name} per stream requires demodulated=True.')
+        streams = ''.join(legendre).upper()
+        if not streams:
+            raise ValueError(f'{name} names no stream.')
+        if extra := sorted(set(streams) - set(self.landscape.stokes)):
             raise ValueError(
-                f'{name} names legs {extra} outside landscape.stokes={self.landscape.stokes!r}.'
+                f'{name} names streams {extra} outside landscape.stokes={self.landscape.stokes!r}.'
             )
-        if repeated := sorted({leg for leg in legs if legs.count(leg) > 1}):
-            raise ValueError(f'{name} names legs {repeated} more than once.')
+        if repeated := sorted({s for s in streams if streams.count(s) > 1}):
+            raise ValueError(f'{name} names streams {repeated} more than once.')
 
     @classmethod
     def for_method(cls, method: 'Methods | str') -> Self:
@@ -1086,7 +1087,7 @@ class MapMakingConfig:
 
     @property
     def read_stokes(self) -> ValidStokesLiteral:
-        """The demodulated legs read: those of the map, and I for the T2P template.
+        """The demodulated streams read: those of the map, and I for the T2P template.
 
         The T2P template is built from the I timestream, which is read even when the map has no I.
         """

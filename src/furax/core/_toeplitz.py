@@ -21,28 +21,34 @@ __all__ = [
 
 @symmetric
 class SymmetricBandToeplitzOperator(AbstractLinearOperator):
-    """Operator for symmetric band Toeplitz convolution.
+    r"""Operator for symmetric band Toeplitz convolution.
 
     A Toeplitz matrix has constant diagonals. This operator is symmetric and
     exploits the band structure for efficient computation. For multidimensional
     band values, the operator is block diagonal.
 
-    Available methods (N = matrix size, K = number of bands):
-        - ``dense``: dense matrix multiplication
-        - ``direct``: direct convolution
-        - ``fft``: FFT on the whole input
-        - ``overlap_save_sequential``: sequential FFT on chunks
-        - ``overlap_save_parallel``: batched FFT on chunks (default)
+    The input can be a pytree, such as a [`Stokes`][furax.obs.stokes.Stokes] TOD: every leaf is
+    convolved on its last axis, with the bands broadcast against its leading axes. The operator is
+    block diagonal over the leaves and over those axes, so it does not model correlations between
+    the leaves, or between the streams of a Stokes TOD.
 
-    ============================  =========  ======
-    Method                        Time       Memory
-    ============================  =========  ======
-    ``dense``                     O(N^2)     N^2
-    ``direct``                    O(NK)      2N
-    ``fft``                       O(N log N) 3N
-    ``overlap_save_sequential``   O(N log K) 2N
-    ``overlap_save_parallel``     O(N log K) 4N
-    ============================  =========  ======
+    The `method` selects the algorithm:
+
+    - `dense`: dense matrix multiplication
+    - `direct`: direct convolution
+    - `fft`: FFT on the whole input
+    - `overlap_save_sequential`: sequential FFT on chunks
+    - `overlap_save_parallel`: batched FFT on chunks (default)
+
+    Their cost, for a matrix of size $N$ with $K$ bands:
+
+    | Method | Time | Memory |
+    | --- | --- | --- |
+    | `dense` | $O(N^2)$ | $N^2$ |
+    | `direct` | $O(NK)$ | $2N$ |
+    | `fft` | $O(N \log N)$ | $3N$ |
+    | `overlap_save_sequential` | $O(N \log K)$ | $2N$ |
+    | `overlap_save_parallel` | $O(N \log K)$ | $4N$ |
 
     Attributes:
         band_values: The band values (first element is the diagonal).
@@ -239,21 +245,21 @@ class SymmetricBandToeplitzOperator(AbstractLinearOperator):
         """[4, 3, 2, 1] -> [1, 2, 3, 4, 3, 2, 1]"""
         return jnp.concatenate((band_values[-1:0:-1], band_values))
 
-    def mv(self, x: Float[Array, '...']) -> Float[Array, '...']:
+    def mv(self, x: PyTree[Float[Array, '...']]) -> PyTree[Float[Array, '...']]:
         func = jnp.vectorize(self._get_func(), signature='(n),(k)->(n)')
-        return func(x, self.band_values)
+        return jax.tree.map(lambda leaf: func(leaf, self.band_values), x)
 
     def as_matrix(self) -> Inexact[Array, 'a a']:
         @partial(jnp.vectorize, signature='(n),(k)->(n,n)')
         def func(x: Array, band_values: Array) -> Array:
             return dense_symmetric_band_toeplitz(x.size, band_values)
 
-        x = jnp.zeros(self.in_structure.shape, self.in_structure.dtype)
-        blocks = func(x, self.band_values)
-        if blocks.ndim > 2:
-            blocks = blocks.reshape(-1, blocks.shape[-1], blocks.shape[-1])
-            return jsl.block_diag(*blocks)
-        return blocks
+        # the blocks of each leaf of the input, in the order the leaves are flattened
+        blocks = []
+        for leaf in jax.tree.leaves(self.in_structure):
+            leaf_blocks = func(jnp.zeros(leaf.shape, leaf.dtype), self.band_values)
+            blocks.extend(leaf_blocks.reshape(-1, *leaf_blocks.shape[-2:]))
+        return blocks[0] if len(blocks) == 1 else jsl.block_diag(*blocks)
 
 
 def dense_symmetric_band_toeplitz(n: int, band_values: ArrayLike) -> Array:

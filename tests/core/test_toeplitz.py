@@ -11,6 +11,7 @@ from numpy.testing import assert_allclose
 
 from furax import AbstractLinearOperator, SymmetricBandToeplitzOperator
 from furax.core import dense_symmetric_band_toeplitz
+from furax.obs.stokes import StokesQU
 
 
 @pytest.mark.parametrize(
@@ -124,3 +125,36 @@ def test_next_power_of_two(n: int, expected: int):
 )
 def test_optimal_fft_size(overlap: int, expected_fft_size: int):
     assert SymmetricBandToeplitzOperator._get_optimal_fft_size(overlap) == expected_fft_size
+
+
+def test_stokes_input_is_convolved_stream_by_stream():
+    # a band per stream and detector, applied to the stream and detector it belongs to
+    bands = jnp.array([[[1.0, 0.5, 0.2], [1.0, 0.3, 0.1]], [[2.0, 0.1, 0.0], [1.0, 0.2, 0.1]]])
+    q, u = jax.random.normal(jax.random.key(0), (2, 2, 7))
+    x = StokesQU(q, u)
+    op = SymmetricBandToeplitzOperator(bands, in_structure=jax.eval_shape(lambda: x))
+
+    y = op(x)
+
+    assert isinstance(y, StokesQU)
+    for component, band, expected in zip((y.q, y.u), bands, (q, u), strict=True):
+        per_stream = SymmetricBandToeplitzOperator(
+            band, in_structure=jax.ShapeDtypeStruct(expected.shape, expected.dtype)
+        )
+        assert_allclose(component, per_stream(expected), rtol=1e-6, atol=1e-6)
+
+
+def test_stokes_input_matrix_is_block_diagonal_over_streams_and_detectors():
+    bands = jnp.array([[[1.0, 0.5, 0.2], [1.0, 0.3, 0.1]], [[2.0, 0.1, 0.0], [1.0, 0.2, 0.1]]])
+    q, u = jax.random.normal(jax.random.key(1), (2, 2, 4))
+    x = StokesQU(q, u)
+    op = SymmetricBandToeplitzOperator(bands, in_structure=jax.eval_shape(lambda: x))
+
+    matrix = op.as_matrix()
+
+    expected = jsl.block_diag(
+        *(dense_symmetric_band_toeplitz(4, band) for band in bands.reshape(4, 3))
+    )
+    assert_allclose(matrix, expected)
+    # the matrix acts as the operator on the flattened stream-major TOD
+    assert_allclose(matrix @ x.data.ravel(), op(x).data.ravel(), rtol=1e-6, atol=1e-6)

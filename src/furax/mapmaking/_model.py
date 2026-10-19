@@ -230,11 +230,14 @@ def _noise_model(
         sample_padding = 0
         if padding is not None:  # one padding per axis of the TOD's array, the samples last
             sample_padding = jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0][-1]
+        # the segments that hold a flagged sample are left out of the estimate, for every stream
+        valid = jnp.broadcast_to(_sample_mask(data, config), (*lead, nsamp)).reshape(-1, nsamp)
         f, Pxx = padding_aware_welch(
             samples,
             sample_padding,
             fs=fs,
             nperseg=fit_config.nperseg,
+            valid=valid,
         )
         flat_model = noise_model_class.fit_psd_model(
             f, Pxx, sample_rate=fs, hwp_frequency=fhwp, config=fit_config

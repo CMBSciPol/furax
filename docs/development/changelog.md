@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax.math.zernike`: the Zernike polynomials on the unit disk (#352)
 - `furax.math.legendre.legvander`: the pseudo-Vandermonde matrix of the Legendre polynomials (#353)
 - `BorderedBandedMatrix`, `probe_bordered_banded` and `ArrowheadCholeskyOperator` in `furax.linalg`: symmetric matrices with a block-banded core and a dense border, their recovery by probing, and an arrowhead Cholesky solve (#344)
+- `Template` in `furax.mapmaking.templates`: a template as a time basis seen through a coupling, with amplitude sets per stream, detector or group of detectors (#347)
+- `build_templates` and the `*_templates` builders make the templates a `TemplatesConfig` enables, one per group of streams fitted alike (#347)
 
 ### Changed
 
@@ -25,7 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - T2P templates (`T2PConfig`) assemble their Gram from the basis structure instead of probing it one amplitude at a time, also when decimated (#335, #336)
 - Spline HWP-synchronous templates (`SplineHWPSynchronousConfig`) need far less memory to assemble their Gram (#338)
 - **Breaking:** `ObservationReader` reads demodulated TODs when given `stokes`, and drops its `demodulated` argument (#342)
-- **Breaking:** `furax.mapmaking.gram` and `furax.mapmaking.pomme` move to `furax.mapmaking.templates.gram` and `furax.mapmaking.templates.pomme` (#343)
+- **Breaking:** `furax.mapmaking.pomme` moves to `furax.mapmaking.templates.pomme` (#343)
+- **Breaking:** `TemplateOperator` sums `Template`s; `StokesTemplateOperator`, `AbstractTemplateOperator`, `StokesLeg`, the `*_basis` builders and `furax.mapmaking.gram` (`gram_inverse`) are removed (#347)
+- **Breaking:** `amplitudes.npz` holds one array per template, such as `polynomial` or `polynomial_qu`, with its stream and detector axes in front, instead of one entry per template and Stokes leg (#347)
 
 ### Fixed
 

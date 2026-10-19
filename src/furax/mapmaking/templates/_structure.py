@@ -7,8 +7,7 @@ $$ L^{sd}_{gh} = B_{g,d}^\top\, \mathrm{diag}(w_{sd})\, B_{h,d}, $$
 
 which [`Basis.gram`][furax.mapmaking.templates.bases.Basis.gram] gives in bands and `_cross_gram` as
 a dense block. The Gram is then their contraction with the weights through which each detector sees
-the amplitude sets of each template (see
-[`Template`][furax.mapmaking.templates._operator.Template]):
+the amplitude sets of each template (see [`Template`][furax.mapmaking.templates.Template]):
 
 $$ G_{gh}[(o, m), (o', m')] = \sum_{s, d} W_{g, sd}[o, m]\, W_{h, sd}[o', m']\, L^{sd}_{gh}. $$
 
@@ -31,7 +30,6 @@ from furax.linalg import BorderedBandedMatrix
 
 from ._operator import Template, TemplateOperator
 from .bases import Basis, OffsetBasis, WindowedBasis, _einsum
-from .gram import _cross_gram
 
 if TYPE_CHECKING:  # the Gram module calls this one
     from ._gram import _Entry, _Layout
@@ -428,3 +426,36 @@ class _BandedSums(NamedTuple):
             rows = jnp.clip(self.first + s, 0, self.n_blocks - 1)
             out = out.at[rows].add(_einsum('ia,ib->iab', self.sums[:, s], other))
         return out.reshape(self.n_blocks * k, -1)
+
+
+def _cross_gram(
+    a: Basis, b: Basis, weights: Float[Array, ' samp']
+) -> Float[Array, 'a_size b_size']:
+    """The weighted cross Gram `B_aᵀ diag(weights) B_b`, as one `(n_a·k_a, n_b·k_b)` block.
+
+    `a is b` recovers the self-Gram, though [`Basis.gram`][] is cheaper for a single template,
+    returning bands instead.
+    """
+    ca, cb = a.support(), b.support()
+    ka, kb = ca.values.shape[0], cb.values.shape[0]
+    if ka < kb:  # step through the smaller side's sub-basis functions (below), keep the larger
+        return _cross_gram(b, a, weights).T
+    vwa = (ca.values * weights[None, :]).T  # (samp, k_a)
+    if ca.blocks.shape[1] == cb.blocks.shape[1] == 1 and ca.n_blocks == cb.n_blocks == 1:
+        # both global: a plain matrix product, with no per-sample products at all
+        taps = ca.taps[:, 0] * cb.taps[:, 0]
+        return jnp.einsum(
+            'ta,bt->ab', taps[:, None] * vwa, cb.values, precision=jax.lax.Precision.HIGHEST
+        )
+
+    def column(values_b: Array) -> Array:
+        """The block for one sub-basis function of `b`, `(n_a, k_a, n_b)`."""
+        gram = jnp.zeros((ca.n_blocks, ka, cb.n_blocks), a.dtype)
+        for wa in range(ca.blocks.shape[1]):  # window slots (single slot for non-overlapping bases)
+            for wb in range(cb.blocks.shape[1]):
+                taps = ca.taps[:, wa] * cb.taps[:, wb] * values_b  # (samp,)
+                gram = gram.at[ca.blocks[:, wa], :, cb.blocks[:, wb]].add(taps[:, None] * vwa)
+        return gram
+
+    columns = jax.lax.map(column, cb.values)  # (k_b, n_a, k_a, n_b)
+    return jnp.moveaxis(columns, 0, -1).reshape(ca.n_blocks * ka, cb.n_blocks * kb)

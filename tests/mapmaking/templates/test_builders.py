@@ -6,9 +6,28 @@ from jax import Array
 from jaxtyping import Float
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.mapmaking.config import BinsConfig, PolynomialOrders, SplineHWPSynchronousConfig
+from furax.mapmaking import ReaderField
+from furax.mapmaking.config import (
+    BinsConfig,
+    HWPSynchronousConfig,
+    PolynomialConfig,
+    PolynomialOrders,
+    SplineHWPSynchronousConfig,
+    T2PConfig,
+    TemplatesConfig,
+)
 from furax.mapmaking.templates import (
+    Template,
     TemplateOperator,
+    build_templates,
+    polynomial_templates,
+    required_reader_fields,
+    t2p_templates,
+)
+from furax.mapmaking.templates._builders import (
+    _bin_weights,
+    _harmonics,
+    _legendre,
     azimuth_hwp_synchronous_basis,
     binned_azimuth_hwp_synchronous_basis,
     binned_azimuth_synchronous_basis,
@@ -18,16 +37,17 @@ from furax.mapmaking.templates import (
     spline_hwp_synchronous_basis,
     t2p_basis,
 )
-from furax.mapmaking.templates._templates import _bin_weights, _harmonics, _legendre
 from furax.mapmaking.templates.bases import Basis, TensorBasis
 from furax.mapmaking.templates.pomme import PommeProjectionOperator
 from furax.math import bspline
+from furax.obs import TODFormat
 
 
 def _wrap(basis: Basis, n_dets: int) -> TemplateOperator:
     """Wrap a bare basis as a single-template TemplateOperator: amplitudes are {'t': ...},
     output is a bare (n_dets, samp) array."""
-    return TemplateOperator({'t': basis}, n_dets)
+    tod_format = TODFormat((n_dets, basis.n_points), basis.dtype)
+    return TemplateOperator({'t': Template(basis, tod_format)})
 
 
 def spline_4f_hwp_basis(
@@ -482,3 +502,71 @@ class TestSplineHWPSynchronousTemplate:
         basis = spline_hwp_synchronous_basis(t, hwp, 4, 3, jnp.float64)
         # 1..3 -> 3 harmonics -> 2 * 3 = 6 columns; K = 4 + 2 = 6
         assert basis.shape == (6, 6)
+
+
+# ---------------------------------------------------------------------------
+# Template builders
+# ---------------------------------------------------------------------------
+
+N_DETS = 3
+N_SAMPS = 120
+
+
+def _data(stokes: str | None) -> dict:
+    """An observation's fields, as the reader returns them, for the template builders."""
+    times = jnp.linspace(0.0, 1.0, N_SAMPS)
+    data = {
+        ReaderField.TIMESTAMPS: times,
+        ReaderField.SCANNING_INTERVALS: jnp.array([[0, 60], [60, N_SAMPS]]),
+        ReaderField.VALID_SCANNING_MASKS: jnp.ones(N_SAMPS, bool),
+        ReaderField.HWP_ANGLES: 2 * jnp.pi * 4 * times,
+        ReaderField.AZIMUTH: jnp.sin(2 * jnp.pi * times),
+    }
+    if stokes is not None:
+        tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes=stokes)
+        data[ReaderField.SAMPLE_DATA] = tod_format.normal(jr.key(0))
+    return data
+
+
+def test_build_templates_splits_explicit_and_implicit():
+    config = TemplatesConfig(
+        polynomial=PolynomialConfig(explicit=True),
+        hwp_synchronous=HWPSynchronousConfig(2, explicit=False),
+    )
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64)
+    explicit, implicit = build_templates(config, _data(None), tod_format)
+    assert set(explicit) == {'polynomial'} and set(implicit) == {'hwp_synchronous'}
+    assert all(
+        t.tod_format == tod_format and t.streams is None
+        for t in [*explicit.values(), *implicit.values()]
+    )
+    assert required_reader_fields(config) <= set(_data(None))
+
+
+@pytest.mark.parametrize(
+    ('legendre', 'streams'),
+    [
+        (PolynomialOrders(0, 3), {'polynomial': 'iqu'}),
+        (
+            {'i': PolynomialOrders(0, 3), 'qu': PolynomialOrders(1, 3)},
+            {'polynomial_i': 'i', 'polynomial_qu': 'qu'},
+        ),
+        ({'u': PolynomialOrders(0, 1)}, {'polynomial_u': 'u'}),
+    ],
+)
+def test_streams_fitted_alike_form_one_template(legendre, streams):
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='IQU')
+    templates = polynomial_templates(PolynomialConfig(legendre=legendre), _data('IQU'), tod_format)
+    assert {name: t.streams for name, t in templates.items()} == streams
+
+
+@pytest.mark.parametrize(('stokes', 'streams'), [('IQU', 'qu'), ('I', None)])
+def test_t2p_covers_the_q_and_u_streams(stokes, streams):
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes=stokes)
+    templates = t2p_templates(T2PConfig(), _data('IQU'), tod_format)
+    assert (templates['t2p'].streams if templates else None) == streams
+
+
+def test_build_templates_needs_an_active_template():
+    with pytest.raises(ValueError, match='no template is active'):
+        build_templates(TemplatesConfig(), _data(None), TODFormat((N_DETS, N_SAMPS), jnp.float64))

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `OffsetBasis`: one offset per interval of a fixed number of samples, the Pomme template returned by `PommeProjectionOperator.template` (#332)
 - `TOD` and `TODFormat` in `furax.obs`: time-ordered data format conventions (normal/demodulated) in a single place (#342)
 - `furax.math.zernike`: the Zernike polynomials on the unit disk (#352)
+- `furax.math.legendre.legvander`: the pseudo-Vandermonde matrix of the Legendre polynomials (#353)
 
 ### Changed
 

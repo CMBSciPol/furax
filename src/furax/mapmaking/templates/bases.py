@@ -208,6 +208,34 @@ class Basis(AbstractLinearOperator):
     def _n_blocks(self) -> int:
         """How many blocks of time the amplitudes split into; 1 when every function spans the TOD."""
 
+    @property
+    def _support_window(self) -> int:
+        """How many consecutive blocks each sample reads."""
+
+        def taps(basis: Basis) -> Array:
+            return basis._map_batch(lambda b, _: b.support().taps, jnp.zeros(basis.batch_shape), 0)
+
+        return jax.eval_shape(taps, self).shape[-1]
+
+    def _support_reach(self, bandwidth: int) -> Int[Array, '']:
+        """How many blocks apart two blocks are that samples at most `bandwidth` apart read.
+
+        Only samples where some function is nonzero count. The largest over a batch of bases.
+        Assumes blocks are non-decreasing in time.
+        """
+
+        def single(basis: Basis, _: Array) -> Array:
+            support = basis.support()
+            n = support.n_points
+            active = jnp.any(support.values != 0, axis=0)
+            t = jnp.arange(n)
+            last = jax.lax.cummax(jnp.where(active, t, -1))  # the last active sample up to each
+            ahead = last[jnp.minimum(t + bandwidth, n - 1)]
+            span = support.offset[ahead] - support.offset + support.taps.shape[-1] - 1
+            return jnp.max(jnp.where(active, span, 0))
+
+        return jnp.max(self._map_batch(single, jnp.zeros(self.batch_shape), 0))
+
     @abstractmethod
     def support(self) -> 'WindowedBasis':
         """This basis written as an equivalent [`WindowedBasis`][]: its support.

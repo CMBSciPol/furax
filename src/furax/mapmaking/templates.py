@@ -25,6 +25,7 @@ from jaxtyping import DTypeLike, Float, PyTree
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
 from furax.math import bspline
+from furax.math.legendre import legvander
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 from .bases import (
@@ -112,8 +113,7 @@ def _legendre_values(
 
     Evaluated on `u`, already rescaled to `[-1, 1]`.
     """
-    legs = jax.scipy.special.lpmn_values(max_order, max_order, u, is_normalized=False)
-    return legs[0, min_order:, :].astype(dtype)
+    return legvander(u, max_order)[:, min_order:].T.astype(dtype)
 
 
 def _legendre(

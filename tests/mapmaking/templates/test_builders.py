@@ -23,6 +23,7 @@ from furax.mapmaking.templates import (
     polynomial_templates,
     required_reader_fields,
     t2p_templates,
+    zernike_couplings,
 )
 from furax.mapmaking.templates._builders import (
     _bin_weights,
@@ -40,6 +41,8 @@ from furax.mapmaking.templates._builders import (
 from furax.mapmaking.templates.bases import Basis, TensorBasis
 from furax.mapmaking.templates.pomme import PommeProjectionOperator
 from furax.math import bspline
+from furax.math.coords import XiEtaAngles
+from furax.math.zernike import zernike
 from furax.obs import TODFormat
 
 
@@ -570,3 +573,56 @@ def test_t2p_covers_the_q_and_u_streams(stokes, streams):
 def test_build_templates_needs_an_active_template():
     with pytest.raises(ValueError, match='no template is active'):
         build_templates(TemplatesConfig(), _data(None), TODFormat((N_DETS, N_SAMPS), jnp.float64))
+
+
+def _detector_angles():
+    r = jr.split(jr.key(5), 3)
+    xi, eta = (jr.uniform(k, (N_DETS,), minval=-0.2, maxval=0.2) for k in r[:2])
+    return xi, eta, jr.uniform(r[2], (N_DETS,), maxval=jnp.pi)
+
+
+@pytest.mark.parametrize('order', [0, 2])
+def test_zernike_couplings_of_one_stream_are_a_cos_sin_pair_per_polynomial(order):
+    xi, eta, gamma = _detector_angles()
+    coupling = zernike_couplings(xi, eta, gamma, order, 0.31)
+    modes = [(n, m) for n in range(order + 1) for m in range(-n, n + 1, 2)]
+    assert coupling.shape == (N_DETS, 2 * len(modes))
+    x, y = xi / 0.31, eta / 0.31
+    first = zernike(*modes[-1], x, y)
+    assert_allclose(coupling[:, -2], first * jnp.cos(2 * gamma))
+    assert_allclose(coupling[:, -1], first * jnp.sin(2 * gamma))
+
+
+def test_zernike_couplings_of_q_and_u_are_the_real_and_imaginary_parts_of_one_field():
+    xi, eta, gamma = _detector_angles()
+    coupling = zernike_couplings(xi, eta, gamma, 2, 0.31, streams='qu')
+    assert coupling.shape == (2, N_DETS, 12)
+    c = jr.normal(jr.key(6), (6, 2))  # (Re, Im) of each polynomial
+    field = sum(
+        complex(*c[k]) * zernike(n, m, xi / 0.31, eta / 0.31)
+        for k, (n, m) in enumerate((n, m) for n in range(3) for m in range(-n, n + 1, 2))
+    )
+    leakage = field * jnp.exp(2j * gamma)
+    assert_allclose(coupling @ c.ravel(), jnp.stack([leakage.real, leakage.imag]), atol=1e-12)
+
+
+def test_zernike_couplings_reject_other_streams_than_q_and_u():
+    xi, eta, gamma = _detector_angles()
+    with pytest.raises(ValueError, match='Q and U streams only'):
+        zernike_couplings(xi, eta, gamma, 1, 0.31, streams='qi')
+
+
+@pytest.mark.parametrize(
+    ('joint_qu', 'per', 'shape'), [(True, (), (1, 12)), (False, ('stream',), (2, 1, 12))]
+)
+def test_t2p_field_shares_its_amplitudes_between_the_detectors(joint_qu, per, shape):
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='IQU')
+    angles = XiEtaAngles(*_detector_angles())
+    data = _data('IQU') | {
+        ReaderField.DETECTOR_QUATERNIONS: jnp.stack(angles.to_quaternion().to_components(), -1)
+    }
+    config = T2PConfig(zernike_order=2, joint_qu=joint_qu)
+    template = t2p_templates(config, data, tod_format)['t2p']
+    assert template.per == per and template.in_structure.shape == shape
+    assert not template.per_detector
+    assert ReaderField.DETECTOR_QUATERNIONS in required_reader_fields(TemplatesConfig(t2p=config))

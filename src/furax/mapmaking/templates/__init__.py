@@ -19,6 +19,7 @@ from ._builders import (
     scan_synchronous_templates,
     spline_hwp_synchronous_templates,
     t2p_templates,
+    zernike_couplings,
 )
 from ._operator import Template, TemplateOperator
 
@@ -35,4 +36,5 @@ __all__ = [
     'binned_azimuth_hwp_synchronous_templates',
     'spline_hwp_synchronous_templates',
     't2p_templates',
+    'zernike_couplings',
 ]

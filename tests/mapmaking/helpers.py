@@ -14,6 +14,7 @@ from furax.mapmaking import (
     ObservationBufferShape,
 )
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
+from furax.math.coords import XiEtaAngles
 from furax.obs.landscapes import ProjectionType, StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
@@ -47,6 +48,7 @@ class FakeObservation(AbstractObservation[None]):
         sample_rate: float = 100.0,
         hwp_frequency: float = 2.0,
         seed: int = 0,
+        focal_plane_radius: float = 0.0,
     ) -> None:
         # Bypass AbstractObservation.__init__: there is no underlying
         # ``data`` container for an in-memory observation.
@@ -55,6 +57,7 @@ class FakeObservation(AbstractObservation[None]):
         self._sample_rate = sample_rate
         self._hwp_frequency = hwp_frequency
         self._seed = seed
+        self._focal_plane_radius = focal_plane_radius
 
     @classmethod
     def from_file(cls, filename, requested_fields=None) -> FakeObservation:
@@ -136,6 +139,13 @@ class FakeObservation(AbstractObservation[None]):
         return q
 
     def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
+        if self._focal_plane_radius > 0:
+            # detectors spread over the focal plane, at random positions and polarization angles
+            rng = np.random.default_rng(1234)
+            xi, eta = rng.uniform(-1, 1, (2, self._n_dets)) * self._focal_plane_radius
+            gamma = rng.uniform(0, np.pi, self._n_dets)
+            q = XiEtaAngles(xi, eta, gamma).to_quaternion()
+            return np.stack([np.asarray(c, np.float64) for c in q.to_components()], axis=-1)
         q = np.zeros((self._n_dets, 4), dtype=np.float64)
         q[:, 0] = 1.0
         return q

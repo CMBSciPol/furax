@@ -7,7 +7,7 @@ weight beyond its reach: it must not couple detectors, nor samples more than `ba
 streams unless declared. Both lay out the Gram alike, the probed bands possibly wider.
 
 The amplitudes split in two. The **local** ones belong to templates with a set per detector
-([`Template.per_detector`][furax.mapmaking.templates._operator.Template.per_detector]): a detector's
+([`Template.per_detector`][furax.mapmaking.templates.Template.per_detector]): a detector's
 amplitudes interact with no other detector's, so their Gram is block diagonal, one block per
 detector, or per detector and stream when every local template has a set per stream and the weight
 does not couple streams. Every other amplitude is **global**, in one block, or one per stream
@@ -32,16 +32,16 @@ from typing import Literal, NamedTuple, Self
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jaxtyping import Float
+from jaxtyping import Float, PyTree
 
-from furax import AbstractLinearOperator, tree
+from furax import AbstractLinearOperator, DiagonalOperator, symmetric, tree
+from furax.core import BlockDiagonalOperator
 from furax.core.utils import register_dataclass_with_keys
 from furax.linalg import ArrowheadCholeskyOperator, BorderedBandedMatrix, probe_bordered_banded
 
 from . import _structure
 from ._operator import TemplateOperator
 from .bases import OffsetBasis
-from .gram import _ridge_operator
 from .pomme import PommeProjectionOperator
 
 __all__ = [
@@ -233,7 +233,8 @@ def factor(
     if local is not None:
         parts.append(local)
 
-    structure = tree.as_structure(ridges)
+    # shapes and dtypes only: the ridges may be laid out over a mesh the inverse is not used on
+    structure = {name: jax.ShapeDtypeStruct(r.shape, r.dtype) for name, r in ridges.items()}
     inverse = _GramInverse(tuple(parts), exact, in_structure=structure)
     if not regularization:
         return inverse, None
@@ -550,6 +551,7 @@ class _Exact:
         return out | self.global_.scatter(*self.global_.unflat(x_global[None]))
 
 
+@symmetric
 class _GramInverse(AbstractLinearOperator):
     """The inverse of a block Gram, on the amplitudes of its templates."""
 
@@ -563,3 +565,18 @@ class _GramInverse(AbstractLinearOperator):
         for part in self.parts:
             out |= part.solve(x)
         return {name: out[name] for name in x}
+
+
+def _ridge_operator(
+    ridges: PyTree[Array], structure: PyTree[jax.ShapeDtypeStruct]
+) -> AbstractLinearOperator:
+    """The ridge added to the Gram before factoring, as a diagonal operator on the amplitudes.
+
+    `ridges` matches `structure`, each leaf holding one value per amplitude, in any shape.
+    """
+    diagonals = jax.tree.map(
+        lambda ridge, s: DiagonalOperator(ridge.reshape(s.shape), in_structure=s),
+        ridges,
+        structure,
+    )
+    return BlockDiagonalOperator(diagonals)

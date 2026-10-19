@@ -6,7 +6,7 @@ import pytest
 from numpy.testing import assert_allclose
 
 from furax import tree
-from furax.mapmaking.templates._operator import Template, TemplateOperator
+from furax.mapmaking.templates import Template, TemplateOperator
 from furax.mapmaking.templates.bases import OffsetBasis, SegmentedBasis, TensorBasis
 from furax.obs import TODFormat
 

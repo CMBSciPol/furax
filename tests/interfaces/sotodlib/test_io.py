@@ -1,10 +1,13 @@
 from pathlib import Path
+from unittest.mock import Mock
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_equal
+from sotodlib.core import Context
+from sotodlib.core.metadata.loader import LoaderError
 
 from furax.interfaces.sotodlib import (
     LazyPreprocSOTODLibObservation,
@@ -229,6 +232,54 @@ def test_lazy_preproc_join_selected_groups(tmp_path) -> None:
 
     assert lazy.probe_shape() == (OBS_NDET[1] // 2, OBS_NSAMPLE[1], 0)
     assert lazy.get_data().n_detectors == OBS_NDET[1] // 2
+
+
+@pytest.fixture
+def missing_group(monkeypatch):
+    """Make `Context.get_meta` find no preprocessing record for the group `detset0_1`."""
+    get_meta = Context.get_meta
+
+    def get_meta_without_group(self, *args, dets=None, **kwargs):
+        if dets is not None and dets.get('detset') == 'detset0_1':
+            raise LoaderError('There were no metadata records found for this observation.')
+        return get_meta(self, *args, dets=dets, **kwargs)
+
+    monkeypatch.setattr(Context, 'get_meta', get_meta_without_group)
+
+
+@pytest.mark.usefixtures('missing_group')
+def test_lazy_preproc_join_groups_skips_a_group_without_record(tmp_path) -> None:
+    """A group with no preprocessing record is left out, not a reason to lose the observation."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[1], config, join_groups=True)
+
+    assert lazy.probe_shape() == (OBS_NDET[1] // 2, OBS_NSAMPLE[1], 0)
+    assert lazy.get_data().n_detectors == OBS_NDET[1] // 2
+
+
+@pytest.mark.usefixtures('missing_group')
+def test_lazy_preproc_a_missing_group_still_fails_alone(tmp_path) -> None:
+    """Without joining, the selected group is the observation: its missing record is an error."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, detector_selection={'detset': 'detset0_1'}
+    )
+
+    with pytest.raises(LoaderError):
+        lazy.probe_shape()
+
+
+def test_lazy_preproc_join_groups_without_any_record_fails(tmp_path, monkeypatch) -> None:
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+
+    no_record = Mock(side_effect=LoaderError('There were no metadata records found.'))
+    monkeypatch.setattr(Context, 'get_meta', no_record)
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[1], config, join_groups=True)
+
+    with pytest.raises(RuntimeError, match='no preprocessing records'):
+        lazy.probe_shape()
+    with pytest.raises(RuntimeError, match='no detectors left'):
+        lazy.get_data()
 
 
 def test_reader_with_preproc_observations(tmp_path) -> None:

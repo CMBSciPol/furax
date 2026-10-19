@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With `--wafer all`, an observation is no longer dropped when one of its wafer-band groups has no preprocessing record (#363)
 - Banded Cholesky solves with a single off-diagonal block no longer crash on GPU (#331)
 - Apply template ridge regularization to explicit map-making normal systems (#264)
 

@@ -9,7 +9,8 @@ from jax import Array
 from jaxtyping import Float
 from numpy.testing import assert_allclose
 
-from furax.mapmaking.bases import (
+from furax.mapmaking.templates import TemplateOperator
+from furax.mapmaking.templates.bases import (
     Basis,
     DecimatedBasis,
     KroneckerBasis,
@@ -18,7 +19,6 @@ from furax.mapmaking.bases import (
     TensorBasis,
     WindowedBasis,
 )
-from furax.mapmaking.templates import TemplateOperator
 from furax.tree import as_structure
 
 

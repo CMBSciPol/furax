@@ -10,7 +10,7 @@ This module assembles the Gram matrix $G \equiv T^\top W T$ from the bases of an
 [`AbstractTemplateOperator`][]. Inversion is performed via [`furax.linalg.cholesky`][].
 
 Combined with Pomme (`pomme_tau`), the effective weight is $W F$ with $F$ the
-[`PommeProjectionOperator`][furax.mapmaking.pomme.PommeProjectionOperator], and the Gram becomes
+[`PommeProjectionOperator`][furax.mapmaking.templates.pomme.PommeProjectionOperator], and the Gram becomes
 $\tilde G = T^\top W F T = (FT)^\top W (FT)$: the Gram of the Pomme-filtered templates. It is
 assembled without forming $FT$, by Schur-eliminating the Pomme template $Z$ (the interval
 indicators) from the joint Gram of $[Z\ T]$:
@@ -61,12 +61,12 @@ from furax import AbstractLinearOperator, DiagonalOperator, symmetric
 from furax.core import BlockDiagonalOperator
 from furax.linalg import BandedCholeskyOperator, BorderedBandedCholeskyOperator
 
-from .bases import Basis, OffsetBasis, WindowedBasis
-from .templates import (
+from ._templates import (
     AbstractTemplateOperator,
     StokesTemplateOperator,
     _is_basis,
 )
+from .bases import Basis, OffsetBasis, WindowedBasis
 
 __all__ = [
     'gram_inverse',
@@ -93,7 +93,7 @@ def gram_inverse(
     carries.
 
     With `pomme_tau`, the effective weight is `W F` with `F` the
-    [`PommeProjectionOperator`][furax.mapmaking.pomme.PommeProjectionOperator] of that interval
+    [`PommeProjectionOperator`][furax.mapmaking.templates.pomme.PommeProjectionOperator] of that interval
     length, and the inverse of `Tᵀ W F T` is returned instead (see the module
     docstring). `W` itself stays the diagonal weight.
 

@@ -59,11 +59,11 @@ class Basis(AbstractLinearOperator):
 
     The basis functions `b_k` are each evaluated at the same `n_points` time samples. Conceptually,
     we can think of them as columns of a matrix `B`. The modelled signal is then a linear
-    combination `s = B a`, i.e. `s(t) = Σ_k a_k b_k(t)` where each `a_k` is the amplitude of the
+    combination `y = B a`, i.e. `y(t) = Σ_k a_k b_k(t)` where each `a_k` is the amplitude of the
     template function `b_k`. The index `k` may be multi dimensional.
 
-    As an operator, the basis synthesises a signal from amplitudes, `s = B(a)`, and its transpose
-    analyses a signal back into amplitudes, `a = B.T(s)`. Both accept any number of leading batch
+    As an operator, the basis synthesises a signal from amplitudes, `y = B(a)`, and its transpose
+    analyses a signal back into amplitudes, `a = B.T(y)`. Both accept any number of leading batch
     axes, e.g. one set of amplitudes per detector, and apply the basis to each batch element.
 
     A basis can also hold a batch of bases of one flavour and shape, for functions that differ from
@@ -439,7 +439,7 @@ class OffsetBasis(Basis):
 
     The amplitude index is the interval. The samples past the last whole interval (the tail) belong
     to none. This is the Pomme template
-    ([`PommeProjectionOperator`][furax.mapmaking.pomme.PommeProjectionOperator]).
+    ([`PommeProjectionOperator`][furax.mapmaking.templates.pomme.PommeProjectionOperator]).
 
     Nothing is stored. As the intervals are regular, the basis and its transpose reshape the samples
     into `(interval, tau)` rather than gathering or scattering by interval like the equivalent

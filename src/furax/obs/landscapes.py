@@ -1,3 +1,4 @@
+import copy
 import math
 import warnings
 from abc import ABC, abstractmethod
@@ -89,6 +90,12 @@ class StokesLandscape(Landscape):
         super().__init__(shape, dtype)
         self.stokes = stokes
         self.pixel_shape = shape[::-1]
+
+    def with_stokes(self, stokes: ValidStokesLiteral) -> Self:
+        """The same pixelization, holding other Stokes components."""
+        other = copy.copy(self)
+        other.stokes = stokes
+        return other
 
     @property
     def has_spin2(self) -> bool:

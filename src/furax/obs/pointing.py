@@ -1,4 +1,3 @@
-import copy
 import dataclasses
 import math
 from dataclasses import field
@@ -208,8 +207,7 @@ class PointingOperator(AbstractLinearOperator):
             interpolation = Interpolation.BILINEAR if interpolate else Interpolation.NEAREST
         if self.landscape.stokes == 'I' and interpolation is self.sampler.kernel.interpolation:
             return self
-        landscape = copy.copy(self.landscape)
-        landscape.stokes = 'I'
+        landscape = self.landscape.with_stokes('I')
         kernel = self.sampler.kernel.intensity_only()
         sampler = self.sampler.with_kernel(dataclasses.replace(kernel, interpolation=interpolation))
         return self.from_sampler(landscape, sampler, batch_samples=self.batch_samples)

@@ -135,6 +135,17 @@ def test_runs_and_produces_a_map(explicit):
     assert res.solver_stats['num_steps'] >= 1
 
 
+def test_polynomial_over_the_observation_returns_its_amplitudes():
+    polynomial = PolynomialConfig(
+        legendre=PolynomialOrders(0, 5), span='observation', explicit=True
+    )
+    cfg = _config(TemplatesConfig(polynomial=polynomial))
+    res = MultiObservationMapMaker(_ground_obs(), config=cfg).run()
+    amps = res.template_amplitudes['polynomial']
+    assert amps.shape == (2, 8, 6)  # (obs, det, order)
+    assert jnp.all(jnp.isfinite(amps))
+
+
 def test_demodulated_polynomial_implicit_runs():
     # With demodulated data, the implicit polynomial template has a set of amplitudes per stream,
     # and its Gram one block per detector and stream.

@@ -69,3 +69,13 @@ def test_equal_structures_hash_alike():
 def test_rejects(kwargs, error):
     with pytest.raises(ValueError, match=error):
         TODFormat(**({'shape': (3, 10), 'dtype': jnp.float32} | kwargs))
+
+
+@pytest.mark.parametrize('stokes', [None, 'QU'])
+def test_diagonal_scales_each_stream_by_its_weights(stokes):
+    tod_format = TODFormat((2, 3, 10), jnp.float64, stokes=stokes)
+    weights = jr.uniform(jr.key(3), (tod_format.n_streams, 2, 3, 10))
+    x = tod_format.normal(jr.key(4))
+    assert_array_equal(
+        tod_format.as_array(tod_format.diagonal(weights)(x)), weights * tod_format.as_array(x)
+    )

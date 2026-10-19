@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Key, PyTree, ScalarLike, Shaped
 
+from furax.core import DiagonalOperator
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 from furax.tree import full_like, normal_like, uniform_like
 
@@ -38,6 +39,9 @@ class TODFormat:
         (3, 100)
         >>> tod_format.n_streams, tod_format.as_array(tod_format.zeros()).shape
         (2, (2, 3, 100))
+        >>> weights = jnp.stack([jnp.ones((3, 100)), 2 * jnp.ones((3, 100))]).astype(jnp.float32)
+        >>> tod_format.diagonal(weights)(tod_format.ones()).u[0, 0]
+        Array(2., dtype=float32)
     """
 
     shape: tuple[int, ...]
@@ -88,8 +92,12 @@ class TODFormat:
     def from_array(self, array: Shaped[Array, 'stream *det samp']) -> TOD:
         """The inverse of `as_array`: the TOD whose streams `array` stacks."""
         if self.stokes is None:
-            return array[0]
+            return self._leaves(array)
         return Stokes.class_for(self.stokes).from_array(array)
+
+    def diagonal(self, weights: Shaped[Array, 'stream *det samp']) -> DiagonalOperator:
+        """The diagonal operator on the TOD that scales sample `(s, d, t)` by `weights[s, d, t]`."""
+        return DiagonalOperator(self._leaves(weights), in_structure=self.structure)
 
     def full(self, fill_value: ScalarLike) -> TOD:
         """A TOD filled with `fill_value`."""
@@ -110,3 +118,7 @@ class TODFormat:
     def uniform(self, key: Key[Array, ''], minval: float = 0.0, maxval: float = 1.0) -> TOD:
         """A TOD of independent samples, uniform in `[minval, maxval)`."""
         return uniform_like(self.structure, key, minval, maxval)
+
+    def _leaves(self, array: Shaped[Array, 'stream *det samp']) -> Shaped[Array, '...']:
+        """`array` as laid out over the leaves of the structure: with no stream axis unless demodulated."""
+        return array if self.stokes is not None else array[0]

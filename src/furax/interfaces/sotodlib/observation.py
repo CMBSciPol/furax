@@ -19,6 +19,7 @@ from numpy.typing import NDArray
 from sotodlib import coords
 from sotodlib.coords.helpers import get_deflected_sightline
 from sotodlib.core import AxisManager
+from sotodlib.core.metadata.loader import LoaderError
 from sotodlib.mapmaking.utils import downsample_obs
 
 from furax.mapmaking import (
@@ -28,6 +29,7 @@ from furax.mapmaking import (
     ObservationBufferShape,
     ReaderField,
 )
+from furax.mapmaking._logger import logger
 from furax.mapmaking.config import SotodlibConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import (
@@ -255,7 +257,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         and bandpass). Each group matching `detector_selection` is loaded as by
         [`from_preproc_group`][furax.interfaces.sotodlib.observation.SOTODLibObservation.from_preproc_group], so it is preprocessed exactly as on its own,
         and the groups are joined along the detectors: with a bandpass selection, the observation
-        spans the whole focal plane. Groups with no detectors left after cuts are skipped.
+        spans the whole focal plane. Groups with no detectors left after cuts, or with no
+        preprocessing record, are skipped.
 
         Args:
             observation_id: Observation id (e.g. 'obs_1714550584_satp3_1111111').
@@ -279,6 +282,9 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                     observation_id, init_config, proc_config, selection, sotodlib_config
                 )
             except RuntimeError:  # all the group's detectors are cut
+                continue
+            except LoaderError:  # the group was not preprocessed
+                logger.warning('%s: no preprocessing record for %s', observation_id, selection)
                 continue
             parts.append(part.data)
         if not parts:
@@ -649,7 +655,8 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         - ``n_samples`` is ``ceil(meta.samps.count / downsample)``. The process pipeline only trims
           samples (e.g. edge cuts) before downsampling, so this bounds the actual samps count.
 
-        With ``join_groups``, the detectors are summed over the groups.
+        With ``join_groups``, the detectors are summed over the groups that have a preprocessing
+        record, as loaded by ``from_preproc_groups``.
         """
         _enable_preproc_context_cache()
         # call get_preprocess_context through the module so the cached get_preprocess_context is used
@@ -661,7 +668,16 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             )
         else:
             selections = [self.detector_selection]
-        metas = [context.get_meta(self.observation_id, dets=s) for s in selections]
+        metas = []
+        for selection in selections:
+            try:
+                metas.append(context.get_meta(self.observation_id, dets=selection))
+            except LoaderError:
+                if not self.join_groups:
+                    raise
+                logger.warning('%s: no preprocessing record for %s', self.observation_id, selection)
+        if not metas:
+            raise RuntimeError(f'no preprocessing records for {self.observation_id}')
         downsample = (self._sotodlib_config or SotodlibConfig()).downsample
         n_samps = max(meta.samps.count for meta in metas)
         return ObservationBufferShape(

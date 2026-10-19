@@ -119,11 +119,9 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
     """The fields of an observation the templates `config` enables are built from."""
     fields: set[str] = set()
     if config.polynomial is not None:
-        fields |= {
-            ReaderField.SCANNING_INTERVALS,
-            ReaderField.TIMESTAMPS,
-            ReaderField.VALID_SCANNING_MASKS,
-        }
+        fields |= {ReaderField.TIMESTAMPS, ReaderField.VALID_SCANNING_MASKS}
+        if config.polynomial.span == 'scan':
+            fields |= {ReaderField.SCANNING_INTERVALS}
     if config.scan_synchronous is not None or config.binned_azimuth_synchronous is not None:
         fields |= {ReaderField.AZIMUTH}
     if config.hwp_synchronous is not None:
@@ -150,13 +148,21 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
 def polynomial_templates(
     config: PolynomialConfig, data: Mapping[str, Any], tod_format: TODFormat
 ) -> dict[str, Template]:
-    """Legendre polynomials over each scan interval.
+    """Legendre polynomials over each scan interval, or over the whole observation.
 
     One template per group of streams fitted with the same orders (see `_stream_groups`).
     """
 
     def basis(orders: PolynomialOrders) -> Basis:
-        return polynomial_basis(
+        if config.span == 'observation':
+            return observation_polynomial_basis(
+                orders.max_order,
+                times=data[ReaderField.TIMESTAMPS],
+                dtype=tod_format.dtype,
+                valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
+                min_poly_order=orders.min_order,
+            )
+        return scan_polynomial_basis(
             max_poly_order=orders.max_order,
             intervals=data[ReaderField.SCANNING_INTERVALS],
             times=data[ReaderField.TIMESTAMPS],
@@ -489,7 +495,7 @@ def _harmonics(
     return jnp.concatenate(parts, axis=0).astype(dtype)
 
 
-def polynomial_basis(
+def scan_polynomial_basis(
     max_poly_order: int,
     intervals: Float[Array, 'n_intervals 2'],
     times: Float[Array, ' samp'],
@@ -531,6 +537,26 @@ def polynomial_basis(
         values = values * valid_mask[None, :].astype(dtype)
 
     return SegmentedBasis(segment.astype(jnp.int32), values, n_intervals)
+
+
+def observation_polynomial_basis(
+    max_poly_order: int,
+    times: Float[Array, ' samp'],
+    dtype: DTypeLike,
+    valid_mask: Float[Array, ' samp'] | None = None,
+    min_poly_order: int = 0,
+) -> Basis:
+    """Basis for a polynomial drift template over the whole observation.
+
+    Legendre orders `min_poly_order..max_poly_order` of the time, rescaled to `[-1, 1]` over the
+    observation. `valid_mask` optionally zeroes flagged samples (1 = keep, 0 = drop) so they
+    neither carry template signal nor constrain the fitted amplitudes.
+    """
+    u = -1.0 + 2.0 * (times - times[0]) / (times[-1] - times[0])
+    values = _legendre_values(u, min_poly_order, max_poly_order, dtype)  # (k, n_samps)
+    if valid_mask is not None:
+        values = values * valid_mask[None, :].astype(dtype)
+    return TensorBasis(values)
 
 
 _T2P_BATCH_SIZE = 32

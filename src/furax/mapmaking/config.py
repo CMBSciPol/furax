@@ -449,7 +449,10 @@ class BinsConfig:
 
 @dataclass
 class PolynomialConfig:
-    """Polynomial drift template (per-detector low-order Legendre polynomial in time).
+    """Polynomial drift template (per-detector Legendre polynomial in time).
+
+    By default each scanning interval has its own low-order polynomial; with `span='observation'`,
+    a single polynomial spans the observation, of an order high enough to follow its slow drifts.
 
     Examples:
         Orders 0 to 3 on every stream
@@ -480,6 +483,8 @@ class PolynomialConfig:
     own orders; the streams of a group are still fitted independently, and a stream left out has no
     polynomial template.
     """
+    span: Literal['scan', 'observation'] = 'scan'
+    """What a polynomial spans: each scanning interval, or the whole observation."""
     explicit: bool = False
     """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 

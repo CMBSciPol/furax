@@ -59,6 +59,7 @@ from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokes
 from furax.profiling import format_bytes
 
 from ._geometry import minimum_enclosing_arc
+from ._injection import inject, load_sky
 from ._logger import logger as furax_logger
 from ._model import ObservationModel, ObservationTemplates, SharedTemplates, restrict_streams
 from ._observation import (
@@ -71,6 +72,7 @@ from ._observation import (
 from ._reader import ObservationReader, slice_detectors
 from .config import (
     GapTreatment,
+    InjectionMode,
     LandscapeConfig,
     MapMakingConfig,
     Methods,
@@ -130,6 +132,9 @@ class _MapMakingSystem(NamedTuple):
     """Approximate inverse of `A`."""
     has_amplitudes: bool
     """Whether the unknowns include explicit-template amplitudes."""
+    response_b: PyTree | None = None
+    """The right-hand side of the simulated sky, in the same unknowns, if it is injected as a
+    response."""
 
 
 class MultiObservationMapMaker[T]:
@@ -149,12 +154,28 @@ class MultiObservationMapMaker[T]:
             _static_landscape(self.config.landscape, self.config.dtype)
             or self._scan_wcs_footprint()
         )
+        # The sky to inject is built here, outside any mesh context: an array that carries a mesh
+        # cannot be closed over by the kernels, which run on the manual axes of that mesh
+        self.injected_sky = self._load_sky(InjectionMode.ADD, InjectionMode.REPLACE)
+        self.response_sky = self._load_sky(InjectionMode.RESPONSE)
         # Build the readers once, up front: they only need the probe shapes (no mesh context)
         rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
         model_fields = ObservationModel.required_reader_fields(self.config)
         template_fields = ObservationTemplates.required_reader_fields(self.config)
         self.reader_fields = model_fields | rhs_fields | template_fields
         self.readers = self.get_readers(self.reader_fields)
+
+    def _load_sky(self, *modes: InjectionMode) -> StokesType | None:
+        """The simulated sky, if injected in one of `modes`.
+
+        A sky scanned into the TOD has the Stokes components that are read; one solved for as a
+        response, those of the map.
+        """
+        if (injection := self.config.injection) is None or injection.mode not in modes:
+            return None
+        response = injection.mode == InjectionMode.RESPONSE
+        stokes = self.config.landscape.stokes if response else self.config.read_stokes
+        return load_sky(injection, self.landscape.with_stokes(stokes), stokes, self.config.dtype)
 
     def _check_config(self) -> None:
         """Validate and adjust config for method-specific compatibility."""
@@ -446,7 +467,7 @@ class MultiObservationMapMaker[T]:
             hit_map = hit_map.at[~valid_pixels].set(0)  # excluded pixels have zero hits
             icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
 
-            system = self._build_system(acc, H, W_prime, S, BJ)
+            system = self._build_system(acc, H, W_prime, S, BJ, self.response_sky)
             if (two_level := self.config.solver.two_level) is not None:
                 system = self._deflate(system, two_level)
 
@@ -462,6 +483,23 @@ class MultiObservationMapMaker[T]:
                 **self.config.solver.options,
             )
             logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
+
+            injected_estimate = None
+            if system.response_b is not None:
+                # the same normal system, with the simulated sky as the right-hand side
+                response = furax.linalg.cg(
+                    system.A,
+                    system.response_b,
+                    preconditioner=system.preconditioner,
+                    iteration_callback=log_iteration if self.config.solver.verbose else None,
+                    **self.config.solver.options,
+                )
+                logger_info(
+                    f'Finished the solve of the injected sky ({int(response.num_steps)} it)'
+                )
+                injected_estimate = (
+                    response.solution if not system.has_amplitudes else response.solution[0]
+                )
 
             if not system.has_amplitudes:
                 sky_estimate = result.solution
@@ -499,6 +537,7 @@ class MultiObservationMapMaker[T]:
             landscape=self.landscape,
             failed_observations=failed_observations,
             template_amplitudes=dict(amplitudes) if amplitudes is not None else None,
+            injected_map=None if injected_estimate is None else S.T(injected_estimate),
         )
 
     def _build_system(
@@ -508,6 +547,7 @@ class MultiObservationMapMaker[T]:
         W: Sequence[AbstractLinearOperator],
         S: AbstractLinearOperator,
         BJ: BJPreconditioner,
+        sky: StokesType | None = None,
     ) -> _MapMakingSystem:
         r"""Assembles the GLS normal system $H^T W' H x = H^T W' d$ over the selected pixels.
 
@@ -517,11 +557,13 @@ class MultiObservationMapMaker[T]:
             W: Per-bucket weight, already bundling the sample mask and the Pomme deprojector.
             S: Selection of the estimated pixels out of the full sky grid.
             BJ: Block-Jacobi preconditioner.
+            sky: A simulated sky on the full grid, whose right-hand side `response_b` is added.
 
         Returns:
             The system to solve, in the unknowns described above.
         """
         layouts = [bucket.stream_layout for bucket in self.layout.buckets]
+        sky_structure = None if sky is None else furax.tree.as_structure(sky)
         # Implicit templates fold into the weight (marginal deprojection).
         W = list(W)
         for b, bm in enumerate(acc.buckets):
@@ -552,7 +594,13 @@ class MultiObservationMapMaker[T]:
                 [((h @ S.T).T @ w @ (h @ S.T)).reduce() for h, w in zip(H, W, strict=True)],
                 sequential=True,
             )
-            return _MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False)
+            response = None
+            if sky is not None:
+                full = AdditionOperator(
+                    [(h.T @ w @ h).reduce() for h, w in zip(H, W, strict=True)], sequential=True
+                )
+                response = S(full(sky))
+            return _MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False, response_b=response)
 
         # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
         # per bucket: those of each detector alone, with an entry per detector batch, and those the
@@ -571,7 +619,7 @@ class MultiObservationMapMaker[T]:
 
         # Joint system. Each bucket's system sees the full sky grid and its own amplitudes, picked
         # out of the lists and embedded back by `E`.
-        terms = []
+        terms, full_terms = [], []
         streams = {'own': Te, 'shared': Tg}
         for b, (h, w) in enumerate(zip(H, W, strict=True)):
             h_joint = StreamOperator.block_row([h, *(streams[kind][b] for kind in kinds)])
@@ -579,6 +627,9 @@ class MultiObservationMapMaker[T]:
             picks = [BlockSelectOperator(b, in_structure=structures[kind]) for kind in kinds]
             E = BlockDiagonalOperator([S.T, *picks])
             terms.append((E.T @ A_joint @ E).reduce())
+            if sky is not None:  # the same, over the whole grid
+                full = BlockDiagonalOperator([IdentityOperator(in_structure=sky_structure), *picks])
+                full_terms.append((full.T @ A_joint @ full).reduce())
 
         # The Gram inverses of the amplitudes of each detector alone are per entry, those of the
         # shared amplitudes per slot, from the Gram summed over the batches of the slot.
@@ -610,7 +661,15 @@ class MultiObservationMapMaker[T]:
         ]
         M = BlockDiagonalOperator([M, *(inverses[kind] for kind in kinds)])
         A = AdditionOperator(terms, sequential=True)
-        return _MapMakingSystem(A, rhs, M, has_amplitudes=True)
+        response = None
+        if sky is not None:
+            # The right-hand side of the TOD `H s` is the normal operator on the sky with no
+            # amplitudes: `[H T]ᵀ W' (H s) = [H T]ᵀ W' [H T] (s, 0)`.
+            out = AdditionOperator(full_terms, sequential=True)(
+                [sky, *furax.tree.zeros_like(rhs[1:])]
+            )
+            response = [S(out[0]), *out[1:]]
+        return _MapMakingSystem(A, rhs, M, has_amplitudes=True, response_b=response)
 
     def _shared_stream(
         self, bucket: Bucket, layout: StreamLayout, operator: TemplateOperator
@@ -875,6 +934,8 @@ class MultiObservationMapMaker[T]:
         fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
         build_templates = config.use_templates
         n_batches, batch_size = bucket.n_batches, bucket.batch_size
+        sky = self.injected_sky
+        sky_landscape = landscape.with_stokes(config.read_stokes)
 
         def cast(tod):
             # The TOD is read in float32, whatever the pipeline's dtype
@@ -951,6 +1012,8 @@ class MultiObservationMapMaker[T]:
 
         def accumulate(carry, data, tod, padding, use):
             hits_acc, rhs_acc = carry
+            if sky is not None:
+                data, tod = inject(sky, sky_landscape, data, tod, config)
             temperature = None
             if config.read_stokes != landscape.stokes:
                 # The extra streams read, the I one for the T2P template, stay out of the model

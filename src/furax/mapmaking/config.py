@@ -926,6 +926,54 @@ class SotodlibConfig:
             raise ValueError(f'downsample must be >= 1, got {self.downsample}')
 
 
+class InjectionMode(Enum):
+    """How a simulated sky enters a run (see [`InjectionConfig.mode`][])."""
+
+    ADD = 'add'
+    """Add the sky to the TOD of every observation, before anything is derived from them."""
+
+    REPLACE = 'replace'
+    """Replace the data by the sky: no noise is left, and the weights must not be fit from them."""
+
+    RESPONSE = 'response'
+    """Leave the data alone and solve for the map of the sky alongside the map of the data."""
+
+
+@dataclass
+class InjectionConfig:
+    """A simulated sky scanned into the data of a run, to measure what the run does to a signal.
+
+    The signal is the sky seen through the acquisition operator of each observation: its pointing,
+    its detectors' polarization angles and, for modulated data, the half-wave plate.
+    """
+
+    path: str
+    """FITS file of the sky, on the pixelization of the landscape (a WCS map, or a HEALPix map in
+    the landscape's ordering). It is written by a run that saves maps, so one can be a template."""
+
+    stokes: ValidStokesLiteral = 'IQU'
+    """The Stokes components stored in the file, in order; the others are zero. The temperature
+    is needed for the T2P template, which is built from it, in the modes that add it to the TOD."""
+
+    scale: float = 1.0
+    """Factor applied to the sky."""
+
+    mode: InjectionMode = InjectionMode.ADD
+    """How the sky enters the run.
+
+    The map is linear in the data once the weights, the pointing and the templates are fixed.
+    With `response`, they all come from the data alone, and the sky is only a second right-hand
+    side of the normal system, solved by a second CG: the result is the map of the sky through the
+    run, `MapMakingResults.injected_map`, without another pass over the data.
+
+    `add` also lets the sky into what is derived from the TOD. The T2P basis, built from the I
+    stream, then carries the sky's temperature, and a template can absorb the polarization that
+    correlates with it: a loss of signal that `response` does not show, since the basis of the data
+    does not carry the sky. The map of the data with the sky added, minus the map of the data
+    alone, is the same as the response where no template is built from the TOD.
+    """
+
+
 @dataclass
 class MapMakingConfig:
     """Top-level configuration for a mapmaking run."""
@@ -997,6 +1045,9 @@ class MapMakingConfig:
     sotodlib: SotodlibConfig | None = None
     """Options specific to the sotodlib interface. `None` when not using sotodlib data."""
 
+    injection: InjectionConfig | None = None
+    """A simulated sky to add to the data, or to replace them with. `None` for none."""
+
     def __post_init__(self) -> None:
         """Validate cross-field constraints that hold regardless of which mapmaker runs."""
         if self.max_buckets < 1:
@@ -1011,6 +1062,25 @@ class MapMakingConfig:
             raise ValueError(
                 f'the {self.gaps.treatment.value} gap treatment works on whole observations: set '
                 f'detector_batch_size to 0 (got {self.detector_batch_size})'
+            )
+        if (
+            self.injection is not None
+            and self.injection.mode == InjectionMode.REPLACE
+            and self.weighting.mode != WeightingMode.IDENTITY
+            and self.weighting.source == NoiseSource.FIT
+        ):
+            raise ValueError(
+                'injection.mode=replace removes the noise from the data, so the weights cannot be '
+                'fit from them: set weighting.source to precomputed.'
+            )
+        if (
+            self.injection is not None
+            and self.injection.mode == InjectionMode.RESPONSE
+            and self.gaps.treatment == GapTreatment.FILL
+            and not self.binned
+        ):
+            raise ValueError(
+                'injection.mode=response needs a map linear in the data: gap filling is not.'
             )
         if (templates := self.templates) is not None:
             if templates.t2p is not None:

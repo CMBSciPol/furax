@@ -68,6 +68,13 @@ def test_has_spin2(stokes: ValidStokesLiteral, expected: bool) -> None:
     assert HealpixLandscape(1, stokes).has_spin2 is expected
 
 
+def test_with_stokes_keeps_the_pixelization() -> None:
+    landscape = HealpixLandscape(nside=4, stokes='QU', dtype=np.float32, nested=True)
+    other = landscape.with_stokes('IQU')
+    assert other.stokes == 'IQU' and landscape.stokes == 'QU'
+    assert (other.nside, other.nested, other.dtype, other.shape) == (4, True, np.float32, (192,))
+
+
 @pytest.mark.parametrize(
     'pixel, expected_index',
     [

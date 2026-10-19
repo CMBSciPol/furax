@@ -33,6 +33,7 @@ class MapMakingResults:
     Here is a summary of the files that products are saved into:
 
         map / hit_map / icov     one file each, named after the field
+        injected_map             injected_map, as the map
                                  FITS for HEALPix or WCS, .npy otherwise
         noise_fits               noise_fits.npy
         template_amplitudes      amplitudes.npz, one array per template
@@ -65,6 +66,9 @@ class MapMakingResults:
     """Estimated amplitudes of the explicit templates, keyed by template name: per observation, the
     amplitudes of [`Template`][furax.mapmaking.templates.Template], streams then detectors first"""
 
+    injected_map: StokesType | None = None
+    """The map of the simulated sky through the run (`injection.mode=response`)"""
+
     def save(self, out_dir: str | Path) -> None:
         """Write every product that is set, into the files listed above."""
         out_dir = Path(out_dir)
@@ -73,6 +77,8 @@ class MapMakingResults:
         self._save_array(np.array(self.hit_map), 'hit_map', out_dir, column_names=['HITS'])
         self._save_icov(np.array(self.icov), out_dir)
 
+        if self.injected_map is not None:
+            self._save_array(np.array(self.injected_map.data), 'injected_map', out_dir)
         if self.noise_fits is not None:
             np.save(out_dir / 'noise_fits.npy', np.array(self.noise_fits))
         if self.template_amplitudes:
@@ -107,6 +113,7 @@ class MapMakingResults:
             landscape=landscape,
             hit_map=cls._load_hit_map(out_dir, landscape),
             icov=cls._load_icov(out_dir, landscape),
+            injected_map=cls._load_injected_map(out_dir, landscape),
             solver_stats=cls._load_solver_stats(out_dir),
             noise_fits=cls._load_noise_fits(out_dir),
             failed_observations=cls._load_failed_observations(out_dir),
@@ -149,11 +156,18 @@ class MapMakingResults:
             return np.load(path)
 
     @staticmethod
-    def _load_map(out_dir: Path, landscape: StokesLandscape) -> StokesType:
+    def _load_map(out_dir: Path, landscape: StokesLandscape, name: str = 'map') -> StokesType:
         ns = len(landscape.stokes)
-        arr = MapMakingResults._load_array('map', out_dir, landscape, ns)
+        arr = MapMakingResults._load_array(name, out_dir, landscape, ns)
         stokes_cls = Stokes.class_for(landscape.stokes)
         return stokes_cls(*[jnp.array(arr[i]) for i in range(ns)])
+
+    @staticmethod
+    def _load_injected_map(out_dir: Path, landscape: StokesLandscape) -> StokesType | None:
+        try:
+            return MapMakingResults._load_map(out_dir, landscape, 'injected_map')
+        except FileNotFoundError:
+            return None
 
     @staticmethod
     def _load_hit_map(out_dir: Path, landscape: StokesLandscape) -> Array:

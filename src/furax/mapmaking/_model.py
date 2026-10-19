@@ -25,7 +25,7 @@ from .config import (
 )
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .templates import TemplateOperator, build_templates, required_reader_fields
-from .templates._gram import factor, template_gram
+from .templates.gram import factor, template_gram
 from .templates.pomme import PommeProjectionOperator
 from .weight import NestedWeightOperator, WeightOperator
 

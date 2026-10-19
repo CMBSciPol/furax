@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BorderedBandedMatrix`, `probe_bordered_banded` and `ArrowheadCholeskyOperator` in `furax.linalg`: symmetric matrices with a block-banded core and a dense border, their recovery by probing, and an arrowhead Cholesky solve (#344)
 - `Template` in `furax.mapmaking.templates`: a template as a time basis seen through a coupling, with amplitude sets per stream, detector or group of detectors (#347)
 - `build_templates` and the `*_templates` builders make the templates a `TemplatesConfig` enables, one per group of streams fitted alike (#347)
+- `furax.mapmaking.templates.gram`: `template_gram`, `BlockGram` and `factor`, the Gram of templates assembled by probing or from the structure of the bases, and its inverse (#348)
 
 ### Changed
 

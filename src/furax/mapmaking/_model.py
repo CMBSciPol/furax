@@ -20,27 +20,12 @@ from .config import (
     MapMakingConfig,
     Methods,
     NoiseSource,
-    PolynomialOrders,
     TemplatesConfig,
     WeightingMode,
-    _legendre_stream_groups,
 )
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
-from .templates import (
-    AbstractTemplateOperator,
-    StokesTemplateOperator,
-    TemplateOperator,
-    azimuth_hwp_synchronous_basis,
-    binned_azimuth_hwp_synchronous_basis,
-    binned_azimuth_synchronous_basis,
-    hwp_synchronous_basis,
-    polynomial_basis,
-    scan_synchronous_basis,
-    spline_hwp_synchronous_basis,
-    t2p_basis,
-)
-from .templates.bases import Basis
-from .templates.gram import gram_inverse
+from .templates import TemplateOperator, build_templates, required_reader_fields
+from .templates._gram import factor, template_gram
 from .templates.pomme import PommeProjectionOperator
 from .weight import NestedWeightOperator, WeightOperator
 
@@ -328,14 +313,14 @@ class TemplateBundle:
     and scaling of the Gram factorization.
     """
 
-    operator: AbstractTemplateOperator
+    operator: TemplateOperator
     gram_inverse: AbstractLinearOperator
     ridge: AbstractLinearOperator | None
 
     @classmethod
     def create(
         cls,
-        operator: AbstractTemplateOperator,
+        operator: TemplateOperator,
         weight: AbstractLinearOperator,
         config: TemplatesConfig,
         *,
@@ -348,15 +333,12 @@ class TemplateBundle:
             weight: The diagonal weight matrix.
             config: Supplies the Gram regularization and batch size.
             pomme_tau: Pomme interval length, when the templates are combined with Pomme; the
-                Gram is then taken under the effective weight $W F$ (see [`gram_inverse`][]).
+                Gram is then taken under the effective weight $W F$.
         """
-        ginv, ridge = gram_inverse(
-            operator,
-            weight,
-            config.regularization,
-            pomme_tau=pomme_tau,
-            batch_size=config.gram_batch_size,
+        gram = template_gram(
+            operator, weight, pomme_tau=pomme_tau, batch_size=config.gram_batch_size
         )
+        ginv, ridge = factor(gram, regularization=config.regularization)
         return cls(operator, ginv, ridge)
 
 
@@ -378,37 +360,9 @@ class ObservationTemplates:
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
         """Reader fields needed to build the active templates via [`create`][]."""
-        tcfg = config.templates
-        if tcfg is None:
+        if config.templates is None:
             return set()
-        fields: set[str] = set()
-        if tcfg.polynomial is not None:
-            fields |= {
-                ReaderField.SCANNING_INTERVALS,
-                ReaderField.TIMESTAMPS,
-                ReaderField.VALID_SCANNING_MASKS,
-            }
-        if tcfg.scan_synchronous is not None:
-            fields |= {ReaderField.AZIMUTH}
-        if tcfg.binned_azimuth_synchronous is not None:
-            fields |= {ReaderField.AZIMUTH}
-        if tcfg.hwp_synchronous is not None:
-            fields |= {ReaderField.HWP_ANGLES}
-        if tcfg.azimuth_hwp_synchronous is not None:
-            fields |= {ReaderField.AZIMUTH, ReaderField.HWP_ANGLES}
-            if tcfg.azimuth_hwp_synchronous.split_scans:
-                fields |= {ReaderField.LEFT_SCAN_MASK, ReaderField.RIGHT_SCAN_MASK}
-        if tcfg.binned_azimuth_hwp_synchronous is not None:
-            fields |= {ReaderField.AZIMUTH, ReaderField.HWP_ANGLES}
-        if tcfg.spline_hwp_synchronous is not None:
-            fields |= {ReaderField.TIMESTAMPS, ReaderField.HWP_ANGLES}
-        if tcfg.t2p is not None:
-            fields |= {ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS}
-        if tcfg.ground is not None:
-            raise NotImplementedError(
-                'Ground templates are not supported in the multi-observation path.'
-            )
-        return fields
+        return required_reader_fields(config.templates)
 
     @classmethod
     def create(
@@ -431,144 +385,9 @@ class ObservationTemplates:
         """
         if (tcfg := config.templates) is None:
             raise ValueError('templates config required to build template operators')
-        n_dets = model.tod_format.shape[0]
-        dtype = config.dtype
-        # Demodulation splits the raw stream into differently filtered I/Q/U streams, so a template
-        # covering several streams fits an independent amplitude on each.
-        streams = config.landscape.stokes if config.demodulated else None
-
-        explicit_bases: dict[str, Any] = {}
-        implicit_bases: dict[str, Any] = {}
-
-        def add(name: str, bases: Basis | dict[str, Basis], explicit: bool) -> None:
-            if streams is not None and isinstance(bases, Basis):
-                bases = {streams.lower(): bases}  # one group: stored once for every stream
-            (explicit_bases if explicit else implicit_bases)[name] = bases
-
-        if (poly := tcfg.polynomial) is not None:
-
-            def poly_basis(orders: PolynomialOrders) -> Basis:
-                return polynomial_basis(
-                    max_poly_order=orders.max_order,
-                    intervals=data[ReaderField.SCANNING_INTERVALS],
-                    times=data[ReaderField.TIMESTAMPS],
-                    dtype=dtype,
-                    valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
-                    min_poly_order=orders.min_order,
-                )
-
-            if streams is not None:
-                # streams fitted with the same orders share one basis
-                groups = _legendre_stream_groups(poly.legendre, streams)
-                add('polynomial', {g: poly_basis(o) for g, o in groups.items()}, poly.explicit)
-            else:
-                assert isinstance(poly.legendre, PolynomialOrders)  # per-stream needs demodulation
-                add('polynomial', poly_basis(poly.legendre), poly.explicit)
-
-        if (scan := tcfg.scan_synchronous) is not None:
-            azimuth = data[ReaderField.AZIMUTH]
-            if streams is not None:
-                groups = _legendre_stream_groups(scan.legendre, streams)
-                bases: dict[str, Basis] = {
-                    g: scan_synchronous_basis(o, azimuth, dtype) for g, o in groups.items()
-                }
-                add('scan_synchronous', bases, scan.explicit)
-            else:
-                assert isinstance(scan.legendre, PolynomialOrders)  # per-stream needs demodulation
-                add(
-                    'scan_synchronous',
-                    scan_synchronous_basis(scan.legendre, azimuth, dtype),
-                    scan.explicit,
-                )
-
-        if (binned_az := tcfg.binned_azimuth_synchronous) is not None:
-            basis = binned_azimuth_synchronous_basis(
-                binned_az.bins, data[ReaderField.AZIMUTH], dtype
-            )
-            add('binned_azimuth_synchronous', basis, binned_az.explicit)
-
-        if (hwp := tcfg.hwp_synchronous) is not None:
-            basis = hwp_synchronous_basis(hwp.n_harmonics, data[ReaderField.HWP_ANGLES], dtype)
-            add('hwp_synchronous', basis, hwp.explicit)
-
-        if (az_hwp := tcfg.azimuth_hwp_synchronous) is not None:
-            if az_hwp.split_scans:
-                for side, scan_mask_field in (
-                    ('left', ReaderField.LEFT_SCAN_MASK),
-                    ('right', ReaderField.RIGHT_SCAN_MASK),
-                ):
-                    basis = azimuth_hwp_synchronous_basis(
-                        az_hwp.legendre,
-                        az_hwp.n_harmonics,
-                        data[ReaderField.AZIMUTH],
-                        data[ReaderField.HWP_ANGLES],
-                        dtype,
-                        scan_mask=data[scan_mask_field],
-                    )
-                    add(f'azimuth_hwp_synchronous_{side}', basis, az_hwp.explicit)
-            else:
-                basis = azimuth_hwp_synchronous_basis(
-                    az_hwp.legendre,
-                    az_hwp.n_harmonics,
-                    data[ReaderField.AZIMUTH],
-                    data[ReaderField.HWP_ANGLES],
-                    dtype,
-                )
-                add('azimuth_hwp_synchronous', basis, az_hwp.explicit)
-
-        if (binned_az_hwp := tcfg.binned_azimuth_hwp_synchronous) is not None:
-            basis = binned_azimuth_hwp_synchronous_basis(
-                binned_az_hwp.bins,
-                binned_az_hwp.n_harmonics,
-                data[ReaderField.AZIMUTH],
-                data[ReaderField.HWP_ANGLES],
-                dtype,
-            )
-            add('binned_azimuth_hwp_synchronous', basis, binned_az_hwp.explicit)
-
-        if (spline_hwp := tcfg.spline_hwp_synchronous) is not None:
-            times = data[ReaderField.TIMESTAMPS]
-            basis = spline_hwp_synchronous_basis(
-                times,
-                data[ReaderField.HWP_ANGLES],
-                spline_hwp.resolve_n_knots(times.size),
-                spline_hwp.harmonics,
-                dtype,
-            )
-            add('spline_hwp_synchronous', basis, spline_hwp.explicit)
-
-        if (t2p := tcfg.t2p) is not None:
-            if temperature is None:
-                temperature = data[ReaderField.SAMPLE_DATA].i
-            sample_rate = _sample_rate(data[ReaderField.TIMESTAMPS])
-            # Q and U each fit their own leakage amplitude from the same temperature stream, so
-            # they share one basis.
-            qu = ''.join(s.lower() for s in config.landscape.stokes if s in 'QU')
-            bases = {}
-            if qu:
-                bases[qu] = t2p_basis(
-                    temperature,
-                    dtype,
-                    fit_band=t2p.fit_band,
-                    sample_rate=sample_rate,
-                    decimation_factor=t2p.decimation_factor,
-                )
-            add('t2p', bases, t2p.explicit)
-
-        if tcfg.ground is not None:
-            raise NotImplementedError(
-                'Ground templates are not supported in the multi-observation path.'
-            )
-
-        if not explicit_bases and not implicit_bases:
-            raise ValueError('config.templates is set but no template is active.')
-
-        def build(bases: dict[str, Any]) -> AbstractTemplateOperator | None:
-            if not bases:
-                return None
-            if config.demodulated:
-                return StokesTemplateOperator(bases, n_dets, config.landscape.stokes)
-            return TemplateOperator(bases, n_dets)
+        explicit_templates, implicit_templates = build_templates(
+            tcfg, data, model.tod_format, temperature=temperature
+        )
 
         # `Weff` bundles the sample mask (via `model.W`) and the Pomme deprojector `model.F`; the
         # Grams are taken under the same effective weight, from the diagonal `model.W` and `tau`.
@@ -577,13 +396,15 @@ class ObservationTemplates:
         pomme_tau = config.pomme_tau if config.method == Methods.POMME else None
 
         implicit = None
-        if (op := build(implicit_bases)) is not None:
+        if implicit_templates:
+            op = TemplateOperator(implicit_templates)
             implicit = TemplateBundle.create(op, model.W, tcfg, pomme_tau=pomme_tau)
             ginv = implicit.gram_inverse
             wd = wd - Weff(op(ginv(op.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
 
         explicit = None
-        if (op := build(explicit_bases)) is not None:
+        if explicit_templates:
+            op = TemplateOperator(explicit_templates)
             explicit = TemplateBundle.create(op, model.W, tcfg, pomme_tau=pomme_tau)
 
         return cls(explicit=explicit, implicit=implicit), wd

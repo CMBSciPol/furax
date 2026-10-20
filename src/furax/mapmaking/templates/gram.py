@@ -1,8 +1,9 @@
 r"""The Gram $T^\top W T$ of a template operator, its assembly and its inverse.
 
 Under a weight $W$ diagonal in time and in streams, the Gram is assembled from the structure of the
-bases (see `_structure`). Otherwise it is assembled by probing: applying $T^\top W T$ to a
-few probe amplitudes and reading its entries off the responses. That needs no structure from the
+bases, their weighted Grams ([`Basis.gram`][furax.mapmaking.templates.bases.Basis.gram]).
+Otherwise it is assembled by probing: applying $T^\top W T$ to a few probe amplitudes and reading
+its entries off the responses. That needs no structure from the
 weight beyond its reach: it must not couple detectors, nor samples more than `bandwidth` apart, nor
 streams unless declared. Both lay out the Gram alike, the probed bands possibly wider.
 

@@ -9,13 +9,13 @@ from numpy.testing import assert_allclose
 from furax import AbstractLinearOperator, symmetric, tree
 from furax.linalg import BorderedBandedMatrix
 from furax.mapmaking.templates import Template, TemplateOperator
-from furax.mapmaking.templates._gram import (
+from furax.mapmaking.templates.bases import OffsetBasis, SegmentedBasis, TensorBasis, _einsum
+from furax.mapmaking.templates.gram import (
     BlockGram,
     _regularized,
     factor,
     template_gram,
 )
-from furax.mapmaking.templates.bases import OffsetBasis, SegmentedBasis, TensorBasis, _einsum
 from furax.mapmaking.templates.pomme import PommeProjectionOperator
 from furax.obs import TODFormat
 

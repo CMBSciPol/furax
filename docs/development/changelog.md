@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TOD` and `TODFormat` in `furax.obs`: time-ordered data format conventions (normal/demodulated) in a single place (#342, #354)
 - `furax.math.zernike`: the Zernike polynomials on the unit disk (#352)
 - `furax.math.legendre.legvander`: the pseudo-Vandermonde matrix of the Legendre polynomials (#353)
+- `BorderedBandedMatrix`, `probe_bordered_banded` and `ArrowheadCholeskyOperator` in `furax.linalg`: symmetric matrices with a block-banded core and a dense border, their recovery by probing, and an arrowhead Cholesky solve (#344)
 
 ### Changed
 

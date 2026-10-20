@@ -5,7 +5,7 @@ from typing import Any, Self, cast
 import cadre
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Bool, Float, PyTree
 from scipy.signal import get_window
 
 from furax.core import (
@@ -249,20 +249,31 @@ def apodization_window(size: int, kind: str = 'chebwin') -> Float[Array, ' {size
 
 
 def padding_aware_welch(
-    tod: Array, sample_padding: Array | int, *, fs: Array, nperseg: int
+    tod: Array,
+    sample_padding: Array | int,
+    *,
+    fs: Array,
+    nperseg: int,
+    valid: Bool[Array, '*dets samples'] | None = None,
 ) -> tuple[Array, Array]:
-    """Estimate a Welch PSD without averaging windows from a padded tail.
+    """Estimate a Welch PSD without averaging windows from a padded tail or over flagged samples.
 
     The segment length sets the number of frequency bins, so it is static and cannot depend on
     `sample_padding`. When fewer than `nperseg` real samples are available, there is therefore no
     all-real segment to average and the estimate falls back to the first one, padding included.
     Keep `nperseg` at or below the real sample count to stay in the regime where this is exact.
 
+    With `valid`, a detector's estimate also leaves out every segment that contains a sample
+    flagged invalid, which is the maximum-likelihood estimate for segments that are independent.
+    A detector with no fully valid segment falls back to the segments of real samples, flagged
+    ones included.
+
     Args:
         tod: Time-ordered data with detector and sample axes.
         sample_padding: Number of padded samples at the end of the sample axis.
         fs: Sampling frequency.
         nperseg: Number of samples per Welch segment, clipped to the buffer length.
+        valid: Whether each sample is valid, with the shape of `tod`, or `None` to keep them all.
 
     Returns:
         The sample frequencies and power spectral density.
@@ -290,8 +301,21 @@ def padding_aware_welch(
     step = nperseg - noverlap
     real_samples = input_samples - sample_padding
     n_valid = jnp.maximum(1, 1 + (real_samples - nperseg) // step)
-    valid = jnp.arange(periodograms.shape[-1]) < n_valid
-    psd = jnp.sum(jnp.where(valid, periodograms, 0), axis=-1) / n_valid
+    segments = jnp.arange(periodograms.shape[-1])
+    real = segments < n_valid  # (segments,)
+    if valid is not None:
+        # a segment is clean when no sample in [start, start + nperseg) is flagged
+        flagged = jnp.cumsum(~valid, axis=-1, dtype=jnp.int32)
+        flagged = jnp.concatenate([jnp.zeros_like(flagged[..., :1]), flagged], axis=-1)
+        starts = segments * step
+        clean = flagged[..., starts + nperseg] == flagged[..., starts]  # (*dets, segments)
+        keep = real & clean
+        # a detector without a clean segment keeps all the real ones
+        keep = jnp.where(keep.any(axis=-1, keepdims=True), keep, real)
+    else:
+        keep = jnp.broadcast_to(real, periodograms.shape[:-2] + real.shape)
+    count = keep.sum(axis=-1, keepdims=True)
+    psd = jnp.sum(jnp.where(keep[..., None, :], periodograms, 0), axis=-1) / count
     return frequencies, psd
 
 

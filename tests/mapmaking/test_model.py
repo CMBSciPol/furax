@@ -38,6 +38,30 @@ def test_padding_aware_welch_preserves_float32():
     assert psd.dtype == jnp.float32
 
 
+@jax.jit
+def _welch(signal, padding, valid):
+    return padding_aware_welch(signal, padding, fs=jnp.array(100.0), nperseg=256, valid=valid)
+
+
+def test_padding_aware_welch_skips_flagged_segments():
+    nperseg, step = 256, 128
+    signal = jax.random.normal(jax.random.key(0), (3, 1024), dtype=jnp.float64)
+    glitched = signal.at[0, 300:340].set(1e6)
+    valid = jnp.ones_like(signal, bool)
+    valid = valid.at[0, 300:340].set(False)  # the segments starting at 128 and 256 hold them
+    valid = valid.at[2, ::100].set(False)  # no segment is clean: the detector keeps them all
+
+    _, psd = _welch(glitched.at[2].set(signal[2]), jnp.array(0), valid)  # padding traced
+
+    def segment(s):
+        return jax.scipy.signal.welch(signal[0, s : s + nperseg], fs=100.0, nperseg=nperseg)[1]
+
+    starts = [s for s in range(0, 1024 - nperseg + 1, step) if s not in (128, 256)]
+    assert_allclose(psd[0], sum(map(segment, starts)) / len(starts), rtol=1e-10, atol=1e-12)
+    _, unmasked = padding_aware_welch(signal, 0, fs=jnp.array(100.0), nperseg=nperseg)
+    assert_allclose(psd[1:], unmasked[1:], rtol=1e-12, atol=1e-12)
+
+
 class TestSampleMask:
     @pytest.mark.parametrize('tail_value', [True, False])
     def test_pomme_tail_always_masked(self, tail_value: bool):

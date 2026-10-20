@@ -324,19 +324,26 @@ class TemplateBundle:
         weight: AbstractLinearOperator,
         config: TemplatesConfig,
         *,
+        bandwidth: int = 0,
         pomme_tau: int | None = None,
     ) -> Self:
-        r"""Pair a template operator $T$ with its Gram inverse given a diagonal weight $W$.
+        r"""Pair a template operator $T$ with its Gram inverse given a weight $W$.
 
         Args:
             operator: The template operator.
-            weight: The diagonal weight matrix.
+            weight: The weight matrix.
             config: Supplies the Gram regularization and batch size.
+            bandwidth: The largest distance, in samples, between two samples that $W$ couples; 0
+                for a diagonal $W$.
             pomme_tau: Pomme interval length, when the templates are combined with Pomme; the
                 Gram is then taken under the effective weight $W F$.
         """
         gram = template_gram(
-            operator, weight, pomme_tau=pomme_tau, batch_size=config.gram_batch_size
+            operator,
+            weight,
+            bandwidth=bandwidth,
+            pomme_tau=pomme_tau,
+            batch_size=config.gram_batch_size,
         )
         ginv, ridge = factor(gram, regularization=config.regularization)
         return cls(operator, ginv, ridge)
@@ -362,11 +369,16 @@ class SharedTemplates:
         weight: AbstractLinearOperator,
         config: TemplatesConfig,
         *,
+        bandwidth: int = 0,
         pomme_tau: int | None = None,
     ) -> Self:
-        """Pair a template operator with its Gram under a diagonal weight, as for [`TemplateBundle`][]."""
+        """Pair a template operator with its Gram under a weight, as for [`TemplateBundle`][]."""
         gram = template_gram(
-            operator, weight, pomme_tau=pomme_tau, batch_size=config.gram_batch_size
+            operator,
+            weight,
+            bandwidth=bandwidth,
+            pomme_tau=pomme_tau,
+            batch_size=config.gram_batch_size,
         )
         return cls(operator, gram)
 
@@ -423,10 +435,13 @@ class ObservationTemplates:
         )
 
         # `Weff` bundles the sample mask (via `model.W`) and the Pomme deprojector `model.F`; the
-        # Grams are taken under the same effective weight, from the diagonal `model.W` and `tau`.
+        # Grams are taken under the same effective weight, from `model.W` and `tau`.
         Weff = (model.W @ model.F).reduce()
         wd = Weff(tod)
         pomme_tau = config.pomme_tau if config.method == Methods.POMME else None
+        # the Toeplitz band of a correlated weight holds lags 0 to `correlation_length - 1`
+        bandwidth = 0 if config.binned else config.weighting.correlation_length - 1
+        gram_options = {'bandwidth': bandwidth, 'pomme_tau': pomme_tau}
 
         implicit = None
         if implicit_templates:
@@ -436,7 +451,7 @@ class ObservationTemplates:
                     'by detectors would couple the batches of an observation'
                 )
             op = TemplateOperator(implicit_templates)
-            implicit = TemplateBundle.create(op, model.W, tcfg, pomme_tau=pomme_tau)
+            implicit = TemplateBundle.create(op, model.W, tcfg, **gram_options)
             ginv = implicit.gram_inverse
             wd = wd - Weff(op(ginv(op.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
 
@@ -445,10 +460,10 @@ class ObservationTemplates:
         common = {n: t for n, t in explicit_templates.items() if not t.per_detector}
         if own:
             op = TemplateOperator(own)
-            explicit = TemplateBundle.create(op, model.W, tcfg, pomme_tau=pomme_tau)
+            explicit = TemplateBundle.create(op, model.W, tcfg, **gram_options)
         if common:
             op = TemplateOperator(common)
-            shared = SharedTemplates.create(op, model.W, tcfg, pomme_tau=pomme_tau)
+            shared = SharedTemplates.create(op, model.W, tcfg, **gram_options)
 
         return cls(explicit=explicit, implicit=implicit, shared=shared), wd
 

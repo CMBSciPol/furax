@@ -15,12 +15,15 @@ from numpy.testing import assert_allclose
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
+    GapsConfig,
+    GapTreatment,
     HealpixConfig,
     HWPSynchronousConfig,
     LandscapeConfig,
     MapMakingConfig,
     Methods,
     NoiseFitConfig,
+    NoiseSource,
     PointingConfig,
     PolynomialConfig,
     PolynomialOrders,
@@ -345,3 +348,113 @@ def test_explicit_and_implicit_agree_under_a_ridge(batch):
 
     explicit, implicit = run(True), run(False)
     assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
+
+
+def _toeplitz_config(
+    templates: TemplatesConfig, precomputed: bool = False, demodulated: bool = False
+) -> MapMakingConfig:
+    sotodlib = SotodlibConfig(demodulated=True) if demodulated else None
+    cfg = replace(_config(None), templates=templates, sotodlib=sotodlib)
+    cfg.method = Methods.MAXL
+    # the ground observations carry a 1/f noise model, correlated within the band; the others
+    # fit one to white noise
+    source = NoiseSource.PRECOMPUTED if precomputed else cfg.weighting.source
+    cfg.weighting = replace(
+        cfg.weighting, mode=WeightingMode.TOEPLITZ, source=source, correlation_length=64
+    )
+    cfg.gaps = GapsConfig(treatment=GapTreatment.INNER_MASK)
+    cfg.solver = SolverConfig(rtol=1e-10, max_steps=1000)
+    return cfg
+
+
+@pytest.mark.parametrize(
+    ('observations', 'template'),
+    [
+        (_hwp_obs, lambda e: TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=e))),
+        # from order 1: the offsets of the intervals are degenerate with the intensity map
+        (
+            _ground_obs,
+            lambda e: TemplatesConfig(
+                polynomial=PolynomialConfig(legendre=PolynomialOrders(1, 2), explicit=e)
+            ),
+        ),
+    ],
+    ids=['hwp_synchronous', 'polynomial'],
+)
+def test_correlated_weight_explicit_and_implicit_give_the_same_map(observations, template):
+    # Under a correlated weight, marginalizing the amplitudes needs the exact Gram, probed from the
+    # weight; the joint solve only uses it as a preconditioner.
+    obs = observations()
+    precomputed = observations is _ground_obs
+    maps = [
+        MultiObservationMapMaker(obs, config=_toeplitz_config(template(e), precomputed)).run()
+        for e in (True, False)
+    ]
+    assert_allclose(maps[0].map.data, maps[1].map.data, rtol=1e-6, atol=1e-8)
+
+
+def test_detector_batches_give_the_same_result_under_a_correlated_weight():
+    # The Gram of each detector is probed from the weight, whatever the batch it is in.
+    templates = TemplatesConfig(polynomial=PolynomialConfig(legendre=PolynomialOrders(1, 2)))
+    cfg = _toeplitz_config(templates, precomputed=True)
+    whole, batched = [
+        MultiObservationMapMaker(
+            _ground_obs(n_dets=7), config=replace(cfg, detector_batch_size=batch)
+        ).run()
+        for batch in (0, 3)
+    ]
+    scale = jnp.max(jnp.abs(whole.map.data))
+    assert_allclose(batched.map.data, whole.map.data, atol=1e-5 * scale)
+
+
+@pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])
+def test_correlated_weight_with_templates_requires_inner_mask_gaps(treatment):
+    config = _toeplitz_config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2)))
+    config.gaps = GapsConfig(treatment=treatment)
+    config.detector_batch_size = 0  # gap treatments other than the inner mask need every detector
+    with pytest.raises(NotImplementedError, match='inner_mask'):
+        MultiObservationMapMaker(_hwp_obs(), config=config)
+
+
+def test_shared_amplitudes_under_a_correlated_weight_are_the_same_in_detector_batches(monkeypatch):
+    # A common mode, one offset per block of 128 samples, seen by every detector: the Gram of its
+    # amplitudes is probed from the weight in each batch, then summed over the batches.
+    def common_mode(_config, _data, tod_format, **_):
+        basis = OffsetBasis(128, tod_format.n_samples, tod_format.dtype)
+        return {'common': Template(basis, tod_format, per=())}, {}
+
+    monkeypatch.setattr('furax.mapmaking._model.build_templates', common_mode)
+    # the configuration only has to enable templates: the builder above makes them
+    templates = TemplatesConfig(polynomial=PolynomialConfig(), regularization=1e-3)
+    cfg = _toeplitz_config(templates, precomputed=True)
+    whole, batched = [
+        MultiObservationMapMaker(
+            _ground_obs(n_dets=7), config=replace(cfg, detector_batch_size=batch)
+        ).run()
+        for batch in (0, 3)
+    ]
+    amplitudes = whole.template_amplitudes['common']
+    assert amplitudes.shape == (2, 1024 // 128)  # (obs, block)
+    assert jnp.all(jnp.isfinite(amplitudes)) and jnp.max(jnp.abs(amplitudes)) > 0
+    scale = jnp.max(jnp.abs(whole.map.data))
+    assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
+    assert_allclose(
+        batched.template_amplitudes['common'], amplitudes, atol=1e-4 * jnp.max(jnp.abs(amplitudes))
+    )
+
+
+def test_demodulated_polynomial_explicit_and_implicit_agree_under_a_correlated_weight():
+    maps = [
+        MultiObservationMapMaker(
+            _ground_obs(),
+            config=_toeplitz_config(
+                TemplatesConfig(
+                    polynomial=PolynomialConfig(legendre=PolynomialOrders(1, 2), explicit=e)
+                ),
+                precomputed=True,
+                demodulated=True,
+            ),
+        ).run()
+        for e in (True, False)
+    ]
+    assert_allclose(maps[0].map.data, maps[1].map.data, rtol=1e-6, atol=1e-8)

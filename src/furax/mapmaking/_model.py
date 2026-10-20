@@ -15,7 +15,6 @@ from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 from ._observation import ReaderField, _sample_rate
 from .acquisition import build_acquisition_operator
-from .bases import Basis
 from .config import (
     GapTreatment,
     MapMakingConfig,
@@ -24,11 +23,9 @@ from .config import (
     PolynomialOrders,
     TemplatesConfig,
     WeightingMode,
-    _legendre_leg_groups,
+    _legendre_stream_groups,
 )
-from .gram import gram_inverse
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
-from .pomme import PommeProjectionOperator
 from .templates import (
     AbstractTemplateOperator,
     StokesTemplateOperator,
@@ -42,6 +39,9 @@ from .templates import (
     spline_hwp_synchronous_basis,
     t2p_basis,
 )
+from .templates.bases import Basis
+from .templates.gram import gram_inverse
+from .templates.pomme import PommeProjectionOperator
 from .weight import NestedWeightOperator, WeightOperator
 
 
@@ -427,22 +427,22 @@ class ObservationTemplates:
             model: The observation's model.
             tod: The TOD to weight.
             temperature: The I timestream, from which the T2P template is built; by default, the
-                I leg of the sample data.
+                I stream of the sample data.
         """
         if (tcfg := config.templates) is None:
             raise ValueError('templates config required to build template operators')
         n_dets = model.tod_format.shape[0]
         dtype = config.dtype
         # Demodulation splits the raw stream into differently filtered I/Q/U streams, so a template
-        # covering several legs fits an independent amplitude on each.
-        legs = config.landscape.stokes if config.demodulated else None
+        # covering several streams fits an independent amplitude on each.
+        streams = config.landscape.stokes if config.demodulated else None
 
         explicit_bases: dict[str, Any] = {}
         implicit_bases: dict[str, Any] = {}
 
         def add(name: str, bases: Basis | dict[str, Basis], explicit: bool) -> None:
-            if legs is not None and isinstance(bases, Basis):
-                bases = {legs.lower(): bases}  # one group: stored once for every leg
+            if streams is not None and isinstance(bases, Basis):
+                bases = {streams.lower(): bases}  # one group: stored once for every stream
             (explicit_bases if explicit else implicit_bases)[name] = bases
 
         if (poly := tcfg.polynomial) is not None:
@@ -457,24 +457,24 @@ class ObservationTemplates:
                     min_poly_order=orders.min_order,
                 )
 
-            if legs is not None:
-                # legs fitted with the same orders share one basis
-                groups = _legendre_leg_groups(poly.legendre, legs)
+            if streams is not None:
+                # streams fitted with the same orders share one basis
+                groups = _legendre_stream_groups(poly.legendre, streams)
                 add('polynomial', {g: poly_basis(o) for g, o in groups.items()}, poly.explicit)
             else:
-                assert isinstance(poly.legendre, PolynomialOrders)  # per-leg needs demodulation
+                assert isinstance(poly.legendre, PolynomialOrders)  # per-stream needs demodulation
                 add('polynomial', poly_basis(poly.legendre), poly.explicit)
 
         if (scan := tcfg.scan_synchronous) is not None:
             azimuth = data[ReaderField.AZIMUTH]
-            if legs is not None:
-                groups = _legendre_leg_groups(scan.legendre, legs)
+            if streams is not None:
+                groups = _legendre_stream_groups(scan.legendre, streams)
                 bases: dict[str, Basis] = {
                     g: scan_synchronous_basis(o, azimuth, dtype) for g, o in groups.items()
                 }
                 add('scan_synchronous', bases, scan.explicit)
             else:
-                assert isinstance(scan.legendre, PolynomialOrders)  # per-leg needs demodulation
+                assert isinstance(scan.legendre, PolynomialOrders)  # per-stream needs demodulation
                 add(
                     'scan_synchronous',
                     scan_synchronous_basis(scan.legendre, azimuth, dtype),
@@ -589,20 +589,20 @@ class ObservationTemplates:
         return cls(explicit=explicit, implicit=implicit), wd
 
 
-def restrict_legs(
-    data: dict[str, Any], tod: Stokes, legs: ValidStokesLiteral
+def restrict_streams(
+    data: dict[str, Any], tod: Stokes, stokes: ValidStokesLiteral
 ) -> tuple[dict[str, Any], Stokes]:
-    """An observation's sample data, noise fits and TOD, restricted to the Stokes `legs`.
+    """An observation's sample data, noise fits and TOD, restricted to the streams `stokes`.
 
-    The reader may load more demodulated legs than the map has (see
+    The reader may load more demodulated streams than the map has (see
     [`MapMakingConfig.read_stokes`][furax.mapmaking.config.MapMakingConfig.read_stokes]).
     """
-    index = jnp.array([tod.stokes.index(leg) for leg in legs])
+    index = jnp.array([tod.stokes.index(s) for s in stokes])
 
     def select(x: Stokes) -> Stokes:
-        return Stokes.class_for(legs).from_array(x.data[index])
+        return Stokes.class_for(stokes).from_array(x.data[index])
 
     data = {**data, ReaderField.SAMPLE_DATA: select(data[ReaderField.SAMPLE_DATA])}
     if (fits := data.get(ReaderField.NOISE_MODEL_FITS)) is not None:
-        data[ReaderField.NOISE_MODEL_FITS] = fits[index]  # one row per leg
+        data[ReaderField.NOISE_MODEL_FITS] = fits[index]  # one row per stream
     return data, select(tod)

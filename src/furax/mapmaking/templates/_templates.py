@@ -4,7 +4,7 @@ A template turns a small set of per-detector amplitudes into a time stream, so t
 and remove unwanted but predictable signals (slow drifts, scan-synchronous pickup, HWP-synchronous
 lines, T-to-P leakage).
 
-Each template is described by a [`Basis`][furax.mapmaking.bases.Basis] of functions of time, built
+Each template is described by a [`Basis`][furax.mapmaking.templates.bases.Basis] of functions of time, built
 here from the observation's data (`polynomial_basis`, `t2p_basis`, ...). A
 [`TemplateOperator`][] combines every enabled template into one operator, keyed by template name,
 giving each detector its own amplitudes; [`StokesTemplateOperator`][] does the same for a
@@ -28,6 +28,7 @@ from furax.math import bspline
 from furax.math.legendre import legvander
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
+from ..config import BinsConfig, PolynomialOrders
 from .bases import (
     Basis,
     DecimatedBasis,
@@ -37,7 +38,6 @@ from .bases import (
     WindowedBasis,
     _einsum,
 )
-from .config import BinsConfig, PolynomialOrders
 
 __all__ = [
     'StokesLeg',

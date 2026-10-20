@@ -6,14 +6,9 @@ from jax import Array
 from jaxtyping import Float
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.mapmaking.bases import Basis, TensorBasis
 from furax.mapmaking.config import BinsConfig, PolynomialOrders, SplineHWPSynchronousConfig
-from furax.mapmaking.pomme import PommeProjectionOperator
 from furax.mapmaking.templates import (
     TemplateOperator,
-    _bin_weights,
-    _harmonics,
-    _legendre,
     azimuth_hwp_synchronous_basis,
     binned_azimuth_hwp_synchronous_basis,
     binned_azimuth_synchronous_basis,
@@ -23,6 +18,9 @@ from furax.mapmaking.templates import (
     spline_hwp_synchronous_basis,
     t2p_basis,
 )
+from furax.mapmaking.templates._templates import _bin_weights, _harmonics, _legendre
+from furax.mapmaking.templates.bases import Basis, TensorBasis
+from furax.mapmaking.templates.pomme import PommeProjectionOperator
 from furax.math import bspline
 
 
@@ -87,12 +85,12 @@ class TestBinWeights:
 class TestLegendreAndHarmonics:
     def test_legendre_order_zero_is_constant_one(self) -> None:
         x = jnp.linspace(0.0, 10.0, 64)
-        legs = _legendre(x, 0, 3, jnp.float64)
-        assert legs.shape == (4, 64)
-        assert_allclose(legs[0], 1.0, atol=TOL)  # P_0 == 1
+        values = _legendre(x, 0, 3, jnp.float64)
+        assert values.shape == (4, 64)
+        assert_allclose(values[0], 1.0, atol=TOL)  # P_0 == 1
         # P_1(u) == u, the rescaled coordinate spanning [-1, 1]
         u = -1.0 + 2.0 * (x - jnp.min(x)) / jnp.ptp(x)
-        assert_allclose(legs[1], u, atol=TOL)
+        assert_allclose(values[1], u, atol=TOL)
 
     @pytest.mark.parametrize('dc', [False, True])
     def test_harmonics_rows_and_dc(self, dc: bool) -> None:
@@ -127,8 +125,8 @@ class TestSynchronousTemplates:
         basis = scan_synchronous_basis(legendre, azimuth, jnp.float64)
         assert basis.shape == (legendre.n_orders,)
         coeffs = jr.normal(jr.key(901), basis.shape)
-        legs = _legendre(azimuth, legendre.min_order, legendre.max_order, jnp.float64)
-        assert_allclose(basis(coeffs), coeffs @ legs, rtol=TOL)
+        values = _legendre(azimuth, legendre.min_order, legendre.max_order, jnp.float64)
+        assert_allclose(basis(coeffs), coeffs @ values, rtol=TOL)
 
     def test_binned_azimuth_synchronous_one_amplitude_per_bin(self) -> None:
         n_samps = 200
@@ -165,7 +163,7 @@ class TestSynchronousTemplates:
         )
 
     def test_azimuth_hwp_scan_mask_zeroes_flagged_samples(self) -> None:
-        # zeroing the azimuth leg kills every basis function there -> zero synthesis.
+        # zeroing the azimuth factor kills every basis function there -> zero synthesis.
         n_samps, n_harm = 200, 3
         azimuth, hwp = _geometry(n_samps)
         scan_mask = (jnp.arange(n_samps) % 3 != 0).astype(jnp.float64)

@@ -4,7 +4,7 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking import ReaderField
-from furax.mapmaking._model import _noise_model, _noise_operator, _sample_mask, restrict_legs
+from furax.mapmaking._model import _noise_model, _noise_operator, _sample_mask, restrict_streams
 from furax.mapmaking.config import MapMakingConfig, Methods, WeightingConfig, WeightingMode
 from furax.mapmaking.noise import WhiteNoiseModel, padding_aware_welch
 from furax.obs import TODFormat
@@ -122,13 +122,13 @@ class TestIdentityNoise:
         assert config.mode is WeightingMode.DIAGONAL
 
 
-def test_restrict_legs_keeps_the_legs_of_the_map():
-    # legs told apart by their values: leg k of the read data holds k
+def test_restrict_streams_keeps_the_streams_of_the_map():
+    # streams told apart by their values: stream k of the read data holds k
     tod = StokesIQU.from_array(jnp.arange(3.0)[:, None, None] * jnp.ones((3, 2, 5)))
     fits = jnp.arange(3.0)[:, None, None] * jnp.ones((3, 2, 4))
     data = {ReaderField.SAMPLE_DATA: tod, ReaderField.NOISE_MODEL_FITS: fits}
 
-    data, restricted = restrict_legs(data, tod, 'QU')
+    data, restricted = restrict_streams(data, tod, 'QU')
 
     assert isinstance(restricted, StokesQU)
     assert_array_equal(restricted.data, tod.data[1:])

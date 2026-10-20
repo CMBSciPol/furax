@@ -21,11 +21,11 @@ rather than separate code paths, and Pomme a step of the Gram assembly.
 
 ## Motivation
 
-Each template feature adds a branch to the operator, the Gram assembly and the mapmaker. The
-table covers the template code on `main` and the work built on it for correlated weights, shared
-amplitudes and the T2P field:
+Before this model, each template feature added a branch to the operator, the Gram assembly and the
+mapmaker. The table lists where each feature lived in that code, which the model replaced (#347),
+and in the work built on it for correlated weights, shared amplitudes and the T2P field:
 
-| Feature | Where it lives today |
+| Feature | Where it lived before the model |
 |---|---|
 | Amplitudes per detector and per stream | `StokesTemplateOperator` keys amplitudes by stream, groups bases by stream (`'qu'`); the Gram is split per stream (`_PerLegOperator`) |
 | Amplitudes shared by the detectors | `shared` name tuples in the operator, a separate Gram summed over detectors, `_BatchSumOperator` in the mapmaker |
@@ -38,8 +38,8 @@ amplitudes and the T2P field:
 
 Most of these differ only in how amplitudes couple to (detector, stream), or in which amplitudes are
 eliminated by a Schur complement. The next feature in line, a T2P field common to Q and U, would
-need yet another branch: amplitudes shared across streams, with a different coupling on each stream.
-The model below makes it a coupling.
+have needed yet another branch: amplitudes shared across streams, with a different coupling on each
+stream. The model below makes it a coupling.
 
 ## The model
 
@@ -118,19 +118,26 @@ order on I and another on Q and U, are separate templates, one per group of stre
 `polynomial` when every stream is fitted alike, `polynomial_<streams>` (`polynomial_i`,
 `polynomial_qu`) otherwise. The same holds for the scan-synchronous template.
 
-Every current template is an instance:
+Every template a `TemplatesConfig` enables is an instance, built by `build_templates`:
 
 | Template | `basis` | `per` | `coupling` |
 |---|---|---|---|
-| Polynomial per interval | `SegmentedBasis` | `('stream', 'det')` | — |
-| HWP-, scan-synchronous | `TensorBasis`, `KroneckerBasis` | `('stream', 'det')` | — |
+| Polynomial per interval (`span='scan'`) | `SegmentedBasis` | `('stream', 'det')` | — |
+| Polynomial over the observation (`span='observation'`) | `TensorBasis` | `('stream', 'det')` | — |
+| HWP-, scan-synchronous, azimuth-binned | `TensorBasis`, `KroneckerBasis` | `('stream', 'det')` | — |
+| Spline HWP-synchronous | `WindowedBasis` | `('stream', 'det')` | — |
 | T2P per detector | detector's temperature, batched | `('stream', 'det')` | — |
 | T2P field, common to Q and U (default) | detector's temperature, batched | `()` | Q: `Zₖ · (cos 2γ, −sin 2γ)`, U: `Zₖ · (sin 2γ, cos 2γ)` |
 | T2P field, per stream (`joint_qu=False`) | detector's temperature, batched | `('stream',)` | `Zₖ(x_d) · (cos 2γ_d, sin 2γ_d)` |
-| Signal common to every detector | any shared basis | `('stream',)` | — |
-| Common mode with a gain per detector (`CoupledBasis`) | any shared basis | `('stream',)` | the gains |
-| Common mode per wafer | `OffsetBasis` | `('det',)` or `('stream', 'det')`, grouped by wafer | the pattern across the wafer |
 | Pomme offsets | `OffsetBasis(tau)` | `('det',)` | — (implicit) |
+
+The model also expresses these, which no builder makes yet:
+
+| Template | `basis` | `per` | `coupling` |
+|---|---|---|---|
+| Signal common to every detector | any shared basis | `('stream',)` | — |
+| Common mode with a gain per detector | any shared basis | `('stream',)` | the gains |
+| Common mode per wafer | `OffsetBasis` | `('det',)` or `('stream', 'det')`, grouped by wafer | the pattern across the wafer |
 
 ### The operator
 
@@ -142,8 +149,8 @@ class TemplateOperator(BlockRowOperator):
 The sum of the templates of one TOD, from amplitudes keyed by template name: their block row
 `T = [T₁ | T₂ | …]`, whose transpose is the block column of the `Tᵢᵀ`. It holds nothing but the
 templates, so stacking observations under a scan only adds a leading axis to their arrays. It
-replaces the current `TemplateOperator`, `StokesTemplateOperator`, stream groups, `shared` and
-`CoupledBasis`.
+replaced the earlier `TemplateOperator`, `StokesTemplateOperator`, the stream groups, the `shared`
+names and `CoupledBasis`.
 
 - **Synthesis**, for each stream: contract each detector's amplitude set with the coupling,
   `c[d, k] = Σₘ C[s, d, m] a[o(s, d), k, m]`, then expand with the basis. A template whose
@@ -225,6 +232,7 @@ def template_gram(
     bandwidth=0,
     streams_coupled=False,
     coupled=False,
+    pomme_tau=None,
     method=None,
     batch_size=1,
 ) -> BlockGram: ...
@@ -232,7 +240,7 @@ def template_gram(
 
 Two backends produce the same `BlockGram`, for the same layout. By default, a diagonal weight
 (`bandwidth=0`, `streams_coupled=False`) is assembled from the structure, any other by probing;
-`method` forces one.
+`method` forces one. `pomme_tau` takes the Gram under Pomme (see below).
 
 - **Probing**, the reference. Apply `Tᵀ W T`, restricted to the templates of the
   block, to probe amplitudes and read the Gram off the responses. Units never interact, so every
@@ -242,7 +250,7 @@ Two backends produce the same `BlockGram`, for the same layout. By default, a di
   rejected (or, under a JAX transformation, gives a NaN Gram). The border is probed one amplitude
   at a time. With `coupled=True`, the global block is all border, and the responses to its probes
   on the local amplitudes are the cross block. It works for any weight whose reach is declared,
-  and extends today's Toeplitz assembly to couplings, amplitude sets and streams. Cost: one
+  and extends the earlier Toeplitz assembly to couplings, amplitude sets and streams. Cost: one
   application of `T`, `W` and `Tᵀ` per probe.
 - **Structural**, for a weight diagonal in time and in streams, whose diagonal is read off by
   applying it to ones: `Basis.gram` (bands, for the core) and `_cross_gram` (dense, for the
@@ -251,7 +259,7 @@ Two backends produce the same `BlockGram`, for the same layout. By default, a di
   detectors; the global ones are summed over them, in batches. For a global template with a
   per-detector basis, such as the T2P field, that is `Σ_d C_d C_dᵀ ⊗ (B_dᵀ w_d B_d)`. The streams
   are assembled one after the other, so that the transient memory is that of one stream, as in the
-  current code.
+  earlier code.
 
 Both backends are checked against the dense Gram in the tests. A new kind of weight works with
 probing first, and gets a fast path only if it is worth it.
@@ -288,7 +296,7 @@ A polynomial per interval does not combine with Pomme: the offsets absorb anythi
 No other template is eliminated. The implicit templates are marginalized together, through one
 Gram of all of them, so none needs eliminating from another's. The Gram of the explicit templates
 is taken under `W`, or `W F`, and not under the marginalized weight `W'`: their preconditioner
-leaves the implicit templates out, as today. On the sky side, the implicit weight stays the
+leaves the implicit templates out, as before the model. On the sky side, the implicit weight stays the
 operator `W − W Tᵢ G⁻¹ Tᵢᵀ W`, and Pomme stays the projector `F`.
 
 ### Factorization
@@ -306,7 +314,7 @@ It returns the inverse on the amplitudes, and the ridge added before factoring.
   the Schur complement of the global one, `S = G_gg − Σ_u G_ugᵀ G_uu⁻¹ G_ug`
   (`ArrowheadCholeskyOperator`). That is cheap for a small global block, such as the 30
   amplitudes of a T2P field.
-- Otherwise the coupling is dropped (block Jacobi), as the preconditioner does today. It is the
+- Otherwise the coupling is dropped (block Jacobi), as the earlier preconditioner did. It is the
   only option when the global block is large and time-local, such as one common-mode amplitude per
   wafer every few seconds. Coupled to a local template spanning the observation (the Legendre
   polynomial), its Schur complement fills in to a dense matrix over every block.
@@ -333,27 +341,38 @@ to the diagonal of its block, and turns deprojection into Wiener filtering,
   Toeplitz weight gives it by probing, with `bandwidth = correlation_length - 1`; the same
   bandwidth applies to the templates of each detector and to the shared ones, whose Gram is summed
   over the batches of an observation after being probed in each.
-- **The system** keeps its form: `A = [H T]ᵀ W' [H T]` plus the priors, preconditioned by the
-  block-Jacobi map preconditioner and `factor(gram)` on the amplitudes.
-- **The amplitudes** are saved as one array per template, with the axes of `per` in front:
-  `(obs, stream, det, ...)` for a per-detector template, `(obs, ...)` for one common to the
-  observation. This replaces the `<template>/<stream>` entries of `amplitudes.npz` (see
-  `MapMakingResults`).
+- **The system** keeps its form: `A = [H T]ᵀ W' [H T]` plus the ridge of `factor`, preconditioned
+  by the block-Jacobi map preconditioner and `factor(gram)` on the amplitudes.
+- **The amplitudes** are saved as one array per template in `amplitudes.npz`, with the axes of
+  `per` in front: `(obs, stream, det, ...)` for a per-detector template, `(obs, ...)` for one
+  common to the observation. `detectors.parquet` gives the detector at each entry of the detector
+  axis (see `MapMakingResults`).
+
+## Fitting templates alone
+
+`TemplateFit` (`furax.mapmaking.templates.fit`) fits templates to a TOD without a map: it solves
+`Tᵀ W T a = Tᵀ W d` by conjugate gradients, preconditioned by `factor` of the Gram, which it
+assembles and factors once, so one fit serves any number of TODs of the same format. It takes the
+other options of `template_gram`, so a weight that couples samples, or Pomme, works as well, and a
+`regularization` makes it the ridge regression of `factor`. It returns the `CGResult`, whose step
+count tells how degenerate a set of templates is.
 
 ## Adding a feature
 
 - **A new kind of template**: a new `Basis`, if no existing flavour fits.
-- **A new way of sharing amplitudes**: a coupling and a choice of `per`. A T2P field common to Q and
-  U, or a common mode per wafer, is a few lines in the template builder.
+- **A new way of sharing amplitudes**: a coupling and a choice of `per`. The T2P field common to Q
+  and U is a coupling with `per=()`; a common mode per wafer would be a coupling with detector
+  groups, a few lines in the template builder.
 - **A new weight structure**: its reach, `bandwidth` and `streams_coupled`. It works through
   probing, and may later get a structural fast path.
 - **Marginalizing a template**: an implicit template, if it is local.
 
 ## Tests
 
-One parametrized test covers the combinations: each basis flavour, each choice of `per`, with and
-without coupling, on one stream or several, with one or several detector axes, under a diagonal,
-banded and stream-coupled weight. On instances small enough for dense matrices, it checks:
+The tests in `tests/mapmaking/templates` are parametrized over the combinations: each basis
+flavour, each choice of `per`, with and without coupling, on one stream or several, with one or
+several detector axes, under a diagonal, banded and stream-coupled weight. On instances small
+enough for dense matrices, they check:
 
 1. synthesis against the definition, one detector at a time;
 2. the transpose against the adjoint;
@@ -361,41 +380,44 @@ banded and stream-coupled weight. On instances small enough for dense matrices, 
 4. the structural Gram against the dense one, including detectors summed in batches that do
    not divide their number;
 5. `factor` against the dense Gram, exact and block by block, with and without the ridge;
-6. the Gram under Pomme against the dense `Tᵀ W F T` (step 4).
+6. the Gram under Pomme against the dense `Tᵀ W F T`.
 
-The existing mapmaker tests (Pomme, implicit and explicit templates, detector batches) stay as
-end-to-end checks.
+The mapmaker tests (Pomme, implicit and explicit templates, detector batches, correlated weights)
+are the end-to-end checks.
 
 ## Migration
 
-The work starts from `main`. Correlated (Toeplitz) weights under templates, amplitudes shared by
-the detectors and the T2P field are built directly in the new model: the first through probing,
-the others as couplings. Each step leaves the test suite green.
+The model was introduced in steps from `main`, each leaving the test suite green. Correlated
+(Toeplitz) weights under templates, amplitudes shared by the detectors and the T2P field were built
+directly in it: the first through probing, the others as couplings.
 
-0. `TODFormat` in `furax.obs`, used by `ObservationReader` (#342).
-1. `Template` and the new `TemplateOperator`, with tests 1–2. The current code is untouched.
-2. The bordered banded matrices in `furax.linalg`, the probing assembly into `BlockGram`, and
-   `factor`, exact or block by block, with the ridge, with tests 3 and 5. Probing is what
-   correlated weights need, so they are supported from this step.
-3. The structural backend, with test 4. On CPU, for the per-detector templates of a
-   demodulated SO SAT run (polynomial per interval and scan-synchronous on I, Q, U, T2P on Q, U;
-   up to 512 detectors × 200 000 samples), it matches the current `gram_inverse` in run time and
-   in scratch memory (within 3%). Probing takes 1.7 times as long and 16 times the memory. The
-   same comparison on GPU, at the size of a full observation, remains to be run
-   (`scripts/bench_template_gram.py`).
-4. Pomme: the Gram under `W F`, by probing `W F`, and from the structure by eliminating the
-   offsets from the weighted Grams of the bases, with test 6.
-5. `ObservationTemplates` and the mapmaker on the new model, `ObservationModel.tod_format`
-   a `TODFormat`, one template per group of streams fitted alike (`polynomial`, or
-   `polynomial_<streams>`), amplitudes saved as one array per template, `(obs, stream, det, ...)`.
-   `StokesTemplateOperator` and the old Gram are removed, and the template modules gathered in the
-   `furax.mapmaking.templates` subpackage (bases, builders, operator, Gram). Templates also work under
-   a correlated (Toeplitz) weight: their Gram is probed with the weight's correlation length as its
-   bandwidth. The gaps are then handled by the inner mask (`gaps.treatment=inner_mask`), since gap
-   filling bypasses the templates and the nested weight couples samples across whole gaps, beyond
-   any band.
-6. The first features on the new base: the T2P field (`T2PConfig.zernike_order`), common to Q
-   and U unless `T2PConfig.joint_qu` is false, and common modes coupled to the detectors.
+0. `TODFormat` in `furax.obs`, used by `ObservationReader` (#342, #354).
+1. The template modules gathered in the `furax.mapmaking.templates` subpackage, with no change in
+   behaviour (#343), and the bordered banded matrices in `furax.linalg` (#344).
+2. `Template` and the new `TemplateOperator`, with tests 1–2, the earlier code untouched (#345).
+3. `template_gram` and `factor` (#346): the probing assembly into `BlockGram`, the structural
+   backend, the Gram under Pomme, and `factor`, exact or block by block, with the ridge, with
+   tests 3–6. On CPU, for the per-detector templates of a demodulated SO SAT run (polynomial per
+   interval and scan-synchronous on I, Q, U, T2P on Q, U; up to 512 detectors × 200 000 samples),
+   the structural backend matched the earlier `gram_inverse` in run time and in scratch memory
+   (within 3%). Probing took 1.7 times as long and 16 times the memory.
+4. The mapmaker on the model (#347): the templates built by `build_templates`, one per group of
+   streams fitted alike (`polynomial`, or `polynomial_<streams>`), `ObservationModel.tod_format` a
+   `TODFormat`, and the amplitudes saved as one array per template. `StokesTemplateOperator` and
+   the old Gram were removed, and the Gram module made public as `furax.mapmaking.templates.gram`
+   (#348).
+5. Amplitudes shared by the detectors, solved over the detector batches of an observation (#356),
+   and the first template with them, the T2P field (`T2PConfig.zernike_order`), common to Q and U
+   unless `T2PConfig.joint_qu` is false (#355).
+6. A polynomial over the whole observation (`PolynomialConfig.span`, #357), and `TemplateFit`
+   (#358).
+7. Templates under a correlated (Toeplitz) weight (#361): their Gram is probed with the weight's
+   correlation length as its bandwidth, and the gaps are handled by the inner mask
+   (`gaps.treatment=inner_mask`), since gap filling bypasses the templates and the nested weight
+   couples samples across whole gaps, beyond any band.
+
+Still to do: the comparison of the two backends on GPU, at the size of a full observation; common
+modes coupled to the detectors, or per wafer; priors.
 
 ## Open questions
 
@@ -414,8 +436,8 @@ the others as couplings. Each step leaves the test suite green.
 
 ## Risks
 
-- **Performance.** The structural backend must match today's Gram assembly in time and memory;
-  step 3 measures it before anything switches.
+- **Performance.** The structural backend matched the earlier Gram assembly in time and memory on
+  CPU (step 3); on GPU it remains to be measured.
 - **Probing cost.** One application of `T`, `W` and `Tᵀ` per probe. A global time-local template
   needs `colors × k × modes` probes: about 90 for one common-mode amplitude per wafer every few
   seconds.

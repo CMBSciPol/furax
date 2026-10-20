@@ -33,7 +33,7 @@ from furax.mapmaking.templates._builders import (
     binned_azimuth_hwp_synchronous_basis,
     binned_azimuth_synchronous_basis,
     hwp_synchronous_basis,
-    polynomial_basis,
+    scan_polynomial_basis,
     scan_synchronous_basis,
     spline_hwp_synchronous_basis,
     t2p_basis,
@@ -211,7 +211,7 @@ class TestSynchronousTemplates:
 
 
 # ---------------------------------------------------------------------------
-# polynomial_basis (structure, gaps)
+# scan_polynomial_basis (structure, gaps)
 # ---------------------------------------------------------------------------
 
 
@@ -220,7 +220,7 @@ class TestPolynomialStructure:
         n_samps, order = 200, 3
         intervals = jnp.array([[0, 100], [100, 200]])
         times = jnp.arange(n_samps, dtype=jnp.float64)
-        basis = polynomial_basis(order, intervals, times, jnp.float64)
+        basis = scan_polynomial_basis(order, intervals, times, jnp.float64)
         # one polynomial (orders 0..order) per interval
         assert basis.shape == (2, order + 1)
         assert basis.out_structure.shape == (n_samps,)
@@ -230,7 +230,7 @@ class TestPolynomialStructure:
         n_samps, order = 200, 3
         intervals = jnp.array([[0, 80], [120, 200]])  # 80..120 is a gap
         times = jnp.arange(n_samps, dtype=jnp.float64)
-        basis = polynomial_basis(order, intervals, times, jnp.float64)
+        basis = scan_polynomial_basis(order, intervals, times, jnp.float64)
         coeffs = jr.normal(jr.key(960), basis.shape)
         out = basis(coeffs)
         gap = (jnp.arange(n_samps) >= 80) & (jnp.arange(n_samps) < 120)
@@ -240,12 +240,12 @@ class TestPolynomialStructure:
         # `SegmentedBasis` requires non-decreasing segment ids, gaps included
         intervals = jnp.array([[10, 80], [120, 160], [160, 190]])
         times = jnp.arange(200, dtype=jnp.float64)
-        basis = polynomial_basis(3, intervals, times, jnp.float64)
+        basis = scan_polynomial_basis(3, intervals, times, jnp.float64)
         assert jnp.all(jnp.diff(basis.segment) >= 0)
 
 
 # ---------------------------------------------------------------------------
-# polynomial_basis (masking)
+# scan_polynomial_basis (masking)
 # ---------------------------------------------------------------------------
 
 
@@ -257,7 +257,7 @@ class TestPolynomialMask:
         half = self.n_samps // 2
         intervals = jnp.array([[0, half], [half, self.n_samps]])
         times = jnp.arange(self.n_samps, dtype=jnp.float64)
-        return polynomial_basis(self.max_poly_order, intervals, times, jnp.float64, valid_mask)
+        return scan_polynomial_basis(self.max_poly_order, intervals, times, jnp.float64, valid_mask)
 
     def _valid_mask(self) -> Float[Array, ' samp']:
         # flag every 5th sample
@@ -626,3 +626,8 @@ def test_t2p_field_shares_its_amplitudes_between_the_detectors(joint_qu, per, sh
     assert template.per == per and template.in_structure.shape == shape
     assert not template.per_detector
     assert ReaderField.DETECTOR_QUATERNIONS in required_reader_fields(TemplatesConfig(t2p=config))
+
+
+def test_polynomial_over_the_observation_needs_no_scanning_intervals():
+    config = TemplatesConfig(polynomial=PolynomialConfig(span='observation'))
+    assert ReaderField.SCANNING_INTERVALS not in required_reader_fields(config)

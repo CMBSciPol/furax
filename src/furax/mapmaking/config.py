@@ -598,7 +598,31 @@ class SplineHWPSynchronousConfig:
 
 @dataclass
 class T2PConfig:
-    """Temperature-to-polarization leakage template (demodulated data only)."""
+    r"""Temperature-to-polarization leakage template (demodulated data only).
+
+    Each detector's Q and U pick up a fraction of its own temperature stream. By default that
+    fraction is a free coefficient per detector and stream.
+
+    With `zernike_order`, the coefficients instead follow the instrumental polarization of the
+    optics, a polarization field over the focal plane shared by every detector. Off-axis rays
+    cross the half-wave plate and the elements in front of it at an angle, which polarizes
+    unpolarized light along the plane of incidence, increasingly with the field angle; a tilted or
+    decentred element adds a polarization uniform across the field. Written in the focal-plane
+    frame as $P(\xi, \eta) = \sum_k c_k Z_k(\xi / R, \eta / R)$ with complex $c_k$ and the Zernike
+    polynomials $Z_k$ up to radial order `zernike_order`, it reaches detector $i$, of
+    polarization angle $\gamma_i$, as the coefficient $e^{2i\gamma_i} P(\xi_i, \eta_i)$: its real
+    part on Q and its imaginary part on U. A few amplitudes per observation replace a coefficient
+    per detector.
+
+    Examples:
+        Leakage following the instrumental polarization of the optics, up to fourth order across
+        the focal plane, fitted in the signal band
+
+            t2p:
+                fit_band: [0.03, 0.15]
+                decimation_factor: 10
+                zernike_order: 4
+    """
 
     fit_band: tuple[float, float] | None = None
     """Frequency band (in Hz) used to fit the leakage coefficients. `None` uses the full band."""
@@ -606,12 +630,33 @@ class T2PConfig:
     decimation_factor: int = 1
     """Decimation factor applied to the I template before fitting."""
 
+    zernike_order: int | None = None
+    """Highest radial order of the polarization field over the focal plane.
+
+    `None` fits a free coefficient per detector instead.
+    """
+
+    zernike_radius: float = 0.31
+    """Focal-plane radius $R$ in radians, scaling the detector coordinates of the field.
+
+    The default covers the Simons Observatory SATs, whose detectors lie within 17.5 degrees of the
+    boresight.
+    """
+
+    joint_qu: bool = True
+    r"""Whether Q and U share one complex field, $\mathrm{Re}$ on Q and $\mathrm{Im}$ on U, or each
+    fit their own. Only with `zernike_order`."""
+
     explicit: bool = True
     """T2P templates are always solved explicitly; deprojection is not supported."""
 
     def __post_init__(self) -> None:
         if not self.explicit:
             raise ValueError('T2P template filtering requires explicit=True')
+        if self.zernike_order is not None and self.zernike_order < 0:
+            raise ValueError(f"'zernike_order' must be >= 0, got {self.zernike_order}")
+        if self.zernike_radius <= 0:
+            raise ValueError(f"'zernike_radius' must be positive, got {self.zernike_radius}")
 
 
 @dataclass

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `build_templates` and the `*_templates` builders make the templates a `TemplatesConfig` enables, one per group of streams fitted alike (#347)
 - `furax.mapmaking.templates.gram`: `template_gram`, `BlockGram` and `factor`, the Gram of templates assembled by probing or from the structure of the bases, and its inverse (#348)
 - Templates can be fitted under a correlated (Toeplitz) weight, with `gaps.treatment=inner_mask` (#369)
+- `T2PConfig.zernike_order`, `zernike_radius` and `joint_qu`: the T2P leakage can be fitted as a polarization field over the focal plane, from `zernike_couplings` (#355)
 
 ### Changed
 

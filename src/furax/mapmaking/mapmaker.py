@@ -37,6 +37,7 @@ from furax import (
     MaskOperator,
     OperatorTag,
     SymmetricBandToeplitzOperator,
+    symmetric,
 )
 from furax.core import (
     AdditionOperator,
@@ -59,7 +60,7 @@ from furax.profiling import format_bytes
 
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
-from ._model import ObservationModel, ObservationTemplates, restrict_streams
+from ._model import ObservationModel, ObservationTemplates, SharedTemplates, restrict_streams
 from ._observation import (
     AbstractGroundObservation,
     AbstractLazyObservation,
@@ -83,8 +84,9 @@ from .layout import Bucket, SlotLayout
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner, make_two_level_preconditioner
 from .results import MapMakingResults
-from .streaming import StreamOperator
+from .streaming import StreamLayout, StreamOperator
 from .templates import TemplateOperator
+from .templates.gram import factor
 from .templates.pomme import PommeProjectionOperator
 from .weight import WeightOperator
 
@@ -99,7 +101,9 @@ class _BucketModel:
     templates: ObservationTemplates | None
     """Per-slot templates (None for a run without any)."""
     amplitude_rhs: PyTree[Array] | None
-    """Explicit-template RHS per slot (None without explicit templates)."""
+    """Explicit-template RHS per entry (None without explicit templates)."""
+    shared_rhs: PyTree[Array] | None = None
+    """RHS of the templates with amplitudes shared by detectors, per slot (None without them)."""
 
 
 @register_dataclass
@@ -455,23 +459,29 @@ class MultiObservationMapMaker[T]:
                 sky_estimate = result.solution
                 amplitudes = None
             else:
-                sky_estimate, per_bucket = result.solution
+                sky_estimate, *blocks = result.solution
                 # Every device holds the same replicated copy after the gather, so the host
                 # array is complete on every process; then back to observation order.
-                operators = [
-                    bm.templates.explicit.operator
-                    for bm in acc.buckets
-                    if bm.templates is not None and bm.templates.explicit is not None
-                ]
-                gathered = [
-                    _merge_detector_batches(bucket, self._gather(a), operator)
-                    for bucket, a, operator in zip(
-                        self.layout.buckets, per_bucket, operators, strict=True
+                bundles = [bm.templates.explicit for bm in acc.buckets if bm.templates]
+                operators = [bundle.operator for bundle in bundles if bundle is not None]
+                gathered = []
+                if operators:
+                    own, *blocks = blocks
+                    gathered.append(
+                        [
+                            _merge_detector_batches(bucket, self._gather(a), operator)
+                            for bucket, a, operator in zip(
+                                self.layout.buckets, own, operators, strict=True
+                            )
+                        ]
                     )
-                ]
-                amplitudes = jax.tree.map(
-                    lambda *leaves: self.layout.to_observation_order(leaves), *gathered
-                )
+                for shared in blocks:  # one set per slot, nothing to merge
+                    gathered.append([self._gather(a) for a in shared])
+                amplitudes = {}
+                for per_bucket in gathered:
+                    amplitudes |= jax.tree.map(
+                        lambda *leaves: self.layout.to_observation_order(leaves), *per_bucket
+                    )
 
         return MapMakingResults(
             map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)
@@ -519,46 +529,128 @@ class MultiObservationMapMaker[T]:
             for bm in acc.buckets
             if bm.templates is not None and bm.templates.explicit is not None
         ]
-        assert len(explicit) in (0, len(acc.buckets))
+        shared = [
+            bm.templates.shared
+            for bm in acc.buckets
+            if bm.templates is not None and bm.templates.shared is not None
+        ]
+        assert len(explicit) in (0, len(acc.buckets)) and len(shared) in (0, len(acc.buckets))
 
         # Restrict BJ preconditioner to selected pixels
         M = (S @ BJ.I @ S.T).reduce()
 
-        if not explicit:
+        if not explicit and not shared:
             A = AdditionOperator(
                 [((h @ S.T).T @ w @ (h @ S.T)).reduce() for h, w in zip(H, W, strict=True)],
                 sequential=True,
             )
             return _MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False)
 
-        Te = [layout.diagonal(e.operator) for e, layout in zip(explicit, layouts, strict=True)]
-        Ge = [layout.diagonal(e.gram_inverse) for e, layout in zip(explicit, layouts, strict=True)]
-        amplitudes_structure = [te.in_structure for te in Te]
+        # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
+        # per bucket: those of each detector alone, with an entry per detector batch, and those the
+        # detectors share, with one set per slot (the batches of a slot see the same amplitudes).
+        Te = [layout.diagonal(e.operator) for e, layout in zip(explicit, layouts, strict=False)]
+        Tg = [
+            self._shared_stream(bucket, layout, s.operator)
+            for bucket, layout, s in zip(self.layout.buckets, layouts, shared, strict=False)
+        ]
+        structures = {
+            'own': [te.in_structure for te in Te],
+            'shared': [tg.in_structure for tg in Tg],
+        }
+        kinds = [kind for kind, present in (('own', explicit), ('shared', shared)) if present]
+        at = {kind: 1 + k for k, kind in enumerate(kinds)}  # their block among the unknowns
 
-        # Joint sky + explicit-amplitude system. The unknowns are the selected sky pixels and one
-        # amplitude block per bucket; each bucket's system sees the full sky grid and its own
-        # amplitudes, picked out of the list and embedded back by `E`.
+        # Joint system. Each bucket's system sees the full sky grid and its own amplitudes, picked
+        # out of the lists and embedded back by `E`.
         terms = []
-        for b, (h, te, w) in enumerate(zip(H, Te, W, strict=True)):
-            h_joint = StreamOperator.block_row([h, te])
+        streams = {'own': Te, 'shared': Tg}
+        for b, (h, w) in enumerate(zip(H, W, strict=True)):
+            h_joint = StreamOperator.block_row([h, *(streams[kind][b] for kind in kinds)])
             A_joint = (h_joint.T @ w @ h_joint).reduce()
-            pick = BlockSelectOperator(b, in_structure=amplitudes_structure)
-            E = BlockDiagonalOperator([S.T, pick])
+            picks = [BlockSelectOperator(b, in_structure=structures[kind]) for kind in kinds]
+            E = BlockDiagonalOperator([S.T, *picks])
             terms.append((E.T @ A_joint @ E).reduce())
+
+        # The Gram inverses of the amplitudes of each detector alone are per entry, those of the
+        # shared amplitudes per slot, from the Gram summed over the batches of the slot.
+        inverses = {'own': [], 'shared': []}
+        ridges = {'own': [], 'shared': []}
+        for e, layout in zip(explicit, layouts, strict=False):
+            inverses['own'].append(layout.diagonal(e.gram_inverse))
+            ridges['own'].append(None if e.ridge is None else layout.diagonal(e.ridge))
+        for bucket, s in zip(self.layout.buckets, shared, strict=False):
+            inverse, ridge = self._factor_shared(bucket, s)
+            inverses['shared'].append(inverse)
+            ridges['shared'].append(ridge)
 
         # The ridge the Gram inverses were factored with acts on the amplitudes alone, so it is
         # one term over them all, outside the per-bucket streams over the TOD.
-        ridged = [e.ridge for e in explicit if e.ridge is not None]
-        assert len(ridged) in (0, len(explicit))
-        if ridged:
-            ridges = [layout.diagonal(r) for r, layout in zip(ridged, layouts, strict=True)]
-            amplitudes = BlockSelectOperator(1, in_structure=terms[0].in_structure)
-            terms.append((amplitudes.T @ BlockDiagonalOperator(ridges) @ amplitudes).reduce())
+        for kind in kinds:
+            ridged = ridges[kind]
+            assert all(r is None for r in ridged) or all(r is not None for r in ridged)
+            if ridged[0] is not None:
+                amplitudes = BlockSelectOperator(at[kind], in_structure=terms[0].in_structure)
+                terms.append((amplitudes.T @ BlockDiagonalOperator(ridged) @ amplitudes).reduce())
 
-        rhs = [S(acc.map_rhs), [bm.amplitude_rhs for bm in acc.buckets]]
-        M = BlockDiagonalOperator([M, Ge])
+        rhs = [
+            S(acc.map_rhs),
+            *(
+                [bm.amplitude_rhs if kind == 'own' else bm.shared_rhs for bm in acc.buckets]
+                for kind in kinds
+            ),
+        ]
+        M = BlockDiagonalOperator([M, *(inverses[kind] for kind in kinds)])
         A = AdditionOperator(terms, sequential=True)
         return _MapMakingSystem(A, rhs, M, has_amplitudes=True)
+
+    def _shared_stream(
+        self, bucket: Bucket, layout: StreamLayout, operator: TemplateOperator
+    ) -> StreamOperator:
+        """The templates with amplitudes shared by detectors, from the amplitudes of each slot.
+
+        The entries of a slot, its detector batches, see its amplitudes alone: of the stack
+        `(n_slots, ...)` every entry reads its own slot's, so that their transpose adds the
+        batches' projections up into the slot's amplitudes.
+        """
+        slots = jnp.arange(bucket.n_entries) // bucket.n_batches
+        structure = self._slot_structure(bucket, operator)
+
+        def select(slot):
+            return BlockDiagonalOperator(
+                {name: IndexOperator(slot, in_structure=s) for name, s in structure.items()}
+            )
+
+        return layout.column(operator @ jax.vmap(select)(slots))
+
+    @staticmethod
+    def _slot_structure(
+        bucket: Bucket, operator: TemplateOperator
+    ) -> dict[str, jax.ShapeDtypeStruct]:
+        """The amplitudes of `operator` for every slot of `bucket`: its own, stacked over slots."""
+        return {
+            name: jax.ShapeDtypeStruct((bucket.n_slots, *s.shape), s.dtype)
+            for name, s in operator.in_structure.items()
+        }
+
+    def _factor_shared(
+        self, bucket: Bucket, shared: SharedTemplates
+    ) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
+        """The inverse of the Gram of the shared amplitudes of each slot, and the ridge added.
+
+        A slot's Gram is the sum of those of its detector batches.
+        """
+        assert self.config.templates is not None  # shared templates exist
+        regularization = self.config.templates.regularization
+        gram = self._sum_batches(shared.gram, bucket)
+        inverse, ridge = jax.vmap(partial(factor, regularization=regularization))(gram)
+        structure = self._slot_structure(bucket, shared.operator)
+        replicated = NamedSharding(self.mesh, P())
+        inverse, ridge = jax.jit(lambda x: x, out_shardings=replicated)((inverse, ridge))
+        return (
+            _PerSlotOperator(inverse, in_structure=structure),
+            None if ridge is None else _PerSlotOperator(ridge, in_structure=structure),
+        )
 
     def _deflate(self, system: _MapMakingSystem, config: TwoLevelConfig) -> _MapMakingSystem:
         """Replaces the system's preconditioner by a two-level one deflating some of its modes."""
@@ -705,8 +797,23 @@ class MultiObservationMapMaker[T]:
             batched = self._merge_leading_axes(batched, 3)
             shared = self._merge_leading_axes(shared, 2)
             stacked = eqx.combine(batched, shared)
-        model, templates, amp_rhs = stacked
-        return hits, rhs, _BucketModel(model=model, templates=templates, amplitude_rhs=amp_rhs)
+        model, templates, (amp_rhs, shared_rhs) = stacked
+        if shared_rhs is not None:
+            # the detector batches of a slot each project onto the amplitudes they share
+            shared_rhs = self._sum_batches(shared_rhs, bucket)
+        return hits, rhs, _BucketModel(model, templates, amp_rhs, shared_rhs)
+
+    def _sum_batches(self, tree: PyTree[Array], bucket: Bucket) -> PyTree[Array]:
+        """The sum of every array of `tree` over the detector batches of each slot.
+
+        The arrays lead with the entries, `bucket.n_batches` consecutive ones to a slot.
+        """
+        shape = (bucket.n_slots, bucket.n_batches)
+        total = jax.jit(
+            partial(jax.tree.map, lambda x: x.reshape(*shape, *x.shape[1:]).sum(axis=1)),
+            out_shardings=self.sharding,
+        )
+        return total(tree)
 
     @cached_property
     def _prefetches_reads(self) -> bool:
@@ -865,15 +972,18 @@ class MultiObservationMapMaker[T]:
                 else:
                     rhs_i = obs.rhs_operator(tod)
                 carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
-                return carry, (obs, None, None)
+                return carry, (obs, None, (None, None))
 
             # Templates require config.binned=True, so fill_gaps never applies here.
             templates, wd = ObservationTemplates.create(data, config, obs, tod, temperature)
-            explicit = templates.explicit
             rhs_i = obs.H.T(wd)
-            amp_i = explicit.operator.T(wd) if explicit is not None else None
+            amp_i = shared_i = None
+            if templates.explicit is not None:
+                amp_i = templates.explicit.operator.T(wd)
+            if templates.shared is not None:
+                shared_i = templates.shared.operator.T(wd)
             carry = (hits_acc + hits_i, furax.tree.add(rhs_acc, rhs_i))
-            return carry, (obs, templates, amp_i)
+            return carry, (obs, templates, (amp_i, shared_i))
 
         return kernel
 
@@ -1631,6 +1741,19 @@ class PommeMapMaker(MapMaker):
             output['proj_map'] = proj_map
 
         return output
+
+
+@symmetric
+class _PerSlotOperator(AbstractLinearOperator):
+    """A symmetric operator of its own for each slot of a leading axis: `x[s] -> operator[s](x[s])`.
+
+    `operator` is a stack of operators over the slots, as the stream operators take them.
+    """
+
+    operator: AbstractLinearOperator
+
+    def mv(self, x: PyTree[Array]) -> PyTree[Array]:
+        return jax.vmap(lambda operator, v: operator(v))(self.operator, x)
 
 
 class _IQUModulationOperator(AbstractLinearOperator):

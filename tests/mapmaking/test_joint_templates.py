@@ -34,6 +34,8 @@ from furax.mapmaking.config import (
     WeightingMode,
 )
 from furax.mapmaking.mapmaker import MultiObservationMapMaker
+from furax.mapmaking.templates import Template
+from furax.mapmaking.templates.bases import OffsetBasis
 from tests.mapmaking.helpers import FakeLazyGroundObservation, FakeLazyObservation
 
 
@@ -226,6 +228,32 @@ def test_detector_batches_give_the_same_result(observations, templates, demodula
             got,
             whole.template_amplitudes,
         )
+
+
+def test_amplitudes_shared_by_the_detectors_are_the_same_in_detector_batches(monkeypatch):
+    # A common mode, one offset per block of 64 samples, seen by every detector. Its amplitudes
+    # belong to the observation, whatever the batches its detectors are processed in.
+    def common_mode(_config, _data, tod_format, **_):
+        basis = OffsetBasis(64, tod_format.n_samples, tod_format.dtype)
+        return {'common': Template(basis, tod_format, per=())}, {}
+
+    monkeypatch.setattr('furax.mapmaking._model.build_templates', common_mode)
+    # the configuration only has to enable templates: the builder above makes them
+    templates = TemplatesConfig(polynomial=PolynomialConfig(), regularization=1e-3)
+    cfg = _config(templates)
+    results = [
+        MultiObservationMapMaker(_ground_obs(n_dets=7), config=replace(cfg, detector_batch_size=b))
+        for b in (0, 3)
+    ]
+    whole, batched = [maker.run() for maker in results]
+    amplitudes = whole.template_amplitudes['common']
+    assert amplitudes.shape == (2, 1024 // 64)  # (obs, block)
+    assert jnp.all(jnp.isfinite(amplitudes)) and jnp.max(jnp.abs(amplitudes)) > 0
+    scale = jnp.max(jnp.abs(whole.map.data))
+    assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
+    assert_allclose(
+        batched.template_amplitudes['common'], amplitudes, atol=1e-4 * jnp.max(jnp.abs(amplitudes))
+    )
 
 
 @pytest.mark.parametrize(('batch', 'n_buffered'), [(0, 8), (64, 8), (3, 9)])

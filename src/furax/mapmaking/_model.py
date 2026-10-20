@@ -25,7 +25,7 @@ from .config import (
 )
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .templates import TemplateOperator, build_templates, required_reader_fields
-from .templates.gram import factor, template_gram
+from .templates.gram import BlockGram, factor, template_gram
 from .templates.pomme import PommeProjectionOperator
 from .weight import NestedWeightOperator, WeightOperator
 
@@ -344,18 +344,51 @@ class TemplateBundle:
 
 @register_dataclass
 @dataclass
+class SharedTemplates:
+    r"""Templates whose amplitudes the detectors share, over one batch of an observation's detectors.
+
+    Such amplitudes are common to the batches of an observation, so no batch can factor their Gram
+    alone: each holds its share $T^\top W T$ of it, the observation's Gram being their sum.
+    """
+
+    operator: TemplateOperator
+    gram: BlockGram
+    """The Gram of this batch, assembled but not factored."""
+
+    @classmethod
+    def create(
+        cls,
+        operator: TemplateOperator,
+        weight: AbstractLinearOperator,
+        config: TemplatesConfig,
+        *,
+        pomme_tau: int | None = None,
+    ) -> Self:
+        """Pair a template operator with its Gram under a diagonal weight, as for [`TemplateBundle`][]."""
+        gram = template_gram(
+            operator, weight, pomme_tau=pomme_tau, batch_size=config.gram_batch_size
+        )
+        return cls(operator, gram)
+
+
+@register_dataclass
+@dataclass
 class ObservationTemplates:
     """One observation's templates, stackable across observations via ``jax.lax.scan``.
 
     Active templates are partitioned by their ``explicit`` config flag when built, because the two
-    kinds enter the map-making system in different places.
+    kinds enter the map-making system in different places. The explicit ones further split by who
+    sees their amplitudes: each detector alone, or detectors in common.
     """
 
     explicit: TemplateBundle | None
-    """Templates whose amplitudes are solved jointly with the map."""
+    """Explicit templates whose amplitudes are each detector's own, solved jointly with the map."""
 
     implicit: TemplateBundle | None
     """Templates whose amplitudes are marginalised over."""
+
+    shared: SharedTemplates | None = None
+    """Explicit templates whose amplitudes are shared by detectors, solved jointly with the map."""
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
@@ -397,17 +430,27 @@ class ObservationTemplates:
 
         implicit = None
         if implicit_templates:
+            if not all(template.per_detector for template in implicit_templates.values()):
+                raise NotImplementedError(
+                    'implicit templates need amplitudes of each detector alone: those shared '
+                    'by detectors would couple the batches of an observation'
+                )
             op = TemplateOperator(implicit_templates)
             implicit = TemplateBundle.create(op, model.W, tcfg, pomme_tau=pomme_tau)
             ginv = implicit.gram_inverse
             wd = wd - Weff(op(ginv(op.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
 
-        explicit = None
-        if explicit_templates:
-            op = TemplateOperator(explicit_templates)
+        explicit = shared = None
+        own = {n: t for n, t in explicit_templates.items() if t.per_detector}
+        common = {n: t for n, t in explicit_templates.items() if not t.per_detector}
+        if own:
+            op = TemplateOperator(own)
             explicit = TemplateBundle.create(op, model.W, tcfg, pomme_tau=pomme_tau)
+        if common:
+            op = TemplateOperator(common)
+            shared = SharedTemplates.create(op, model.W, tcfg, pomme_tau=pomme_tau)
 
-        return cls(explicit=explicit, implicit=implicit), wd
+        return cls(explicit=explicit, implicit=implicit, shared=shared), wd
 
 
 def restrict_streams(

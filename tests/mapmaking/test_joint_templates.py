@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
+from polars.testing import assert_frame_equal
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
@@ -231,6 +232,8 @@ def test_detector_batches_give_the_same_result(observations, templates, demodula
     whole, batched = [maker.run() for maker in makers]
     scale = jnp.max(jnp.abs(whole.map.data))
     assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
+    # the same detectors at the same places, whatever the padding of the batches
+    assert_frame_equal(batched.detectors, whole.detectors, rel_tol=1e-10)
     if whole.template_amplitudes is not None:
         # batching pads 2 more detectors, whose amplitudes trail the real ones; the amplitudes
         # are (obs, stream, det, ...) on a demodulated TOD, (obs, det, ...) otherwise

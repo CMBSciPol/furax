@@ -5,10 +5,12 @@ import json
 import healpy as hp
 import jax.numpy as jnp
 import numpy as np
+import polars as pl
 import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
 from numpy.testing import assert_array_almost_equal, assert_array_equal
+from polars.testing import assert_frame_equal
 
 from furax.mapmaking.results import MapMakingResults
 from furax.obs.landscapes import (
@@ -50,7 +52,29 @@ def healpix_results_with_extras(healpix_results) -> MapMakingResults:
     return dataclasses.replace(
         healpix_results,
         solver_stats={'num_steps': 7, 'converged': True, 'residual': 1e-8},
-        noise_fits=jnp.array(rng.standard_normal(NPIX)),
+        # all-null columns, as from a run that read no flags, must keep their type
+        observations=pl.DataFrame(
+            {
+                'name': ['obs0', 'obs1'],
+                'loaded': [True, False],
+                'n_detectors': [2, 0],
+                'n_samples': [100, 0],
+                'valid_sample_fraction': [None, None],
+                'load_seconds': [1.5, None],
+                'error': [None, None],
+            },
+            schema_overrides={'valid_sample_fraction': pl.Float64, 'error': pl.String},
+        ),
+        detectors=pl.DataFrame(
+            {
+                'observation': [0, 0],
+                'detector': [0, 1],
+                'name': ['a', 'b'],
+                'xi': [0.1, None],
+                'sigma_q': rng.standard_normal(2),
+            }
+        ),
+        provenance={'furax': {'version': '1.0'}, 'command': ['furax-so-map']},
     )
 
 
@@ -247,14 +271,18 @@ def test_healpix_load_roundtrip(healpix_results_with_extras, tmp_path):
     assert_array_equal(icov, icov.transpose(1, 0, 2))  # symmetric
 
     assert loaded.solver_stats == {'num_steps': 7, 'converged': True, 'residual': 1e-8}
-    assert_array_almost_equal(loaded.noise_fits, r.noise_fits)
+    assert loaded.provenance == r.provenance
+    assert_frame_equal(loaded.observations, r.observations)
+    assert_frame_equal(loaded.detectors, r.detectors)
 
 
 def test_healpix_load_missing_optionals_are_none(healpix_results, tmp_path):
     healpix_results.save(tmp_path)
     loaded = MapMakingResults.load(tmp_path, healpix_results.landscape)
     assert loaded.solver_stats is None
-    assert loaded.noise_fits is None
+    assert loaded.observations is None
+    assert loaded.detectors is None
+    assert loaded.provenance is None
 
 
 def test_wcs_load_roundtrip(car_results, tmp_path):

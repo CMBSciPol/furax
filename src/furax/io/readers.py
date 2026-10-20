@@ -76,8 +76,10 @@ class AbstractReader(ABC):
         ``failed_indices`` is a set: ``read`` runs inside ``io_callback``, which JAX may dispatch
         on concurrent host threads, so two threads can record the same failing index at once.
         ``set.add`` is idempotent, sidestepping the check-then-append race a list would need.
+        ``errors`` keeps, for each index that failed in this pass, the exception it raised.
         """
         self.failed_indices = set(self.known_failures)
+        self.errors: dict[int, str] = {}
 
     @staticmethod
     def _normalize_args_keywords(
@@ -215,8 +217,9 @@ class AbstractReader(ABC):
             data = self._read_data_impure(
                 *self.args[data_index], **self.keywords[data_index], **self.common_keywords
             )
-        except Exception:
+        except Exception as error:
             self.failed_indices.add(data_index)
+            self.errors[data_index] = f'{type(error).__name__}: {error}'
             logger.exception(
                 'read item %d: failed after %.1fs; substituting filler data',
                 data_index,

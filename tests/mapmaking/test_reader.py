@@ -4,6 +4,7 @@ import pytest
 from numpy.testing import assert_array_equal
 
 from furax.mapmaking import ObservationReader
+from furax.mapmaking._reader import ObservationRecord
 from tests.mapmaking.helpers import FakeLazyObservation, FakeObservation
 
 
@@ -60,3 +61,30 @@ def test_sample_data_reaches_a_cpu_device_without_a_copy(demodulated: bool):
     (tod,) = jax.tree.leaves(data['sample_data'])
     on_device = jax.device_put(tod[None], jax.devices('cpu')[0], may_alias=True)
     assert on_device.unsafe_buffer_pointer() == tod.ctypes.data
+
+
+def test_records_every_item_of_a_repeated_observation():
+    observation = FakeLazyObservation(n_dets=2, n_samples=500)
+    reader = ObservationReader.from_observations(
+        [observation] * 2, requested_fields=['sample_data']
+    )
+    for item in range(2):
+        reader.read_host(item)
+    assert sorted(reader.records) == [0, 1]
+    reader.reset_failures()
+    assert reader.records == {}
+
+
+def test_failure_to_record_does_not_fail_the_read(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise ValueError('cannot record')
+
+    monkeypatch.setattr(ObservationRecord, 'from_fields', fail)
+    observations = [FakeLazyObservation(n_dets=2, n_samples=500)]
+    reader = ObservationReader.from_observations(observations, requested_fields=['sample_data'])
+    _, _, valid = reader.read_host(0)
+    assert valid
+    assert not reader.failed_indices
+    record = reader.records[0]
+    assert record.loaded
+    assert record.error == 'ValueError: cannot record'

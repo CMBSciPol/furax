@@ -53,6 +53,7 @@ mapmaking = [
     'jax-cadre>=0.1.2',
     'matplotlib>=3.8.4',
     'pixell>=0.31.3',
+    'polars>=2.0.0',
     'pyyaml>=6.0.3',
     'typedload>=2.41',
 ]

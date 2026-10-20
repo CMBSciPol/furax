@@ -1,7 +1,8 @@
 import logging
 import mmap
+import time
 from collections.abc import Collection, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from math import prod
 from typing import Any, Self
 
@@ -26,6 +27,59 @@ from ._observation import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ObservationRecord:
+    """What was read of one observation.
+
+    The detectors are listed in the order of the detector axis of the data read: detector `j` is
+    entry `j` along that axis, and the entries past `n_detectors` are padding.
+    """
+
+    name: str
+    """The observation's name."""
+    detectors: list[str]
+    """The names of the detectors read, in the order of the detector axis."""
+    quaternions: np.ndarray | None = None
+    """The detector quaternions, `(n_detectors, 4)`; `None` if they were not read."""
+    n_samples: int = 0
+    """The number of samples read."""
+    valid_sample_fraction: float | None = None
+    """The fraction of the samples not flagged; `None` if the flags were not read."""
+    load_seconds: float | None = None
+    """The time taken to load the observation; `None` if it was not read."""
+    loaded: bool = True
+    """Whether the observation was read; `False` for one that failed to load."""
+
+    error: str | None = None
+    """Why the observation was not read, the exception its shape probe or its load raised; `None`
+    if it was read, or if no exception is known."""
+
+    @property
+    def n_detectors(self) -> int:
+        return len(self.detectors)
+
+    @classmethod
+    def from_fields(
+        cls, observation: AbstractObservation[Any], fields: dict[str, Any], load_seconds: float
+    ) -> Self:
+        """The record of an observation read, from the fields read of it."""
+        quaternions = fields.get(ReaderField.DETECTOR_QUATERNIONS)
+        masks = fields.get(ReaderField.VALID_SAMPLE_MASKS)
+        return cls(
+            name=observation.name,
+            detectors=list(observation.detectors),
+            quaternions=None if quaternions is None else np.array(quaternions, dtype=np.float64),
+            n_samples=observation.n_samples,
+            valid_sample_fraction=None if masks is None else float(np.mean(masks)),
+            load_seconds=load_seconds,
+        )
+
+    @classmethod
+    def missing(cls, name: str, error: str | None = None) -> Self:
+        """The record of an observation that was not read, for the reason `error`."""
+        return cls(name, [], loaded=False, error=error)
 
 
 @register_static
@@ -56,6 +110,8 @@ class ObservationReader[T](AbstractReader):
         stokes: Stokes components of the demodulated TOD; `None` for detector timestreams.
         dtype: Floating-point dtype every floating-point field is cast to.
         sample_dtype: Floating-point dtype the sample data is cast to instead.
+        records: What was read of each item read so far, keyed by its index: its detectors, in
+            the order of the detector axis of the data, and a summary.
     """
 
     def __init__(
@@ -109,6 +165,9 @@ class ObservationReader[T](AbstractReader):
             known_failures=known_failures,
             **keywords,
         )
+        self.records: dict[int, ObservationRecord] = {}
+        # the items are found back from their observation, the only argument of a read
+        self._item_of_observation = {id(args[0]): i for i, args in enumerate(self.args)}
 
     @classmethod
     def from_observations(
@@ -451,9 +510,15 @@ class ObservationReader[T](AbstractReader):
     def _read_data_impure(
         self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]
     ) -> PyTree[Array]:
+        start = time.perf_counter()
         data = observation.get_data(data_field_names)
         field_reader = self._get_data_field_readers()
-        return {field: field_reader[field](data) for field in data_field_names}
+        fields = {field: field_reader[field](data) for field in data_field_names}
+        # Items are read concurrently, each recording under its own key.
+        self.records[self._item_of_observation[id(observation)]] = ObservationRecord.from_fields(
+            data, fields, time.perf_counter() - start
+        )
+        return fields
 
 
 def _aligned_zeros(shape: tuple[int, ...], dtype: DTypeLike) -> np.ndarray:

@@ -16,6 +16,7 @@ import lineax
 import numpy as np
 import pixell.enmap
 import pixell.utils
+import polars as pl
 from astropy.io import fits
 from astropy.wcs import WCS
 from fastquat import Quaternion
@@ -47,6 +48,7 @@ from furax.core import (
 )
 from furax.interfaces.lineax import as_lineax_operator
 from furax.linalg._lanczos import LanczosWhich
+from furax.math.coords import XiEtaAngles
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
@@ -69,7 +71,8 @@ from ._observation import (
     ObservationBufferShape,
     ReaderField,
 )
-from ._reader import ObservationReader, slice_detectors
+from ._provenance import provenance, utc_now
+from ._reader import ObservationReader, ObservationRecord, slice_detectors
 from .config import (
     GapTreatment,
     InjectionMode,
@@ -163,6 +166,7 @@ class MultiObservationMapMaker[T]:
         model_fields = ObservationModel.required_reader_fields(self.config)
         template_fields = ObservationTemplates.required_reader_fields(self.config)
         self.reader_fields = model_fields | rhs_fields | template_fields
+        self._probe_errors: dict[int, str] = {}  # the probes of this process that raised
         self.readers = self.get_readers(self.reader_fields)
 
     def _load_sky(self, *modes: InjectionMode) -> StokesType | None:
@@ -263,8 +267,9 @@ class MultiObservationMapMaker[T]:
         for i in range(jax.process_index(), n_obs, n_proc):
             try:
                 rows[i, :3] = self.observations[i].probe_shape(need_intervals)
-            except Exception:
+            except Exception as error:
                 self.logger.exception('probe of observation %d failed', i)
+                self._probe_errors[i] = f'{type(error).__name__}: {error}'
                 rows[i] = (1, 1, 0, 1)
         # Each observation is probed by exactly one rank, so summing the tables merges them.
         rows = np.asarray(mhu.process_allgather(rows)).reshape(n_proc, n_obs, 4).sum(axis=0)
@@ -403,6 +408,7 @@ class MultiObservationMapMaker[T]:
         """Computes the mapmaker results (maps and other products)."""
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
         rank = jax.process_index()
+        started = utc_now()
         self._log_layout()
 
         with jax.set_mesh(self.mesh):
@@ -414,6 +420,10 @@ class MultiObservationMapMaker[T]:
             failed_observations = self._collect_failed_observations()
             if failed_observations:
                 logger_info(f'{len(failed_observations)} observation(s) failed and were excluded')
+            records = self._collect_observation_records(failed_observations)
+            noise_parameters = None
+            if self.config.weighting.mode != WeightingMode.IDENTITY:
+                noise_parameters = self._collect_noise_parameters(acc)
 
             # Per-bucket stream operators. Everything below sums over the buckets: each is a
             # stream of its own length, so the sums stay plain additions of stream operators.
@@ -484,6 +494,7 @@ class MultiObservationMapMaker[T]:
             )
             logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
 
+            solver_stats = _solver_stats(result, self.config.solver.options)
             injected_estimate = None
             if system.response_b is not None:
                 # the same normal system, with the simulated sky as the right-hand side
@@ -497,6 +508,7 @@ class MultiObservationMapMaker[T]:
                 logger_info(
                     f'Finished the solve of the injected sky ({int(response.num_steps)} it)'
                 )
+                solver_stats['injected'] = _solver_stats(response, self.config.solver.options)
                 injected_estimate = (
                     response.solution if not system.has_amplitudes else response.solution[0]
                 )
@@ -533,11 +545,16 @@ class MultiObservationMapMaker[T]:
             map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)
             icov=icov,
             hit_map=hit_map,
-            solver_stats={'num_steps': int(result.num_steps)},
+            solver_stats=solver_stats,
             landscape=self.landscape,
-            failed_observations=failed_observations,
             template_amplitudes=dict(amplitudes) if amplitudes is not None else None,
             injected_map=None if injected_estimate is None else S.T(injected_estimate),
+            observations=_observation_table(records),
+            # the noise model covers the streams of the model's TOD, not all those read
+            detectors=_detector_table(
+                records, noise_parameters, acc.buckets[0].model.tod_format.stokes
+            ),
+            provenance=provenance(started=started),
         )
 
     def _build_system(
@@ -766,6 +783,66 @@ class MultiObservationMapMaker[T]:
         gathered = np.asarray(mhu.process_allgather(local)).reshape(-1, self.n_observations)
         failed = np.flatnonzero(gathered.any(axis=0))
         return [self.observations[int(i)].name for i in failed]
+
+    def _collect_observation_records(self, failed: Collection[str]) -> list[ObservationRecord]:
+        """What was read of every observation, in observation order, on every process.
+
+        Each observation is probed and read by one process, which holds its record, or the
+        exception that stopped it; they are pickled and all-gathered. An observation that failed,
+        or holds no record, is marked as not read.
+        """
+        local: dict[int, ObservationRecord] = {}
+        for i, error in self._probe_errors.items():
+            local[i] = ObservationRecord.missing(
+                self.observations[i].name, f'probe failed: {error}'
+            )
+        for bucket, reader in zip(self.layout.buckets, self.readers, strict=True):
+            for item, record in reader.records.items():
+                local[int(bucket.observations[item])] = record
+            for item, error in reader.errors.items():
+                i = int(bucket.observations[item])
+                local[i] = ObservationRecord.missing(
+                    self.observations[i].name, f'load failed: {error}'
+                )
+        payload = np.frombuffer(pickle.dumps(local), dtype=np.uint8)
+        # every process sends a buffer of the same length, the longest
+        n_proc = jax.process_count()
+        sizes = np.asarray(mhu.process_allgather(np.array([payload.size]))).reshape(n_proc)
+        padded = np.zeros(int(sizes.max()), dtype=np.uint8)
+        padded[: payload.size] = payload
+        buffers = np.asarray(mhu.process_allgather(padded)).reshape(n_proc, -1)
+        records: dict[int, ObservationRecord] = {}
+        for buffer, size in zip(buffers, sizes, strict=True):
+            records |= pickle.loads(buffer[:size].tobytes())
+
+        failed = set(failed)
+
+        def record(i: int, name: str) -> ObservationRecord:
+            found = records.get(i)
+            if found is None or (name in failed and found.loaded):
+                return ObservationRecord.missing(name)
+            return found
+
+        return [record(i, obs.name) for i, obs in enumerate(self.observations)]
+
+    def _collect_noise_parameters(self, acc: _AccumulatedModel) -> dict[str, np.ndarray]:
+        """The noise model parameters of every detector slot, in observation order.
+
+        Each parameter is `(n_observations, [stream,] detector)`, its detector axis padded.
+        """
+        per_bucket = []
+        for bucket, bm in zip(self.layout.buckets, acc.buckets, strict=True):
+            leaves, _ = jax.tree_util.tree_flatten_with_path(self._gather(bm.model.noise_model))
+            per_bucket.append(
+                {
+                    _parameter_name(path): _merge_last_detector_axis(bucket, np.asarray(leaf))
+                    for path, leaf in leaves
+                }
+            )
+        return {
+            name: self.layout.to_observation_order([p[name] for p in per_bucket])
+            for name in per_bucket[0]
+        }
 
     def build_model_and_accumulate(self) -> _AccumulatedModel:
         """Build the model and accumulate the hit map and map RHS in one pass over the data.
@@ -1932,3 +2009,96 @@ def _merge_detector_batches(
         per_entry = np.moveaxis(np.asarray(a), axis, 1)
         out[name] = np.moveaxis(bucket.merge_detector_batches(per_entry), 1, axis)
     return out
+
+
+def _merge_last_detector_axis(bucket: Bucket, per_entry: np.ndarray) -> np.ndarray:
+    """Per-slot values of `bucket` from per-entry ones whose detector axis is last."""
+    merged = bucket.merge_detector_batches(np.moveaxis(per_entry, -1, 1))
+    return np.moveaxis(merged, 1, -1)
+
+
+def _parameter_name(path: tuple[Any, ...]) -> str:
+    """The name of a leaf of a noise model, from its path: `sigma`, or `<key>/sigma` if nested."""
+    return '/'.join(str(getattr(k, 'name', getattr(k, 'key', k))) for k in path)
+
+
+def _solver_stats(result: furax.linalg.CGResult, options: dict[str, Any]) -> dict[str, Any]:
+    """The statistics of a CG solve: its convergence, residuals and options, as JSON values."""
+    n_steps = int(result.num_steps)
+    # residuals[0] is the initial residual, residuals[i + 1] the one after step i
+    residuals = np.asarray(result.residuals)[: n_steps + 1]
+    return {
+        'num_steps': n_steps,
+        'converged': bool(result.converged),
+        'residuals': residuals.tolist(),
+        'options': options,
+    }
+
+
+def _observation_table(records: Sequence[ObservationRecord]) -> pl.DataFrame:
+    """One row per observation, from what was read of it."""
+    return pl.DataFrame(
+        {
+            'name': [r.name for r in records],
+            'loaded': [r.loaded for r in records],
+            'n_detectors': [r.n_detectors for r in records],
+            'n_samples': [r.n_samples for r in records],
+            'valid_sample_fraction': [r.valid_sample_fraction for r in records],
+            'load_seconds': [r.load_seconds for r in records],
+            'error': [r.error for r in records],
+        },
+        schema={
+            'name': pl.String,
+            'loaded': pl.Boolean,
+            'n_detectors': pl.Int64,
+            'n_samples': pl.Int64,
+            'valid_sample_fraction': pl.Float64,
+            'load_seconds': pl.Float64,
+            'error': pl.String,
+        },
+    )
+
+
+def _detector_table(
+    records: Sequence[ObservationRecord],
+    noise_parameters: dict[str, np.ndarray] | None,
+    stokes: str | None,
+) -> pl.DataFrame:
+    """One row per detector read, with its indices along the axes of the per-detector products.
+
+    Args:
+        records: What was read of each observation, in observation order.
+        noise_parameters: Each noise parameter, `(n_observations, [stream,] detector slot)`.
+        stokes: The streams of a demodulated TOD, which suffix the parameters; `None` otherwise.
+    """
+    read = [(i, r) for i, r in enumerate(records) if r.n_detectors]
+
+    def concat(parts: list[np.ndarray], dtype: DTypeLike) -> np.ndarray:
+        return np.concatenate(parts) if parts else np.zeros(0, dtype)
+
+    columns: dict[str, Any] = {
+        'observation': concat([np.full(r.n_detectors, i) for i, r in read], np.int64),
+        'detector': concat([np.arange(r.n_detectors) for _, r in read], np.int64),
+        'name': [name for _, r in read for name in r.detectors],
+    }
+    coordinates = [_focal_plane_coordinates(r) for _, r in read]
+    for k, axis in enumerate(('xi', 'eta', 'gamma')):
+        values = concat([c[k] for c in coordinates], np.float64)
+        columns[axis] = pl.Series(axis, values).fill_nan(None)  # null where not read
+    for name, values in (noise_parameters or {}).items():
+        if values.ndim == 2:
+            columns[name] = concat([values[i, : r.n_detectors] for i, r in read], values.dtype)
+            continue
+        assert stokes is not None and values.shape[1] == len(stokes)  # one row per stream
+        for k, stream in enumerate(stokes.lower()):
+            per_stream = [values[i, k, : r.n_detectors] for i, r in read]
+            columns[f'{name}_{stream}'] = concat(per_stream, values.dtype)
+    return pl.DataFrame(columns)
+
+
+def _focal_plane_coordinates(record: ObservationRecord) -> tuple[np.ndarray, ...]:
+    """The detectors' `(xi, eta, gamma)` from their quaternions, NaN if they were not read."""
+    if record.quaternions is None:
+        return tuple(np.full(record.n_detectors, np.nan) for _ in range(3))
+    angles = XiEtaAngles.from_quaternion(Quaternion.from_array(jnp.asarray(record.quaternions)))
+    return tuple(np.asarray(a, dtype=np.float64) for a in angles)

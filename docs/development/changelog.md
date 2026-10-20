@@ -23,9 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TemplateFit`: the weighted least-squares fit of templates to a TOD (#358)
 - Templates can be fitted under a correlated (Toeplitz) weight, with `gaps.treatment=inner_mask` (#361)
 - `MapMakingConfig.injection` (`InjectionConfig`) scans a simulated sky into the data of a run, and `MapMakingResults.injected_map` holds the response of the run to it (#362)
+- Multi-observation mapmaking runs now save the detectors read of each observation, their noise parameters, the CG residuals and the run's provenance, the tables as polars data frames (#366)
 
 ### Changed
 
+- **Breaking:** `MapMakingResults.noise_fits` and `noise_fits.npy` are replaced by the noise parameter columns of `MapMakingResults.detectors` (#366)
+- **Breaking:** `failed_observations.txt` and `mapped_observations.txt` are no longer written; which observations were mapped, and why the others failed, is in `observations.csv` (#366)
 - The `furax-so-*` commands no longer print sotodlib's INFO messages or metadata loader errors unless `--loglevel debug` (#364)
 - `SymmetricBandToeplitzOperator` acts on any pytree, block-diagonally over its leaves (#359)
 - **Breaking:** `Basis` and its flavours move from `furax.mapmaking.templates` to `furax.mapmaking.templates.bases` (#334, #343)

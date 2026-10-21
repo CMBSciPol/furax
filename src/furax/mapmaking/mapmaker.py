@@ -531,23 +531,21 @@ class MultiObservationMapMaker[T]:
                 # array is complete on every process; then back to observation order.
                 bundles = [bm.templates.explicit for bm in acc.buckets if bm.templates]
                 operators = [bundle.operator for bundle in bundles if bundle is not None]
-                gathered = []
+                amplitudes = {}
                 if operators:
                     own, *blocks = blocks
-                    gathered.append(
-                        [
-                            _merge_detector_batches(bucket, self._gather(a), operator)
-                            for bucket, a, operator in zip(
-                                self.layout.buckets, own, operators, strict=True
-                            )
-                        ]
-                    )
-                for shared in blocks:  # one set per slot, nothing to merge
-                    gathered.append([self._gather(a) for a in shared])
-                amplitudes = {}
-                for per_bucket in gathered:
+                    per_bucket = [self._gather(a) for a in own]
+                    for name in per_bucket[0]:
+                        # the detector axis follows the stream axis, if any (see `Template`),
+                        # after the axis of entries
+                        axis = 1 + operators[0].templates[name].per.index('det')
+                        amplitudes[name] = self.layout.to_observation_order(
+                            [a[name] for a in per_bucket], detector_axis=axis
+                        )
+                for shared in blocks:  # one set per slot, no detector axis
                     amplitudes |= jax.tree.map(
-                        lambda *leaves: self.layout.to_observation_order(leaves), *per_bucket
+                        lambda *leaves: self.layout.to_observation_order(leaves),
+                        *[self._gather(a) for a in shared],
                     )
 
         return MapMakingResults(
@@ -814,16 +812,11 @@ class MultiObservationMapMaker[T]:
         Each parameter is `(n_observations, [stream,] detector)`, its detector axis padded.
         """
         per_bucket = []
-        for bucket, bm in zip(self.layout.buckets, acc.buckets, strict=True):
+        for bm in acc.buckets:
             leaves, _ = jax.tree_util.tree_flatten_with_path(self._gather(bm.model.noise_model))
-            per_bucket.append(
-                {
-                    _parameter_name(path): _merge_last_detector_axis(bucket, np.asarray(leaf))
-                    for path, leaf in leaves
-                }
-            )
+            per_bucket.append({_parameter_name(path): leaf for path, leaf in leaves})
         return {
-            name: self.layout.to_observation_order([p[name] for p in per_bucket])
+            name: self.layout.to_observation_order([p[name] for p in per_bucket], detector_axis=-1)
             for name in per_bucket[0]
         }
 
@@ -2000,28 +1993,6 @@ def _depends_on_argument(
             dependent.update(eqn.outvars)
     flags = [not isinstance(v, JaxprLiteral) and v in dependent for v in jaxpr.outvars]
     return jax.tree.unflatten(jax.tree.structure(out_shape), flags), out_shape
-
-
-def _merge_detector_batches(
-    bucket: Bucket, amplitudes: dict[str, Array], operator: TemplateOperator
-) -> dict[str, np.ndarray]:
-    """Each template's amplitudes per slot of `bucket`, from those of its detector batches.
-
-    A template's amplitudes carry its detector axis after its stream axis, if it has one (see
-    [`Template`][furax.mapmaking.templates.Template]).
-    """
-    out = {}
-    for name, a in amplitudes.items():
-        axis = 1 + operator.templates[name].per.index('det')  # after the axis of entries
-        per_entry = np.moveaxis(np.asarray(a), axis, 1)
-        out[name] = np.moveaxis(bucket.merge_detector_batches(per_entry), 1, axis)
-    return out
-
-
-def _merge_last_detector_axis(bucket: Bucket, per_entry: np.ndarray) -> np.ndarray:
-    """Per-slot values of `bucket` from per-entry ones whose detector axis is last."""
-    merged = bucket.merge_detector_batches(np.moveaxis(per_entry, -1, 1))
-    return np.moveaxis(merged, 1, -1)
 
 
 def _parameter_name(path: tuple[Any, ...]) -> str:

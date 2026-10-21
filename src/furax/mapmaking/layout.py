@@ -105,9 +105,10 @@ by observation index ([`SlotLayout.to_observation_order`][]). The result has the
                      █ data read    ░ padding to the envelope
     ```
 
-    **Back to observations.** A product computed per entry is brought back per observation: the
-    batches of each slot are merged ([`Bucket.merge_detector_batches`][]), then the empty slots
-    are dropped and the slots reordered ([`SlotLayout.to_observation_order`][]):
+    **Back to observations.** [`SlotLayout.to_observation_order`][] brings a product computed
+    per entry back per observation, given its detector axis: the batches of each slot are merged
+    ([`Bucket.merge_detector_batches`][]), then the empty slots are dropped and the slots
+    reordered:
 
     ```text
     per entry    bucket A (8, 55, ...)   bucket B (8, 55, ...)
@@ -514,25 +515,39 @@ class SlotLayout:
         return slice(start, start + n_local * n_per_device)
 
     def to_observation_order(
-        self, per_bucket: Sequence[Shaped[np.ndarray, 'slot ...']]
+        self,
+        per_bucket: Sequence[Shaped[np.ndarray, 'entry_or_slot ...']],
+        detector_axis: int | None = None,
     ) -> Shaped[np.ndarray, 'obs ...']:
-        """Reorder per-slot arrays, one per bucket, into a single per-observation array.
+        """Bring per-entry or per-slot arrays, one per bucket, back into a per-observation array.
 
         This undoes the bucketing for results the caller wants per observation, in their original
-        order, such as per-observation diagnostics.
-
-        The leading axis of each input runs over the bucket's slots; the empty slots are dropped.
-        Trailing axes may differ between buckets (each pads to its own shape), so the result is
-        padded with zeros to the largest.
+        order, such as the noise parameters or the template amplitudes. Given `detector_axis`, the
+        detector batches of each slot are first merged along it. Then the empty slots are dropped
+        and the others reordered by observation index.
 
         Args:
-            per_bucket: One array per bucket, of shape `(n_slots, ...)`.
+            per_bucket: One array per bucket, of shape `(n_entries, ...)` with a detector axis,
+                `(n_slots, ...)` without.
+            detector_axis: The detector axis of the arrays, which holds one batch of detectors per
+                entry; `None` for values per slot.
 
         Returns:
-            An array of shape `(n_observations, ...)` in observation order.
+            An array of shape `(n_observations, ...)` in observation order. Trailing axes may
+            differ between buckets, each padded to its own envelope, so they are zero-padded to
+            the largest.
         """
         if len(per_bucket) != len(self.buckets):
             raise ValueError(f'expected {len(self.buckets)} arrays, got {len(per_bucket)}')
+        if detector_axis is not None:
+            per_bucket = [
+                np.moveaxis(
+                    bucket.merge_detector_batches(np.moveaxis(a, detector_axis, 1)),
+                    1,
+                    detector_axis,
+                )
+                for bucket, a in zip(self.buckets, per_bucket, strict=True)
+            ]
         trailing = tuple(max(dims) for dims in zip(*(a.shape[1:] for a in per_bucket), strict=True))
         dtype = np.result_type(*(a.dtype for a in per_bucket))
         out = np.zeros((self.n_observations, *trailing), dtype=dtype)

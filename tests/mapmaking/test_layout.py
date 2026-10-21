@@ -222,6 +222,32 @@ def test_local_slots_tile_the_axis_by_process():
     np.testing.assert_array_equal(bucket.is_empty[blocks[1]], [False, False, True, True])
 
 
+@pytest.mark.parametrize('detector_axis', [1, 2, -1])
+@pytest.mark.parametrize('batch_size', [0, 2], ids=['one-batch', 'batches'])
+def test_to_observation_order_merges_detector_batches(detector_axis: int, batch_size: int):
+    # two buckets of different widths, with empty slots
+    shapes = [Shape(4, 10), Shape(6, 10), Shape(6, 10)]
+    buckets = (
+        Bucket.create(shapes, [1], n_devices=3, detector_batch_size=batch_size),
+        Bucket.create(shapes, [0, 2], n_devices=3, detector_batch_size=batch_size),
+    )
+    layout = SlotLayout(buckets, n_observations=3, n_devices=3)
+    rng = np.random.default_rng(0)
+    per_slot = []
+    per_entry = []
+    for bucket in buckets:
+        n_det = bucket.envelope.detector_count
+        # (slot, stream, det, mode) with the detector axis moved to `detector_axis`
+        values = np.moveaxis(rng.standard_normal((bucket.n_slots, 2, n_det, 3)), 2, detector_axis)
+        per_slot.append(values)
+        batches = np.moveaxis(values, detector_axis, 1).reshape(
+            bucket.n_entries, bucket.batch_size, *np.delete(values.shape, [0, detector_axis])
+        )
+        per_entry.append(np.moveaxis(batches, 1, detector_axis))
+    out = layout.to_observation_order(per_entry, detector_axis=detector_axis)
+    np.testing.assert_array_equal(out, layout.to_observation_order(per_slot))
+
+
 def test_scatter_restores_observation_order_and_pads_trailing_axes():
     layout = SlotLayout(
         buckets=(

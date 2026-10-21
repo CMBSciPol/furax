@@ -59,6 +59,8 @@ def healpix_results_with_extras(healpix_results) -> MapMakingResults:
                 'loaded': [True, False],
                 'n_detectors': [2, 0],
                 'n_samples': [100, 0],
+                'probed_detectors': [2, 0],
+                'probed_samples': [100, 0],
                 'valid_sample_fraction': [None, None],
                 'load_seconds': [1.5, None],
                 'error': [None, None],

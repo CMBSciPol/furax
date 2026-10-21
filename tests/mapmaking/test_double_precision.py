@@ -190,7 +190,7 @@ def test_float32_tod_accumulates_like_float64(detector_batch_size: int) -> None:
     )
     maker = MultiObservationMapMaker(observations, config=config)
     reference = MultiObservationMapMaker(observations, config=config)
-    shapes, _ = reference._probe_shapes
+    shapes = reference._probe_shapes
     reference.readers = (
         ObservationReader.from_observations(
             observations,

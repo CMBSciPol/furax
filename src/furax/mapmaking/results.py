@@ -34,6 +34,8 @@ _OBSERVATIONS_SCHEMA = {
     'loaded': pl.Boolean,
     'n_detectors': pl.Int64,
     'n_samples': pl.Int64,
+    'probed_detectors': pl.Int64,
+    'probed_samples': pl.Int64,
     'valid_sample_fraction': pl.Float64,
     'load_seconds': pl.Float64,
     'error': pl.String,
@@ -81,9 +83,11 @@ class MapMakingResults:
 
     observations: pl.DataFrame | None = None
     """One row per observation, in the order of the observation axis of the per-observation
-    products: `name`, whether it was `loaded`, `n_detectors`, `n_samples`, the
-    `valid_sample_fraction` (null if the flags were not read), `load_seconds`, and the `error`
-    that stopped an observation not loaded, its probe or its load (null if it was loaded)"""
+    products: `name`, whether it was `loaded`, the `n_detectors` and `n_samples` read, the
+    `probed_detectors` and `probed_samples` its buffers were sized from (zero if its probe
+    failed), the `valid_sample_fraction` (null if the flags were not read), `load_seconds`, and
+    the `error` that stopped an observation not loaded, its probe or its load (null if there was
+    none)"""
 
     detectors: pl.DataFrame | None = None
     r"""One row per detector read. `observation` and `detector` are its indices along the

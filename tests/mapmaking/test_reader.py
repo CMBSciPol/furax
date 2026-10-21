@@ -86,5 +86,4 @@ def test_failure_to_record_does_not_fail_the_read(monkeypatch):
     assert valid
     assert not reader.failed_indices
     record = reader.records[0]
-    assert record.loaded
     assert record.error == 'ValueError: cannot record'

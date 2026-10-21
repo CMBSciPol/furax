@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `T2PConfig.zernike_order`, `zernike_radius` and `joint_qu`: the T2P leakage can be fitted as a polarization field over the focal plane, from `zernike_couplings` (#355)
 - `PolynomialConfig.span` chooses whether a polynomial template spans each scan or the whole observation (#357)
 - `TemplateFit`: the weighted least-squares fit of templates to a TOD (#358)
+- `MapMakingConfig.injection` (`InjectionConfig`) scans a simulated sky into the data of a run, and `MapMakingResults.injected_map` holds the response of the run to it (#362)
 
 ### Changed
 

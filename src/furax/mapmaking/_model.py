@@ -59,17 +59,7 @@ class ObservationModel:
     def create(
         cls, data: Any, padding: Any, config: MapMakingConfig, landscape: StokesLandscape
     ) -> Self:
-        H = build_acquisition_operator(
-            landscape,
-            Quaternion.from_array(data[ReaderField.BORESIGHT_QUATERNIONS]),
-            Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS]),
-            data.get(ReaderField.HWP_ANGLES),
-            demodulated=config.demodulated,
-            pointing_on_the_fly=config.pointing.on_the_fly,
-            pointing_batch_samples=config.pointing.batch_samples,
-            pointing_interpolate=config.pointing.interpolation == 'bilinear',
-            dtype=config.dtype,
-        )
+        H = acquisition_operator(data, config, landscape)
         tod_format = _tod_format(H)
         M = _mask_projector(_sample_mask(data, config), tod_format=tod_format)
         noise_model, sample_rate = _noise_model(data, config, tod_format, padding=padding)
@@ -185,6 +175,23 @@ class ObservationModel:
         white = self.noise_model.to_white_noise_model()
         inv = _noise_operator(white, self.tod_format, self.sample_rate, inverse=True)
         return WeightOperator.create(inv, self.M)
+
+
+def acquisition_operator(
+    data: Any, config: MapMakingConfig, landscape: StokesLandscape
+) -> AbstractLinearOperator:
+    """The acquisition operator of an observation, from the sky of `landscape` to its TOD."""
+    return build_acquisition_operator(
+        landscape,
+        Quaternion.from_array(data[ReaderField.BORESIGHT_QUATERNIONS]),
+        Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS]),
+        data.get(ReaderField.HWP_ANGLES),
+        demodulated=config.demodulated,
+        pointing_on_the_fly=config.pointing.on_the_fly,
+        pointing_batch_samples=config.pointing.batch_samples,
+        pointing_interpolate=config.pointing.interpolation == 'bilinear',
+        dtype=config.dtype,
+    )
 
 
 def _noise_model(

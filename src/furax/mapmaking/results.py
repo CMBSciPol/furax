@@ -1,11 +1,13 @@
 import json
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Self
 
 import healpy as hp
 import jax.numpy as jnp
 import numpy as np
+import polars as pl
 from astropy.io import fits
 from jaxtyping import Array, Float, Integer
 
@@ -24,6 +26,19 @@ __all__ = [
 ]
 
 _AMPLITUDES_FILE = 'amplitudes.npz'
+_DETECTORS_FILE = 'detectors.parquet'
+_OBSERVATIONS_FILE = 'observations.csv'
+# A CSV file does not keep the column types, and a column of nulls would read back as text.
+_OBSERVATIONS_SCHEMA = {
+    'name': pl.String,
+    'loaded': pl.Boolean,
+    'n_detectors': pl.Int64,
+    'n_samples': pl.Int64,
+    'valid_sample_fraction': pl.Float64,
+    'load_seconds': pl.Float64,
+    'error': pl.String,
+}
+_PROVENANCE_FILE = 'provenance.json'
 
 
 @dataclass
@@ -35,10 +50,11 @@ class MapMakingResults:
         map / hit_map / icov     one file each, named after the field
                                  FITS for HEALPix or WCS, .npy otherwise
         injected_map             injected_map, as the map
-        noise_fits               noise_fits.npy
         template_amplitudes      amplitudes.npz, one array per template
+        observations             observations.csv
+        detectors                detectors.parquet
         solver_stats             solver_stats.json
-        failed_observations      failed_observations.txt, one name per line
+        provenance               provenance.json
     """
 
     map: StokesType
@@ -56,18 +72,40 @@ class MapMakingResults:
     solver_stats: dict[str, Any] | None = None
     """Statistics from the linear solver (e.g. num_steps, max_steps)"""
 
-    noise_fits: Float[Array, '...'] | None = None
-    """The fitted noise PSD parameters"""
-
-    failed_observations: list[str] | None = None
-    """Names of observations that failed to load and were excluded from the maps"""
-
     template_amplitudes: dict[str, Any] | None = None
     """Estimated amplitudes of the explicit templates, keyed by template name: per observation, the
     amplitudes of [`Template`][furax.mapmaking.templates.Template], streams then detectors first"""
 
     injected_map: StokesType | None = None
     """The map of the simulated sky through the run (`injection.mode=response`)"""
+
+    observations: pl.DataFrame | None = None
+    """One row per observation, in the order of the observation axis of the per-observation
+    products: `name`, whether it was `loaded`, `n_detectors`, `n_samples`, the
+    `valid_sample_fraction` (null if the flags were not read), `load_seconds`, and the `error`
+    that stopped an observation not loaded, its probe or its load (null if it was loaded)"""
+
+    detectors: pl.DataFrame | None = None
+    r"""One row per detector read. `observation` and `detector` are its indices along the
+    observation and detector axes of the per-detector products, such as the amplitudes of a
+    template with one set per detector. Then come its `name`, its focal-plane coordinates `xi`,
+    `eta` and `gamma` in radians (null if the run did not read them), and the parameters of its
+    noise model (`sigma`, and `alpha`, `fk`, `f0` for a $1/f$ model), suffixed by the stream on a
+    demodulated TOD (`sigma_q`, `sigma_u`)"""
+
+    provenance: dict[str, Any] | None = None
+    """The code, environment and command that produced the run; in a multi-process run, held by
+    process 0 only"""
+
+    @property
+    def failed_observations(self) -> list[str] | None:
+        """The observations that failed to load and were excluded from the maps.
+
+        Read from `observations`; `None` without it.
+        """
+        if self.observations is None:
+            return None
+        return self.observations.filter(~pl.col('loaded'))['name'].to_list()
 
     def save(self, out_dir: str | Path) -> None:
         """Write every product that is set, into the files listed above."""
@@ -79,17 +117,17 @@ class MapMakingResults:
 
         if self.injected_map is not None:
             self._save_array(np.array(self.injected_map.data), 'injected_map', out_dir)
-        if self.noise_fits is not None:
-            np.save(out_dir / 'noise_fits.npy', np.array(self.noise_fits))
         if self.template_amplitudes:
             entries = {name: np.array(a) for name, a in self.template_amplitudes.items()}
             np.savez(out_dir / _AMPLITUDES_FILE, **entries)  # ty: ignore[invalid-argument-type]
+        if self.observations is not None:
+            self.observations.write_csv(out_dir / _OBSERVATIONS_FILE)
+        if self.detectors is not None:
+            self.detectors.write_parquet(out_dir / _DETECTORS_FILE)
         if self.solver_stats is not None:
-            (out_dir / 'solver_stats.json').write_text(json.dumps(self.solver_stats, indent=2))
-        if self.failed_observations:
-            (out_dir / 'failed_observations.txt').write_text(
-                ''.join(f'{name}\n' for name in self.failed_observations)
-            )
+            _write_json(out_dir / 'solver_stats.json', self.solver_stats)
+        if self.provenance is not None:
+            _write_json(out_dir / _PROVENANCE_FILE, self.provenance)
 
     @classmethod
     def load(cls, out_dir: str | Path, landscape: StokesLandscape) -> Self:
@@ -114,10 +152,13 @@ class MapMakingResults:
             hit_map=cls._load_hit_map(out_dir, landscape),
             icov=cls._load_icov(out_dir, landscape),
             injected_map=cls._load_injected_map(out_dir, landscape),
-            solver_stats=cls._load_solver_stats(out_dir),
-            noise_fits=cls._load_noise_fits(out_dir),
-            failed_observations=cls._load_failed_observations(out_dir),
+            solver_stats=cls._load_json(out_dir / 'solver_stats.json'),
             template_amplitudes=cls._load_amplitudes(out_dir),
+            observations=_read_if_present(
+                partial(pl.read_csv, schema=_OBSERVATIONS_SCHEMA), out_dir / _OBSERVATIONS_FILE
+            ),
+            detectors=_read_if_present(pl.read_parquet, out_dir / _DETECTORS_FILE),
+            provenance=cls._load_json(out_dir / _PROVENANCE_FILE),
         )
 
     @staticmethod
@@ -217,19 +258,8 @@ class MapMakingResults:
         return amplitudes or None
 
     @staticmethod
-    def _load_noise_fits(out_dir: Path) -> Array | None:
-        path = out_dir / 'noise_fits.npy'
-        return jnp.array(np.load(path)) if path.exists() else None
-
-    @staticmethod
-    def _load_solver_stats(out_dir: Path) -> dict[str, Any] | None:
-        path = out_dir / 'solver_stats.json'
+    def _load_json(path: Path) -> dict[str, Any] | None:
         return json.loads(path.read_text()) if path.exists() else None
-
-    @staticmethod
-    def _load_failed_observations(out_dir: Path) -> list[str] | None:
-        path = out_dir / 'failed_observations.txt'
-        return path.read_text().split() if path.exists() else None
 
     def _save_icov(self, arr: np.ndarray, out_dir: Path) -> None:
         """Save the inverse covariance, storing only the upper triangle with stokes-aware names."""
@@ -264,3 +294,12 @@ class MapMakingResults:
                 f'saving {name} as npy: geometry information will not be embedded in the file'
             )
             np.save(out_dir / name, arr)
+
+
+def _read_if_present(read: Any, path: Path) -> pl.DataFrame | None:
+    return read(path) if path.exists() else None
+
+
+def _write_json(path: Path, value: Any) -> None:
+    """Write `value` as indented JSON, ending with a newline like any text file."""
+    path.write_text(json.dumps(value, indent=2) + '\n')

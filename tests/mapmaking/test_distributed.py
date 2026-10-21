@@ -52,6 +52,8 @@ def _run_mapmaker(out_path: Path, *, max_buckets: int) -> None:
         max_buckets=max_buckets,
     )
     results = MultiObservationMapMaker(observations, config=config).run()
+    # every process holds the tables of all the observations, whichever process read them
+    assert results.observations is not None and results.observations['loaded'].all()
     if jax.process_index() == 0:
         assert results.template_amplitudes is not None
         np.savez(
@@ -60,6 +62,8 @@ def _run_mapmaker(out_path: Path, *, max_buckets: int) -> None:
             hit_map=np.asarray(results.hit_map),
             icov=np.asarray(results.icov),
             amplitudes=np.asarray(results.template_amplitudes['hwp_synchronous']),
+            n_samples=results.observations['n_samples'].to_numpy(),
+            focal_plane=results.detectors.select('observation', 'xi', 'eta', 'gamma').to_numpy(),
         )
 
 
@@ -125,6 +129,9 @@ def test_multi_process_matches_single_process(
     # per-observation amplitudes come back in observation order whatever the layout
     assert result['amplitudes'].shape == (len(N_SAMPLES), N_DETS, 2 * N_HARMONICS)
     np.testing.assert_allclose(result['amplitudes'], reference['amplitudes'], rtol=1e-8, atol=1e-10)
+    # and so do the records of what was read of them
+    np.testing.assert_array_equal(result['n_samples'], N_SAMPLES)
+    np.testing.assert_array_equal(result['focal_plane'], reference['focal_plane'])
 
 
 if __name__ == '__main__':

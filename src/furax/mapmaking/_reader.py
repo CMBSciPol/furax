@@ -1,7 +1,8 @@
 import logging
 import mmap
+import time
 from collections.abc import Collection, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from math import prod
 from typing import Any, Self
 
@@ -26,6 +27,59 @@ from ._observation import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ObservationRecord:
+    """What was read of one observation.
+
+    The detectors are listed in the order of the detector axis of the data read: detector `j` is
+    entry `j` along that axis, and the entries past `n_detectors` are padding.
+    """
+
+    name: str
+    """The observation's name."""
+    detectors: list[str]
+    """The names of the detectors read, in the order of the detector axis."""
+    quaternions: np.ndarray | None = None
+    """The detector quaternions, `(n_detectors, 4)`; `None` if they were not read."""
+    n_samples: int = 0
+    """The number of samples read."""
+    valid_sample_fraction: float | None = None
+    """The fraction of the samples not flagged; `None` if the flags were not read."""
+    load_seconds: float | None = None
+    """The time taken to load the observation; `None` if it was not read."""
+    loaded: bool = True
+    """Whether the observation was read; `False` for one that failed to load."""
+
+    error: str | None = None
+    """The exception that stopped the observation being read (its shape probe or its load), or,
+    for one read, its record being made; `None` if there was none, or none is known."""
+
+    @property
+    def n_detectors(self) -> int:
+        return len(self.detectors)
+
+    @classmethod
+    def from_fields(
+        cls, observation: AbstractObservation[Any], fields: dict[str, Any], load_seconds: float
+    ) -> Self:
+        """The record of an observation read, from the fields read of it."""
+        quaternions = fields.get(ReaderField.DETECTOR_QUATERNIONS)
+        masks = fields.get(ReaderField.VALID_SAMPLE_MASKS)
+        return cls(
+            name=observation.name,
+            detectors=list(observation.detectors),
+            quaternions=None if quaternions is None else np.array(quaternions, dtype=np.float64),
+            n_samples=observation.n_samples,
+            valid_sample_fraction=None if masks is None else float(np.mean(masks)),
+            load_seconds=load_seconds,
+        )
+
+    @classmethod
+    def missing(cls, name: str, error: str | None = None) -> Self:
+        """The record of an observation that was not read, for the reason `error`."""
+        return cls(name, [], loaded=False, error=error)
 
 
 @register_static
@@ -56,6 +110,8 @@ class ObservationReader[T](AbstractReader):
         stokes: Stokes components of the demodulated TOD; `None` for detector timestreams.
         dtype: Floating-point dtype every floating-point field is cast to.
         sample_dtype: Floating-point dtype the sample data is cast to instead.
+        records: What was read of each item read in this pass, keyed by its index: its
+            detectors, in the order of the detector axis of the data, and a summary.
     """
 
     def __init__(
@@ -107,8 +163,15 @@ class ObservationReader[T](AbstractReader):
             common_keywords=common_keywords,
             structures=structures,
             known_failures=known_failures,
+            # each read is told its item, under which it records what it read
+            item=range(len(args[0])),
             **keywords,
         )
+
+    def reset_failures(self) -> None:
+        """Reset runtime read failures, and forget the records of the items read so far."""
+        super().reset_failures()
+        self.records: dict[int, ObservationRecord] = {}
 
     @classmethod
     def from_observations(
@@ -441,7 +504,7 @@ class ObservationReader[T](AbstractReader):
         return {field: fill(field, struct) for field, struct in self.out_structure.items()}
 
     def _read_structure_impure(
-        self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]
+        self, observation: AbstractLazyObservation[T], data_field_names: Collection[str], item: int
     ) -> PyTree[jax.ShapeDtypeStruct]:
         return self._get_data_field_structures_for(
             observation.probe_shape(intervals=ReaderField.SCANNING_INTERVALS in data_field_names),
@@ -449,11 +512,21 @@ class ObservationReader[T](AbstractReader):
         )
 
     def _read_data_impure(
-        self, observation: AbstractLazyObservation[T], data_field_names: Collection[str]
+        self, observation: AbstractLazyObservation[T], data_field_names: Collection[str], item: int
     ) -> PyTree[Array]:
+        start = time.perf_counter()
         data = observation.get_data(data_field_names)
         field_reader = self._get_data_field_readers()
-        return {field: field_reader[field](data) for field in data_field_names}
+        fields = {field: field_reader[field](data) for field in data_field_names}
+        # Items are read concurrently, each recording under its own key. The data was read, so a
+        # failure to record it must not make the read fail.
+        try:
+            record = ObservationRecord.from_fields(data, fields, time.perf_counter() - start)
+        except Exception as error:
+            logger.exception('read item %d: could not record what was read', item)
+            record = ObservationRecord(data.name, [], error=f'{type(error).__name__}: {error}')
+        self.records[item] = record
+        return fields
 
 
 def _aligned_zeros(shape: tuple[int, ...], dtype: DTypeLike) -> np.ndarray:

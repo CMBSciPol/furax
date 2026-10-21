@@ -34,7 +34,7 @@ class ObservationRecord:
     """What was read of one observation.
 
     The detectors are listed in the order of the detector axis of the data read: detector `j` is
-    entry `j` along that axis, and the entries past `n_detectors` are padding.
+    at index `j` along that axis, and the indices past `n_detectors` are padding.
     """
 
     name: str

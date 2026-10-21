@@ -3,43 +3,119 @@
 [`MultiObservationMapMaker`][] runs one jit-compiled program over multiple observations, so they
 are required to share a common buffer shape. In reality they do not: they differ in detector and
 sample count. This module provides tools to group them into *buckets*, i.e., groups of observations
-padded to a common buffer shape. The mapmaker then streams each bucket separately through the
-available devices.
+padded to a common buffer shape. The mapmaker then processes the buckets one after the other,
+each spread over all the available devices.
 
 Two kinds of padding are required:
 
 - *shape padding*: every observation of the group grows to the bucket's **envelope**, the per-axis
-  maximum over the group. A 10-minute scan bucketed with a 60-minute one occupies a 60-minute
+  maximum over the group. A 10-minute scan in a bucket with a 60-minute one occupies a 60-minute
   buffer;
-- *slot padding*: the group is rounded up to a whole number of **slots** per device, so the stream
-  axis divides evenly over them. Nine observations on four devices take twelve slots, three of
+- *slot padding*: the group is rounded up to a whole number of **slots** per device, so the slots
+  divide evenly over the devices. Nine observations on four devices take twelve slots, three of
   them empty.
 
-The **observation index** is the global position of an observation in the list given to the
-mapmaker. Within a bucket, the local index of that observation is called the **item index**.
-A **slot** is where one observation's data lives once the bucket is sharded over the devices.
-A slot may contain a fake observation with the same bucket-level envelope (slot padding).
+Each observation has an **observation index**: its position in the list given to the mapmaker.
+A bucket lists its observations ([`Bucket.observations`][]) by increasing index. Each observation's
+buffers occupy one **slot**. The slots after the last observation are **empty**
+([`Bucket.is_empty`][]): they only hold filler data and are gated out of computations. Each bucket
+has its own [`ObservationReader`][furax.mapmaking.ObservationReader] over its observations.
 
-A slot's detectors may further be split into **detector batches**, processed one after the other.
-Each batch of each slot is then an **entry** of its own in what the mapmaker stacks per bucket:
-`n_slots × n_batches` entries, batch `j` of slot `s` at entry `s · n_batches + j`.
+The detector axis of a bucket's envelope may further be split into `n_batches` **detector
+batches** of `batch_size` detectors each, the same for every slot, and processed one after the
+other. The mapmaker then builds the model of a bucket (its operators, noise model, weights and
+templates) one batch of one slot at a time, and stacks the results along a leading axis of
+`n_slots × n_batches` **entries**. They are ordered slot by slot, batch `j` of slot `s` at entry
+`s · n_batches + j`, so the entries of a slot stay on the device that holds it. What the batches
+of a slot share, such as the boresight pointing, is stacked once per slot instead.
+
+The **detector index** runs along the detector axis of a slot's buffer, padded to the envelope;
+the indices past the detectors read are padding.
+
+The indices convert as follows, within a bucket:
+
+| Index | Converts to | With |
+| --- | --- | --- |
+| slot `s`, not empty | observation | `Bucket.observations[s]` |
+| entry `e` | slot, batch | `divmod(e, n_batches)` |
+| detector `d` of batch `j` | detector of the slot | `j · batch_size + d` |
+| process | its block of slots | [`SlotLayout.local_slots`][] |
+
+A product computed per entry or per slot, such as the noise parameters or the template
+amplitudes, is returned per observation. Per entry, its batches are first merged into slots
+([`Bucket.merge_detector_batches`][]); then the empty slots are dropped and the others reordered
+by observation index ([`SlotLayout.to_observation_order`][]). The result has the axes
+`(observation, [stream], [detector], ...)`:
+
+- the **stream** axis, over the Stokes components of a demodulated TOD, if the product has one
+  value per stream;
+- the detector axis, if the product has one value per detector. It is as long as the widest
+  envelope of all buckets; past the detectors read of an observation, its values are padding.
 
 !!! example
 
-    Six observations of two very different lengths, in two buckets, on four devices held by two
-    processes:
+    Six observations of two very different lengths, on four devices held by two processes, with
+    detector batches of 55 (`detector_batch_size=55`).
+
+    **Partition.** Each shape is first padded to whole batches
+    ([`ObservationBufferShape.whole_detector_batches`][]), then the observations are grouped
+    into two buckets, each padded to its envelope:
 
     ```text
-    observation shapes (detectors, samples):
-      0: (100, 4900)   1: (100, 5000)   2: ( 90, 1200)
-      3: (100, 4800)   4: (110, 5000)   5: (100,  900)
+    observation   shape read     whole batches   bucket   slot
+         0        (100, 4900)    (110, 4900)       B        0
+         1        (100, 5000)    (110, 5000)       B        1
+         2        ( 90, 1200)    (110, 1200)       A        0
+         3        (100, 4800)    (110, 4800)       B        2
+         4        (110, 5000)    (110, 5000)       B        3
+         5        (100,  900)    (110,  900)       A        1
 
-    bucket A, envelope (100, 1200)              bucket B, envelope (110, 5000)
-    slot  process  device  item  observation    slot  process  device  item  observation
-      0    proc 0   dev 0    0        2           0    proc 0   dev 0    0        0
-      1    proc 0   dev 1    1        5           1    proc 0   dev 1    1        1
-      2    proc 1   dev 2    -        -           2    proc 1   dev 2    2        3
-      3    proc 1   dev 3    -        -           3    proc 1   dev 3    3        4
+    bucket A: 2 observations, envelope (110, 1200), 4 slots (2 empty), 2 batches → 8 entries
+    bucket B: 4 observations, envelope (110, 5000), 4 slots (0 empty), 2 batches → 8 entries
+    ```
+
+    **Slots.** Each bucket is sharded over the devices, a contiguous block of slots per process
+    ([`SlotLayout.local_slots`][]). An empty slot holds filler:
+
+    ```text
+                    ┌──────── process 0 ────────┐   ┌──────── process 1 ────────┐
+                        dev 0          dev 1           dev 2          dev 3
+    bucket A   slot     0              1               2              3
+               obs      2              5               (empty)        (empty)
+               entries  0, 1           2, 3            4, 5           6, 7
+
+    bucket B   slot     0              1               2              3
+               obs      0              1               3              4
+               entries  0, 1           2, 3            4, 5           6, 7
+    ```
+
+    **Entries.** The buffer of a slot has the bucket's envelope. Its detector axis is split into
+    batches, batch `j` of slot `s` at entry `s · n_batches + j`. Slot 2 of bucket B, holding
+    observation 3:
+
+    ```text
+                     sample 0 ··························· 4799   4800 ··· 4999
+    detector   0  ┐  █████████████████████████████████████████   ░░░░░░░░░░░   batch 0 → entry 4
+              54  ┘  █████████████████████████████████████████   ░░░░░░░░░░░
+              55  ┐  █████████████████████████████████████████   ░░░░░░░░░░░   batch 1 → entry 5
+              99  │  █████████████████████████████████████████   ░░░░░░░░░░░
+             100  │  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   ░░░░░░░░░░░
+             109  ┘  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   ░░░░░░░░░░░
+
+                     █ data read    ░ padding to the envelope
+    ```
+
+    **Back to observations.** A product computed per entry is brought back per observation: the
+    batches of each slot are merged ([`Bucket.merge_detector_batches`][]), then the empty slots
+    are dropped and the slots reordered ([`SlotLayout.to_observation_order`][]):
+
+    ```text
+    per entry    bucket A (8, 55, ...)   bucket B (8, 55, ...)
+                          │ merge batches         │
+    per slot     bucket A (4, 110, ...)  bucket B (4, 110, ...)
+                          │ drop empty, reorder   │
+                          └───────────┬───────────┘
+    per observation              (6, 110, ...)   rows 0..5 = observations 0..5
     ```
 
 !!! tip "Choosing the number of buckets"
@@ -64,6 +140,7 @@ from functools import cached_property
 from typing import Self
 
 import numpy as np
+from jaxtyping import Bool, Int, Shaped
 
 from ._observation import ObservationBufferShape
 from .streaming import StreamLayout
@@ -73,28 +150,28 @@ __all__ = [
     'SlotLayout',
     'padded_volume',
     'partition_padded',
-    'real_volume',
+    'unpadded_volume',
 ]
 
 
 @dataclass(frozen=True, eq=False)
 class Bucket:
-    """One group of observations, streamed together through every device.
+    """One group of observations, processed together over all the devices.
 
     Every slot of the bucket holds a buffer of the same shape, the `envelope` of the group.
     `n_slots` is set to a value that fills the device count evenly, so its value is at least
-    the number of real observations. Empty (fake) slots are always at the end.
+    the number of observations. The empty slots come after those of the observations.
 
     Buckets are normally built for a whole run by [`SlotLayout.create`][], not one by one.
 
     Attributes:
-        observations: Observation indices (global), sorted.
+        observations: The observation index held by each slot that is not empty, sorted.
         n_slots: The number of slots; a multiple of the device count.
         envelope: The per-axis maximum buffer shape over the group.
         n_batches: The number of detector batches each slot is split into.
     """
 
-    observations: np.ndarray
+    observations: Int[np.ndarray, ' bucket_observation']
     n_slots: int
     envelope: ObservationBufferShape
     n_batches: int = 1
@@ -130,7 +207,7 @@ class Bucket:
             >>> bucket = Bucket.create([Shape(2, 100), Shape(3, 10)], [1, 0])
             >>> bucket.envelope
             ObservationBufferShape(detector_count=3, sample_count=100, interval_count=0)
-            >>> bucket.padded_volume, real_volume([Shape(2, 100), Shape(3, 10)])
+            >>> bucket.padded_volume, unpadded_volume([Shape(2, 100), Shape(3, 10)])
             (600, 230)
         """
         if len(group) == 0:
@@ -158,14 +235,14 @@ class Bucket:
         return -(-size // n_devices) * n_devices
 
     @property
-    def n_real(self) -> int:
-        """Number of observations in the bucket, i.e. of slots holding real data."""
+    def n_observations(self) -> int:
+        """Number of observations in the bucket, i.e. of slots that are not empty."""
         return len(self.observations)
 
     @property
-    def n_pad(self) -> int:
+    def n_empty(self) -> int:
         """Number of empty slots."""
-        return self.n_slots - self.n_real
+        return self.n_slots - self.n_observations
 
     @property
     def padded_volume(self) -> int:
@@ -187,7 +264,9 @@ class Bucket:
         """The entries as a stream lays them out, the batches of a slot sharing its common data."""
         return StreamLayout(self.n_entries, self.n_batches)
 
-    def merge_detector_batches(self, per_entry: np.ndarray) -> np.ndarray:
+    def merge_detector_batches(
+        self, per_entry: Shaped[np.ndarray, 'entry batch_size *rest']
+    ) -> Shaped[np.ndarray, 'slot det *rest']:
         """Per-slot values from per-entry ones: `(n_entries, batch_size, ...)` to `(n_slots, ...)`.
 
         The detector axis follows the entry axis; batch `j` of a slot holds its detectors from
@@ -198,29 +277,21 @@ class Bucket:
         )
 
     @cached_property
-    def is_real(self) -> np.ndarray:
-        """Per slot, whether it holds an observation (`False` for the empty slots at the end)."""
-        return np.arange(self.n_slots) < self.n_real
+    def is_empty(self) -> Bool[np.ndarray, ' slot']:
+        """Per slot, whether it is empty (`True` for the slots past the observations)."""
+        return np.arange(self.n_slots) >= self.n_observations
 
     def summary(self, n_devices: int = 1) -> str:
-        """The bucket's slot bookkeeping, as `obs=... slots=... pad=... envelope=...`."""
+        """The bucket's slot bookkeeping, as `obs=... slots=... empty=... envelope=...`."""
         batches = f' det_batches={self.n_batches}' if self.n_batches > 1 else ''
         return (
-            f'obs={self.n_real} slots={self.n_slots} pad={self.n_pad} '
+            f'obs={self.n_observations} slots={self.n_slots} empty={self.n_empty} '
             f'slots_per_dev={self.n_slots // n_devices} '
             f'envelope=({self.envelope.detector_count}, {self.envelope.sample_count}){batches}'
         )
 
-    @cached_property
-    def item_of_slot(self) -> np.ndarray:
-        """Per slot, the reader item to load there.
 
-        Empty slots repeat the last item so the index is always valid.
-        """
-        return np.minimum(np.arange(self.n_slots), self.n_real - 1)
-
-
-def real_volume(shapes: Sequence[ObservationBufferShape]) -> int:
+def unpadded_volume(shapes: Sequence[ObservationBufferShape]) -> int:
     """Total volume of the observations, without padding.
 
     Args:
@@ -351,7 +422,7 @@ class SlotLayout:
     buckets: tuple[Bucket, ...]
     """The buckets, ordered by increasing envelope shape."""
     n_observations: int
-    """Total number of (real) observations."""
+    """Total number of observations."""
     n_devices: int
     """Total number of devices in the whole job."""
 
@@ -382,13 +453,13 @@ class SlotLayout:
             >>> layout = SlotLayout.create(shapes, n_devices=2, max_buckets=4)
             >>> print(layout)
             SlotLayout: obs=4 buckets=2 slots=4 devices=2 slot_overhead=+0.0%
-              bucket 0: obs=2 slots=2 pad=0 slots_per_dev=1 envelope=(2, 10)
-              bucket 1: obs=2 slots=2 pad=0 slots_per_dev=1 envelope=(2, 90)
+              bucket 0: obs=2 slots=2 empty=0 slots_per_dev=1 envelope=(2, 10)
+              bucket 1: obs=2 slots=2 empty=0 slots_per_dev=1 envelope=(2, 90)
 
             The dataset is heterogeneous enough that the layout still costs two thirds more
             memory than the observations themselves:
 
-            >>> round(layout.padded_volume / real_volume(shapes), 2)
+            >>> round(layout.padded_volume / unpadded_volume(shapes), 2)
             1.67
         """
         groups = partition_padded(shapes, max_buckets, n_devices=n_devices)
@@ -430,8 +501,8 @@ class SlotLayout:
     def local_slots(self, bucket: int, *, process_index: int, n_local: int) -> slice:
         """The slots of a bucket held by one process's devices.
 
-        The mesh orders devices by process, so a process's shards of the stream axis are one
-        contiguous block: ``n_local`` shards of ``n_slots / n_devices`` slots each.
+        The mesh orders devices by process, so a process's shards of the slot axis are one
+        contiguous block: `n_local` shards of `n_slots / n_devices` slots each.
 
         Args:
             bucket: Index of the bucket.
@@ -442,21 +513,23 @@ class SlotLayout:
         start = process_index * n_local * n_per_device
         return slice(start, start + n_local * n_per_device)
 
-    def to_observation_order(self, per_bucket: Sequence[np.ndarray]) -> np.ndarray:
+    def to_observation_order(
+        self, per_bucket: Sequence[Shaped[np.ndarray, 'slot ...']]
+    ) -> Shaped[np.ndarray, 'obs ...']:
         """Reorder per-slot arrays, one per bucket, into a single per-observation array.
 
         This undoes the bucketing for results the caller wants per observation, in their original
-        order -- per-observation diagnostics, for instance.
+        order, such as per-observation diagnostics.
 
         The leading axis of each input runs over the bucket's slots; the empty slots are dropped.
         Trailing axes may differ between buckets (each pads to its own shape), so the result is
         padded with zeros to the largest.
 
         Args:
-            per_bucket: One array per bucket, of shape ``(n_slots, ...)``.
+            per_bucket: One array per bucket, of shape `(n_slots, ...)`.
 
         Returns:
-            An array of shape ``(n_observations, ...)`` in observation order.
+            An array of shape `(n_observations, ...)` in observation order.
         """
         if len(per_bucket) != len(self.buckets):
             raise ValueError(f'expected {len(self.buckets)} arrays, got {len(per_bucket)}')
@@ -464,7 +537,7 @@ class SlotLayout:
         dtype = np.result_type(*(a.dtype for a in per_bucket))
         out = np.zeros((self.n_observations, *trailing), dtype=dtype)
         for bucket, values in zip(self.buckets, per_bucket, strict=True):
-            real = values[: bucket.n_real]
-            region = (bucket.observations, *(slice(0, n) for n in real.shape[1:]))
-            out[region] = real
+            held = values[: bucket.n_observations]
+            region = (bucket.observations, *(slice(0, n) for n in held.shape[1:]))
+            out[region] = held
         return out

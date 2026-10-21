@@ -9,7 +9,7 @@ from furax.mapmaking.layout import (
     SlotLayout,
     padded_volume,
     partition_padded,
-    real_volume,
+    unpadded_volume,
 )
 
 SHAPES = [Shape(2, 10), Shape(2, 90), Shape(3, 12), Shape(2, 88), Shape(3, 50), Shape(2, 49)]
@@ -27,8 +27,8 @@ def test_bucket_envelope_and_volume():
     assert bucket.envelope == Shape(3, 100)
     assert bucket.n_slots == 2
     assert bucket.padded_volume == 2 * 3 * 100  # count * max_det * max_samp
-    assert real_volume(shapes) == 2 * 100 + 3 * 10
-    assert padded_volume(shapes, [[0], [1]]) == real_volume(shapes)  # singletons never pad
+    assert unpadded_volume(shapes) == 2 * 100 + 3 * 10
+    assert padded_volume(shapes, [[0], [1]]) == unpadded_volume(shapes)  # singletons never pad
     with pytest.raises(ValueError, match='at least one observation'):
         Bucket.create(shapes, [])
 
@@ -53,10 +53,8 @@ def test_bucket_envelope_covers_the_interval_axis():
 
 def test_bucket_slot_bookkeeping():
     bucket = Bucket(observations=np.array([1, 4]), n_slots=4, envelope=Shape(3, 90))
-    assert (bucket.n_real, bucket.n_pad) == (2, 2)
-    np.testing.assert_array_equal(bucket.is_real, [True, True, False, False])
-    # empty slots point at a valid item; they are gated out by `is_real`, never read
-    np.testing.assert_array_equal(bucket.item_of_slot, [0, 1, 1, 1])
+    assert (bucket.n_observations, bucket.n_empty) == (2, 2)
+    np.testing.assert_array_equal(bucket.is_empty, [False, False, True, True])
 
 
 @pytest.mark.parametrize(
@@ -206,7 +204,7 @@ def test_layout_covers_every_observation_once(n_devices, max_buckets):
     assert sorted(covered.tolist()) == list(range(len(SHAPES)))
     for bucket in layout.buckets:
         assert bucket.n_slots % n_devices == 0
-        assert bucket.n_real <= bucket.n_slots < bucket.n_real + n_devices
+        assert bucket.n_observations <= bucket.n_slots < bucket.n_observations + n_devices
         # the envelope covers every member
         for i in bucket.observations:
             assert SHAPES[i].detector_count <= bucket.envelope.detector_count
@@ -221,7 +219,7 @@ def test_local_slots_tile_the_axis_by_process():
     blocks = [layout.local_slots(0, process_index=p, n_local=2) for p in range(2)]
     assert blocks == [slice(0, 4), slice(4, 8)]
     # the second process holds the two empty slots, which is a valid (partly empty) block
-    np.testing.assert_array_equal(bucket.is_real[blocks[1]], [True, True, False, False])
+    np.testing.assert_array_equal(bucket.is_empty[blocks[1]], [False, False, True, True])
 
 
 def test_scatter_restores_observation_order_and_pads_trailing_axes():

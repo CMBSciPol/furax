@@ -160,7 +160,7 @@ class ObservationReader[T](AbstractReader):
         )
 
     def reset_failures(self) -> None:
-        """Reset runtime read failures, and forget the records of the items read so far."""
+        """Forget the read failures, and the records of the items read, recorded so far."""
         super().reset_failures()
         self.records: dict[int, ObservationRecord] = {}
 

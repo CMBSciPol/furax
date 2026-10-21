@@ -84,6 +84,6 @@ def test_failure_to_record_does_not_fail_the_read(monkeypatch):
     reader = ObservationReader.from_observations(observations, requested_fields=['sample_data'])
     _, _, valid = reader.read_host(0)
     assert valid
-    assert not reader.failed_indices
+    assert not reader.errors
     record = reader.records[0]
     assert record.error == 'ValueError: cannot record'

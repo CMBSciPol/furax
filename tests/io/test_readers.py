@@ -117,23 +117,25 @@ def test_read_returns_valid_flag_and_filler_on_failure() -> None:
     data, _, valid = reader.read(0)
     assert bool(valid) is True
     assert_array_equal(data, jnp.ones(4, np.float32))
-    assert reader.failed_indices == set()
+    assert reader.errors == {}
 
     data, _, valid = reader.read(1)
     assert bool(valid) is False
     assert_array_equal(data, jnp.full(4, -1.0, np.float32))  # filler
-    assert reader.failed_indices == {1}
+    assert reader.errors == {1: 'RuntimeError: boom'}
 
 
-def test_reset_failures_clears_runtime_failures_to_known_baseline() -> None:
-    reader = FillerReader([4, 4], [False, True], known_failures=[0])
-    assert reader.failed_indices == {0}  # baseline from known_failures
+def test_known_failures_are_not_read_and_failures_are_reset() -> None:
+    reader = FillerReader([4, 4], [True, True], known_failures=[0])
+    _, _, valid = reader.read(0)
+    assert bool(valid) is False
+    assert reader.errors == {}  # skipped, not read
 
     reader.read(1)  # runtime failure recorded as a host side effect
-    assert reader.failed_indices == {0, 1}
+    assert reader.errors == {1: 'RuntimeError: boom'}
 
     reader.reset_failures()
-    assert reader.failed_indices == {0}  # back to the known-failure baseline
+    assert reader.errors == {}
 
 
 def test_buffers() -> None:

@@ -2,7 +2,7 @@ import pickle
 from abc import abstractmethod
 from collections.abc import Callable, Collection, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import cached_property, partial
 from logging import Logger
 from math import prod
@@ -104,6 +104,8 @@ from .weight import WeightOperator
 class _BucketModel:
     """One bucket's share of `_AccumulatedModel`: everything that is stacked over its slots."""
 
+    bucket: Bucket = field(metadata={'static': True})
+    """The bucket of the layout the model is stacked over."""
     model: ObservationModel
     """Per-slot observation model."""
     templates: ObservationTemplates | None
@@ -112,6 +114,37 @@ class _BucketModel:
     """Explicit-template RHS per entry (None without explicit templates)."""
     shared_rhs: PyTree[Array] | None = None
     """RHS of the templates with amplitudes shared by detectors, per slot (None without them)."""
+
+    @property
+    def streams(self) -> StreamLayout:
+        """How the operators stacked over the entries of the bucket form one stream."""
+        return self.bucket.stream_layout
+
+    @property
+    def H(self) -> StreamOperator:
+        """The sky pointing, from the sky to the TOD of every entry."""
+        return self.streams.column(self.model.H)
+
+    @property
+    def W(self) -> StreamOperator:
+        """The weight of every entry."""
+        return self.streams.diagonal(self.model.W)
+
+    @property
+    def W_diag(self) -> StreamOperator:
+        """The weight of every entry, without the noise correlations.
+
+        Each access maps the noise model over the entries again, compiling that map, so it is
+        best read once.
+        """
+        # Map only the inverse noise: the mask is W's own, used as it is.
+        weight = self.streams.vmap(lambda m: m.diag_W().weight, self.model)
+        return self.streams.diagonal(WeightOperator.create(weight, self.model.M))
+
+    @property
+    def F(self) -> StreamOperator:
+        """The Pomme deprojector of every entry."""
+        return self.streams.diagonal(self.model.F)
 
 
 @register_dataclass
@@ -410,27 +443,10 @@ class MultiObservationMapMaker[T]:
 
             # Per-bucket stream operators. Everything below sums over the buckets: each is a
             # stream of its own length, so the sums stay plain additions of stream operators.
-            layouts = [bucket.stream_layout for bucket in self.layout.buckets]
-            H = [layout.column(bm.model.H) for bm, layout in zip(acc.buckets, layouts, strict=True)]
-            W = [
-                layout.diagonal(bm.model.W) for bm, layout in zip(acc.buckets, layouts, strict=True)
-            ]
-            W_diag = (
-                W
-                if self.config.binned
-                else [
-                    layout.diagonal(
-                        # Map only the inverse noise: the mask is W's own, used as it is.
-                        WeightOperator.create(
-                            layout.vmap(lambda m: m.diag_W().weight, bm.model), bm.model.M
-                        )
-                    )
-                    for bm, layout in zip(acc.buckets, layouts, strict=True)
-                ]
-            )
-            F = [
-                layout.diagonal(bm.model.F) for bm, layout in zip(acc.buckets, layouts, strict=True)
-            ]
+            H = [bm.H for bm in acc.buckets]
+            W = [bm.W for bm in acc.buckets]
+            W_diag = W if self.config.binned else [bm.W_diag for bm in acc.buckets]
+            F = [bm.F for bm in acc.buckets]
 
             # Diagonal pixel system for the block-Jacobi preconditioner
             A_diag = AdditionOperator(
@@ -559,14 +575,12 @@ class MultiObservationMapMaker[T]:
         Returns:
             The system to solve, in the unknowns described above.
         """
-        layouts = [bucket.stream_layout for bucket in self.layout.buckets]
         # Implicit templates fold into the weight (marginal deprojection).
         W = list(W)
         for b, bm in enumerate(acc.buckets):
             if bm.templates is not None and (implicit := bm.templates.implicit) is not None:
-                layout = layouts[b]
-                Ti = layout.diagonal(implicit.operator)
-                G = layout.diagonal(implicit.gram_inverse)
+                Ti = bm.streams.diagonal(implicit.operator)
+                G = bm.streams.diagonal(implicit.gram_inverse)
                 W[b] = (W[b] - W[b] @ Ti @ G @ Ti.T @ W[b]).reduce()
 
         # Explicit templates are configured for the run, so every bucket carries them or none.
@@ -601,10 +615,10 @@ class MultiObservationMapMaker[T]:
         # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
         # per bucket: those of each detector alone, with an entry per detector batch, and those the
         # detectors share, with one set per slot (the batches of a slot see the same amplitudes).
-        Te = [layout.diagonal(e.operator) for e, layout in zip(explicit, layouts, strict=False)]
+        Te = [bm.streams.diagonal(e.operator) for bm, e in zip(acc.buckets, explicit, strict=False)]
         Tg = [
-            self._shared_stream(bucket, layout, s.operator)
-            for bucket, layout, s in zip(self.layout.buckets, layouts, shared, strict=False)
+            self._shared_stream(bm.bucket, bm.streams, s.operator)
+            for bm, s in zip(acc.buckets, shared, strict=False)
         ]
         structures = {
             'own': [te.in_structure for te in Te],
@@ -630,11 +644,11 @@ class MultiObservationMapMaker[T]:
         # shared amplitudes per slot, from the Gram summed over the batches of the slot.
         inverses = {'own': [], 'shared': []}
         ridges = {'own': [], 'shared': []}
-        for e, layout in zip(explicit, layouts, strict=False):
-            inverses['own'].append(layout.diagonal(e.gram_inverse))
-            ridges['own'].append(None if e.ridge is None else layout.diagonal(e.ridge))
-        for bucket, s in zip(self.layout.buckets, shared, strict=False):
-            inverse, ridge = self._factor_shared(bucket, s)
+        for bm, e in zip(acc.buckets, explicit, strict=False):
+            inverses['own'].append(bm.streams.diagonal(e.gram_inverse))
+            ridges['own'].append(None if e.ridge is None else bm.streams.diagonal(e.ridge))
+        for bm, s in zip(acc.buckets, shared, strict=False):
+            inverse, ridge = self._factor_shared(bm.bucket, s)
             inverses['shared'].append(inverse)
             ridges['shared'].append(ridge)
 
@@ -868,7 +882,7 @@ class MultiObservationMapMaker[T]:
         if shared_rhs is not None:
             # the detector batches of a slot each project onto the amplitudes they share
             shared_rhs = self.placement.per_slot(shared_rhs, bucket.sum_detector_batches)
-        return hits, rhs, _BucketModel(model, templates, amp_rhs, shared_rhs)
+        return hits, rhs, _BucketModel(bucket, model, templates, amp_rhs, shared_rhs)
 
     @cached_property
     def _prefetches_reads(self) -> bool:

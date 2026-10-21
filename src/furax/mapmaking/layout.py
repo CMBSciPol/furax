@@ -74,8 +74,9 @@ by observation index ([`SlotLayout.to_observation_order`][]). The result has the
     bucket B: 4 observations, envelope (110, 5000), 4 slots (0 empty), 2 batches → 8 entries
     ```
 
-    **Slots.** Each bucket is sharded over the devices, a contiguous block of slots per process
-    ([`SlotLayout.local_slots`][]). An empty slot holds filler:
+    **Slots.** Each bucket is sharded over the devices ([`SlotPlacement`][]), ordered by process
+    so that each process holds a contiguous block of slots ([`SlotLayout.local_slots`][]). An
+    empty slot holds filler:
 
     ```text
                     ┌──────── process 0 ────────┐   ┌──────── process 1 ────────┐
@@ -135,13 +136,16 @@ by observation index ([`SlotLayout.to_observation_order`][]). The result has the
     divides the number of observations.
 """
 
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
-from functools import cached_property
-from typing import Self
+from functools import cached_property, partial
+from typing import Any, ClassVar, Self
 
+import jax
 import numpy as np
-from jaxtyping import Bool, Int, Shaped
+from jax.sharding import AxisType, Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
+from jaxtyping import Array, Bool, Int, PyTree, Shaped
 
 from ._observation import ObservationBufferShape
 from .streaming import StreamLayout
@@ -149,6 +153,7 @@ from .streaming import StreamLayout
 __all__ = [
     'Bucket',
     'SlotLayout',
+    'SlotPlacement',
     'padded_volume',
     'partition_padded',
     'unpadded_volume',
@@ -276,6 +281,12 @@ class Bucket:
         return per_entry.reshape(
             self.n_slots, self.n_batches * per_entry.shape[1], *per_entry.shape[2:]
         )
+
+    def sum_detector_batches(
+        self, per_entry: Shaped[Array, ' entry *rest']
+    ) -> Shaped[Array, ' slot *rest']:
+        """Per-slot values from per-entry ones, summed over the detector batches of each slot."""
+        return per_entry.reshape(self.n_slots, self.n_batches, *per_entry.shape[1:]).sum(axis=1)
 
     @cached_property
     def is_empty(self) -> Bool[np.ndarray, ' slot']:
@@ -556,3 +567,111 @@ class SlotLayout:
             region = (bucket.observations, *(slice(0, n) for n in held.shape[1:]))
             out[region] = held
         return out
+
+
+@dataclass(frozen=True, eq=False)
+class SlotPlacement:
+    """The slots of a layout, placed on the devices of the job.
+
+    The devices are ordered by process along one mesh axis, so that each process's shards of the
+    slot axis form one contiguous block ([`SlotLayout.local_slots`][]).
+    """
+
+    layout: SlotLayout
+    """The layout to place, planned for as many devices as the mesh has."""
+    mesh: Mesh
+    """The devices of the whole job, along the one axis `axis`."""
+
+    axis: ClassVar[str] = 'slot'
+    """The name of the mesh axis, which shards the slots (or the entries) of a bucket."""
+
+    def __post_init__(self) -> None:
+        if self.mesh.axis_names != (self.axis,):
+            raise ValueError(f'expected a mesh along {self.axis!r}, got {self.mesh.axis_names}')
+        if self.mesh.size != self.layout.n_devices:
+            raise ValueError(
+                f'layout planned for {self.layout.n_devices} devices, the mesh has {self.mesh.size}'
+            )
+
+    @classmethod
+    def create(cls, layout: SlotLayout) -> Self:
+        """Place `layout` on all the devices of the job, which it must have been planned for."""
+        # `Auto` rather than `Explicit`: under explicit axis types an array built on this mesh
+        # carries it in its sharding and then cannot be closed over inside `shard_map`, which is
+        # how the sky landscape reaches the pointing. The price is that every `shard_map` must
+        # spell out its `in_specs` instead of having them inferred.
+        devices = sorted(jax.devices(), key=lambda d: (d.process_index, d.id))
+        return cls(layout, Mesh(np.array(devices), (cls.axis,), axis_types=(AxisType.Auto,)))
+
+    @cached_property
+    def sharding(self) -> NamedSharding:
+        """The sharding of an array that leads with the slots, or the entries, of a bucket."""
+        return NamedSharding(self.mesh, P(self.axis))
+
+    @cached_property
+    def replicated(self) -> NamedSharding:
+        """The sharding of an array that every device holds whole."""
+        return NamedSharding(self.mesh, P())
+
+    @cached_property
+    def local_devices(self) -> list[jax.Device]:
+        """This process's devices, in the order of the mesh."""
+        return [d for d in self.mesh.devices.flat if d.process_index == jax.process_index()]
+
+    def device_slots(self, bucket: int) -> Int[np.ndarray, 'device round']:
+        """The slots of a bucket held by each of this process's devices, one per round.
+
+        Row `k` holds the slots of the `k`-th of the local devices, a contiguous run of
+        `n_slots / n_devices` slots, as the sharding of the slot axis places them.
+        """
+        n_local = len(self.local_devices)
+        local = self.layout.local_slots(bucket, process_index=jax.process_index(), n_local=n_local)
+        return np.arange(local.start, local.stop).reshape(n_local, -1)
+
+    def to_devices(self, per_device: Sequence[PyTree[Any]]) -> PyTree[Array]:
+        """Host pytrees, one per local device, as arrays sharded over a leading device axis.
+
+        On a CPU device, a suitably aligned host buffer is used in place rather than copied.
+        """
+
+        def stack(*leaves: Any) -> Array:
+            shards = [
+                jax.device_put(np.asarray(leaf)[None], device, may_alias=True)
+                for leaf, device in zip(leaves, self.local_devices, strict=True)
+            ]
+            shape = (self.mesh.size, *np.shape(leaves[0]))
+            return jax.make_array_from_single_device_arrays(shape, self.sharding, shards)
+
+        return jax.tree.map(stack, *per_device)
+
+    def broadcast(self, tree: PyTree[Any]) -> PyTree[Array]:
+        """Host values, the same on every process, as arrays every device holds whole."""
+        place = partial(jax.make_array_from_process_local_data, self.replicated)
+        return jax.tree.map(lambda x: place(np.asarray(x)), tree)
+
+    def gather(self, tree: PyTree[Array]) -> PyTree[np.ndarray]:
+        """Arrays sharded over the devices, brought whole to the host of every process."""
+        return jax.tree.map(np.asarray, self.replicate(tree))
+
+    def replicate(
+        self, tree: PyTree[Array], fn: Callable[[Array], Array] = lambda x: x
+    ) -> PyTree[Array]:
+        """`fn` of every array of `tree`, held whole by every device."""
+        return jax.jit(partial(jax.tree.map, fn), out_shardings=self.replicated)(tree)
+
+    def per_slot(
+        self, tree: PyTree[Array], fn: Callable[[Array], Array], *, donate: bool = False
+    ) -> PyTree[Array]:
+        """`fn` of every array of `tree`, sharded over the slots (or entries) it leads with.
+
+        Args:
+            tree: Arrays sharded over the devices along their leading axis.
+            fn: The function to apply to every array.
+            donate: Whether the buffers of `tree` may be reused for the result.
+        """
+        apply = jax.jit(
+            partial(jax.tree.map, fn),
+            out_shardings=self.sharding,
+            donate_argnums=0 if donate else (),
+        )
+        return apply(tree)

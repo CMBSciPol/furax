@@ -7,7 +7,7 @@ from functools import cached_property, partial
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any, ClassVar, NamedTuple, overload
+from typing import Any, ClassVar, NamedTuple
 
 import equinox as eqx
 import jax
@@ -22,10 +22,8 @@ from fastquat import Quaternion
 from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils as mhu
 from jax.extend.core import Literal as JaxprLiteral
-from jax.sharding import AxisType, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jax.tree_util import register_dataclass
-from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
 import furax.linalg
@@ -90,7 +88,7 @@ from .config import (
     WeightingMode,
 )
 from .gap_filling import gap_fill
-from .layout import Bucket, SlotLayout
+from .layout import Bucket, SlotLayout, SlotPlacement
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner, make_two_level_preconditioner
 from .results import MapMakingResults
@@ -219,34 +217,6 @@ class MultiObservationMapMaker[T]:
                 'Templates with correlated weighting require gaps.treatment=inner_mask.'
             )
 
-    @cached_property
-    def mesh(self) -> Mesh:
-        # One axis over every device of the job, ordered by process so that each process's
-        # shards form one contiguous block of the axis (see `SlotLayout.local_slots`).
-        #
-        # `Auto` rather than `Explicit`: under explicit axis types an array built on this mesh
-        # carries it in its sharding and then cannot be closed over inside `shard_map`, which is
-        # how the sky landscape reaches the pointing. The price is that every `shard_map` must
-        # spell out its `in_specs` instead of having them inferred.
-        devices = np.array(sorted(jax.devices(), key=lambda d: (d.process_index, d.id)))
-        return Mesh(devices, ('obs',), axis_types=(AxisType.Auto,))
-
-    @property
-    def sharding(self) -> NamedSharding:
-        return NamedSharding(self.mesh, P('obs'))
-
-    @overload
-    def distribute(self, x: ArrayLike) -> Array: ...
-    @overload
-    def distribute[S](self, x: S) -> S: ...
-    def distribute(self, x: Any) -> Any:
-        """Shard a pytree of process-local slot blocks along the 'obs' axis.
-
-        Each leaf holds this process's block of a bucket's slots (see
-        [`SlotLayout.local_slots`][]); the leaves of every process together form the global array.
-        """
-        return jax.tree.map(lambda a: jax.make_array_from_process_local_data(self.sharding, a), x)
-
     @property
     def n_observations(self) -> int:
         """Total number of observations across all processes."""
@@ -315,6 +285,11 @@ class MultiObservationMapMaker[T]:
             max_buckets=self.config.max_buckets,
             detector_batch_size=self.config.detector_batch_size,
         )
+
+    @cached_property
+    def placement(self) -> SlotPlacement:
+        """The slots of the layout, placed on the devices of the job."""
+        return SlotPlacement.create(self.layout)
 
     @cached_property
     def fit_config(self) -> MapMakingConfig:
@@ -391,10 +366,9 @@ class MultiObservationMapMaker[T]:
             return
         logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
         layout = self.layout
-        n_devices = jax.device_count()
         logger_info(
-            f'layout procs={jax.process_count()} dev_per_proc={jax.local_device_count()} '
-            f'dev_total={n_devices}'
+            f'layout procs={jax.process_count()} dev_per_proc={len(self.placement.local_devices)} '
+            f'dev_total={layout.n_devices}'
         )
         # Every slot of a bucket is padded to its reader's out_structure, real or empty.
         real_bytes = sum(reader.total_nbytes for reader in self.readers)
@@ -403,7 +377,7 @@ class MultiObservationMapMaker[T]:
             slot_bytes = furax.tree.nbytes(reader.out_structure)
             padded_bytes += slot_bytes * bucket.n_slots
             logger_info(
-                f'bucket {b}: {bucket.summary(n_devices)} '
+                f'bucket {b}: {bucket.summary(layout.n_devices)} '
                 f'slot_size={format_bytes(slot_bytes)} '
                 f'real_size={format_bytes(reader.total_nbytes)} '
                 f'pad_size={format_bytes(slot_bytes * bucket.n_slots - reader.total_nbytes)}'
@@ -421,7 +395,7 @@ class MultiObservationMapMaker[T]:
         started = utc_now()
         self._log_layout()
 
-        with jax.set_mesh(self.mesh):
+        with jax.set_mesh(self.placement.mesh):
             # Single read pass, so each observation is read/preprocessed exactly once.
             acc = self.build_model_and_accumulate()
             jax.block_until_ready(acc)
@@ -532,7 +506,7 @@ class MultiObservationMapMaker[T]:
                 amplitudes = {}
                 if operators:
                     own, *blocks = blocks
-                    per_bucket = [self._gather(a) for a in own]
+                    per_bucket = [self.placement.gather(a) for a in own]
                     for name in per_bucket[0]:
                         # the detector axis follows the stream axis, if any (see `Template`),
                         # after the axis of entries
@@ -543,7 +517,7 @@ class MultiObservationMapMaker[T]:
                 for shared in blocks:  # one set per slot, no detector axis
                     amplitudes |= jax.tree.map(
                         lambda *leaves: self.layout.to_observation_order(leaves),
-                        *[self._gather(a) for a in shared],
+                        *[self.placement.gather(a) for a in shared],
                     )
 
         return MapMakingResults(
@@ -725,11 +699,10 @@ class MultiObservationMapMaker[T]:
         """
         assert self.config.templates is not None  # shared templates exist
         regularization = self.config.templates.regularization
-        gram = self._sum_batches(shared.gram, bucket)
+        gram = self.placement.per_slot(shared.gram, bucket.sum_detector_batches)
         inverse, ridge = jax.vmap(partial(factor, regularization=regularization))(gram)
         structure = self._slot_structure(bucket, shared.operator)
-        replicated = NamedSharding(self.mesh, P())
-        inverse, ridge = jax.jit(lambda x: x, out_shardings=replicated)((inverse, ridge))
+        inverse, ridge = self.placement.replicate((inverse, ridge))
         return (
             _PerSlotOperator(inverse, in_structure=structure),
             None if ridge is None else _PerSlotOperator(ridge, in_structure=structure),
@@ -764,11 +737,6 @@ class MultiObservationMapMaker[T]:
         )
         return system._replace(preconditioner=M)
 
-    def _gather(self, x: PyTree[Array]) -> PyTree[np.ndarray]:
-        """Bring a pytree sharded over the 'obs' axis to the host, whole, on every process."""
-        replicated = jax.jit(lambda t: t, out_shardings=NamedSharding(self.mesh, P()))(x)
-        return jax.tree.map(np.asarray, replicated)
-
     def _gather_reads(self) -> dict[int, Read]:
         """What the last pass read of each observation, or the exception that stopped its load.
 
@@ -790,7 +758,9 @@ class MultiObservationMapMaker[T]:
         """
         per_bucket = []
         for bm in acc.buckets:
-            leaves, _ = jax.tree_util.tree_flatten_with_path(self._gather(bm.model.noise_model))
+            leaves, _ = jax.tree_util.tree_flatten_with_path(
+                self.placement.gather(bm.model.noise_model)
+            )
             per_bucket.append({_parameter_name(path): leaf for path, leaf in leaves})
         return {
             name: self.layout.to_observation_order([p[name] for p in per_bucket], detector_axis=-1)
@@ -802,7 +772,7 @@ class MultiObservationMapMaker[T]:
 
         Empty (or failed) slots are gated out using a zero-mask, so they drop from the system.
 
-        This method must run under ``jax.set_mesh(self.mesh)``.
+        This method must run under `jax.set_mesh(self.placement.mesh)`.
         """
         hit_map = jnp.zeros(self.landscape.shape, jnp.int64)
         map_rhs = self.landscape.zeros()
@@ -810,11 +780,7 @@ class MultiObservationMapMaker[T]:
         # only, rather than a constant compiled into them
         sky = None
         if (scanned := self._scanned_sky) is not None:
-            replicated = NamedSharding(self.mesh, P())
-            sky = jax.tree.map(
-                lambda x: jax.make_array_from_process_local_data(replicated, np.asarray(x)),
-                scanned,
-            )
+            sky = self.placement.broadcast(scanned)
         bucket_models = []
         for b, reader in enumerate(self.readers):
             hits, rhs, bucket_model = self._accumulate_bucket(b, reader, sky)
@@ -835,18 +801,15 @@ class MultiObservationMapMaker[T]:
         """
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         bucket = self.layout.buckets[bucket_index]
-        devices = self._local_devices
-        n_rounds = bucket.n_slots // self.layout.n_devices  # slots per device
-        local = self.layout.local_slots(
-            bucket_index, process_index=jax.process_index(), n_local=len(devices)
-        )
-        axis = self.mesh.axis_names[0]
+        device_slots = self.placement.device_slots(bucket_index)  # (local device, round)
+        n_rounds = device_slots.shape[1]
+        axis = self.placement.axis
         # The launch has no collective, so each process runs it on its own devices without
         # waiting for the others. It still spans the job's mesh: the operators it builds record
         # the mesh they were traced under, and the solve uses them under that mesh.
         launch = jax.jit(
             jax.shard_map(
-                self._observation_kernel(bucket, axis),
+                self._observation_kernel(bucket),
                 in_specs=(P(axis), P(axis), P(axis), P()),
                 out_specs=P(axis),
                 check_vma=False,
@@ -862,16 +825,14 @@ class MultiObservationMapMaker[T]:
         hits = rhs = None
         stacked: Any = None
         # The pool reads the observations of a round's devices concurrently
-        with ThreadPoolExecutor(len(devices)) as pool:
+        with ThreadPoolExecutor(len(device_slots)) as pool:
 
             def read_round(r):
-                # device k holds slots `local.start + k * n_rounds + r`, as the global sharding
-                slots = [local.start + k * n_rounds + r for k in range(len(devices))]
-                return list(pool.map(load, slots))
+                return list(pool.map(load, device_slots[:, r].tolist()))
 
             per_device = read_round(0)
             for r in range(n_rounds):
-                inputs = self._to_devices(per_device)
+                inputs = self.placement.to_devices(per_device)
                 # Hold this round's buffers only as long as its launch: on a CPU device they are
                 # its TOD, which the next read must not find still in memory.
                 per_device = []
@@ -890,37 +851,24 @@ class MultiObservationMapMaker[T]:
                     per_device = read_round(r + 1)
 
         # every device's partial sums, over the job
-        sum_devices = partial(jax.tree.map, lambda x: x.sum(axis=0))
-        replicated = NamedSharding(self.mesh, P())
-        hits, rhs = jax.jit(sum_devices, out_shardings=replicated)((hits, rhs))
+        hits, rhs = self.placement.replicate((hits, rhs), lambda x: x.sum(axis=0))
 
         # (device, round, ...) -> (slot, ...), and for detector batches (slot·batch, ...): each
         # detector batch an entry of its own, the shared data staying one per slot (see
         # `Bucket.stream_layout`)
+        def merge(tree, n):
+            return self.placement.per_slot(tree, lambda x: x.reshape(-1, *x.shape[n:]), donate=True)
+
         if bucket.n_batches == 1:
-            stacked = self._merge_leading_axes(stacked, 2)
+            stacked = merge(stacked, 2)
         else:
             batched, shared = stacked
-            batched = self._merge_leading_axes(batched, 3)
-            shared = self._merge_leading_axes(shared, 2)
-            stacked = eqx.combine(batched, shared)
+            stacked = eqx.combine(merge(batched, 3), merge(shared, 2))
         model, templates, (amp_rhs, shared_rhs) = stacked
         if shared_rhs is not None:
             # the detector batches of a slot each project onto the amplitudes they share
-            shared_rhs = self._sum_batches(shared_rhs, bucket)
+            shared_rhs = self.placement.per_slot(shared_rhs, bucket.sum_detector_batches)
         return hits, rhs, _BucketModel(model, templates, amp_rhs, shared_rhs)
-
-    def _sum_batches(self, tree: PyTree[Array], bucket: Bucket) -> PyTree[Array]:
-        """The sum of every array of `tree` over the detector batches of each slot.
-
-        The arrays lead with the entries, `bucket.n_batches` consecutive ones to a slot.
-        """
-        shape = (bucket.n_slots, bucket.n_batches)
-        total = jax.jit(
-            partial(jax.tree.map, lambda x: x.reshape(*shape, *x.shape[1:]).sum(axis=1)),
-            out_shardings=self.sharding,
-        )
-        return total(tree)
 
     @cached_property
     def _prefetches_reads(self) -> bool:
@@ -930,40 +878,10 @@ class MultiObservationMapMaker[T]:
         next TOD in the same memory as the current one's working set, and compete with it for
         the cores.
         """
-        return self._local_devices[0].platform != 'cpu'
-
-    @cached_property
-    def _local_devices(self) -> list[jax.Device]:
-        """This process's devices, in the order of the mesh."""
-        return [d for d in self.mesh.devices.flat if d.process_index == jax.process_index()]
-
-    def _to_devices(self, per_device: Sequence[PyTree[Any]]) -> Any:
-        """Host pytrees, one per local device, as arrays sharded over a leading device axis.
-
-        On a CPU device, a suitably aligned host buffer is used in place rather than copied.
-        """
-
-        def stack(*leaves: Any) -> Array:
-            shards = [
-                jax.device_put(np.asarray(leaf)[None], device, may_alias=True)
-                for leaf, device in zip(leaves, self._local_devices, strict=True)
-            ]
-            shape = (self.layout.n_devices, *np.shape(leaves[0]))
-            return jax.make_array_from_single_device_arrays(shape, self.sharding, shards)
-
-        return jax.tree.map(stack, *per_device)
-
-    def _merge_leading_axes(self, tree: PyTree[Array], n: int) -> PyTree[Array]:
-        """Merge the `n` leading axes of every array, keeping it sharded over the merged axis."""
-        merge = jax.jit(
-            partial(jax.tree.map, lambda x: x.reshape(-1, *x.shape[n:])),
-            out_shardings=self.sharding,
-            donate_argnums=0,
-        )
-        return merge(tree)
+        return self.placement.local_devices[0].platform != 'cpu'
 
     def _observation_kernel(
-        self, bucket: Bucket, axis: str
+        self, bucket: Bucket
     ) -> Callable[[Any, Any, Array, StokesType | None], tuple[Array, StokesType, Any]]:
         """Accumulate one observation per device: its hit map, RHS and model.
 
@@ -1032,7 +950,9 @@ class MultiObservationMapMaker[T]:
             # out once; the others are stacked per batch.
             per_batch, out_shape = _depends_on_argument(lambda j: batch(carry, j)[1], 0)
             shared_shape = eqx.filter(out_shape, per_batch, inverse=True)
-            shared = jax.lax.pcast(furax.tree.zeros_like(shared_shape), axis, to='varying')
+            shared = jax.lax.pcast(
+                furax.tree.zeros_like(shared_shape), self.placement.axis, to='varying'
+            )
 
             def detector_step(carry, j):
                 carry, _ = carry

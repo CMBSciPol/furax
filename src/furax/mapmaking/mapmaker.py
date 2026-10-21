@@ -16,7 +16,6 @@ import lineax
 import numpy as np
 import pixell.enmap
 import pixell.utils
-import polars as pl
 from astropy.io import fits
 from astropy.wcs import WCS
 from fastquat import Quaternion
@@ -48,7 +47,6 @@ from furax.core import (
 )
 from furax.interfaces.lineax import as_lineax_operator
 from furax.linalg._lanczos import LanczosWhich
-from furax.math.coords import XiEtaAngles
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
@@ -60,6 +58,7 @@ from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokesLiteral
 from furax.profiling import format_bytes
 
+from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
 from ._geometry import minimum_enclosing_arc
 from ._injection import inject, load_sky, unpadded
 from ._logger import logger as furax_logger
@@ -78,7 +77,7 @@ from ._observation import (
     ReaderField,
 )
 from ._provenance import provenance, utc_now
-from ._reader import ObservationReader, ObservationRecord, slice_detector_axis, slice_detectors
+from ._reader import ObservationReader, slice_detector_axis, slice_detectors
 from .config import (
     GapTreatment,
     InjectionMode,
@@ -94,7 +93,7 @@ from .gap_filling import gap_fill
 from .layout import Bucket, SlotLayout
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner, make_two_level_preconditioner
-from .results import _OBSERVATIONS_SCHEMA, MapMakingResults
+from .results import MapMakingResults
 from .streaming import StreamLayout, StreamOperator
 from .templates import TemplateOperator
 from .templates.gram import factor
@@ -169,7 +168,6 @@ class MultiObservationMapMaker[T]:
         model_fields = ObservationModel.required_reader_fields(self.config)
         template_fields = ObservationTemplates.required_reader_fields(self.config)
         self.reader_fields = model_fields | rhs_fields | template_fields
-        self._probe_errors: dict[int, str] = {}  # the probes of this process that raised
         self.readers = self.get_readers(self.reader_fields)
 
     def _load_sky(self) -> StokesType | None:
@@ -255,46 +253,46 @@ class MultiObservationMapMaker[T]:
         return len(self.observations)
 
     @cached_property
-    def _probe_shapes(self) -> tuple[list[ObservationBufferShape], np.ndarray]:
-        """Every observation's buffer shape, plus a mask of the ones that could not be probed.
+    def _catalog(self) -> ObservationCatalog:
+        """What the run knows of every observation, starting from its probe.
 
         Probing costs an open, so the observations are dealt round-robin to the processes and the
-        rows are all-gathered. Every rank sends the same fixed-size table, rows it did not probe
-        left at zero, so the gather is well-formed whatever the per-rank counts (even none).
+        probes are gathered. A probe that raises must not crash the process (it would deadlock the
+        others at the gather), so its exception is kept instead.
+        """
+        n_proc = jax.process_count()
+        need_intervals = ReaderField.SCANNING_INTERVALS in self.reader_fields
+        local: dict[int, ObservationBufferShape | str] = {}
+        for i in range(jax.process_index(), self.n_observations, n_proc):
+            try:
+                local[i] = self.observations[i].probe_shape(need_intervals)
+            except Exception as error:
+                self.logger.exception('probe of observation %d failed', i)
+                local[i] = f'{type(error).__name__}: {error}'
+        names = [observation.name for observation in self.observations]
+        return ObservationCatalog(names, gather_rows(local))
 
-        A probe that raises must not crash the rank (it would deadlock the others at the gather).
-        Failed observations are flagged so the reader skips them and the accumulation gates them
-        out. After the gather, they inherit the largest successful probe shape so they cannot form
-        an undersized bucket of their own.
+    @cached_property
+    def _probe_shapes(self) -> list[ObservationBufferShape]:
+        """Every observation's buffer shape.
+
+        Observations whose probe failed are skipped by the readers and gated out of the
+        accumulation. They inherit the largest successful probe shape so they cannot form an
+        undersized bucket of their own.
 
         The sample count is raised to `_minimum_buffer_samples`, and the detector count to whole
         detector batches, so the buckets and the readers size their buffers identically.
         """
-        n_obs = self.n_observations
-        n_proc = jax.process_count()
-        need_intervals = ReaderField.SCANNING_INTERVALS in self.reader_fields
-
-        rows = np.zeros((n_obs, 4), dtype=np.int32)  # (n_det, n_samp, n_intervals, failed)
-        for i in range(jax.process_index(), n_obs, n_proc):
-            try:
-                rows[i, :3] = self.observations[i].probe_shape(need_intervals)
-            except Exception as error:
-                self.logger.exception('probe of observation %d failed', i)
-                self._probe_errors[i] = f'{type(error).__name__}: {error}'
-                rows[i] = (1, 1, 0, 1)
-        # Each observation is probed by exactly one rank, so summing the tables merges them.
-        rows = np.asarray(mhu.process_allgather(rows)).reshape(n_proc, n_obs, 4).sum(axis=0)
-        failed = rows[:, 3].astype(bool)
-        if np.any(~failed):
-            rows[failed, :3] = rows[~failed, :3].max(axis=0)
+        rows = self._catalog.probed
+        failed = self._catalog.probe_failed
+        rows[failed] = rows[~failed].max(axis=0) if np.any(~failed) else (1, 1, 0)
         minimum_samples = self._minimum_buffer_samples
-        shapes = [
+        return [
             ObservationBufferShape(
                 int(row[0]), max(int(row[1]), minimum_samples), int(row[2])
             ).whole_detector_batches(self.config.detector_batch_size)
             for row in rows
         ]
-        return shapes, failed
 
     @property
     def _minimum_buffer_samples(self) -> int:
@@ -311,9 +309,8 @@ class MultiObservationMapMaker[T]:
     @cached_property
     def layout(self) -> SlotLayout:
         """How the observations are bucketed and laid out over the devices."""
-        shapes, _ = self._probe_shapes
         return SlotLayout.create(
-            shapes,
+            self._probe_shapes,
             n_devices=jax.device_count(),
             max_buckets=self.config.max_buckets,
             detector_batch_size=self.config.detector_batch_size,
@@ -338,8 +335,8 @@ class MultiObservationMapMaker[T]:
         weighting = self.config.weighting
         if weighting.mode == WeightingMode.IDENTITY or weighting.source != NoiseSource.FIT:
             return self.config  # no PSD is estimated, so the segment length is unused
-        shapes, _ = self._probe_shapes
-        nperseg = min(weighting.fitting.nperseg, min(shape.sample_count for shape in shapes))
+        shortest = min(shape.sample_count for shape in self._probe_shapes)
+        nperseg = min(weighting.fitting.nperseg, shortest)
         if nperseg == weighting.fitting.nperseg:
             return self.config
         self.logger.info(
@@ -355,7 +352,8 @@ class MultiObservationMapMaker[T]:
         A reader reads its bucket's observations in slot order, so its buffers are sized by
         exactly the observations it can be asked to read.
         """
-        shapes, failed = self._probe_shapes
+        shapes = self._probe_shapes
+        failed = self._catalog.probe_failed
         return tuple(
             ObservationReader.from_observations(
                 [self.observations[i] for i in bucket.observations],
@@ -429,8 +427,8 @@ class MultiObservationMapMaker[T]:
             jax.block_until_ready(acc)
             logger_info('Accumulated hit map and RHS vector')
 
-            records = self._collect_observation_records()
-            if n_failed := sum(not r.loaded for r in records):
+            self._catalog.reads = self._gather_reads()
+            if n_failed := self._catalog.n_failed:
                 logger_info(f'{n_failed} observation(s) failed and were excluded')
             noise_parameters = None
             if self.config.weighting.mode != WeightingMode.IDENTITY:
@@ -556,10 +554,10 @@ class MultiObservationMapMaker[T]:
             landscape=self.landscape,
             template_amplitudes=dict(amplitudes) if amplitudes is not None else None,
             injected_map=None if injected_estimate is None else S.T(injected_estimate),
-            observations=_observation_table(records),
+            observations=self._catalog.to_table(),
             # the noise model covers the streams of the model's TOD, not all those read
-            detectors=_detector_table(
-                records, noise_parameters, acc.buckets[0].model.tod_format.stokes
+            detectors=detector_table(
+                self._catalog.reads, noise_parameters, acc.buckets[0].model.tod_format.stokes
             ),
             # only process 0 saves it, so only process 0 spends the git calls on it
             provenance=provenance(started=started) if rank == 0 else None,
@@ -771,40 +769,19 @@ class MultiObservationMapMaker[T]:
         replicated = jax.jit(lambda t: t, out_shardings=NamedSharding(self.mesh, P()))(x)
         return jax.tree.map(np.asarray, replicated)
 
-    def _collect_observation_records(self) -> list[ObservationRecord]:
-        """What was read of every observation, in observation order, on every process.
+    def _gather_reads(self) -> dict[int, Read]:
+        """What the last pass read of each observation, or the exception that stopped its load.
 
-        Each observation is probed and read by one process, which holds its record, or the
-        exception that stopped it; they are pickled and all-gathered. An observation that failed
-        holds a record marked as not read, and so does one that holds no record.
+        Keyed by observation index, gathered from the readers of every process. An observation
+        that was not loaded, such as one whose probe failed, is absent.
         """
-        local: dict[int, ObservationRecord] = {}
-        for i, error in self._probe_errors.items():
-            local[i] = ObservationRecord.missing(
-                self.observations[i].name, f'probe failed: {error}'
-            )
+        local: dict[int, Read] = {}
         for bucket, reader in zip(self.layout.buckets, self.readers, strict=True):
-            for item, record in reader.records.items():
-                local[int(bucket.observations[item])] = record
-            for item, error in reader.errors.items():
-                i = int(bucket.observations[item])
-                local[i] = ObservationRecord.missing(
-                    self.observations[i].name, f'load failed: {error}'
-                )
-        payload = np.frombuffer(pickle.dumps(local), dtype=np.uint8)
-        # every process sends a buffer of the same length, the longest
-        n_proc = jax.process_count()
-        sizes = np.asarray(mhu.process_allgather(np.array([payload.size]))).reshape(n_proc)
-        padded = np.zeros(int(sizes.max()), dtype=np.uint8)
-        padded[: payload.size] = payload
-        buffers = np.asarray(mhu.process_allgather(padded)).reshape(n_proc, -1)
-        records: dict[int, ObservationRecord] = {}
-        for buffer, size in zip(buffers, sizes, strict=True):
-            records |= pickle.loads(buffer[:size].tobytes())
-        return [
-            records[i] if i in records else ObservationRecord.missing(obs.name)
-            for i, obs in enumerate(self.observations)
-        ]
+            for slot, record in reader.records.items():
+                local[int(bucket.observations[slot])] = record
+            for slot, error in reader.errors.items():
+                local[int(bucket.observations[slot])] = error
+        return gather_rows(local)
 
     def _collect_noise_parameters(self, acc: _AccumulatedModel) -> dict[str, np.ndarray]:
         """The noise model parameters of every detector slot, in observation order.
@@ -2014,72 +1991,3 @@ def _solver_stats(result: furax.linalg.CGResult, options: dict[str, Any]) -> dic
         'residuals': [float(r) if np.isfinite(r) else None for r in residuals],
         'options': options,
     }
-
-
-def _observation_table(records: Sequence[ObservationRecord]) -> pl.DataFrame:
-    """One row per observation, from what was read of it."""
-    return pl.DataFrame(
-        {
-            'name': [r.name for r in records],
-            'loaded': [r.loaded for r in records],
-            'n_detectors': [r.n_detectors for r in records],
-            'n_samples': [r.n_samples for r in records],
-            'valid_sample_fraction': [r.valid_sample_fraction for r in records],
-            'load_seconds': [r.load_seconds for r in records],
-            'error': [r.error for r in records],
-        },
-        schema=_OBSERVATIONS_SCHEMA,
-    )
-
-
-def _detector_table(
-    records: Sequence[ObservationRecord],
-    noise_parameters: dict[str, np.ndarray] | None,
-    stokes: str | None,
-) -> pl.DataFrame:
-    """One row per detector read, with its indices along the axes of the per-detector products.
-
-    Args:
-        records: What was read of each observation, in observation order.
-        noise_parameters: Each noise parameter, `(n_observations, [stream,] detector slot)`.
-        stokes: The streams of a demodulated TOD, which suffix the parameters; `None` otherwise.
-    """
-    read = [(i, r) for i, r in enumerate(records) if r.n_detectors]
-
-    def concat(parts: list[np.ndarray], dtype: DTypeLike) -> np.ndarray:
-        return np.concatenate(parts) if parts else np.zeros(0, dtype)
-
-    columns: dict[str, Any] = {
-        'observation': concat([np.full(r.n_detectors, i) for i, r in read], np.int64),
-        'detector': concat([np.arange(r.n_detectors) for _, r in read], np.int64),
-        'name': [name for _, r in read for name in r.detectors],
-    }
-    coordinates = _focal_plane_coordinates([r for _, r in read])
-    for axis, values in zip(('xi', 'eta', 'gamma'), coordinates, strict=True):
-        columns[axis] = pl.Series(axis, values).fill_nan(None)  # null where not read
-    for name, values in (noise_parameters or {}).items():
-        if values.ndim == 2:
-            columns[name] = concat([values[i, : r.n_detectors] for i, r in read], values.dtype)
-            continue
-        assert stokes is not None and values.shape[1] == len(stokes)  # one row per stream
-        for k, stream in enumerate(stokes.lower()):
-            per_stream = [values[i, k, : r.n_detectors] for i, r in read]
-            columns[f'{name}_{stream}'] = concat(per_stream, values.dtype)
-    return pl.DataFrame(columns)
-
-
-def _focal_plane_coordinates(records: Sequence[ObservationRecord]) -> np.ndarray:
-    """The `(xi, eta, gamma)` of the detectors of all `records`, `(3, n_detectors)`.
-
-    NaN for the detectors of an observation whose quaternions were not read. The quaternions are
-    converted in one call, so the conversion compiles once, not once per number of detectors.
-    """
-    read = np.concatenate(
-        [np.full(r.n_detectors, r.quaternions is not None) for r in records] or [np.zeros(0, bool)]
-    )
-    coordinates = np.full((3, read.size), np.nan)
-    quaternions = [r.quaternions for r in records if r.quaternions is not None]
-    if quaternions:
-        q = Quaternion.from_array(jnp.asarray(np.concatenate(quaternions)))
-        coordinates[:, read] = np.stack([np.asarray(a) for a in XiEtaAngles.from_quaternion(q)])
-    return coordinates

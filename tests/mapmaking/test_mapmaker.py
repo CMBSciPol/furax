@@ -5,7 +5,6 @@ from typing import Literal
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
 
 import furax
@@ -16,7 +15,6 @@ from furax.mapmaking import (
     MultiObservationMapMaker,
     ObservationReader,
 )
-from furax.mapmaking._reader import ObservationRecord
 from furax.mapmaking.config import (
     GapTreatment,
     HealpixConfig,
@@ -40,7 +38,6 @@ from furax.mapmaking.mapmaker import (
     MapMaker,
     MLMapmaker,
     PommeMapMaker,
-    _detector_table,
     _solver_stats,
 )
 from furax.mapmaking.noise import WhiteNoiseModel
@@ -194,6 +191,7 @@ class TestFakeObsMapMaker:
         assert observations['name'].to_list() == [data.name, 'failing_obs']
         assert observations['loaded'].to_list() == [True, False]
         assert observations['n_samples'].to_list() == [data.n_samples, 0]
+        assert observations['probed_samples'][0] == data.n_samples
         assert observations['error'].to_list() == [
             None,
             'load failed: RuntimeError: simulated preprocessing failure',
@@ -311,13 +309,14 @@ class TestBuckets:
             GappyLazyGroundObservation(seed=2, n_samples=256),
         ]
         maker = MultiObservationMapMaker(observations, config=config)
-        shapes, failed = maker._probe_shapes
-        assert failed.tolist() == [True, False, False]
+        shapes = maker._probe_shapes
+        assert maker._catalog.probe_failed.tolist() == [True, False, False]
         assert shapes[0] == shapes[2]
-        # its record keeps why, before anything is read
-        record = maker._collect_observation_records()[0]
-        assert not record.loaded
-        assert record.error == 'probe failed: RuntimeError: simulated shape-probe failure'
+        # its row keeps why, before anything is read
+        row = maker._catalog.to_table().row(0, named=True)
+        assert not row['loaded']
+        assert row['probed_samples'] == 0
+        assert row['error'] == 'probe failed: RuntimeError: simulated shape-probe failure'
 
     def test_bucket_envelope_covers_toeplitz_support(self):
         config = self._correlated_config(correlation_length=64)
@@ -608,25 +607,6 @@ class TestGapTreatmentMapMaker:
         expected = MultiObservationMapMaker(good_only, config=config).run()
         assert eqx.tree_equal(results.hit_map, expected.hit_map)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
-
-
-def test_detector_table_follows_the_detector_axis():
-    # 2 and 1 detectors read on 3 padded slots, and an observation not read, on a QU TOD; only
-    # the second has its quaternions read, its detector at the centre of the focal plane
-    records = [
-        ObservationRecord('a', ['d0', 'd1'], n_samples=10),
-        ObservationRecord('b', ['d2'], quaternions=np.array([[1.0, 0, 0, 0]]), n_samples=5),
-        ObservationRecord.missing('c'),
-    ]
-    sigma = np.arange(3 * 2 * 3, dtype=float).reshape(3, 2, 3)  # (obs, stream, slot)
-    table = _detector_table(records, {'sigma': sigma}, 'QU')
-    assert table['observation'].to_list() == [0, 0, 1]
-    assert table['detector'].to_list() == [0, 1, 0]
-    assert table['name'].to_list() == ['d0', 'd1', 'd2']
-    assert table['sigma_q'].to_list() == [sigma[0, 0, 0], sigma[0, 0, 1], sigma[1, 0, 0]]
-    assert table['sigma_u'].to_list() == [sigma[0, 1, 0], sigma[0, 1, 1], sigma[1, 1, 0]]
-    assert table['xi'].to_list() == [None, None, 0.0]
-    assert table['eta'].to_list() == [None, None, 0.0]
 
 
 def test_solver_stats_write_non_finite_residuals_as_null():

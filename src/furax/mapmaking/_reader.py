@@ -48,13 +48,9 @@ class ObservationRecord:
     valid_sample_fraction: float | None = None
     """The fraction of the samples not flagged; `None` if the flags were not read."""
     load_seconds: float | None = None
-    """The time taken to load the observation; `None` if it was not read."""
-    loaded: bool = True
-    """Whether the observation was read; `False` for one that failed to load."""
-
+    """The time taken to load the observation; `None` if it is not known."""
     error: str | None = None
-    """The exception that stopped the observation being read (its shape probe or its load), or,
-    for one read, its record being made; `None` if there was none, or none is known."""
+    """The exception that stopped the record being made; `None` if there was none."""
 
     @property
     def n_detectors(self) -> int:
@@ -75,11 +71,6 @@ class ObservationRecord:
             valid_sample_fraction=None if masks is None else float(np.mean(masks)),
             load_seconds=load_seconds,
         )
-
-    @classmethod
-    def missing(cls, name: str, error: str | None = None) -> Self:
-        """The record of an observation that was not read, for the reason `error`."""
-        return cls(name, [], loaded=False, error=error)
 
 
 @register_static

@@ -97,7 +97,7 @@ class TestMultiObsMapMaker:
         reader = ObservationReader.from_observations(
             observations, stokes=stokes if demodulated else None
         )
-        with jax.set_mesh(maker.mesh):
+        with jax.set_mesh(maker.placement.mesh):
             model = maker.build_model_and_accumulate().buckets[0].model
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
@@ -149,7 +149,7 @@ class TestFakeObsMapMaker:
         reader = ObservationReader.from_observations(
             observations, stokes=stokes if demodulated else None
         )
-        with jax.set_mesh(maker.mesh):
+        with jax.set_mesh(maker.placement.mesh):
             model = maker.build_model_and_accumulate().buckets[0].model
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
@@ -324,7 +324,7 @@ class TestBuckets:
         observations.extend(GappyLazyGroundObservation(seed=i, n_samples=256) for i in (1, 2))
         maker = MultiObservationMapMaker(observations, config=config)
         assert min(bucket.envelope.sample_count for bucket in maker.layout.buckets) >= 2 * 64 - 1
-        with jax.set_mesh(maker.mesh):
+        with jax.set_mesh(maker.placement.mesh):
             maker.build_model_and_accumulate()
 
     def test_bucket_envelope_covers_pomme_support(self):
@@ -333,7 +333,7 @@ class TestBuckets:
         observations.extend(FakeLazyObservation(seed=i, n_samples=256) for i in (1, 2))
         maker = MultiObservationMapMaker(observations, config=config)
         assert min(bucket.envelope.sample_count for bucket in maker.layout.buckets) >= 64
-        with jax.set_mesh(maker.mesh):
+        with jax.set_mesh(maker.placement.mesh):
             maker.build_model_and_accumulate()
 
 
@@ -353,7 +353,7 @@ class TestNoiseModelSelection:
         observations = self._observations()
         config = _config('healpix', stokes, demodulated=demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
-        with jax.set_mesh(maker.mesh):
+        with jax.set_mesh(maker.placement.mesh):
             noise_model = maker.build_model_and_accumulate().buckets[0].model.noise_model
         # A single WhiteNoiseModel covers both paths. The demodulated TOD is a single-array Stokes,
         # so its per-detector sigma carries the leading Stokes axis (here after the observation-stack
@@ -366,7 +366,7 @@ class TestNoiseModelSelection:
         observations = self._observations()
         config = _config('healpix', 'IQU', demodulated, identity_noise=True)
         maker = MultiObservationMapMaker(observations, config=config)
-        with jax.set_mesh(maker.mesh):
+        with jax.set_mesh(maker.placement.mesh):
             model = maker.build_model_and_accumulate().buckets[0].model
         noise_leaves = jax.tree.leaves(
             model.noise_model,

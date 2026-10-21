@@ -201,7 +201,7 @@ def test_float32_tod_accumulates_like_float64(detector_batch_size: int) -> None:
     )
     accumulated = []
     for m in (reference, maker):
-        with jax.set_mesh(m.mesh):
+        with jax.set_mesh(m.placement.mesh):
             accumulated.append(m.build_model_and_accumulate())
     float64, float32 = accumulated
     assert float32.map_rhs.data.dtype == jnp.float64

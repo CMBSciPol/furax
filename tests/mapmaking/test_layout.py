@@ -1,12 +1,16 @@
 from itertools import combinations
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.sharding import Mesh
 
 from furax.mapmaking import ObservationBufferShape as Shape
 from furax.mapmaking.layout import (
     Bucket,
     SlotLayout,
+    SlotPlacement,
     padded_volume,
     partition_padded,
     unpadded_volume,
@@ -220,6 +224,66 @@ def test_local_slots_tile_the_axis_by_process():
     assert blocks == [slice(0, 4), slice(4, 8)]
     # the second process holds the two empty slots, which is a valid (partly empty) block
     np.testing.assert_array_equal(bucket.is_empty[blocks[1]], [False, False, True, True])
+
+
+def test_sum_detector_batches():
+    bucket = Bucket(observations=np.array([0, 1]), n_slots=2, envelope=Shape(4, 10), n_batches=2)
+    per_entry = jnp.arange(2 * 2 * 3.0).reshape(4, 3)  # 2 slots of 2 batches
+    expected = per_entry.reshape(2, 2, 3).sum(axis=1)
+    np.testing.assert_array_equal(bucket.sum_detector_batches(per_entry), expected)
+
+
+# ---------------------------------------------------------------------------
+# SlotPlacement: the slots on the devices of the job
+# ---------------------------------------------------------------------------
+
+
+def _placement() -> SlotPlacement:
+    layout = SlotLayout.create(SHAPES, n_devices=jax.device_count(), max_buckets=1)
+    return SlotPlacement.create(layout)
+
+
+def test_placement_assigns_each_local_device_a_run_of_slots():
+    placement = _placement()
+    assert placement.local_devices == jax.local_devices()
+    n_slots = placement.layout.buckets[0].n_slots
+    np.testing.assert_array_equal(
+        placement.device_slots(0), np.arange(n_slots).reshape(jax.device_count(), -1)
+    )
+
+
+def test_placement_moves_arrays_between_host_and_devices():
+    placement = _placement()
+    n = jax.device_count()
+    sharded = placement.to_devices([{'x': np.arange(6.0).reshape(2, 3)} for _ in range(n)])
+    assert sharded['x'].sharding == placement.sharding
+    whole = placement.broadcast({'x': np.ones(3)})
+    assert whole['x'].sharding == placement.replicated
+
+    summed = placement.replicate(sharded, lambda x: x.sum(axis=0))
+    assert summed['x'].sharding == placement.replicated
+    np.testing.assert_array_equal(summed['x'], n * np.arange(6.0).reshape(2, 3))
+    gathered = placement.gather(sharded)
+    assert isinstance(gathered['x'], np.ndarray)
+    assert gathered['x'].shape == (n, 2, 3)
+
+    merged = placement.per_slot(sharded, lambda x: x.reshape(-1, 3), donate=True)
+    assert merged['x'].sharding == placement.sharding
+    assert merged['x'].shape == (2 * n, 3)
+    assert sharded['x'].is_deleted()
+
+
+def test_placement_needs_the_devices_the_layout_was_planned_for():
+    layout = SlotLayout.create(SHAPES, n_devices=jax.device_count() + 1, max_buckets=1)
+    with pytest.raises(ValueError, match='planned for'):
+        SlotPlacement.create(layout)
+
+
+def test_placement_shards_the_slots_over_one_mesh_axis():
+    layout = SlotLayout.create(SHAPES, n_devices=1, max_buckets=1)
+    mesh = Mesh(np.array(jax.devices()[:1]).reshape(1, 1), ('slot', 'other'))
+    with pytest.raises(ValueError, match="along 'slot'"):
+        SlotPlacement(layout, mesh)
 
 
 @pytest.mark.parametrize('detector_axis', [1, 2, -1])

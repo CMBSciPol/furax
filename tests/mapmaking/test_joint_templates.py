@@ -179,7 +179,7 @@ def test_demodulated_streams_fitted_alike_form_one_template(name, legendre, temp
     cfg.sotodlib = SotodlibConfig(demodulated=True)
     template.legendre = legendre  # set after demodulation, which per-stream orders require
     maker = MultiObservationMapMaker(_ground_obs(), config=cfg)
-    with jax.set_mesh(maker.mesh):
+    with jax.set_mesh(maker.placement.mesh):
         acc = maker.build_model_and_accumulate()
     operator = acc.buckets[0].templates.implicit.operator
     assert {key: t.streams for key, t in operator.templates.items()} == templates
@@ -221,7 +221,7 @@ def test_detector_batches_give_the_same_result(observations, templates, demodula
 
     accumulated = []
     for maker in makers:
-        with jax.set_mesh(maker.mesh):
+        with jax.set_mesh(maker.placement.mesh):
             accumulated.append(maker.build_model_and_accumulate())
     whole, batched = accumulated
     assert_allclose(batched.hit_map, whole.hit_map)
@@ -327,7 +327,7 @@ def test_several_observations_per_device_match_single_observations(monkeypatch, 
 
     def accumulate(observations):
         maker = MultiObservationMapMaker(observations, config=cfg)
-        with jax.set_mesh(maker.mesh):
+        with jax.set_mesh(maker.placement.mesh):
             return maker, maker.build_model_and_accumulate()
 
     maker, together = accumulate(observations)

@@ -145,6 +145,19 @@ class _BucketModel:
         """The Pomme deprojector of every entry."""
         return self.streams.diagonal(self.model.F)
 
+    @property
+    def W_prime(self) -> AbstractLinearOperator:
+        """The weight of the normal system, from `W` and the Pomme deprojector.
+
+        The implicit templates, if there are some, are marginalised over (deprojected).
+        """
+        W = (self.W @ self.F).reduce()
+        if self.templates is None or (implicit := self.templates.implicit) is None:
+            return W
+        Ti = self.streams.diagonal(implicit.operator)
+        G = self.streams.diagonal(implicit.gram_inverse)
+        return (W - W @ Ti @ G @ Ti.T @ W).reduce()
+
 
 @register_dataclass
 @dataclass(frozen=True)
@@ -195,6 +208,19 @@ class _AmplitudeBlock(NamedTuple):
     def structure(self) -> list[PyTree[jax.ShapeDtypeStruct]]:
         """The amplitudes of every bucket."""
         return [t.in_structure for t in self.T]
+
+
+class _Solution(NamedTuple):
+    """What the solve of `_MapMakingSystem` gives."""
+
+    sky: PyTree[Array]
+    """The sky estimate over the selected pixels."""
+    amplitudes: dict[str, np.ndarray] | None
+    """The template amplitudes, in observation order; `None` without explicit templates."""
+    injected: PyTree[Array] | None
+    """The estimate of the injected sky, over the selected pixels; `None` without one."""
+    stats: dict[str, Any]
+    """The solver statistics."""
 
 
 class _MapMakingSystem(NamedTuple):
@@ -384,8 +410,8 @@ class MultiObservationMapMaker[T]:
         nperseg = min(weighting.fitting.nperseg, shortest)
         if nperseg == weighting.fitting.nperseg:
             return self.config
-        self.logger.info(
-            f'MultiObsMapMaker: Welch segment clipped to {nperseg} samples '
+        self._info(
+            f'Welch segment clipped to {nperseg} samples '
             f'(configured {weighting.fitting.nperseg}) by the shortest observation'
         )
         fitting = replace(weighting.fitting, nperseg=nperseg)
@@ -430,13 +456,15 @@ class MultiObservationMapMaker[T]:
 
         return results
 
+    def _info(self, message: str) -> None:
+        self.logger.info(f'MultiObsMapMaker: {message}')
+
     def _log_layout(self) -> None:
         """Log the device layout and what the bucketing costs in padding (rank 0 only)."""
         if jax.process_index() != 0:
             return
-        logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
         layout = self.layout
-        logger_info(
+        self._info(
             f'layout procs={jax.process_count()} dev_per_proc={len(self.placement.local_devices)} '
             f'dev_total={layout.n_devices}'
         )
@@ -446,21 +474,20 @@ class MultiObservationMapMaker[T]:
         for b, (bucket, reader) in enumerate(zip(layout.buckets, self.readers, strict=True)):
             slot_bytes = furax.tree.nbytes(reader.out_structure)
             padded_bytes += slot_bytes * bucket.n_slots
-            logger_info(
+            self._info(
                 f'bucket {b}: {bucket.summary(layout.n_devices)} '
                 f'slot_size={format_bytes(slot_bytes)} '
                 f'real_size={format_bytes(reader.total_nbytes)} '
                 f'pad_size={format_bytes(slot_bytes * bucket.n_slots - reader.total_nbytes)}'
             )
         byte_overhead = (padded_bytes - real_bytes) / real_bytes
-        logger_info(
+        self._info(
             f'dataset {layout.summary()} real={format_bytes(real_bytes)} '
             f'padded={format_bytes(padded_bytes)} byte_overhead=+{byte_overhead:.1%}'
         )
 
     def make_maps(self) -> MapMakingResults:
         """Computes the mapmaker results (maps and other products)."""
-        logger_info = lambda msg: self.logger.info(f'MultiObsMapMaker: {msg}')
         rank = jax.process_index()
         started = utc_now()
         self._log_layout()
@@ -469,100 +496,43 @@ class MultiObservationMapMaker[T]:
             # Single read pass, so each observation is read/preprocessed exactly once.
             acc = self.build_model_and_accumulate()
             jax.block_until_ready(acc)
-            logger_info('Accumulated hit map and RHS vector')
+            self._info('Accumulated hit map and RHS vector')
 
             self._catalog.reads = self._gather_reads()
             if n_failed := self._catalog.n_failed:
-                logger_info(f'{n_failed} observation(s) failed and were excluded')
+                self._info(f'{n_failed} observation(s) failed and were excluded')
             noise_parameters = None
             if self.config.weighting.mode != WeightingMode.IDENTITY:
                 noise_parameters = self._collect_noise_parameters(acc)
 
-            # Per-bucket stream operators. Everything below sums over the buckets: each is a
-            # stream of its own length, so the sums stay plain additions of stream operators.
-            H = [bm.H for bm in acc.buckets]
-            W = [bm.W for bm in acc.buckets]
-            W_diag = W if self.config.binned else [bm.W_diag for bm in acc.buckets]
-            F = [bm.F for bm in acc.buckets]
-
-            # Diagonal pixel system for the block-Jacobi preconditioner
-            A_diag = AdditionOperator(
-                [(h.T @ wd @ f @ h).reduce() for h, wd, f in zip(H, W_diag, F, strict=True)],
-                sequential=True,
-            )
-            BJ = BJPreconditioner.create(A_diag)
+            BJ = self._block_jacobi(acc)
             icov = BJ.blocks.block_until_ready()
-            logger_info('Computed white noise inverse covariance')
+            self._info('Computed white noise inverse covariance')
 
-            # Fold Pomme deprojector into the weight
-            W_prime = [(w @ f).reduce() for w, f in zip(W, F, strict=True)]
-
-            # Pixel selection from the icov estimate
-            hit_map = acc.hit_map  # rebound below, once the pixel selection is known
-            valid_pixels = self.pixel_selection(hit_map, icov)
+            valid_pixels = self.pixel_selection(acc.hit_map, icov)
+            self._info(
+                f'Selected {jnp.sum(valid_pixels)} pixels ({jnp.sum(acc.hit_map > 0)} seen, '
+                f'{valid_pixels.size} total)'
+            )
             # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
             S = IndexOperator(
                 (..., *jnp.where(valid_pixels)), in_structure=self.landscape.structure
             )
 
-            n_selected = jnp.sum(valid_pixels)
-            n_observed = jnp.sum(hit_map > 0)
-            n_total = valid_pixels.size
-            logger_info(f'Selected {n_selected} pixels ({n_observed} seen, {n_total} total)')
-
-            hit_map = hit_map.at[~valid_pixels].set(0)  # excluded pixels have zero hits
-            icov = jnp.moveaxis(icov, [-2, -1], [0, 1])  # (*pixels, ns, ns) → (ns, ns, *pixels)
-
             response_sky = None if self._scanned_sky is not None else self.sky
-            system = self._build_system(acc, H, W_prime, S, BJ, response_sky)
+            system = self._build_system(acc, S, BJ, response_sky)
             if (two_level := self.config.solver.two_level) is not None:
                 system = self._deflate(system, two_level)
-
-            def log_iteration(step: Array, r_norm: Array) -> None:
-                if rank == 0:  # log from rank 0 only
-                    logger_info(f'CG step={int(step)} residual={float(r_norm):.6e}')
-
-            def solve(b):
-                return furax.linalg.cg(
-                    system.A,
-                    b,
-                    preconditioner=system.preconditioner,
-                    iteration_callback=log_iteration if self.config.solver.verbose else None,
-                    **self.config.solver.options,
-                )
-
-            result = solve(system.b)
-            logger_info(f'Finished GLS solve ({int(result.num_steps)} it)')
-
-            solver_stats = _solver_stats(result, self.config.solver.options)
-            injected_estimate = None
-            if system.response_b is not None:
-                # the same normal system, with the simulated sky as the right-hand side
-                response = solve(system.response_b)
-                logger_info(
-                    f'Finished the solve of the injected sky ({int(response.num_steps)} it)'
-                )
-                solver_stats['injected'] = _solver_stats(response, self.config.solver.options)
-                injected_estimate = response.solution[0] if system.blocks else response.solution
-
-            amplitudes = None
-            sky_estimate = result.solution
-            if system.blocks:
-                sky_estimate, *solutions = result.solution
-                amplitudes = {}
-                for block, solution in zip(system.blocks, solutions, strict=True):
-                    amplitudes |= self.placement.gather_per_observation(
-                        solution, block.detector_axes
-                    )
+            solution = self._solve(system)
 
         return MapMakingResults(
-            map=S.T(sky_estimate),  # all sky pixels including those not estimated (zero)
-            icov=icov,
-            hit_map=hit_map,
-            solver_stats=solver_stats,
+            map=S.T(solution.sky),  # all sky pixels including those not estimated (zero)
+            icov=jnp.moveaxis(icov, [-2, -1], [0, 1]),  # (*pixels, ns, ns) → (ns, ns, *pixels)
+            hit_map=jnp.where(valid_pixels, acc.hit_map, 0),  # excluded pixels have zero hits
+            solver_stats=solution.stats,
             landscape=self.landscape,
-            template_amplitudes=amplitudes,
-            injected_map=None if injected_estimate is None else S.T(injected_estimate),
+            template_amplitudes=solution.amplitudes,
+            injected_map=None if solution.injected is None else S.T(solution.injected),
             observations=self._catalog.to_table(),
             # the noise model covers the streams of the model's TOD, not all those read
             detectors=detector_table(
@@ -572,21 +542,28 @@ class MultiObservationMapMaker[T]:
             provenance=provenance(started=started) if rank == 0 else None,
         )
 
+    def _block_jacobi(self, acc: _AccumulatedModel) -> BJPreconditioner:
+        """The block-Jacobi preconditioner, from the diagonal pixel system over every bucket."""
+        # each bucket is a stream of its own length, so their sum is a plain addition of streams
+        terms = []
+        for bm in acc.buckets:
+            W_diag = bm.W if self.config.binned else bm.W_diag
+            terms.append((bm.H.T @ W_diag @ bm.F @ bm.H).reduce())
+        return BJPreconditioner.create(AdditionOperator(terms, sequential=True))
+
     def _build_system(
         self,
         acc: _AccumulatedModel,
-        H: Sequence[AbstractLinearOperator],
-        W: Sequence[AbstractLinearOperator],
         S: AbstractLinearOperator,
         BJ: BJPreconditioner,
         sky: StokesType | None = None,
     ) -> _MapMakingSystem:
         r"""Assembles the GLS normal system $H^T W' H x = H^T W' d$ over the selected pixels.
 
+        The weight $W'$ is that of each bucket (`_BucketModel.W_prime`).
+
         Args:
             acc: The accumulated per-bucket models, hit map and map RHS.
-            H: Per-bucket sky pointing operator.
-            W: Per-bucket weight, already bundling the sample mask and the Pomme deprojector.
             S: Selection of the estimated pixels out of the full sky grid.
             BJ: Block-Jacobi preconditioner.
             sky: A simulated sky on the full grid, whose right-hand side `response_b` is added.
@@ -594,13 +571,8 @@ class MultiObservationMapMaker[T]:
         Returns:
             The system to solve, in the unknowns described above.
         """
-        # Implicit templates fold into the weight (marginal deprojection).
-        W = list(W)
-        for b, bm in enumerate(acc.buckets):
-            if bm.templates is not None and (implicit := bm.templates.implicit) is not None:
-                Ti = bm.streams.diagonal(implicit.operator)
-                G = bm.streams.diagonal(implicit.gram_inverse)
-                W[b] = (W[b] - W[b] @ Ti @ G @ Ti.T @ W[b]).reduce()
+        H = [bm.H for bm in acc.buckets]
+        W = [bm.W_prime for bm in acc.buckets]
 
         blocks = self._amplitude_blocks(acc)
 
@@ -689,10 +661,10 @@ class MultiObservationMapMaker[T]:
     ) -> tuple[StreamOperator, AbstractLinearOperator, AbstractLinearOperator | None]:
         """The shared templates of a bucket, with the inverse of their Gram and its ridge, if any.
 
-        The amplitudes are those of each slot. The entries of a slot, its detector batches, see its amplitudes alone: of the stack
-        `(n_slots, ...)` every entry reads its own slot's, so that their transpose adds the
-        batches' projections up into the slot's amplitudes. Likewise, a slot's Gram is the sum of
-        those of its detector batches.
+        The amplitudes are those of each slot. The entries of a slot, its detector batches, see its
+        amplitudes alone: of the stack `(n_slots, ...)` every entry reads its own slot's, so that
+        their transpose adds the batches' projections up into the slot's amplitudes. Likewise, a
+        slot's Gram is the sum of those of its detector batches.
         """
         assert self.config.templates is not None  # shared templates exist
         bucket = bm.bucket
@@ -706,8 +678,9 @@ class MultiObservationMapMaker[T]:
                 {name: IndexOperator(slot, in_structure=s) for name, s in structure.items()}
             )
 
-        slots = jnp.arange(bucket.n_entries) // bucket.n_batches
-        templates = bm.streams.column(shared.operator @ jax.vmap(select)(slots))
+        templates = bm.streams.column(
+            shared.operator @ jax.vmap(select)(jnp.asarray(bucket.slot_of_entry))
+        )
 
         regularization = self.config.templates.regularization
         gram = self.placement.per_slot(shared.gram, bucket.sum_detector_batches)
@@ -735,8 +708,8 @@ class MultiObservationMapMaker[T]:
             preconditioner=system.preconditioner if preconditioned else None,
         )
         theta = result.eigenvalues
-        self.logger.info(
-            f'MultiObsMapMaker: Deflating {config.rank} eigenpairs ({config.which}) of the '
+        self._info(
+            f'Deflating {config.rank} eigenpairs ({config.which}) of the '
             f'{config.spectrum} spectrum, eigenvalues in '
             f'[{float(theta[0]):.6e}, {float(theta[-1]):.6e}], '
             f'max residual bound {float(jnp.max(result.residual_norms)):.3e}'
@@ -747,6 +720,43 @@ class MultiObservationMapMaker[T]:
             preconditioned=preconditioned,
         )
         return system._replace(preconditioner=M)
+
+    def _solve(self, system: _MapMakingSystem) -> _Solution:
+        """Solve `system`, and for its response to the injected sky if there is one."""
+        options = self.config.solver.options
+
+        def log_iteration(step: Array, r_norm: Array) -> None:
+            if jax.process_index() == 0:  # log from rank 0 only
+                self._info(f'CG step={int(step)} residual={float(r_norm):.6e}')
+
+        def solve(b):
+            result = furax.linalg.cg(
+                system.A,
+                b,
+                preconditioner=system.preconditioner,
+                iteration_callback=log_iteration if self.config.solver.verbose else None,
+                **options,
+            )
+            # the unknowns are the sky, then the amplitudes of each block, if any
+            sky, *amplitudes = result.solution if system.blocks else [result.solution]
+            return result, sky, amplitudes
+
+        result, sky, solutions = solve(system.b)
+        self._info(f'Finished GLS solve ({int(result.num_steps)} it)')
+        stats = _solver_stats(result, options)
+        injected = None
+        if system.response_b is not None:
+            # the same normal system, with the simulated sky as the right-hand side
+            response, injected, _ = solve(system.response_b)
+            self._info(f'Finished the solve of the injected sky ({int(response.num_steps)} it)')
+            stats['injected'] = _solver_stats(response, options)
+
+        amplitudes = None
+        if system.blocks:
+            amplitudes = {}
+            for block, solution in zip(system.blocks, solutions, strict=True):
+                amplitudes |= self.placement.gather_per_observation(solution, block.detector_axes)
+        return _Solution(sky, amplitudes, injected, stats)
 
     def _gather_reads(self) -> dict[int, Read]:
         """What the last pass read of each observation, or the exception that stopped its load.

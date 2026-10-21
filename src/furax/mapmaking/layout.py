@@ -270,6 +270,11 @@ class Bucket:
         """The entries as a stream lays them out, the batches of a slot sharing its common data."""
         return StreamLayout(self.n_entries, self.n_batches)
 
+    @property
+    def slot_of_entry(self) -> Int[np.ndarray, ' entry']:
+        """The slot of each entry: entry `e` is batch `e % n_batches` of slot `e // n_batches`."""
+        return np.arange(self.n_entries) // self.n_batches
+
     def merge_detector_batches(
         self, per_entry: Shaped[np.ndarray, 'entry batch_size *rest']
     ) -> Shaped[np.ndarray, 'slot det *rest']:

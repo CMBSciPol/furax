@@ -226,6 +226,11 @@ def test_local_slots_tile_the_axis_by_process():
     np.testing.assert_array_equal(bucket.is_empty[blocks[1]], [False, False, True, True])
 
 
+def test_slot_of_entry():
+    bucket = Bucket(observations=np.array([0, 1]), n_slots=3, envelope=Shape(4, 10), n_batches=2)
+    np.testing.assert_array_equal(bucket.slot_of_entry, [0, 0, 1, 1, 2, 2])
+
+
 def test_sum_detector_batches():
     bucket = Bucket(observations=np.array([0, 1]), n_slots=2, envelope=Shape(4, 10), n_batches=2)
     per_entry = jnp.arange(2 * 2 * 3.0).reshape(4, 3)  # 2 slots of 2 batches

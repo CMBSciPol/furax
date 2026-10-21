@@ -352,7 +352,7 @@ class MultiObservationMapMaker[T]:
     def get_readers(self, required_fields: Collection[str]) -> tuple[ObservationReader[T], ...]:
         """Build one reader per bucket, over that bucket's observations only.
 
-        A reader's items are its bucket's observations in order, so its buffers are sized by
+        A reader reads its bucket's observations in slot order, so its buffers are sized by
         exactly the observations it can be asked to read.
         """
         shapes, failed = self._probe_shapes
@@ -830,7 +830,7 @@ class MultiObservationMapMaker[T]:
     def build_model_and_accumulate(self) -> _AccumulatedModel:
         """Build the model and accumulate the hit map and map RHS in one pass over the data.
 
-        Padding (or failed) slots are gated out using a zero-mask, so they drop from the system.
+        Empty (or failed) slots are gated out using a zero-mask, so they drop from the system.
 
         This method must run under ``jax.set_mesh(self.mesh)``.
         """
@@ -884,9 +884,9 @@ class MultiObservationMapMaker[T]:
         )
 
         def load(slot):
-            if bucket.is_real[slot]:
-                return reader.read_host(int(bucket.item_of_slot[slot]))
-            # A padding slot is never read or preprocessed just to be masked away
+            if not bucket.is_empty[slot]:
+                return reader.read_host(slot)  # readers are indexed by slot
+            # An empty slot is never read or preprocessed just to be masked away
             return reader.read_filler_host()
 
         hits = rhs = None

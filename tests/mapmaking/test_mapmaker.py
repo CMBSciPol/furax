@@ -248,7 +248,7 @@ class TestBuckets:
         covered = sorted(int(i) for b in layout.buckets for i in b.observations)
         assert covered == list(range(len(self.N_SAMPLES)))
         for bucket, reader in zip(layout.buckets, maker.readers, strict=True):
-            assert reader.count == bucket.n_real
+            assert reader.count == bucket.n_observations
             assert bucket.n_slots % jax.device_count() == 0
             # each reader pads to its own bucket's envelope, not the dataset's largest
             n_samples = reader.out_structure['sample_data'].shape[-1]

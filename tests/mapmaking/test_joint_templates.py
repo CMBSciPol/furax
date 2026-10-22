@@ -31,6 +31,7 @@ from furax.mapmaking.config import (
     ScanSynchronousConfig,
     SolverConfig,
     SotodlibConfig,
+    SplineDriftConfig,
     T2PConfig,
     TemplatesConfig,
     TwoLevelConfig,
@@ -139,14 +140,12 @@ def test_runs_and_produces_a_map(explicit):
     assert res.solver_stats['num_steps'] >= 1
 
 
-def test_polynomial_over_the_observation_returns_its_amplitudes():
-    polynomial = PolynomialConfig(
-        legendre=PolynomialOrders(0, 5), span='observation', explicit=True
-    )
-    cfg = _config(TemplatesConfig(polynomial=polynomial))
+def test_spline_drift_returns_its_amplitudes():
+    spline = SplineDriftConfig(samples_per_knot=128, explicit=True)
+    cfg = _config(TemplatesConfig(spline_drift=spline))
     res = MultiObservationMapMaker(_ground_obs(), config=cfg).run()
-    amps = res.template_amplitudes['polynomial']
-    assert amps.shape == (2, 8, 6)  # (obs, det, order)
+    amps = res.template_amplitudes['spline_drift']
+    assert amps.shape == (2, 8, 10)  # (obs, det, knot): 1024 // 128 knots, plus 2
     assert jnp.all(jnp.isfinite(amps))
 
 

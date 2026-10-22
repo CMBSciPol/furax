@@ -102,6 +102,7 @@ Templates are instances of the model:
 | Template | basis | `per` | coupling |
 |---|---|---|---|
 | Polynomial per scan interval | piecewise, one block per interval | `('stream', 'det')` | — |
+| Drift over the observation | cubic B-spline of time, four knots read by each sample | `('stream', 'det')` | — |
 | HWP- or scan-synchronous | dense, of the HWP angle or the azimuth | `('stream', 'det')` | — |
 | T2P per detector | the detector's temperature, batched | `('stream', 'det')` | — |
 | T2P field, common to Q and U | the detector's temperature, batched | `()` | Q: `Zₖ · (cos 2γ, −sin 2γ)`, U: `Zₖ · (sin 2γ, cos 2γ)` |

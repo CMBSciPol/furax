@@ -20,10 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax.mapmaking.templates.gram`: `template_gram`, `BlockGram` and `factor`, the Gram of templates assembled by probing or from the structure of the bases, and its inverse (#348)
 - Templates can be fitted under a correlated (Toeplitz) weight, with `gaps.treatment=inner_mask` (#369)
 - `T2PConfig.zernike_order`, `zernike_radius` and `joint_qu`: the T2P leakage can be fitted as a polarization field over the focal plane, from `zernike_couplings` (#355)
-- `PolynomialConfig.span` chooses whether a polynomial template spans each scan or the whole observation (#357)
 - `TemplateFit`: the weighted least-squares fit of templates to a TOD (#358)
 - `MapMakingConfig.injection` (`InjectionConfig`) scans a simulated sky into the data of a run, and `MapMakingResults.injected_map` holds the response of the run to it (#362)
 - `MapMakingResults.observations`, `detectors` and `provenance`: what a multi-observation run read, its noise parameters and provenance; `solver_stats` gains the CG residuals (#366)
+- `SplineDriftConfig` (`templates.spline_drift`): a drift template, a cubic B-spline of time over the observation, with a knot every `samples_per_knot` samples (#383)
 
 ### Changed
 

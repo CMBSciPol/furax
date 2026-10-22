@@ -18,13 +18,14 @@ from furax.mapmaking.config import (
     PolynomialOrders,
     ScanSynchronousConfig,
     SotodlibConfig,
+    SplineDriftConfig,
     T2PConfig,
     TemplatesConfig,
     TwoLevelConfig,
     WCSConfig,
     WeightingConfig,
     WeightingMode,
-    _legendre_stream_groups,
+    _per_stream_groups,
 )
 
 # Every config class whose docstring carries an `Examples:` block.
@@ -276,5 +277,22 @@ class TestLegendrePerLeg:
         ({'qu': PolynomialOrders(2, 5)}, {'qu': PolynomialOrders(2, 5)}),
     ],
 )
-def test_legendre_stream_groups(legendre, expected):
-    assert _legendre_stream_groups(legendre, 'IQU') == expected
+def test_per_stream_groups(legendre, expected):
+    assert _per_stream_groups(legendre, 'IQU') == expected
+
+
+class TestSplineDrift:
+    def test_round_trips_through_yaml_per_stream(self):
+        spline = SplineDriftConfig(samples_per_knot={'i': 2000, 'qu': 560})
+        config = _demodulated(TemplatesConfig(spline_drift=spline))
+        assert MapMakingConfig.load_dict(yaml.safe_load(config._to_yaml())) == config
+
+    def test_per_stream_needs_demodulated_data(self):
+        templates = TemplatesConfig(spline_drift=SplineDriftConfig(samples_per_knot={'qu': 500}))
+        with pytest.raises(ValueError, match='per stream requires demodulated=True'):
+            MapMakingConfig(templates=templates)
+
+    @pytest.mark.parametrize('samples_per_knot', [0, {'qu': -1}])
+    def test_knot_spacing_is_positive(self, samples_per_knot):
+        with pytest.raises(ValueError, match='samples_per_knot must be >= 1'):
+            SplineDriftConfig(samples_per_knot=samples_per_knot)

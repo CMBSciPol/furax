@@ -34,10 +34,11 @@ from ..config import (
     PolynomialConfig,
     PolynomialOrders,
     ScanSynchronousConfig,
+    SplineDriftConfig,
     SplineHWPSynchronousConfig,
     T2PConfig,
     TemplatesConfig,
-    _legendre_stream_groups,
+    _per_stream_groups,
 )
 from ._operator import Template
 from .bases import (
@@ -53,6 +54,7 @@ __all__ = [
     'build_templates',
     'required_reader_fields',
     'polynomial_templates',
+    'spline_drift_templates',
     'scan_synchronous_templates',
     'binned_azimuth_synchronous_templates',
     'hwp_synchronous_templates',
@@ -97,6 +99,7 @@ def build_templates(
     implicit: dict[str, Template] = {}
     builders = {
         'polynomial': polynomial_templates,
+        'spline_drift': spline_drift_templates,
         'scan_synchronous': scan_synchronous_templates,
         'binned_azimuth_synchronous': binned_azimuth_synchronous_templates,
         'hwp_synchronous': hwp_synchronous_templates,
@@ -119,9 +122,13 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
     """The fields of an observation the templates `config` enables are built from."""
     fields: set[str] = set()
     if config.polynomial is not None:
+        fields |= {
+            ReaderField.TIMESTAMPS,
+            ReaderField.VALID_SCANNING_MASKS,
+            ReaderField.SCANNING_INTERVALS,
+        }
+    if config.spline_drift is not None:
         fields |= {ReaderField.TIMESTAMPS, ReaderField.VALID_SCANNING_MASKS}
-        if config.polynomial.span == 'scan':
-            fields |= {ReaderField.SCANNING_INTERVALS}
     if config.scan_synchronous is not None or config.binned_azimuth_synchronous is not None:
         fields |= {ReaderField.AZIMUTH}
     if config.hwp_synchronous is not None:
@@ -148,20 +155,12 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
 def polynomial_templates(
     config: PolynomialConfig, data: Mapping[str, Any], tod_format: TODFormat
 ) -> dict[str, Template]:
-    """Legendre polynomials over each scan interval, or over the whole observation.
+    """Legendre polynomials over each scan interval.
 
     One template per group of streams fitted with the same orders (see `_stream_groups`).
     """
 
     def basis(orders: PolynomialOrders) -> Basis:
-        if config.span == 'observation':
-            return observation_polynomial_basis(
-                orders.max_order,
-                times=data[ReaderField.TIMESTAMPS],
-                dtype=tod_format.dtype,
-                valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
-                min_poly_order=orders.min_order,
-            )
         return scan_polynomial_basis(
             max_poly_order=orders.max_order,
             intervals=data[ReaderField.SCANNING_INTERVALS],
@@ -172,6 +171,26 @@ def polynomial_templates(
         )
 
     return _stream_groups('polynomial', config.legendre, basis, tod_format)
+
+
+def spline_drift_templates(
+    config: SplineDriftConfig, data: Mapping[str, Any], tod_format: TODFormat
+) -> dict[str, Template]:
+    """Cubic B-splines of time over the whole observation.
+
+    One template per group of streams fitted with the same knot spacing (see `_stream_groups`).
+    """
+    times = data[ReaderField.TIMESTAMPS]
+
+    def basis(samples_per_knot: int) -> Basis:
+        return spline_drift_basis(
+            max(2, times.size // samples_per_knot),
+            times=times,
+            dtype=tod_format.dtype,
+            valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
+        )
+
+    return _stream_groups('spline_drift', config.samples_per_knot, basis, tod_format)
 
 
 def scan_synchronous_templates(
@@ -380,26 +399,26 @@ def _on_every_stream(basis: Basis, tod_format: TODFormat) -> Template:
     )
 
 
-def _stream_groups(
+def _stream_groups[T](
     name: str,
-    legendre: PolynomialOrders | dict[str, PolynomialOrders],
-    basis: Callable[[PolynomialOrders], Basis],
+    per_stream: T | dict[str, T],
+    basis: Callable[[T], Basis],
     tod_format: TODFormat,
 ) -> dict[str, Template]:
-    """One template per group of streams fitted with the same `legendre` orders.
+    """One template per group of streams fitted with the same option, such as Legendre orders.
 
     It is named `name` if every stream of the TOD is fitted alike, `<name>_<streams>` otherwise,
-    such as `polynomial_qu`. Orders per stream need a demodulated TOD.
+    such as `polynomial_qu`. Options per stream need a demodulated TOD.
     """
     if tod_format.stokes is None:
-        assert isinstance(legendre, PolynomialOrders)  # per-stream orders need demodulation
-        return {name: Template(basis(legendre), tod_format)}
+        assert not isinstance(per_stream, dict)  # per-stream options need demodulation
+        return {name: Template(basis(per_stream), tod_format)}
     streams = tod_format.stokes.lower()
     return {
         name if group == streams else f'{name}_{group}': Template(
-            basis(orders), tod_format, streams=group
+            basis(value), tod_format, streams=group
         )
-        for group, orders in _legendre_stream_groups(legendre, streams).items()
+        for group, value in _per_stream_groups(per_stream, streams).items()
     }
 
 
@@ -539,24 +558,22 @@ def scan_polynomial_basis(
     return SegmentedBasis(segment.astype(jnp.int32), values, n_intervals)
 
 
-def observation_polynomial_basis(
-    max_poly_order: int,
+def spline_drift_basis(
+    n_knots: int,
     times: Float[Array, ' samp'],
     dtype: DTypeLike,
     valid_mask: Float[Array, ' samp'] | None = None,
-    min_poly_order: int = 0,
 ) -> Basis:
-    """Basis for a polynomial drift template over the whole observation.
+    """Basis for a drift template, a cubic B-spline of time over the whole observation.
 
-    Legendre orders `min_poly_order..max_poly_order` of the time, rescaled to `[-1, 1]` over the
-    observation. `valid_mask` optionally zeroes flagged samples (1 = keep, 0 = drop) so they
-    neither carry template signal nor constrain the fitted amplitudes.
+    One amplitude per knot, `n_knots + 2` in all. A knot that no valid sample sees has an exactly
+    zero row in the Gram. `valid_mask` optionally zeroes flagged samples (1 = keep, 0 = drop) so
+    they neither carry template signal nor constrain the fitted amplitudes.
     """
-    u = -1.0 + 2.0 * (times - times[0]) / (times[-1] - times[0])
-    values = _legendre_values(u, min_poly_order, max_poly_order, dtype)  # (k, n_samps)
+    values = bspline.spline_basis(times, n_knots)  # (k, n_samps)
     if valid_mask is not None:
-        values = values * valid_mask[None, :].astype(dtype)
-    return TensorBasis(values)
+        values = values * valid_mask[None, :].astype(values.dtype)
+    return TensorBasis(values.astype(dtype))
 
 
 _T2P_BATCH_SIZE = 32

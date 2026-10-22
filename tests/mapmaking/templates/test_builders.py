@@ -12,6 +12,7 @@ from furax.mapmaking.config import (
     HWPSynchronousConfig,
     PolynomialConfig,
     PolynomialOrders,
+    SplineDriftConfig,
     SplineHWPSynchronousConfig,
     T2PConfig,
     TemplatesConfig,
@@ -35,6 +36,7 @@ from furax.mapmaking.templates._builders import (
     hwp_synchronous_basis,
     scan_polynomial_basis,
     scan_synchronous_basis,
+    spline_drift_basis,
     spline_hwp_synchronous_basis,
     t2p_basis,
 )
@@ -628,6 +630,21 @@ def test_t2p_field_shares_its_amplitudes_between_the_detectors(joint_qu, per, sh
     assert ReaderField.DETECTOR_QUATERNIONS in required_reader_fields(TemplatesConfig(t2p=config))
 
 
-def test_polynomial_over_the_observation_needs_no_scanning_intervals():
-    config = TemplatesConfig(polynomial=PolynomialConfig(span='observation'))
+def test_spline_drift_needs_no_scanning_intervals():
+    config = TemplatesConfig(spline_drift=SplineDriftConfig())
     assert ReaderField.SCANNING_INTERVALS not in required_reader_fields(config)
+    assert ReaderField.SCANNING_INTERVALS in required_reader_fields(
+        TemplatesConfig(polynomial=PolynomialConfig())
+    )
+
+
+def test_spline_drift_is_a_partition_of_unity_on_valid_samples():
+    n_samps, n_knots = 300, 10
+    t = jnp.linspace(0, 30, n_samps)
+    valid = jnp.ones(n_samps).at[100:200].set(0.0)  # a gap wider than the knot spacing
+    basis = spline_drift_basis(n_knots, t, jnp.float64, valid)
+    assert basis.shape == (n_knots + 2,)
+
+    assert_allclose(basis(jnp.ones(basis.shape)), valid, atol=TOL)
+    matrix = basis.as_matrix()
+    assert jnp.sum(jnp.diagonal(matrix.T @ matrix) == 0) > 0  # knots in the gap see no sample

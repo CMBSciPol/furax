@@ -35,6 +35,7 @@ __all__ = [
     'TemplatesConfig',
     'PolynomialOrders',
     'PolynomialConfig',
+    'SplineDriftConfig',
     'ScanSynchronousConfig',
     'BinsConfig',
     'BinnedAzimuthSynchronousConfig',
@@ -405,29 +406,27 @@ class PolynomialOrders(NamedTuple):
         return self.max_order - self.min_order + 1
 
 
-def _legendre_stream_groups(
-    legendre: PolynomialOrders | dict[str, PolynomialOrders], stokes: str
-) -> dict[str, PolynomialOrders]:
-    """The orders of each group of streams fitted alike, keyed by its lowercase streams.
+def _per_stream_groups[T](values: T | dict[str, T], stokes: str) -> dict[str, T]:
+    """The value of each group of streams fitted alike, keyed by its lowercase streams.
 
-    Streams with the same orders are grouped, in the order of `stokes`, whatever groups `legendre`
-    names them in; streams it leaves out are absent.
+    Streams with the same value are grouped, in the order of `stokes`, whatever groups `values`
+    names them in; streams it leaves out are absent. A plain value applies to every stream.
 
     Examples:
-        >>> _legendre_stream_groups(PolynomialOrders(0, 3), 'IQU')
+        >>> _per_stream_groups(PolynomialOrders(0, 3), 'IQU')
         {'iqu': PolynomialOrders(min_order=0, max_order=3)}
         >>> orders = PolynomialOrders(0, 1)
-        >>> _legendre_stream_groups({'u': orders, 'Q': orders}, 'IQU')
+        >>> _per_stream_groups({'u': orders, 'Q': orders}, 'IQU')
         {'qu': PolynomialOrders(min_order=0, max_order=1)}
     """
-    if not isinstance(legendre, dict):
-        return {stokes.lower(): legendre}
-    per_stream = {s: orders for group, orders in legendre.items() for s in group.lower()}
-    groups: dict[PolynomialOrders, str] = {}
+    if not isinstance(values, dict):
+        return {stokes.lower(): values}
+    per_stream = {s: value for group, value in values.items() for s in group.lower()}
+    groups: dict[T, str] = {}
     for s in stokes.lower():
-        if (orders := per_stream.get(s)) is not None:
-            groups[orders] = groups.get(orders, '') + s
-    return {group: orders for orders, group in groups.items()}
+        if (value := per_stream.get(s)) is not None:
+            groups[value] = groups.get(value, '') + s
+    return {group: value for value, group in groups.items()}
 
 
 @dataclass
@@ -451,8 +450,8 @@ class BinsConfig:
 class PolynomialConfig:
     """Polynomial drift template (per-detector Legendre polynomial in time).
 
-    By default each scanning interval has its own low-order polynomial; with `span='observation'`,
-    a single polynomial spans the observation, of an order high enough to follow its slow drifts.
+    Each scanning interval has its own low-order polynomial. The slow drift over a whole
+    observation is left to [`SplineDriftConfig`][].
 
     Examples:
         Orders 0 to 3 on every stream
@@ -483,10 +482,50 @@ class PolynomialConfig:
     own orders; the streams of a group are still fitted independently, and a stream left out has no
     polynomial template.
     """
-    span: Literal['scan', 'observation'] = 'scan'
-    """What a polynomial spans: each scanning interval, or the whole observation."""
     explicit: bool = False
     """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
+
+
+@dataclass
+class SplineDriftConfig:
+    """Slow drift of each detector, a cubic B-spline of time over the whole observation.
+
+    Unlike a polynomial, the spline is local: each sample is seen by four neighbouring knots, so a
+    flagged stretch leaves some knots unconstrained instead of making the template degenerate. The
+    drift follows time scales longer than about twice the knot spacing.
+
+    Examples:
+        One knot every 560 samples, about 70 s at 8 Hz
+
+            spline_drift:
+                samples_per_knot: 560
+
+        Demodulated data: slower drifts on I than on Q and U
+
+            spline_drift:
+                samples_per_knot:
+                    i: 2000
+                    qu: 560
+    """
+
+    samples_per_knot: int | dict[str, int] = 500
+    """Samples between knots, for every stream or per group of streams of demodulated data.
+
+    A knot count must be known before the timestamps are, so the spacing is in samples, not
+    seconds. On a mapping such as `{'i': ..., 'qu': ...}` the streams of a group are fitted
+    independently, and a stream left out has no spline template.
+    """
+    explicit: bool = False
+    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
+
+    def __post_init__(self) -> None:
+        values = (
+            self.samples_per_knot.values()
+            if isinstance(self.samples_per_knot, dict)
+            else [self.samples_per_knot]
+        )
+        if any(value < 1 for value in values):
+            raise ValueError(f'samples_per_knot must be >= 1, got {self.samples_per_knot}')
 
 
 @dataclass
@@ -708,7 +747,10 @@ class TemplatesConfig:
     """
 
     polynomial: PolynomialConfig | None = None
-    """Per-detector polynomial template."""
+    """Per-detector polynomial template on each scanning interval."""
+
+    spline_drift: SplineDriftConfig | None = None
+    """Per-detector drift template, a cubic B-spline of time over the observation."""
 
     scan_synchronous: ScanSynchronousConfig | None = None
     """Scan-synchronous (azimuth-only) template on a global Legendre basis."""
@@ -749,6 +791,7 @@ class TemplatesConfig:
         """Create a template config with default values for all templates."""
         return cls(
             polynomial=PolynomialConfig(),
+            spline_drift=SplineDriftConfig(),
             scan_synchronous=ScanSynchronousConfig(),
             binned_azimuth_synchronous=BinnedAzimuthSynchronousConfig(),
             hwp_synchronous=HWPSynchronousConfig(),
@@ -1090,16 +1133,22 @@ class MapMakingConfig:
                         'The T2P template requires Q and U streams in landscape.stokes (got '
                         f'{self.landscape.stokes!r}).'
                     )
-            for name in ('polynomial', 'scan_synchronous'):
+            for name, option in (
+                ('polynomial', 'legendre'),
+                ('scan_synchronous', 'legendre'),
+                ('spline_drift', 'samples_per_knot'),
+            ):
                 template = getattr(templates, name)
-                if template is not None and isinstance(template.legendre, dict):
-                    self._check_stream_groups(f'templates.{name}.legendre', template.legendre)
+                if template is not None and isinstance(
+                    per_stream := getattr(template, option), dict
+                ):
+                    self._check_stream_groups(f'templates.{name}.{option}', per_stream)
 
-    def _check_stream_groups(self, name: str, legendre: dict[str, PolynomialOrders]) -> None:
-        """Check that per-stream orders name each stream of the landscape at most once."""
+    def _check_stream_groups(self, name: str, per_stream: dict[str, Any]) -> None:
+        """Check that a template option per stream names each stream of the landscape at most once."""
         if not self.demodulated:
             raise ValueError(f'{name} per stream requires demodulated=True.')
-        streams = ''.join(legendre).upper()
+        streams = ''.join(per_stream).upper()
         if not streams:
             raise ValueError(f'{name} names no stream.')
         if extra := sorted(set(streams) - set(self.landscape.stokes)):

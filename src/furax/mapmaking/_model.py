@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import functools
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, Self
 
 import jax
@@ -8,7 +11,8 @@ from fastquat import Quaternion
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, PyTree
 
-from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
+from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, symmetric, tree
+from furax.core import BlockDiagonalOperator, IndexOperator
 from furax.obs import TODFormat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
@@ -23,7 +27,9 @@ from .config import (
     TemplatesConfig,
     WeightingMode,
 )
+from .layout import Bucket, SlotPlacement
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
+from .streaming import StreamLayout, StreamOperator
 from .templates import TemplateOperator, build_templates, required_reader_fields
 from .templates.gram import BlockGram, factor, template_gram
 from .templates.pomme import PommeProjectionOperator
@@ -33,11 +39,11 @@ from .weight import NestedWeightOperator, WeightOperator
 @register_dataclass
 @dataclass
 class ObservationModel:
-    """Holds the operators and data for one or more observations.
+    """The operators of one observation, or of one batch of its detectors, and its noise model.
 
-    When stacked via ``jax.lax.scan``, the array fields carry a leading batch
-    dimension over observations while static fields (structures, chunk sizes)
-    remain shared.
+    The mapmaker builds one for each entry of a bucket as it reads the data, then stacks them over
+    the entries: the array fields gain a leading axis, while the static fields (structures, chunk
+    sizes) stay shared. [`BucketModel`][] holds the stack.
     """
 
     H: AbstractLinearOperator
@@ -164,17 +170,35 @@ class ObservationModel:
             inverse=inverse,
         )
 
-    def diag_W(self) -> WeightOperator:
-        """Build the inverse white-noise weight for a *single* observation.
+    def white_weight(self) -> WeightOperator:
+        """The weight `W` without the noise correlations: that of the white part of the noise.
 
-        Assumes ``self`` is a single-observation model (single-observation ``noise_model`` and
-        ``tod_format``). The observation-stacked preconditioner is obtained by mapping this over
-        the observation axis in [`MultiObservationMapMaker.make_maps`][], mirroring how ``W`` is
-        stacked inside the accumulation scan.
+        Assumes a model that is not stacked: its noise model and TOD format are one entry's.
         """
         white = self.noise_model.to_white_noise_model()
         inv = _noise_operator(white, self.tod_format, self.sample_rate, inverse=True)
         return WeightOperator.create(inv, self.M)
+
+    def deprojected_weight(
+        self,
+        implicit: TemplateBundle | None = None,
+        lift: Callable[[AbstractLinearOperator], AbstractLinearOperator] = lambda op: op,
+    ) -> AbstractLinearOperator:
+        r"""The weight of the normal system, from `W` and the Pomme deprojector.
+
+        The implicit templates $T$, if there are some, are marginalised over:
+        $W' = W F - W F T G^{-1} T^\top W F$, with $G$ their Gram.
+
+        Args:
+            implicit: The implicit templates, if any.
+            lift: Applied to each operator of the formula before they are combined, such as
+                [`StreamLayout.diagonal`][] for a model stacked over the entries of a bucket.
+        """
+        W = (lift(self.W) @ lift(self.F)).reduce()
+        if implicit is None:
+            return W
+        T, G = lift(implicit.operator), lift(implicit.gram_inverse)
+        return (W - W @ T @ G @ T.T @ W).reduce()
 
 
 def acquisition_operator(
@@ -290,7 +314,7 @@ def _noise_operator(
 
 
 def _hwp_frequency(
-    timestamps: Float[Array, '...'], hwp_angles: Float[Array, '...']
+    timestamps: Float[Array, ' ...'], hwp_angles: Float[Array, ' ...']
 ) -> Float[Array, '']:
     # Note that the reader extrapolates hwp_angles in the padded region, keeping hwp freq constant
     return (jnp.unwrap(hwp_angles)[-1] - hwp_angles[0]) / jnp.ptp(timestamps) / (2 * jnp.pi)
@@ -403,7 +427,7 @@ class ObservationTemplates:
     sees their amplitudes: each detector alone, or detectors in common.
     """
 
-    explicit: TemplateBundle | None
+    own: TemplateBundle | None
     """Explicit templates whose amplitudes are each detector's own, solved jointly with the map."""
 
     implicit: TemplateBundle | None
@@ -425,16 +449,14 @@ class ObservationTemplates:
         data: Any,
         config: MapMakingConfig,
         model: ObservationModel,
-        tod: PyTree[Array],
         temperature: Float[Array, 'det samp'] | None = None,
-    ) -> tuple[Self, PyTree[Array]]:
-        """Build one observation's templates and weight its TOD, implicit templates folded in.
+    ) -> Self:
+        """Build one observation's templates.
 
         Args:
             data: The fields read for the observation.
             config: The mapmaking configuration, whose templates are built.
             model: The observation's model.
-            tod: The TOD to weight.
             temperature: The I timestream, from which the T2P template is built; by default, the
                 I stream of the sample data.
         """
@@ -444,10 +466,8 @@ class ObservationTemplates:
             tcfg, data, model.tod_format, temperature=temperature
         )
 
-        # `Weff` bundles the sample mask (via `model.W`) and the Pomme deprojector `model.F`; the
-        # Grams are taken under the same effective weight, from `model.W` and `tau`.
-        Weff = (model.W @ model.F).reduce()
-        wd = Weff(tod)
+        # The Grams are taken under the effective weight `W F` of the observation's model, from
+        # `model.W` and the Pomme interval length.
         pomme_tau = config.pomme_tau if config.method == Methods.POMME else None
         # the Toeplitz band of a correlated weight holds lags 0 to `correlation_length - 1`
         bandwidth = 0 if config.binned else config.weighting.correlation_length - 1
@@ -462,20 +482,18 @@ class ObservationTemplates:
                 )
             op = TemplateOperator(implicit_templates)
             implicit = TemplateBundle.create(op, model.W, tcfg, **gram_options)
-            ginv = implicit.gram_inverse
-            wd = wd - Weff(op(ginv(op.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
 
-        explicit = shared = None
-        own = {n: t for n, t in explicit_templates.items() if t.per_detector}
+        own = shared = None
+        per_detector = {n: t for n, t in explicit_templates.items() if t.per_detector}
         common = {n: t for n, t in explicit_templates.items() if not t.per_detector}
-        if own:
-            op = TemplateOperator(own)
-            explicit = TemplateBundle.create(op, model.W, tcfg, **gram_options)
+        if per_detector:
+            op = TemplateOperator(per_detector)
+            own = TemplateBundle.create(op, model.W, tcfg, **gram_options)
         if common:
             op = TemplateOperator(common)
             shared = SharedTemplates.create(op, model.W, tcfg, **gram_options)
 
-        return cls(explicit=explicit, implicit=implicit, shared=shared), wd
+        return cls(own=own, implicit=implicit, shared=shared)
 
 
 def restrict_streams(
@@ -495,3 +513,195 @@ def restrict_streams(
     if (fits := data.get(ReaderField.NOISE_MODEL_FITS)) is not None:
         data[ReaderField.NOISE_MODEL_FITS] = fits[index]  # one row per stream
     return data, select(tod)
+
+
+@register_dataclass
+@dataclass(frozen=True)
+class BucketModel:
+    """The model of one bucket: the models of its entries, and the amplitudes solved for.
+
+    It is assembled once the bucket is read. Its operators stream over the entries.
+    """
+
+    streams: StreamLayout = field(metadata={'static': True})
+    """How the operators stacked over the entries of the bucket form one stream."""
+    entries: ObservationModel
+    """The model of every entry, stacked over the entries (what the detector batches of a slot
+    share, once per slot)."""
+    implicit: TemplateBundle | None
+    """Per-entry implicit templates, marginalised over (None without them)."""
+    amplitudes: tuple[BucketAmplitudes, ...]
+    """The explicit amplitudes of each kind present: those of each detector alone, then those
+    shared by the detectors of an observation."""
+
+    @classmethod
+    def create(
+        cls,
+        bucket: Bucket,
+        entries: ObservationModel,
+        templates: ObservationTemplates | None,
+        own_rhs: PyTree[Array] | None,
+        shared_rhs: PyTree[Array] | None,
+        placement: SlotPlacement,
+        config: TemplatesConfig | None,
+    ) -> BucketModel:
+        """The model of a bucket, from what its accumulation stacked over its entries.
+
+        The shared data of the entries of a slot, its detector batches, is stacked once per slot.
+
+        Args:
+            bucket: The bucket.
+            entries: The model of every entry.
+            templates: The templates, if any.
+            own_rhs: The right-hand side of the explicit amplitudes of each detector alone.
+            shared_rhs: The right-hand side of the explicit amplitudes shared by the detectors.
+            placement: Where the slots of the bucket lie.
+            config: The templates configuration.
+        """
+        streams = bucket.stream_layout
+        if templates is None:
+            return cls(streams, entries, None, ())
+        amplitudes = []
+        if (own := templates.own) is not None:
+            # the detector axis follows the stream axis, if any (see `Template`), after the axis
+            # of entries
+            axes = tuple(
+                (name, 1 + t.per.index('det')) for name, t in own.operator.templates.items()
+            )
+            amplitudes.append(
+                BucketAmplitudes(
+                    streams.diagonal(own.operator),
+                    streams.diagonal(own.gram_inverse),
+                    None if own.ridge is None else streams.diagonal(own.ridge),
+                    own_rhs,
+                    axes,
+                )
+            )
+        if templates.shared is not None:
+            assert config is not None  # shared templates are configured
+            amplitudes.append(
+                _shared_amplitudes(
+                    bucket, templates.shared, shared_rhs, placement, config.regularization
+                )
+            )
+        return cls(streams, entries, templates.implicit, tuple(amplitudes))
+
+    @property
+    def H(self) -> StreamOperator:
+        """The sky pointing, from the sky to the TOD of every entry."""
+        return self.streams.column(self.entries.H)
+
+    @property
+    def W(self) -> StreamOperator:
+        """The weight of every entry."""
+        return self.streams.diagonal(self.entries.W)
+
+    def white_weight(self) -> StreamOperator:
+        """The weight of every entry, without the noise correlations.
+
+        It is the plain masked weight of the white part of the noise, even under the nested gap
+        treatment.
+        """
+        if isinstance(self.entries.noise_model, WhiteNoiseModel) and isinstance(
+            self.entries.W, WeightOperator
+        ):
+            return self.W
+        # Map only the inverse noise: the mask is W's own, used as it is.
+        weight = self.streams.vmap(lambda m: m.white_weight().weight, self.entries)
+        return self.streams.diagonal(WeightOperator.create(weight, self.entries.M))
+
+    @property
+    def F(self) -> StreamOperator:
+        """The Pomme deprojector of every entry."""
+        return self.streams.diagonal(self.entries.F)
+
+    @property
+    def deprojected_weight(self) -> AbstractLinearOperator:
+        """The weight of the normal system, from `W` and the Pomme deprojector.
+
+        The implicit templates, if there are some, are marginalised over (see
+        [`ObservationModel.deprojected_weight`][]).
+        """
+        return self.entries.deprojected_weight(self.implicit, lift=self.streams.diagonal)
+
+
+@register_dataclass
+@dataclass(frozen=True)
+class BucketAmplitudes:
+    """One kind of explicit-template amplitudes of one bucket.
+
+    The counterpart of [`TemplateBundle`][] over the entries of a bucket, with the right-hand side.
+    """
+
+    operator: StreamOperator
+    """The templates, from the amplitudes to the TOD of every entry of the bucket."""
+    gram_inverse: AbstractLinearOperator
+    """The inverse of the Gram of the amplitudes, which preconditions them."""
+    ridge: AbstractLinearOperator | None
+    """The ridge the Gram inverse was factored with, if any."""
+    rhs: PyTree[Array]
+    """The right-hand side of the amplitudes."""
+    detector_axes: tuple[tuple[str, int | None], ...] = field(metadata={'static': True})
+    """For each template, the detector axis of its amplitudes, after the leading axis of entries
+    or slots; `None` for amplitudes without one."""
+
+
+def _shared_amplitudes(
+    bucket: Bucket,
+    shared: SharedTemplates,
+    rhs: PyTree[Array],
+    placement: SlotPlacement,
+    regularization: float,
+) -> BucketAmplitudes:
+    """The amplitudes shared by the detectors of each slot of a bucket.
+
+    The entries of a slot, its detector batches, see its amplitudes alone: of the stack
+    `(n_slots, ...)` every entry reads its own slot's, its selection being stacked once per slot
+    like the other data the batches share, so that their transpose adds the batches' projections
+    up into the slot's amplitudes. Likewise, a slot's Gram and right-hand side are the
+    sums of those of its detector batches.
+
+    Args:
+        bucket: The bucket.
+        shared: The shared templates, stacked over the entries of the bucket.
+        rhs: The right-hand side of each entry.
+        placement: Where the slots of the bucket lie.
+        regularization: The regularization the Gram is factored with.
+    """
+    structure = {
+        name: jax.ShapeDtypeStruct((bucket.n_slots, *s.shape), s.dtype)
+        for name, s in shared.operator.in_structure.items()
+    }
+
+    def select(slot):
+        return BlockDiagonalOperator(
+            {name: IndexOperator(slot, in_structure=s) for name, s in structure.items()}
+        )
+
+    templates = bucket.stream_layout.column(
+        shared.operator @ jax.vmap(select)(jnp.arange(bucket.n_slots))
+    )
+    rhs = placement.per_slot(rhs, bucket.sum_detector_batches)
+    gram = placement.per_slot(shared.gram, bucket.sum_detector_batches)
+    inverse, ridge = jax.vmap(functools.partial(factor, regularization=regularization))(gram)
+    inverse, ridge = placement.replicate((inverse, ridge))
+    return BucketAmplitudes(
+        templates,
+        _PerSlotOperator(inverse, in_structure=structure),
+        None if ridge is None else _PerSlotOperator(ridge, in_structure=structure),
+        rhs,
+        tuple((name, None) for name in structure),  # one set per slot, no detector axis
+    )
+
+
+@symmetric
+class _PerSlotOperator(AbstractLinearOperator):
+    """A symmetric operator of its own for each slot of a leading axis: `x[s] -> operator[s](x[s])`.
+
+    `operator` is a stack of operators over the slots, as the stream operators take them.
+    """
+
+    operator: AbstractLinearOperator
+
+    def mv(self, x: PyTree[Array]) -> PyTree[Array]:
+        return jax.vmap(lambda operator, v: operator(v))(self.operator, x)

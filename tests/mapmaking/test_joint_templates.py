@@ -181,7 +181,7 @@ def test_demodulated_streams_fitted_alike_form_one_template(name, legendre, temp
     maker = MultiObservationMapMaker(_ground_obs(), config=cfg)
     with jax.set_mesh(maker.placement.mesh):
         acc = maker.build_model_and_accumulate()
-    operator = acc.buckets[0].templates.implicit.operator
+    operator = acc.buckets[0].implicit.operator
     assert {key: t.streams for key, t in operator.templates.items()} == templates
 
 
@@ -338,10 +338,10 @@ def test_several_observations_per_device_match_single_observations(monkeypatch, 
     assert_allclose(
         together.map_rhs.data, sum(acc.map_rhs.data for acc in alone), rtol=1e-12, atol=1e-12
     )
-    amplitude_rhs = together.buckets[0].amplitude_rhs['hwp_synchronous']
+    amplitude_rhs = together.buckets[0].amplitudes[0].rhs['hwp_synchronous']
     per_observation = maker.layout.to_observation_order([np.asarray(amplitude_rhs)])
     for got, acc in zip(per_observation, alone, strict=True):
-        assert_allclose(got, np.asarray(acc.buckets[0].amplitude_rhs['hwp_synchronous'])[0])
+        assert_allclose(got, np.asarray(acc.buckets[0].amplitudes[0].rhs['hwp_synchronous'])[0])
 
 
 # ---------------------------------------------------------------------------

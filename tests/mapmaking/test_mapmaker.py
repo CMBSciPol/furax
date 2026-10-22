@@ -98,7 +98,7 @@ class TestMultiObsMapMaker:
             observations, stokes=stokes if demodulated else None
         )
         with jax.set_mesh(maker.placement.mesh):
-            model = maker.build_model_and_accumulate().buckets[0].model
+            model = maker.build_model_and_accumulate().buckets[0].entries
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
@@ -150,7 +150,7 @@ class TestFakeObsMapMaker:
             observations, stokes=stokes if demodulated else None
         )
         with jax.set_mesh(maker.placement.mesh):
-            model = maker.build_model_and_accumulate().buckets[0].model
+            model = maker.build_model_and_accumulate().buckets[0].entries
         n_obs = jax.tree.leaves(model)[0].shape[0]
         assert n_obs == len(observations) == reader.count
         # structures compared ignoring sharding (the model is built sharded inside shard_map)
@@ -354,7 +354,7 @@ class TestNoiseModelSelection:
         config = _config('healpix', stokes, demodulated=demodulated)
         maker = MultiObservationMapMaker(observations, config=config)
         with jax.set_mesh(maker.placement.mesh):
-            noise_model = maker.build_model_and_accumulate().buckets[0].model.noise_model
+            noise_model = maker.build_model_and_accumulate().buckets[0].entries.noise_model
         # A single WhiteNoiseModel covers both paths. The demodulated TOD is a single-array Stokes,
         # so its per-detector sigma carries the leading Stokes axis (here after the observation-stack
         # axis added by the accumulation scan).
@@ -367,7 +367,7 @@ class TestNoiseModelSelection:
         config = _config('healpix', 'IQU', demodulated, identity_noise=True)
         maker = MultiObservationMapMaker(observations, config=config)
         with jax.set_mesh(maker.placement.mesh):
-            model = maker.build_model_and_accumulate().buckets[0].model
+            model = maker.build_model_and_accumulate().buckets[0].entries
         noise_leaves = jax.tree.leaves(
             model.noise_model,
             is_leaf=lambda x: isinstance(x, WhiteNoiseModel),

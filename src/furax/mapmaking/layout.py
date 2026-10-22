@@ -136,7 +136,7 @@ by observation index ([`SlotLayout.to_observation_order`][]). The result has the
     divides the number of observations.
 """
 
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property, partial
 from typing import Any, ClassVar, Self
@@ -648,6 +648,22 @@ class SlotPlacement:
         """Host values, the same on every process, as arrays every device holds whole."""
         place = partial(jax.make_array_from_process_local_data, self.replicated)
         return jax.tree.map(lambda x: place(np.asarray(x)), tree)
+
+    def gather_per_observation(
+        self, per_bucket: Sequence[dict[str, Array]], detector_axes: Mapping[str, int | None]
+    ) -> dict[str, np.ndarray]:
+        """Arrays stacked over the entries or slots of each bucket, gathered per observation.
+
+        Args:
+            per_bucket: For each bucket, arrays by name, leading with its entries or slots.
+            detector_axes: For each name, the detector axis along which the detector batches are
+                merged (see [`SlotLayout.to_observation_order`][]), or `None` for arrays without one.
+        """
+        gathered = [self.gather(arrays) for arrays in per_bucket]
+        return {
+            name: self.layout.to_observation_order([g[name] for g in gathered], axis)
+            for name, axis in detector_axes.items()
+        }
 
     def gather(self, tree: PyTree[Array]) -> PyTree[np.ndarray]:
         """Arrays sharded over the devices, brought whole to the host of every process."""

@@ -1,12 +1,30 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from jax.sharding import AxisType
+from jax.sharding import PartitionSpec as P
 from numpy.testing import assert_allclose, assert_array_equal
 
+from furax import IdentityOperator, MaskOperator
 from furax.mapmaking import ReaderField
-from furax.mapmaking._model import _noise_model, _noise_operator, _sample_mask, restrict_streams
-from furax.mapmaking.config import MapMakingConfig, Methods, WeightingConfig, WeightingMode
+from furax.mapmaking._model import (
+    BucketModel,
+    ObservationModel,
+    _noise_model,
+    _noise_operator,
+    _sample_mask,
+    restrict_streams,
+)
+from furax.mapmaking.config import (
+    MapMakingConfig,
+    Methods,
+    NestedConfig,
+    WeightingConfig,
+    WeightingMode,
+)
 from furax.mapmaking.noise import WhiteNoiseModel, padding_aware_welch
+from furax.mapmaking.streaming import StreamLayout
+from furax.mapmaking.weight import NestedWeightOperator, WeightOperator
 from furax.obs import TODFormat
 from furax.obs.stokes import StokesIQU, StokesQU
 
@@ -158,3 +176,37 @@ def test_restrict_streams_keeps_the_streams_of_the_map():
     assert_array_equal(restricted.data, tod.data[1:])
     assert_array_equal(data[ReaderField.SAMPLE_DATA].data, tod.data[1:])
     assert_array_equal(data[ReaderField.NOISE_MODEL_FITS], fits[1:])
+
+
+@pytest.fixture
+def single_device_mesh():
+    # the mapmaker's mesh (see `SlotPlacement`)
+    mesh = jax.make_mesh((1,), ('obs',), (AxisType.Auto,), devices=jax.devices()[:1])
+    with jax.set_mesh(mesh):
+        yield
+
+
+@pytest.mark.usefixtures('single_device_mesh')
+@pytest.mark.parametrize('nested', [False, True])
+def test_bucket_white_weight_is_the_plain_masked_weight(nested):
+    # identity weighting has white noise, but the nested gap treatment still wraps it
+    tod_format = TODFormat((2, 50), jnp.float64)
+    structure = tod_format.structure
+    noise_model = WhiteNoiseModel(sigma=jnp.ones(2))
+    ninv = _noise_operator(noise_model, tod_format, jnp.array(1.0))
+    good = jnp.ones((2, 50), bool).at[:, 20:25].set(False)
+    mask = MaskOperator.from_boolean_mask(good, in_structure=structure)
+    W = (
+        NestedWeightOperator.create(ninv, mask, NestedConfig())
+        if nested
+        else WeightOperator.create(ninv, mask)
+    )
+    identity = IdentityOperator(in_structure=structure)
+    entry = ObservationModel(identity, W, identity, noise_model, jnp.array(1.0))
+    entries = jax.tree.map(lambda leaf: jax.device_put(jnp.stack([leaf, leaf]), P('obs')), entry)
+    weight = BucketModel(StreamLayout(2), entries, None, ()).white_weight()
+
+    is_nested = lambda node: isinstance(node, NestedWeightOperator)
+    assert not any(is_nested(node) for node in jax.tree.leaves(weight, is_leaf=is_nested))
+    x = jax.device_put(jax.random.normal(jax.random.key(0), (2, 2, 50)), P('obs'))
+    assert_allclose(weight(x), jnp.where(good, x, 0))

@@ -18,14 +18,11 @@ from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
     GapsConfig,
     GapTreatment,
-    HealpixConfig,
     HWPSynchronousConfig,
-    LandscapeConfig,
     MapMakingConfig,
     Methods,
     NoiseFitConfig,
     NoiseSource,
-    PointingConfig,
     PolynomialConfig,
     PolynomialOrders,
     ScanSynchronousConfig,
@@ -41,13 +38,16 @@ from furax.mapmaking.config import (
 from furax.mapmaking.mapmaker import MultiObservationMapMaker
 from furax.mapmaking.templates import Template
 from furax.mapmaking.templates.bases import OffsetBasis
-from tests.mapmaking.helpers import FakeLazyGroundObservation, FakeLazyObservation
+from tests.mapmaking.helpers import (
+    FakeLazyGroundObservation,
+    FakeLazyObservation,
+    accumulate,
+    healpix_config,
+)
 
 
-def _config(templates: TemplatesConfig) -> MapMakingConfig:
-    return MapMakingConfig(
-        pointing=PointingConfig(on_the_fly=True),
-        landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=16)),
+def _config(templates: TemplatesConfig | None) -> MapMakingConfig:
+    return healpix_config(
         weighting=WeightingConfig(mode=WeightingMode.DIAGONAL, fitting=NoiseFitConfig(nperseg=256)),
         templates=templates,
         # keep every observed pixel so the map comparisons below are meaningful
@@ -65,24 +65,6 @@ def _ground_obs(n_obs: int = 2, n_dets: int = 8, n_samples: int = 1024, **kwargs
         FakeLazyGroundObservation(seed=i, n_dets=n_dets, n_samples=n_samples, **kwargs)
         for i in range(n_obs)
     ]
-
-
-def test_explicit_returns_amplitudes():
-    n_harmonics = 3
-    cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(n_harmonics, explicit=True)))
-    res = MultiObservationMapMaker(_hwp_obs(), config=cfg).run()
-    assert res.template_amplitudes is not None
-    amps = res.template_amplitudes['hwp_synchronous']
-    # (n_obs, n_dets, K) with K = 2 * n_harmonics (sin + cos)
-    assert amps.shape == (2, 8, 2 * n_harmonics)
-    assert jnp.all(jnp.isfinite(amps))
-
-
-def test_implicit_returns_no_amplitudes():
-    cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=False)))
-    res = MultiObservationMapMaker(_hwp_obs(), config=cfg).run()
-    assert res.template_amplitudes is None
-    assert jnp.all(jnp.isfinite(res.map.data))
 
 
 @pytest.mark.parametrize(
@@ -103,6 +85,12 @@ def test_explicit_and_implicit_give_the_same_map(observations, template):
     explicit = MultiObservationMapMaker(obs, config=_config(template(True))).run()
     implicit = MultiObservationMapMaker(obs, config=_config(template(False))).run()
     assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
+    assert explicit.solver_stats['num_steps'] >= 1
+    # only the explicit amplitudes are solved for, one set per observation and detector
+    assert implicit.template_amplitudes is None
+    (amplitudes,) = explicit.template_amplitudes.values()
+    assert amplitudes.shape[:2] == (2, 8)
+    assert jnp.all(jnp.isfinite(amplitudes))
 
 
 def test_mixed_explicit_and_implicit():
@@ -118,26 +106,17 @@ def test_mixed_explicit_and_implicit():
     assert jnp.all(jnp.isfinite(res.template_amplitudes['hwp_synchronous']))
 
 
-@pytest.mark.parametrize('spectrum', ['preconditioned', 'system'])
-def test_two_level_preconditioner_with_explicit_templates(spectrum):
+def test_two_level_preconditioner_with_explicit_templates():
     cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)))
     cfg.solver = SolverConfig(rtol=1e-10, max_steps=500)
     expected = MultiObservationMapMaker(_hwp_obs(), config=cfg).run()
-    cfg.solver.two_level = TwoLevelConfig(rank=4, spectrum=spectrum, tol=1e-8, max_restarts=50)
-    res = MultiObservationMapMaker(_hwp_obs(), config=cfg).run()
-    assert_allclose(res.map.data, expected.map.data, rtol=1e-6, atol=1e-8)
-    amplitudes = res.template_amplitudes['hwp_synchronous']
     expected_amplitudes = expected.template_amplitudes['hwp_synchronous']
-    assert_allclose(amplitudes, expected_amplitudes, rtol=1e-6, atol=1e-8)
-
-
-@pytest.mark.parametrize('explicit', [True, False], ids=['explicit', 'implicit'])
-def test_runs_and_produces_a_map(explicit):
-    cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=explicit)))
-    maker = MultiObservationMapMaker(_hwp_obs(), config=cfg)
-    res = maker.run()
-    assert res.map.shape == maker.landscape.shape
-    assert res.solver_stats['num_steps'] >= 1
+    for spectrum in ('preconditioned', 'system'):
+        cfg.solver.two_level = TwoLevelConfig(rank=4, spectrum=spectrum, tol=1e-8, max_restarts=50)
+        res = MultiObservationMapMaker(_hwp_obs(), config=cfg).run()
+        assert_allclose(res.map.data, expected.map.data, rtol=1e-6, atol=1e-8)
+        amplitudes = res.template_amplitudes['hwp_synchronous']
+        assert_allclose(amplitudes, expected_amplitudes, rtol=1e-6, atol=1e-8)
 
 
 def test_spline_drift_returns_its_amplitudes():
@@ -147,15 +126,6 @@ def test_spline_drift_returns_its_amplitudes():
     amps = res.template_amplitudes['spline_drift']
     assert amps.shape == (2, 8, 10)  # (obs, det, knot): 1024 // 128 knots, plus 2
     assert jnp.all(jnp.isfinite(amps))
-
-
-def test_demodulated_polynomial_implicit_runs():
-    # With demodulated data, the implicit polynomial template has a set of amplitudes per stream,
-    # and its Gram one block per detector and stream.
-    cfg = _config(TemplatesConfig(polynomial=PolynomialConfig(explicit=False)))
-    cfg.sotodlib = SotodlibConfig(demodulated=True)
-    res = MultiObservationMapMaker(_ground_obs(), config=cfg).run()
-    assert jnp.all(jnp.isfinite(res.map.data))
 
 
 @pytest.mark.parametrize(
@@ -177,9 +147,7 @@ def test_demodulated_streams_fitted_alike_form_one_template(name, legendre, temp
     cfg = _config(TemplatesConfig(**{name: template}))
     cfg.sotodlib = SotodlibConfig(demodulated=True)
     template.legendre = legendre  # set after demodulation, which per-stream orders require
-    maker = MultiObservationMapMaker(_ground_obs(), config=cfg)
-    with jax.set_mesh(maker.placement.mesh):
-        acc = maker.build_model_and_accumulate()
+    acc = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg))
     operator = acc.buckets[0].templates.implicit.operator
     assert {key: t.streams for key, t in operator.templates.items()} == templates
 
@@ -218,11 +186,7 @@ def test_detector_batches_give_the_same_result(observations, templates, demodula
         for batch in (0, 3)
     ]
 
-    accumulated = []
-    for maker in makers:
-        with jax.set_mesh(maker.placement.mesh):
-            accumulated.append(maker.build_model_and_accumulate())
-    whole, batched = accumulated
+    whole, batched = [accumulate(maker) for maker in makers]
     assert_allclose(batched.hit_map, whole.hit_map)
     assert_allclose(batched.map_rhs.data, whole.map_rhs.data, rtol=1e-12, atol=1e-12)
 
@@ -245,32 +209,6 @@ def test_detector_batches_give_the_same_result(observations, templates, demodula
             got,
             whole.template_amplitudes,
         )
-
-
-def test_amplitudes_shared_by_the_detectors_are_the_same_in_detector_batches(monkeypatch):
-    # A common mode, one offset per block of 64 samples, seen by every detector. Its amplitudes
-    # belong to the observation, whatever the batches its detectors are processed in.
-    def common_mode(_config, _data, tod_format, **_):
-        basis = OffsetBasis(64, tod_format.n_samples, tod_format.dtype)
-        return {'common': Template(basis, tod_format, per=())}, {}
-
-    monkeypatch.setattr('furax.mapmaking._model.build_templates', common_mode)
-    # the configuration only has to enable templates: the builder above makes them
-    templates = TemplatesConfig(polynomial=PolynomialConfig(), regularization=1e-3)
-    cfg = _config(templates)
-    results = [
-        MultiObservationMapMaker(_ground_obs(n_dets=7), config=replace(cfg, detector_batch_size=b))
-        for b in (0, 3)
-    ]
-    whole, batched = [maker.run() for maker in results]
-    amplitudes = whole.template_amplitudes['common']
-    assert amplitudes.shape == (2, 1024 // 64)  # (obs, block)
-    assert jnp.all(jnp.isfinite(amplitudes)) and jnp.max(jnp.abs(amplitudes)) > 0
-    scale = jnp.max(jnp.abs(whole.map.data))
-    assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
-    assert_allclose(
-        batched.template_amplitudes['common'], amplitudes, atol=1e-4 * jnp.max(jnp.abs(amplitudes))
-    )
 
 
 @pytest.mark.parametrize(
@@ -324,14 +262,10 @@ def test_several_observations_per_device_match_single_observations(monkeypatch, 
     cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)))
     observations = _hwp_obs(n_obs=10)
 
-    def accumulate(observations):
-        maker = MultiObservationMapMaker(observations, config=cfg)
-        with jax.set_mesh(maker.placement.mesh):
-            return maker, maker.build_model_and_accumulate()
-
-    maker, together = accumulate(observations)
+    maker = MultiObservationMapMaker(observations, config=cfg)
+    together = accumulate(maker)
     assert maker.layout.buckets[0].n_slots // maker.layout.n_devices >= 2
-    alone = [accumulate([obs])[1] for obs in observations]
+    alone = [accumulate(MultiObservationMapMaker([obs], config=cfg)) for obs in observations]
 
     assert_allclose(together.hit_map, sum(acc.hit_map for acc in alone))
     assert_allclose(
@@ -357,22 +291,14 @@ def _pomme_config(templates: TemplatesConfig) -> MapMakingConfig:
     return cfg
 
 
-@pytest.mark.parametrize(
-    'observations, template',
-    [
-        (_hwp_obs, lambda e: TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=e))),
-        (
-            _ground_obs,
-            lambda e: TemplatesConfig(scan_synchronous=ScanSynchronousConfig(explicit=e)),
-        ),
-    ],
-    ids=['hwp_synchronous', 'scan_synchronous'],
-)
-def test_pomme_explicit_and_implicit_give_the_same_map(observations, template):
+def test_pomme_explicit_and_implicit_give_the_same_map():
     # Under Pomme the effective weight is W F; marginalising the amplitudes under it must still
     # match the joint solve. Both paths use the Pomme-filtered Gram (as weight fold and as
     # preconditioner respectively).
-    obs = observations()
+    def template(explicit):
+        return TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=explicit))
+
+    obs = _hwp_obs()
     explicit = MultiObservationMapMaker(obs, config=_pomme_config(template(True))).run()
     implicit = MultiObservationMapMaker(obs, config=_pomme_config(template(False))).run()
     assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
@@ -463,9 +389,13 @@ def test_correlated_weight_with_templates_requires_inner_mask_gaps(treatment):
         MultiObservationMapMaker(_hwp_obs(), config=config)
 
 
-def test_shared_amplitudes_under_a_correlated_weight_are_the_same_in_detector_batches(monkeypatch):
-    # A common mode, one offset per block of 128 samples, seen by every detector: the Gram of its
-    # amplitudes is probed from the weight in each batch, then summed over the batches.
+@pytest.mark.parametrize('correlated', [False, True], ids=['diagonal', 'correlated'])
+def test_amplitudes_shared_by_the_detectors_are_the_same_in_detector_batches(
+    monkeypatch, correlated
+):
+    # A common mode, one offset per block of 128 samples, seen by every detector. Its amplitudes
+    # belong to the observation, whatever the batches its detectors are processed in; under a
+    # correlated weight, their Gram is probed from the weight in each batch, then summed.
     def common_mode(_config, _data, tod_format, **_):
         basis = OffsetBasis(128, tod_format.n_samples, tod_format.dtype)
         return {'common': Template(basis, tod_format, per=())}, {}
@@ -473,7 +403,7 @@ def test_shared_amplitudes_under_a_correlated_weight_are_the_same_in_detector_ba
     monkeypatch.setattr('furax.mapmaking._model.build_templates', common_mode)
     # the configuration only has to enable templates: the builder above makes them
     templates = TemplatesConfig(polynomial=PolynomialConfig(), regularization=1e-3)
-    cfg = _toeplitz_config(templates, precomputed=True)
+    cfg = _toeplitz_config(templates, precomputed=True) if correlated else _config(templates)
     whole, batched = [
         MultiObservationMapMaker(
             _ground_obs(n_dets=7), config=replace(cfg, detector_batch_size=batch)

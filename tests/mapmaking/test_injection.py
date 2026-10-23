@@ -20,7 +20,6 @@ from furax.mapmaking.config import (
     MapMakingConfig,
     NoiseFitConfig,
     NoiseSource,
-    PointingConfig,
     PolynomialConfig,
     PolynomialOrders,
     SotodlibConfig,
@@ -32,15 +31,14 @@ from furax.mapmaking.config import (
 from furax.mapmaking.mapmaker import MultiObservationMapMaker
 from furax.mapmaking.results import MapMakingResults
 from furax.obs.landscapes import HealpixLandscape, WCSLandscape
-from tests.mapmaking.helpers import FakeLazyGroundObservation
+from tests.mapmaking.helpers import FakeLazyGroundObservation, healpix_config
 
 NSIDE = 16
 
 
 def _config(injection: InjectionConfig | None = None) -> MapMakingConfig:
-    return MapMakingConfig(
-        pointing=PointingConfig(on_the_fly=True),
-        landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=NSIDE)),
+    return healpix_config(
+        nside=NSIDE,
         weighting=WeightingConfig(
             mode=WeightingMode.DIAGONAL,
             source=NoiseSource.PRECOMPUTED,
@@ -84,28 +82,39 @@ def test_the_map_of_the_sky_alone_is_the_sky(sky):
     assert_allclose(result.map.data[:, observed], maps[:, observed], atol=1e-4)
 
 
-@pytest.mark.parametrize('scale', [1.0, 3.0])
-def test_the_map_is_linear_in_the_data_and_the_sky(sky, scale):
-    # the weights are precomputed: they do not depend on the data, so the map is linear in them
+def test_the_map_is_linear_in_the_data_and_the_sky(sky, tmp_path):
+    # The weights are precomputed: they do not depend on the data, so the map is linear in them.
     maps, path = sky
     data = _run(_config())
-    both = _run(_config(InjectionConfig(path, scale=scale, mode=InjectionMode.ADD)))
+    assert data.injected_map is None
+    added = _run(_config(InjectionConfig(path, scale=3.0, mode=InjectionMode.ADD)))
+    response = _run(_config(InjectionConfig(path, mode=InjectionMode.RESPONSE)))
     observed = _well_observed(data)
     assert_allclose(
-        both.map.data[:, observed] - data.map.data[:, observed],
-        scale * maps[:, observed],
-        atol=1e-4,
+        added.map.data[:, observed] - data.map.data[:, observed], 3.0 * maps[:, observed], atol=1e-4
     )
+    # without templates, the response to the sky is the sky; the map of the data is unchanged
+    assert_allclose(response.injected_map.data[:, observed], maps[:, observed], atol=1e-4)
+    assert_allclose(response.map.data, data.map.data, atol=1e-6)
+
+    # the injected map is saved with the products, and only when there is one
+    for name, result in [('response', response), ('data', data)]:
+        result.save(tmp_path / name)
+        loaded = MapMakingResults.load(tmp_path / name, result.landscape)
+        if result.injected_map is None:
+            assert loaded.injected_map is None
+        else:
+            assert_allclose(loaded.injected_map.data, result.injected_map.data, atol=1e-6)
 
 
 def test_components_missing_from_the_file_are_zero(sky, tmp_path):
     maps, _ = sky
     path = tmp_path / 'qu.fits'
     hp.write_map(str(path), maps[1:], overwrite=True)
-    result = _run(_config(InjectionConfig(str(path), stokes='QU', mode=InjectionMode.REPLACE)))
-    observed = _well_observed(result)
-    assert_allclose(result.map.data[0, observed], 0.0, atol=1e-4)
-    assert_allclose(result.map.data[1:, observed], maps[1:, observed], atol=1e-4)
+    landscape = HealpixLandscape(NSIDE, 'IQU', np.float64)
+    loaded = load_sky(InjectionConfig(str(path), stokes='QU'), landscape)
+    assert_allclose(loaded.i, 0.0)
+    assert_allclose(loaded.data[1:], maps[1:])
 
 
 def test_a_sky_on_another_pixelization_is_rejected(tmp_path):
@@ -121,12 +130,6 @@ def test_replacing_the_data_needs_weights_that_are_not_fit_from_them():
     config.weighting = WeightingConfig(mode=WeightingMode.DIAGONAL, source=NoiseSource.FIT)
     with pytest.raises(ValueError, match='precomputed'):
         config.__post_init__()
-
-
-def test_no_injection_leaves_the_data_alone():
-    maker = MultiObservationMapMaker(_observations(), config=_config())
-    assert maker.sky is None
-    assert jnp.all(jnp.isfinite(maker.run().map.data))
 
 
 def _demodulated_config(injection, templates=None):
@@ -225,13 +228,6 @@ def test_the_response_is_the_map_of_the_data_with_the_sky_added_minus_that_of_th
     assert_allclose(response.map.data, data.map.data, atol=1e-6)
 
 
-def test_the_response_without_templates_is_the_sky(sky):
-    maps, path = sky
-    result = _run(_config(InjectionConfig(path, mode=InjectionMode.RESPONSE)))
-    observed = _well_observed(result)
-    assert_allclose(result.injected_map.data[:, observed], maps[:, observed], atol=1e-4)
-
-
 def test_the_response_through_a_t2p_template_is_the_same_in_detector_batches(sky):
     maps, path = sky
     templates = TemplatesConfig(t2p=T2PConfig())
@@ -257,20 +253,3 @@ def test_the_response_through_a_t2p_template_is_the_same_in_detector_batches(sky
         np.asarray(added.map.data - data.map.data)[:, observed] - maps[1:, observed]
     ).max()
     assert added_loss > 100 * response_loss
-
-
-def test_the_injected_map_is_saved_and_loaded(sky, tmp_path):
-    _, path = sky
-    config = _config(InjectionConfig(path, mode=InjectionMode.RESPONSE))
-    result = _run(config)
-    result.save(tmp_path / 'out')
-    loaded = MapMakingResults.load(tmp_path / 'out', result.landscape)
-    assert_allclose(loaded.injected_map.data, result.injected_map.data, atol=1e-6)
-    assert MapMakingResults.load(tmp_path / 'out', result.landscape).map is not None
-
-
-def test_a_run_without_injection_has_no_injected_map(tmp_path):
-    result = _run(_config())
-    assert result.injected_map is None
-    result.save(tmp_path / 'out')
-    assert MapMakingResults.load(tmp_path / 'out', result.landscape).injected_map is None

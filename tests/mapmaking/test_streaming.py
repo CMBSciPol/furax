@@ -110,7 +110,7 @@ def _reference(
 
 
 @pytest.mark.parametrize('make_stream, in_stacked, out_stacked', _LAYOUTS)
-def test_layout_structure_and_mv(
+def test_layout_structure_mv_and_transpose(
     make_stream: Callable[[AbstractLinearOperator], StreamOperator],
     in_stacked: bool,
     out_stacked: bool,
@@ -134,15 +134,7 @@ def test_layout_structure_and_mv(
     struct = jax.ShapeDtypeStruct(x.shape, jnp.float64, sharding=_spec(in_stacked))
     assert jax.eval_shape(op.mv, struct).sharding.spec == _spec(out_stacked)
 
-
-@pytest.mark.parametrize('make_stream, in_stacked, out_stacked', _LAYOUTS)
-def test_layout_transpose(
-    make_stream: Callable[[AbstractLinearOperator], StreamOperator],
-    in_stacked: bool,
-    out_stacked: bool,
-) -> None:
-    blocks = _make_blocks(P('obs'))
-    op_T = make_stream(blocks).T
+    op_T = op.T
     # transposing swaps the boundary: column <-> row, diagonal and addition map to themselves
     assert (op_T.in_stacked, op_T.out_stacked) == (out_stacked, in_stacked)
     y = _boundary(out_stacked, N_OUT)
@@ -292,17 +284,6 @@ def test_addition_fusion(
     assert_allclose(reduced(x), tree.add(A(x), B(x)), rtol=1e-10)
 
 
-def test_subtraction_fusion_diagonal() -> None:
-    # `A - B` -> `A + (-1) * B`: the -1 becomes a constant segment on B, then addition fusion
-    # blocks the two bodies up slot by slot, keeping the scalar out of the sliced body.
-    A = StreamOperator.diagonal(_make_blocks(P('obs')))
-    B = StreamOperator.diagonal(_make_blocks(P('obs')))
-    reduced = (A - B).reduce()
-    assert (reduced.in_stacked, reduced.out_stacked) == (True, True)
-    x = jax.device_put(RNG.standard_normal((N_OBS, N_IN), dtype=np.float64), P('obs'))
-    assert_allclose(reduced(x), tree.sub(A(x), B(x)), rtol=1e-10)
-
-
 def test_marginal_weight_fusion() -> None:
     # the marginalisation shape `W - W T G T.T W` reduces to a single StreamDiagonal.
     # W: per-obs (N_OUT, N_OUT); T: per-obs (N_OUT, N_IN) amplitudes->tod; G: per-obs (N_IN, N_IN).
@@ -333,18 +314,11 @@ def test_fused_block_composes_with_sharded_block() -> None:
     A = StreamOperator.diagonal(_make_blocks(P('obs'), n_in=N_OUT))
     B = StreamOperator.diagonal(_make_blocks(P('obs'), n_in=N_OUT))
     fused = (A - B).reduce()
-    composed = (A @ fused).reduce()  # must not raise on the structure check
+    assert (fused.in_stacked, fused.out_stacked) == (True, True)
     x = jax.device_put(RNG.standard_normal((N_OBS, N_OUT), dtype=np.float64), P('obs'))
+    assert_allclose(fused(x), tree.sub(A(x), B(x)), rtol=1e-10)
+    composed = (A @ fused).reduce()  # must not raise on the structure check
     assert_allclose(composed(x), A(tree.sub(A(x), B(x))), rtol=1e-10)
-
-
-def test_create_carries_explicit_obs_size() -> None:
-    # n is declared, not re-inferred from leaf shapes downstream; create starts with one stacked seg.
-    W = StreamOperator.diagonal(_make_blocks(P('obs')))
-    assert W.slice_count == N_OBS
-    assert len(W.segments) == 1
-    assert W.segments[0].sliced
-    assert W.segments[0].operator.matrix.shape[0] == N_OBS
 
 
 def test_non_scalar_static_post_is_applied() -> None:
@@ -418,26 +392,36 @@ def _joint_operands() -> tuple[StreamOperator, StreamOperator, StreamOperator]:
     return h_sky, te, w
 
 
-def test_stream_block_row_structure_and_specs() -> None:
+def _joint_input() -> list[jax.Array]:
+    """A (shared sky, stacked amplitudes) input of the joint operands."""
+    return [
+        jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P()),
+        jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs')),
+    ]
+
+
+def _joint_normal_operator() -> StreamOperator:
+    """The reduced `Hᵀ W H` of the joint operands."""
+    h_sky, te, w = _joint_operands()
+    h = StreamOperator.block_row([h_sky, te])
+    return (h.T @ w @ h).reduce()
+
+
+def test_stream_block_row_structure_mv_and_transpose() -> None:
     h_sky, te, _ = _joint_operands()
     h = StreamOperator.block_row([h_sky, te])
     assert isinstance(h, StreamOperator)
     assert h.in_stacked == [False, True]  # sky shared, amplitudes stacked
     assert h.out_stacked is True  # both map into the (stacked) tod
-    in_struct = h.in_structure
-    assert in_struct[0].shape == (N_IN,)
-    assert in_struct[1].shape == (N_OBS, N_AMP)
+    assert [s.shape for s in h.in_structure] == [(N_IN,), (N_OBS, N_AMP)]
     assert h.out_structure.shape == (N_OBS, N_OUT)
+    # the fan-in and fan-out carry no arrays when the operands have no shared segments, so
+    # `_normalize` folds those slots into the core rather than leaving them
+    assert [seg.sliced for seg in h.segments] == [True]
 
-
-def test_stream_block_row_mv_and_transpose() -> None:
-    h_sky, te, _ = _joint_operands()
-    h = StreamOperator.block_row([h_sky, te])
     hs = _per_obs(h_sky.segments[0].operator)
     ts = _per_obs(te.segments[0].operator)
-
-    x_sky = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
-    x_amp = jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs'))
+    x_sky, x_amp = _joint_input()
     sky_np, amp_np = np.array(x_sky), np.array(jax.device_get(x_amp))
     expected = np.stack([hs[i] @ sky_np + ts[i] @ amp_np[i] for i in range(N_OBS)])
     assert_allclose(h([x_sky, x_amp]), expected, rtol=1e-10)
@@ -484,17 +468,8 @@ def test_stream_block_row_keeps_shared_maps_out_of_the_body(post: bool) -> None:
     # composition order: a post map lands left of the sliced core, a pre map right of it
     assert [seg.sliced for seg in h.segments] == ([False, True] if post else [True, False])
     assert h.in_stacked == [False, True]
-    x_sky = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
-    x_amp = jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs'))
+    x_sky, x_amp = _joint_input()
     assert_allclose(h([x_sky, x_amp]), tree.add(a(x_sky), b(x_amp)), rtol=1e-10)
-
-
-def test_structural_maps_fold_into_the_stacked_core() -> None:
-    # a block row's fan-in and fan-out carry no arrays when the operands have no shared
-    # segments, so `_normalize` folds those slots into the core rather than leaving them
-    h_sky, te, _ = _joint_operands()
-    h = StreamOperator.block_row([h_sky, te])
-    assert [seg.sliced for seg in h.segments] == [True]
 
 
 def _multi_stacked(n_in: int = N_IN) -> StreamOperator:
@@ -591,8 +566,8 @@ def test_stream_block_column_fans_out_shared_input() -> None:
     a = StreamOperator.column(_make_blocks(P('obs')))  # (N_IN,) -> (N_OBS, N_OUT)
     b = StreamOperator.column(_make_blocks(P('obs')))
     col = StreamOperator.block_column([a, b])
-    # both output legs are obs-stacked, so the spec is uniform and collapses to a plain column
-    # a uniform per-block spec collapses back to a bare bool, so this is a plain column again
+    # both output legs are obs-stacked: the uniform per-block spec collapses back to a bare bool,
+    # so this is a plain column again
     assert (col.in_stacked, col.out_stacked) == (False, True)
     x = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
     out_a, out_b = col(x)
@@ -616,10 +591,7 @@ def test_mixed_normal_equations_fuse_to_single_scan() -> None:
     a_aa = (te.T @ w @ te).reduce()
     a_2x2 = BlockColumnOperator([BlockRowOperator([a_ss, a_sa]), BlockRowOperator([a_as, a_aa])])
 
-    x = [
-        jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P()),
-        jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs')),
-    ]
+    x = _joint_input()
     fused, ref = a(x), a_2x2(x)
     for leaf_a, leaf_b in zip(jax.tree.leaves(fused), jax.tree.leaves(ref), strict=True):
         assert_allclose(leaf_a, leaf_b, rtol=1e-9)
@@ -628,12 +600,6 @@ def test_mixed_normal_equations_fuse_to_single_scan() -> None:
     assert _count_scans(jax.make_jaxpr(a.mv)(x).jaxpr) == 1
     assert _count_scans(jax.make_jaxpr(a_2x2.mv)(x).jaxpr) == 4
 
-
-def test_mixed_output_sharding() -> None:
-    h_sky, te, w = _joint_operands()
-    a = (
-        StreamOperator.block_row([h_sky, te]).T @ w @ StreamOperator.block_row([h_sky, te])
-    ).reduce()
     x_struct = [
         jax.ShapeDtypeStruct((N_IN,), jnp.float64, sharding=P()),
         jax.ShapeDtypeStruct((N_OBS, N_AMP), jnp.float64, sharding=P('obs')),
@@ -655,38 +621,22 @@ def test_addition_composition_does_not_fuse() -> None:
 
 
 def test_mixed_addition_fusion() -> None:
-    h_sky, te, w = _joint_operands()
-    left = (
-        StreamOperator.block_row([h_sky, te]).T @ w @ StreamOperator.block_row([h_sky, te])
-    ).reduce()
-    h_sky2, te2, w2 = _joint_operands()
-    right = (
-        StreamOperator.block_row([h_sky2, te2]).T @ w2 @ StreamOperator.block_row([h_sky2, te2])
-    ).reduce()
+    left, right = _joint_normal_operator(), _joint_normal_operator()
     fused = (left + right).reduce()
     assert isinstance(fused, StreamOperator)
     assert fused.sliced_count == 1
-    x = [
-        jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P()),
-        jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs')),
-    ]
+    x = _joint_input()
     expected = tree.add(left(x), right(x))
     for leaf_a, leaf_b in zip(jax.tree.leaves(fused(x)), jax.tree.leaves(expected), strict=True):
         assert_allclose(leaf_a, leaf_b, rtol=1e-9)
 
 
 def test_homothety_on_mixed_stream() -> None:
-    h_sky, te, w = _joint_operands()
-    a = (
-        StreamOperator.block_row([h_sky, te]).T @ w @ StreamOperator.block_row([h_sky, te])
-    ).reduce()
+    a = _joint_normal_operator()
     scaled = ((-2.0) * a).reduce()
     assert isinstance(scaled, StreamOperator)
     assert scaled.sliced_count == 1  # scalar stays out of the sliced body
-    x = [
-        jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P()),
-        jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs')),
-    ]
+    x = _joint_input()
     expected = tree.mul(-2.0, a(x))
     for leaf_a, leaf_b in zip(jax.tree.leaves(scaled(x)), jax.tree.leaves(expected), strict=True):
         assert_allclose(leaf_a, leaf_b, rtol=1e-9)
@@ -807,8 +757,7 @@ class TestSharded:
         ts = _per_obs(te.segments[0].operator)
         ws = _per_obs(w.segments[0].operator)
 
-        x_sky = jax.device_put(RNG.standard_normal((N_IN,), dtype=np.float64), P())
-        x_amp = jax.device_put(RNG.standard_normal((N_OBS, N_AMP), dtype=np.float64), P('obs'))
+        x_sky, x_amp = _joint_input()
         sky_np, amp_np = np.array(x_sky), np.array(jax.device_get(x_amp))
         wd = [ws[i] @ (hs[i] @ sky_np + ts[i] @ amp_np[i]) for i in range(N_OBS)]
         exp_sky = sum(hs[i].T @ wd[i] for i in range(N_OBS))

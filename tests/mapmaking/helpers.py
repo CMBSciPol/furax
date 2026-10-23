@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Bool, Float
@@ -11,8 +12,11 @@ from furax.mapmaking import (
     AbstractGroundObservation,
     AbstractLazyObservation,
     AbstractObservation,
+    MultiObservationMapMaker,
     ObservationBufferShape,
 )
+from furax.mapmaking.config import HealpixConfig, LandscapeConfig, MapMakingConfig, PointingConfig
+from furax.mapmaking.mapmaker import _AccumulatedModel
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math.coords import XiEtaAngles
 from furax.obs.landscapes import ProjectionType, StokesLandscape
@@ -205,61 +209,10 @@ class ProbeFailingLazyObservation(FakeLazyObservation):
         raise RuntimeError('simulated shape-probe failure')
 
 
-class GappyGroundObservation(FakeObservation, AbstractGroundObservation[None]):
-    """Ground observation with flagged gaps in the sample mask and a finite 1/f noise model.
-
-    Use ``weighting.source = PRECOMPUTED`` to avoid fitting a 1/f model to synthetic white TODs.
-    """
-
-    def get_scanning_intervals(self) -> Float[np.ndarray, 'n 2']:
-        half = self._n_samples // 2
-        return np.array([[0, half], [half, self._n_samples]])
-
-    def get_elapsed_times(self) -> Float[np.ndarray, ' a']:
-        return np.arange(self._n_samples, dtype=np.float64) / self._sample_rate
-
-    def get_azimuth(self) -> Float[np.ndarray, ' a']:
-        return np.linspace(0.0, 10.0, self._n_samples).astype(np.float64)
-
-    def get_elevation(self) -> Float[np.ndarray, ' a']:
-        return np.full(self._n_samples, 0.8, dtype=np.float64)
-
-    def get_left_scan_mask(self) -> Float[np.ndarray, ' a']:
-        return (np.arange(self._n_samples) % 2 == 0).astype(np.float64)
-
-    def get_right_scan_mask(self) -> Float[np.ndarray, ' a']:
-        return (np.arange(self._n_samples) % 2 == 1).astype(np.float64)
-
-    def get_noise_model(self) -> NoiseModel:
-        n = self._n_dets
-        return AtmosphericNoiseModel(
-            sigma=jnp.ones(n),
-            alpha=-jnp.ones(n),
-            fk=0.1 * jnp.ones(n),
-            f0=1e-3 * jnp.ones(n),
-        )
-
-    def get_sample_mask(self) -> Bool[np.ndarray, 'dets samps']:
-        mask = np.ones((self._n_dets, self._n_samples), dtype=bool)
-        gap = max(2, self._n_samples // 20)
-        for centre in (self._n_samples // 4, self._n_samples // 2, 3 * self._n_samples // 4):
-            mask[:, centre - gap // 2 : centre + gap // 2] = False
-        return mask
-
-
-class GappyLazyGroundObservation(FakeLazyObservation):
-    """File-free lazy wrapper around :class:`GappyGroundObservation`."""
-
-    interface_class = GappyGroundObservation
-
-    def get_data(self, requested_fields=None) -> GappyGroundObservation:
-        return GappyGroundObservation(**self._kwargs)
-
-
 class FakeGroundObservation(FakeObservation, AbstractGroundObservation[None]):
-    """``FakeObservation`` extended with the ground getters the single-observation
-    ``MapMaker`` template path needs (azimuth/elevation, scanning intervals, scan masks),
-    plus a finite precomputed noise model.
+    """``FakeObservation`` extended with the ground getters (azimuth/elevation, scanning
+    intervals, scan masks) the azimuth and interval templates need, plus a finite precomputed
+    noise model.
 
     The precomputed ``AtmosphericNoiseModel`` sidesteps fitting a 1/f model to the synthetic
     white TODs (which yields NaN); use ``weighting.source = PRECOMPUTED``.
@@ -287,27 +240,55 @@ class FakeGroundObservation(FakeObservation, AbstractGroundObservation[None]):
     def get_noise_model(self) -> NoiseModel:
         n = self._n_dets
         return AtmosphericNoiseModel(
-            sigma=jnp.ones(n),
-            alpha=-jnp.ones(n),
-            fk=0.1 * jnp.ones(n),
-            f0=1e-3 * jnp.ones(n),
+            sigma=jnp.ones(n), alpha=-jnp.ones(n), fk=0.1 * jnp.ones(n), f0=1e-3 * jnp.ones(n)
         )
 
 
-class FakeLazyGroundObservation(AbstractLazyObservation[None]):
-    """File-free lazy synthetic *ground* observation.
+class GappyGroundObservation(FakeGroundObservation):
+    """Ground observation with three flagged gaps in its sample mask."""
 
-    Like :class:`FakeLazyObservation` but its ``interface_class`` is
-    :class:`FakeGroundObservation`, so the reader exposes the ground fields (azimuth,
-    elevation, scan masks, scanning intervals) needed by the azimuth/interval template
-    families. ``kwargs`` are forwarded to :class:`FakeGroundObservation`.
-    """
+    def get_sample_mask(self) -> Bool[np.ndarray, 'dets samps']:
+        mask = np.ones((self._n_dets, self._n_samples), dtype=bool)
+        gap = max(2, self._n_samples // 20)
+        for centre in (self._n_samples // 4, self._n_samples // 2, 3 * self._n_samples // 4):
+            mask[:, centre - gap // 2 : centre + gap // 2] = False
+        return mask
+
+
+class FakeLazyGroundObservation(FakeLazyObservation):
+    """File-free lazy wrapper around :class:`FakeGroundObservation`."""
 
     interface_class = FakeGroundObservation
 
-    def __init__(self, **kwargs: Any) -> None:
-        self.file = Path('<synthetic>')
-        self._kwargs = kwargs
-
-    def get_data(self, requested_fields: Any = None) -> FakeGroundObservation:
+    def get_data(self, requested_fields=None) -> FakeGroundObservation:
         return FakeGroundObservation(**self._kwargs)
+
+
+class GappyLazyGroundObservation(FakeLazyObservation):
+    """File-free lazy wrapper around :class:`GappyGroundObservation`."""
+
+    interface_class = GappyGroundObservation
+
+    def get_data(self, requested_fields=None) -> GappyGroundObservation:
+        return GappyGroundObservation(**self._kwargs)
+
+
+def healpix_config(
+    stokes: ValidStokesLiteral = 'IQU', nside: int = 16, **kwargs: Any
+) -> MapMakingConfig:
+    """A configuration mapping the fake observations onto a HEALPix landscape.
+
+    The fake observations support on-the-fly pointing only. ``kwargs`` are forwarded to
+    ``MapMakingConfig``.
+    """
+    return MapMakingConfig(
+        pointing=PointingConfig(on_the_fly=True),
+        landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=nside)),
+        **kwargs,
+    )
+
+
+def accumulate(maker: MultiObservationMapMaker) -> _AccumulatedModel:
+    """Build the model of each bucket of ``maker`` and accumulate its system, on its mesh."""
+    with jax.set_mesh(maker.placement.mesh):
+        return maker.build_model_and_accumulate()

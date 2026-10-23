@@ -12,6 +12,7 @@ from furax.mapmaking.noise import (
     apodization_window,
     fit_atmospheric_psd_model,
     fit_white_noise_model,
+    padding_aware_welch,
 )
 
 # ---------------------------------------------------------------------------
@@ -55,6 +56,7 @@ class TestWhiteNoiseModel:
         psd = model.psd(f)
         assert psd.shape == (2, 3)
         assert_allclose(psd, sigma[:, None] ** 2 * jnp.ones((1, 3)), rtol=1e-6)
+        assert model.to_white_noise_model() is model
 
     def test_inverse_operator_zero_sigma(self):
         """sigma=0 detectors should produce zero output, not NaN/Inf."""
@@ -71,10 +73,6 @@ class TestWhiteNoiseModel:
         struct = jax.ShapeDtypeStruct((2, 50), jnp.float64)
         x = jnp.ones((2, 50))
         assert_allclose(model.inverse_operator(struct)(model.operator(struct)(x)), x, rtol=1e-5)
-
-    def test_to_white_noise_model_returns_self(self):
-        model = WhiteNoiseModel(sigma=jnp.array([1.0, 2.0]))
-        assert model.to_white_noise_model() is model
 
 
 # ---------------------------------------------------------------------------
@@ -152,24 +150,23 @@ def test_apodization_window_invalid_kind():
 # ---------------------------------------------------------------------------
 
 
-def test_frequency_mask_f_min():
-    f = jnp.array([0.0, 1.0, 2.0, 3.0])
-    mask = _create_frequency_mask(f, f_min=jnp.array(2.0), f_max=None, f_mask_intervals=None)
-    assert_array_equal(mask, jnp.array([0.0, 0.0, 1.0, 1.0]))
-
-
-def test_frequency_mask_f_max():
-    f = jnp.array([0.0, 1.0, 2.0, 3.0])
-    mask = _create_frequency_mask(f, f_min=None, f_max=jnp.array(2.0), f_mask_intervals=None)
-    assert_array_equal(mask, jnp.array([1.0, 1.0, 0.0, 0.0]))
-
-
-def test_frequency_mask_intervals():
-    f = jnp.array([0.0, 1.0, 2.0, 3.0, 4.0])
+@pytest.mark.parametrize(
+    ('f_min', 'f_max', 'intervals', 'expected'),
+    [
+        (2.0, None, None, [0, 0, 1, 1, 1]),  # f_min inclusive
+        (None, 2.0, None, [1, 1, 0, 0, 0]),  # f_max exclusive
+        (None, None, [[1.0, 3.0]], [1, 0, 0, 1, 1]),  # [start, end)
+    ],
+)
+def test_frequency_mask(f_min, f_max, intervals, expected):
+    f = jnp.arange(5.0)
     mask = _create_frequency_mask(
-        f, f_min=None, f_max=None, f_mask_intervals=jnp.array([[1.0, 3.0]])
+        f,
+        f_min=None if f_min is None else jnp.array(f_min),
+        f_max=None if f_max is None else jnp.array(f_max),
+        f_mask_intervals=None if intervals is None else jnp.array(intervals),
     )
-    assert_array_equal(mask, jnp.array([1.0, 0.0, 0.0, 1.0, 1.0]))
+    assert_array_equal(mask, jnp.array(expected, dtype=float))
 
 
 def test_frequency_mask_hwp_harmonics_masked():
@@ -190,32 +187,78 @@ def test_frequency_mask_hwp_harmonics_masked():
 # ---------------------------------------------------------------------------
 
 
-def test_fit_white_noise_model():
+def test_fit_white_noise_model_recovers_sigma():
     f = make_freq(256, 10.0)
-    Pxx = make_white_psd(f, sigma=1.0)
     result = fit_white_noise_model(
         f,
-        Pxx,
+        make_white_psd(f, sigma=2.0),
         sample_rate=jnp.array(10.0),
         hwp_frequency=jnp.array(0.0),
         config=NoiseFitConfig(mask_hwp_harmonics=False),
     )
-    assert result['fit'].shape == (1,)
-    assert jnp.all(jnp.isfinite(result['fit']))
+    assert_allclose(result['fit'], [2.0], rtol=0.02)
 
 
-def test_fit_atmospheric_psd_model():
+def test_fit_atmospheric_psd_model_recovers_the_parameters():
     f = make_freq(256, 10.0)
-    Pxx = make_atm_psd(f)
     result = fit_atmospheric_psd_model(
         f,
-        Pxx,
+        make_atm_psd(f, sigma=0.5, alpha=-2.5, fk=0.3),
         sample_rate=jnp.array(10.0),
         hwp_frequency=jnp.array(0.0),
         config=NoiseFitConfig(mask_hwp_harmonics=False, max_iter=50),
     )
     assert result['fit'].shape == (1, 4)
-    assert result['loss'].shape == (1,)
-    assert result['num_iter'].shape == (1,)
     assert result['inv_fisher'].shape == (1, 4, 4)
-    assert jnp.all(jnp.isfinite(result['fit']))
+    assert jnp.all(jnp.isfinite(result['loss']))
+    # sigma, alpha, f_knee; the offset f0 is barely constrained by a spectrum that starts above it
+    assert_allclose(result['fit'][0, :3], [0.5, -2.5, 0.3], rtol=0.05)
+
+
+# ---------------------------------------------------------------------------
+# padding_aware_welch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(('n_samples', 'padding'), [(1024, 512), (127, 0)], ids=['padded', 'short'])
+def test_padding_aware_welch_matches_the_unpadded_signal(n_samples, padding):
+    # padding is ignored, and a segment longer than the signal is clipped to it
+    signal = jax.random.normal(jax.random.key(0), (2, n_samples), dtype=jnp.float64)
+    expected_f, expected_psd = jax.scipy.signal.welch(signal, fs=100.0, nperseg=256)
+    padded = jnp.pad(signal, ((0, 0), (0, padding)))
+    actual_f, actual_psd = padding_aware_welch(padded, padding, fs=jnp.array(100.0), nperseg=256)
+    assert_allclose(actual_f, expected_f)
+    assert_allclose(actual_psd, expected_psd, rtol=1e-12, atol=1e-12)
+
+
+def test_padding_aware_welch_preserves_float32():
+    signal = jax.random.normal(jax.random.key(0), (2, 256), dtype=jnp.float32)
+    frequencies, psd = padding_aware_welch(
+        signal, 0, fs=jnp.array(100.0, dtype=jnp.float32), nperseg=128
+    )
+    assert frequencies.dtype == jnp.float32
+    assert psd.dtype == jnp.float32
+
+
+@jax.jit
+def _welch(signal, padding, valid):
+    return padding_aware_welch(signal, padding, fs=jnp.array(100.0), nperseg=256, valid=valid)
+
+
+def test_padding_aware_welch_skips_flagged_segments():
+    nperseg, step = 256, 128
+    signal = jax.random.normal(jax.random.key(0), (3, 1024), dtype=jnp.float64)
+    glitched = signal.at[0, 300:340].set(1e6)
+    valid = jnp.ones_like(signal, bool)
+    valid = valid.at[0, 300:340].set(False)  # the segments starting at 128 and 256 hold them
+    valid = valid.at[2, ::100].set(False)  # no segment is clean: the detector keeps them all
+
+    _, psd = _welch(glitched.at[2].set(signal[2]), jnp.array(0), valid)  # padding traced
+
+    def segment(s):
+        return jax.scipy.signal.welch(signal[0, s : s + nperseg], fs=100.0, nperseg=nperseg)[1]
+
+    starts = [s for s in range(0, 1024 - nperseg + 1, step) if s not in (128, 256)]
+    assert_allclose(psd[0], sum(map(segment, starts)) / len(starts), rtol=1e-10, atol=1e-12)
+    _, unmasked = padding_aware_welch(signal, 0, fs=jnp.array(100.0), nperseg=nperseg)
+    assert_allclose(psd[1:], unmasked[1:], rtol=1e-12, atol=1e-12)

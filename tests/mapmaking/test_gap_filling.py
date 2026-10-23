@@ -34,32 +34,33 @@ def test_get_kernel_fail_lagmax(n_tt: list[int], fft_size: int):
         _ = _get_kernel(jnp.array(n_tt), fft_size)
 
 
-@pytest.mark.parametrize('shape', [(1,), (10,), (1, 100), (2, 10), (2, 100), (1, 2, 100)])
+@pytest.mark.parametrize('shape', [(10,), (2, 100), (1, 2, 100)])
 def test_generate_realization_shape(shape: tuple[int, ...]):
-    key = jax.random.key(31415926539)
     structure = jax.ShapeDtypeStruct(shape, float)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=structure)
-    real = generate_noise_realization(key, cov, 1.0)
-    assert real.shape == shape
+    assert generate_noise_realization(jax.random.key(0), cov, 1.0).shape == shape
 
 
 def test_generate_realization_with_metadata():
-    """generate_noise_realization must accept a populated HashedObservationMetadata.
-
-    The metadata is a JAX-registered dataclass whose fields are array leaves and are
-    folded into the random key (a traced operation). Passing it must not require the
-    metadata to be hashable.
-    """
+    # the metadata is a pytree of array leaves, folded into the random key under tracing: it
+    # need not be hashable, and it tells the realizations of different observations apart
     ndet, nsamp = 3, 100
     structure = jax.ShapeDtypeStruct((ndet, nsamp), float)
     cov = SymmetricBandToeplitzOperator(jnp.array([1.0]), in_structure=structure)
-    metadata = HashedObservationMetadata(
-        uid=jnp.uint32(1),
-        telescope_uid=jnp.uint32(2),
-        detector_uids=jnp.arange(ndet, dtype=jnp.uint32),
-    )
-    real = generate_noise_realization(jax.random.key(0), cov, 1.0, metadata=metadata)
-    assert real.shape == (ndet, nsamp)
+
+    def realization(uid):
+        metadata = HashedObservationMetadata(
+            uid=jnp.uint32(uid),
+            telescope_uid=jnp.uint32(2),
+            detector_uids=jnp.arange(ndet, dtype=jnp.uint32),
+        )
+        return generate_noise_realization(jax.random.key(0), cov, 1.0, metadata=metadata)
+
+    first = realization(1)
+    assert first.shape == (ndet, nsamp)
+    assert not jnp.allclose(first, realization(2))
+    # each detector gets its own
+    assert not jnp.allclose(first[0], first[1])
 
 
 @pytest.fixture

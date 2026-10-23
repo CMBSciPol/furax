@@ -53,30 +53,24 @@ def test_fit_matches_the_dense_normal_equations(stokes):
     assert_allclose(ravel_pytree(result.solution)[0], expected, rtol=1e-5, atol=1e-8)
 
 
-def test_fit_recovers_the_amplitudes_of_a_noiseless_tod():
+def test_fit_recovers_the_amplitudes_of_noiseless_tods():
     operator, tod_format, weights, key = _setup('QU')
-    amplitudes = {
-        name: jr.normal(k, s.shape)
-        for k, (name, s) in zip(jr.split(key), operator.in_structure.items(), strict=True)
-    }
-    fit = TemplateFit(operator, tod_format.diagonal(weights))
-    result = fit(operator(amplitudes))
-    for name, a in amplitudes.items():
-        assert_allclose(result.solution[name], a, rtol=1e-5, atol=1e-7)
-    # the fitted model is the TOD
-    assert_allclose(
-        tod_format.as_array(fit.model(result.solution)),
-        tod_format.as_array(operator(amplitudes)),
-        atol=1e-7,
-    )
-
-
-def test_fit_applies_to_several_tods():
-    operator, tod_format, weights, key = _setup(None)
     fit = TemplateFit(operator, tod_format.diagonal(weights), solver=CGSolver(rtol=1e-10))
+    # one fit applies to any TOD
     for k in jr.split(key, 2):
-        amplitudes = {n: jr.normal(k, s.shape) for n, s in operator.in_structure.items()}
-        assert_allclose(fit(operator(amplitudes)).solution['drift'], amplitudes['drift'], atol=1e-6)
+        amplitudes = {
+            name: jr.normal(kk, s.shape)
+            for kk, (name, s) in zip(jr.split(k), operator.in_structure.items(), strict=True)
+        }
+        result = fit(operator(amplitudes))
+        for name, a in amplitudes.items():
+            assert_allclose(result.solution[name], a, rtol=1e-5, atol=1e-7)
+        # the fitted model is the TOD
+        assert_allclose(
+            tod_format.as_array(fit.model(result.solution)),
+            tod_format.as_array(operator(amplitudes)),
+            atol=1e-7,
+        )
 
 
 def test_regularization_keeps_unconstrained_amplitudes_finite():

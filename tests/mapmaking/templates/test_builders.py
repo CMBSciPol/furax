@@ -4,7 +4,7 @@ import jax.random as jr
 import pytest
 from jax import Array
 from jaxtyping import Float
-from numpy.testing import assert_allclose, assert_array_equal
+from numpy.testing import assert_allclose
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
@@ -18,8 +18,6 @@ from furax.mapmaking.config import (
     TemplatesConfig,
 )
 from furax.mapmaking.templates import (
-    Template,
-    TemplateOperator,
     build_templates,
     polynomial_templates,
     required_reader_fields,
@@ -40,25 +38,17 @@ from furax.mapmaking.templates._builders import (
     spline_hwp_synchronous_basis,
     t2p_basis,
 )
-from furax.mapmaking.templates.bases import Basis, TensorBasis
+from furax.mapmaking.templates.bases import TensorBasis
 from furax.mapmaking.templates.pomme import PommeProjectionOperator
 from furax.math import bspline
 from furax.math.coords import XiEtaAngles
 from furax.math.zernike import zernike
 from furax.obs import TODFormat
-
-
-def _wrap(basis: Basis, n_dets: int) -> TemplateOperator:
-    """Wrap a bare basis as a single-template TemplateOperator: amplitudes are {'t': ...},
-    output is a bare (n_dets, samp) array."""
-    tod_format = TODFormat((n_dets, basis.n_points), basis.dtype)
-    return TemplateOperator({'t': Template(basis, tod_format)})
+from tests.mapmaking.templates.helpers import TOL, wrap
 
 
 def spline_4f_hwp_basis(
-    times: Float[Array, ' samp'],
-    hwp_angles: Float[Array, ' samp'],
-    n_knots: int,
+    times: Float[Array, ' samp'], hwp_angles: Float[Array, ' samp'], n_knots: int
 ) -> Float[Array, '2k samp']:
     """Dense reference for `spline_hwp_synchronous_basis`'s `WindowedBasis`.
 
@@ -72,17 +62,6 @@ def spline_4f_hwp_basis(
     B = B.at[0::2].set(phi * sin4)
     B = B.at[1::2].set(phi * cos4)
     return B
-
-
-# float64 everywhere: structural/adjoint residuals run ~1e-14, so one tight tolerance fits all.
-TOL = 1e-12
-
-
-def _adjoint_residual(basis, coeffs: Array, signal: Array) -> float:
-    """|<expand(coeffs), signal> - <coeffs, project(signal)>|."""
-    lhs = jnp.vdot(basis(coeffs), signal)
-    rhs = jnp.vdot(coeffs, basis.T(signal))
-    return float(jnp.abs(lhs - rhs))
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +111,8 @@ class TestLegendreAndHarmonics:
 # ---------------------------------------------------------------------------
 # Synchronous templates (bare basis factories)
 # ---------------------------------------------------------------------------
-# Per-detector broadcasting and transpose-adjoint mechanics are TemplateOperator's job,
-# covered by test_template_operator.py; these test the basis construction itself.
+# Per-detector application and the adjoint are covered with the bases, in test_bases.py; these
+# test the basis construction itself.
 
 
 def _geometry(n_samps: int):
@@ -142,74 +121,52 @@ def _geometry(n_samps: int):
     return azimuth, hwp
 
 
-class TestSynchronousTemplates:
-    def test_scan_synchronous_is_shared_legendre(self) -> None:
-        n_samps = 200
-        azimuth, _ = _geometry(n_samps)
-        legendre = PolynomialOrders(0, 3)
-        basis = scan_synchronous_basis(legendre, azimuth, jnp.float64)
-        assert basis.shape == (legendre.n_orders,)
-        coeffs = jr.normal(jr.key(901), basis.shape)
-        values = _legendre(azimuth, legendre.min_order, legendre.max_order, jnp.float64)
-        assert_allclose(basis(coeffs), coeffs @ values, rtol=TOL)
+@pytest.mark.parametrize(
+    ('build', 'shape'),
+    [
+        (lambda az, hwp: scan_synchronous_basis(PolynomialOrders(0, 3), az, jnp.float64), (4,)),
+        (
+            lambda az, hwp: binned_azimuth_synchronous_basis(
+                BinsConfig(n_bins=6, interpolate=False, smooth=False), az, jnp.float64
+            ),
+            (6,),
+        ),
+        # two rows per harmonic, no DC row
+        (lambda az, hwp: hwp_synchronous_basis(4, hwp, jnp.float64), (8,)),
+        # azimuth functions x HWP harmonics with their DC row
+        (
+            lambda az, hwp: azimuth_hwp_synchronous_basis(
+                PolynomialOrders(0, 2), 3, az, hwp, jnp.float64
+            ),
+            (3, 7),
+        ),
+        (
+            lambda az, hwp: binned_azimuth_hwp_synchronous_basis(
+                BinsConfig(n_bins=5, interpolate=False, smooth=False), 3, az, hwp, jnp.float64
+            ),
+            (5, 7),
+        ),
+    ],
+    ids=['scan', 'binned_scan', 'hwp', 'azimuth_hwp', 'binned_azimuth_hwp'],
+)
+def test_synchronous_basis_amplitudes(build, shape) -> None:
+    azimuth, hwp = _geometry(200)
+    basis = build(azimuth, hwp)
+    assert basis.shape == shape
+    assert basis.n_points == 200
 
-    def test_binned_azimuth_synchronous_one_amplitude_per_bin(self) -> None:
-        n_samps = 200
-        azimuth, _ = _geometry(n_samps)
-        bins = BinsConfig(n_bins=6, interpolate=False, smooth=False)
-        basis = binned_azimuth_synchronous_basis(bins, azimuth, jnp.float64)
-        assert basis.shape == (bins.n_bins,)
-        coeffs = jr.normal(jr.key(911), basis.shape)
-        signal = jr.normal(jr.key(912), basis.out_structure.shape)
-        assert_allclose(
-            jnp.vdot(basis(coeffs), signal), jnp.vdot(coeffs, basis.T(signal)), rtol=TOL
-        )
 
-    def test_hwp_synchronous_has_two_rows_per_harmonic(self) -> None:
-        n_samps, n_harm = 200, 4
-        _, hwp = _geometry(n_samps)
-        basis = hwp_synchronous_basis(n_harm, hwp, jnp.float64)
-        assert basis.shape == (2 * n_harm,)  # no DC row
-        coeffs = jr.normal(jr.key(921), basis.shape)
-        matrix = _harmonics(hwp, n_harm, jnp.float64, dc=False)
-        assert_allclose(basis(coeffs), coeffs @ matrix, rtol=TOL)
-
-    def test_azimuth_hwp_synchronous_is_kronecker_shaped(self) -> None:
-        n_samps, n_harm = 200, 3
-        azimuth, hwp = _geometry(n_samps)
-        legendre = PolynomialOrders(0, 2)
-        basis = azimuth_hwp_synchronous_basis(legendre, n_harm, azimuth, hwp, jnp.float64)
-        # azimuth Legendre orders x HWP harmonics with DC (2*n_harm + 1)
-        assert basis.shape == (legendre.n_orders, 2 * n_harm + 1)
-        coeffs = jr.normal(jr.key(931), basis.shape)
-        signal = jr.normal(jr.key(932), basis.out_structure.shape)
-        assert_allclose(
-            jnp.vdot(basis(coeffs), signal), jnp.vdot(coeffs, basis.T(signal)), rtol=TOL
-        )
-
-    def test_azimuth_hwp_scan_mask_zeroes_flagged_samples(self) -> None:
-        # zeroing the azimuth factor kills every basis function there -> zero synthesis.
-        n_samps, n_harm = 200, 3
-        azimuth, hwp = _geometry(n_samps)
-        scan_mask = (jnp.arange(n_samps) % 3 != 0).astype(jnp.float64)
-        basis = azimuth_hwp_synchronous_basis(
-            PolynomialOrders(0, 2), n_harm, azimuth, hwp, jnp.float64, scan_mask=scan_mask
-        )
-        coeffs = jr.normal(jr.key(941), basis.shape)
-        out = basis(coeffs)
-        assert_allclose(out[scan_mask == 0], 0.0, atol=TOL)
-
-    def test_binned_azimuth_hwp_synchronous_is_kronecker_shaped(self) -> None:
-        n_samps, n_harm = 200, 3
-        azimuth, hwp = _geometry(n_samps)
-        bins = BinsConfig(n_bins=5, interpolate=False, smooth=False)
-        basis = binned_azimuth_hwp_synchronous_basis(bins, n_harm, azimuth, hwp, jnp.float64)
-        assert basis.shape == (bins.n_bins, 2 * n_harm + 1)
-        coeffs = jr.normal(jr.key(951), basis.shape)
-        signal = jr.normal(jr.key(952), basis.out_structure.shape)
-        assert_allclose(
-            jnp.vdot(basis(coeffs), signal), jnp.vdot(coeffs, basis.T(signal)), rtol=TOL
-        )
+def test_azimuth_hwp_scan_mask_zeroes_flagged_samples() -> None:
+    # zeroing the azimuth factor kills every basis function there -> zero synthesis.
+    n_samps, n_harm = 200, 3
+    azimuth, hwp = _geometry(n_samps)
+    scan_mask = (jnp.arange(n_samps) % 3 != 0).astype(jnp.float64)
+    basis = azimuth_hwp_synchronous_basis(
+        PolynomialOrders(0, 2), n_harm, azimuth, hwp, jnp.float64, scan_mask=scan_mask
+    )
+    out = basis(jr.normal(jr.key(941), basis.shape))
+    assert_allclose(out[scan_mask == 0], 0.0, atol=TOL)
+    assert jnp.all(out[scan_mask == 1] != 0)
 
 
 # ---------------------------------------------------------------------------
@@ -217,75 +174,34 @@ class TestSynchronousTemplates:
 # ---------------------------------------------------------------------------
 
 
-class TestPolynomialStructure:
-    def test_amplitude_shape_is_intervals_orders(self) -> None:
-        n_samps, order = 200, 3
-        intervals = jnp.array([[0, 100], [100, 200]])
-        times = jnp.arange(n_samps, dtype=jnp.float64)
-        basis = scan_polynomial_basis(order, intervals, times, jnp.float64)
-        # one polynomial (orders 0..order) per interval
-        assert basis.shape == (2, order + 1)
-        assert basis.out_structure.shape == (n_samps,)
-
-    def test_samples_in_gaps_carry_no_signal(self) -> None:
-        # a gap between intervals: those samples sit in no segment -> zero column.
-        n_samps, order = 200, 3
-        intervals = jnp.array([[0, 80], [120, 200]])  # 80..120 is a gap
-        times = jnp.arange(n_samps, dtype=jnp.float64)
-        basis = scan_polynomial_basis(order, intervals, times, jnp.float64)
-        coeffs = jr.normal(jr.key(960), basis.shape)
-        out = basis(coeffs)
-        gap = (jnp.arange(n_samps) >= 80) & (jnp.arange(n_samps) < 120)
-        assert_allclose(out[gap], 0.0, atol=TOL)
-
-    def test_segments_are_sorted(self) -> None:
-        # `SegmentedBasis` requires non-decreasing segment ids, gaps included
-        intervals = jnp.array([[10, 80], [120, 160], [160, 190]])
-        times = jnp.arange(200, dtype=jnp.float64)
-        basis = scan_polynomial_basis(3, intervals, times, jnp.float64)
-        assert jnp.all(jnp.diff(basis.segment) >= 0)
+def test_polynomial_basis_has_a_polynomial_per_interval_and_none_in_the_gaps() -> None:
+    n_samps, order = 200, 3
+    intervals = jnp.array([[10, 80], [120, 160], [160, 190]])  # gaps at both ends and inside
+    times = jnp.arange(n_samps, dtype=jnp.float64)
+    basis = scan_polynomial_basis(order, intervals, times, jnp.float64)
+    assert basis.shape == (3, order + 1)  # orders 0..order, per interval
+    assert basis.out_structure.shape == (n_samps,)
+    # `SegmentedBasis` requires non-decreasing segment ids, gaps included
+    assert jnp.all(jnp.diff(basis.segment) >= 0)
+    out = basis(jr.normal(jr.key(960), basis.shape))
+    samples = jnp.arange(n_samps)
+    covered = jnp.any(
+        (samples[:, None] >= intervals[:, 0]) & (samples[:, None] < intervals[:, 1]), 1
+    )
+    assert_allclose(out[~covered], 0.0, atol=TOL)
+    assert jnp.all(out[covered] != 0)
 
 
-# ---------------------------------------------------------------------------
-# scan_polynomial_basis (masking)
-# ---------------------------------------------------------------------------
-
-
-class TestPolynomialMask:
+def test_polynomial_basis_mask_zeros_the_flagged_samples() -> None:
     n_samps = 200
-    max_poly_order = 3
-
-    def _setup(self, valid_mask):
-        half = self.n_samps // 2
-        intervals = jnp.array([[0, half], [half, self.n_samps]])
-        times = jnp.arange(self.n_samps, dtype=jnp.float64)
-        return scan_polynomial_basis(self.max_poly_order, intervals, times, jnp.float64, valid_mask)
-
-    def _valid_mask(self) -> Float[Array, ' samp']:
-        # flag every 5th sample
-        return (jnp.arange(self.n_samps) % 5 != 0).astype(jnp.float64)
-
-    def test_mask_zeros_template_at_flagged_samples(self) -> None:
-        valid = self._valid_mask()
-        basis = self._setup(valid)
-        coeffs = jr.normal(jr.key(20), basis.shape)
-        out = basis(coeffs)
-        # flagged samples carry no template signal
-        assert_allclose(out[valid == 0], 0.0, atol=TOL)
-
-    def test_mask_drops_flagged_from_projection(self) -> None:
-        valid = self._valid_mask()
-        basis = self._setup(valid)
-        signal = jr.normal(jr.key(21), basis.out_structure.shape)
-        # corrupting flagged samples must not change the projected coefficients
-        corrupt = signal.at[valid == 0].add(1e3)
-        assert_allclose(basis.T(signal), basis.T(corrupt), atol=TOL)
-
-    def test_no_mask_matches_explicit_ones(self) -> None:
-        basis_none = self._setup(None)
-        basis_ones = self._setup(jnp.ones(self.n_samps, dtype=jnp.float64))
-        coeffs = jr.normal(jr.key(22), basis_none.shape)
-        assert_allclose(basis_none(coeffs), basis_ones(coeffs), rtol=TOL)
+    intervals = jnp.array([[0, 100], [100, n_samps]])
+    times = jnp.arange(n_samps, dtype=jnp.float64)
+    valid = (jnp.arange(n_samps) % 5 != 0).astype(jnp.float64)
+    masked = scan_polynomial_basis(3, intervals, times, jnp.float64, valid)
+    unmasked = scan_polynomial_basis(3, intervals, times, jnp.float64, None)
+    coeffs = jr.normal(jr.key(20), masked.shape)
+    # the projection drops them too, the basis being its transpose's adjoint
+    assert_allclose(masked(coeffs), valid * unmasked(coeffs), atol=TOL)
 
 
 # ---------------------------------------------------------------------------
@@ -298,31 +214,10 @@ class TestTemperatureTemplate:
         # each detector's basis is its own temperature stream -> mv(lambda) = lambda * T_d
         n_dets, n_samps = 4, 200
         T = jr.normal(jr.key(40), (n_dets, n_samps))
-        op = _wrap(t2p_basis(T, jnp.float64), n_dets)
+        op = wrap(t2p_basis(T, jnp.float64), n_dets)
         assert op.in_structure['t'].shape == (n_dets, 1)  # one amplitude per detector
         lam = jr.normal(jr.key(41), (n_dets, 1))
         assert_allclose(op({'t': lam}), lam * T, rtol=TOL)
-
-    def test_adjoint(self) -> None:
-        n_dets, n_samps = 4, 200
-        T = jr.normal(jr.key(44), (n_dets, n_samps))
-        op = _wrap(t2p_basis(T, jnp.float64), n_dets)
-        lam = jr.normal(jr.key(45), (n_dets, 1))
-        x = jr.normal(jr.key(46), (n_dets, n_samps))
-        assert_allclose(jnp.vdot(op({'t': lam}), x), jnp.vdot(lam, op.T(x)['t']), rtol=TOL)
-
-    def test_scan_stacking_over_observations(self) -> None:
-        # the per-detector basis values gain an obs axis under lax.scan; one program
-        n_obs, n_dets, n_samps = 3, 4, 200
-        Ts = jr.normal(jr.key(47), (n_obs, n_dets, n_samps))
-        _, stack = jax.lax.scan(
-            lambda _, Ti: (None, _wrap(t2p_basis(Ti, jnp.float64), n_dets)),
-            None,
-            Ts,
-        )
-        op0 = jax.tree.map(lambda leaf: leaf[0], stack)
-        lam = jr.normal(jr.key(48), (n_dets, 1))
-        assert_allclose(op0({'t': lam}), lam * Ts[0], rtol=TOL)
 
     def test_fit_band_limits_the_basis_to_the_band(self) -> None:
         # fit_band band-passes the temperature basis: synthesis lives only in (f0, f1)
@@ -330,7 +225,7 @@ class TestTemperatureTemplate:
         f0, f1 = 0.5, 2.0
         T = jr.normal(jr.key(49), (n_dets, n_samps))
         basis = t2p_basis(T, jnp.float64, fit_band=(f0, f1), sample_rate=fs)
-        op = _wrap(basis, n_dets)
+        op = wrap(basis, n_dets)
         out = op({'t': jnp.ones((n_dets, 1))})  # = bandpass(T) since lambda = 1
         spec = jnp.abs(jnp.fft.rfft(out, axis=-1))
         freqs = jnp.fft.rfftfreq(n_samps, d=1.0 / fs)
@@ -342,7 +237,7 @@ class TestTemperatureTemplate:
         # block-averaged temperature, held over each block.
         n_dets, n_samps, q = 2, 60, 4
         T = jr.normal(jr.key(970), (n_dets, n_samps))
-        op = _wrap(t2p_basis(T, jnp.float64, decimation_factor=q), n_dets)
+        op = wrap(t2p_basis(T, jnp.float64, decimation_factor=q), n_dets)
         assert op.in_structure['t'].shape == (n_dets, 1)
         out = op({'t': jnp.ones((n_dets, 1))})
         assert out.shape == (n_dets, n_samps)
@@ -359,62 +254,42 @@ class TestTemperatureTemplate:
 # ---------------------------------------------------------------------------
 
 
-class TestPommeProjectionOperator:
-    def make_op(self, n_det: int, n_samp: int, tau: int) -> PommeProjectionOperator:
-        return PommeProjectionOperator(
-            tau, in_structure=jax.ShapeDtypeStruct((n_det, n_samp), jnp.float64)
-        )
-
-    @pytest.mark.parametrize(
-        'tau,x_vals,expected_vals',
-        [
-            (2, [1, 3, 5, 7], [-1, 1, -1, 1]),
-            (3, [0, 3, 6, 10, 10, 10], [-3, 0, 3, 0, 0, 0]),
-            (4, [0, 0, 0, 0, 1, 1, 1, 1, 2, 4, 6, 8], [0, 0, 0, 0, 0, 0, 0, 0, -3, -1, 1, 3]),
-        ],
+def _pomme(n_det: int, n_samp: int, tau: int) -> PommeProjectionOperator:
+    return PommeProjectionOperator(
+        tau, in_structure=jax.ShapeDtypeStruct((n_det, n_samp), jnp.float64)
     )
-    def test_demeaning_per_interval(self, tau: int, x_vals: list, expected_vals: list):
-        """Each interval has its own mean removed, not a global one."""
-        x = jnp.array([x_vals], dtype=jnp.float64)
-        y = self.make_op(1, len(x_vals), tau)(x)
-        assert_allclose(y, [expected_vals])
 
-    def test_tail_passed_through_unchanged(self):
-        """Samples in the partial tail interval are returned as-is."""
-        n_det, n_samp, tau = 1, 10, 4  # tail at indices 8, 9
-        x = jnp.arange(n_det * n_samp, dtype=jnp.float64).reshape(n_det, n_samp)
-        y = self.make_op(n_det, n_samp, tau)(x)
-        assert_array_equal(y[0, 2 * tau :], x[0, 2 * tau :])
 
-    def test_multiple_detectors_demeaned_independently(self):
-        """Each detector row is demeaned using its own interval means."""
-        tau = 4
-        n_det, n_samp = 3, 8
-        x = jnp.stack([jnp.full((n_samp,), float(d)) for d in range(n_det)])
-        y = self.make_op(n_det, n_samp, tau)(x)
-        assert_array_equal(y, jnp.zeros((n_det, n_samp)))
+@pytest.mark.parametrize(
+    'tau,x_vals,expected_vals',
+    [
+        (2, [1, 3, 5, 7], [-1, 1, -1, 1]),
+        (3, [0, 3, 6, 10, 10, 10], [-3, 0, 3, 0, 0, 0]),
+        (4, [0, 0, 0, 0, 1, 1, 1, 1, 2, 4, 6, 8], [0, 0, 0, 0, 0, 0, 0, 0, -3, -1, 1, 3]),
+    ],
+)
+def test_pomme_projection_removes_the_mean_of_each_interval(tau, x_vals, expected_vals):
+    """Each interval has its own mean removed, not a global one."""
+    x = jnp.array([x_vals], dtype=jnp.float64)
+    assert_allclose(_pomme(1, len(x_vals), tau)(x), [expected_vals])
 
-    @pytest.mark.parametrize('n_samp,tau', [(8, 4), (10, 4)])
-    def test_idempotent(self, n_samp: int, tau: int):
-        """Test that op(op(x)) == op(x): operator is a projector."""
-        n_det = 2
-        x = jax.random.normal(jax.random.key(0), (n_det, n_samp))
-        op = self.make_op(n_det, n_samp, tau)
-        assert_allclose(op(op(x)), op(x), atol=1e-6)
 
-    def test_tau_one(self):
-        """With tau=1, every sample is its own interval, so output is all zeros."""
-        n_det, n_samp = 2, 6
-        x = jax.random.normal(jax.random.key(1), (n_det, n_samp))
-        y = self.make_op(n_det, n_samp, tau=1)(x)
-        assert_allclose(y, jnp.zeros((n_det, n_samp)), atol=1e-6)
-
-    def test_tau_equals_n_samp(self):
-        """With tau=n_samp, a single interval covers all samples; output sums to zero."""
-        n_det, n_samp = 2, 8
-        x = jax.random.normal(jax.random.key(2), (n_det, n_samp))
-        y = self.make_op(n_det, n_samp, tau=n_samp)(x)
-        assert_allclose(y.sum(axis=-1), jnp.zeros(n_det), atol=1e-6)
+@pytest.mark.parametrize(
+    'n_samp,tau',
+    [(8, 4), (10, 4), (6, 1), (8, 8)],
+    ids=['whole', 'tail', 'tau_one', 'one_interval'],
+)
+def test_pomme_projection_is_the_interval_demeaning_projector(n_samp: int, tau: int):
+    # each detector demeaned on its own intervals; the partial tail interval is left as is
+    x = jax.random.normal(jax.random.key(0), (3, n_samp))
+    op = _pomme(3, n_samp, tau)
+    n_whole = n_samp // tau * tau
+    blocks = x[:, :n_whole].reshape(3, -1, tau)
+    expected = jnp.concatenate(
+        [(blocks - blocks.mean(-1, keepdims=True)).reshape(3, -1), x[:, n_whole:]], axis=-1
+    )
+    assert_allclose(op(x), expected, atol=1e-12)
+    assert_allclose(op(op(x)), op(x), atol=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -444,69 +319,29 @@ class TestSplineHWPSynchronousConfig:
             SplineHWPSynchronousConfig(n_knots=None, samples_per_knot=None)
 
 
-class TestSplineHWPSynchronousTemplate:
-    def test_template_structure(self) -> None:
-        n_samps, n_knots = 100, 3
-        t = jnp.linspace(0, 10, n_samps)
-        hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
-        basis = spline_hwp_synchronous_basis(t, hwp, n_knots, (4,), jnp.float64)
+@pytest.mark.parametrize(
+    ('harmonics', 'shape'),
+    # n_knots + 2 = 6 knots, each with a (sin, cos) pair per harmonic; an int n is the harmonics
+    # 1..n, matching `_harmonics`' convention
+    [((4,), (6, 2)), ([2, 4], (6, 4)), (3, (6, 6))],
+)
+def test_spline_hwp_synchronous_amplitudes(harmonics, shape) -> None:
+    t = jnp.linspace(0, 10, 100)
+    hwp = jnp.linspace(0, 2 * jnp.pi, 100)
+    basis = spline_hwp_synchronous_basis(t, hwp, 4, harmonics, jnp.float64)
+    assert basis.shape == shape
+    assert basis.out_structure.shape == (100,)
 
-        K = n_knots + 2
-        # WindowedBasis amplitudes: (K knots, 2 = cos/sin)
-        assert basis.shape == (K, 2)
-        assert basis.out_structure.shape == (n_samps,)
 
-    def test_offsets_are_sorted(self) -> None:
-        # `WindowedBasis` requires non-decreasing window offsets
-        t = jnp.linspace(0, 10, 100)
-        basis = spline_hwp_synchronous_basis(t, jnp.zeros(100), 6, (4,), jnp.float64)
-        assert jnp.all(jnp.diff(basis.offset) >= 0)
-
-    def test_equivalent_to_dense_4f_basis(self) -> None:
-        # WindowedBasis spline_hwp_synchronous reproduces the dense (2K, N) interleaved basis.
-        n_samps, n_knots = 120, 5
-        t = jnp.linspace(0, 10, n_samps)
-        hwp = jnp.linspace(0, 6 * jnp.pi, n_samps)
-        basis = spline_hwp_synchronous_basis(t, hwp, n_knots, (4,), jnp.float64)
-        dense = TensorBasis(spline_4f_hwp_basis(t, hwp, n_knots))  # rows 2j=sin, 2j+1=cos
-
-        K = n_knots + 2
-        a = jr.normal(jr.key(1010), (K, 2))  # WindowedBasis amplitudes a[j] = (sin amp, cos amp)
-        # dense uses the same interleaved order [sin_0, cos_0, sin_1, cos_1, ...]
-        assert_allclose(basis(a), dense(a.reshape(-1)), rtol=TOL)
-
-    def test_adjoint(self) -> None:
-        n_samps, n_knots = 100, 3
-        t = jnp.linspace(0, 10, n_samps)
-        hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
-        basis = spline_hwp_synchronous_basis(t, hwp, n_knots, (4,), jnp.float64)
-
-        coeffs = jr.normal(jr.key(1001), basis.shape)
-        signal = jr.normal(jr.key(1002), basis.out_structure.shape)
-        assert _adjoint_residual(basis, coeffs, signal) < TOL
-        assert_allclose(
-            jnp.vdot(basis(coeffs), signal), jnp.vdot(coeffs, basis.T(signal)), rtol=TOL
-        )
-
-    def test_spline_hwp_synchronous_multiple_harmonics(self) -> None:
-        n_samps = 100
-        t = jnp.linspace(0, 10, n_samps)
-        hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
-        harmonics = [2, 4]
-        basis = spline_hwp_synchronous_basis(t, hwp, 4, harmonics, jnp.float64)
-        # amplitudes: (K, 2 * n_harm)
-        # K = n_knots + 2 = 4 + 2 = 6
-        # 2 * n_harm = 2 * 2 = 4
-        assert basis.shape == (6, 4)
-
-    def test_spline_hwp_synchronous_int_harmonics(self) -> None:
-        # an int n is the harmonics 1..n, matching `_harmonics`' convention.
-        n_samps = 100
-        t = jnp.linspace(0, 10, n_samps)
-        hwp = jnp.linspace(0, 2 * jnp.pi, n_samps)
-        basis = spline_hwp_synchronous_basis(t, hwp, 4, 3, jnp.float64)
-        # 1..3 -> 3 harmonics -> 2 * 3 = 6 columns; K = 4 + 2 = 6
-        assert basis.shape == (6, 6)
+def test_spline_hwp_synchronous_is_the_dense_4f_basis() -> None:
+    n_samps, n_knots = 120, 5
+    t = jnp.linspace(0, 10, n_samps)
+    hwp = jnp.linspace(0, 6 * jnp.pi, n_samps)
+    basis = spline_hwp_synchronous_basis(t, hwp, n_knots, (4,), jnp.float64)
+    dense = TensorBasis(spline_4f_hwp_basis(t, hwp, n_knots))  # rows 2j=sin, 2j+1=cos
+    a = jr.normal(jr.key(1010), (n_knots + 2, 2))  # amplitudes a[j] = (sin amp, cos amp)
+    # dense uses the same interleaved order [sin_0, cos_0, sin_1, cos_1, ...]
+    assert_allclose(basis(a), dense(a.reshape(-1)), rtol=TOL)
 
 
 # ---------------------------------------------------------------------------

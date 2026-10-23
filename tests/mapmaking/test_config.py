@@ -80,10 +80,14 @@ def test_docstring_example_parses_and_deserializes(cls: type, yaml_block: str):
     deserialize(cls, value)
 
 
-def test_yaml_round_trip_writes_projection_by_name():
-    config = MapMakingConfig(landscape=LandscapeConfig(wcs=WCSConfig()))
+def test_yaml_round_trip_writes_enums_by_name():
+    config = MapMakingConfig(
+        landscape=LandscapeConfig(wcs=WCSConfig()),
+        weighting=WeightingConfig(mode=WeightingMode.IDENTITY),
+    )
     text = config._to_yaml()
     assert 'projection: CAR' in text
+    assert 'mode: identity' in text
     assert MapMakingConfig.load_dict(yaml.safe_load(text)) == config
 
 
@@ -143,21 +147,30 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
     assert MapMakingConfig(templates=templates).use_templates == enabled
 
 
-@pytest.mark.parametrize('max_buckets', [0, -1])
-def test_max_buckets_must_be_positive(max_buckets: int):
-    with pytest.raises(ValueError, match='max_buckets must be >= 1'):
-        MapMakingConfig(max_buckets=max_buckets)
-
-
-@pytest.mark.parametrize('downsample', [0, -1])
-def test_downsample_must_be_positive(downsample: int):
-    with pytest.raises(ValueError, match='downsample must be >= 1'):
-        SotodlibConfig(downsample=downsample)
-
-
-def test_detector_batch_size_must_not_be_negative():
-    with pytest.raises(ValueError, match='detector_batch_size must be >= 0'):
-        MapMakingConfig(detector_batch_size=-1)
+@pytest.mark.parametrize(
+    ('make', 'match'),
+    [
+        (lambda: MapMakingConfig(max_buckets=0), 'max_buckets must be >= 1'),
+        (lambda: SotodlibConfig(downsample=0), 'downsample must be >= 1'),
+        (lambda: MapMakingConfig(detector_batch_size=-1), 'detector_batch_size must be >= 0'),
+        (lambda: T2PConfig(zernike_order=-1), 'zernike_order'),
+        (lambda: T2PConfig(zernike_radius=0.0), 'zernike_radius'),
+        (lambda: SplineDriftConfig(samples_per_knot=0), 'samples_per_knot must be >= 1'),
+        (lambda: SplineDriftConfig(samples_per_knot={'qu': -1}), 'samples_per_knot must be >= 1'),
+    ],
+    ids=[
+        'max_buckets',
+        'downsample',
+        'detector_batch_size',
+        'zernike_order',
+        'zernike_radius',
+        'samples_per_knot',
+        'samples_per_knot-per-stream',
+    ],
+)
+def test_rejects_out_of_range_values(make, match):
+    with pytest.raises(ValueError, match=match):
+        make()
 
 
 @pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])
@@ -172,30 +185,10 @@ def test_correlated_gap_treatments_reject_detector_batches(treatment: GapTreatme
     MapMakingConfig(gaps=GapsConfig(treatment=treatment), detector_batch_size=16)
 
 
-class TestExplicitOnlyTemplates:
-    """T2P and ground templates don't support implicit deprojection."""
-
-    @pytest.mark.parametrize('cls', [T2PConfig, GroundConfig])
-    def test_raises_if_not_explicit(self, cls):
-        with pytest.raises(ValueError, match='requires explicit=True'):
-            cls(explicit=False)
-
-    @pytest.mark.parametrize('cls', [T2PConfig, GroundConfig])
-    def test_accepts_explicit(self, cls):
-        cls(explicit=True)
-
-
-class TestT2PField:
-    @pytest.mark.parametrize(
-        ('kwargs', 'match'),
-        [
-            ({'zernike_order': -1}, 'zernike_order'),
-            ({'zernike_radius': 0.0}, 'zernike_radius'),
-        ],
-    )
-    def test_rejects_invalid_values(self, kwargs, match):
-        with pytest.raises(ValueError, match=match):
-            T2PConfig(**kwargs)
+@pytest.mark.parametrize('cls', [T2PConfig, GroundConfig])
+def test_template_without_implicit_deprojection_must_be_explicit(cls):
+    with pytest.raises(ValueError, match='requires explicit=True'):
+        cls(explicit=False)
 
 
 class TestT2PRequiresDemodulated:
@@ -291,8 +284,3 @@ class TestSplineDrift:
         templates = TemplatesConfig(spline_drift=SplineDriftConfig(samples_per_knot={'qu': 500}))
         with pytest.raises(ValueError, match='per stream requires demodulated=True'):
             MapMakingConfig(templates=templates)
-
-    @pytest.mark.parametrize('samples_per_knot', [0, {'qu': -1}])
-    def test_knot_spacing_is_positive(self, samples_per_knot):
-        with pytest.raises(ValueError, match='samples_per_knot must be >= 1'):
-            SplineDriftConfig(samples_per_knot=samples_per_knot)

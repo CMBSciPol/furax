@@ -127,45 +127,31 @@ def test_nested_weight_is_symmetric() -> None:
     assert_allclose(matrix[~good.ravel()], 0.0, atol=1e-8)
 
 
-def test_with_mask_rebuilds_weight_only() -> None:
+def test_with_mask_rebuilds_the_weight_only() -> None:
+    """The noise and the budget fraction are kept; the flag budget is resolved from the new mask."""
     n = 32
     struct = jax.ShapeDtypeStruct((1, n), jnp.float64)
-    inv_noise = _inv_noise_op(1, n)
     good = np.ones((1, n), bool)
     good[0, 10:14] = False
     mask = MaskOperator.from_boolean_mask(jnp.asarray(good), in_structure=struct)
     weight = NestedWeightOperator.create(
-        inv_noise, mask, NestedConfig(max_flag_fraction=0.5, inner_steps=50)
-    )
-
-    new_good = np.ones((1, n), bool)
-    new_good[0, 5:9] = False
-    new_mask = MaskOperator.from_boolean_mask(jnp.asarray(new_good), in_structure=struct)
-    rebuilt = weight.with_mask(new_mask)
-
-    assert isinstance(rebuilt, NestedWeightOperator)
-    assert rebuilt.n_flag_max == weight.n_flag_max
-    assert rebuilt.max_flag_fraction == weight.max_flag_fraction
-    assert rebuilt.inner_steps == weight.inner_steps
-    assert rebuilt.ninv is weight.ninv
-    assert_allclose(np.asarray(rebuilt.mask.to_boolean_mask()), new_good)
-
-
-def test_with_mask_reresolves_n_flag_max() -> None:
-    """with_mask resolves n_flag_max from the *new* mask's size, not by copying the old budget."""
-    struct32 = jax.ShapeDtypeStruct((1, 32), jnp.float64)
-    mask32 = MaskOperator.from_boolean_mask(jnp.ones((1, 32), bool), in_structure=struct32)
-    weight = NestedWeightOperator.create(
-        _inv_noise_op(1, 32), mask32, NestedConfig(max_flag_fraction=0.5, inner_steps=10)
+        _inv_noise_op(1, n), mask, NestedConfig(max_flag_fraction=0.5, inner_steps=50)
     )
     assert weight.n_flag_max == 16  # ceil(0.5 * 32)
 
-    # A new mask over a larger TOD must grow the budget (only the budget field is inspected here).
-    struct64 = jax.ShapeDtypeStruct((1, 64), jnp.float64)
-    mask64 = MaskOperator.from_boolean_mask(jnp.ones((1, 64), bool), in_structure=struct64)
-    rebuilt = weight.with_mask(mask64)
+    # a new mask over a TOD twice as long
+    new_struct = jax.ShapeDtypeStruct((1, 2 * n), jnp.float64)
+    new_good = np.ones((1, 2 * n), bool)
+    new_good[0, 5:9] = False
+    new_mask = MaskOperator.from_boolean_mask(jnp.asarray(new_good), in_structure=new_struct)
+    rebuilt = weight.with_mask(new_mask)
+
+    assert isinstance(rebuilt, NestedWeightOperator)
     assert rebuilt.max_flag_fraction == weight.max_flag_fraction
-    assert rebuilt.n_flag_max == 32  # ceil(0.5 * 64), re-resolved from mask64
+    assert rebuilt.n_flag_max == 32  # ceil(0.5 * 64), not copied from the old budget
+    assert rebuilt.inner_steps == weight.inner_steps
+    assert rebuilt.ninv is weight.ninv
+    assert_allclose(np.asarray(rebuilt.mask.to_boolean_mask()), new_good)
 
 
 def test_weight_operator_with_mask() -> None:

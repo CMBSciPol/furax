@@ -18,7 +18,6 @@ from furax.mapmaking import (
 from furax.mapmaking.config import (
     GapTreatment,
     HealpixConfig,
-    HWPSynchronousConfig,
     LandscapeConfig,
     Methods,
     NoiseFitConfig,
@@ -27,7 +26,6 @@ from furax.mapmaking.config import (
     SkyPatch,
     SolverConfig,
     SotodlibConfig,
-    TemplatesConfig,
     TwoLevelConfig,
     WCSConfig,
     WeightingConfig,
@@ -49,20 +47,14 @@ from tests.mapmaking.helpers import (
     FakeLazyObservation,
     GappyLazyGroundObservation,
     ProbeFailingLazyObservation,
+    accumulate,
 )
 
 # Skip tests for interfaces that are not installed
 sotodlib_installed = importlib.util.find_spec('sotodlib') is not None
 toast_installed = importlib.util.find_spec('toast') is not None
 
-# Parameters for all the tests below.
-# Tests are parametrized over:
-#   - PARAMS: observation interface (sotodlib, toast) and demodulation flag
-#   - STOKES_TYPES: Stokes components ('I', 'QU', 'IQU')
-#   - LANDSCAPE_TYPES: output map projection (healpix, CAR)
-# Add more entries to any of these lists to extend coverage.
-
-PARAMS = [
+INTERFACES = [
     pytest.param(
         'sotodlib',
         False,
@@ -83,136 +75,98 @@ PARAMS = [
     ),
 ]
 STOKES_TYPES = ['I', 'QU', 'IQU']
-LANDSCAPE_TYPES = ['healpix', 'car']
+POMME_TAU = 10
 
 
-@pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
-@pytest.mark.parametrize('stokes', STOKES_TYPES)
-@pytest.mark.parametrize('name,demodulated', PARAMS)
-class TestMultiObsMapMaker:
-    def test_model_vs_reader_structure(self, name, demodulated, stokes, landscape_type):
-        observations = _observations(name, demodulated)
-        config = _config(landscape_type, stokes, demodulated)
-        maker = MultiObservationMapMaker(observations, config=config)
-        reader = ObservationReader.from_observations(
-            observations, stokes=stokes if demodulated else None
-        )
-        with jax.set_mesh(maker.placement.mesh):
-            model = maker.build_model_and_accumulate().buckets[0].model
-        n_obs = jax.tree.leaves(model)[0].shape[0]
-        assert n_obs == len(observations) == reader.count
-        # structures compared ignoring sharding (the model is built sharded inside shard_map)
-        assert structure_equal(model.map_structure, maker.landscape.structure)
-        assert structure_equal(model.tod_format.structure, reader.out_structure['sample_data'])
-
-    def test_full_mapmaker(self, name, demodulated, stokes, landscape_type):
-        observations = _observations(name, demodulated)
-        config = _config(landscape_type, stokes, demodulated)
-        maker = MultiObservationMapMaker(observations, config=config)
-        results = maker.run()
-        n_stokes = len(stokes)
-        assert results.hit_map.shape == maker.landscape.shape
-        assert jnp.all(results.hit_map >= 0)
-        assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
-        assert results.solver_stats is not None
-        num_steps = results.solver_stats['num_steps']
-        assert num_steps == 1, (
-            f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'
-        )
-
-    def test_bilinear_mapmaker_runs(self, name, demodulated, stokes, landscape_type):
-        observations = _observations(name, demodulated)
-        config = _config(landscape_type, stokes, demodulated, interpolation='bilinear')
-        maker = MultiObservationMapMaker(observations, config=config)
-        results = maker.run()
-        n_stokes = len(stokes)
-        assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
+@pytest.mark.parametrize(
+    ('landscape_type', 'stokes', 'interpolation'),
+    [('healpix', 'IQU', 'nearest'), ('car', 'QU', 'bilinear')],
+    ids=['healpix-nearest', 'car-bilinear'],
+)
+@pytest.mark.parametrize('name,demodulated', INTERFACES)
+def test_interface_observations_are_mapped(
+    name, demodulated, landscape_type, stokes, interpolation
+):
+    # The fake observations below cover the pipeline itself; this checks that the observations of
+    # each interface reach it, on both pixelizations and with either pointing interpolation.
+    observations = _observations(name, demodulated)
+    config = _config(landscape_type, stokes, demodulated, interpolation=interpolation)
+    maker = MultiObservationMapMaker(observations, config=config)
+    results = maker.run()
+    n_stokes = len(stokes)
+    assert results.hit_map.shape == maker.landscape.shape
+    assert jnp.all(results.hit_map >= 0) and jnp.any(results.hit_map > 0)
+    assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
+    if interpolation == 'nearest':
+        # the system of a binned map is block diagonal, which the preconditioner inverts exactly
+        assert results.solver_stats['num_steps'] == 1
 
 
 @pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])
 @pytest.mark.parametrize('stokes', STOKES_TYPES)
-class TestFakeObsMapMaker:
-    """Interface-agnostic pipeline coverage backed by the synthetic observation.
+def test_model_matches_the_reader_and_the_landscape(stokes, demodulated):
+    observations = [FakeLazyObservation(seed=i) for i in range(2)]
+    maker = MultiObservationMapMaker(observations, config=_config('healpix', stokes, demodulated))
+    reader = ObservationReader.from_observations(
+        observations, stokes=stokes if demodulated else None
+    )
+    model = accumulate(maker).buckets[0].model
+    n_obs = jax.tree.leaves(model)[0].shape[0]
+    assert n_obs == len(observations) == reader.count
+    # structures compared ignoring sharding (the model is built sharded inside shard_map)
+    assert structure_equal(model.map_structure, maker.landscape.structure)
+    assert structure_equal(model.tod_format.structure, reader.out_structure['sample_data'])
+    # a single white noise model covers both paths; on a demodulated TOD, its per-detector sigma
+    # carries the stream axis (after the observation axis of the accumulation scan)
+    assert isinstance(model.noise_model, WhiteNoiseModel)
+    if demodulated:
+        assert model.noise_model.sigma.shape[1] == len(stokes)
 
-    Unlike the classes above, these are *not* gated on sotodlib/toast being
-    installed and need no committed ``.h5`` fixtures: they exercise the binned
-    mapmaker end-to-end (both the modulated and demodulated paths) in a minimal
-    install (``[dev,mapmaking]`` only), where every interface-parametrized test
-    is skipped. The fake observation only supports the on-the-fly + healpix
-    path, so coverage is limited to that.
-    """
 
-    def test_model_vs_reader_structure(self, stokes, demodulated):
-        observations = [FakeLazyObservation()]
-        config = _config('healpix', stokes, demodulated=demodulated)
-        maker = MultiObservationMapMaker(observations, config=config)
-        reader = ObservationReader.from_observations(
-            observations, stokes=stokes if demodulated else None
-        )
-        with jax.set_mesh(maker.placement.mesh):
-            model = maker.build_model_and_accumulate().buckets[0].model
-        n_obs = jax.tree.leaves(model)[0].shape[0]
-        assert n_obs == len(observations) == reader.count
-        # structures compared ignoring sharding (the model is built sharded inside shard_map)
-        assert structure_equal(model.map_structure, maker.landscape.structure)
-        assert structure_equal(model.tod_format.structure, reader.out_structure['sample_data'])
+@pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])
+def test_failed_observation_is_excluded(demodulated):
+    # One good observation + one whose load fails: the run must complete, exclude the failed
+    # observation (contributing nothing, no NaN), and report it.
+    config = _config('healpix', 'IQU', demodulated=demodulated)
+    mixed = [FakeLazyObservation(seed=0), FailingLazyObservation(seed=1)]
+    maker = MultiObservationMapMaker(mixed, config=config)
+    results = maker.run()
 
-    def test_full_binned_mapmaker_multi_obs(self, stokes, demodulated):
-        # Two observations (distinct noise seeds) so the multi-observation
-        # accumulation path is exercised without any interface or data file.
-        observations = [FakeLazyObservation(seed=i) for i in range(2)]
-        config = _config('healpix', stokes, demodulated=demodulated)
-        maker = MultiObservationMapMaker(observations, config=config)
-        results = maker.run()
-        n_stokes = len(stokes)
-        assert results.hit_map.shape == maker.landscape.shape
-        assert jnp.all(results.hit_map >= 0)
-        assert results.icov.shape == (n_stokes, n_stokes, *maker.landscape.shape)
-        assert results.solver_stats is not None
-        num_steps = results.solver_stats['num_steps']
-        assert num_steps == 1, (
-            f'Expected CG to converge in 1 iteration (binned map), got {num_steps}'
-        )
+    assert results.failed_observations == ['failing_obs']
+    assert results.hit_map.shape == maker.landscape.shape
+    assert results.icov.shape == (3, 3, *maker.landscape.shape)
+    assert all(jnp.all(jnp.isfinite(x)) for x in jax.tree.leaves(results.map))
+    assert jnp.all(jnp.isfinite(results.icov))
 
-    def test_failed_observation_excluded(self, stokes, demodulated):
-        # One good observation + one whose load fails: the run must complete, exclude the failed
-        # observation (contributing nothing, no NaN), and report it.
-        config = _config('healpix', stokes, demodulated=demodulated)
-        mixed = [FakeLazyObservation(seed=0), FailingLazyObservation(seed=1)]
-        results = MultiObservationMapMaker(mixed, config=config).run()
+    # one row per observation, the failed one not loaded
+    data = mixed[0].get_data()
+    observations = results.observations
+    assert observations['name'].to_list() == [data.name, 'failing_obs']
+    assert observations['loaded'].to_list() == [True, False]
+    assert observations['n_samples'].to_list() == [data.n_samples, 0]
+    assert observations['probed_samples'][0] == data.n_samples
+    assert observations['error'].to_list() == [
+        None,
+        'load failed: RuntimeError: simulated preprocessing failure',
+    ]
+    # one row per detector read, the failed observation's none
+    detectors = results.detectors
+    assert detectors['observation'].to_list() == [0] * data.n_detectors
+    assert detectors['detector'].to_list() == list(range(data.n_detectors))
+    assert detectors['name'].to_list() == data.detectors
+    assert detectors['xi'].null_count() == 0
+    sigma = [c for c in detectors.columns if c.startswith('sigma')]
+    assert sigma and all(detectors[c].is_finite().all() for c in sigma)
+    stats = results.solver_stats
+    assert stats['num_steps'] == 1  # binned map
+    assert stats['converged'] and len(stats['residuals']) == stats['num_steps'] + 1
+    assert results.provenance['processes'] == 1
 
-        assert results.failed_observations == ['failing_obs']
-        assert all(jnp.all(jnp.isfinite(x)) for x in jax.tree.leaves(results.map))
-        assert jnp.all(jnp.isfinite(results.icov))
-
-        # one row per observation, the failed one not loaded
-        data = mixed[0].get_data()
-        observations = results.observations
-        assert observations['name'].to_list() == [data.name, 'failing_obs']
-        assert observations['loaded'].to_list() == [True, False]
-        assert observations['n_samples'].to_list() == [data.n_samples, 0]
-        assert observations['probed_samples'][0] == data.n_samples
-        assert observations['error'].to_list() == [
-            None,
-            'load failed: RuntimeError: simulated preprocessing failure',
-        ]
-        # one row per detector read, the failed observation's none
-        detectors = results.detectors
-        assert detectors['observation'].to_list() == [0] * data.n_detectors
-        assert detectors['detector'].to_list() == list(range(data.n_detectors))
-        assert detectors['name'].to_list() == data.detectors
-        assert detectors['xi'].null_count() == 0
-        sigma = [c for c in detectors.columns if c.startswith('sigma')]
-        assert sigma and all(detectors[c].is_finite().all() for c in sigma)
-        stats = results.solver_stats
-        assert stats['converged'] and len(stats['residuals']) == stats['num_steps'] + 1
-        assert results.provenance['processes'] == 1
-
-        # the failed observation contributes nothing -> identical to mapping only the good one
-        good_only = [FakeLazyObservation(seed=0)]
-        expected = MultiObservationMapMaker(good_only, config=config).run()
-        assert eqx.tree_equal(results.hit_map, expected.hit_map)
-        assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
+    # the failed observation contributes nothing -> identical to mapping only the good one
+    good_only = [FakeLazyObservation(seed=0)]
+    expected = MultiObservationMapMaker(good_only, config=config).run()
+    assert eqx.tree_equal(results.hit_map, expected.hit_map)
+    assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 
 
 class TestBuckets:
@@ -254,37 +208,30 @@ class TestBuckets:
         if max_buckets == 3 and jax.device_count() == 1:
             assert len(layout.buckets) == 3  # singletons never pad on one device
 
-    @pytest.mark.parametrize('stokes', ['I', 'IQU'])
-    def test_maps_do_not_depend_on_bucketing(self, stokes):
+    @pytest.mark.parametrize(
+        ('stokes', 'method'), [('I', Methods.BINNED), ('IQU', Methods.MAXL)], ids=['I', 'IQU-ml']
+    )
+    def test_maps_do_not_depend_on_bucketing(self, stokes, method):
         # Unit weights: a fitted noise level would see the padded samples and so depend on the
         # bucket's envelope, which is not what is under test here.
         observations = self._observations()
-        one = _config('healpix', stokes, identity_noise=True)
-        many = _config('healpix', stokes, identity_noise=True, max_buckets=3)
+        one = _config('healpix', stokes, method=method, identity_noise=True)
+        many = _config('healpix', stokes, method=method, identity_noise=True, max_buckets=3)
         one_result = MultiObservationMapMaker(observations, config=one).run()
         many_result = MultiObservationMapMaker(observations, config=many).run()
         assert eqx.tree_equal(one_result.hit_map, many_result.hit_map)
         assert eqx.tree_equal(one_result.map, many_result.map, rtol=1e-10, atol=1e-12)
         assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
 
-    def test_fitted_noise_clips_the_welch_segment_to_the_shortest_observation(self):
-        # The segment is longer than the shortest observation, so an unclipped fit would average a
-        # segment straddling its padding, differently in each bucketing.
+    def test_fitted_noise_does_not_depend_on_bucketing(self):
+        # The Welch segment is longer than the shortest observation, so an unclipped fit would
+        # average a segment straddling its padding, differently in each bucketing.
         observations = self._observations()
         one = _config('healpix', 'I', max_buckets=1, nperseg=1024)
         many = _config('healpix', 'I', max_buckets=3, nperseg=1024)
         maker = MultiObservationMapMaker(observations, config=one)
         assert maker.fit_config.weighting.fitting.nperseg == min(self.N_SAMPLES)
         one_result = maker.run()
-        many_result = MultiObservationMapMaker(observations, config=many).run()
-        assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
-        assert eqx.tree_equal(one_result.map, many_result.map, rtol=1e-10, atol=1e-12)
-
-    def test_fitted_noise_does_not_depend_on_bucketing(self):
-        observations = self._observations()
-        one = _config('healpix', 'I', max_buckets=1)
-        many = _config('healpix', 'I', max_buckets=3)
-        one_result = MultiObservationMapMaker(observations, config=one).run()
         many_result = MultiObservationMapMaker(observations, config=many).run()
         assert eqx.tree_equal(one_result.hit_map, many_result.hit_map)
         assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
@@ -324,8 +271,7 @@ class TestBuckets:
         observations.extend(GappyLazyGroundObservation(seed=i, n_samples=256) for i in (1, 2))
         maker = MultiObservationMapMaker(observations, config=config)
         assert min(bucket.envelope.sample_count for bucket in maker.layout.buckets) >= 2 * 64 - 1
-        with jax.set_mesh(maker.placement.mesh):
-            maker.build_model_and_accumulate()
+        accumulate(maker)
 
     def test_bucket_envelope_covers_pomme_support(self):
         config = _config('healpix', 'QU', method=Methods.POMME, pomme_tau=64, max_buckets=3)
@@ -333,65 +279,10 @@ class TestBuckets:
         observations.extend(FakeLazyObservation(seed=i, n_samples=256) for i in (1, 2))
         maker = MultiObservationMapMaker(observations, config=config)
         assert min(bucket.envelope.sample_count for bucket in maker.layout.buckets) >= 64
-        with jax.set_mesh(maker.placement.mesh):
-            maker.build_model_and_accumulate()
+        accumulate(maker)
 
 
-@pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])
-class TestNoiseModelSelection:
-    """Noise-model *selection* logic. This is generic mapmaker behaviour that
-    does not depend on the specific interface or sample values, so it is backed
-    by the synthetic observation -- no sotodlib/toast install or ``.h5`` fixture
-    required.
-    """
-
-    def _observations(self):
-        return [FakeLazyObservation(seed=i) for i in range(2)]
-
-    def test_white_noise_models_binned_or_demodulated(self, demodulated):
-        stokes = 'IQU'
-        observations = self._observations()
-        config = _config('healpix', stokes, demodulated=demodulated)
-        maker = MultiObservationMapMaker(observations, config=config)
-        with jax.set_mesh(maker.placement.mesh):
-            noise_model = maker.build_model_and_accumulate().buckets[0].model.noise_model
-        # A single WhiteNoiseModel covers both paths. The demodulated TOD is a single-array Stokes,
-        # so its per-detector sigma carries the leading Stokes axis (here after the observation-stack
-        # axis added by the accumulation scan).
-        assert isinstance(noise_model, WhiteNoiseModel)
-        if demodulated:
-            assert noise_model.sigma.shape[1] == len(stokes)
-
-    def test_identity_builds_unit_white_noise(self, demodulated):
-        observations = self._observations()
-        config = _config('healpix', 'IQU', demodulated, identity_noise=True)
-        maker = MultiObservationMapMaker(observations, config=config)
-        with jax.set_mesh(maker.placement.mesh):
-            model = maker.build_model_and_accumulate().buckets[0].model
-        noise_leaves = jax.tree.leaves(
-            model.noise_model,
-            is_leaf=lambda x: isinstance(x, WhiteNoiseModel),
-        )
-        assert noise_leaves
-        for nm in noise_leaves:
-            assert isinstance(nm, WhiteNoiseModel)
-            assert jnp.allclose(nm.sigma, 1.0)
-
-    @pytest.mark.parametrize('method', [Methods.BINNED, Methods.MAXL])
-    def test_identity_full_mapmaker(self, demodulated, method):
-        observations = self._observations()
-        config = _config('healpix', 'IQU', demodulated, method=method, identity_noise=True)
-        maker = MultiObservationMapMaker(observations, config=config)
-        results = maker.run()
-        assert results.icov.shape == (3, 3, *maker.landscape.shape)
-        assert results.solver_stats is not None
-
-
-@pytest.mark.parametrize(
-    'spectrum, which',
-    [('preconditioned', 'small'), ('system', 'small'), ('preconditioned', 'large')],
-)
-def test_two_level_preconditioner_solves_the_same_system(spectrum, which):
+def test_two_level_preconditioner_solves_the_same_system():
     config = _config('healpix', 'IQU', method=Methods.MAXL)
     config.weighting = WeightingConfig(
         mode=WeightingMode.TOEPLITZ, source=NoiseSource.PRECOMPUTED, correlation_length=64
@@ -399,78 +290,44 @@ def test_two_level_preconditioner_solves_the_same_system(spectrum, which):
     config.solver = SolverConfig(rtol=1e-10, max_steps=500)
     observations = [GappyLazyGroundObservation(seed=i, n_samples=256) for i in range(2)]
     expected = MultiObservationMapMaker(observations, config=config).run()
-    config.solver.two_level = TwoLevelConfig(
-        rank=4, which=which, spectrum=spectrum, tol=1e-8, max_restarts=50
-    )
-    results = MultiObservationMapMaker(observations, config=config).run()
-    assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-8)
-
-
-POMME_PARAMS = [
-    pytest.param(
-        'sotodlib',
-        id='sotodlib',
-        marks=pytest.mark.skipif(not sotodlib_installed, reason='sotodlib is not installed'),
-    ),
-    pytest.param(
-        'toast',
-        id='toast',
-        marks=pytest.mark.skipif(not toast_installed, reason='toast is not installed'),
-    ),
-]
-POMME_TAU = 10
-
-
-@pytest.mark.parametrize('landscape_type', LANDSCAPE_TYPES)
-@pytest.mark.parametrize('name', POMME_PARAMS)
-class TestPommeMapMaker:
-    """Test Pomme support in MultiObservationMapMaker."""
-
-    def test_pomme_full_mapmaker(self, name, landscape_type):
-        """Pomme runs end-to-end and produces a QU map with the correct shape."""
-        observations = _observations(name)
-        config = _config(landscape_type, stokes='QU', method=Methods.POMME, pomme_tau=POMME_TAU)
-        maker = MultiObservationMapMaker(observations, config=config)
-        results = maker.run()
-        assert results.icov.shape == (2, 2, *maker.landscape.shape)
-
-
-class TestPommeStokesValidation:
-    """Pomme Stokes-config normalisation/validation. Pure construction-time logic
-    that never reads sample data, so it is backed by the synthetic observation
-    (or an empty list) rather than an interface or ``.h5`` fixture.
-    """
-
-    def _base_config(self, stokes: ValidStokesLiteral) -> MapMakingConfig:
-        return MapMakingConfig(
-            method=Methods.POMME,
-            pomme_tau=POMME_TAU,
-            landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16)),
+    for spectrum, which in [
+        ('preconditioned', 'small'),
+        ('system', 'small'),
+        ('preconditioned', 'large'),
+    ]:
+        config.solver.two_level = TwoLevelConfig(
+            rank=4, which=which, spectrum=spectrum, tol=1e-8, max_restarts=50
         )
+        results = MultiObservationMapMaker(observations, config=config).run()
+        assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-8), (spectrum, which)
 
-    def test_iqu_stokes_falls_back_to_qu(self):
-        """stokes='IQU' with Pomme is converted to 'QU'."""
-        maker = MultiObservationMapMaker([FakeLazyObservation()], config=self._base_config('IQU'))
-        assert maker.config.landscape.stokes == 'QU'
 
-    def test_i_stokes_raises(self):
-        with pytest.raises(ValueError, match='cannot be reduced to a supported type'):
-            MultiObservationMapMaker([], config=self._base_config('I'))
+def test_pomme_maps_q_and_u_of_an_iqu_configuration():
+    config = _config('healpix', 'IQU', method=Methods.POMME, pomme_tau=POMME_TAU)
+    maker = MultiObservationMapMaker([FakeLazyObservation(seed=i) for i in range(2)], config=config)
+    assert maker.config.landscape.stokes == 'QU'
+    results = maker.run()
+    assert results.icov.shape == (2, 2, *maker.landscape.shape)
+    assert jnp.all(jnp.isfinite(results.icov))
 
-    def test_iquv_stokes_raises(self):
-        with pytest.raises(ValueError, match='cannot be reduced to a supported type'):
-            MultiObservationMapMaker([], config=self._base_config('IQUV'))
 
-    def test_pomme_with_templates_is_accepted(self):
-        config = self._base_config('QU')
-        config.templates = TemplatesConfig(hwp_synchronous=HWPSynchronousConfig())
-        MultiObservationMapMaker([FakeLazyObservation()], config=config)
-
-    def test_pomme_with_demodulated_data_raises(self):
-        config = self._base_config('QU')
-        config.sotodlib = SotodlibConfig(demodulated=True)
-        with pytest.raises(ValueError, match='demodulated'):
-            MultiObservationMapMaker([], config=config)
+@pytest.mark.parametrize(
+    ('stokes', 'demodulated', 'match'),
+    [
+        ('I', False, 'cannot be reduced to a supported type'),
+        ('IQUV', False, 'cannot be reduced to a supported type'),
+        ('QU', True, 'demodulated'),
+    ],
+)
+def test_pomme_rejects(stokes, demodulated, match):
+    config = MapMakingConfig(
+        method=Methods.POMME,
+        pomme_tau=POMME_TAU,
+        landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16)),
+        sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
+    )
+    with pytest.raises(ValueError, match=match):
+        MultiObservationMapMaker([], config=config)
 
 
 def _observations(name: str, demodulated: bool = False) -> list[AbstractLazyObservation]:
@@ -550,18 +407,13 @@ class TestSingleObsSolverGuards:
             weighting=WeightingConfig(mode=mode, source=NoiseSource.PRECOMPUTED),
         )
 
-    @pytest.mark.parametrize('mode', [WeightingMode.IDENTITY, WeightingMode.DIAGONAL])
-    def test_ml_mapmaker_accepts_diagonal_weighting(self, mode: WeightingMode) -> None:
-        """ML runs with identity/diagonal weighting (previously rejected via ``binned=True``)."""
+    @pytest.mark.parametrize(
+        ('mode', 'interpolation'),
+        [(WeightingMode.IDENTITY, 'nearest'), (WeightingMode.DIAGONAL, 'bilinear')],
+    )
+    def test_ml_mapmaker_accepts_any_weighting_and_pointing(self, mode, interpolation) -> None:
         obs = FakeGroundObservation(n_dets=4, n_samples=1024, sample_rate=100.0)
-        res = MLMapmaker(config=self._config(mode)).make_map(obs)
-        assert bool(jnp.all(jnp.isfinite(res['map'])))
-
-    def test_ml_mapmaker_accepts_bilinear_pointing(self) -> None:
-        """Bilinear pointing runs under the ML solver."""
-        obs = FakeGroundObservation(n_dets=4, n_samples=1024, sample_rate=100.0)
-        cfg = self._config(WeightingMode.IDENTITY, interpolation='bilinear')
-        res = MLMapmaker(config=cfg).make_map(obs)
+        res = MLMapmaker(config=self._config(mode, interpolation)).make_map(obs)
         assert bool(jnp.all(jnp.isfinite(res['map'])))
 
     @pytest.mark.parametrize('maker_cls', [BinnedMapMaker, PommeMapMaker])

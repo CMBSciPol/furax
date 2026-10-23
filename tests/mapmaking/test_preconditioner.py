@@ -5,194 +5,31 @@ import jax.numpy as jnp
 import pytest
 from numpy.testing import assert_allclose
 
-from furax import AbstractLinearOperator, asoperator
+from furax import asoperator
 from furax.linalg import LowRankTerms
 from furax.mapmaking.preconditioner import BJPreconditioner, make_two_level_preconditioner
-from furax.obs.stokes import StokesI, StokesIQU, StokesQU
+from furax.obs.stokes import Stokes, StokesIQU, StokesQU
 
 N_PIX = 8
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _diagonal_op_i(weights: jax.Array) -> AbstractLinearOperator:
-    """Diagonal operator on StokesI: scales the I map by weights."""
-    in_struct = StokesI.structure_for(weights.shape, weights.dtype)
-    return asoperator(lambda x: StokesI(weights * x.i), in_structure=in_struct)
-
-
-def _diagonal_op_qu(weights_q: jax.Array, weights_u: jax.Array) -> AbstractLinearOperator:
-    """Diagonal operator on StokesQU: independently scales Q and U."""
-    in_struct = StokesQU.structure_for(weights_q.shape, weights_q.dtype)
-    return asoperator(lambda x: StokesQU(weights_q * x.q, weights_u * x.u), in_structure=in_struct)
-
-
-def _diagonal_op_iqu(
-    weights_i: jax.Array, weights_q: jax.Array, weights_u: jax.Array
-) -> AbstractLinearOperator:
-    """Diagonal operator on StokesIQU: independently scales I, Q, U."""
-    in_struct = StokesIQU.structure_for(weights_i.shape, weights_i.dtype)
-    return asoperator(
-        lambda x: StokesIQU(weights_i * x.i, weights_q * x.q, weights_u * x.u),
-        in_structure=in_struct,
+@pytest.mark.parametrize('stokes', ['I', 'QU', 'IQU'])
+def test_block_jacobi_recovers_the_per_pixel_blocks(stokes: str) -> None:
+    # an operator coupling the Stokes components of each pixel through its own SPD block
+    n = len(stokes)
+    a = jax.random.normal(jax.random.key(0), (N_PIX, n, n))
+    matrices = a @ jnp.swapaxes(a, -1, -2) + jnp.eye(n)
+    cls = Stokes.class_for(stokes)
+    op = asoperator(
+        lambda x: cls.from_array(jnp.einsum('pij,jp->ip', matrices, x.data)),
+        in_structure=cls.structure_for((N_PIX,), jnp.float64),
     )
 
-
-# ---------------------------------------------------------------------------
-# Tests for StokesI
-# ---------------------------------------------------------------------------
-
-
-class TestBJPreconditionerI:
-    def test_create_blocks_match_diagonal(self) -> None:
-        """create() on a diagonal I operator gives blocks equal to the diagonal."""
-        w = jnp.arange(1, N_PIX + 1, dtype=jnp.float64)
-        op = _diagonal_op_i(w)
-        BJ = BJPreconditioner.create(op)
-        blocks = BJ.blocks  # (N_PIX, 1, 1)
-        assert blocks.shape == (N_PIX, 1, 1)
-        assert_allclose(blocks[:, 0, 0], w)
-
-    def test_apply_matches_diagonal(self) -> None:
-        """BJ(x) == w * x for a diagonal operator."""
-        w = jnp.arange(1, N_PIX + 1, dtype=jnp.float64)
-        op = _diagonal_op_i(w)
-        BJ = BJPreconditioner.create(op)
-        x = StokesI(jnp.ones(N_PIX))
-        result = BJ(x)
-        assert_allclose(result.i, w)
-
-    def test_inverse_undoes_operator(self) -> None:
-        """BJ.I(BJ(x)) ≈ x."""
-        w = jnp.arange(1, N_PIX + 1, dtype=jnp.float64)
-        op = _diagonal_op_i(w)
-        BJ = BJPreconditioner.create(op)
-        x = StokesI(jnp.ones(N_PIX))
-        assert_allclose(BJ.I(BJ(x)).i, x.i, rtol=1e-12)
-
-
-# ---------------------------------------------------------------------------
-# Tests for StokesQU
-# ---------------------------------------------------------------------------
-
-
-class TestBJPreconditionerQU:
-    def test_create_blocks_diagonal(self) -> None:
-        """create() on a diagonal QU operator gives 2×2 diagonal blocks."""
-        wq = jnp.arange(1, N_PIX + 1, dtype=jnp.float64)
-        wu = 2 * wq
-        op = _diagonal_op_qu(wq, wu)
-        BJ = BJPreconditioner.create(op)
-        blocks = BJ.blocks  # (N_PIX, 2, 2)
-        assert blocks.shape == (N_PIX, 2, 2)
-        assert_allclose(blocks[:, 0, 0], wq)
-        assert_allclose(blocks[:, 1, 1], wu)
-        assert_allclose(blocks[:, 0, 1], 0.0)
-        assert_allclose(blocks[:, 1, 0], 0.0)
-
-    def test_apply_matches_per_component_weights(self) -> None:
-        wq = jnp.arange(1, N_PIX + 1, dtype=jnp.float64)
-        wu = 2 * wq
-        op = _diagonal_op_qu(wq, wu)
-        BJ = BJPreconditioner.create(op)
-        x = StokesQU(jnp.ones(N_PIX), jnp.ones(N_PIX))
-        result = BJ(x)
-        assert_allclose(result.q, wq)
-        assert_allclose(result.u, wu)
-
-
-# ---------------------------------------------------------------------------
-# Tests for StokesIQU
-# ---------------------------------------------------------------------------
-
-
-class TestBJPreconditionerIQU:
-    def test_create_blocks_diagonal(self) -> None:
-        """create() on a diagonal IQU operator gives 3×3 diagonal blocks."""
-        wi = jnp.arange(1, N_PIX + 1, dtype=jnp.float64)
-        wq = 2 * wi
-        wu = 3 * wi
-        op = _diagonal_op_iqu(wi, wq, wu)
-        BJ = BJPreconditioner.create(op)
-        blocks = BJ.blocks  # (N_PIX, 3, 3)
-        assert blocks.shape == (N_PIX, 3, 3)
-        assert_allclose(blocks[:, 0, 0], wi)
-        assert_allclose(blocks[:, 1, 1], wq)
-        assert_allclose(blocks[:, 2, 2], wu)
-        # Off-diagonal blocks must be zero for a diagonal operator
-        assert_allclose(blocks[:, 0, 1], 0.0)
-        assert_allclose(blocks[:, 0, 2], 0.0)
-        assert_allclose(blocks[:, 1, 0], 0.0)
-        assert_allclose(blocks[:, 1, 2], 0.0)
-        assert_allclose(blocks[:, 2, 0], 0.0)
-        assert_allclose(blocks[:, 2, 1], 0.0)
-
-    def test_apply_matches_per_component_weights(self) -> None:
-        wi = jnp.arange(1, N_PIX + 1, dtype=jnp.float64)
-        wq = 2 * wi
-        wu = 3 * wi
-        op = _diagonal_op_iqu(wi, wq, wu)
-        BJ = BJPreconditioner.create(op)
-        x = StokesIQU(jnp.ones(N_PIX), jnp.ones(N_PIX), jnp.ones(N_PIX))
-        result = BJ(x)
-        assert_allclose(result.i, wi)
-        assert_allclose(result.q, wq)
-        assert_allclose(result.u, wu)
-
-    def test_off_diagonal_coupling(self) -> None:
-        """create() correctly captures off-diagonal (cross-Stokes) coupling.
-
-        Build an operator that couples I and Q via a known 2×2 block (per pixel)
-        plus an independent U component, then check that get_blocks() reproduces
-        the full matrix.
-        """
-        # Per-pixel 3×3 matrix: [[2, 1, 0], [1, 3, 0], [0, 0, 4]] (constant over pixels)
-        # Implement as a function operator
-        a, b, c = 2.0, 1.0, 3.0
-        d = 4.0
-
-        def coupled(x: StokesIQU) -> StokesIQU:
-            return StokesIQU(
-                i=a * x.i + b * x.q,
-                q=b * x.i + c * x.q,
-                u=d * x.u,
-            )
-
-        in_struct = StokesIQU.structure_for((N_PIX,), jnp.float64)
-        op = asoperator(coupled, in_structure=in_struct)
-
-        BJ = BJPreconditioner.create(op)
-        blocks = BJ.blocks  # (N_PIX, 3, 3)
-
-        expected = jnp.array([[a, b, 0.0], [b, c, 0.0], [0.0, 0.0, d]])
-        for pix in range(N_PIX):
-            assert_allclose(blocks[pix], expected, atol=1e-12)
-
-    def test_blocks_are_symmetric(self) -> None:
-        """For a symmetric operator the recovered blocks must be symmetric."""
-        wi = jnp.arange(1, N_PIX + 1, dtype=jnp.float64)
-        wq = 2 * wi
-        wu = 3 * wi
-        op = _diagonal_op_iqu(wi, wq, wu)
-        BJ = BJPreconditioner.create(op)
-        blocks = BJ.blocks
-        assert_allclose(blocks, jnp.swapaxes(blocks, -1, -2), atol=1e-12)
-
-    def test_inverse_undoes_operator(self) -> None:
-        """BJ.I(BJ(x)) ≈ x for a full IQU preconditioner."""
-        wi = jnp.arange(1, N_PIX + 1, dtype=jnp.float64)
-        wq = 2 * wi
-        wu = 3 * wi
-        op = _diagonal_op_iqu(wi, wq, wu)
-        BJ = BJPreconditioner.create(op)
-        x = StokesIQU(jnp.ones(N_PIX), 2 * jnp.ones(N_PIX), 3 * jnp.ones(N_PIX))
-        recovered = BJ.I(BJ(x))
-        assert_allclose(recovered.i, x.i, rtol=1e-12)
-        assert_allclose(recovered.q, x.q, rtol=1e-12)
-        assert_allclose(recovered.u, x.u, rtol=1e-12)
+    BJ = BJPreconditioner.create(op)
+    assert_allclose(BJ.blocks, matrices, rtol=1e-12, atol=1e-12)
+    x = cls.from_array(jax.random.normal(jax.random.key(1), (n, N_PIX)))
+    assert_allclose(BJ(x).data, op(x).data, rtol=1e-12)
+    assert_allclose(BJ.I(BJ(x)).data, x.data, rtol=1e-10)
 
 
 # ---------------------------------------------------------------------------

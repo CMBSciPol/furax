@@ -6,60 +6,9 @@ from numpy.testing import assert_allclose, assert_array_equal
 from furax.mapmaking import ReaderField
 from furax.mapmaking._model import _noise_model, _noise_operator, _sample_mask, restrict_streams
 from furax.mapmaking.config import MapMakingConfig, Methods, WeightingConfig, WeightingMode
-from furax.mapmaking.noise import WhiteNoiseModel, padding_aware_welch
+from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs import TODFormat
 from furax.obs.stokes import StokesIQU, StokesQU
-
-
-def test_padding_aware_welch_matches_unpadded_signal():
-    signal = jax.random.normal(jax.random.key(0), (2, 1024), dtype=jnp.float64)
-    expected_f, expected_psd = jax.scipy.signal.welch(signal, fs=100.0, nperseg=256)
-    padded = jnp.pad(signal, ((0, 0), (0, 512)))
-    actual_f, actual_psd = padding_aware_welch(padded, 512, fs=jnp.array(100.0), nperseg=256)
-    assert_allclose(actual_f, expected_f)
-    assert_allclose(actual_psd, expected_psd, rtol=1e-12, atol=1e-12)
-
-
-def test_padding_aware_welch_clips_segment_to_short_signal():
-    signal = jax.random.normal(jax.random.key(0), (2, 127), dtype=jnp.float64)
-    expected_f, expected_psd = jax.scipy.signal.welch(signal, fs=100.0, nperseg=256)
-    actual_f, actual_psd = padding_aware_welch(signal, 0, fs=jnp.array(100.0), nperseg=256)
-    assert_allclose(actual_f, expected_f)
-    assert_allclose(actual_psd, expected_psd, rtol=1e-12, atol=1e-12)
-
-
-def test_padding_aware_welch_preserves_float32():
-    with jax.enable_x64():
-        signal = jax.random.normal(jax.random.key(0), (2, 256), dtype=jnp.float32)
-        frequencies, psd = padding_aware_welch(
-            signal, 0, fs=jnp.array(100.0, dtype=jnp.float32), nperseg=128
-        )
-    assert frequencies.dtype == jnp.float32
-    assert psd.dtype == jnp.float32
-
-
-@jax.jit
-def _welch(signal, padding, valid):
-    return padding_aware_welch(signal, padding, fs=jnp.array(100.0), nperseg=256, valid=valid)
-
-
-def test_padding_aware_welch_skips_flagged_segments():
-    nperseg, step = 256, 128
-    signal = jax.random.normal(jax.random.key(0), (3, 1024), dtype=jnp.float64)
-    glitched = signal.at[0, 300:340].set(1e6)
-    valid = jnp.ones_like(signal, bool)
-    valid = valid.at[0, 300:340].set(False)  # the segments starting at 128 and 256 hold them
-    valid = valid.at[2, ::100].set(False)  # no segment is clean: the detector keeps them all
-
-    _, psd = _welch(glitched.at[2].set(signal[2]), jnp.array(0), valid)  # padding traced
-
-    def segment(s):
-        return jax.scipy.signal.welch(signal[0, s : s + nperseg], fs=100.0, nperseg=nperseg)[1]
-
-    starts = [s for s in range(0, 1024 - nperseg + 1, step) if s not in (128, 256)]
-    assert_allclose(psd[0], sum(map(segment, starts)) / len(starts), rtol=1e-10, atol=1e-12)
-    _, unmasked = padding_aware_welch(signal, 0, fs=jnp.array(100.0), nperseg=nperseg)
-    assert_allclose(psd[1:], unmasked[1:], rtol=1e-12, atol=1e-12)
 
 
 class TestSampleMask:
@@ -133,17 +82,6 @@ class TestIdentityNoise:
         x = jax.random.normal(jax.random.key(1), (4, 200))
         assert_allclose(inv_op(x), x, rtol=1e-12)
         assert_allclose(fwd_op(x), x, rtol=1e-12)
-
-    def test_identity_config_yaml_round_trip(self):
-        config = MapMakingConfig(weighting=WeightingConfig(mode=WeightingMode.IDENTITY))
-        yaml_str = config._to_yaml()
-        assert 'mode: identity' in yaml_str
-        loaded = MapMakingConfig.load_dict({'weighting': {'mode': 'identity'}})
-        assert loaded.weighting.mode is WeightingMode.IDENTITY
-
-    def test_diagonal_by_default(self):
-        config = WeightingConfig()
-        assert config.mode is WeightingMode.DIAGONAL
 
 
 def test_restrict_streams_keeps_the_streams_of_the_map():

@@ -9,6 +9,7 @@ from numpy.testing import assert_allclose
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
     BinsConfig,
+    CommonModeConfig,
     HWPSynchronousConfig,
     PolynomialConfig,
     PolynomialOrders,
@@ -19,15 +20,19 @@ from furax.mapmaking.config import (
 )
 from furax.mapmaking.templates import (
     build_templates,
+    common_mode_templates,
+    polarization_field_couplings,
     polynomial_templates,
     required_reader_fields,
     t2p_templates,
+    winding_couplings,
     zernike_couplings,
 )
 from furax.mapmaking.templates._builders import (
     _bin_weights,
     _harmonics,
     _legendre,
+    _winding_exponents,
     azimuth_hwp_synchronous_basis,
     binned_azimuth_hwp_synchronous_basis,
     binned_azimuth_synchronous_basis,
@@ -463,6 +468,123 @@ def test_t2p_field_shares_its_amplitudes_between_the_detectors(joint_qu, per, sh
     assert template.per == per and template.in_structure.shape == shape
     assert not template.per_detector
     assert ReaderField.DETECTOR_QUATERNIONS in required_reader_fields(TemplatesConfig(t2p=config))
+
+
+def test_polarization_field_couplings_of_q_and_u_are_the_leakage_of_a_complex_field():
+    _, _, gamma = _detector_angles()
+    re, im = jr.normal(jr.key(7), (2, N_DETS, 3))
+    fields = re + 1j * im
+    c = jr.normal(jr.key(8), (3, 2))  # (Re, Im) of each function
+    coupling = polarization_field_couplings(fields, gamma, streams='qu')
+    assert coupling.shape == (2, N_DETS, 6)
+    leakage = (fields @ (c[:, 0] + 1j * c[:, 1])) * jnp.exp(2j * gamma)
+    assert_allclose(coupling @ c.ravel(), jnp.stack([leakage.real, leakage.imag]), atol=1e-12)
+
+
+def test_polarization_field_couplings_of_one_stream_are_the_real_and_imaginary_parts():
+    _, _, gamma = _detector_angles()
+    re, im = jr.normal(jr.key(9), (2, N_DETS, 2))
+    fields = re + 1j * im
+    coupling = polarization_field_couplings(fields, gamma)
+    assert coupling.shape == (N_DETS, 4)
+    w = fields * jnp.exp(2j * gamma)[:, None]
+    assert_allclose(coupling[:, 0::2], w.real, atol=1e-12)
+    assert_allclose(coupling[:, 1::2], w.imag, atol=1e-12)
+
+
+def test_polarization_field_couplings_reject_other_streams_than_q_and_u():
+    with pytest.raises(ValueError, match='Q and U streams only'):
+        polarization_field_couplings(jnp.ones((N_DETS, 1)), jnp.zeros(N_DETS), streams='qi')
+
+
+@pytest.mark.parametrize(
+    ('order', 'decentred', 'uniform', 'n_fields'),
+    [(1, False, False, 1), (1, True, True, 3), (2, True, True, 6), (2, True, False, 5)]
+    + [(3, False, True, 4)],
+)
+def test_winding_couplings_have_two_modes_per_complex_function(order, decentred, uniform, n_fields):
+    xi, eta, gamma = _detector_angles()
+    coupling = winding_couplings(
+        xi, eta, gamma, order, 0.31, decentred=decentred, uniform=uniform, streams='qu'
+    )
+    assert coupling.shape == (2, N_DETS, 2 * n_fields)
+
+
+def test_winding_functions_are_ordered_by_degree_and_turns():
+    assert _winding_exponents(2, decentred=True, uniform=True) == [
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (2, 1),
+        (3, 0),
+        (3, 1),
+    ]
+
+
+@pytest.mark.parametrize('order', [1, 2, 4])
+def test_winding_functions_of_a_centred_axis_turn_twice_around_the_axis(order):
+    exponents = _winding_exponents(order, decentred=False, uniform=False)
+    assert len(exponents) == order and all(p - q == 2 for p, q in exponents)
+
+
+def test_winding_couplings_of_the_axis_vanish_without_a_uniform_mode():
+    zero = jnp.zeros(N_DETS)
+    coupling = winding_couplings(zero, zero, zero + 0.3, 2, 0.31, uniform=False, streams='qu')
+    assert_allclose(coupling, 0.0, atol=TOL)
+
+
+def test_winding_couplings_reject_a_radial_order_below_one():
+    xi, eta, gamma = _detector_angles()
+    with pytest.raises(ValueError, match="'radial_order' must be >= 1"):
+        winding_couplings(xi, eta, gamma, 0, 0.31)
+
+
+def _field_data(stokes: str) -> dict:
+    """The fields the polarization templates are built from: those of `_data` and the detector
+    quaternions."""
+    angles = XiEtaAngles(*_detector_angles())
+    quaternions = jnp.stack(angles.to_quaternion().to_components(), -1)
+    return _data(stokes) | {ReaderField.DETECTOR_QUATERNIONS: quaternions}
+
+
+@pytest.mark.parametrize(
+    ('joint_qu', 'per', 'shape'), [(True, (), (1, 12)), (False, ('stream',), (2, 1, 12))]
+)
+def test_t2p_quadrupole_field_shares_its_amplitudes_between_the_detectors(joint_qu, per, shape):
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='IQU')
+    config = T2PConfig(quadrupole_order=2, joint_qu=joint_qu)  # 6 complex functions
+    template = t2p_templates(config, _field_data('IQU'), tod_format)['t2p']
+    assert template.per == per and template.in_structure.shape == shape
+    assert ReaderField.DETECTOR_QUATERNIONS in required_reader_fields(TemplatesConfig(t2p=config))
+
+
+@pytest.mark.parametrize(
+    ('config', 'n_modes'),
+    [
+        (CommonModeConfig(samples_per_knot=30), 4),  # the quadrupole and the shifted axis
+        (CommonModeConfig(samples_per_knot=30, uniform=True), 6),
+        (CommonModeConfig(samples_per_knot=30, quadrupole_order=2, decentred=False), 4),
+    ],
+)
+def test_common_mode_has_one_spline_per_mode_shared_by_the_detectors(config, n_modes):
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='IQU')
+    template = common_mode_templates(config, _field_data('IQU'), tod_format)['common_mode']
+    assert template.streams == 'qu' and template.per == ()
+    assert template.in_structure.shape == (N_SAMPS // 30 + 2, n_modes)  # (spline, mode)
+    assert not template.per_detector
+
+
+def test_common_mode_needs_the_q_and_u_streams():
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='I')
+    assert common_mode_templates(CommonModeConfig(), _field_data('I'), tod_format) == {}
+
+
+def test_build_templates_adds_the_common_mode_to_the_explicit_templates():
+    config = TemplatesConfig(common_mode=CommonModeConfig())
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='IQU')
+    explicit, implicit = build_templates(config, _field_data('IQU'), tod_format)
+    assert set(explicit) == {'common_mode'} and not implicit
+    assert required_reader_fields(config) <= set(_field_data('IQU'))
 
 
 def test_spline_drift_needs_no_scanning_intervals():

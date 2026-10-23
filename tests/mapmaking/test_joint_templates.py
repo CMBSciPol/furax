@@ -16,6 +16,7 @@ from polars.testing import assert_frame_equal
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
+    CommonModeConfig,
     GapsConfig,
     GapTreatment,
     HWPSynchronousConfig,
@@ -241,6 +242,36 @@ def test_t2p_field_is_the_same_in_detector_batches(joint_qu, polynomial):
     assert amplitudes.shape[0] == 2  # one set of amplitudes per observation
     assert_allclose(
         batched.template_amplitudes['t2p'], amplitudes, atol=1e-4 * jnp.max(jnp.abs(amplitudes))
+    )
+
+
+@pytest.mark.parametrize(
+    'templates',
+    [
+        TemplatesConfig(t2p=T2PConfig(quadrupole_order=1)),
+        TemplatesConfig(common_mode=CommonModeConfig(samples_per_knot=256), regularization=1e-3),
+    ],
+    ids=['t2p-quadrupole', 'common-mode'],
+)
+def test_quadrupolar_templates_are_the_same_in_detector_batches(templates):
+    # Their amplitudes belong to the observation, as those of the Zernike field: batching the
+    # detectors changes the memory layout, not the model.
+    name = 't2p' if templates.t2p is not None else 'common_mode'
+    cfg = replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
+    whole, batched = [
+        MultiObservationMapMaker(
+            _ground_obs(n_dets=7, focal_plane_radius=0.2),
+            config=replace(cfg, detector_batch_size=batch),
+        ).run()
+        for batch in (0, 3)
+    ]
+    amplitudes = whole.template_amplitudes[name]
+    assert jnp.all(jnp.isfinite(amplitudes)) and jnp.max(jnp.abs(amplitudes)) > 0
+    assert amplitudes.shape[0] == 2  # one set of amplitudes per observation
+    scale = jnp.max(jnp.abs(whole.map.data))
+    assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
+    assert_allclose(
+        batched.template_amplitudes[name], amplitudes, atol=1e-4 * jnp.max(jnp.abs(amplitudes))
     )
 
 

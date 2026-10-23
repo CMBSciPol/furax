@@ -16,7 +16,7 @@ import jax.numpy as jnp
 from fastquat import Quaternion
 from jax import Array
 from jax.scipy.signal import detrend
-from jaxtyping import DTypeLike, Float
+from jaxtyping import Complex, DTypeLike, Float
 
 from furax.math import bspline
 from furax.math.coords import XiEtaAngles
@@ -30,6 +30,7 @@ from ..config import (
     BinnedAzimuthHWPSynchronousConfig,
     BinnedAzimuthSynchronousConfig,
     BinsConfig,
+    CommonModeConfig,
     HWPSynchronousConfig,
     PolynomialConfig,
     PolynomialOrders,
@@ -62,7 +63,10 @@ __all__ = [
     'binned_azimuth_hwp_synchronous_templates',
     'spline_hwp_synchronous_templates',
     't2p_templates',
+    'common_mode_templates',
     'zernike_couplings',
+    'winding_couplings',
+    'polarization_field_couplings',
 ]
 
 
@@ -113,6 +117,9 @@ def build_templates(
     if config.t2p is not None:
         templates = t2p_templates(config.t2p, data, tod_format, temperature=temperature)
         (explicit if config.t2p.explicit else implicit).update(templates)
+    if config.common_mode is not None:
+        templates = common_mode_templates(config.common_mode, data, tod_format)
+        (explicit if config.common_mode.explicit else implicit).update(templates)
     if not explicit and not implicit:
         raise ValueError('config.templates is set but no template is active.')
     return explicit, implicit
@@ -143,8 +150,14 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
         fields |= {ReaderField.TIMESTAMPS, ReaderField.HWP_ANGLES}
     if config.t2p is not None:
         fields |= {ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS}
-        if config.t2p.zernike_order is not None:
+        if config.t2p.zernike_order is not None or config.t2p.quadrupole_order is not None:
             fields |= {ReaderField.DETECTOR_QUATERNIONS}
+    if config.common_mode is not None:
+        fields |= {
+            ReaderField.TIMESTAMPS,
+            ReaderField.VALID_SCANNING_MASKS,
+            ReaderField.DETECTOR_QUATERNIONS,
+        }
     if config.ground is not None:
         raise NotImplementedError(
             'Ground templates are not supported in the multi-observation path.'
@@ -296,8 +309,9 @@ def t2p_templates(
 
     Each detector's leakage is its own temperature stream, `temperature`, by default the I stream
     of the sample data. Q and U each fit their own amplitudes per detector, or, with
-    `config.zernike_order`, a few amplitudes shared by the detectors: the leakage follows a
-    polarization field over the focal plane, from the detector quaternions in `data`.
+    `config.zernike_order` or `config.quadrupole_order`, a few amplitudes shared by the detectors:
+    the leakage follows a polarization field over the focal plane, from the detector quaternions
+    in `data`.
     """
     streams = (
         ''
@@ -315,20 +329,34 @@ def t2p_templates(
         sample_rate=_sample_rate(data[ReaderField.TIMESTAMPS]),
         decimation_factor=config.decimation_factor,
     )
-    if config.zernike_order is None:
+    if config.zernike_order is None and config.quadrupole_order is None:
         return {'t2p': Template(basis, tod_format, streams=streams)}
     angles = XiEtaAngles.from_quaternion(
         Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS])
     )
     joint = config.joint_qu
-    coupling = zernike_couplings(
-        angles.xi,
-        angles.eta,
-        angles.gamma,
-        config.zernike_order,
-        config.zernike_radius,
-        streams=streams if joint else None,
-    ).astype(tod_format.dtype)
+    if config.quadrupole_order is None:
+        assert config.zernike_order is not None  # guaranteed by the test above
+        coupling = zernike_couplings(
+            angles.xi,
+            angles.eta,
+            angles.gamma,
+            config.zernike_order,
+            config.zernike_radius,
+            streams=streams if joint else None,
+        )
+    else:
+        coupling = winding_couplings(
+            angles.xi,
+            angles.eta,
+            angles.gamma,
+            config.quadrupole_order,
+            config.zernike_radius,
+            decentred=config.decentred,
+            uniform=config.decentred,
+            streams=streams if joint else None,
+        )
+    coupling = coupling.astype(tod_format.dtype)
     # one common field for the detectors; its own for each stream unless Q and U share one
     template = Template(
         basis,
@@ -338,6 +366,46 @@ def t2p_templates(
         coupling=coupling if joint else coupling[None],
     )
     return {'t2p': template}
+
+
+def common_mode_templates(
+    config: CommonModeConfig, data: Mapping[str, Any], tod_format: TODFormat
+) -> dict[str, Template]:
+    """The polarization common to the detectors on the Q and U streams of the TOD, none without.
+
+    The detectors see one polarization pattern over the focal plane, `winding_couplings` from the
+    detector quaternions in `data`, with a time dependence they share: a cubic B-spline of time
+    over the whole observation for each mode of the pattern.
+    """
+    streams = (
+        ''
+        if tod_format.stokes is None
+        else ''.join(s for s in tod_format.stokes.lower() if s in 'qu')
+    )
+    if not streams:
+        return {}
+    times = data[ReaderField.TIMESTAMPS]
+    basis = spline_drift_basis(
+        max(2, times.size // config.samples_per_knot),
+        times=times,
+        dtype=tod_format.dtype,
+        valid_mask=data[ReaderField.VALID_SCANNING_MASKS],
+    )
+    angles = XiEtaAngles.from_quaternion(
+        Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS])
+    )
+    coupling = winding_couplings(
+        angles.xi,
+        angles.eta,
+        angles.gamma,
+        config.quadrupole_order,
+        config.radius,
+        decentred=config.decentred,
+        uniform=config.uniform,
+        streams=streams,
+    ).astype(tod_format.dtype)
+    template = Template(basis, tod_format, streams=streams, per=(), coupling=coupling)
+    return {'common_mode': template}
 
 
 def zernike_couplings(
@@ -374,20 +442,111 @@ def zernike_couplings(
     Raises:
         ValueError: If `streams` names a stream other than `'q'` and `'u'`.
     """
+    x, y = xi / radius, eta / radius
+    return polarization_field_couplings(zernike_vander(x, y, order), gamma, streams=streams)
+
+
+def winding_couplings(
+    xi: Float[Array, ' det'],
+    eta: Float[Array, ' det'],
+    gamma: Float[Array, ' det'],
+    radial_order: int,
+    radius: float,
+    *,
+    decentred: bool = True,
+    uniform: bool = True,
+    streams: str | None = None,
+) -> Float[Array, '*stream det mode']:
+    r"""Couplings of a leakage that follows a quadrupolar polarization field over the focal plane.
+
+    With $\zeta = (-\eta - i\xi) / R$ the complex position of a detector, the field of optics
+    symmetric about their axis is $P = \zeta^2 g(|\zeta|^2)$: exactly two turns of the
+    polarization around the axis. Its modes are the monomials $\zeta^{j+2}\bar\zeta^{j}$, for $j$
+    below `radial_order`. If `decentred`, the first-order terms of an axis shifted from the origin
+    are added: $\zeta^{j+1}\bar\zeta^{j}$ and, from $j = 1$, $\zeta^{j+2}\bar\zeta^{j-1}$.
+    If `uniform`, so is the constant. The modes are ordered by degree and then by number of turns,
+    each with the couplings of [`polarization_field_couplings`][].
+
+    Args:
+        xi: The detectors' first focal-plane coordinate, in radians.
+        eta: The detectors' second focal-plane coordinate, in radians.
+        gamma: The detectors' polarization angle, in radians.
+        radial_order: The number of terms of the axisymmetric field, at least 1.
+        radius: The focal-plane radius $R$, in radians.
+        decentred: Whether to include the terms of a shifted axis.
+        uniform: Whether to include the constant mode.
+        streams: The streams `'q'` and `'u'` to couple together; `None` for the couplings of one
+            stream.
+
+    Raises:
+        ValueError: If `radial_order` is below 1, or `streams` names a stream other than `'q'` and
+            `'u'`.
+    """
+    if radial_order < 1:
+        raise ValueError(f"'radial_order' must be >= 1, got {radial_order}")
+    zeta = (-eta - 1j * xi) / radius
+    fields = jnp.stack(
+        [
+            zeta**p * jnp.conj(zeta) ** q
+            for p, q in _winding_exponents(radial_order, decentred, uniform)
+        ],
+        axis=-1,
+    )
+    return polarization_field_couplings(fields, gamma, streams=streams)
+
+
+def polarization_field_couplings(
+    fields: Complex[Array, 'det field'],
+    gamma: Float[Array, ' det'],
+    *,
+    streams: str | None = None,
+) -> Float[Array, '*stream det mode']:
+    r"""Couplings of a leakage that follows a polarization field over the focal plane.
+
+    The field $P = \sum_k c_k F_k$, with complex $c_k$ over the functions $F_k$ whose values at the
+    detectors are `fields`, reaches detector $i$, of polarization angle $\gamma_i$, as the leakage
+    coefficient $e^{2i\gamma_i} P_i$. With $w_{ik} = F_k(i) e^{2i\gamma_i}$, a stream alone sees
+    $a_k \mathrm{Re}\, w_{ik} + b_k \mathrm{Im}\, w_{ik}$, a real combination: the couplings,
+    `(det, mode)` with the modes $(a_k, b_k)$ of each function in turn.
+
+    With `streams`, such as `'qu'`, the couplings are those of Q and U together, `(stream, det,
+    mode)`: the modes are then $(\mathrm{Re}\, c_k, \mathrm{Im}\, c_k)$, common to the streams,
+    seen as $\mathrm{Re}(c_k w_{ik})$ on Q and $\mathrm{Im}(c_k w_{ik})$ on U.
+
+    Args:
+        fields: The values of the functions at the detectors, `(det, field)`.
+        gamma: The detectors' polarization angle, in radians.
+        streams: The streams `'q'` and `'u'` to couple together; `None` for the couplings of one
+            stream.
+
+    Raises:
+        ValueError: If `streams` names a stream other than `'q'` and `'u'`.
+    """
     if streams is not None and not set(streams) <= set('qu'):
         raise ValueError(f"'streams' must name Q and U streams only, got {streams!r}")
-    x, y = xi / radius, eta / radius
-    fields = zernike_vander(x, y, order)  # (det, k)
-    rotation = jnp.stack([jnp.cos(2 * gamma), jnp.sin(2 * gamma)], axis=-1)  # (det, 2)
-    if streams is not None:
-        # Q sees (cos, -sin) of the complex amplitude, U sees (sin, cos)
-        rotation = jnp.stack(
+    w = fields * jnp.exp(2j * gamma)[:, None]  # (det, field)
+    if streams is None:
+        couplings = jnp.stack([w.real, w.imag], axis=-1)  # (det, field, 2)
+    else:
+        # Q sees (Re, -Im) of the complex amplitude, U sees (Im, Re)
+        couplings = jnp.stack(
             [
-                rotation * jnp.array([1.0, -1.0]) if s == 'q' else rotation[..., ::-1]
+                jnp.stack([w.real, -w.imag] if s == 'q' else [w.imag, w.real], axis=-1)
                 for s in streams
             ]
-        )  # (stream, det, 2)
-    return (fields[..., None] * rotation[..., None, :]).reshape(*rotation.shape[:-2], len(x), -1)
+        )  # (stream, det, field, 2)
+    return couplings.reshape(*couplings.shape[:-2], -1)
+
+
+def _winding_exponents(radial_order: int, decentred: bool, uniform: bool) -> list[tuple[int, int]]:
+    r"""The powers `(p, q)` of the monomials $\zeta^p \bar\zeta^q$ of `winding_couplings`."""
+    exponents = [(j + 2, j) for j in range(radial_order)]
+    if decentred:
+        exponents += [(j + 1, j) for j in range(radial_order)]
+        exponents += [(j + 2, j - 1) for j in range(1, radial_order)]
+    if uniform:
+        exponents.append((0, 0))
+    return sorted(exponents, key=lambda pq: (sum(pq), pq[0] - pq[1]))
 
 
 def _on_every_stream(basis: Basis, tod_format: TODFormat) -> Template:

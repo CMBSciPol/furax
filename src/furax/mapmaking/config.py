@@ -658,6 +658,15 @@ class T2PConfig:
     part on Q and its imaginary part on U. A few amplitudes per observation replace a coefficient
     per detector.
 
+    With `quadrupole_order` instead, the field is the one that optics symmetric about their axis
+    produce. With $\zeta = (-\eta - i\xi) / R$ the complex position of a detector in the focal
+    plane, the polarization makes exactly two turns around the axis, $P = \zeta^2 g(|\zeta|^2)$,
+    and grows as the square of the field angle near the axis. `quadrupole_order` is the number of
+    terms of the polynomial $g$ in $|\zeta|^2$. An axis shifted from the centre of the focal plane
+    adds to the field, to first order in the shift, a polarization linear in $\zeta$ and a uniform
+    one: `decentred` includes them. The field has `quadrupole_order` complex amplitudes, or
+    three times as many if `decentred`.
+
     Examples:
         Leakage following the instrumental polarization of the optics, up to fourth order across
         the focal plane, fitted in the signal band
@@ -666,6 +675,13 @@ class T2PConfig:
                 fit_band: [0.03, 0.15]
                 decimation_factor: 10
                 zernike_order: 4
+
+        The quadrupolar field of optics whose axis may be off the centre of the focal plane, to
+        the first correction in the field angle: 6 complex amplitudes
+
+            t2p:
+                fit_band: [0.004, 0.1]
+                quadrupole_order: 2
     """
 
     fit_band: tuple[float, float] | None = None
@@ -680,6 +696,17 @@ class T2PConfig:
     `None` fits a free coefficient per detector instead.
     """
 
+    quadrupole_order: int | None = None
+    """Number of terms of the quadrupolar polarization field over the focal plane.
+
+    `None` for no such field: the leakage is then a Zernike field if `zernike_order` is set, and a
+    free coefficient per detector otherwise. Exclusive with `zernike_order`.
+    """
+
+    decentred: bool = True
+    """Whether the quadrupolar field includes the terms of an axis shifted from the centre of the
+    focal plane. Only with `quadrupole_order`."""
+
     zernike_radius: float = 0.31
     """Focal-plane radius $R$ in radians, scaling the detector coordinates of the field.
 
@@ -689,7 +716,7 @@ class T2PConfig:
 
     joint_qu: bool = True
     r"""Whether Q and U share one complex field, $\mathrm{Re}$ on Q and $\mathrm{Im}$ on U, or each
-    fit their own. Only with `zernike_order`."""
+    fit their own. Only with `zernike_order` or `quadrupole_order`."""
 
     explicit: bool = True
     """T2P templates are always solved explicitly; deprojection is not supported."""
@@ -699,8 +726,65 @@ class T2PConfig:
             raise ValueError('T2P template filtering requires explicit=True')
         if self.zernike_order is not None and self.zernike_order < 0:
             raise ValueError(f"'zernike_order' must be >= 0, got {self.zernike_order}")
+        if self.quadrupole_order is not None and self.quadrupole_order < 1:
+            raise ValueError(f"'quadrupole_order' must be >= 1, got {self.quadrupole_order}")
+        if self.zernike_order is not None and self.quadrupole_order is not None:
+            raise ValueError("'zernike_order' and 'quadrupole_order' are exclusive")
         if self.zernike_radius <= 0:
             raise ValueError(f"'zernike_radius' must be positive, got {self.zernike_radius}")
+
+
+@dataclass
+class CommonModeConfig:
+    r"""Polarization common to the detectors, with a slow time dependence (demodulated data only).
+
+    The window and the half-wave plate emit radiation that is partly polarized. All the detectors
+    look through them, so they see the same polarization pattern across the focal plane, rising
+    and falling together. The pattern is the quadrupolar field of [`T2PConfig`][], and each of its
+    modes has its own timestream, a cubic B-spline of time: a few spline coefficients per knot
+    replace a signal in every detector. The amplitudes are shared by all the detectors of a run,
+    so fit one band at a time.
+
+    The uniform mode, equal for every detector, has the same effect as the polarization of the
+    sky, so it removes sky signal at the time scales of the spline: it is off by default.
+
+    Examples:
+        The quadrupolar field and the term of a shifted axis, two complex amplitudes per knot, one
+        knot every 10 s at 8 Hz
+
+            common_mode:
+                samples_per_knot: 80
+    """
+
+    samples_per_knot: int = 80
+    """Samples between the knots of the time dependence. The amplitudes follow time scales longer
+    than about twice the knot spacing."""
+
+    quadrupole_order: int = 1
+    """Number of terms of the quadrupolar field, as in [`T2PConfig`][]."""
+
+    decentred: bool = True
+    """Whether the field includes the terms of an axis shifted from the centre of the focal plane,
+    as in [`T2PConfig`][]."""
+
+    uniform: bool = False
+    """Whether the field includes the polarization uniform across the focal plane."""
+
+    radius: float = 0.31
+    """Focal-plane radius $R$ in radians, scaling the detector coordinates of the field."""
+
+    explicit: bool = True
+    """The common mode is always solved explicitly; deprojection is not supported."""
+
+    def __post_init__(self) -> None:
+        if not self.explicit:
+            raise ValueError('Common-mode template filtering requires explicit=True')
+        if self.samples_per_knot < 1:
+            raise ValueError(f"'samples_per_knot' must be >= 1, got {self.samples_per_knot}")
+        if self.quadrupole_order < 1:
+            raise ValueError(f"'quadrupole_order' must be >= 1, got {self.quadrupole_order}")
+        if self.radius <= 0:
+            raise ValueError(f"'radius' must be positive, got {self.radius}")
 
 
 @dataclass
@@ -773,6 +857,9 @@ class TemplatesConfig:
     t2p: T2PConfig | None = None
     """Temperature-to-polarization leakage template (demodulated data only)."""
 
+    common_mode: CommonModeConfig | None = None
+    """Polarization common to the detectors, with a slow time dependence (demodulated data only)."""
+
     ground: GroundConfig | None = None
     """Ground pickup template, binned in (azimuth, elevation)."""
 
@@ -798,6 +885,7 @@ class TemplatesConfig:
             azimuth_hwp_synchronous=AzimuthHWPSynchronousConfig(),
             binned_azimuth_hwp_synchronous=BinnedAzimuthHWPSynchronousConfig(),
             t2p=T2PConfig(),
+            common_mode=CommonModeConfig(),
             spline_hwp_synchronous=SplineHWPSynchronousConfig(),
             ground=GroundConfig(),
         )
@@ -1125,12 +1213,17 @@ class MapMakingConfig:
                     'injection.mode=response needs a map linear in the data: gap filling is not.'
                 )
         if (templates := self.templates) is not None:
-            if templates.t2p is not None:
+            for label, polarized in (
+                ('T2P', templates.t2p),
+                ('common-mode', templates.common_mode),
+            ):
+                if polarized is None:
+                    continue
                 if not self.demodulated:
-                    raise ValueError('The T2P template requires demodulated=True.')
+                    raise ValueError(f'The {label} template requires demodulated=True.')
                 if 'QU' not in self.landscape.stokes:
                     raise ValueError(
-                        'The T2P template requires Q and U streams in landscape.stokes (got '
+                        f'The {label} template requires Q and U streams in landscape.stokes (got '
                         f'{self.landscape.stokes!r}).'
                     )
             for name, option in (

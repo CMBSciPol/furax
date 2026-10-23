@@ -107,13 +107,16 @@ Templates are instances of the model:
 | T2P per detector | the detector's temperature, batched | `('stream', 'det')` | — |
 | T2P field, common to Q and U | the detector's temperature, batched | `()` | Q: `Zₖ · (cos 2γ, −sin 2γ)`, U: `Zₖ · (sin 2γ, cos 2γ)` |
 | T2P field, per stream | the detector's temperature, batched | `('stream',)` | `Zₖ(x_d) · (cos 2γ_d, sin 2γ_d)` |
+| T2P quadrupolar field, common to Q and U | the detector's temperature, batched | `()` | Q: `(Re wₖ, −Im wₖ)`, U: `(Im wₖ, Re wₖ)`, `wₖ = Fₖ(x_d) · e^{2iγ_d}` |
 | Signal common to every detector | any shared basis | `('stream',)` | — |
+| Polarized common mode | cubic B-spline of time, shared | `()` | as the quadrupolar field: its modes, each with a timestream |
 | Common mode with a gain per detector | any shared basis | `('stream',)` | the gains |
 | Common mode per wafer | offsets | `('det',)` or `('stream', 'det')`, grouped by wafer | the pattern across the wafer |
 | Pomme offsets | offsets, one per `tau` samples | `('det',)` | — (implicit) |
 
-Here `Zₖ(x_d)` are the Zernike polynomials at the detector's focal-plane position, and `γ_d` its
-polarization angle.
+Here `Zₖ(x_d)` are the Zernike polynomials at the detector's focal-plane position, `γ_d` its
+polarization angle, and `Fₖ(x_d)` the monomials ζ^p ζ̄^q of its complex position ζ in the
+quadrupolar field.
 
 ### The operator
 

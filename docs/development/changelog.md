@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MapMakingConfig.injection` (`InjectionConfig`) scans a simulated sky into the data of a run, and `MapMakingResults.injected_map` holds the response of the run to it (#362)
 - `MapMakingResults.observations`, `detectors` and `provenance`: what a multi-observation run read, its noise parameters and provenance; `solver_stats` gains the CG residuals (#366)
 - `SplineDriftConfig` (`templates.spline_drift`): a drift template, a cubic B-spline of time over the observation, with a knot every `samples_per_knot` samples (#383)
+- `T2PConfig.quadrupole_order` and `decentred`: the T2P leakage can be fitted as the quadrupolar polarization field of axisymmetric optics, from `winding_couplings` (#385)
+- `CommonModeConfig` (`templates.common_mode`): a polarization pattern common to the detectors over the focal plane, with a slow time dependence (#385)
+- `polarization_field_couplings`: the Q/U couplings of any polarization field over the focal plane (#385)
 
 ### Changed
 

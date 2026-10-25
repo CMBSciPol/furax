@@ -16,6 +16,8 @@ A few [`Basis`][] flavours trade memory for structure:
   [`SegmentedBasis`][], which stores nothing.
 - [`WindowedBasis`][]: each sample reads a fixed window of overlapping blocks, the
   overlapping generalisation of [`SegmentedBasis`][].
+- [`SplineBasis`][]: a spline of time, one amplitude per knot, the [`WindowedBasis`][] of a single
+  function.
 - [`DecimatedBasis`][]: any of the above, stored on a coarser time grid to trade resolution for
   memory.
 
@@ -47,6 +49,7 @@ __all__ = [
     'SegmentedBasis',
     'OffsetBasis',
     'WindowedBasis',
+    'SplineBasis',
     'DecimatedBasis',
 ]
 
@@ -657,6 +660,60 @@ class WindowedBasis(Basis):
 
     def support(self) -> 'WindowedBasis':
         return self
+
+
+class SplineBasis(Basis):
+    """A spline of time: one amplitude per knot, each sample reading a window of consecutive knots.
+
+    The [`WindowedBasis`][] with a single sub-basis function of unit value, whose axis is dropped:
+    the amplitudes are `(n_knots,)`. For a cubic B-spline, each sample reads the four knots around
+    it, with the weights given by
+    [`bspline.spline_window`][furax.math.bspline.spline_window]; a sample whose taps are zero, such
+    as a flagged one, is seen by no knot. The Gram is banded, the knots more than a window apart
+    never sharing a sample.
+
+    Examples:
+        Three samples over four knots, each reading a window of two.
+
+        >>> offset = jnp.array([0, 1, 2])
+        >>> taps = jnp.array([[0.5, 0.5], [1.0, 0.0], [0.25, 0.75]])
+        >>> basis = SplineBasis(offset, taps, n_knots=4)
+        >>> basis(jnp.array([1.0, 2.0, 3.0, 4.0]))
+        Array([1.5 , 2.  , 3.75], dtype=float32)
+    """
+
+    offset: Int[Array, ' samp']
+    """The first knot of each sample's window."""
+    taps: Float[Array, 'samp window']
+    """The weight of each sample on each knot of its window."""
+    n_knots: int = field(metadata={'static': True})
+    """The number of knots."""
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return (self.n_knots,)
+
+    @property
+    def _array_dtype(self) -> DTypeLike:
+        return self.taps.dtype
+
+    @property
+    def n_points(self) -> int:
+        return self.offset.shape[-1]
+
+    def _expand(self, coeffs: Float[Array, '*batch knot']) -> Float[Array, '*batch samp']:
+        return self.support()._expand(coeffs[..., None])
+
+    def _project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '*batch knot']:
+        return self.support()._project(signal)[..., 0]
+
+    @property
+    def _n_blocks(self) -> int:
+        return self.n_knots
+
+    def support(self) -> WindowedBasis:
+        values = jnp.ones((1, self.n_points), self.taps.dtype)
+        return WindowedBasis(self.offset, self.taps, values, self.n_knots)
 
 
 def _single_block(values: Float[Array, 'k samp']) -> WindowedBasis:

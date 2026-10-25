@@ -15,6 +15,7 @@ from furax.mapmaking.templates.bases import (
     KroneckerBasis,
     OffsetBasis,
     SegmentedBasis,
+    SplineBasis,
     TensorBasis,
     WindowedBasis,
 )
@@ -249,6 +250,13 @@ def _batched_and_singles(
         sub = jr.normal(k[2], (*batch_shape, 2, n_points))
         singles = [WindowedBasis(o, w, v, n_blocks) for o, w, v in split(offset, weights, sub)]
         return WindowedBasis(offset, weights, sub, n_blocks, batch_shape=batch_shape), singles
+    if flavour == 'spline':
+        n_knots, n_window = 6, 4
+        offset = jr.randint(k[0], (*batch_shape, n_points), 0, n_knots - n_window + 1)
+        offset = jnp.sort(offset, axis=-1).astype(jnp.int32)
+        taps = jr.normal(k[1], (*batch_shape, n_points, n_window))
+        singles = [SplineBasis(o, t, n_knots) for o, t in split(offset, taps)]
+        return SplineBasis(offset, taps, n_knots, batch_shape=batch_shape), singles
     if flavour == 'decimated':  # a segmented basis on a 4-times coarser grid
         n_seg, q = 3, 4
         n_dec = -(-n_points // q)
@@ -264,7 +272,7 @@ def _batched_and_singles(
     raise AssertionError(flavour)
 
 
-FLAVOURS = ['tensor', 'kronecker', 'segmented', 'windowed', 'decimated']
+FLAVOURS = ['tensor', 'kronecker', 'segmented', 'windowed', 'spline', 'decimated']
 BATCH_SHAPES = [(3,), (2, 3)]
 
 

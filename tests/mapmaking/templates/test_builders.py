@@ -473,6 +473,16 @@ def test_spline_drift_needs_no_scanning_intervals():
     )
 
 
+def test_spline_drift_basis_is_the_masked_dense_spline():
+    n_samps, n_knots = 300, 10
+    t = jnp.linspace(0, 30, n_samps)
+    valid = jnp.ones(n_samps).at[100:200].set(0.0)
+    basis = spline_drift_basis(n_knots, t, jnp.float64, valid)
+    dense = bspline.spline_basis(t, n_knots) * valid  # (K, N)
+    assert_allclose(basis.as_matrix(), dense.T, atol=TOL)
+    assert basis._n_blocks == n_knots + 2  # time-local: its Gram is banded
+
+
 def test_spline_drift_is_a_partition_of_unity_on_valid_samples():
     n_samps, n_knots = 300, 10
     t = jnp.linspace(0, 30, n_samps)

@@ -46,6 +46,7 @@ from .bases import (
     DecimatedBasis,
     KroneckerBasis,
     SegmentedBasis,
+    SplineBasis,
     TensorBasis,
     WindowedBasis,
 )
@@ -570,10 +571,10 @@ def spline_drift_basis(
     zero row in the Gram. `valid_mask` optionally zeroes flagged samples (1 = keep, 0 = drop) so
     they neither carry template signal nor constrain the fitted amplitudes.
     """
-    values = bspline.spline_basis(times, n_knots)  # (k, n_samps)
+    offset, taps = bspline.spline_window(times, n_knots)  # taps (samp, 4)
     if valid_mask is not None:
-        values = values * valid_mask[None, :].astype(values.dtype)
-    return TensorBasis(values.astype(dtype))
+        taps = taps * valid_mask[:, None].astype(taps.dtype)
+    return SplineBasis(offset, taps.astype(dtype), n_knots + 2)
 
 
 _T2P_BATCH_SIZE = 32

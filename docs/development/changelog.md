@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MarginalizedWeightOperator`, the weight with the amplitudes of some templates marginalized (#387)
+
+### Fixed
+
+- CG no longer stalls when templates shared by detectors overlap implicit ones (#387)
+
 ## [0.16.0] - 2026-10-25
 
 Templates are rebuilt around a single model: a `Template` is a time basis seen through a coupling, with one set of amplitudes per stream, per detector or per group of detectors, and the Gram of the templates is assembled from the structure of their bases instead of being probed. The [template model](template_model.md) page describes the design (#345, #346, #347, #348, #350).

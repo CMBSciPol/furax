@@ -37,7 +37,7 @@ from furax.mapmaking.config import (
 )
 from furax.mapmaking.mapmaker import MultiObservationMapMaker
 from furax.mapmaking.templates import Template
-from furax.mapmaking.templates.bases import OffsetBasis
+from furax.mapmaking.templates.bases import OffsetBasis, TensorBasis
 from tests.mapmaking.helpers import (
     FakeLazyGroundObservation,
     FakeLazyObservation,
@@ -389,16 +389,22 @@ def test_correlated_weight_with_templates_requires_inner_mask_gaps(treatment):
         MultiObservationMapMaker(_hwp_obs(), config=config)
 
 
+@pytest.mark.parametrize('drift', [False, True], ids=['alone', 'with_drift'])
 @pytest.mark.parametrize('correlated', [False, True], ids=['diagonal', 'correlated'])
 def test_amplitudes_shared_by_the_detectors_are_the_same_in_detector_batches(
-    monkeypatch, correlated
+    monkeypatch, correlated, drift
 ):
     # A common mode, one offset per block of 128 samples, seen by every detector. Its amplitudes
     # belong to the observation, whatever the batches its detectors are processed in; under a
-    # correlated weight, their Gram is probed from the weight in each batch, then summed.
+    # correlated weight, their Gram is probed from the weight in each batch, then summed. With an
+    # implicit drift of each detector, their Gram is that under the marginalized weight.
     def common_mode(_config, _data, tod_format, **_):
         basis = OffsetBasis(128, tod_format.n_samples, tod_format.dtype)
-        return {'common': Template(basis, tod_format, per=())}, {}
+        implicit = {}
+        if drift:
+            ramp = jnp.linspace(-1, 1, tod_format.n_samples, dtype=tod_format.dtype)
+            implicit = {'drift': Template(TensorBasis(ramp[None]), tod_format)}
+        return {'common': Template(basis, tod_format, per=())}, implicit
 
     monkeypatch.setattr('furax.mapmaking._model.build_templates', common_mode)
     # the configuration only has to enable templates: the builder above makes them

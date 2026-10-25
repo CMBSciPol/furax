@@ -23,6 +23,10 @@ leakage field.
 
 The Grams of disjoint sets of detectors, such as the detector batches of an observation, combine
 into the Gram of their union ([`BlockGram.combine`][]).
+
+Templates whose amplitudes are marginalized, rather than solved for, change the weight under which
+the others are seen: the Gram of global templates is also assembled under a
+[`MarginalizedWeightOperator`][furax.mapmaking.templates.MarginalizedWeightOperator] of local ones.
 """
 
 from dataclasses import dataclass, field
@@ -41,7 +45,7 @@ from furax.core.utils import register_dataclass_with_keys
 from furax.linalg import ArrowheadCholeskyOperator, BorderedBandedMatrix, probe_bordered_banded
 
 from . import _structure
-from ._operator import TemplateOperator
+from ._operator import MarginalizedWeightOperator, TemplateOperator
 from .bases import OffsetBasis
 from .pomme import PommeProjectionOperator
 
@@ -66,11 +70,14 @@ class BlockGram:
 
     `local` holds the blocks of the detectors' own amplitudes, `global_` those of the others, and
     `cross` their coupling, `(n_global, n_local_units, n_local)`, when assembled with it.
+    `marginal` is what the global block loses under a marginalized weight, when assembled under one.
     """
 
     local: '_Part | None'
     global_: '_Part | None'
     cross: Float[Array, 'global unit local'] | None
+    marginal: Float[Array, '1 global global'] | None = None
+    """Subtracted from the global block, then all border, when factored."""
 
     @classmethod
     def combine(cls, grams: list[Self]) -> Self:
@@ -80,7 +87,7 @@ class BlockGram:
         detectors, add up. The Grams are assembled alike, by the same method.
         """
         first = grams[0]
-        local = global_ = cross = None
+        local = global_ = cross = marginal = None
         if first.local is not None:
             matrices = [gram.local.matrix for gram in grams if gram.local is not None]
             local = _Part(_concatenate(matrices), first.local.layout)
@@ -89,7 +96,11 @@ class BlockGram:
             global_ = _Part(reduce(tree.add, matrices), first.global_.layout)
         if first.cross is not None:
             cross = jnp.concatenate([gram.cross for gram in grams if gram.cross is not None], 1)
-        return cls(local, global_, cross)
+        if first.marginal is not None:
+            marginal = reduce(
+                jnp.add, [gram.marginal for gram in grams if gram.marginal is not None]
+            )
+        return cls(local, global_, cross, marginal)
 
 
 def template_gram(
@@ -117,10 +128,22 @@ def template_gram(
     offsets are eliminated from the Gram. A time-local template next to Pomme must have blocks
     longer than an interval.
 
+    Under a [`MarginalizedWeightOperator`][furax.mapmaking.templates.MarginalizedWeightOperator]
+    $W' = W - W T_\ell G_\ell^{-1} T_\ell^\top W$ of templates $T_\ell$ whose amplitudes are each
+    detector's own, the Gram of global templates $T_g$ is
+
+    $$ T_g^\top W' T_g = T_g^\top W T_g - C^\top G_\ell^{-1} C, $$
+
+    with $C = T_\ell^\top W T_g$ their coupling. `bandwidth` and `streams_coupled` then describe
+    $W$, and `pomme_tau` applies $F$ to it. As the local templates couple all the global amplitudes
+    they see, the Gram is one dense block, the subtracted term held apart (`marginal`) so that
+    [`factor`][] takes the ridge from $T_g^\top W T_g$.
+
     Args:
         operator: The template operator $T$.
         weight: The weight $W$. It must not couple detectors, nor samples more than `bandwidth`
-            apart, nor the streams of a detector unless `streams_coupled`.
+            apart, nor the streams of a detector unless `streams_coupled`. It may also be such a
+            weight with local templates marginalized, when `operator` has global templates only.
         bandwidth: The largest distance, in samples, between two samples that $W$ couples.
         streams_coupled: Whether $W$ couples the streams of a detector, such as Q and U.
         coupled: Whether to also assemble the coupling of the local and the global amplitudes,
@@ -132,13 +155,25 @@ def template_gram(
             from the structure, bounding the memory of the assembly.
 
     Raises:
-        ValueError: If the assembly from the structure is asked for a weight that is not
+        TypeError: If the templates of a marginalized weight are not a [`TemplateOperator`][].
+        ValueError: If the weight is marginalized and `operator` has local templates, or `coupled`
+            is asked for. If the assembly from the structure is asked for a weight that is not
             diagonal, or Pomme for a demodulated TOD. If, when probing, the time blocks of a
             template are too short for the probes to resolve its banded Gram; under a
             transformation such as `jax.jit`, where this cannot be checked, the Gram is NaN
             instead, as it is from the structure when a time-local template has blocks shorter
             than a Pomme interval.
     """
+    marginalized = None
+    if isinstance(weight, MarginalizedWeightOperator):
+        marginalized, weight = weight, weight.weight
+        if not isinstance(marginalized.templates, TemplateOperator):
+            raise TypeError('a marginalized weight takes its templates as a TemplateOperator')
+        if coupled or any(t.per_detector for t in operator.templates.values()):
+            raise ValueError('under a marginalized weight, the Gram is that of global templates')
+        # the marginalized templates join the operator, so that their coupling is assembled
+        operator = TemplateOperator(marginalized.templates.templates | operator.templates)
+        coupled = True
     tod_format = operator.tod_format
     pomme = None
     if pomme_tau is not None:
@@ -181,6 +216,13 @@ def template_gram(
             )
         return _Part(matrix, layout), cross
 
+    if marginalized is not None:  # the local block is that of the marginalized templates
+        assert global_layout is not None and local_layout is not None
+        global_part, cross = assemble(global_layout, local_layout)
+        assert cross is not None
+        marginal = _marginal_term(cross, local_layout, marginalized.gram_inverse, batch_size)
+        return BlockGram(None, global_part, None, marginal)
+
     local_part = global_part = cross = None
     if local_layout is not None:
         local_part, _ = assemble(local_layout, None)
@@ -195,11 +237,13 @@ def factor(
     """The inverse of the Gram, and the ridge added to it before factoring.
 
     The Gram is inverted exactly if it was assembled with its local-global coupling, block by block
-    otherwise. Amplitudes that no weighted sample sees, whose rows are zero, take a unit diagonal
+    otherwise. A global block assembled under a marginalized weight is inverted as one dense block,
+    its marginal term subtracted. Amplitudes that no weighted sample sees, whose rows are zero, take
+    a unit diagonal
     and come back unchanged. The ridge is `regularization` times the mean diagonal of each core
     block, and times its own diagonal entry for each border amplitude, so that it is in the units
     of the amplitudes it regularizes: those of a core block are of one basis, while the border may
-    gather several templates.
+    gather several templates. It is taken before the marginal term is subtracted.
 
     Args:
         gram: The assembled Gram.
@@ -221,7 +265,13 @@ def factor(
     if gram.global_ is not None:
         matrix, ridge = _regularized(gram.global_.matrix, regularization)
         ridges |= gram.global_.layout.scatter(*ridge)
-        if gram.cross is None:
+        if gram.marginal is not None:
+            assert matrix.corner is not None  # a marginalized block is all border
+            dense = matrix.corner - gram.marginal
+            dense = (dense + jnp.swapaxes(dense, -1, -2)) / 2  # symmetric up to rounding
+            layout = gram.global_.layout
+            parts.append(_FactorPart(BorderedBandedMatrix(corner=dense).cholesky(), layout))
+        elif gram.cross is None:
             parts.append(_FactorPart(matrix.cholesky(), gram.global_.layout))
         else:  # the local blocks eliminated into the Schur complement of the global one
             assert local is not None and matrix.corner is not None  # a coupled block is all border
@@ -240,6 +290,26 @@ def factor(
     if not regularization:
         return inverse, None
     return inverse, _ridge_operator(ridges, structure)
+
+
+def _marginal_term(
+    cross: Float[Array, 'global unit local'],
+    layout: '_Layout',
+    gram_inverse: AbstractLinearOperator,
+    batch_size: int,
+) -> Float[Array, '1 global global']:
+    r"""$C^\top G_\ell^{-1} C$, from the coupling $C$ to the amplitudes laid out by `layout`."""
+
+    def solve(row):
+        solved = gram_inverse(layout.scatter(*layout.unflat(row)))
+        return layout.flat(*layout.gather(solved))
+
+    solved = tree.stacked_map(solve, cross, batch_size=batch_size)
+    rows = cross.reshape(cross.shape[0], -1)
+    term = jnp.einsum(
+        'pi,qi->pq', rows, solved.reshape(rows.shape), precision=jax.lax.Precision.HIGHEST
+    )
+    return term[None]
 
 
 def _regularized(

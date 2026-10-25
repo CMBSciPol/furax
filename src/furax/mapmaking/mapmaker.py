@@ -93,7 +93,7 @@ from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner, make_two_level_preconditioner
 from .results import MapMakingResults
 from .streaming import StreamLayout, StreamOperator
-from .templates import TemplateOperator
+from .templates import MarginalizedWeightOperator, TemplateOperator
 from .templates.gram import factor
 from .templates.pomme import PommeProjectionOperator
 from .weight import WeightOperator
@@ -567,7 +567,7 @@ class MultiObservationMapMaker[T]:
                 layout = layouts[b]
                 Ti = layout.diagonal(implicit.operator)
                 G = layout.diagonal(implicit.gram_inverse)
-                W[b] = (W[b] - W[b] @ Ti @ G @ Ti.T @ W[b]).reduce()
+                W[b] = MarginalizedWeightOperator.create(W[b], Ti, G)
 
         # Explicit templates are configured for the run, so every bucket carries them or none.
         explicit = [
@@ -695,12 +695,11 @@ class MultiObservationMapMaker[T]:
     ) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
         """The inverse of the Gram of the shared amplitudes of each slot, and the ridge added.
 
-        A slot's Gram is the sum of those of its detector batches.
+        A slot's Gram is the sum of those of its detector batches, summed as they are accumulated.
         """
         assert self.config.templates is not None  # shared templates exist
         regularization = self.config.templates.regularization
-        gram = self.placement.per_slot(shared.gram, bucket.sum_detector_batches)
-        inverse, ridge = jax.vmap(partial(factor, regularization=regularization))(gram)
+        inverse, ridge = jax.vmap(partial(factor, regularization=regularization))(shared.gram)
         structure = self._slot_structure(bucket, shared.operator)
         inverse, ridge = self.placement.replicate((inverse, ridge))
         return (
@@ -947,22 +946,29 @@ class MultiObservationMapMaker[T]:
             # What the batches share (boresight pointing, shared template bases, ...) is kept
             # once per observation rather than once per batch.
             # The shared leaves ride the carry, each batch writing the same values, and come
-            # out once; the others are stacked per batch.
+            # out once; the Gram of the templates shared by the detectors rides it too, summed
+            # over the batches; the others are stacked per batch.
             per_batch, out_shape = _depends_on_argument(lambda j: batch(carry, j)[1], 0)
-            shared_shape = eqx.filter(out_shape, per_batch, inverse=True)
-            shared = jax.lax.pcast(
-                furax.tree.zeros_like(shared_shape), self.placement.axis, to='varying'
-            )
+            summed = _shared_gram_leaves(out_shape)
+            per_batch = jax.tree.map(lambda p, s: p and not s, per_batch, summed)
+            once = jax.tree.map(lambda p, s: not p and not s, per_batch, summed)
+            varying = partial(jax.lax.pcast, axis_name=self.placement.axis, to='varying')
+            shared = varying(furax.tree.zeros_like(eqx.filter(out_shape, once)))
+            total = varying(furax.tree.zeros_like(eqx.filter(out_shape, summed)))
 
             def detector_step(carry, j):
-                carry, _ = carry
+                carry, _, total = carry
                 carry, out = batch(carry, j)
-                batched, shared = eqx.partition(out, per_batch)
-                return (carry, shared), batched
+                batched, shared, gram = (
+                    eqx.filter(out, spec) for spec in (per_batch, once, summed)
+                )
+                return (carry, shared, furax.tree.add(total, gram)), batched
 
-            init = (carry, shared)
-            (carry, shared), batched = jax.lax.scan(detector_step, init, jnp.arange(n_batches))
-            return carry, (batched, shared)
+            init = (carry, shared, total)
+            (carry, shared, total), batched = jax.lax.scan(
+                detector_step, init, jnp.arange(n_batches)
+            )
+            return carry, (batched, eqx.combine(shared, total))
 
         def fill_observation_gaps(data, padding):
             obs = ObservationModel.create(data, padding, config, landscape)
@@ -1869,6 +1875,23 @@ def _store_round(
             out,
         )
     return _set_round(store, out, r)
+
+
+def _shared_gram_leaves(out: PyTree[Any]) -> PyTree[bool]:
+    """Which leaves of an observation kernel's output are the Gram of the shared templates.
+
+    The output is `(model, templates, rhs)`, the Gram that of the templates whose amplitudes the
+    detectors share.
+    """
+    flags = jax.tree.map(lambda _: False, out)
+    templates = out[1]
+    if templates is None or templates.shared is None:
+        return flags
+    return eqx.tree_at(
+        lambda tree: tree[1].shared.gram,
+        flags,
+        replace_fn=lambda gram: jax.tree.map(lambda _: True, gram),
+    )
 
 
 def _depends_on_argument(

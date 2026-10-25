@@ -8,7 +8,7 @@ from numpy.testing import assert_allclose
 
 from furax import AbstractLinearOperator, symmetric, tree
 from furax.linalg import BorderedBandedMatrix
-from furax.mapmaking.templates import Template, TemplateOperator
+from furax.mapmaking.templates import MarginalizedWeightOperator, Template, TemplateOperator
 from furax.mapmaking.templates.bases import OffsetBasis, SegmentedBasis, TensorBasis, _einsum
 from furax.mapmaking.templates.gram import (
     BlockGram,
@@ -302,6 +302,50 @@ def test_factor_inverts_the_gram(templates, coupled, regularization):
     if ridge is not None:
         gram_x = gram_x + ravel_pytree(ridge(x))[0]
     assert_allclose(ravel_pytree(inverse(unravel(gram_x)))[0], flat, rtol=1e-7, atol=1e-8)
+
+
+def test_marginalized_weight_is_blind_to_its_templates():
+    local = TemplateOperator(_local(jr.key(9)))
+    W = _weight(local, jr.key(11))
+    inverse, _ = factor(template_gram(local, W))
+    W_marginal = np.asarray(MarginalizedWeightOperator.create(W, local, inverse).as_matrix())
+    assert_allclose(W_marginal, W_marginal.T, atol=1e-12)
+    assert_allclose(W_marginal @ np.asarray(local.as_matrix()), 0, atol=1e-10)
+
+
+@pytest.mark.parametrize('regularization', [0.0, 0.1], ids=['plain', 'ridge'])
+@pytest.mark.parametrize('method', ['probe', 'structure'])
+def test_gram_under_a_marginalized_weight(method, regularization):
+    local = TemplateOperator(_local(jr.key(9)))
+    shared = TemplateOperator(_global(jr.key(10)))
+    W = _weight(TemplateOperator(local.templates | shared.templates), jr.key(11))
+    local_inverse, _ = factor(template_gram(local, W, method=method), regularization=regularization)
+    W_marginal = MarginalizedWeightOperator.create(W, local, local_inverse)
+    gram = template_gram(shared, W_marginal, method=method)
+    inverse, ridge = factor(gram, regularization=regularization)
+    # the ridge is that of the Gram under the plain weight, as one dense block
+    plain = template_gram(shared, W, coupled=True, method=method)
+    _, plain_ridge = factor(plain, regularization=regularization)
+
+    x = tree.normal_like(shared.in_structure, jr.key(12))
+    flat, unravel = ravel_pytree(x)
+    gram_x = jnp.asarray(_dense_gram(shared, W_marginal)) @ flat
+    if ridge is not None:
+        assert_allclose(ravel_pytree(ridge(x))[0], ravel_pytree(plain_ridge(x))[0], rtol=1e-12)
+        gram_x = gram_x + ravel_pytree(ridge(x))[0]
+    assert_allclose(ravel_pytree(inverse(unravel(gram_x)))[0], flat, rtol=1e-7, atol=1e-8)
+
+
+@pytest.mark.parametrize('coupled', [False, True], ids=['local', 'coupled'])
+def test_gram_under_a_marginalized_weight_is_of_global_templates_only(coupled):
+    local = TemplateOperator(_local(jr.key(9)))
+    shared = TemplateOperator(_global(jr.key(10)))
+    joint = TemplateOperator(local.templates | shared.templates)
+    W = _weight(joint, jr.key(11))
+    inverse, _ = factor(template_gram(local, W))
+    W_marginal = MarginalizedWeightOperator.create(W, local, inverse)
+    with pytest.raises(ValueError, match='global templates'):
+        template_gram(shared if coupled else joint, W_marginal, coupled=coupled)
 
 
 def test_unseen_amplitudes_come_back_unchanged():

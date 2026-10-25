@@ -24,7 +24,12 @@ from .config import (
     WeightingMode,
 )
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
-from .templates import TemplateOperator, build_templates, required_reader_fields
+from .templates import (
+    MarginalizedWeightOperator,
+    TemplateOperator,
+    build_templates,
+    required_reader_fields,
+)
 from .templates.gram import BlockGram, factor, template_gram
 from .templates.pomme import PommeProjectionOperator
 from .weight import NestedWeightOperator, WeightOperator
@@ -366,11 +371,16 @@ class SharedTemplates:
 
     Such amplitudes are common to the batches of an observation, so no batch can factor their Gram
     alone: each holds its share $T^\top W T$ of it, the observation's Gram being their sum.
+
+    Under implicit templates, the weight is that with their amplitudes marginalized, and so is the
+    Gram (see [`MarginalizedWeightOperator`][furax.mapmaking.templates.MarginalizedWeightOperator]):
+    the shared templates lose what the implicit ones can absorb, such as the slow part of a common
+    mode under each detector's drift.
     """
 
     operator: TemplateOperator
     gram: BlockGram
-    """The Gram of this batch, assembled but not factored."""
+    """The Gram, assembled but not factored: of this batch, or summed over an observation's."""
 
     @classmethod
     def create(
@@ -382,7 +392,10 @@ class SharedTemplates:
         bandwidth: int = 0,
         pomme_tau: int | None = None,
     ) -> Self:
-        """Pair a template operator with its Gram under a weight, as for [`TemplateBundle`][]."""
+        """Pair a template operator with its Gram under a weight, as for [`TemplateBundle`][].
+
+        The weight may have the implicit templates marginalized.
+        """
         gram = template_gram(
             operator,
             weight,
@@ -454,6 +467,7 @@ class ObservationTemplates:
         gram_options = {'bandwidth': bandwidth, 'pomme_tau': pomme_tau}
 
         implicit = None
+        weight = model.W
         if implicit_templates:
             if not all(template.per_detector for template in implicit_templates.values()):
                 raise NotImplementedError(
@@ -463,7 +477,8 @@ class ObservationTemplates:
             op = TemplateOperator(implicit_templates)
             implicit = TemplateBundle.create(op, model.W, tcfg, **gram_options)
             ginv = implicit.gram_inverse
-            wd = wd - Weff(op(ginv(op.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
+            wd = MarginalizedWeightOperator.create(Weff, op, ginv)(tod)
+            weight = MarginalizedWeightOperator.create(model.W, op, ginv)
 
         explicit = shared = None
         own = {n: t for n, t in explicit_templates.items() if t.per_detector}
@@ -473,7 +488,7 @@ class ObservationTemplates:
             explicit = TemplateBundle.create(op, model.W, tcfg, **gram_options)
         if common:
             op = TemplateOperator(common)
-            shared = SharedTemplates.create(op, model.W, tcfg, **gram_options)
+            shared = SharedTemplates.create(op, weight, tcfg, **gram_options)
 
         return cls(explicit=explicit, implicit=implicit, shared=shared), wd
 

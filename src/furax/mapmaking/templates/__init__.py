@@ -6,6 +6,8 @@ streams of a TOD through a coupling. [`build_templates`][furax.mapmaking.templat
 makes the templates a configuration enables from an observation's data, through the builders of
 each kind of template, and [`TemplateOperator`][furax.mapmaking.templates.TemplateOperator] sums
 the templates of one TOD.
+[`MarginalizedWeightOperator`][furax.mapmaking.templates.MarginalizedWeightOperator] is the weight
+of the data once the amplitudes of some templates are marginalized.
 """
 
 from ._builders import (
@@ -22,9 +24,10 @@ from ._builders import (
     t2p_templates,
     zernike_couplings,
 )
-from ._operator import Template, TemplateOperator
+from ._operator import MarginalizedWeightOperator, Template, TemplateOperator
 
 __all__ = [
+    'MarginalizedWeightOperator',
     'Template',
     'TemplateOperator',
     'build_templates',

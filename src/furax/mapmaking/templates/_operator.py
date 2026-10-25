@@ -11,20 +11,21 @@ amplitudes to the TOD that a [`TODFormat`][furax.obs.TODFormat] describes, and
 from dataclasses import field
 from functools import reduce
 from math import prod
-from typing import Literal, NamedTuple, get_args
+from typing import Literal, NamedTuple, Self, get_args
 
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jaxtyping import Bool, Float, PyTree
+from jaxtyping import Bool, Float, Inexact, PyTree
 
-from furax import AbstractLinearOperator
+from furax import AbstractLinearOperator, symmetric, tree
 from furax.core import BlockRowOperator, TransposeOperator
 from furax.obs import TOD, TODFormat
 
 from .bases import Basis, _einsum
 
 __all__ = [
+    'MarginalizedWeightOperator',
     'Template',
     'TemplateOperator',
 ]
@@ -428,6 +429,40 @@ class TemplateOperator(BlockRowOperator):
             (t._stream_indices, t._expand_streams(x[name])) for name, t in self.templates.items()
         ]
         return _sum_into(self.tod_format, terms)
+
+
+@symmetric
+class MarginalizedWeightOperator(AbstractLinearOperator):
+    r"""A weight with the amplitudes of some templates marginalized.
+
+    Marginalizing the amplitudes of templates $T$ turns the weight $W$ into
+
+    $$ W' = W - W T G^{-1} T^\top W, $$
+
+    with $G^{-1}$ the inverse of their Gram $T^\top W T$, possibly regularized. When $G^{-1}$ is
+    exact, $W'$ is blind to the templates: $W' T = 0$.
+    """
+
+    weight: AbstractLinearOperator
+    """The weight $W$."""
+    templates: AbstractLinearOperator
+    """The templates $T$ whose amplitudes are marginalized."""
+    gram_inverse: AbstractLinearOperator
+    """The inverse $G^{-1}$ of their Gram under $W$."""
+
+    @classmethod
+    def create(
+        cls,
+        weight: AbstractLinearOperator,
+        templates: AbstractLinearOperator,
+        gram_inverse: AbstractLinearOperator,
+    ) -> Self:
+        return cls(weight, templates, gram_inverse, in_structure=weight.in_structure)
+
+    def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
+        W, T = self.weight, self.templates
+        wx = W(x)
+        return tree.sub(wx, W(T(self.gram_inverse(T.T(wx)))))
 
 
 class _DenseTerm(NamedTuple):

@@ -7,45 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-25
+
+Templates are rebuilt around a single model: a `Template` is a time basis seen through a coupling, with one set of amplitudes per stream, per detector or per group of detectors, and the Gram of the templates is assembled from the structure of their bases instead of being probed. The [template model](template_model.md) page describes the design (#345, #346, #347, #348, #350).
+
 ### Added
 
 - Pomme can be combined with templates in `MultiObservationMapMaker` (#257)
 - `OffsetBasis`: one offset per interval of a fixed number of samples, the Pomme template returned by `PommeProjectionOperator.template` (#332)
+- `furax-so-map --wafer all` maps all the wafers of an observation in `--band` as one observation, loaded by `SOTODLibObservation.from_preproc_groups` (#340)
 - `TOD` and `TODFormat` in `furax.obs`: time-ordered data format conventions (normal/demodulated) in a single place (#342, #354)
+- `BorderedBandedMatrix`, `probe_bordered_banded` and `ArrowheadCholeskyOperator` in `furax.linalg`: symmetric matrices with a block-banded core and a dense border, their recovery by probing, and an arrowhead Cholesky solve (#344)
+- `Template` in `furax.mapmaking.templates`: a template as a time basis seen through a coupling, with amplitude sets per stream, detector or group of detectors (#345, #347)
+- `furax.mapmaking.templates.gram`: `template_gram`, `BlockGram` and `factor`, the Gram of templates assembled by probing or from the structure of the bases, and its inverse (#346, #348)
+- `build_templates` and the `*_templates` builders make the templates a `TemplatesConfig` enables, one per group of streams fitted alike (#347)
 - `furax.math.zernike`: the Zernike polynomials on the unit disk (#352)
 - `furax.math.legendre.legvander`: the pseudo-Vandermonde matrix of the Legendre polynomials (#353)
-- `BorderedBandedMatrix`, `probe_bordered_banded` and `ArrowheadCholeskyOperator` in `furax.linalg`: symmetric matrices with a block-banded core and a dense border, their recovery by probing, and an arrowhead Cholesky solve (#344)
-- `Template` in `furax.mapmaking.templates`: a template as a time basis seen through a coupling, with amplitude sets per stream, detector or group of detectors (#347)
-- `build_templates` and the `*_templates` builders make the templates a `TemplatesConfig` enables, one per group of streams fitted alike (#347)
-- `furax.mapmaking.templates.gram`: `template_gram`, `BlockGram` and `factor`, the Gram of templates assembled by probing or from the structure of the bases, and its inverse (#348)
-- Templates can be fitted under a correlated (Toeplitz) weight, with `gaps.treatment=inner_mask` (#369)
-- `T2PConfig.zernike_order`, `zernike_radius` and `joint_qu`: the T2P leakage can be fitted as a polarization field over the focal plane, from `zernike_couplings` (#355)
+- `T2PConfig.zernike_order`, `zernike_radius` and `joint_qu`: the T2P leakage can be fitted as a polarization field over the focal plane, from `zernike_couplings`, also with detector batches (#355, #356)
 - `TemplateFit`: the weighted least-squares fit of templates to a TOD (#358)
 - `MapMakingConfig.injection` (`InjectionConfig`) scans a simulated sky into the data of a run, and `MapMakingResults.injected_map` holds the response of the run to it (#362)
-- `MapMakingResults.observations`, `detectors` and `provenance`: what a multi-observation run read, its noise parameters and provenance; `solver_stats` gains the CG residuals (#366)
+- `MapMakingResults.observations`, `detectors` and `provenance`: what a multi-observation run read, its noise parameters and provenance; `solver_stats` gains the CG residuals (#366, #375)
+- Templates can be fitted under a correlated (Toeplitz) weight, with `gaps.treatment=inner_mask` (#369)
+- `SlotLayout.to_observation_order` accepts `detector_axis`, along which it first merges the detector batches of each slot (#374)
+- `SlotPlacement` in `furax.mapmaking.layout`: the slots of a `SlotLayout` placed on the devices of the job (#377)
 - `SplineDriftConfig` (`templates.spline_drift`): a drift template, a cubic B-spline of time over the observation, with a knot every `samples_per_knot` samples (#383)
+- `SplineBasis`: a spline of time, one amplitude per knot, with a banded Gram (#386)
 
 ### Changed
 
-- **Breaking:** `MapMakingResults.noise_fits` and `noise_fits.npy` are replaced by the noise parameter columns of `MapMakingResults.detectors` (#366)
-- **Breaking:** `failed_observations.txt` and `mapped_observations.txt` are no longer written; which observations were mapped, and why the others failed, is in `observations.csv` (#366)
-- The `furax-so-*` commands no longer print sotodlib's INFO messages or metadata loader errors unless `--loglevel debug` (#364)
-- `SymmetricBandToeplitzOperator` acts on any pytree, block-diagonally over its leaves (#359)
 - **Breaking:** `Basis` and its flavours move from `furax.mapmaking.templates` to `furax.mapmaking.templates.bases` (#334, #343)
 - **Breaking:** `Basis.batch_shape` replaces `Basis.per_detector_stack`: a basis can hold a batch of bases of any shape, broadcast against the batch axes of the amplitudes and of the signal (#335)
-- T2P templates (`T2PConfig`) assemble their Gram from the basis structure instead of probing it one amplitude at a time, also when decimated (#335, #336)
-- Spline HWP-synchronous templates (`SplineHWPSynchronousConfig`) need far less memory to assemble their Gram (#338)
+- **Breaking:** `NoStructuredView` is removed: every basis provides a structured Gram (#337)
 - **Breaking:** `ObservationReader` reads demodulated TODs when given `stokes`, and drops its `demodulated` argument (#342)
 - **Breaking:** `furax.mapmaking.pomme` moves to `furax.mapmaking.templates.pomme` (#343)
 - **Breaking:** `TemplateOperator` sums `Template`s; `StokesTemplateOperator`, `AbstractTemplateOperator`, `StokesLeg`, the `*_basis` builders and `furax.mapmaking.gram` (`gram_inverse`) are removed (#347)
 - **Breaking:** `amplitudes.npz` holds one array per template, such as `polynomial` or `polynomial_qu`, with its stream and detector axes in front, instead of one entry per template and Stokes leg (#347)
+- **Breaking:** `MapMakingResults.noise_fits` and `noise_fits.npy` are replaced by the noise parameter columns of `MapMakingResults.detectors` (#366)
+- **Breaking:** `failed_observations.txt` and `mapped_observations.txt` are no longer written; which observations were mapped, and why the others failed, is in `observations.csv` (#366)
+- **Breaking:** renames in `furax.mapmaking.layout` (#373):
+  - `Bucket.n_real` → `n_observations`, `Bucket.n_pad` → `n_empty`
+  - `Bucket.is_real` → `is_empty`, with the opposite meaning
+  - `real_volume` → `unpadded_volume`
+  - `Bucket.item_of_slot` is removed: slot `s` holds the `s`-th observation of the bucket
+- **Breaking:** `AbstractReader.failed_indices` is removed; read failures are recorded in `AbstractReader.errors` only (#376)
+- **Breaking:** `MultiObservationMapMaker.placement` replaces `mesh`, `sharding` and `distribute` (#377)
+- T2P templates (`T2PConfig`) assemble their Gram from the basis structure instead of probing it one amplitude at a time, also when decimated (#335, #336)
+- Spline HWP-synchronous templates (`SplineHWPSynchronousConfig`) need far less memory to assemble their Gram (#338)
+- `SymmetricBandToeplitzOperator` acts on any pytree, block-diagonally over its leaves (#359)
+- The `furax-so-*` commands no longer print sotodlib's INFO messages or metadata loader errors unless `--loglevel debug` (#364)
 
 ### Fixed
 
-- The noise fit leaves out the Welch segments that contain a flagged sample (#365)
-- With `--wafer all`, an observation is no longer dropped when one of its wafer-band groups has no preprocessing record (#363)
+- Template ridge regularization is applied to the normal systems of explicit map-making (#264)
 - Banded Cholesky solves with a single off-diagonal block no longer crash on GPU (#331)
-- Apply template ridge regularization to explicit map-making normal systems (#264)
+- T2P templates with `fit_band` detrend the temperature before band-passing it, so the template no longer rings at the ends of the observation (#341)
+- With `--wafer all`, an observation is no longer dropped when one of its wafer-band groups has no preprocessing record (#363)
+- The noise fit leaves out the Welch segments that contain a flagged sample (#365)
 
 ## [0.15.5] - 2026-10-12
 
@@ -533,7 +550,8 @@ Initial tagged release.
 
 - Project classifiers and editable-mode installation instructions
 
-[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.15.5...HEAD
+[unreleased]: https://github.com/CMBSciPol/furax/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/CMBSciPol/furax/compare/v0.15.5...v0.16.0
 [0.15.5]: https://github.com/CMBSciPol/furax/compare/v0.15.4...v0.15.5
 [0.15.4]: https://github.com/CMBSciPol/furax/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/CMBSciPol/furax/compare/v0.15.2...v0.15.3

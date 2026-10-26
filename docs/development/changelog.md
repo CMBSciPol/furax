@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `probe_bordered_banded` takes `n_colors`, to spread its probes further apart, and `all_extras`, to return the other outputs of every probe (#388)
+- `DensePseudoInverseOperator`, the pseudo-inverse of symmetric positive semi-definite dense matrices, or with `clamp` a positive definite approximate inverse (#388)
+- `furax.tree.ravel` and `unravel`: the leaves of a pytree flattened past their leading batch axes into one vector per batch element, and back (#388)
+
 ## [0.16.0] - 2026-10-25
 
 Templates are rebuilt around a single model: a `Template` is a time basis seen through a coupling, with one set of amplitudes per stream, per detector or per group of detectors, and the Gram of the templates is assembled from the structure of their bases instead of being probed. The [template model](template_model.md) page describes the design (#345, #346, #347, #348, #350).

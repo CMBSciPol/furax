@@ -9,6 +9,7 @@ from .cholesky import (
     banded_cholesky_solve,
 )
 from .low_rank import LowRankOperator, LowRankTerms, low_rank, low_rank_mv
+from .pseudo_inverse import DensePseudoInverseOperator
 
 __all__ = [
     'cg',
@@ -23,6 +24,7 @@ __all__ = [
     'low_rank_mv',
     'LowRankOperator',
     'BandedCholeskyOperator',
+    'DensePseudoInverseOperator',
     'BorderedBandedCholeskyOperator',
     'banded_cholesky',
     'banded_cholesky_solve',

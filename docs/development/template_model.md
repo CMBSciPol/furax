@@ -94,8 +94,9 @@ coupling, so that every later step finds each axis at the same place for every t
 `per` is then the same two contractions, one per direction, with a set per detector keeping the
 weight diagonal.
 
-A template has a single basis. Streams fitted with different bases, such as a polynomial of one
-order on I and another on Q and U, are separate templates, one per group of streams fitted alike.
+A template has a single basis. Streams fitted with different bases, such as a spline drift with
+one knot spacing on I and another on Q and U, are separate templates, one per group of streams
+fitted alike.
 
 Templates are instances of the model:
 
@@ -107,13 +108,16 @@ Templates are instances of the model:
 | T2P per detector | the detector's temperature, batched | `('stream', 'det')` | — |
 | T2P field, common to Q and U | the detector's temperature, batched | `()` | Q: `Zₖ · (cos 2γ, −sin 2γ)`, U: `Zₖ · (sin 2γ, cos 2γ)` |
 | T2P field, per stream | the detector's temperature, batched | `('stream',)` | `Zₖ(x_d) · (cos 2γ_d, sin 2γ_d)` |
+| T2P quadrupolar field, common to Q and U | the detector's temperature, batched | `()` | Q: `(Re wₖ, −Im wₖ)`, U: `(Im wₖ, Re wₖ)`, `wₖ = Fₖ(x_d) · e^{2iγ_d}` |
 | Signal common to every detector | any shared basis | `('stream',)` | — |
+| Polarized common mode | cubic B-spline of time, shared | `()` | as the quadrupolar field: its modes, each with a timestream |
 | Common mode with a gain per detector | any shared basis | `('stream',)` | the gains |
 | Common mode per wafer | offsets | `('det',)` or `('stream', 'det')`, grouped by wafer | the pattern across the wafer |
 | Pomme offsets | offsets, one per `tau` samples | `('det',)` | — (implicit) |
 
-Here `Zₖ(x_d)` are the Zernike polynomials at the detector's focal-plane position, and `γ_d` its
-polarization angle.
+Here `Zₖ(x_d)` are the Zernike polynomials at the detector's focal-plane position, `γ_d` its
+polarization angle, and `Fₖ(x_d)` the monomials ζ^p ζ̄^q of its complex position ζ in the
+quadrupolar field.
 
 ### The operator
 
@@ -247,15 +251,15 @@ G̃_TT = G_TT − G_TZ G_ZZ⁻¹ G_ZT
   is formed. Its blocks must be longer than an interval, such as the knots of a spline
   HWP-synchronous template, which Pomme leaves since its harmonics are at high frequency.
 
-A polynomial per interval does not combine with Pomme: the offsets absorb anything smooth over
-`tau`, so the polynomial, smooth over much longer, would fit nothing they leave, and its Gram under
-`W F` would be all but singular.
+A spline drift does not combine with Pomme: the offsets absorb anything smooth over `tau`, so the
+spline, smooth over much longer, would fit nothing they leave, and its Gram under `W F` would be
+all but singular.
 
 No other template is eliminated. The implicit templates are marginalized together, through one
-Gram of all of them, so none needs eliminating from another's. The Gram of the explicit templates
-is taken under `W`, or `W F`, and not under the marginalized weight `W'`: their preconditioner
-leaves the implicit templates out. On the sky side, the implicit weight stays the operator
-`W − W Tᵢ G⁻¹ Tᵢᵀ W`, and Pomme stays the projector `F`.
+Gram of all of them, into `W' = W − W Tᵢ G⁻¹ Tᵢᵀ W`. The Gram of the explicit templates the
+detectors share is taken under `W'` (`MarginalizedWeightOperator`), that of the others under `W`,
+or `W F`: their preconditioner leaves the implicit templates out. On the sky side, the weights
+stay operators, and Pomme stays the projector `F`.
 
 ### Factorization
 

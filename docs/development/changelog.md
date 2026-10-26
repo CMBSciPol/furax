@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DensePseudoInverseOperator`, the pseudo-inverse of symmetric positive semi-definite dense matrices, or with `clamp` a positive definite approximate inverse (#388)
 - `furax.tree.ravel` and `unravel`: the leaves of a pytree flattened past their leading batch axes into one vector per batch element, and back (#388)
 - `Basis.block_lengths`: the shortest and longest blocks of a time-local basis, from which the band of its Gram follows, checked against its arrays when built (#389)
+- `T2PConfig.quadrupole_order` and `decentred`: the T2P leakage can be fitted as the quadrupolar polarization field of axisymmetric optics, from `winding_couplings` (#385)
+- `CommonModeConfig` (`templates.common_mode`): a polarization pattern common to the detectors over the focal plane, with a slow time dependence (#385)
+- `polarization_field_couplings`: the Q/U couplings of any polarization field over the focal plane (#385)
 
 ### Changed
 
@@ -21,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `furax.mapmaking.streaming` (`StreamOperator`, `StreamLayout`) is removed (#391)
 - **Breaking:** `BlockGram.combine` is removed (#389)
 - **Breaking:** `ArrowheadCholeskyOperator`, `template_gram(coupled=...)` and `BlockGram.cross` are removed: `factor` always inverts the Gram block by block (#389)
+- **Breaking:** the per-interval polynomial template is removed: `PolynomialConfig` (`templates.polynomial`), `polynomial_templates` and `scan_polynomial_basis`; use `SplineDriftConfig` (#385)
+- **Breaking:** `T2PConfig` and `GroundConfig` no longer have an `explicit` field: their templates are always solved for with the map (#385)
 - **Breaking:** `Bucket.n_entries`, `Bucket.stream_layout` and `Bucket.sum_detector_batches` are removed, and `SlotLayout.to_observation_order` and `Bucket.merge_detector_batches` take per-batch values as `(slot, batch, ...)` (#391)
 
 ## [0.16.0] - 2026-10-25

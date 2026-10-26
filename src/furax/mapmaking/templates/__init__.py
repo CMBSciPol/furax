@@ -13,13 +13,15 @@ from ._builders import (
     binned_azimuth_hwp_synchronous_templates,
     binned_azimuth_synchronous_templates,
     build_templates,
+    common_mode_templates,
     hwp_synchronous_templates,
-    polynomial_templates,
+    polarization_field_couplings,
     required_reader_fields,
     scan_synchronous_templates,
     spline_drift_templates,
     spline_hwp_synchronous_templates,
     t2p_templates,
+    winding_couplings,
     zernike_couplings,
 )
 from ._operator import Template, TemplateOperator
@@ -29,7 +31,6 @@ __all__ = [
     'TemplateOperator',
     'build_templates',
     'required_reader_fields',
-    'polynomial_templates',
     'spline_drift_templates',
     'scan_synchronous_templates',
     'binned_azimuth_synchronous_templates',
@@ -38,5 +39,8 @@ __all__ = [
     'binned_azimuth_hwp_synchronous_templates',
     'spline_hwp_synchronous_templates',
     't2p_templates',
+    'common_mode_templates',
     'zernike_couplings',
+    'winding_couplings',
+    'polarization_field_couplings',
 ]

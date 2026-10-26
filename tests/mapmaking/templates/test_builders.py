@@ -9,8 +9,8 @@ from numpy.testing import assert_allclose
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
     BinsConfig,
+    CommonModeConfig,
     HWPSynchronousConfig,
-    PolynomialConfig,
     PolynomialOrders,
     SplineDriftConfig,
     SplineHWPSynchronousConfig,
@@ -19,9 +19,12 @@ from furax.mapmaking.config import (
 )
 from furax.mapmaking.templates import (
     build_templates,
-    polynomial_templates,
+    common_mode_templates,
+    polarization_field_couplings,
     required_reader_fields,
+    spline_drift_templates,
     t2p_templates,
+    winding_couplings,
     zernike_couplings,
 )
 from furax.mapmaking.templates._builders import (
@@ -32,7 +35,6 @@ from furax.mapmaking.templates._builders import (
     binned_azimuth_hwp_synchronous_basis,
     binned_azimuth_synchronous_basis,
     hwp_synchronous_basis,
-    scan_polynomial_basis,
     scan_synchronous_basis,
     spline_drift_basis,
     spline_hwp_synchronous_basis,
@@ -167,41 +169,6 @@ def test_azimuth_hwp_scan_mask_zeroes_flagged_samples() -> None:
     out = basis(jr.normal(jr.key(941), basis.shape))
     assert_allclose(out[scan_mask == 0], 0.0, atol=TOL)
     assert jnp.all(out[scan_mask == 1] != 0)
-
-
-# ---------------------------------------------------------------------------
-# scan_polynomial_basis (structure, gaps)
-# ---------------------------------------------------------------------------
-
-
-def test_polynomial_basis_has_a_polynomial_per_interval_and_none_in_the_gaps() -> None:
-    n_samps, order = 200, 3
-    intervals = jnp.array([[10, 80], [120, 160], [160, 190]])  # gaps at both ends and inside
-    times = jnp.arange(n_samps, dtype=jnp.float64)
-    basis = scan_polynomial_basis(order, intervals, times, jnp.float64)
-    assert basis.shape == (3, order + 1)  # orders 0..order, per interval
-    assert basis.out_structure.shape == (n_samps,)
-    # `SegmentedBasis` requires non-decreasing segment ids, gaps included
-    assert jnp.all(jnp.diff(basis.segment) >= 0)
-    out = basis(jr.normal(jr.key(960), basis.shape))
-    samples = jnp.arange(n_samps)
-    covered = jnp.any(
-        (samples[:, None] >= intervals[:, 0]) & (samples[:, None] < intervals[:, 1]), 1
-    )
-    assert_allclose(out[~covered], 0.0, atol=TOL)
-    assert jnp.all(out[covered] != 0)
-
-
-def test_polynomial_basis_mask_zeros_the_flagged_samples() -> None:
-    n_samps = 200
-    intervals = jnp.array([[0, 100], [100, n_samps]])
-    times = jnp.arange(n_samps, dtype=jnp.float64)
-    valid = (jnp.arange(n_samps) % 5 != 0).astype(jnp.float64)
-    masked = scan_polynomial_basis(3, intervals, times, jnp.float64, valid)
-    unmasked = scan_polynomial_basis(3, intervals, times, jnp.float64, None)
-    coeffs = jr.normal(jr.key(20), masked.shape)
-    # the projection drops them too, the basis being its transpose's adjoint
-    assert_allclose(masked(coeffs), valid * unmasked(coeffs), atol=TOL)
 
 
 # ---------------------------------------------------------------------------
@@ -370,12 +337,12 @@ def _data(stokes: str | None) -> dict:
 
 def test_build_templates_splits_explicit_and_implicit():
     config = TemplatesConfig(
-        polynomial=PolynomialConfig(explicit=True),
+        spline_drift=SplineDriftConfig(explicit=True),
         hwp_synchronous=HWPSynchronousConfig(2, explicit=False),
     )
     tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64)
     explicit, implicit = build_templates(config, _data(None), tod_format)
-    assert set(explicit) == {'polynomial'} and set(implicit) == {'hwp_synchronous'}
+    assert set(explicit) == {'spline_drift'} and set(implicit) == {'hwp_synchronous'}
     assert all(
         t.tod_format == tod_format and t.streams is None
         for t in [*explicit.values(), *implicit.values()]
@@ -384,19 +351,17 @@ def test_build_templates_splits_explicit_and_implicit():
 
 
 @pytest.mark.parametrize(
-    ('legendre', 'streams'),
+    ('samples_per_knot', 'streams'),
     [
-        (PolynomialOrders(0, 3), {'polynomial': 'iqu'}),
-        (
-            {'i': PolynomialOrders(0, 3), 'qu': PolynomialOrders(1, 3)},
-            {'polynomial_i': 'i', 'polynomial_qu': 'qu'},
-        ),
-        ({'u': PolynomialOrders(0, 1)}, {'polynomial_u': 'u'}),
+        (50, {'spline_drift': 'iqu'}),
+        ({'i': 50, 'qu': 25}, {'spline_drift_i': 'i', 'spline_drift_qu': 'qu'}),
+        ({'u': 50}, {'spline_drift_u': 'u'}),
     ],
 )
-def test_streams_fitted_alike_form_one_template(legendre, streams):
+def test_streams_fitted_alike_form_one_template(samples_per_knot, streams):
     tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='IQU')
-    templates = polynomial_templates(PolynomialConfig(legendre=legendre), _data('IQU'), tod_format)
+    config = SplineDriftConfig(samples_per_knot=samples_per_knot)
+    templates = spline_drift_templates(config, _data('IQU'), tod_format)
     assert {name: t.streams for name, t in templates.items()} == streams
 
 
@@ -450,27 +415,104 @@ def test_zernike_couplings_reject_other_streams_than_q_and_u():
 
 
 @pytest.mark.parametrize(
+    'field',
+    [{'zernike_order': 2}, {'quadrupole_order': 2}],  # 6 complex functions each
+    ids=['zernike', 'quadrupole'],
+)
+@pytest.mark.parametrize(
     ('joint_qu', 'per', 'shape'), [(True, (), (1, 12)), (False, ('stream',), (2, 1, 12))]
 )
-def test_t2p_field_shares_its_amplitudes_between_the_detectors(joint_qu, per, shape):
+def test_t2p_field_shares_its_amplitudes_between_the_detectors(field, joint_qu, per, shape):
     tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='IQU')
-    angles = XiEtaAngles(*_detector_angles())
-    data = _data('IQU') | {
-        ReaderField.DETECTOR_QUATERNIONS: jnp.stack(angles.to_quaternion().to_components(), -1)
-    }
-    config = T2PConfig(zernike_order=2, joint_qu=joint_qu)
-    template = t2p_templates(config, data, tod_format)['t2p']
+    config = T2PConfig(**field, joint_qu=joint_qu)
+    template = t2p_templates(config, _field_data('IQU'), tod_format)['t2p']
     assert template.per == per and template.in_structure.shape == shape
     assert not template.per_detector
     assert ReaderField.DETECTOR_QUATERNIONS in required_reader_fields(TemplatesConfig(t2p=config))
 
 
-def test_spline_drift_needs_no_scanning_intervals():
-    config = TemplatesConfig(spline_drift=SplineDriftConfig())
-    assert ReaderField.SCANNING_INTERVALS not in required_reader_fields(config)
-    assert ReaderField.SCANNING_INTERVALS in required_reader_fields(
-        TemplatesConfig(polynomial=PolynomialConfig())
+def test_polarization_field_couplings_of_q_and_u_are_the_leakage_of_a_complex_field():
+    _, _, gamma = _detector_angles()
+    re, im = jr.normal(jr.key(7), (2, N_DETS, 3))
+    fields = re + 1j * im
+    c = jr.normal(jr.key(8), (3, 2))  # (Re, Im) of each function
+    coupling = polarization_field_couplings(fields, gamma, streams='qu')
+    assert coupling.shape == (2, N_DETS, 6)
+    leakage = (fields @ (c[:, 0] + 1j * c[:, 1])) * jnp.exp(2j * gamma)
+    assert_allclose(coupling @ c.ravel(), jnp.stack([leakage.real, leakage.imag]), atol=1e-12)
+
+
+def test_polarization_field_couplings_of_one_stream_are_the_real_and_imaginary_parts():
+    _, _, gamma = _detector_angles()
+    re, im = jr.normal(jr.key(9), (2, N_DETS, 2))
+    fields = re + 1j * im
+    coupling = polarization_field_couplings(fields, gamma)
+    assert coupling.shape == (N_DETS, 4)
+    w = fields * jnp.exp(2j * gamma)[:, None]
+    assert_allclose(coupling[:, 0::2], w.real, atol=1e-12)
+    assert_allclose(coupling[:, 1::2], w.imag, atol=1e-12)
+
+
+def test_polarization_field_couplings_reject_other_streams_than_q_and_u():
+    with pytest.raises(ValueError, match='Q and U streams only'):
+        polarization_field_couplings(jnp.ones((N_DETS, 1)), jnp.zeros(N_DETS), streams='qi')
+
+
+@pytest.mark.parametrize(
+    ('decentred', 'uniform', 'exponents'),
+    [
+        (True, True, [(0, 0), (1, 0), (2, 0), (2, 1), (3, 0), (3, 1)]),
+        (False, False, [(2, 0), (3, 1)]),
+    ],
+    ids=['decentred', 'centred'],
+)
+def test_winding_couplings_are_those_of_the_monomials_by_degree_and_turns(
+    decentred, uniform, exponents
+):
+    # the modes are the monomials ζ^p ζ̄^q of ζ = (-η - iξ) / R, by degree p + q, then by turns
+    # p - q: two turns about the axis for a centred one
+    xi, eta, gamma = _detector_angles()
+    zeta = (-eta - 1j * xi) / 0.31
+    fields = jnp.stack([zeta**p * jnp.conj(zeta) ** q for p, q in exponents], axis=-1)
+    coupling = winding_couplings(
+        xi, eta, gamma, 2, 0.31, decentred=decentred, uniform=uniform, streams='qu'
     )
+    assert_allclose(coupling, polarization_field_couplings(fields, gamma, streams='qu'), atol=TOL)
+
+
+def test_winding_couplings_reject_a_radial_order_below_one():
+    xi, eta, gamma = _detector_angles()
+    with pytest.raises(ValueError, match="'radial_order' must be >= 1"):
+        winding_couplings(xi, eta, gamma, 0, 0.31)
+
+
+def _field_data(stokes: str) -> dict:
+    """The fields the polarization templates are built from: those of `_data` and the detector
+    quaternions."""
+    angles = XiEtaAngles(*_detector_angles())
+    quaternions = jnp.stack(angles.to_quaternion().to_components(), -1)
+    return _data(stokes) | {ReaderField.DETECTOR_QUATERNIONS: quaternions}
+
+
+@pytest.mark.parametrize(
+    ('config', 'n_modes'),
+    [
+        (CommonModeConfig(samples_per_knot=30), 4),  # the quadrupole and the shifted axis
+        (CommonModeConfig(samples_per_knot=30, uniform=True), 6),
+        (CommonModeConfig(samples_per_knot=30, quadrupole_order=2, decentred=False), 4),
+    ],
+)
+def test_common_mode_has_one_spline_per_mode_shared_by_the_detectors(config, n_modes):
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='IQU')
+    template = common_mode_templates(config, _field_data('IQU'), tod_format)['common_mode']
+    assert template.streams == 'qu' and template.per == ()
+    assert template.in_structure.shape == (N_SAMPS // 30 + 2, n_modes)  # (spline, mode)
+    assert not template.per_detector
+
+
+def test_common_mode_needs_the_q_and_u_streams():
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='I')
+    assert common_mode_templates(CommonModeConfig(), _field_data('I'), tod_format) == {}
 
 
 def test_spline_drift_basis_is_the_masked_dense_spline():

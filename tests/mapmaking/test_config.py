@@ -7,14 +7,13 @@ from typedload.exceptions import TypedloadException
 from furax.mapmaking import config as config_module
 from furax.mapmaking._serialization import deserialize
 from furax.mapmaking.config import (
+    CommonModeConfig,
     GapsConfig,
     GapTreatment,
-    GroundConfig,
     HealpixConfig,
     HWPSynchronousConfig,
     LandscapeConfig,
     MapMakingConfig,
-    PolynomialConfig,
     PolynomialOrders,
     ScanSynchronousConfig,
     SotodlibConfig,
@@ -154,6 +153,8 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
         (lambda: SotodlibConfig(downsample=0), 'downsample must be >= 1'),
         (lambda: MapMakingConfig(detector_batch_size=-1), 'detector_batch_size must be >= 0'),
         (lambda: T2PConfig(zernike_order=-1), 'zernike_order'),
+        (lambda: T2PConfig(quadrupole_order=0), 'quadrupole_order'),
+        (lambda: T2PConfig(zernike_order=2, quadrupole_order=1), 'exclusive'),
         (lambda: T2PConfig(zernike_radius=0.0), 'zernike_radius'),
         (lambda: SplineDriftConfig(samples_per_knot=0), 'samples_per_knot must be >= 1'),
         (lambda: SplineDriftConfig(samples_per_knot={'qu': -1}), 'samples_per_knot must be >= 1'),
@@ -163,6 +164,8 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
         'downsample',
         'detector_batch_size',
         'zernike_order',
+        'quadrupole_order',
+        'zernike-quadrupole-exclusive',
         'zernike_radius',
         'samples_per_knot',
         'samples_per_knot-per-stream',
@@ -185,10 +188,29 @@ def test_correlated_gap_treatments_reject_detector_batches(treatment: GapTreatme
     MapMakingConfig(gaps=GapsConfig(treatment=treatment), detector_batch_size=16)
 
 
-@pytest.mark.parametrize('cls', [T2PConfig, GroundConfig])
-def test_template_without_implicit_deprojection_must_be_explicit(cls):
-    with pytest.raises(ValueError, match='requires explicit=True'):
-        cls(explicit=False)
+class TestCommonMode:
+    @pytest.mark.parametrize(
+        ('kwargs', 'match'),
+        [
+            ({'samples_per_knot': 0}, 'samples_per_knot'),
+            ({'quadrupole_order': 0}, 'quadrupole_order'),
+            ({'radius': 0.0}, 'radius'),
+        ],
+    )
+    def test_rejects_invalid_values(self, kwargs, match):
+        with pytest.raises(ValueError, match=match):
+            CommonModeConfig(**kwargs)
+
+    def test_requires_demodulated_qu_data(self):
+        templates = TemplatesConfig(common_mode=CommonModeConfig())
+        with pytest.raises(ValueError, match='common-mode template requires demodulated=True'):
+            MapMakingConfig(templates=templates)
+        with pytest.raises(ValueError, match='common-mode template requires Q and U streams'):
+            MapMakingConfig(
+                sotodlib=SotodlibConfig(demodulated=True),
+                landscape=LandscapeConfig(stokes='I', healpix=HealpixConfig()),
+                templates=templates,
+            )
 
 
 class TestT2PRequiresDemodulated:
@@ -225,11 +247,10 @@ def _demodulated(templates: TemplatesConfig) -> MapMakingConfig:
     )
 
 
-@pytest.mark.parametrize('template', [PolynomialConfig, ScanSynchronousConfig])
 class TestLegendrePerLeg:
-    def test_raises_without_demodulated(self, template):
-        name = 'polynomial' if template is PolynomialConfig else 'scan_synchronous'
-        templates = TemplatesConfig(**{name: template(legendre={'qu': PolynomialOrders(0, 1)})})
+    def test_raises_without_demodulated(self):
+        legendre = {'qu': PolynomialOrders(0, 1)}
+        templates = TemplatesConfig(scan_synchronous=ScanSynchronousConfig(legendre=legendre))
         with pytest.raises(ValueError, match='per stream requires demodulated=True'):
             MapMakingConfig(templates=templates)
 
@@ -241,16 +262,16 @@ class TestLegendrePerLeg:
             (['qu', 'U'], r"names streams \['U'\] more than once"),
         ],
     )
-    def test_raises_on_invalid_streams(self, template, streams: list[str], match: str):
-        name = 'polynomial' if template is PolynomialConfig else 'scan_synchronous'
+    def test_raises_on_invalid_streams(self, streams: list[str], match: str):
         legendre = {group: PolynomialOrders(0, 1) for group in streams}
         with pytest.raises(ValueError, match=match):
-            _demodulated(TemplatesConfig(**{name: template(legendre=legendre)}))
+            _demodulated(TemplatesConfig(scan_synchronous=ScanSynchronousConfig(legendre=legendre)))
 
-    def test_round_trips_through_yaml(self, template):
-        name = 'polynomial' if template is PolynomialConfig else 'scan_synchronous'
+    def test_round_trips_through_yaml(self):
         legendre = {'i': PolynomialOrders(0, 9), 'qu': PolynomialOrders(2, 5)}
-        config = _demodulated(TemplatesConfig(**{name: template(legendre=legendre)}))
+        config = _demodulated(
+            TemplatesConfig(scan_synchronous=ScanSynchronousConfig(legendre=legendre))
+        )
         assert MapMakingConfig.load_dict(yaml.safe_load(config._to_yaml())) == config
 
 

@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-26
+
+The normal system of multi-observation map-making is evaluated per observation, a detector batch at a time, which replaces the streaming operators; common templates overlapping implicit ones are preconditioned under the marginalized weight. The per-interval polynomial template gives way to the spline drift, and the T2P and ground templates are always solved for with the map (#385, #389, #391).
+
 ### Added
 
-- `MarginalizedWeightOperator`, the weight with the amplitudes of some templates marginalized (#389)
-- `probe_bordered_banded` takes `n_colors`, to spread its probes further apart, and `all_extras`, to return the other outputs of every probe (#388)
-- `DensePseudoInverseOperator`, the pseudo-inverse of symmetric positive semi-definite dense matrices, or with `clamp` a positive definite approximate inverse (#388)
 - `furax.tree.ravel` and `unravel`: the leaves of a pytree flattened past their leading batch axes into one vector per batch element, and back (#388)
+- `DensePseudoInverseOperator`, the pseudo-inverse of symmetric positive semi-definite dense matrices, or with `clamp` a positive definite approximate inverse (#388)
+- `probe_bordered_banded` takes `n_colors`, to spread its probes further apart, and `all_extras`, to return the other outputs of every probe (#388)
+- `MarginalizedWeightOperator`, the weight with the amplitudes of some templates marginalized (#389)
 - `Basis.block_lengths`: the shortest and longest blocks of a time-local basis, from which the band of its Gram follows, checked against its arrays when built (#389)
 - `T2PConfig.quadrupole_order` and `decentred`: the T2P leakage can be fitted as the quadrupolar polarization field of axisymmetric optics, from `winding_couplings` (#385)
 - `CommonModeConfig` (`templates.common_mode`): a polarization pattern common to the detectors over the focal plane, with a slow time dependence (#385)
@@ -20,13 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The amplitudes the detectors have in common are preconditioned by their Gram under the weight with the implicit templates marginalized, so that CG converges when a common template overlaps implicit ones (#391)
-- **Breaking:** `furax.mapmaking.streaming` (`StreamOperator`, `StreamLayout`) is removed (#391)
-- **Breaking:** `BlockGram.combine` is removed (#389)
 - **Breaking:** `ArrowheadCholeskyOperator`, `template_gram(coupled=...)` and `BlockGram.cross` are removed: `factor` always inverts the Gram block by block (#389)
+- **Breaking:** `BlockGram.combine` is removed (#389)
+- **Breaking:** `furax.mapmaking.streaming` (`StreamOperator`, `StreamLayout`) is removed (#391)
+- **Breaking:** `Bucket.n_entries`, `Bucket.stream_layout` and `Bucket.sum_detector_batches` are removed, and `SlotLayout.to_observation_order` and `Bucket.merge_detector_batches` take per-batch values as `(slot, batch, ...)` (#391)
 - **Breaking:** the per-interval polynomial template is removed: `PolynomialConfig` (`templates.polynomial`), `polynomial_templates` and `scan_polynomial_basis`; use `SplineDriftConfig` (#385)
 - **Breaking:** `T2PConfig` and `GroundConfig` no longer have an `explicit` field: their templates are always solved for with the map (#385)
-- **Breaking:** `Bucket.n_entries`, `Bucket.stream_layout` and `Bucket.sum_detector_batches` are removed, and `SlotLayout.to_observation_order` and `Bucket.merge_detector_batches` take per-batch values as `(slot, batch, ...)` (#391)
+- The amplitudes the detectors have in common are preconditioned by their Gram under the weight with the implicit templates marginalized, so that CG converges when a common template overlaps implicit ones (#391)
 
 ## [0.16.0] - 2026-10-25
 
@@ -572,6 +576,7 @@ Initial tagged release.
 - Project classifiers and editable-mode installation instructions
 
 [unreleased]: https://github.com/CMBSciPol/furax/compare/v0.16.0...HEAD
+[0.17.0]: https://github.com/CMBSciPol/furax/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/CMBSciPol/furax/compare/v0.15.5...v0.16.0
 [0.15.5]: https://github.com/CMBSciPol/furax/compare/v0.15.4...v0.15.5
 [0.15.4]: https://github.com/CMBSciPol/furax/compare/v0.15.3...v0.15.4

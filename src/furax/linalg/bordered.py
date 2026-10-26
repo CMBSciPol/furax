@@ -7,13 +7,11 @@ $$ M = \begin{pmatrix} A & B \\ B^\top & C \end{pmatrix} $$
 over unknowns split in two: a core $x_a$ of `n_blocks` blocks of `k`, on which $A$ is
 block-banded, and a border $x_c$ of `m`, on which $C$ is dense, coupled by the dense $B$. The
 core and the border are each optional. [`probe_bordered_banded`][] recovers such a matrix from
-the operator it represents, and [`ArrowheadCholeskyOperator`][] solves a batch of independent
-blocks coupled to one dense block.
+the operator it represents.
 """
 
-import functools
 from collections.abc import Callable
-from typing import Any, Self
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -25,7 +23,6 @@ from furax import AbstractLinearOperator, symmetric, tree
 from .cholesky import BandedCholeskyOperator, BorderedBandedCholeskyOperator, _einsum
 
 __all__ = [
-    'ArrowheadCholeskyOperator',
     'BorderedBandedMatrix',
     'probe_bordered_banded',
 ]
@@ -207,86 +204,6 @@ def probe_bordered_banded(
     if not all_extras:
         extra = tree.stacked_get(extra, slice(n_core, None))
     return BorderedBandedMatrix(bands, border, corner), extra
-
-
-@symmetric
-class ArrowheadCholeskyOperator(AbstractLinearOperator):
-    r"""Inverse of a symmetric positive-definite arrowhead matrix, by Schur complement.
-
-    The matrix couples independent blocks $A$, such as one per detector, to one dense block $C$:
-
-    $$ M = \begin{pmatrix} A & B \\ B^\top & C \end{pmatrix}. $$
-
-    With $Z = A^{-1} B$, the unknowns of $C$ are eliminated into $S = C - B^\top Z$, and solving
-    $M x = r$ is
-
-    $$ x_c = S^{-1} (r_c - Z^\top r_a), \qquad x_a = A^{-1} r_a - Z x_c. $$
-
-    Calling the operator on a pair `(r_a, r_c)` solves for `(x_a, x_c)`: `r_a` a pytree on which
-    $A^{-1}$ acts, `r_c` a vector of the `m` unknowns of $C$. Unlike
-    [`BorderedBandedCholeskyOperator`][furax.linalg.BorderedBandedCholeskyOperator], a batch of
-    bordered matrices, it is one matrix, whose blocks $A$ share the one dense block $C$.
-
-    Examples:
-        >>> blocks = BandedCholeskyOperator.from_dense(jnp.array([[[4.0]], [[4.0]]]))  # A = 4 I
-        >>> cross = jnp.array([[[1.0], [1.0]]])  # B, one column per unknown of C
-        >>> op = ArrowheadCholeskyOperator.from_blocks(blocks, cross, jnp.array([[3.0]]))
-        >>> x_a, x_c = op((jnp.array([[5.0], [5.0]]), jnp.array([5.0])))  # M x = r for x = 1
-        >>> x_a.ravel(), x_c
-        (Array([1., 1.], dtype=float32), Array([1.], dtype=float32))
-    """
-
-    blocks: AbstractLinearOperator
-    """$A^{-1}$."""
-    coupling: PyTree[Array]
-    """$Z$, shaped like the unknowns of $A$ with a leading axis of those of $C$."""
-    schur: BandedCholeskyOperator
-    """$S^{-1}$."""
-
-    @classmethod
-    def from_blocks(
-        cls,
-        blocks: AbstractLinearOperator,
-        cross: PyTree[Array],
-        corner: Float[Array, 'm m'],
-        batch_size: int = 1,
-    ) -> Self:
-        """Eliminate the unknowns of the dense block.
-
-        Args:
-            blocks: $A^{-1}$.
-            cross: $B$, shaped like the unknowns of $A$ with a leading axis of those of $C$.
-            corner: $C$.
-            batch_size: The number of columns of $B$ solved at once, bounding the memory.
-        """
-        coupling = tree.stacked_map(blocks, cross, batch_size=batch_size)
-        schur = corner - _dots(cross, coupling)
-        schur = (schur + schur.T) / 2  # symmetric up to rounding
-        structure = (blocks.in_structure, jax.ShapeDtypeStruct(corner.shape[:1], corner.dtype))
-        return cls(
-            blocks, coupling, BandedCholeskyOperator.from_dense(schur), in_structure=structure
-        )
-
-    def mv(self, x: tuple[PyTree[Array], Array]) -> tuple[PyTree[Array], Array]:
-        r_a, r_c = x
-        x_c = self.schur(r_c - _dots(self.coupling, jax.tree.map(lambda a: a[None], r_a))[:, 0])
-        correction = jax.tree.map(lambda z: _einsum('m...,m->...', z, x_c), self.coupling)
-        x_a = tree.sub(self.blocks(r_a), correction)
-        return x_a, x_c
-
-
-def _dots(a: PyTree[Array], b: PyTree[Array]) -> Float[Array, 'p q']:
-    """The dot products of the leading-axis slices of two pytrees of the same structure.
-
-    A matrix product at full precision, many times faster than the reduction of
-    [`stacked_gram`][furax.tree.stacked_gram] on large slices.
-    """
-    products = jax.tree.map(
-        lambda u, v: _einsum('pi,qi->pq', u.reshape(u.shape[0], -1), v.reshape(v.shape[0], -1)),
-        a,
-        b,
-    )
-    return functools.reduce(jnp.add, jax.tree.leaves(products))
 
 
 def _core_bands(

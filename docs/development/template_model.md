@@ -174,29 +174,26 @@ The block structures are generic linear algebra:
 - a **bordered banded matrix**: a batch of symmetric matrices with a block-banded core and a dense
   border, each part optional, acting on `(core, border)` pairs. It factors by banded or bordered
   banded Cholesky;
-- its **recovery by probing**, from the operator it represents;
-- an **arrowhead** solve: independent blocks coupled to one dense block, by Schur complement.
+- its **recovery by probing**, from the operator it represents.
 
 The Gram of one observation, or of one batch of its detectors, is a bordered banded matrix over
-the units, one over the global block, and, kept for an exact factorization, the dense cross block
-between them:
+the units, and one over the global block:
 
 ```python
 class BlockGram:
     local: BorderedBandedMatrix | None  # over the units
     global_: BorderedBandedMatrix | None
-    cross: Float[Array, 'global unit local'] | None
 ```
 
 A static layout maps the rows of each block to template amplitudes; it does not depend on the
-number of detectors. The Grams of disjoint detector batches combine: the local blocks and the
-cross terms concatenate, the global blocks add up.
+number of detectors. The Grams of disjoint detector batches combine: the local blocks
+concatenate, the global blocks add up.
 
 ### Assembly
 
 ```python
 def template_gram(
-    operator, weight, *, bandwidth=0, streams_coupled=False, coupled=False, pomme_tau=None
+    operator, weight, *, bandwidth=0, streams_coupled=False, pomme_tau=None
 ) -> BlockGram: ...
 ```
 
@@ -209,8 +206,8 @@ the Gram under Pomme.
   same probe. The core is probed one color of blocks at a time, blocks far enough apart that their
   responses do not overlap: `2·half_width + 1` colors, the half-width estimated from the basis
   support and `bandwidth`. A core whose blocks are too short for that estimate is rejected. The
-  border is probed one amplitude at a time. With `coupled=True`, the global block is all border,
-  and the responses to its probes on the local amplitudes are the cross block. It works for any
+  border is probed one amplitude at a time. Under a marginalized weight, the global block is all
+  border, and the responses to its probes on the local amplitudes are their coupling. It works for any
   weight whose reach is declared, with any couplings, amplitude sets and streams. Cost: one
   application of `T`, `W` and `Tᵀ` per probe.
 - **Structural**, for a weight diagonal in time and in streams, whose diagonal is read off by
@@ -269,14 +266,17 @@ def factor(gram: BlockGram, *, regularization=0.0) -> tuple[inverse, ridge]: ...
 It returns the inverse on the amplitudes, and the ridge added before factoring.
 
 - The units and the global block are factored by banded or bordered banded Cholesky.
-- A Gram assembled with `coupled=True` is inverted exactly: the local blocks are eliminated into
-  the Schur complement of the global one, `S = G_gg − Σ_u G_ugᵀ G_uu⁻¹ G_ug`, by the arrowhead
-  solve. That is cheap for a small global block, such as the 30 amplitudes of a T2P field.
-- Otherwise the coupling is dropped (block Jacobi). It is the only option when the global block is
-  large and time-local, such as one common-mode amplitude per wafer every few seconds. Coupled to a
-  local template spanning the observation (a Legendre polynomial), its Schur complement fills in
-  to a dense matrix over every block.
-- Implicit templates need an exact inverse. Being local, they always have one.
+- The coupling of the local and global blocks is dropped (block Jacobi): the inverse
+  preconditions their joint system.
+- Implicit templates need an exact inverse. Having a set per detector, they always have one.
+- The shared Gram under a marginalized weight `W'` is a preconditioner only, and inverted on two
+  levels when both it and the implicit templates are time-local. The fine level is the band of
+  the Gram under `W`, by banded Cholesky. The coarse level corrects the directions the implicit
+  templates absorb, which only the ridge holds in the system: `Π`, the implicit functions of time
+  projected onto the shared basis by least squares, mode by mode, each truncated to a band. The
+  inverse is `B⁻¹ + Π E⁻¹ Πᵀ` with `E = Πᵀ (Tᵀ W' T) Π`, so that only `E`, of the implicit
+  functions times the modes, is dense: a sixth of the shared amplitudes for the default common
+  mode next to the default spline drift, and a thirty-sixth of the memory of the dense block.
 
 Amplitudes no weighted sample sees, whose rows are zero, take a unit diagonal and come back
 unchanged. The ridge is `regularization` times the mean diagonal of each core block, and times
@@ -322,7 +322,7 @@ banded and stream-coupled weight. On instances small enough for dense matrices:
 
 1. synthesis against the definition, one detector at a time;
 2. the transpose against the adjoint;
-3. the probed Gram against the dense `Tᵀ W T`, alone and combined over detector batches;
+3. the probed Gram against the dense `Tᵀ W T`;
 4. the structural Gram against the dense one, including detectors summed in batches that do
    not divide their number;
 5. `factor` against the dense Gram, exact and block by block, with and without the ridge;
@@ -341,9 +341,12 @@ batches change neither the map nor the amplitudes.
 - **Per-wafer blocks.** Templates grouped by wafer are global: the wafers end up in one block,
   coupled, although they never interact. One block per wafer needs the grouping to be static,
   such as detectors sorted by wafer with static boundaries, padded per wafer across observations.
-- **A coupled global block is dense.** `coupled=True` puts the whole global block in the border,
-  even a time-local one: one probe per amplitude, and a dense cross block, `n_global × units ×
-  n_local`. That suits a T2P field but not a common mode per wafer, which stays block Jacobi. A
-  time-sparse cross block would lift the limit.
+- **A marginalized global block can be dense.** Under a marginalized weight, the coupling of a
+  time-local global block to time-local local ones, such as a common-mode spline next to each
+  detector's spline drift, is read off colored probes, as many as its band needs; a local template spanning the observation still takes one
+  probe per global amplitude, and its marginalized Gram stays one dense block, `n_global²`,
+  inverted dense, the directions the local templates absorb, singular without a ridge, at a
+  cutoff. Time-local implicit templates avoid both: scan- and HWP-synchronous ones on a spline of
+  time, as `spline_hwp_synchronous` is, would keep the two-level inverse.
 - **Probing cost.** A global time-local template needs `colors × k × modes` probes: about 90 for
   one common-mode amplitude per wafer every few seconds, each an application of `T`, `W` and `Tᵀ`.

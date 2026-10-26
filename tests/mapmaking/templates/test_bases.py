@@ -377,3 +377,39 @@ class TestStructuredViews:
             for d in range(w1):
                 if j + d < n_blocks:
                     assert_allclose(bands[j, d], dense[j, :, j + d, :], rtol=TOL, atol=TOL)
+
+
+# segments of 4, 2 and 4 samples: an interior block of 2, the longest of 4
+_SEGMENTS = jnp.array([0, 0, 0, 0, 1, 1, 2, 2, 2, 2], jnp.int32)
+
+
+@pytest.mark.parametrize(
+    ('block_lengths', 'segment'),
+    [
+        ((3, 4), _SEGMENTS),  # an interior block shorter than stated
+        ((2, 3), _SEGMENTS),  # a block longer than stated
+        ((2, 4), jnp.array([0, 0, 0, 0, 2, 2, 2, 2, 2, 2], jnp.int32)),  # block 1 skipped
+    ],
+    ids=['shorter', 'longer', 'skipped'],
+)
+@pytest.mark.parametrize('jit', [False, True], ids=['eager', 'jit'])
+def test_blocks_breaking_the_stated_lengths_raise(block_lengths, segment, jit):
+    def build(segment):
+        basis = SegmentedBasis(segment, jnp.ones((1, 10)), 3, block_lengths=block_lengths)
+        return basis(jnp.ones((3, 1)))
+
+    with pytest.raises(RuntimeError, match='breaking its block_lengths'):
+        jax.block_until_ready((jax.jit(build) if jit else build)(segment))
+
+
+def test_blocks_within_the_stated_lengths_pass():
+    basis = SegmentedBasis(_SEGMENTS, jnp.ones((1, 10)), 3, block_lengths=(2, 4))
+    assert_allclose(basis(jnp.ones((3, 1))), jnp.ones(10))
+
+
+def test_offsets_and_their_decimation_state_their_block_lengths():
+    # intervals of 3 samples, the last holding the 2 samples of the tail
+    offsets = OffsetBasis(3, 11, jnp.float64)
+    assert offsets.block_lengths == (3, 5)
+    decimated = DecimatedBasis(offsets, decimation_factor=2, n_samples=22)
+    assert decimated.block_lengths == (6, 10)

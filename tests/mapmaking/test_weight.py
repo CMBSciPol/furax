@@ -6,7 +6,15 @@ from numpy.testing import assert_allclose
 
 from furax import MaskOperator, SymmetricBandToeplitzOperator
 from furax.mapmaking.config import NestedConfig
-from furax.mapmaking.weight import NestedWeightOperator, WeightOperator
+from furax.mapmaking.templates import Template, TemplateOperator
+from furax.mapmaking.templates.bases import TensorBasis
+from furax.mapmaking.templates.gram import factor, template_gram
+from furax.mapmaking.weight import (
+    MarginalizedWeightOperator,
+    NestedWeightOperator,
+    WeightOperator,
+)
+from furax.obs import TODFormat
 
 # A banded SPD inverse-noise; the covariance N is its dense inverse.
 NINV_BAND = np.array([2.5, -1.0, -0.3])
@@ -172,3 +180,15 @@ def test_weight_operator_with_mask() -> None:
     assert isinstance(rebuilt, WeightOperator)
     assert rebuilt.weight is weight.weight
     assert_allclose(np.asarray(rebuilt.mask.to_boolean_mask()), new_good)
+
+
+def test_marginalized_weight_is_blind_to_its_templates():
+    tod_format = TODFormat((2, 16), jnp.float64)
+    keys = jax.random.split(jax.random.key(0), 2)
+    basis = TensorBasis(jax.random.normal(keys[0], (3, 16)))
+    templates = TemplateOperator({'drift': Template(basis, tod_format)})
+    W = tod_format.diagonal(jax.random.uniform(keys[1], (1, 2, 16), minval=0.5, maxval=2.0))
+    inverse, _ = factor(template_gram(templates, W))
+    W_marginal = np.asarray(MarginalizedWeightOperator.create(W, templates, inverse).as_matrix())
+    assert_allclose(W_marginal, W_marginal.T, atol=1e-12)
+    assert_allclose(W_marginal @ np.asarray(templates.as_matrix()), 0, atol=1e-10)

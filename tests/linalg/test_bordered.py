@@ -1,6 +1,5 @@
-"""Tests for the bordered block-banded matrices, their probing and the arrowhead solve."""
+"""Tests for the bordered block-banded matrices and their probing."""
 
-import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -8,8 +7,6 @@ import pytest
 from numpy.testing import assert_allclose
 
 from furax.linalg import (
-    ArrowheadCholeskyOperator,
-    BandedCholeskyOperator,
     BorderedBandedMatrix,
     probe_bordered_banded,
 )
@@ -156,26 +153,6 @@ def test_probing_rejects_too_few_colors():
             dtype=jnp.float64,
             n_colors=4,
         )
-
-
-def test_arrowhead_solve_matches_the_dense_solve():
-    n_blocks, size, n_global = 3, 4, 2
-    key = jr.split(jr.key(7), 3)
-    a = jr.normal(key[0], (n_blocks, size, size))
-    blocks = a @ jnp.swapaxes(a, -1, -2) + size * jnp.eye(size)
-    cross = 0.1 * jr.normal(key[1], (n_global, n_blocks, size))
-    corner = jnp.eye(n_global) * 10
-    inverse = BandedCholeskyOperator.from_dense(blocks)
-    op = ArrowheadCholeskyOperator.from_blocks(inverse, cross, corner)
-
-    dense = jax.scipy.linalg.block_diag(*blocks, corner)
-    coupling = jnp.moveaxis(cross, 0, -1).reshape(n_blocks * size, n_global)
-    dense = dense.at[: n_blocks * size, n_blocks * size :].set(coupling)
-    dense = dense.at[n_blocks * size :, : n_blocks * size].set(coupling.T)
-    r_l, r_g = jr.normal(key[2], (n_blocks, size)), jnp.ones(n_global)
-    x_l, x_g = op((r_l, r_g))
-    expected = jnp.linalg.solve(dense, jnp.concatenate([r_l.ravel(), r_g]))
-    assert_allclose(jnp.concatenate([x_l.ravel(), x_g]), expected, rtol=1e-8)
 
 
 def test_matrix_with_more_bands_than_blocks_ignores_the_extra_ones():

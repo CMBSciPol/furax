@@ -9,9 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MarginalizedWeightOperator`, the weight with the amplitudes of some templates marginalized (#389)
 - `probe_bordered_banded` takes `n_colors`, to spread its probes further apart, and `all_extras`, to return the other outputs of every probe (#388)
 - `DensePseudoInverseOperator`, the pseudo-inverse of symmetric positive semi-definite dense matrices, or with `clamp` a positive definite approximate inverse (#388)
 - `furax.tree.ravel` and `unravel`: the leaves of a pytree flattened past their leading batch axes into one vector per batch element, and back (#388)
+- `Basis.block_lengths`: the shortest and longest blocks of a time-local basis, from which the band of its Gram follows, checked against its arrays when built (#389)
+
+### Changed
+
+- **Breaking:** `BlockGram.combine` is removed (#389)
+- **Breaking:** `ArrowheadCholeskyOperator`, `template_gram(coupled=...)` and `BlockGram.cross` are removed: `factor` always inverts the Gram block by block (#389)
 
 ## [0.16.0] - 2026-10-25
 

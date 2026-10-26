@@ -101,6 +101,63 @@ def test_probing_collects_the_other_outputs_of_the_border_probes():
     assert_allclose(extra, jnp.broadcast_to(jnp.eye(m)[:, None], (m, *BATCH, m)))
 
 
+@pytest.mark.parametrize('n_colors', [None, 4])
+def test_probing_with_more_colors_recovers_the_matrix_and_returns_every_output(n_colors):
+    n, k, w, m = SHAPES['bordered']
+    matrix, _ = _random(jr.key(7), n, k, w, m)
+    probed, extra = probe_bordered_banded(
+        lambda x: (matrix(x), x),
+        batch_shape=BATCH,
+        n_blocks=n,
+        k=k,
+        n_border=m,
+        half_width=w,
+        dtype=jnp.float64,
+        n_colors=n_colors,
+        all_extras=True,
+    )
+    x = _pair(jr.key(8), n, k, m)
+    assert_allclose(_flat(*probed(x)), _flat(*matrix(x)), rtol=1e-10)
+    # every probe: the core ones, color by color then function by function, then the border ones
+    colors = 2 * w + 1 if n_colors is None else n_colors
+    core, border = extra
+    assert core.shape == (colors * k + m, *BATCH, n, k)
+    blocks = np.arange(n) % colors
+    assert_allclose(core[1, 0], (blocks[:, None] == 0) & (np.arange(k) == 1))
+    assert_allclose(border[colors * k :], jnp.broadcast_to(jnp.eye(m)[:, None], (m, *BATCH, m)))
+
+
+def test_probing_with_a_color_per_block_recovers_a_band_wider_than_the_colors():
+    n, k, w, m = 3, 2, 2, 1
+    matrix, _ = _random(jr.key(9), n, k, w, m)
+    probed, _ = probe_bordered_banded(
+        lambda x: (matrix(x), None),
+        batch_shape=BATCH,
+        n_blocks=n,
+        k=k,
+        n_border=m,
+        half_width=w,
+        dtype=jnp.float64,
+        n_colors=n,
+    )
+    x = _pair(jr.key(10), n, k, m)
+    assert_allclose(_flat(*probed(x)), _flat(*matrix(x)), rtol=1e-10)
+
+
+def test_probing_rejects_too_few_colors():
+    with pytest.raises(ValueError, match='cannot resolve'):
+        probe_bordered_banded(
+            lambda x: (x, None),
+            batch_shape=BATCH,
+            n_blocks=5,
+            k=1,
+            n_border=0,
+            half_width=2,
+            dtype=jnp.float64,
+            n_colors=4,
+        )
+
+
 def test_arrowhead_solve_matches_the_dense_solve():
     n_blocks, size, n_global = 3, 4, 2
     key = jr.split(jr.key(7), 3)

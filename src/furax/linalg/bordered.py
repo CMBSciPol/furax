@@ -134,6 +134,8 @@ def probe_bordered_banded(
     half_width: int,
     dtype: DTypeLike,
     batch_size: int = 1,
+    n_colors: int | None = None,
+    all_extras: bool = False,
 ) -> tuple[BorderedBandedMatrix, PyTree[Array]]:
     """Recover a bordered banded matrix from the responses of its operator to a few probes.
 
@@ -143,8 +145,10 @@ def probe_bordered_banded(
     The core is probed one of its `k` functions at a time, on every block of one color: the blocks
     `n_colors` apart. A core block couples to those at most `half_width` away, so with
     `n_colors = 2·half_width + 1` the response on a block within reach of a colored one holds that
-    block's coupling alone. There are `n_colors · k + n_border` probes. The other outputs are
-    collected for every probe, and only then restricted to the border ones.
+    block's coupling alone. More colors spread the probed blocks further apart, for other outputs
+    that reach further than the band. There are `n_colors · k + n_border` probes. The other outputs
+    are collected for every probe, and only then restricted to the border ones, unless
+    `all_extras`.
 
     Args:
         apply: The operator, and the other outputs to collect.
@@ -155,12 +159,22 @@ def probe_bordered_banded(
         half_width: The number of blocks a core block couples to on either side.
         dtype: The dtype of the probes.
         batch_size: The number of probes applied at once, bounding the memory.
+        n_colors: The number of colors of the core probes, at least `2·half_width + 1` or
+            `n_blocks`, whichever is fewer; by default, that many.
+        all_extras: Whether to return the other outputs of every probe, rather than of the border
+            ones only.
 
     Returns:
-        The matrix, and the other outputs for the probes of the border unknowns, stacked on a
-        leading axis.
+        The matrix, and the other outputs for the probes of the border unknowns, or of all the
+        probes, core ones first, color by color, then function by function of a block, stacked on
+        a leading axis.
+
+    Raises:
+        ValueError: If `n_colors` is less than both `2·half_width + 1` and `n_blocks`.
     """
-    n_colors = min(n_blocks, 2 * half_width + 1)
+    if n_colors is not None and n_colors < min(n_blocks, 2 * half_width + 1):
+        raise ValueError(f'{n_colors} colors cannot resolve a band of half width {half_width}')
+    n_colors = min(n_blocks, 2 * half_width + 1 if n_colors is None else n_colors)
     n_core = n_colors * k
 
     def one(p: Int[Array, '']) -> tuple[Array | None, Array | None, Any]:
@@ -190,7 +204,8 @@ def probe_bordered_banded(
             assert y_a is not None
             columns = y_a[n_core:].reshape(n_border, *batch_shape, n_blocks * k)
             border = jnp.moveaxis(columns, 0, -1)
-    extra = tree.stacked_get(extra, slice(n_core, None))
+    if not all_extras:
+        extra = tree.stacked_get(extra, slice(n_core, None))
     return BorderedBandedMatrix(bands, border, corner), extra
 
 

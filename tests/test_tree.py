@@ -428,6 +428,38 @@ def test_unstack_without_common_leading_axis(X) -> None:
         fx.tree.unstack(X)
 
 
+@pytest.mark.parametrize('batch_ndim', [0, 1, 2])
+def test_ravel_unravel_roundtrip(batch_ndim) -> None:
+    batch = (2, 3)[:batch_ndim]
+    keys = jax.random.split(jax.random.key(0), 3)
+    x = {
+        'a': jax.random.normal(keys[0], (*batch, 4, 2)),
+        'b': (jax.random.normal(keys[1], batch), None),
+        'c': [jax.random.normal(keys[2], (*batch, 3))],
+    }
+    flat = fx.tree.ravel(x, batch_ndim)
+    assert flat.shape == (*batch, 12)
+    assert tree_equal(fx.tree.unravel(x, flat, batch_ndim), x)
+    assert tree_equal(fx.tree.unravel(fx.tree.as_structure(x), flat, batch_ndim), x)
+
+
+def test_ravel_concatenates_the_leaves_in_order() -> None:
+    x = {'a': jnp.arange(6.0).reshape(2, 3), 'b': jnp.array([10.0, 20.0])}
+    assert_array_equal(fx.tree.ravel(x), ravel_pytree(x)[0])
+    assert_array_equal(fx.tree.ravel(x, 1), [[0.0, 1.0, 2.0, 10.0], [3.0, 4.0, 5.0, 20.0]])
+
+
+def test_unravel_takes_the_batch_axes_of_the_vectors() -> None:
+    # the structure of one batch element, the vectors with batch axes of their own
+    structure = {
+        'a': jax.ShapeDtypeStruct((2,), jnp.float32),
+        'b': jax.ShapeDtypeStruct((), jnp.float32),
+    }
+    x = fx.tree.unravel(structure, jnp.arange(12.0).reshape(4, 3))
+    assert_array_equal(x['a'], [[0.0, 1.0], [3.0, 4.0], [6.0, 7.0], [9.0, 10.0]])
+    assert_array_equal(x['b'], [2.0, 5.0, 8.0, 11.0])
+
+
 @pytest.mark.parametrize('as_structure', [False, True])
 def test_stacked_zeros_like(as_structure: bool) -> None:
     x = {'a': jnp.ones(2, jnp.float32), 'b': jnp.ones((2, 3), jnp.complex64)}

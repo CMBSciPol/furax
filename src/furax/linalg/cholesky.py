@@ -1,16 +1,14 @@
 """Block-banded Cholesky factorization for symmetric positive-(semi)definite matrices."""
 
 from functools import partial
-from math import prod
 from typing import Self
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import Array
 from jaxtyping import Float, PyTree
 
-from furax import AbstractLinearOperator, symmetric
+from furax import AbstractLinearOperator, symmetric, tree
 
 __all__ = [
     'BandedCholeskyOperator',
@@ -87,20 +85,15 @@ class BandedCholeskyOperator(AbstractLinearOperator):
     def mv(self, x: PyTree[Array]) -> PyTree[Array]:
         batch_ndim = self.lb.ndim - 4
         n_blocks, k = self.lb.shape[-4], self.lb.shape[-1]
-        leaves, treedef = jax.tree.flatten(x)
-        # Flatten every leaf's non-batch axes and concatenate them into one length-K vector per
-        # batch element, matching how `lb` was built from `bands`/`matrix` (K = n_blocks * k).
-        flats = [leaf.reshape(*leaf.shape[:batch_ndim], -1) for leaf in leaves]
-        xf = jnp.concatenate(flats, axis=-1)  # (*batch, K)
-        xb = xf.reshape(*xf.shape[:-1], n_blocks, k)  # split K back into the (n_blocks, k) layout
-        yb = banded_cholesky_solve(self.lb, xb)
-        yf = yb.reshape(*yb.shape[:-2], -1)  # (*batch, K)
-        # Undo the flatten/concatenate: split the solution back into per-leaf chunks (in the same
-        # order they were concatenated) and reshape each to its original leaf shape.
-        sizes = [prod(leaf.shape[batch_ndim:]) for leaf in leaves]
-        chunks = jnp.split(yf, np.cumsum(sizes)[:-1], axis=-1)
-        out = [c.reshape(leaf.shape) for c, leaf in zip(chunks, leaves, strict=True)]
-        return treedef.unflatten(out)
+
+        # The flattened leaves are one length-K vector per batch element, matching how `lb` was
+        # built from `bands`/`matrix` (K = n_blocks * k).
+        def solve(xf):
+            xb = xf.reshape(*xf.shape[:-1], n_blocks, k)  # split K into the (n_blocks, k) layout
+            yb = banded_cholesky_solve(self.lb, xb)
+            return yb.reshape(*yb.shape[:-2], -1)  # (*batch, K)
+
+        return tree.unravel(x, solve(tree.ravel(x, batch_ndim)), batch_ndim)
 
 
 @symmetric

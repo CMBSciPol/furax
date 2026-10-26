@@ -1,3 +1,4 @@
+import itertools
 import operator
 from collections.abc import Callable, Sequence
 from functools import partial
@@ -35,6 +36,8 @@ __all__ = [
     'matmat',
     'stack',
     'unstack',
+    'ravel',
+    'unravel',
     'stacked_zeros_like',
     'stacked_get',
     'stacked_set',
@@ -408,6 +411,54 @@ def _stack_size(X: PyTree[Num[Array, 'k ...']]) -> int:
     if len(sizes) != 1 or not all(shapes):
         raise StructureError(f'The leaves do not share a leading stack axis: {shapes}')
     return sizes.pop()
+
+
+def ravel(x: PyTree[Num[Array, '...']], batch_ndim: int = 0) -> Num[Array, '...']:
+    """Flattens the leaves of a pytree past their leading batch axes, and concatenates them.
+
+    Every batch element gets one vector: the remaining axes of the leaves flattened, the leaves
+    concatenated in order. [`unravel`][furax.tree.unravel] is the inverse.
+
+    Args:
+        x: The pytree, whose leaves share their first `batch_ndim` axes.
+        batch_ndim: The number of leading axes kept.
+
+    Returns:
+        An array of shape `(*batch, n)`, with `n` the number of entries of a batch element.
+
+    Examples:
+        >>> ravel({'a': jnp.ones((2, 3)), 'b': jnp.zeros(2)}, batch_ndim=1)
+        Array([[1., 1., 1., 0.],
+               [1., 1., 1., 0.]], dtype=float32)
+    """
+    flats = [leaf.reshape(*leaf.shape[:batch_ndim], -1) for leaf in jax.tree.leaves(x)]
+    return jnp.concatenate(flats, axis=-1)
+
+
+def unravel(
+    structure: ArrayPyTree, flat: Num[Array, '...'], batch_ndim: int = 0
+) -> PyTree[Num[Array, '...']]:
+    """The inverse of [`ravel`][furax.tree.ravel]: splits each vector back into leaves.
+
+    Args:
+        structure: The pytree whose leaves, arrays or `ShapeDtypeStruct`, give the shapes, their
+            first `batch_ndim` axes being the batch axes.
+        flat: The vectors, of shape `(*batch, n)`; the batch axes need not be those of `structure`.
+        batch_ndim: The number of leading batch axes of the leaves of `structure`.
+
+    Returns:
+        The pytree of `structure`, in the dtype of `flat`, its leaves of shape `(*batch, ...)`.
+
+    Examples:
+        >>> unravel({'a': jnp.ones(3), 'b': jnp.ones(())}, jnp.arange(4.0))
+        {'a': Array([0., 1., 2.], dtype=float32), 'b': Array(3., dtype=float32)}
+    """
+    leaves, treedef = jax.tree.flatten(structure)
+    shapes = [leaf.shape[batch_ndim:] for leaf in leaves]
+    ends = list(itertools.accumulate(prod(shape) for shape in shapes))
+    chunks = jnp.split(flat, ends[:-1], axis=-1)
+    out = [c.reshape(*flat.shape[:-1], *shape) for c, shape in zip(chunks, shapes, strict=True)]
+    return treedef.unflatten(out)
 
 
 def stacked_zeros_like[P: ArrayPyTree](x: P, k: int) -> P:

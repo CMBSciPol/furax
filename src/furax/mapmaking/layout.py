@@ -24,10 +24,9 @@ has its own [`ObservationReader`][furax.mapmaking.ObservationReader] over its ob
 The detector axis of a bucket's envelope may further be split into `n_batches` **detector
 batches** of `batch_size` detectors each, the same for every slot, and processed one after the
 other. The mapmaker then builds the model of a bucket (its operators, noise model, weights and
-templates) one batch of one slot at a time, and stacks the results along a leading axis of
-`n_slots × n_batches` **entries**. They are ordered slot by slot, batch `j` of slot `s` at entry
-`s · n_batches + j`, so the entries of a slot stay on the device that holds it. What the batches
-of a slot share, such as the boresight pointing, is stacked once per slot instead.
+templates) one batch of one slot at a time, and stacks the results along two leading axes, of
+slots then of batches, so the batches of a slot stay on the device that holds it. What the
+batches of a slot share, such as the boresight pointing, is stacked once per slot instead.
 
 The **detector index** runs along the detector axis of a slot's buffer, padded to the envelope;
 the indices past the detectors read are padding.
@@ -37,12 +36,11 @@ The indices convert as follows, within a bucket:
 | Index | Converts to | With |
 | --- | --- | --- |
 | slot `s`, not empty | observation | `Bucket.observations[s]` |
-| entry `e` | slot, batch | `divmod(e, n_batches)` |
 | detector `d` of batch `j` | detector of the slot | `j · batch_size + d` |
 | process | its block of slots | [`SlotLayout.local_slots`][] |
 
-A product computed per entry or per slot, such as the noise parameters or the template
-amplitudes, is returned per observation. Per entry, its batches are first merged into slots
+A product computed per batch or per slot, such as the noise parameters or the template
+amplitudes, is returned per observation. Per batch, the batches of each slot are first merged
 ([`Bucket.merge_detector_batches`][]); then the empty slots are dropped and the others reordered
 by observation index ([`SlotLayout.to_observation_order`][]). The result has the axes
 `(observation, [stream], [detector], ...)`:
@@ -70,8 +68,8 @@ by observation index ([`SlotLayout.to_observation_order`][]). The result has the
          4        (110, 5000)    (110, 5000)       B        3
          5        (100,  900)    (110,  900)       A        1
 
-    bucket A: 2 observations, envelope (110, 1200), 4 slots (2 empty), 2 batches → 8 entries
-    bucket B: 4 observations, envelope (110, 5000), 4 slots (0 empty), 2 batches → 8 entries
+    bucket A: 2 observations, envelope (110, 1200), 4 slots (2 empty), 2 batches each
+    bucket B: 4 observations, envelope (110, 5000), 4 slots (0 empty), 2 batches each
     ```
 
     **Slots.** Each bucket is sharded over the devices ([`SlotPlacement`][]), ordered by process
@@ -83,22 +81,19 @@ by observation index ([`SlotLayout.to_observation_order`][]). The result has the
                         dev 0          dev 1           dev 2          dev 3
     bucket A   slot     0              1               2              3
                obs      2              5               (empty)        (empty)
-               entries  0, 1           2, 3            4, 5           6, 7
 
     bucket B   slot     0              1               2              3
                obs      0              1               3              4
-               entries  0, 1           2, 3            4, 5           6, 7
     ```
 
-    **Entries.** The buffer of a slot has the bucket's envelope. Its detector axis is split into
-    batches, batch `j` of slot `s` at entry `s · n_batches + j`. Slot 2 of bucket B, holding
-    observation 3:
+    **Batches.** The buffer of a slot has the bucket's envelope. Its detector axis is split into
+    batches. Slot 2 of bucket B, holding observation 3:
 
     ```text
                      sample 0 ··························· 4799   4800 ··· 4999
-    detector   0  ┐  █████████████████████████████████████████   ░░░░░░░░░░░   batch 0 → entry 4
+    detector   0  ┐  █████████████████████████████████████████   ░░░░░░░░░░░   batch 0
               54  ┘  █████████████████████████████████████████   ░░░░░░░░░░░
-              55  ┐  █████████████████████████████████████████   ░░░░░░░░░░░   batch 1 → entry 5
+              55  ┐  █████████████████████████████████████████   ░░░░░░░░░░░   batch 1
               99  │  █████████████████████████████████████████   ░░░░░░░░░░░
              100  │  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   ░░░░░░░░░░░
              109  ┘  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   ░░░░░░░░░░░
@@ -107,12 +102,12 @@ by observation index ([`SlotLayout.to_observation_order`][]). The result has the
     ```
 
     **Back to observations.** [`SlotLayout.to_observation_order`][] brings a product computed
-    per entry back per observation, given its detector axis: the batches of each slot are merged
+    per batch back per observation, given its detector axis: the batches of each slot are merged
     ([`Bucket.merge_detector_batches`][]), then the empty slots are dropped and the slots
     reordered:
 
     ```text
-    per entry    bucket A (8, 55, ...)   bucket B (8, 55, ...)
+    per batch    bucket A (4, 2, 55, ...)  bucket B (4, 2, 55, ...)
                           │ merge batches         │
     per slot     bucket A (4, 110, ...)  bucket B (4, 110, ...)
                           │ drop empty, reorder   │
@@ -148,7 +143,6 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Bool, Int, PyTree, Shaped
 
 from ._observation import ObservationBufferShape
-from .streaming import StreamLayout
 
 __all__ = [
     'Bucket',
@@ -260,33 +254,17 @@ class Bucket:
         """Detectors per batch."""
         return self.envelope.detector_count // self.n_batches
 
-    @property
-    def n_entries(self) -> int:
-        """Number of entries, one per detector batch of each slot."""
-        return self.n_slots * self.n_batches
-
-    @property
-    def stream_layout(self) -> StreamLayout:
-        """The entries as a stream lays them out, the batches of a slot sharing its common data."""
-        return StreamLayout(self.n_entries, self.n_batches)
-
     def merge_detector_batches(
-        self, per_entry: Shaped[np.ndarray, 'entry batch_size *rest']
+        self, per_batch: Shaped[np.ndarray, 'slot batch batch_size *rest']
     ) -> Shaped[np.ndarray, 'slot det *rest']:
-        """Per-slot values from per-entry ones: `(n_entries, batch_size, ...)` to `(n_slots, ...)`.
+        """Per-slot values from per-batch ones, the detector batches of each slot merged.
 
-        The detector axis follows the entry axis; batch `j` of a slot holds its detectors from
-        `j · batch_size` on.
+        `(n_slots, n_batches, batch_size, ...)` becomes `(n_slots, n_batches · batch_size, ...)`:
+        batch `j` of a slot holds its detectors from `j · batch_size` on.
         """
-        return per_entry.reshape(
-            self.n_slots, self.n_batches * per_entry.shape[1], *per_entry.shape[2:]
+        return per_batch.reshape(
+            self.n_slots, self.n_batches * per_batch.shape[2], *per_batch.shape[3:]
         )
-
-    def sum_detector_batches(
-        self, per_entry: Shaped[Array, ' entry *rest']
-    ) -> Shaped[Array, ' slot *rest']:
-        """Per-slot values from per-entry ones, summed over the detector batches of each slot."""
-        return per_entry.reshape(self.n_slots, self.n_batches, *per_entry.shape[1:]).sum(axis=1)
 
     @cached_property
     def is_empty(self) -> Bool[np.ndarray, ' slot']:
@@ -527,10 +505,10 @@ class SlotLayout:
 
     def to_observation_order(
         self,
-        per_bucket: Sequence[Shaped[np.ndarray, 'entry_or_slot ...']],
+        per_bucket: Sequence[Shaped[np.ndarray, 'slot ...']],
         detector_axis: int | None = None,
     ) -> Shaped[np.ndarray, 'obs ...']:
-        """Bring per-entry or per-slot arrays, one per bucket, back into a per-observation array.
+        """Bring per-batch or per-slot arrays, one per bucket, back into a per-observation array.
 
         This undoes the bucketing for results the caller wants per observation, in their original
         order, such as the noise parameters or the template amplitudes. Given `detector_axis`, the
@@ -538,10 +516,10 @@ class SlotLayout:
         and the others reordered by observation index.
 
         Args:
-            per_bucket: One array per bucket, of shape `(n_entries, ...)` with a detector axis,
-                `(n_slots, ...)` without.
-            detector_axis: The detector axis of the arrays, which holds one batch of detectors per
-                entry; `None` for values per slot.
+            per_bucket: One array per bucket, of shape `(n_slots, n_batches, ...)` with a detector
+                axis, `(n_slots, ...)` without.
+            detector_axis: The detector axis of the arrays, after the slot and batch axes, which
+                holds one batch of detectors; `None` for values per slot.
 
         Returns:
             An array of shape `(n_observations, ...)` in observation order. Trailing axes may
@@ -551,11 +529,11 @@ class SlotLayout:
         if len(per_bucket) != len(self.buckets):
             raise ValueError(f'expected {len(self.buckets)} arrays, got {len(per_bucket)}')
         if detector_axis is not None:
+            # the batch axis merges into the detector axis, which moves up by one
+            merged = detector_axis - 1 if detector_axis >= 0 else detector_axis
             per_bucket = [
                 np.moveaxis(
-                    bucket.merge_detector_batches(np.moveaxis(a, detector_axis, 1)),
-                    1,
-                    detector_axis,
+                    bucket.merge_detector_batches(np.moveaxis(a, detector_axis, 2)), 1, merged
                 )
                 for bucket, a in zip(self.buckets, per_bucket, strict=True)
             ]
@@ -605,7 +583,7 @@ class SlotPlacement:
 
     @cached_property
     def sharding(self) -> NamedSharding:
-        """The sharding of an array that leads with the slots, or the entries, of a bucket."""
+        """The sharding of an array that leads with the slots of a bucket."""
         return NamedSharding(self.mesh, P(self.axis))
 
     @cached_property

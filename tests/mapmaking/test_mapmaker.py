@@ -110,17 +110,17 @@ def test_model_matches_the_reader_and_the_landscape(stokes, demodulated):
     reader = ObservationReader.from_observations(
         observations, stokes=stokes if demodulated else None
     )
-    model = accumulate(maker).buckets[0].model
+    model = accumulate(maker).buckets[0].batches.model
     n_obs = jax.tree.leaves(model)[0].shape[0]
     assert n_obs == len(observations) == reader.count
     # structures compared ignoring sharding (the model is built sharded inside shard_map)
     assert structure_equal(model.map_structure, maker.landscape.structure)
     assert structure_equal(model.tod_format.structure, reader.out_structure['sample_data'])
     # a single white noise model covers both paths; on a demodulated TOD, its per-detector sigma
-    # carries the stream axis (after the observation axis of the accumulation scan)
+    # carries the stream axis (after the slot and detector batch axes of the accumulation)
     assert isinstance(model.noise_model, WhiteNoiseModel)
     if demodulated:
-        assert model.noise_model.sigma.shape[1] == len(stokes)
+        assert model.noise_model.sigma.shape[2] == len(stokes)
 
 
 @pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])

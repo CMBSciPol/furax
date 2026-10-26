@@ -292,9 +292,9 @@ to the diagonal of its block, and turns deprojection into Wiener filtering,
 - **The TOD.** Each observation's model exposes the format of its TOD, from which its templates
   are built.
 - **Detector batches.** The amplitudes of templates with a set per detector live in their
-  detector's batch. Every other amplitude, grouped ones included, is summed over the batches of
-  its observation. Whether a template has a set per detector is read from its `per` and detector
-  groups.
+  detector's batch. Every other amplitude, grouped ones included, is the observation's: its Gram
+  and right-hand side are summed over the batches, and the Gram factored once per observation.
+  Whether a template has a set per detector is read from its `per` and detector groups.
 - **The weight.** A diagonal weight gives the Gram from the structure of the bases. A banded
   Toeplitz weight gives it by probing, with `bandwidth = correlation_length - 1`; the same
   bandwidth applies to the templates of each detector and to the shared ones, whose Gram is summed
@@ -312,7 +312,8 @@ to the diagonal of its block, and turns deprojection into Wiener filtering,
   and U is a coupling with `per=()`; a common mode per wafer is a coupling with detector groups.
 - **A new weight structure**: its reach, `bandwidth` and `streams_coupled`. It works through
   probing, and may later get a structural fast path.
-- **Marginalizing a template**: an implicit template, if it is local.
+- **Marginalizing a template**: an implicit template, if it has a set per detector. One the
+  detectors share would couple the batches of an observation, and take a second pass over them.
 
 ## Verification
 
@@ -334,10 +335,10 @@ batches change neither the map nor the amplitudes.
 ## Open questions
 
 - **The explicit preconditioner under `W'`.** With implicit templates, the system operator uses the
-  marginalized weight `W'`, but the preconditioner of the explicit amplitudes is the Gram under
-  `W`. Eliminating the implicit templates from it would give the Gram under `W'`: worth building
-  only if CG iteration counts, such as for T2P solved explicitly next to a deprojected polynomial,
-  show the preconditioner limits convergence.
+  marginalized weight `W'`. The preconditioner of the shared explicit amplitudes is their Gram under
+  `W'`, which a shared template overlapping the implicit ones needs to converge, but that of the
+  per-detector explicit amplitudes is still the Gram under `W`. Taking it under `W'` is worth it
+  only if CG iteration counts show the preconditioner limits convergence.
 - **Per-wafer blocks.** Templates grouped by wafer are global: the wafers end up in one block,
   coupled, although they never interact. One block per wafer needs the grouping to be static,
   such as detectors sorted by wafer with static boundaries, padded per wafer across observations.

@@ -1,7 +1,6 @@
 from itertools import combinations
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.sharding import Mesh
@@ -79,8 +78,6 @@ def test_bucket_detector_batches(n_dets, batch_size, n_batches, per_batch):
     shapes = [Shape(n_dets, 10).whole_detector_batches(batch_size)] * 3
     bucket = Bucket.create(shapes, [0, 1, 2], n_devices=2, detector_batch_size=batch_size)
     assert (bucket.n_batches, bucket.batch_size) == (n_batches, per_batch)
-    assert bucket.n_entries == bucket.n_slots * n_batches == 4 * n_batches
-    assert bucket.stream_layout == (bucket.n_entries, n_batches)
 
 
 def test_bucket_rejects_an_envelope_of_partial_batches():
@@ -89,11 +86,11 @@ def test_bucket_rejects_an_envelope_of_partial_batches():
 
 
 def test_merge_detector_batches_restores_the_slots():
-    # entry s·n_batches + j holds detectors j·batch_size on of slot s
+    # batch j of slot s holds detectors j·batch_size on of slot s
     bucket = Bucket.create([Shape(6, 10)] * 2, [0, 1], detector_batch_size=2)
     per_slot = np.arange(2 * 6 * 4).reshape(2, 6, 4)
-    per_entry = per_slot.reshape(2 * 3, 2, 4)
-    np.testing.assert_array_equal(bucket.merge_detector_batches(per_entry), per_slot)
+    per_batch = per_slot.reshape(2, 3, 2, 4)
+    np.testing.assert_array_equal(bucket.merge_detector_batches(per_batch), per_slot)
 
 
 def test_bucket_and_layout_use_identity_equality():
@@ -226,13 +223,6 @@ def test_local_slots_tile_the_axis_by_process():
     np.testing.assert_array_equal(bucket.is_empty[blocks[1]], [False, False, True, True])
 
 
-def test_sum_detector_batches():
-    bucket = Bucket(observations=np.array([0, 1]), n_slots=2, envelope=Shape(4, 10), n_batches=2)
-    per_entry = jnp.arange(2 * 2 * 3.0).reshape(4, 3)  # 2 slots of 2 batches
-    expected = per_entry.reshape(2, 2, 3).sum(axis=1)
-    np.testing.assert_array_equal(bucket.sum_detector_batches(per_entry), expected)
-
-
 # ---------------------------------------------------------------------------
 # SlotPlacement: the slots on the devices of the job
 # ---------------------------------------------------------------------------
@@ -298,17 +288,22 @@ def test_to_observation_order_merges_detector_batches(detector_axis: int, batch_
     layout = SlotLayout(buckets, n_observations=3, n_devices=3)
     rng = np.random.default_rng(0)
     per_slot = []
-    per_entry = []
+    per_batch = []
+    # the detector axis of the per-batch arrays, after their slot and batch axes
+    batched_axis = detector_axis + 1 if detector_axis >= 0 else detector_axis
     for bucket in buckets:
         n_det = bucket.envelope.detector_count
         # (slot, stream, det, mode) with the detector axis moved to `detector_axis`
         values = np.moveaxis(rng.standard_normal((bucket.n_slots, 2, n_det, 3)), 2, detector_axis)
         per_slot.append(values)
         batches = np.moveaxis(values, detector_axis, 1).reshape(
-            bucket.n_entries, bucket.batch_size, *np.delete(values.shape, [0, detector_axis])
+            bucket.n_slots,
+            bucket.n_batches,
+            bucket.batch_size,
+            *np.delete(values.shape, [0, detector_axis]),
         )
-        per_entry.append(np.moveaxis(batches, 1, detector_axis))
-    out = layout.to_observation_order(per_entry, detector_axis=detector_axis)
+        per_batch.append(np.moveaxis(batches, 2, batched_axis))
+    out = layout.to_observation_order(per_batch, detector_axis=batched_axis)
     np.testing.assert_array_equal(out, layout.to_observation_order(per_slot))
 
 

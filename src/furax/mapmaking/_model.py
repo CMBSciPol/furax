@@ -1,6 +1,6 @@
 import functools
 from dataclasses import dataclass
-from typing import Any, Self
+from typing import Any, NamedTuple, Self
 
 import jax
 import jax.numpy as jnp
@@ -13,6 +13,7 @@ from furax.obs import TODFormat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
+from ._engine import OutKind
 from ._observation import ReaderField, _sample_rate
 from .acquisition import build_acquisition_operator
 from .config import (
@@ -27,7 +28,7 @@ from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_a
 from .templates import TemplateOperator, build_templates, required_reader_fields
 from .templates.gram import BlockGram, factor, template_gram
 from .templates.pomme import PommeProjectionOperator
-from .weight import NestedWeightOperator, WeightOperator
+from .weight import MarginalizedWeightOperator, NestedWeightOperator, WeightOperator
 
 
 @register_dataclass
@@ -175,6 +176,23 @@ class ObservationModel:
         white = self.noise_model.to_white_noise_model()
         inv = _noise_operator(white, self.tod_format, self.sample_rate, inverse=True)
         return WeightOperator.create(inv, self.M)
+
+    def deprojected_weight(
+        self, implicit: 'TemplateBundle | None' = None
+    ) -> AbstractLinearOperator:
+        r"""The weight of the normal system: $W F$, with $F$ the Pomme deprojector.
+
+        With implicit templates $T$, their amplitudes are marginalized:
+        $W' = W F - W F T G^{-1} T^\top W F$, with $G^{-1}$ the inverse of their Gram (see
+        [`MarginalizedWeightOperator`][furax.mapmaking.weight.MarginalizedWeightOperator]).
+
+        Args:
+            implicit: The implicit templates, if any.
+        """
+        weight = (self.W @ self.F).reduce()
+        if implicit is None:
+            return weight
+        return MarginalizedWeightOperator.create(weight, implicit.operator, implicit.gram_inverse)
 
 
 def acquisition_operator(
@@ -359,38 +377,27 @@ class TemplateBundle:
         return cls(operator, ginv, ridge)
 
 
-@register_dataclass
-@dataclass
-class SharedTemplates:
-    r"""Templates whose amplitudes the detectors share, over one batch of an observation's detectors.
+FACTORED_KINDS: dict[str, OutKind] = {'explicit': 'stack', 'common': 'sum'}
+"""The kinds of templates whose Grams are factored where their amplitudes live, and how the
+detector batches of an observation combine their Grams and right-hand sides: stacked for the
+`'explicit'` templates, whose amplitudes are each detector's own, each Gram factored in its batch,
+and summed for the `'common'` ones, whose amplitudes are the observation's, the Gram factored once
+summed. A kind names the [`ObservationTemplates`][] field holding its templates."""
 
-    Such amplitudes are common to the batches of an observation, so no batch can factor their Gram
-    alone: each holds its share $T^\top W T$ of it, the observation's Gram being their sum.
-    """
 
-    operator: TemplateOperator
-    gram: BlockGram
-    """The Gram of this batch, assembled but not factored."""
+class BatchTemplates(NamedTuple):
+    """The templates of one detector batch, as built, before their Grams are factored."""
 
-    @classmethod
-    def create(
-        cls,
-        operator: TemplateOperator,
-        weight: AbstractLinearOperator,
-        config: TemplatesConfig,
-        *,
-        bandwidth: int = 0,
-        pomme_tau: int | None = None,
-    ) -> Self:
-        """Pair a template operator with its Gram under a weight, as for [`TemplateBundle`][]."""
-        gram = template_gram(
-            operator,
-            weight,
-            bandwidth=bandwidth,
-            pomme_tau=pomme_tau,
-            batch_size=config.gram_batch_size,
-        )
-        return cls(operator, gram)
+    implicit: 'TemplateBundle | None'
+    """The implicit templates whose amplitudes are each detector's own, factored: the weight of the
+    batch needs them."""
+    operators: dict[str, TemplateOperator | None]
+    """The operator of each of `FACTORED_KINDS`, `None` for those absent."""
+    grams: dict[str, BlockGram | None]
+    """The Gram of each, assembled but not factored: the batch's share of it for the kinds whose
+    amplitudes the observation's detectors share."""
+    weighted_tod: PyTree[Array]
+    """The TOD under the batch's weight, its own implicit templates marginalized."""
 
 
 @register_dataclass
@@ -400,35 +407,66 @@ class ObservationTemplates:
 
     Active templates are partitioned by their ``explicit`` config flag when built, because the two
     kinds enter the map-making system in different places. The explicit ones further split by who
-    sees their amplitudes: each detector alone, or detectors in common.
+    sees their amplitudes: each detector alone, or the detectors of the observation in common.
     """
 
     explicit: TemplateBundle | None
     """Explicit templates whose amplitudes are each detector's own, solved jointly with the map."""
 
     implicit: TemplateBundle | None
-    """Templates whose amplitudes are marginalised over."""
+    """Templates whose amplitudes are each detector's own, marginalised over."""
 
-    shared: SharedTemplates | None = None
-    """Explicit templates whose amplitudes are shared by detectors, solved jointly with the map."""
+    common: TemplateBundle | None = None
+    """Explicit templates whose amplitudes the detectors have in common, solved jointly with the
+    map."""
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
-        """Reader fields needed to build the active templates via [`create`][]."""
+        """Reader fields needed to build the active templates via [`assemble`][]."""
         if config.templates is None:
             return set()
         return required_reader_fields(config.templates)
 
     @classmethod
-    def create(
+    def from_inverses(
         cls,
+        implicit: 'TemplateBundle | None',
+        operators: dict[str, TemplateOperator | None],
+        inverses: dict[str, tuple[AbstractLinearOperator, AbstractLinearOperator | None] | None],
+    ) -> Self:
+        """An observation's templates, from those of [`BatchTemplates`][] and their Gram inverses.
+
+        Args:
+            implicit: The implicit templates whose amplitudes are each detector's own.
+            operators: The operator of each of `FACTORED_KINDS`, `None` for those absent.
+            inverses: The inverse of the Gram of each, and the ridge added, as
+                [`factor`][furax.mapmaking.templates.gram.factor] gives them.
+        """
+        bundles = {}
+        for kind, operator in operators.items():
+            bundles[kind] = None
+            if operator is not None:
+                inverse = inverses[kind]
+                assert inverse is not None  # every template present has its Gram factored
+                bundles[kind] = TemplateBundle(operator, *inverse)
+        return cls(implicit=implicit, **bundles)
+
+    @staticmethod
+    def assemble(
         data: Any,
         config: MapMakingConfig,
         model: ObservationModel,
         tod: PyTree[Array],
         temperature: Float[Array, 'det samp'] | None = None,
-    ) -> tuple[Self, PyTree[Array]]:
-        """Build one observation's templates and weight its TOD, implicit templates folded in.
+    ) -> BatchTemplates:
+        """Build one batch's templates, and weight its TOD.
+
+        The implicit templates are factored here and marginalized from the weight, which needs
+        their Gram inverse. The Grams of the explicit ones are only assembled: for the templates
+        the observation's detectors share, the batch's share of a Gram summed over its batches.
+        [`from_inverses`][] makes the observation's templates once they are factored. The
+        templates the detectors share are taken under the marginalized weight, those of each
+        detector under `W`.
 
         Args:
             data: The fields read for the observation.
@@ -440,20 +478,20 @@ class ObservationTemplates:
         """
         if (tcfg := config.templates) is None:
             raise ValueError('templates config required to build template operators')
+
         explicit_templates, implicit_templates = build_templates(
             tcfg, data, model.tod_format, temperature=temperature
         )
 
-        # `Weff` bundles the sample mask (via `model.W`) and the Pomme deprojector `model.F`; the
-        # Grams are taken under the same effective weight, from `model.W` and `tau`.
-        Weff = (model.W @ model.F).reduce()
-        wd = Weff(tod)
+        # The Grams are taken under the weight of the system (see `deprojected_weight`), from
+        # `model.W` and `tau`.
         pomme_tau = config.pomme_tau if config.method == Methods.POMME else None
         # the Toeplitz band of a correlated weight holds lags 0 to `correlation_length - 1`
         bandwidth = 0 if config.binned else config.weighting.correlation_length - 1
         gram_options = {'bandwidth': bandwidth, 'pomme_tau': pomme_tau}
 
         implicit = None
+        weight = model.W
         if implicit_templates:
             if not all(template.per_detector for template in implicit_templates.values()):
                 raise NotImplementedError(
@@ -462,20 +500,31 @@ class ObservationTemplates:
                 )
             op = TemplateOperator(implicit_templates)
             implicit = TemplateBundle.create(op, model.W, tcfg, **gram_options)
-            ginv = implicit.gram_inverse
-            wd = wd - Weff(op(ginv(op.T(wd))))  # W'd = W d − W Tᵢ G⁻¹ Tᵢᵀ W d
+            weight = MarginalizedWeightOperator.create(model.W, op, implicit.gram_inverse)
 
-        explicit = shared = None
-        own = {n: t for n, t in explicit_templates.items() if t.per_detector}
-        common = {n: t for n, t in explicit_templates.items() if not t.per_detector}
-        if own:
-            op = TemplateOperator(own)
-            explicit = TemplateBundle.create(op, model.W, tcfg, **gram_options)
-        if common:
-            op = TemplateOperator(common)
-            shared = SharedTemplates.create(op, model.W, tcfg, **gram_options)
+        def by_detectors(templates, per_detector):
+            chosen = {n: t for n, t in templates.items() if t.per_detector == per_detector}
+            return TemplateOperator(chosen) if chosen else None
 
-        return cls(explicit=explicit, implicit=implicit, shared=shared), wd
+        operators = {
+            'explicit': by_detectors(explicit_templates, True),
+            'common': by_detectors(explicit_templates, False),
+        }
+        weights = {'explicit': model.W, 'common': weight}
+        grams = {
+            kind: None
+            if op is None
+            else template_gram(
+                op,
+                weights[kind],
+                bandwidth=bandwidth,
+                pomme_tau=pomme_tau,
+                batch_size=tcfg.gram_batch_size,
+            )
+            for kind, op in operators.items()
+        }
+        wd = model.deprojected_weight(implicit)(tod)
+        return BatchTemplates(implicit, operators, grams, wd)
 
 
 def restrict_streams(

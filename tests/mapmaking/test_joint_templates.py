@@ -23,7 +23,6 @@ from furax.mapmaking.config import (
     Methods,
     NoiseFitConfig,
     NoiseSource,
-    PolynomialConfig,
     PolynomialOrders,
     ScanSynchronousConfig,
     SolverConfig,
@@ -129,24 +128,28 @@ def test_spline_drift_returns_its_amplitudes():
 
 
 @pytest.mark.parametrize(
-    ('name', 'legendre', 'templates'),
+    ('name', 'option', 'templates'),
     [
-        ('polynomial', PolynomialOrders(0, 3), {'polynomial': 'iqu'}),
+        ('spline_drift', 256, {'spline_drift': 'iqu'}),
         (
-            'polynomial',
-            {'i': PolynomialOrders(0, 3), 'q': PolynomialOrders(1, 3), 'u': PolynomialOrders(1, 3)},
-            {'polynomial_i': 'i', 'polynomial_qu': 'qu'},
+            'spline_drift',
+            {'i': 256, 'q': 128, 'u': 128},
+            {'spline_drift_i': 'i', 'spline_drift_qu': 'qu'},
         ),
         ('scan_synchronous', {'qu': PolynomialOrders(2, 5)}, {'scan_synchronous_qu': 'qu'}),
     ],
 )
-def test_demodulated_streams_fitted_alike_form_one_template(name, legendre, templates):
-    # the streams fitted with the same orders share one template, so an observation stores its
-    # basis once; the amplitudes stay one set per stream, on the streams given orders only
-    template = PolynomialConfig() if name == 'polynomial' else ScanSynchronousConfig()
+def test_demodulated_streams_fitted_alike_form_one_template(name, option, templates):
+    # the streams fitted alike share one template, so an observation stores its basis once; the
+    # amplitudes stay one set per stream, on the streams given an option only
+    template = SplineDriftConfig() if name == 'spline_drift' else ScanSynchronousConfig()
     cfg = _config(TemplatesConfig(**{name: template}))
     cfg.sotodlib = SotodlibConfig(demodulated=True)
-    template.legendre = legendre  # set after demodulation, which per-stream orders require
+    # set after demodulation, which per-stream options require
+    if name == 'spline_drift':
+        template.samples_per_knot = option
+    else:
+        template.legendre = option
     acc = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg))
     operator = acc.buckets[0].templates.implicit.operator
     assert {key: t.streams for key, t in operator.templates.items()} == templates
@@ -157,11 +160,13 @@ def test_demodulated_streams_fitted_alike_form_one_template(name, legendre, temp
     [
         (_hwp_obs, None, False),
         (_hwp_obs, TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)), False),
-        # Polynomial and scan-synchronous templates together are nearly degenerate on these short
+        # Drift and scan-synchronous templates together are nearly degenerate on these short
         # scans, too ill-conditioned for any two runs to agree closely, so they come separately.
         (
             _ground_obs,
-            TemplatesConfig(polynomial=PolynomialConfig(explicit=False), t2p=T2PConfig()),
+            TemplatesConfig(
+                spline_drift=SplineDriftConfig(samples_per_knot={'qu': 256}), t2p=T2PConfig()
+            ),
             True,
         ),
         (
@@ -172,7 +177,7 @@ def test_demodulated_streams_fitted_alike_form_one_template(name, legendre, temp
             True,
         ),
     ],
-    ids=['no-templates', 'explicit', 'demodulated-polynomial-and-t2p', 'demodulated-azss-and-t2p'],
+    ids=['no-templates', 'explicit', 'demodulated-drift-and-t2p', 'demodulated-azss-and-t2p'],
 )
 def test_detector_batches_give_the_same_result(observations, templates, demodulated):
     # Processing an observation's detectors in batches is a memory layout, not a change of model:
@@ -212,18 +217,18 @@ def test_detector_batches_give_the_same_result(observations, templates, demodula
 
 
 @pytest.mark.parametrize(
-    ('joint_qu', 'polynomial'),
+    ('joint_qu', 'drift'),
     [(True, False), (False, False), (True, True)],
-    ids=['joint', 'per-stream', 'with-polynomial'],
+    ids=['joint', 'per-stream', 'with-drift'],
 )
-def test_t2p_field_is_the_same_in_detector_batches(joint_qu, polynomial):
+def test_t2p_field_is_the_same_in_detector_batches(joint_qu, drift):
     # The amplitudes of a leakage field are shared by an observation's detectors, so its batches
     # solve for them together: batching changes the memory layout, not the model. With a
-    # polynomial, the unknowns hold both kinds of amplitudes.
+    # drift, the unknowns hold both kinds of amplitudes.
     # 6 amplitudes per stream (3 Zernike polynomials, each with its cos and sin) for 7 detectors
     templates = TemplatesConfig(
         t2p=T2PConfig(zernike_order=1, joint_qu=joint_qu),
-        polynomial=PolynomialConfig(legendre=PolynomialOrders(0, 1)) if polynomial else None,
+        spline_drift=SplineDriftConfig(samples_per_knot={'qu': 256}) if drift else None,
     )
     cfg = replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
     results = [
@@ -271,10 +276,12 @@ def test_several_observations_per_device_match_single_observations(monkeypatch, 
     assert_allclose(
         together.map_rhs.data, sum(acc.map_rhs.data for acc in alone), rtol=1e-12, atol=1e-12
     )
-    amplitude_rhs = together.buckets[0].amplitude_rhs['hwp_synchronous']
+    # (slot, batch, ...), with a single detector batch
+    amplitude_rhs = together.buckets[0].batches.amplitude_rhs['hwp_synchronous'][:, 0]
     per_observation = maker.layout.to_observation_order([np.asarray(amplitude_rhs)])
     for got, acc in zip(per_observation, alone, strict=True):
-        assert_allclose(got, np.asarray(acc.buckets[0].amplitude_rhs['hwp_synchronous'])[0])
+        alone_rhs = acc.buckets[0].batches.amplitude_rhs['hwp_synchronous']
+        assert_allclose(got, np.asarray(alone_rhs)[0, 0])
 
 
 # ---------------------------------------------------------------------------
@@ -344,15 +351,14 @@ def _toeplitz_config(
     ('observations', 'template'),
     [
         (_hwp_obs, lambda e: TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=e))),
-        # from order 1: the offsets of the intervals are degenerate with the intensity map
         (
             _ground_obs,
             lambda e: TemplatesConfig(
-                polynomial=PolynomialConfig(legendre=PolynomialOrders(1, 2), explicit=e)
+                scan_synchronous=ScanSynchronousConfig(PolynomialOrders(1, 3), explicit=e)
             ),
         ),
     ],
-    ids=['hwp_synchronous', 'polynomial'],
+    ids=['hwp_synchronous', 'scan_synchronous'],
 )
 def test_correlated_weight_explicit_and_implicit_give_the_same_map(observations, template):
     # Under a correlated weight, marginalizing the amplitudes needs the exact Gram, probed from the
@@ -368,8 +374,8 @@ def test_correlated_weight_explicit_and_implicit_give_the_same_map(observations,
 
 def test_detector_batches_give_the_same_result_under_a_correlated_weight():
     # The Gram of each detector is probed from the weight, whatever the batch it is in.
-    templates = TemplatesConfig(polynomial=PolynomialConfig(legendre=PolynomialOrders(1, 2)))
-    cfg = _toeplitz_config(templates, precomputed=True)
+    templates = TemplatesConfig(spline_drift=SplineDriftConfig(samples_per_knot={'qu': 256}))
+    cfg = _toeplitz_config(templates, precomputed=True, demodulated=True)
     whole, batched = [
         MultiObservationMapMaker(
             _ground_obs(n_dets=7), config=replace(cfg, detector_batch_size=batch)
@@ -402,7 +408,7 @@ def test_amplitudes_shared_by_the_detectors_are_the_same_in_detector_batches(
 
     monkeypatch.setattr('furax.mapmaking._model.build_templates', common_mode)
     # the configuration only has to enable templates: the builder above makes them
-    templates = TemplatesConfig(polynomial=PolynomialConfig(), regularization=1e-3)
+    templates = TemplatesConfig(spline_drift=SplineDriftConfig(), regularization=1e-3)
     cfg = _toeplitz_config(templates, precomputed=True) if correlated else _config(templates)
     whole, batched = [
         MultiObservationMapMaker(
@@ -420,13 +426,15 @@ def test_amplitudes_shared_by_the_detectors_are_the_same_in_detector_batches(
     )
 
 
-def test_demodulated_polynomial_explicit_and_implicit_agree_under_a_correlated_weight():
+def test_demodulated_drift_explicit_and_implicit_agree_under_a_correlated_weight():
+    # a knot every 512 samples: closer knots condition the two systems too poorly for their maps
+    # to agree to 1e-6
     maps = [
         MultiObservationMapMaker(
             _ground_obs(),
             config=_toeplitz_config(
                 TemplatesConfig(
-                    polynomial=PolynomialConfig(legendre=PolynomialOrders(1, 2), explicit=e)
+                    spline_drift=SplineDriftConfig(samples_per_knot={'qu': 512}, explicit=e)
                 ),
                 precomputed=True,
                 demodulated=True,

@@ -17,8 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The amplitudes the detectors have in common are preconditioned by their Gram under the weight with the implicit templates marginalized, so that CG converges when a common template overlaps implicit ones (#391)
+- **Breaking:** `furax.mapmaking.streaming` (`StreamOperator`, `StreamLayout`) is removed (#391)
 - **Breaking:** `BlockGram.combine` is removed (#389)
 - **Breaking:** `ArrowheadCholeskyOperator`, `template_gram(coupled=...)` and `BlockGram.cross` are removed: `factor` always inverts the Gram block by block (#389)
+- **Breaking:** `Bucket.n_entries`, `Bucket.stream_layout` and `Bucket.sum_detector_batches` are removed, and `SlotLayout.to_observation_order` and `Bucket.merge_detector_batches` take per-batch values as `(slot, batch, ...)` (#391)
 
 ## [0.16.0] - 2026-10-25
 

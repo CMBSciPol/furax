@@ -20,8 +20,8 @@ from furax.mapmaking.config import (
     MapMakingConfig,
     NoiseFitConfig,
     NoiseSource,
-    PolynomialConfig,
     PolynomialOrders,
+    ScanSynchronousConfig,
     SotodlibConfig,
     T2PConfig,
     TemplatesConfig,
@@ -199,11 +199,11 @@ def test_only_the_samples_that_are_not_padding_are_injectable(leading):
     assert_allclose(unpadded(padding, (*leading, 3, 5)), expected)
 
 
-def _polynomial_config(injection=None, explicit=True) -> MapMakingConfig:
+def _templates_config(injection=None, explicit=True) -> MapMakingConfig:
     config = _config(injection)
-    # from order 1: the offsets of the intervals are degenerate with the intensity map
-    polynomial = PolynomialConfig(legendre=PolynomialOrders(1, 2), explicit=explicit)
-    config.templates = TemplatesConfig(polynomial=polynomial)
+    # from order 1: a constant is degenerate with the intensity map
+    scan = ScanSynchronousConfig(legendre=PolynomialOrders(1, 2), explicit=explicit)
+    config.templates = TemplatesConfig(scan_synchronous=scan)
     return config
 
 
@@ -211,13 +211,12 @@ def _polynomial_config(injection=None, explicit=True) -> MapMakingConfig:
 def test_the_response_is_the_map_of_the_data_with_the_sky_added_minus_that_of_the_data(
     sky, explicit
 ):
-    # Polynomial templates do not depend on the data, so the two are the same linear response.
+    # Scan-synchronous templates do not depend on the data, so the two are the same linear
+    # response.
     _, path = sky
-    response = _run(
-        _polynomial_config(InjectionConfig(path, mode=InjectionMode.RESPONSE), explicit)
-    )
-    added = _run(_polynomial_config(InjectionConfig(path, mode=InjectionMode.ADD), explicit))
-    data = _run(_polynomial_config(None, explicit))
+    response = _run(_templates_config(InjectionConfig(path, mode=InjectionMode.RESPONSE), explicit))
+    added = _run(_templates_config(InjectionConfig(path, mode=InjectionMode.ADD), explicit))
+    data = _run(_templates_config(None, explicit))
     observed = _well_observed(data)
     assert_allclose(
         response.injected_map.data[:, observed],

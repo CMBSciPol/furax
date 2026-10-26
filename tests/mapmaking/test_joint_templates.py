@@ -16,6 +16,7 @@ from polars.testing import assert_frame_equal
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
+    CommonModeConfig,
     GapsConfig,
     GapTreatment,
     HWPSynchronousConfig,
@@ -35,8 +36,6 @@ from furax.mapmaking.config import (
     WeightingMode,
 )
 from furax.mapmaking.mapmaker import MultiObservationMapMaker
-from furax.mapmaking.templates import Template
-from furax.mapmaking.templates.bases import OffsetBasis
 from tests.mapmaking.helpers import (
     FakeLazyGroundObservation,
     FakeLazyObservation,
@@ -249,6 +248,49 @@ def test_t2p_field_is_the_same_in_detector_batches(joint_qu, drift):
     )
 
 
+_COMMON_MODE_WITH_DRIFT = TemplatesConfig(
+    common_mode=CommonModeConfig(samples_per_knot=128),
+    spline_drift=SplineDriftConfig(samples_per_knot={'qu': 512}),
+    regularization=1e-3,
+)
+
+
+@pytest.mark.parametrize(
+    ('templates', 'correlated'),
+    [
+        (TemplatesConfig(t2p=T2PConfig(quadrupole_order=1)), False),
+        (_COMMON_MODE_WITH_DRIFT, False),
+        (_COMMON_MODE_WITH_DRIFT, True),
+    ],
+    ids=['t2p-quadrupole', 'common-mode-with-drift', 'common-mode-with-drift-correlated'],
+)
+def test_quadrupolar_templates_are_the_same_in_detector_batches(templates, correlated):
+    # Their amplitudes belong to the observation, as those of the Zernike field: batching the
+    # detectors changes the memory layout, not the model. Next to each detector's implicit drift,
+    # the Gram of the common mode is that under the marginalized weight; under a correlated
+    # weight, it is probed in each batch, then summed.
+    name = 't2p' if templates.t2p is not None else 'common_mode'
+    if correlated:
+        cfg = _toeplitz_config(templates, precomputed=True, demodulated=True)
+    else:
+        cfg = replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
+    whole, batched = [
+        MultiObservationMapMaker(
+            _ground_obs(n_dets=7, focal_plane_radius=0.2),
+            config=replace(cfg, detector_batch_size=batch),
+        ).run()
+        for batch in (0, 3)
+    ]
+    amplitudes = whole.template_amplitudes[name]
+    assert jnp.all(jnp.isfinite(amplitudes)) and jnp.max(jnp.abs(amplitudes)) > 0
+    assert amplitudes.shape[0] == 2  # one set of amplitudes per observation
+    scale = jnp.max(jnp.abs(whole.map.data))
+    assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
+    assert_allclose(
+        batched.template_amplitudes[name], amplitudes, atol=1e-4 * jnp.max(jnp.abs(amplitudes))
+    )
+
+
 @pytest.mark.parametrize(('batch', 'n_buffered'), [(0, 8), (64, 8), (3, 9)])
 def test_only_observations_larger_than_a_batch_are_padded(batch, n_buffered):
     # 8 detectors: a batch of 64 holds them all, unpadded; batches of 3 need a ninth
@@ -395,37 +437,6 @@ def test_correlated_weight_with_templates_requires_inner_mask_gaps(treatment):
         MultiObservationMapMaker(_hwp_obs(), config=config)
 
 
-@pytest.mark.parametrize('correlated', [False, True], ids=['diagonal', 'correlated'])
-def test_amplitudes_shared_by_the_detectors_are_the_same_in_detector_batches(
-    monkeypatch, correlated
-):
-    # A common mode, one offset per block of 128 samples, seen by every detector. Its amplitudes
-    # belong to the observation, whatever the batches its detectors are processed in; under a
-    # correlated weight, their Gram is probed from the weight in each batch, then summed.
-    def common_mode(_config, _data, tod_format, **_):
-        basis = OffsetBasis(128, tod_format.n_samples, tod_format.dtype)
-        return {'common': Template(basis, tod_format, per=())}, {}
-
-    monkeypatch.setattr('furax.mapmaking._model.build_templates', common_mode)
-    # the configuration only has to enable templates: the builder above makes them
-    templates = TemplatesConfig(spline_drift=SplineDriftConfig(), regularization=1e-3)
-    cfg = _toeplitz_config(templates, precomputed=True) if correlated else _config(templates)
-    whole, batched = [
-        MultiObservationMapMaker(
-            _ground_obs(n_dets=7), config=replace(cfg, detector_batch_size=batch)
-        ).run()
-        for batch in (0, 3)
-    ]
-    amplitudes = whole.template_amplitudes['common']
-    assert amplitudes.shape == (2, 1024 // 128)  # (obs, block)
-    assert jnp.all(jnp.isfinite(amplitudes)) and jnp.max(jnp.abs(amplitudes)) > 0
-    scale = jnp.max(jnp.abs(whole.map.data))
-    assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
-    assert_allclose(
-        batched.template_amplitudes['common'], amplitudes, atol=1e-4 * jnp.max(jnp.abs(amplitudes))
-    )
-
-
 def test_demodulated_drift_explicit_and_implicit_agree_under_a_correlated_weight():
     # a knot every 512 samples: closer knots condition the two systems too poorly for their maps
     # to agree to 1e-6
@@ -443,3 +454,22 @@ def test_demodulated_drift_explicit_and_implicit_agree_under_a_correlated_weight
         for e in (True, False)
     ]
     assert_allclose(maps[0].map.data, maps[1].map.data, rtol=1e-6, atol=1e-8)
+
+
+@pytest.mark.slow
+def test_common_mode_absorbed_by_the_drifts_under_a_small_ridge_converges():
+    # The detectors' drifts absorb the slow part of the common mode, which the system then holds
+    # through a ridge below the rounding cutoff of the inverse of its Gram: preconditioned by an
+    # inverse that left those directions out, CG would stall.
+    templates = TemplatesConfig(
+        common_mode=CommonModeConfig(samples_per_knot=128),
+        spline_drift=SplineDriftConfig(samples_per_knot={'qu': 256}),
+        regularization=1e-8,
+    )
+    cfg = _toeplitz_config(templates, precomputed=True, demodulated=True)
+    # converges in about 300 iterations; without the floor, not in 1500
+    cfg.solver = SolverConfig(rtol=1e-10, max_steps=500)
+    results = MultiObservationMapMaker(
+        _ground_obs(n_dets=7, focal_plane_radius=0.2), config=cfg
+    ).run()
+    assert results.solver_stats['converged']

@@ -24,6 +24,11 @@ A few [`Basis`][] flavours trade memory for structure:
 A basis is normally shared by every detector. When the functions differ from detector to detector,
 as for the T-to-P leakage template, a basis of any flavour can instead hold a batch of bases, one
 per detector (see `batch_shape` in [`Basis`][]).
+
+A basis whose amplitudes split into blocks of time states how long its blocks are, in samples
+(`block_lengths` in [`Basis`][]). The Gram of templates under a correlated weight is banded, and
+how wide the band is follows from these lengths, which the builder of the basis knows before the
+data do.
 """
 
 from abc import abstractmethod
@@ -32,12 +37,13 @@ from dataclasses import field, fields
 from functools import partial
 from itertools import chain
 from math import prod
-from typing import Any, Self
+from typing import Any, NamedTuple, Self
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import Array, ShapeDtypeStruct
-from jaxtyping import DTypeLike, Float, Int
+from jaxtyping import Bool, DTypeLike, Float, Int
 
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
@@ -89,6 +95,17 @@ class Basis(AbstractLinearOperator):
 
     batch_shape: tuple[int, ...] = field(metadata={'static': True}, default=(), kw_only=True)
     """Leading axes of the stored arrays, one basis per index; empty for a single basis."""
+    block_lengths: tuple[int, int] | None = field(
+        metadata={'static': True}, default=None, kw_only=True
+    )
+    """The fewest and the most consecutive samples whose window starts at the same block.
+
+    The fewest is over the blocks between the first and the last, which a partial block at either
+    end of the samples does not shorten; the most is over all of them. `None` when unknown, and
+    the Gram then makes no assumption on how far apart samples read blocks. Checked against the
+    stored arrays when the basis is built, under `jax.jit` too, a basis whose blocks are shorter
+    or longer raises.
+    """
 
     @property
     @abstractmethod
@@ -104,6 +121,27 @@ class Basis(AbstractLinearOperator):
         structure = ShapeDtypeStruct((*self.batch_shape, *self.shape), self._array_dtype)
         object.__setattr__(self, 'in_structure', structure)
         super().__post_init__()
+        if self.block_lengths is not None and self._n_blocks > 1:
+            self._check_block_lengths(*self.block_lengths)
+
+    def _check_block_lengths(self, fewest: int, most: int) -> None:
+        """Make the stored arrays raise, when used, if the blocks break `block_lengths`."""
+        names = [f.name for f in fields(self) if f.init and not f.metadata.get('static')]
+        stored = {name: getattr(self, name) for name in names if name != 'in_structure'}
+        if not jax.tree.leaves(stored):
+            return
+
+        def broken(basis: Basis, _: Array) -> Array:
+            runs = _block_runs(basis.support().offset)
+            return (runs.fewest < fewest) | (runs.most > most) | runs.skips
+
+        violated = jnp.any(self._map_batch(broken, jnp.zeros(self.batch_shape), 0))
+        msg = (
+            f'{type(self).__name__} has blocks breaking its block_lengths ({fewest}, {most}): '
+            'shorter, longer, or skipping blocks'
+        )
+        for name, value in eqx.error_if(stored, violated, msg).items():
+            object.__setattr__(self, name, value)
 
     def _check_batch_axes(self) -> None:
         shapes = [leaf.shape for leaf in jax.tree.leaves(self)]
@@ -176,8 +214,9 @@ class Basis(AbstractLinearOperator):
 
         `vmap` and `lax.map` pass the arrays that way, once they have sliced the other axes off.
         """
-        excluded = {'in_structure', 'batch_shape'}
+        excluded = {'in_structure', 'batch_shape', 'block_lengths'}
         names = [f.name for f in fields(self) if f.init and f.name not in excluded]
+        # each basis of the batch alone: the lengths, checked once on the batch, are not passed
         return type(self)(**{name: getattr(self, name) for name in names}, batch_shape=batch_shape)
 
     def _dense_values(self) -> Float[Array, 'k samp'] | None:
@@ -220,25 +259,6 @@ class Basis(AbstractLinearOperator):
 
         return jax.eval_shape(taps, self).shape[-1]
 
-    def _support_reach(self, bandwidth: int) -> Int[Array, '']:
-        """How many blocks apart two blocks are that samples at most `bandwidth` apart read.
-
-        Only samples where some function is nonzero count. The largest over a batch of bases.
-        Assumes blocks are non-decreasing in time.
-        """
-
-        def single(basis: Basis, _: Array) -> Array:
-            support = basis.support()
-            n = support.n_points
-            active = jnp.any(support.values != 0, axis=0)
-            t = jnp.arange(n)
-            last = jax.lax.cummax(jnp.where(active, t, -1))  # the last active sample up to each
-            ahead = last[jnp.minimum(t + bandwidth, n - 1)]
-            span = support.offset[ahead] - support.offset + support.taps.shape[-1] - 1
-            return jnp.max(jnp.where(active, span, 0))
-
-        return jnp.max(self._map_batch(single, jnp.zeros(self.batch_shape), 0))
-
     @abstractmethod
     def support(self) -> 'WindowedBasis':
         """This basis written as an equivalent [`WindowedBasis`][]: its support.
@@ -260,6 +280,28 @@ class Basis(AbstractLinearOperator):
             Array([[1., 2., 3.],
                    [4., 5., 6.]], dtype=float32)
         """
+
+
+class _BlockRuns(NamedTuple):
+    """The runs of consecutive samples whose window starts at the same block."""
+
+    fewest: Int[Array, '']
+    """The shortest run between the first and the last; very large without one."""
+    most: Int[Array, '']
+    """The longest run."""
+    skips: Bool[Array, '']
+    """Whether consecutive samples start their windows more than one block apart."""
+
+
+def _block_runs(offset: Int[Array, ' samp']) -> _BlockRuns:
+    """The runs of `offset`, the first block of each sample's window, non-decreasing."""
+    n = offset.shape[-1]
+    step = jnp.diff(offset)
+    run = jnp.concatenate([jnp.zeros(1, jnp.int32), jnp.cumsum(step != 0, dtype=jnp.int32)])
+    lengths = jax.ops.segment_sum(jnp.ones(n, jnp.int32), run, n, indices_are_sorted=True)
+    interior = (jnp.arange(n) > 0) & (jnp.arange(n) < run[-1])
+    fewest = jnp.min(jnp.where(interior, lengths, jnp.iinfo(jnp.int32).max))
+    return _BlockRuns(fewest, jnp.max(lengths), jnp.any(step > 1))
 
 
 class _BasisTranspose(TransposeOperator):
@@ -487,6 +529,12 @@ class OffsetBasis(Basis):
     tau: int = field(metadata={'static': True})
     n_samples: int = field(metadata={'static': True})
     value_dtype: DTypeLike = field(metadata={'static': True})
+
+    def __post_init__(self) -> None:
+        if self.block_lengths is None:  # whole intervals, the last holding the tail
+            tail = self.n_samples - self._n_blocks * self.tau
+            object.__setattr__(self, 'block_lengths', (self.tau, self.tau + tail))
+        super().__post_init__()
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -764,6 +812,10 @@ class DecimatedBasis(Basis):
             msg = f'batch_shape {self.batch_shape} differs from the inner {self.inner.batch_shape}'
             raise ValueError(msg)
         object.__setattr__(self, 'batch_shape', self.inner.batch_shape)
+        if self.block_lengths is None and self.inner.block_lengths is not None:
+            # each coarse point held over `decimation_factor` samples
+            fewest, most = self.inner.block_lengths
+            object.__setattr__(self, 'block_lengths', (fewest * factor, most * factor))
         super().__post_init__()
 
     @property

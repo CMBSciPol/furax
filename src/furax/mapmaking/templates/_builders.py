@@ -574,7 +574,26 @@ def spline_drift_basis(
     offset, taps = bspline.spline_window(times, n_knots)  # taps (samp, 4)
     if valid_mask is not None:
         taps = taps * valid_mask[:, None].astype(taps.dtype)
-    return SplineBasis(offset, taps.astype(dtype), n_knots + 2)
+    lengths = _spline_block_lengths(times.size, n_knots)
+    return SplineBasis(offset, taps.astype(dtype), n_knots + 2, block_lengths=lengths)
+
+
+def _spline_block_lengths(n_samples: int, n_knots: int) -> tuple[int, int] | None:
+    """The `block_lengths` of a spline of `n_knots` knots over evenly spaced samples.
+
+    The samples lie `Δ = (n_samples − 1) / (n_knots − 2)` apart from knot to knot, so a window
+    starts at the same knot for `⌊Δ⌋` or `⌈Δ⌉` of them. One sample of slack either way leaves room
+    for the jitter of real timestamps. `None` when knots are closer than samples, so that some
+    knot starts no window.
+    """
+    n_intervals = n_knots - 2
+    if n_intervals < 1:  # a single run
+        return 1, n_samples
+    if n_samples - 1 < n_intervals:
+        return None
+    fewest = (n_samples - 1) // n_intervals
+    most = -(-(n_samples - 1) // n_intervals)
+    return max(fewest - 1, 1), most + 1
 
 
 _T2P_BATCH_SIZE = 32
@@ -712,4 +731,7 @@ def spline_hwp_synchronous_basis(
     """
     offset, weights = bspline.spline_window(times, n_knots)  # weights (samp, 4)
     sub_values = _harmonics(hwp_angles, harmonics, dtype, dc=False).astype(dtype)
-    return WindowedBasis(offset, weights.astype(dtype), sub_values, n_blocks=n_knots + 2)
+    lengths = _spline_block_lengths(times.size, n_knots)
+    return WindowedBasis(
+        offset, weights.astype(dtype), sub_values, n_blocks=n_knots + 2, block_lengths=lengths
+    )

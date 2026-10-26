@@ -324,8 +324,8 @@ def _pomme_corrected(
 
     Each Gram of two bases loses `Cᵀ D⁻¹ C'`, with `D = Zᵀ W Z` the weighted counts of the
     intervals and `C = Zᵀ W B` each basis summed over them. The sums of a time-local core are kept
-    in its band layout; the core's bands gain one, an interval straddling two of its blocks. They
-    are NaN if an interval spans more blocks still: the core's blocks must be longer than one.
+    in its band layout; the core's bands gain one, an interval straddling two of its blocks, which
+    [`template_gram`][furax.mapmaking.templates.gram.template_gram] checks it does at most.
     """
     counts = pomme.gram(w)[:, 0, 0, 0]  # the offsets do not overlap: their Gram is diagonal
     inverse = 1 / jnp.where(counts > 0, counts, jnp.inf)  # no correction from a masked interval
@@ -350,7 +350,6 @@ def _pomme_corrected(
         width = sums.sums.shape[1]
         bands = jnp.pad(bands, [(0, 0), (0, width - bands.shape[1]), (0, 0), (0, 0)])
         bands = bands - sums.band_correction(inverse)
-        bands = jnp.where(sums.too_long, jnp.nan, bands)
     return corrected, bands
 
 
@@ -379,8 +378,6 @@ class _BandedSums(NamedTuple):
     sums: Float[Array, 'int width k']
     """`C` on the `width` consecutive blocks of each interval, from `first`."""
     n_blocks: int
-    too_long: Array
-    """Whether an interval reads more than `width` blocks, which the band cannot hold."""
 
     @classmethod
     def of(cls, pomme: OffsetBasis, support: WindowedBasis, w: Float[Array, ' samp']) -> Self:
@@ -391,20 +388,18 @@ class _BandedSums(NamedTuple):
         zw = w * intervals.values[0]  # each sample's entry of Zᵀ W, zero past the last interval
         dtype = support.blocks.dtype
         first = jnp.full(n_intervals, n_blocks, dtype)
-        last = jnp.full(n_intervals, -1, dtype)
         # only the samples of nonzero weight and value read a block
         active = (zw != 0) & jnp.any(support.values != 0, axis=0)
         for slot in range(support.blocks.shape[1]):  # the window width is static
             reads = active & (support.taps[:, slot] != 0)
             block = support.blocks[:, slot]
             first = first.at[ids].min(jnp.where(reads, block, n_blocks).astype(dtype))
-            last = last.at[ids].max(jnp.where(reads, block, -1).astype(dtype))
         weighted = (support.values * zw[None, :]).T  # (samp, k)
         sums = jnp.zeros((n_intervals, width, k), support.values.dtype)
         for slot in range(support.blocks.shape[1]):
             s = jnp.clip(support.blocks[:, slot] - first[ids], 0, width - 1)
             sums = sums.at[ids, s].add(support.taps[:, slot][:, None] * weighted)
-        return cls(first, sums, n_blocks, jnp.any(last - first >= width))
+        return cls(first, sums, n_blocks)
 
     def band_correction(self, inverse: Float[Array, ' int']) -> Float[Array, 'n width k k']:
         """`Cᵀ D⁻¹ C` in the band layout: interval `i` adds to the band at `(first + s, s' − s)`."""

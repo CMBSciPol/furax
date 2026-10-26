@@ -1,7 +1,7 @@
 from ._cg import CGResult, CGSolver, cg
 from ._eigvalsh import eigvalsh
 from ._lanczos import LanczosResult, lanczos_eigh, lanczos_tr
-from .bordered import ArrowheadCholeskyOperator, BorderedBandedMatrix, probe_bordered_banded
+from .bordered import BorderedBandedMatrix, probe_bordered_banded
 from .cholesky import (
     BandedCholeskyOperator,
     BorderedBandedCholeskyOperator,
@@ -29,6 +29,5 @@ __all__ = [
     'banded_cholesky',
     'banded_cholesky_solve',
     'BorderedBandedMatrix',
-    'ArrowheadCholeskyOperator',
     'probe_bordered_banded',
 ]

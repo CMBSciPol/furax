@@ -36,6 +36,40 @@ class WeightOperator(AbstractLinearOperator):
 
 
 @symmetric
+class MarginalizedWeightOperator(AbstractLinearOperator):
+    r"""A weight with the amplitudes of some templates marginalized.
+
+    Marginalizing the amplitudes of templates $T$ turns the weight $W$ into
+
+    $$ W' = W - W T G^{-1} T^\top W, $$
+
+    with $G^{-1}$ the inverse of their Gram $T^\top W T$, possibly regularized. When $G^{-1}$ is
+    exact, $W'$ is blind to the templates: $W' T = 0$.
+    """
+
+    weight: AbstractLinearOperator
+    """The weight $W$."""
+    templates: AbstractLinearOperator
+    """The templates $T$ whose amplitudes are marginalized."""
+    gram_inverse: AbstractLinearOperator
+    """The inverse $G^{-1}$ of their Gram under $W$."""
+
+    @classmethod
+    def create(
+        cls,
+        weight: AbstractLinearOperator,
+        templates: AbstractLinearOperator,
+        gram_inverse: AbstractLinearOperator,
+    ) -> Self:
+        return cls(weight, templates, gram_inverse, in_structure=weight.in_structure)
+
+    def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
+        W, T = self.weight, self.templates
+        wx = W(x)
+        return tree.sub(wx, W(T(self.gram_inverse(T.T(wx)))))
+
+
+@symmetric
 class NestedWeightOperator(AbstractLinearOperator):
     r"""Minimum-variance inverse-noise weighting for gappy data, using an iterative algorithm.
 

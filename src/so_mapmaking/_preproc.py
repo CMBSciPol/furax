@@ -2,7 +2,7 @@
 
 A sotodlib preproc config carries paths that are *relative to a root directory* and that
 sotodlib resolves against the process cwd at load time. This single fact is needed in several
-places (``furax-so-map``, ``furax-so-prepare``, ``furax-so-stage``); centralising it here keeps
+places (``furax-so-map``, ``furax-so-stage``); centralising it here keeps
 them consistent. The convention:
 
 - The config lives at ``<root>/preprocessing/satpy/cfg.yaml`` -- i.e. ``root`` is
@@ -15,7 +15,7 @@ them consistent. The convention:
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -50,18 +50,6 @@ class ConfigPath:
 def config_root(config: str | Path) -> Path:
     """Return the root directory a preproc config's relative paths resolve against."""
     return Path(config).resolve().parents[PREPROC_ROOT_DEPTH]
-
-
-def shared_root(layers: Iterable[str | Path]) -> Path:
-    """Return the common root of all ``layers``, raising if they disagree.
-
-    Only callers that ``chdir`` to a single root (e.g. ``furax-so-prepare``) need this; the
-    map path normalises each layer independently and has no single-root constraint.
-    """
-    roots = {config_root(layer) for layer in layers}
-    if len(roots) > 1:
-        raise ValueError('all preproc configs must share the same root directory')
-    return roots.pop()
 
 
 def resolve(path: str, base: Path) -> Path:

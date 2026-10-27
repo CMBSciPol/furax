@@ -13,6 +13,7 @@ from furax.interfaces.sotodlib import (
     LazyPreprocSOTODLibObservation,
     LazySOTODLibObservation,
 )
+from furax.interfaces.sotodlib.observation import _digest
 from furax.mapmaking import (
     AbstractGroundObservation,
     HashedObservationMetadata,
@@ -280,6 +281,103 @@ def test_lazy_preproc_join_groups_without_any_record_fails(tmp_path, monkeypatch
         lazy.probe_shape()
     with pytest.raises(RuntimeError, match='no detectors left'):
         lazy.get_data()
+
+
+@pytest.mark.parametrize('join_groups', [False, True])
+def test_lazy_preproc_cache(tmp_path, join_groups: bool) -> None:
+    """A cached observation loads back as preprocessed, without the preprocessing archive."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    sotodlib_config = SotodlibConfig(downsample=3)
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1],
+        config,
+        sotodlib_config=sotodlib_config,
+        join_groups=join_groups,
+        cache_dir=tmp_path / 'cache',
+    )
+
+    loaded = lazy.get_data()
+    (key,) = (tmp_path / 'cache').iterdir()
+    assert sorted(p.name for p in key.iterdir()) == ['key.json', f'{OBS_IDS[1]}.h5']
+
+    (tmp_path / 'preprocess_archive.h5').unlink()
+    cached = lazy.get_data([ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS])
+    assert cached.name == OBS_IDS[1]
+    assert cached.n_samples == loaded.n_samples == -(-OBS_NSAMPLE[1] // 3)
+    assert_array_equal(cached.detectors, loaded.detectors)
+    assert_array_equal(cached.get_tods(), loaded.get_tods())
+    assert_array_equal(cached.get_timestamps(), loaded.get_timestamps())
+
+
+@pytest.mark.parametrize(
+    ('changes', 'shared'),
+    [
+        ({'sotodlib_config': SotodlibConfig(demodulated=True, noise_source='mapmaking')}, True),
+        ({'sotodlib_config': SotodlibConfig(downsample=2)}, False),
+        ({'join_groups': True}, False),
+        ({'detector_selection': {'detset': 'detset0_1'}}, False),
+        ({'init_config': 'copy.yaml'}, True),
+        ({'init_config': 'edited.yaml'}, False),
+        ({'proc_config': 'copy.yaml'}, False),
+    ],
+)
+def test_lazy_preproc_cache_key(tmp_path, changes: dict, shared: bool) -> None:
+    """Observations share a cache directory if and only if they load the same data."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    text = config.read_text()
+    (tmp_path / 'copy.yaml').write_text(text)
+    (tmp_path / 'edited.yaml').write_text(text + 'extra: 1\n')
+    for name in ('init_config', 'proc_config'):
+        if name in changes:
+            changes[name] = tmp_path / changes[name]
+    reference = LazyPreprocSOTODLibObservation(OBS_IDS[1], config, cache_dir=tmp_path)
+    other = LazyPreprocSOTODLibObservation(
+        **{
+            'observation_id': OBS_IDS[1],
+            'init_config': config,
+            'cache_dir': tmp_path,
+            **changes,
+        }
+    )
+
+    keys = (_digest(obs._cache_inputs) for obs in (reference, other))
+    assert (len(set(keys)) == 1) == shared
+
+
+def test_lazy_preproc_cache_key_covers_context(tmp_path) -> None:
+    """Editing the context of the configs in place changes the cache key."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
+    before = LazyPreprocSOTODLibObservation(OBS_IDS[0], config, cache_dir=tmp_path)
+    key = _digest(before._cache_inputs)
+    context = tmp_path / 'context.yaml'
+    context.write_text(context.read_text() + 'extra: 1\n')
+    after = LazyPreprocSOTODLibObservation(OBS_IDS[0], config, cache_dir=tmp_path)
+
+    assert _digest(after._cache_inputs) != key
+
+
+def test_lazy_preproc_cache_unreadable_file(tmp_path, caplog) -> None:
+    """A cached file that cannot be read is loaded again and replaced."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config, cache_dir=tmp_path / 'cache')
+    expected = lazy.get_data().get_tods()
+    lazy._cache_path.write_bytes(b'not hdf5')
+
+    assert_array_equal(lazy.get_data().get_tods(), expected)
+    assert 'cannot read' in caplog.text
+    (tmp_path / 'preprocess_archive.h5').unlink()
+    assert_array_equal(lazy.get_data().get_tods(), expected)
+
+
+def test_lazy_preproc_cache_write_failure(tmp_path, caplog) -> None:
+    """An unwritable cache leaves the observation loaded, uncached."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
+    cache_dir = tmp_path / 'cache'
+    cache_dir.write_text('not a directory')
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config, cache_dir=cache_dir)
+
+    assert lazy.get_data().n_detectors == OBS_NDET[0]
+    assert 'could not write' in caplog.text
 
 
 def test_reader_with_preproc_observations(tmp_path) -> None:

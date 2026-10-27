@@ -3,7 +3,6 @@
 import sqlite3
 from pathlib import Path
 
-import pytest
 import yaml
 
 from so_mapmaking import _preproc as pp
@@ -69,17 +68,6 @@ def test_iter_config_paths_resolves_index_and_context_dbs(tmp_path: Path) -> Non
     assert by_token['{basedir}/obsdb.sqlite'].path == root / 'obsdb.sqlite'
     # the context_file itself is not yielded (it is rewritten, not copied)
     assert all('context.yaml' not in c.token for c in pp.iter_config_paths(cfg))
-
-
-def test_shared_root_accepts_common_root_and_rejects_mismatch(tmp_path: Path) -> None:
-    init = _make_config(tmp_path / 'vx')
-    proc_same = tmp_path / 'vx' / 'preprocessing' / 'satpy' / 'proc.yaml'
-    proc_same.write_text((tmp_path / 'vx' / 'preprocessing' / 'satpy' / 'config.yaml').read_text())
-    assert pp.shared_root([init, proc_same]) == (tmp_path / 'vx').resolve()
-
-    proc_other = _make_config(tmp_path / 'vy')
-    with pytest.raises(ValueError, match='same root directory'):
-        pp.shared_root([init, proc_other])
 
 
 def test_normalize_config_absolutizes_cwd_sensitive_paths(tmp_path: Path, monkeypatch) -> None:

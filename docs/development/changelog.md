@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The wheel now ships `so_mapmaking` (imported by `furax-so-*` scripts) (#394)
+
 ## [0.17.0] - 2026-10-26
 
 The normal system of multi-observation map-making is evaluated per observation, a detector batch at a time, which replaces the streaming operators; common templates overlapping implicit ones are preconditioned under the marginalized weight. The per-interval polynomial template gives way to the spline drift, and the T2P and ground templates are always solved for with the map (#385, #389, #391).

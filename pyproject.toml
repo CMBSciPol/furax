@@ -118,6 +118,9 @@ skip_covered = true
 [tool.hatch.version]
 source = 'vcs'
 
+[tool.hatch.build.targets.wheel]
+packages = ['src/furax', 'src/so_mapmaking']
+
 [tool.ty.analysis]
 replace-imports-with-any = [
     'litebird_sim',

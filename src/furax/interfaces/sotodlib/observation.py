@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import functools
+import hashlib
+import json
+import os
 import threading
-from collections.abc import Collection
+import uuid
+from collections.abc import Callable, Collection
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, Self, overload
@@ -11,6 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 import pixell.utils
 import so3g.proj
+import sotodlib
 import sotodlib.preprocess.preprocess_util as pu
 import yaml
 from astropy.wcs import WCS
@@ -47,6 +52,11 @@ from furax.obs.stokes import (
     StokesType,
     ValidStokesLiteral,
 )
+
+# Version of the on-disk observation cache of LazyPreprocSOTODLibObservation, part of its key.
+# Bump it when furax changes the data it loads, e.g. which timestreams downsample_obs resamples or
+# how preprocessing groups are joined, so that existing caches are not reused.
+_CACHE_VERSION = 1
 
 # Per-process cache of (configs, context) from sotodlib's get_preprocess_context, keyed by
 # (config-file path, thread id). See _enable_preproc_context_cache.
@@ -123,11 +133,9 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             return cls(data, sotodlib_config)
 
         requested = set(requested_fields)
-        # minimum information needed to determine buffer shapes
-        fields = {'dets', 'samp'}
+        # minimum information needed to determine buffer shapes and name the observation
+        fields = {'dets', 'samp', 'obs_info'}
         # translate request to sotodlib subfield names (sets dedup overlapping requests)
-        if ReaderField.METADATA in requested:
-            fields.add('obs_info')
         if ReaderField.SAMPLE_DATA in requested:
             if sotodlib_config.demodulated:
                 fields |= {'dsT', 'demodQ', 'demodU'}
@@ -206,9 +214,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
 
         This reads the saved preprocessing products from the archive and re-applies the
         process pipeline, without writing any intermediate file. It mirrors the load path
-        of ``preproc_or_load_group`` (as used by the ``furax-so-prepare`` tool) but skips
-        the archive/proc-aman saving, so the result is identical to mapping a binary file
-        produced by that tool.
+        of ``preproc_or_load_group`` but skips the archive/proc-aman saving.
 
         Args:
             observation_id: Observation id (e.g. 'obs_1714550584_satp3_1111111').
@@ -603,6 +609,20 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
     the groups are joined into one observation (see
     [`SOTODLibObservation.from_preproc_groups`][furax.interfaces.sotodlib.observation.SOTODLibObservation.from_preproc_groups]),
     e.g. all the wafers of a bandpass. Otherwise the selection must match a single group.
+
+    With `cache_dir`, the first read saves the loaded observation (preprocessed, joined and
+    downsampled) to `<cache_dir>/<key>/<observation_id>.h5`, and later reads load that file
+    instead, only the requested fields. `key` is a hash of every input that changes the loaded
+    data: the detector selection, `join_groups`, the content of the preprocessing configs and of
+    their contexts, `SotodlibConfig.downsample`, and the sotodlib version. A `key.json` next to
+    the files records these inputs. The other `SotodlibConfig` settings act after loading, so
+    runs that differ only in them share a cache. The databases the configs point to, the
+    preprocessing archive among them, are not part of the key: after preprocessing again under
+    the same configs, delete the cache.
+
+    The files are written to a temporary name and renamed into place, so concurrent runs can
+    share a cache and never read a partial file. A cached file that cannot be read is loaded
+    from the preprocessing database again and replaced.
     """
 
     interface_class = SOTODLibObservation
@@ -615,33 +635,37 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         detector_selection: dict[str, str] | None = None,
         sotodlib_config: SotodlibConfig | None = None,
         join_groups: bool = False,
+        cache_dir: str | Path | None = None,
     ) -> None:
         self.observation_id = observation_id
         self.init_config = Path(init_config).resolve()
         self.proc_config = Path(proc_config).resolve() if proc_config else None
         self.detector_selection = detector_selection
         self.join_groups = join_groups
-        self._sotodlib_config = sotodlib_config
+        self._sotodlib_config = sotodlib_config or SotodlibConfig()
+        self.cache_dir = Path(cache_dir).resolve() if cache_dir else None
 
     @property
     def name(self) -> str:
         return self.observation_id
 
     def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
-        # A preproc load cannot be field-subset: the full observation is always returned,
-        # which satisfies any requested fields. The cheap shape path lives in probe_shape.
-        load = (
-            SOTODLibObservation.from_preproc_groups
-            if self.join_groups
-            else SOTODLibObservation.from_preproc_group
-        )
-        return load(
-            self.observation_id,
-            self.init_config,
-            self.proc_config,
-            self.detector_selection,
-            sotodlib_config=self._sotodlib_config,
-        )
+        if self.cache_dir is None:
+            return self._load()
+        path = self._cache_path
+        if path.exists():
+            # the cached observation is already downsampled
+            config = replace(self._sotodlib_config, downsample=1)
+            try:
+                return SOTODLibObservation.from_file(path, requested_fields, sotodlib_config=config)
+            except Exception:  # ruff: ignore[BLE001]
+                logger.warning('cannot read %s, loading it again', path, exc_info=True)
+        obs = self._load()
+        key = path.parent / 'key.json'
+        if not key.exists():
+            _write_atomically(key, lambda tmp: tmp.write_text(_dumps(self._cache_inputs)))
+        _write_atomically(path, lambda tmp: obs.data.save(tmp.as_posix()))
+        return obs
 
     def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
         """Returns an upper bound on the variable padded-buffer dimensions for ``fields``.
@@ -657,6 +681,9 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
 
         With ``join_groups``, the detectors are summed over the groups that have a preprocessing
         record, as loaded by ``from_preproc_groups``.
+
+        The bound does not depend on `cache_dir`, so that a cached observation is padded as an
+        uncached one.
         """
         _enable_preproc_context_cache()
         # call get_preprocess_context through the module so the cached get_preprocess_context is used
@@ -678,13 +705,104 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
                 logger.warning('%s: no preprocessing record for %s', self.observation_id, selection)
         if not metas:
             raise RuntimeError(f'no preprocessing records for {self.observation_id}')
-        downsample = (self._sotodlib_config or SotodlibConfig()).downsample
+        downsample = self._sotodlib_config.downsample
         n_samps = max(meta.samps.count for meta in metas)
         return ObservationBufferShape(
             sum(meta.dets.count for meta in metas),
             -(-n_samps // downsample),  # ceil, matches downsample_obs
             max(meta.subscans.count for meta in metas) if intervals else 0,
         )
+
+    def _load(self) -> SOTODLibObservation:
+        # A preproc load cannot be field-subset: the full observation is always returned,
+        # which satisfies any requested fields. The cheap shape path lives in probe_shape.
+        load = (
+            SOTODLibObservation.from_preproc_groups
+            if self.join_groups
+            else SOTODLibObservation.from_preproc_group
+        )
+        return load(
+            self.observation_id,
+            self.init_config,
+            self.proc_config,
+            self.detector_selection,
+            sotodlib_config=self._sotodlib_config,
+        )
+
+    @functools.cached_property
+    def _cache_path(self) -> Path:
+        assert self.cache_dir is not None
+        return self.cache_dir / _digest(self._cache_inputs) / f'{self.observation_id}.h5'
+
+    @functools.cached_property
+    def _cache_inputs(self) -> dict[str, Any]:
+        """The inputs that determine the loaded data, from which the cache key is derived."""
+        paths = [self.init_config] + ([self.proc_config] if self.proc_config else [])
+        configs = [_canonical_config(path) for path in paths]
+        return {
+            'detector_selection': self.detector_selection,
+            'join_groups': self.join_groups,
+            'preprocess_configs': configs,
+            'contexts': [_read_context(config) for config in configs],
+            'downsample': self._sotodlib_config.downsample,
+            'sotodlib': sotodlib.__version__,
+            'cache_version': _CACHE_VERSION,
+        }
+
+
+def _canonical_config(path: Path) -> dict[str, Any]:
+    """A preprocessing config, with the paths sotodlib resolves against the cwd made absolute.
+
+    Two configs with the same text but relative paths read different archives from different
+    working directories, so they must not share a cache key.
+    """
+    doc = yaml.safe_load(path.read_text())
+    if isinstance(doc.get('context_file'), str):
+        doc['context_file'] = Path(doc['context_file']).resolve().as_posix()
+    archive = doc.get('archive')
+    if isinstance(archive, dict) and isinstance(archive.get('index'), str):
+        archive['index'] = Path(archive['index']).resolve().as_posix()
+    return doc
+
+
+def _read_context(config: dict[str, Any]) -> Any:
+    """The context of a canonical preprocessing config, `None` if it names none."""
+    path = config.get('context_file')
+    return yaml.safe_load(Path(path).read_text()) if isinstance(path, str) else None
+
+
+def _digest(inputs: dict[str, Any]) -> str:
+    return hashlib.sha256(_dumps(inputs).encode()).hexdigest()[:16]
+
+
+def _dumps(inputs: dict[str, Any]) -> str:
+    # sorted keys: the key must not depend on the order of the entries in the configs
+    return json.dumps(inputs, sort_keys=True, indent=2, default=str)
+
+
+def _write_atomically(path: Path, write: Callable[[Path], object]) -> None:
+    """Writes `path` through a temporary file in its directory, renamed into place when complete.
+
+    The rename is atomic, so a concurrent reader sees either no file or all of it, and of two
+    concurrent writers of the same content the last one wins. A failed write is logged and
+    leaves no file: the observation is then not cached.
+    """
+    tmp = path.with_name(f'{path.name}.tmp.{uuid.uuid4().hex}')
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write(tmp)
+        # flush the data to storage before the name appears, or a crash could leave the final
+        # name on a partial file
+        with tmp.open('rb') as file:
+            os.fsync(file.fileno())
+        os.replace(tmp, path)
+    except Exception:  # ruff: ignore[BLE001]
+        # not only I/O errors: AxisManager.save also fails on fields it cannot encode, and the
+        # observation is loaded either way
+        logger.warning('could not write %s', path, exc_info=True)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def _group_selections(

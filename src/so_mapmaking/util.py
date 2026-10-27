@@ -58,10 +58,3 @@ def resolve_obsids(obsid: list[str] | None, obsids_file: Path | None) -> list[st
     if obsids_file is not None:
         return [line.strip() for line in obsids_file.read_text().splitlines() if line.strip()]
     return []
-
-
-def standard_obsdir(outdir: Path, wafer: str, band: str, downsample: int = 1) -> Path:
-    path = outdir / 'obs' / wafer / band
-    if downsample > 1:
-        path = path / f'ds{downsample}'
-    return path

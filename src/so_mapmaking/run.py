@@ -23,13 +23,15 @@ def run(
     wafer: str = 'ws0',
     band: str = 'f090',
     obsdir: Path | None = None,
+    cache_dir: Path | None = None,
     loglevel: str = 'info',
     log_path: Path | None = None,
 ):
     """Run the mapmaker, loading observations directly from the preprocessing database.
 
-    Observations are streamed from the preproc archive at mapmaking time (no intermediate
-    binary files). Pass ``obsdir`` instead to map pre-dumped ``.h5`` files (legacy path).
+    Observations are loaded from the preproc archive at mapmaking time, or from ``cache_dir``
+    where an earlier run saved them. Pass ``obsdir`` instead to map pre-dumped ``.h5`` files
+    (legacy path).
 
     Args:
         init_config: Base-layer preprocessing config file (preproc-db mode).
@@ -43,6 +45,9 @@ def run(
         band: Wafer bandpass selection.
         obsdir: Legacy mode: directory of prepared .h5 files. Mutually exclusive with
             ``init_config``.
+        cache_dir: Directory of preprocessed observations (preproc-db mode). The first run saves
+            each observation there once loaded, and later runs with the same preprocessing load
+            it back instead of preprocessing again. Delete it after rerunning the preprocessing.
         loglevel: Logging level (debug, info, warning, error).
         log_path: Log output path.
     """
@@ -71,6 +76,9 @@ def run(
 
     if (init_config is None) == (obsdir is None):
         logger.error('specify exactly one of --init-config (preproc db) or --obsdir (legacy)')
+        return 1
+    if cache_dir is not None and init_config is None:
+        logger.error('--cache-dir requires --init-config')
         return 1
 
     if mapmaking_config is None:
@@ -106,6 +114,7 @@ def run(
                 det_select,
                 sotodlib_config=config.sotodlib,
                 join_groups=join_groups,
+                cache_dir=cache_dir,
             )
             for obs_id in obsids
         ]

@@ -10,6 +10,8 @@ from jaxtyping import Float, PyTree
 
 from furax import AbstractLinearOperator, symmetric, tree
 
+from ._dense import _matmul
+
 __all__ = [
     'BandedCholeskyOperator',
     'BorderedBandedCholeskyOperator',
@@ -18,7 +20,6 @@ __all__ = [
 ]
 
 # Full float32 precision for the block products to avoid TF32 rounding
-_matmul = partial(jnp.matmul, precision=jax.lax.Precision.HIGHEST)
 _einsum = partial(jnp.einsum, precision=jax.lax.Precision.HIGHEST)
 
 

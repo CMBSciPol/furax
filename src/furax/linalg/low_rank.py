@@ -9,8 +9,9 @@ from jaxtyping import Float, Key, Num, PyTree
 from furax import AbstractLinearOperator, symmetric, tree
 
 from ._lanczos import lanczos_eigh, lanczos_tr
+from ._lobpcg import lobpcg_standard
 
-LowRankMethod = Literal['lanczos', 'lanczos_tr']
+LowRankMethod = Literal['lanczos', 'lanczos_tr', 'lobpcg', 'nystrom']
 
 
 class LowRankTerms(NamedTuple):
@@ -38,24 +39,36 @@ def low_rank(
     The approximation is of the form A ≈ U @ diag(S) @ U^T, where U contains
     the k eigenvectors and S contains the corresponding eigenvalues.
 
-    Two solvers are available via ``method``:
+    The solvers available via `method` are:
 
-    - 'lanczos': single-shot m-step Lanczos. Builds one Krylov subspace and returns the k
-      best-converged Ritz pairs by residual norm.
-      Extra kwargs: ``m``.
-    - 'lanczos_tr' (default): thick-restart Lanczos. Restarts until convergence and targets
-      specific eigenpairs via ``which`` ('LM', 'SM', 'LA', 'SA', 'BE'; default 'LM').
-      Extra kwargs: ``m``, ``which``, ``max_restarts``, ``tol``.
+    - `'lanczos'`: single-shot m-step Lanczos ([`lanczos_eigh`][furax.linalg.lanczos_eigh]).
+      Builds one Krylov subspace and returns the k best-converged Ritz pairs by residual norm.
+      Extra kwargs: `m`.
+    - `'lanczos_tr'` (default): thick-restart Lanczos ([`lanczos_tr`][furax.linalg.lanczos_tr]).
+      Restarts until convergence and targets specific eigenpairs via `which` (`'LM'`, `'SM'`,
+      `'LA'`, `'SA'`, `'BE'`; default `'LM'`).
+      Extra kwargs: `m`, `which`, `max_restarts`, `tol`, `preconditioner`. A `preconditioner`
+      $M$ changes the operator: the eigenpairs are those of $M A$.
+    - `'lobpcg'`: block preconditioned eigensolver
+      ([`lobpcg_standard`][furax.linalg.lobpcg_standard]) from a random block of k vectors.
+      Targets the largest eigenvalues, or the smallest with `largest=False`.
+      Extra kwargs: `largest`, `maxiter`, `tol`, `preconditioner`. A `preconditioner` only
+      accelerates convergence: the eigenpairs are those of $A$.
+    - `'nystrom'`: randomized Nyström approximation
+      ([`randomized_nystrom`][furax.linalg.randomized_nystrom]) of the largest eigenpairs, for a
+      positive semi-definite operator, in a single pass of independent products with A.
+      Extra kwargs: `oversampling`.
 
     Args:
         A: A Hermitian linear operator.
         rank: Number of eigenvalues/eigenvectors to compute.
         key: Random key for initialization of the eigenvalue solver.
-        method: Eigenvalue solver to use (see above). Defaults to 'lanczos_tr'.
+        method: Eigenvalue solver to use (see above). Defaults to `'lanczos_tr'`.
         **kwargs: Additional keyword arguments passed to the selected solver.
 
     Returns:
-        LowRankTerms containing eigenvalues and eigenvectors.
+        LowRankTerms containing eigenvalues and eigenvectors. Convergence information is not
+        returned: to check it, call the selected solver directly.
 
     Examples:
         >>> import jax
@@ -68,10 +81,19 @@ def low_rank(
         >>> terms.eigenvalues  # Should be approximately [4, 5] (which='LM' by default)
         Array([4., 5.], dtype=float32)
     """
-    solvers = {'lanczos': lanczos_eigh, 'lanczos_tr': lanczos_tr}
-    if method not in solvers:
+    if method == 'nystrom':
+        from ._nystrom import randomized_nystrom  # circular: _nystrom builds on LowRankTerms
+
+        return randomized_nystrom(A, rank, key=key, **kwargs)
+    if method == 'lobpcg':
+        X = tree.stacked_normal_like(A.in_structure, rank, key)
+        kwargs.setdefault('largest', True)
+        result = lobpcg_standard(A, X, **kwargs)
+    elif method in ('lanczos', 'lanczos_tr'):
+        solver = lanczos_eigh if method == 'lanczos' else lanczos_tr
+        result = solver(A, key=key, k=rank, **kwargs)
+    else:
         raise ValueError(f'Unknown method: {method!r}. Use one of {get_args(LowRankMethod)}.')
-    result = solvers[method](A, key=key, k=rank, **kwargs)
     return LowRankTerms(
         eigenvalues=result.eigenvalues,
         eigenvectors=result.eigenvectors,

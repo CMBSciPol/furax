@@ -26,6 +26,16 @@ class TestLowRank:
         assert terms.eigenvalues.shape == (3,)
         assert LowRankOperator(terms).in_structure == A.in_structure
 
+    @pytest.mark.parametrize(
+        'method, kwargs',
+        [('lanczos_tr', {}), ('lobpcg', {'tol': 1e-10}), ('nystrom', {})],
+    )
+    def test_low_rank_largest_eigenpairs(self, method, kwargs):
+        """Every method targets the largest eigenpairs by default."""
+        A = _diagonal_op(jnp.arange(1.0, 9.0))
+        terms = low_rank(A, rank=2, method=method, key=jax.random.key(0), **kwargs)
+        assert_allclose(terms.eigenvalues, [7.0, 8.0], rtol=1e-6)
+
     def test_low_rank_invalid_method(self):
         """low_rank raises for unknown method."""
         A = _diagonal_op(jnp.arange(1.0, 4.0))

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `lobpcg_standard`: LOBPCG eigensolver for the smallest or largest eigenpairs of a Hermitian operator, with an optional preconditioner (#TBD)
+- `randomized_nystrom`, a randomized Nyström low-rank approximation of a positive semi-definite operator, and `make_nystrom_preconditioner` built from it (#TBD)
+- `low_rank` accepts `method='lobpcg'` and `method='nystrom'` (#TBD)
+- `furax.tree.stacked_normal_like`, `stacked_concatenate`, `stacked_norm` and `stacked_orthonormalize` (#TBD)
+
+### Changed
+
+- `tree.stacked_gram` is computed as a matrix product, an order of magnitude faster on GPU for tens of vectors (#TBD)
+- `tree.stacked_gram` and `tree.stacked_combine` compute float32 products at full precision on GPU, instead of TF32 (#TBD)
+
 ## [0.17.0] - 2026-10-26
 
 The normal system of multi-observation map-making is evaluated per observation, a detector batch at a time, which replaces the streaming operators; common templates overlapping implicit ones are preconditioned under the marginalized weight. The per-interval polynomial template gives way to the spline drift, and the T2P and ground templates are always solved for with the map (#385, #389, #391).

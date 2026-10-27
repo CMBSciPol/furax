@@ -2,6 +2,7 @@ import contextlib
 import itertools
 
 import jax
+import numpy as np
 import pytest
 from equinox import tree_equal
 from jax import Array
@@ -589,14 +590,80 @@ def test_stacked_sharded() -> None:
             zeros = fx.tree.stacked_zeros_like(y, 3)
             combined = fx.tree.stacked_combine(X, c)
             mapped = fx.tree.stacked_map(lambda x: x + y, X, batch_size=2)
-            return zeros, combined, mapped, fx.tree.stacked_dot(X, y), fx.tree.stacked_gram(X, X)
+            normal = fx.tree.stacked_normal_like(y, 3, jax.random.key(3))
+            orthonormal = fx.tree.stacked_orthonormalize(X)
+            return (
+                zeros,
+                combined,
+                mapped,
+                fx.tree.stacked_dot(X, y),
+                fx.tree.stacked_gram(X, X),
+                normal,
+                orthonormal,
+                fx.tree.stacked_norm(X),
+                fx.tree.stacked_gram(jnp.ones((2, n, 2)), X),
+            )
 
-        zeros, combined, mapped, dots, gram = compute(X_s, y_s)
+        zeros, combined, mapped, dots, gram, normal, orthonormal, norms, mixed = compute(X_s, y_s)
 
     assert zeros.sharding.spec == P(None, 'i', None), zeros.sharding.spec
     assert combined.sharding.spec == P(None, 'i', None), combined.sharding.spec
     assert mapped.sharding.spec == P(None, 'i', None), mapped.sharding.spec
+    assert normal.sharding.spec == P(None, 'i', None), normal.sharding.spec
+    assert orthonormal.sharding.spec == P(None, 'i', None), orthonormal.sharding.spec
+    Q = np.asarray(orthonormal).reshape(3, -1)
+    assert_allclose(Q @ Q.T, np.eye(3), atol=1e-14)
+    assert_allclose(norms, jnp.linalg.norm(X.reshape(3, -1), axis=1), rtol=1e-12)
+    assert_allclose(mixed, jnp.ones((2, 2 * n)) @ X.reshape(3, -1).T, rtol=1e-12)
     assert_allclose(mapped, X + y, rtol=1e-12)
     assert_allclose(combined, jnp.einsum('kl,k...->l...', c, X), rtol=1e-12)
     assert_allclose(dots, X.reshape(3, -1) @ y.reshape(-1), rtol=1e-12)
     assert_allclose(gram, X.reshape(3, -1) @ X.reshape(3, -1).T, rtol=1e-12)
+
+
+def test_stacked_normal_like() -> None:
+    x = {
+        'a': jax.ShapeDtypeStruct((3,), jnp.float64),
+        'b': jax.ShapeDtypeStruct((2, 2), jnp.float64),
+    }
+    X = fx.tree.stacked_normal_like(x, 3, jax.random.key(1))
+    assert fx.tree.as_structure(X) == fx.tree.as_structure(fx.tree.stacked_zeros_like(x, 3))
+    rows = _dense(X)
+    assert not jnp.allclose(rows[0], rows[1])
+
+
+def test_stacked_concatenate() -> None:
+    X = _random_stacked(jax.random.key(0), 3, jnp.float64)
+    Y = _random_stacked(jax.random.key(1), 2, jnp.float64)
+    Z = fx.tree.stacked_concatenate([X, Y])
+    assert_array_equal(_dense(Z), jnp.concatenate([_dense(X), _dense(Y)]))
+
+
+@pytest.mark.parametrize('dtype', [jnp.float64, jnp.complex128])
+def test_stacked_norm(dtype) -> None:
+    X = _random_stacked(jax.random.key(0), 3, dtype)
+    norms = fx.tree.stacked_norm(X)
+    assert norms.dtype == jnp.float64
+    assert_allclose(norms, jnp.linalg.norm(_dense(X), axis=1))
+
+
+@pytest.mark.parametrize('dtype', [jnp.float64, jnp.complex128])
+def test_stacked_orthonormalize(dtype) -> None:
+    X = _random_stacked(jax.random.key(0), 4, dtype)
+    Q = fx.tree.stacked_orthonormalize(X)
+    assert_allclose(fx.tree.stacked_gram(Q, Q), jnp.eye(4), atol=1e-14)
+    # Same span: X is reproduced by its projection onto Q.
+    coefficients = fx.tree.stacked_gram(Q, X)
+    assert_allclose(_dense(fx.tree.stacked_combine(Q, coefficients)), _dense(X), atol=1e-12)
+
+
+def test_stacked_orthonormalize_rank_deficient() -> None:
+    """Directions lost to rank deficiency are zero pytrees, the others orthonormal."""
+    X = _random_stacked(jax.random.key(0), 3, jnp.float64)
+    third = fx.tree.add(fx.tree.stacked_get(X, 0), fx.tree.mul(1e-17, fx.tree.stacked_get(X, 1)))
+    X = fx.tree.stacked_concatenate([X, fx.tree.stack([third, fx.tree.zeros_like(third)])])
+    Q = fx.tree.stacked_orthonormalize(X)
+    norms = fx.tree.stacked_norm(Q)
+    assert_allclose(jnp.sort(norms), [0, 0, 1, 1, 1], atol=1e-14)
+    live = _dense(Q)[norms > 0.5]
+    assert_allclose(live @ live.T, jnp.eye(3), atol=1e-14)

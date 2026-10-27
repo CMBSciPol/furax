@@ -9,7 +9,7 @@ import jax
 from jax import Array
 from jax import numpy as jnp
 from jax.core import Tracer
-from jax.sharding import AbstractMesh, NamedSharding
+from jax.sharding import AbstractMesh, NamedSharding, PartitionSpec
 from jax.tree_util import PyTreeDef
 from jaxtyping import Key, Num, PyTree, ScalarLike
 
@@ -45,6 +45,10 @@ __all__ = [
     'stacked_combine',
     'stacked_dot',
     'stacked_gram',
+    'stacked_normal_like',
+    'stacked_concatenate',
+    'stacked_norm',
+    'stacked_orthonormalize',
 ]
 
 
@@ -370,8 +374,8 @@ def norm(x: PyTree[Num[Array, '...']]) -> Num[Array, '']:
 
 
 # Stacked pytrees: k vectors with the same structure, stacked along a new leading axis of every
-# leaf. The leading axis is never sharded; reductions over the other axes use the same
-# `sum(conj(x) * y)` form as `dot`, so they stay valid when those axes are sharded.
+# leaf. The leading axis is never sharded; reductions over the other axes stay valid when those
+# axes are sharded.
 
 
 def stack[P: ArrayPyTree](xs: Sequence[P]) -> P:
@@ -585,8 +589,12 @@ def stacked_combine(
         {'a': Array([[ 1.,  1.],
                [ 1., -1.]], dtype=float32)}
     """
-    # The contraction runs over the leading axis, which is never sharded.
-    return jax.tree.map(lambda leaf: jnp.tensordot(c, leaf, axes=(0, 0)), X)
+    # The contraction runs over the leading axis, which is never sharded. The full precision
+    # costs little in this memory-bound product, while the TF32 default of float32 products on
+    # GPU would leave combinations of orthonormal vectors orthonormal to only ~1e-3.
+    return jax.tree.map(
+        lambda leaf: jnp.tensordot(c, leaf, axes=(0, 0), precision=jax.lax.Precision.HIGHEST), X
+    )
 
 
 def stacked_dot(X: PyTree[Num[Array, 'k ...']], y: PyTree[Num[Array, '...']]) -> Num[Array, ' k']:
@@ -632,14 +640,126 @@ def stacked_gram(
         Array([[1., 1.],
                [1., 2.]], dtype=float32)
     """
+    # A matrix product, an order of magnitude faster than a broadcast product reduced over the
+    # vector axes for tens of pytrees. When these contracted axes are sharded over explicit mesh
+    # axes, which requires a mesh context, the output sharding must be given: replicated.
+    out_sharding = None if jax.sharding.get_abstract_mesh().empty else PartitionSpec()
 
     def gram(X_leaf: Array, Y_leaf: Array) -> Array:
-        # The broadcast product is fused into the reduction: no (k, l, ...) temporary.
-        product = jnp.conj(X_leaf)[:, None] * Y_leaf[None]
-        return jnp.sum(product, axis=tuple(range(2, product.ndim)))
+        return jnp.einsum(
+            'i...,j...->ij',
+            jnp.conj(X_leaf),
+            Y_leaf,
+            precision=jax.lax.Precision.HIGHEST,
+            out_sharding=out_sharding,
+        )
 
     XY = jax.tree.map(gram, X, Y)
     return sum(jax.tree.leaves(XY), start=jnp.array(0))
+
+
+def stacked_normal_like[P: ArrayPyTree](x: P, k: int, key: Key[Array, '']) -> P:
+    """Returns k pytrees of normal values with the structure of x, stacked along a new leading axis.
+
+    The leaves are placed like `stacked_zeros_like(x, k)`: as the leaves of x, with the new
+    leading axis replicated.
+
+    Args:
+        x: The pytree of array-like leaves with `shape` and `dtype` attributes, whose structure
+            is repeated.
+        k: The number of stacked pytrees.
+        key: The random key to use.
+
+    Examples:
+        >>> X = stacked_normal_like({'a': jax.ShapeDtypeStruct((2,), jnp.float32)}, 3,
+        ...                         jax.random.key(0))
+        >>> X['a'].shape
+        (3, 2)
+    """
+    # The zeros carry the shape and placement of the output, and are dead code under jit.
+    return normal_like(stacked_zeros_like(x, k), key)
+
+
+def stacked_concatenate[P: ArrayPyTree](Xs: Sequence[P]) -> P:
+    """Concatenates stacked pytrees with the same structure along their leading axis.
+
+    Args:
+        Xs: The stacked pytrees, of possibly different numbers of pytrees.
+
+    Examples:
+        >>> stacked_concatenate([{'a': jnp.ones((2, 3))}, {'a': jnp.zeros((1, 3))}])
+        {'a': Array([[1., 1., 1.],
+               [1., 1., 1.],
+               [0., 0., 0.]], dtype=float32)}
+    """
+    return jax.tree.map(lambda *leaves: jnp.concatenate(leaves), *Xs)
+
+
+def stacked_norm(X: PyTree[Num[Array, 'k ...']]) -> Num[Array, ' k']:
+    """Norms of the pytrees of a stacked pytree.
+
+    Returns the array of `norm(X_i)`, real-valued for complex leaves.
+
+    Args:
+        X: The stacked pytree of k pytrees.
+
+    Examples:
+        >>> stacked_norm({'a': jnp.array([[3., 4.], [1., 0.]])})
+        Array([5., 1.], dtype=float32)
+    """
+    squares = jax.tree.map(
+        lambda leaf: jnp.sum(jnp.abs(leaf) ** 2, axis=tuple(range(1, leaf.ndim))), X
+    )
+    return jnp.sqrt(sum(jax.tree.leaves(squares), start=jnp.array(0)))
+
+
+def stacked_orthonormalize[P: ArrayPyTree](X: P) -> P:
+    """Orthonormal basis of the span of the pytrees of a stacked pytree.
+
+    Returns as many pytrees as X, spanning the same space: the nonzero ones are orthonormal, and
+    each direction lost to the numerical rank deficiency of X is a zero pytree. The basis is not
+    obtained by Gram-Schmidt: its i-th pytree is in general a combination of all the pytrees of
+    X, not only of the first i.
+
+    The basis is computed from the Gram matrix of X (SVQB), so the work on the pytrees is two
+    Gram matrices and two linear combinations, which stay valid when the leaves are sharded.
+
+    Args:
+        X: The stacked pytree of k pytrees.
+
+    Examples:
+        >>> Q = stacked_orthonormalize({'a': jnp.array([[1., 1.], [2., 2.], [1., 0.]])})
+        >>> stacked_norm(Q).round(4)
+        Array([0., 1., 1.], dtype=float32)
+    """
+    # One pass leaves an orthogonality error growing with the condition number of the directions
+    # kept, which is at most 1/eps; a second pass on a nearly orthonormal basis removes it.
+    for _ in range(2):
+        X = _svqb(X)
+    return X
+
+
+def _svqb[P: ArrayPyTree](X: P) -> P:
+    """One SVQB pass, dropping the directions below eps (zero pytrees)."""
+    T, _ = _svqb_coefficients(stacked_gram(X, X))
+    return stacked_combine(X, T)
+
+
+def _svqb_coefficients(
+    G: Num[Array, 'k k'], rtol: float | None = None
+) -> tuple[Num[Array, 'k k'], Array]:
+    r"""Coefficients T of an orthonormal basis X T of the span of X, from its Gram matrix G.
+
+    $T = D V \Lambda^{-1/2}$, from $D G D = V \Lambda V^H$ with unit diagonal. The directions of
+    eigenvalues below `rtol` (default eps) times the largest are dropped: their columns of T are
+    zero, and the returned mask, of the kept columns, is False.
+    """
+    diagonal = jnp.real(jnp.diagonal(G))
+    scale = jnp.where(diagonal > 0, diagonal, 1) ** -0.5
+    w, V = jnp.linalg.eigh(scale[:, None] * G * scale[None, :])
+    keep = w > (jnp.finfo(w.dtype).eps if rtol is None else rtol) * w[-1]
+    inv_sqrt_w = jnp.where(keep, jnp.where(keep, w, 1) ** -0.5, 0)
+    return scale[:, None] * V * inv_sqrt_w[None, :], keep
 
 
 def matvec(

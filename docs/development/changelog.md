@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `CGResult.residuals` records the residual after the last step of a solve that runs out of steps, and so does `solver_stats.json` (#404)
+- `template_gram` assembles the Gram of common amplitudes under a marginalized weight dense, inverted exactly, up to `max_dense` amplitudes, so that CG no longer stalls on heavily masked observations (#393)
+- `factor` preconditions the border of a two-level common block, such as the T2P field next to the common mode, under the marginalized weight (#393)
 
 ## [0.17.1] - 2026-10-28
 

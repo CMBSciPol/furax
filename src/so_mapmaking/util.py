@@ -53,8 +53,15 @@ def detector_selection(wafer: str | None, band: str | None) -> dict[str, str] | 
 
 
 def resolve_obsids(obsid: list[str] | None, obsids_file: Path | None) -> list[str]:
+    """The observation ids given on the command line, or else in the file, one per line.
+
+    An id given more than once is kept once, at its first position: an observation listed twice
+    would otherwise enter the map twice.
+    """
     if obsid:
-        return obsid
-    if obsids_file is not None:
-        return [line.strip() for line in obsids_file.read_text().splitlines() if line.strip()]
-    return []
+        obsids = obsid
+    elif obsids_file is not None:
+        obsids = [line.strip() for line in obsids_file.read_text().splitlines() if line.strip()]
+    else:
+        obsids = []
+    return list(dict.fromkeys(obsids))

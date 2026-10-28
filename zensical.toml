@@ -15,6 +15,7 @@ nav = [
       "user_guide/getting_started.md",
       "user_guide/data_structures.md",
       "user_guide/operators.md",
+      "user_guide/so_mapmaking.md",
   ] },
   { "Examples" = [
       "examples/component_separation.md",

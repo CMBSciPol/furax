@@ -1,13 +1,14 @@
-import atexit
-import shutil
-import tempfile
 from pathlib import Path
-from typing import Any
 
 from cyclopts import App
 
-from . import _preproc as pp
-from .util import detector_selection, resolve_obsids, setup_logger
+from .util import (
+    enable_x64,
+    obsdir_observations,
+    preproc_observations,
+    resolve_obsids,
+    setup_logger,
+)
 
 app = App(help='Run the mapmaker on SO observations, loaded straight from the preproc db.')
 
@@ -47,31 +48,22 @@ def run(
             ``init_config``.
         cache_dir: Directory of preprocessed observations (preproc-db mode). The first run saves
             each observation there once loaded, and later runs with the same preprocessing load
-            it back instead of preprocessing again. Delete it after rerunning the preprocessing.
+            it back instead of preprocessing again. With `--wafer all`, an observation is saved
+            with its wafers joined, and serves only runs with `--wafer all`. Delete the cache
+            after rerunning the preprocessing.
         loglevel: Logging level (debug, info, warning, error).
         log_path: Log output path.
     """
-    # Defer JAX (and the mapmaker stack it pulls in) to call time so that
-    # merely importing this module stays cheap and backend-free.
+    # Before importing furax, so that jax_healpy does not warn; the config sets the precision below
+    enable_x64()
+
+    # Deferred, so that `--help` stays fast
     import jax
 
-    # MapMakingConfig.double_precision defaults to True, and the mapmaking config (which could
-    # override it) isn't available until after the furax imports below -- so assume the default
-    # here to avoid jax_healpy's import-time "not using 64-bit precision" warning firing on a
-    # flag we're about to set anyway; corrected below once the actual config is loaded.
-    jax.config.update('jax_enable_x64', True)
-
     from furax.distributed import maybe_init
+    from furax.mapmaking import MapMakingConfig, MultiObservationMapMaker
 
-    maybe_init()  # must run before the JAX backend is touched
-
-    from furax.interfaces.sotodlib import LazyPreprocSOTODLibObservation, LazySOTODLibObservation
-    from furax.mapmaking import (
-        AbstractLazyObservation,
-        MapMakingConfig,
-        MultiObservationMapMaker,
-    )
-
+    maybe_init()  # before the first use of the JAX backend, jax.process_index() below
     logger = setup_logger(loglevel, log_path, process_index=jax.process_index())
 
     if (init_config is None) == (obsdir is None):
@@ -90,55 +82,19 @@ def run(
     jax.config.update('jax_enable_x64', config.double_precision)
 
     obsids = resolve_obsids(obsid, obsids_file)
-    observations: list[AbstractLazyObservation[Any]]
-    outdir = (outdir or Path.cwd()).resolve()
-
     if init_config is not None:
-        if not obsids:
-            logger.warning('no observations to map')
-            return
-        # Normalise the configs (cwd-sensitive paths -> absolute) instead of chdir'ing the whole
-        # process: sotodlib then loads them from anywhere, and init/proc may live under different
-        # roots. The temp copies must outlive every lazy read, so clean them up only at exit.
-        stage_dir = Path(tempfile.mkdtemp(prefix='furax-so-map-'))
-        atexit.register(shutil.rmtree, stage_dir, ignore_errors=True)
-        init_config = pp.normalize_config(init_config, stage_dir)
-        proc_config = pp.normalize_config(proc_config, stage_dir) if proc_config else None
-        join_groups = wafer == 'all'
-        det_select = detector_selection(None if join_groups else wafer, band)
-        observations = [
-            LazyPreprocSOTODLibObservation(
-                obs_id,
-                init_config,
-                proc_config,
-                det_select,
-                sotodlib_config=config.sotodlib,
-                join_groups=join_groups,
-                cache_dir=cache_dir,
-            )
-            for obs_id in obsids
-        ]
+        observations = preproc_observations(
+            obsids, init_config, proc_config, wafer, band, config.sotodlib, cache_dir
+        )
     else:
         assert obsdir is not None
-        if obsids:
-            obsfiles = []
-            for obs_id in obsids:
-                obsfile = obsdir / f'{obs_id}.h5'
-                if not obsfile.exists():
-                    logger.warning(f'{obsfile} not found, skipping')
-                    continue
-                obsfiles.append(obsfile)
-        else:
-            obsfiles = sorted(obsdir.glob('*.h5'))
-        if len(obsfiles) == 0:
-            logger.warning('no observations to map')
-            return
-        observations = [
-            LazySOTODLibObservation(f, sotodlib_config=config.sotodlib) for f in obsfiles
-        ]
-
+        observations = obsdir_observations(obsdir, obsids, config.sotodlib)
+    if not observations:
+        logger.warning('no observations to map')
+        return
     logger.info(f'found {len(observations)} observations')
 
+    outdir = (outdir or Path.cwd()).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
 
     maker = MultiObservationMapMaker(observations, config=config, logger=logger)

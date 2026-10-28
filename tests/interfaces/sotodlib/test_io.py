@@ -249,13 +249,15 @@ def missing_group(monkeypatch):
 
 
 @pytest.mark.usefixtures('missing_group')
-def test_lazy_preproc_join_groups_skips_a_group_without_record(tmp_path) -> None:
+def test_lazy_preproc_join_groups_skips_a_group_without_record(tmp_path, caplog) -> None:
     """A group with no preprocessing record is left out, not a reason to lose the observation."""
     config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
     lazy = LazyPreprocSOTODLibObservation(OBS_IDS[1], config, join_groups=True)
 
     assert lazy.probe_shape() == (OBS_NDET[1] // 2, OBS_NSAMPLE[1], 0)
     assert lazy.get_data().n_detectors == OBS_NDET[1] // 2
+    # the group is reported in plain Python values, not as numpy scalars
+    assert "no preprocessing record for {'detset': 'detset0_1'}" in caplog.text
 
 
 @pytest.mark.usefixtures('missing_group')
@@ -361,7 +363,7 @@ def test_lazy_preproc_cache_unreadable_file(tmp_path, caplog) -> None:
     config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
     lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config, cache_dir=tmp_path / 'cache')
     expected = lazy.get_data().get_tods()
-    lazy._cache_path.write_bytes(b'not hdf5')
+    lazy.cache_path.write_bytes(b'not hdf5')
 
     assert_array_equal(lazy.get_data().get_tods(), expected)
     assert 'cannot read' in caplog.text

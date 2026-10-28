@@ -80,6 +80,7 @@ changelog = 'https://furax.readthedocs.io/en/stable/development/changelog/'
 
 [project.scripts]
 furax-so-atomic-map = 'furax.interfaces.sotodlib.mapmaker:main_cli'
+furax-so-cache = 'so_mapmaking.cache:app'
 furax-so-map = 'so_mapmaking.run:app'
 furax-so-stage = 'so_mapmaking.stage:app'
 

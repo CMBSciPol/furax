@@ -618,7 +618,13 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
     the files records these inputs. The other `SotodlibConfig` settings act after loading, so
     runs that differ only in them share a cache. The databases the configs point to, the
     preprocessing archive among them, are not part of the key: after preprocessing again under
-    the same configs, delete the cache.
+    the same configs, delete the cache. A config staged by `furax-so-stage` is keyed as the
+    config it was staged from, so that staged and unstaged runs share a cache.
+
+    With `join_groups`, a file holds the joined observation, without the groups skipped when it
+    was loaded. Since `join_groups` and the detector selection are part of the key, the joined
+    observation and each group on its own are cached apart: neither is assembled from, or cut
+    out of, the other.
 
     The files are written to a temporary name and renamed into place, so concurrent runs can
     share a cache and never read a partial file. A cached file that cannot be read is loaded
@@ -649,10 +655,20 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
     def name(self) -> str:
         return self.observation_id
 
-    def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
+    @functools.cached_property
+    def cache_path(self) -> Path | None:
+        """The file the observation is cached in, `None` without `cache_dir`.
+
+        Its directory is the cache key. The file need not exist yet.
+        """
         if self.cache_dir is None:
+            return None
+        return self.cache_dir / _digest(self._cache_inputs) / f'{self.observation_id}.h5'
+
+    def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
+        path = self.cache_path
+        if path is None:
             return self._load()
-        path = self._cache_path
         if path.exists():
             # the cached observation is already downsampled
             config = replace(self._sotodlib_config, downsample=1)
@@ -730,11 +746,6 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         )
 
     @functools.cached_property
-    def _cache_path(self) -> Path:
-        assert self.cache_dir is not None
-        return self.cache_dir / _digest(self._cache_inputs) / f'{self.observation_id}.h5'
-
-    @functools.cached_property
     def _cache_inputs(self) -> dict[str, Any]:
         """The inputs that determine the loaded data, from which the cache key is derived."""
         paths = [self.init_config] + ([self.proc_config] if self.proc_config else [])
@@ -754,9 +765,15 @@ def _canonical_config(path: Path) -> dict[str, Any]:
     """A preprocessing config, with the paths sotodlib resolves against the cwd made absolute.
 
     Two configs with the same text but relative paths read different archives from different
-    working directories, so they must not share a cache key.
+    working directories, so they must not share a cache key. A config written by
+    `furax-so-stage` reads node-local copies of the databases of the config it names as its
+    source, and is that config here.
     """
     doc = yaml.safe_load(path.read_text())
+    # the entry so_mapmaking.stage writes in the configs it stages
+    source = doc.get('furax_staged_from')
+    if isinstance(source, str):
+        return _canonical_config(Path(source))
     if isinstance(doc.get('context_file'), str):
         doc['context_file'] = Path(doc['context_file']).resolve().as_posix()
     archive = doc.get('archive')
@@ -817,7 +834,14 @@ def _group_selections(
     selection = detector_selection or {}
     selections = []
     for values in groups:
-        group = dict(zip(group_by, values, strict=True))
+        # sotodlib gives numpy scalars: as Python values, the selections print plainly in logs
+        group = {
+            _python_scalar(k): _python_scalar(v) for k, v in zip(group_by, values, strict=True)
+        }
         if all(v in np.atleast_1d(selection.get(k, v)) for k, v in group.items()):
             selections.append(selection | group)
     return selections
+
+
+def _python_scalar(value: Any) -> Any:
+    return value.item() if isinstance(value, np.generic) else value

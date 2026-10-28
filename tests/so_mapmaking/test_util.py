@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from so_mapmaking.util import resolve_obsids, setup_logger
+from so_mapmaking.util import obsdir_observations, resolve_obsids, setup_logger
 
 SOTODLIB_LOGGERS = ('sotodlib', 'sotodlib.core.metadata.loader')
 
@@ -46,3 +46,16 @@ def test_resolve_obsids_keeps_each_id_once(tmp_path, from_file: bool) -> None:
     else:
         resolved = resolve_obsids(obsids, None)
     assert resolved == ['obs_2', 'obs_1', 'obs_3']
+
+
+@pytest.mark.parametrize(
+    ('obsids', 'expected'),
+    [(['obs_b', 'obs_missing', 'obs_a'], ['obs_b', 'obs_a']), ([], ['obs_a', 'obs_b'])],
+)
+def test_obsdir_observations(tmp_path, obsids: list[str], expected: list[str]) -> None:
+    """The files of the given ids that exist, or else every file of the directory."""
+    for name in ('obs_b', 'obs_a'):
+        (tmp_path / f'{name}.h5').touch()
+
+    observations = obsdir_observations(tmp_path, obsids, None)
+    assert [obs.name for obs in observations] == expected

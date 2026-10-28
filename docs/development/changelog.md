@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `LazyPreprocSOTODLibObservation` takes `cache_dir` (`furax-so-map --cache-dir`): an on-disk cache of preprocessed observations, shared by runs with the same preprocessing (#395)
+- `furax-so-cache` to manage the observation cache; `LazyPreprocSOTODLibObservation.cache_path` (#396)
+- User guide page "Mapping SO Observations" (#396)
 
 ### Removed
 
@@ -20,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The wheel now ships `so_mapmaking` (imported by `furax-so-*` scripts) (#394)
 - Importing `furax` no longer starts the JAX backend (#397)
 - `furax-so-map` deduplicates observations (#398)
+- Configs staged by `furax-so-stage` share the observation cache of their source configs (#396)
 
 ## [0.17.0] - 2026-10-26
 

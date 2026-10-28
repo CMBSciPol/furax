@@ -13,11 +13,15 @@ Run it once per node in the slurm prologue (for multi-node, use --ntasks-per-nod
     srun ... --init-config "${CFGS[0]}" --proc-config "${CFGS[1]}"
 
 Prints the patched init and proc config paths (one per line) to stdout; diagnostics go to stderr.
+
+Each patched config names its source in a `furax_staged_from` entry, so that the observation cache
+of `furax-so-map --cache-dir` keys it as its source: staged and unstaged runs share the cache.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import sqlite3
 import sys
@@ -29,6 +33,10 @@ from cyclopts import App
 from . import _preproc as pp
 
 app = App(help='Stage a preproc run sqlite indices to node-local storage and emit patched configs.')
+
+# Entry of a patched config naming its source config, read under the same name by the cache key
+# of LazyPreprocSOTODLibObservation (furax.interfaces.sotodlib.observation._canonical_config)
+_STAGED_FROM = 'furax_staged_from'
 
 
 def _log(msg: str) -> None:
@@ -119,6 +127,11 @@ def stage_config(stager: Stager, config_path: Path) -> Path:
 
     patched_config = stager.dest / f'{config_path.stem}.yaml'
     patched_config_text = stager.patch_text(config_text, config_repl)
+    # Names the source, for the observation cache to key the staged config as its source.
+    # A config staged again keeps the name of the first source.
+    if _STAGED_FROM not in yaml.safe_load(config_text):
+        source = json.dumps(config_path.as_posix())  # a quoted string is valid yaml
+        patched_config_text = f'{_STAGED_FROM}: {source}\n{patched_config_text}'
     patched_config.write_text(patched_config_text)
 
     # Warn on any path the run will still resolve against its cwd: with the patched config living in

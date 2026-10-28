@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from so_mapmaking.util import setup_logger
+from so_mapmaking.util import resolve_obsids, setup_logger
 
 SOTODLIB_LOGGERS = ('sotodlib', 'sotodlib.core.metadata.loader')
 
@@ -33,3 +33,16 @@ def test_setup_logger_debug_keeps_sotodlib() -> None:
 
     assert logging.getLogger('sotodlib').isEnabledFor(logging.INFO)
     assert logging.getLogger('sotodlib.core.metadata.loader').isEnabledFor(logging.ERROR)
+
+
+@pytest.mark.parametrize('from_file', [False, True])
+def test_resolve_obsids_keeps_each_id_once(tmp_path, from_file: bool) -> None:
+    obsids = ['obs_2', 'obs_1', 'obs_2', 'obs_3', 'obs_1']
+    obsids_file = tmp_path / 'obsids.txt'
+    obsids_file.write_text('\n'.join(obsids) + '\n\n')
+
+    if from_file:
+        resolved = resolve_obsids(None, obsids_file)
+    else:
+        resolved = resolve_obsids(obsids, None)
+    assert resolved == ['obs_2', 'obs_1', 'obs_3']

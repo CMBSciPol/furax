@@ -19,14 +19,14 @@ _C = 2.998e8  # speed of light, m/s
 
 # Pauli-like basis for the Jones → Mueller formula:
 #   M[i,j] = Re( Tr(Σᵢ J Σⱼ J†) ) / 2
-_SIGMA = jnp.array(
+_SIGMA = np.array(
     [
         [[1, 0], [0, 1]],  # I
         [[1, 0], [0, -1]],  # Q
         [[0, 1], [1, 0]],  # U
         [[0, -1j], [1j, 0]],  # V
     ],
-    dtype=jnp.complex128,
+    dtype=np.complex128,
 )
 
 __all__ = [

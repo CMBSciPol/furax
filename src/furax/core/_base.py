@@ -20,6 +20,7 @@ from furax._config import Config, ConfigState
 from furax.tree import add as tree_add
 from furax.tree import zeros_like
 
+from ._ensembles import ListEnsemble, map_reduce
 from .utils import register_dataclass_with_keys
 
 if TYPE_CHECKING:
@@ -483,9 +484,9 @@ class AdditionOperator(AbstractLinearOperator):
         contributions = (
             operands[group[0]](x)
             if len(group) == 1
-            else _sequential_sum(
-                [operands[i] for i in group], lambda op: op(x), operands[group[0]].out_structure
-            )
+            else map_reduce(
+                lambda op, v: op(v), ListEnsemble([operands[i] for i in group]), 'sum', x
+            )[0]
             for group in _group_by_signature(operands)
         )
         return functools.reduce(tree_add, contributions)
@@ -551,44 +552,6 @@ class AdditionOperator(AbstractLinearOperator):
             *args,
             is_leaf=lambda x: isinstance(x, AbstractLinearOperator),
         )
-
-
-def _sequential_sum(
-    members: list[PyTree[Any]],
-    apply: Callable[[PyTree[Any]], PyTree[Array]],
-    out_structure: PyTree[jax.ShapeDtypeStruct],
-) -> PyTree[Array]:
-    """Sum `apply(member)` over members of one structure, one at a time, through one traced body.
-
-    The members are pytrees -- an operator, or an operator paired with its input -- that share
-    their treedef and their non-array leaves and only differ by the values of their arrays, as
-    the members of a `_static_signature` group do.
-
-    `lax.switch` acts as a multiplexer: like the electronic component, it routes one of N inputs
-    to a single output according to a selector. The selector is the loop index, the inputs are
-    the array leaves of each member, and the output feeds the one compute body. Each branch only
-    selects the arrays of one member, so nothing is computed in it and nothing is copied or
-    stacked; the compute body appears once in the compiled program and reuses its buffers from
-    one iteration to the next. This differs from switching between N bodies, which compiles N
-    copies of the computation. Peak memory is that of one member.
-    """
-    treedef = jax.tree.structure(members[0])
-    per_member = [jax.tree.leaves(member) for member in members]
-    template = per_member[0]
-    is_array = [_is_array(leaf) for leaf in template]
-    arrays = [[leaf for leaf, flag in zip(leaves, is_array) if flag] for leaves in per_member]
-    branches = [lambda k=k: arrays[k] for k in range(len(members))]
-
-    def rebuild(selected: list[Array]) -> PyTree[Any]:
-        it = iter(selected)
-        leaves = [next(it) if flag else leaf for leaf, flag in zip(template, is_array)]
-        return jax.tree.unflatten(treedef, leaves)
-
-    def body(i: Array, acc: PyTree[Array]) -> PyTree[Array]:
-        member = rebuild(jax.lax.switch(i, branches)) if arrays[0] else members[0]
-        return tree_add(acc, apply(member))
-
-    return jax.lax.fori_loop(0, len(members), body, zeros_like(out_structure))
 
 
 def _group_by_signature(operands: list[AbstractLinearOperator]) -> list[list[int]]:

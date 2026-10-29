@@ -19,27 +19,53 @@ from ._base import (
     _group_by_signature,
     structure_equal,
 )
-from ._ensembles import ListEnsemble, map_reduce
+from ._ensembles import Ensemble, ListEnsemble, StackedEnsemble, lift, map_reduce
 from .rules import AbstractCompositionRule, NoReduction
 
 
 class AbstractBlockOperator(AbstractLinearOperator, ABC):
+    """Base class for the block composites.
+
+    `blocks` is a pytree of operators or an [`Ensemble`][furax.core.Ensemble] of operators. An
+    ensemble closes into the composite through the engine, with the composite deciding which side
+    carries the member index: its stacked inputs and outputs are pytrees whose array leaves carry
+    a leading member axis.
+    """
+
     blocks: PyTree[AbstractLinearOperator]
 
-    def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:
+    def __init__(self, blocks: PyTree[AbstractLinearOperator] | Ensemble) -> None:
         object.__setattr__(self, 'blocks', blocks)
-        super().__init__(in_structure=self._tree_map(lambda op: op.in_structure))
+        if isinstance(blocks, Ensemble):
+            structure = self._ensemble_in_structure(blocks.fetch(0))
+        else:
+            structure = self._tree_map(lambda op: op.in_structure)
+        super().__init__(in_structure=structure)
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        if isinstance(self.blocks, Ensemble):
+            return self._ensemble_out_structure(self.blocks.fetch(0))
         return self._tree_map(lambda op: op.out_structure)
 
     def reduce(self) -> AbstractLinearOperator:
+        if isinstance(self.blocks, Ensemble):
+            return type(self)(lift(lambda op: op.reduce(), self.blocks))
         return type(self)(self._tree_map(lambda op: op.reduce()))
+
+    def _ensemble_in_structure(self, member: AbstractLinearOperator) -> PyTree[Any]:
+        """The input structure of the composite over an ensemble, from one member's."""
+        return _stacked_structure(member.in_structure, self.blocks.size)
+
+    def _ensemble_out_structure(self, member: AbstractLinearOperator) -> PyTree[Any]:
+        """The output structure of the composite over an ensemble, from one member's."""
+        return _stacked_structure(member.out_structure, self.blocks.size)
 
     @property
     def block_leaves(self) -> list[AbstractLinearOperator]:
         """Returns the flat list of operators."""
+        if isinstance(self.blocks, Ensemble):
+            return [self.blocks.fetch(i) for i in range(self.blocks.size)]
         return jax.tree.leaves(self.blocks, is_leaf=lambda x: isinstance(x, AbstractLinearOperator))
 
     def _tree_map(self, f: Callable[..., Any], *args: Any) -> Any:
@@ -81,8 +107,11 @@ class BlockRowOperator(AbstractBlockOperator):
         Array([ 6., 12.], dtype=float32)
     """
 
-    def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:
+    def __init__(self, blocks: PyTree[AbstractLinearOperator] | Ensemble) -> None:
         super().__init__(blocks)
+        if isinstance(blocks, Ensemble):
+            # the members of an ensemble share their structures
+            return
         try:
             operators = self.block_leaves
             ref_structure = operators[0].out_structure
@@ -103,6 +132,9 @@ class BlockRowOperator(AbstractBlockOperator):
             )
 
     def mv(self, x: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
+        if isinstance(self.blocks, Ensemble):
+            zipped = _zip_input(self.blocks, x)
+            return map_reduce(lambda member: member[0](member[1]), zipped, 'sum')[0]
         treedef = jax.tree.structure(
             self.blocks, is_leaf=lambda op: isinstance(op, AbstractLinearOperator)
         )
@@ -121,10 +153,17 @@ class BlockRowOperator(AbstractBlockOperator):
         return functools.reduce(lambda a, b: add(a, b), contributions)
 
     def transpose(self) -> AbstractLinearOperator:
+        if isinstance(self.blocks, Ensemble):
+            return BlockColumnOperator(lift(lambda op: op.T, self.blocks))
         return BlockColumnOperator(self._tree_map(lambda op: op.T))
+
+    def _ensemble_out_structure(self, member: AbstractLinearOperator) -> PyTree[Any]:
+        return member.out_structure  # summed over the members
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        if isinstance(self.blocks, Ensemble):
+            return self.blocks.fetch(0).out_structure
         return self.block_leaves[0].out_structure
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
@@ -177,12 +216,22 @@ class BlockDiagonalOperator(AbstractBlockOperator):
         super().__init__(blocks)
 
     def mv(self, x: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
+        if isinstance(self.blocks, Ensemble):
+            zipped = _zip_input(self.blocks, x)
+            return map_reduce(lambda member: member[0](member[1]), zipped, 1)[0]
         return self._tree_map(lambda op, vect: op.mv(vect), x)
 
     def transpose(self) -> AbstractLinearOperator:
+        if isinstance(self.blocks, Ensemble):
+            return BlockDiagonalOperator(lift(lambda op: op.T, self.blocks))
         return BlockDiagonalOperator(self._tree_map(lambda op: op.T))
 
     def inverse(self) -> AbstractLinearOperator:
+        if isinstance(self.blocks, Ensemble):
+            member = self.blocks.fetch(0)
+            if not structure_equal(member.in_structure, member.out_structure):
+                return super().inverse()
+            return BlockDiagonalOperator(lift(lambda op: op.I, self.blocks))
         # if some of the blocks are not square, let's defer to the default inverse method
         if not jax.tree.all(
             self._tree_map(lambda op: structure_equal(op.in_structure, op.out_structure))
@@ -197,7 +246,8 @@ class BlockDiagonalOperator(AbstractBlockOperator):
         """BlockDiagonalOperator([I, I, ...]) -> I."""
         op = super().reduce()
         assert isinstance(op, BlockDiagonalOperator)
-        if all(isinstance(block, IdentityOperator) for block in op.block_leaves):
+        witnesses = [op.blocks.fetch(0)] if isinstance(op.blocks, Ensemble) else op.block_leaves
+        if all(isinstance(block, IdentityOperator) for block in witnesses):
             return IdentityOperator(in_structure=self.in_structure)
         return op
 
@@ -236,8 +286,11 @@ class BlockColumnOperator(AbstractBlockOperator):
          'c': Array([1., 2.], dtype=float32)}
     """
 
-    def __init__(self, blocks: PyTree[AbstractLinearOperator]) -> None:
+    def __init__(self, blocks: PyTree[AbstractLinearOperator] | Ensemble) -> None:
         super().__init__(blocks)
+        if isinstance(blocks, Ensemble):
+            # the members of an ensemble share their structures
+            return
         try:
             operators = self.block_leaves
             ref_structure = operators[0].in_structure
@@ -259,10 +312,17 @@ class BlockColumnOperator(AbstractBlockOperator):
             )
 
     def mv(self, x: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
+        if isinstance(self.blocks, Ensemble):
+            return map_reduce(lambda op, v: op(v), self.blocks, 1, x)[0]
         return self._tree_map(lambda op: op.mv(x))
 
     def transpose(self) -> AbstractLinearOperator:
+        if isinstance(self.blocks, Ensemble):
+            return BlockRowOperator(lift(lambda op: op.T, self.blocks))
         return BlockRowOperator(self._tree_map(lambda op: op.T))
+
+    def _ensemble_in_structure(self, member: AbstractLinearOperator) -> PyTree[Any]:
+        return member.in_structure  # every member takes the input whole
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
         return jnp.vstack([op.as_matrix() for op in self.block_leaves])
@@ -276,6 +336,14 @@ class AbstractBlockDiagonalRule(AbstractCompositionRule):
     ) -> list[AbstractLinearOperator]:
         assert isinstance(left, AbstractBlockOperator)  # ty assert
         assert isinstance(right, AbstractBlockOperator)  # ty assert
+        if isinstance(left.blocks, Ensemble) or isinstance(right.blocks, Ensemble):
+            # the rules keep their statement over ensembles, composed member-wise by lifting
+            if type(left.blocks) is not type(right.blocks):
+                raise NoReduction
+            if left.blocks.size != right.blocks.size:
+                raise NoReduction
+            composed = lift(lambda l, r: l @ r, left.blocks, right.blocks)
+            return [self.reduced_class(composed).reduce()]
         return [self.reduced_class(left._tree_map(lambda l, r: l @ r, right.blocks)).reduce()]
 
 
@@ -387,6 +455,8 @@ class BlockSelectBlockDiagonalRule(AbstractCompositionRule):
     ) -> list[AbstractLinearOperator]:
         assert isinstance(left, BlockSelectOperator)  # ty assert
         assert isinstance(right, BlockDiagonalOperator)  # ty assert
+        if isinstance(right.blocks, Ensemble):
+            raise NoReduction
         try:
             block = right.blocks[left.key]
         except (IndexError, KeyError, TypeError):
@@ -395,3 +465,27 @@ class BlockSelectBlockDiagonalRule(AbstractCompositionRule):
             # the key selects a subtree of blocks, not a single one
             raise NoReduction
         return [block, BlockSelectOperator(left.key, in_structure=right.in_structure)]
+
+
+def _zip_input(ensemble: Ensemble, x: PyTree[Any]) -> Ensemble:
+    """Members paired with their slice of a stacked input: member i becomes `(member, x[i])`."""
+    if isinstance(ensemble, StackedEnsemble):
+        strides = tuple(ensemble._leaves_and_strides()[1]) + (1,) * len(jax.tree.leaves(x))
+        return StackedEnsemble(
+            ensemble.size,
+            (ensemble.stacked, x),
+            strides,
+            valid=ensemble.valid,
+            policy=ensemble.policy,
+        )
+    assert isinstance(ensemble, ListEnsemble)  # ty assert
+    members = [
+        (member, jax.tree.map(lambda leaf, i=i: leaf[i], x))
+        for i, member in enumerate(ensemble.members)
+    ]
+    return ListEnsemble(members, valid=ensemble.valid, policy=ensemble.policy)
+
+
+def _stacked_structure(structure: PyTree[jax.ShapeDtypeStruct], n: int) -> PyTree[Any]:
+    """A structure with a leading member axis on every array leaf."""
+    return jax.tree.map(lambda s: jax.ShapeDtypeStruct((n, *s.shape), s.dtype), structure)

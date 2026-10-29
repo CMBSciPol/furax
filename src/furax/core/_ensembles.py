@@ -21,7 +21,7 @@ The ensemble's data can be held in three ways, which decide what the engine may 
 
 import dataclasses
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -32,6 +32,7 @@ import numpy as np
 from jax.extend.core import Literal as JaxprLiteral
 from jax.extend.core import jaxpr_as_fun
 from jax.sharding import PartitionSpec as P
+from jax.tree_util import GetAttrKey, register_pytree_with_keys
 from jaxtyping import Array, Bool, Int, PyTree
 
 __all__ = [
@@ -995,3 +996,50 @@ def _abstract(leaf: Any) -> Any:
 
 def _is_array(leaf: Any) -> bool:
     return isinstance(leaf, jax.Array | np.ndarray)
+
+
+# The resident ensembles are pytree nodes, so an operator can hold one where it holds a pytree of
+# operators: its arrays are leaves of the operator, and the sizes, strides and policy are static.
+# Unflattening bypasses validation, as tree transformations put placeholders in the leaves.
+
+
+def _stacked_unflatten(aux: tuple[Any, ...], children: Iterable[Any]) -> StackedEnsemble:
+    size, strides, policy = aux
+    stacked, valid = children
+    ensemble = object.__new__(StackedEnsemble)
+    object.__setattr__(ensemble, 'size', size)
+    object.__setattr__(ensemble, 'stacked', stacked)
+    object.__setattr__(ensemble, 'strides', strides)
+    object.__setattr__(ensemble, 'valid', valid)
+    object.__setattr__(ensemble, 'policy', policy)
+    return ensemble
+
+
+def _list_unflatten(aux: tuple[Any, ...], children: Iterable[Any]) -> ListEnsemble:
+    members, valid = children
+    ensemble = object.__new__(ListEnsemble)
+    object.__setattr__(ensemble, 'members', members)
+    object.__setattr__(ensemble, 'valid', valid)
+    object.__setattr__(ensemble, 'policy', aux[0])
+    return ensemble
+
+
+register_pytree_with_keys(
+    StackedEnsemble,
+    lambda e: (
+        [(GetAttrKey('stacked'), e.stacked), (GetAttrKey('valid'), e.valid)],
+        (e.size, tuple(e._leaves_and_strides()[1]), e.policy),
+    ),
+    _stacked_unflatten,
+    lambda e: ([e.stacked, e.valid], (e.size, tuple(e._leaves_and_strides()[1]), e.policy)),
+)
+
+register_pytree_with_keys(
+    ListEnsemble,
+    lambda e: (
+        [(GetAttrKey('members'), tuple(e.members)), (GetAttrKey('valid'), e.valid)],
+        (e.policy,),
+    ),
+    _list_unflatten,
+    lambda e: ([tuple(e.members), e.valid], (e.policy,)),
+)

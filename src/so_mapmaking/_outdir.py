@@ -7,14 +7,22 @@ killed by a signal, e.g. at the end of its time limit, stays `running`.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+from collections.abc import Generator
+from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 STATUS_FILE = 'status.json'
 LOG_FILE = 'furax-so-map.log'
+LOCK_FILE = '.lock'
+
+
+class DirectoryInUse(Exception):
+    """Another live run holds the lock of the output directory."""
 
 
 class RunState(StrEnum):
@@ -40,15 +48,46 @@ def earlier_run(outdir: Path) -> str | None:
     return f'an earlier run ({status.get("state", "?")}, started {status.get("started", "?")})'
 
 
-def remove_run_files(outdir: Path) -> None:
-    """Delete the files a run writes into `outdir`: its status, default logs and mapmaker files.
+@contextmanager
+def run_lock(outdir: Path) -> Generator[bool]:
+    """Hold the lock of the run on `outdir`; yield `False` if another live process holds it.
 
-    Other files, such as the output of a batch scheduler, are kept.
+    The state in `status.json` cannot tell a run still going from one killed by a signal, which
+    stays `running`. The operating system releases the lock when its holder dies, however it dies.
+    """
+    outdir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(outdir / LOCK_FILE, os.O_CREAT | os.O_WRONLY)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+        else:
+            yield True
+    finally:
+        os.close(fd)  # releases the lock
+
+
+def has_checkpoint(outdir: Path) -> bool:
+    """Whether `outdir` holds a checkpoint of a solve, from which a run resumes."""
+    # Deferred: importing furax pulls in JAX, which the CLI parse path does not need
+    from furax.mapmaking._checkpoint import CHECKPOINT_FILES
+
+    return any((outdir / name).exists() for name in CHECKPOINT_FILES)
+
+
+def remove_run_files(outdir: Path) -> None:
+    """Delete the files a run writes into `outdir`, and none other.
+
+    They are its status, products, checkpoints and default logs. Other files, such as the
+    output of a batch scheduler, and the lock of the run, are kept.
     """
     # Deferred: importing furax pulls in JAX, which the CLI parse path does not need
     from furax.mapmaking import MapMakingResults
+    from furax.mapmaking._checkpoint import remove_checkpoint_files
 
     MapMakingResults.remove(outdir)
+    remove_checkpoint_files(outdir)
     logs = outdir.glob('furax-so-map.rank*.log')  # LOG_FILE, as setup_logger suffixes it
     for path in [outdir / STATUS_FILE, *logs]:
         path.unlink(missing_ok=True)

@@ -7,7 +7,7 @@ from functools import cached_property, partial, reduce
 from logging import Logger
 from math import prod
 from pathlib import Path
-from typing import Any, ClassVar, NamedTuple
+from typing import Any, ClassVar
 
 import jax
 import jax.numpy as jnp
@@ -82,6 +82,7 @@ from ._observation import (
 )
 from ._provenance import provenance
 from ._reader import ObservationReader
+from ._solve import MapMakingSystem
 from ._system import (
     Batch,
     BucketModel,
@@ -120,35 +121,6 @@ class _AccumulatedModel:
     """Hit map over every observation, replicated on every device."""
     map_rhs: StokesType
     """Map RHS over every observation, replicated on every device."""
-
-
-class _MapMakingSystem(NamedTuple):
-    """The normal system handed to the solver."""
-
-    A: AbstractLinearOperator
-    """The normal operator, acting on the selected sky pixels (plus amplitudes, if any)."""
-    b: PyTree
-    """The right-hand side, in the same unknowns."""
-    preconditioner: AbstractLinearOperator
-    """Approximate inverse of `A`."""
-    has_amplitudes: bool
-    """Whether the unknowns include explicit-template amplitudes."""
-    response_b: PyTree | None = None
-    """The right-hand side of the simulated sky, in the same unknowns, if it is injected as a
-    response."""
-
-
-class _Solution(NamedTuple):
-    """The solution of the normal system, and what comes with it."""
-
-    sky: PyTree[Array]
-    """The selected sky pixels."""
-    amplitudes: dict[str, np.ndarray] | None
-    """The explicit-template amplitudes per observation, if the system has some."""
-    injected: PyTree[Array] | None
-    """The selected sky pixels of the injected sky's solution, if one is solved for."""
-    stats: dict[str, Any]
-    """The solver statistics."""
 
 
 class MultiObservationMapMaker[T]:
@@ -320,11 +292,15 @@ class MultiObservationMapMaker[T]:
             for bucket in self.layout.buckets
         )
 
-    def run(self, out_dir: str | Path) -> MapMakingResults:
+    def run(self, out_dir: str | Path, resume: bool = False) -> MapMakingResults:
         """Runs the mapmaker and return results after saving them to the given directory.
 
         The configuration and the provenance are written to `out_dir` before the maps are
         computed.
+
+        Args:
+            out_dir: Directory of the products, and of the checkpoints of the solves.
+            resume: Resume the solves from the checkpoints in `out_dir`, if any.
         """
         # Only process 0 writes, and so only process 0 spends the git calls on the provenance
         is_writer = jax.process_index() == 0
@@ -338,7 +314,7 @@ class MultiObservationMapMaker[T]:
         # Loaded now, once the run is on record, so that a bad injection fails before the passes
         # over the data, and shows in the output directory
         _ = self.sky
-        results = self.make_maps()
+        results = self.make_maps(checkpoint_dir=out_dir, resume=resume)
 
         # Save outputs on process 0 only (all processes hold the same maps)
         if is_writer:
@@ -377,8 +353,19 @@ class MultiObservationMapMaker[T]:
             f'padded={format_bytes(padded_bytes)} byte_overhead=+{byte_overhead:.1%}'
         )
 
-    def make_maps(self) -> MapMakingResults:
-        """Computes the mapmaker results (maps and other products)."""
+    def make_maps(
+        self, checkpoint_dir: str | Path | None = None, resume: bool = False
+    ) -> MapMakingResults:
+        """Computes the mapmaker results (maps and other products).
+
+        Args:
+            checkpoint_dir: Directory where the CG solves save their iterate every
+                [`SolverConfig.checkpoint_every`][furax.mapmaking.config.SolverConfig.checkpoint_every]
+                steps. A solve that converges deletes its checkpoint; one that runs out of steps
+                saves its last iterate, to be resumed with more steps.
+            resume: Start the solves from the checkpoints in `checkpoint_dir`, if any. A checkpoint
+                of a system of other shapes, e.g. from other observations, is ignored.
+        """
         self._log_layout()
 
         with jax.set_mesh(self.placement.mesh):
@@ -413,17 +400,27 @@ class MultiObservationMapMaker[T]:
             system = self._build_system(acc, S, BJ, response_sky)
             if (two_level := self.config.solver.two_level) is not None:
                 system = self._deflate(system, two_level)
-            solution = self._solve(system, acc)
+            solved = system.solve(
+                self.config.solver,
+                self.placement,
+                self.logger,
+                None if checkpoint_dir is None else Path(checkpoint_dir),
+                resume,
+            )
+            sky, amplitudes = solved.x, None
+            if system.has_amplitudes:
+                sky, *blocks = solved.x
+                amplitudes = self._template_amplitudes(acc, blocks)
 
         # Built only now, so that their copies are not held through the solve
         return MapMakingResults(
-            map=S.T(solution.sky),  # all sky pixels including those not estimated (zero)
+            map=S.T(sky),  # all sky pixels including those not estimated (zero)
             icov=jnp.moveaxis(icov, [-2, -1], [0, 1]),  # (*pixels, ns, ns) → (ns, ns, *pixels)
             hit_map=jnp.where(valid_pixels, acc.hit_map, 0),  # excluded pixels have zero hits
-            solver_stats=solution.stats,
+            solver_stats=solved.solver_stats,
             landscape=self.landscape,
-            template_amplitudes=solution.amplitudes,
-            injected_map=None if solution.injected is None else S.T(solution.injected),
+            template_amplitudes=amplitudes,
+            injected_map=None if solved.injected_sky is None else S.T(solved.injected_sky),
             observations=self._catalog.to_table(),
             # the noise model covers the streams of the model's TOD, not all those read
             detectors=detector_table(
@@ -457,55 +454,6 @@ class MultiObservationMapMaker[T]:
             sequential=True,
         )
         return BJPreconditioner.create(A_diag)
-
-    def _solve(self, system: _MapMakingSystem, acc: _AccumulatedModel) -> _Solution:
-        """The solution of the system, and of the injected sky's, if any, and their statistics."""
-        rank = jax.process_index()
-
-        def log_iteration(step: Array, r_norm: Array) -> None:
-            if rank == 0:  # log from rank 0 only
-                self._info(f'CG step={int(step)} residual={float(r_norm):.6e}')
-
-        def solve(b):
-            return furax.linalg.cg(
-                system.A,
-                b,
-                preconditioner=system.preconditioner,
-                iteration_callback=log_iteration if self.config.solver.verbose else None,
-                **self.config.solver.options,
-            )
-
-        result = solve(system.b)
-        self._log_solve('GLS solve', result)
-        stats = _solver_stats(result, self.config.solver.options)
-        injected = None
-        if system.response_b is not None:
-            # the same normal system, with the simulated sky as the right-hand side
-            response = solve(system.response_b)
-            self._log_solve('solve of the injected sky', response)
-            stats['injected'] = _solver_stats(response, self.config.solver.options)
-            injected = response.solution if not system.has_amplitudes else response.solution[0]
-
-        if not system.has_amplitudes:
-            return _Solution(result.solution, None, injected, stats)
-        sky, *blocks = result.solution
-        return _Solution(sky, self._template_amplitudes(acc, blocks), injected, stats)
-
-    def _log_solve(self, name: str, result: furax.linalg.CGResult) -> None:
-        """Log the outcome of a CG solve, as a warning if it did not reach its tolerance."""
-        options = self.config.solver.options
-        n_steps = int(result.num_steps)
-        outcome = f'{n_steps} steps, relative residual {result.relative_residual:.2e}'
-        if result.converged:
-            self._info(f'{name} converged ({outcome})')
-        elif options['rtol'] == options['atol'] == 0:
-            # no tolerance: the solve runs max_steps steps by design
-            self._info(f'{name} finished ({outcome})')
-        else:
-            self.logger.warning(
-                f'MultiObsMapMaker: {name} did not converge ({outcome}, rtol={options["rtol"]}, '
-                f'atol={options["atol"]})'
-            )
 
     def _template_amplitudes(
         self, acc: _AccumulatedModel, blocks: list[list[PyTree[Array]]]
@@ -542,14 +490,14 @@ class MultiObservationMapMaker[T]:
         S: AbstractLinearOperator,
         BJ: BJPreconditioner,
         sky: StokesType | None = None,
-    ) -> _MapMakingSystem:
+    ) -> MapMakingSystem:
         r"""Assembles the GLS normal system $J^T W' J x = J^T W' d$ over the selected pixels.
 
         Args:
             acc: The accumulated per-bucket models, hit map and map RHS.
             S: Selection of the estimated pixels out of the full sky grid.
             BJ: Block-Jacobi preconditioner.
-            sky: A simulated sky on the full grid, whose right-hand side `response_b` is added.
+            sky: A simulated sky on the full grid, whose right-hand side `injected_b` is added.
 
         Returns:
             The system to solve, in the unknowns described above.
@@ -573,7 +521,7 @@ class MultiObservationMapMaker[T]:
             response = None
             if sky is not None:
                 response = reduce(furax.tree.add, [op.response(sky) for op in terms])
-            return _MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False, response_b=response)
+            return MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False, injected_b=response)
 
         # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
         # per bucket: those of each detector batch alone, `(slot, batch, ...)`, and those the
@@ -635,7 +583,7 @@ class MultiObservationMapMaker[T]:
         response = None
         if sky is not None:
             response = reduce(furax.tree.add, responses)
-        return _MapMakingSystem(A, rhs, M, has_amplitudes=True, response_b=response)
+        return MapMakingSystem(A, rhs, M, has_amplitudes=True, injected_b=response)
 
     @staticmethod
     def _amplitude_structure(
@@ -683,7 +631,7 @@ class MultiObservationMapMaker[T]:
         assert inverse is not None
         return inverse, member('ridge')
 
-    def _deflate(self, system: _MapMakingSystem, config: TwoLevelConfig) -> _MapMakingSystem:
+    def _deflate(self, system: MapMakingSystem, config: TwoLevelConfig) -> MapMakingSystem:
         """Replaces the system's preconditioner by a two-level one deflating some of its modes."""
         preconditioned = config.spectrum == 'preconditioned'
         # The spectrum is positive, so its smallest and largest eigenvalues are its algebraic ends.
@@ -710,7 +658,7 @@ class MultiObservationMapMaker[T]:
             furax.linalg.LowRankTerms(theta, result.eigenvectors),
             preconditioned=preconditioned,
         )
-        return system._replace(preconditioner=M)
+        return replace(system, preconditioner=M)
 
     def _gather_reads(self) -> dict[int, Read]:
         """What the last pass read of each observation, or the exception that stopped its load.
@@ -1874,19 +1822,3 @@ def _store_round(
 def _parameter_name(path: tuple[Any, ...]) -> str:
     """The name of a leaf of a noise model, from its path: `sigma`, or `<key>/sigma` if nested."""
     return '/'.join(str(getattr(k, 'name', getattr(k, 'key', k))) for k in path)
-
-
-def _solver_stats(result: furax.linalg.CGResult, options: dict[str, Any]) -> dict[str, Any]:
-    """The statistics of a CG solve: its convergence, residuals and options, as JSON values.
-
-    A non-finite residual, from a diverged solve, is `None`: JSON has no NaN or infinity.
-    """
-    n_steps = int(result.num_steps)
-    # residuals[0] is the initial residual, residuals[i + 1] the one after step i
-    residuals = np.asarray(result.residuals)[: n_steps + 1]
-    return {
-        'num_steps': n_steps,
-        'converged': bool(result.converged),
-        'residuals': [float(r) if np.isfinite(r) else None for r in residuals],
-        'options': options,
-    }

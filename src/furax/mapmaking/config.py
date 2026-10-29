@@ -186,15 +186,16 @@ class SolverConfig:
     """Log the residual norm at every iteration."""
 
     two_level: TwoLevelConfig | None = None
-    """Two-level preconditioner options. `None` uses the block-Jacobi preconditioner alone.
+    """Two-level preconditioner options. `None` uses the block-Jacobi preconditioner alone."""
 
-    Only the multi-observation mapmaker supports it.
-    """
+    checkpoint_every: int | None = None
+    """Number of CG steps between two checkpoints of the solution. `None` for no checkpoints."""
 
     @property
     def options(self) -> dict[str, Any]:
-        """Dictionary of solver options, minus `verbose` and `two_level`."""
-        return {k: v for k, v in asdict(self).items() if k not in ('verbose', 'two_level')}
+        """Dictionary of solver options, minus `verbose`, `two_level` and `checkpoint_every`."""
+        excluded = ('verbose', 'two_level', 'checkpoint_every')
+        return {k: v for k, v in asdict(self).items() if k not in excluded}
 
 
 @dataclass

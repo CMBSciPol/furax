@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import yaml
 
-from so_mapmaking._outdir import claim, earlier_run
+from so_mapmaking._outdir import claim, earlier_run, run_lock
 
 FOLDER = Path(__file__).parents[1] / 'data/sotodlib'
 
@@ -122,6 +122,59 @@ def test_run_records_a_failed_run(tmp_path) -> None:
     assert (outdir / 'mapmaking_config.yaml').exists()
     assert (outdir / 'provenance.json').exists()
     assert (outdir / 'furax-so-map.rank0.log').exists()
+
+
+@pytest.mark.parametrize(
+    'args, message',
+    [(['--resume'], 'no checkpoint'), (['--resume', '--overwrite'], 'either --overwrite')],
+    ids=['no-checkpoint', 'with-overwrite'],
+)
+def test_run_refuses_to_resume(tmp_path, args: list[str], message: str) -> None:
+    outdir = tmp_path / 'maps'
+    refused = _run(outdir, *args)
+    assert refused.returncode == 1
+    assert message in refused.stderr
+    assert not (outdir / 'status.json').exists()
+
+
+def test_a_directory_is_locked_by_one_run_at_a_time(tmp_path) -> None:
+    with run_lock(tmp_path) as first:
+        assert first
+        with run_lock(tmp_path) as second:
+            assert not second
+    with run_lock(tmp_path) as again:
+        assert again
+
+
+@pytest.mark.parametrize('args', [['--overwrite'], ['--resume']], ids=['overwrite', 'resume'])
+def test_run_refuses_a_directory_in_use(tmp_path, args: list[str]) -> None:
+    outdir = tmp_path / 'maps'
+    with run_lock(outdir):
+        refused = _run(outdir, *args)
+    assert refused.returncode == 1
+    assert 'still going' in refused.stderr
+
+
+@pytest.mark.slow
+def test_run_resumes_a_solve_out_of_steps(tmp_path) -> None:
+    solver = {'rtol': 1e-10, 'max_steps': 3, 'checkpoint_every': 2}
+    config = {
+        'method': 'ML',
+        'weighting': {'mode': 'toeplitz'},
+        'gaps': {'treatment': 'inner_mask'},
+        'solver': solver,
+    }
+    outdir = tmp_path / 'maps'
+    assert _run(outdir, '--mapmaking-config', str(_config_file(tmp_path, config))).returncode == 0
+    assert (outdir / 'checkpoint.npz').exists()
+
+    solver['max_steps'] = 500
+    resumed = _run(outdir, '--mapmaking-config', str(_config_file(tmp_path, config)), '--resume')
+    assert resumed.returncode == 0
+    stats = json.loads((outdir / 'solver_stats.json').read_text())
+    assert stats['converged'] and stats['resumed_after'] == 3
+    assert not (outdir / 'checkpoint.npz').exists()
+    assert _status(outdir)['state'] == 'done'
 
 
 def _run(outdir: Path, *args: str) -> subprocess.CompletedProcess[str]:

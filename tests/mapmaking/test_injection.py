@@ -67,7 +67,7 @@ def sky(tmp_path):
 
 
 def _run(config):
-    return MultiObservationMapMaker(_observations(), config=config).run()
+    return MultiObservationMapMaker(_observations(), config=config).make_maps()
 
 
 def _well_observed(result):
@@ -122,7 +122,7 @@ def test_a_sky_on_another_pixelization_is_rejected(tmp_path):
     hp.write_map(str(path), np.zeros((3, hp.nside2npix(2 * NSIDE))), overwrite=True)
     config = _config(InjectionConfig(str(path)))
     with pytest.raises(ValueError, match='pixelization of the landscape'):
-        MultiObservationMapMaker(_observations(), config=config)
+        MultiObservationMapMaker(_observations(), config=config).make_maps()
 
 
 def test_replacing_the_data_needs_weights_that_are_not_fit_from_them():
@@ -234,7 +234,7 @@ def test_the_response_through_a_t2p_template_is_the_same_in_detector_batches(sky
     whole, batched = [
         MultiObservationMapMaker(
             _observations(), config=replace(config, detector_batch_size=b)
-        ).run()
+        ).make_maps()
         for b in (0, 4)
     ]
     observed = _well_observed(whole)

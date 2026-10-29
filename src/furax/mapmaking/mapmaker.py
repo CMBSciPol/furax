@@ -80,7 +80,7 @@ from ._observation import (
     ObservationBufferShape,
     ReaderField,
 )
-from ._provenance import provenance, utc_now
+from ._provenance import provenance
 from ._reader import ObservationReader
 from ._system import (
     Batch,
@@ -103,7 +103,7 @@ from .gap_filling import gap_fill
 from .layout import Bucket, SlotLayout, SlotPlacement
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
 from .preconditioner import BJPreconditioner, make_two_level_preconditioner
-from .results import MapMakingResults
+from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
 from .templates.gram import factor
 from .templates.pomme import PommeProjectionOperator
 from .weight import WeightOperator
@@ -163,12 +163,10 @@ class MultiObservationMapMaker[T]:
         self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
-        self._check_config()
         self.landscape = (
             _static_landscape(self.config.landscape, self.config.dtype)
             or self._scan_wcs_footprint()
         )
-        self.sky = self._load_sky()
         # Build the readers once, up front: they only need the probe shapes (no mesh context)
         rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
         model_fields = ObservationModel.required_reader_fields(self.config)
@@ -176,7 +174,8 @@ class MultiObservationMapMaker[T]:
         self.reader_fields = model_fields | rhs_fields | template_fields
         self.readers = self.get_readers(self.reader_fields)
 
-    def _load_sky(self) -> StokesType | None:
+    @cached_property
+    def sky(self) -> StokesType | None:
         """The simulated sky, if one is injected.
 
         A sky scanned into the TOD has the Stokes components that are read; one solved for as a
@@ -195,35 +194,6 @@ class MultiObservationMapMaker[T]:
         if injection is None or injection.mode == InjectionMode.RESPONSE:
             return None
         return self.sky
-
-    def _check_config(self) -> None:
-        """Validate and adjust config for method-specific compatibility."""
-        if self.config.method == Methods.POMME:
-            if not self.config.binned:
-                raise ValueError('Pomme requires diagonal weighting (weighting.mode=DIAGONAL).')
-            if 'I' in (stokes := self.config.landscape.stokes):
-                if stokes != 'IQU':
-                    raise ValueError(
-                        f'Pomme does not support intensity map reconstruction and {stokes=!r}'
-                        " cannot be reduced to a supported type. Use stokes='QU' instead."
-                    )
-                self.logger.info(
-                    "Received stokes='IQU', but Pomme does not support intensity map"
-                    " reconstruction. Falling back to stokes='QU' instead."
-                )
-                self.config.landscape.stokes = 'QU'
-            if self.config.demodulated:
-                raise ValueError('Pomme acts on the HWP-modulated TOD, not on demodulated data.')
-        if (
-            self.config.use_templates
-            and not self.config.binned
-            and self.config.gaps.treatment != GapTreatment.INNER_MASK
-        ):
-            # gap filling bypasses the template path, and the nested weight couples samples
-            # across whole gaps, beyond the band of the template Grams
-            raise NotImplementedError(
-                'Templates with correlated weighting require gaps.treatment=inner_mask.'
-            )
 
     @property
     def n_observations(self) -> int:
@@ -350,18 +320,30 @@ class MultiObservationMapMaker[T]:
             for bucket in self.layout.buckets
         )
 
-    def run(self, out_dir: str | Path | None = None) -> MapMakingResults:
-        """Runs the mapmaker and return results after saving them to the given directory."""
+    def run(self, out_dir: str | Path) -> MapMakingResults:
+        """Runs the mapmaker and return results after saving them to the given directory.
+
+        The configuration and the provenance are written to `out_dir` before the maps are
+        computed.
+        """
+        # Only process 0 writes, and so only process 0 spends the git calls on the provenance
+        is_writer = jax.process_index() == 0
+        out_dir = Path(out_dir).resolve()
+        if is_writer:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            self.config.dump_yaml(out_dir / CONFIG_FILE)
+            write_json(out_dir / PROVENANCE_FILE, provenance())
+            self.logger.info(f'saved mapmaking configuration and provenance to {out_dir}')
+
+        # Loaded now, once the run is on record, so that a bad injection fails before the passes
+        # over the data, and shows in the output directory
+        _ = self.sky
         results = self.make_maps()
 
-        # Save outputs on process 0 only (all processes hold the same maps; only process 0 holds
-        # the provenance)
-        if out_dir is not None and jax.process_index() == 0:
-            out_dir = Path(out_dir).resolve()
+        # Save outputs on process 0 only (all processes hold the same maps)
+        if is_writer:
             results.save(out_dir)
             self.logger.info(f'saved results to {out_dir}')
-            self.config.dump_yaml(out_dir / 'mapmaking_config.yaml')
-            self.logger.info('saved mapmaking configuration to file')
 
         # Barrier so other ranks don't race ahead while rank 0 is still writing.
         mhu.sync_global_devices('mapmaker.run.save_done')
@@ -397,8 +379,6 @@ class MultiObservationMapMaker[T]:
 
     def make_maps(self) -> MapMakingResults:
         """Computes the mapmaker results (maps and other products)."""
-        rank = jax.process_index()
-        started = utc_now()
         self._log_layout()
 
         with jax.set_mesh(self.placement.mesh):
@@ -451,8 +431,6 @@ class MultiObservationMapMaker[T]:
                 noise_parameters,
                 acc.buckets[0].batches.model.tod_format.stokes,
             ),
-            # only process 0 saves it, so only process 0 spends the git calls on it
-            provenance=provenance(started=started) if rank == 0 else None,
         )
 
     def _info(self, message: str) -> None:
@@ -498,13 +476,13 @@ class MultiObservationMapMaker[T]:
             )
 
         result = solve(system.b)
-        self._info(f'Finished GLS solve ({int(result.num_steps)} it)')
+        self._log_solve('GLS solve', result)
         stats = _solver_stats(result, self.config.solver.options)
         injected = None
         if system.response_b is not None:
             # the same normal system, with the simulated sky as the right-hand side
             response = solve(system.response_b)
-            self._info(f'Finished the solve of the injected sky ({int(response.num_steps)} it)')
+            self._log_solve('solve of the injected sky', response)
             stats['injected'] = _solver_stats(response, self.config.solver.options)
             injected = response.solution if not system.has_amplitudes else response.solution[0]
 
@@ -512,6 +490,22 @@ class MultiObservationMapMaker[T]:
             return _Solution(result.solution, None, injected, stats)
         sky, *blocks = result.solution
         return _Solution(sky, self._template_amplitudes(acc, blocks), injected, stats)
+
+    def _log_solve(self, name: str, result: furax.linalg.CGResult) -> None:
+        """Log the outcome of a CG solve, as a warning if it did not reach its tolerance."""
+        options = self.config.solver.options
+        n_steps = int(result.num_steps)
+        outcome = f'{n_steps} steps, relative residual {result.relative_residual:.2e}'
+        if result.converged:
+            self._info(f'{name} converged ({outcome})')
+        elif options['rtol'] == options['atol'] == 0:
+            # no tolerance: the solve runs max_steps steps by design
+            self._info(f'{name} finished ({outcome})')
+        else:
+            self.logger.warning(
+                f'MultiObsMapMaker: {name} did not converge ({outcome}, rtol={options["rtol"]}, '
+                f'atol={options["atol"]})'
+            )
 
     def _template_amplitudes(
         self, acc: _AccumulatedModel, blocks: list[list[PyTree[Array]]]
@@ -1022,7 +1016,7 @@ class MultiObservationMapMaker[T]:
                     'rhs': absent,
                 }
 
-            # Templates are rejected with gap filling (see `_check_config`).
+            # Templates are rejected with gap filling (see `MapMakingConfig`).
             built = ObservationTemplates.assemble(data, config, obs, tod, temperature)
             wd = built.weighted_tod
             return {
@@ -1203,7 +1197,7 @@ class MapMaker:
             out_dir = Path(out_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
             self._save(results, out_dir)
-            self.config.dump_yaml(out_dir / 'mapmaking_config.yaml')
+            self.config.dump_yaml(out_dir / CONFIG_FILE)
             self.logger.info('Mapmaking config saved to file')
 
         return results

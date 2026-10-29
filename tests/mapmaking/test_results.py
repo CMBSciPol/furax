@@ -99,7 +99,6 @@ def test_save_load_roundtrip(name, tmp_path):
     assert loaded.solver_stats is None
     assert loaded.observations is None
     assert loaded.detectors is None
-    assert loaded.provenance is None
 
 
 def test_healpix_files_are_healpy_maps(tmp_path):
@@ -178,14 +177,12 @@ def test_extras_roundtrip(tmp_path):
                 'sigma_q': rng.standard_normal(2),
             }
         ),
-        provenance={'furax': {'version': '1.0'}, 'command': ['furax-so-map']},
     )
     results.save(tmp_path)
     with open(tmp_path / 'solver_stats.json') as f:
         assert json.load(f) == results.solver_stats
     loaded = MapMakingResults.load(tmp_path, results.landscape)
     assert loaded.solver_stats == results.solver_stats
-    assert loaded.provenance == results.provenance
     assert_frame_equal(loaded.observations, results.observations)
     assert_frame_equal(loaded.detectors, results.detectors)
 

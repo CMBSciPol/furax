@@ -31,6 +31,20 @@ class CGResult(NamedTuple):
     num_steps: Array
     converged: Array
 
+    @property
+    def relative_residual(self) -> float:
+        r"""The residual norm after the last step, relative to the one before the first step.
+
+        This is the residual relative to $\|b\|$ for a solve that starts from zero. It is `nan`
+        when the initial residual is zero or not finite. It reads concrete values, so it cannot
+        be used under `jit`.
+        """
+        residuals = np.asarray(self.residuals)
+        initial = residuals[0]
+        if not (np.isfinite(initial) and initial > 0):
+            return float('nan')
+        return float(residuals[int(self.num_steps)] / initial)
+
 
 class _CGCarry(NamedTuple):
     """Loop-carried state for the CG iteration.

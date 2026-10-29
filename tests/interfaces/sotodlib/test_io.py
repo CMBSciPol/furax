@@ -433,7 +433,7 @@ def test_binned_mapmaker_over_preproc_db(tmp_path) -> None:
         landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16)),
     )
     maker = MultiObservationMapMaker(observations, config=config)
-    results = maker.run()
+    results = maker.make_maps()
 
     n_stokes = len(stokes)
     assert results.hit_map.shape == maker.landscape.shape
@@ -465,7 +465,7 @@ def test_mapmaker_reads_each_observation_once(tmp_path, monkeypatch) -> None:
         pointing=PointingConfig(on_the_fly=True),
         landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=16)),
     )
-    MultiObservationMapMaker(observations, config=config).run()
+    MultiObservationMapMaker(observations, config=config).make_maps()
 
     # one load per observation (the fused build/accumulate pass), not two
     assert n_loads == len(observations)

@@ -55,6 +55,17 @@ class TestCGBasic:
         assert result.residuals.shape == (21,)
         assert_allclose(result.residuals[0], jnp.linalg.norm(b), rtol=1e-5)
 
+    def test_relative_residual(self):
+        A, b, _ = _diagonal_system(n=20)
+        result = cg(A, b, max_steps=3, rtol=0.0, atol=0.0)
+        expected = result.residuals[3] / result.residuals[0]
+        assert_allclose(result.relative_residual, expected)
+
+    def test_relative_residual_is_nan_for_a_zero_right_hand_side(self):
+        A, b, _ = _diagonal_system()
+        result = cg(A, jnp.zeros_like(b), max_steps=5)
+        assert np.isnan(result.relative_residual)
+
     def test_residuals_record_the_last_step(self):
         A, matrix, b, _ = _dense_spd_system(n=20, condition=1e3, seed=0)
         result = cg(A, b, max_steps=5, rtol=0.0, atol=0.0)

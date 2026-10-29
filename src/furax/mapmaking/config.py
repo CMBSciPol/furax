@@ -1149,6 +1149,18 @@ class MapMakingConfig:
                 raise ValueError(
                     'injection.mode=response needs a map linear in the data: gap filling is not.'
                 )
+        if self.method == Methods.POMME:
+            self._check_pomme()
+        if (
+            self.use_templates
+            and not self.binned
+            and self.gaps.treatment != GapTreatment.INNER_MASK
+        ):
+            # gap filling bypasses the template path, and the nested weight couples samples
+            # across whole gaps, beyond the band of the template Grams
+            raise ValueError(
+                'Templates with correlated weighting require gaps.treatment=inner_mask.'
+            )
         if (templates := self.templates) is not None:
             for label, polarized in (
                 ('T2P', templates.t2p),
@@ -1172,6 +1184,17 @@ class MapMakingConfig:
                     per_stream := getattr(template, option), dict
                 ):
                     self._check_stream_groups(f'templates.{name}.{option}', per_stream)
+
+    def _check_pomme(self) -> None:
+        """Check that Pomme supports the config."""
+        if not self.binned:
+            raise ValueError('Pomme requires diagonal weighting (weighting.mode=DIAGONAL).')
+        if self.landscape.stokes != 'QU':
+            raise ValueError(
+                f"Pomme maps Q and U only: set landscape.stokes='QU' (got {self.landscape.stokes!r})."
+            )
+        if self.demodulated:
+            raise ValueError('Pomme does not work with demodulated data.')
 
     def _check_stream_groups(self, name: str, per_stream: dict[str, Any]) -> None:
         """Check that a template option per stream names each stream of the landscape at most once."""
@@ -1230,6 +1253,7 @@ class MapMakingConfig:
         elif method == Methods.POMME:
             return cls(
                 method=Methods.POMME,
+                landscape=LandscapeConfig(stokes='QU', healpix=HealpixConfig()),
                 weighting=WeightingConfig(),
                 solver=SolverConfig(
                     rtol=1e-6,

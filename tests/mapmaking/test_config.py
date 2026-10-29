@@ -14,6 +14,7 @@ from furax.mapmaking.config import (
     HWPSynchronousConfig,
     LandscapeConfig,
     MapMakingConfig,
+    Methods,
     PolynomialOrders,
     ScanSynchronousConfig,
     SotodlibConfig,
@@ -186,6 +187,35 @@ def test_correlated_gap_treatments_reject_detector_batches(treatment: GapTreatme
     )
     # with diagonal weights, gaps need no special treatment
     MapMakingConfig(gaps=GapsConfig(treatment=treatment), detector_batch_size=16)
+
+
+@pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])
+def test_correlated_weight_with_templates_requires_inner_mask_gaps(treatment: GapTreatment):
+    with pytest.raises(ValueError, match='inner_mask'):
+        MapMakingConfig(
+            weighting=WeightingConfig(mode=WeightingMode.TOEPLITZ),
+            gaps=GapsConfig(treatment=treatment),
+            detector_batch_size=0,  # gap treatments other than the inner mask need every detector
+            templates=TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2)),
+        )
+
+
+@pytest.mark.parametrize(
+    ('stokes', 'demodulated', 'match'),
+    [
+        ('I', False, 'Q and U only'),
+        ('IQU', False, 'Q and U only'),
+        ('IQUV', False, 'Q and U only'),
+        ('QU', True, 'demodulated'),
+    ],
+)
+def test_pomme_rejects(stokes: str, demodulated: bool, match: str):
+    with pytest.raises(ValueError, match=match):
+        MapMakingConfig(
+            method=Methods.POMME,
+            landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16)),
+            sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
+        )
 
 
 class TestCommonMode:

@@ -1,7 +1,6 @@
 import pickle
 from abc import abstractmethod
 from collections.abc import Callable, Collection, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import cached_property, partial, reduce
 from logging import Logger
@@ -20,7 +19,6 @@ from astropy.wcs import WCS
 from fastquat import Quaternion
 from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils as mhu
-from jax.sharding import PartitionSpec as P
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
@@ -38,7 +36,12 @@ from furax.core import (
     AdditionOperator,
     BlockDiagonalOperator,
     BlockSelectOperator,
+    HostEnsemble,
     IndexOperator,
+    map_reduce,
+)
+from furax.core import (
+    Policy as EnginePolicy,
 )
 from furax.interfaces.lineax import as_lineax_operator
 from furax.linalg._lanczos import LanczosWhich
@@ -776,71 +779,41 @@ class MultiObservationMapMaker[T]:
     ) -> tuple[Int64[Array, '...'], StokesType, BucketModel]:
         """One bucket's pass over the data: its hit map and RHS partials, and its stacked model.
 
-        The observations are accumulated in rounds, each round launching one observation on each
-        of this process's devices. A launch frees its working memory (the TOD and what is
-        computed from it) when it returns, so only one observation per device is in memory at a
-        time, and the processes need not keep in step until the bucket is assembled at the end.
+        The pass is an engine call on a host ensemble of the bucket's slots: each round launches
+        one observation on each device while its process reads the next round, so only one
+        observation per device is in memory at a time, and the processes need not keep in step
+        until the device sum at the end. The stacked outputs land sharded over the slots, in slot
+        order, which is the layout `BucketModel` holds.
         """
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         bucket = self.layout.buckets[bucket_index]
-        device_slots = self.placement.device_slots(bucket_index)  # (local device, round)
-        n_rounds = device_slots.shape[1]
-        axis = self.placement.axis
-        # The launch has no collective, so each process runs it on its own devices without
-        # waiting for the others. It still spans the job's mesh: the operators it builds record
-        # the mesh they were traced under, and the solve uses them under that mesh.
-        launch = jax.jit(
-            jax.shard_map(
-                self._observation_kernel(bucket),
-                in_specs=(P(axis), P(axis), P(axis), P()),
-                out_specs=P(axis),
-                check_vma=False,
-            )
-        )
 
-        def load(slot):
+        def read(slot: int) -> tuple[np.ndarray, ...]:
             if not bucket.is_empty[slot]:
-                return reader.read_host(slot)  # readers are indexed by slot
-            # An empty slot is never read or preprocessed just to be masked away
-            return reader.read_filler_host()
+                member = reader.read_host(slot)  # readers are indexed by slot
+            else:
+                # An empty slot is never read or preprocessed just to be masked away
+                member = reader.read_filler_host()
+            return tuple(np.asarray(leaf) for leaf in jax.tree.leaves(member))
 
-        hits = rhs = None
-        stacked: Any = None
-        # The pool reads the observations of a round's devices concurrently
-        with ThreadPoolExecutor(len(device_slots)) as pool:
-
-            def read_round(r):
-                return list(pool.map(load, device_slots[:, r].tolist()))
-
-            per_device = read_round(0)
-            for r in range(n_rounds):
-                inputs = self.placement.to_devices(per_device)
-                # Hold this round's buffers only as long as its launch: on a CPU device they are
-                # its TOD, which the next read must not find still in memory.
-                per_device = []
-                # dispatched without waiting
-                round_hits, round_rhs, out = launch(*inputs, sky)
-                del inputs
-                hits = round_hits if hits is None else _add(hits, round_hits)
-                rhs = round_rhs if rhs is None else _add(rhs, round_rhs)
-                stacked = _store_round(stacked, out, r, n_rounds)
-                last = r + 1 == n_rounds
-                if self._prefetches_reads and not last:
-                    per_device = read_round(r + 1)  # while the devices compute
-                # wait for the round, so that its working memory is freed
-                jax.block_until_ready((hits, rhs, stacked))
-                if not self._prefetches_reads and not last:
-                    per_device = read_round(r + 1)
-
-        # every device's partial sums, over the job
-        hits, rhs = self.placement.replicate((hits, rhs), lambda x: x.sum(axis=0))
-
-        # (device, round, ...) -> (slot, ...), what depends on the detector batch keeping a
-        # batch axis after the slot axis
-        def merge(tree):
-            return self.placement.per_slot(tree, lambda x: x.reshape(-1, *x.shape[2:]), donate=True)
-
-        return hits, rhs, BucketModel(*merge(stacked))
+        template = (
+            reader.out_structure,
+            jax.tree.map(
+                lambda s: jax.ShapeDtypeStruct((len(s.shape),), np.int32), reader.out_structure
+            ),
+            jax.ShapeDtypeStruct((), bool),
+        )
+        ensemble = HostEnsemble(
+            bucket.n_slots,
+            read,
+            template,
+            policy=EnginePolicy(axis=self.placement.axis),
+            prefetch=self._prefetches_reads,
+        )
+        (hits, rhs, out), _ = map_reduce(
+            self._observation_kernel(bucket), ensemble, ('sum', 'sum', 1), sky
+        )
+        return hits, rhs, BucketModel(*out)
 
     @cached_property
     def _prefetches_reads(self) -> bool:
@@ -854,11 +827,11 @@ class MultiObservationMapMaker[T]:
 
     def _observation_kernel(
         self, bucket: Bucket
-    ) -> Callable[[Any, Any, Array, StokesType | None], tuple[Array, StokesType, Any]]:
-        """Accumulate one observation per device: its hit map, RHS and model.
+    ) -> Callable[[tuple[Any, Any, Array], StokesType | None], tuple[Array, StokesType, Any]]:
+        """Accumulate one observation: its hit map, RHS and model.
 
-        The arguments and results carry a leading axis of size one, the device's, except the sky to
-        inject, which every device holds whole.
+        The member is one slot's read, the triple `(observation, padding, valid)`; the sky to
+        inject, if any, is a shared input that every member receives whole.
         """
         config = self.fit_config
         landscape = self.landscape
@@ -877,14 +850,13 @@ class MultiObservationMapMaker[T]:
         def cast_tod(data):
             return {**data, ReaderField.SAMPLE_DATA: cast(data[ReaderField.SAMPLE_DATA])}
 
-        def kernel(observation, padding, valid, sky):
-            observation, padding, use = jax.tree.map(lambda x: x[0], (observation, padding, valid))
+        def kernel(member, sky):
+            observation, padding, use = member
             injection = None
             if sky is not None:
                 shape = jax.tree.leaves(observation[ReaderField.SAMPLE_DATA])[0].shape
                 injection = (sky, unpadded(padding, shape))
-            hits, rhs, out = step(observation, padding, use, injection)
-            return jax.tree.map(lambda x: x[None], (hits, rhs, out))
+            return step(observation, padding, use, injection)
 
         def scan_in(data, injection):
             if injection is None:
@@ -1855,26 +1827,6 @@ class _QUModulationOperator(AbstractLinearOperator):
 
     def mv(self, x: StokesType) -> Float[Array, '...']:
         return self.cos_hwp_angle[None, :] * x.q + self.sin_hwp_angle[None, :] * x.u
-
-
-_add = jax.jit(furax.tree.add, donate_argnums=0)
-
-
-@partial(jax.jit, donate_argnums=0)
-def _set_round(store: PyTree[Array], out: PyTree[Array], r: Array) -> PyTree[Array]:
-    return jax.tree.map(lambda a, b: a.at[:, r].set(b), store, out)
-
-
-def _store_round(
-    store: PyTree[Array] | None, out: PyTree[Array], r: int, n_rounds: int
-) -> PyTree[Array]:
-    """Write a round's outputs, leading with the device axis, as round `r` of the store."""
-    if store is None:
-        store = jax.tree.map(
-            lambda x: jnp.zeros((x.shape[0], n_rounds, *x.shape[1:]), x.dtype, device=x.sharding),
-            out,
-        )
-    return _set_round(store, out, r)
 
 
 def _parameter_name(path: tuple[Any, ...]) -> str:

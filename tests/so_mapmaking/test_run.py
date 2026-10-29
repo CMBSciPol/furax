@@ -124,6 +124,41 @@ def test_run_records_a_failed_run(tmp_path) -> None:
     assert (outdir / 'furax-so-map.rank0.log').exists()
 
 
+@pytest.mark.parametrize(
+    'args, message',
+    [(['--resume'], 'no checkpoint'), (['--resume', '--overwrite'], 'either --overwrite')],
+    ids=['no-checkpoint', 'with-overwrite'],
+)
+def test_run_refuses_to_resume(tmp_path, args: list[str], message: str) -> None:
+    outdir = tmp_path / 'maps'
+    refused = _run(outdir, *args)
+    assert refused.returncode == 1
+    assert message in refused.stderr
+    assert not outdir.exists()
+
+
+@pytest.mark.slow
+def test_run_resumes_a_solve_out_of_steps(tmp_path) -> None:
+    solver = {'rtol': 1e-10, 'max_steps': 3, 'checkpoint_every': 2}
+    config = {
+        'method': 'ML',
+        'weighting': {'mode': 'toeplitz'},
+        'gaps': {'treatment': 'inner_mask'},
+        'solver': solver,
+    }
+    outdir = tmp_path / 'maps'
+    assert _run(outdir, '--mapmaking-config', str(_config_file(tmp_path, config))).returncode == 0
+    assert (outdir / 'checkpoint.npz').exists()
+
+    solver['max_steps'] = 500
+    resumed = _run(outdir, '--mapmaking-config', str(_config_file(tmp_path, config)), '--resume')
+    assert resumed.returncode == 0
+    stats = json.loads((outdir / 'solver_stats.json').read_text())
+    assert stats['converged'] and stats['resumed_after'] == 3
+    assert not (outdir / 'checkpoint.npz').exists()
+    assert _status(outdir)['state'] == 'done'
+
+
 def _run(outdir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Runs `furax-so-map` on a test observation, in a fresh interpreter.
 

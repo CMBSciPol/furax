@@ -5,6 +5,7 @@ from typing import Literal
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import furax
@@ -298,6 +299,32 @@ def test_two_level_preconditioner_solves_the_same_system():
         )
         results = MultiObservationMapMaker(observations, config=config).make_maps()
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-8), (spectrum, which)
+
+
+def test_solve_resumes_from_its_checkpoint(tmp_path: Path):
+    config = _config('healpix', 'IQU', method=Methods.MAXL)
+    config.weighting = WeightingConfig(
+        mode=WeightingMode.TOEPLITZ, source=NoiseSource.PRECOMPUTED, correlation_length=64
+    )
+    config.solver = SolverConfig(rtol=1e-10, max_steps=500)
+    observations = [GappyLazyGroundObservation(seed=i, n_samples=256) for i in range(2)]
+    expected = MultiObservationMapMaker(observations, config=config).make_maps()
+    assert expected.solver_stats['num_steps'] > 6
+
+    # a solve that runs out of steps saves its last iterate...
+    config.solver = SolverConfig(rtol=1e-10, max_steps=6, checkpoint_every=4)
+    stopped = MultiObservationMapMaker(observations, config=config).make_maps(tmp_path)
+    assert not stopped.solver_stats['converged']
+    assert int(np.load(tmp_path / 'checkpoint.npz')['n_steps']) == 6
+
+    # ...which a solve with more steps resumes, deleting it once converged
+    config.solver = SolverConfig(rtol=1e-10, max_steps=500, checkpoint_every=4)
+    maker = MultiObservationMapMaker(observations, config=config)
+    resumed = maker.make_maps(tmp_path, resume=True)
+    assert resumed.solver_stats['converged']
+    assert resumed.solver_stats['resumed_after'] == 6
+    assert not (tmp_path / 'checkpoint.npz').exists()
+    assert eqx.tree_equal(resumed.map, expected.map, rtol=1e-6, atol=1e-8)
 
 
 def _observations(name: str, demodulated: bool = False) -> list[AbstractLazyObservation]:

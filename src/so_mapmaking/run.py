@@ -6,9 +6,11 @@ from typedload.exceptions import TypedloadException
 
 from ._outdir import (
     LOG_FILE,
+    STATUS_FILE,
     RunState,
     claim,
     earlier_run,
+    has_checkpoint,
     remove_run_files,
     write_status,
 )
@@ -36,6 +38,7 @@ def run(
     obsdir: Path | None = None,
     cache_dir: Path | None = None,
     overwrite: bool = False,
+    resume: bool = False,
     loglevel: str = 'info',
     log_path: Path | None = None,
 ):
@@ -69,6 +72,11 @@ def run(
         overwrite: Map into an `outdir` that holds the output of an earlier run, after deleting
             the files that run wrote. Other files, such as the output of a batch scheduler, are
             kept.
+        resume: Map into an `outdir` that holds the checkpoint of an earlier run, keeping its
+            files, and resume its solve from there. The checkpoints are saved every
+            `solver.checkpoint_every` steps of the mapmaking config; a solve that runs out of
+            steps saves its last iterate, to be resumed with a larger `solver.max_steps`, which
+            bounds the steps of all the runs.
         loglevel: Logging level (debug, info, warning, error).
         log_path: Log output path, one file per process. Defaults to `furax-so-map.log` in `outdir`.
     """
@@ -99,6 +107,9 @@ def run(
         return 1
     if cache_dir is not None and init_config is None:
         logger.error('--cache-dir requires --init-config')
+        return 1
+    if overwrite and resume:
+        logger.error('pass either --overwrite or --resume')
         return 1
     try:
         config = MapMakingConfig.load_yaml(mapmaking_config) if mapmaking_config else None
@@ -141,6 +152,13 @@ def run(
                 if outdir.is_dir():
                     remove_run_files(outdir)
                 earlier = None
+            elif resume:
+                # The earlier run's status gives way to the claim of this one
+                if has_checkpoint(outdir):
+                    (outdir / STATUS_FILE).unlink(missing_ok=True)
+                    earlier = None
+                else:
+                    raise FileNotFoundError('it holds no checkpoint to resume from')
             else:
                 earlier = earlier_run(outdir)
             # Claiming is exclusive: a run started at the same time on the directory loses it
@@ -148,7 +166,8 @@ def run(
                 earlier = 'a run that started at the same time'
             if earlier is not None:
                 logger.error(
-                    f'{outdir} holds the output of {earlier}; pass --overwrite to replace it'
+                    f'{outdir} holds the output of {earlier}; pass --overwrite to replace it, or'
+                    ' --resume to resume it'
                 )
                 refused = True
         except OSError as e:
@@ -165,7 +184,7 @@ def run(
     try:
         maker = MultiObservationMapMaker(observations, config=config, logger=logger)
         logger.info('loaded config and set up mapmaker')
-        maker.run(outdir)
+        maker.run(outdir, resume=resume)
     except Exception as e:
         logger.exception('mapmaking failed', exc_info=e)
         # Any process may be the one that fails, and the others may then never return

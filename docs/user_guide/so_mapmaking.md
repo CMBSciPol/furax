@@ -37,6 +37,12 @@ finish leaves them behind. `furax-so-map` refuses a directory that holds the out
 run, unless given `--overwrite`, which deletes the files of that run first. Other files, such as
 the output of a batch scheduler, are kept.
 
+With `solver.checkpoint_every: N` in the mapmaking config, the CG solve saves its solution to
+`checkpoint.npz` in the output directory every `N` steps, and a solve that runs out of steps
+saves its last one. `--resume` then maps into that directory again, starting the solve from the
+checkpoint: after a job killed at its time limit, or with a larger `solver.max_steps`, which
+bounds the steps of all the runs together. A converged solve deletes its checkpoint.
+
 `furax-so-map` initializes `jax.distributed` itself, so that a run over several processes, e.g.
 launched with `srun`, maps the observations together.
 

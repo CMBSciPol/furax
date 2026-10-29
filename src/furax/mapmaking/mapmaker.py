@@ -54,6 +54,7 @@ from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokes
 from furax.profiling import format_bytes
 
 from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
+from ._checkpoint import CHECKPOINT_FILES, SolveCheckpoint
 from ._engine import (
     DetectorFamily,
     Family,
@@ -320,11 +321,15 @@ class MultiObservationMapMaker[T]:
             for bucket in self.layout.buckets
         )
 
-    def run(self, out_dir: str | Path) -> MapMakingResults:
+    def run(self, out_dir: str | Path, resume: bool = False) -> MapMakingResults:
         """Runs the mapmaker and return results after saving them to the given directory.
 
         The configuration and the provenance are written to `out_dir` before the maps are
         computed.
+
+        Args:
+            out_dir: Directory of the products, and of the checkpoints of the solves.
+            resume: Resume the solves from the checkpoints in `out_dir`, if any.
         """
         # Only process 0 writes, and so only process 0 spends the git calls on the provenance
         is_writer = jax.process_index() == 0
@@ -338,7 +343,7 @@ class MultiObservationMapMaker[T]:
         # Loaded now, once the run is on record, so that a bad injection fails before the passes
         # over the data, and shows in the output directory
         _ = self.sky
-        results = self.make_maps()
+        results = self.make_maps(checkpoint_dir=out_dir, resume=resume)
 
         # Save outputs on process 0 only (all processes hold the same maps)
         if is_writer:
@@ -377,8 +382,19 @@ class MultiObservationMapMaker[T]:
             f'padded={format_bytes(padded_bytes)} byte_overhead=+{byte_overhead:.1%}'
         )
 
-    def make_maps(self) -> MapMakingResults:
-        """Computes the mapmaker results (maps and other products)."""
+    def make_maps(
+        self, checkpoint_dir: str | Path | None = None, resume: bool = False
+    ) -> MapMakingResults:
+        """Computes the mapmaker results (maps and other products).
+
+        Args:
+            checkpoint_dir: Directory where the CG solves save their iterate every
+                [`SolverConfig.checkpoint_every`][furax.mapmaking.config.SolverConfig.checkpoint_every]
+                steps. A solve that converges deletes its checkpoint; one that runs out of steps
+                saves its last iterate, to be resumed with more steps.
+            resume: Start the solves from the checkpoints in `checkpoint_dir`, if any. A checkpoint
+                of a system of other shapes, e.g. from other observations, is ignored.
+        """
         self._log_layout()
 
         with jax.set_mesh(self.placement.mesh):
@@ -413,7 +429,8 @@ class MultiObservationMapMaker[T]:
             system = self._build_system(acc, S, BJ, response_sky)
             if (two_level := self.config.solver.two_level) is not None:
                 system = self._deflate(system, two_level)
-            solution = self._solve(system, acc)
+            checkpoints = None if checkpoint_dir is None else Path(checkpoint_dir)
+            solution = self._solve(system, acc, checkpoints, resume)
 
         # Built only now, so that their copies are not held through the solve
         return MapMakingResults(
@@ -458,32 +475,74 @@ class MultiObservationMapMaker[T]:
         )
         return BJPreconditioner.create(A_diag)
 
-    def _solve(self, system: _MapMakingSystem, acc: _AccumulatedModel) -> _Solution:
+    def _solve(
+        self,
+        system: _MapMakingSystem,
+        acc: _AccumulatedModel,
+        checkpoint_dir: Path | None,
+        resume: bool,
+    ) -> _Solution:
         """The solution of the system, and of the injected sky's, if any, and their statistics."""
         rank = jax.process_index()
+        options = self.config.solver.options
+        checkpoint_every = self.config.solver.checkpoint_every
 
         def log_iteration(step: Array, r_norm: Array) -> None:
             if rank == 0:  # log from rank 0 only
                 self._info(f'CG step={int(step)} residual={float(r_norm):.6e}')
 
-        def solve(b):
-            return furax.linalg.cg(
+        def solve(b, name, file):
+            checkpoint = None if checkpoint_dir is None else SolveCheckpoint(checkpoint_dir / file)
+            x0, done = None, 0
+            if resume and checkpoint is not None and checkpoint.path.exists():
+                if (saved := checkpoint.load(b)) is None:
+                    self.logger.warning(
+                        f'MultiObsMapMaker: ignoring {checkpoint.path}, of another system'
+                    )
+                else:
+                    x0, done = saved
+                    self._info(f'resuming the {name} after step {done}')
+            # max_steps bounds the steps over every run that resumes the solve; cg takes one at least
+            cg_options: dict[str, Any] = options | {
+                'max_steps': max(options['max_steps'] - done, 1)
+            }
+            if checkpoint is not None and checkpoint_every:
+                cg_options |= {
+                    'checkpoint_every': checkpoint_every,
+                    'checkpoint_callback': checkpoint.save,
+                }
+            result = furax.linalg.cg(
                 system.A,
                 b,
+                x0,
                 preconditioner=system.preconditioner,
                 iteration_callback=log_iteration if self.config.solver.verbose else None,
-                **self.config.solver.options,
+                **cg_options,
             )
+            jax.effects_barrier()  # the last checkpoint is written
+            self._log_solve(name, result, b, done)
+            if checkpoint is not None and checkpoint_every:
+                if result.converged:
+                    if rank == 0:
+                        checkpoint.remove()
+                else:
+                    # the last iterate, to resume with more steps
+                    x = self.placement.gather(result.solution)
+                    if rank == 0:
+                        checkpoint.save(result.num_steps, x)
+            stats = _solver_stats(result, options)
+            if done:
+                stats['resumed_after'] = done
+            return result, stats
 
-        result = solve(system.b)
-        self._log_solve('GLS solve', result)
-        stats = _solver_stats(result, self.config.solver.options)
+        gls_file, injected_file = CHECKPOINT_FILES
+        result, stats = solve(system.b, 'GLS solve', gls_file)
         injected = None
         if system.response_b is not None:
             # the same normal system, with the simulated sky as the right-hand side
-            response = solve(system.response_b)
-            self._log_solve('solve of the injected sky', response)
-            stats['injected'] = _solver_stats(response, self.config.solver.options)
+            response, stats['injected'] = solve(
+                system.response_b, 'solve of the injected sky', injected_file
+            )
             injected = response.solution if not system.has_amplitudes else response.solution[0]
 
         if not system.has_amplitudes:
@@ -491,11 +550,16 @@ class MultiObservationMapMaker[T]:
         sky, *blocks = result.solution
         return _Solution(sky, self._template_amplitudes(acc, blocks), injected, stats)
 
-    def _log_solve(self, name: str, result: furax.linalg.CGResult) -> None:
+    def _log_solve(
+        self, name: str, result: furax.linalg.CGResult, b: PyTree[Array], done: int
+    ) -> None:
         """Log the outcome of a CG solve, as a warning if it did not reach its tolerance."""
         options = self.config.solver.options
-        n_steps = int(result.num_steps)
-        outcome = f'{n_steps} steps, relative residual {result.relative_residual:.2e}'
+        n_steps = done + int(result.num_steps)
+        # relative to the right-hand side: the initial residual of a resumed solve is not
+        residual = np.asarray(result.residuals)[int(result.num_steps)]
+        relative = float(residual) / float(furax.tree.norm(b))
+        outcome = f'{n_steps} steps, relative residual {relative:.2e}'
         if result.converged:
             self._info(f'{name} converged ({outcome})')
         elif options['rtol'] == options['atol'] == 0:

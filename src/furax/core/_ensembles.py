@@ -393,12 +393,17 @@ class HostEnsemble(Ensemble):
     size: int
     """The number of members."""
     read: Callable[[int], tuple[np.ndarray, ...]]
-    """The per-member leaves of member i, called from host threads."""
+    """The per-member leaves of member i, called from host threads. Under several processes, each
+    process reads only the members of its own devices."""
     template: PyTree[Any]
     """The member structure: `jax.ShapeDtypeStruct` on the per-member leaves, values on the
     shared ones."""
     valid: np.ndarray | None = None
     policy: Policy = Policy()
+    prefetch: bool = True
+    """Whether to read the next round while the devices evaluate the current one; set it to False
+    on devices that share the host's memory, where the next round's buffers would compete with the
+    current round's working set."""
 
     @property
     def size_per_device(self) -> int:
@@ -753,50 +758,86 @@ def _host_map_reduce(
         )
     launch = jax.jit(launch, donate_argnums=0)
 
+    # Each process reads and places the members of its own devices; the rows of the mesh axis
+    # held by this process are contiguous, since a mesh orders its devices by process.
+    if axis is None:
+        sharding = None
+        axis_devices: list[Any] = [None]
+        local_rows = [0]
+    else:
+        mesh = jax.sharding.get_mesh()
+        if mesh.empty or mesh.axis_names != (axis,):
+            raise ValueError(f'a host ensemble needs a mesh along the one axis {axis!r}')
+        sharding = jax.sharding.NamedSharding(mesh, P(axis))
+        axis_devices = list(mesh.devices.flat)
+        process = jax.process_index()
+        local_rows = [r for r, d in enumerate(axis_devices) if d.process_index == process]
+
+    def zeros(shape: tuple[int, ...], dtype: Any) -> Array:
+        if sharding is None:
+            return jnp.zeros(shape, dtype)
+        return jnp.zeros(shape, dtype, device=sharding)
+
     init_sums = [
-        jnp.zeros((devices, *shape), dtype)
+        zeros((devices, *shape), dtype)
         for (shape, dtype), kind in zip(member_shapes, kinds)
         if kind == 'sum'
     ]
     init_stacks = [
-        jnp.zeros((ensemble.size // kind, *shape), dtype)
+        zeros((ensemble.size // kind, *shape), dtype)
         for (shape, dtype), kind in zip(member_shapes, kinds)
         if isinstance(kind, int)
     ]
-    if axis is not None:
-        init_sums = [jax.device_put(x, P(axis)) for x in init_sums]
-        init_stacks = [jax.device_put(x, P(axis)) for x in init_stacks]
 
-    def read_round(g: int) -> tuple[list[np.ndarray], np.ndarray | None]:
-        # device d evaluates positions d * per_device + g * batch + [0, batch)
-        positions = [d * per_device + g * batch + i for d in range(devices) for i in range(batch)]
-        with ThreadPoolExecutor(max(devices, 1)) as pool:
+    def assemble(stacks: list[list[np.ndarray]]) -> list[Array]:
+        """Per-local-device round buffers, as arrays sharded over the mesh axis."""
+        if sharding is None:
+            return [jnp.asarray(by_row[0]) for by_row in stacks]
+        placed = []
+        for by_row in stacks:
+            shards = [
+                jax.device_put(block, axis_devices[row], may_alias=True)
+                for row, block in zip(local_rows, by_row, strict=True)
+            ]
+            shape = (devices * by_row[0].shape[0], *by_row[0].shape[1:])
+            placed.append(jax.make_array_from_single_device_arrays(shape, sharding, shards))
+        return placed
+
+    def read_round(g: int) -> tuple[list[Array], Array | None]:
+        # the device of row r evaluates positions r * per_device + g * batch + [0, batch)
+        positions = [r * per_device + g * batch + i for r in local_rows for i in range(batch)]
+        with ThreadPoolExecutor(len(positions)) as pool:
             members = list(pool.map(ensemble.read, positions))
-        arrays = [np.stack([m[j] for m in members]) for j in range(len(member_structs))]
-        use = None if valid is None else np.asarray([valid[p] for p in positions])
+        by_member = [
+            [
+                np.stack([members[r * batch + i][j] for i in range(batch)])
+                for r in range(len(local_rows))
+            ]
+            for j in range(len(member_structs))
+        ]
+        arrays = assemble(by_member)
+        use = None
+        if valid is not None:
+            flags = np.asarray([valid[p] for p in positions]).reshape(len(local_rows), batch)
+            use = assemble([[flags[r] for r in range(len(local_rows))]])[0]
         return arrays, use
-
-    def put(x: np.ndarray) -> Array:
-        return jnp.asarray(x) if axis is None else jax.device_put(x, P(axis))
-
-    def to_device(
-        arrays: list[np.ndarray], use: np.ndarray | None
-    ) -> tuple[list[Array], Array | None]:
-        return [put(x) for x in arrays], None if use is None else put(use)
 
     carry = (init_sums, init_stacks)
     shareds: list[Array] = []
-    pending = read_round(0)
+    members = read_round(0)
     for g in range(rounds):
-        round_arrays, use = to_device(*pending)
+        round_arrays, use = members
+        members = ([], None)  # a CPU read must not find the round's buffers still alive
         carry, shareds = launch(
             carry, jnp.int32(g), round_arrays, use, [*fixed_arrays, *args_leaves]
         )
-        if g + 1 < rounds:
-            with ThreadPoolExecutor(1) as pool:  # read the next round while the devices compute
-                future = pool.submit(read_round, g + 1)
-                jax.block_until_ready(carry)
-                pending = future.result()
+        del round_arrays, use
+        last = g + 1 == rounds
+        if ensemble.prefetch and not last:
+            members = read_round(g + 1)  # while the devices compute
+        jax.block_until_ready(carry)
+        if not ensemble.prefetch and not last:
+            members = read_round(g + 1)
     partials, stacks = carry
     sums = [x.sum(axis=0) for x in partials]  # one partial per device
     return _unflattened(out_shape, kinds, sums, shareds, stacks)

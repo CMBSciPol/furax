@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The multi-observation mapmaker's pass over the data runs on the ensemble engine: a `HostEnsemble` of each bucket's slots replaces the hand-rolled accumulation loop (#401)
 - `AdditionOperator` with `sequential=True` and `BlockRowOperator` apply operands sharing a static signature through a single traced body, one operand at a time, so compiling a sum of N structurally identical terms no longer scales linearly with N (#315)
 
 ## [0.17.1] - 2026-10-28

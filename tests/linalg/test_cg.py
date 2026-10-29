@@ -52,8 +52,15 @@ class TestCGBasic:
     def test_residuals(self):
         A, b, _ = _diagonal_system(n=20)
         result = cg(A, b, max_steps=20, rtol=0.0, atol=0.0)
-        assert result.residuals.shape == (20,)
+        assert result.residuals.shape == (21,)
         assert_allclose(result.residuals[0], jnp.linalg.norm(b), rtol=1e-5)
+
+    def test_residuals_record_the_last_step(self):
+        A, matrix, b, _ = _dense_spd_system(n=20, condition=1e3, seed=0)
+        result = cg(A, b, max_steps=5, rtol=0.0, atol=0.0)
+        assert int(result.num_steps) == 5
+        true = jnp.linalg.norm(b - matrix @ result.solution)
+        assert_allclose(result.residuals[5], true, rtol=1e-8)
 
     def test_custom_x0(self):
         A, b, _ = _diagonal_system()
@@ -180,7 +187,7 @@ class TestCGJit:
             return cg(A, b, max_steps=13)
 
         result = solve(b)
-        assert result.residuals.shape == (13,)
+        assert result.residuals.shape == (14,)
 
     def test_jit_pytree(self):
         d1 = jnp.array([1.0, 2.0])

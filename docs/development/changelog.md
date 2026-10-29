@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HealpixConfig` accepts `ordering='nest'`; it cannot be combined with bilinear pointing (#431)
 - `furax-so-map` and `furax-so-cache` take the default of `--loglevel` from the `LOGLEVEL` variable (#430)
 - `furax.tree.size`: the number of elements of a pytree (#432)
+- The ensemble engine in `furax.core`: `map_reduce` evaluates one computation over the members of an `Ensemble` (`ListEnsemble`, `StackedEnsemble` or `HostEnsemble`) with summed or strided outputs, `'auto'` inferring the output strides; `Policy` and `Policy.from_budget` set the batching and device sharding; `lift` applies a function member-wise over ensembles (#399)
 
 ### Changed
 

@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `AdditionOperator` with `sequential=True` and `BlockRowOperator` apply operands sharing a static signature through a single traced body, one operand at a time, so compiling a sum of N structurally identical terms no longer scales linearly with N (#315)
 
+### Fixed
+
+- `CGResult.residuals` records the residual after the last step of a solve that runs out of steps, and so does `solver_stats.json` (#404)
+
 ## [0.17.1] - 2026-10-28
 
 This release brings a cache to facilitate repeated mapping of the same SO observations, through `furax-so-cache`.

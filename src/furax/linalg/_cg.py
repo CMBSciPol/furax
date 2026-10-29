@@ -19,14 +19,15 @@ class CGResult(NamedTuple):
 
     Attributes:
         solution: The approximate solution x to Ax = b.
-        residuals: Norm of the residual at each iteration, shape (max_steps,).
+        residuals: Norm of the residual before the first step, then after each step, shape
+            (max_steps + 1,). The entries past `num_steps` are zero.
         num_steps: Number of CG steps taken.
         converged: Whether the residual norm met the tolerance `atol + rtol * ||b||`. False
             when the solve ran out of steps or stopped on negative curvature.
     """
 
     solution: PyTree[Num[Array, '...']]
-    residuals: Float[Array, ' max_steps']
+    residuals: Float[Array, ' n_residuals']
     num_steps: Array
     converged: Array
 
@@ -45,7 +46,7 @@ class _CGCarry(NamedTuple):
     converged: Array
     truncated: Array
     step: Array
-    residuals: Float[Array, ' max_steps']
+    residuals: Float[Array, ' n_residuals']
 
 
 def cg(
@@ -301,8 +302,7 @@ def _cg_loop(
 
     r0_norm = tree.norm(r)
     # residuals[0] = initial residual; residuals[i+1] = residual after step i.
-    # If i+1 >= max_steps (loop ran to completion), the last write is dropped by JAX.
-    residuals = jnp.zeros(max_steps).at[0].set(r0_norm)
+    residuals = jnp.zeros(max_steps + 1).at[0].set(r0_norm)
 
     def cond_fn(c: _CGCarry) -> Array:
         return ~c.converged & ~c.truncated & (c.step < max_steps)

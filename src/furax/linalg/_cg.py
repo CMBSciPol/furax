@@ -9,6 +9,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.custom_derivatives import SymbolicZero
+from jax.experimental import io_callback
+from jax.sharding import SingleDeviceSharding
 from jaxtyping import Array, Float, Num, PyTree
 
 from furax import AbstractLinearOperator, tree
@@ -77,6 +79,8 @@ def cg(
     loop_kind: Literal['lax', 'checkpointed', 'bounded'] = 'lax',
     differentiation: Literal['implicit', 'unrolled'] = 'implicit',
     iteration_callback: Callable[[Array, Array], None] | None = None,
+    checkpoint_every: int = 0,
+    checkpoint_callback: Callable[[Array, PyTree[Array]], None] | None = None,
 ) -> CGResult:
     r"""Conjugate Gradient solver for symmetric positive definite systems Ax = b.
 
@@ -137,6 +141,14 @@ def cg(
         iteration_callback: Optional host callback called after each step with
             ``(step, r_norm)`` as 0-d JAX arrays.  Runs via
             ``jax.debug.callback`` so it is JIT-compatible and ordered.
+        checkpoint_every: Number of steps between two calls of `checkpoint_callback`.
+        checkpoint_callback: Host callback called after every `checkpoint_every` steps with
+            `(n_steps, x)`: the number of steps taken, and the iterate after them, whole on the
+            host even if `x` is sharded. It runs in the process holding the first device only,
+            so that a multi-process solve saves its iterate once. Passing the iterate back as
+            `x0` resumes the solve, up to the conjugate directions, which start over. The tangent
+            solves of the derivatives do not call it. The calls are asynchronous:
+            `jax.effects_barrier()` waits for them to return.
 
     Returns:
         CGResult with the solution, per-iteration residual norms, and iteration count.
@@ -160,6 +172,10 @@ def cg(
         )
     if differentiation not in ('implicit', 'unrolled'):
         raise ValueError(f'differentiation must be implicit/unrolled, got {differentiation!r}')
+    if (checkpoint_callback is None) != (checkpoint_every <= 0):
+        raise ValueError(
+            f'checkpoint_callback needs a positive checkpoint_every, got {checkpoint_every}'
+        )
     solve = partial(
         _cg_loop,
         max_steps=max_steps,
@@ -168,10 +184,12 @@ def cg(
         stabilise_every=stabilise_every,
         negative_curvature=negative_curvature,
         loop_kind=loop_kind,
+        checkpoint_every=checkpoint_every,
     )
+    callbacks = iteration_callback, checkpoint_callback
     if differentiation == 'unrolled':
-        return solve(A, b, x0, preconditioner, iteration_callback)
-    return _implicit_cg(solve, A, b, x0, preconditioner, iteration_callback)
+        return solve(A, b, x0, preconditioner, *callbacks)
+    return _implicit_cg(solve, A, b, x0, preconditioner, *callbacks)
 
 
 def _implicit_cg(
@@ -181,6 +199,7 @@ def _implicit_cg(
     x0: PyTree[Num[Array, '...']] | None,
     preconditioner: AbstractLinearOperator | None,
     iteration_callback: Callable[[Array, Array], None] | None,
+    checkpoint_callback: Callable[[Array, PyTree[Array]], None] | None,
 ) -> CGResult:
     r"""Run `solve` with the derivative of the exact solution $A^{-1} b$.
 
@@ -197,7 +216,7 @@ def _implicit_cg(
     @jax.custom_jvp
     def implicit_solve(dynamic: PyTree[Array]) -> CGResult:
         A, b, x0, preconditioner = eqx.combine(dynamic, static)
-        return solve(A, b, x0, preconditioner, iteration_callback)
+        return solve(A, b, x0, preconditioner, iteration_callback, checkpoint_callback)
 
     @partial(implicit_solve.defjvp, symbolic_zeros=True)
     def implicit_solve_jvp(
@@ -233,7 +252,7 @@ def _implicit_cg(
         rhs = jax.tree.map(lambda leaf: leaf + anchor.astype(leaf.dtype), rhs)
 
         def tangent_solve(_: Any, rhs: PyTree[Num[Array, '...']]) -> PyTree[Num[Array, '...']]:
-            return solve(A, rhs, None, preconditioner, None).solution
+            return solve(A, rhs, None, preconditioner, None, None).solution
 
         x_dot = jax.lax.custom_linear_solve(A, rhs, tangent_solve, symmetric=True)
         # The convergence diagnostics are not differentiated, and integer and boolean outputs
@@ -272,6 +291,7 @@ def _cg_loop(
     x0: PyTree[Num[Array, '...']] | None,
     preconditioner: AbstractLinearOperator | None,
     iteration_callback: Callable[[Array, Array], None] | None,
+    checkpoint_callback: Callable[[Array, PyTree[Array]], None] | None,
     *,
     max_steps: int,
     atol: float,
@@ -279,6 +299,7 @@ def _cg_loop(
     stabilise_every: int,
     negative_curvature: Literal['ignore', 'error', 'truncate'],
     loop_kind: Literal['lax', 'checkpointed', 'bounded'],
+    checkpoint_every: int,
 ) -> CGResult:
     """The CG iteration of [`cg`][], differentiable only by unrolling."""
     truncate = negative_curvature == 'truncate'
@@ -361,6 +382,19 @@ def _cg_loop(
         if iteration_callback is not None:
             # `ordered = True` would error in distributed mode
             jax.debug.callback(iteration_callback, i, r_norm)
+        if checkpoint_callback is not None:
+            # The iterate is gathered whole to the first device
+            jax.lax.cond(
+                (i + 1) % checkpoint_every == 0,
+                lambda: io_callback(
+                    checkpoint_callback,
+                    None,
+                    i + 1,
+                    x,
+                    sharding=SingleDeviceSharding(jax.devices()[0]),
+                ),
+                lambda: None,
+            )
 
         z = M(r)
         rz_new = tree.dot(r, z)
@@ -431,6 +465,8 @@ class CGSolver:
     loop_kind: Literal['lax', 'checkpointed', 'bounded'] = 'lax'
     differentiation: Literal['implicit', 'unrolled'] = 'implicit'
     iteration_callback: Callable[[Array, Array], None] | None = None
+    checkpoint_every: int = 0
+    checkpoint_callback: Callable[[Array, PyTree[Array]], None] | None = None
 
     def __call__(
         self,

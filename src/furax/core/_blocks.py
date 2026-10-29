@@ -16,6 +16,8 @@ from ._base import (
     AdditionOperator,
     IdentityOperator,
     TransposeOperator,
+    _group_by_signature,
+    _sequential_sum,
     structure_equal,
 )
 from .rules import AbstractCompositionRule, NoReduction
@@ -54,6 +56,10 @@ class BlockRowOperator(AbstractBlockOperator):
 
     Applies each block to the corresponding part of a pytree input and sums
     the results. All blocks must have the same output structure.
+
+    Blocks that only differ by the values of their arrays (same class, static fields, array
+    shapes and dtypes) are applied through a single traced body, a loop that selects one block
+    and its input at a time, as [`AdditionOperator`][] does with `sequential=True`.
 
     Transpose: BlockRowOperator.T = BlockColumnOperator
 
@@ -100,10 +106,19 @@ class BlockRowOperator(AbstractBlockOperator):
         treedef = jax.tree.structure(
             self.blocks, is_leaf=lambda op: isinstance(op, AbstractLinearOperator)
         )
-        output_leaves = (
-            block(leaf) for block, leaf in zip(self.block_leaves, treedef.flatten_up_to(x))
+        blocks = self.block_leaves
+        leaves = treedef.flatten_up_to(x)
+        contributions = (
+            blocks[group[0]](leaves[group[0]])
+            if len(group) == 1
+            else _sequential_sum(
+                [(blocks[i], leaves[i]) for i in group],
+                lambda member: member[0](member[1]),
+                self.out_structure,
+            )
+            for group in _group_by_signature(blocks)
         )
-        return functools.reduce(lambda a, b: add(a, b), output_leaves)
+        return functools.reduce(lambda a, b: add(a, b), contributions)
 
     def transpose(self) -> AbstractLinearOperator:
         return BlockColumnOperator(self._tree_map(lambda op: op.T))

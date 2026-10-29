@@ -20,7 +20,7 @@ from furax._config import Config, ConfigState
 from furax.tree import add as tree_add
 from furax.tree import zeros_like
 
-from ._ensembles import ListEnsemble, map_reduce
+from ._ensembles import Ensemble, ListEnsemble, lift, map_reduce
 from .utils import register_dataclass_with_keys
 
 if TYPE_CHECKING:
@@ -440,44 +440,62 @@ class AdditionOperator(AbstractLinearOperator):
     number.
 
     A `sequential` sum is not reduced pairwise by `reduce`.
+
+    The operands may also be an [`Ensemble`][furax.core.Ensemble] of operators: the sum is then
+    evaluated by the engine with the ensemble's policy, which decides how many members run
+    together, and `sequential` plays no part.
     """
 
     operands: PyTree[AbstractLinearOperator]
     sequential: bool = field(default=False, metadata={'static': True})
 
-    def __init__(self, operands: PyTree[AbstractLinearOperator], sequential: bool = False) -> None:
+    def __init__(
+        self, operands: PyTree[AbstractLinearOperator] | Ensemble, sequential: bool = False
+    ) -> None:
         object.__setattr__(self, 'operands', operands)
         object.__setattr__(self, 'sequential', sequential)
+        if isinstance(operands, Ensemble):
+            super().__init__(in_structure=operands.fetch(0).in_structure)
+            return
         if not self.operand_leaves:
             raise ValueError('AdditionOperator needs at least one operand')
         super().__init__(in_structure=self.operand_leaves[0].in_structure)
 
-    # Tag propagation properties
+    # Tag propagation properties. The members of an ensemble share their class and static fields,
+    # so one member answers for all of them.
+    @property
+    def _tag_witnesses(self) -> list['AbstractLinearOperator']:
+        if isinstance(self.operands, Ensemble):
+            return [self.operands.fetch(0)]
+        return self.operand_leaves
+
     @property
     def is_square(self) -> bool:
-        return super().is_square or self.operand_leaves[0].is_square
+        return super().is_square or self._tag_witnesses[0].is_square
 
     @property
     def is_symmetric(self) -> bool:
-        return super().is_symmetric or all(op.is_symmetric for op in self.operand_leaves)
+        return super().is_symmetric or all(op.is_symmetric for op in self._tag_witnesses)
 
     @property
     def is_diagonal(self) -> bool:
-        return super().is_diagonal or all(op.is_diagonal for op in self.operand_leaves)
+        return super().is_diagonal or all(op.is_diagonal for op in self._tag_witnesses)
 
     @property
     def is_positive_semidefinite(self) -> bool:
         return super().is_positive_semidefinite or all(
-            op.is_positive_semidefinite for op in self.operand_leaves
+            op.is_positive_semidefinite for op in self._tag_witnesses
         )
 
     @property
     def is_negative_semidefinite(self) -> bool:
         return super().is_negative_semidefinite or all(
-            op.is_negative_semidefinite for op in self.operand_leaves
+            op.is_negative_semidefinite for op in self._tag_witnesses
         )
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
+        if isinstance(self.operands, Ensemble):
+            return map_reduce(lambda op, v: op(v), self.operands, 'sum', x)[0]
         operands = self.operand_leaves
         if not self.sequential:
             return functools.reduce(tree_add, (operand(x) for operand in operands))
@@ -492,6 +510,8 @@ class AdditionOperator(AbstractLinearOperator):
         return functools.reduce(tree_add, contributions)
 
     def transpose(self) -> AbstractLinearOperator:
+        if isinstance(self.operands, Ensemble):
+            return AdditionOperator(lift(lambda op: op.T, self.operands), self.sequential)
         return AdditionOperator(self._tree_map(lambda operand: operand.T), self.sequential)
 
     def __add__(self, other: AbstractLinearOperator) -> 'AdditionOperator':
@@ -501,7 +521,10 @@ class AdditionOperator(AbstractLinearOperator):
             raise ValueError('Incompatible linear operator input structures')
         if not structure_equal(self.out_structure, other.out_structure):
             raise ValueError('Incompatible linear operator output structures')
-        if isinstance(other, AdditionOperator):
+        if isinstance(self.operands, Ensemble):
+            # the ensemble stays a closed operand of a wider sum
+            return AdditionOperator([self, other], self.sequential)
+        if isinstance(other, AdditionOperator) and not isinstance(other.operands, Ensemble):
             operands = other.operand_leaves
             sequential = self.sequential or other.sequential
         else:
@@ -516,13 +539,19 @@ class AdditionOperator(AbstractLinearOperator):
             raise ValueError('Incompatible linear operator input structures')
         if not structure_equal(self.out_structure, other.out_structure):
             raise ValueError('Incompatible linear operator output structures')
+        if isinstance(self.operands, Ensemble):
+            return AdditionOperator([other, self], self.sequential)
         return AdditionOperator([other] + self.operand_leaves, self.sequential)
 
     def __neg__(self) -> 'AdditionOperator':
+        if isinstance(self.operands, Ensemble):
+            return AdditionOperator(lift(lambda op: (-1) * op, self.operands), self.sequential)
         return AdditionOperator(self._tree_map(lambda operand: (-1) * operand), self.sequential)
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
+        if isinstance(self.operands, Ensemble):
+            return self.operands.fetch(0).out_structure
         return self.operand_leaves[0].out_structure
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
@@ -531,6 +560,8 @@ class AdditionOperator(AbstractLinearOperator):
     def reduce(self) -> AbstractLinearOperator:
         from .rules import AdditiveReductionRule
 
+        if isinstance(self.operands, Ensemble):
+            return AdditionOperator(lift(lambda op: op.reduce(), self.operands), self.sequential)
         operands = [operand.reduce() for operand in self.operand_leaves]
         if not self.sequential:
             operands = AdditiveReductionRule().apply(operands)
@@ -541,6 +572,8 @@ class AdditionOperator(AbstractLinearOperator):
     @property
     def operand_leaves(self) -> list[AbstractLinearOperator]:
         """Returns the flat list of operators."""
+        if isinstance(self.operands, Ensemble):
+            return [self.operands.fetch(i) for i in range(self.operands.size)]
         return jax.tree.leaves(
             self.operands, is_leaf=lambda x: isinstance(x, AbstractLinearOperator)
         )

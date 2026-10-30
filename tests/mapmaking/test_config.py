@@ -97,6 +97,12 @@ def test_two_level_is_not_a_cg_option():
     assert 'two_level' not in config.solver.options
 
 
+def test_checkpoint_every_is_not_a_cg_option():
+    config = MapMakingConfig.load_dict({'solver': {'checkpoint_every': 50}})
+    assert config.solver.checkpoint_every == 50
+    assert 'checkpoint_every' not in config.solver.options
+
+
 @pytest.mark.parametrize('which', ['small', 'large', 'both'])
 def test_two_level_which(which):
     config = MapMakingConfig.load_dict({'solver': {'two_level': {'which': which}}})

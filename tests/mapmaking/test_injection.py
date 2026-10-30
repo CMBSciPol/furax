@@ -13,6 +13,7 @@ from numpy.testing import assert_allclose
 from furax.mapmaking._injection import load_sky, unpadded
 from furax.mapmaking._observation import ReaderField
 from furax.mapmaking.config import (
+    AzimuthSynchronousConfig,
     HealpixConfig,
     InjectionConfig,
     InjectionMode,
@@ -20,8 +21,6 @@ from furax.mapmaking.config import (
     MapMakingConfig,
     NoiseFitConfig,
     NoiseSource,
-    PolynomialOrders,
-    ScanSynchronousConfig,
     SotodlibConfig,
     T2PConfig,
     TemplatesConfig,
@@ -201,9 +200,9 @@ def test_only_the_samples_that_are_not_padding_are_injectable(leading):
 
 def _templates_config(injection=None, explicit=True) -> MapMakingConfig:
     config = _config(injection)
-    # from order 1: a constant is degenerate with the intensity map
-    scan = ScanSynchronousConfig(legendre=PolynomialOrders(1, 2), explicit=explicit)
-    config.templates = TemplatesConfig(scan_synchronous=scan)
+    # the spline leaves out the constant, which is degenerate with the intensity map
+    scan = AzimuthSynchronousConfig(n_knots=4, explicit=explicit)
+    config.templates = TemplatesConfig(azimuth_synchronous=scan)
     return config
 
 

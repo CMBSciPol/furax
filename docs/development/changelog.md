@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax-so-map` records the state of the run in `status.json`, and writes the mapmaking config and provenance at the start (#402)
 - `MapMakingResults.remove` deletes the files that `MapMakingResults.save` writes (#402)
 - `CGResult.relative_residual`: the final residual norm over the initial one (#402)
+- `AzimuthSynchronousConfig.n_knots`: the azimuth-synchronous template can be a cubic B-spline of the azimuth, and `split_scans` gives each scan direction its own function
 
 ### Changed
 
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pomme requires `landscape.stokes='QU'`, instead of mapping Q and U of an IQU landscape (#402)
 - `MapMakingResults.provenance` is removed; `MultiObservationMapMaker.run` writes `provenance.json` itself, and `out_dir` is required (#402)
 - `provenance.json` no longer holds the start and end times of the run; they are recorded in `status.json` for SO mapmaking runs (#402)
+- **Breaking:** `TemplatesConfig.binned_azimuth_synchronous` becomes the `bins` alternative of `TemplatesConfig.azimuth_synchronous`, and the Legendre `scan_synchronous` template is removed in favour of its `n_knots` (spline) alternative; the template and its amplitudes are named `azimuth_synchronous`
 
 ## [0.17.2] - 2026-10-30
 

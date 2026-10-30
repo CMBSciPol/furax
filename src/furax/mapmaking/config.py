@@ -35,9 +35,8 @@ __all__ = [
     'TemplatesConfig',
     'PolynomialOrders',
     'SplineDriftConfig',
-    'ScanSynchronousConfig',
     'BinsConfig',
-    'BinnedAzimuthSynchronousConfig',
+    'AzimuthSynchronousConfig',
     'HWPSynchronousConfig',
     'AzimuthHWPSynchronousConfig',
     'BinnedAzimuthHWPSynchronousConfig',
@@ -488,37 +487,52 @@ class SplineDriftConfig:
 
 
 @dataclass
-class ScanSynchronousConfig:
-    """Scan-synchronous signal on a global Legendre basis.
+class AzimuthSynchronousConfig:
+    """Scan-synchronous signal: a function of the telescope's azimuth, by scan direction.
 
-    Represents signals that depend only on the telescope's azimuth.
+    Represents signals that depend only on the azimuth, such as ground pickup, and on the
+    direction of the scan if `split_scans`. The function is one of two alternatives, exactly one
+    of which is set:
+
+    - `bins`: one amplitude per azimuth bin;
+    - `n_knots`: a cubic B-spline, smooth and local, a feature at one azimuth moving only the few
+      coefficients around it. Its constant is left out, for a drift or offset template to hold;
+      the offset between the two scan directions is kept.
+
+    Examples:
+        Demodulated data: Q and U only, 20 spline functions across the azimuth range for each
+        scan direction
+
+            azimuth_synchronous:
+                n_knots:
+                    qu: 20
+                split_scans: true
     """
 
-    legendre: PolynomialOrders | dict[str, PolynomialOrders] = field(
-        default_factory=lambda: PolynomialOrders(3, 7)
-    )
-    """Legendre orders of the azimuth-dependent basis, for every stream or per group of streams.
+    bins: BinsConfig | None = None
+    """Azimuth binning, on every stream."""
+
+    n_knots: int | dict[str, int] | None = None
+    """Cubic B-spline functions across the azimuth range of the observation, per scan direction,
+    for every stream or per group of streams.
 
     On demodulated data, a mapping such as `{'qu': ...}` fits the Q and U streams only, each
-    independently; a stream left out has no scan-synchronous template.
+    independently; a stream left out has no template.
     """
+
+    split_scans: bool = False
+    """Whether the left- and right-going scans have their own function of the azimuth."""
 
     explicit: bool = False
     """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
-
-@dataclass
-class BinnedAzimuthSynchronousConfig:
-    """Binned azimuth-synchronous signal, no HWP coupling.
-
-    The binned counterpart of [`ScanSynchronousConfig`][].
-    """
-
-    bins: BinsConfig = field(default_factory=BinsConfig)
-    """Azimuth binning."""
-
-    explicit: bool = False
-    """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
+    def __post_init__(self) -> None:
+        if (self.bins is None) == (self.n_knots is None):
+            raise ValueError("set exactly one of 'bins' and 'n_knots'")
+        if self.n_knots is not None:
+            values = self.n_knots.values() if isinstance(self.n_knots, dict) else [self.n_knots]
+            if any(value < 4 for value in values):
+                raise ValueError(f'n_knots must be >= 4, got {self.n_knots}')
 
 
 @dataclass
@@ -774,11 +788,8 @@ class TemplatesConfig:
     spline_drift: SplineDriftConfig | None = None
     """Per-detector drift template, a cubic B-spline of time over the observation."""
 
-    scan_synchronous: ScanSynchronousConfig | None = None
-    """Scan-synchronous (azimuth-only) template on a global Legendre basis."""
-
-    binned_azimuth_synchronous: BinnedAzimuthSynchronousConfig | None = None
-    """Scan-synchronous (azimuth-only) template on a binned azimuth basis."""
+    azimuth_synchronous: AzimuthSynchronousConfig | None = None
+    """Scan-synchronous template, a function of the azimuth: binned or a spline."""
 
     hwp_synchronous: HWPSynchronousConfig | None = None
     """HWP-synchronous template on a global Fourier (harmonic) basis."""
@@ -816,8 +827,7 @@ class TemplatesConfig:
         """Create a template config with default values for all templates."""
         return cls(
             spline_drift=SplineDriftConfig(),
-            scan_synchronous=ScanSynchronousConfig(),
-            binned_azimuth_synchronous=BinnedAzimuthSynchronousConfig(),
+            azimuth_synchronous=AzimuthSynchronousConfig(n_knots=20),
             hwp_synchronous=HWPSynchronousConfig(),
             azimuth_hwp_synchronous=AzimuthHWPSynchronousConfig(),
             binned_azimuth_hwp_synchronous=BinnedAzimuthHWPSynchronousConfig(),
@@ -1175,15 +1185,16 @@ class MapMakingConfig:
                         f'The {label} template requires Q and U streams in landscape.stokes (got '
                         f'{self.landscape.stokes!r}).'
                     )
-            for name, option in (
-                ('scan_synchronous', 'legendre'),
-                ('spline_drift', 'samples_per_knot'),
+            azimuth, drift = templates.azimuth_synchronous, templates.spline_drift
+            for name, per_stream in (
+                ('azimuth_synchronous.n_knots', None if azimuth is None else azimuth.n_knots),
+                (
+                    'spline_drift.samples_per_knot',
+                    None if drift is None else drift.samples_per_knot,
+                ),
             ):
-                template = getattr(templates, name)
-                if template is not None and isinstance(
-                    per_stream := getattr(template, option), dict
-                ):
-                    self._check_stream_groups(f'templates.{name}.{option}', per_stream)
+                if isinstance(per_stream, dict):
+                    self._check_stream_groups(f'templates.{name}', per_stream)
 
     def _check_pomme(self) -> None:
         """Check that Pomme supports the config."""

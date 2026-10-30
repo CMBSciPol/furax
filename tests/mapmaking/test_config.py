@@ -7,6 +7,8 @@ from typedload.exceptions import TypedloadException
 from furax.mapmaking import config as config_module
 from furax.mapmaking._serialization import deserialize
 from furax.mapmaking.config import (
+    AzimuthSynchronousConfig,
+    BinsConfig,
     CommonModeConfig,
     GapsConfig,
     GapTreatment,
@@ -16,7 +18,6 @@ from furax.mapmaking.config import (
     MapMakingConfig,
     Methods,
     PolynomialOrders,
-    ScanSynchronousConfig,
     SotodlibConfig,
     SplineDriftConfig,
     T2PConfig,
@@ -159,6 +160,12 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
         (lambda: T2PConfig(zernike_radius=0.0), 'zernike_radius'),
         (lambda: SplineDriftConfig(samples_per_knot=0), 'samples_per_knot must be >= 1'),
         (lambda: SplineDriftConfig(samples_per_knot={'qu': -1}), 'samples_per_knot must be >= 1'),
+        (lambda: AzimuthSynchronousConfig(n_knots={'qu': 3}), 'n_knots must be >= 4'),
+        (lambda: AzimuthSynchronousConfig(), 'exactly one'),
+        (
+            lambda: AzimuthSynchronousConfig(bins=BinsConfig(), n_knots=20),
+            'exactly one',
+        ),
     ],
     ids=[
         'max_buckets',
@@ -170,6 +177,9 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
         'zernike_radius',
         'samples_per_knot',
         'samples_per_knot-per-stream',
+        'n_knots',
+        'azimuth-no-alternative',
+        'azimuth-two-alternatives',
     ],
 )
 def test_rejects_out_of_range_values(make, match):
@@ -277,10 +287,10 @@ def _demodulated(templates: TemplatesConfig) -> MapMakingConfig:
     )
 
 
-class TestLegendrePerLeg:
+class TestAzimuthSplinePerStream:
     def test_raises_without_demodulated(self):
-        legendre = {'qu': PolynomialOrders(0, 1)}
-        templates = TemplatesConfig(scan_synchronous=ScanSynchronousConfig(legendre=legendre))
+        azimuth = AzimuthSynchronousConfig(n_knots={'qu': 20})
+        templates = TemplatesConfig(azimuth_synchronous=azimuth)
         with pytest.raises(ValueError, match='per stream requires demodulated=True'):
             MapMakingConfig(templates=templates)
 
@@ -289,19 +299,18 @@ class TestLegendrePerLeg:
         [
             ([], 'names no stream'),
             (['iv'], r"names streams \['V'\] outside landscape.stokes"),
-            (['qu', 'U'], r"names streams \['U'\] more than once"),
+            (['qu', 'U'], r"azimuth_synchronous.n_knots names streams \['U'\] more than once"),
         ],
     )
     def test_raises_on_invalid_streams(self, streams: list[str], match: str):
-        legendre = {group: PolynomialOrders(0, 1) for group in streams}
+        azimuth = AzimuthSynchronousConfig(n_knots={group: 20 for group in streams})
         with pytest.raises(ValueError, match=match):
-            _demodulated(TemplatesConfig(scan_synchronous=ScanSynchronousConfig(legendre=legendre)))
+            _demodulated(TemplatesConfig(azimuth_synchronous=azimuth))
 
     def test_round_trips_through_yaml(self):
-        legendre = {'i': PolynomialOrders(0, 9), 'qu': PolynomialOrders(2, 5)}
-        config = _demodulated(
-            TemplatesConfig(scan_synchronous=ScanSynchronousConfig(legendre=legendre))
-        )
+        n_knots = {'i': 10, 'qu': 20}
+        azimuth = AzimuthSynchronousConfig(n_knots=n_knots, split_scans=True, explicit=True)
+        config = _demodulated(TemplatesConfig(azimuth_synchronous=azimuth))
         assert MapMakingConfig.load_dict(yaml.safe_load(config._to_yaml())) == config
 
 

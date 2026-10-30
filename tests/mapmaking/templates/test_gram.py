@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 from jax.flatten_util import ravel_pytree
 from numpy.testing import assert_allclose
+from scipy.linalg import block_diag
 
 import furax.mapmaking.templates.gram as gram_module
 from furax import AbstractLinearOperator, symmetric, tree
@@ -319,9 +320,13 @@ def test_gram_under_a_marginalized_weight(method, regularization):
 LONG = 512  # samples: more blocks of the common mode than colors of its probes
 
 
-def _time_local(key, block_lengths=(64, 64)):
-    """A common mode of 64 blocks, and a piecewise polynomial of each detector over 8 blocks."""
-    k = jr.split(key, 2)
+def _time_local(key, block_lengths=(64, 64), field=False):
+    """A common mode of 64 blocks, and a piecewise polynomial of each detector over 8 blocks.
+
+    With `field`, the common mode is bordered by a field of a stream of each detector, which the
+    polynomials partly absorb.
+    """
+    k = jr.split(key, 4)
     tod_format = TODFormat((N_DETS, LONG), jnp.float64)
     segment = jnp.repeat(jnp.arange(8), LONG // 8).astype(jnp.int32)
     basis = SegmentedBasis(segment, jr.normal(k[0], (2, LONG)), 8, block_lengths=block_lengths)
@@ -329,7 +334,17 @@ def _time_local(key, block_lengths=(64, 64)):
     common = Template(
         OffsetBasis(8, LONG, jnp.float64), tod_format, per=(), coupling=jr.normal(k[1], (N_DETS, 1))
     )
-    return TemplateOperator(local), TemplateOperator({'common': common})
+    shared = {'common': common}
+    if field:
+        # slow, as an atmospheric signal, so that the polynomials take most of it
+        stream = jnp.cumsum(jr.normal(k[2], (N_DETS, 1, LONG)), axis=-1)
+        shared['field'] = Template(
+            TensorBasis(stream, batch_shape=(N_DETS,)),
+            tod_format,
+            per=(),
+            coupling=jr.normal(k[3], (N_DETS, 2)),
+        )
+    return TemplateOperator(local), TemplateOperator(shared)
 
 
 def _banded_weight(op, key, bandwidth):
@@ -343,21 +358,26 @@ def _banded_weight(op, key, bandwidth):
     return _DenseWeight(jnp.asarray(matrix), in_structure=op.out_structure)
 
 
+@pytest.mark.parametrize('field', [False, True], ids=['core', 'bordered'])
 @pytest.mark.parametrize('bandwidth', [1, 9])
-def test_gram_of_time_local_templates_under_a_marginalized_weight_is_probed_by_color(bandwidth):
+def test_gram_of_time_local_templates_under_a_marginalized_weight_is_probed_by_color(
+    bandwidth, field
+):
     # The coupling of a time-local common mode to time-local templates of each detector is read
     # off the colored probes of its band, fewer than its amplitudes. The block keeps its band, the
     # Gram under the plain weight, and the term the marginalized weight takes from it is that on
-    # the coarse amplitudes.
-    local, shared = _time_local(jr.key(13))
+    # the coarse amplitudes and the border, when the block is too large to be dense.
+    local, shared = _time_local(jr.key(13), field=field)
     W = _banded_weight(shared, jr.key(14), bandwidth)
     local_inverse, _ = factor(template_gram(local, W, bandwidth=bandwidth), regularization=0.1)
     W_marginal = MarginalizedWeightOperator.create(W, local, local_inverse)
-    gram = template_gram(shared, W_marginal, bandwidth=bandwidth)
+    gram = template_gram(shared, W_marginal, bandwidth=bandwidth, max_dense=0)
     assert gram.coarse is not None
     plain = _dense_gram(shared, W)
     assert_allclose(gram.global_.matrix.as_matrix(), plain, rtol=1e-7, atol=1e-8)
-    projection = _coarse_matrix(gram.coarse)
+    projection = _coarse_matrix(
+        gram.coarse, n_border=plain.shape[0] - gram.coarse.n_blocks * gram.coarse.k
+    )
     marginal = projection.T @ (plain - _dense_gram(shared, W_marginal)) @ projection
     scale = np.abs(marginal).max()
     assert_allclose(gram.marginal[0], marginal, rtol=1e-7, atol=1e-9 * scale)
@@ -369,12 +389,14 @@ def test_gram_of_time_local_templates_under_a_marginalized_weight_is_probed_by_c
 
 
 @pytest.mark.parametrize('bandwidth', [1, 9])
-def test_marginalized_gram_of_time_local_templates_without_block_lengths_is_inverted_exactly(
-    bandwidth,
+@pytest.mark.parametrize('block_lengths', [(64, 64), None], ids=['small', 'unbounded'])
+def test_marginalized_gram_of_time_local_templates_is_inverted_exactly_when_dense(
+    bandwidth, block_lengths
 ):
-    # Without the block lengths of the local templates, the coarse amplitudes have no bounded
-    # band: the marginalized Gram is assembled dense and inverted exactly.
-    local, shared = _time_local(jr.key(13), block_lengths=None)
+    # A block of at most `max_dense` amplitudes is assembled dense and inverted exactly, as is any
+    # block when the local templates state no block lengths: the coarse amplitudes then have no
+    # bounded band.
+    local, shared = _time_local(jr.key(13), block_lengths=block_lengths)
     W = _banded_weight(shared, jr.key(14), bandwidth)
     local_inverse, _ = factor(template_gram(local, W, bandwidth=bandwidth), regularization=0.1)
     W_marginal = MarginalizedWeightOperator.create(W, local, local_inverse)
@@ -423,15 +445,16 @@ def test_absorbed_directions_are_inverted_at_the_ridge_or_the_rounding_cutoff(
     assert_allclose(eigenvalues.max(), 1 / floor, rtol=1e-3)
 
 
-def test_coarse_lift_and_project_are_transposes():
-    k = jr.split(jr.key(30), 3)
+def test_coarse_expand_and_reduce_are_transposes():
+    k = jr.split(jr.key(30), 4)
     coarse = gram_module._Coarse(jnp.array([0, 2, 3, 7]), jr.normal(k[0], (4, 3)), n_blocks=10, k=2)
-    y = jr.normal(k[1], (4, 2))
-    x = jr.normal(k[2], (10, 2))
-    assert_allclose(jnp.vdot(coarse.lift(y), x), jnp.vdot(y, coarse.project(x)))
-    for c in range(coarse.size):  # a column is the lift of a unit coarse amplitude
-        unit = jnp.zeros(coarse.size).at[c].set(1).reshape(-1, coarse.k)
-        assert_allclose(coarse.column(c), coarse.lift(unit))
+    y = jr.normal(k[1], (coarse.size + 3,))  # the coarse amplitudes, then a border of 3
+    core, border = jr.normal(k[2], (10, 2)), jr.normal(k[3], (3,))
+    expanded_core, expanded_border = coarse.expand(y)
+    assert_allclose(
+        jnp.vdot(expanded_core, core) + jnp.vdot(expanded_border, border),
+        jnp.vdot(y, coarse.reduce(core, border)),
+    )
 
 
 def test_banded_coupling_apply_is_the_transpose_of_contract():
@@ -475,25 +498,36 @@ def test_coarse_amplitudes_synthesize_the_local_functions():
         assert_allclose(synthesized, local(unit.reshape(local.shape)), atol=1e-12)
 
 
-def test_two_level_inverse_is_that_of_the_band_plus_the_coarse_correction():
+@pytest.mark.parametrize('n_border', [0, 2], ids=['core', 'bordered'])
+def test_two_level_inverse_is_that_of_the_band_plus_the_coarse_correction(n_border):
+    # The band inverts the core alone; the border is inverted by the coarse level, with the coarse
+    # amplitudes.
     basis = spline_drift_basis(10, jnp.arange(200.0), jnp.float64)
     bands = basis.gram(jnp.ones(200)).at[:, 0].add(jnp.eye(1))  # positive definite
-    matrix = BorderedBandedMatrix(bands=bands[None])
-    k = jr.split(jr.key(34), 2)
+    k = jr.split(jr.key(34), 3)
+    border = corner = None
+    if n_border:
+        border = 0.1 * jr.normal(k[1], (1, 12, n_border))
+        corner = 10 * jnp.eye(n_border)[None]  # diagonally dominant, so positive definite
+    matrix = BorderedBandedMatrix(bands[None], border, corner)
     coarse = gram_module._Coarse(jnp.array([0, 3, 6, 9]), jr.normal(k[0], (4, 3)), 12, 1)
-    projection = _coarse_matrix(coarse)
+    projection = _coarse_matrix(coarse, n_border)
     plain = np.asarray(matrix.as_matrix())
     marginal = 0.5 * projection.T @ plain @ projection
     inverse = gram_module._two_level(matrix, jnp.asarray(marginal)[None], coarse, 0.0, 2)
     coarse_block = projection.T @ plain @ projection - marginal
-    expected = np.linalg.inv(plain) + projection @ np.linalg.inv(coarse_block) @ projection.T
+    band = np.zeros_like(plain)
+    band[:12, :12] = np.linalg.inv(plain[:12, :12])
+    expected = band + projection @ np.linalg.inv(coarse_block) @ projection.T
     assert_allclose(inverse.as_matrix(), expected, rtol=1e-8, atol=1e-10)
 
 
-def _coarse_matrix(coarse):
-    """The coarse amplitudes as a dense matrix, from the core amplitudes to the coarse ones."""
+def _coarse_matrix(coarse, n_border=0):
+    r"""The coarse amplitudes and the border as a dense matrix $Z = \Pi \oplus I$, from the core
+    amplitudes then the border to the coarse ones then the border."""
     units = jnp.eye(coarse.size).reshape(coarse.size, -1, coarse.k)
-    return np.asarray(jax.vmap(lambda y: coarse.lift(y).ravel())(units)).T
+    projection = np.asarray(jax.vmap(lambda y: coarse.lift(y).ravel())(units)).T
+    return block_diag(projection, np.eye(n_border))
 
 
 def _absorbed_common_mode(bandwidth):

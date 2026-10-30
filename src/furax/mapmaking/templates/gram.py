@@ -69,7 +69,7 @@ class BlockGram:
     global_: '_Part | None'
     marginal: Float[Array, '1 global global'] | None = None
     """Subtracted from the global block, then all border, when factored; with `coarse`, its
-    projection onto the coarse amplitudes."""
+    projection onto the coarse amplitudes and the border."""
     coarse: '_Coarse | None' = None
     """The coarse amplitudes of a time-local global block assembled under a marginalized weight,
     which then keeps its band (see [`template_gram`][])."""
@@ -84,6 +84,7 @@ def template_gram(
     pomme_tau: int | None = None,
     method: Literal['structure', 'probe'] | None = None,
     batch_size: int = 1,
+    max_dense: int = 4096,
 ) -> BlockGram:
     r"""Assemble the Gram $T^\top W T$, or $T^\top W F T$ with the Pomme projector $F$.
 
@@ -109,9 +110,12 @@ def template_gram(
     $W$, and `pomme_tau` applies $F$ to it. As the local templates couple all the global amplitudes
     they see, the Gram is one dense block, the subtracted term held apart (`marginal`) so that
     [`factor`][] takes the ridge from $T_g^\top W T_g$. When both the global block and the local
-    templates are time-local, the global block keeps its band instead, $T_g^\top W T_g$, and the
-    subtracted term is taken on coarse amplitudes only (`coarse`): those whose signal, mode by
-    mode, the local templates' functions of time reproduce, which they absorb.
+    templates are time-local, and the global block has more than `max_dense` amplitudes, it keeps
+    its band instead, $T_g^\top W T_g$, and the subtracted term is taken on coarse amplitudes only
+    (`coarse`): those whose signal, mode by mode, the local templates' functions of time
+    reproduce, which they absorb, and those of the border, which they may absorb as well. The
+    inverse is then only approximate: a local template absorbs more than its functions of time
+    where a detector sees few samples, such as next to its gaps, which the coarse amplitudes miss.
 
     Args:
         operator: The template operator $T$.
@@ -125,6 +129,9 @@ def template_gram(
             structure when the weight is diagonal, by probing otherwise.
         batch_size: The number of probes applied at once, or of detectors assembled at once
             from the structure, bounding the memory of the assembly.
+        max_dense: The most global amplitudes whose Gram under a marginalized weight is one dense
+            block, inverted exactly, rather than banded with coarse amplitudes. The dense block
+            takes memory quadratic in their number.
 
     Raises:
         TypeError: If the templates of a marginalized weight are not a [`TemplateOperator`][].
@@ -209,7 +216,11 @@ def template_gram(
         # The coarse amplitudes need the block probed under `weight` itself, which carries the
         # Pomme projector wherever Pomme applies, except on the structure path.
         coarse = None
-        if time_local and (diagonal_weights is None or pomme is None):
+        if (
+            time_local
+            and (diagonal_weights is None or pomme is None)
+            and global_layout.size > max_dense
+        ):
             coarse = _coarse_projection(operator, banded, local_layout, batch_size)
         if coarse is not None or (time_local and diagonal_weights is None):
             dense = None if coarse is not None else global_layout
@@ -244,9 +255,11 @@ def factor(
     its marginal term subtracted: the directions the marginalized templates absorb, held only by
     the ridge, are inverted at the ridge, or at the rounding error of the subtraction if larger,
     so that the inverse still preconditions a system that holds them. With coarse amplitudes, the
-    block keeps its band, factored by banded Cholesky, and only the coarse amplitudes $\Pi$ are
-    inverted dense: the inverse is that of the band plus $\Pi E^{-1} \Pi^\top$, with
-    $E = \Pi^\top S \Pi$ the marginalized Gram $S$ on them, a two-level preconditioner.
+    core keeps its band, factored by banded Cholesky, and only the coarse amplitudes and the
+    border, $Z = \Pi \oplus I$, are inverted dense: the inverse is that of the band of the core
+    plus $Z E^{-1} Z^\top$, with $E = Z^\top S Z$ the marginalized Gram $S$ on them, a two-level
+    preconditioner. The border, whose amplitudes the marginalized templates may absorb as well, is
+    inverted by the coarse level alone.
     Amplitudes that no weighted sample sees, whose rows are zero, take a unit diagonal and come
     back unchanged. The ridge is `regularization` times the mean diagonal of each core block, and
     times its own diagonal entry for each border amplitude, so that it is in the units of the
@@ -305,8 +318,9 @@ def _marginal_term(
 
     It is built a column at a time, `batch_size` at once: $C^\top G_i^{-1} C_q$ for the coupling
     $C_q$ of each global amplitude, which only the columns of a batch hold whole. With `coarse`,
-    it is $\Pi^\top C^\top G_i^{-1} C \Pi$ on the coarse amplitudes $\Pi$ instead, a column
-    per coarse amplitude, the coupling then in the order of the banded layout.
+    it is $Z^\top C^\top G_i^{-1} C Z$ on the coarse amplitudes and the border instead,
+    $Z = \Pi \oplus I$, a column per coarse or border amplitude, the coupling then in the order
+    of the banded layout.
     """
 
     def solve(local):
@@ -320,12 +334,11 @@ def _marginal_term(
     assert isinstance(coupling, _BandedCoupling)  # coarse amplitudes come with the colored probes
     n_core = coarse.n_blocks * coarse.k
 
-    def apply(core):
-        border = jnp.zeros(coupling.n_rows - n_core, core.dtype)
+    def apply(core, border):
         out = solve(coupling.apply(jnp.concatenate([core.ravel(), border])))
-        return out[:n_core].reshape(coarse.n_blocks, coarse.k)
+        return out[:n_core].reshape(coarse.n_blocks, coarse.k), out[n_core:]
 
-    return coarse.restrict(apply, batch_size)[None]
+    return coarse.restrict(apply, coupling.n_rows - n_core, batch_size)[None]
 
 
 class _DenseCoupling(NamedTuple):
@@ -411,7 +424,7 @@ class _Coarse:
 
     Coarse function `j` weighs the core blocks from `start[j]` on by `band[j]`, and each of the
     `k` amplitudes of a block alike: a coarse amplitude is a pair (function, `k` index). The border
-    has none.
+    is kept whole, next to them: $Z = \Pi \oplus I$.
     """
 
     start: Int[Array, ' coarse']
@@ -433,22 +446,35 @@ class _Coarse:
         r"""$\Pi^\top x$, from the core."""
         return _einsum('jw,jwa->ja', self.band, x[self._blocks])
 
-    def column(self, c: Int[Array, '']) -> Float[Array, 'block k']:
-        r"""$\Pi$ of the coarse amplitude `c`, on the core: its function's band, on its index."""
-        j, a = c // self.k, c % self.k
-        band = jnp.zeros((self.band.shape[1], self.k), self.band.dtype).at[:, a].set(self.band[j])
-        core = jnp.zeros((self.n_blocks, self.k), self.band.dtype)
-        return jax.lax.dynamic_update_slice_in_dim(core, band, self.start[j], axis=0)
+    def expand(
+        self, y: Float[Array, ' z']
+    ) -> tuple[Float[Array, 'block k'], Float[Array, ' border']]:
+        r"""$Z y$, on the core and border: the coarse amplitudes come first in `y`, then the border."""
+        return self.lift(y[: self.size].reshape(-1, self.k)), y[self.size :]
+
+    def reduce(
+        self, core: Float[Array, 'block k'], border: Float[Array, ' border']
+    ) -> Float[Array, ' z']:
+        r"""$Z^\top x$, from the core and border, laid out as `expand` takes it."""
+        return jnp.concatenate([self.project(core).ravel(), border])
 
     def restrict(
-        self, apply: Callable[[Array], Array], batch_size: int
-    ) -> Float[Array, 'coarse coarse']:
-        r"""$\Pi^\top A \Pi$, for `apply` the action of $A$ on the core, a batch of columns at once."""
+        self,
+        apply: Callable[[Array, Array], tuple[Array, Array]],
+        n_border: int,
+        batch_size: int,
+    ) -> Float[Array, 'z z']:
+        r"""$Z^\top A Z$, for `apply` the action of $A$ on the core and border.
+
+        It is built a batch of columns at once.
+        """
+        n = self.size + n_border
 
         def column(c):
-            return self.project(apply(self.column(c))).ravel()
+            unit = (jnp.arange(n) == c).astype(self.band.dtype)
+            return self.reduce(*apply(*self.expand(unit)))
 
-        return tree.stacked_map(column, jnp.arange(self.size), batch_size=batch_size)
+        return tree.stacked_map(column, jnp.arange(n), batch_size=batch_size)
 
     @property
     def _blocks(self) -> Int[Array, 'coarse width']:
@@ -509,18 +535,21 @@ def _two_level(
     """The two-level inverse of a banded block whose marginalized Gram is projected on `coarse`.
 
     `matrix` is the regularized block under the plain weight, `marginal` what the marginalized
-    weight takes from it on the coarse amplitudes.
+    weight takes from it on the coarse amplitudes and the border.
     """
-    border = None
-    if matrix.border is not None:
-        border = jnp.zeros((1, matrix.border.shape[-1]), matrix.border.dtype)
+    n_border = 0 if matrix.border is None else matrix.border.shape[-1]
 
-    def apply(core):
-        return matrix((core[None], border))[0][0]
+    def apply(core, border):
+        if not n_border:  # the matrix takes no border, rather than an empty one
+            return matrix((core[None], None))[0][0], border
+        out_core, out_border = matrix((core[None], border[None]))
+        return out_core[0], out_border[0]
 
-    plain = coarse.restrict(apply, batch_size)
+    plain = coarse.restrict(apply, n_border, batch_size)
     correction = _absorbed_inverse(plain[None], marginal, regularization)
-    return _TwoLevelInverse(matrix.cholesky(), coarse, correction, in_structure=matrix.in_structure)
+    # the border is held whole by the coarse level, so the band is factored alone
+    band = BorderedBandedMatrix(bands=matrix.bands).cholesky()
+    return _TwoLevelInverse(band, coarse, correction, in_structure=matrix.in_structure)
 
 
 def _absorbed_inverse(
@@ -667,6 +696,11 @@ class _Layout(NamedTuple):
     @property
     def n_border(self) -> int:
         return sum(prod(self.unit(entry)) for entry in self.border)
+
+    @property
+    def size(self) -> int:
+        """The number of amplitudes of a unit: its core, then its border."""
+        return self.n_blocks * self.k + self.n_border
 
     @property
     def block_axis(self) -> int:
@@ -985,22 +1019,25 @@ class _GramInverse(AbstractLinearOperator):
 
 @symmetric
 class _TwoLevelInverse(AbstractLinearOperator):
-    r"""$B^{-1} + \Pi E^{-1} \Pi^\top$, on the core and border of a single unit.
+    r"""$A^{-1} \oplus 0 + Z E^{-1} Z^\top$, on the core and border of a single unit.
 
-    $B^{-1}$ inverts the band of a block, and $E^{-1}$ the marginalized Gram on its coarse
-    amplitudes $\Pi$, which the band holds as well determined although the marginalized templates
-    absorb them.
+    $A^{-1}$ inverts the band of the core of a block, and $E^{-1}$ the marginalized Gram on its
+    coarse amplitudes and its border, $Z = \Pi \oplus I$: the coarse amplitudes, which the band
+    holds as well determined although the marginalized templates absorb them, and the border,
+    which only this level inverts.
     """
 
     band: AbstractLinearOperator
     coarse: _Coarse
     correction: DensePseudoInverseOperator
-    """$E^{-1}$, on the coarse amplitudes, flat."""
+    """$E^{-1}$, on the coarse amplitudes then the border, flat."""
 
     def mv(self, x: tuple[Array, Array | None]) -> tuple[Array, Array | None]:
-        core, border = self.band(x)
-        y = self.correction(self.coarse.project(x[0][0]).reshape(1, -1))[0]
-        return core + self.coarse.lift(y.reshape(-1, self.coarse.k))[None], border
+        core, border = x
+        z = self.coarse.reduce(core[0], jnp.zeros(0, core.dtype) if border is None else border[0])
+        coarse_core, coarse_border = self.coarse.expand(self.correction(z[None])[0])
+        core = self.band((core, None))[0] + coarse_core[None]
+        return core, None if border is None else coarse_border[None]
 
 
 def _ridge_operator(

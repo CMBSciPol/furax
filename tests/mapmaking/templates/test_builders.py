@@ -31,11 +31,11 @@ from furax.mapmaking.templates._builders import (
     _bin_weights,
     _harmonics,
     _legendre,
+    azimuth_bins_basis,
     azimuth_hwp_synchronous_basis,
+    azimuth_spline_basis,
     binned_azimuth_hwp_synchronous_basis,
-    binned_azimuth_synchronous_basis,
     hwp_synchronous_basis,
-    scan_synchronous_basis,
     spline_drift_basis,
     spline_hwp_synchronous_basis,
     t2p_basis,
@@ -126,12 +126,18 @@ def _geometry(n_samps: int):
 @pytest.mark.parametrize(
     ('build', 'shape'),
     [
-        (lambda az, hwp: scan_synchronous_basis(PolynomialOrders(0, 3), az, jnp.float64), (4,)),
         (
-            lambda az, hwp: binned_azimuth_synchronous_basis(
+            lambda az, hwp: azimuth_bins_basis(
                 BinsConfig(n_bins=6, interpolate=False, smooth=False), az, jnp.float64
             ),
             (6,),
+        ),
+        # a set of functions per scan mask
+        (
+            lambda az, hwp: azimuth_bins_basis(
+                BinsConfig(n_bins=6), az, jnp.float64, scan_masks=(az < 5, az >= 5)
+            ),
+            (12,),
         ),
         # two rows per harmonic, no DC row
         (lambda az, hwp: hwp_synchronous_basis(4, hwp, jnp.float64), (8,)),
@@ -149,13 +155,52 @@ def _geometry(n_samps: int):
             (5, 7),
         ),
     ],
-    ids=['scan', 'binned_scan', 'hwp', 'azimuth_hwp', 'binned_azimuth_hwp'],
+    ids=['binned_scan', 'binned_scan_split', 'hwp', 'azimuth_hwp', 'binned_azimuth_hwp'],
 )
 def test_synchronous_basis_amplitudes(build, shape) -> None:
     azimuth, hwp = _geometry(200)
     basis = build(azimuth, hwp)
     assert basis.shape == shape
     assert basis.n_points == 200
+
+
+def _scan(n_samps: int):
+    """A triangle wave of azimuth, its left- and right-going samples, and a few in neither."""
+    phase = jnp.arange(n_samps) % 50 / 25
+    azimuth = jnp.where(phase < 1, phase, 2 - phase)
+    right = phase < 1
+    turnaround = (phase < 0.08) | (jnp.abs(phase - 1) < 0.04)
+    return azimuth, ~right & ~turnaround, right & ~turnaround
+
+
+@pytest.mark.parametrize('split', [False, True])
+def test_azimuth_spline_basis_is_the_splines_without_the_constant(split) -> None:
+    n_knots = 6
+    azimuth, left, right = _scan(400)
+    masks = (left, right) if split else None
+    basis = azimuth_spline_basis(n_knots, azimuth, jnp.float64, scan_masks=masks)
+    values = basis.as_matrix()  # (samp, function)
+    n_sets = 2 if split else 1
+    assert values.shape == (400, n_sets * n_knots - 1)
+    assert jnp.linalg.matrix_rank(values) == n_sets * n_knots - 1
+
+    def residual(signal):
+        fit = values @ jnp.linalg.lstsq(values, signal)[0]
+        return jnp.max(jnp.abs(signal - fit))
+
+    # the splines sum to one; every one whose coefficients sum to zero is in the span, the
+    # constant is not
+    splines = bspline.spline_basis(azimuth, n_knots - 1)[:-1].T  # (samp, knot)
+    assert_allclose(splines.sum(axis=1), 1.0, atol=TOL)
+    coefficients = jr.normal(jr.key(0), (n_knots,))
+    signal = splines @ (coefficients - coefficients.mean())
+    in_scans = (left | right) if split else jnp.ones(400, bool)
+    assert residual(jnp.where(in_scans, signal, 0)) < 1e-10
+    assert residual(in_scans.astype(jnp.float64)) > 0.1
+    if split:
+        # the offset of one scan direction to the other is kept, and the turnarounds are not seen
+        assert residual(left.astype(jnp.float64) - right) < 1e-10
+        assert_allclose(values[~in_scans], 0.0, atol=TOL)
 
 
 def test_azimuth_hwp_scan_mask_zeroes_flagged_samples() -> None:

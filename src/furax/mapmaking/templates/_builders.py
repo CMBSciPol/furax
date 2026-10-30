@@ -65,6 +65,7 @@ __all__ = [
     'common_mode_templates',
     'zernike_couplings',
     'winding_couplings',
+    'polynomial_couplings',
     'polarization_field_couplings',
 ]
 
@@ -336,17 +337,30 @@ def common_mode_templates(
         return {}
     basis = _spline_drift_basis(data, config.samples_per_knot, tod_format.dtype)
     angles = _focal_plane_angles(data)
-    coupling = winding_couplings(
-        angles.xi,
-        angles.eta,
-        angles.gamma,
-        config.quadrupole_order,
-        config.radius,
-        decentred=config.decentred,
-        uniform=config.uniform,
-        streams=streams,
-    ).astype(tod_format.dtype)
-    template = Template(basis, tod_format, streams=streams, per=(), coupling=coupling)
+    if config.polynomial_order is None:
+        coupling = winding_couplings(
+            angles.xi,
+            angles.eta,
+            angles.gamma,
+            config.quadrupole_order,
+            config.radius,
+            decentred=config.decentred,
+            uniform=config.uniform,
+            streams=streams,
+        )
+    else:
+        coupling = polynomial_couplings(
+            angles.xi,
+            angles.eta,
+            angles.gamma,
+            config.polynomial_order,
+            config.radius,
+            uniform=config.uniform,
+            streams=streams,
+        )
+    template = Template(
+        basis, tod_format, streams=streams, per=(), coupling=coupling.astype(tod_format.dtype)
+    )
     return {'common_mode': template}
 
 
@@ -434,6 +448,46 @@ def winding_couplings(
         ],
         axis=-1,
     )
+    return polarization_field_couplings(fields, gamma, streams=streams)
+
+
+def polynomial_couplings(
+    xi: Float[Array, ' det'],
+    eta: Float[Array, ' det'],
+    gamma: Float[Array, ' det'],
+    order: int,
+    radius: float,
+    *,
+    uniform: bool = False,
+    streams: str | None = None,
+) -> Float[Array, '*stream det mode']:
+    r"""Couplings of a leakage that follows a polynomial polarization field over the focal plane.
+
+    With $\zeta = (-\eta - i\xi) / R$ the complex position of a detector, the field is
+    $P = \sum_{p, q} c_{pq} \zeta^p \bar\zeta^q$ over the monomials of degree $1 \le p + q \le$
+    `order`, and the constant if `uniform`: any smooth field, of which `winding_couplings` holds
+    only the quadrupolar ones. The modes are ordered by degree and then by number of turns
+    $p - q$, each with the couplings of [`polarization_field_couplings`][].
+
+    Args:
+        xi: The detectors' first focal-plane coordinate, in radians.
+        eta: The detectors' second focal-plane coordinate, in radians.
+        gamma: The detectors' polarization angle, in radians.
+        order: The highest degree of the monomials, at least 1.
+        radius: The focal-plane radius $R$, in radians.
+        uniform: Whether to include the constant mode.
+        streams: The streams `'q'` and `'u'` to couple together; `None` for the couplings of one
+            stream.
+
+    Raises:
+        ValueError: If `order` is below 1, or `streams` names a stream other than `'q'` and `'u'`.
+    """
+    if order < 1:
+        raise ValueError(f"'order' must be >= 1, got {order}")
+    zeta = (-eta - 1j * xi) / radius
+    # by degree n, then by turns p - q = 2p - n
+    exponents = [(p, n - p) for n in range(0 if uniform else 1, order + 1) for p in range(n + 1)]
+    fields = jnp.stack([zeta**p * jnp.conj(zeta) ** q for p, q in exponents], axis=-1)
     return polarization_field_couplings(fields, gamma, streams=streams)
 
 

@@ -194,6 +194,7 @@ class TestCommonMode:
         [
             ({'samples_per_knot': 0}, 'samples_per_knot'),
             ({'quadrupole_order': 0}, 'quadrupole_order'),
+            ({'polynomial_order': 0}, 'polynomial_order'),
             ({'radius': 0.0}, 'radius'),
         ],
     )

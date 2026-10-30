@@ -21,6 +21,7 @@ from furax.mapmaking.templates import (
     build_templates,
     common_mode_templates,
     polarization_field_couplings,
+    polynomial_couplings,
     required_reader_fields,
     spline_drift_templates,
     t2p_templates,
@@ -486,6 +487,37 @@ def test_winding_couplings_reject_a_radial_order_below_one():
         winding_couplings(xi, eta, gamma, 0, 0.31)
 
 
+def test_polynomial_couplings_are_those_of_the_monomials_by_degree_and_turns():
+    # the modes are the monomials ζ^p ζ̄^q with 1 <= p + q <= order, by degree p + q, then by
+    # turns p - q
+    xi, eta, gamma = _detector_angles()
+    zeta = (-eta - 1j * xi) / 0.31
+    exponents = [(0, 1), (1, 0), (0, 2), (1, 1), (2, 0)]
+    fields = jnp.stack([zeta**p * jnp.conj(zeta) ** q for p, q in exponents], axis=-1)
+    coupling = polynomial_couplings(xi, eta, gamma, 2, 0.31, streams='qu')
+    assert_allclose(coupling, polarization_field_couplings(fields, gamma, streams='qu'), atol=TOL)
+    with_constant = polynomial_couplings(xi, eta, gamma, 2, 0.31, uniform=True, streams='qu')
+    assert with_constant.shape[-1] == coupling.shape[-1] + 2
+
+
+def test_polynomial_couplings_of_order_two_span_the_winding_couplings():
+    xi, eta, gamma = _detector_angles()
+    poly = polynomial_couplings(xi, eta, gamma, 2, 0.31, streams='qu')  # (stream, det, mode)
+    winding = winding_couplings(
+        xi, eta, gamma, 1, 0.31, decentred=True, uniform=False, streams='qu'
+    )
+    a = poly.reshape(-1, poly.shape[-1])
+    b = winding.reshape(-1, winding.shape[-1])
+    coef = jnp.linalg.lstsq(a, b)[0]
+    assert_allclose(a @ coef, b, atol=1e-8)
+
+
+def test_polynomial_couplings_reject_an_order_below_one():
+    xi, eta, gamma = _detector_angles()
+    with pytest.raises(ValueError, match="'order' must be >= 1"):
+        polynomial_couplings(xi, eta, gamma, 0, 0.31)
+
+
 def _field_data(stokes: str) -> dict:
     """The fields the polarization templates are built from: those of `_data` and the detector
     quaternions."""
@@ -500,6 +532,8 @@ def _field_data(stokes: str) -> dict:
         (CommonModeConfig(samples_per_knot=30), 4),  # the quadrupole and the shifted axis
         (CommonModeConfig(samples_per_knot=30, uniform=True), 6),
         (CommonModeConfig(samples_per_knot=30, quadrupole_order=2, decentred=False), 4),
+        (CommonModeConfig(samples_per_knot=30, polynomial_order=2), 10),  # 5 complex monomials
+        (CommonModeConfig(samples_per_knot=30, polynomial_order=3, uniform=True), 20),
     ],
 )
 def test_common_mode_has_one_spline_per_mode_shared_by_the_detectors(config, n_modes):

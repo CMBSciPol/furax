@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `CommonModeConfig.polynomial_order`: the common mode can follow any polynomial polarization field over the focal plane, from `polynomial_couplings`, not only the quadrupolar one
+
 ## [0.17.2] - 2026-10-30
 
 ### Changed

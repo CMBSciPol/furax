@@ -695,9 +695,9 @@ class CommonModeConfig:
 
     The window and the half-wave plate emit radiation that is partly polarized. All the detectors
     look through them, so they see the same polarization pattern across the focal plane, rising
-    and falling together. The pattern is the quadrupolar field of [`T2PConfig`][], and each of its
-    modes has its own timestream, a cubic B-spline of time: a few spline coefficients per knot
-    replace a signal in every detector. The amplitudes are shared by all the detectors of a run,
+    and falling together. The pattern is the quadrupolar field of [`T2PConfig`][], or any
+    polynomial field with `polynomial_order`, and each of its modes has its own timestream, a cubic
+    B-spline of time: a few spline coefficients per knot replace a signal in every detector. The amplitudes are shared by all the detectors of a run,
     so fit one band at a time. They are always solved for with the map, never marginalized.
 
     The uniform mode, equal for every detector, has the same effect as the polarization of the
@@ -725,6 +725,15 @@ class CommonModeConfig:
     uniform: bool = False
     """Whether the field includes the polarization uniform across the focal plane."""
 
+    polynomial_order: int | None = None
+    r"""Highest degree of a polynomial field, in place of the quadrupolar one.
+
+    The field is every monomial $\zeta^p \bar\zeta^q$ with $1 \le p + q \le$ `polynomial_order`
+    (and the constant if `uniform`): $(n + 1)(n + 2) / 2 - 1$ complex amplitudes per knot, any
+    smooth polarization pattern across the focal plane, not only the quadrupolar one. At order 2
+    it holds the quadrupolar field and the term of a shifted axis. `quadrupole_order` and
+    `decentred` are then ignored."""
+
     radius: float = 0.31
     """Focal-plane radius $R$ in radians, scaling the detector coordinates of the field."""
 
@@ -733,6 +742,8 @@ class CommonModeConfig:
             raise ValueError(f"'samples_per_knot' must be >= 1, got {self.samples_per_knot}")
         if self.quadrupole_order < 1:
             raise ValueError(f"'quadrupole_order' must be >= 1, got {self.quadrupole_order}")
+        if self.polynomial_order is not None and self.polynomial_order < 1:
+            raise ValueError(f"'polynomial_order' must be >= 1, got {self.polynomial_order}")
         if self.radius <= 0:
             raise ValueError(f"'radius' must be positive, got {self.radius}")
 

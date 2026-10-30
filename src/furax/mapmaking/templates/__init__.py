@@ -16,6 +16,7 @@ from ._builders import (
     common_mode_templates,
     hwp_synchronous_templates,
     polarization_field_couplings,
+    polynomial_couplings,
     required_reader_fields,
     scan_synchronous_templates,
     spline_drift_templates,
@@ -41,6 +42,7 @@ __all__ = [
     't2p_templates',
     'common_mode_templates',
     'zernike_couplings',
+    'polynomial_couplings',
     'winding_couplings',
     'polarization_field_couplings',
 ]

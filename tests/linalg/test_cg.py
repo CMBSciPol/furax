@@ -459,6 +459,48 @@ class TestCGCurvature:
             cg(A, b, max_steps=20, negative_curvature='nope')
 
 
+class TestCGCheckpoint:
+    def test_checkpoints_are_the_iterates_and_resume_the_solve(self):
+        A, _, b, x_true = _dense_spd_system(20, condition=1e3, seed=0)
+        saved = []
+        cg(A, b, max_steps=12, rtol=0, checkpoint_every=4, checkpoint_callback=_record(saved))
+        jax.effects_barrier()
+
+        assert [n for n, _ in saved] == [4, 8, 12]
+        for n, x in saved:
+            assert_allclose(x, cg(A, b, max_steps=n, rtol=0).solution, rtol=1e-12)
+        resumed = cg(A, b, saved[-1][1], max_steps=100, rtol=1e-10)
+        assert resumed.converged
+        assert_allclose(resumed.solution, x_true, rtol=1e-8)
+
+    def test_tangent_solve_does_not_checkpoint(self):
+        A, b, _ = _diagonal_system()
+        saved = []
+
+        def solve(b):
+            callback = _record(saved)
+            return cg(A, b, max_steps=5, rtol=0, checkpoint_every=1, checkpoint_callback=callback)
+
+        jax.jvp(lambda b: solve(b).solution, (b,), (jnp.ones_like(b),))
+        jax.effects_barrier()
+        assert [n for n, _ in saved] == [1, 2, 3, 4, 5]
+
+    @pytest.mark.parametrize(
+        'every, callback', [(0, lambda n, x: None), (3, None)], ids=['no-period', 'no-callback']
+    )
+    def test_callback_and_period_go_together(self, every, callback):
+        A, b, _ = _diagonal_system()
+        with pytest.raises(ValueError, match='checkpoint_callback'):
+            cg(A, b, checkpoint_every=every, checkpoint_callback=callback)
+
+
+def _record(saved: list[tuple[int, np.ndarray]]):
+    def callback(n_steps, x):
+        saved.append((int(n_steps), np.asarray(x)))
+
+    return callback
+
+
 _AXIS_TYPES = {'explicit': AxisType.Explicit, 'auto': AxisType.Auto}
 
 
@@ -518,3 +560,21 @@ class TestCGDistributed:
         # under auto axes JAX is free to choose, so only assert the spec in the explicit case.
         if axis is AxisType.Explicit:
             assert plain.solution.sharding.spec == spec, plain.solution.sharding.spec
+
+    def test_checkpoint_holds_the_whole_iterate(self) -> None:
+        mesh_shape, axis_names, spec = _sharded_layout(1)
+        diag = 1.0 + jnp.arange(mesh_shape[0] * self.K, dtype=float).reshape(-1, self.K)
+        b = jnp.ones_like(diag)
+        saved = []
+        mesh = jax.make_mesh(mesh_shape, axis_names, axis_types=(AxisType.Explicit,))
+        with jax.set_mesh(mesh):
+            b_s = jax.device_put(b, NamedSharding(mesh, spec))
+            A = DiagonalOperator(jax.device_put(diag, b_s.sharding), in_structure=as_structure(b_s))
+            result = cg(
+                A, b_s, max_steps=2, rtol=0, checkpoint_every=2, checkpoint_callback=_record(saved)
+            )
+        jax.effects_barrier()
+
+        [(n, x)] = saved
+        assert n == 2
+        assert_allclose(x, np.asarray(result.solution), rtol=1e-12)

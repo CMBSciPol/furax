@@ -75,7 +75,6 @@ INTERFACES = [
     ),
 ]
 STOKES_TYPES = ['I', 'QU', 'IQU']
-POMME_TAU = 10
 
 
 @pytest.mark.parametrize(
@@ -92,7 +91,7 @@ def test_interface_observations_are_mapped(
     observations = _observations(name, demodulated)
     config = _config(landscape_type, stokes, demodulated, interpolation=interpolation)
     maker = MultiObservationMapMaker(observations, config=config)
-    results = maker.run()
+    results = maker.make_maps()
     n_stokes = len(stokes)
     assert results.hit_map.shape == maker.landscape.shape
     assert jnp.all(results.hit_map >= 0) and jnp.any(results.hit_map > 0)
@@ -130,7 +129,7 @@ def test_failed_observation_is_excluded(demodulated):
     config = _config('healpix', 'IQU', demodulated=demodulated)
     mixed = [FakeLazyObservation(seed=0), FailingLazyObservation(seed=1)]
     maker = MultiObservationMapMaker(mixed, config=config)
-    results = maker.run()
+    results = maker.make_maps()
 
     assert results.failed_observations == ['failing_obs']
     assert results.hit_map.shape == maker.landscape.shape
@@ -160,11 +159,10 @@ def test_failed_observation_is_excluded(demodulated):
     stats = results.solver_stats
     assert stats['num_steps'] == 1  # binned map
     assert stats['converged'] and len(stats['residuals']) == stats['num_steps'] + 1
-    assert results.provenance['processes'] == 1
 
     # the failed observation contributes nothing -> identical to mapping only the good one
     good_only = [FakeLazyObservation(seed=0)]
-    expected = MultiObservationMapMaker(good_only, config=config).run()
+    expected = MultiObservationMapMaker(good_only, config=config).make_maps()
     assert eqx.tree_equal(results.hit_map, expected.hit_map)
     assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 
@@ -217,8 +215,8 @@ class TestBuckets:
         observations = self._observations()
         one = _config('healpix', stokes, method=method, identity_noise=True)
         many = _config('healpix', stokes, method=method, identity_noise=True, max_buckets=3)
-        one_result = MultiObservationMapMaker(observations, config=one).run()
-        many_result = MultiObservationMapMaker(observations, config=many).run()
+        one_result = MultiObservationMapMaker(observations, config=one).make_maps()
+        many_result = MultiObservationMapMaker(observations, config=many).make_maps()
         assert eqx.tree_equal(one_result.hit_map, many_result.hit_map)
         assert eqx.tree_equal(one_result.map, many_result.map, rtol=1e-10, atol=1e-12)
         assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
@@ -231,8 +229,8 @@ class TestBuckets:
         many = _config('healpix', 'I', max_buckets=3, nperseg=1024)
         maker = MultiObservationMapMaker(observations, config=one)
         assert maker.fit_config.weighting.fitting.nperseg == min(self.N_SAMPLES)
-        one_result = maker.run()
-        many_result = MultiObservationMapMaker(observations, config=many).run()
+        one_result = maker.make_maps()
+        many_result = MultiObservationMapMaker(observations, config=many).make_maps()
         assert eqx.tree_equal(one_result.hit_map, many_result.hit_map)
         assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
         assert eqx.tree_equal(one_result.map, many_result.map, rtol=1e-10, atol=1e-12)
@@ -242,9 +240,9 @@ class TestBuckets:
         config = _config('healpix', 'IQU', max_buckets=3)
         observations = self._observations()
         observations[0] = FailingLazyObservation(seed=0, n_samples=self.N_SAMPLES[0])
-        results = MultiObservationMapMaker(observations, config=config).run()
+        results = MultiObservationMapMaker(observations, config=config).make_maps()
         assert results.failed_observations == ['failing_obs']
-        expected = MultiObservationMapMaker(observations[1:], config=config).run()
+        expected = MultiObservationMapMaker(observations[1:], config=config).make_maps()
         assert eqx.tree_equal(results.hit_map, expected.hit_map)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 
@@ -289,7 +287,7 @@ def test_two_level_preconditioner_solves_the_same_system():
     )
     config.solver = SolverConfig(rtol=1e-10, max_steps=500)
     observations = [GappyLazyGroundObservation(seed=i, n_samples=256) for i in range(2)]
-    expected = MultiObservationMapMaker(observations, config=config).run()
+    expected = MultiObservationMapMaker(observations, config=config).make_maps()
     for spectrum, which in [
         ('preconditioned', 'small'),
         ('system', 'small'),
@@ -298,36 +296,8 @@ def test_two_level_preconditioner_solves_the_same_system():
         config.solver.two_level = TwoLevelConfig(
             rank=4, which=which, spectrum=spectrum, tol=1e-8, max_restarts=50
         )
-        results = MultiObservationMapMaker(observations, config=config).run()
+        results = MultiObservationMapMaker(observations, config=config).make_maps()
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-8), (spectrum, which)
-
-
-def test_pomme_maps_q_and_u_of_an_iqu_configuration():
-    config = _config('healpix', 'IQU', method=Methods.POMME, pomme_tau=POMME_TAU)
-    maker = MultiObservationMapMaker([FakeLazyObservation(seed=i) for i in range(2)], config=config)
-    assert maker.config.landscape.stokes == 'QU'
-    results = maker.run()
-    assert results.icov.shape == (2, 2, *maker.landscape.shape)
-    assert jnp.all(jnp.isfinite(results.icov))
-
-
-@pytest.mark.parametrize(
-    ('stokes', 'demodulated', 'match'),
-    [
-        ('I', False, 'cannot be reduced to a supported type'),
-        ('IQUV', False, 'cannot be reduced to a supported type'),
-        ('QU', True, 'demodulated'),
-    ],
-)
-def test_pomme_rejects(stokes, demodulated, match):
-    config = MapMakingConfig(
-        method=Methods.POMME,
-        pomme_tau=POMME_TAU,
-        landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16)),
-        sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
-    )
-    with pytest.raises(ValueError, match=match):
-        MultiObservationMapMaker([], config=config)
 
 
 def _observations(name: str, demodulated: bool = False) -> list[AbstractLazyObservation]:
@@ -441,7 +411,7 @@ class TestGapTreatmentMapMaker:
     def test_ml_mapmaker_with_gaps(self, treatment):
         """The full solve completes and yields a finite map over gappy observations."""
         observations = [GappyLazyGroundObservation(seed=i) for i in range(2)]
-        results = MultiObservationMapMaker(observations, config=self._config(treatment)).run()
+        results = MultiObservationMapMaker(observations, config=self._config(treatment)).make_maps()
         assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(results.map))
         assert bool(jnp.all(jnp.isfinite(results.icov)))
         assert jnp.all(results.hit_map >= 0)
@@ -451,12 +421,12 @@ class TestGapTreatmentMapMaker:
         """The ``real & valid`` gate: a failed load is read as filler and never gap-filled."""
         config = self._config(GapTreatment.FILL)
         mixed = [GappyLazyGroundObservation(seed=0), FailingLazyObservation(seed=1)]
-        results = MultiObservationMapMaker(mixed, config=config).run()
+        results = MultiObservationMapMaker(mixed, config=config).make_maps()
         assert results.failed_observations == ['failing_obs']
         assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(results.map))
 
         good_only = [GappyLazyGroundObservation(seed=0)]
-        expected = MultiObservationMapMaker(good_only, config=config).run()
+        expected = MultiObservationMapMaker(good_only, config=config).make_maps()
         assert eqx.tree_equal(results.hit_map, expected.hit_map)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 

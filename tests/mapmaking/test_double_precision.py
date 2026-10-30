@@ -127,7 +127,7 @@ def _check_float32_run() -> None:
         cond_cut=0.0,
         solver=SolverConfig(rtol=1e-6, atol=0, max_steps=10),
     )
-    results = MultiObservationMapMaker([FakeLazyObservation()], config=config).run()
+    results = MultiObservationMapMaker([FakeLazyObservation()], config=config).make_maps()
     assert jax.tree.leaves(results.map)[0].dtype == jnp.float32
     assert results.icov.dtype == jnp.float32
 

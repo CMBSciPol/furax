@@ -51,7 +51,7 @@ def _run_mapmaker(out_path: Path, *, max_buckets: int) -> None:
         cond_cut=0.0,
         max_buckets=max_buckets,
     )
-    results = MultiObservationMapMaker(observations, config=config).run()
+    results = MultiObservationMapMaker(observations, config=config).make_maps()
     # every process holds the tables of all the observations, whichever process read them
     assert results.observations is not None and results.observations['loaded'].all()
     if jax.process_index() == 0:

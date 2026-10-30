@@ -5,7 +5,14 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking._model import _noise_model, _noise_operator, _sample_mask, restrict_streams
-from furax.mapmaking.config import MapMakingConfig, Methods, WeightingConfig, WeightingMode
+from furax.mapmaking.config import (
+    HealpixConfig,
+    LandscapeConfig,
+    MapMakingConfig,
+    Methods,
+    WeightingConfig,
+    WeightingMode,
+)
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs import TODFormat
 from furax.obs.stokes import StokesIQU, StokesQU
@@ -24,7 +31,7 @@ class TestSampleMask:
         if not tail_value:
             mask = mask.at[0, 2 * tau :].set(False)
 
-        config = MapMakingConfig(method=Methods.POMME, pomme_tau=tau)
+        config = _pomme_config(tau)
         result = _sample_mask({'valid_sample_masks': mask}, config)
 
         assert_array_equal(result[0, 2 * tau :], jnp.zeros(n_samp - 2 * tau, dtype=bool))
@@ -39,7 +46,7 @@ class TestSampleMask:
         sample_mask = jnp.ones((n_det, n_samp), dtype=bool)
         scanning = jnp.ones(n_samp, dtype=bool).at[5].set(False)  # one sample of interval 1
 
-        config = MapMakingConfig(method=Methods.POMME, pomme_tau=tau)
+        config = _pomme_config(tau)
         data = {'valid_sample_masks': sample_mask, 'valid_scanning_masks': scanning}
         result = _sample_mask(data, config)
 
@@ -96,3 +103,8 @@ def test_restrict_streams_keeps_the_streams_of_the_map():
     assert_array_equal(restricted.data, tod.data[1:])
     assert_array_equal(data[ReaderField.SAMPLE_DATA].data, tod.data[1:])
     assert_array_equal(data[ReaderField.NOISE_MODEL_FITS], fits[1:])
+
+
+def _pomme_config(tau: int) -> MapMakingConfig:
+    landscape = LandscapeConfig(stokes='QU', healpix=HealpixConfig())
+    return MapMakingConfig(method=Methods.POMME, pomme_tau=tau, landscape=landscape)

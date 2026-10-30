@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -22,12 +23,22 @@ from furax.obs.stokes import Stokes, StokesType
 from ._logger import logger as furax_logger
 
 __all__ = [
+    'CONFIG_FILE',
+    'PROVENANCE_FILE',
     'MapMakingResults',
+    'write_json',
 ]
 
 _AMPLITUDES_FILE = 'amplitudes.npz'
 _DETECTORS_FILE = 'detectors.parquet'
 _OBSERVATIONS_FILE = 'observations.csv'
+_SOLVER_STATS_FILE = 'solver_stats.json'
+_MAPS = ('map', 'hit_map', 'icov', 'injected_map')
+CONFIG_FILE = 'mapmaking_config.yaml'
+"""Name of the file holding the mapmaking configuration of a run."""
+PROVENANCE_FILE = 'provenance.json'
+"""Name of the file holding the provenance of a run."""
+
 # A CSV file does not keep the column types, and a column of nulls would read back as text.
 _OBSERVATIONS_SCHEMA = {
     'name': pl.String,
@@ -40,7 +51,6 @@ _OBSERVATIONS_SCHEMA = {
     'load_seconds': pl.Float64,
     'error': pl.String,
 }
-_PROVENANCE_FILE = 'provenance.json'
 
 
 @dataclass
@@ -56,7 +66,6 @@ class MapMakingResults:
         observations             observations.csv
         detectors                detectors.parquet
         solver_stats             solver_stats.json
-        provenance               provenance.json
     """
 
     map: StokesType
@@ -97,10 +106,6 @@ class MapMakingResults:
     noise model (`sigma`, and `alpha`, `fk`, `f0` for a $1/f$ model), suffixed by the stream on a
     demodulated TOD (`sigma_q`, `sigma_u`)"""
 
-    provenance: dict[str, Any] | None = None
-    """The code, environment and command that produced the run; in a multi-process run, held by
-    process 0 only"""
-
     @property
     def failed_observations(self) -> list[str] | None:
         """The observations that failed to load and were excluded from the maps.
@@ -129,9 +134,7 @@ class MapMakingResults:
         if self.detectors is not None:
             self.detectors.write_parquet(out_dir / _DETECTORS_FILE)
         if self.solver_stats is not None:
-            _write_json(out_dir / 'solver_stats.json', self.solver_stats)
-        if self.provenance is not None:
-            _write_json(out_dir / _PROVENANCE_FILE, self.provenance)
+            write_json(out_dir / _SOLVER_STATS_FILE, self.solver_stats)
 
     @classmethod
     def load(cls, out_dir: str | Path, landscape: StokesLandscape) -> Self:
@@ -156,14 +159,34 @@ class MapMakingResults:
             hit_map=cls._load_hit_map(out_dir, landscape),
             icov=cls._load_icov(out_dir, landscape),
             injected_map=cls._load_injected_map(out_dir, landscape),
-            solver_stats=cls._load_json(out_dir / 'solver_stats.json'),
+            solver_stats=cls._load_json(out_dir / _SOLVER_STATS_FILE),
             template_amplitudes=cls._load_amplitudes(out_dir),
             observations=_read_if_present(
                 partial(pl.read_csv, schema=_OBSERVATIONS_SCHEMA), out_dir / _OBSERVATIONS_FILE
             ),
             detectors=_read_if_present(pl.read_parquet, out_dir / _DETECTORS_FILE),
-            provenance=cls._load_json(out_dir / _PROVENANCE_FILE),
         )
+
+    @staticmethod
+    def exists(out_dir: str | Path) -> bool:
+        """Whether `out_dir` holds any file of a run: its products, configuration or provenance."""
+        return any(path.exists() for path in MapMakingResults._run_files(Path(out_dir)))
+
+    @staticmethod
+    def remove(out_dir: str | Path) -> None:
+        """Delete the files of a run in `out_dir`, those present; other files are kept.
+
+        These are the products that `save` writes, and the configuration and provenance of the run.
+        """
+        for path in MapMakingResults._run_files(Path(out_dir)):
+            path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _run_files(out_dir: Path) -> list[Path]:
+        names = [f'{name}{suffix}' for name in _MAPS for suffix in ('.fits', '.npy')]
+        names += [_AMPLITUDES_FILE, _OBSERVATIONS_FILE, _DETECTORS_FILE]
+        names += [_SOLVER_STATS_FILE, PROVENANCE_FILE, CONFIG_FILE]
+        return [out_dir / name for name in names]
 
     @staticmethod
     def _load_array(
@@ -304,6 +327,11 @@ def _read_if_present(read: Any, path: Path) -> pl.DataFrame | None:
     return read(path) if path.exists() else None
 
 
-def _write_json(path: Path, value: Any) -> None:
-    """Write `value` as indented JSON, ending with a newline like any text file."""
-    path.write_text(json.dumps(value, indent=2) + '\n')
+def write_json(path: Path, value: Any) -> None:
+    """Write `value` to `path` as indented JSON, atomically.
+
+    The file ends with a newline.
+    """
+    tmp = path.with_name(f'{path.name}.tmp.{os.getpid()}')
+    tmp.write_text(json.dumps(value, indent=2) + '\n')
+    os.replace(tmp, path)

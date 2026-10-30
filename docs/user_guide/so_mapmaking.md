@@ -29,6 +29,14 @@ furax-so-map --init-config init.yaml --proc-config proc.yaml \
 - `--mapmaking-config` is the YAML file of a `MapMakingConfig`. Its `sotodlib` section sets how
   the observations are loaded, e.g. `downsample` and `demodulated`.
 
+The output directory records the state of the run in `status.json`: `running` from the start,
+then `done` once every product is written, or `failed`, with the error. A run killed by a signal,
+e.g. at its time limit, stays `running`. The mapmaking config, the provenance and the logs, one
+`furax-so-map.rank<N>.log` per process, are written at the start, so that a run that does not
+finish leaves them behind. `furax-so-map` refuses a directory that holds the output of an earlier
+run, unless given `--overwrite`, which deletes the files of that run first. Other files, such as
+the output of a batch scheduler, are kept.
+
 `furax-so-map` initializes `jax.distributed` itself, so that a run over several processes, e.g.
 launched with `srun`, maps the observations together.
 

@@ -20,12 +20,12 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec='seconds')
 
 
-def provenance(started: str) -> dict[str, Any]:
-    """The provenance of a run started at `started`, finishing now, as JSON values.
+def provenance() -> dict[str, Any]:
+    """The provenance of a run, as JSON values.
 
     It records the furax version and, for a furax run from a git checkout, its commit and whether
     the tracked files differed from it; the versions of the main dependencies; the command line,
-    host and devices; and the start and end times.
+    host and devices.
     """
     return {
         'furax': {'version': _version('furax'), **_git_state(Path(__file__).parent)},
@@ -36,8 +36,6 @@ def provenance(started: str) -> dict[str, Any]:
         'processes': jax.process_count(),
         'devices': jax.device_count(),
         'platform': jax.devices()[0].platform,
-        'started': started,
-        'finished': utc_now(),
     }
 
 

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `furax-so-map` records the state of the run in `status.json`, and writes the mapmaking config and provenance at the start (#402)
+- `MapMakingResults.remove` deletes the files that `MapMakingResults.save` writes (#402)
+- `CGResult.relative_residual`: the final residual norm over the initial one (#402)
+
+### Changed
+
+- `furax-so-map` refuses an output directory that holds the output of an earlier run, unless given `--overwrite`, which deletes that output first (#402)
+- `furax-so-map` logs to `furax-so-map.rank<N>.log` in the output directory by default (#402)
+- The multi-observation mapmaker logs a warning when the CG solve does not converge (#402)
+- `MapMakingConfig` checks the Pomme and template constraints when constructed, instead of `MultiObservationMapMaker` (#402)
+- Pomme requires `landscape.stokes='QU'`, instead of mapping Q and U of an IQU landscape (#402)
+- `MapMakingResults.provenance` is removed; `MultiObservationMapMaker.run` writes `provenance.json` itself, and `out_dir` is required (#402)
+- `provenance.json` no longer holds the start and end times of the run; they are recorded in `status.json` for SO mapmaking runs (#402)
+
 ## [0.17.2] - 2026-10-30
 
 ### Changed

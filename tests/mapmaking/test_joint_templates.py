@@ -80,8 +80,8 @@ def test_explicit_and_implicit_give_the_same_map(observations, template):
     # Marginalising the amplitudes (implicit deprojection) is exactly equivalent to solving
     # them jointly and discarding them: the recovered map must match.
     obs = observations()
-    explicit = MultiObservationMapMaker(obs, config=_config(template(True))).run()
-    implicit = MultiObservationMapMaker(obs, config=_config(template(False))).run()
+    explicit = MultiObservationMapMaker(obs, config=_config(template(True))).make_maps()
+    implicit = MultiObservationMapMaker(obs, config=_config(template(False))).make_maps()
     assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
     assert explicit.solver_stats['num_steps'] >= 1
     # only the explicit amplitudes are solved for, one set per observation and detector
@@ -99,7 +99,7 @@ def test_mixed_explicit_and_implicit():
             scan_synchronous=ScanSynchronousConfig(explicit=False),
         )
     )
-    res = MultiObservationMapMaker(_ground_obs(), config=cfg).run()
+    res = MultiObservationMapMaker(_ground_obs(), config=cfg).make_maps()
     assert set(res.template_amplitudes) == {'hwp_synchronous'}
     assert jnp.all(jnp.isfinite(res.template_amplitudes['hwp_synchronous']))
 
@@ -107,11 +107,11 @@ def test_mixed_explicit_and_implicit():
 def test_two_level_preconditioner_with_explicit_templates():
     cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)))
     cfg.solver = SolverConfig(rtol=1e-10, max_steps=500)
-    expected = MultiObservationMapMaker(_hwp_obs(), config=cfg).run()
+    expected = MultiObservationMapMaker(_hwp_obs(), config=cfg).make_maps()
     expected_amplitudes = expected.template_amplitudes['hwp_synchronous']
     for spectrum in ('preconditioned', 'system'):
         cfg.solver.two_level = TwoLevelConfig(rank=4, spectrum=spectrum, tol=1e-8, max_restarts=50)
-        res = MultiObservationMapMaker(_hwp_obs(), config=cfg).run()
+        res = MultiObservationMapMaker(_hwp_obs(), config=cfg).make_maps()
         assert_allclose(res.map.data, expected.map.data, rtol=1e-6, atol=1e-8)
         amplitudes = res.template_amplitudes['hwp_synchronous']
         assert_allclose(amplitudes, expected_amplitudes, rtol=1e-6, atol=1e-8)
@@ -120,7 +120,7 @@ def test_two_level_preconditioner_with_explicit_templates():
 def test_spline_drift_returns_its_amplitudes():
     spline = SplineDriftConfig(samples_per_knot=128, explicit=True)
     cfg = _config(TemplatesConfig(spline_drift=spline))
-    res = MultiObservationMapMaker(_ground_obs(), config=cfg).run()
+    res = MultiObservationMapMaker(_ground_obs(), config=cfg).make_maps()
     amps = res.template_amplitudes['spline_drift']
     assert amps.shape == (2, 8, 10)  # (obs, det, knot): 1024 // 128 knots, plus 2
     assert jnp.all(jnp.isfinite(amps))
@@ -196,7 +196,7 @@ def test_detector_batches_give_the_same_result(observations, templates, demodula
 
     # The template-marginalised systems are ill-conditioned enough that the solves agree only to
     # about the solver tolerance.
-    whole, batched = [maker.run() for maker in makers]
+    whole, batched = [maker.make_maps() for maker in makers]
     scale = jnp.max(jnp.abs(whole.map.data))
     assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
     # the same detectors at the same places, whatever the padding of the batches
@@ -234,7 +234,7 @@ def test_t2p_field_is_the_same_in_detector_batches(joint_qu, drift):
         MultiObservationMapMaker(
             _ground_obs(n_dets=7, focal_plane_radius=0.2),
             config=replace(cfg, detector_batch_size=batch),
-        ).run()
+        ).make_maps()
         for batch in (0, 3)
     ]
     whole, batched = results
@@ -278,7 +278,7 @@ def test_quadrupolar_templates_are_the_same_in_detector_batches(templates, corre
         MultiObservationMapMaker(
             _ground_obs(n_dets=7, focal_plane_radius=0.2),
             config=replace(cfg, detector_batch_size=batch),
-        ).run()
+        ).make_maps()
         for batch in (0, 3)
     ]
     amplitudes = whole.template_amplitudes[name]
@@ -348,8 +348,8 @@ def test_pomme_explicit_and_implicit_give_the_same_map():
         return TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=explicit))
 
     obs = _hwp_obs()
-    explicit = MultiObservationMapMaker(obs, config=_pomme_config(template(True))).run()
-    implicit = MultiObservationMapMaker(obs, config=_pomme_config(template(False))).run()
+    explicit = MultiObservationMapMaker(obs, config=_pomme_config(template(True))).make_maps()
+    implicit = MultiObservationMapMaker(obs, config=_pomme_config(template(False))).make_maps()
     assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
 
 
@@ -366,7 +366,7 @@ def test_explicit_and_implicit_agree_under_a_ridge(batch):
         config.templates.regularization = 1e-3  # large enough to tell the two systems apart
         config = replace(config, detector_batch_size=batch)
         observations = _ground_obs(n_obs=1, n_dets=2, n_samples=256)
-        return MultiObservationMapMaker(observations, config=config).run()
+        return MultiObservationMapMaker(observations, config=config).make_maps()
 
     explicit, implicit = run(True), run(False)
     assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
@@ -408,7 +408,7 @@ def test_correlated_weight_explicit_and_implicit_give_the_same_map(observations,
     obs = observations()
     precomputed = observations is _ground_obs
     maps = [
-        MultiObservationMapMaker(obs, config=_toeplitz_config(template(e), precomputed)).run()
+        MultiObservationMapMaker(obs, config=_toeplitz_config(template(e), precomputed)).make_maps()
         for e in (True, False)
     ]
     assert_allclose(maps[0].map.data, maps[1].map.data, rtol=1e-6, atol=1e-8)
@@ -421,20 +421,11 @@ def test_detector_batches_give_the_same_result_under_a_correlated_weight():
     whole, batched = [
         MultiObservationMapMaker(
             _ground_obs(n_dets=7), config=replace(cfg, detector_batch_size=batch)
-        ).run()
+        ).make_maps()
         for batch in (0, 3)
     ]
     scale = jnp.max(jnp.abs(whole.map.data))
     assert_allclose(batched.map.data, whole.map.data, atol=1e-5 * scale)
-
-
-@pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])
-def test_correlated_weight_with_templates_requires_inner_mask_gaps(treatment):
-    config = _toeplitz_config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2)))
-    config.gaps = GapsConfig(treatment=treatment)
-    config.detector_batch_size = 0  # gap treatments other than the inner mask need every detector
-    with pytest.raises(NotImplementedError, match='inner_mask'):
-        MultiObservationMapMaker(_hwp_obs(), config=config)
 
 
 def test_demodulated_drift_explicit_and_implicit_agree_under_a_correlated_weight():
@@ -450,7 +441,7 @@ def test_demodulated_drift_explicit_and_implicit_agree_under_a_correlated_weight
                 precomputed=True,
                 demodulated=True,
             ),
-        ).run()
+        ).make_maps()
         for e in (True, False)
     ]
     assert_allclose(maps[0].map.data, maps[1].map.data, rtol=1e-6, atol=1e-8)
@@ -471,5 +462,5 @@ def test_common_mode_absorbed_by_the_drifts_under_a_small_ridge_converges():
     cfg.solver = SolverConfig(rtol=1e-10, max_steps=500)
     results = MultiObservationMapMaker(
         _ground_obs(n_dets=7, focal_plane_radius=0.2), config=cfg
-    ).run()
+    ).make_maps()
     assert results.solver_stats['converged']

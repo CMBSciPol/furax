@@ -28,13 +28,12 @@ from furax.obs import TODFormat
 from .._observation import ReaderField, _sample_rate
 from ..config import (
     AzimuthHWPSynchronousConfig,
+    AzimuthSynchronousConfig,
     BinnedAzimuthHWPSynchronousConfig,
-    BinnedAzimuthSynchronousConfig,
     BinsConfig,
     CommonModeConfig,
     HWPSynchronousConfig,
     PolynomialOrders,
-    ScanSynchronousConfig,
     SplineDriftConfig,
     SplineHWPSynchronousConfig,
     T2PConfig,
@@ -55,8 +54,7 @@ __all__ = [
     'build_templates',
     'required_reader_fields',
     'spline_drift_templates',
-    'scan_synchronous_templates',
-    'binned_azimuth_synchronous_templates',
+    'azimuth_synchronous_templates',
     'hwp_synchronous_templates',
     'azimuth_hwp_synchronous_templates',
     'binned_azimuth_hwp_synchronous_templates',
@@ -102,8 +100,7 @@ def build_templates(
     implicit: dict[str, Template] = {}
     builders = {
         'spline_drift': spline_drift_templates,
-        'scan_synchronous': scan_synchronous_templates,
-        'binned_azimuth_synchronous': binned_azimuth_synchronous_templates,
+        'azimuth_synchronous': azimuth_synchronous_templates,
         'hwp_synchronous': hwp_synchronous_templates,
         'azimuth_hwp_synchronous': azimuth_hwp_synchronous_templates,
         'binned_azimuth_hwp_synchronous': binned_azimuth_hwp_synchronous_templates,
@@ -126,14 +123,17 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
     fields: set[str] = set()
     if config.spline_drift is not None:
         fields |= {ReaderField.TIMESTAMPS, ReaderField.VALID_SCANNING_MASKS}
-    if config.scan_synchronous is not None or config.binned_azimuth_synchronous is not None:
+    if config.azimuth_synchronous is not None:
         fields |= {ReaderField.AZIMUTH}
     if config.hwp_synchronous is not None:
         fields |= {ReaderField.HWP_ANGLES}
     if config.azimuth_hwp_synchronous is not None:
         fields |= {ReaderField.AZIMUTH, ReaderField.HWP_ANGLES}
-        if config.azimuth_hwp_synchronous.split_scans:
-            fields |= {ReaderField.LEFT_SCAN_MASK, ReaderField.RIGHT_SCAN_MASK}
+    if any(
+        section is not None and section.split_scans
+        for section in (config.azimuth_synchronous, config.azimuth_hwp_synchronous)
+    ):
+        fields |= {ReaderField.LEFT_SCAN_MASK, ReaderField.RIGHT_SCAN_MASK}
     if config.binned_azimuth_hwp_synchronous is not None:
         fields |= {ReaderField.AZIMUTH, ReaderField.HWP_ANGLES}
     if config.spline_hwp_synchronous is not None:
@@ -166,29 +166,32 @@ def spline_drift_templates(
     return _stream_groups('spline_drift', config.samples_per_knot, basis, tod_format)
 
 
-def scan_synchronous_templates(
-    config: ScanSynchronousConfig, data: Mapping[str, Any], tod_format: TODFormat
+def azimuth_synchronous_templates(
+    config: AzimuthSynchronousConfig, data: Mapping[str, Any], tod_format: TODFormat
 ) -> dict[str, Template]:
-    """Legendre polynomials of the azimuth.
+    """Functions of the azimuth, by scan direction if `config.split_scans`.
 
-    One template per group of streams fitted with the same orders (see `_stream_groups`).
+    Bins or a cubic B-spline, whichever `config` sets. One template per group of streams fitted
+    alike (see `_stream_groups`).
     """
-    azimuth = data[ReaderField.AZIMUTH]
-
-    def basis(orders: PolynomialOrders) -> Basis:
-        return scan_synchronous_basis(orders, azimuth, tod_format.dtype)
-
-    return _stream_groups('scan_synchronous', config.legendre, basis, tod_format)
-
-
-def binned_azimuth_synchronous_templates(
-    config: BinnedAzimuthSynchronousConfig, data: Mapping[str, Any], tod_format: TODFormat
-) -> dict[str, Template]:
-    """One amplitude per azimuth bin, on every stream."""
-    basis = binned_azimuth_synchronous_basis(
-        config.bins, data[ReaderField.AZIMUTH], tod_format.dtype
+    azimuth, dtype = data[ReaderField.AZIMUTH], tod_format.dtype
+    scan_masks = None
+    if config.split_scans:
+        scan_masks = (data[ReaderField.LEFT_SCAN_MASK], data[ReaderField.RIGHT_SCAN_MASK])
+    if config.bins is not None:
+        return _stream_groups(
+            'azimuth_synchronous',
+            config.bins,
+            lambda bins: azimuth_bins_basis(bins, azimuth, dtype, scan_masks=scan_masks),
+            tod_format,
+        )
+    assert config.n_knots is not None  # exactly one alternative is set
+    return _stream_groups(
+        'azimuth_synchronous',
+        config.n_knots,
+        lambda n_knots: azimuth_spline_basis(n_knots, azimuth, dtype, scan_masks=scan_masks),
+        tod_format,
     )
-    return {'binned_azimuth_synchronous': _on_every_stream(basis, tod_format)}
 
 
 def hwp_synchronous_templates(
@@ -619,6 +622,15 @@ def _legendre(
     return _legendre_values(u, min_order, max_order, dtype)
 
 
+def _by_scan(
+    values: Float[Array, 'k samp'], scan_masks: Sequence[Array] | None
+) -> Float[Array, 'k2 samp']:
+    """`values` times each scan mask in turn, stacked: a set of functions per mask."""
+    if scan_masks is None:
+        return values
+    return jnp.concatenate([values * mask.astype(values.dtype) for mask in scan_masks])
+
+
 def _harmonics(
     angles: Float[Array, ' samp'],
     harmonics: int | Sequence[int],
@@ -732,24 +744,39 @@ def t2p_basis(
     return basis if q == 1 else DecimatedBasis(basis, q, n_full)
 
 
-def scan_synchronous_basis(
-    legendre: PolynomialOrders,
-    azimuth: Float[Array, ' samp'],
-    dtype: DTypeLike,
-) -> Basis:
-    """Scan-synchronous (azimuth-only) basis on a global Legendre basis."""
-    values = _legendre(azimuth, legendre.min_order, legendre.max_order, dtype)
-    return TensorBasis(values)
-
-
-def binned_azimuth_synchronous_basis(
+def azimuth_bins_basis(
     bins: BinsConfig,
     azimuth: Float[Array, ' samp'],
     dtype: DTypeLike,
+    *,
+    scan_masks: Sequence[Array] | None = None,
 ) -> Basis:
-    """Binned azimuth-synchronous basis, no HWP coupling: one amplitude per azimuth bin."""
+    """One amplitude per azimuth bin, one set per scan mask if given."""
     weights = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
-    return TensorBasis(weights)
+    return TensorBasis(_by_scan(weights, scan_masks))
+
+
+def azimuth_spline_basis(
+    n_knots: int,
+    azimuth: Float[Array, ' samp'],
+    dtype: DTypeLike,
+    *,
+    scan_masks: Sequence[Array] | None = None,
+) -> Basis:
+    r"""Cubic B-splines of the azimuth, one set per scan mask, without the constant.
+
+    `n_knots` uniform cubic B-splines $B_k$ cover the azimuth range of the observation, summing to
+    one over it. With `scan_masks`, each mask has its own set, $B_k$ times the mask. The functions
+    $f_j$ then sum to one on the samples of the masks: that constant is removed by taking the
+    differences $f_j - f_{\text{last}}$ to the last function, which span the combinations whose
+    coefficients sum to zero. A set less one function remains: `n_knots - 1` functions, or
+    `len(scan_masks) * n_knots - 1`. Each is local but for the last function it carries; dropping
+    that function instead would leave the constant too close to the span.
+    """
+    # the last of the `n_knots + 1` functions of `spline_basis` is zero over the azimuth range
+    splines = bspline.spline_basis(azimuth, n_knots - 1)[:-1].astype(dtype)
+    values = _by_scan(splines, scan_masks)
+    return TensorBasis(values[:-1] - values[-1:])
 
 
 def hwp_synchronous_basis(

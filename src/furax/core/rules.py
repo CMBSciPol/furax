@@ -274,12 +274,14 @@ class InverseBinaryRule(AbstractCompositionRule):
 
     def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
         super().check(left, right)
-        if isinstance(left, self.operator_class):
-            if left.operator is not right:
+        # operator_class is declared as optional in the base class, so ty cannot see that it is
+        # set here and that its instances have an `operator` attribute.
+        if isinstance(left, self.operator_class):  # ty: ignore[invalid-argument-type]
+            if left.operator is not right:  # ty: ignore[unresolved-attribute]
                 raise NoReduction
         else:
-            assert isinstance(right, self.operator_class)  # ty assert
-            if right.operator is not left:
+            assert isinstance(right, self.operator_class)  # ty: ignore[invalid-argument-type]
+            if right.operator is not left:  # ty: ignore[unresolved-attribute]
                 raise NoReduction
 
     def apply(

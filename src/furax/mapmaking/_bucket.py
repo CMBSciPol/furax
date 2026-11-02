@@ -7,22 +7,23 @@ batch's TOD, and $W'_b$ its weight (see
 [`ObservationModel.deprojected_weight`][furax.mapmaking._model.ObservationModel.deprojected_weight]).
 
 A bucket keeps what its observations hold as a `BucketModel`, and the operators of this module
-evaluate the sums over it with the engine: a family of the bucket's observations, split over the
-devices, each observation a family of its detector batches.
+evaluate the sums over it with the ensemble engine: a stacked ensemble of the bucket's
+observations, split over the devices, each observation an inner stacked ensemble of its detector
+batches.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import jax
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, PyTree
 
 from furax import AbstractLinearOperator, symmetric
-from furax.core import BlockRowOperator
+from furax.core import BlockRowOperator, Policy, StackedEnsemble, map_reduce
 from furax.obs.stokes import StokesType
 
-from ._engine import Policy, ReplicatedFamily, StackedFamily, ZippedFamily, family_apply
 from ._model import ObservationModel, ObservationTemplates
 
 
@@ -67,12 +68,13 @@ class BucketModel:
 def bucket_apply(
     model: BucketModel,
     apply: Callable[
-        [Batch, PyTree[Any], PyTree[Array] | None, PyTree[Array] | None], tuple[Any, ...]
+        [Batch, PyTree[Array], PyTree[Array] | None, PyTree[Array] | None], tuple[Any, ...]
     ],
-    whole: PyTree[Any],
+    whole: PyTree[Array],
     own: PyTree[Array] | None,
     common: PyTree[Array] | None,
     axis: str,
+    policy: Policy | None = None,
 ) -> tuple[Any, Any, Any]:
     """`apply` on every detector batch of every observation of a bucket.
 
@@ -81,33 +83,40 @@ def bucket_apply(
         apply: From a batch, `whole`, its own amplitudes and those of its observation, to `(map,
             own, common)`: a map, the batch's own amplitudes and its observation's, any of them
             `None`.
-        whole: What every batch takes whole, such as a map, held by every device.
+        whole: What every batch takes whole, such as a map, held by every device. Its leaves must
+            be arrays; anything else (an operator, whose index may hold an `Ellipsis`) is closed
+            over `apply` instead.
         own: The amplitudes of each batch alone, `(slot, batch, ...)`, if any.
         common: The amplitudes of each observation, `(slot, ...)`, if any.
         axis: The mesh axis the slots are sharded over.
+        policy: How the slots are walked; by default one slot per round, sharded over `axis`.
+            Every slot runs one detector batch at a time, so a round of `batch` slots holds the
+            temporaries of that many detector batches.
 
     Returns:
         The maps summed over the bucket, the batches' own amplitudes `(slot, batch, ...)`, and
         those of each observation summed over its batches, `(slot, ...)`.
     """
+    n_slots, n_batches = _leading_shape(model.batches)[:2]
+    slots = StackedEnsemble(
+        n_slots,
+        (model.batches, model.shared, own, common),
+        policy=policy if policy is not None else Policy(axis=axis),
+    )
 
-    def observation(members):
-        (batches, kept, own_o, common_o), whole_o = members
-        families = [StackedFamily(batches, shared=kept)]
-        if own_o is not None:
-            families.append(StackedFamily(own_o))
+    def slot_fn(member: tuple[Any, ...], whole: PyTree[Array]) -> tuple[Any, Any, Any]:
+        batches, shared, own_o, common_o = member
+        # one detector batch at a time: only one batch's TOD-sized temporaries are live
+        ensemble = StackedEnsemble(n_batches, (batches, own_o))
 
-        def batch(members):
-            member, *rest = members
-            return apply(member, whole_o, rest[0] if rest else None, common_o)
+        def batch_fn(member: tuple[Any, ...]) -> tuple[Any, Any, Any]:
+            batch, own_b = member
+            return apply(_combine(batch, shared), whole, own_b, common_o)
 
-        out, _ = family_apply(ZippedFamily(tuple(families)), batch, ('sum', 'stack', 'sum'))
+        out, _ = map_reduce(batch_fn, ensemble, ('sum', 1, 'sum'))
         return out
 
-    slots = StackedFamily((model.batches, model.shared, own, common))
-    family = ZippedFamily((slots, ReplicatedFamily(whole, slots.size)))
-    policy = Policy(devices=axis)
-    out, _ = family_apply(family, observation, ('sum', 'stack', 'stack'), policy)
+    out, _ = map_reduce(slot_fn, slots, ('sum', 1, 1), whole)
     return out
 
 
@@ -158,29 +167,30 @@ class BucketNormalOperator(AbstractLinearOperator):
     the white part of the noise only."""
     amplitudes: bool = field(default=True, metadata={'static': True})
     """Whether the unknowns include the amplitudes of the explicit templates."""
+    policy: Policy | None = field(default=None, metadata={'static': True})
+    """How the slots are walked (see `bucket_apply`); by default one slot per round, sharded over
+    `axis`."""
 
     def mv(self, x: Any) -> Any:
         m, own, common = self._split(x)
+        # closed over, not an engine argument: the selection may hold non-array leaves
+        selection = self.selection
 
-        def apply(batch, whole, own_b, common_o):
-            m, selection = whole
+        def apply(batch, m, own_b, common_o):
             J = joint_operator(batch, selection, *self._amplitudes_present)
-            inputs = [x for x in (own_b, common_o) if x is not None]
+            inputs = [v for v in (own_b, common_o) if v is not None]
             return self._project(batch, self._weight(batch)(J([m, *inputs])), selection)
 
-        return self._join(
-            *bucket_apply(self.model, apply, (m, self.selection), own, common, self.axis)
-        )
+        return self._join(*bucket_apply(self.model, apply, m, own, common, self.axis, self.policy))
 
     def response(self, sky: StokesType) -> Any:
         r"""$\sum_b J_b^\top W'_b H_b \, s$: the right-hand side of the TOD of a sky `sky`."""
+        selection = self.selection
 
-        def apply(batch, whole, _own, _common):
-            sky, selection = whole
+        def apply(batch, sky, _own, _common):
             return self._project(batch, self._weight(batch)(batch.model.H(sky)), selection)
 
-        whole = (sky, self.selection)
-        return self._join(*bucket_apply(self.model, apply, whole, None, None, self.axis))
+        return self._join(*bucket_apply(self.model, apply, sky, None, None, self.axis, self.policy))
 
     def _project(
         self, batch: Batch, u: PyTree[Array], selection: AbstractLinearOperator | None
@@ -236,27 +246,53 @@ class MemberOperator(AbstractLinearOperator):
     """Whether there is an operator per detector batch rather than per observation."""
 
     def mv(self, x: PyTree[Array]) -> PyTree[Array]:
-        def apply(member):
-            operator, v = member
-            return operator(v)
-
+        # small computations: every member of a round is evaluated at once, vectorized
         if not self.batches:
-            slots = ZippedFamily((StackedFamily(self.operators), StackedFamily(x)))
-            return _at_once(slots, apply)
+            n_slots = _leading_shape(self.operators)[0]
+            slots = StackedEnsemble(n_slots, (self.operators, x), policy=Policy(batch=n_slots))
 
-        def observation(member):
-            (operators, kept), x_o = member
-            batches = (StackedFamily(operators, shared=kept), StackedFamily(x_o))
-            return _at_once(ZippedFamily(batches), apply)
+            def apply(member: tuple[Any, ...]) -> PyTree[Array]:
+                operator, v = member
+                return operator(v)
 
-        slots = (StackedFamily((self.operators, self.shared)), StackedFamily(x))
-        return _at_once(ZippedFamily(slots), observation)
+            out, _ = map_reduce(apply, slots, 1)
+            return out
+
+        n_slots, n_batches = _leading_shape(self.operators)[:2]
+        slots = StackedEnsemble(
+            n_slots, (self.operators, self.shared, x), policy=Policy(batch=n_slots)
+        )
+
+        def slot_fn(member: tuple[Any, ...]) -> PyTree[Array]:
+            operators, shared, x_o = member
+            ensemble = StackedEnsemble(n_batches, (operators, x_o), policy=Policy(batch=n_batches))
+
+            def apply(member: tuple[Any, ...]) -> PyTree[Array]:
+                operator, v = member
+                if shared is not None:
+                    operator = _combine(operator, shared)
+                return operator(v)
+
+            out, _ = map_reduce(apply, ensemble, 1)
+            return out
+
+        out, _ = map_reduce(slot_fn, slots, 1)
+        return out
 
 
-def _at_once(family: ZippedFamily, apply: Callable[[Any], PyTree[Array]]) -> PyTree[Array]:
-    """`apply` on every member of a family, a small computation, in a single round."""
-    out, _ = family_apply(family, apply, 'stack', Policy(batch=family.size))
-    return out
+def _combine(a: Any, b: Any) -> Any:
+    """Merge two pytrees with complementary None leaves into one, None where both are None."""
+    return jax.tree.map(
+        lambda *leaves: next((x for x in leaves if x is not None), None),
+        a,
+        b,
+        is_leaf=lambda x: x is None,
+    )
+
+
+def _leading_shape(tree: PyTree[Any]) -> tuple[int, ...]:
+    """The shape of the first array leaf of a stacked pytree."""
+    return next(leaf for leaf in jax.tree.leaves(tree) if isinstance(leaf, jax.Array)).shape
 
 
 def _unpack(parts: list[PyTree[Array]], own: bool, common: bool) -> tuple[Any, Any, Any]:

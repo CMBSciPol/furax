@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax-so-map` records the state of the run in `status.json`, and writes the mapmaking config and provenance at the start (#402)
 - `MapMakingResults.remove` deletes the files that `MapMakingResults.save` writes (#402)
 - `CGResult.relative_residual`: the final residual norm over the initial one (#402)
+- `Stencil.voided`: the stencil reading no pixel for the given samples (#425)
 
 ### Changed
 
@@ -22,10 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pomme requires `landscape.stokes='QU'`, instead of mapping Q and U of an IQU landscape (#402)
 - `MapMakingResults.provenance` is removed; `MultiObservationMapMaker.run` writes `provenance.json` itself, and `out_dir` is required (#402)
 - `provenance.json` no longer holds the start and end times of the run; they are recorded in `status.json` for SO mapmaking runs (#402)
+- **Breaking:** a pixel index of -1 reads no pixel: `PointingOperator` gathers zero for it and skips it when binning, and a resolved `Stencil` keeps -1 for a neighbour outside the map instead of pixel 0 (#425)
+- **Breaking:** `LocalStokesLandscape` maps pixels outside its subset to -1: its maps have `nlocal` pixels, and `sink`, `with_sink` and `drop_sink` are removed (#425)
+- **Breaking:** the reader pads boresight and detector quaternions with zero quaternions, which `QuaternionSampler` reads as samples without pointing (#425)
 
 ### Fixed
 
 - Pomme with a template that the offsets absorb, such as a constant, no longer gives NaN maps (#422)
+- Padded samples are no longer binned onto one pixel, which serialized the GPU scatter in proportion to the padding (#425)
 
 ## [0.17.2] - 2026-10-30
 

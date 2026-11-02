@@ -6,8 +6,12 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
+from equinox import tree_equal
 from jaxtyping import Bool, Float
+from numpy.testing import assert_allclose
 
+from furax import tree
+from furax.core import IndexOperator
 from furax.mapmaking import (
     AbstractGroundObservation,
     AbstractLazyObservation,
@@ -15,6 +19,7 @@ from furax.mapmaking import (
     MultiObservationMapMaker,
     ObservationBufferShape,
 )
+from furax.mapmaking._model import FACTORED_KINDS
 from furax.mapmaking.config import HealpixConfig, LandscapeConfig, MapMakingConfig, PointingConfig
 from furax.mapmaking.mapmaker import _AccumulatedModel
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
@@ -292,3 +297,46 @@ def accumulate(maker: MultiObservationMapMaker) -> _AccumulatedModel:
     """Build the model of each bucket of ``maker`` and accumulate its system, on its mesh."""
     with jax.set_mesh(maker.placement.mesh):
         return maker.build_model_and_accumulate()
+
+
+def probe_normal_system(maker: MultiObservationMapMaker, seed: int = 0) -> tuple[list, list]:
+    """The action of the normal system of `maker` on a random vector, and its right-hand side.
+
+    The system is the one `make_maps` hands to the solver, in the same blocks: the sky, then the
+    amplitudes of each kind of explicit template. Comparing these for two makers tests that their
+    models agree, whatever the conditioning of the solve.
+
+    The amplitudes each detector has of its own are set to zero and left out of the blocks
+    returned, since their layout depends on how the detectors are batched.
+    """
+    with jax.set_mesh(maker.placement.mesh):
+        acc = maker.build_model_and_accumulate()
+        maker._catalog.reads = maker._gather_reads()
+        BJ = maker._block_jacobi(acc)
+        valid = maker.pixel_selection(acc.hit_map, BJ.blocks)
+        S = IndexOperator((..., *jnp.where(valid)), in_structure=maker.landscape.structure)
+        system = maker._build_system(acc, S, BJ)
+        templates = acc.buckets[0].templates
+        kinds = [] if templates is None else [k for k in FACTORED_KINDS if getattr(templates, k)]
+        x = tree.normal_like(system.A.in_structure, jax.random.key(seed))
+        if not kinds:
+            return [system.A(x)], [system.b]
+        for i, kind in enumerate(kinds, 1):
+            if FACTORED_KINDS[kind] == 'stack':
+                x[i] = tree.zeros_like(x[i])
+        keep = [0, *(i for i, kind in enumerate(kinds, 1) if FACTORED_KINDS[kind] != 'stack')]
+        Ax, b = system.A(x), system.b
+        return [Ax[i] for i in keep], [b[i] for i in keep]
+
+
+def assert_same_system(got: Any, expected: Any) -> None:
+    """Assert that two results of `probe_normal_system` agree to rounding."""
+    assert tree_equal(got, expected, atol=1e-10 * tree.norm(expected))
+
+
+def assert_same_map(got: Any, expected: Any, **tolerances: float) -> None:
+    """Assert that the maps of two solves agree, once both converged to finite maps."""
+    for results in (got, expected):
+        assert results.solver_stats['converged']
+        assert jnp.all(jnp.isfinite(results.map.data))
+    assert_allclose(got.map.data, expected.map.data, **tolerances)

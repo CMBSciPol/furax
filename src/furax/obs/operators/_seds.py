@@ -17,7 +17,7 @@ from scipy import constants
 from furax import AbstractLinearOperator, BlockRowOperator, BroadcastDiagonalOperator, diagonal
 
 _H_OVER_K_GHZ = constants.h * 1e9 / constants.k
-_T_CMB = Planck15.Tcmb(0).value
+_T_CMB = Planck15.Tcmb(0).value  # ty: ignore[unresolved-attribute]
 
 __all__ = [
     'AbstractSEDOperator',

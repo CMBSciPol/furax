@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MapMakingResults.provenance` is removed; `MultiObservationMapMaker.run` writes `provenance.json` itself, and `out_dir` is required (#402)
 - `provenance.json` no longer holds the start and end times of the run; they are recorded in `status.json` for SO mapmaking runs (#402)
 
+### Fixed
+
+- Pomme with a template that the offsets absorb, such as a constant, no longer gives NaN maps (#422)
+
 ## [0.17.2] - 2026-10-30
 
 ### Changed

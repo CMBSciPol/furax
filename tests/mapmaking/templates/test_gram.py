@@ -252,6 +252,37 @@ def test_gram_under_pomme_is_the_dense_gram(method):
     _check_gram(op, W, 0, False, method, batch_size=3, effective=effective, pomme_tau=TAU)
 
 
+@pytest.mark.parametrize('method', ['probe', 'structure'])
+def test_amplitudes_the_pomme_offsets_absorb_come_back_unchanged(method):
+    # The offsets absorb a constant on the intervals they cover: its Gram row is then zero up to
+    # the rounding of the elimination, which gave it a tiny diagonal, even a negative one, and
+    # NaN once factored. Here the first block of the time-local basis, and the dense one's whole.
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64)
+    functions = jnp.stack([jnp.ones(N_SAMPS), jnp.linspace(-1, 1, N_SAMPS)])
+    segment = jnp.repeat(jnp.arange(4), N_SAMPS // 4).astype(jnp.int32)
+    op = TemplateOperator(
+        {
+            'local': Template(
+                SegmentedBasis(segment, functions, 4, block_lengths=BLOCKS), tod_format
+            ),
+            'dense': Template(TensorBasis(functions), tod_format),
+        }
+    )
+    W = _pomme_weight(op, jr.key(23))
+    F = PommeProjectionOperator(TAU, in_structure=tod_format.structure).as_matrix()
+    effective = _DenseWeight(W.matrix @ F, in_structure=op.out_structure)
+
+    gram = template_gram(op, W, pomme_tau=TAU, method=method)
+    assert_allclose(_dense(gram, op), _dense_gram(op, effective), rtol=1e-8, atol=1e-8)
+    inverse, _ = factor(gram, regularization=1e-3)
+
+    x = tree.normal_like(op.in_structure, jr.key(24))
+    y = inverse(x)
+    assert all(jnp.all(jnp.isfinite(a)) for a in jax.tree.leaves(y))
+    assert_allclose(y['local'][:, 0, 0], x['local'][:, 0, 0])
+    assert_allclose(y['dense'][:, 0], x['dense'][:, 0])
+
+
 def test_pomme_is_for_a_tod_that_is_not_demodulated():
     op = _operator('local', jr.key(20))
     with pytest.raises(ValueError, match='not demodulated'):

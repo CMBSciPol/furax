@@ -322,6 +322,9 @@ def _pomme_corrected(
 ) -> tuple[list[Array], Array | None]:
     """One detector's Grams of the bases, the Pomme offsets `Z` eliminated.
 
+    The functions the offsets absorb come out with zero rows and columns, as those no weighted
+    sample sees, so that the Gram can be factored.
+
     Each Gram of two bases loses `Cᵀ D⁻¹ C'`, with `D = Zᵀ W Z` the weighted counts of the
     intervals and `C = Zᵀ W B` each basis summed over them. The sums of a time-local core are kept
     in its band layout; the core's bands gain one, an interval straddling two of its blocks, which
@@ -344,13 +347,79 @@ def _pomme_corrected(
         else:
             gram = gram - dense[p.g.name].T @ scaled
         corrected.append(gram)
+    corrected_bands = None
     if core is not None:
         assert bands is not None
         sums = banded[core.name]
         width = sums.sums.shape[1]
-        bands = jnp.pad(bands, [(0, 0), (0, width - bands.shape[1]), (0, 0), (0, 0)])
-        bands = bands - sums.band_correction(inverse)
-    return corrected, bands
+        corrected_bands = jnp.pad(bands, [(0, 0), (0, width - bands.shape[1]), (0, 0), (0, 0)])
+        corrected_bands = corrected_bands - sums.band_correction(inverse)
+    absorbed = _absorbed(pairs, core, blocks, corrected, bands, corrected_bands, w)
+    return _without(absorbed, pairs, core, corrected, corrected_bands)
+
+
+def _absorbed(
+    pairs: list[_Pair],
+    core: _Entry | None,
+    blocks: list[Array],
+    corrected: list[Array],
+    bands: Array | None,
+    corrected_bands: Array | None,
+    w: Float[Array, ' samp'],
+) -> dict[str, Array]:
+    """The basis functions of each template that the offsets absorb, as flat masks.
+
+    The elimination takes a function such as a constant its whole weight, which then remains only
+    as the rounding of the subtraction, of either sign. A function is absorbed when what remains of
+    its diagonal is below the rounding of a sum over the samples, capped at the square root of the
+    machine epsilon: in single precision, a function the offsets nearly absorb is left out too.
+    """
+    eps = float(jnp.finfo(w.dtype).eps)
+    rtol = min(w.shape[-1] * eps, eps**0.5)  # capped, so that float32 keeps what it can resolve
+    absorbed = {}
+    for p, before, after in zip(pairs, blocks, corrected, strict=True):
+        if p.g.name == p.h.name:
+            absorbed[p.g.name] = jnp.diagonal(after) <= rtol * jnp.diagonal(before)
+    if core is not None:
+        assert bands is not None and corrected_bands is not None
+        assert core.name not in absorbed  # the core's own Gram is in its bands only
+        before = jnp.diagonal(bands[:, 0], axis1=-2, axis2=-1)
+        after = jnp.diagonal(corrected_bands[:, 0], axis1=-2, axis2=-1)
+        absorbed[core.name] = (after <= rtol * before).reshape(-1)  # (block, function)
+    return absorbed
+
+
+def _without(
+    absorbed: dict[str, Array],
+    pairs: list[_Pair],
+    core: _Entry | None,
+    blocks: list[Array],
+    bands: Array | None,
+) -> tuple[list[Array], Array | None]:
+    """The Grams without the rows and columns of the functions that are absorbed.
+
+    Their weight is zero then, as that of the functions no weighted sample sees, which the
+    factorization of the Gram leaves out.
+    """
+    out = []
+    for p, gram in zip(pairs, blocks, strict=True):
+        rows, columns = absorbed.get(p.g.name), absorbed.get(p.h.name)
+        if rows is not None:
+            gram = jnp.where(rows[:, None], 0, gram)
+        if columns is not None:
+            gram = jnp.where(columns[None, :], 0, gram)
+        out.append(gram)
+    if core is not None:
+        assert bands is not None
+        n_blocks, n_w1, k, _ = bands.shape
+        lost = absorbed[core.name].reshape(n_blocks, k)
+        # the band `w` of block `i` couples it to block `i + w`, beyond the last one nothing
+        reached = jnp.arange(n_blocks)[:, None] + jnp.arange(n_w1)
+        columns = jnp.where(
+            (reached < n_blocks)[..., None], lost[jnp.minimum(reached, n_blocks - 1)], False
+        )
+        bands = jnp.where(lost[:, None, :, None] | columns[:, :, None, :], 0, bands)
+    return out, bands
 
 
 def _interval_sums(

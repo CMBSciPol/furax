@@ -245,10 +245,8 @@ class ObservationReader[T](AbstractReader):
           and the hwp rotation frequency remain consistent
         - `valid_sample_masks`, `valid_scanning_masks`: padded with 0 (False) outside the valid
           samples
-        - `detector_quaternions`: padded with (1, 0, 0, 0) for invalid detectors, as if they are
-          located at the centre of the focal plane.
-        - `boresight_quaternions`: padded with the last valid sample's quaternion, as if the
-          telescope stopped moving since then.
+        - `detector_quaternions`, `boresight_quaternions`: padded with zero quaternions, which
+          mark samples without pointing: the pointing operator neither reads nor bins them.
         - `noise_model_fits`: padded with (sigma, alpha, fknee, f0) = (0., 0., 1., 0.1)
 
         Args:
@@ -310,24 +308,6 @@ class ObservationReader[T](AbstractReader):
             last_end = valid[-1, 1]
             data[ReaderField.SCANNING_INTERVALS] = np.concatenate(
                 [valid, np.full((pad_size, 2), last_end, dtype=intervals.dtype)]
-            )
-        if ReaderField.DETECTOR_QUATERNIONS in data_field_names:
-            # Pad with (1, 0, 0, 0), corresponding to xi=eta=gamma=0.
-            quats = data[ReaderField.DETECTOR_QUATERNIONS]
-            zero_padded = np.linalg.norm(quats, axis=-1) == 0.0
-            data[ReaderField.DETECTOR_QUATERNIONS] = np.where(
-                zero_padded[:, None],
-                np.array([[1.0, 0.0, 0.0, 0.0]], dtype=quats.dtype),
-                quats,
-            )
-        if ReaderField.BORESIGHT_QUATERNIONS in data_field_names:
-            # Pad with the last non-zero quaternion provided.
-            quats = data[ReaderField.BORESIGHT_QUATERNIONS]
-            pad_size = padding[ReaderField.BORESIGHT_QUATERNIONS][0]  # samples axis
-            last_quaternion = quats[-pad_size - 1, :]
-            zero_padded = np.linalg.norm(quats, axis=-1) == 0.0
-            data[ReaderField.BORESIGHT_QUATERNIONS] = np.where(
-                zero_padded[:, None], last_quaternion[None, :], quats
             )
         if ReaderField.NOISE_MODEL_FITS in data_field_names:
 

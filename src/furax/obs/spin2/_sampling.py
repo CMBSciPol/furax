@@ -4,6 +4,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from furax.math.coords import ZSPhi
+from furax.obs._indexing import gather_pixels, scatter_add_pixels
 from furax.obs.operators._qu_rotations import Spin2Rotation
 from furax.obs.spin2._transport import spin2_cos_sin_zs
 from furax.obs.stencil import Stencil
@@ -107,8 +108,9 @@ def rotated_gather[S: Stokes](sky: S, stencil: Stencil, rotation: Spin2Rotation 
     Returns:
         The sampled Stokes values, of the shape of the stencil minus its neighbour axis.
     """
+    # a -1 index, a neighbour outside the map, reads zero
     if stencil.n_neighbors == 1:
-        gathered = type(sky).from_array(sky.data[..., stencil.indices])
+        gathered = type(sky).from_array(gather_pixels(sky.data, stencil.indices))
         if rotation is not None:
             gathered = gathered.rotate_qu(*rotation)
         return type(sky).from_array(jnp.sum(gathered.data * stencil.weights, axis=-1))
@@ -117,7 +119,7 @@ def rotated_gather[S: Stokes](sky: S, stencil: Stencil, rotation: Spin2Rotation 
     # every neighbour of every component, which `Stokes.rotate_qu` on the gathered map would
     # force. With a single neighbour there is nothing to sum, and one gather of all the rows is
     # faster.
-    rows = [sky.data[i][stencil.indices] for i in range(len(sky.stokes))]
+    rows = [gather_pixels(sky.data[i], stencil.indices) for i in range(len(sky.stokes))]
     qi = sky.stokes.find('Q')
     if rotation is not None and qi >= 0:
         cos_2a, sin_2a = rotation
@@ -161,7 +163,8 @@ def rotated_scatter[S: Stokes](
         spread = spread.rotate_qu(*rotation.inverse())
     n_stokes = out.data.shape[0]
     contrib = spread.data.reshape(n_stokes, -1)
-    accumulated = out.data.at[..., stencil.indices.ravel()].add(contrib)
+    # a -1 index, a neighbour outside the map, is dropped
+    accumulated = scatter_add_pixels(out.data, stencil.indices.ravel(), contrib)
     return type(out).from_array(accumulated)
 
 

@@ -234,8 +234,8 @@ class TestPrecomputed:
 
         sky = local.normal(jax.random.key(22))
         assert tree_equal(op.precomputed()(sky), op(sky), rtol=1e-10, atol=1e-12)
-        # half the pixels are unmapped, so some samples do sink: the test would pass vacuously
-        assert jnp.any(op.landscape.quat2index(op.sampler.quaternions()) == local.sink)
+        # half the pixels are unmapped, so some samples fall outside: else the test is vacuous
+        assert jnp.any(op.landscape.quat2index(op.sampler.quaternions()) == -1)
 
 
 @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
@@ -327,7 +327,7 @@ class TestLocalLandscape:
     def half_coverage(
         cls, p_full: PointingOperator, covered: jax.Array
     ) -> tuple[LocalStokesLandscape, PointingOperator]:
-        # samples on the dropped pixels land in the sink
+        # samples on the dropped pixels read no pixel
         return cls._local_operator(p_full, covered[::2])
 
     def test_mv_matches_full_sky(self, p_full, sky, full_coverage) -> None:
@@ -339,12 +339,12 @@ class TestLocalLandscape:
         # uncovered pixels are zero in both the full binning and the promoted local one
         assert tree_equal(local.promote(p_local.T(tod)), p_full.T(tod), rtol=1e-12)
 
-    def test_partial_coverage_sinks_missing_pixels(self, p_full, tod, half_coverage) -> None:
+    def test_partial_coverage_drops_missing_pixels(self, p_full, tod, half_coverage) -> None:
         local, p_local = half_coverage
         subset = local.global_indices
         binned_local = local.promote(p_local.T(tod)).data
         if not _interpolates(p_full):
-            # nearest: contributions to kept pixels are identical, sink ones are discarded
+            # nearest: contributions to kept pixels are identical, the others are discarded
             # (bilinear renormalizes the weights over covered neighbors, so values differ)
             binned_full = p_full.T(tod).data
             assert_array_almost_equal(binned_local[:, subset], binned_full[:, subset], decimal=13)
@@ -413,7 +413,7 @@ class TestTransport:
         assert_array_almost_equal(op(sky).data, expected.data, decimal=13)
 
     def test_local_landscape_adjoint(self, interpolate) -> None:
-        """Samples outside the subset sink, and the centers still come from the parent."""
+        """Samples outside the subset are dropped, and the centers still come from the parent."""
         parent = HealpixLandscape(NSIDE, 'IQU')
         qbore, qdet = self._quats(12)
         p_full = PointingOperator.create(parent, qbore, qdet, interpolate=interpolate)
@@ -546,7 +546,7 @@ class TestPartialSkyNearest:
         assert jnp.all((weights == 0) | (weights == 1))  # nearest weighs one or nothing
 
     def test_a_sample_outside_the_map_reads_zero(self, stokes) -> None:
-        """Without the mask it would read the last pixel, which the raw index -1 wraps onto."""
+        """A plain gather would read the last pixel, which the raw index -1 wraps onto."""
         op = self._op(51, stokes)
         outside = self._outside(op, op.sampler.quaternions())
         assert jnp.any(outside)
@@ -554,7 +554,7 @@ class TestPartialSkyNearest:
         assert_array_equal(op(sky).i[outside], 0.0)
 
     def test_binning_a_sample_outside_the_map_adds_nothing(self, stokes) -> None:
-        """Without the mask its TOD would land on the last pixel, inflating a pixel it never hit."""
+        """A plain scatter would add its TOD to the last pixel, inflating a pixel it never hit."""
         op = self._op(52, stokes)
         outside = self._outside(op, op.sampler.quaternions())
         assert jnp.any(outside)
@@ -567,6 +567,51 @@ class TestPartialSkyNearest:
         assert jnp.any(self._outside(op, op.sampler.quaternions()))
         sky = op.landscape.normal(jax.random.key(54))
         assert tree_equal(op.precomputed()(sky), op(sky), rtol=1e-10, atol=1e-13)
+
+
+@pytest.mark.parametrize('stokes', ['I', 'IQU'])
+@pytest.mark.parametrize('interpolate', [False, True], ids=['nearest', 'bilinear'])
+@pytest.mark.parametrize('precompute', [False, True], ids=['on-the-fly', 'precomputed'])
+@pytest.mark.parametrize('with_beam', [False, True], ids=['line-of-sight', 'beam'])
+class TestSamplesWithoutPointing:
+    """A zero quaternion, as the reader pads an observation with, marks samples to skip."""
+
+    @staticmethod
+    def _ops(
+        stokes: ValidStokesLiteral, interpolate: bool, precompute: bool, with_beam: bool
+    ) -> tuple[PointingOperator, PointingOperator, jax.Array]:
+        """The operator with the last samples and detector padded, one without, and the mask."""
+        landscape = HealpixLandscape(NSIDE, stokes)
+        k1, k2, k3 = jax.random.split(jax.random.key(70), 3)
+        beam = None
+        if with_beam:
+            nodes = XiEtaAngles(*jax.random.normal(k3, (3, 2)) * 0.01).to_quaternion()
+            beam = DiscretizedBeam.create(nodes, jnp.array([0.4, 0.6]))
+        qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
+        valid = (jnp.arange(NDET) < NDET - 1)[:, None] & (jnp.arange(NSAMP) < NSAMP - 3)[None, :]
+        padded_bore = Quaternion.from_array(qbore.wxyz.at[NSAMP - 3 :].set(0))
+        padded_det = Quaternion.from_array(qdet.wxyz.at[NDET - 1].set(0))
+        ops = [
+            PointingOperator.create(landscape, bore, det, interpolate=interpolate, beam=beam)
+            for bore, det in ((padded_bore, padded_det), (qbore, qdet))
+        ]
+        if precompute:
+            ops = [op.precomputed() for op in ops]
+        return ops[0], ops[1], valid
+
+    def test_they_read_zero(self, stokes, interpolate, precompute, with_beam) -> None:
+        padded, full, valid = self._ops(stokes, interpolate, precompute, with_beam)
+        sky = padded.landscape.normal(jax.random.key(71))
+        tod, expected = padded(sky).data, full(sky).data
+        assert_array_equal(tod[:, ~valid], 0.0)
+        assert_allclose(tod[:, valid], expected[:, valid], rtol=1e-12)
+
+    def test_binning_them_adds_nothing(self, stokes, interpolate, precompute, with_beam) -> None:
+        """Even nonzero samples are skipped: the operator has no row for them."""
+        padded, full, valid = self._ops(stokes, interpolate, precompute, with_beam)
+        tod = ftree.normal_like(padded.out_structure, jax.random.key(72))
+        masked = type(tod).from_array(jnp.where(valid, tod.data, 0))
+        assert tree_equal(padded.T(tod), full.T(masked), rtol=1e-12, atol=1e-14)
 
 
 class TestNearestTransport:

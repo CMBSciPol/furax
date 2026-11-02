@@ -7,7 +7,6 @@ Backed by the file-free synthetic observations (no sotodlib/toast, no fixtures):
 
 from dataclasses import replace
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -40,7 +39,10 @@ from tests.mapmaking.helpers import (
     FakeLazyGroundObservation,
     FakeLazyObservation,
     accumulate,
+    assert_same_map,
+    assert_same_system,
     healpix_config,
+    probe_normal_system,
 )
 
 
@@ -82,7 +84,7 @@ def test_explicit_and_implicit_give_the_same_map(observations, template):
     obs = observations()
     explicit = MultiObservationMapMaker(obs, config=_config(template(True))).make_maps()
     implicit = MultiObservationMapMaker(obs, config=_config(template(False))).make_maps()
-    assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
+    assert_same_map(explicit, implicit, rtol=1e-4, atol=1e-6)
     assert explicit.solver_stats['num_steps'] >= 1
     # only the explicit amplitudes are solved for, one set per observation and detector
     assert implicit.template_amplitudes is None
@@ -99,9 +101,9 @@ def test_mixed_explicit_and_implicit():
             scan_synchronous=ScanSynchronousConfig(explicit=False),
         )
     )
-    res = MultiObservationMapMaker(_ground_obs(), config=cfg).make_maps()
-    assert set(res.template_amplitudes) == {'hwp_synchronous'}
-    assert jnp.all(jnp.isfinite(res.template_amplitudes['hwp_synchronous']))
+    templates = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg)).buckets[0].templates
+    assert list(templates.explicit.operator.templates) == ['hwp_synchronous']
+    assert list(templates.implicit.operator.templates) == ['scan_synchronous']
 
 
 def test_two_level_preconditioner_with_explicit_templates():
@@ -117,13 +119,12 @@ def test_two_level_preconditioner_with_explicit_templates():
         assert_allclose(amplitudes, expected_amplitudes, rtol=1e-6, atol=1e-8)
 
 
-def test_spline_drift_returns_its_amplitudes():
+def test_spline_drift_has_amplitudes_per_detector_and_knot():
     spline = SplineDriftConfig(samples_per_knot=128, explicit=True)
     cfg = _config(TemplatesConfig(spline_drift=spline))
-    res = MultiObservationMapMaker(_ground_obs(), config=cfg).make_maps()
-    amps = res.template_amplitudes['spline_drift']
-    assert amps.shape == (2, 8, 10)  # (obs, det, knot): 1024 // 128 knots, plus 2
-    assert jnp.all(jnp.isfinite(amps))
+    acc = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg))
+    # (obs, batch, det, knot): 1024 // 128 knots, plus 2
+    assert acc.buckets[0].batches.amplitude_rhs['spline_drift'].shape == (2, 1, 8, 10)
 
 
 @pytest.mark.parametrize(
@@ -154,13 +155,25 @@ def test_demodulated_streams_fitted_alike_form_one_template(name, option, templa
     assert {key: t.streams for key, t in operator.templates.items()} == templates
 
 
+def _detector_batch_systems(cfg: MapMakingConfig, observations=_ground_obs, **obs_kwargs):
+    """The normal system of a run with the detectors processed whole, then in batches."""
+    return [
+        probe_normal_system(
+            MultiObservationMapMaker(
+                observations(n_dets=7, **obs_kwargs), config=replace(cfg, detector_batch_size=batch)
+            )
+        )
+        for batch in (0, 3)
+    ]
+
+
 @pytest.mark.parametrize(
     ('observations', 'templates', 'demodulated'),
     [
         (_hwp_obs, None, False),
         (_hwp_obs, TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)), False),
         # Drift and scan-synchronous templates together are nearly degenerate on these short
-        # scans, too ill-conditioned for any two runs to agree closely, so they come separately.
+        # scans, so they come separately.
         (
             _ground_obs,
             TemplatesConfig(
@@ -178,41 +191,33 @@ def test_demodulated_streams_fitted_alike_form_one_template(name, option, templa
     ],
     ids=['no-templates', 'explicit', 'demodulated-drift-and-t2p', 'demodulated-azss-and-t2p'],
 )
-def test_detector_batches_give_the_same_result(observations, templates, demodulated):
+def test_detector_batches_give_the_same_system(observations, templates, demodulated):
     # Processing an observation's detectors in batches is a memory layout, not a change of model:
     # every template, weight and Gram is per detector. 7 detectors in batches of 3 also pads two.
-    n_dets = 7
-    obs = observations(n_dets=n_dets)
+    # The systems are compared, not their solutions: the templates make them ill-conditioned, so
+    # solving turns the rounding of either into a much larger difference of the maps.
     sotodlib = SotodlibConfig(demodulated=True) if demodulated else None
     cfg = replace(_config(None), templates=templates, sotodlib=sotodlib)
-    makers = [
-        MultiObservationMapMaker(obs, config=replace(cfg, detector_batch_size=batch))
+    whole, batched = _detector_batch_systems(cfg, observations)
+    assert_same_system(batched, whole)
+
+
+def test_padded_detectors_are_left_out_of_the_results():
+    # batching 7 detectors by 3 pads two, whose rows must not reach the detector table, and whose
+    # amplitudes trail the real ones
+    templates = TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True))
+    cfg = _config(templates)
+    n_dets = 7
+    whole, batched = [
+        MultiObservationMapMaker(
+            _hwp_obs(n_dets=n_dets), config=replace(cfg, detector_batch_size=batch)
+        ).make_maps()
         for batch in (0, 3)
     ]
-
-    whole, batched = [accumulate(maker) for maker in makers]
-    assert_allclose(batched.hit_map, whole.hit_map)
-    assert_allclose(batched.map_rhs.data, whole.map_rhs.data, rtol=1e-12, atol=1e-12)
-
-    # The template-marginalised systems are ill-conditioned enough that the solves agree only to
-    # about the solver tolerance.
-    whole, batched = [maker.make_maps() for maker in makers]
-    scale = jnp.max(jnp.abs(whole.map.data))
-    assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
-    # the same detectors at the same places, whatever the padding of the batches
     assert_frame_equal(batched.detectors, whole.detectors, rel_tol=1e-10)
-    if whole.template_amplitudes is not None:
-        # batching pads 2 more detectors, whose amplitudes trail the real ones; the amplitudes
-        # are (obs, stream, det, ...) on a demodulated TOD, (obs, det, ...) otherwise
-        axis = 2 if demodulated else 1
-        got = jax.tree.map(
-            lambda a: jnp.take(a, jnp.arange(n_dets), axis=axis), batched.template_amplitudes
-        )
-        jax.tree.map(
-            lambda a, b: assert_allclose(a, b, atol=1e-4 * jnp.max(jnp.abs(b))),
-            got,
-            whole.template_amplitudes,
-        )
+    (expected,) = whole.template_amplitudes.values()
+    (got,) = batched.template_amplitudes.values()
+    assert_allclose(got[:, :n_dets], expected, atol=1e-4 * jnp.max(jnp.abs(expected)))
 
 
 @pytest.mark.parametrize(
@@ -220,32 +225,17 @@ def test_detector_batches_give_the_same_result(observations, templates, demodula
     [(True, False), (False, False), (True, True)],
     ids=['joint', 'per-stream', 'with-drift'],
 )
-def test_t2p_field_is_the_same_in_detector_batches(joint_qu, drift):
+def test_t2p_field_gives_the_same_system_in_detector_batches(joint_qu, drift):
     # The amplitudes of a leakage field are shared by an observation's detectors, so its batches
     # solve for them together: batching changes the memory layout, not the model. With a
     # drift, the unknowns hold both kinds of amplitudes.
-    # 6 amplitudes per stream (3 Zernike polynomials, each with its cos and sin) for 7 detectors
     templates = TemplatesConfig(
         t2p=T2PConfig(zernike_order=1, joint_qu=joint_qu),
         spline_drift=SplineDriftConfig(samples_per_knot={'qu': 256}) if drift else None,
     )
     cfg = replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
-    results = [
-        MultiObservationMapMaker(
-            _ground_obs(n_dets=7, focal_plane_radius=0.2),
-            config=replace(cfg, detector_batch_size=batch),
-        ).make_maps()
-        for batch in (0, 3)
-    ]
-    whole, batched = results
-    scale = jnp.max(jnp.abs(whole.map.data))
-    assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
-    amplitudes = whole.template_amplitudes['t2p']
-    assert jnp.all(jnp.isfinite(amplitudes)) and jnp.max(jnp.abs(amplitudes)) > 0
-    assert amplitudes.shape[0] == 2  # one set of amplitudes per observation
-    assert_allclose(
-        batched.template_amplitudes['t2p'], amplitudes, atol=1e-4 * jnp.max(jnp.abs(amplitudes))
-    )
+    whole, batched = _detector_batch_systems(cfg, focal_plane_radius=0.2)
+    assert_same_system(batched, whole)
 
 
 _COMMON_MODE_WITH_DRIFT = TemplatesConfig(
@@ -255,40 +245,44 @@ _COMMON_MODE_WITH_DRIFT = TemplatesConfig(
 )
 
 
-@pytest.mark.parametrize(
-    ('templates', 'correlated'),
-    [
-        (TemplatesConfig(t2p=T2PConfig(quadrupole_order=1)), False),
-        (_COMMON_MODE_WITH_DRIFT, False),
-        (_COMMON_MODE_WITH_DRIFT, True),
-    ],
-    ids=['t2p-quadrupole', 'common-mode-with-drift', 'common-mode-with-drift-correlated'],
-)
-def test_quadrupolar_templates_are_the_same_in_detector_batches(templates, correlated):
+_T2P_QUADRUPOLE = TemplatesConfig(t2p=T2PConfig(quadrupole_order=1))
+_QUADRUPOLAR = [
+    pytest.param(_T2P_QUADRUPOLE, False, id='t2p-quadrupole'),
+    pytest.param(_COMMON_MODE_WITH_DRIFT, False, id='common-mode-with-drift'),
+    pytest.param(_COMMON_MODE_WITH_DRIFT, True, id='common-mode-with-drift-correlated'),
+]
+
+
+def _quadrupolar_config(templates: TemplatesConfig, correlated: bool) -> MapMakingConfig:
+    if correlated:
+        return _toeplitz_config(templates, precomputed=True, demodulated=True)
+    return replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
+
+
+@pytest.mark.parametrize(('templates', 'correlated'), _QUADRUPOLAR)
+def test_quadrupolar_templates_give_the_same_system_in_detector_batches(templates, correlated):
     # Their amplitudes belong to the observation, as those of the Zernike field: batching the
     # detectors changes the memory layout, not the model. Next to each detector's implicit drift,
     # the Gram of the common mode is that under the marginalized weight; under a correlated
     # weight, it is probed in each batch, then summed.
-    name = 't2p' if templates.t2p is not None else 'common_mode'
-    if correlated:
-        cfg = _toeplitz_config(templates, precomputed=True, demodulated=True)
-    else:
-        cfg = replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
-    whole, batched = [
-        MultiObservationMapMaker(
-            _ground_obs(n_dets=7, focal_plane_radius=0.2),
-            config=replace(cfg, detector_batch_size=batch),
-        ).make_maps()
-        for batch in (0, 3)
-    ]
-    amplitudes = whole.template_amplitudes[name]
+    cfg = _quadrupolar_config(templates, correlated)
+    whole, batched = _detector_batch_systems(cfg, focal_plane_radius=0.2)
+    assert_same_system(batched, whole)
+
+
+@pytest.mark.parametrize(
+    ('name', 'templates'),
+    [('t2p', _T2P_QUADRUPOLE), ('common_mode', _COMMON_MODE_WITH_DRIFT)],
+    ids=['t2p-quadrupole', 'common-mode-with-drift'],
+)
+def test_amplitudes_shared_by_detectors_are_returned_per_observation(name, templates):
+    cfg = _quadrupolar_config(templates, correlated=False)
+    maps = MultiObservationMapMaker(
+        _ground_obs(n_dets=7, focal_plane_radius=0.2), config=cfg
+    ).make_maps()
+    amplitudes = maps.template_amplitudes[name]
     assert jnp.all(jnp.isfinite(amplitudes)) and jnp.max(jnp.abs(amplitudes)) > 0
     assert amplitudes.shape[0] == 2  # one set of amplitudes per observation
-    scale = jnp.max(jnp.abs(whole.map.data))
-    assert_allclose(batched.map.data, whole.map.data, atol=1e-4 * scale)
-    assert_allclose(
-        batched.template_amplitudes[name], amplitudes, atol=1e-4 * jnp.max(jnp.abs(amplitudes))
-    )
 
 
 @pytest.mark.parametrize(('batch', 'n_buffered'), [(0, 8), (64, 8), (3, 9)])
@@ -350,7 +344,7 @@ def test_pomme_explicit_and_implicit_give_the_same_map():
     obs = _hwp_obs()
     explicit = MultiObservationMapMaker(obs, config=_pomme_config(template(True))).make_maps()
     implicit = MultiObservationMapMaker(obs, config=_pomme_config(template(False))).make_maps()
-    assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
+    assert_same_map(explicit, implicit, rtol=1e-4, atol=1e-6)
 
 
 @pytest.mark.parametrize('batch', [0, 1], ids=['one_batch', 'per_detector'])
@@ -369,7 +363,7 @@ def test_explicit_and_implicit_agree_under_a_ridge(batch):
         return MultiObservationMapMaker(observations, config=config).make_maps()
 
     explicit, implicit = run(True), run(False)
-    assert_allclose(explicit.map.data, implicit.map.data, rtol=1e-4, atol=1e-6)
+    assert_same_map(explicit, implicit, rtol=1e-4, atol=1e-6)
 
 
 def _toeplitz_config(
@@ -411,40 +405,36 @@ def test_correlated_weight_explicit_and_implicit_give_the_same_map(observations,
         MultiObservationMapMaker(obs, config=_toeplitz_config(template(e), precomputed)).make_maps()
         for e in (True, False)
     ]
-    assert_allclose(maps[0].map.data, maps[1].map.data, rtol=1e-6, atol=1e-8)
+    assert_same_map(*maps, rtol=1e-6, atol=1e-8)
 
 
-def test_detector_batches_give_the_same_result_under_a_correlated_weight():
-    # The Gram of each detector is probed from the weight, whatever the batch it is in.
+def test_detector_batches_give_the_same_system_under_a_correlated_weight():
+    # The Gram of each detector is probed from the weight, whatever the batch it is in. The
+    # systems are compared, not their solutions: this one has two directions 1e-10 times its
+    # largest eigenvalue, so solving it turns the rounding of either (~1e-15) into ~1e-5 of the map.
     templates = TemplatesConfig(spline_drift=SplineDriftConfig(samples_per_knot={'qu': 256}))
     cfg = _toeplitz_config(templates, precomputed=True, demodulated=True)
-    whole, batched = [
-        MultiObservationMapMaker(
-            _ground_obs(n_dets=7), config=replace(cfg, detector_batch_size=batch)
-        ).make_maps()
-        for batch in (0, 3)
-    ]
-    scale = jnp.max(jnp.abs(whole.map.data))
-    assert_allclose(batched.map.data, whole.map.data, atol=1e-5 * scale)
+    whole, batched = _detector_batch_systems(cfg)
+    assert_same_system(batched, whole)
 
 
 def test_demodulated_drift_explicit_and_implicit_agree_under_a_correlated_weight():
-    # a knot every 512 samples: closer knots condition the two systems too poorly for their maps
-    # to agree to 1e-6
+    # The Gram of the drift of a detector is singular here, so it takes a ridge to be factored
+    templates = TemplatesConfig(
+        spline_drift=SplineDriftConfig(samples_per_knot={'qu': 512}), regularization=1e-4
+    )
     maps = [
         MultiObservationMapMaker(
             _ground_obs(),
             config=_toeplitz_config(
-                TemplatesConfig(
-                    spline_drift=SplineDriftConfig(samples_per_knot={'qu': 512}, explicit=e)
-                ),
+                replace(templates, spline_drift=replace(templates.spline_drift, explicit=e)),
                 precomputed=True,
                 demodulated=True,
             ),
         ).make_maps()
         for e in (True, False)
     ]
-    assert_allclose(maps[0].map.data, maps[1].map.data, rtol=1e-6, atol=1e-8)
+    assert_same_map(*maps, rtol=1e-6, atol=1e-8)
 
 
 @pytest.mark.slow

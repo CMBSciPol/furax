@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax-so-map` and `furax-so-cache` now accept several wafers with `--wafer ws0 ws1`; `furax-so-map` joins them into one observation by default unless `--no-join-wafers` is passed (#449)
 - User guide page "Distributing work": pytrees of operators versus ensembles, with an end-to-end example reading observations from disk (#459)
 - `LowRankFourierOperator`: a diagonal plus low-rank matrix across channels in each frequency bin, with its inverse from the Woodbury identity (#465)
+- `Stencil.voided`: the stencil reading no pixel for the given samples (#425)
 
 ### Changed
 
@@ -60,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WindowedBasis` expands its amplitudes one window slot at a time, for a lower peak memory (#466)
 - `WindowedBasis` transposes one window slot at a time, for faster conjugate gradient steps (#473)
 - **Breaking:** implicit templates need a diagonal weighting: `MapMakingConfig` rejects them with the Toeplitz mode, where the templates must be `explicit` and their Gram is taken under the white weight; `template_gram` loses `bandwidth`, `streams_coupled` and `method` (#472)
+- **Breaking:** a pixel index of -1 reads no pixel: `PointingOperator` gathers zero for it and skips it when binning, and a resolved `Stencil` keeps -1 for a neighbour outside the map instead of pixel 0 (#425)
+- **Breaking:** `LocalStokesLandscape` maps pixels outside its subset to -1: its maps have `nlocal` pixels, and `sink`, `with_sink` and `drop_sink` are removed (#425)
+- **Breaking:** the reader pads boresight and detector quaternions with zero quaternions, which `QuaternionSampler` reads as samples without pointing (#425)
 
 ### Fixed
 
@@ -71,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - User-guide examples broken by the single-array `Stokes` containers and other API changes (#461)
 - `ListEnsemble` rejects members that differ by a non-array leaf, which it used to take from the first member for all of them, or by the shape or dtype of an array leaf (#463)
 - `map_reduce` over a `ListEnsemble` accepts members holding 0-d arrays (#463)
+- Padded samples are no longer binned onto one pixel, which serialized the GPU scatter in proportion to the padding (#425)
 
 ## [0.17.2] - 2026-10-30
 

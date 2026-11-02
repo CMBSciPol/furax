@@ -51,6 +51,22 @@ def test_sample_data_is_zero_padded(lazy, demodulated: bool):
     assert tuple(sample_padding[-2:]) == (1, 100)
 
 
+def test_quaternions_are_zero_padded():
+    """A zero quaternion marks the padded samples and detectors as having no pointing."""
+    small = {'n_dets': 2, 'n_samples': 500}
+    observations = [FakeLazyObservation(**small), FakeLazyObservation(n_dets=3, n_samples=600)]
+    reader = ObservationReader.from_observations(
+        observations, requested_fields=['boresight_quaternions', 'detector_quaternions']
+    )
+    data, _, _ = reader.read(0)
+    obs = FakeObservation(**small)
+    qbore, qdet = data['boresight_quaternions'], data['detector_quaternions']
+    assert_array_equal(qbore[:500], obs.get_boresight_quaternions())
+    assert_array_equal(qdet[:2], obs.get_detector_quaternions())
+    assert not np.any(qbore[500:])
+    assert not np.any(qdet[2:])
+
+
 @pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])
 def test_sample_data_reaches_a_cpu_device_without_a_copy(demodulated: bool):
     observations = [FakeLazyObservation(n_dets=2, n_samples=500), FakeLazyObservation(n_dets=3)]

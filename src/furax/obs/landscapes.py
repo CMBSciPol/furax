@@ -17,6 +17,7 @@ from jax.tree_util import register_static
 from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
 from furax.math.coords import ZAXIS, IsoAngles, ZSPhi
+from furax.obs._indexing import NO_PIXEL
 from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
@@ -195,7 +196,7 @@ class StokesLandscape(Landscape):
             valid &= (0 <= indices_axis) & (indices_axis < dim)
             indices += indices_axis * stride
             stride *= dim
-        return jnp.where(valid, indices, -1)
+        return jnp.where(valid, indices, NO_PIXEL)
 
     def quat2pixel(self, quat: Quaternion) -> tuple[Float[Array, ' *dims'], ...]:
         """Converts quaternion to floating-point pixel coordinates."""
@@ -232,7 +233,7 @@ class StokesLandscape(Landscape):
 
         The nearest-neighbour stencil of a sampler that already holds the index of the pixel each
         sample falls in, from [`quat2index`][] say, positioned at those pixels' centers. An index
-        outside the map (negative) reads pixel 0 with zero weight.
+        outside the map (negative) reads nothing.
         """
         return Stencil.nearest(indices, *self.index2world(indices)).astype(self.dtype)
 
@@ -286,7 +287,7 @@ def _index2pixel(
     landscape: StokesLandscape, indices: Integer[Array, ' *dims']
 ) -> tuple[Float[Array, ' *dims'], ...]:
     """Inverse of `pixel2index`: the coordinates of the pixels the raveled indices address."""
-    safe = jnp.where(indices < 0, 0, indices)  # an out-of-map index reads pixel 0, weightless
+    safe = jnp.where(indices < 0, 0, indices)  # a -1 reads no pixel: any location will do
     coords = []
     for dim in landscape.pixel_shape:
         coords.append((safe % dim).astype(landscape.dtype))
@@ -584,8 +585,7 @@ class HealpixLandscape(StokesLandscape):
         r"""Returns the one-neighbour [`Stencil`][] reading the pixels of `indices`.
 
         The pixel centres come as $(\cos\theta, \sin\theta, \phi)$ straight from the pixel
-        scheme, without forming $\theta$. An index outside the map (negative) reads pixel 0 with
-        zero weight.
+        scheme, without forming $\theta$. An index outside the map (negative) reads nothing.
         """
         safe = jnp.where(indices < 0, 0, indices)
         z, sin_theta, phi = jhp.pix2loc(self.nside, safe, nest=self.nested)
@@ -1070,13 +1070,9 @@ class LocalStokesLandscape(StokesLandscape):
     grid, so the pixel-coordinate methods (``world2pixel``, ``quat2pixel``, ``pixel2index``) raise
     ``NotImplementedError``.
 
-    The pixel axis carries an extra trailing *sink* slot: ``shape == (nlocal + 1,)`` and the sink is
-    index ``nlocal``. Coordinates outside the subset (and out-of-bounds inputs) map to the sink
-    rather than ``-1``, so a plain gather from the length ``nlocal + 1`` buffer lands them on the
-    dedicated discardable slot instead of wrapping onto a real pixel (as ``-1`` would). Maps live
-    in that ``nlocal + 1`` space throughout: [`restrict`][] pads a zero sink slot and [`promote`][]
-    discards it when moving between the parent sky and the local one. [`with_sink`][] and
-    [`drop_sink`][] convert between that space and sink-less ``nlocal``-sized maps.
+    The pixel axis holds the ``nlocal`` pixels of the subset. Coordinates outside the subset (and
+    out-of-bounds inputs) map to ``-1``, the index of no pixel, like a sample outside a partial
+    parent map: a pointing operator neither reads nor bins such a sample.
 
     Attributes:
         parent: The parent landscape.
@@ -1084,24 +1080,23 @@ class LocalStokesLandscape(StokesLandscape):
             ``nlocal``.
 
     Examples:
-        Restrict a 12-pixel HEALPix sky to two pixels (the shape gains a trailing sink slot):
+        Restrict a 12-pixel HEALPix sky to two pixels:
 
         >>> parent = HealpixLandscape(1, stokes='I')
         >>> local = LocalStokesLandscape(parent, jnp.array([3, 7]))
-        >>> local.nlocal, local.sink, local.shape
-        (2, 2, (3,))
+        >>> local.nlocal, local.shape
+        (2, (2,))
 
-        Global indices map to local ones; unselected and out-of-bounds pixels fall in the sink:
+        Global indices map to local ones; unselected and out-of-bounds pixels map to -1:
 
         >>> local.global2local(jnp.array([3, 7, 5, -1]))
-        Array([0, 1, 2, 2], dtype=int32)
+        Array([ 0,  1, -1, -1], dtype=int32)
 
-        [`restrict`][] and [`promote`][] move between the parent sky and the local map space
-        (sink slot included):
+        [`restrict`][] and [`promote`][] move between the parent sky and the local map:
 
         >>> sky = parent.ones()
         >>> local.restrict(sky).shape
-        (3,)
+        (2,)
         >>> local.promote(local.restrict(sky)).shape
         (12,)
     """
@@ -1125,9 +1120,7 @@ class LocalStokesLandscape(StokesLandscape):
                 f'global_indices contains {int(gi[-1])}, out of range for a parent '
                 f'with {npix} pixels.'
             )
-        nlocal = int(gi.size)
-        # The sink occupies index `nlocal`, so the buffer has shape `(nlocal + 1,)`.
-        super().__init__(shape=(nlocal + 1,), stokes=parent.stokes, dtype=parent.dtype)
+        super().__init__(shape=(int(gi.size),), stokes=parent.stokes, dtype=parent.dtype)
         self.parent = parent
         self.global_indices = gi
 
@@ -1135,19 +1128,14 @@ class LocalStokesLandscape(StokesLandscape):
     def nlocal(self) -> int:
         return len(self.global_indices)
 
-    @property
-    def sink(self) -> int:
-        """The sink index that unmapped/out-of-bounds samples map to."""
-        return self.nlocal
-
     def world2index(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
     ) -> Integer[Array, ' *dims']:
-        """Convert world coordinates to local pixel indices (sink for unmapped)."""
+        """Convert world coordinates to local pixel indices (-1 for unmapped)."""
         return self.global2local(self.parent.world2index(theta, phi))
 
     def quat2index(self, quat: Quaternion) -> Integer[Array, ' *dims']:
-        """Convert quaternions to local pixel indices (sink for unmapped)."""
+        """Convert quaternions to local pixel indices (-1 for unmapped)."""
         return self.global2local(self.parent.quat2index(quat))
 
     def world2stencil(
@@ -1158,34 +1146,26 @@ class LocalStokesLandscape(StokesLandscape):
     ) -> Stencil:
         r"""Returns the parent's [`Stencil`][], locally indexed.
 
-        A neighbour outside the subset lands in the sink with its weight zeroed, so it contributes
-        nothing rather than reading the sink slot, and the remaining weights are rescaled over the
-        covered neighbours only. The neighbour positions are the parent's, i.e. positions on the
-        sky, unaffected by the local re-indexing.
+        A neighbour outside the subset gets index -1 and its weight zeroed, so it contributes
+        nothing, and the remaining weights are rescaled over the covered neighbours only. The
+        neighbour positions are the parent's, i.e. positions on the sky, unaffected by the local
+        re-indexing.
 
         Note:
             Calling this method entails an additional $O(\log n_\mathrm{local})$ binary search
             per neighbor, compared to the parent landscape's method.
         """
         stencil = self.parent.world2stencil(theta, phi, interpolation)
-        return stencil.reindexed(*self._localize(stencil.indices, stencil.weights))
+        return stencil.reindexed(self.global2local(stencil.indices), stencil.weights)
 
     def index2stencil(self, indices: Integer[Array, ' *dims']) -> Stencil:
         """Returns the parent's one-neighbour [`Stencil`][], addressed by the local indices.
 
-        A local index in the sink reads the sink slot with zero weight, as one out of the parent
-        map does, and carries no meaningful position: it no longer names a parent pixel.
+        A local index of -1 reads nothing, as one out of the parent map does, and carries no
+        meaningful position: it names no parent pixel.
         """
-        # `local2global` sends the sink outside the parent map, where the parent zeroes the weight.
         stencil = self.parent.index2stencil(self.local2global(indices))
         return stencil.reindexed(indices[..., None], stencil.weights)
-
-    def _localize(
-        self, indices: Integer[Array, '...'], weights: Float[Array, '...']
-    ) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
-        """Map parent neighbour indices to local ones, zeroing the weight of those in the sink."""
-        local = self.global2local(indices)
-        return local, jnp.where(local == self.sink, 0, weights)
 
     def world2pixel(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
@@ -1199,56 +1179,46 @@ class LocalStokesLandscape(StokesLandscape):
         raise NotImplementedError('LocalStokesLandscape does not support pixel2index.')
 
     def global2local(self, indices: Integer[Array, ' *dims']) -> Integer[Array, ' *dims']:
-        """Map global (parent) flat indices to local indices, sending unmapped ones to the sink.
+        """Map global (parent) flat indices to local indices, -1 for those outside the subset.
 
-        Out-of-bounds inputs (negative, e.g. ``-1`` from a missed sample) also map to the sink.
+        Out-of-bounds inputs (negative, e.g. ``-1`` from a missed sample) also map to -1.
         """
         if self.nlocal == 0:
-            return jnp.full(jnp.shape(indices), self.sink, dtype=jnp.int32)
+            return jnp.full(jnp.shape(indices), NO_PIXEL, dtype=jnp.int32)
         # global_indices is sorted-unique: binary search + equality check gives an O(log nlocal)
         # inverse lookup without materializing an npix-sized LUT. Negative inputs (oob markers)
-        # miss the equality check (global_indices is non-negative) and fall in the sink.
+        # miss the equality check (global_indices is non-negative).
         pos = jnp.searchsorted(self.global_indices, indices).astype(jnp.int32)
         safe = jnp.minimum(pos, self.nlocal - 1)
         hit = self.global_indices[safe] == indices
-        local: Integer[Array, ' *dims'] = jnp.where(hit, safe, self.sink)
-        return local
+        return jnp.where(hit, safe, NO_PIXEL)
 
     def local2global(self, indices: Integer[Array, ' *dims']) -> Integer[Array, ' *dims']:
         """Map local indices to global (parent) flat indices, ``-1`` for out-of-range inputs."""
         valid = (indices >= 0) & (indices < self.nlocal)
         safe = jnp.where(valid, indices, 0)
-        return jnp.where(valid, self.global_indices[safe], -1)
-
-    def with_sink(self, sky: _StokesT, fill_value: ScalarLike = 0) -> _StokesT:
-        """Append a sink slot filled with ``fill_value`` (``nlocal`` -> ``nlocal + 1`` pixels)."""
-        pad_width = [(0, 0)] * (sky.data.ndim - 1) + [(0, 1)]
-        return type(sky).from_array(jnp.pad(sky.data, pad_width, constant_values=fill_value))
-
-    def drop_sink(self, sky: _StokesT) -> _StokesT:
-        """Return the map without its trailing sink slot (``nlocal + 1`` -> ``nlocal`` pixels)."""
-        return type(sky).from_array(sky.data[..., :-1])
+        return jnp.where(valid, self.global_indices[safe], NO_PIXEL)
 
     def restrict(self, sky: _StokesT) -> _StokesT:
         """Extract the local subset from a parent-shaped Stokes map (shape ``self.shape``).
 
-        The trailing sink slot is padded with zeros. Leading (batch) axes are preserved; only the
-        trailing ``parent.ndim`` axes are interpreted as the pixel axes.
+        Leading (batch) axes are preserved; only the trailing ``parent.ndim`` axes are interpreted
+        as the pixel axes.
         """
         batch = sky.data.shape[: sky.data.ndim - len(self.parent.shape)]
         flat = sky.data.reshape(*batch, -1)
-        return self.with_sink(type(sky).from_array(flat[..., self.global_indices]))
+        return type(sky).from_array(flat[..., self.global_indices])
 
     def promote(self, sky: _StokesT, fill_value: ScalarLike = 0) -> _StokesT:
         """Scatter a local (``self.shape``-sized) Stokes map back into a parent-shaped one.
 
-        The trailing sink slot is discarded. Pixels outside the local subset are set to
-        ``fill_value``. Leading (batch) axes are preserved.
+        Pixels outside the local subset are set to ``fill_value``. Leading (batch) axes are
+        preserved.
         """
         batch = sky.data.shape[:-1]
         npix = math.prod(self.parent.shape)
         flat = jnp.full((*batch, npix), fill_value, dtype=sky.dtype)
-        flat = flat.at[..., self.global_indices].set(sky.data[..., : self.nlocal])
+        flat = flat.at[..., self.global_indices].set(sky.data)
         return type(sky).from_array(flat.reshape(*batch, *self.parent.shape))
 
     @classmethod
@@ -1271,10 +1241,9 @@ class LocalStokesLandscape(StokesLandscape):
             sampler: Where the samples read the map.
         """
         stencil = sampler.pointing_rows(parent, sampler.every_sample()).stencil
-        # A resolved stencil parks the neighbours it drops on pixel 0 with a zero weight, so
-        # select on the weight: taking the indices alone would enrol pixel 0 in every subset.
+        # select on the weight: a neighbour of zero weight is not read, whatever its index
         read = stencil.weights > 0
         if read.ndim > stencil.indices.ndim:
             # weights per Stokes component: a pixel any component reads is kept
             read = read.any(axis=0)
-        return cls(parent, jnp.where(read, stencil.indices, -1))
+        return cls(parent, jnp.where(read, stencil.indices, NO_PIXEL))

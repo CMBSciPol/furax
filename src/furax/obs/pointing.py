@@ -12,6 +12,7 @@ from jaxtyping import Array, Bool, Float, Int, PyTree
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
 from furax.core.rules import AbstractCompositionRule, NoReduction
+from furax.obs._indexing import gather_pixels, scatter_add_pixels
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators._qu_rotations import (
     QURotationOperator,
@@ -250,9 +251,9 @@ class PointingOperator(AbstractLinearOperator):
         """Sample the flat map for a batch of samples, in the map's dtype."""
         tod: _StokesT
         if self._reads_nearest:
-            # the gather wraps a -1 onto the last pixel, which the sample never observed
+            # a -1 pixel, a sample outside the map or without pointing, reads zero
             pix = self.sampler.nearest_indices(self.landscape, index)
-            tod = type(x_flat).from_array(jnp.where(pix >= 0, x_flat[pix].data, 0))
+            tod = type(x_flat).from_array(gather_pixels(x_flat.data, pix))
         else:
             pointing = self._pointing(index)
             tod = rotated_gather(x_flat, *pointing[:2])
@@ -272,9 +273,10 @@ class PointingOperator(AbstractLinearOperator):
 
         if self._reads_nearest:
             pix = self.sampler.nearest_indices(self.landscape, index)
-            # the scatter wraps a -1 onto the last pixel, so such a sample must add nothing
-            contrib = jnp.where(pix >= 0, tod_batch.data, 0)
-            binned = flat.data.at[:, pix.ravel()].add(contrib.reshape(n_stokes, -1))
+            # a -1 pixel, a sample outside the map or without pointing, is dropped
+            binned = scatter_add_pixels(
+                flat.data, pix.ravel(), tod_batch.data.reshape(n_stokes, -1)
+            )
         else:
             pointing = self._pointing(index)
             if pointing.polarization_rotation is not None:

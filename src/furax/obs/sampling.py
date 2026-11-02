@@ -8,10 +8,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from fastquat import Quaternion
-from jaxtyping import Array, Float, Int, Integer
+from jaxtyping import Array, Bool, Float, Int, Integer
 
 from furax.core.utils import register_dataclass_with_keys
 from furax.math.coords import XiEtaAngles, ZSPhi, gamma_angle_cos_sin, polarization_angle_cos_sin
+from furax.obs._indexing import NO_PIXEL
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators import Spin2Rotation
 from furax.obs.spin2 import transport_rotation
@@ -366,9 +367,7 @@ class AbstractSampler(ABC):
         sample outside the map. It is only called when `kernel.reads_one_pixel`; the default takes
         it from the stencil.
         """
-        stencil = self.pointing_rows(landscape, index).stencil
-        # the stencil reads pixel 0 with zero weight for a sample outside the map
-        return jnp.where(stencil.weights[..., 0] > 0, stencil.indices[..., 0], -1)
+        return self.pointing_rows(landscape, index).stencil.indices[..., 0]
 
     def scaling(self, index: SampleIndex) -> Float[Array, '...'] | None:
         """A factor multiplying each sample of a batch, or `None` (the default) for none.
@@ -395,16 +394,17 @@ class QuaternionSampler(AbstractSampler):
     r"""Detectors on a moving boresight, read along the pointing given by quaternions.
 
     The pointing of detector $d$ at sample $t$ is `qbore[t] * qdet[d]`, and the samples have shape
-    (n_detectors, n_samples). Q and U are returned in the meridian basis of the line of sight
-    rotated by $\psi - \gamma$, with $\psi$ the polarization angle and $\gamma$ the detector's
-    angle about the boresight (`'boresight'` frame, the default), by $\psi$ (`'detector'`), or not
-    rotated (`'sky'`).
+    (n_detectors, n_samples). A zero quaternion, in `qbore` or `qdet`, marks samples without
+    pointing, e.g. the padding of an observation: they read nothing, and nothing of them is binned.
+    Q and U are returned in the meridian basis of the line of sight rotated by $\psi - \gamma$,
+    with $\psi$ the polarization angle and $\gamma$ the detector's angle about the boresight
+    (`'boresight'` frame, the default), by $\psi$ (`'detector'`), or not rotated (`'sky'`).
 
     Attributes:
         kernel: How each sample reads the map. Beam nodes compose with `qdet`; per-Stokes beam
             weights act on Q and U in the `frame` basis.
-        qbore: Boresight quaternions, shape (n_samples,).
-        qdet: Detector quaternions, shape (n_detectors,).
+        qbore: Boresight quaternions, shape (n_samples,), zero for a sample without pointing.
+        qdet: Detector quaternions, shape (n_detectors,), zero for a detector without pointing.
         frame: The basis Q and U are returned in.
     """
 
@@ -422,7 +422,7 @@ class QuaternionSampler(AbstractSampler):
         return self.qbore[isamp] * self.qdet[idet]
 
     def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
-        quats = self.quaternions(index)
+        quats, void = self._pointed(index)
         beam = self.kernel.beam
         if beam is None:
             stencil = self._stencil(landscape, quats)
@@ -433,6 +433,7 @@ class QuaternionSampler(AbstractSampler):
             # (*batch, 1) x (*batch, n_nodes) -> (*batch, n_nodes)
             node_quats = quats[..., None] * beam.nodes_for(index[0])
             stencil = beam.integrate(self._stencil(landscape, node_quats))
+        stencil = stencil.voided(void)
         if not landscape.has_spin2:
             return PointingRows(stencil, None)
         rotation = self._frame_rotation(quats, index[0])
@@ -444,7 +445,8 @@ class QuaternionSampler(AbstractSampler):
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
     ) -> Integer[Array, '...']:
-        return landscape.quat2index(self.quaternions(index))
+        quats, void = self._pointed(index)
+        return jnp.where(void, NO_PIXEL, landscape.quat2index(quats))
 
     def to_angles(self, landscape: StokesLandscape) -> 'AngleSampler':
         """The same sampler, from the world angles of every sample and beam node, computed once.
@@ -457,9 +459,11 @@ class QuaternionSampler(AbstractSampler):
                 'a nearest-neighbour sampler cannot be stored as angles, which may not find the '
                 'same pixels: store its rows instead'
             )
-        idet = self.every_sample()[0]
-        quats = self.quaternions()
+        index = self.every_sample()
+        idet = index[0]
+        quats, void = self._pointed(index)
         theta, phi = landscape.quat2world(quats)
+        theta = jnp.where(void, jnp.nan, theta)
         rotation = self._frame_rotation(quats, idet)
         node_theta = node_phi = None
         if self.kernel.beam is not None:
@@ -473,6 +477,18 @@ class QuaternionSampler(AbstractSampler):
             node_theta=node_theta,
             node_phi=node_phi,
         )
+
+    def _pointed(self, index: SampleIndex) -> tuple[Quaternion, Bool[Array, '...']]:
+        """The pointing of a batch of samples, and which of them have none.
+
+        A zero quaternion gives finite angles, which only the flags discard. The boresight and the
+        detectors are tested apart, before their product: testing the product would materialize
+        it, which slows the pointing down on CPU.
+        """
+        idet, isamp = index
+        void_bore = jnp.all(self.qbore.wxyz[isamp] == 0, axis=-1)
+        void_det = jnp.all(self.qdet.wxyz[idet] == 0, axis=-1)
+        return self.quaternions(index), void_bore | void_det
 
     def _frame_rotation(self, quats: Quaternion, idet: Int[Array, '...']) -> Spin2Rotation | None:
         """The rotation from the meridian basis to the frame, if any."""
@@ -498,13 +514,15 @@ class AngleSampler(AbstractSampler):
 
     The lines of sight are the co-latitude $\theta$ and longitude $\phi$ of each sample, and the
     polarization is returned in a frame rotated by $\psi$ from the meridian basis of that direction.
+    A sample whose $\theta$ is NaN has no pointing: it reads nothing, and nothing of it is binned.
     It holds the pointing as arrays, which costs memory but no trigonometry on every apply:
     [`QuaternionSampler.to_angles`][furax.obs.sampling.QuaternionSampler.to_angles] builds one.
 
     Attributes:
         kernel: How each sample reads the map. With a beam, its nodes are given by `node_theta`
             and `node_phi`.
-        theta: Co-latitude of every sample, in radians.
+        theta: Co-latitude of every sample, in radians, NaN for a sample without pointing (its
+            beam nodes, if any, are then ignored).
         phi: Longitude of every sample, in radians.
         polarization_rotation: The rotation by $\psi$ of every sample, or `None` to return the
             meridian basis.
@@ -523,7 +541,7 @@ class AngleSampler(AbstractSampler):
         return self.theta.shape
 
     def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
-        theta, phi = self.theta[index], self.phi[index]
+        theta, phi, void = self._pointed(index)
         beam = self.kernel.beam
         if beam is None:
             stencil = self._stencil(landscape, theta, phi)
@@ -531,6 +549,7 @@ class AngleSampler(AbstractSampler):
             assert self.node_theta is not None and self.node_phi is not None
             node_stencil = self._stencil(landscape, self.node_theta[index], self.node_phi[index])
             stencil = beam.integrate(node_stencil)
+        stencil = stencil.voided(void)
         if not landscape.has_spin2:
             return PointingRows(stencil, None)
         rotation = self.polarization_rotation
@@ -544,7 +563,16 @@ class AngleSampler(AbstractSampler):
     def nearest_indices(
         self, landscape: StokesLandscape, index: SampleIndex
     ) -> Integer[Array, '...']:
-        return landscape.world2index(self.theta[index], self.phi[index])
+        theta, phi, void = self._pointed(index)
+        return jnp.where(void, NO_PIXEL, landscape.world2index(theta, phi))
+
+    def _pointed(
+        self, index: SampleIndex
+    ) -> tuple[Float[Array, '...'], Float[Array, '...'], Bool[Array, '...']]:
+        """The angles of a batch of samples, finite for those without pointing, and which they are."""
+        theta = self.theta[index]
+        void = jnp.isnan(theta)
+        return jnp.where(void, 0, theta), self.phi[index], void
 
     def _stencil(
         self, landscape: StokesLandscape, theta: Float[Array, '...'], phi: Float[Array, '...']
@@ -594,11 +622,9 @@ class PrecomputedSampler(AbstractSampler):
             return cls(kernel=sampler.kernel, source=sampler, nearest=nearest)
         pointing = sampler.pointing_rows(landscape, index)
         if sampler.kernel.reads_one_pixel:
-            # A single neighbour, of weight one, or zero outside the map: store a negative pixel
-            # for the zero weight, and the neighbour's transport composed with the polarization
-            # rotation, rotations of one sample commuting.
-            weights, indices = pointing.stencil.weights[..., 0], pointing.stencil.indices[..., 0]
-            nearest = jnp.where(weights > 0, indices, -1)
+            # A single neighbour: store its pixel, and the neighbour's transport composed with the
+            # polarization rotation, rotations of one sample commuting.
+            nearest = pointing.stencil.indices[..., 0]
             rotation = pointing.neighbour_rotation
             if rotation is not None:
                 rotation = rotation[..., 0]

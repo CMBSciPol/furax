@@ -335,7 +335,7 @@ class TestAdjoint:
         assert_allclose(written.data, derived.data, atol=1e-14)
 
     def test_adjoint_on_a_subset_landscape(self) -> None:
-        """Neighbours falling outside the subset go to the sink; the pair must stay adjoint.
+        """Neighbours falling outside the subset read no pixel; the pair must stay adjoint.
 
         The subset also exercises the trap that local indices are meaningless as sky positions: the
         centers must come from the parent, and this test is wrong by 1e-1 if they do not.
@@ -347,7 +347,7 @@ class TestAdjoint:
         landscape = LocalStokesLandscape(parent, covered[: 2 * len(covered) // 3])
 
         stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)
-        assert int((stencil.indices == landscape.sink).sum()) > 0
+        assert int((stencil.indices == -1).sum()) > 0
 
         sky = landscape.normal(jax.random.key(6))
         tod = _random_tod(landscape, 400, 7)
@@ -371,8 +371,8 @@ class TestAdjoint:
 
 
 class TestOutOfBounds:
-    def test_sink_neighbours_do_not_contribute(self) -> None:
-        """A neighbour sent to the sink must neither be read nor written."""
+    def test_out_of_map_neighbours_do_not_contribute(self) -> None:
+        """A neighbour of index -1 must neither be read nor written."""
         landscape = HealpixLandscape(NSIDE, stokes='IQU')
         theta, phi = _directions(50, 10)
         stencil = landscape.world2stencil(theta, phi, Interpolation.BILINEAR)

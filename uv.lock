@@ -1003,14 +1003,14 @@ wheels = [
 
 [[package]]
 name = "fastquat"
-version = "1.0b4"
+version = "1.0b7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jax" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a7/2e/8ffb4df9254a7ac62a5f3f03a1ddee76389d4bc02943bca3cff1415733d4/fastquat-1.0b4.tar.gz", hash = "sha256:165fa0577e7713e8e8a0ada7578b7a22c545ed0eac2194fa7a7dfc3110011b5c", size = 213242, upload-time = "2026-09-28T12:21:39.023Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0d/13/72eb920f06ed04d93c074383d875d883d0fcab4b95e6cab51de5a87525ab/fastquat-1.0b7.tar.gz", hash = "sha256:b1c459a14ba7e96c30476486d1ed7f6dc0d49d83f16f6c0682bd26e2a794f161", size = 180982, upload-time = "2026-10-02T14:38:56.399Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/90/98147de3a04d6e8d060a7cd433b57a966f0ff8103b8dab1a74a683d1c06f/fastquat-1.0b4-py3-none-any.whl", hash = "sha256:4b5406dffe9966e8914dbb66acd4ba33f62529080f20d821789937d405003b43", size = 8424, upload-time = "2026-09-28T12:21:37.753Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/69/19b59ae7e1368df98b315b276b6890a79e86ac861847d7eb20bc4a8f0802/fastquat-1.0b7-py3-none-any.whl", hash = "sha256:ae317462d376e6778f77c6748d8e26c85aaae724aa658bb0e053bb6eac7d78b9", size = 12167, upload-time = "2026-10-02T14:38:55.275Z" },
 ]
 
 [[package]]

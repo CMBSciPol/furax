@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BlockRowOperator`, `BlockColumnOperator` and `BlockDiagonalOperator` take `axes`, the member axis of their stacked inputs and outputs over an ensemble (#454)
 - `furax-so-map` and `furax-so-cache` now accept several wafers with `--wafer ws0 ws1`; `furax-so-map` joins them into one observation by default unless `--no-join-wafers` is passed (#449)
 - User guide page "Distributing work": pytrees of operators versus ensembles, with an end-to-end example reading observations from disk (#459)
+- `LowRankFourierOperator`: a diagonal plus low-rank matrix across channels in each frequency bin, with its inverse from the Woodbury identity (#465)
 
 ### Changed
 

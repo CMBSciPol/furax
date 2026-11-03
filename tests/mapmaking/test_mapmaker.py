@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Literal
 
 import equinox as eqx
+import healpy as hp
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -358,12 +359,13 @@ def _config(
     interpolation: Literal['nearest', 'bilinear'] = 'nearest',
     method: Methods = Methods.BINNED,
     pomme_tau: int = 0,
+    ordering: Literal['nest', 'ring'] = 'ring',
     identity_noise: bool = False,
     max_buckets: int = 1,
     nperseg: int = 512,
 ) -> MapMakingConfig:
     if landscape_type == 'healpix':
-        lc = LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16))
+        lc = LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16, ordering=ordering))
     else:
         lc = LandscapeConfig(
             stokes=stokes,
@@ -387,6 +389,24 @@ def _config(
         pomme_tau=pomme_tau,
         max_buckets=max_buckets,
     )
+
+
+def test_nested_healpix_gives_the_ring_map():
+    observations = _observations('sotodlib')
+    ring = MultiObservationMapMaker(
+        observations, config=_config('healpix', 'IQU', identity_noise=True)
+    ).make_maps()
+    nested = MultiObservationMapMaker(
+        observations, config=_config('healpix', 'IQU', identity_noise=True, ordering='nest')
+    ).make_maps()
+    assert np.array_equal(
+        hp.reorder(np.asarray(nested.hit_map), n2r=True), np.asarray(ring.hit_map)
+    )
+    for expected, actual in zip(
+        jax.tree.leaves(ring.map), jax.tree.leaves(nested.map), strict=True
+    ):
+        reordered = hp.reorder(np.asarray(actual), n2r=True)
+        np.testing.assert_allclose(reordered, np.asarray(expected), rtol=1e-10, atol=1e-12)
 
 
 class TestSingleObsSolverGuards:

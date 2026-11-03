@@ -280,11 +280,7 @@ class HealpixConfig:
     """HEALPix resolution parameter."""
 
     ordering: Literal['nest', 'ring'] = 'ring'
-    """Pixel ordering scheme. Only ``'ring'`` is currently supported."""
-
-    def __post_init__(self) -> None:
-        if self.ordering == 'nest':
-            raise ValueError('NESTED ordering not supported')
+    """Pixel ordering scheme."""
 
 
 @dataclass
@@ -1123,6 +1119,12 @@ class MapMakingConfig:
             raise ValueError(f'max_buckets must be >= 1, got {self.max_buckets}')
         if self.detector_batch_size < 0:
             raise ValueError(f'detector_batch_size must be >= 0, got {self.detector_batch_size}')
+        if (
+            self.landscape.healpix is not None
+            and self.landscape.healpix.ordering == 'nest'
+            and self.pointing.interpolation == 'bilinear'
+        ):
+            raise ValueError('Bilinear pointing needs ring ordering: set healpix.ordering to ring.')
         if (
             self.detector_batch_size
             and not self.binned

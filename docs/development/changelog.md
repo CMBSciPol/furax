@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SolverConfig.checkpoint_every`, when set to a positive value, saves CG checkpoints; `MultiObservationMapMaker.run(resume=True)` can resume from them (#405)
 - `furax-so-map --resume` can resume an unfinished solve from a checkpoint (#405)
 - `furax-so-map` refuses an output directory in use by a run that is still going (#405)
+- `HealpixConfig` accepts `ordering='nest'`; it cannot be combined with bilinear pointing (#431)
 
 ### Changed
 

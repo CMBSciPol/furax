@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pomme requires `landscape.stokes='QU'`, instead of mapping Q and U of an IQU landscape (#402)
 - `MapMakingResults.provenance` is removed; `MultiObservationMapMaker.run` writes `provenance.json` itself, and `out_dir` is required (#402)
 - `provenance.json` no longer holds the start and end times of the run; they are recorded in `status.json` for SO mapmaking runs (#402)
+- **Breaking:** `MapMakingConfig.method`, `Methods` and `MapMakingConfig.for_method` are removed; set `MapMakingConfig.pomme_tau` to enable Pomme (#427)
+- **Breaking:** the single-observation mapmakers `MapMaker`, `BinnedMapMaker`, `MLMapmaker` and `PommeMapMaker`, the `furax-so-atomic-map` command and `furax.interfaces.sotodlib.mapmaker_multi` are removed; use `MultiObservationMapMaker` or `furax-so-map` (#427)
 
 ### Fixed
 

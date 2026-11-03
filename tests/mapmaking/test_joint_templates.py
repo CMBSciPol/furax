@@ -20,7 +20,6 @@ from furax.mapmaking.config import (
     GapTreatment,
     HWPSynchronousConfig,
     MapMakingConfig,
-    Methods,
     NoiseFitConfig,
     NoiseSource,
     PolynomialOrders,
@@ -327,7 +326,6 @@ def test_several_observations_per_device_match_single_observations(monkeypatch, 
 
 def _pomme_config(templates: TemplatesConfig) -> MapMakingConfig:
     cfg = _config(templates)
-    cfg.method = Methods.POMME
     cfg.pomme_tau = 37
     cfg.landscape.stokes = 'QU'
     templates.regularization = 1e-10
@@ -371,7 +369,6 @@ def _toeplitz_config(
 ) -> MapMakingConfig:
     sotodlib = SotodlibConfig(demodulated=True) if demodulated else None
     cfg = replace(_config(None), templates=templates, sotodlib=sotodlib)
-    cfg.method = Methods.MAXL
     # the ground observations carry a 1/f noise model, correlated within the band; the others
     # fit one to white noise
     source = NoiseSource.PRECOMPUTED if precomputed else cfg.weighting.source

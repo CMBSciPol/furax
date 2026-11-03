@@ -16,14 +16,7 @@ from furax.obs.stokes import Stokes, ValidStokesLiteral
 from ._engine import OutKind
 from ._observation import ReaderField, _sample_rate
 from .acquisition import build_acquisition_operator
-from .config import (
-    GapTreatment,
-    MapMakingConfig,
-    Methods,
-    NoiseSource,
-    TemplatesConfig,
-    WeightingMode,
-)
+from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .templates import TemplateOperator, build_templates, required_reader_fields
 from .templates.gram import BlockGram, factor, template_gram
@@ -90,7 +83,7 @@ class ObservationModel:
             W = WeightOperator.create(Ninv, M)
         F = (
             PommeProjectionOperator(config.pomme_tau, in_structure=tod_format.structure)
-            if config.method == Methods.POMME
+            if config.pomme_tau is not None
             else IdentityOperator(in_structure=tod_format.structure)
         )
         return cls(H, W, F, noise_model, sample_rate)
@@ -274,9 +267,8 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
     if (scanning := data.get(ReaderField.VALID_SCANNING_MASKS)) is not None:
         mask = jnp.logical_and(mask, scanning)
 
-    if config.method == Methods.POMME:
-        tau = config.pomme_tau
-        F = PommeProjectionOperator(config.pomme_tau, in_structure=tree.as_structure(mask))
+    if (tau := config.pomme_tau) is not None:
+        F = PommeProjectionOperator(tau, in_structure=tree.as_structure(mask))
         # Mask all tau-intervals that are partially masked
         interval_mask = jnp.abs(F(mask)) < 0.5 / tau
         mask = jnp.logical_and(mask, interval_mask)
@@ -485,7 +477,7 @@ class ObservationTemplates:
 
         # The Grams are taken under the weight of the system (see `deprojected_weight`), from
         # `model.W` and `tau`.
-        pomme_tau = config.pomme_tau if config.method == Methods.POMME else None
+        pomme_tau = config.pomme_tau
         # the Toeplitz band of a correlated weight holds lags 0 to `correlation_length - 1`
         bandwidth = 0 if config.binned else config.weighting.correlation_length - 1
         gram_options = {'bandwidth': bandwidth, 'pomme_tau': pomme_tau}

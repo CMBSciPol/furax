@@ -16,7 +16,6 @@ from furax.obs.stokes import ValidStokesLiteral
 # Docs order: main config first, then its sub-configs grouped by topic.
 __all__ = [
     'MapMakingConfig',
-    'Methods',
     'PointingConfig',
     'WeightingConfig',
     'WeightingMode',
@@ -46,25 +45,6 @@ __all__ = [
     'GroundConfig',
     'SotodlibConfig',
 ]
-
-
-class Methods(Enum):
-    """Mapmaking algorithm selector (see [`MapMakingConfig.method`][])."""
-
-    BINNED = 'Binned'
-    """Invert the diagonal mapmaking system directly and skip the iterative solve.
-
-    Only available when diagonal weights are used (see [`MapMakingConfig.weighting`][]).
-    """
-
-    MAXL = 'ML'
-    """Classic maximum-likelihood mapmaking solve via conjugate gradient iteration."""
-
-    POMME = 'Pomme'
-    """Polarisation (QU only) estimator using deprojection of short baselines.
-
-    See [`MapMakingConfig.pomme_tau`][].
-    """
 
 
 class WeightingMode(Enum):
@@ -1043,9 +1023,6 @@ class InjectionConfig:
 class MapMakingConfig:
     """Top-level configuration for a mapmaking run."""
 
-    method: Methods = Methods.BINNED
-    """Mapmaking algorithm to use."""
-
     scanning_mask: bool = False
     """Drop samples outside each observation's scanning intervals."""
 
@@ -1088,8 +1065,8 @@ class MapMakingConfig:
     templates: TemplatesConfig | None = None
     """Template deprojection options. `None` disables all templates."""
 
-    pomme_tau: int = 0
-    """Length of the `Pomme` interval (in samples)."""
+    pomme_tau: int | None = None
+    """Enable the Pomme QU estimator, deprojecting baselines of this many samples (`None`: off)."""
 
     max_buckets: int = 4
     """Largest number of buckets observations are grouped into.
@@ -1152,7 +1129,7 @@ class MapMakingConfig:
                 raise ValueError(
                     'injection.mode=response needs a map linear in the data: gap filling is not.'
                 )
-        if self.method == Methods.POMME:
+        if self.pomme_tau is not None:
             self._check_pomme()
         if (
             self.use_templates
@@ -1190,6 +1167,8 @@ class MapMakingConfig:
 
     def _check_pomme(self) -> None:
         """Check that Pomme supports the config."""
+        if self.pomme_tau is None or self.pomme_tau < 2:
+            raise ValueError(f'Pomme requires pomme_tau >= 2 samples (got {self.pomme_tau}).')
         if not self.binned:
             raise ValueError('Pomme requires diagonal weighting (weighting.mode=DIAGONAL).')
         if self.landscape.stokes != 'QU':
@@ -1212,62 +1191,6 @@ class MapMakingConfig:
             )
         if repeated := sorted({s for s in streams if streams.count(s) > 1}):
             raise ValueError(f'{name} names streams {repeated} more than once.')
-
-    @classmethod
-    def for_method(cls, method: 'Methods | str') -> Self:
-        """Return a default MapMakingConfig pre-configured for the given method.
-
-        Args:
-            method: A ``Methods`` enum value or its string name (e.g. ``'binned'``,
-                ``'ml'``, ``'pomme'``), case-insensitive.
-        """
-        if isinstance(method, str):
-            upper = method.upper()
-            try:
-                method = Methods[upper]
-            except KeyError:
-                # Fall back to matching by value (e.g. 'ML' → Methods.MAXL)
-                matched = next((m for m in Methods if m.value.upper() == upper), None)
-                if matched is None:
-                    raise ValueError(f'Unknown method: {method!r}') from None
-                method = matched
-
-        if method == Methods.BINNED:
-            return cls(
-                method=Methods.BINNED,
-                weighting=WeightingConfig(),
-                templates=None,
-            )
-        elif method == Methods.MAXL:
-            return cls(
-                method=Methods.MAXL,
-                weighting=WeightingConfig(
-                    mode=WeightingMode.TOEPLITZ,
-                    correlation_length=1_000,
-                ),
-                solver=SolverConfig(
-                    rtol=1e-6,
-                    atol=0,
-                    max_steps=1_000,
-                ),
-                templates=None,
-                detector_batch_size=0,  # the default gap filling works on whole observations
-            )
-        elif method == Methods.POMME:
-            return cls(
-                method=Methods.POMME,
-                landscape=LandscapeConfig(stokes='QU', healpix=HealpixConfig()),
-                weighting=WeightingConfig(),
-                solver=SolverConfig(
-                    rtol=1e-6,
-                    atol=0,
-                    max_steps=100,
-                ),
-                pomme_tau=37,
-                templates=None,
-            )
-        else:
-            raise ValueError(f'Unknown method: {method}')
 
     @classmethod
     def load_yaml(cls, path: str | Path) -> Self:

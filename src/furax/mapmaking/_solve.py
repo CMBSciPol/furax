@@ -1,5 +1,5 @@
+import logging
 from dataclasses import dataclass, replace
-from logging import Logger
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -18,6 +18,8 @@ from ._checkpoint import CHECKPOINT_FILES, SolveCheckpoint
 from .config import SolverConfig, TwoLevelConfig
 from .layout import SlotPlacement
 from .preconditioner import make_two_level_preconditioner
+
+logger = logging.getLogger(__name__)
 
 
 class SystemSolution(NamedTuple):
@@ -50,7 +52,6 @@ class MapMakingSystem:
         self,
         config: SolverConfig,
         placement: SlotPlacement,
-        logger: Logger,
         checkpoint_dir: Path | None = None,
         resume: bool = False,
     ) -> SystemSolution:
@@ -59,7 +60,6 @@ class MapMakingSystem:
         Args:
             config: The solver options.
             placement: The placement of the data on the devices.
-            logger: Where to report progress.
             checkpoint_dir: Directory to save the iterates in every `config.checkpoint_every`
                 steps. `None` for no checkpoints.
             resume: Start from the checkpoints in `checkpoint_dir`, if any.
@@ -70,9 +70,7 @@ class MapMakingSystem:
         ]
         converged: list[SolveCheckpoint] = []
 
-        result, stats = _solve(
-            self, self.b, 'main', checkpoints[0], config, placement, logger, resume
-        )
+        result, stats = _solve(self, self.b, 'main', checkpoints[0], config, placement, resume)
         if checkpoints[0] is not None and result.converged:
             converged.append(checkpoints[0])
         injected = None
@@ -85,7 +83,6 @@ class MapMakingSystem:
                 checkpoints[1],
                 config,
                 placement,
-                logger,
                 resume,
             )
             if checkpoints[1] is not None and response.converged:
@@ -99,12 +96,11 @@ class MapMakingSystem:
                 checkpoint.remove()
         return SystemSolution(result.solution, injected, stats)
 
-    def deflate(self, config: TwoLevelConfig, logger: Logger) -> 'MapMakingSystem':
+    def deflate(self, config: TwoLevelConfig) -> 'MapMakingSystem':
         """The system with a two-level preconditioner deflating some modes of the current one.
 
         Args:
             config: The options of the eigenpairs to deflate.
-            logger: Where to report the eigenvalues found.
         """
         preconditioned = config.spectrum == 'preconditioned'
         # The spectrum is positive, so its smallest and largest eigenvalues are its algebraic ends.
@@ -141,7 +137,6 @@ def _solve(
     checkpoint: SolveCheckpoint | None,
     config: SolverConfig,
     placement: SlotPlacement,
-    logger: Logger,
     resume: bool,
 ) -> tuple[CGResult, dict[str, Any]]:
     """Solve the normal system for the right-hand side `b`, checkpointing if requested."""
@@ -154,7 +149,7 @@ def _solve(
 
     x0, previous_steps = None, 0
     if resume and checkpoint is not None:
-        x0, previous_steps = _resume(checkpoint, b, name, logger)
+        x0, previous_steps = _resume(checkpoint, b, name)
     # max_steps bounds the steps over every run that resumes the solve
     cg_options: dict[str, Any] = dict(options)
     cg_options['max_steps'] = max(options['max_steps'] - previous_steps, 0)
@@ -175,7 +170,7 @@ def _solve(
     stats = _solver_stats(result, options, previous_steps)
     # Residual history is incomplete for a resumed solve
     b_norm = float(furax.tree.norm(b))
-    _log_solve(name, stats, b_norm, logger)
+    _log_solve(name, stats, b_norm)
     if checkpoint is not None and config.checkpoint_every:
         # The last iterate, to resume with more steps
         x = placement.gather(result.solution)
@@ -185,7 +180,7 @@ def _solve(
 
 
 def _resume(
-    checkpoint: SolveCheckpoint, b: PyTree[Array], name: str, logger: Logger
+    checkpoint: SolveCheckpoint, b: PyTree[Array], name: str
 ) -> tuple[PyTree[Array] | None, int]:
     """The saved iterate and its number of steps, or `(None, 0)` if there is nothing to resume."""
     saved = checkpoint.load(b)
@@ -209,7 +204,7 @@ def _resume(
     return x0, previous_steps
 
 
-def _log_solve(name: str, stats: dict[str, Any], b_norm: float, logger: Logger) -> None:
+def _log_solve(name: str, stats: dict[str, Any], b_norm: float) -> None:
     """Log the outcome of a CG solve, as a warning if it did not reach its tolerance.
 
     The residual is relative to `b_norm`, the norm of the right-hand side: the initial residual of

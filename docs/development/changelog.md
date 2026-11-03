@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax-so-map --resume` can resume an unfinished solve from a checkpoint (#405)
 - `furax-so-map` refuses an output directory in use by a run that is still going (#405)
 - `HealpixConfig` accepts `ordering='nest'`; it cannot be combined with bilinear pointing (#431)
+- `furax-so-map` and `furax-so-cache` take the default of `--loglevel` from the `LOGLEVEL` variable (#430)
 
 ### Changed
 
@@ -29,10 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `provenance.json` no longer holds the start and end times of the run; they are recorded in `status.json` for SO mapmaking runs (#402)
 - **Breaking:** `MapMakingConfig.method`, `Methods` and `MapMakingConfig.for_method` are removed; set `MapMakingConfig.pomme_tau` to enable Pomme (#427)
 - **Breaking:** the single-observation mapmakers `MapMaker`, `BinnedMapMaker`, `MLMapmaker` and `PommeMapMaker`, the `furax-so-atomic-map` command and `furax.interfaces.sotodlib.mapmaker_multi` are removed; use `MultiObservationMapMaker` or `furax-so-map` (#427)
+- **Breaking:** `MultiObservationMapMaker` no longer takes `logger`, `furax.mapmaking.logger` is removed and the library no longer reads `LOGLEVEL`: furax logs through the `furax.*` loggers, which the application configures (#430)
 
 ### Fixed
 
 - Pomme with a template that the offsets absorb, such as a constant, no longer gives NaN maps (#422)
+- `furax-so-map` logs now include the messages of `furax.mapmaking.noise`, `furax.mapmaking.results` and `furax.interfaces.sotodlib.observation` (#430)
 
 ## [0.17.2] - 2026-10-30
 

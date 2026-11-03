@@ -1,8 +1,8 @@
+import logging
 from collections.abc import Callable, Collection, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from functools import cached_property, partial
-from logging import Logger
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +27,6 @@ from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
 from ._engine import DetectorFamily, Family, StackedFamily, ZippedFamily, family_apply, partition
 from ._injection import inject, load_sky, unpadded
 from ._landscape import build_landscape
-from ._logger import logger as furax_logger
 from ._model import (
     FACTORED_KINDS,
     ObservationModel,
@@ -45,6 +44,8 @@ from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
 from .templates.gram import factor
 from .weight import WeightOperator
 
+logger = logging.getLogger(__name__)
+
 
 class MultiObservationMapMaker[T]:
     """Class for mapping multiple observations together."""
@@ -53,11 +54,9 @@ class MultiObservationMapMaker[T]:
         self,
         observations: Sequence[AbstractLazyObservation[T]],
         config: MapMakingConfig | None = None,
-        logger: Logger | None = None,
     ) -> None:
         self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
-        self.logger = logger or furax_logger
         self.landscape = build_landscape(
             self.observations, self.config.landscape, self.config.dtype
         )
@@ -109,7 +108,7 @@ class MultiObservationMapMaker[T]:
             try:
                 local[i] = self.observations[i].probe_shape(need_intervals)
             except Exception as error:
-                self.logger.exception('probe of observation %d failed', i)
+                logger.exception('probe of observation %d failed', i)
                 local[i] = f'{type(error).__name__}: {error}'
         names = [observation.name for observation in self.observations]
         return ObservationCatalog(names, gather_rows(local))
@@ -186,8 +185,8 @@ class MultiObservationMapMaker[T]:
         nperseg = min(weighting.fitting.nperseg, shortest)
         if nperseg == weighting.fitting.nperseg:
             return self.config
-        self.logger.info(
-            f'MultiObsMapMaker: Welch segment clipped to {nperseg} samples '
+        logger.info(
+            f'Welch segment clipped to {nperseg} samples '
             f'(configured {weighting.fitting.nperseg}) by the shortest observation'
         )
         fitting = replace(weighting.fitting, nperseg=nperseg)
@@ -231,7 +230,7 @@ class MultiObservationMapMaker[T]:
             out_dir.mkdir(parents=True, exist_ok=True)
             self.config.dump_yaml(out_dir / CONFIG_FILE)
             write_json(out_dir / PROVENANCE_FILE, provenance())
-            self.logger.info(f'saved mapmaking configuration and provenance to {out_dir}')
+            logger.info(f'saved mapmaking configuration and provenance to {out_dir}')
 
         # Loaded now, once the run is on record, so that a bad injection fails before the passes
         # over the data, and shows in the output directory
@@ -241,7 +240,7 @@ class MultiObservationMapMaker[T]:
         # Save outputs on process 0 only (all processes hold the same maps)
         if is_writer:
             results.save(out_dir)
-            self.logger.info(f'saved results to {out_dir}')
+            logger.info(f'saved results to {out_dir}')
 
         # Barrier so other ranks don't race ahead while rank 0 is still writing.
         mhu.sync_global_devices('mapmaker.run.save_done')
@@ -253,7 +252,7 @@ class MultiObservationMapMaker[T]:
         if jax.process_index() != 0:
             return
         layout = self.layout
-        self._info(
+        logger.info(
             f'layout procs={jax.process_count()} dev_per_proc={len(self.placement.local_devices)} '
             f'dev_total={layout.n_devices}'
         )
@@ -263,14 +262,14 @@ class MultiObservationMapMaker[T]:
         for b, (bucket, reader) in enumerate(zip(layout.buckets, self.readers, strict=True)):
             slot_bytes = furax.tree.nbytes(reader.out_structure)
             padded_bytes += slot_bytes * bucket.n_slots
-            self._info(
+            logger.info(
                 f'bucket {b}: {bucket.summary(layout.n_devices)} '
                 f'slot_size={format_bytes(slot_bytes)} '
                 f'real_size={format_bytes(reader.total_nbytes)} '
                 f'pad_size={format_bytes(slot_bytes * bucket.n_slots - reader.total_nbytes)}'
             )
         byte_overhead = (padded_bytes - real_bytes) / real_bytes
-        self._info(
+        logger.info(
             f'dataset {layout.summary()} real={format_bytes(real_bytes)} '
             f'padded={format_bytes(padded_bytes)} byte_overhead=+{byte_overhead:.1%}'
         )
@@ -294,18 +293,18 @@ class MultiObservationMapMaker[T]:
             # Single read pass, so each observation is read/preprocessed exactly once.
             acc = self.build_model_and_accumulate()
             jax.block_until_ready(acc)
-            self._info('Accumulated hit map and RHS vector')
+            logger.info('Accumulated hit map and RHS vector')
 
             self._catalog.reads = self._gather_reads()
             if n_failed := self._catalog.n_failed:
-                self._info(f'{n_failed} observation(s) failed and were excluded')
+                logger.info(f'{n_failed} observation(s) failed and were excluded')
             noise_parameters = None
             if self.config.weighting.mode != WeightingMode.IDENTITY:
                 noise_parameters = acc.noise_parameters(self.layout, self.placement)
 
             BJ = acc.block_jacobi(self.placement, self.config.binned, self.landscape.structure)
             icov = BJ.blocks.block_until_ready()
-            self._info('Computed white noise inverse covariance')
+            logger.info('Computed white noise inverse covariance')
 
             valid_pixels = self.pixel_selection(acc.hit_map, icov)
             # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
@@ -313,7 +312,7 @@ class MultiObservationMapMaker[T]:
                 (..., *jnp.where(valid_pixels)), in_structure=self.landscape.structure
             )
             n_observed = jnp.sum(acc.hit_map > 0)
-            self._info(
+            logger.info(
                 f'Selected {jnp.sum(valid_pixels)} pixels ({n_observed} seen, '
                 f'{valid_pixels.size} total)'
             )
@@ -321,11 +320,10 @@ class MultiObservationMapMaker[T]:
             response_sky = None if self._scanned_sky is not None else self.sky
             system = acc.build_system(S, BJ, self.layout, self.placement, response_sky)
             if (two_level := self.config.solver.two_level) is not None:
-                system = system.deflate(two_level, self.logger)
+                system = system.deflate(two_level)
             solved = system.solve(
                 self.config.solver,
                 self.placement,
-                self.logger,
                 None if checkpoint_dir is None else Path(checkpoint_dir),
                 resume,
             )
@@ -351,9 +349,6 @@ class MultiObservationMapMaker[T]:
                 acc.buckets[0].batches.model.tod_format.stokes,
             ),
         )
-
-    def _info(self, message: str) -> None:
-        self.logger.info(f'MultiObsMapMaker: {message}')
 
     def _gather_reads(self) -> dict[int, Read]:
         """What the last pass read of each observation, or the exception that stopped its load.

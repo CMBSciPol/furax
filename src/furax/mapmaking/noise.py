@@ -1,3 +1,4 @@
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Self, cast
@@ -15,8 +16,9 @@ from furax.core import (
     SymmetricBandToeplitzOperator,
 )
 
-from ._logger import logger
 from .config import NoiseFitConfig
+
+logger = logging.getLogger(__name__)
 
 
 @jax.tree_util.register_dataclass

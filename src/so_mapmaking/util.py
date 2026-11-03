@@ -13,6 +13,13 @@ if TYPE_CHECKING:
     from furax.interfaces.sotodlib import LazyPreprocSOTODLibObservation, LazySOTODLibObservation
     from furax.mapmaking.config import SotodlibConfig
 
+# Under `furax` so that `setup_logger`'s handlers apply
+logger = logging.getLogger('furax.so_mapmaking')
+
+# The rank only tells the processes apart on the console: each one has its own log file
+CONSOLE_FORMAT = '%(asctime)s [rank %(rank)s] %(name)s %(levelname)s: %(message)s'
+FILE_FORMAT = '%(asctime)s %(name)s %(levelname)s: %(message)s'
+
 
 def enable_x64() -> None:
     """Enables JAX's 64-bit mode, before furax is imported.
@@ -26,34 +33,30 @@ def enable_x64() -> None:
     jax.config.update('jax_enable_x64', True)
 
 
-def setup_logger(loglevel: str, log_path: Path | None, process_index: int = 0) -> logging.Logger:
+def setup_logger(loglevel: str, log_path: Path | None, process_index: int = 0) -> None:
+    """Configures the logging of a command: the console, and a file if `log_path` is given.
+
+    The handlers go on the `furax` logger, so that every `furax.*` module logs through them.
+    `log_path` gets the process index in its name, one file per process.
+    """
     level = loglevel.upper()
-    # Configure the package-root logger so every ``furax.*`` submodule (mapmaker, io.readers, ...)
-    # propagates its records to these handlers. Configuring ``furax.mapmaker`` alone would drop
-    # sibling loggers such as ``furax.io.readers`` (per-observation read logging).
-    logger = logging.getLogger('furax')
-    logger.setLevel(level)
-    logger.propagate = False
-    logger.handlers.clear()
-    formatter = logging.Formatter(
-        f'%(asctime)s - [rank {process_index}] - %(levelname)s - %(message)s'
-    )
+    root = logging.getLogger('furax')
+    root.setLevel(level)
+    root.propagate = False
+    root.handlers.clear()
     ch = logging.StreamHandler()
-    ch.setLevel(level)
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+    ch.setFormatter(logging.Formatter(CONSOLE_FORMAT, defaults={'rank': process_index}))
+    root.addHandler(ch)
     if log_path is not None:
         log_path = log_path.with_stem(f'{log_path.stem}.rank{process_index}')
         log_path.parent.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(log_path)
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(formatter)
-        logger.addHandler(fh)
-    _quiet_sotodlib(level)
-    return logger
+        fh.setFormatter(logging.Formatter(FILE_FORMAT))
+        root.addHandler(fh)
+    silence_sotodlib_logs(level)
 
 
-def _quiet_sotodlib(level: str) -> None:
+def silence_sotodlib_logs(level: str) -> None:
     """Keep sotodlib out of the logs, unless the run is debugged.
 
     sotodlib prints its INFO records on import, and its metadata loader logs the error of a missing
@@ -157,7 +160,7 @@ def obsdir_observations(
             if obsfile.exists():
                 obsfiles.append(obsfile)
             else:
-                logging.getLogger('furax.so_mapmaking').warning(f'{obsfile} not found, skipping')
+                logger.warning(f'{obsfile} not found, skipping')
     else:
         obsfiles = sorted(obsdir.glob('*.h5'))
     return [LazySOTODLibObservation(f, sotodlib_config=sotodlib_config) for f in obsfiles]

@@ -13,15 +13,16 @@ from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
-from cyclopts import App
+from cyclopts import App, Parameter
 
 from .util import enable_x64, preproc_observations, resolve_obsids, setup_logger
 
 if TYPE_CHECKING:
     from furax.interfaces.sotodlib import LazyPreprocSOTODLibObservation
 
+logger = logging.getLogger('furax.so_mapmaking')
 app = App(help='Manage the cache of preprocessed observations of `furax-so-map --cache-dir`.')
 
 # A cache key, as LazyPreprocSOTODLibObservation names the directories of its cache
@@ -40,7 +41,7 @@ def fill(
     band: str = 'f090',
     nproc: int = 1,
     dry_run: bool = False,
-    loglevel: str = 'info',
+    loglevel: Annotated[str, Parameter(env_var='LOGLEVEL')] = 'info',
     log_path: Path | None = None,
 ):
     """Preprocess observations into the cache, without mapmaking.
@@ -61,14 +62,14 @@ def fill(
         band: Wafer bandpass selection.
         nproc: Number of worker processes (single node).
         dry_run: Only report the cache key and which observations are missing.
-        loglevel: Logging level (debug, info, warning, error).
+        loglevel: Logging level (debug, info, warning, error). Defaults to `$LOGLEVEL`, else info.
         log_path: Log output path.
     """
     enable_x64()
     # Deferred: importing furax pulls in JAX, which the CLI parse path does not need
     from furax.mapmaking import MapMakingConfig
 
-    logger = setup_logger(loglevel, log_path)
+    setup_logger(loglevel, log_path)
     obsids = resolve_obsids(obsid, obsids_file)
     if not obsids:
         logger.warning('no observations to cache')
@@ -171,7 +172,6 @@ def _fill_in_parallel(
     log_path: Path | None,
 ) -> list[str]:
     """Loads observations into the cache in `nproc` processes; returns those not cached."""
-    logger = logging.getLogger('furax.so_mapmaking')
     # spawn, not fork: a process forked after the JAX backend has started can deadlock
     context = multiprocessing.get_context('spawn')
     failed = []
@@ -195,7 +195,6 @@ def _fill_in_parallel(
 
 def _fill_one(observation: LazyPreprocSOTODLibObservation) -> bool:
     """Loads an observation into the cache, and tells whether it is cached."""
-    logger = logging.getLogger('furax.so_mapmaking')
     start = time.perf_counter()
     try:
         observation.get_data([])

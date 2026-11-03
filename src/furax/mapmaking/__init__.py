@@ -1,4 +1,3 @@
-from ._logger import logger
 from ._observation import (
     AbstractGroundObservation,
     AbstractLazyObservation,
@@ -32,5 +31,4 @@ __all__ = [
     'MapMakingResults',
     'MultiObservationMapMaker',
     'ObservationBufferShape',
-    'logger',
 ]

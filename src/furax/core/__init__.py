@@ -43,6 +43,7 @@ from ._ensembles import (
 )
 from ._fourier import FourierOperator
 from ._indices import IndexOperator
+from ._lowrank import LowRankFourierOperator
 from ._mask import MaskOperator
 from ._sum import SumOperator
 from ._toeplitz import SymmetricBandToeplitzOperator, dense_symmetric_band_toeplitz
@@ -91,6 +92,7 @@ __all__ = [
     'lift',
     'map_reduce',
     'IndexOperator',
+    'LowRankFourierOperator',
     'MaskOperator',
     'SumOperator',
     'SymmetricBandToeplitzOperator',

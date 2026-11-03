@@ -22,25 +22,19 @@ from furax import AbstractLinearOperator, symmetric
 from furax.core import BlockRowOperator
 from furax.obs.stokes import StokesType
 
-from ._engine import (
-    Policy,
-    ReplicatedFamily,
-    StackedFamily,
-    ZippedFamily,
-    family_apply,
-)
+from ._engine import Policy, ReplicatedFamily, StackedFamily, ZippedFamily, family_apply
 from ._model import ObservationModel, ObservationTemplates
 
 
 @register_dataclass
 @dataclass(frozen=True)
 class Batch:
-    """What the system needs of one detector batch of an observation."""
+    """What the normal system needs of one detector batch of an observation."""
 
     model: ObservationModel
+    """The batch's acquisition operator, weight and noise model."""
     templates: ObservationTemplates | None
-    """The batch's templates; those its observation's detectors share, factored over all its
-    batches (None for a run without templates)."""
+    """The batch's templates, with amplitudes per detector or shared by the observation."""
     amplitude_rhs: PyTree[Array] | None
     """The right-hand side of the batch's own explicit amplitudes (None without them)."""
 
@@ -50,19 +44,19 @@ class Batch:
 class BucketModel:
     """The detector batches of every observation of a bucket.
 
-    What a batch holds is split in two: `batches`, stacked over the slots then over the batches of
-    each, and `shared`, what the batches of an observation all hold (its boresight
-    pointing, the bases and Gram inverse of the templates its detectors share, ...), stacked over
-    the slots only. Each is `None` where the other has a leaf; a batch is their combination.
+    What a batch holds is split in two. `batches` holds what differs between the batches of an
+    observation, stacked over the slots then over its batches. `shared` holds what they all have
+    (the boresight pointing, the bases and Gram inverse of the templates with shared amplitudes,
+    ...), stacked over the slots only. Each is `None` where the other has a leaf; a batch is their
+    combination.
     """
 
     batches: Batch
-    """Leaves `(slot, batch, ...)`."""
+    """What differs between the batches, leaves `(slot, batch, ...)`."""
     shared: Batch
-    """Leaves `(slot, ...)`."""
+    """What the batches of an observation all have, leaves `(slot, ...)`."""
     common_rhs: PyTree[Array] | None
-    """The right-hand side of the amplitudes the detectors of each observation have in common, `(slot,
-    ...)` (None without them)."""
+    """Right-hand side of each observation's shared amplitudes, `(slot, ...)` (None without)."""
 
     @property
     def templates(self) -> ObservationTemplates | None:

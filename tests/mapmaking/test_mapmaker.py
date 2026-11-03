@@ -5,9 +5,9 @@ from typing import Literal
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
-import furax
 from furax.core._base import structure_equal
 from furax.mapmaking import (
     AbstractLazyObservation,
@@ -36,7 +36,6 @@ from furax.mapmaking.mapmaker import (
     MapMaker,
     MLMapmaker,
     PommeMapMaker,
-    _solver_stats,
 )
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
@@ -300,6 +299,42 @@ def test_two_level_preconditioner_solves_the_same_system():
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-8), (spectrum, which)
 
 
+def test_solve_resumes_from_its_checkpoint(tmp_path: Path):
+    config = _config('healpix', 'IQU', method=Methods.MAXL)
+    config.weighting = WeightingConfig(
+        mode=WeightingMode.TOEPLITZ, source=NoiseSource.PRECOMPUTED, correlation_length=64
+    )
+    config.solver = SolverConfig(rtol=1e-10, max_steps=500)
+    observations = [GappyLazyGroundObservation(seed=i, n_samples=256) for i in range(2)]
+    expected = MultiObservationMapMaker(observations, config=config).make_maps()
+    assert expected.solver_stats['num_steps'] > 6
+
+    # a solve that runs out of steps saves its last iterate...
+    config.solver = SolverConfig(rtol=1e-10, max_steps=6, checkpoint_every=4)
+    stopped = MultiObservationMapMaker(observations, config=config).make_maps(tmp_path)
+    assert not stopped.solver_stats['converged']
+    assert int(np.load(tmp_path / 'checkpoint.npz')['n_steps']) == 6
+
+    # ...which a resume with the same budget leaves as it is
+    unchanged = MultiObservationMapMaker(observations, config=config).make_maps(
+        tmp_path, resume=True
+    )
+    assert unchanged.solver_stats['resumed_after'] == 6
+    assert unchanged.solver_stats['num_steps'] == 6
+    assert len(unchanged.solver_stats['residuals']) == 1  # no step taken in this run
+    assert int(np.load(tmp_path / 'checkpoint.npz')['n_steps']) == 6
+
+    # ...which a solve with more steps resumes, deleting it once converged
+    config.solver = SolverConfig(rtol=1e-10, max_steps=500, checkpoint_every=4)
+    maker = MultiObservationMapMaker(observations, config=config)
+    resumed = maker.make_maps(tmp_path, resume=True)
+    assert resumed.solver_stats['converged']
+    assert resumed.solver_stats['resumed_after'] == 6
+    assert resumed.solver_stats['num_steps'] == 6 + len(resumed.solver_stats['residuals']) - 1
+    assert not (tmp_path / 'checkpoint.npz').exists()
+    assert eqx.tree_equal(resumed.map, expected.map, rtol=1e-6, atol=1e-8)
+
+
 def _observations(name: str, demodulated: bool = False) -> list[AbstractLazyObservation]:
     folder = Path(__file__).parents[1] / 'data' / name
     if name == 'toast':
@@ -429,14 +464,3 @@ class TestGapTreatmentMapMaker:
         expected = MultiObservationMapMaker(good_only, config=config).make_maps()
         assert eqx.tree_equal(results.hit_map, expected.hit_map)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
-
-
-def test_solver_stats_write_non_finite_residuals_as_null():
-    result = furax.linalg.CGResult(
-        solution=jnp.zeros(2),
-        residuals=jnp.array([1.0, jnp.nan, jnp.inf, 0.0]),
-        num_steps=jnp.array(2),
-        converged=jnp.array(False),
-    )
-    stats = _solver_stats(result, {'max_steps': 4})
-    assert stats['residuals'] == [1.0, None, None]

@@ -1,6 +1,7 @@
 """A simulated sky scanned into the data, to measure what a mapmaking run does to a signal."""
 
 from dataclasses import replace
+from pathlib import Path
 
 import healpy as hp
 import jax.numpy as jnp
@@ -22,6 +23,7 @@ from furax.mapmaking.config import (
     NoiseSource,
     PolynomialOrders,
     ScanSynchronousConfig,
+    SolverConfig,
     SotodlibConfig,
     T2PConfig,
     TemplatesConfig,
@@ -130,6 +132,38 @@ def test_replacing_the_data_needs_weights_that_are_not_fit_from_them():
     config.weighting = WeightingConfig(mode=WeightingMode.DIAGONAL, source=NoiseSource.FIT)
     with pytest.raises(ValueError, match='precomputed'):
         config.__post_init__()
+
+
+def test_a_run_killed_in_the_solve_of_the_sky_resumes_after_the_data_solve(
+    sky, tmp_path, monkeypatch
+):
+    import furax.mapmaking._solve as solve
+
+    _, path = sky
+    config = _config(InjectionConfig(path, mode=InjectionMode.RESPONSE))
+    config.solver = SolverConfig(checkpoint_every=2)
+    outdir = tmp_path / 'run'
+    outdir.mkdir()
+    cg = solve.cg
+    calls = []
+
+    def killed_in_the_second_solve(*args, **kwargs):
+        calls.append(None)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return cg(*args, **kwargs)
+
+    monkeypatch.setattr(solve, 'cg', killed_in_the_second_solve)
+    with pytest.raises(KeyboardInterrupt):
+        MultiObservationMapMaker(_observations(), config=config).make_maps(outdir)
+    assert (outdir / 'checkpoint.npz').exists()
+
+    monkeypatch.setattr(solve, 'cg', cg)
+    resumed = MultiObservationMapMaker(_observations(), config=config).make_maps(
+        outdir, resume=True
+    )
+    assert resumed.solver_stats['resumed_after'] > 0
+    assert not list(Path(outdir).glob('checkpoint*'))
 
 
 def _demodulated_config(injection, templates=None):

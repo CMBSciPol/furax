@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MapMakingResults.remove` deletes the files that `MapMakingResults.save` writes (#402)
 - `CGResult.relative_residual`: the final residual norm over the initial one (#402)
 - `cg` and `CGSolver` take `checkpoint_every` and `checkpoint_callback`, to save the iterate every few steps (#403)
+- `SolverConfig.checkpoint_every`, when set to a positive value, saves CG checkpoints; `MultiObservationMapMaker.run(resume=True)` can resume from them (#405)
+- `furax-so-map --resume` can resume an unfinished solve from a checkpoint (#405)
+- `furax-so-map` refuses an output directory in use by a run that is still going (#405)
 
 ### Changed
 

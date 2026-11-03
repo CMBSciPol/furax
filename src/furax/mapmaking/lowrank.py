@@ -23,9 +23,10 @@ __all__ = [
 _TRACY_WIDOM_QUANTILES = (0.9, 0.95, 0.99, 0.999)
 _TRACY_WIDOM_VALUES = (0.4501, 0.9793, 2.0234, 3.2724)
 
-# Neighbouring Fourier coefficients of a Hann-windowed segment are correlated; every other one is
-# close to independent, which the eigenvalue threshold assumes.
-_FREQUENCY_STRIDE = 2
+# The eigenvalue threshold assumes independent samples. With far more channels than samples, as in
+# the low bins, even the 1/6 correlation of Hann coefficients two apart shifts the noise edge enough
+# to let noise eigenvalues through: coefficients three apart, in disjoint segments, are independent.
+_FREQUENCY_STRIDE = 3
 
 # Modes beyond the strongest ones are examined, to leave room for the single-channel rejection.
 _CANDIDATES_PER_MODE = 3
@@ -139,10 +140,11 @@ def fit_low_rank_noise(
     `config.max_modes`, and none carried mostly by a single channel. The diagonal $D$ is the
     remaining power of each channel, so the model reproduces every channel's power in the bin.
 
-    The covariance is estimated from overlapping segments. A segment contributes for a channel
-    only when none of its samples is flagged for that channel, so flagged samples are never
-    replaced by zeros, which would create correlations. Segments in which too few channels are
-    clean, or that reach into the padded tail, are left out entirely.
+    The covariance is estimated from disjoint segments, leaving out those that reach into the
+    padded tail. With `valid`, a segment contributes for a channel only when none of its samples is
+    flagged for that channel, so flagged samples are never replaced by zeros, which would create
+    correlations; segments in which too few channels are clean are left out entirely, and a channel
+    without any clean segment keeps all of them.
 
     Args:
         samples: Time-ordered data of all channels, with the samples last.
@@ -167,11 +169,10 @@ def fit_low_rank_noise(
 
     n_channels, n_samples = samples.shape
     nperseg = min(config.nperseg, n_samples)
-    starts = jnp.arange(0, n_samples - nperseg + 1, nperseg // 2)
+    starts = jnp.arange(0, n_samples - nperseg + 1, nperseg)
     frequencies = np.fft.rfftfreq(nperseg, 1 / sample_rate)
 
-    clean, used = _segment_weights(valid, n_real, starts, nperseg, n_channels, n_samples, config)
-    weights = clean & used[:, None]  # (segment, channel)
+    weights, used = _segment_weights(valid, n_real, starts, nperseg, n_channels, n_samples, config)
     spectra, band_power = _segment_spectra(
         samples, starts, nperseg, frequencies, edges[-1], config.whitening_band
     )
@@ -234,17 +235,20 @@ def _segment_weights(
     n_samples: int,
     config: LowRankNoiseFitConfig,
 ) -> tuple[Bool[Array, 'segment channel'], Bool[Array, ' segment']]:
-    """Which segments are clean for each channel, and which segments are used at all."""
+    """Which segments each channel contributes to the fit, and which segments are used at all."""
     stops = starts + nperseg
     in_real = stops <= (n_samples if n_real is None else n_real)
     if valid is None:
-        return jnp.ones((starts.size, n_channels), bool), in_real
+        return jnp.broadcast_to(in_real[:, None], (starts.size, n_channels)), in_real
     flagged = jnp.cumsum(~valid, axis=-1, dtype=jnp.int32)
     flagged = jnp.concatenate([jnp.zeros_like(flagged[:, :1]), flagged], axis=-1)
     clean = (flagged[:, stops] == flagged[:, starts]).T
     used = in_real & (clean.mean(axis=1) >= config.min_valid_fraction)
     # without any such segment, fall back to every segment of real samples
-    return clean, jnp.where(used.any(), used, in_real)
+    used = jnp.where(used.any(), used, in_real)
+    # and a channel without a clean one keeps them all, flagged samples included
+    weights = clean & used[:, None]
+    return jnp.where(weights.any(axis=0), weights, used[:, None]), used
 
 
 def _segment_spectra(

@@ -296,7 +296,9 @@ def _low_rank_noise_model(
     n_real = nsamp
     if padding is not None:  # one padding per axis of the TOD's array, the samples last
         n_real = nsamp - jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0][-1]
-    valid = jnp.broadcast_to(_sample_mask(data, config), (*lead, nsamp)).reshape(-1, nsamp)
+    valid = None
+    if not fit_config.ignore_flags:
+        valid = jnp.broadcast_to(_sample_mask(data, config), (*lead, nsamp)).reshape(-1, nsamp)
     return fit_low_rank_noise(
         samples,
         sample_rate,

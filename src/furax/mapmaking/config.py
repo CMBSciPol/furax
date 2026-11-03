@@ -236,7 +236,7 @@ class LowRankNoiseFitConfig:
     noise, from the Marchenko-Pastur edge and the Tracy-Widom fluctuation. Between 0.9 and 0.999."""
 
     nperseg: int = 8_192
-    """Segment length in samples. The segments overlap by half. Clipped to the data length."""
+    """Segment length in samples. The segments are disjoint. Clipped to the data length."""
 
     whitening_band: tuple[float, float] = (1.0, 3.0)
     """Frequency band in Hz where each channel is assumed white, to set its noise level."""
@@ -244,8 +244,15 @@ class LowRankNoiseFitConfig:
     single_lim: float = 0.55
     """A mode is rejected when one channel carries a component of its unit vector above this."""
 
+    ignore_flags: bool = True
+    """Fit on every sample, flagged or not, which assumes that the flagged samples hold filled
+    values (e.g. from the sotodlib `GlitchFill` preprocessing step). Otherwise, the fit only uses
+    the segments free of flagged samples, which are rare when the flags are spread through the
+    observation."""
+
     min_valid_fraction: float = 0.5
-    """Segments where fewer channels are fully valid are left out of the fit."""
+    """Segments where fewer channels are fully valid are left out of the fit. Only relevant when
+    the flags are not ignored."""
 
 
 @dataclass

@@ -1,5 +1,6 @@
 import logging
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,13 @@ def compilation_cache() -> None:
     jax.config.update('jax_persistent_cache_min_compile_time_secs', 0.0)
 
 
-@pytest.fixture(scope='session', autouse=True)
-def silence_furax_logger() -> None:
-    logging.getLogger('furax-mapmaking').setLevel(logging.WARNING)
+@pytest.fixture(autouse=True)
+def silence_furax_logger() -> Iterator[None]:
+    # Tests that configure the logger (so_mapmaking.util.setup_logger) set its level and stop its
+    # propagation, so both are restored afterwards.
+    furax_logger = logging.getLogger('furax')
+    level, propagate = furax_logger.level, furax_logger.propagate
+    furax_logger.setLevel(logging.WARNING)
+    yield
+    furax_logger.setLevel(level)
+    furax_logger.propagate = propagate

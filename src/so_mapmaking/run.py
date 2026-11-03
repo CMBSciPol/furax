@@ -1,8 +1,10 @@
+import logging
 from contextlib import ExitStack
 from pathlib import Path
+from typing import Annotated
 
 import yaml
-from cyclopts import App
+from cyclopts import App, Parameter
 from typedload.exceptions import TypedloadException
 
 from ._outdir import (
@@ -25,6 +27,7 @@ from .util import (
     setup_logger,
 )
 
+logger = logging.getLogger('furax.so_mapmaking')
 app = App(help='Run the mapmaker on SO observations, loaded straight from the preproc db.')
 
 
@@ -42,7 +45,7 @@ def run(
     cache_dir: Path | None = None,
     overwrite: bool = False,
     resume: bool = False,
-    loglevel: str = 'info',
+    loglevel: Annotated[str, Parameter(env_var='LOGLEVEL')] = 'info',
     log_path: Path | None = None,
 ):
     """Run the mapmaker, loading observations directly from the preprocessing database.
@@ -80,7 +83,7 @@ def run(
             `solver.checkpoint_every` steps of the mapmaking config; a solve that runs out of
             steps saves its last iterate, to be resumed with a larger `solver.max_steps`, which
             bounds the steps of all the runs.
-        loglevel: Logging level (debug, info, warning, error).
+        loglevel: Logging level (debug, info, warning, error). Defaults to `$LOGLEVEL`, else info.
         log_path: Log output path, one file per process. Defaults to `furax-so-map.log` in `outdir`.
     """
     # Before importing furax, so that jax_healpy does not warn; the config sets the precision below
@@ -100,7 +103,7 @@ def run(
     outdir = (outdir or Path.cwd()).resolve()
     # Log to the console only until the output directory is known to be free, so that a run
     # refused, or stopped by an invalid input, leaves the directory as it found it
-    logger = setup_logger(loglevel, None, process_index=rank)
+    setup_logger(loglevel, None, process_index=rank)
 
     if outdir.exists() and not outdir.is_dir():
         logger.error(f'{outdir} is not a directory')
@@ -186,13 +189,13 @@ def run(
                 refused = True
         if mhu.broadcast_one_to_all(np.int32(refused)):
             return 1
-        logger = setup_logger(loglevel, log_path or outdir / LOG_FILE, process_index=rank)
+        setup_logger(loglevel, log_path or outdir / LOG_FILE, process_index=rank)
         if mapmaking_config is None:
             logger.warning('no mapmaking configuration specified, using defaults')
         logger.info(f'found {len(observations)} observations')
 
         try:
-            maker = MultiObservationMapMaker(observations, config=config, logger=logger)
+            maker = MultiObservationMapMaker(observations, config=config)
             logger.info('loaded config and set up mapmaker')
             maker.run(outdir, resume=resume)
         except Exception as e:

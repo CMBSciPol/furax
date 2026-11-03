@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import logging
 import os
 import threading
 import uuid
@@ -34,7 +35,6 @@ from furax.mapmaking import (
     ObservationBufferShape,
     ReaderField,
 )
-from furax.mapmaking._logger import logger
 from furax.mapmaking.config import SotodlibConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import (
@@ -52,6 +52,8 @@ from furax.obs.stokes import (
     StokesType,
     ValidStokesLiteral,
 )
+
+logger = logging.getLogger(__name__)
 
 # Version of the on-disk observation cache of LazyPreprocSOTODLibObservation, part of its key.
 # Bump it when furax changes the data it loads, e.g. which timestreams downsample_obs resamples or
@@ -674,7 +676,7 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             config = replace(self._sotodlib_config, downsample=1)
             try:
                 return SOTODLibObservation.from_file(path, requested_fields, sotodlib_config=config)
-            except Exception:  # ruff: ignore[BLE001]
+            except Exception:
                 logger.warning('cannot read %s, loading it again', path, exc_info=True)
         obs = self._load()
         key = path.parent / 'key.json'
@@ -813,7 +815,7 @@ def _write_atomically(path: Path, write: Callable[[Path], object]) -> None:
         with tmp.open('rb') as file:
             os.fsync(file.fileno())
         os.replace(tmp, path)
-    except Exception:  # ruff: ignore[BLE001]
+    except Exception:
         # not only I/O errors: AxisManager.save also fails on fields it cannot encode, and the
         # observation is loaded either way
         logger.warning('could not write %s', path, exc_info=True)

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from dataclasses import dataclass
 from functools import partial
@@ -20,7 +21,7 @@ from furax.obs.landscapes import (
 )
 from furax.obs.stokes import Stokes, StokesType
 
-from ._logger import logger as furax_logger
+logger = logging.getLogger(__name__)
 
 __all__ = [
     'CONFIG_FILE',
@@ -317,7 +318,7 @@ class MapMakingResults:
                 overwrite=True,
             )
         else:
-            furax_logger.warning(
+            logger.warning(
                 f'saving {name} as npy: geometry information will not be embedded in the file'
             )
             np.save(out_dir / name, arr)

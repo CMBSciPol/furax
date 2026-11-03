@@ -37,23 +37,66 @@ def setup_logger(loglevel: str, log_path: Path | None, process_index: int = 0) -
     """Configures the logging of a command: the console, and a file if `log_path` is given.
 
     The handlers go on the `furax` logger, so that every `furax.*` module logs through them.
-    `log_path` gets the process index in its name, one file per process.
+    `log_path` gets the process index in its name, one file per process. The console shows the
+    messages below WARNING of process 0 only, the file all the messages of its process.
+
+    Without `log_path` the records are also kept, and the call that gives a `log_path` writes them
+    to the file first: what was logged before the file could be created is not lost.
     """
     level = loglevel.upper()
     root = logging.getLogger('furax')
     root.setLevel(level)
     root.propagate = False
+    # The buffer outlives the call that makes it, until a file takes its records
+    early = next((h for h in root.handlers if isinstance(h, EarlyRecords)), None)
+    for handler in root.handlers:
+        if handler is not early:
+            handler.close()
     root.handlers.clear()
     ch = logging.StreamHandler()
     ch.setFormatter(logging.Formatter(CONSOLE_FORMAT, defaults={'rank': process_index}))
+    ch.addFilter(ConsoleFilter(process_index))
     root.addHandler(ch)
-    if log_path is not None:
+    if log_path is None:
+        early = early or EarlyRecords()
+        root.addHandler(early)
+    else:
         log_path = log_path.with_stem(f'{log_path.stem}.rank{process_index}')
         log_path.parent.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(log_path)
         fh.setFormatter(logging.Formatter(FILE_FORMAT))
+        if early is not None:
+            early.write_to(fh)
         root.addHandler(fh)
     silence_sotodlib_logs(level)
+
+
+class EarlyRecords(logging.Handler):
+    """Keeps the records logged before the log file exists, to write them to it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+    def write_to(self, handler: logging.Handler) -> None:
+        """Hands the records to `handler`, and forgets them."""
+        for record in self.records:
+            handler.handle(record)
+        self.records.clear()
+
+
+class ConsoleFilter(logging.Filter):
+    """Filter out records below WARNING for ranks other than zero."""
+
+    def __init__(self, process_index: int) -> None:
+        super().__init__()
+        self.process_index = process_index
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return self.process_index == 0 or record.levelno >= logging.WARNING
 
 
 def silence_sotodlib_logs(level: str) -> None:
@@ -160,7 +203,7 @@ def obsdir_observations(
             if obsfile.exists():
                 obsfiles.append(obsfile)
             else:
-                logger.warning(f'{obsfile} not found, skipping')
+                logger.warning(f'Cannot find {obsfile}, skipping it')
     else:
         obsfiles = sorted(obsdir.glob('*.h5'))
     return [LazySOTODLibObservation(f, sotodlib_config=sotodlib_config) for f in obsfiles]

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -340,3 +343,28 @@ def assert_same_map(got: Any, expected: Any, **tolerances: float) -> None:
         assert results.solver_stats['converged']
         assert jnp.all(jnp.isfinite(results.map.data))
     assert_allclose(got.map.data, expected.map.data, **tolerances)
+
+
+@contextmanager
+def furax_records(level: int) -> Iterator[list[logging.LogRecord]]:
+    """The records of the `furax` loggers at `level` or above, collected as the block logs them.
+
+    The handler goes on the `furax` logger itself: a command that configured the logging has
+    stopped it propagating to the root logger, where `caplog` listens.
+    """
+
+    class Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    records: list[logging.LogRecord] = []
+    logger = logging.getLogger('furax')
+    previous = logger.level
+    handler = Collector(level)
+    logger.addHandler(handler)
+    logger.setLevel(min(previous or level, level))
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)

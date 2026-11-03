@@ -24,7 +24,10 @@ def test_observation_catalog_keeps_the_probes_and_replaces_the_reads():
         'probe failed: RuntimeError: no file',
         'load failed: OSError',
     ]
-    assert catalog.n_failed == 2
+    assert catalog.failures() == [
+        ('b', 'probe failed: RuntimeError: no file'),
+        ('c', 'load failed: OSError'),
+    ]
 
     # a new pass replaces the reads of the previous one
     catalog.reads = {}

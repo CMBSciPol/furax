@@ -514,9 +514,10 @@ class ObservationReader[T](AbstractReader):
         try:
             record = ObservationRecord.from_fields(data, fields, time.perf_counter() - start)
         except Exception as error:
-            logger.exception('read item %d: could not record what was read', item)
+            logger.exception('Read item %d: could not record what was read', item)
             record = ObservationRecord(data.name, [], error=f'{type(error).__name__}: {error}')
         self.records[item] = record
+        logger.info(f'Read {data.name} ({time.perf_counter() - start:.1f} s)')
         return fields
 
 

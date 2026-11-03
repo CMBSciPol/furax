@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 from pathlib import Path
@@ -8,6 +9,8 @@ from jaxtyping import Array, PyTree
 
 CHECKPOINT_FILES = ('checkpoint.npz', 'checkpoint_injected.npz')
 TEMPORARY_SUFFIX = '.tmp.'
+
+logger = logging.getLogger(__name__)
 
 
 def remove_checkpoint_files(directory: Path) -> None:
@@ -44,6 +47,7 @@ class SolveCheckpoint:
                 np.savez(f, *leaves, n_steps=total)
             os.replace(tmp, self.path)
             self._saved = total
+        logger.debug(f'Saved the checkpoint after {total} steps to {self.path}')
 
     def load(self, like: PyTree[Array]) -> tuple[PyTree[Array], int] | None:
         """Load a saved iterate sharded like `like`, and its number of steps.

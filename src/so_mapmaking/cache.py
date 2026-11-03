@@ -72,18 +72,18 @@ def fill(
     setup_logger(loglevel, log_path)
     obsids = resolve_obsids(obsid, obsids_file)
     if not obsids:
-        logger.warning('no observations to cache')
+        logger.warning('No observations to cache')
         return
     config = MapMakingConfig.load_yaml(mapmaking_config) if mapmaking_config else MapMakingConfig()
     observations = preproc_observations(
         obsids, init_config, proc_config, wafer, band, config.sotodlib, cache_dir
     )
     missing = [obs for obs in observations if not _cache_path(obs).exists()]
-    logger.info(f'cache key: {_cache_path(observations[0]).parent}')
-    logger.info(f'{len(observations) - len(missing)} of {len(observations)} observations cached')
+    logger.info(f'Cache key: {_cache_path(observations[0]).parent}')
+    logger.info(f'Cached {len(observations) - len(missing)} of {len(observations)} observations')
     if dry_run:
         for obs in missing:
-            logger.info(f'missing: {obs.name}')
+            logger.info(f'Missing: {obs.name}')
         return
 
     nproc = max(1, min(nproc, len(missing)))
@@ -92,7 +92,7 @@ def fill(
     else:
         failed = _fill_in_parallel(missing, nproc, loglevel, log_path)
     if failed:
-        logger.error(f'{len(failed)} observations not cached: {" ".join(failed)}')
+        logger.error(f'Failed to cache {len(failed)} observations: {" ".join(failed)}')
         return 1
 
 
@@ -189,7 +189,7 @@ def _fill_in_parallel(
                     failed.append(obs.name)
     if broken:
         # e.g. killed out of memory: the pool stops, and its pending observations with it
-        logger.error('a worker process died')
+        logger.error('A worker process died')
     return failed
 
 
@@ -199,11 +199,11 @@ def _fill_one(observation: LazyPreprocSOTODLibObservation) -> bool:
     try:
         observation.get_data([])
     except Exception:
-        logger.exception(f'{observation.name}: could not load')
+        logger.exception(f'Could not load {observation.name}')
         return False
     if not _cache_path(observation).exists():  # the write failed, and was logged
         return False
-    logger.info(f'{observation.name}: cached ({time.perf_counter() - start:.0f} s)')
+    logger.info(f'Cached {observation.name} ({time.perf_counter() - start:.0f} s)')
     return True
 
 

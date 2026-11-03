@@ -1,4 +1,5 @@
 import logging
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -20,6 +21,9 @@ from .layout import SlotPlacement
 from .preconditioner import make_two_level_preconditioner
 
 logger = logging.getLogger(__name__)
+
+PROGRESS_EVERY = 10
+"""The number of CG steps between two progress records of a solve."""
 
 
 class SystemSolution(NamedTuple):
@@ -68,11 +72,11 @@ class MapMakingSystem:
             None if checkpoint_dir is None else SolveCheckpoint(checkpoint_dir / file)
             for file in CHECKPOINT_FILES
         ]
-        converged: list[SolveCheckpoint] = []
+        converged: list[tuple[str, SolveCheckpoint]] = []
 
         result, stats = _solve(self, self.b, 'main', checkpoints[0], config, placement, resume)
         if checkpoints[0] is not None and result.converged:
-            converged.append(checkpoints[0])
+            converged.append(('main', checkpoints[0]))
         injected = None
         if self.injected_b is not None:
             # the same normal system, with the simulated sky as the right-hand side
@@ -86,14 +90,16 @@ class MapMakingSystem:
                 resume,
             )
             if checkpoints[1] is not None and response.converged:
-                converged.append(checkpoints[1])
+                converged.append(('injected', checkpoints[1]))
             injected = response.solution if not self.has_amplitudes else response.solution[0]
 
         # A converged solve keeps its checkpoint until the other is done too, so that a run killed
         # in between does not redo it.
         if jax.process_index() == 0:
-            for checkpoint in converged:
-                checkpoint.remove()
+            for name, checkpoint in converged:
+                if checkpoint.path.exists():
+                    checkpoint.remove()
+                    logger.info(f'Deleted the checkpoint of the {name} solve')
         return SystemSolution(result.solution, injected, stats)
 
     def deflate(self, config: TwoLevelConfig) -> 'MapMakingSystem':
@@ -143,16 +149,28 @@ def _solve(
     options = config.options
     rank = jax.process_index()
 
-    def log_iteration(step: Array, r_norm: Array) -> None:
-        if rank == 0:  # log from rank 0 only
-            logger.info(f'CG step={int(step)} residual={float(r_norm):.6e}')
-
     x0, previous_steps = None, 0
     if resume and checkpoint is not None:
         x0, previous_steps = _resume(checkpoint, b, name)
     # max_steps bounds the steps over every run that resumes the solve
     cg_options: dict[str, Any] = dict(options)
     cg_options['max_steps'] = max(options['max_steps'] - previous_steps, 0)
+    b_norm = float(furax.tree.norm(b))
+    logger.info(f'Starting the {name} solve: {furax.tree.size(b)} unknowns')
+    start = time.perf_counter()
+
+    def log_iteration(step: Array, r_norm: Array) -> None:
+        if rank != 0:  # log from rank 0 only
+            return
+        if config.verbose:
+            logger.info(f'CG step={int(step)} residual={float(r_norm):.6e}')
+        elif (int(step) + 1) % PROGRESS_EVERY == 0:
+            relative = float(r_norm) / b_norm if b_norm else float('nan')
+            logger.info(
+                f'{name.capitalize()} solve: step {previous_steps + int(step) + 1}, '
+                f'relative residual {relative:.2e}, {time.perf_counter() - start:.0f} s'
+            )
+
     if checkpoint is not None and config.checkpoint_every:
         cg_options |= {
             'checkpoint_every': config.checkpoint_every,
@@ -163,13 +181,12 @@ def _solve(
         b,
         x0,
         preconditioner=system.preconditioner,
-        iteration_callback=log_iteration if config.verbose else None,
+        iteration_callback=log_iteration,
         **cg_options,
     )
     jax.effects_barrier()  # the last checkpoint is written
     stats = _solver_stats(result, options, previous_steps)
     # Residual history is incomplete for a resumed solve
-    b_norm = float(furax.tree.norm(b))
     _log_solve(name, stats, b_norm)
     if checkpoint is not None and config.checkpoint_every:
         # The last iterate, to resume with more steps
@@ -185,14 +202,14 @@ def _resume(
     """The saved iterate and its number of steps, or `(None, 0)` if there is nothing to resume."""
     saved = checkpoint.load(b)
     if saved is None and checkpoint.path.exists():
-        logger.warning(f'ignoring {checkpoint.path} (incompatible structure)')
+        logger.warning(f'Ignoring {checkpoint.path} (incompatible structure)')
     # Every process must start from the same iterate, or the collectives diverge
     steps = np.array(-1 if saved is None else saved[1])
     if jax.process_count() > 1:
         per_process = mhu.process_allgather(steps).tolist()
         if len(set(per_process)) > 1:
             logger.warning(
-                f'inconsistent number of steps in the {name} checkpoint across processes '
+                f'Inconsistent number of steps in the {name} checkpoint across processes '
                 f'({per_process}), starting from zero'
             )
             saved = None
@@ -200,7 +217,7 @@ def _resume(
         return None, 0
     x0, previous_steps = saved
     checkpoint.resume(previous_steps)
-    logger.info(f'resuming the {name} solve after step {previous_steps}')
+    logger.info(f'Resuming the {name} solve after step {previous_steps}')
     return x0, previous_steps
 
 
@@ -214,15 +231,15 @@ def _log_solve(name: str, stats: dict[str, Any], b_norm: float) -> None:
     residual = stats['residuals'][-1]
     relative = residual / b_norm if b_norm else float('nan')
     outcome = f'{stats["num_steps"]} steps, relative residual {relative:.2e}'
+    solve = f'{name.capitalize()} solve'
     if stats['converged']:
-        logger.info(f'{name} solve converged ({outcome})')
+        logger.info(f'{solve} converged ({outcome})')
     elif options['rtol'] == options['atol'] == 0:
         # no tolerance: the solve runs max_steps steps by design
-        logger.info(f'{name} solve finished ({outcome})')
+        logger.info(f'{solve} finished ({outcome})')
     else:
         logger.warning(
-            f'{name} solve did not converge ({outcome}, '
-            f'rtol={options["rtol"]}, atol={options["atol"]})'
+            f'{solve} did not converge ({outcome}, rtol={options["rtol"]}, atol={options["atol"]})'
         )
 
 

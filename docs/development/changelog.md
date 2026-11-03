@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax-so-map` records the state of the run in `status.json`, and writes the mapmaking config and provenance at the start (#402)
 - `MapMakingResults.remove` deletes the files that `MapMakingResults.save` writes (#402)
 - `CGResult.relative_residual`: the final residual norm over the initial one (#402)
+- `cg` and `CGSolver` take `checkpoint_every` and `checkpoint_callback`, to save the iterate every few steps (#403)
 
 ### Changed
 

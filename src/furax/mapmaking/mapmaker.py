@@ -9,27 +9,24 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pixell.enmap
-import pixell.utils
 from fastquat import Quaternion
 from jax.experimental import multihost_utils as mhu
 from jax.sharding import PartitionSpec as P
-from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
+from jaxtyping import Array, Bool, Float, Int64, Integer, PyTree
 
 import furax.linalg
 import furax.tree
 from furax.core import IndexOperator
-from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import Stokes, StokesI, StokesType, ValidStokesLiteral
+from furax.obs.stokes import Stokes, StokesI, StokesType
 from furax.profiling import format_bytes
 
 from ._accumulated import AccumulatedModel
 from ._bucket import Batch, BucketModel
 from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
 from ._engine import DetectorFamily, Family, StackedFamily, ZippedFamily, family_apply, partition
-from ._geometry import minimum_enclosing_arc
 from ._injection import inject, load_sky, unpadded
+from ._landscape import build_landscape
 from ._logger import logger as furax_logger
 from ._model import (
     FACTORED_KINDS,
@@ -38,23 +35,10 @@ from ._model import (
     acquisition_operator,
     restrict_streams,
 )
-from ._observation import (
-    AbstractLazyObservation,
-    FileBackedLazyObservation,
-    ObservationBufferShape,
-    ReaderField,
-)
+from ._observation import AbstractLazyObservation, ObservationBufferShape, ReaderField
 from ._provenance import provenance
 from ._reader import ObservationReader
-from .config import (
-    GapTreatment,
-    InjectionMode,
-    LandscapeConfig,
-    MapMakingConfig,
-    NoiseSource,
-    WCSConfig,
-    WeightingMode,
-)
+from .config import GapTreatment, InjectionMode, MapMakingConfig, NoiseSource, WeightingMode
 from .gap_filling import gap_fill
 from .layout import Bucket, SlotLayout, SlotPlacement
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
@@ -74,9 +58,8 @@ class MultiObservationMapMaker[T]:
         self.observations = observations
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
-        self.landscape = (
-            _static_landscape(self.config.landscape, self.config.dtype)
-            or self._scan_wcs_footprint()
+        self.landscape = build_landscape(
+            self.observations, self.config.landscape, self.config.dtype
         )
         # Build the readers once, up front: they only need the probe shapes (no mesh context)
         rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
@@ -704,103 +687,6 @@ class MultiObservationMapMaker[T]:
             )
 
         return valid
-
-    def _scan_wcs_footprint(self) -> WCSLandscape:
-        """Scan observations to determine the combined WCS footprint and build a WCSLandscape.
-
-        Performs a preliminary pass over all observations, loading the pointing data needed
-        to compute each observation's sky coverage, then combines them into a unified footprint.
-
-        Restricted to single-process runs over file-backed observations: the scan is an
-        unsharded loop calling ``get_data`` per observation. For file-backed observations that
-        cheaply loads only the requested pointing fields, but for sources that cannot subset
-        their fields (e.g. preproc-backed observations) it would run the full load/preprocess
-        pipeline on every observation, on every process. Pre-compute the footprint and pass an
-        explicit WCS landscape instead in those cases.
-        """
-        if jax.process_count() > 1:
-            msg = (
-                'Automatic WCS footprint scanning is only supported on a single process. '
-                'Pre-compute the footprint and pass an explicit WCS landscape instead.'
-            )
-            raise RuntimeError(msg)
-        if any(not isinstance(obs, FileBackedLazyObservation) for obs in self.observations):
-            msg = (
-                'Automatic WCS footprint scanning requires file-backed observations '
-                '(get_data must cheaply subset pointing fields). Pre-compute the footprint'
-                'and pass an explicit WCS landscape instead.'
-            )
-            raise RuntimeError(msg)
-        lc = self.config.landscape
-        if lc.wcs is None:
-            raise ValueError('WCS landscape config is required for auto footprint scanning.')
-        wcs_config = lc.wcs
-        res = wcs_config.resolution * pixell.utils.arcmin
-        proj = wcs_config.projection.name.lower()
-        pointing_fields = [ReaderField.BORESIGHT_QUATERNIONS, ReaderField.DETECTOR_QUATERNIONS]
-
-        n = len(self.observations)
-        corners_rad = np.empty((2, 2, n))  # [bottom-left, top-right] corners per observation
-        for i, lazy_obs in enumerate(self.observations):
-            obs = lazy_obs.get_data(pointing_fields)
-            shape, wcs = obs.get_wcs_shape_and_kernel(
-                resolution_arcmin=wcs_config.resolution, projection=wcs_config.projection
-            )
-            # RA _decreases_ left-to-right (increases toward the East)
-            # so each corner pair is technically [[dec_lo, ra_hi], [dec_hi, ra_lo]]
-            corners_rad[..., i] = pixell.enmap.corners(shape, wcs, corner=True)
-
-        # find the corners of the smallest box covering all the individual patches
-        dec_lo = corners_rad[0, 0].min()
-        dec_hi = corners_rad[1, 0].max()
-        # minimum_enclosing_arc expects [lo, hi] intervals with shape (2, n)
-        ra_lo, ra_hi = minimum_enclosing_arc(corners_rad[::-1, 1].T)
-        union_box = np.array([[dec_lo, ra_hi], [dec_hi, ra_lo]])
-
-        # create the final shape and WCS objects for this covering box
-        shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
-        return WCSLandscape.from_wcs(shape, wcs, lc.stokes, self.config.dtype)
-
-
-def _static_landscape(lc: LandscapeConfig, dtype: DTypeLike) -> StokesLandscape | None:
-    """Build a landscape from config alone, without observation data.
-
-    Returns None if the landscape cannot be determined without scanning observations
-    (i.e. WCS with no explicit geometry).
-    """
-    if lc.healpix is not None:
-        return HealpixLandscape(
-            nside=lc.healpix.nside,
-            stokes=lc.stokes,
-            dtype=dtype,
-            nested=lc.healpix.ordering == 'nest',
-        )
-    if lc.wcs is not None and lc.wcs.has_geometry:
-        return _wcs_landscape_from_geometry(lc.wcs, lc.stokes, dtype)
-    return None
-
-
-def _wcs_landscape_from_geometry(
-    wcs_config: WCSConfig,
-    stokes: ValidStokesLiteral,
-    dtype: DTypeLike,
-) -> WCSLandscape:
-    """Build a WCSLandscape from an explicit geometry specification."""
-    if not wcs_config.has_geometry:
-        raise ValueError('wcs_config must specify a geometry_file or patch.')
-    if wcs_config.geometry_file is not None:
-        shape, wcs = pixell.enmap.read_map_geometry(wcs_config.geometry_file)
-    else:
-        assert wcs_config.patch is not None  # ty assert: has_geometry guarantees patch is set here
-        res = wcs_config.resolution * pixell.utils.arcmin
-        half_w = np.radians(wcs_config.patch.width / 2)
-        half_h = np.radians(wcs_config.patch.height / 2)
-        ra, dec = np.radians(wcs_config.patch.center)
-        corners = np.array([[dec - half_h, ra + half_w], [dec + half_h, ra - half_w]])
-        shape, wcs = pixell.enmap.geometry(
-            pos=corners, res=res, proj=wcs_config.projection.name.lower()
-        )
-    return WCSLandscape.from_wcs(shape, wcs, stokes, dtype)
 
 
 _add = jax.jit(furax.tree.add, donate_argnums=0)

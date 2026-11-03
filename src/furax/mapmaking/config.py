@@ -216,6 +216,35 @@ class NoiseFitConfig:
 
 
 @dataclass
+class LowRankNoiseFitConfig:
+    """Options for fitting a detector-correlated noise model: a diagonal plus a few common modes."""
+
+    bin_edges: tuple[float, ...] = (0.0015, 0.003, 0.006, 0.012, 0.025, 0.05, 0.1, 0.2)
+    """Frequency bin edges in Hz, increasing. The modes are fitted in each bin between two
+    consecutive edges. Below the first edge the first bin applies; above the last edge the noise
+    is uncorrelated and white."""
+
+    max_modes: int = 18
+    """Maximum number of correlated modes per bin."""
+
+    threshold_quantile: float = 0.99
+    """A mode is kept when its eigenvalue exceeds this quantile of the largest eigenvalue of pure
+    noise, from the Marchenko-Pastur edge and the Tracy-Widom fluctuation. Between 0.9 and 0.999."""
+
+    nperseg: int = 8_192
+    """Segment length in samples. The segments overlap by half. Clipped to the data length."""
+
+    whitening_band: tuple[float, float] = (1.0, 3.0)
+    """Frequency band in Hz where each channel is assumed white, to set its noise level."""
+
+    single_lim: float = 0.55
+    """A mode is rejected when one channel carries a component of its unit vector above this."""
+
+    min_valid_fraction: float = 0.5
+    """Segments where fewer channels are fully valid are left out of the fit."""
+
+
+@dataclass
 class WeightingConfig:
     """Configuration for the inverse-noise / weighting matrix used in mapmaking.
 

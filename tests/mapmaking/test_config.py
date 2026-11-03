@@ -15,6 +15,7 @@ from furax.mapmaking.config import (
     LandscapeConfig,
     MapMakingConfig,
     Methods,
+    PointingConfig,
     PolynomialOrders,
     ScanSynchronousConfig,
     SotodlibConfig,
@@ -181,6 +182,14 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
 def test_rejects_out_of_range_values(make, match):
     with pytest.raises(ValueError, match=match):
         make()
+
+
+def test_bilinear_pointing_rejects_nested_healpix():
+    with pytest.raises(ValueError, match='needs ring ordering'):
+        MapMakingConfig(
+            landscape=LandscapeConfig(healpix=HealpixConfig(ordering='nest')),
+            pointing=PointingConfig(interpolation='bilinear'),
+        )
 
 
 @pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])

@@ -244,15 +244,8 @@ class LowRankNoiseFitConfig:
     single_lim: float = 0.55
     """A mode is rejected when one channel carries a component of its unit vector above this."""
 
-    ignore_flags: bool = True
-    """Fit on every sample, flagged or not, which assumes that the flagged samples hold filled
-    values (e.g. from the sotodlib `GlitchFill` preprocessing step). Otherwise, the fit only uses
-    the segments free of flagged samples, which are rare when the flags are spread through the
-    observation."""
-
     min_valid_fraction: float = 0.5
-    """Segments where fewer channels are fully valid are left out of the fit. Only relevant when
-    the flags are not ignored."""
+    """A channel leaves a segment out of the fit when fewer of its samples are valid."""
 
 
 @dataclass

@@ -141,10 +141,12 @@ def fit_low_rank_noise(
     remaining power of each channel, so the model reproduces every channel's power in the bin.
 
     The covariance is estimated from disjoint segments, leaving out those that reach into the
-    padded tail. With `valid`, a segment contributes for a channel only when none of its samples is
-    flagged for that channel, so flagged samples are never replaced by zeros, which would create
-    correlations; segments in which too few channels are clean are left out entirely, and a channel
-    without any clean segment keeps all of them.
+    padded tail. The flagged samples are treated as missing, whatever they hold: in each segment,
+    a channel's valid samples are taken relative to their mean and the flagged ones are set to
+    zero, and the spectrum is normalized by the windowed power of the valid samples. Removing the
+    mean first keeps a gap shared by several channels from writing the same offset into all of
+    them, which would show as a correlation at every frequency. A channel contributes a segment
+    only when enough of its samples are valid.
 
     Args:
         samples: Time-ordered data of all channels, with the samples last.
@@ -172,12 +174,17 @@ def fit_low_rank_noise(
     starts = jnp.arange(0, n_samples - nperseg + 1, nperseg)
     frequencies = np.fft.rfftfreq(nperseg, 1 / sample_rate)
 
-    weights, used = _segment_weights(valid, n_real, starts, nperseg, n_channels, n_samples, config)
-    spectra, band_power = _segment_spectra(
-        samples, starts, nperseg, frequencies, edges[-1], config.whitening_band
+    used = starts + nperseg <= (n_samples if n_real is None else n_real)  # (segment,)
+    spectra, band_power, valid_fraction, efficiency = _segment_spectra(
+        samples, valid, starts, nperseg, frequencies, edges[-1], config.whitening_band
     )
+    weights = used[:, None] & (valid_fraction >= config.min_valid_fraction)  # (segment, channel)
+    # a channel without such a segment keeps all those where it has valid samples
+    weights = jnp.where(weights.any(axis=0), weights, used[:, None] & (valid_fraction > 0))
+    # zero-filled gaps correlate neighbouring coefficients: fewer independent samples
+    efficiency = jnp.sum(jnp.where(weights, efficiency, 0)) / jnp.maximum(weights.sum(), 1)
 
-    # per-channel noise level, from the clean segments
+    # per-channel noise level, from the segments it contributes
     count = weights.sum(axis=0)  # (channel,)
     alive = count > 0
     level = jnp.where(weights, band_power, 0).sum(axis=0) / jnp.maximum(count, 1)
@@ -197,7 +204,10 @@ def fit_low_rank_noise(
             z = jnp.where(weights[:, :, None], z, 0)
             z = z * jnp.sqrt(n_used / jnp.maximum(count, 1))[None, :, None]
             z = jnp.moveaxis(z, 1, 0).reshape(n_channels, -1)
-            vectors, eigenvalues, power = _fit_bin(z, n_used * columns.size, alive, config)
+            n_independent = n_used * columns.size * efficiency
+            vectors, eigenvalues, power = _fit_bin(
+                z, n_used * columns.size, n_independent, alive, config
+            )
             diagonal = level * jnp.maximum(
                 power - (vectors**2 * eigenvalues).sum(axis=1), _DIAGONAL_FLOOR * power
             )
@@ -226,64 +236,63 @@ def fit_low_rank_noise(
     )
 
 
-def _segment_weights(
-    valid: Bool[Array, 'channel sample'] | None,
-    n_real: int | Array | None,
-    starts: Array,
-    nperseg: int,
-    n_channels: int,
-    n_samples: int,
-    config: LowRankNoiseFitConfig,
-) -> tuple[Bool[Array, 'segment channel'], Bool[Array, ' segment']]:
-    """Which segments each channel contributes to the fit, and which segments are used at all."""
-    stops = starts + nperseg
-    in_real = stops <= (n_samples if n_real is None else n_real)
-    if valid is None:
-        return jnp.broadcast_to(in_real[:, None], (starts.size, n_channels)), in_real
-    flagged = jnp.cumsum(~valid, axis=-1, dtype=jnp.int32)
-    flagged = jnp.concatenate([jnp.zeros_like(flagged[:, :1]), flagged], axis=-1)
-    clean = (flagged[:, stops] == flagged[:, starts]).T
-    used = in_real & (clean.mean(axis=1) >= config.min_valid_fraction)
-    # without any such segment, fall back to every segment of real samples
-    used = jnp.where(used.any(), used, in_real)
-    # and a channel without a clean one keeps them all, flagged samples included
-    weights = clean & used[:, None]
-    return jnp.where(weights.any(axis=0), weights, used[:, None]), used
-
-
 def _segment_spectra(
     samples: Float[Array, 'channel sample'],
+    valid: Bool[Array, 'channel sample'] | None,
     starts: Array,
     nperseg: int,
     frequencies: np.ndarray,
     top: float,
     band: tuple[float, float],
-) -> tuple[Array, Array]:
-    """Windowed spectra of the segments up to `top`, and the mean power in the white band.
+) -> tuple[Array, Array, Array, Array]:
+    """Spectra of the segments, with their white-band power, valid fraction and efficiency.
 
-    The spectra are normalised so that white noise of per-sample variance σ² has E|X|² = σ².
+    The windowed spectra go up to `top`, and every output is per segment and channel.
+
+    The spectra are normalised by the windowed power of the valid samples, so that white noise of
+    per-sample variance σ² has E|X|² = σ² under any mask. The efficiency is the effective number of
+    samples of the masked window relative to that of the full window, `(Σu²)²/Σu⁴` for weights
+    `u`: the fraction of independent coefficients that remain once gaps correlate them.
     """
     window = jnp.hanning(nperseg + 1)[:-1].astype(samples.dtype)
-    norm = jnp.sqrt(jnp.sum(window**2))
     n_low = int(np.searchsorted(frequencies, top))
     in_band = (frequencies >= band[0]) & (frequencies <= band[1])
     if not in_band.any():
         raise ValueError(f'No frequency in the whitening band {band} Hz')
+    if valid is None:
+        valid = jnp.ones(samples.shape, bool)
 
-    def spectrum(start: Array) -> tuple[Array, Array]:
+    full = jnp.sum(window**2) ** 2 / jnp.sum(window**4)
+
+    def spectrum(start: Array) -> tuple[Array, Array, Array, Array]:
         segment = jax.lax.dynamic_slice_in_dim(samples, start, nperseg, axis=1)
-        segment = (segment - segment.mean(axis=1, keepdims=True)) * window
-        coefficients = jnp.fft.rfft(segment) / norm
+        mask = jax.lax.dynamic_slice_in_dim(valid, start, nperseg, axis=1)
+        n_valid = mask.sum(axis=1, keepdims=True)
+        mean = jnp.where(mask, segment, 0).sum(axis=1, keepdims=True) / jnp.maximum(n_valid, 1)
+        weighted = jnp.where(mask, window, 0)
+        norm = jnp.sqrt(jnp.sum(weighted**2, axis=1, keepdims=True))
+        coefficients = jnp.fft.rfft(jnp.where(mask, segment - mean, 0) * window)
+        coefficients = coefficients / jnp.where(norm > 0, norm, 1)
         power = jnp.mean(jnp.abs(coefficients[:, in_band]) ** 2, axis=1)
-        return coefficients[:, :n_low], power
+        effective = jnp.sum(weighted**2, axis=1) ** 2 / jnp.maximum(
+            jnp.sum(weighted**4, axis=1), 1e-300
+        )
+        return coefficients[:, :n_low], power, n_valid[:, 0] / nperseg, effective / full
 
     return jax.lax.map(spectrum, starts)
 
 
 def _fit_bin(
-    z: Array, n_columns: Array, alive: Bool[Array, ' channel'], config: LowRankNoiseFitConfig
+    z: Array,
+    n_columns: Array,
+    n_independent: Array,
+    alive: Bool[Array, ' channel'],
+    config: LowRankNoiseFitConfig,
 ) -> tuple[Array, Array, Array]:
     """Modes of one bin from its whitened Fourier coefficients, shape `(channel, column)`.
+
+    The noise edge is that of `n_independent` samples, the columns' worth once their correlations
+    are accounted for, scaled to the `n_columns` they are averaged over.
 
     Returns the unit vectors `(channel, max_modes)`, their eigenvalues `(max_modes,)` (zero for
     modes that are not kept) and the power of each channel.
@@ -304,7 +313,9 @@ def _fit_bin(
         values, vectors = values[::-1][:n_candidates], vectors[:, ::-1][:, :n_candidates]
 
     eigenvalues = values / jnp.maximum(n_columns, 1)  # covariance eigenvalues; pure noise is ~1
-    threshold = _noise_edge(jnp.sum(alive), 2 * n_columns, config.threshold_quantile) / 2
+    n_independent = jnp.maximum(n_independent, 1)
+    edge = _noise_edge(jnp.sum(alive), 2 * n_independent, config.threshold_quantile) / 2
+    threshold = edge * n_columns / n_independent
     accepted = (values > threshold) & (jnp.abs(vectors).max(axis=0) < config.single_lim)
     # strongest accepted modes first, at most max_modes of them
     order = jnp.argsort(~accepted, stable=True)[: config.max_modes]

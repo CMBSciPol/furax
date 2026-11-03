@@ -19,9 +19,9 @@ from furax.mapmaking import (
     MultiObservationMapMaker,
     ObservationBufferShape,
 )
+from furax.mapmaking._accumulated import AccumulatedModel
 from furax.mapmaking._model import FACTORED_KINDS
 from furax.mapmaking.config import HealpixConfig, LandscapeConfig, MapMakingConfig, PointingConfig
-from furax.mapmaking.mapmaker import _AccumulatedModel
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math.coords import XiEtaAngles
 from furax.obs.landscapes import ProjectionType, StokesLandscape
@@ -293,7 +293,7 @@ def healpix_config(
     )
 
 
-def accumulate(maker: MultiObservationMapMaker) -> _AccumulatedModel:
+def accumulate(maker: MultiObservationMapMaker) -> AccumulatedModel:
     """Build the model of each bucket of ``maker`` and accumulate its system, on its mesh."""
     with jax.set_mesh(maker.placement.mesh):
         return maker.build_model_and_accumulate()
@@ -312,10 +312,10 @@ def probe_normal_system(maker: MultiObservationMapMaker, seed: int = 0) -> tuple
     with jax.set_mesh(maker.placement.mesh):
         acc = maker.build_model_and_accumulate()
         maker._catalog.reads = maker._gather_reads()
-        BJ = maker._block_jacobi(acc)
+        BJ = acc.block_jacobi(maker.placement, maker.config.binned, maker.landscape.structure)
         valid = maker.pixel_selection(acc.hit_map, BJ.blocks)
         S = IndexOperator((..., *jnp.where(valid)), in_structure=maker.landscape.structure)
-        system = maker._build_system(acc, S, BJ)
+        system = acc.build_system(S, BJ, maker.layout, maker.placement)
         templates = acc.buckets[0].templates
         kinds = [] if templates is None else [k for k in FACTORED_KINDS if getattr(templates, k)]
         x = tree.normal_like(system.A.in_structure, jax.random.key(seed))

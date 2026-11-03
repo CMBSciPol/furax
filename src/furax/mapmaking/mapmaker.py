@@ -3,7 +3,7 @@ from abc import abstractmethod
 from collections.abc import Callable, Collection, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from functools import cached_property, partial, reduce
+from functools import cached_property, partial
 from logging import Logger
 from math import prod
 from pathlib import Path
@@ -21,7 +21,6 @@ from fastquat import Quaternion
 from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils as mhu
 from jax.sharding import PartitionSpec as P
-from jax.tree_util import register_dataclass
 from jaxtyping import Array, Bool, DTypeLike, Float, Int64, Integer, PyTree
 
 import furax.linalg
@@ -34,14 +33,8 @@ from furax import (
     OperatorTag,
     SymmetricBandToeplitzOperator,
 )
-from furax.core import (
-    AdditionOperator,
-    BlockDiagonalOperator,
-    BlockSelectOperator,
-    IndexOperator,
-)
+from furax.core import IndexOperator
 from furax.interfaces.lineax import as_lineax_operator
-from furax.linalg._lanczos import LanczosWhich
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
@@ -53,6 +46,8 @@ from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokesLiteral
 from furax.profiling import format_bytes
 
+from ._accumulated import AccumulatedModel
+from ._bucket import Batch, BucketModel
 from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
 from ._engine import (
     DetectorFamily,
@@ -69,7 +64,6 @@ from ._model import (
     FACTORED_KINDS,
     ObservationModel,
     ObservationTemplates,
-    TemplateBundle,
     acquisition_operator,
     restrict_streams,
 )
@@ -82,13 +76,6 @@ from ._observation import (
 )
 from ._provenance import provenance
 from ._reader import ObservationReader
-from ._solve import MapMakingSystem
-from ._system import (
-    Batch,
-    BucketModel,
-    BucketNormalOperator,
-    MemberOperator,
-)
 from .config import (
     GapTreatment,
     InjectionMode,
@@ -96,31 +83,17 @@ from .config import (
     MapMakingConfig,
     Methods,
     NoiseSource,
-    TwoLevelConfig,
     WCSConfig,
     WeightingMode,
 )
 from .gap_filling import gap_fill
 from .layout import Bucket, SlotLayout, SlotPlacement
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel
-from .preconditioner import BJPreconditioner, make_two_level_preconditioner
+from .preconditioner import BJPreconditioner
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
 from .templates.gram import factor
 from .templates.pomme import PommeProjectionOperator
 from .weight import WeightOperator
-
-
-@register_dataclass
-@dataclass(frozen=True)
-class _AccumulatedModel:
-    """Per-bucket observation models and the map-domain sums."""
-
-    buckets: tuple[BucketModel, ...]
-    """One `BucketModel` per bucket of the layout, in bucket order."""
-    hit_map: Int64[Array, '...']
-    """Hit map over every observation, replicated on every device."""
-    map_rhs: StokesType
-    """Map RHS over every observation, replicated on every device."""
 
 
 class MultiObservationMapMaker[T]:
@@ -379,9 +352,9 @@ class MultiObservationMapMaker[T]:
                 self._info(f'{n_failed} observation(s) failed and were excluded')
             noise_parameters = None
             if self.config.weighting.mode != WeightingMode.IDENTITY:
-                noise_parameters = self._collect_noise_parameters(acc)
+                noise_parameters = acc.noise_parameters(self.layout, self.placement)
 
-            BJ = self._block_jacobi(acc)
+            BJ = acc.block_jacobi(self.placement, self.config.binned, self.landscape.structure)
             icov = BJ.blocks.block_until_ready()
             self._info('Computed white noise inverse covariance')
 
@@ -397,9 +370,9 @@ class MultiObservationMapMaker[T]:
             )
 
             response_sky = None if self._scanned_sky is not None else self.sky
-            system = self._build_system(acc, S, BJ, response_sky)
+            system = acc.build_system(S, BJ, self.layout, self.placement, response_sky)
             if (two_level := self.config.solver.two_level) is not None:
-                system = self._deflate(system, two_level)
+                system = system.deflate(two_level, self.logger)
             solved = system.solve(
                 self.config.solver,
                 self.placement,
@@ -410,7 +383,7 @@ class MultiObservationMapMaker[T]:
             sky, amplitudes = solved.x, None
             if system.has_amplitudes:
                 sky, *blocks = solved.x
-                amplitudes = self._template_amplitudes(acc, blocks)
+                amplitudes = acc.template_amplitudes(blocks, self.layout, self.placement)
 
         # Built only now, so that their copies are not held through the solve
         return MapMakingResults(
@@ -433,233 +406,6 @@ class MultiObservationMapMaker[T]:
     def _info(self, message: str) -> None:
         self.logger.info(f'MultiObsMapMaker: {message}')
 
-    def _block_jacobi(self, acc: _AccumulatedModel) -> BJPreconditioner:
-        """The block-Jacobi preconditioner, from the diagonal pixel system summed over the buckets.
-
-        The system is under the weight without the noise correlations, nor the implicit templates.
-        """
-        weight = 'plain' if self.config.binned else 'white'
-        A_diag = AdditionOperator(
-            [
-                BucketNormalOperator(
-                    bm,
-                    None,
-                    self.placement.axis,
-                    weight,
-                    amplitudes=False,
-                    in_structure=self.landscape.structure,
-                )
-                for bm in acc.buckets
-            ],
-            sequential=True,
-        )
-        return BJPreconditioner.create(A_diag)
-
-    def _template_amplitudes(
-        self, acc: _AccumulatedModel, blocks: list[list[PyTree[Array]]]
-    ) -> dict[str, np.ndarray]:
-        """The explicit-template amplitudes solved for, per observation, from their CG blocks.
-
-        Every device holds the same replicated copy after the gather, so the host array is
-        complete on every process; then back to observation order.
-        """
-        # Explicit templates are configured for the run, so every bucket carries them or none.
-        templates = acc.buckets[0].templates
-        explicit = None if templates is None else templates.explicit
-        amplitudes = {}
-        if explicit is not None:
-            own, *blocks = blocks
-            per_bucket = [self.placement.gather(a) for a in own]
-            for name in per_bucket[0]:
-                # the detector axis follows the stream axis, if any (see `Template`), after the
-                # slot and batch axes
-                axis = 2 + explicit.operator.templates[name].per.index('det')
-                amplitudes[name] = self.layout.to_observation_order(
-                    [a[name] for a in per_bucket], detector_axis=axis
-                )
-        for common in blocks:  # one set per slot, no detector axis
-            amplitudes |= jax.tree.map(
-                lambda *leaves: self.layout.to_observation_order(leaves),
-                *[self.placement.gather(a) for a in common],
-            )
-        return amplitudes
-
-    def _build_system(
-        self,
-        acc: _AccumulatedModel,
-        S: AbstractLinearOperator,
-        BJ: BJPreconditioner,
-        sky: StokesType | None = None,
-    ) -> MapMakingSystem:
-        r"""Assembles the GLS normal system $J^T W' J x = J^T W' d$ over the selected pixels.
-
-        Args:
-            acc: The accumulated per-bucket models, hit map and map RHS.
-            S: Selection of the estimated pixels out of the full sky grid.
-            BJ: Block-Jacobi preconditioner.
-            sky: A simulated sky on the full grid, whose right-hand side `injected_b` is added.
-
-        Returns:
-            The system to solve, in the unknowns described above.
-        """
-        axis = self.placement.axis
-        # Restrict BJ preconditioner to selected pixels
-        M = (S @ BJ.I @ S.T).reduce()
-
-        # Explicit templates are configured for the run, so every bucket carries them or none.
-        templates = acc.buckets[0].templates
-        kinds = []
-        if templates is not None:
-            kinds = [kind for kind in FACTORED_KINDS if getattr(templates, kind) is not None]
-
-        if not kinds:
-            terms = [
-                BucketNormalOperator(bm, S, axis, in_structure=S.out_structure)
-                for bm in acc.buckets
-            ]
-            A = AdditionOperator(terms, sequential=True)
-            response = None
-            if sky is not None:
-                response = reduce(furax.tree.add, [op.response(sky) for op in terms])
-            return MapMakingSystem(A, S(acc.map_rhs), M, has_amplitudes=False, injected_b=response)
-
-        # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
-        # per bucket: those of each detector batch alone, `(slot, batch, ...)`, and those the
-        # detectors of an observation share, `(slot, ...)`.
-        structures = {
-            kind: [
-                self._amplitude_structure(bucket, bm, kind)
-                for bucket, bm in zip(self.layout.buckets, acc.buckets, strict=True)
-            ]
-            for kind in kinds
-        }
-        at = {kind: 1 + k for k, kind in enumerate(kinds)}  # their block among the unknowns
-
-        # Joint system. Each bucket's system sees the selected pixels and its own amplitudes,
-        # picked out of the lists and embedded back by `E`.
-        terms, responses = [], []
-        for b, bm in enumerate(acc.buckets):
-            in_structure = [S.out_structure, *(structures[kind][b] for kind in kinds)]
-            normal = BucketNormalOperator(bm, S, axis, in_structure=in_structure)
-            picks = [BlockSelectOperator(b, in_structure=structures[kind]) for kind in kinds]
-            E = BlockDiagonalOperator([IdentityOperator(in_structure=S.out_structure), *picks])
-            terms.append((E.T @ normal @ E).reduce())
-            if sky is not None:
-                responses.append(E.T(normal.response(sky)))
-
-        # The Gram inverses of the amplitudes of each detector batch alone are per batch, those
-        # of the common amplitudes per observation.
-        inverses: dict[str, list[AbstractLinearOperator]] = {kind: [] for kind in kinds}
-        ridges: dict[str, list[AbstractLinearOperator | None]] = {kind: [] for kind in kinds}
-        for b, bm in enumerate(acc.buckets):
-            for kind in kinds:
-                inverse, ridge = self._gram_inverse(bm, kind, structures[kind][b])
-                inverses[kind].append(inverse)
-                ridges[kind].append(ridge)
-
-        # The ridge the Gram inverses were factored with acts on the amplitudes alone, so it is
-        # one term over them all, outside the passes over the TOD.
-        for kind in kinds:
-            ridged = ridges[kind]
-            assert all(r is None for r in ridged) or all(r is not None for r in ridged)
-            if ridged[0] is not None:
-                amplitudes = BlockSelectOperator(at[kind], in_structure=terms[0].in_structure)
-                terms.append((amplitudes.T @ BlockDiagonalOperator(ridged) @ amplitudes).reduce())
-
-        rhs = [
-            S(acc.map_rhs),
-            *(
-                # declared stacked over the batches, the right-hand sides of each batch's own
-                # amplitudes are wholly per batch
-                [
-                    bm.batches.amplitude_rhs if FACTORED_KINDS[kind] == 'stack' else bm.common_rhs
-                    for bm in acc.buckets
-                ]
-                for kind in kinds
-            ),
-        ]
-        M = BlockDiagonalOperator([M, *(inverses[kind] for kind in kinds)])
-        A = AdditionOperator(terms, sequential=True)
-        response = None
-        if sky is not None:
-            response = reduce(furax.tree.add, responses)
-        return MapMakingSystem(A, rhs, M, has_amplitudes=True, injected_b=response)
-
-    @staticmethod
-    def _amplitude_structure(
-        bucket: Bucket, bm: BucketModel, kind: str
-    ) -> dict[str, jax.ShapeDtypeStruct]:
-        """The amplitudes of a kind of a bucket.
-
-        Those of each batch alone are `(slot, batch, ...)`, those of each observation `(slot, ...)`.
-        """
-        assert bm.templates is not None
-        bundle = getattr(bm.templates, kind)
-        assert bundle is not None
-        leading = (bucket.n_slots,)
-        if FACTORED_KINDS[kind] == 'stack':
-            leading += (bucket.n_batches,)
-        return {
-            name: jax.ShapeDtypeStruct((*leading, *s.shape), s.dtype)
-            for name, s in bundle.operator.in_structure.items()
-        }
-
-    @staticmethod
-    def _gram_inverse(
-        bm: BucketModel, kind: str, structure: dict[str, jax.ShapeDtypeStruct]
-    ) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
-        """The inverse of the Gram of a kind of amplitudes of a bucket, and the ridge added."""
-
-        def bundle(batch: Batch) -> TemplateBundle:
-            assert batch.templates is not None
-            bundle = getattr(batch.templates, kind)
-            assert bundle is not None
-            return bundle
-
-        # those of each batch alone hold per batch what depends on the batch, the others whole
-        own, kept = bundle(bm.batches), bundle(bm.shared)
-
-        def member(part: str) -> AbstractLinearOperator | None:
-            operators, shared = getattr(own, part), getattr(kept, part)
-            if operators is None and shared is None:
-                return None
-            if FACTORED_KINDS[kind] == 'stack':
-                return MemberOperator(operators, shared, batches=True, in_structure=structure)
-            return MemberOperator(shared, in_structure=structure)
-
-        inverse = member('gram_inverse')
-        assert inverse is not None
-        return inverse, member('ridge')
-
-    def _deflate(self, system: MapMakingSystem, config: TwoLevelConfig) -> MapMakingSystem:
-        """Replaces the system's preconditioner by a two-level one deflating some of its modes."""
-        preconditioned = config.spectrum == 'preconditioned'
-        # The spectrum is positive, so its smallest and largest eigenvalues are its algebraic ends.
-        lanczos_which: dict[str, LanczosWhich] = {'small': 'SA', 'large': 'LA', 'both': 'BE'}
-        result = furax.linalg.lanczos_tr(
-            system.A,
-            key=jax.random.key(config.seed),
-            k=config.rank,
-            m=config.krylov_size,
-            which=lanczos_which[config.which],
-            max_restarts=config.max_restarts,
-            tol=config.tol,
-            preconditioner=system.preconditioner if preconditioned else None,
-        )
-        theta = result.eigenvalues
-        self._info(
-            f'Deflating {config.rank} eigenpairs ({config.which}) of the '
-            f'{config.spectrum} spectrum, eigenvalues in '
-            f'[{float(theta[0]):.6e}, {float(theta[-1]):.6e}], '
-            f'max residual bound {float(jnp.max(result.residual_norms)):.3e}'
-        )
-        M = make_two_level_preconditioner(
-            system.preconditioner,
-            furax.linalg.LowRankTerms(theta, result.eigenvectors),
-            preconditioned=preconditioned,
-        )
-        return replace(system, preconditioner=M)
-
     def _gather_reads(self) -> dict[int, Read]:
         """What the last pass read of each observation, or the exception that stopped its load.
 
@@ -674,24 +420,7 @@ class MultiObservationMapMaker[T]:
                 local[int(bucket.observations[slot])] = error
         return gather_rows(local)
 
-    def _collect_noise_parameters(self, acc: _AccumulatedModel) -> dict[str, np.ndarray]:
-        """The noise model parameters of every detector slot, in observation order.
-
-        Each parameter is `(n_observations, [stream,] detector)`, its detector axis padded.
-        """
-        per_bucket = []
-        for bm in acc.buckets:
-            # every parameter is a detector's, so held per batch: `(slot, batch, ..., detector)`
-            leaves, _ = jax.tree_util.tree_flatten_with_path(
-                self.placement.gather(bm.batches.model.noise_model)
-            )
-            per_bucket.append({_parameter_name(path): leaf for path, leaf in leaves})
-        return {
-            name: self.layout.to_observation_order([p[name] for p in per_bucket], detector_axis=-1)
-            for name in per_bucket[0]
-        }
-
-    def build_model_and_accumulate(self) -> _AccumulatedModel:
+    def build_model_and_accumulate(self) -> AccumulatedModel:
         """Build the model and accumulate the hit map and map RHS in one pass over the data.
 
         Empty (or failed) slots are gated out using a zero-mask, so they drop from the system.
@@ -711,7 +440,7 @@ class MultiObservationMapMaker[T]:
             hit_map = hit_map + hits
             map_rhs = furax.tree.add(map_rhs, rhs)
             bucket_models.append(bucket_model)
-        return _AccumulatedModel(buckets=tuple(bucket_models), hit_map=hit_map, map_rhs=map_rhs)
+        return AccumulatedModel(buckets=tuple(bucket_models), hit_map=hit_map, map_rhs=map_rhs)
 
     def _accumulate_bucket(
         self, bucket_index: int, reader: ObservationReader[T], sky: StokesType | None
@@ -1817,8 +1546,3 @@ def _store_round(
             out,
         )
     return _set_round(store, out, r)
-
-
-def _parameter_name(path: tuple[Any, ...]) -> str:
-    """The name of a leaf of a noise model, from its path: `sigma`, or `<key>/sigma` if nested."""
-    return '/'.join(str(getattr(k, 'name', getattr(k, 'key', k))) for k in path)

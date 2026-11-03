@@ -1,20 +1,23 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from logging import Logger
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 from jax.experimental import multihost_utils as mhu
 from jaxtyping import Array, PyTree
 
 import furax.tree
 from furax import AbstractLinearOperator
-from furax.linalg import CGResult, cg
+from furax.linalg import CGResult, LowRankTerms, cg, lanczos_tr
+from furax.linalg._lanczos import LanczosWhich
 
 from ._checkpoint import CHECKPOINT_FILES, SolveCheckpoint
-from .config import SolverConfig
+from .config import SolverConfig, TwoLevelConfig
 from .layout import SlotPlacement
+from .preconditioner import make_two_level_preconditioner
 
 
 class SystemSolution(NamedTuple):
@@ -95,6 +98,40 @@ class MapMakingSystem:
             for checkpoint in converged:
                 checkpoint.remove()
         return SystemSolution(result.solution, injected, stats)
+
+    def deflate(self, config: TwoLevelConfig, logger: Logger) -> 'MapMakingSystem':
+        """The system with a two-level preconditioner deflating some modes of the current one.
+
+        Args:
+            config: The options of the eigenpairs to deflate.
+            logger: Where to report the eigenvalues found.
+        """
+        preconditioned = config.spectrum == 'preconditioned'
+        # The spectrum is positive, so its smallest and largest eigenvalues are its algebraic ends.
+        lanczos_which: dict[str, LanczosWhich] = {'small': 'SA', 'large': 'LA', 'both': 'BE'}
+        result = lanczos_tr(
+            self.A,
+            key=jax.random.key(config.seed),
+            k=config.rank,
+            m=config.krylov_size,
+            which=lanczos_which[config.which],
+            max_restarts=config.max_restarts,
+            tol=config.tol,
+            preconditioner=self.preconditioner if preconditioned else None,
+        )
+        theta = result.eigenvalues
+        logger.info(
+            f'Deflating {config.rank} eigenpairs ({config.which}) of the '
+            f'{config.spectrum} spectrum, eigenvalues in '
+            f'[{float(theta[0]):.6e}, {float(theta[-1]):.6e}], '
+            f'max residual bound {float(jnp.max(result.residual_norms)):.3e}'
+        )
+        M = make_two_level_preconditioner(
+            self.preconditioner,
+            LowRankTerms(theta, result.eigenvectors),
+            preconditioned=preconditioned,
+        )
+        return replace(self, preconditioner=M)
 
 
 def _solve(

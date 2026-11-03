@@ -6,7 +6,7 @@ from numpy.testing import assert_allclose
 
 from furax import tree
 from furax.core import DenseBlockDiagonalOperator
-from furax.mapmaking._system import MemberOperator
+from furax.mapmaking._bucket import MemberOperator
 
 N = 3
 

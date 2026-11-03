@@ -20,7 +20,6 @@ from furax.mapmaking.config import (
     GapTreatment,
     HealpixConfig,
     LandscapeConfig,
-    Methods,
     NoiseFitConfig,
     NoiseSource,
     PointingConfig,
@@ -32,18 +31,11 @@ from furax.mapmaking.config import (
     WeightingConfig,
     WeightingMode,
 )
-from furax.mapmaking.mapmaker import (
-    BinnedMapMaker,
-    MapMaker,
-    MLMapmaker,
-    PommeMapMaker,
-)
 from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import ValidStokesLiteral
 from tests.mapmaking.helpers import (
     FailingLazyObservation,
-    FakeGroundObservation,
     FakeLazyObservation,
     GappyLazyGroundObservation,
     ProbeFailingLazyObservation,
@@ -181,7 +173,7 @@ class TestBuckets:
 
     @staticmethod
     def _correlated_config(correlation_length: int) -> MapMakingConfig:
-        config = _config('healpix', 'IQU', method=Methods.MAXL, max_buckets=3)
+        config = _config('healpix', 'IQU', max_buckets=3)
         config.weighting = WeightingConfig(
             mode=WeightingMode.TOEPLITZ,
             source=NoiseSource.PRECOMPUTED,
@@ -206,15 +198,13 @@ class TestBuckets:
         if max_buckets == 3 and jax.device_count() == 1:
             assert len(layout.buckets) == 3  # singletons never pad on one device
 
-    @pytest.mark.parametrize(
-        ('stokes', 'method'), [('I', Methods.BINNED), ('IQU', Methods.MAXL)], ids=['I', 'IQU-ml']
-    )
-    def test_maps_do_not_depend_on_bucketing(self, stokes, method):
+    @pytest.mark.parametrize('stokes', ['I', 'IQU'])
+    def test_maps_do_not_depend_on_bucketing(self, stokes):
         # Unit weights: a fitted noise level would see the padded samples and so depend on the
         # bucket's envelope, which is not what is under test here.
         observations = self._observations()
-        one = _config('healpix', stokes, method=method, identity_noise=True)
-        many = _config('healpix', stokes, method=method, identity_noise=True, max_buckets=3)
+        one = _config('healpix', stokes, identity_noise=True)
+        many = _config('healpix', stokes, identity_noise=True, max_buckets=3)
         one_result = MultiObservationMapMaker(observations, config=one).make_maps()
         many_result = MultiObservationMapMaker(observations, config=many).make_maps()
         assert eqx.tree_equal(one_result.hit_map, many_result.hit_map)
@@ -272,7 +262,7 @@ class TestBuckets:
         accumulate(maker)
 
     def test_bucket_envelope_covers_pomme_support(self):
-        config = _config('healpix', 'QU', method=Methods.POMME, pomme_tau=64, max_buckets=3)
+        config = _config('healpix', 'QU', pomme_tau=64, max_buckets=3)
         observations = [FakeLazyObservation(seed=0, n_samples=32)]
         observations.extend(FakeLazyObservation(seed=i, n_samples=256) for i in (1, 2))
         maker = MultiObservationMapMaker(observations, config=config)
@@ -281,7 +271,7 @@ class TestBuckets:
 
 
 def test_two_level_preconditioner_solves_the_same_system():
-    config = _config('healpix', 'IQU', method=Methods.MAXL)
+    config = _config('healpix', 'IQU')
     config.weighting = WeightingConfig(
         mode=WeightingMode.TOEPLITZ, source=NoiseSource.PRECOMPUTED, correlation_length=64
     )
@@ -301,7 +291,7 @@ def test_two_level_preconditioner_solves_the_same_system():
 
 
 def test_solve_resumes_from_its_checkpoint(tmp_path: Path):
-    config = _config('healpix', 'IQU', method=Methods.MAXL)
+    config = _config('healpix', 'IQU')
     config.weighting = WeightingConfig(
         mode=WeightingMode.TOEPLITZ, source=NoiseSource.PRECOMPUTED, correlation_length=64
     )
@@ -357,8 +347,7 @@ def _config(
     stokes: ValidStokesLiteral,
     demodulated: bool = False,
     interpolation: Literal['nearest', 'bilinear'] = 'nearest',
-    method: Methods = Methods.BINNED,
-    pomme_tau: int = 0,
+    pomme_tau: int | None = None,
     ordering: Literal['nest', 'ring'] = 'ring',
     identity_noise: bool = False,
     max_buckets: int = 1,
@@ -378,7 +367,6 @@ def _config(
             ),
         )
     return MapMakingConfig(
-        method=method,
         pointing=PointingConfig(on_the_fly=True, interpolation=interpolation),
         landscape=lc,
         weighting=WeightingConfig(
@@ -409,56 +397,21 @@ def test_nested_healpix_gives_the_ring_map():
         np.testing.assert_allclose(reordered, np.asarray(expected), rtol=1e-10, atol=1e-12)
 
 
-class TestSingleObsSolverGuards:
-    """Solver/weighting compatibility on the single-observation ``MapMaker`` path.
-
-    The direct binned solvers invert only the per-pixel (block-Jacobi) system, which is exact for
-    nearest-neighbour pointing but drops the off-diagonal pixel coupling that bilinear interpolation
-    introduces -- so bilinear pointing is restricted to the iterative ML solver. The ML solver in
-    turn accepts any weighting mode (identity / diagonal / Toeplitz), not just Toeplitz.
-    """
-
-    def _config(
-        self,
-        mode: WeightingMode,
-        interpolation: Literal['nearest', 'bilinear'] = 'nearest',
-        method: Methods = Methods.MAXL,
-    ) -> MapMakingConfig:
-        return MapMakingConfig(
-            method=method,
-            pointing=PointingConfig(on_the_fly=True, interpolation=interpolation),
-            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
-            # PRECOMPUTED sidesteps fitting a model to the synthetic white TODs (yields NaN).
-            weighting=WeightingConfig(mode=mode, source=NoiseSource.PRECOMPUTED),
-        )
-
-    @pytest.mark.parametrize(
-        ('mode', 'interpolation'),
-        [(WeightingMode.IDENTITY, 'nearest'), (WeightingMode.DIAGONAL, 'bilinear')],
-    )
-    def test_ml_mapmaker_accepts_any_weighting_and_pointing(self, mode, interpolation) -> None:
-        obs = FakeGroundObservation(n_dets=4, n_samples=1024, sample_rate=100.0)
-        res = MLMapmaker(config=self._config(mode, interpolation)).make_map(obs)
-        assert bool(jnp.all(jnp.isfinite(res['map'])))
-
-    @pytest.mark.parametrize('maker_cls', [BinnedMapMaker, PommeMapMaker])
-    def test_direct_solvers_reject_bilinear_pointing(self, maker_cls: type[MapMaker]) -> None:
-        """The direct binned solvers refuse bilinear pointing at construction time."""
-        cfg = self._config(WeightingMode.DIAGONAL, interpolation='bilinear', method=Methods.BINNED)
-        with pytest.raises(ValueError, match='does not support bilinear pointing'):
-            maker_cls(config=cfg)
-
-
 class TestGapTreatmentMapMaker:
     """End-to-end multi-observation ML mapmaking with the correlated-noise gap treatments."""
 
     def _config(self, treatment: GapTreatment) -> MapMakingConfig:
-        cfg = MapMakingConfig.for_method('ml')
-        cfg.weighting.source = NoiseSource.PRECOMPUTED  # use the obs 1/f model (finite)
-        cfg.weighting.correlation_length = 128  # < n_samples, keeps the Toeplitz solve small
-        cfg.landscape = LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8))
-        cfg.pointing = PointingConfig(on_the_fly=True, interpolation='nearest')
-        cfg.solver.max_steps = 30
+        cfg = MapMakingConfig(
+            weighting=WeightingConfig(
+                mode=WeightingMode.TOEPLITZ,
+                source=NoiseSource.PRECOMPUTED,  # use the obs 1/f model (finite)
+                correlation_length=128,  # < n_samples, keeps the Toeplitz solve small
+            ),
+            solver=SolverConfig(rtol=1e-6, atol=0, max_steps=30),
+            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
+            pointing=PointingConfig(on_the_fly=True, interpolation='nearest'),
+            detector_batch_size=0,  # the default gap filling works on whole observations
+        )
         cfg.gaps.treatment = treatment
         return cfg
 

@@ -9,7 +9,6 @@ from furax.mapmaking.config import (
     HealpixConfig,
     LandscapeConfig,
     MapMakingConfig,
-    Methods,
     WeightingConfig,
     WeightingMode,
 )
@@ -107,4 +106,4 @@ def test_restrict_streams_keeps_the_streams_of_the_map():
 
 def _pomme_config(tau: int) -> MapMakingConfig:
     landscape = LandscapeConfig(stokes='QU', healpix=HealpixConfig())
-    return MapMakingConfig(method=Methods.POMME, pomme_tau=tau, landscape=landscape)
+    return MapMakingConfig(pomme_tau=tau, landscape=landscape)

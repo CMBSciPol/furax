@@ -68,12 +68,13 @@ def test_run_records_a_done_run_and_keeps_it(tmp_path) -> None:
 
 def test_run_rejects_an_invalid_config_without_touching_outdir(tmp_path) -> None:
     # Pomme maps Q and U only, and the default landscape is IQU
-    mapmaking_config = _config_file(tmp_path, {'method': 'Pomme'})
+    mapmaking_config = _config_file(tmp_path, {'pomme_tau': 8})
     outdir = tmp_path / 'maps'
 
     rejected = _run(outdir, '--mapmaking-config', str(mapmaking_config))
     assert rejected.returncode == 1
     assert 'invalid mapmaking config' in rejected.stderr
+    assert 'Pomme maps Q and U only' in rejected.stderr
     assert not outdir.exists()
 
 
@@ -159,7 +160,6 @@ def test_run_refuses_a_directory_in_use(tmp_path, args: list[str]) -> None:
 def test_run_resumes_a_solve_out_of_steps(tmp_path) -> None:
     solver = {'rtol': 1e-10, 'max_steps': 3, 'checkpoint_every': 2}
     config = {
-        'method': 'ML',
         'weighting': {'mode': 'toeplitz'},
         'gaps': {'treatment': 'inner_mask'},
         'solver': solver,

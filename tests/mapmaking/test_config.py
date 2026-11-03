@@ -14,7 +14,6 @@ from furax.mapmaking.config import (
     HWPSynchronousConfig,
     LandscapeConfig,
     MapMakingConfig,
-    Methods,
     PointingConfig,
     PolynomialOrders,
     ScanSynchronousConfig,
@@ -227,9 +226,17 @@ def test_correlated_weight_with_templates_requires_inner_mask_gaps(treatment: Ga
 def test_pomme_rejects(stokes: str, demodulated: bool, match: str):
     with pytest.raises(ValueError, match=match):
         MapMakingConfig(
-            method=Methods.POMME,
+            pomme_tau=64,
             landscape=LandscapeConfig(stokes=stokes, healpix=HealpixConfig(nside=16)),
             sotodlib=SotodlibConfig(demodulated=True) if demodulated else None,
+        )
+
+
+@pytest.mark.parametrize('tau', [0, 1])
+def test_pomme_rejects_short_interval(tau: int):
+    with pytest.raises(ValueError, match='pomme_tau'):
+        MapMakingConfig(
+            pomme_tau=tau, landscape=LandscapeConfig(stokes='QU', healpix=HealpixConfig(nside=16))
         )
 
 

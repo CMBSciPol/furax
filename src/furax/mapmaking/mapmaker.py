@@ -45,6 +45,9 @@ from .weight import WeightOperator
 
 logger = logging.getLogger(__name__)
 
+# Relative spread of the observation sample rates the low-rank weighting accepts as one rate.
+_SAMPLE_RATE_TOLERANCE = 1e-3
+
 
 class MultiObservationMapMaker[T]:
     """Class for mapping multiple observations together."""
@@ -163,14 +166,14 @@ class MultiObservationMapMaker[T]:
 
     @cached_property
     def fit_config(self) -> MapMakingConfig:
-        """The run configuration, with the Welch segment clipped to the shortest observation.
+        """The run configuration, with the noise fit options completed from the probes.
 
         [`padding_aware_welch`][furax.mapmaking.noise.padding_aware_welch] drops the segments that
         fall in an observation's padded tail, but the segment length sets the number of frequency
         bins and so cannot vary with the padding. A segment longer than the shortest observation
         would therefore leave one partial segment straddling that observation's padding, and its
         noise fit would see the zeros. Clipping the segment keeps every averaged segment inside
-        real data.
+        real data. The segments of the low-rank fit are clipped likewise.
 
         The clip is taken over the whole dataset rather than over each bucket, so that the noise
         fit stays independent of how the observations happen to be bucketed. Observation lengths
@@ -181,6 +184,11 @@ class MultiObservationMapMaker[T]:
         if weighting.mode == WeightingMode.IDENTITY or weighting.source != NoiseSource.FIT:
             return self.config  # no PSD is estimated, so the segment length is unused
         shortest = min(shape.sample_count for shape in self._probe_shapes)
+        if weighting.mode == WeightingMode.LOW_RANK:
+            low_rank = replace(
+                weighting.low_rank, nperseg=min(weighting.low_rank.nperseg, shortest)
+            )
+            return replace(self.config, weighting=replace(weighting, low_rank=low_rank))
         nperseg = min(weighting.fitting.nperseg, shortest)
         if nperseg == weighting.fitting.nperseg:
             return self.config
@@ -190,6 +198,35 @@ class MultiObservationMapMaker[T]:
         )
         fitting = replace(weighting.fitting, nperseg=nperseg)
         return replace(self.config, weighting=replace(weighting, fitting=fitting))
+
+    @cached_property
+    def _probed_sample_rate(self) -> float:
+        """The sample rate shared by the observations, from their probes.
+
+        The low-rank noise model places its frequency bins at it, which must be known before
+        compilation.
+
+        The probes are dealt round-robin to the processes and gathered, as for the shapes. An
+        observation whose probe fails is left out here; its read fails later as well.
+        """
+        n_proc = jax.process_count()
+        local: dict[int, float] = {}
+        for i in range(jax.process_index(), self.n_observations, n_proc):
+            try:
+                local[i] = float(self.observations[i].probe_sample_rate())
+            except Exception:
+                logger.exception('Sample rate probe of observation %d failed', i)
+        rates = np.array(list(gather_rows(local).values()))
+        if rates.size == 0:
+            raise RuntimeError('no observation gave its sample rate')
+        median = float(np.median(rates))
+        if np.ptp(rates) > _SAMPLE_RATE_TOLERANCE * median:
+            raise ValueError(
+                f'the observations have sample rates from {rates.min()} to {rates.max()} Hz: the '
+                'low-rank weighting needs a common one'
+            )
+        logger.info(f'Low-rank noise bins placed at the probed sample rate of {median:.6g} Hz')
+        return median
 
     def get_readers(self, required_fields: Collection[str]) -> tuple[ObservationReader[T], ...]:
         """Build one reader per bucket, over that bucket's observations only.
@@ -448,6 +485,9 @@ class MultiObservationMapMaker[T]:
         inject, if any, is a shared input that every member receives whole.
         """
         config = self.fit_config
+        noise_sample_rate = None
+        if config.weighting.mode == WeightingMode.LOW_RANK:
+            noise_sample_rate = self._probed_sample_rate
         landscape = self.landscape
         fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
         build_templates = config.use_templates
@@ -548,7 +588,9 @@ class MultiObservationMapMaker[T]:
             return out['hits'], out['map'], (batches, kept, out['rhs']['common'])
 
         def fill_observation_gaps(data, padding):
-            obs = ObservationModel.create(data, padding, config, landscape)
+            obs = ObservationModel.create(
+                data, padding, config, landscape, noise_sample_rate=noise_sample_rate
+            )
             # Only reached under GapTreatment.FILL, where W is the plain inner-mask weight.
             assert isinstance(obs.W, WeightOperator)
             # Optional M_b N M_b preconditioner (covariance from the noise model).
@@ -575,7 +617,9 @@ class MultiObservationMapMaker[T]:
                 # The extra streams read, the I one for the T2P template, stay out of the model
                 temperature = data[ReaderField.SAMPLE_DATA].i
                 data, tod = restrict_streams(data, tod, landscape.stokes)
-            obs = ObservationModel.create(data, padding, config, landscape)
+            obs = ObservationModel.create(
+                data, padding, config, landscape, noise_sample_rate=noise_sample_rate
+            )
 
             # Padding/failed observations contribute nothing
             obs.M = obs.M.restrict(use)

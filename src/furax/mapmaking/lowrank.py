@@ -1,17 +1,21 @@
 """Detector-correlated noise model: a diagonal plus a few common modes per frequency bin."""
 
 import itertools
+from dataclasses import dataclass, field
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Array, Bool, Float
+from jaxtyping import Array, Bool, Float, Inexact, PyTree
 
 from furax.core import LowRankFourierOperator
 
 from .config import LowRankNoiseFitConfig
+from .noise import NoiseModel, WhiteNoiseModel
 
 __all__ = [
+    'LowRankNoiseModel',
     'fit_low_rank_noise',
 ]
 
@@ -30,14 +34,103 @@ _CANDIDATES_PER_MODE = 3
 _DIAGONAL_FLOOR = 1e-2
 
 
+@jax.tree_util.register_dataclass
+@dataclass
+class LowRankNoiseModel(NoiseModel):
+    r"""Noise covariance $N(f) = D_b + V_b G_b V_b^\dagger$ in frequency bins, across channels.
+
+    The channels are the streams and detectors of a TOD, flattened stream-major, as
+    [`LowRankFourierOperator`][furax.core.LowRankFourierOperator] takes them.
+    """
+
+    diagonal: Float[Array, 'bin channel']
+    """The diagonal $D_b$ of each bin."""
+
+    modes: Inexact[Array, 'bin channel mode']
+    """The modes $V_b$ of each bin, padded with zeros."""
+
+    core: Inexact[Array, 'bin mode mode']
+    """The mode covariance $G_b$ of each bin."""
+
+    edges: tuple[float, ...] = field(metadata={'static': True})
+    """Interior bin boundaries in Hz (see [`LowRankFourierOperator.edges`][])."""
+
+    sample_rate: float = field(metadata={'static': True})
+    """Sample rate in Hz at which the bins are placed."""
+
+    lead: tuple[int, ...] = field(metadata={'static': True})
+    """The shape of the channel axes: `(streams, detectors)` for a demodulated TOD."""
+
+    @property
+    def n_detectors(self) -> int:
+        return self.lead[-1]
+
+    def psd(self, f: Float[Array, ' a']) -> Float[Array, '... a']:
+        """The diagonal of $N(f)$: the power of each channel, correlated modes included."""
+        bins = jnp.searchsorted(jnp.array(self.edges), f, side='right')
+        power = (
+            self.diagonal
+            + jnp.einsum('bcj,bjk,bck->bc', self.modes, self.core, self.modes.conj()).real
+        )
+        return power[bins].T.reshape(*self.lead, f.size)
+
+    def log_psd(self, f: Float[Array, ' a']) -> Float[Array, '... a']:
+        return jnp.log10(self.psd(f))
+
+    def to_array(self) -> Float[Array, 'dets n']:
+        return self.diagonal.T
+
+    def operator(
+        self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
+    ) -> LowRankFourierOperator:
+        """The covariance $N$, as an operator on TODs of structure `in_structure`."""
+        return LowRankFourierOperator(
+            self.diagonal,
+            self.modes,
+            self.core,
+            edges=self.edges,
+            sample_rate=self.sample_rate,
+            in_structure=in_structure,
+        )
+
+    def inverse_operator(
+        self, in_structure: PyTree[jax.ShapeDtypeStruct], **kwargs: Any
+    ) -> LowRankFourierOperator:
+        """The weight $N^{-1}$, as an operator on TODs of structure `in_structure`."""
+        return self.operator(in_structure).inverse()
+
+    def detector_parameters(self) -> WhiteNoiseModel:
+        """The white noise level of each detector: the correlated modes have no per-detector form."""
+        return self.to_white_noise_model()
+
+    def to_white_noise_model(self) -> WhiteNoiseModel:
+        """The white noise whose weight is the zero-lag of $N^{-1}$, channel by channel.
+
+        It is the diagonal of the weight in the time domain: the average of the diagonal of
+        $N^{-1}(f)$ over the frequencies up to Nyquist.
+        """
+        weight = self.inverse_operator(
+            jax.ShapeDtypeStruct((self.diagonal.shape[1], 1), self.diagonal.dtype)
+        )
+        diagonal = (
+            weight.diagonal
+            + jnp.einsum('bcj,bjk,bck->bc', weight.modes, weight.core, weight.modes.conj()).real
+        )
+        bounds = np.array([0.0, *self.edges, self.sample_rate / 2]).clip(0, self.sample_rate / 2)
+        fractions = jnp.asarray(np.diff(bounds) / (self.sample_rate / 2), diagonal.dtype)
+        inverse_variance = fractions @ diagonal
+        return WhiteNoiseModel(sigma=(1 / jnp.sqrt(inverse_variance)).reshape(self.lead))
+
+
 def fit_low_rank_noise(
     samples: Float[Array, 'channel sample'],
     sample_rate: float,
     *,
     valid: Bool[Array, 'channel sample'] | None = None,
     n_real: int | Array | None = None,
+    lead: tuple[int, ...] | None = None,
     config: LowRankNoiseFitConfig | None = None,
-) -> LowRankFourierOperator:
+) -> LowRankNoiseModel:
     r"""Fit the noise covariance $N(f) = D + V G V^\top$ in frequency bins from the data.
 
     Each channel is whitened by its power in the high-frequency band, where it is assumed white.
@@ -56,11 +149,12 @@ def fit_low_rank_noise(
         sample_rate: Sample rate in Hz.
         valid: Whether each sample is valid, or `None` to keep them all.
         n_real: Number of samples before the padded tail, or `None` for no padding.
+        lead: The shape of the channel axes, `(streams, detectors)` for a demodulated TOD; by
+            default, a single axis.
         config: Fit options.
 
     Returns:
-        The covariance, as an operator on arrays of the shape of `samples`. Its
-        [`inverse`][furax.core.LowRankFourierOperator.inverse] is the noise weight.
+        The fitted noise model.
     """
     config = config or LowRankNoiseFitConfig()
     edges = tuple(float(e) for e in config.bin_edges)
@@ -121,13 +215,13 @@ def fit_low_rank_noise(
         [zero_modes if v is None else jnp.sqrt(level)[:, None] * v for _, v, _ in bins]
     )
     core = jnp.stack([jnp.diag(zero_power if g is None else g) for _, _, g in bins])
-    return LowRankFourierOperator(
+    return LowRankNoiseModel(
         diagonal,
         mode_array,
         core,
         edges=edges,
         sample_rate=float(sample_rate),
-        in_structure=jax.ShapeDtypeStruct(samples.shape, samples.dtype),
+        lead=(n_channels,) if lead is None else tuple(lead),
     )
 
 

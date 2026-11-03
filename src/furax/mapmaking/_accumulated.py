@@ -23,6 +23,7 @@ from ._bucket import Batch, BucketModel, BucketNormalOperator, MemberOperator
 from ._model import FACTORED_KINDS, TemplateBundle
 from ._solve import MapMakingSystem
 from .layout import Bucket, SlotLayout, SlotPlacement
+from .noise import NoiseModel
 from .preconditioner import BJPreconditioner
 
 
@@ -208,9 +209,15 @@ class AccumulatedModel:
         per_bucket = []
         for bm in self.buckets:
             # every parameter is a detector's, so held per batch: `(slot, batch, ..., detector)`
-            leaves, _ = jax.tree_util.tree_flatten_with_path(
-                placement.gather(bm.batches.model.noise_model)
-            )
+            def per_detector(models):
+                return jax.tree.map(
+                    lambda m: m.detector_parameters(),
+                    models,
+                    is_leaf=lambda m: isinstance(m, NoiseModel),
+                )
+
+            parameters = jax.vmap(jax.vmap(per_detector))(bm.batches.model.noise_model)
+            leaves, _ = jax.tree_util.tree_flatten_with_path(placement.gather(parameters))
             per_bucket.append({_parameter_name(path): leaf for path, leaf in leaves})
         return {
             name: layout.to_observation_order([p[name] for p in per_bucket], detector_axis=-1)

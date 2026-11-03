@@ -18,6 +18,7 @@ OutKind = Literal['sum', 'stack', 'shared']
 from ._observation import ReaderField, _sample_rate
 from .acquisition import build_acquisition_operator
 from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
+from .lowrank import fit_low_rank_noise
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .templates import TemplateOperator, build_templates, required_reader_fields
 from .templates.gram import BlockGram, factor, template_gram
@@ -52,12 +53,30 @@ class ObservationModel:
 
     @classmethod
     def create(
-        cls, data: Any, padding: Any, config: MapMakingConfig, landscape: StokesLandscape
+        cls,
+        data: Any,
+        padding: Any,
+        config: MapMakingConfig,
+        landscape: StokesLandscape,
+        *,
+        noise_sample_rate: float | None = None,
     ) -> Self:
+        """Build the model of an observation from the fields read for it.
+
+        Args:
+            data: The fields read for the observation.
+            padding: Their padding widths, as returned by the reader.
+            config: The mapmaking configuration.
+            landscape: The landscape of the maps.
+            noise_sample_rate: The sample rate in Hz at which the bins of the low-rank noise model
+                are placed. It must be known before compilation, and is required in that mode.
+        """
         H = acquisition_operator(data, config, landscape)
         tod_format = _tod_format(H)
         M = _mask_projector(_sample_mask(data, config), tod_format=tod_format)
-        noise_model, sample_rate = _noise_model(data, config, tod_format, padding=padding)
+        noise_model, sample_rate = _noise_model(
+            data, config, tod_format, padding=padding, noise_sample_rate=noise_sample_rate
+        )
         Ninv = _noise_operator(
             noise_model,
             tod_format,
@@ -211,6 +230,7 @@ def _noise_model(
     config: MapMakingConfig,
     tod_format: TODFormat,
     padding: Any | None = None,
+    noise_sample_rate: float | None = None,
 ) -> tuple[PyTree[NoiseModel], Array]:
     """Compute the noise model and sample rate for a single observation block."""
     fs = _sample_rate(data[ReaderField.TIMESTAMPS])
@@ -225,6 +245,11 @@ def _noise_model(
     )
     if config.weighting.mode == WeightingMode.IDENTITY:
         return WhiteNoiseModel(sigma=jnp.ones(lead, dtype=tod_format.dtype)), fs
+    if config.weighting.mode == WeightingMode.LOW_RANK:
+        if noise_sample_rate is None:
+            raise ValueError('the low-rank noise fit needs a static noise_sample_rate')
+        model = _low_rank_noise_model(data, config, tod_format, lead, padding, noise_sample_rate)
+        return model, fs
     if config.weighting.source == NoiseSource.FIT:
         fit_config = config.weighting.fitting
         noise_model_class = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
@@ -254,6 +279,32 @@ def _noise_model(
         if config.binned:
             noise_model = noise_model.to_white_noise_model()
     return noise_model, fs
+
+
+def _low_rank_noise_model(
+    data: Any,
+    config: MapMakingConfig,
+    tod_format: TODFormat,
+    lead: tuple[int, ...],
+    padding: Any | None,
+    sample_rate: float,
+) -> NoiseModel:
+    """Fit the detector-correlated noise model of a whole observation."""
+    fit_config = config.weighting.low_rank
+    nsamp = tod_format.n_samples
+    samples = tod_format.as_array(data[ReaderField.SAMPLE_DATA]).reshape(-1, nsamp)
+    n_real = nsamp
+    if padding is not None:  # one padding per axis of the TOD's array, the samples last
+        n_real = nsamp - jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0][-1]
+    valid = jnp.broadcast_to(_sample_mask(data, config), (*lead, nsamp)).reshape(-1, nsamp)
+    return fit_low_rank_noise(
+        samples,
+        sample_rate,
+        valid=valid,
+        n_real=n_real,
+        lead=lead,
+        config=fit_config,
+    )
 
 
 def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
@@ -481,6 +532,12 @@ class ObservationTemplates:
         pomme_tau = config.pomme_tau
         # the Toeplitz band of a correlated weight holds lags 0 to `correlation_length - 1`
         bandwidth = 0 if config.binned else config.weighting.correlation_length - 1
+        gram_weight = model.W
+        if config.weighting.mode == WeightingMode.LOW_RANK:
+            # The low-rank weight couples detectors, which the Grams cannot take. The templates
+            # are all explicit (see `MapMakingConfig`), so their Grams only precondition the solve
+            # and set its ridge: those under the zero-lag white weight serve.
+            bandwidth, gram_weight = 0, model.diag_W()
         gram_options = {'bandwidth': bandwidth, 'pomme_tau': pomme_tau}
 
         implicit = None
@@ -503,7 +560,7 @@ class ObservationTemplates:
             'explicit': by_detectors(explicit_templates, True),
             'common': by_detectors(explicit_templates, False),
         }
-        weights = {'explicit': model.W, 'common': weight}
+        weights = {'explicit': gram_weight, 'common': gram_weight if implicit is None else weight}
         grams = {
             kind: None
             if op is None

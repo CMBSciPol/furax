@@ -3,7 +3,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from furax.core import LowRankFourierOperator
 from furax.mapmaking.config import LowRankNoiseFitConfig
 from furax.mapmaking.lowrank import fit_low_rank_noise
 
@@ -80,15 +79,25 @@ def test_weight_is_the_inverse_of_the_fitted_covariance():
     # the operator applies to inputs of any length at the same sample rate
     x = jax.random.normal(jax.random.key(7), (N_CHANNELS, 256))
     structure = jax.ShapeDtypeStruct(x.shape, x.dtype)
-    short = LowRankFourierOperator(
-        op.diagonal,
-        op.modes,
-        op.core,
-        edges=op.edges,
-        sample_rate=SAMPLE_RATE,
-        in_structure=structure,
+    weight = op.inverse_operator(structure)
+    np.testing.assert_allclose(weight(op.operator(structure)(x)), x, atol=1e-8)
+
+
+def test_white_model_is_the_zero_lag_of_the_weight():
+    data, _, _ = simulate(jax.random.key(8), 1.0)
+    model = fit_low_rank_noise(data, SAMPLE_RATE, lead=(2, N_CHANNELS // 2), config=CONFIG)
+    # the time-domain diagonal of the weight, on a grid fine enough to resolve the bins
+    structure = jax.ShapeDtypeStruct((N_CHANNELS, 2**14), jnp.float64)
+    weight = model.inverse_operator(structure)
+    impulses = (
+        jnp.zeros((N_CHANNELS, *structure.shape))
+        .at[jnp.arange(N_CHANNELS), :, 0]
+        .set(jnp.eye(N_CHANNELS))
     )
-    np.testing.assert_allclose(short.inverse()(short(x)), x, atol=1e-8)
+    zero_lag = jnp.diag(jax.vmap(weight)(impulses)[:, :, 0])
+    sigma = model.to_white_noise_model().sigma
+    assert sigma.shape == (2, N_CHANNELS // 2)
+    np.testing.assert_allclose(1 / sigma.ravel() ** 2, zero_lag, rtol=2e-3)
 
 
 @pytest.mark.parametrize(

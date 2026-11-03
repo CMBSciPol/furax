@@ -21,6 +21,7 @@ __all__ = [
     'WeightingMode',
     'NoiseSource',
     'NoiseFitConfig',
+    'LowRankNoiseFitConfig',
     'SolverConfig',
     'TwoLevelConfig',
     'GapsConfig',
@@ -57,6 +58,9 @@ class WeightingMode(Enum):
 
     TOEPLITZ = 'toeplitz'
     """Banded Toeplitz weighting ($1/f$ noise model)."""
+
+    LOW_RANK = 'low_rank'
+    """Detector-correlated weighting: a diagonal plus a few common modes per frequency bin."""
 
 
 class NoiseSource(Enum):
@@ -274,10 +278,13 @@ class WeightingConfig:
     fitting: NoiseFitConfig = field(default_factory=NoiseFitConfig)
     """Options for fitting the noise PSD to the data."""
 
+    low_rank: LowRankNoiseFitConfig = field(default_factory=LowRankNoiseFitConfig)
+    """Options for fitting the detector-correlated noise model. Only relevant in `LOW_RANK` mode."""
+
     @property
     def diagonal_matrix(self) -> bool:
         """True when the inverse-noise matrix is diagonal (identity or white)."""
-        return self.mode != WeightingMode.TOEPLITZ
+        return self.mode not in (WeightingMode.TOEPLITZ, WeightingMode.LOW_RANK)
 
 
 @dataclass
@@ -1191,6 +1198,8 @@ class MapMakingConfig:
             raise ValueError(
                 'Templates with correlated weighting require gaps.treatment=inner_mask.'
             )
+        if self.weighting.mode == WeightingMode.LOW_RANK:
+            self._check_low_rank()
         if (templates := self.templates) is not None:
             for label, polarized in (
                 ('T2P', templates.t2p),
@@ -1215,6 +1224,33 @@ class MapMakingConfig:
             ):
                 if isinstance(per_stream, dict):
                     self._check_stream_groups(f'templates.{name}', per_stream)
+
+    def _check_low_rank(self) -> None:
+        """Check that the detector-correlated weighting supports the config."""
+        if self.weighting.source != NoiseSource.FIT:
+            raise ValueError('weighting.mode=low_rank requires weighting.source=fit.')
+        if self.detector_batch_size:
+            raise ValueError(
+                'weighting.mode=low_rank couples the detectors of an observation: set '
+                f'detector_batch_size to 0 (got {self.detector_batch_size})'
+            )
+        if self.gaps.treatment != GapTreatment.INNER_MASK:
+            raise ValueError('weighting.mode=low_rank requires gaps.treatment=inner_mask.')
+        if self.templates is not None:
+            implicit = [
+                f.name
+                for f in fields(self.templates)
+                if (template := getattr(self.templates, f.name)) is not None
+                and hasattr(template, 'explicit')
+                and not template.explicit
+            ]
+            if implicit:
+                # marginalizing amplitudes needs their exact Gram under the weight, which the
+                # correlated weight does not provide
+                raise ValueError(
+                    'weighting.mode=low_rank requires explicit templates: set explicit=true for '
+                    + ', '.join(implicit)
+                )
 
     def _check_pomme(self) -> None:
         """Check that Pomme supports the config."""

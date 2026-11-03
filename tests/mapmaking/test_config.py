@@ -16,6 +16,7 @@ from furax.mapmaking.config import (
     HWPSynchronousConfig,
     LandscapeConfig,
     MapMakingConfig,
+    NoiseSource,
     PointingConfig,
     PolynomialOrders,
     SotodlibConfig,
@@ -211,6 +212,36 @@ def test_correlated_gap_treatments_reject_detector_batches(treatment: GapTreatme
     )
     # with diagonal weights, gaps need no special treatment
     MapMakingConfig(gaps=GapsConfig(treatment=treatment), detector_batch_size=16)
+
+
+@pytest.mark.parametrize(
+    ('options', 'match'),
+    [
+        ({'detector_batch_size': 16}, 'detector_batch_size to 0'),
+        (
+            {
+                'weighting': WeightingConfig(
+                    mode=WeightingMode.LOW_RANK, source=NoiseSource.PRECOMPUTED
+                )
+            },
+            'source=fit',
+        ),
+        ({'gaps': GapsConfig(treatment=GapTreatment.NESTED)}, 'inner_mask'),
+        (
+            {'templates': TemplatesConfig(spline_drift=SplineDriftConfig())},
+            'explicit=true for spline_drift',
+        ),
+    ],
+    ids=['detector-batches', 'precomputed', 'nested-gaps', 'implicit-template'],
+)
+def test_low_rank_weighting_rejects(options, match):
+    base = {
+        'weighting': WeightingConfig(mode=WeightingMode.LOW_RANK),
+        'detector_batch_size': 0,
+        'gaps': GapsConfig(treatment=GapTreatment.INNER_MASK),
+    }
+    with pytest.raises(ValueError, match=match):
+        MapMakingConfig(**(base | options))
 
 
 @pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])

@@ -547,6 +547,14 @@ class AbstractLazyObservation[T](ABC):
             n_intervals = 0
         return ObservationBufferShape(data.n_detectors, data.n_samples, n_intervals)
 
+    def probe_sample_rate(self) -> float:
+        """Returns the sample rate of the observation in Hz.
+
+        The default opens the observation for its timestamps; subclasses may override with a
+        cheaper query (e.g., metadata only).
+        """
+        return self.get_data([ReaderField.TIMESTAMPS]).sample_rate
+
 
 class FileBackedLazyObservation[T](AbstractLazyObservation[T]):
     """Lazy observation whose backing store is a single binary file."""

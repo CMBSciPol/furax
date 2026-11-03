@@ -733,6 +733,25 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             max(meta.subscans.count for meta in metas) if intervals else 0,
         )
 
+    def probe_sample_rate(self) -> float:
+        """Returns the sample rate of the observation once downsampled, in Hz.
+
+        It is read from the observation database (the start and stop times of the observation and
+        its sample count), with no heavy I/O work. Without these, the observation is loaded.
+        """
+        _enable_preproc_context_cache()
+        _, context = pu.get_preprocess_context(self.init_config.as_posix())
+        info = context.obsdb.get(self.observation_id) if context.obsdb is not None else None
+        try:
+            if info is None:
+                raise KeyError(self.observation_id)
+            duration = float(info['stop_time']) - float(info['start_time'])
+            n_samples = int(info['n_samples'])
+        except (KeyError, TypeError):
+            logger.debug('No start and stop times for %s: loading it', self.observation_id)
+            return super().probe_sample_rate()
+        return (n_samples - 1) / duration / self._sotodlib_config.downsample
+
     def _load(self) -> SOTODLibObservation:
         # A preproc load cannot be field-subset: the full observation is always returned,
         # which satisfies any requested fields. The cheap shape path lives in probe_shape.

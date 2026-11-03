@@ -292,7 +292,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             except RuntimeError:  # all the group's detectors are cut
                 continue
             except LoaderError:  # the group was not preprocessed
-                logger.warning('%s: no preprocessing record for %s', observation_id, selection)
+                logger.warning('No preprocessing record for %s in %s', selection, observation_id)
                 continue
             parts.append(part.data)
         if not parts:
@@ -677,7 +677,7 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             try:
                 return SOTODLibObservation.from_file(path, requested_fields, sotodlib_config=config)
             except Exception:
-                logger.warning('cannot read %s, loading it again', path, exc_info=True)
+                logger.warning('Cannot read %s, loading it again', path, exc_info=True)
         obs = self._load()
         key = path.parent / 'key.json'
         if not key.exists():
@@ -720,7 +720,9 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             except LoaderError:
                 if not self.join_groups:
                     raise
-                logger.warning('%s: no preprocessing record for %s', self.observation_id, selection)
+                logger.warning(
+                    'No preprocessing record for %s in %s', selection, self.observation_id
+                )
         if not metas:
             raise RuntimeError(f'no preprocessing records for {self.observation_id}')
         downsample = self._sotodlib_config.downsample
@@ -818,7 +820,7 @@ def _write_atomically(path: Path, write: Callable[[Path], object]) -> None:
     except Exception:
         # not only I/O errors: AxisManager.save also fails on fields it cannot encode, and the
         # observation is loaded either way
-        logger.warning('could not write %s', path, exc_info=True)
+        logger.warning('Could not write %s', path, exc_info=True)
     finally:
         if tmp.exists():
             tmp.unlink()

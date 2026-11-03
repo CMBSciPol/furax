@@ -1,4 +1,5 @@
 import logging
+import time
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Annotated
@@ -98,6 +99,7 @@ def run(
     from furax.mapmaking import MapMakingConfig, MapMakingResults, MultiObservationMapMaker
     from furax.mapmaking._provenance import utc_now
 
+    run_start = time.perf_counter()
     maybe_init()  # before the first use of the JAX backend, jax.process_index() below
     rank = jax.process_index()
     outdir = (outdir or Path.cwd()).resolve()
@@ -106,21 +108,21 @@ def run(
     setup_logger(loglevel, None, process_index=rank)
 
     if outdir.exists() and not outdir.is_dir():
-        logger.error(f'{outdir} is not a directory')
+        logger.error(f'Output directory {outdir} is not a directory')
         return 1
     if (init_config is None) == (obsdir is None):
-        logger.error('specify exactly one of --init-config (preproc db) or --obsdir (legacy)')
+        logger.error('Specify exactly one of --init-config (preproc db) or --obsdir (legacy)')
         return 1
     if cache_dir is not None and init_config is None:
-        logger.error('--cache-dir requires --init-config')
+        logger.error('Option --cache-dir requires --init-config')
         return 1
     if overwrite and resume:
-        logger.error('pass either --overwrite or --resume')
+        logger.error('Pass either --overwrite or --resume')
         return 1
     try:
         config = MapMakingConfig.load_yaml(mapmaking_config) if mapmaking_config else None
     except (OSError, yaml.YAMLError, TypedloadException) as e:
-        logger.error(f'invalid mapmaking config {mapmaking_config}: {e}')
+        logger.error(f'Invalid mapmaking config {mapmaking_config}: {e}')
         return 1
     config = config or MapMakingConfig()
     jax.config.update('jax_enable_x64', config.double_precision)
@@ -138,14 +140,15 @@ def run(
             assert obsdir is not None
             observations = obsdir_observations(obsdir, obsids, config.sotodlib)
     except Exception:
-        logger.exception('loading the observations failed')
+        logger.exception('Loading the observations failed')
         observations, failed = [], True
     counts = mhu.process_allgather(np.array([len(observations), failed])).reshape(-1, 2)
     if counts[:, 1].any():
-        logger.error('loading the observations failed')
+        if not failed:  # the process that failed has logged why
+            logger.error('Loading the observations failed on another process')
         return 1
     if not counts[:, 0].any():
-        logger.warning('no observations to map')
+        logger.warning('No observations to map')
         return
 
     with ExitStack() as stack:
@@ -178,28 +181,30 @@ def run(
                 if earlier is None and not claim(outdir, started=started):
                     earlier = 'a run that started at the same time'
                 if earlier is not None:
-                    logger.error(f'{outdir} holds {earlier}: pass --overwrite or --resume')
+                    logger.error(
+                        f'Output directory {outdir} holds {earlier}: pass --overwrite or --resume'
+                    )
                     refused = True
             except DirectoryInUse:
-                logger.error(f'{outdir} is in use by a run that is still going')
+                logger.error(f'Output directory {outdir} is in use by a run that is still going')
                 refused = True
             except OSError as e:
                 # The other processes are waiting for the verdict below
-                logger.error(f'cannot prepare {outdir}: {e}')
+                logger.error(f'Cannot prepare {outdir}: {e}')
                 refused = True
         if mhu.broadcast_one_to_all(np.int32(refused)):
             return 1
         setup_logger(loglevel, log_path or outdir / LOG_FILE, process_index=rank)
         if mapmaking_config is None:
-            logger.warning('no mapmaking configuration specified, using defaults')
-        logger.info(f'found {len(observations)} observations')
+            logger.warning('No mapmaking configuration specified, using defaults')
+        logger.info(f'Found {len(observations)} observations')
 
         try:
             maker = MultiObservationMapMaker(observations, config=config)
-            logger.info('loaded config and set up mapmaker')
+            logger.info('Loaded config and set up mapmaker')
             maker.run(outdir, resume=resume)
         except Exception as e:
-            logger.exception('mapmaking failed', exc_info=e)
+            logger.exception('Mapmaking failed')
             # Any process may be the one that fails, and the others may then never return
             write_status(
                 outdir,
@@ -212,7 +217,7 @@ def run(
             return 1
         if rank == 0:
             write_status(outdir, RunState.DONE, started=started, finished=utc_now())
-        logger.info('finished mapmaking')
+        logger.info(f'Finished mapmaking in {time.perf_counter() - run_start:.0f} s')
 
 
 if __name__ == '__main__':

@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from so_mapmaking.util import obsdir_observations, resolve_obsids, setup_logger
+from so_mapmaking.util import EarlyRecords, obsdir_observations, resolve_obsids, setup_logger
 
 SOTODLIB_LOGGERS = ('sotodlib', 'sotodlib.core.metadata.loader')
 
@@ -13,6 +13,8 @@ def restore_loggers():
     yield
     for name, level in levels.items():
         logging.getLogger(name).setLevel(level)
+    for handler in logging.getLogger('furax').handlers:
+        handler.close()
     logging.getLogger('furax').handlers.clear()
 
 
@@ -33,6 +35,66 @@ def test_setup_logger_debug_keeps_sotodlib() -> None:
 
     assert logging.getLogger('sotodlib').isEnabledFor(logging.INFO)
     assert logging.getLogger('sotodlib.core.metadata.loader').isEnabledFor(logging.ERROR)
+
+
+def _console_handler() -> logging.Handler:
+    (console,) = [
+        h
+        for h in logging.getLogger('furax').handlers
+        if type(h) is logging.StreamHandler  # a FileHandler is a StreamHandler too
+    ]
+    return console
+
+
+def _passes(handler: logging.Handler, level: int) -> bool:
+    record = logging.LogRecord('furax.so_mapmaking', level, __file__, 0, 'message', None, None)
+    return bool(handler.filter(record))
+
+
+@pytest.mark.usefixtures('restore_loggers')
+def test_setup_logger_keeps_the_records_logged_before_the_file(tmp_path) -> None:
+    setup_logger('info', None)
+    logging.getLogger('furax.so_mapmaking').warning('logged early')
+
+    setup_logger('info', tmp_path / 'run.log')
+    logging.getLogger('furax.so_mapmaking').info('logged late')
+    for handler in logging.getLogger('furax').handlers:
+        handler.flush()
+
+    text = (tmp_path / 'run.rank0.log').read_text()
+    assert text.count('logged early') == 1
+    assert text.index('logged early') < text.index('logged late')
+    # the file takes the records over: later calls do not write them again
+    assert not any(isinstance(h, EarlyRecords) for h in logging.getLogger('furax').handlers)
+
+
+@pytest.mark.usefixtures('restore_loggers')
+@pytest.mark.parametrize(
+    ('rank', 'level', 'shown'),
+    [
+        (0, logging.INFO, True),
+        (0, logging.WARNING, True),
+        (1, logging.INFO, False),
+        (1, logging.WARNING, True),
+        (1, logging.ERROR, True),
+    ],
+)
+def test_console_shows_the_records_below_warning_of_rank_0_only(
+    rank: int, level: int, shown: bool
+) -> None:
+    setup_logger('info', None, process_index=rank)
+
+    assert _passes(_console_handler(), level) == shown
+
+
+@pytest.mark.usefixtures('restore_loggers')
+def test_log_file_of_a_rank_holds_its_info_records(tmp_path) -> None:
+    setup_logger('info', tmp_path / 'run.log', process_index=1)
+    logging.getLogger('furax.so_mapmaking').info('from rank 1')
+    for handler in logging.getLogger('furax').handlers:
+        handler.flush()
+
+    assert 'from rank 1' in (tmp_path / 'run.rank1.log').read_text()
 
 
 @pytest.mark.parametrize('from_file', [False, True])

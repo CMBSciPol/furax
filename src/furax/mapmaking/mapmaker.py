@@ -1,4 +1,5 @@
 import logging
+import time
 from collections.abc import Callable, Collection, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -108,7 +109,7 @@ class MultiObservationMapMaker[T]:
             try:
                 local[i] = self.observations[i].probe_shape(need_intervals)
             except Exception as error:
-                logger.exception('probe of observation %d failed', i)
+                logger.exception('Probe of observation %d failed', i)
                 local[i] = f'{type(error).__name__}: {error}'
         names = [observation.name for observation in self.observations]
         return ObservationCatalog(names, gather_rows(local))
@@ -230,7 +231,7 @@ class MultiObservationMapMaker[T]:
             out_dir.mkdir(parents=True, exist_ok=True)
             self.config.dump_yaml(out_dir / CONFIG_FILE)
             write_json(out_dir / PROVENANCE_FILE, provenance())
-            logger.info(f'saved mapmaking configuration and provenance to {out_dir}')
+            logger.info(f'Saved mapmaking configuration and provenance to {out_dir}')
 
         # Loaded now, once the run is on record, so that a bad injection fails before the passes
         # over the data, and shows in the output directory
@@ -240,7 +241,7 @@ class MultiObservationMapMaker[T]:
         # Save outputs on process 0 only (all processes hold the same maps)
         if is_writer:
             results.save(out_dir)
-            logger.info(f'saved results to {out_dir}')
+            logger.info(f'Saved results to {out_dir}')
 
         # Barrier so other ranks don't race ahead while rank 0 is still writing.
         mhu.sync_global_devices('mapmaker.run.save_done')
@@ -253,8 +254,8 @@ class MultiObservationMapMaker[T]:
             return
         layout = self.layout
         logger.info(
-            f'layout procs={jax.process_count()} dev_per_proc={len(self.placement.local_devices)} '
-            f'dev_total={layout.n_devices}'
+            f'Layout procs={jax.process_count()} dev_per_proc={len(self.placement.local_devices)} '
+            f'dev_total={layout.n_devices} platform={jax.default_backend()}'
         )
         # Every slot of a bucket is padded to its reader's out_structure, real or empty.
         real_bytes = sum(reader.total_nbytes for reader in self.readers)
@@ -263,14 +264,14 @@ class MultiObservationMapMaker[T]:
             slot_bytes = furax.tree.nbytes(reader.out_structure)
             padded_bytes += slot_bytes * bucket.n_slots
             logger.info(
-                f'bucket {b}: {bucket.summary(layout.n_devices)} '
+                f'Bucket {b}: {bucket.summary(layout.n_devices)} '
                 f'slot_size={format_bytes(slot_bytes)} '
                 f'real_size={format_bytes(reader.total_nbytes)} '
                 f'pad_size={format_bytes(slot_bytes * bucket.n_slots - reader.total_nbytes)}'
             )
         byte_overhead = (padded_bytes - real_bytes) / real_bytes
         logger.info(
-            f'dataset {layout.summary()} real={format_bytes(real_bytes)} '
+            f'Dataset {layout.summary()} real={format_bytes(real_bytes)} '
             f'padded={format_bytes(padded_bytes)} byte_overhead=+{byte_overhead:.1%}'
         )
 
@@ -291,20 +292,23 @@ class MultiObservationMapMaker[T]:
 
         with jax.set_mesh(self.placement.mesh):
             # Single read pass, so each observation is read/preprocessed exactly once.
+            start = time.perf_counter()
             acc = self.build_model_and_accumulate()
             jax.block_until_ready(acc)
-            logger.info('Accumulated hit map and RHS vector')
+            logger.info(f'Finished the pass over the data in {time.perf_counter() - start:.0f} s')
 
             self._catalog.reads = self._gather_reads()
-            if n_failed := self._catalog.n_failed:
-                logger.info(f'{n_failed} observation(s) failed and were excluded')
+            if failures := self._catalog.failures():
+                # The catalog is the same on every process: one warning is enough
+                level = logging.WARNING if jax.process_index() == 0 else logging.DEBUG
+                logger.log(level, _excluded_message(failures))
             noise_parameters = None
             if self.config.weighting.mode != WeightingMode.IDENTITY:
                 noise_parameters = acc.noise_parameters(self.layout, self.placement)
 
             BJ = acc.block_jacobi(self.placement, self.config.binned, self.landscape.structure)
             icov = BJ.blocks.block_until_ready()
-            logger.info('Computed white noise inverse covariance')
+            logger.info('Computed the block-Jacobi preconditioner')
 
             valid_pixels = self.pixel_selection(acc.hit_map, icov)
             # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
@@ -702,3 +706,17 @@ def _store_round(
             out,
         )
     return _set_round(store, out, r)
+
+
+def _excluded_message(failures: list[tuple[str, str]], limit: int = 5) -> str:
+    """The warning for the observations that were excluded, with the reason of each.
+
+    Args:
+        failures: The name and the reason of each excluded observation.
+        limit: The number of observations listed; the others are counted.
+    """
+    lines = [f'Excluded {len(failures)} observation(s):']
+    lines += [f'  {name}: {reason}' for name, reason in failures[:limit]]
+    if len(failures) > limit:
+        lines.append(f'  and {len(failures) - limit} more')
+    return '\n'.join(lines)

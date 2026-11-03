@@ -314,12 +314,13 @@ class MapMakingResults:
                 str(out_dir / f'{name}.fits'),
                 maps,
                 nest=self.landscape.nested,
+                dtype=[m.dtype for m in maps],
                 column_names=column_names,
                 overwrite=True,
             )
         else:
             logger.warning(
-                f'saving {name} as npy: geometry information will not be embedded in the file'
+                f'Saving {name} as npy: geometry information will not be embedded in the file'
             )
             np.save(out_dir / name, arr)
 

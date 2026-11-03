@@ -206,9 +206,9 @@ class AbstractReader(ABC):
         """
         if data_index in self.known_failures:
             # skip load entirely
-            logger.info('read item %d: skipped (known failure)', data_index)
+            logger.debug('Read item %d: skipped (known failure)', data_index)
             return self.read_filler_host()
-        logger.info('read item %d: start', data_index)
+        logger.debug('Read item %d: start', data_index)
         start = time.perf_counter()
         try:
             data = self._read_data_impure(
@@ -217,7 +217,7 @@ class AbstractReader(ABC):
         except Exception as error:
             self.errors[data_index] = f'{type(error).__name__}: {error}'
             logger.exception(
-                'read item %d: failed after %.1fs; substituting filler data',
+                'Read item %d: failed after %.1fs; substituting filler data',
                 data_index,
                 time.perf_counter() - start,
             )
@@ -231,7 +231,7 @@ class AbstractReader(ABC):
             self._padding_to_arrays(actual_padding),
             np.array(True),
         )
-        logger.info('read item %d: ok (%.1fs)', data_index, time.perf_counter() - start)
+        logger.debug('Read item %d: ok (%.1fs)', data_index, time.perf_counter() - start)
         return result
 
     def read_filler_host(self) -> tuple[PyTree[np.ndarray], PyTree[np.ndarray], np.ndarray]:

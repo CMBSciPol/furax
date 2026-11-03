@@ -73,7 +73,7 @@ def test_run_rejects_an_invalid_config_without_touching_outdir(tmp_path) -> None
 
     rejected = _run(outdir, '--mapmaking-config', str(mapmaking_config))
     assert rejected.returncode == 1
-    assert 'invalid mapmaking config' in rejected.stderr
+    assert 'Invalid mapmaking config' in rejected.stderr
     assert 'Pomme maps Q and U only' in rejected.stderr
     assert not outdir.exists()
 
@@ -94,7 +94,7 @@ def test_run_refuses_an_output_directory_it_cannot_create(tmp_path) -> None:
 
     refused = _run(parent / 'maps')
     assert refused.returncode == 1
-    assert 'cannot prepare' in refused.stderr
+    assert 'Cannot prepare' in refused.stderr
 
 
 def test_run_stops_when_the_observations_cannot_be_loaded(tmp_path) -> None:
@@ -106,7 +106,7 @@ def test_run_stops_when_the_observations_cannot_be_loaded(tmp_path) -> None:
     command += ['--obsids-file', str(ids), '--init-config', str(tmp_path / 'missing.yaml')]
     stopped = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
     assert stopped.returncode == 1
-    assert 'loading the observations failed' in stopped.stderr
+    assert 'Loading the observations failed' in stopped.stderr
     assert not outdir.exists()
 
 

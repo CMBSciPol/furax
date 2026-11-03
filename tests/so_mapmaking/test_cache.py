@@ -36,7 +36,7 @@ def test_fill_caches_what_the_map_run_reads(tmp_path, config, capsys) -> None:
     observations = preproc_observations(OBS_IDS, config, None, '', '', SotodlibConfig(), cache_dir)
     assert all(obs.cache_path is not None and obs.cache_path.exists() for obs in observations)
     fill(cache_dir, config, obsid=OBS_IDS, wafer='', band='', dry_run=True)
-    assert '2 of 2 observations cached' in capsys.readouterr().err
+    assert 'Cached 2 of 2 observations' in capsys.readouterr().err
 
 
 def test_staged_configs_share_the_cache(tmp_path, config) -> None:
@@ -76,7 +76,7 @@ def test_fill_reports_observations_it_cannot_cache(tmp_path, config, capsys) -> 
     status = fill(cache_dir, config, obsid=[OBS_IDS[0], 'obs_missing'], wafer='', band='')
 
     assert status == 1
-    assert 'not cached: obs_missing' in capsys.readouterr().err
+    assert 'Failed to cache 1 observations: obs_missing' in capsys.readouterr().err
     assert len(list(cache_dir.glob('*/*.h5'))) == 1
 
 

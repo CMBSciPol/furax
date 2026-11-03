@@ -21,6 +21,7 @@ __all__ = [
     'full_like',
     'normal_like',
     'nbytes',
+    'size',
     'ones_like',
     'zeros_like',
     'is_leaf',
@@ -111,6 +112,23 @@ def nbytes[P: ArrayPyTree](x: P) -> int:
     # instead of promoting to Python's arbitrary-precision int.
     sizes = jax.tree.map(lambda leaf: leaf.dtype.itemsize * prod(int(d) for d in leaf.shape), x)
     return sum(jax.tree.leaves(sizes))
+
+
+def size[P: ArrayPyTree](x: P) -> int:
+    """Returns the total number of elements of the leaves of a pytree.
+
+    Args:
+        x: The pytree of array-like leaves (or ``ShapeDtypeStruct`` leaves), whose elements will
+            be counted.
+
+    Examples:
+        >>> size(jnp.ones(10))
+        10
+
+        >>> size({'a': [jnp.zeros((2, 3)), jnp.array(2)]})
+        7
+    """
+    return sum(prod(int(d) for d in leaf.shape) for leaf in jax.tree.leaves(x))
 
 
 def empty_like[P: ArrayPyTree](x: P) -> P:

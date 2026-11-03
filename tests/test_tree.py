@@ -83,6 +83,20 @@ def test_zeros_like(x, expected_y) -> None:
 
 
 @pytest.mark.parametrize(
+    'x, expected_size',
+    [
+        (jnp.ones(10), 10),
+        (jnp.array(1.0), 1),
+        ({'a': [jnp.zeros((2, 3)), jnp.array(2)], 'b': jnp.ones((4, 0))}, 7),
+        (jax.ShapeDtypeStruct((2, 5), jnp.float32), 10),
+        ([], 0),
+    ],
+)
+def test_size(x, expected_size) -> None:
+    assert fx.tree.size(x) == expected_size
+
+
+@pytest.mark.parametrize(
     'x, expected_y',
     [
         (jnp.zeros(2, dtype=jnp.float16), jnp.ones(2, dtype=jnp.float16)),

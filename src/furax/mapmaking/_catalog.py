@@ -55,11 +55,13 @@ class ObservationCatalog:
         """Per observation, whether its probe raised."""
         return np.array([isinstance(self.probes.get(i), str) for i in range(len(self.names))])
 
-    @property
-    def n_failed(self) -> int:
-        """The number of observations not read."""
-        n_read = sum(isinstance(read, ObservationRecord) for read in self.reads.values())
-        return len(self.names) - n_read
+    def failures(self) -> list[tuple[str, str]]:
+        """The name and the reason of each observation not read, in observation order."""
+        return [
+            (self.names[i], self._failure(i) or 'not read')
+            for i in range(len(self.names))
+            if not isinstance(self.reads.get(i), ObservationRecord)
+        ]
 
     def to_table(self) -> pl.DataFrame:
         """The catalog as `MapMakingResults.observations` holds it."""
@@ -92,11 +94,19 @@ class ObservationCatalog:
                 'load_seconds': read.load_seconds,
                 'error': read.error,
             }
-        if isinstance(probe, str):
-            row['error'] = f'probe failed: {probe}'
-        elif isinstance(read, str):
-            row['error'] = f'load failed: {read}'
+        if failure := self._failure(i):
+            row['error'] = failure
         return row
+
+    def _failure(self, i: int) -> str | None:
+        """Why observation `i` was not probed or loaded, if it was not."""
+        probe = self.probes.get(i)
+        read = self.reads.get(i)
+        if isinstance(probe, str):
+            return f'probe failed: {probe}'
+        if isinstance(read, str):
+            return f'load failed: {read}'
+        return None
 
 
 def detector_table(

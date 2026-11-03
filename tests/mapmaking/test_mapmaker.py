@@ -1,4 +1,5 @@
 import importlib.util
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -40,6 +41,7 @@ from tests.mapmaking.helpers import (
     GappyLazyGroundObservation,
     ProbeFailingLazyObservation,
     accumulate,
+    furax_records,
 )
 
 # Skip tests for interfaces that are not installed
@@ -121,9 +123,12 @@ def test_failed_observation_is_excluded(demodulated):
     config = _config('healpix', 'IQU', demodulated=demodulated)
     mixed = [FakeLazyObservation(seed=0), FailingLazyObservation(seed=1)]
     maker = MultiObservationMapMaker(mixed, config=config)
-    results = maker.make_maps()
+    with furax_records(logging.WARNING) as records:
+        results = maker.make_maps()
 
     assert results.failed_observations == ['failing_obs']
+    (warning,) = [r for r in records if r.levelno == logging.WARNING]
+    assert 'simulated preprocessing failure' in (warning.getMessage())
     assert results.hit_map.shape == maker.landscape.shape
     assert results.icov.shape == (3, 3, *maker.landscape.shape)
     assert all(jnp.all(jnp.isfinite(x)) for x in jax.tree.leaves(results.map))

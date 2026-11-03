@@ -6,6 +6,7 @@ from typing import Any, Self, cast
 import cadre
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array, Bool, Float, PyTree
 from scipy.signal import get_window
 
@@ -429,15 +430,15 @@ def fit_atmospheric_psd_model(
     )(f, Pxx)
 
     def fit_details(results: dict[str, Any]) -> None:
-        logger.info(
-            f'---- PSD model fit details ----\n'
-            f'Number of frequency bins: {results["num_freq"]}\n'
-            f'Mean loss per bin: {results["loss"] / results["num_freq"]}\n'
-            f'Number of iterations: {results["num_iter"]}\n'
-            f'-------------------------------'
+        logger.debug(
+            'PSD fit, per detector: loss per bin %s, iterations %s',
+            np.asarray(results['loss']) / results['num_freq'],
+            np.asarray(results['num_iter']),
         )
 
-    jax.debug.callback(fit_details, results)
+    # Decided when the fit is traced: no host callback unless the record would be logged
+    if logger.isEnabledFor(logging.DEBUG):
+        jax.debug.callback(fit_details, results)
 
     return results
 

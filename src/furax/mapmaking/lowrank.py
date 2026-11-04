@@ -29,6 +29,9 @@ _TRACY_WIDOM_VALUES = (0.4501, 0.9793, 2.0234, 3.2724)
 # Modes beyond the strongest ones are examined, to leave room for the single-channel rejection.
 _CANDIDATES_PER_MODE = 3
 
+# Fits of a bin, each whitened by the diagonal of the previous one.
+_WHITENING_PASSES = 3
+
 # The diagonal of a channel never falls below this fraction of its measured power in a bin.
 _DIAGONAL_FLOOR = 1e-2
 
@@ -133,13 +136,14 @@ def fit_low_rank_noise(
 
     The covariance is estimated from the Fourier transform of the whole observation, its mean
     removed and its ends tapered over `config.taper` seconds. Every sample enters the fit,
-    flagged or not. Each channel is whitened by its power in `config.whitening_band`, where it
-    is assumed white. In every bin of `config.bin_edges`, the eigendecomposition of the channel
-    covariance gives the modes: those above the largest eigenvalue that pure noise would produce,
-    with at most `config.max_modes` and at most half the real samples of the bin, and none
-    carried mostly by a single channel. The diagonal $D$ is the remaining power of each channel,
-    corrected for the part of it that the modes absorb, so that the model reproduces every
-    channel's power in the bin.
+    flagged or not. In every bin of `config.bin_edges`, the eigendecomposition of the whitened
+    channel covariance gives the modes: those above the largest eigenvalue that pure noise would
+    produce, with at most `config.max_modes` and at most half the real samples of the bin, and
+    none carried mostly by a single channel. The diagonal $D$ is the remaining power of each
+    channel, corrected for the part of it that the modes absorb, so that the model reproduces
+    every channel's power in the bin. Each channel is whitened by its diagonal in the bin, found
+    by refitting a few times. Above the last edge the noise is white, at the level of each channel
+    in `config.whitening_band`.
 
     Args:
         samples: Time-ordered data of all channels, with the samples last.
@@ -181,16 +185,32 @@ def fit_low_rank_noise(
         if columns.size == 0:
             diagonal, vectors, eigenvalues = level, None, None
         else:
-            z = spectra[:, columns] / jnp.sqrt(level)[:, None]
+            coefficients = spectra[:, columns]
             n_independent = columns.size * efficiency
-            vectors, eigenvalues, power = _fit_bin(z, columns.size, n_independent, alive, config)
-            # The k sample modes span part of each channel's own noise too, a fraction k/n of
-            # it in expectation over the n real samples, which the residual power lacks.
-            n_kept = jnp.sum(eigenvalues > 0)
-            residual = (power - (vectors**2 * eigenvalues).sum(axis=1)) / (
-                1 - n_kept / (2 * n_independent)
-            )
-            diagonal = level * jnp.maximum(residual, _DIAGONAL_FLOOR * power)
+            # The noise edge holds for unit uncorrelated power in every channel and at every
+            # frequency, which the white level is not where each channel has its own 1/f. The
+            # whitening starts from the channel's whole power, which is too high, and is refined
+            # from the residual of each fit: per channel, and per frequency within the bin.
+            total = jnp.mean(jnp.abs(coefficients) ** 2, axis=1)
+            scale = jnp.where(alive & (total > 0), total, level)
+            shape = jnp.ones(columns.size, level.dtype)
+            for _ in range(_WHITENING_PASSES):
+                z = coefficients / jnp.sqrt(scale[:, None] * shape)
+                vectors, eigenvalues, power = _fit_bin(
+                    z, columns.size, n_independent, alive, config
+                )
+                clean = z - vectors @ (vectors.T @ z)
+                profile = jnp.sum(jnp.where(alive[:, None], jnp.abs(clean) ** 2, 0), axis=0)
+                shape = shape * profile / jnp.mean(profile)
+                # The k sample modes span part of each channel's own noise too, a fraction k/n
+                # of it in expectation over the n real samples, which the residual power lacks.
+                n_kept = jnp.sum(eigenvalues > 0)
+                residual = (power - (vectors**2 * eigenvalues).sum(axis=1)) / (
+                    1 - n_kept / (2 * n_independent)
+                )
+                diagonal = scale * jnp.maximum(residual, _DIAGONAL_FLOOR * power)
+                vectors = jnp.sqrt(scale)[:, None] * vectors
+                scale = jnp.where(alive, diagonal, scale)
         diagonals.append(diagonal)
         modes.append(vectors)
         powers.append(eigenvalues)
@@ -202,9 +222,7 @@ def fit_low_rank_noise(
     zero_power = jnp.zeros(k, level.dtype)
     bins = [fitted[0], *fitted, (level, None, None)]
     diagonal = jnp.stack([d for d, _, _ in bins])
-    mode_array = jnp.stack(
-        [zero_modes if v is None else jnp.sqrt(level)[:, None] * v for _, v, _ in bins]
-    )
+    mode_array = jnp.stack([zero_modes if v is None else v for _, v, _ in bins])
     core = jnp.stack([jnp.diag(zero_power if g is None else g) for _, _, g in bins])
     model = LowRankNoiseModel(
         diagonal,
@@ -225,7 +243,7 @@ def _fit_summary(
 ) -> tuple[Array, ...]:
     """Per-bin statistics of a fit, over the live channels, for the debug log.
 
-    Returns the number of modes kept, the largest mode power over the white level, the quantiles
+    Returns the number of modes kept, the largest mode power over the diagonal, the quantiles
     (0, 1, 50 %) of the diagonal over the white level, and the quantiles (50, 99, 100 %) of the
     weight's diagonal over its zero-lag value, which the block-Jacobi preconditioner uses.
     """
@@ -253,7 +271,10 @@ def _log_fit(n_modes: Array, top_power: Array, diagonal_q: Array, ratio_q: Array
         f' weight/zero-lag median/99%/max {np.array2string(np.asarray(ratio_q[b]), precision=3)}'
         for b in range(len(n_modes))
     ]
-    logger.debug('Low-rank noise fit, per bin (powers relative to white):\n%s', '\n'.join(lines))
+    logger.debug(
+        'Low-rank noise fit, per bin (mode power relative to the diagonal, others to white):\n%s',
+        '\n'.join(lines),
+    )
 
 
 def _observation_spectra(

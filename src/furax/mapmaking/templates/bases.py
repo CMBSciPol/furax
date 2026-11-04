@@ -656,10 +656,14 @@ class WindowedBasis(Basis):
         return self.offset[..., None] + window
 
     def _expand(self, coeffs: Float[Array, '*batch block k']) -> Float[Array, '*batch samp']:
-        # gather each sample's window of block coefficients, contract over the sub-basis
-        # index against the shared values and over the window against its taps.
-        gathered = coeffs[..., self.blocks, :]  # (*batch, samp, O, k)
-        return _einsum('...soj,so,js->...s', gathered, self.taps, self.values)
+        # gather each sample's block coefficients, contract over the sub-basis index against the
+        # shared values and weigh by the taps: one window slot at a time, so that the gather of a
+        # single slot, `(*batch, samp, k)`, is live rather than that of the whole window
+        out = jnp.zeros((*coeffs.shape[:-2], self.n_points), self.dtype)
+        for o in range(self.taps.shape[1]):  # window width is static
+            gathered = coeffs[..., self.offset + o, :]  # (*batch, samp, k)
+            out = out + _einsum('...sj,s,js->...s', gathered, self.taps[:, o], self.values)
+        return out
 
     def _project(self, signal: Float[Array, '*batch samp']) -> Float[Array, '*batch block k']:
         batch = signal.shape[:-1]

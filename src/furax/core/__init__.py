@@ -30,6 +30,17 @@ from ._blocks import (
 )
 from ._dense import DenseBlockDiagonalOperator
 from ._diagonal import BroadcastDiagonalOperator, DiagonalOperator
+from ._ensembles import (
+    Ensemble,
+    HostEnsemble,
+    ListEnsemble,
+    OutSpec,
+    Policy,
+    StackedEnsemble,
+    Stride,
+    lift,
+    map_reduce,
+)
 from ._fourier import FourierOperator
 from ._indices import IndexOperator
 from ._mask import MaskOperator
@@ -70,6 +81,15 @@ __all__ = [
     'DenseBlockDiagonalOperator',
     'BroadcastDiagonalOperator',
     'DiagonalOperator',
+    'Ensemble',
+    'HostEnsemble',
+    'ListEnsemble',
+    'OutSpec',
+    'Policy',
+    'StackedEnsemble',
+    'Stride',
+    'lift',
+    'map_reduce',
     'IndexOperator',
     'MaskOperator',
     'SumOperator',

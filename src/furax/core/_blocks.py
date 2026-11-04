@@ -17,9 +17,9 @@ from ._base import (
     IdentityOperator,
     TransposeOperator,
     _group_by_signature,
-    _sequential_sum,
     structure_equal,
 )
+from ._ensembles import ListEnsemble, map_reduce
 from .rules import AbstractCompositionRule, NoReduction
 
 
@@ -111,11 +111,11 @@ class BlockRowOperator(AbstractBlockOperator):
         contributions = (
             blocks[group[0]](leaves[group[0]])
             if len(group) == 1
-            else _sequential_sum(
-                [(blocks[i], leaves[i]) for i in group],
+            else map_reduce(
                 lambda member: member[0](member[1]),
-                self.out_structure,
-            )
+                ListEnsemble([(blocks[i], leaves[i]) for i in group]),
+                'sum',
+            )[0]
             for group in _group_by_signature(blocks)
         )
         return functools.reduce(lambda a, b: add(a, b), contributions)

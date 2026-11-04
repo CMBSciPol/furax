@@ -1,6 +1,6 @@
 import functools
 from dataclasses import dataclass
-from typing import Any, NamedTuple, Self
+from typing import Any, Literal, NamedTuple, Self
 
 import jax
 import jax.numpy as jnp
@@ -13,7 +13,8 @@ from furax.obs import TODFormat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
-from ._engine import OutKind
+OutKind = Literal['sum', 'stack', 'shared']
+"""How the detector batches of an observation combine one output leaf."""
 from ._observation import ReaderField, _sample_rate
 from .acquisition import build_acquisition_operator
 from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode

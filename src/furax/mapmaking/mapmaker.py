@@ -11,12 +11,11 @@ import jax.numpy as jnp
 import numpy as np
 from fastquat import Quaternion
 from jax.experimental import multihost_utils as mhu
-from jaxtyping import Array, Bool, Float, Int64, Integer
+from jaxtyping import Array, Bool, Float, Int64, Integer, PyTree
 
 import furax.linalg
 import furax.tree
-from furax.core import HostEnsemble, IndexOperator, map_reduce
-from furax.core import Policy as EnginePolicy
+from furax.core import HostEnsemble, IndexOperator, Policy, StackedEnsemble, map_reduce
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesType
 from furax.profiling import format_bytes
@@ -24,19 +23,19 @@ from furax.profiling import format_bytes
 from ._accumulated import AccumulatedModel
 from ._bucket import Batch, BucketModel
 from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
-from ._engine import DetectorFamily, Family, StackedFamily, ZippedFamily, family_apply, partition
 from ._injection import inject, load_sky, unpadded
 from ._landscape import build_landscape
 from ._model import (
     FACTORED_KINDS,
     ObservationModel,
     ObservationTemplates,
+    OutKind,
     acquisition_operator,
     restrict_streams,
 )
 from ._observation import AbstractLazyObservation, ObservationBufferShape, ReaderField
 from ._provenance import provenance
-from ._reader import ObservationReader
+from ._reader import ObservationReader, slice_detector_axis, slice_detectors
 from .config import GapTreatment, InjectionMode, MapMakingConfig, NoiseSource, WeightingMode
 from .gap_filling import gap_fill
 from .layout import Bucket, SlotLayout, SlotPlacement
@@ -422,7 +421,7 @@ class MultiObservationMapMaker[T]:
             bucket.n_slots,
             read,
             template,
-            policy=EnginePolicy(axis=self.placement.axis),
+            policy=Policy(axis=self.placement.axis),
             prefetch=self._prefetches_reads,
         )
         (hits, rhs, out), _ = map_reduce(
@@ -485,16 +484,19 @@ class MultiObservationMapMaker[T]:
             # batch contributing to the sums and stacking its own model and templates. Gap filling
             # needs whole observations, so it only runs with a single batch.
             assert not fill_gaps or n_batches == 1
-            family: Family = DetectorFamily(observation, batch_size)
-            if injection is not None:  # the samples to inject into, per detector
-                injectable = StackedFamily(injection[1], axis=-2, width=batch_size)
-                family = ZippedFamily((family, injectable))
+            # The member is the first detector of its batch: the fields stay whole in their read
+            # layout, closed over `apply`, which slices its batch out. Stacking the per-detector
+            # fields over a leading batch axis instead would transpose any field with axes ahead
+            # of the detector one, such as the demodulated TOD, and XLA materializes the copy.
+            starts = batch_size * jnp.arange(n_batches, dtype=jnp.int32)
+            ensemble = StackedEnsemble(n_batches, starts)
 
-            def apply(members):
+            def apply(start):
+                data = slice_detectors(observation, start, batch_size)
                 if injection is None:
-                    data = cast_tod(members)
-                else:
-                    data, injectable = members
+                    data = cast_tod(data)
+                else:  # the samples to inject into, per detector
+                    injectable = slice_detector_axis(injection[1], start, batch_size)
                     data = scan_in(cast_tod(data), (injection[0], injectable))
                 tod = raw = data[ReaderField.SAMPLE_DATA]
                 if fill_gaps:
@@ -514,15 +516,16 @@ class MultiObservationMapMaker[T]:
             spec = {
                 **dict.fromkeys(('hits', 'map'), 'sum'),
                 **dict.fromkeys(('model', 'implicit', 'operators'), 'auto'),
-                'inverses': 'stack',
+                'inverses': 1,
                 'grams': {
-                    kind: ('sum', 'shared')
-                    for kind, held in FACTORED_KINDS.items()
-                    if held == 'sum'
+                    kind: ('sum', None) for kind, held in FACTORED_KINDS.items() if held == 'sum'
                 },
-                'rhs': FACTORED_KINDS,
+                'rhs': {
+                    kind: 'sum' if held == 'sum' else 1 for kind, held in FACTORED_KINDS.items()
+                },
             }
-            out, kinds = family_apply(family, apply, spec)
+            out, resolved = map_reduce(apply, ensemble, spec)
+            kinds = _out_kinds(out, resolved)
             templates = template_kinds = None
             if build_templates:
                 inverses = out['inverses'] | {
@@ -541,7 +544,7 @@ class MultiObservationMapMaker[T]:
                 )
             batch = Batch(out['model'], templates, out['rhs']['explicit'])
             batch_kinds = Batch(kinds['model'], template_kinds, kinds['rhs']['explicit'])
-            batches, kept = partition(batch, batch_kinds)
+            batches, kept = _partition(batch, batch_kinds)
             return out['hits'], out['map'], (batches, kept, out['rhs']['common'])
 
         def fill_observation_gaps(data, padding):
@@ -668,3 +671,27 @@ def _excluded_message(failures: list[tuple[str, str]], limit: int = 5) -> str:
     if len(failures) > limit:
         lines.append(f'  and {len(failures) - limit} more')
     return '\n'.join(lines)
+
+
+def _out_kinds(outputs: PyTree[Any], resolved: PyTree[Any]) -> PyTree[OutKind]:
+    """The kind of each output leaf of `map_reduce`, in the `OutKind` vocabulary.
+
+    The resolved spec puts `None` on the shared leaves, which `jax.tree.map` over the outputs
+    would read as a missing subtree; the returned tree names every kind, so it maps with them.
+    """
+    treedef = jax.tree.structure(outputs)
+    kinds = treedef.flatten_up_to(resolved)
+    names = [{1: 'stack', None: 'shared'}.get(kind, kind) for kind in kinds]
+    return jax.tree.unflatten(treedef, names)
+
+
+def _partition(
+    outputs: PyTree[Array], kinds: PyTree[OutKind]
+) -> tuple[PyTree[Array | None], PyTree[Array | None]]:
+    """The `'stack'` outputs, and the others.
+
+    Each is `None` where the other has a leaf; together they are one batch of the observation.
+    """
+    stacked = jax.tree.map(lambda x, kind: x if kind == 'stack' else None, outputs, kinds)
+    others = jax.tree.map(lambda x, kind: None if kind == 'stack' else x, outputs, kinds)
+    return stacked, others

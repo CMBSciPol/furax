@@ -480,15 +480,14 @@ class AdditionOperator(AbstractLinearOperator):
         operands = self.operand_leaves
         if not self.sequential:
             return functools.reduce(tree_add, (operand(x) for operand in operands))
-        contributions = (
-            operands[group[0]](x)
-            if len(group) == 1
-            else _sequential_sum(
-                [operands[i] for i in group], lambda op: op(x), operands[group[0]].out_structure
-            )
-            for group in _group_by_signature(operands)
-        )
-        return functools.reduce(tree_add, contributions)
+        groups = _group_by_signature(operands)
+        total = _apply_group([operands[i] for i in groups[0]], x)
+        for group in groups[1:]:
+            # Hand the input to the group only once the running sum is computed: independent
+            # contributions could be scheduled together, each holding its temporaries.
+            total, x_group = jax.lax.optimization_barrier((total, x))
+            total = tree_add(total, _apply_group([operands[i] for i in group], x_group))
+        return total
 
     def transpose(self) -> AbstractLinearOperator:
         return AdditionOperator(self._tree_map(lambda operand: operand.T), self.sequential)
@@ -551,6 +550,13 @@ class AdditionOperator(AbstractLinearOperator):
             *args,
             is_leaf=lambda x: isinstance(x, AbstractLinearOperator),
         )
+
+
+def _apply_group(members: list[AbstractLinearOperator], x: PyTree[Array]) -> PyTree[Array]:
+    """Sum of `member(x)` over operands sharing a `_static_signature`."""
+    if len(members) == 1:
+        return members[0](x)
+    return _sequential_sum(members, lambda op: op(x), members[0].out_structure)
 
 
 def _sequential_sum(

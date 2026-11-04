@@ -280,12 +280,18 @@ class StackedEnsemble(Ensemble):
     stacked: PyTree[Any]
     """The members' pytree; an array leaf of stride s has shape `(size // s, ...)`."""
     strides: PyTree[Stride] = 1
-    """The stride of each leaf of `stacked`, or one stride for all."""
+    """The stride of each leaf of `stacked`, or one stride for all; canonicalized at construction
+    to one stride per leaf, non-array leaves getting None."""
     valid: Bool[Array, ' _n'] | None = None
     policy: Policy = Policy()
 
     def __post_init__(self) -> None:
-        for leaf, stride in zip(*self._leaves_and_strides(), strict=True):
+        # Canonicalize `strides` to one stride per leaf, so that flattening the ensemble never has
+        # to look at the leaves again: tree transformations (eqx.partition, jax.eval_shape) replace
+        # the arrays with placeholders, and an array test at flatten time would flip the strides.
+        leaves = jax.tree.leaves(self.stacked)
+        object.__setattr__(self, 'strides', _normalized_strides(leaves, self.strides))
+        for leaf, stride in zip(leaves, self.strides, strict=True):
             if stride is None:
                 continue
             if self.size % stride:
@@ -400,19 +406,9 @@ class StackedEnsemble(Ensemble):
 
         return body
 
-    def _leaves_and_strides(self) -> tuple[list[Any], list[Stride]]:
-        """The leaves of `stacked` and their strides, non-array leaves forced to None."""
-        leaves = jax.tree.leaves(self.stacked)
-        if self.strides is None or isinstance(self.strides, int):
-            strides: list[Stride] = [self.strides] * len(leaves)
-        else:
-            strides = jax.tree.flatten(self.strides, is_leaf=lambda x: x is None)[0]
-            if len(strides) != len(leaves):
-                raise ValueError(
-                    f'{len(strides)} strides for {len(leaves)} leaves: strides must be a single '
-                    f'value or a pytree aligned with the stacked leaves'
-                )
-        return leaves, [s if _is_array(leaf) else None for leaf, s in zip(leaves, strides)]
+    def _leaves_and_strides(self) -> tuple[list[Any], tuple[Stride, ...]]:
+        """The leaves of `stacked` and their strides, canonicalized at construction."""
+        return jax.tree.leaves(self.stacked), self.strides
 
 
 @dataclass(frozen=True)
@@ -1075,6 +1071,20 @@ def _abstract(leaf: Any) -> Any:
     return leaf
 
 
+def _normalized_strides(leaves: list[Any], strides: PyTree[Stride]) -> tuple[Stride, ...]:
+    """One stride per leaf, non-array leaves forced to None (they are shared)."""
+    if strides is None or isinstance(strides, int):
+        flat: list[Stride] = [strides] * len(leaves)
+    else:
+        flat = jax.tree.flatten(strides, is_leaf=lambda x: x is None)[0]
+        if len(flat) != len(leaves):
+            raise ValueError(
+                f'{len(flat)} strides for {len(leaves)} leaves: strides must be a single '
+                f'value or a pytree aligned with the stacked leaves'
+            )
+    return tuple(s if _is_array(leaf) else None for leaf, s in zip(leaves, flat))
+
+
 def _is_array(leaf: Any) -> bool:
     return isinstance(leaf, jax.Array | np.ndarray)
 
@@ -1109,10 +1119,10 @@ register_pytree_with_keys(
     StackedEnsemble,
     lambda e: (
         [(GetAttrKey('stacked'), e.stacked), (GetAttrKey('valid'), e.valid)],
-        (e.size, tuple(e._leaves_and_strides()[1]), e.policy),
+        (e.size, e.strides, e.policy),
     ),
     _stacked_unflatten,
-    lambda e: ([e.stacked, e.valid], (e.size, tuple(e._leaves_and_strides()[1]), e.policy)),
+    lambda e: ([e.stacked, e.valid], (e.size, e.strides, e.policy)),
 )
 
 register_pytree_with_keys(

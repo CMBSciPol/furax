@@ -135,6 +135,24 @@ def test_inverse_cg_solver_options() -> None:
         op.I(solver=solver, preconditioner=jnp.ones(3))(b)
 
 
+def test_inverse_lineax_solver_options() -> None:
+    op, m = _spd_op_and_matrix()
+    b = jnp.array([1.0, 2.0, 3.0])
+    expected = jnp.linalg.solve(m, b)
+    solver = lx.CG(rtol=1e-12, atol=1e-12, max_steps=100)
+
+    # An explicit None means no preconditioning, as with CGSolver
+    actual = op.I(solver=solver, preconditioner=None)(b)
+    assert_allclose(actual, expected, rtol=1e-10)
+
+    preconditioner = DiagonalOperator(1 / jnp.diag(m), in_structure=op.in_structure)
+    actual = op.I(solver=solver, preconditioner=preconditioner)(b)
+    assert_allclose(actual, expected, rtol=1e-10)
+
+    with pytest.raises(TypeError, match='preconditioner'):
+        op.I(solver=solver, preconditioner=jnp.ones(3))(b)
+
+
 def test_inverse_cg_solver_throw() -> None:
     op, _ = _spd_op_and_matrix()
     b = jnp.array([1.0, 2.0, 3.0])

@@ -3,8 +3,10 @@
 import dataclasses
 import re
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
@@ -216,3 +218,23 @@ def test_least_squares_solve_over_a_sharded_ensemble():
         x_hat, _ = jax.scipy.sparse.linalg.cg(normal, b, tol=1e-12)
 
     assert_allclose(x_hat, x_true, atol=1e-10)
+
+
+def test_tree_transformations_keep_the_strides():
+    # eqx.partition replaces the arrays with placeholders: the flattening aux data must not
+    # depend on the leaf values, or the two sides of the partition disagree on the strides
+    operator = AdditionOperator(_ensemble('stacked'))
+    dynamic, static = eqx.partition(operator, eqx.is_array)
+    combined = eqx.combine(dynamic, static)
+    assert_allclose(combined(_x()), operator(_x()))
+
+
+def test_lineax_solve_over_an_ensemble():
+    # the inverse of an ensemble closure through lineax: the solver traverses the ensemble
+    # with equinox tree transformations
+    operator = AdditionOperator(_ensemble('stacked'))
+    x = _x()
+    b = operator(x)
+    solver = lx.CG(rtol=1e-12, atol=1e-12, max_steps=100)
+    got = operator.I(solver=solver)(b)
+    assert_allclose(got, x, atol=1e-10)

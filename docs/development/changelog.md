@@ -44,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pomme with a template that the offsets absorb, such as a constant, no longer gives NaN maps (#422)
 - `furax-so-map` logs now include the messages of `furax.mapmaking.noise`, `furax.mapmaking.results` and `furax.interfaces.sotodlib.observation` (#430)
 - `furax-so-*` commands no longer initialise MPI by default when mpi4py is installed (#433)
+- `StackedEnsemble` keeps its strides through tree transformations that replace the arrays with placeholders, such as `eqx.partition` and `jax.eval_shape` (#443)
+- `.I()` accepts an explicit `preconditioner=None` with a lineax solver (#443)
 
 ## [0.17.2] - 2026-10-30
 

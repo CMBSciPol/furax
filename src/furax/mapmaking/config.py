@@ -245,6 +245,10 @@ class LowRankNoiseFitConfig:
     single_lim: float = 0.55
     """A mode is rejected when one channel carries a component of its unit vector above this."""
 
+    deproject: bool = True
+    """Whether to fit the model on the TOD less its fit by the configured templates, which their
+    amplitudes absorb in the solve, rather than on the TOD itself."""
+
 
 @dataclass
 class WeightingConfig:

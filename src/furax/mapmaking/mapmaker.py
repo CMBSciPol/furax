@@ -616,7 +616,12 @@ class MultiObservationMapMaker[T]:
                 temperature = data[ReaderField.SAMPLE_DATA].i
                 data, tod = restrict_streams(data, tod, landscape.stokes)
             obs = ObservationModel.create(
-                data, padding, config, landscape, noise_sample_rate=noise_sample_rate
+                data,
+                padding,
+                config,
+                landscape,
+                noise_sample_rate=noise_sample_rate,
+                temperature=temperature,
             )
 
             # Padding/failed observations contribute nothing

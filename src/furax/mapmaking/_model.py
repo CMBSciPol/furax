@@ -9,6 +9,7 @@ from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
+from furax.linalg import CGSolver
 from furax.obs import TODFormat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
@@ -21,6 +22,7 @@ from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig,
 from .lowrank import fit_low_rank_noise
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .templates import TemplateOperator, build_templates, required_reader_fields
+from .templates.fit import TemplateFit
 from .templates.gram import BlockGram, factor, template_gram
 from .templates.pomme import PommeProjectionOperator
 from .weight import MarginalizedWeightOperator, NestedWeightOperator, WeightOperator
@@ -60,6 +62,7 @@ class ObservationModel:
         landscape: StokesLandscape,
         *,
         noise_sample_rate: float | None = None,
+        temperature: Float[Array, 'det samp'] | None = None,
     ) -> Self:
         """Build the model of an observation from the fields read for it.
 
@@ -70,12 +73,20 @@ class ObservationModel:
             landscape: The landscape of the maps.
             noise_sample_rate: The sample rate in Hz at which the bins of the low-rank noise model
                 are placed. It must be known before compilation, and is required in that mode.
+            temperature: The I timestream, from which the T2P template is built when the low-rank
+                noise model is fitted on the deprojected TOD; by default, the I stream of the
+                sample data.
         """
         H = acquisition_operator(data, config, landscape)
         tod_format = _tod_format(H)
         M = _mask_projector(_sample_mask(data, config), tod_format=tod_format)
         noise_model, sample_rate = _noise_model(
-            data, config, tod_format, padding=padding, noise_sample_rate=noise_sample_rate
+            data,
+            config,
+            tod_format,
+            padding=padding,
+            noise_sample_rate=noise_sample_rate,
+            temperature=temperature,
         )
         Ninv = _noise_operator(
             noise_model,
@@ -233,6 +244,7 @@ def _noise_model(
     tod_format: TODFormat,
     padding: Any | None = None,
     noise_sample_rate: float | None = None,
+    temperature: Float[Array, 'det samp'] | None = None,
 ) -> tuple[PyTree[NoiseModel], Array]:
     """Compute the noise model and sample rate for a single observation block."""
     fs = _sample_rate(data[ReaderField.TIMESTAMPS])
@@ -250,7 +262,9 @@ def _noise_model(
     if config.weighting.mode == WeightingMode.LOW_RANK:
         if noise_sample_rate is None:
             raise ValueError('the low-rank noise fit needs a static noise_sample_rate')
-        model = _low_rank_noise_model(data, config, tod_format, lead, padding, noise_sample_rate)
+        model = _low_rank_noise_model(
+            data, config, tod_format, lead, padding, noise_sample_rate, temperature
+        )
         return model, fs
     if config.weighting.source == NoiseSource.FIT:
         fit_config = config.weighting.fitting
@@ -290,15 +304,60 @@ def _low_rank_noise_model(
     lead: tuple[int, ...],
     padding: Any | None,
     sample_rate: float,
+    temperature: Float[Array, 'det samp'] | None,
 ) -> NoiseModel:
     """Fit the detector-correlated noise model of a whole observation."""
     fit_config = config.weighting.low_rank
     nsamp = tod_format.n_samples
-    samples = tod_format.as_array(data[ReaderField.SAMPLE_DATA]).reshape(-1, nsamp)
     n_real = nsamp
     if padding is not None:  # one padding per axis of the TOD's array, the samples last
         n_real = nsamp - jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0][-1]
+    tod = data[ReaderField.SAMPLE_DATA]
+    if fit_config.deproject and config.templates is not None:
+        tod = _deprojected_tod(data, config, tod_format, n_real, temperature)
+    samples = tod_format.as_array(tod).reshape(-1, nsamp)
     return fit_low_rank_noise(samples, sample_rate, n_real=n_real, lead=lead, config=fit_config)
+
+
+def _deprojected_tod(
+    data: Any,
+    config: MapMakingConfig,
+    tod_format: TODFormat,
+    n_real: int | Array,
+    temperature: Float[Array, 'det samp'] | None,
+) -> PyTree[Array]:
+    r"""The TOD less its fit by every configured template, $d - T \hat a$.
+
+    The amplitudes are fitted by least squares under a white weight: each channel's inverse
+    variance, from its sample-to-sample differences, on its valid samples. The fit only shapes the
+    data the noise is estimated from, so a loose tolerance serves.
+    """
+    assert config.templates is not None
+    explicit, implicit = build_templates(
+        config.templates, data, tod_format, temperature=temperature
+    )
+    operator = TemplateOperator({**explicit, **implicit})
+    tod = data[ReaderField.SAMPLE_DATA]
+    samples = tod_format.as_array(tod)  # (stream, det, sample)
+    valid = _sample_mask(data, config) & (jnp.arange(tod_format.n_samples) < n_real)
+    valid = jnp.broadcast_to(valid, samples.shape)
+    pairs = valid[..., 1:] & valid[..., :-1]
+    steps = jnp.where(pairs, jnp.diff(samples, axis=-1), 0)
+    variance = jnp.sum(steps**2, axis=-1) / jnp.maximum(2 * pairs.sum(axis=-1), 1)
+    inverse = jnp.where(variance > 0, 1 / jnp.where(variance > 0, variance, 1), 0)
+    weight = tod_format.diagonal(jnp.where(valid, inverse[..., None], 0).astype(samples.dtype))
+    fit = TemplateFit(
+        operator,
+        weight,
+        regularization=config.templates.regularization,
+        batch_size=config.templates.gram_batch_size,
+        solver=CGSolver(rtol=1e-4, max_steps=_DEPROJECTION_STEPS),
+    )
+    return tree.sub(tod, fit.model(fit(tod).solution))
+
+
+_DEPROJECTION_STEPS = 50
+"""The most conjugate gradient steps of the template fit that precedes the low-rank noise fit."""
 
 
 def _sample_mask(data: Any, config: MapMakingConfig) -> Array:

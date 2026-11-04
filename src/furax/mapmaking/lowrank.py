@@ -1,6 +1,7 @@
 """Detector-correlated noise model: a diagonal plus a few common modes per frequency bin."""
 
 import itertools
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -19,14 +20,11 @@ __all__ = [
     'fit_low_rank_noise',
 ]
 
+logger = logging.getLogger(__name__)
+
 # Tracy-Widom (beta = 1) quantiles, for the fluctuation of the largest eigenvalue of pure noise.
 _TRACY_WIDOM_QUANTILES = (0.9, 0.95, 0.99, 0.999)
 _TRACY_WIDOM_VALUES = (0.4501, 0.9793, 2.0234, 3.2724)
-
-# The eigenvalue threshold assumes independent samples. With far more channels than samples, as in
-# the low bins, even the 1/6 correlation of Hann coefficients two apart shifts the noise edge enough
-# to let noise eigenvalues through: coefficients three apart, in disjoint segments, are independent.
-_FREQUENCY_STRIDE = 3
 
 # Modes beyond the strongest ones are examined, to leave room for the single-channel rejection.
 _CANDIDATES_PER_MODE = 3
@@ -127,31 +125,25 @@ def fit_low_rank_noise(
     samples: Float[Array, 'channel sample'],
     sample_rate: float,
     *,
-    valid: Bool[Array, 'channel sample'] | None = None,
     n_real: int | Array | None = None,
     lead: tuple[int, ...] | None = None,
     config: LowRankNoiseFitConfig | None = None,
 ) -> LowRankNoiseModel:
     r"""Fit the noise covariance $N(f) = D + V G V^\top$ in frequency bins from the data.
 
-    Each channel is whitened by its power in the high-frequency band, where it is assumed white.
-    In every bin of `config.bin_edges`, the eigendecomposition of the channel covariance gives the
-    modes: those above the largest eigenvalue that pure noise would produce, with at most
-    `config.max_modes`, and none carried mostly by a single channel. The diagonal $D$ is the
-    remaining power of each channel, so the model reproduces every channel's power in the bin.
-
-    The covariance is estimated from disjoint segments, leaving out those that reach into the
-    padded tail. The flagged samples are treated as missing, whatever they hold: in each segment,
-    a channel's valid samples are taken relative to their mean and the flagged ones are set to
-    zero, and the spectrum is normalized by the windowed power of the valid samples. Removing the
-    mean first keeps a gap shared by several channels from writing the same offset into all of
-    them, which would show as a correlation at every frequency. A channel contributes a segment
-    only when enough of its samples are valid.
+    The covariance is estimated from the Fourier transform of the whole observation, its mean
+    removed and its ends tapered over `config.taper` seconds. Every sample enters the fit,
+    flagged or not. Each channel is whitened by its power in `config.whitening_band`, where it
+    is assumed white. In every bin of `config.bin_edges`, the eigendecomposition of the channel
+    covariance gives the modes: those above the largest eigenvalue that pure noise would produce,
+    with at most `config.max_modes` and at most half the real samples of the bin, and none
+    carried mostly by a single channel. The diagonal $D$ is the remaining power of each channel,
+    corrected for the part of it that the modes absorb, so that the model reproduces every
+    channel's power in the bin.
 
     Args:
         samples: Time-ordered data of all channels, with the samples last.
         sample_rate: Sample rate in Hz.
-        valid: Whether each sample is valid, or `None` to keep them all.
         n_real: Number of samples before the padded tail, or `None` for no padding.
         lead: The shape of the channel axes, `(streams, detectors)` for a demodulated TOD; by
             default, a single axis.
@@ -170,47 +162,35 @@ def fit_low_rank_noise(
         )
 
     n_channels, n_samples = samples.shape
-    nperseg = min(config.nperseg, n_samples)
-    starts = jnp.arange(0, n_samples - nperseg + 1, nperseg)
-    frequencies = np.fft.rfftfreq(nperseg, 1 / sample_rate)
-
-    used = starts + nperseg <= (n_samples if n_real is None else n_real)  # (segment,)
-    spectra, band_power, valid_fraction, efficiency = _segment_spectra(
-        samples, valid, starts, nperseg, frequencies, edges[-1], config.whitening_band
+    frequencies = np.fft.rfftfreq(n_samples, 1 / sample_rate)
+    spectra, level, efficiency = _observation_spectra(
+        samples,
+        n_samples if n_real is None else n_real,
+        frequencies,
+        edges[-1],
+        config.whitening_band,
+        max(round(config.taper * sample_rate), 1),
     )
-    weights = used[:, None] & (valid_fraction >= config.min_valid_fraction)  # (segment, channel)
-    # a channel without such a segment keeps all those where it has valid samples
-    weights = jnp.where(weights.any(axis=0), weights, used[:, None] & (valid_fraction > 0))
-    # zero-filled gaps correlate neighbouring coefficients: fewer independent samples
-    efficiency = jnp.sum(jnp.where(weights, efficiency, 0)) / jnp.maximum(weights.sum(), 1)
-
-    # per-channel noise level, from the segments it contributes
-    count = weights.sum(axis=0)  # (channel,)
-    alive = count > 0
-    level = jnp.where(weights, band_power, 0).sum(axis=0) / jnp.maximum(count, 1)
+    alive = level > 0
     median = jnp.nanmedian(jnp.where(alive, level, jnp.nan))
     level = jnp.where(alive, level, jnp.where(jnp.isnan(median), 1.0, median))
-    n_used = jnp.maximum(used.sum(), 1)
 
     diagonals, modes, powers = [], [], []
     for lo, hi in itertools.pairwise(edges):
         columns = np.flatnonzero((frequencies >= lo) & (frequencies < hi) & (frequencies > 0))
-        columns = columns[::_FREQUENCY_STRIDE]
         if columns.size == 0:
             diagonal, vectors, eigenvalues = level, None, None
         else:
-            # whitened coefficients, scaled so that a channel missing some segments keeps unit power
-            z = spectra[:, :, columns] / jnp.sqrt(level)[None, :, None]
-            z = jnp.where(weights[:, :, None], z, 0)
-            z = z * jnp.sqrt(n_used / jnp.maximum(count, 1))[None, :, None]
-            z = jnp.moveaxis(z, 1, 0).reshape(n_channels, -1)
-            n_independent = n_used * columns.size * efficiency
-            vectors, eigenvalues, power = _fit_bin(
-                z, n_used * columns.size, n_independent, alive, config
+            z = spectra[:, columns] / jnp.sqrt(level)[:, None]
+            n_independent = columns.size * efficiency
+            vectors, eigenvalues, power = _fit_bin(z, columns.size, n_independent, alive, config)
+            # The k sample modes span part of each channel's own noise too, a fraction k/n of
+            # it in expectation over the n real samples, which the residual power lacks.
+            n_kept = jnp.sum(eigenvalues > 0)
+            residual = (power - (vectors**2 * eigenvalues).sum(axis=1)) / (
+                1 - n_kept / (2 * n_independent)
             )
-            diagonal = level * jnp.maximum(
-                power - (vectors**2 * eigenvalues).sum(axis=1), _DIAGONAL_FLOOR * power
-            )
+            diagonal = level * jnp.maximum(residual, _DIAGONAL_FLOOR * power)
         diagonals.append(diagonal)
         modes.append(vectors)
         powers.append(eigenvalues)
@@ -226,7 +206,7 @@ def fit_low_rank_noise(
         [zero_modes if v is None else jnp.sqrt(level)[:, None] * v for _, v, _ in bins]
     )
     core = jnp.stack([jnp.diag(zero_power if g is None else g) for _, _, g in bins])
-    return LowRankNoiseModel(
+    model = LowRankNoiseModel(
         diagonal,
         mode_array,
         core,
@@ -234,57 +214,82 @@ def fit_low_rank_noise(
         sample_rate=float(sample_rate),
         lead=(n_channels,) if lead is None else tuple(lead),
     )
+    # Decided when the fit is traced: no host callback unless the record would be logged
+    if logger.isEnabledFor(logging.DEBUG):
+        jax.debug.callback(_log_fit, *_fit_summary(model, level, alive))
+    return model
 
 
-def _segment_spectra(
+def _fit_summary(
+    model: LowRankNoiseModel, level: Float[Array, ' channel'], alive: Bool[Array, ' channel']
+) -> tuple[Array, ...]:
+    """Per-bin statistics of a fit, over the live channels, for the debug log.
+
+    Returns the number of modes kept, the largest mode power over the white level, the quantiles
+    (0, 1, 50 %) of the diagonal over the white level, and the quantiles (50, 99, 100 %) of the
+    weight's diagonal over its zero-lag value, which the block-Jacobi preconditioner uses.
+    """
+    n_modes = jnp.sum(jnp.diagonal(model.core, axis1=1, axis2=2) > 0, axis=1)
+    top_power = jnp.max(jnp.diagonal(model.core, axis1=1, axis2=2), axis=1)
+    whitened = jnp.where(alive, model.diagonal / level, jnp.nan)
+    diagonal_q = jnp.nanquantile(whitened, jnp.array([0.0, 0.01, 0.5]), axis=1).T
+    weight = model.inverse_operator(
+        jax.ShapeDtypeStruct((model.diagonal.shape[1], 1), model.diagonal.dtype)
+    )
+    weight_diagonal = (
+        weight.diagonal
+        + jnp.einsum('bcj,bjk,bck->bc', weight.modes, weight.core, weight.modes.conj()).real
+    )
+    zero_lag = 1 / model.to_white_noise_model().sigma.ravel() ** 2
+    ratio = jnp.where(alive, weight_diagonal / zero_lag, jnp.nan)
+    ratio_q = jnp.nanquantile(ratio, jnp.array([0.5, 0.99, 1.0]), axis=1).T
+    return n_modes, top_power, diagonal_q, ratio_q
+
+
+def _log_fit(n_modes: Array, top_power: Array, diagonal_q: Array, ratio_q: Array) -> None:
+    lines = [
+        f'  bin {b}: {int(n_modes[b])} modes, top power {float(top_power[b]):.3g},'
+        f' D/white min/1%/median {np.array2string(np.asarray(diagonal_q[b]), precision=3)},'
+        f' weight/zero-lag median/99%/max {np.array2string(np.asarray(ratio_q[b]), precision=3)}'
+        for b in range(len(n_modes))
+    ]
+    logger.debug('Low-rank noise fit, per bin (powers relative to white):\n%s', '\n'.join(lines))
+
+
+def _observation_spectra(
     samples: Float[Array, 'channel sample'],
-    valid: Bool[Array, 'channel sample'] | None,
-    starts: Array,
-    nperseg: int,
+    n_real: int | Array,
     frequencies: np.ndarray,
     top: float,
     band: tuple[float, float],
-) -> tuple[Array, Array, Array, Array]:
-    """Spectra of the segments, with their white-band power, valid fraction and efficiency.
+    n_taper: int,
+) -> tuple[Array, Array, Array]:
+    """Spectra of the whole observation up to `top`, with their white-band power and efficiency.
 
-    The windowed spectra go up to `top`, and every output is per segment and channel.
-
-    The spectra are normalised by the windowed power of the valid samples, so that white noise of
-    per-sample variance σ² has E|X|² = σ² under any mask. The efficiency is the effective number of
-    samples of the masked window relative to that of the full window, `(Σu²)²/Σu⁴` for weights
-    `u`: the fraction of independent coefficients that remain once gaps correlate them.
+    The samples past `n_real` are left out. The spectra are normalised by the power of the
+    window, so that white noise of per-sample variance σ² has E|X|² = σ². The efficiency is the
+    effective number of samples of the window, `(Σw²)²/Σw⁴`, over the length of the transform:
+    the fraction of independent coefficients.
     """
-    window = jnp.hanning(nperseg + 1)[:-1].astype(samples.dtype)
-    n_low = int(np.searchsorted(frequencies, top))
     in_band = (frequencies >= band[0]) & (frequencies <= band[1])
     if not in_band.any():
         raise ValueError(f'No frequency in the whitening band {band} Hz')
-    if valid is None:
-        valid = jnp.ones(samples.shape, bool)
-
-    full = jnp.sum(window**2) ** 2 / jnp.sum(window**4)
-
-    def spectrum(start: Array) -> tuple[Array, Array, Array, Array]:
-        segment = jax.lax.dynamic_slice_in_dim(samples, start, nperseg, axis=1)
-        mask = jax.lax.dynamic_slice_in_dim(valid, start, nperseg, axis=1)
-        n_valid = mask.sum(axis=1, keepdims=True)
-        mean = jnp.where(mask, segment, 0).sum(axis=1, keepdims=True) / jnp.maximum(n_valid, 1)
-        weighted = jnp.where(mask, window, 0)
-        norm = jnp.sqrt(jnp.sum(weighted**2, axis=1, keepdims=True))
-        coefficients = jnp.fft.rfft(jnp.where(mask, segment - mean, 0) * window)
-        coefficients = coefficients / jnp.where(norm > 0, norm, 1)
-        power = jnp.mean(jnp.abs(coefficients[:, in_band]) ** 2, axis=1)
-        effective = jnp.sum(weighted**2, axis=1) ** 2 / jnp.maximum(
-            jnp.sum(weighted**4, axis=1), 1e-300
-        )
-        return coefficients[:, :n_low], power, n_valid[:, 0] / nperseg, effective / full
-
-    return jax.lax.map(spectrum, starts)
+    n_low = int(np.searchsorted(frequencies, top))
+    n_samples = samples.shape[-1]
+    t = jnp.arange(n_samples)
+    real = t < n_real
+    ramp = jnp.clip(jnp.minimum(t + 1, n_real - t) / n_taper, 0, 1)
+    window = jnp.where(real, (1 - jnp.cos(jnp.pi * ramp)) / 2, 0).astype(samples.dtype)
+    mean = jnp.where(real, samples, 0).sum(axis=1, keepdims=True) / n_real
+    coefficients = jnp.fft.rfft((samples - mean) * window) / jnp.sqrt(jnp.sum(window**2))
+    level = jnp.mean(jnp.abs(coefficients[:, in_band]) ** 2, axis=1)
+    efficiency = jnp.sum(window**2) ** 2 / jnp.sum(window**4) / n_samples
+    return coefficients[:, :n_low], level, efficiency
 
 
 def _fit_bin(
     z: Array,
-    n_columns: Array,
+    n_columns: int,
     n_independent: Array,
     alive: Bool[Array, ' channel'],
     config: LowRankNoiseFitConfig,
@@ -317,9 +322,10 @@ def _fit_bin(
     edge = _noise_edge(jnp.sum(alive), 2 * n_independent, config.threshold_quantile) / 2
     threshold = edge * n_columns / n_independent
     accepted = (values > threshold) & (jnp.abs(vectors).max(axis=0) < config.single_lim)
-    # strongest accepted modes first, at most max_modes of them
+    # strongest accepted modes first, at most max_modes of them, and at most half the real samples
+    # so that the diagonal keeps enough of them
     order = jnp.argsort(~accepted, stable=True)[: config.max_modes]
-    keep = accepted[order]
+    keep = accepted[order] & (jnp.arange(order.size) < jnp.floor(n_independent))
     pad = config.max_modes - order.size
     vectors = jnp.where(keep, vectors[:, order], 0)
     eigenvalues = jnp.where(keep, eigenvalues[order], 0)

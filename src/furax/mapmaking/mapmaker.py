@@ -173,7 +173,7 @@ class MultiObservationMapMaker[T]:
         bins and so cannot vary with the padding. A segment longer than the shortest observation
         would therefore leave one partial segment straddling that observation's padding, and its
         noise fit would see the zeros. Clipping the segment keeps every averaged segment inside
-        real data. The segments of the low-rank fit are clipped likewise.
+        real data.
 
         The clip is taken over the whole dataset rather than over each bucket, so that the noise
         fit stays independent of how the observations happen to be bucketed. Observation lengths
@@ -181,14 +181,12 @@ class MultiObservationMapMaker[T]:
         still falls back to a partial segment.
         """
         weighting = self.config.weighting
-        if weighting.mode == WeightingMode.IDENTITY or weighting.source != NoiseSource.FIT:
-            return self.config  # no PSD is estimated, so the segment length is unused
+        if weighting.source != NoiseSource.FIT or weighting.mode in (
+            WeightingMode.IDENTITY,
+            WeightingMode.LOW_RANK,  # fitted on the whole observation
+        ):
+            return self.config  # no Welch PSD is estimated, so the segment length is unused
         shortest = min(shape.sample_count for shape in self._probe_shapes)
-        if weighting.mode == WeightingMode.LOW_RANK:
-            low_rank = replace(
-                weighting.low_rank, nperseg=min(weighting.low_rank.nperseg, shortest)
-            )
-            return replace(self.config, weighting=replace(weighting, low_rank=low_rank))
         nperseg = min(weighting.fitting.nperseg, shortest)
         if nperseg == weighting.fitting.nperseg:
             return self.config

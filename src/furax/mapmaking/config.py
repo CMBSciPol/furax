@@ -235,17 +235,15 @@ class LowRankNoiseFitConfig:
     """A mode is kept when its eigenvalue exceeds this quantile of the largest eigenvalue of pure
     noise, from the Marchenko-Pastur edge and the Tracy-Widom fluctuation. Between 0.9 and 0.999."""
 
-    nperseg: int = 8_192
-    """Segment length in samples. The segments are disjoint. Clipped to the data length."""
+    taper: float = 2.0
+    """Duration in seconds of the cosine taper applied to each end of the observation before its
+    Fourier transform."""
 
     whitening_band: tuple[float, float] = (1.0, 3.0)
     """Frequency band in Hz where each channel is assumed white, to set its noise level."""
 
     single_lim: float = 0.55
     """A mode is rejected when one channel carries a component of its unit vector above this."""
-
-    min_valid_fraction: float = 0.5
-    """A channel leaves a segment out of the fit when fewer of its samples are valid."""
 
 
 @dataclass

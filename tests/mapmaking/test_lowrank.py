@@ -9,7 +9,7 @@ from furax.mapmaking.lowrank import fit_low_rank_noise
 SAMPLE_RATE = 8.0
 N_CHANNELS = 24
 N_SAMPLES = 2**15
-CONFIG = LowRankNoiseFitConfig(bin_edges=(0.02, 0.05, 0.1, 0.2), nperseg=2048, max_modes=4)
+CONFIG = LowRankNoiseFitConfig(bin_edges=(0.02, 0.05, 0.1, 0.2), max_modes=4)
 
 
 def simulate(key, amplitude, *, n_modes=2, sigma=None):
@@ -55,22 +55,6 @@ def test_diagonal_reproduces_channel_power_in_white_band():
     op = fit_low_rank_noise(data, SAMPLE_RATE, config=CONFIG)
     np.testing.assert_allclose(op.diagonal[-1], sigma**2, rtol=0.15)
     np.testing.assert_allclose(op.diagonal[2], sigma**2, rtol=0.4)
-
-
-def test_shared_flags_do_not_create_correlations():
-    data, _, _ = simulate(jax.random.key(3), 0.0)
-    valid = jnp.ones(data.shape, bool).at[:, 6000:9000].set(False).at[:, 20000:21500].set(False)
-    # what an unmasked fit would see: flagged samples zeroed in all channels
-    op = fit_low_rank_noise(jnp.where(valid, data, 0), SAMPLE_RATE, valid=valid, config=CONFIG)
-    assert mode_count(op).sum() == 0
-
-
-def test_per_channel_flags_do_not_create_correlations():
-    data, _, _ = simulate(jax.random.key(4), 0.0)
-    flagged = jax.random.uniform(jax.random.key(5), (N_CHANNELS, 16)) < 0.2
-    valid = ~jnp.repeat(flagged, N_SAMPLES // 16, axis=1)
-    op = fit_low_rank_noise(jnp.where(valid, data, 0), SAMPLE_RATE, valid=valid, config=CONFIG)
-    assert mode_count(op).sum() == 0
 
 
 def test_weight_is_the_inverse_of_the_fitted_covariance():

@@ -202,3 +202,34 @@ def test_sequential_compiles_the_body_once(n_terms: int) -> None:
     op = AdditionOperator(diags, sequential=True)
     hlo = jax.jit(lambda v: op(v)).lower(jnp.ones(4)).compile().as_text()
     assert len(re.findall(r'\bmultiply\(', hlo)) == 1
+
+
+class _LowRank(AbstractLinearOperator):
+    """Rank-k operator `U (cumsum Uᵀ x)`, whose application holds temporaries of size k."""
+
+    factor: Inexact[Array, 'n k']
+
+    def mv(self, x: Inexact[Array, ' n']) -> Inexact[Array, ' n']:
+        return self.factor @ jnp.cumsum(self.factor.T @ x)
+
+
+def _temp_bytes(op: AbstractLinearOperator) -> int:
+    """Temporary memory of the compiled application of `op`, whose arrays are kept as inputs."""
+    x = jnp.ones(op.in_structure.shape, op.in_structure.dtype)
+    compiled = jax.jit(lambda op, x: op(x)).lower(op, x).compile()
+    return compiled.memory_analysis().temp_size_in_bytes
+
+
+def test_groups_are_applied_one_after_another() -> None:
+    """Operands of different shapes form separate groups, which must not be live together.
+
+    The peak memory of the sum is then that of the largest operand, not of all of them.
+    """
+    n = 100
+    structure = jax.ShapeDtypeStruct((n,), jnp.float32)
+    ranks = [1_000, 2_000, 3_000, 4_000]
+    operands = [_LowRank(jnp.ones((n, k), jnp.float32), in_structure=structure) for k in ranks]
+
+    sequential_sum = AdditionOperator(operands, sequential=True)
+    largest_operand = operands[-1]
+    assert _temp_bytes(sequential_sum) < 1.2 * _temp_bytes(largest_operand)

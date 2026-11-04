@@ -800,7 +800,8 @@ class InverseOperator(AbstractLazyInverseOperator):
         from furax.interfaces.lineax import as_lineax_operator
 
         A = as_lineax_operator(self.operator, OperatorTag.POSITIVE_SEMIDEFINITE)
-        if preconditioner := options.get('preconditioner'):
+        preconditioner = options.pop('preconditioner', None)
+        if preconditioner is not None:
             if not isinstance(preconditioner, AbstractLinearOperator):
                 raise TypeError('The preconditioner must be an instance of AbstractLinearOperator.')
             options['preconditioner'] = as_lineax_operator(

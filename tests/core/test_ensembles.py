@@ -187,6 +187,19 @@ def test_stacked_leaves_match_their_strides():
         StackedEnsemble(N, {'x': jnp.zeros((2, 2))}, 3)
 
 
+def test_strides_are_canonicalized_at_construction():
+    # Whatever form the strides are given in, the ensembles flatten to the same treedef, and the
+    # aux data never inspects the leaves: an abstract ensemble keeps the strides of the concrete
+    # one it was traced from.
+    stacked = {'x': jnp.zeros((N, 2)), 'y': jnp.zeros((N, 3))}
+    default = StackedEnsemble(N, stacked)
+    explicit = StackedEnsemble(N, stacked, {'x': 1, 'y': 1})
+    assert default.strides == (1, 1)
+    assert jax.tree.structure(default) == jax.tree.structure(explicit)
+    abstract = jax.eval_shape(lambda e: e, default)
+    assert abstract.strides == (1, 1)
+
+
 def test_stacked_outputs_come_back_in_position_order():
     out, _ = map_reduce(lambda m: m['x'], _stacked(policy=Policy(batch=2)), 1)
     assert_allclose(out, _xs())
@@ -263,7 +276,7 @@ def test_lift_keeps_the_leaves_and_strides_of_a_structural_function():
     assert isinstance(rearranged, StackedEnsemble)
     assert rearranged.stacked['pair'][0] is by_2  # the arrays are reused, not copied
     assert rearranged.stacked['pair'][1] is xs
-    assert rearranged.strides == {'pair': (2, 1)}
+    assert rearranged.strides == (2, 1)
 
 
 def test_lift_composes_operators_structurally():

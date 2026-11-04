@@ -68,9 +68,12 @@ is shared by the whole ensemble. It is the only representation the engine can ba
 (`Policy.batch`) and shard (`Policy.axis`), and the one stacked engine outputs come back as.
 
 Sharding is explicit: [`shard(axis)`][furax.core.StackedEnsemble.shard] lays the strided leaves
-out over the mesh axis (`PartitionSpec(axis)`) and records the axis in the policy. The engine runs
-the members under `jax.shard_map`, which does not reshard: an ensemble whose leaves are not laid
-out over the axis fails rather than silently gathering.
+out over the mesh axis (`PartitionSpec(axis)`) and records the axis in the policy. At evaluation,
+the engine reads the mesh back from the shardings of the laid-out leaves, falling back to the
+ambient mesh — the mesh set by `jax.set_mesh` is thread-local, and reading it from the leaves lets
+any thread evaluate the ensemble, such as the host-callback thread of `jax.pure_callback`. The
+engine runs the members under `jax.shard_map`, which does not reshard: an ensemble whose leaves
+are not laid out over the axis fails rather than silently gathering.
 
 ### HostEnsemble
 

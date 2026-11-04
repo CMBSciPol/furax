@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `map_reduce`, `size_per_device` and `Policy.from_budget` read the mesh of a laid-out ensemble from the shardings of its leaves, falling back to the ambient mesh (#441)
 - `furax-so-map` refuses an output directory that holds the output of an earlier run, unless given `--overwrite`, which deletes that output first (#402)
 - `furax-so-map` logs to `furax-so-map.rank<N>.log` in the output directory by default (#402)
 - The multi-observation mapmaker logs a warning when the CG solve does not converge (#402)

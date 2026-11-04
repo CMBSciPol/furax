@@ -1,11 +1,14 @@
 """The ensemble engine: representations, policies, output strides and their inference."""
 
+import dataclasses
 import re
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 from numpy.testing import assert_allclose
 
 from furax import DiagonalOperator
@@ -335,8 +338,6 @@ class TestSharded:
             ensemble = _stacked().shard('obs')
             assert ensemble.policy.axis == 'obs'
             out, _ = map_reduce(_apply, ensemble, {'sum': 'sum', 'stack': 1, 'shared': None}, 3.0)
-            from jax.sharding import PartitionSpec as P
-
             assert out['sum'].sharding.spec == P()  # summed over the devices, held by all
             assert out['stack'].sharding.spec == P('obs')  # stays with the devices
             assert_allclose(out['sum'], reference['sum'])
@@ -375,3 +376,77 @@ class TestSharded:
             ensemble = ListEnsemble(members, policy=Policy(axis='obs'))
             with pytest.raises(ValueError, match='mesh axis'):
                 map_reduce(lambda m: m['x'], ensemble, 'sum')
+
+    def test_sharded_evaluates_without_the_ambient_mesh(self):
+        # the ambient mesh is thread-local: the mesh read back from the laid-out leaves lets
+        # any thread -- such as the host-callback thread of `jax.pure_callback` -- evaluate
+        # the ensemble
+        reference, _ = map_reduce(
+            _apply, _stacked(), {'sum': 'sum', 'stack': 1, 'shared': None}, 3.0
+        )
+        with jax.set_mesh(self._mesh()):
+            ensemble = _stacked().shard('obs')
+        assert jax.sharding.get_abstract_mesh().empty
+        assert ensemble.size_per_device == N // jax.device_count()
+        out, _ = map_reduce(_apply, ensemble, {'sum': 'sum', 'stack': 1, 'shared': None}, 3.0)
+        assert_allclose(out['sum'], reference['sum'])
+        assert_allclose(out['stack'], reference['stack'])
+        assert_allclose(out['shared'], reference['shared'])
+
+    def test_hand_built_policy_evaluates_without_the_ambient_mesh(self):
+        # a policy built directly with the axis, without `shard` -- the pattern of
+        # `bucket_apply` and of the mapmaker -- carries no mesh: the engine reads it from
+        # the laid-out leaves
+        reference, _ = map_reduce(
+            _apply, _stacked(), {'sum': 'sum', 'stack': 1, 'shared': None}, 3.0
+        )
+        mesh = self._mesh()
+        base = _stacked()
+        stacked = {
+            'x': jax.device_put(base.stacked['x'], NamedSharding(mesh, P('obs'))),
+            't': base.stacked['t'],
+        }
+        ensemble = dataclasses.replace(base, stacked=stacked, policy=Policy(axis='obs'))
+        assert jax.sharding.get_abstract_mesh().empty
+        out, _ = map_reduce(_apply, ensemble, {'sum': 'sum', 'stack': 1, 'shared': None}, 3.0)
+        assert_allclose(out['sum'], reference['sum'])
+        assert_allclose(out['stack'], reference['stack'])
+        assert_allclose(out['shared'], reference['shared'])
+
+    def test_host_loop_evaluates_without_the_ambient_mesh(self):
+        # the host ensemble's rows live on the host: the mesh is read from its shared
+        # template arrays laid out over the devices
+        reference, _ = map_reduce(
+            _apply, _stacked(), {'sum': 'sum', 'stack': 1, 'shared': None}, 1.0
+        )
+        mesh = self._mesh()
+        xs = np.asarray(_xs())
+        ensemble = HostEnsemble(
+            N,
+            lambda i: (xs[i],),
+            {
+                'x': jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64),
+                't': jax.device_put(_shared(), NamedSharding(mesh, P())),
+            },
+            policy=Policy(axis='obs'),
+        )
+        assert jax.sharding.get_abstract_mesh().empty
+        out, _ = map_reduce(_apply, ensemble, {'sum': 'sum', 'stack': 1, 'shared': None}, 1.0)
+        assert_allclose(out['sum'], reference['sum'])
+        assert_allclose(out['stack'], reference['stack'])
+        assert_allclose(out['shared'], reference['shared'])
+
+    def test_leaves_on_different_meshes_are_rejected(self):
+        # two meshes may carry the same axis name: an ensemble laid out over both is ambiguous
+        devices = jax.devices()
+        half = len(devices) // 2
+        mesh1 = jax.sharding.Mesh(devices[:half], ('obs',))
+        mesh2 = jax.sharding.Mesh(devices[half:], ('obs',))
+        base = _stacked()
+        stacked = {
+            'x': jax.device_put(base.stacked['x'], NamedSharding(mesh1, P('obs'))),
+            't': jax.device_put(base.stacked['t'], NamedSharding(mesh2, P())),
+        }
+        ensemble = dataclasses.replace(base, stacked=stacked, policy=Policy(axis='obs'))
+        with pytest.raises(ValueError, match='different meshes'):
+            map_reduce(_apply, ensemble, {'sum': 'sum', 'stack': 1, 'shared': None}, 1.0)

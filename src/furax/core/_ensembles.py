@@ -31,6 +31,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.extend.core import Literal as JaxprLiteral
 from jax.extend.core import jaxpr_as_fun
+from jax.sharding import AbstractMesh, Mesh
 from jax.sharding import PartitionSpec as P
 from jax.tree_util import GetAttrKey, register_pytree_with_keys
 from jaxtyping import Array, Bool, Int, PyTree
@@ -61,7 +62,9 @@ class Policy:
     """How an ensemble is evaluated: in rounds of `batch` members, split over `axis`."""
 
     axis: str | None = None
-    """The mesh axis the members are split over, each device evaluating its own, if any."""
+    """The mesh axis the members are split over, each device evaluating its own, if any. The
+    mesh is the one of the ensemble's laid-out leaves, or the current mesh when no leaf names
+    it."""
     batch: int = 1
     """The number of members of a round, which must divide the members of a device: evaluated
     together, vectorized, rather than one after the other."""
@@ -112,7 +115,7 @@ class Policy:
         if analysis is None:
             raise ValueError('the backend reports no memory analysis: pass the policy explicitly')
         temporaries = analysis.temp_size_in_bytes
-        devices = 1 if axis is None else _axis_size(axis)
+        devices = 1 if axis is None else _axis_size(axis, ensemble._mesh(axis))
         per_device = ensemble.size // devices
         resident = ensemble._nbytes(devices)
         if temporaries == 0:
@@ -169,6 +172,18 @@ class Ensemble(ABC):
     @abstractmethod
     def _arrays(self) -> tuple[list[Array], list[Array]]:
         """The ensemble's arrays: those that carry the members, and those every member holds."""
+
+    def _mesh(self, axis: str) -> Mesh | AbstractMesh | None:
+        """The mesh carrying `axis`, read from the shardings of the ensemble's arrays.
+
+        The mesh set by `jax.set_mesh` is thread-local: read back from the laid-out leaves, it
+        lets the engine evaluate the ensemble from any thread -- such as the host-callback
+        thread of `jax.pure_callback` -- however the policy was built. None when no array
+        names the axis: the engine then falls back to the ambient mesh.
+        """
+        member, fixed = self._arrays()
+        extra = [] if self.valid is None else [self.valid]
+        return _leaves_mesh([*member, *extra, *fixed], axis)
 
     @abstractmethod
     def _body(
@@ -299,7 +314,8 @@ class StackedEnsemble(Ensemble):
     @property
     def size_per_device(self) -> int:
         """The members of one device."""
-        return self.size // (1 if self.policy.axis is None else _axis_size(self.policy.axis))
+        axis = self.policy.axis
+        return self.size // (1 if axis is None else _axis_size(axis, self._mesh(axis)))
 
     @property
     def template(self) -> PyTree[Any]:
@@ -321,8 +337,10 @@ class StackedEnsemble(Ensemble):
     def shard(self, axis: str) -> 'StackedEnsemble':
         """The ensemble laid out over a mesh axis: consecutive members on each device.
 
-        The strided leaves are split over their leading axis, the shared leaves and `valid` are
-        replicated, and the returned ensemble's policy records the axis.
+        The strided leaves and `valid` are split over their leading axis, the shared leaves are
+        replicated, and the returned ensemble's policy records the axis. The engine reads the
+        mesh back from the laid-out leaves, so the ensemble evaluates from any thread, not only
+        the one that set the mesh.
         """
         devices = _axis_size(axis)
         leaves, strides = self._leaves_and_strides()
@@ -448,7 +466,8 @@ class HostEnsemble(Ensemble):
     @property
     def size_per_device(self) -> int:
         """The members of one device."""
-        return self.size // (1 if self.policy.axis is None else _axis_size(self.policy.axis))
+        axis = self.policy.axis
+        return self.size // (1 if axis is None else _axis_size(axis, self._mesh(axis)))
 
     def fetch(self, i: Int[Array, ''] | int) -> PyTree[Any]:
         leaves, is_member, treedef = self._parts()
@@ -502,10 +521,12 @@ def map_reduce(
     once: rounds of one member suit heavy computations, a single round of every member the small
     ones, which a loop would serialize. A round of one member is `apply` itself, not vectorized.
 
-    With `ensemble.policy.axis`, the members are first split over the devices of that axis of the
-    current mesh -- the ensemble must then be a [`StackedEnsemble`][furax.core.StackedEnsemble]
-    laid out over it (see [`StackedEnsemble.shard`][furax.core.StackedEnsemble.shard]) -- and each
-    device loops over its own members. The summed outputs are summed across the devices and held
+    With `ensemble.policy.axis`, the members are first split over the devices of that axis -- the
+    ensemble must then be a [`StackedEnsemble`][furax.core.StackedEnsemble] laid out over it (see
+    [`StackedEnsemble.shard`][furax.core.StackedEnsemble.shard]) -- and each device loops over its
+    own members. The mesh is read back from the shardings of the laid-out leaves, falling back to
+    the current mesh, so the evaluation does not depend on the thread-local mesh of the calling
+    thread. The summed outputs are summed across the devices and held
     by all of them; the stacked outputs stay with the devices that computed them, in position
     order.
 
@@ -661,7 +682,8 @@ def _resident_map_reduce(
             raise ValueError('only a stacked ensemble is laid out over a mesh axis')
         if batch != 1:
             raise ValueError('only a stacked ensemble is evaluated in batched rounds')
-    devices = 1 if policy.axis is None else _axis_size(policy.axis)
+    mesh = None if policy.axis is None else ensemble._mesh(policy.axis)
+    devices = 1 if policy.axis is None else _axis_size(policy.axis, mesh)
     per_device, remainder = divmod(ensemble.size, devices)
     if remainder:
         raise ValueError(f'{devices} devices do not divide {ensemble.size} members')
@@ -722,9 +744,9 @@ def _resident_map_reduce(
             + (P(),) * (len(fixed_arrays) + len(args_leaves))
         )
         out_specs = (P(),) * (n_sums + n_shareds) + (P(axis),) * n_stacks
-        flat = jax.shard_map(block, in_specs=in_specs, out_specs=out_specs, check_vma=False)(
-            *member_arrays, *([valid] if has_valid else []), *fixed_arrays, *args_leaves
-        )
+        flat = jax.shard_map(
+            block, mesh=mesh, in_specs=in_specs, out_specs=out_specs, check_vma=False
+        )(*member_arrays, *([valid] if has_valid else []), *fixed_arrays, *args_leaves)
         sums = list(flat[:n_sums])
         shareds = list(flat[n_sums : n_sums + n_shareds])
         stacks = list(flat[n_sums + n_shareds :])
@@ -741,7 +763,12 @@ def _host_map_reduce(
     policy = ensemble.policy
     batch = policy.batch
     axis = policy.axis
-    devices = 1 if axis is None else _axis_size(axis)
+    mesh = None
+    if axis is not None:
+        mesh = ensemble._mesh(axis)
+        if mesh is None:
+            mesh = _leaves_mesh(jax.tree.leaves(args), axis)
+    devices = 1 if axis is None else _axis_size(axis, mesh)
     per_device, remainder = divmod(ensemble.size, devices)
     if remainder:
         raise ValueError(f'{devices} devices do not divide {ensemble.size} members')
@@ -792,6 +819,7 @@ def _host_map_reduce(
     if axis is not None:
         launch = jax.shard_map(
             step,
+            mesh=mesh,
             in_specs=((P(axis), P(axis)), P(), P(axis), P(axis), P()),
             out_specs=((P(axis), P(axis)), P()),
             check_vma=False,
@@ -805,7 +833,8 @@ def _host_map_reduce(
         axis_devices: list[Any] = [None]
         local_rows = [0]
     else:
-        mesh = jax.sharding.get_mesh()
+        if mesh is None:
+            mesh = jax.sharding.get_mesh()
         if mesh.empty or mesh.axis_names != (axis,):
             raise ValueError(f'a host ensemble needs a mesh along the one axis {axis!r}')
         sharding = jax.sharding.NamedSharding(mesh, P(axis))
@@ -1062,11 +1091,31 @@ def _expanded(leaf: Array, stride: int, size: int) -> Array:
     return jnp.repeat(leaf, stride, axis=0, total_repeat_length=size)
 
 
-def _axis_size(axis: str) -> int:
-    mesh = jax.sharding.get_abstract_mesh()
+def _axis_size(axis: str, mesh: Mesh | AbstractMesh | None = None) -> int:
+    if mesh is None:
+        mesh = jax.sharding.get_abstract_mesh()
     if mesh.empty or axis not in mesh.shape:
         raise ValueError(f'no mesh axis {axis!r} is set: use `jax.set_mesh`')
     return mesh.shape[axis]
+
+
+def _leaves_mesh(leaves: Iterable[Any], axis: str) -> Mesh | AbstractMesh | None:
+    """The mesh carrying `axis`, read from the shardings of the leaves, or None.
+
+    A traced leaf exposes no sharding (reading it raises, so `getattr` yields None): under a
+    trace, every leaf is skipped and the engine falls back to the ambient mesh of the tracing
+    thread.
+    """
+    found = None
+    for leaf in leaves:
+        mesh = getattr(getattr(leaf, 'sharding', None), 'mesh', None)
+        if mesh is None or mesh.empty or axis not in mesh.shape:
+            continue
+        if found is None:
+            found = mesh
+        elif mesh != found:
+            raise ValueError(f'the leaves are laid out over different meshes carrying {axis!r}')
+    return found
 
 
 def _abstract(leaf: Any) -> Any:

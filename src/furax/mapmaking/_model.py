@@ -97,7 +97,9 @@ class ObservationModel:
                     config.weighting.correlation_length,
                     inverse=False,
                 )
-            W = NestedWeightOperator.create(Ninv, M, config.gaps.nested, cov=cov)
+            # the zero-lag white weight of each channel preconditions a linear inner solve
+            white = 1 / noise_model.to_white_noise_model().sigma.ravel() ** 2
+            W = NestedWeightOperator.create(Ninv, M, config.gaps.nested, cov=cov, white=white)
         else:
             # Plain masked weights, only exact for diagonal W
             W = WeightOperator.create(Ninv, M)

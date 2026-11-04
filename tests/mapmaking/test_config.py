@@ -226,13 +226,13 @@ def test_correlated_gap_treatments_reject_detector_batches(treatment: GapTreatme
             },
             'source=fit',
         ),
-        ({'gaps': GapsConfig(treatment=GapTreatment.NESTED)}, 'inner_mask'),
+        ({'gaps': GapsConfig(treatment=GapTreatment.FILL)}, 'inner_mask or nested'),
         (
             {'templates': TemplatesConfig(spline_drift=SplineDriftConfig())},
             'explicit=true for spline_drift',
         ),
     ],
-    ids=['detector-batches', 'precomputed', 'nested-gaps', 'implicit-template'],
+    ids=['detector-batches', 'precomputed', 'fill-gaps', 'implicit-template'],
 )
 def test_low_rank_weighting_rejects(options, match):
     base = {

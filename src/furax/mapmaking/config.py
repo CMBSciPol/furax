@@ -911,6 +911,18 @@ class NestedConfig:
     precondition: bool = False
     """Use the noise-model covariance to precondition the solve (off by default)."""
 
+    resolution: int = 1
+    """Knot spacing, in samples, of the cubic spline that models each gap.
+
+    With 1, every flagged sample is its own unknown and the weight is exact. A larger spacing
+    replaces the samples of each gap by a smooth spline across it, whose amplitudes are
+    marginalized: the weight stays unbiased, with a much smaller inner solve.
+    """
+
+    max_gaps_per_channel: int = 256
+    """Gap budget of each channel when `resolution > 1`; observations with more fall back to
+    `INNER_MASK`."""
+
 
 @dataclass
 class GapsConfig:
@@ -1192,9 +1204,14 @@ class MapMakingConfig:
             self.use_templates
             and not self.binned
             and self.gaps.treatment != GapTreatment.INNER_MASK
+            and not (
+                self.weighting.mode == WeightingMode.LOW_RANK
+                and self.gaps.treatment == GapTreatment.NESTED
+            )
         ):
             # gap filling bypasses the template path, and the nested weight couples samples
-            # across whole gaps, beyond the band of the template Grams
+            # across whole gaps, beyond the band of the template Grams; the low-rank weighting
+            # takes its Grams under the white weight instead
             raise ValueError(
                 'Templates with correlated weighting require gaps.treatment=inner_mask.'
             )
@@ -1234,8 +1251,10 @@ class MapMakingConfig:
                 'weighting.mode=low_rank couples the detectors of an observation: set '
                 f'detector_batch_size to 0 (got {self.detector_batch_size})'
             )
-        if self.gaps.treatment != GapTreatment.INNER_MASK:
-            raise ValueError('weighting.mode=low_rank requires gaps.treatment=inner_mask.')
+        if self.gaps.treatment == GapTreatment.FILL:
+            raise ValueError(
+                'weighting.mode=low_rank requires gaps.treatment=inner_mask or nested.'
+            )
         if self.templates is not None:
             implicit = [
                 f.name

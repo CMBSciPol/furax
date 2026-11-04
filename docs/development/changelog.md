@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `MultiObservationMapMaker` no longer takes `logger`, `furax.mapmaking.logger` is removed and the library no longer reads `LOGLEVEL`: furax logs through the `furax.*` loggers, which the application configures (#430)
 - `furax-so-map` logs the excluded observations as a warning with their reasons, and adds one line per observation read, the start of each solve and a progress line every 10 CG steps (#432)
 - `furax-so-map` shows the messages below WARNING of process 0 only on the console, and its log files also hold the messages logged before they were created (#432)
+- The multi-observation mapmaker's pass over the data runs on the ensemble engine: a `HostEnsemble` of each bucket's slots replaces the hand-rolled accumulation loop (#401)
 
 ### Fixed
 

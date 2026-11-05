@@ -46,7 +46,8 @@ from furax.mapmaking.templates.pomme import PommeProjectionOperator
 from furax.math import bspline
 from furax.math.coords import XiEtaAngles
 from furax.math.zernike import zernike
-from furax.obs import TODFormat
+from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator, TODFormat
+from furax.obs.stokes import StokesIQU
 from tests.mapmaking.templates.helpers import TOL, wrap
 
 
@@ -524,6 +525,41 @@ def test_winding_couplings_are_those_of_the_monomials_by_degree_and_turns(
         xi, eta, gamma, 2, 0.31, decentred=decentred, uniform=uniform, streams='qu'
     )
     assert_allclose(coupling, polarization_field_couplings(fields, gamma, streams='qu'), atol=TOL)
+
+
+def test_winding_couplings_are_the_demodulated_response_to_a_radial_leakage():
+    # The leakage is a polarization field of the focal plane, passed through the HWP and the
+    # analyzer of each detector, then demodulated at 4× the HWP angle. A detector whose analyzer is
+    # along the direction of its own position angle φ = arg ζ sees a polarization along the radius
+    # in full; the field Q + iU = ζ² is such a radial polarization.
+    xi, eta, gamma = _detector_angles()
+    zeta = (-eta - 1j * xi) / 0.31
+    n_det, n_samp = gamma.size, 64
+    shape = (n_det, n_samp)
+    field = jnp.broadcast_to(zeta[:, None] ** 2, shape)
+    sky = StokesIQU(jnp.ones(shape), field.real, field.imag)
+
+    radial = QURotationOperator.create(shape, jnp.float64, 'IQU', angles=jnp.angle(zeta)[:, None])
+    polarizer = LinearPolarizerOperator.create(shape=shape, dtype=jnp.float64, stokes='IQU')
+    along_radius = (polarizer @ radial)(sky)
+    assert_allclose(along_radius, 0.5 * (1 + jnp.abs(field)), atol=TOL)
+
+    # whole turns of the HWP, so that the lock-in sums are exact
+    psi = jnp.broadcast_to(jnp.pi * jnp.arange(n_samp) / n_samp, shape)
+    rot = QURotationOperator.create(shape, jnp.float64, 'IQU', angles=gamma[:, None])
+    hwp = HWPOperator.create(shape, jnp.float64, 'IQU', angles=psi)
+    tod = (polarizer @ rot @ hwp)(sky)
+    demodulated = jnp.stack(
+        [
+            4 * jnp.mean(tod * jnp.cos(4 * psi), axis=-1),
+            4 * jnp.mean(tod * jnp.sin(4 * psi), axis=-1),
+        ]
+    )  # (stream, det): Q and U
+
+    coupling = winding_couplings(
+        xi, eta, gamma, 1, 0.31, decentred=False, uniform=False, streams='qu'
+    )  # (stream, det, mode): the amplitude of the mode ζ² is (Re, Im) = (1, 0)
+    assert_allclose(demodulated, coupling[..., 0], atol=TOL)
 
 
 def test_winding_couplings_reject_a_radial_order_below_one():

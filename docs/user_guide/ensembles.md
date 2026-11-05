@@ -68,7 +68,7 @@ is shared by the whole ensemble. The member axis is leading by default; `axes` p
 leaf, and the engine slices, batches and shards each leaf along its own axis in place, so a leaf
 whose natural layout puts the member dimension elsewhere — a Stokes-first map stacked over its
 frequency axis, a demodulated TOD over its detector axis — needs no transposition. Stacked engine
-outputs always come back with a leading member axis. It is the only representation the engine can
+outputs come back with a leading member axis, unless `map_reduce`'s `out_axes` places it. It is the only representation the engine can
 batch (`Policy.batch`) and shard (`Policy.axis`).
 
 Sharding is explicit: [`shard(axis)`][furax.core.StackedEnsemble.shard] lays the strided leaves
@@ -104,8 +104,8 @@ sharded run treats them as explicit inputs instead of captured constants.
 
 - `'sum'`: the leaf is reduced over the members (padded members masked), then across the devices,
   and held by all of them;
-- stride 1: one entry per member, stacked along a new leading axis, staying with the device that
-  computed it;
+- stride 1: one entry per member, stacked along a new axis — leading by default, placed by the
+  `out_axes` keyword (a prefix of the output tree) — staying with the device that computed it;
 - stride s: one entry per run of s members that share it — a promise the engine does not check;
 - stride `None`: the same for every member, returned once;
 - `'auto'`: resolved to 1 or `None` by whether the leaf depends on the member in the traced
@@ -113,7 +113,9 @@ sharded run treats them as explicit inputs instead of captured constants.
 
 The second return value is the specification with `'auto'` resolved: together with the stacked
 outputs it is the template and strides of the next ensemble, so engine calls chain — the
-mapmaker's pass over the data returns the ensemble its solver then runs on.
+mapmaker's pass over the data returns the ensemble its solver then runs on. With `out_axes`
+matching the input `axes`, a pipeline keeps its layout through the round trip: a Stokes-first map
+stacked over its frequency axis comes back Stokes-first, with no transposition on either side.
 
 ## Ensembles of operators
 

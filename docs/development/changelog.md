@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AdditionOperator`, `BlockRowOperator`, `BlockColumnOperator` and `BlockDiagonalOperator` accept an `Ensemble` of operators as their container, evaluated through the engine with the ensemble's policy, and the block composition rules combine ensembles member-wise (#400)
 - `Ensemble.zip` pairs the members with their slices of a stacked pytree (#444)
 - `StackedEnsemble` takes `axes`, the member axis of each leaf, leading by default: the engine slices, batches and shards each leaf along its own axis, without transposition (#452)
+- `Ensemble.zip` takes `axes`, the member axis of each leaf of the zipped input (#453)
+- `map_reduce` takes `out_axes`, the placement of the member axis of each stacked output (#453)
 
 ### Changed
 

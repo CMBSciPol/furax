@@ -403,14 +403,19 @@ class StackedEnsemble(Ensemble):
             policy=self.policy,
         )
 
-    def shard(self, axis: str) -> 'StackedEnsemble':
+    def shard(self, axis: str | None) -> 'StackedEnsemble':
         """The ensemble laid out over a mesh axis: consecutive members on each device.
 
         The strided leaves are split over their member axis and `valid` over its leading axis,
         the shared leaves are replicated, and the returned ensemble's policy records the axis.
         The engine reads the mesh back from the laid-out leaves, so the ensemble evaluates from
         any thread, not only the one that set the mesh.
+
+        A `None` axis returns the ensemble unchanged: code that distributes only when several
+        devices are visible lays its ensembles out unconditionally, passing the axis it has.
         """
+        if axis is None:
+            return self
         devices = _axis_size(axis)
         leaves, strides = self._leaves_and_strides()
         for leaf, s, a in zip(leaves, strides, self.axes):

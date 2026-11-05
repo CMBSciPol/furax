@@ -470,6 +470,17 @@ def test_template_abstracts_the_member_leaves():
     assert template['t'] == jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64)
 
 
+def test_sharding_no_axis_keeps_the_ensemble():
+    # a caller that distributes only when several devices are visible passes the axis it has
+    ensemble = _stacked()
+    assert ensemble.shard(None) is ensemble
+    out, _ = map_reduce(
+        _apply, ensemble.shard(None), {'sum': 'sum', 'stack': 1, 'shared': None}, 1.0
+    )
+    assert_allclose(out['sum'], _expected(1.0)['sum'])
+    assert_allclose(out['stack'], _expected(1.0)['stack'])
+
+
 @pytest.mark.distributed
 class TestSharded:
     def _mesh(self):

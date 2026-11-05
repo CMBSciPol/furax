@@ -73,7 +73,8 @@ batch (`Policy.batch`) and shard (`Policy.axis`).
 
 Sharding is explicit: [`shard(axis)`][furax.core.StackedEnsemble.shard] lays the strided leaves
 out over the mesh axis (`PartitionSpec` on each leaf's member axis) and records the axis in the
-policy. At evaluation,
+policy; a `None` axis returns the ensemble unchanged, so code that distributes only when several
+devices are visible lays its ensembles out unconditionally. At evaluation,
 the engine reads the mesh back from the shardings of the laid-out leaves, falling back to the
 ambient mesh — the mesh set by `jax.set_mesh` is thread-local, and reading it from the leaves lets
 any thread evaluate the ensemble, such as the host-callback thread of `jax.pure_callback`. The

@@ -169,6 +169,18 @@ class Ensemble(ABC):
     def fetch(self, i: Int[Array, ''] | int) -> PyTree[Any]:
         """Member `i`."""
 
+    def zip(self, x: PyTree[Any]) -> 'Ensemble':
+        """The members paired with their slices of a stacked pytree.
+
+        Member i becomes the pair `(member, x[i])`: the array leaves of `x` carry a leading
+        member axis of `size` entries, sliced per member. The block composites use it to hand
+        each block its own slice of the input.
+
+        Only the resident ensembles support it: the members of a [`HostEnsemble`][] are read on
+        the fly, they cannot be rebuilt into pairs.
+        """
+        raise NotImplementedError(f'the members of a {type(self).__name__} cannot be zipped')
+
     @abstractmethod
     def _arrays(self) -> tuple[list[Array], list[Array]]:
         """The ensemble's arrays: those that carry the members, and those every member holds."""
@@ -247,6 +259,13 @@ class ListEnsemble(Ensemble):
             return self.members[0]
         selected = jax.lax.switch(i, [lambda a=a: list(a) for a in arrays])
         return _rebuild(treedef, leaves, is_array, selected)
+
+    def zip(self, x: PyTree[Any]) -> 'ListEnsemble':
+        members = [
+            (member, jax.tree.map(lambda leaf, i=i: leaf[i], x))
+            for i, member in enumerate(self.members)
+        ]
+        return ListEnsemble(members, valid=self.valid, policy=self.policy)
 
     def _arrays(self) -> tuple[list[Array], list[Array]]:
         _, arrays, _, _ = self._parts()
@@ -339,6 +358,12 @@ class StackedEnsemble(Ensemble):
             for leaf, s in zip(leaves, strides)
         ]
         return jax.tree.unflatten(jax.tree.structure(self.stacked), picked)
+
+    def zip(self, x: PyTree[Any]) -> 'StackedEnsemble':
+        strides = self.strides + (1,) * len(jax.tree.leaves(x))
+        return StackedEnsemble(
+            self.size, (self.stacked, x), strides, valid=self.valid, policy=self.policy
+        )
 
     def shard(self, axis: str) -> 'StackedEnsemble':
         """The ensemble laid out over a mesh axis: consecutive members on each device.

@@ -340,12 +340,13 @@ def _deprojected_tod(
     tod = data[ReaderField.SAMPLE_DATA]
     samples = tod_format.as_array(tod)  # (stream, det, sample)
     valid = _sample_mask(data, config) & (jnp.arange(tod_format.n_samples) < n_real)
-    valid = jnp.broadcast_to(valid, samples.shape)
     pairs = valid[..., 1:] & valid[..., :-1]
     steps = jnp.where(pairs, jnp.diff(samples, axis=-1), 0)
     variance = jnp.sum(steps**2, axis=-1) / jnp.maximum(2 * pairs.sum(axis=-1), 1)
     inverse = jnp.where(variance > 0, 1 / jnp.where(variance > 0, variance, 1), 0)
-    weight = tod_format.diagonal(jnp.where(valid, inverse[..., None], 0).astype(samples.dtype))
+    channel_weight = tod_format.diagonal(inverse[..., None].astype(samples.dtype))
+    sample_weight = tod_format.diagonal(valid[None].astype(samples.dtype))
+    weight = channel_weight @ sample_weight
     fit = TemplateFit(
         operator,
         weight,

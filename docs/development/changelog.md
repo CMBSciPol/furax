@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `map_reduce` takes `out_axes`, the placement of the member axis of each stacked output (#453)
 - `BlockRowOperator`, `BlockColumnOperator` and `BlockDiagonalOperator` take `axes`, the member axis of their stacked inputs and outputs over an ensemble (#454)
 - `furax-so-map` and `furax-so-cache` now accept several wafers with `--wafer ws0 ws1`; `furax-so-map` joins them into one observation by default unless `--no-join-wafers` is passed (#449)
+- Ensemble members can be grouped in segments of varying length through an `owner` index: `StackedEnsemble` leaves of stride `'segment'` hold one entry per segment, and `map_reduce` keeps outputs per segment with `'segment'` and `'segment_sum'` (#445)
 
 ### Changed
 

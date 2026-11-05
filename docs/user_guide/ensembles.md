@@ -80,6 +80,29 @@ any thread evaluate the ensemble, such as the host-callback thread of `jax.pure_
 engine runs the members under `jax.shard_map`, which does not reshard: an ensemble whose leaves
 are not laid out over the axis fails rather than silently gathering.
 
+#### Segments
+
+Some data is shared by a run of members whose length varies, such as the boresight pointing of an
+observation split into detector tiles, one member per tile, when observations have different
+numbers of detectors. A fixed stride cannot describe it. An `owner` index groups the members into
+**segments**: `owner[i]` is the segment of member i, and a leaf of stride `'segment'` has one
+entry per segment, read by every member of that segment. The segment data is stored once, and the
+members' leaves need not be padded to a common segment length. Like a strided leaf, a segment leaf
+places its member axis — here, its segment axis — through `axes`.
+
+```python
+ensemble = StackedEnsemble(
+    n_tiles,
+    {'tod': tods, 'boresight': boresights},  # (n_tiles, ...) and (n_observations, ...)
+    {'tod': 1, 'boresight': 'segment'},
+    owner=observation_of_tile,
+)
+```
+
+Sharded over a mesh axis, the segments are split over the devices like the members: device d
+holds the d-th block of `segments / devices` segments, and its members must own segments of that
+block, which `shard` checks. The members of a segment therefore never span two devices.
+
 ### HostEnsemble
 
 [`HostEnsemble`][furax.core.HostEnsemble] reads its members from the host: `read(i)` returns the
@@ -89,6 +112,10 @@ launch on `Policy.batch` members per device while the host reads the next round 
 and the devices, not their sum. The stacked outputs land sharded over the mesh axis in position
 order, ready to be used as the leaves of a resident `StackedEnsemble` with the same layout: the
 output of a pass over the data is the ensemble the solve then iterates on.
+
+A host ensemble may be grouped in segments too, through `owner` and `segments`. `read(i)` still
+returns all the leaves of member i, those that only vary with its segment included; declaring
+them with stride `'segment'` lets `'auto'` keep what is computed from them once per segment.
 
 ## The engine
 
@@ -108,8 +135,15 @@ sharded run treats them as explicit inputs instead of captured constants.
   `out_axes` keyword (a prefix of the output tree) — staying with the device that computed it;
 - stride s: one entry per run of s members that share it — a promise the engine does not check;
 - stride `None`: the same for every member, returned once;
-- `'auto'`: resolved to 1 or `None` by whether the leaf depends on the member in the traced
-  computation.
+- `'segment_sum'`: with an owner index, the leaf is reduced over the members of each segment
+  (padded members masked), one entry per segment staying with the device that holds it;
+- `'segment'`: with an owner index, one entry per segment, the same for its members — a promise
+  the engine does not check;
+- `'auto'`: resolved to 1, `'segment'` or `None` by whether the leaf depends on the member, on its
+  segment only, or on neither, in the traced computation.
+
+The `'segment'` and `'segment_sum'` outputs come back with a leading segment axis, whatever
+`out_axes`, and a segment without valid members holds zeros in them.
 
 The second return value is the specification with `'auto'` resolved: together with the stacked
 outputs it is the template and strides of the next ensemble, so engine calls chain — the

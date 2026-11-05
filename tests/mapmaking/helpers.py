@@ -322,7 +322,7 @@ def probe_normal_system(maker: MultiObservationMapMaker, seed: int = 0) -> tuple
         BJ = acc.block_jacobi(maker.placement, maker.config.binned, maker.landscape.structure)
         valid = maker.pixel_selection(acc.hit_map, BJ.blocks)
         S = IndexOperator((..., *jnp.where(valid)), in_structure=maker.landscape.structure)
-        system = acc.build_system(S, BJ, maker.layout, maker.placement)
+        system = acc.build_system(S, BJ, maker.placement)
         templates = acc.buckets[0].templates
         kinds = [] if templates is None else [k for k in FACTORED_KINDS if getattr(templates, k)]
         x = tree.normal_like(system.A.in_structure, jax.random.key(seed))

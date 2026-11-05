@@ -122,8 +122,8 @@ def test_spline_drift_has_amplitudes_per_detector_and_knot():
     spline = SplineDriftConfig(samples_per_knot=128, explicit=True)
     cfg = _config(TemplatesConfig(spline_drift=spline))
     acc = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg))
-    # (obs, batch, det, knot): 1024 // 128 knots, plus 2
-    assert acc.buckets[0].batches.amplitude_rhs['spline_drift'].shape == (2, 1, 8, 10)
+    # (tile, det, knot): one tile per observation, 1024 // 128 knots, plus 2
+    assert acc.buckets[0].tiles.stacked.amplitude_rhs['spline_drift'].shape == (2, 8, 10)
 
 
 @pytest.mark.parametrize(
@@ -237,6 +237,30 @@ def test_t2p_field_gives_the_same_system_in_detector_batches(joint_qu, drift):
     assert_same_system(batched, whole)
 
 
+def test_observations_of_different_widths_give_the_same_system_in_tiles():
+    # 7 and 3 detectors in one bucket: in tiles of 2 the observations take 4 and 2 tiles, the
+    # last of each padded, where whole they are one tile each, the narrow one padded to 7
+    # detectors. The amplitudes of the leakage field, shared by an observation's detectors, sum
+    # over its tiles.
+    templates = TemplatesConfig(t2p=T2PConfig(zernike_order=1))
+    sotodlib = SotodlibConfig(demodulated=True)
+    cfg = replace(_config(None), templates=templates, sotodlib=sotodlib, max_buckets=1)
+
+    def observations():
+        return [
+            FakeLazyGroundObservation(seed=i, n_dets=n, n_samples=1024, focal_plane_radius=0.2)
+            for i, n in enumerate((7, 3))
+        ]
+
+    whole, tiled = [
+        probe_normal_system(
+            MultiObservationMapMaker(observations(), config=replace(cfg, detector_batch_size=size))
+        )
+        for size in (0, 2)
+    ]
+    assert_same_system(tiled, whole)
+
+
 _COMMON_MODE_WITH_DRIFT = TemplatesConfig(
     common_mode=CommonModeConfig(samples_per_knot=128),
     spline_drift=SplineDriftConfig(samples_per_knot={'qu': 512}),
@@ -304,19 +328,21 @@ def test_several_observations_per_device_match_single_observations(monkeypatch, 
 
     maker = MultiObservationMapMaker(observations, config=cfg)
     together = accumulate(maker)
-    assert maker.layout.buckets[0].n_slots // maker.layout.n_devices >= 2
+    (bucket,) = maker.layout.buckets
+    assert bucket.tiles_per_device >= 2
     alone = [accumulate(MultiObservationMapMaker([obs], config=cfg)) for obs in observations]
 
     assert_allclose(together.hit_map, sum(acc.hit_map for acc in alone))
     assert_allclose(
         together.map_rhs.data, sum(acc.map_rhs.data for acc in alone), rtol=1e-12, atol=1e-12
     )
-    # (slot, batch, ...), with a single detector batch
-    amplitude_rhs = together.buckets[0].batches.amplitude_rhs['hwp_synchronous'][:, 0]
-    per_observation = maker.layout.to_observation_order([np.asarray(amplitude_rhs)])
-    for got, acc in zip(per_observation, alone, strict=True):
-        alone_rhs = acc.buckets[0].batches.amplitude_rhs['hwp_synchronous']
-        assert_allclose(got, np.asarray(alone_rhs)[0, 0])
+    # (tile, ...), with one tile per observation
+    amplitude_rhs = np.asarray(together.buckets[0].tiles.stacked.amplitude_rhs['hwp_synchronous'])
+    for observation, acc in enumerate(alone):
+        (segment,) = np.flatnonzero(bucket.segment_observations == observation)
+        (tile,) = bucket.tiles_of(segment)
+        alone_rhs = acc.buckets[0].tiles.stacked.amplitude_rhs['hwp_synchronous']
+        assert_allclose(amplitude_rhs[tile], np.asarray(alone_rhs)[0])
 
 
 # ---------------------------------------------------------------------------

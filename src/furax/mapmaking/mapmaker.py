@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import replace
@@ -21,7 +22,7 @@ from furax.obs.stokes import Stokes, StokesI, StokesType
 from furax.profiling import format_bytes
 
 from ._accumulated import AccumulatedModel
-from ._bucket import Batch, BucketModel
+from ._bucket import BucketModel, Tile
 from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
 from ._injection import inject, load_sky, unpadded
 from ._landscape import build_landscape
@@ -29,16 +30,15 @@ from ._model import (
     FACTORED_KINDS,
     ObservationModel,
     ObservationTemplates,
-    OutKind,
     acquisition_operator,
     restrict_streams,
 )
 from ._observation import AbstractLazyObservation, ObservationBufferShape, ReaderField
 from ._provenance import provenance
-from ._reader import ObservationReader, slice_detector_axis, slice_detectors
+from ._reader import ObservationReader, detector_tile, detector_tile_structure
 from .config import GapTreatment, InjectionMode, MapMakingConfig, NoiseSource, WeightingMode
 from .gap_filling import gap_fill
-from .layout import Bucket, SlotLayout, SlotPlacement
+from .layout import TileBucket, TileLayout, TilePlacement
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
 from .templates.gram import factor
 from .weight import WeightOperator
@@ -120,17 +120,15 @@ class MultiObservationMapMaker[T]:
         accumulation. They inherit the largest successful probe shape so they cannot form an
         undersized bucket of their own.
 
-        The sample count is raised to `_minimum_buffer_samples`, and the detector count to whole
-        detector batches, so the buckets and the readers size their buffers identically.
+        The sample count is raised to `_minimum_buffer_samples`, so the buckets and the readers
+        size their buffers identically.
         """
         rows = self._catalog.probed
         failed = self._catalog.probe_failed
         rows[failed] = rows[~failed].max(axis=0) if np.any(~failed) else (1, 1, 0)
         minimum_samples = self._minimum_buffer_samples
         return [
-            ObservationBufferShape(
-                int(row[0]), max(int(row[1]), minimum_samples), int(row[2])
-            ).whole_detector_batches(self.config.detector_batch_size)
+            ObservationBufferShape(int(row[0]), max(int(row[1]), minimum_samples), int(row[2]))
             for row in rows
         ]
 
@@ -147,9 +145,9 @@ class MultiObservationMapMaker[T]:
         return minimum
 
     @cached_property
-    def layout(self) -> SlotLayout:
-        """How the observations are bucketed and laid out over the devices."""
-        return SlotLayout.create(
+    def layout(self) -> TileLayout:
+        """How the observations are bucketed, split into tiles and laid out over the devices."""
+        return TileLayout.create(
             self._probe_shapes,
             n_devices=jax.device_count(),
             max_buckets=self.config.max_buckets,
@@ -157,9 +155,9 @@ class MultiObservationMapMaker[T]:
         )
 
     @cached_property
-    def placement(self) -> SlotPlacement:
-        """The slots of the layout, placed on the devices of the job."""
-        return SlotPlacement.create(self.layout)
+    def placement(self) -> TilePlacement:
+        """The tiles of the layout, placed on the devices of the job."""
+        return TilePlacement.create(self.layout)
 
     @cached_property
     def fit_config(self) -> MapMakingConfig:
@@ -194,8 +192,8 @@ class MultiObservationMapMaker[T]:
     def get_readers(self, required_fields: Collection[str]) -> tuple[ObservationReader[T], ...]:
         """Build one reader per bucket, over that bucket's observations only.
 
-        A reader reads its bucket's observations in slot order, so its buffers are sized by
-        exactly the observations it can be asked to read.
+        A reader reads its bucket's observations in the order of their indices, into buffers of
+        whole tiles sized by exactly the observations it can be asked to read.
         """
         shapes = self._probe_shapes
         failed = self._catalog.probe_failed
@@ -206,7 +204,9 @@ class MultiObservationMapMaker[T]:
                 stokes=self.config.read_stokes if self.config.demodulated else None,
                 dtype=self.config.dtype,
                 sample_dtype=jnp.float32,
-                shapes=[shapes[i] for i in bucket.observations],
+                shapes=[
+                    shapes[i].whole_detector_batches(bucket.tile_size) for i in bucket.observations
+                ],
                 known_failures=np.flatnonzero(failed[bucket.observations]).tolist(),
             )
             for bucket in self.layout.buckets
@@ -255,17 +255,18 @@ class MultiObservationMapMaker[T]:
             f'Layout procs={jax.process_count()} dev_per_proc={len(self.placement.local_devices)} '
             f'dev_total={layout.n_devices} platform={jax.default_backend()}'
         )
-        # Every slot of a bucket is padded to its reader's out_structure, real or empty.
+        # Every tile of a bucket holds one tile of its reader's buffers, real or padding.
         real_bytes = sum(reader.total_nbytes for reader in self.readers)
         padded_bytes = 0
         for b, (bucket, reader) in enumerate(zip(layout.buckets, self.readers, strict=True)):
-            slot_bytes = furax.tree.nbytes(reader.out_structure)
-            padded_bytes += slot_bytes * bucket.n_slots
+            tile, _ = detector_tile_structure(reader.out_structure, bucket.tile_size)
+            tile_bytes = furax.tree.nbytes(tile)
+            padded_bytes += tile_bytes * bucket.n_tiles
             logger.info(
-                f'Bucket {b}: {bucket.summary(layout.n_devices)} '
-                f'slot_size={format_bytes(slot_bytes)} '
+                f'Bucket {b}: {bucket.summary()} '
+                f'tile_size={format_bytes(tile_bytes)} '
                 f'real_size={format_bytes(reader.total_nbytes)} '
-                f'pad_size={format_bytes(slot_bytes * bucket.n_slots - reader.total_nbytes)}'
+                f'pad_size={format_bytes(tile_bytes * bucket.n_tiles - reader.total_nbytes)}'
             )
         byte_overhead = (padded_bytes - real_bytes) / real_bytes
         logger.info(
@@ -320,7 +321,7 @@ class MultiObservationMapMaker[T]:
             )
 
             response_sky = None if self._scanned_sky is not None else self.sky
-            system = acc.build_system(S, BJ, self.layout, self.placement, response_sky)
+            system = acc.build_system(S, BJ, self.placement, response_sky)
             if (two_level := self.config.solver.two_level) is not None:
                 system = system.deflate(two_level)
             solved = system.solve(
@@ -348,7 +349,7 @@ class MultiObservationMapMaker[T]:
             detectors=detector_table(
                 self._catalog.reads,
                 noise_parameters,
-                acc.buckets[0].batches.model.tod_format.stokes,
+                acc.buckets[0].tiles.template.model.tod_format.stokes,
             ),
         )
 
@@ -360,16 +361,18 @@ class MultiObservationMapMaker[T]:
         """
         local: dict[int, Read] = {}
         for bucket, reader in zip(self.layout.buckets, self.readers, strict=True):
-            for slot, record in reader.records.items():
-                local[int(bucket.observations[slot])] = record
-            for slot, error in reader.errors.items():
-                local[int(bucket.observations[slot])] = error
+            # the reader reads the observations of its bucket in the order of their indices
+            for k, record in reader.records.items():
+                local[int(bucket.observations[k])] = record
+            for k, error in reader.errors.items():
+                local[int(bucket.observations[k])] = error
         return gather_rows(local)
 
     def build_model_and_accumulate(self) -> AccumulatedModel:
         """Build the model and accumulate the hit map and map RHS in one pass over the data.
 
-        Empty (or failed) slots are gated out using a zero-mask, so they drop from the system.
+        Padding tiles and failed observations are gated out using a zero-mask, so they drop from
+        the system.
 
         This method must run under `jax.set_mesh(self.placement.mesh)`.
         """
@@ -393,41 +396,101 @@ class MultiObservationMapMaker[T]:
     ) -> tuple[Int64[Array, '...'], StokesType, BucketModel]:
         """One bucket's pass over the data: its hit map and RHS partials, and its stacked model.
 
-        The pass is an engine call on a host ensemble of the bucket's slots: each round launches
-        one observation on each device while its process reads the next round, so only one
-        observation per device is in memory at a time, and the processes need not keep in step
-        until the device sum at the end. The stacked outputs land sharded over the slots, in slot
-        order, which is the layout `BucketModel` holds.
+        The pass is an engine call on a host ensemble of the bucket's tiles: each round launches
+        one tile on each device while its process reads the next round. An observation is read
+        once, when its first tile is, and held on the host until its last tile has been read, so
+        only one observation per device is in memory at a time, and the processes need not keep
+        in step until the device sum at the end. The stacked outputs land sharded over the tiles
+        and the segments, which is the layout `BucketModel` holds.
         """
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         bucket = self.layout.buckets[bucket_index]
-
-        def read(slot: int) -> tuple[np.ndarray, ...]:
-            if not bucket.is_empty[slot]:
-                member = reader.read_host(slot)  # readers are indexed by slot
-            else:
-                # An empty slot is never read or preprocessed just to be masked away
-                member = reader.read_filler_host()
-            return tuple(np.asarray(leaf) for leaf in jax.tree.leaves(member))
-
-        template = (
-            reader.out_structure,
-            jax.tree.map(
-                lambda s: jax.ShapeDtypeStruct((len(s.shape),), np.int32), reader.out_structure
-            ),
-            jax.ShapeDtypeStruct((), bool),
-        )
+        reads = _TileReads(bucket, reader)
         ensemble = HostEnsemble(
-            bucket.n_slots,
-            read,
-            template,
+            bucket.n_tiles,
+            reads.read,
+            reads.template,
             policy=Policy(axis=self.placement.axis),
             prefetch=self._prefetches_reads,
+            strides=reads.strides,
+            owner=bucket.owner,
+            segments=bucket.n_segments,
         )
-        (hits, rhs, out), _ = map_reduce(
-            self._observation_kernel(bucket), ensemble, ('sum', 'sum', 1), sky
+        # The sums run over the tiles; of the rest, what the tiles of an observation share
+        # (boresight pointing, common template bases, ...) is kept once per segment. The Gram
+        # inverses and right-hand sides of the templates go where their amplitudes live. A Gram
+        # summed over the tiles of an observation is paired with its coarse amplitudes, which
+        # follow from the bases alone, the same in every tile.
+        spec = {
+            **dict.fromkeys(('hits', 'map'), 'sum'),
+            **dict.fromkeys(('model', 'implicit', 'operators'), 'auto'),
+            'inverses': 1,
+            'grams': {
+                kind: ('segment_sum', 'segment')
+                for kind, held in FACTORED_KINDS.items()
+                if held == 'sum'
+            },
+            'rhs': {
+                kind: 'segment_sum' if held == 'sum' else 1 for kind, held in FACTORED_KINDS.items()
+            },
+        }
+        out, resolved = map_reduce(self._tile_kernel(), ensemble, spec, sky)
+        return out['hits'], out['map'], self._bucket_model(bucket, out, resolved)
+
+    def _bucket_model(
+        self, bucket: TileBucket, out: dict[str, Any], resolved: dict[str, Any]
+    ) -> BucketModel:
+        """The model of a bucket, from the outputs of its pass over the data and their kinds."""
+        strides = _strides(out, resolved)
+        templates = template_strides = None
+        if self.fit_config.use_templates:
+            inverses, inverse_strides = self._factor_common_grams(out['grams'])
+            templates = ObservationTemplates.from_inverses(
+                out['implicit'], out['operators'], out['inverses'] | inverses
+            )
+            template_strides = ObservationTemplates.from_inverses(
+                strides['implicit'], strides['operators'], strides['inverses'] | inverse_strides
+            )
+        tile = Tile(out['model'], templates, out['rhs']['explicit'])
+        tile_strides = Tile(strides['model'], template_strides, strides['rhs']['explicit'])
+        tiles = StackedEnsemble(
+            bucket.n_tiles,
+            tile,
+            tuple(jax.tree.structure(tile).flatten_up_to(tile_strides)),
+            policy=Policy(axis=self.placement.axis),
+            owner=self.placement.shard(bucket.owner),
+            segments=bucket.n_segments,
         )
-        return hits, rhs, BucketModel(*out)
+        return BucketModel(tiles, out['rhs']['common'])
+
+    def _factor_common_grams(
+        self, grams: dict[str, tuple[Any, Any]]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The inverses of the Grams summed over the tiles of each observation, and their strides.
+
+        Each observation's Gram is factored on the device that holds it, one per round.
+        """
+        templates = self.fit_config.templates
+        regularization = 0.0 if templates is None else templates.regularization
+        inverses, strides = {}, {}
+        for kind, (gram, coarse) in grams.items():
+            if gram is None:
+                inverses[kind] = strides[kind] = None
+                continue
+            n_segments = jax.tree.leaves(gram)[0].shape[0]
+            ensemble = StackedEnsemble(
+                n_segments, (gram, coarse), policy=Policy(axis=self.placement.axis)
+            )
+
+            def factored(member):
+                gram, coarse = member
+                return factor(replace(gram, coarse=coarse), regularization=regularization)
+
+            inverse, kinds = map_reduce(factored, ensemble, 'auto')
+            inverses[kind] = inverse
+            # one per observation: per segment among the tiles
+            strides[kind] = _strides(inverse, kinds, segment=True)
+        return inverses, strides
 
     @cached_property
     def _prefetches_reads(self) -> bool:
@@ -439,19 +502,19 @@ class MultiObservationMapMaker[T]:
         """
         return self.placement.local_devices[0].platform != 'cpu'
 
-    def _observation_kernel(
-        self, bucket: Bucket
-    ) -> Callable[[tuple[Any, Any, Array], StokesType | None], tuple[Array, StokesType, Any]]:
-        """Accumulate one observation: its hit map, RHS and model.
+    def _tile_kernel(
+        self,
+    ) -> Callable[[tuple[Any, Any, Array], StokesType | None], dict[str, Any]]:
+        """Accumulate one detector tile: its hit map, RHS and model.
 
-        The member is one slot's read, the triple `(observation, padding, valid)`; the sky to
-        inject, if any, is a shared input that every member receives whole.
+        The member is one tile's read, the triple `(observation, padding, valid)` restricted to
+        the tile's detectors; the sky to inject, if any, is a shared input that every member
+        receives whole.
         """
         config = self.fit_config
         landscape = self.landscape
         fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
         build_templates = config.use_templates
-        n_batches, batch_size = bucket.n_batches, bucket.batch_size
         sky_landscape = landscape.with_stokes(config.read_stokes)
         replaces = config.injection is not None and config.injection.mode == InjectionMode.REPLACE
         regularization = 0.0 if config.templates is None else config.templates.regularization
@@ -465,87 +528,23 @@ class MultiObservationMapMaker[T]:
             return {**data, ReaderField.SAMPLE_DATA: cast(data[ReaderField.SAMPLE_DATA])}
 
         def kernel(member, sky):
-            observation, padding, use = member
-            injection = None
-            if sky is not None:
-                shape = jax.tree.leaves(observation[ReaderField.SAMPLE_DATA])[0].shape
-                injection = (sky, unpadded(padding, shape))
-            return step(observation, padding, use, injection)
-
-        def scan_in(data, injection):
-            if injection is None:
-                return data
-            sky, injectable = injection
-            H = acquisition_operator(data, config, sky_landscape)
-            return inject(H, sky, data, injectable, replaces)
-
-        def step(observation, padding, use, injection):
-            # One detector batch at a time: nothing computed from the TOD outlives its batch, each
-            # batch contributing to the sums and stacking its own model and templates. Gap filling
-            # needs whole observations, so it only runs with a single batch.
-            assert not fill_gaps or n_batches == 1
-            # The member is the first detector of its batch: the fields stay whole in their read
-            # layout, closed over `apply`, which slices its batch out. Stacking the per-detector
-            # fields over a leading batch axis instead would transpose any field with axes ahead
-            # of the detector one, such as the demodulated TOD, and XLA materializes the copy.
-            starts = batch_size * jnp.arange(n_batches, dtype=jnp.int32)
-            ensemble = StackedEnsemble(n_batches, starts)
-
-            def apply(start):
-                data = slice_detectors(observation, start, batch_size)
-                if injection is None:
-                    data = cast_tod(data)
-                else:  # the samples to inject into, per detector
-                    injectable = slice_detector_axis(injection[1], start, batch_size)
-                    data = scan_in(cast_tod(data), (injection[0], injectable))
-                tod = raw = data[ReaderField.SAMPLE_DATA]
-                if fill_gaps:
-                    # The RHS uses the filled TOD; the models are still built from the raw one.
-                    tod = jax.lax.cond(
-                        use,
-                        lambda: fill_observation_gaps(data, padding),
-                        lambda: raw,  # nothing to fill
-                    )
-                return accumulate(data, tod, padding, use)
-
-            # The sums run over the batches; of the rest, what the batches share (boresight
-            # pointing, common template bases, ...) is kept once per observation. The Gram
-            # inverses and right-hand sides of the templates go where their amplitudes live.
-            # A Gram summed over the batches is paired with its coarse amplitudes, which follow
-            # from the bases alone, the same in every batch.
-            spec = {
-                **dict.fromkeys(('hits', 'map'), 'sum'),
-                **dict.fromkeys(('model', 'implicit', 'operators'), 'auto'),
-                'inverses': 1,
-                'grams': {
-                    kind: ('sum', None) for kind, held in FACTORED_KINDS.items() if held == 'sum'
-                },
-                'rhs': {
-                    kind: 'sum' if held == 'sum' else 1 for kind, held in FACTORED_KINDS.items()
-                },
-            }
-            out, resolved = map_reduce(apply, ensemble, spec)
-            kinds = _out_kinds(out, resolved)
-            templates = template_kinds = None
-            if build_templates:
-                inverses = out['inverses'] | {
-                    kind: None if gram is None else factored(replace(gram, coarse=coarse))
-                    for kind, (gram, coarse) in out['grams'].items()
-                }
-                templates = ObservationTemplates.from_inverses(
-                    out['implicit'], out['operators'], inverses
+            # Gap filling needs whole observations, so it only runs with one tile per observation
+            # (see `MapMakingConfig`).
+            data, padding, use = member
+            data = cast_tod(data)
+            if sky is not None:  # the samples to inject into, per detector
+                shape = jax.tree.leaves(data[ReaderField.SAMPLE_DATA])[0].shape
+                H = acquisition_operator(data, config, sky_landscape)
+                data = inject(H, sky, data, unpadded(padding, shape), replaces)
+            tod = raw = data[ReaderField.SAMPLE_DATA]
+            if fill_gaps:
+                # The RHS uses the filled TOD; the models are still built from the raw one.
+                tod = jax.lax.cond(
+                    use,
+                    lambda: fill_observation_gaps(data, padding),
+                    lambda: raw,  # nothing to fill
                 )
-                # an inverse factored once per observation is held whole by it
-                inverse_kinds = kinds['inverses'] | {
-                    kind: jax.tree.map(lambda _: 'shared', inverses[kind]) for kind in out['grams']
-                }
-                template_kinds = ObservationTemplates.from_inverses(
-                    kinds['implicit'], kinds['operators'], inverse_kinds
-                )
-            batch = Batch(out['model'], templates, out['rhs']['explicit'])
-            batch_kinds = Batch(kinds['model'], template_kinds, kinds['rhs']['explicit'])
-            batches, kept = _partition(batch, batch_kinds)
-            return out['hits'], out['map'], (batches, kept, out['rhs']['common'])
+            return accumulate(data, tod, padding, use)
 
         def fill_observation_gaps(data, padding):
             obs = ObservationModel.create(data, padding, config, landscape)
@@ -673,25 +672,78 @@ def _excluded_message(failures: list[tuple[str, str]], limit: int = 5) -> str:
     return '\n'.join(lines)
 
 
-def _out_kinds(outputs: PyTree[Any], resolved: PyTree[Any]) -> PyTree[OutKind]:
-    """The kind of each output leaf of `map_reduce`, in the `OutKind` vocabulary.
+def _strides(outputs: PyTree[Any], resolved: PyTree[Any], segment: bool = False) -> PyTree[Any]:
+    """The stride of each output leaf of `map_reduce` in an ensemble of tiles.
+
+    An output stacked per tile has stride 1, one kept or summed per segment the stride
+    `'segment'`, and one shared by the bucket None. With `segment`, the outputs are those of an
+    ensemble of segments, whose stacked outputs are per segment among the tiles.
 
     The resolved spec puts `None` on the shared leaves, which `jax.tree.map` over the outputs
-    would read as a missing subtree; the returned tree names every kind, so it maps with them.
+    would read as a missing subtree; the returned tree has the structure of the outputs, so it
+    maps with them.
     """
     treedef = jax.tree.structure(outputs)
     kinds = treedef.flatten_up_to(resolved)
-    names = [{1: 'stack', None: 'shared'}.get(kind, kind) for kind in kinds]
-    return jax.tree.unflatten(treedef, names)
+    per_member = 'segment' if segment else 1
+    strides = [
+        None if kind is None else 'segment' if kind in ('segment', 'segment_sum') else per_member
+        for kind in kinds
+    ]
+    return jax.tree.unflatten(treedef, strides)
 
 
-def _partition(
-    outputs: PyTree[Array], kinds: PyTree[OutKind]
-) -> tuple[PyTree[Array | None], PyTree[Array | None]]:
-    """The `'stack'` outputs, and the others.
+class _TileReads:
+    """The reads of the tiles of a bucket, each observation read once for all its tiles.
 
-    Each is `None` where the other has a leaf; together they are one batch of the observation.
+    An observation is read when the first of its tiles is, and kept until the last one is; its
+    tiles are then views of its fields. The padding tiles read filler. The tiles of an observation
+    are read one after the other by the device that holds them, but reads for several devices run
+    in parallel threads: the per-observation locks keep a read from starting twice.
     """
-    stacked = jax.tree.map(lambda x, kind: x if kind == 'stack' else None, outputs, kinds)
-    others = jax.tree.map(lambda x, kind: None if kind == 'stack' else x, outputs, kinds)
-    return stacked, others
+
+    def __init__(self, bucket: TileBucket, reader: ObservationReader[Any]) -> None:
+        self.bucket = bucket
+        self.reader = reader
+        # the reader reads the observations of the bucket in the order of their indices
+        self.position = {int(o): k for k, o in enumerate(bucket.observations)}
+        self.remaining = {
+            int(o): len(bucket.tiles_of(s))
+            for s, o in enumerate(bucket.segment_observations)
+            if o >= 0
+        }
+        self.held: dict[int, tuple[Any, Any, np.ndarray]] = {}
+        self.locks = {observation: threading.Lock() for observation in self.remaining}
+        self.lock = threading.Lock()
+        fields, field_strides = detector_tile_structure(reader.out_structure, bucket.tile_size)
+        padding = jax.tree.map(
+            lambda s: jax.ShapeDtypeStruct((len(s.shape),), np.int32), reader.out_structure
+        )
+        self.template = (fields, padding, jax.ShapeDtypeStruct((), bool))
+        # the padding widths count the tile's detectors, and the read succeeds or fails per
+        # observation
+        self.strides = (field_strides, jax.tree.map(lambda _: 1, padding), 'segment')
+        filler = reader.read_filler_host()
+        self.filler = self._tile(filler, 0)
+
+    def read(self, tile: int) -> tuple[np.ndarray, ...]:
+        """The leaves of a tile, in the order of the template's leaves."""
+        bucket = self.bucket
+        observation = int(bucket.segment_observations[bucket.owner[tile]])
+        if not bucket.valid[tile]:
+            return self.filler
+        with self.locks[observation]:
+            read = self.held.get(observation)
+            if read is None:
+                read = self.reader.read_host(self.position[observation])
+                self.held[observation] = read
+        with self.lock:
+            self.remaining[observation] -= 1
+            if self.remaining[observation] == 0:
+                del self.held[observation]
+        return self._tile(read, int(bucket.tile_starts[tile]))
+
+    def _tile(self, read: tuple[Any, Any, np.ndarray], start: int) -> tuple[np.ndarray, ...]:
+        data, padding, use = read
+        data, padding = detector_tile(data, padding, start, self.bucket.tile_size)
+        return tuple(np.asarray(leaf) for leaf in jax.tree.leaves((data, padding, use)))

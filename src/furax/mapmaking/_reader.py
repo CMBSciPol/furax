@@ -544,23 +544,74 @@ def _aligned_zeros(shape: tuple[int, ...], dtype: DTypeLike) -> np.ndarray:
     return np.frombuffer(pages, dtype).reshape(shape)
 
 
-def slice_detector_axis(field: PyTree[Array], start: Array, size: int) -> PyTree[Array]:
-    """`size` detectors from `start` of a per-detector field, such as the TOD."""
-    return jax.tree.map(
-        lambda x: jax.lax.dynamic_slice_in_dim(x, start, size, axis=x.ndim - 2), field
-    )
+def detector_tile(
+    data: dict[str, Any], padding: dict[str, Any], start: int, size: int
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The fields read for one observation restricted to `size` detectors from `start`, on the host.
 
+    Shared fields (timestamps, boresight, scan masks, ...) are kept whole. The per-detector fields
+    are sliced along their detector axis, as views, and their padding widths along it count the
+    detectors of the tile past those read.
 
-def slice_detectors(data: dict[str, Any], start: Array, size: int) -> dict[str, Any]:
-    """The fields read for one observation, restricted to `size` detectors from `start`.
+    Args:
+        data: The fields read for one observation, padded to the reader's buffers.
+        padding: Their padding widths, one per axis of each field, as read.
+        start: The first detector of the tile.
+        size: The detectors of the tile.
 
-    Shared fields (timestamps, boresight, scan masks, ...) are kept whole.
+    Returns:
+        The tile's fields and their padding widths.
     """
-    sliced = {
-        field: slice_detector_axis(value, start, size) if ReaderField(field).per_detector else value
-        for field, value in data.items()
-    }
+
+    def tile_padding(widths: np.ndarray, leaf: np.ndarray) -> np.ndarray:
+        widths = np.array(widths)
+        read = leaf.shape[-2] - widths[-2]
+        widths[-2] = size - min(max(read - start, 0), size)
+        return widths
+
+    fields, widths = {}, {}
+    for field, value in data.items():
+        if ReaderField(field).per_detector:
+            fields[field] = jax.tree.map(lambda x: x[..., start : start + size, :], value)
+            widths[field] = jax.tree.map(tile_padding, padding[field], value)
+        else:
+            fields[field] = value
+            widths[field] = padding[field]
     if (metadata := data.get(ReaderField.METADATA)) is not None:
-        detector_uids = jax.lax.dynamic_slice_in_dim(metadata.detector_uids, start, size)
-        sliced[ReaderField.METADATA] = replace(metadata, detector_uids=detector_uids)
-    return sliced
+        uids = metadata.detector_uids
+        fields[ReaderField.METADATA] = replace(metadata, detector_uids=uids[start : start + size])
+        uid_widths = np.array(padding[ReaderField.METADATA].detector_uids)
+        uid_widths[-1] = size - min(max(len(uids) - uid_widths[-1] - start, 0), size)
+        widths[ReaderField.METADATA] = replace(
+            padding[ReaderField.METADATA], detector_uids=uid_widths
+        )
+    return fields, widths
+
+
+def detector_tile_structure(
+    structure: dict[str, Any], size: int
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The structure of a tile of `size` detectors of the fields of `structure`, with strides.
+
+    The stride of each leaf is that of an ensemble of tiles: 1 for a leaf of the tile alone,
+    `'segment'` for one the tiles of its observation share.
+    """
+
+    def tile(leaf: jax.ShapeDtypeStruct) -> jax.ShapeDtypeStruct:
+        return jax.ShapeDtypeStruct((*leaf.shape[:-2], size, leaf.shape[-1]), leaf.dtype)
+
+    tiles, strides = {}, {}
+    for field, value in structure.items():
+        if ReaderField(field).per_detector:
+            tiles[field] = jax.tree.map(tile, value)
+            strides[field] = jax.tree.map(lambda _: 1, value)
+        else:
+            tiles[field] = value
+            strides[field] = jax.tree.map(lambda _: 'segment', value)
+    if (metadata := structure.get(ReaderField.METADATA)) is not None:
+        uids = metadata.detector_uids
+        tiles[ReaderField.METADATA] = replace(
+            metadata, detector_uids=jax.ShapeDtypeStruct((size,), uids.dtype)
+        )
+        strides[ReaderField.METADATA] = replace(strides[ReaderField.METADATA], detector_uids=1)
+    return tiles, strides

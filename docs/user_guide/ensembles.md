@@ -17,7 +17,7 @@ ordinary operator expression.
 ## Motivation
 
 The multi-observation mapmaker applies the same computation to every observation and to every
-detector batch: pointing, weighting, Gram assembly. Written naively, this either
+detector tile: pointing, weighting, Gram assembly. Written naively, this either
 
 - compiles one body per member, so compilation time and program size grow with the dataset, or
 - evaluates every member in one expression, which XLA is free to schedule together, every
@@ -200,11 +200,13 @@ This is the integration test `test_least_squares_solve_over_a_sharded_ensemble`.
 
 ## In the mapmaker
 
-- The pass over the data is a `HostEnsemble` of each bucket's slots: every round launches one
-  observation per device while its process reads the next, so one observation per device is in
-  memory at a time. Its stacked outputs are the bucket's model, already laid out for the solve.
-- The normal operator walks a `StackedEnsemble` of the bucket's slots, each slot running its
-  detector batches one at a time, so the solve holds one batch of TOD-sized temporaries per
-  device.
-- Inside the RHS kernel, the detector batches of one observation form a `StackedEnsemble` of
-  their starting detectors, each member slicing its batch out of the observation's fields.
+- Each observation is split into detector tiles, and the tiles of a bucket form one ensemble,
+  grouped in segments by observation: the tiles of an observation share its segment, which holds
+  what they have in common, such as the boresight pointing.
+- The pass over the data is a `HostEnsemble` of each bucket's tiles: every round launches one tile
+  per device while its process reads the next. An observation is read once, for all its tiles, so
+  one observation per device is in memory at a time. Its outputs, stacked per tile or per segment
+  as `'auto'` resolves them, are the bucket's model, already laid out for the solve.
+- The normal operator walks a `StackedEnsemble` of the bucket's tiles, one tile at a time, so the
+  solve holds one tile of TOD-sized temporaries per device. The amplitudes the detectors of an
+  observation share are summed over its tiles with `'segment_sum'`.

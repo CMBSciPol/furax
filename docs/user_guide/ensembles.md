@@ -62,13 +62,18 @@ the representation of convenience for operators already at hand, such as the ope
 ### StackedEnsemble
 
 [`StackedEnsemble`][furax.core.StackedEnsemble] holds one pytree whose array leaves carry a
-leading member axis, with a stride per leaf ([`Stride`][furax.core.Stride]): a stride-s leaf has
+member axis, with a stride per leaf ([`Stride`][furax.core.Stride]): a stride-s leaf has
 one entry per run of s consecutive members, and a stride-`None` leaf — like any non-array leaf —
-is shared by the whole ensemble. It is the only representation the engine can batch
-(`Policy.batch`) and shard (`Policy.axis`), and the one stacked engine outputs come back as.
+is shared by the whole ensemble. The member axis is leading by default; `axes` places it per
+leaf, and the engine slices, batches and shards each leaf along its own axis in place, so a leaf
+whose natural layout puts the member dimension elsewhere — a Stokes-first map stacked over its
+frequency axis, a demodulated TOD over its detector axis — needs no transposition. Stacked engine
+outputs always come back with a leading member axis. It is the only representation the engine can
+batch (`Policy.batch`) and shard (`Policy.axis`).
 
 Sharding is explicit: [`shard(axis)`][furax.core.StackedEnsemble.shard] lays the strided leaves
-out over the mesh axis (`PartitionSpec(axis)`) and records the axis in the policy. At evaluation,
+out over the mesh axis (`PartitionSpec` on each leaf's member axis) and records the axis in the
+policy. At evaluation,
 the engine reads the mesh back from the shardings of the laid-out leaves, falling back to the
 ambient mesh — the mesh set by `jax.set_mesh` is thread-local, and reading it from the leaves lets
 any thread evaluate the ensemble, such as the host-callback thread of `jax.pure_callback`. The

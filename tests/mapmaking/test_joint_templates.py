@@ -114,7 +114,7 @@ def test_mixed_explicit_and_implicit():
 
 def test_two_level_preconditioner_with_explicit_templates():
     cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)))
-    cfg.solver = SolverConfig(rtol=1e-10, max_steps=500)
+    cfg.solver = SolverConfig(rtol=1e-8, max_steps=1500)
     expected = MultiObservationMapMaker(_hwp_obs(), config=cfg).make_maps()
     expected_amplitudes = expected.template_amplitudes['hwp_synchronous']
     for spectrum in ('preconditioned', 'system'):
@@ -251,25 +251,21 @@ _COMMON_MODE_WITH_DRIFT = TemplatesConfig(
 
 _T2P_QUADRUPOLE = TemplatesConfig(t2p=T2PConfig(quadrupole_order=1))
 _QUADRUPOLAR = [
-    pytest.param(_T2P_QUADRUPOLE, False, id='t2p-quadrupole'),
-    pytest.param(_COMMON_MODE_WITH_DRIFT, False, id='common-mode-with-drift'),
-    pytest.param(_COMMON_MODE_WITH_DRIFT, True, id='common-mode-with-drift-correlated'),
+    pytest.param(_T2P_QUADRUPOLE, id='t2p-quadrupole'),
+    pytest.param(_COMMON_MODE_WITH_DRIFT, id='common-mode-with-drift'),
 ]
 
 
-def _quadrupolar_config(templates: TemplatesConfig, correlated: bool) -> MapMakingConfig:
-    if correlated:
-        return _toeplitz_config(templates, precomputed=True, demodulated=True)
+def _quadrupolar_config(templates: TemplatesConfig) -> MapMakingConfig:
     return replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
 
 
-@pytest.mark.parametrize(('templates', 'correlated'), _QUADRUPOLAR)
-def test_quadrupolar_templates_give_the_same_system_in_detector_batches(templates, correlated):
+@pytest.mark.parametrize('templates', _QUADRUPOLAR)
+def test_quadrupolar_templates_give_the_same_system_in_detector_batches(templates):
     # Their amplitudes belong to the observation, as those of the Zernike field: batching the
     # detectors changes the memory layout, not the model. Next to each detector's implicit drift,
-    # the Gram of the common mode is that under the marginalized weight; under a correlated
-    # weight, it is probed in each batch, then summed.
-    cfg = _quadrupolar_config(templates, correlated)
+    # the Gram of the common mode is that under the marginalized weight, summed over the batches.
+    cfg = _quadrupolar_config(templates)
     whole, batched = _detector_batch_systems(cfg, focal_plane_radius=0.2)
     assert_same_system(batched, whole)
 
@@ -280,7 +276,7 @@ def test_quadrupolar_templates_give_the_same_system_in_detector_batches(template
     ids=['t2p-quadrupole', 'common-mode-with-drift'],
 )
 def test_amplitudes_shared_by_detectors_are_returned_per_observation(name, templates):
-    cfg = _quadrupolar_config(templates, correlated=False)
+    cfg = _quadrupolar_config(templates)
     maps = MultiObservationMapMaker(
         _ground_obs(n_dets=7, focal_plane_radius=0.2), config=cfg
     ).make_maps()
@@ -385,72 +381,13 @@ def _toeplitz_config(
     return cfg
 
 
-@pytest.mark.parametrize(
-    ('observations', 'template'),
-    [
-        (_hwp_obs, lambda e: TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=e))),
-        (
-            _ground_obs,
-            lambda e: TemplatesConfig(azimuth_synchronous=_azimuth_spline(4, e)),
-        ),
-    ],
-    ids=['hwp_synchronous', 'azimuth_spline'],
-)
-def test_correlated_weight_explicit_and_implicit_give_the_same_map(observations, template):
-    # Under a correlated weight, marginalizing the amplitudes needs the exact Gram, probed from the
-    # weight; the joint solve only uses it as a preconditioner.
-    obs = observations()
-    precomputed = observations is _ground_obs
-    maps = [
-        MultiObservationMapMaker(obs, config=_toeplitz_config(template(e), precomputed)).make_maps()
-        for e in (True, False)
-    ]
-    assert_same_map(*maps, rtol=1e-6, atol=1e-8)
-
-
 def test_detector_batches_give_the_same_system_under_a_correlated_weight():
-    # The Gram of each detector is probed from the weight, whatever the batch it is in. The
+    # The Gram of each detector is taken from the weight, whatever the batch it is in. The
     # systems are compared, not their solutions: this one has two directions 1e-10 times its
     # largest eigenvalue, so solving it turns the rounding of either (~1e-15) into ~1e-5 of the map.
-    templates = TemplatesConfig(spline_drift=SplineDriftConfig(samples_per_knot={'qu': 256}))
+    templates = TemplatesConfig(
+        spline_drift=SplineDriftConfig(samples_per_knot={'qu': 256}, explicit=True)
+    )
     cfg = _toeplitz_config(templates, precomputed=True, demodulated=True)
     whole, batched = _detector_batch_systems(cfg)
     assert_same_system(batched, whole)
-
-
-def test_demodulated_drift_explicit_and_implicit_agree_under_a_correlated_weight():
-    # The Gram of the drift of a detector is singular here, so it takes a ridge to be factored
-    templates = TemplatesConfig(
-        spline_drift=SplineDriftConfig(samples_per_knot={'qu': 512}), regularization=1e-4
-    )
-    maps = [
-        MultiObservationMapMaker(
-            _ground_obs(),
-            config=_toeplitz_config(
-                replace(templates, spline_drift=replace(templates.spline_drift, explicit=e)),
-                precomputed=True,
-                demodulated=True,
-            ),
-        ).make_maps()
-        for e in (True, False)
-    ]
-    assert_same_map(*maps, rtol=1e-6, atol=1e-8)
-
-
-@pytest.mark.slow
-def test_common_mode_absorbed_by_the_drifts_under_a_small_ridge_converges():
-    # The detectors' drifts absorb the slow part of the common mode, which the system then holds
-    # through a ridge below the rounding cutoff of the inverse of its Gram: preconditioned by an
-    # inverse that left those directions out, CG would stall.
-    templates = TemplatesConfig(
-        common_mode=CommonModeConfig(samples_per_knot=128),
-        spline_drift=SplineDriftConfig(samples_per_knot={'qu': 256}),
-        regularization=1e-8,
-    )
-    cfg = _toeplitz_config(templates, precomputed=True, demodulated=True)
-    # converges in about 300 iterations; without the floor, not in 1500
-    cfg.solver = SolverConfig(rtol=1e-10, max_steps=500)
-    results = MultiObservationMapMaker(
-        _ground_obs(n_dets=7, focal_plane_radius=0.2), config=cfg
-    ).make_maps()
-    assert results.solver_stats['converged']

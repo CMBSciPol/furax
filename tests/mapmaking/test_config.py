@@ -227,12 +227,8 @@ def test_correlated_gap_treatments_reject_detector_batches(treatment: GapTreatme
             'source=fit',
         ),
         ({'gaps': GapsConfig(treatment=GapTreatment.FILL)}, 'inner_mask or nested'),
-        (
-            {'templates': TemplatesConfig(spline_drift=SplineDriftConfig())},
-            'explicit=true for spline_drift',
-        ),
     ],
-    ids=['detector-batches', 'precomputed', 'fill-gaps', 'implicit-template'],
+    ids=['detector-batches', 'precomputed', 'fill-gaps'],
 )
 def test_low_rank_weighting_rejects(options, match):
     base = {
@@ -244,15 +240,31 @@ def test_low_rank_weighting_rejects(options, match):
         MapMakingConfig(**(base | options))
 
 
-@pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])
-def test_correlated_weight_with_templates_requires_inner_mask_gaps(treatment: GapTreatment):
-    with pytest.raises(ValueError, match='inner_mask'):
+@pytest.mark.parametrize('mode', [WeightingMode.TOEPLITZ, WeightingMode.LOW_RANK])
+def test_correlated_weight_rejects_implicit_templates(mode: WeightingMode):
+    options = {
+        'weighting': WeightingConfig(mode=mode),
+        'detector_batch_size': 0,
+        'gaps': GapsConfig(treatment=GapTreatment.INNER_MASK),
+    }
+    with pytest.raises(ValueError, match='explicit=true for spline_drift'):
         MapMakingConfig(
-            weighting=WeightingConfig(mode=WeightingMode.TOEPLITZ),
-            gaps=GapsConfig(treatment=treatment),
-            detector_batch_size=0,  # gap treatments other than the inner mask need every detector
-            templates=TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2)),
+            **options, templates=TemplatesConfig(spline_drift=SplineDriftConfig(explicit=False))
         )
+    MapMakingConfig(
+        **options, templates=TemplatesConfig(spline_drift=SplineDriftConfig(explicit=True))
+    )
+
+
+def test_correlated_weight_with_templates_rejects_gap_filling():
+    options = {
+        'weighting': WeightingConfig(mode=WeightingMode.TOEPLITZ),
+        'detector_batch_size': 0,  # gap treatments other than the inner mask need every detector
+        'templates': TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)),
+    }
+    with pytest.raises(ValueError, match='inner_mask or nested'):
+        MapMakingConfig(**options, gaps=GapsConfig(treatment=GapTreatment.FILL))
+    MapMakingConfig(**options, gaps=GapsConfig(treatment=GapTreatment.NESTED))
 
 
 @pytest.mark.parametrize(

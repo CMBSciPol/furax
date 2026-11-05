@@ -1202,23 +1202,15 @@ class MapMakingConfig:
                 )
         if self.pomme_tau is not None:
             self._check_pomme()
-        if (
-            self.use_templates
-            and not self.binned
-            and self.gaps.treatment != GapTreatment.INNER_MASK
-            and not (
-                self.weighting.mode == WeightingMode.LOW_RANK
-                and self.gaps.treatment == GapTreatment.NESTED
-            )
-        ):
-            # gap filling bypasses the template path, and the nested weight couples samples
-            # across whole gaps, beyond the band of the template Grams; the low-rank weighting
-            # takes its Grams under the white weight instead
+        if self.use_templates and not self.binned and self.gaps.treatment == GapTreatment.FILL:
+            # gap filling bypasses the template path
             raise ValueError(
-                'Templates with correlated weighting require gaps.treatment=inner_mask.'
+                'Templates with correlated weighting require gaps.treatment=inner_mask or nested.'
             )
         if self.weighting.mode == WeightingMode.LOW_RANK:
             self._check_low_rank()
+        if self.templates is not None and not self.binned:
+            self._check_explicit_templates()
         if (templates := self.templates) is not None:
             for label, polarized in (
                 ('T2P', templates.t2p),
@@ -1257,21 +1249,24 @@ class MapMakingConfig:
             raise ValueError(
                 'weighting.mode=low_rank requires gaps.treatment=inner_mask or nested.'
             )
-        if self.templates is not None:
-            implicit = [
-                f.name
-                for f in fields(self.templates)
-                if (template := getattr(self.templates, f.name)) is not None
-                and hasattr(template, 'explicit')
-                and not template.explicit
-            ]
-            if implicit:
-                # marginalizing amplitudes needs their exact Gram under the weight, which the
-                # correlated weight does not provide
-                raise ValueError(
-                    'weighting.mode=low_rank requires explicit templates: set explicit=true for '
-                    + ', '.join(implicit)
-                )
+
+    def _check_explicit_templates(self) -> None:
+        """Check that no template is implicit: a correlated weight needs them all explicit."""
+        assert self.templates is not None
+        implicit = [
+            f.name
+            for f in fields(self.templates)
+            if (template := getattr(self.templates, f.name)) is not None
+            and hasattr(template, 'explicit')
+            and not template.explicit
+        ]
+        if implicit:
+            # marginalizing amplitudes needs their exact Gram under the weight, which only a
+            # diagonal weight provides
+            raise ValueError(
+                f'weighting.mode={self.weighting.mode.value} requires explicit templates: set '
+                'explicit=true for ' + ', '.join(implicit)
+            )
 
     def _check_pomme(self) -> None:
         """Check that Pomme supports the config."""

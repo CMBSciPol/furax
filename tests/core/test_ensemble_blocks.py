@@ -86,6 +86,75 @@ class TestClosures:
         assert_allclose(operator.as_matrix(), np.diag(_diagonals().sum(axis=0)))
 
 
+@pytest.mark.parametrize('representation', ['list', 'stacked'])
+class TestMemberAxis:
+    """The composites over an ensemble whose stacked sides carry the member axis at 1."""
+
+    def test_block_row(self, representation):
+        operator = BlockRowOperator(_ensemble(representation), axes=1)
+        assert_allclose(operator(_xs().T), (_diagonals() * _xs()).sum(axis=0))
+
+    def test_block_column(self, representation):
+        operator = BlockColumnOperator(_ensemble(representation), axes=1)
+        assert_allclose(operator(_x()), (_diagonals() * _x()).T)
+
+    def test_block_diagonal(self, representation):
+        operator = BlockDiagonalOperator(_ensemble(representation), axes=1)
+        assert_allclose(operator(_xs().T), (_diagonals() * _xs()).T)
+
+    def test_structures(self, representation):
+        row = BlockRowOperator(_ensemble(representation), axes=1)
+        assert jax.tree.leaves(row.in_structure)[0].shape == (M, N)
+        assert jax.tree.leaves(row.out_structure)[0].shape == (M,)
+        column = BlockColumnOperator(_ensemble(representation), axes=1)
+        assert jax.tree.leaves(column.in_structure)[0].shape == (M,)
+        assert jax.tree.leaves(column.out_structure)[0].shape == (M, N)
+
+    def test_transpose_and_reduce_keep_the_axes(self, representation):
+        row = BlockRowOperator(_ensemble(representation), axes=1)
+        assert isinstance(row.T, BlockColumnOperator)
+        assert row.T.axes == 1
+        assert_allclose(row.T(_x()), (_diagonals() * _x()).T)
+        assert row.T.T.axes == 1
+        diagonal = BlockDiagonalOperator(_ensemble(representation), axes=1)
+        reduced = diagonal.reduce()
+        assert isinstance(reduced, BlockDiagonalOperator)
+        assert reduced.axes == 1
+        inverse = diagonal.inverse()
+        assert isinstance(inverse, BlockDiagonalOperator)
+        assert inverse.axes == 1
+        assert_allclose(inverse(diagonal(_xs().T)), _xs().T, atol=1e-12)
+
+    def test_as_matrix(self, representation):
+        # the member entries interleave in the flattened space: built from the basis
+        diagonal = BlockDiagonalOperator(_ensemble(representation), axes=1)
+        x = _xs().T
+        assert_allclose(diagonal.as_matrix() @ x.ravel(), diagonal(x).ravel())
+
+    def test_composition_rules_keep_the_axes(self, representation):
+        row = BlockRowOperator(_ensemble(representation), axes=1)
+        diagonal = BlockDiagonalOperator(_ensemble(representation, scale=2.0), axes=1)
+        reduced = (row @ diagonal).reduce()
+        assert isinstance(reduced, BlockRowOperator)
+        assert reduced.axes == 1
+        assert_allclose(reduced(_xs().T), row(diagonal(_xs().T)))
+
+
+def test_blocks_with_different_axes_do_not_reduce():
+    diagonals = jnp.arange(16.0).reshape(4, 4) + 1.0
+    ensemble = lift(lambda m: DiagonalOperator(m['d']), StackedEnsemble(4, {'d': diagonals}, 1))
+    left = BlockDiagonalOperator(ensemble, axes=1)
+    right = BlockDiagonalOperator(ensemble)  # same shapes, different layout
+    reduced = (left @ right).reduce()
+    assert not isinstance(reduced, BlockDiagonalOperator)
+    assert_allclose(reduced(_diagonals()[:4].T), left(right(_diagonals()[:4].T)))
+
+
+def test_axes_need_an_ensemble():
+    with pytest.raises(ValueError, match='ensemble'):
+        BlockDiagonalOperator([DiagonalOperator(jnp.ones(3))], axes=1)
+
+
 def test_addition_tags_come_from_one_member():
     operator = AdditionOperator(_ensemble('stacked'))
     assert operator.is_symmetric and operator.is_diagonal

@@ -169,12 +169,14 @@ class Ensemble(ABC):
     def fetch(self, i: Int[Array, ''] | int) -> PyTree[Any]:
         """Member `i`."""
 
-    def zip(self, x: PyTree[Any]) -> 'Ensemble':
+    def zip(self, x: PyTree[Any], axes: PyTree[int | None] = 0) -> 'Ensemble':
         """The members paired with their slices of a stacked pytree.
 
-        Member i becomes the pair `(member, x[i])`: the array leaves of `x` carry a leading
-        member axis of `size` entries, sliced per member. The block composites use it to hand
-        each block its own slice of the input.
+        Member i becomes the pair `(member, x[i])`: the array leaves of `x` carry a member axis
+        of `size` entries, sliced per member. The member axis is leading by default; `axes`
+        places it per leaf of `x`, a single value or an aligned pytree, so an input whose
+        natural layout puts the member dimension elsewhere is sliced in place. The block
+        composites use it to hand each block its own slice of the input.
 
         Only the resident ensembles support it: the members of a [`HostEnsemble`][] are read on
         the fly, they cannot be rebuilt into pairs.
@@ -203,13 +205,14 @@ class Ensemble(ABC):
 
     @abstractmethod
     def _body(
-        self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int
+        self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int, out_axes: Any = 0
     ) -> Callable[..., PyTree[Array]]:
         """The round body `(g, *member_arrays, *fixed_arrays, *args_leaves) -> outputs`.
 
-        The outputs carry a leading axis of `batch` members when `batch > 1`. The member-carrying
-        arrays are arguments rather than closed-over values, so that an output depends on the
-        member exactly where the traced computation does.
+        The outputs carry an axis of `batch` members when `batch > 1`, placed by `out_axes` (a
+        prefix of the output tree, leading by default). The member-carrying arrays are arguments
+        rather than closed-over values, so that an output depends on the member exactly where the
+        traced computation does.
         """
 
     def _nbytes(self, devices: int) -> int:
@@ -264,9 +267,20 @@ class ListEnsemble(Ensemble):
         selected = jax.lax.switch(i, [lambda a=a: list(a) for a in arrays])
         return _rebuild(treedef, leaves, is_array, selected)
 
-    def zip(self, x: PyTree[Any]) -> 'ListEnsemble':
+    def zip(self, x: PyTree[Any], axes: PyTree[int | None] = 0) -> 'ListEnsemble':
+        x_leaves, x_def = jax.tree.flatten(x)
+        x_axes = _normalized_axes(x_leaves, _normalized_strides(x_leaves, 1), axes)
         members = [
-            (member, jax.tree.map(lambda leaf, i=i: leaf[i], x))
+            (
+                member,
+                jax.tree.unflatten(
+                    x_def,
+                    [
+                        leaf if a is None else jax.lax.index_in_dim(leaf, i, axis=a, keepdims=False)
+                        for leaf, a in zip(x_leaves, x_axes)
+                    ],
+                ),
+            )
             for i, member in enumerate(self.members)
         ]
         return ListEnsemble(members, valid=self.valid, policy=self.policy)
@@ -276,7 +290,7 @@ class ListEnsemble(Ensemble):
         return [leaf for member in arrays for leaf in member], []
 
     def _body(
-        self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int
+        self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int, out_axes: Any = 0
     ) -> Callable[..., PyTree[Array]]:
         leaves, arrays, is_array, treedef = self._parts()
         n_per = len(arrays[0])
@@ -376,13 +390,15 @@ class StackedEnsemble(Ensemble):
         ]
         return jax.tree.unflatten(jax.tree.structure(self.stacked), picked)
 
-    def zip(self, x: PyTree[Any]) -> 'StackedEnsemble':
-        n = len(jax.tree.leaves(x))
+    def zip(self, x: PyTree[Any], axes: PyTree[int | None] = 0) -> 'StackedEnsemble':
+        x_leaves = jax.tree.leaves(x)
+        x_strides = _normalized_strides(x_leaves, 1)
+        x_axes = _normalized_axes(x_leaves, x_strides, axes)
         return StackedEnsemble(
             self.size,
             (self.stacked, x),
-            self.strides + (1,) * n,
-            axes=self.axes + (0,) * n,
+            self.strides + x_strides,
+            axes=self.axes + x_axes,
             valid=self.valid,
             policy=self.policy,
         )
@@ -422,7 +438,7 @@ class StackedEnsemble(Ensemble):
         return [a for s, a in zip(self.strides, self.axes) if s is not None]
 
     def _body(
-        self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int
+        self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int, out_axes: Any = 0
     ) -> Callable[..., PyTree[Array]]:
         leaves, strides = self._leaves_and_strides()
         axes = self.axes
@@ -474,7 +490,7 @@ class StackedEnsemble(Ensemble):
                     full[i] = leaf
                 return apply(jax.tree.unflatten(treedef, full), *args)
 
-            return jax.vmap(member, in_axes=tuple(axes[i] for i, _ in picked))(
+            return jax.vmap(member, in_axes=tuple(axes[i] for i, _ in picked), out_axes=out_axes)(
                 *[leaf for _, leaf in picked]
             )
 
@@ -531,7 +547,7 @@ class HostEnsemble(Ensemble):
         return [], [leaf for leaf, flag in zip(leaves, is_member) if not flag and _is_array(leaf)]
 
     def _body(
-        self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int
+        self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int, out_axes: Any = 0
     ) -> Callable[..., PyTree[Array]]:
         leaves, is_member, treedef = self._parts()
         n_member = sum(is_member)
@@ -564,6 +580,7 @@ def map_reduce(
     ensemble: Ensemble,
     out_spec: OutSpec,
     *args: Any,
+    out_axes: PyTree[int] = 0,
 ) -> tuple[PyTree[Array], PyTree[Literal['sum'] | Stride]]:
     """`apply` on every member of an ensemble, its outputs combined over the members.
 
@@ -592,6 +609,12 @@ def map_reduce(
             whether the leaf depends on the member in the traced computation. A declared stride is
             a promise the engine does not check.
         *args: The shared inputs, which every member receives whole.
+        out_axes: Where the member axis of each stacked output leaf goes, leading by default, as
+            a non-negative value or a prefix of the output tree: the engine writes each member's
+            entry along that axis in place, without transposition, so an output can keep the
+            layout of a [`StackedEnsemble`][furax.core.StackedEnsemble] input with the same
+            `axes`. Ignored on the summed and shared leaves. A host ensemble stacks its outputs
+            member-leading only.
 
     Returns:
         The outputs of `apply` combined over the members, and the output specification with
@@ -603,8 +626,12 @@ def map_reduce(
             `StackedEnsemble`.
     """
     if isinstance(ensemble, HostEnsemble):
+        if any(a != 0 for a in jax.tree.leaves(out_axes)):
+            raise ValueError(
+                'a host ensemble stacks its outputs member-leading: out_axes must be 0'
+            )
         return _host_map_reduce(apply, ensemble, out_spec, args)
-    return _resident_map_reduce(apply, ensemble, out_spec, args)
+    return _resident_map_reduce(apply, ensemble, out_spec, args, out_axes)
 
 
 def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble:
@@ -733,7 +760,12 @@ def _resident_map_reduce(
     ensemble: Ensemble,
     out_spec: OutSpec,
     args: tuple[Any, ...],
+    out_axes: PyTree[int] = 0,
 ) -> tuple[PyTree[Array], PyTree[Literal['sum'] | Stride]]:
+    if any(
+        not isinstance(a, int) or isinstance(a, bool) or a < 0 for a in jax.tree.leaves(out_axes)
+    ):
+        raise ValueError('out_axes takes non-negative integers')
     policy = ensemble.policy
     batch = policy.batch
     if not isinstance(ensemble, StackedEnsemble):
@@ -767,6 +799,24 @@ def _resident_map_reduce(
     )
     kinds = _resolved_kinds(out_spec, out_shape, closed, 1 + len(member_arrays), per_device, batch)
 
+    # The member axis of a stacked output leaf goes where `out_axes` says: the round outputs and
+    # the accumulation buffers carry it there from the start, so nothing is transposed. The other
+    # leaves keep their round batch axis leading. A vectorized body places the batch axis itself,
+    # which needs a second trace -- only when a non-leading axis is actually requested.
+    axes_flat = [
+        a if isinstance(kind, int) else 0
+        for kind, a in zip(kinds, _spec_leaves(out_axes, out_shape))
+    ]
+    for (aval, kind), a in zip(zip(closed.out_avals, kinds), axes_flat):
+        if isinstance(kind, int) and a > len(aval.shape) - (1 if batch > 1 else 0):
+            raise ValueError(f'out axis {a} is out of bounds for a member output {aval.shape}')
+    if batch > 1 and any(axes_flat):
+        placement = jax.tree.unflatten(jax.tree.structure(out_shape), axes_flat)
+        body = ensemble._body(apply, args_def, batch, out_axes=placement)
+        closed, out_shape = jax.make_jaxpr(body, return_shape=True)(
+            jnp.zeros((), jnp.int32), *local, *fixed_arrays, *args_leaves
+        )
+
     valid = ensemble.valid
     if valid is not None and not any(kind == 'sum' for kind in kinds):
         valid = None
@@ -779,7 +829,9 @@ def _resident_map_reduce(
             # Avals are typed by the mesh context, so the trace made outside, under the explicit
             # mesh, cannot be evaluated inside the shard: trace the same body again in its context.
             local = jax.make_jaxpr(body)(jnp.zeros((), jnp.int32), *member, *fixed_and_args)
-        return _loop(local, kinds, batch, rounds, per_device, [*member, *fixed_and_args], use)
+        return _loop(
+            local, kinds, axes_flat, batch, rounds, per_device, [*member, *fixed_and_args], use
+        )
 
     if policy.axis is None:
         sums, shareds, stacks = run(member_arrays, valid, [*fixed_arrays, *args_leaves])
@@ -804,7 +856,9 @@ def _resident_map_reduce(
             + ((P(axis),) if has_valid else ())
             + (P(),) * (len(fixed_arrays) + len(args_leaves))
         )
-        out_specs = (P(),) * (n_sums + n_shareds) + (P(axis),) * n_stacks
+        out_specs = (P(),) * (n_sums + n_shareds) + tuple(
+            P(*(None,) * a, axis) for kind, a in zip(kinds, axes_flat) if isinstance(kind, int)
+        )
         flat = jax.shard_map(
             block, mesh=mesh, in_specs=in_specs, out_specs=out_specs, check_vma=False
         )(*member_arrays, *([valid] if has_valid else []), *fixed_arrays, *args_leaves)
@@ -872,7 +926,7 @@ def _host_map_reduce(
         sums, stacks = carry
         out = list(run(*round_arrays, *fixed_and_args))
         new_sums, new_stacks, shareds = _combined(
-            out, kinds, [x[0] for x in sums], stacks, g, batch, use
+            out, kinds, [0] * len(kinds), [x[0] for x in sums], stacks, g, batch, use
         )
         return ([x[None] for x in new_sums], new_stacks), shareds
 
@@ -976,16 +1030,22 @@ def _host_map_reduce(
 def _loop(
     closed: Any,
     kinds: list[Any],
+    axes: list[int],
     batch: int,
     rounds: int,
     per_device: int,
     inputs: list[Array],
     valid: Array | None,
 ) -> tuple[list[Array], list[Array], list[Array]]:
-    """The loop over the rounds of one device: evaluate the trace, combine by kind."""
+    """The loop over the rounds of one device: evaluate the trace, combine by kind.
+
+    `axes` places the member axis of each stacked output, and locates the batch axis of each
+    round output when the rounds are vectorized (0 on the summed and shared leaves).
+    """
     traced = jaxpr_as_fun(closed)
     member_shapes = [
-        (aval.shape[1:] if batch > 1 else aval.shape, aval.dtype) for aval in closed.out_avals
+        (aval.shape[:a] + aval.shape[a + 1 :] if batch > 1 else aval.shape, aval.dtype)
+        for aval, a in zip(closed.out_avals, axes)
     ]
     init_sums = [
         jnp.zeros(shape, dtype)
@@ -998,8 +1058,8 @@ def _loop(
         if kind is None
     ]
     init_stacks = [
-        jnp.zeros((per_device // kind, *shape), dtype)
-        for (shape, dtype), kind in zip(member_shapes, kinds)
+        jnp.zeros((*shape[:a], per_device // kind, *shape[a:]), dtype)
+        for ((shape, dtype), kind), a in zip(zip(member_shapes, kinds), axes)
         if isinstance(kind, int)
     ]
 
@@ -1014,7 +1074,7 @@ def _loop(
                 use = jax.lax.dynamic_index_in_dim(valid, g, keepdims=False)
             else:
                 use = jax.lax.dynamic_slice_in_dim(valid, g * batch, batch)
-        new_sums, new_stacks, new_shareds = _combined(out, kinds, sums, stacks, g, batch, use)
+        new_sums, new_stacks, new_shareds = _combined(out, kinds, axes, sums, stacks, g, batch, use)
         return new_sums, new_shareds, new_stacks
 
     sums, shareds, stacks = jax.lax.fori_loop(
@@ -1026,6 +1086,7 @@ def _loop(
 def _combined(
     out: list[Array],
     kinds: list[Any],
+    axes: list[int],
     sums: list[Array],
     stacks: list[Array],
     g: Int[Array, ''],
@@ -1035,7 +1096,7 @@ def _combined(
     """One round's outputs folded into the carries: sums masked and added, stacks written."""
     new_sums, new_stacks, shareds = [], [], []
     it_sums, it_stacks = iter(sums), iter(stacks)
-    for leaf, kind in zip(out, kinds):
+    for leaf, kind, a in zip(out, kinds, axes):
         if kind == 'sum':
             if use is not None:
                 mask = use if batch == 1 else use.reshape((batch,) + (1,) * (leaf.ndim - 1))
@@ -1046,13 +1107,13 @@ def _combined(
             shareds.append(leaf if batch == 1 else leaf[0])
         else:
             if batch == 1:
-                chunk = leaf[None]
+                chunk = jnp.expand_dims(leaf, a)
             elif kind >= batch:
-                chunk = leaf[0][None]
+                chunk = jnp.expand_dims(jax.lax.index_in_dim(leaf, 0, axis=a, keepdims=False), a)
             else:
-                chunk = leaf[::kind]
+                chunk = leaf[(slice(None),) * a + (slice(None, None, kind),)]
             new_stacks.append(
-                jax.lax.dynamic_update_slice_in_dim(next(it_stacks), chunk, g * batch // kind, 0)
+                jax.lax.dynamic_update_slice_in_dim(next(it_stacks), chunk, g * batch // kind, a)
             )
     return new_sums, new_stacks, shareds
 

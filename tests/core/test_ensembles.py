@@ -164,6 +164,57 @@ def test_member_axis_must_match_the_members():
         StackedEnsemble(N, {'x': jnp.zeros((N, 3))}, 1, axes=None)
 
 
+@pytest.mark.parametrize('batch', [1, 2, 8])
+def test_out_axes_place_the_member_axis_of_the_stacked_outputs(batch):
+    # a layout-preserving round trip: member axis 1 in, member axis 1 out, no transposition
+    moved = jnp.moveaxis(_xs(), 0, 1)
+    ensemble = StackedEnsemble(
+        N, {'x': moved, 't': _shared()}, {'x': 1, 't': None}, axes=1, policy=Policy(batch=batch)
+    )
+    out, kinds = map_reduce(
+        _apply, ensemble, {'sum': 'sum', 'stack': 'auto', 'shared': 'auto'}, 3.0, out_axes=1
+    )
+    expected = _expected(3.0)
+    assert kinds == {'sum': 'sum', 'stack': 1, 'shared': None}
+    assert_allclose(out['sum'], expected['sum'])  # out_axes is ignored on the summed leaves
+    assert_allclose(out['stack'], jnp.moveaxis(expected['stack'], 0, 1))
+    assert_allclose(out['shared'], expected['shared'])
+
+
+@pytest.mark.parametrize('batch', [1, 2, 4])
+def test_out_axes_combine_with_output_strides(batch):
+    xs = jnp.arange(float(N))
+    by_2 = jnp.array([1.0, 2.0, 3.0, 4.0])
+    ensemble = StackedEnsemble(
+        N, {'x': xs, 'b': by_2}, {'x': 1, 'b': 2}, policy=Policy(batch=batch)
+    )
+    out, _ = map_reduce(
+        lambda m: {'y': m['x'] * jnp.ones(3), 'b': m['b'] * jnp.ones(2)},
+        ensemble,
+        {'y': 1, 'b': 2},
+        out_axes=1,
+    )
+    assert_allclose(out['y'], jnp.outer(xs, jnp.ones(3)).T)
+    assert_allclose(out['b'], jnp.outer(by_2, jnp.ones(2)).T)
+
+
+def test_out_axes_are_validated():
+    with pytest.raises(ValueError, match='non-negative'):
+        map_reduce(lambda m: m['x'], _stacked(), 1, out_axes=-1)
+    with pytest.raises(ValueError, match='out of bounds'):
+        map_reduce(lambda m: m['x'], _stacked(), 1, out_axes=2)
+    with pytest.raises(ValueError, match='member-leading'):
+        map_reduce(lambda m: m['x'], _host(), 1, out_axes=1)
+
+
+def test_zip_slices_the_input_along_its_axes():
+    v = jnp.moveaxis(jnp.arange(float(N * 3)).reshape(N, 3), 0, 1)  # (3, N): member axis last
+    for ensemble in (_stacked(), _list()):
+        member, entry = ensemble.zip({'v': v}, axes=1).fetch(2)
+        assert_allclose(member['x'], _xs()[2])
+        assert_allclose(entry['v'], v[:, 2])
+
+
 def test_lift_keeps_the_axes_of_a_structural_function():
     moved = jnp.moveaxis(_xs(), 0, 1)
     ensemble = StackedEnsemble(N, {'x': moved}, 1, axes=1)
@@ -546,6 +597,21 @@ class TestSharded:
         assert_allclose(out['sum'], reference['sum'])
         assert_allclose(out['stack'], reference['stack'])
         assert_allclose(out['shared'], reference['shared'])
+
+    def test_sharded_out_axes(self):
+        moved = jnp.moveaxis(_xs(), 0, 1)
+        with jax.set_mesh(self._mesh()):
+            ensemble = StackedEnsemble(
+                N, {'x': moved, 't': _shared()}, {'x': 1, 't': None}, axes=1
+            ).shard('obs')
+            out, _ = map_reduce(
+                _apply, ensemble, {'sum': 'sum', 'stack': 1, 'shared': None}, 3.0, out_axes=1
+            )
+            assert out['stack'].sharding.spec == P(None, 'obs')
+        expected = _expected(3.0)
+        assert_allclose(out['sum'], expected['sum'])
+        assert_allclose(out['stack'], jnp.moveaxis(expected['stack'], 0, 1))
+        assert_allclose(out['shared'], expected['shared'])
 
     def test_leaves_on_different_meshes_are_rejected(self):
         # two meshes may carry the same axis name: an ensemble laid out over both is ambiguous

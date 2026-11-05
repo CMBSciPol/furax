@@ -47,9 +47,8 @@ def fill(
     """Preprocess observations into the cache, without mapmaking.
 
     Pass the arguments of the `furax-so-map` run to prepare: that run then finds every
-    observation in the cache. Observations already cached are skipped. With `--wafer all`, each
-    observation is saved with its wafers joined, as that run maps it; a run with a single wafer
-    uses a cache of its own.
+    observation in the cache. Observations already cached are skipped. Each wafer of an
+    observation is cached in a file of its own, so that runs share the wafers they have in common.
 
     Args:
         cache_dir: Cache directory.
@@ -78,8 +77,8 @@ def fill(
     observations = preproc_observations(
         obsids, init_config, proc_config, wafer, band, config.sotodlib, cache_dir
     )
-    missing = [obs for obs in observations if not _cache_path(obs).exists()]
-    logger.info(f'Cache key: {_cache_path(observations[0]).parent}')
+    missing = [obs for obs in observations if not obs.is_cached()]
+    logger.info(f'Cache key: {observations[0].cache_key_path}')
     logger.info(f'Cached {len(observations) - len(missing)} of {len(observations)} observations')
     if dry_run:
         for obs in missing:
@@ -106,7 +105,7 @@ def list_keys(cache_dir: Path) -> None:
     for directory in sorted(_key_directories(cache_dir)):
         stats = _stats(directory.glob('*.h5'))
         size = sum(stat.st_size for stat in stats) / 2**30
-        print(f'{directory.name}: {len(stats)} observations, {size:.1f} GiB')
+        print(f'{directory.name}: {len(stats)} files, {size:.1f} GiB')
         if stats:
             last = max(stat.st_mtime for stat in stats)
             print(f'  last written: {time.strftime("%Y-%m-%d %H:%M", time.localtime(last))}')
@@ -159,12 +158,6 @@ def prune(
     return status
 
 
-def _cache_path(observation: LazyPreprocSOTODLibObservation) -> Path:
-    path = observation.cache_path
-    assert path is not None  # preproc_observations was given a cache_dir
-    return path
-
-
 def _fill_in_parallel(
     observations: list[LazyPreprocSOTODLibObservation],
     nproc: int,
@@ -185,7 +178,7 @@ def _fill_in_parallel(
                     failed.append(obs.name)
             except BrokenProcessPool:
                 broken = True
-                if not _cache_path(obs).exists():  # it may have been cached before the break
+                if not obs.is_cached():  # it may have been cached before the break
                     failed.append(obs.name)
     if broken:
         # e.g. killed out of memory: the pool stops, and its pending observations with it
@@ -195,13 +188,20 @@ def _fill_in_parallel(
 
 def _fill_one(observation: LazyPreprocSOTODLibObservation) -> bool:
     """Loads an observation into the cache, and tells whether it is cached."""
+    # Deferred: importing furax pulls in JAX, which the CLI parse path does not need
+    from furax.interfaces.sotodlib.observation import NoDetectorsLeftError
+
     start = time.perf_counter()
     try:
         observation.get_data([])
+    except NoDetectorsLeftError as error:
+        # every group is recorded as skipped: there is nothing more to cache, as for a later run
+        logger.warning(f'Nothing to cache for {observation.name}: {error}')
+        return observation.is_cached()
     except Exception:
         logger.exception(f'Could not load {observation.name}')
         return False
-    if not _cache_path(observation).exists():  # the write failed, and was logged
+    if not observation.is_cached():  # the write failed, and was logged
         return False
     logger.info(f'Cached {observation.name} ({time.perf_counter() - start:.0f} s)')
     return True
@@ -238,8 +238,6 @@ def _describe(inputs: dict[str, Any]) -> list[str]:
         archives.append(archive.get('index') if isinstance(archive, dict) else None)
     return [
         f'archives: {", ".join(str(archive or "?") for archive in archives) or "?"}',
-        f'detector selection: {inputs.get("detector_selection", "?")}',
-        f'join groups: {inputs.get("join_groups", "?")}',
         f'downsample: {inputs.get("downsample", "?")}',
         f'sotodlib {inputs.get("sotodlib", "?")}, cache version {inputs.get("cache_version", "?")}',
     ]

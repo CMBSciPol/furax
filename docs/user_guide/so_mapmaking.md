@@ -53,28 +53,27 @@ files of a directory.
 ## Caching preprocessed observations
 
 Preprocessing takes minutes per observation, and is repeated by every run that maps the same
-observations. With `--cache-dir DIR`, the first run saves each observation once loaded, i.e.
-preprocessed, joined over the wafers and downsampled, to `DIR/<key>/<obsid>.h5`. Later runs load
-that file instead.
+observations. With `--cache-dir DIR`, the first run saves each wafer of an observation once loaded,
+i.e. preprocessed and downsampled, to `DIR/<key>/<obsid>__<wafer>.h5`. Later runs load those files
+instead. The files do not depend on how a run selects or joins the wafers, so a run with
+`--wafer ws0` and one with `--wafer all` share the files of `ws0`.
 
 The key is a hash of every input that changes the loaded data:
 
-- the detector selection, and whether the wafers are joined (`--wafer all`);
-- the content of the preprocessing configs and of their sotodlib contexts;
+- the content of the preprocessing configs and of their sotodlib contexts, except where the raw
+  TOD files are stored (`obsfiledb.prefix`);
 - `sotodlib.downsample` from the mapmaking config;
 - the version of sotodlib, and a version of the cache format.
 
 A `key.json` next to the files records these inputs. Runs that differ only in the rest of the
 mapmaking config, the other `sotodlib` settings included, share a cache. Runs that differ in one
-of the inputs above use a key of their own: in particular, an observation cached with
-`--wafer all` holds every wafer joined, and serves only runs with `--wafer all`, while a run
-with `--wafer ws0` caches that wafer alone.
+of the inputs above use a key of their own.
 
 The content of the databases the configs point to, such as the preprocessing archive, is not
 part of the key. After preprocessing again under the same configs, delete the key (see
 [`prune`](#listing-and-pruning)), or the runs keep loading the earlier data. Likewise, a wafer
 skipped when an observation was cached, because none of its detectors survived the cuts or it
-had no preprocessing record, stays missing from the cached observation.
+had no preprocessing record, is recorded in a `.skip` file next to the others and stays skipped.
 
 Concurrent runs can share a cache: each file is written under a temporary name and renamed into
 place once complete, so a run never reads a partial file. A cached file that cannot be read is

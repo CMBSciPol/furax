@@ -135,6 +135,61 @@ def test_stage_config_copies_and_repoints_to_dest(tmp_path: Path) -> None:
     assert name == (root.resolve() / 'data.h5').as_posix()
 
 
+def _make_obsfiledb(path: Path) -> None:
+    """Write an obsfiledb-style files table holding a TOD file by a relative name."""
+    con = sqlite3.connect(path)
+    con.execute(
+        'create table files (name varchar(256) unique, detset varchar(256), obs_id varchar(256), '
+        'sample_start int, sample_stop int)'
+    )
+    con.execute("insert into files values ('oper/1/obs_1/D_000.g3', 'ufm', 'obs_1', 0, 10)")
+    con.commit()
+    con.close()
+
+
+def _staged_file_names(dest: Path, pattern: str) -> list[str]:
+    con = sqlite3.connect(next(dest.glob(pattern)))
+    try:
+        return [name for (name,) in con.execute('select name from files')]
+    finally:
+        con.close()
+
+
+def test_stage_config_anchors_obsfiledb_tod_names_to_the_source_dir(tmp_path: Path) -> None:
+    """sotodlib joins the names to the db's directory, which the staged copy no longer is."""
+    root = (tmp_path / 'vx').resolve()
+    cfg = _make_config(root)
+    (root / 'obsfiledb.sqlite').unlink()
+    _make_obsfiledb(root / 'obsfiledb.sqlite')
+    dest = tmp_path / 'shm'
+    dest.mkdir()
+
+    stage_config(Stager(dest), cfg)
+
+    assert _staged_file_names(dest, '*obsfiledb.sqlite') == [
+        (root / 'oper/1/obs_1/D_000.g3').as_posix()
+    ]
+
+
+def test_stage_config_leaves_obsfiledb_names_to_an_explicit_prefix(tmp_path: Path) -> None:
+    """With `obsfiledb.prefix`, the names are relative to it, and the context keeps it."""
+    root = (tmp_path / 'vx').resolve()
+    cfg = _make_config(root)
+    (root / 'obsfiledb.sqlite').unlink()
+    _make_obsfiledb(root / 'obsfiledb.sqlite')
+    context = yaml.safe_load((root / 'context.yaml').read_text())
+    context['obsfiledb.prefix'] = '/data/tod'
+    (root / 'context.yaml').write_text(yaml.safe_dump(context))
+    dest = tmp_path / 'shm'
+    dest.mkdir()
+
+    stage_config(Stager(dest), cfg)
+
+    assert _staged_file_names(dest, '*obsfiledb.sqlite') == ['oper/1/obs_1/D_000.g3']
+    staged_context = yaml.safe_load((dest / f'context_{cfg.stem}.yaml').read_text())
+    assert staged_context['obsfiledb.prefix'] == '/data/tod'
+
+
 def test_stage_config_warns_on_leftover_relative_path(tmp_path: Path, capsys) -> None:
     cfg = _make_config(tmp_path / 'vx', extra={'stray': 'unhandled.h5'})
     dest = tmp_path / 'shm'

@@ -9,9 +9,12 @@ preprocess archive (ManifestDb + hdf5), wired together by a Context.
 from pathlib import Path
 
 import numpy as np
+import pytest
 import sotodlib.io.metadata  # noqa: F401  registers the hdf5 metadata loaders (AxisManagerHdf)
 import yaml
-from sotodlib.core import OBSLOADER_REGISTRY, AxisManager, metadata
+from sotodlib.core import OBSLOADER_REGISTRY, AxisManager, Context, metadata
+from sotodlib.core.metadata.loader import LoaderError
+from sotodlib.preprocess import preprocess_util as pu
 
 # obs_id -> raw observation file, consulted by the registered obs loader below.
 _RAW_FILES: dict[str, str] = {}
@@ -104,3 +107,33 @@ def build_preproc_db(root: Path, files: list[Path], n_detsets: int = 1) -> Path:
     config_path = root / 'config.yaml'
     config_path.write_text(yaml.safe_dump(config))
     return config_path
+
+
+def drop_group_record(monkeypatch: pytest.MonkeyPatch, detset: str) -> None:
+    """Make `Context.get_meta` find no preprocessing record for the group of a detset."""
+    get_meta = Context.get_meta
+
+    def get_meta_without_group(self, *args, dets=None, **kwargs):
+        if dets is not None and dets.get('detset') == detset:
+            raise LoaderError('There were no metadata records found for this observation.')
+        return get_meta(self, *args, dets=dets, **kwargs)
+
+    monkeypatch.setattr(Context, 'get_meta', get_meta_without_group)
+
+
+def cut_group(monkeypatch: pytest.MonkeyPatch, detset: str) -> list[str]:
+    """Make preprocessing cut every detector of the group of a detset.
+
+    Returns the list that records the detsets each load was asked for.
+    """
+    load_and_preprocess = pu.load_and_preprocess
+    loaded: list[str] = []
+
+    def load_without_group(*args, dets=None, **kwargs):
+        loaded.append((dets or {}).get('detset'))
+        if dets is not None and dets.get('detset') == detset:
+            return None
+        return load_and_preprocess(*args, dets=dets, **kwargs)
+
+    monkeypatch.setattr(pu, 'load_and_preprocess', load_without_group)
+    return loaded

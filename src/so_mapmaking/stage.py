@@ -43,26 +43,27 @@ def _log(msg: str) -> None:
     print(f'stage: {msg}', file=sys.stderr)
 
 
-def _absolutize_manifest_paths(db_path: Path, src_dir: Path) -> None:
-    """Rewrite a staged ManifestDb's relative ``files.name`` entries to absolute paths.
+def _absolutize_file_names(db_path: Path, src_dir: Path) -> None:
+    """Rewrite a staged index's relative ``files.name`` entries to absolute paths.
 
     ManifestDb-style indices (the preprocess process_archive + the metadata ``*_local.sqlite``)
     store their companion ``.h5`` data file by a path relative to the db's own directory; sotodlib
-    resolves it via ``os.path.join(prefix, name)`` where ``prefix`` is that directory. Copying the
-    sqlite to node-local storage moves the directory out from under those relative names, so the
-    ``.h5`` (which stays on the shared FS) can no longer be found. Anchoring each relative name to the
-    original source dir makes the join idempotent. obsfiledb/obsdb use a different ``files`` schema
-    (and already store absolute g3 paths), so they are detected by signature and left untouched.
+    resolves it via ``os.path.join(prefix, name)`` where ``prefix`` is that directory. An obsfiledb
+    does the same for its ``.g3`` TOD files, unless the context sets ``obsfiledb.prefix``. Copying
+    the sqlite to node-local storage moves the directory out from under those relative names, so
+    the data (which stays on the shared FS) can no longer be found. Anchoring each relative name
+    to the original source dir makes the join idempotent. The two schemas are told apart by their
+    ``files`` columns; a db with another schema (the obsdb) is left untouched.
     """
     con = sqlite3.connect(db_path)
     try:
         cols = [r[1] for r in con.execute('PRAGMA table_info(files)')]
-        if cols != ['id', 'name']:  # not a ManifestDb files table
+        if cols != ['id', 'name'] and not {'name', 'detset', 'obs_id'} <= set(cols):
             return
-        for fid, name in con.execute('select id, name from files').fetchall():
+        for rowid, name in con.execute('select rowid, name from files').fetchall():
             if name and not Path(name).is_absolute():
                 con.execute(
-                    'update files set name=? where id=?', ((src_dir / name).as_posix(), fid)
+                    'update files set name=? where rowid=?', ((src_dir / name).as_posix(), rowid)
                 )
         con.commit()
     finally:
@@ -76,8 +77,12 @@ class Stager:
         self.dest = dest
         self._copied: dict[Path, str] = {}  # source abs -> local basename
 
-    def stage(self, src: Path) -> str | None:
-        """Copy ``src`` into dest (deduped) and return its local basename, or None if missing."""
+    def stage(self, src: Path, *, anchor_names: bool = True) -> str | None:
+        """Copy ``src`` into dest (deduped) and return its local basename, or None if missing.
+
+        With `anchor_names`, the relative file names the index stores are made absolute, against
+        the directory of `src`.
+        """
         src = src.resolve()
         if src in self._copied:
             return self._copied[src]
@@ -89,7 +94,8 @@ class Stager:
         digest = hashlib.sha1(str(src.parent).encode()).hexdigest()[:8]
         local_name = f'{digest}_{src.name}'
         shutil.copy2(src, self.dest / local_name)
-        _absolutize_manifest_paths(self.dest / local_name, src.parent)
+        if anchor_names:
+            _absolutize_file_names(self.dest / local_name, src.parent)
         self._copied[src] = local_name
         _log(f'staged {src} -> {local_name}')
         return local_name
@@ -112,8 +118,12 @@ def stage_config(stager: Stager, config_path: Path) -> Path:
     # text carries the token (the index/metadata live in the config, the dbs in the context).
     config_repl: dict[str, str] = {}
     ctx_repl: dict[str, str] = {}
+    ctx_doc = yaml.safe_load(ctx_text)
+    # With an explicit prefix, the obsfiledb names are relative to it, not to the db
+    prefix_set = bool(ctx_doc.get('obsfiledb.prefix'))
     for cp in pp.iter_config_paths(config_path):
-        local = stager.stage(cp.path)
+        is_obsfiledb = cp.where == 'context' and cp.token == ctx_doc.get('obsfiledb')
+        local = stager.stage(cp.path, anchor_names=not (is_obsfiledb and prefix_set))
         if local is None:
             continue
         repl = config_repl if cp.where == 'config' else ctx_repl

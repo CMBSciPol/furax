@@ -130,7 +130,10 @@ The composites close the loop:
 - `AdditionOperator(ensemble)` sums the members' outputs through the engine;
 - [`BlockRowOperator`][furax.core.BlockRowOperator],
   [`BlockColumnOperator`][furax.core.BlockColumnOperator] and
-  [`BlockDiagonalOperator`][furax.core.BlockDiagonalOperator] accept an ensemble of blocks;
+  [`BlockDiagonalOperator`][furax.core.BlockDiagonalOperator] accept an ensemble of blocks; their
+  stacked inputs and outputs carry the member index on a leading axis, or on the axis given by
+  `axes` — a block-diagonal over frequency channels can take and return Stokes-first maps
+  `(n_stokes, n_freq, n_pix)` with `axes=1`, nothing transposed on either side;
 - transposition, reduction rules and algebraic simplifications apply member-wise through `lift`,
   structurally where possible — `(H.T @ H).reduce()` on an ensemble of pointings never touches
   the data.

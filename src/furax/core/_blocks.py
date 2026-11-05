@@ -19,7 +19,7 @@ from ._base import (
     _group_by_signature,
     structure_equal,
 )
-from ._ensembles import Ensemble, ListEnsemble, StackedEnsemble, lift, map_reduce
+from ._ensembles import Ensemble, ListEnsemble, lift, map_reduce
 from .rules import AbstractCompositionRule, NoReduction
 
 
@@ -133,7 +133,7 @@ class BlockRowOperator(AbstractBlockOperator):
 
     def mv(self, x: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
         if isinstance(self.blocks, Ensemble):
-            zipped = _zip_input(self.blocks, x)
+            zipped = self.blocks.zip(x)
             return map_reduce(lambda member: member[0](member[1]), zipped, 'sum')[0]
         treedef = jax.tree.structure(
             self.blocks, is_leaf=lambda op: isinstance(op, AbstractLinearOperator)
@@ -217,7 +217,7 @@ class BlockDiagonalOperator(AbstractBlockOperator):
 
     def mv(self, x: PyTree[Inexact[Array, ' _b']]) -> PyTree[Inexact[Array, ' _a']]:
         if isinstance(self.blocks, Ensemble):
-            zipped = _zip_input(self.blocks, x)
+            zipped = self.blocks.zip(x)
             return map_reduce(lambda member: member[0](member[1]), zipped, 1)[0]
         return self._tree_map(lambda op, vect: op.mv(vect), x)
 
@@ -465,25 +465,6 @@ class BlockSelectBlockDiagonalRule(AbstractCompositionRule):
             # the key selects a subtree of blocks, not a single one
             raise NoReduction
         return [block, BlockSelectOperator(left.key, in_structure=right.in_structure)]
-
-
-def _zip_input(ensemble: Ensemble, x: PyTree[Any]) -> Ensemble:
-    """Members paired with their slice of a stacked input: member i becomes `(member, x[i])`."""
-    if isinstance(ensemble, StackedEnsemble):
-        strides = tuple(ensemble._leaves_and_strides()[1]) + (1,) * len(jax.tree.leaves(x))
-        return StackedEnsemble(
-            ensemble.size,
-            (ensemble.stacked, x),
-            strides,
-            valid=ensemble.valid,
-            policy=ensemble.policy,
-        )
-    assert isinstance(ensemble, ListEnsemble)  # ty assert
-    members = [
-        (member, jax.tree.map(lambda leaf, i=i: leaf[i], x))
-        for i, member in enumerate(ensemble.members)
-    ]
-    return ListEnsemble(members, valid=ensemble.valid, policy=ensemble.policy)
 
 
 def _stacked_structure(structure: PyTree[jax.ShapeDtypeStruct], n: int) -> PyTree[Any]:

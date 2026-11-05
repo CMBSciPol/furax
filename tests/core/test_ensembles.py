@@ -190,6 +190,17 @@ def test_stacked_leaves_match_their_strides():
         StackedEnsemble(N, {'x': jnp.zeros((2, 2))}, 3)
 
 
+def test_zip_pairs_each_member_with_its_slice():
+    v = jnp.arange(float(N))
+    for ensemble in (_stacked(), _list()):
+        member, entry = ensemble.zip({'v': v}).fetch(2)
+        assert_allclose(member['x'], _xs()[2])
+        assert_allclose(member['t'], _shared())
+        assert_allclose(entry['v'], v[2])
+    with pytest.raises(NotImplementedError, match='zipped'):
+        _host().zip({'v': v})
+
+
 def test_strides_are_canonicalized_at_construction():
     # Whatever form the strides are given in, the ensembles flatten to the same treedef, and the
     # aux data never inspects the leaves: an abstract ensemble keeps the strides of the concrete

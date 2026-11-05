@@ -185,6 +185,10 @@ class Ensemble(ABC):
     def _arrays(self) -> tuple[list[Array], list[Array]]:
         """The ensemble's arrays: those that carry the members, and those every member holds."""
 
+    def _member_axes(self) -> list[int]:
+        """The member axis of each member-carrying array, aligned with `_arrays()[0]`."""
+        return [0] * len(self._arrays()[0])
+
     def _mesh(self, axis: str) -> Mesh | AbstractMesh | None:
         """The mesh carrying `axis`, read from the shardings of the ensemble's arrays.
 
@@ -301,39 +305,48 @@ class ListEnsemble(Ensemble):
 
 @dataclass(frozen=True)
 class StackedEnsemble(Ensemble):
-    """N members held as one pytree whose array leaves carry a leading member axis.
+    """N members held as one pytree whose array leaves carry a member axis, leading by default.
 
-    A leaf with stride s has a leading axis of `size // s` entries, one per run of s consecutive
+    A leaf with stride s has a member axis of `size // s` entries, one per run of s consecutive
     members; a leaf with stride None, and any non-array leaf, is shared by the whole ensemble.
-    This is the only representation the engine can batch (`Policy.batch`) and shard
-    (`Policy.axis`), and the one the stacked outputs of `map_reduce` come back as.
+    `axes` places the member axis of each leaf: the engine slices, batches and shards along it
+    in place, so a leaf whose natural layout puts the member dimension elsewhere needs no
+    transposition. This is the only representation the engine can batch (`Policy.batch`) and
+    shard (`Policy.axis`); the stacked outputs of `map_reduce` come back as one, with leading
+    member axes.
     """
 
     size: int
     """The number of members."""
     stacked: PyTree[Any]
-    """The members' pytree; an array leaf of stride s has shape `(size // s, ...)`."""
+    """The members' pytree; an array leaf of stride s has `size // s` entries on its member
+    axis."""
     strides: PyTree[Stride] = 1
     """The stride of each leaf of `stacked`, or one stride for all; canonicalized at construction
     to one stride per leaf, non-array leaves getting None."""
+    axes: PyTree[int | None] = 0
+    """The member axis of each leaf of `stacked`, or one axis for all; canonicalized at
+    construction to one non-negative axis per leaf, None on the shared leaves."""
     valid: Bool[Array, ' _n'] | None = None
     policy: Policy = Policy()
 
     def __post_init__(self) -> None:
-        # Canonicalize `strides` to one stride per leaf, so that flattening the ensemble never has
-        # to look at the leaves again: tree transformations (eqx.partition, jax.eval_shape) replace
-        # the arrays with placeholders, and an array test at flatten time would flip the strides.
+        # Canonicalize `strides` and `axes` to one value per leaf, so that flattening the ensemble
+        # never has to look at the leaves again: tree transformations (eqx.partition,
+        # jax.eval_shape) replace the arrays with placeholders, and an array test at flatten time
+        # would flip the strides.
         leaves = jax.tree.leaves(self.stacked)
         object.__setattr__(self, 'strides', _normalized_strides(leaves, self.strides))
-        for leaf, stride in zip(leaves, self.strides, strict=True):
+        object.__setattr__(self, 'axes', _normalized_axes(leaves, self.strides, self.axes))
+        for leaf, stride, axis in zip(leaves, self.strides, self.axes, strict=True):
             if stride is None:
                 continue
             if self.size % stride:
                 raise ValueError(f'stride {stride} does not divide {self.size} members')
-            if leaf.shape[0] != self.size // stride:
+            if leaf.shape[axis] != self.size // stride:
                 raise ValueError(
                     f'a stride-{stride} leaf of {self.size} members has '
-                    f'{self.size // stride} entries, got shape {leaf.shape}'
+                    f'{self.size // stride} entries on axis {axis}, got shape {leaf.shape}'
                 )
 
     @property
@@ -346,40 +359,50 @@ class StackedEnsemble(Ensemble):
     def template(self) -> PyTree[Any]:
         leaves, strides = self._leaves_and_strides()
         picked = [
-            leaf if s is None else jax.ShapeDtypeStruct(leaf.shape[1:], leaf.dtype)
-            for leaf, s in zip(leaves, strides)
+            leaf
+            if s is None
+            else jax.ShapeDtypeStruct(leaf.shape[:a] + leaf.shape[a + 1 :], leaf.dtype)
+            for leaf, s, a in zip(leaves, strides, self.axes)
         ]
         return jax.tree.unflatten(jax.tree.structure(self.stacked), picked)
 
     def fetch(self, i: Int[Array, ''] | int) -> PyTree[Any]:
         leaves, strides = self._leaves_and_strides()
         picked = [
-            leaf if s is None else jax.lax.dynamic_index_in_dim(leaf, i // s, keepdims=False)
-            for leaf, s in zip(leaves, strides)
+            leaf
+            if s is None
+            else jax.lax.dynamic_index_in_dim(leaf, i // s, axis=a, keepdims=False)
+            for leaf, s, a in zip(leaves, strides, self.axes)
         ]
         return jax.tree.unflatten(jax.tree.structure(self.stacked), picked)
 
     def zip(self, x: PyTree[Any]) -> 'StackedEnsemble':
-        strides = self.strides + (1,) * len(jax.tree.leaves(x))
+        n = len(jax.tree.leaves(x))
         return StackedEnsemble(
-            self.size, (self.stacked, x), strides, valid=self.valid, policy=self.policy
+            self.size,
+            (self.stacked, x),
+            self.strides + (1,) * n,
+            axes=self.axes + (0,) * n,
+            valid=self.valid,
+            policy=self.policy,
         )
 
     def shard(self, axis: str) -> 'StackedEnsemble':
         """The ensemble laid out over a mesh axis: consecutive members on each device.
 
-        The strided leaves and `valid` are split over their leading axis, the shared leaves are
-        replicated, and the returned ensemble's policy records the axis. The engine reads the
-        mesh back from the laid-out leaves, so the ensemble evaluates from any thread, not only
-        the one that set the mesh.
+        The strided leaves are split over their member axis and `valid` over its leading axis,
+        the shared leaves are replicated, and the returned ensemble's policy records the axis.
+        The engine reads the mesh back from the laid-out leaves, so the ensemble evaluates from
+        any thread, not only the one that set the mesh.
         """
         devices = _axis_size(axis)
         leaves, strides = self._leaves_and_strides()
-        for leaf, s in zip(leaves, strides):
-            if s is not None and leaf.shape[0] % devices:
-                raise ValueError(f'{leaf.shape[0]} entries do not split over {devices} devices')
+        for leaf, s, a in zip(leaves, strides, self.axes):
+            if s is not None and leaf.shape[a] % devices:
+                raise ValueError(f'{leaf.shape[a]} entries do not split over {devices} devices')
         placed = [
-            leaf if s is None else jax.device_put(leaf, P(axis)) for leaf, s in zip(leaves, strides)
+            leaf if s is None else jax.device_put(leaf, P(*(None,) * a, axis))
+            for leaf, s, a in zip(leaves, strides, self.axes)
         ]
         valid = None if self.valid is None else jax.device_put(self.valid, P(axis))
         return dataclasses.replace(
@@ -395,10 +418,14 @@ class StackedEnsemble(Ensemble):
         fixed = [leaf for leaf, s in zip(leaves, strides) if s is None and _is_array(leaf)]
         return member, fixed
 
+    def _member_axes(self) -> list[int]:
+        return [a for s, a in zip(self.strides, self.axes) if s is not None]
+
     def _body(
         self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int
     ) -> Callable[..., PyTree[Array]]:
         leaves, strides = self._leaves_and_strides()
+        axes = self.axes
         treedef = jax.tree.structure(self.stacked)
         member_at = [i for i, s in enumerate(strides) if s is not None]
         fixed_at = [i for i, s in enumerate(strides) if s is None and _is_array(leaves[i])]
@@ -418,23 +445,25 @@ class StackedEnsemble(Ensemble):
                 picked = [
                     leaf
                     if s is None
-                    else jax.lax.dynamic_index_in_dim(leaf, start // s, keepdims=False)
-                    for leaf, s in zip(full, strides)
+                    else jax.lax.dynamic_index_in_dim(leaf, start // s, axis=a, keepdims=False)
+                    for leaf, s, a in zip(full, strides, axes)
                 ]
                 return apply(jax.tree.unflatten(treedef, picked), *args)
             batched: list[Array | None] = []
             shared: list[Any] = []
-            for leaf, s in zip(full, strides):
+            for leaf, s, a in zip(full, strides, axes):
                 if s is None:
                     batched.append(None)
                     shared.append(leaf)
                 elif s >= batch:
                     batched.append(None)
-                    shared.append(jax.lax.dynamic_index_in_dim(leaf, start // s, keepdims=False))
+                    shared.append(
+                        jax.lax.dynamic_index_in_dim(leaf, start // s, axis=a, keepdims=False)
+                    )
                 else:
-                    sliced = jax.lax.dynamic_slice_in_dim(leaf, start // s, batch // s)
+                    sliced = jax.lax.dynamic_slice_in_dim(leaf, start // s, batch // s, axis=a)
                     if s > 1:
-                        sliced = jnp.repeat(sliced, s, axis=0, total_repeat_length=batch)
+                        sliced = jnp.repeat(sliced, s, axis=a, total_repeat_length=batch)
                     batched.append(sliced)
                     shared.append(None)
             picked = [(i, leaf) for i, leaf in enumerate(batched) if leaf is not None]
@@ -445,7 +474,9 @@ class StackedEnsemble(Ensemble):
                     full[i] = leaf
                 return apply(jax.tree.unflatten(treedef, full), *args)
 
-            return jax.vmap(member)(*[leaf for _, leaf in picked])
+            return jax.vmap(member, in_axes=tuple(axes[i] for i, _ in picked))(
+                *[leaf for _, leaf in picked]
+            )
 
         return body
 
@@ -622,14 +653,17 @@ def _lift_stacked(f: Callable[..., PyTree[Any]], ensembles: Sequence[StackedEnse
         ]
         return [leaf for leaf in jax.tree.leaves(f(*members)) if _is_array(leaf)]
 
-    flats, axes = [], []
+    flats, in_axes = [], []
     for e in ensembles:
         leaves, strides = e._leaves_and_strides()
         flats.append(
-            [leaf if s is None else _expanded(leaf, s, size) for leaf, s in zip(leaves, strides)]
+            [
+                leaf if s is None else _expanded(leaf, s, size, a)
+                for leaf, s, a in zip(leaves, strides, e.axes)
+            ]
         )
-        axes.append([None if s is None else 0 for s in strides])
-    out_arrays = jax.vmap(on_members, in_axes=(axes,))(flats)
+        in_axes.append(list(e.axes))  # the canonical axes are None exactly on the shared leaves
+    out_arrays = jax.vmap(on_members, in_axes=(in_axes,))(flats)
 
     member0 = f(*(e.fetch(0) for e in ensembles))
     out_leaves, out_treedef = jax.tree.flatten(member0)
@@ -648,18 +682,19 @@ def _lift_structural(
 
     A structural `f` passes its members' array leaves through untouched, so every array leaf of
     its output is one of the sentinel inputs: the output ensemble reuses the stacked arrays with
-    their strides. Any computed array leaf, or any error on abstract leaves, falls back to None.
+    their strides and member axes. Any computed array leaf, or any error on abstract leaves,
+    falls back to None.
     """
-    sources: dict[int, tuple[Array, Stride]] = {}
+    sources: dict[int, tuple[Array, Stride, int | None]] = {}
     members = []
     for e in ensembles:
         leaves, strides = e._leaves_and_strides()
         sentinels = []
-        for leaf, s in zip(leaves, strides):
+        for leaf, s, a in zip(leaves, strides, e.axes):
             if _is_array(leaf):
-                shape = leaf.shape if s is None else leaf.shape[1:]
+                shape = leaf.shape if s is None else leaf.shape[:a] + leaf.shape[a + 1 :]
                 sentinel = jax.ShapeDtypeStruct(shape, leaf.dtype)
-                sources[id(sentinel)] = (leaf, s)
+                sources[id(sentinel)] = (leaf, s, a)
                 sentinels.append(sentinel)
             else:
                 sentinels.append(leaf)
@@ -670,21 +705,24 @@ def _lift_structural(
         # f computes on its leaves, which the abstract sentinels cannot do: not structural.
         return None
     out_leaves, out_treedef = jax.tree.flatten(out)
-    stacked, strides = [], []
+    stacked, strides, axes = [], [], []
     for leaf in out_leaves:
         if id(leaf) in sources:
-            source, stride = sources[id(leaf)]
+            source, stride, axis = sources[id(leaf)]
             stacked.append(source)
             strides.append(stride)
+            axes.append(axis)
         elif isinstance(leaf, jax.ShapeDtypeStruct) or _is_array(leaf):
             return None  # a computed array leaf: f is not structural
         else:
             stacked.append(leaf)
             strides.append(None)
+            axes.append(None)
     return StackedEnsemble(
         ensembles[0].size,
         jax.tree.unflatten(out_treedef, stacked),
         jax.tree.unflatten(out_treedef, strides),
+        axes=jax.tree.unflatten(out_treedef, axes),
         valid=ensembles[0].valid,
         policy=ensembles[0].policy,
     )
@@ -713,6 +751,7 @@ def _resident_map_reduce(
         raise ValueError(f'rounds of {batch} members do not divide {per_device} members')
 
     member_arrays, fixed_arrays = ensemble._arrays()
+    member_axes = ensemble._member_axes()
     args_leaves, args_def = jax.tree.flatten(args)
     body = ensemble._body(apply, args_def, batch)
 
@@ -720,7 +759,8 @@ def _resident_map_reduce(
     # inputs; the loop then evaluates the trace, and `'auto'` is resolved on it before any
     # collective is laid out.
     local = [
-        jax.ShapeDtypeStruct((x.shape[0] // devices, *x.shape[1:]), x.dtype) for x in member_arrays
+        jax.ShapeDtypeStruct((*x.shape[:a], x.shape[a] // devices, *x.shape[a + 1 :]), x.dtype)
+        for x, a in zip(member_arrays, member_axes)
     ]
     closed, out_shape = jax.make_jaxpr(body, return_shape=True)(
         jnp.zeros((), jnp.int32), *local, *fixed_arrays, *args_leaves
@@ -760,7 +800,7 @@ def _resident_map_reduce(
         n_stacks = sum(isinstance(kind, int) for kind in kinds)
         n_shareds = len(kinds) - n_sums - n_stacks
         in_specs = (
-            (P(axis),) * n_member
+            tuple(P(*(None,) * a, axis) for a in member_axes)
             + ((P(axis),) if has_valid else ())
             + (P(),) * (len(fixed_arrays) + len(args_leaves))
         )
@@ -1105,11 +1145,11 @@ def _rebuild(
     )
 
 
-def _expanded(leaf: Array, stride: int, size: int) -> Array:
+def _expanded(leaf: Array, stride: int, size: int, axis: int = 0) -> Array:
     """A stride-s leaf with one entry per member, for leaves small enough to gather."""
     if stride == 1:
         return leaf
-    return jnp.repeat(leaf, stride, axis=0, total_repeat_length=size)
+    return jnp.repeat(leaf, stride, axis=axis, total_repeat_length=size)
 
 
 def _axis_size(axis: str, mesh: Mesh | AbstractMesh | None = None) -> int:
@@ -1159,6 +1199,33 @@ def _normalized_strides(leaves: list[Any], strides: PyTree[Stride]) -> tuple[Str
     return tuple(s if _is_array(leaf) else None for leaf, s in zip(leaves, flat))
 
 
+def _normalized_axes(
+    leaves: list[Any], strides: tuple[Stride, ...], axes: PyTree[int | None]
+) -> tuple[int | None, ...]:
+    """One non-negative member axis per leaf, None on the shared leaves."""
+    if axes is None or isinstance(axes, int):
+        flat: list[int | None] = [axes] * len(leaves)
+    else:
+        flat = jax.tree.flatten(axes, is_leaf=lambda x: x is None)[0]
+        if len(flat) != len(leaves):
+            raise ValueError(
+                f'{len(flat)} axes for {len(leaves)} leaves: axes must be a single '
+                f'value or a pytree aligned with the stacked leaves'
+            )
+    out: list[int | None] = []
+    for leaf, s, a in zip(leaves, strides, flat):
+        if s is None:
+            out.append(None)
+            continue
+        if a is None:
+            raise ValueError('a strided leaf needs a member axis')
+        ndim = len(leaf.shape)
+        if not -ndim <= a < ndim:
+            raise ValueError(f'axis {a} is out of bounds for a leaf of shape {leaf.shape}')
+        out.append(a % ndim)
+    return tuple(out)
+
+
 def _is_array(leaf: Any) -> bool:
     return isinstance(leaf, jax.Array | np.ndarray)
 
@@ -1169,12 +1236,13 @@ def _is_array(leaf: Any) -> bool:
 
 
 def _stacked_unflatten(aux: tuple[Any, ...], children: Iterable[Any]) -> StackedEnsemble:
-    size, strides, policy = aux
+    size, strides, axes, policy = aux
     stacked, valid = children
     ensemble = object.__new__(StackedEnsemble)
     object.__setattr__(ensemble, 'size', size)
     object.__setattr__(ensemble, 'stacked', stacked)
     object.__setattr__(ensemble, 'strides', strides)
+    object.__setattr__(ensemble, 'axes', axes)
     object.__setattr__(ensemble, 'valid', valid)
     object.__setattr__(ensemble, 'policy', policy)
     return ensemble
@@ -1193,10 +1261,10 @@ register_pytree_with_keys(
     StackedEnsemble,
     lambda e: (
         [(GetAttrKey('stacked'), e.stacked), (GetAttrKey('valid'), e.valid)],
-        (e.size, e.strides, e.policy),
+        (e.size, e.strides, e.axes, e.policy),
     ),
     _stacked_unflatten,
-    lambda e: ([e.stacked, e.valid], (e.size, e.strides, e.policy)),
+    lambda e: ([e.stacked, e.valid], (e.size, e.strides, e.axes, e.policy)),
 )
 
 register_pytree_with_keys(

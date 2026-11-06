@@ -14,7 +14,7 @@ from furax.interfaces.sotodlib import (
     LazyPreprocSOTODLibObservation,
     LazySOTODLibObservation,
 )
-from furax.interfaces.sotodlib.observation import _digest, _is_missing_record
+from furax.interfaces.sotodlib.observation import _is_missing_record
 from furax.mapmaking import (
     AbstractGroundObservation,
     HashedObservationMetadata,
@@ -564,7 +564,7 @@ def test_lazy_preproc_cache_key(tmp_path, changes: dict, shared: bool) -> None:
         }
     )
 
-    keys = (_digest(obs._cache_inputs) for obs in (reference, other))
+    keys = (obs.cache_key_path for obs in (reference, other))
     assert (len(set(keys)) == 1) == shared
 
 
@@ -572,22 +572,26 @@ def test_lazy_preproc_cache_key_covers_context(tmp_path) -> None:
     """Editing the context of the configs in place changes the cache key."""
     config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
     before = LazyPreprocSOTODLibObservation(OBS_IDS[0], config, cache_dir=tmp_path)
-    key = _digest(before._cache_inputs)
+    key = before.cache_key_path
     context = tmp_path / 'context.yaml'
     context.write_text(context.read_text() + 'extra: 1\n')
     after = LazyPreprocSOTODLibObservation(OBS_IDS[0], config, cache_dir=tmp_path)
 
-    assert _digest(after._cache_inputs) != key
+    assert after.cache_key_path != key
 
 
 def test_lazy_preproc_cache_key_ignores_the_tod_location(tmp_path) -> None:
     """Where the raw TOD files are stored does not change the loaded data, nor the cache key."""
     config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
-    key = _digest(LazyPreprocSOTODLibObservation(OBS_IDS[0], config)._cache_inputs)
+
+    def key() -> Path:
+        return LazyPreprocSOTODLibObservation(OBS_IDS[0], config, cache_dir=tmp_path).cache_key_path
+
+    before = key()
     context = tmp_path / 'context.yaml'
     context.write_text(context.read_text() + "obsfiledb.prefix: '/data/tod'\n")
 
-    assert _digest(LazyPreprocSOTODLibObservation(OBS_IDS[0], config)._cache_inputs) == key
+    assert key() == before
 
 
 def test_lazy_preproc_cache_unreadable_file(tmp_path, caplog) -> None:

@@ -8,12 +8,13 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 from sotodlib.core import Context
 from sotodlib.core.metadata.loader import LoaderError
+from sotodlib.preprocess import preprocess_util as pu
 
 from furax.interfaces.sotodlib import (
     LazyPreprocSOTODLibObservation,
     LazySOTODLibObservation,
 )
-from furax.interfaces.sotodlib.observation import _digest
+from furax.interfaces.sotodlib.observation import _digest, _is_missing_record
 from furax.mapmaking import (
     AbstractGroundObservation,
     HashedObservationMetadata,
@@ -31,7 +32,7 @@ from furax.mapmaking.config import (
 from furax.obs.stokes import Stokes
 from furax.tree import as_structure
 
-from ._preproc_db import build_preproc_db
+from ._preproc_db import build_preproc_db, cut_group, drop_group_record
 
 FOLDER = Path(__file__).parents[2] / 'data/sotodlib'
 FILES = ['test_obs.h5', 'test_obs_2.h5']
@@ -238,14 +239,7 @@ def test_lazy_preproc_join_selected_groups(tmp_path) -> None:
 @pytest.fixture
 def missing_group(monkeypatch):
     """Make `Context.get_meta` find no preprocessing record for the group `detset0_1`."""
-    get_meta = Context.get_meta
-
-    def get_meta_without_group(self, *args, dets=None, **kwargs):
-        if dets is not None and dets.get('detset') == 'detset0_1':
-            raise LoaderError('There were no metadata records found for this observation.')
-        return get_meta(self, *args, dets=dets, **kwargs)
-
-    monkeypatch.setattr(Context, 'get_meta', get_meta_without_group)
+    drop_group_record(monkeypatch, 'detset0_1')
 
 
 @pytest.mark.usefixtures('missing_group')
@@ -285,30 +279,236 @@ def test_lazy_preproc_join_groups_without_any_record_fails(tmp_path, monkeypatch
         lazy.get_data()
 
 
-@pytest.mark.parametrize('join_groups', [False, True])
-def test_lazy_preproc_cache(tmp_path, join_groups: bool) -> None:
-    """A cached observation loads back as preprocessed, without the preprocessing archive."""
+GROUPS = ['detset0_0', 'detset0_1']  # the preprocessing groups of OBS_IDS[1], with two detsets
+
+
+def _cached_names(cache_dir) -> list[str]:
+    """The names of the files cached for OBS_IDS[1], leaving out those of the key."""
+    (key,) = cache_dir.iterdir()
+    assert (key / 'key.json').exists()
+    return sorted(p.name for p in key.iterdir() if p.name != 'key.json')
+
+
+@pytest.mark.parametrize(
+    ('join_groups', 'selection', 'names'),
+    [
+        # joined: one file per group, named after the group
+        (True, None, [f'{OBS_IDS[1]}__detset-{group}.h5' for group in GROUPS]),
+        (True, {'detset': GROUPS[1]}, [f'{OBS_IDS[1]}__detset-{GROUPS[1]}.h5']),
+        # not joined: the selection is loaded and cached as one unit
+        (False, None, [f'{OBS_IDS[1]}__all.h5']),
+        (False, {'detset': GROUPS[1]}, [f'{OBS_IDS[1]}__detset-{GROUPS[1]}.h5']),
+    ],
+)
+def test_lazy_preproc_cache_layout(tmp_path, join_groups, selection, names) -> None:
+    """The cache holds one file per group that is joined, or one per selection that is not."""
     config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
-    sotodlib_config = SotodlibConfig(downsample=3)
     lazy = LazyPreprocSOTODLibObservation(
         OBS_IDS[1],
         config,
-        sotodlib_config=sotodlib_config,
+        detector_selection=selection,
         join_groups=join_groups,
         cache_dir=tmp_path / 'cache',
     )
 
-    loaded = lazy.get_data()
-    (key,) = (tmp_path / 'cache').iterdir()
-    assert sorted(p.name for p in key.iterdir()) == ['key.json', f'{OBS_IDS[1]}.h5']
+    assert not lazy.is_cached()
+    lazy.get_data()
 
+    assert _cached_names(tmp_path / 'cache') == names
+    assert sorted(p.name for p in lazy.cache_paths()) == names
+    assert lazy.is_cached()
+
+
+@pytest.mark.parametrize('join_groups', [False, True])
+def test_lazy_preproc_cache_reads_back_what_was_loaded(tmp_path, join_groups: bool) -> None:
+    """A cached observation, joined from its group files or not, equals the loaded one.
+
+    The archive is deleted in between, so that the second read can only come from the cache.
+    """
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1],
+        config,
+        sotodlib_config=SotodlibConfig(downsample=3),
+        join_groups=join_groups,
+        cache_dir=tmp_path / 'cache',
+    )
+    loaded = lazy.get_data()
     (tmp_path / 'preprocess_archive.h5').unlink()
+
     cached = lazy.get_data([ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS])
+
     assert cached.name == OBS_IDS[1]
+    # downsampled once, when loaded: the cached data is not downsampled again
     assert cached.n_samples == loaded.n_samples == -(-OBS_NSAMPLE[1] // 3)
     assert_array_equal(cached.detectors, loaded.detectors)
     assert_array_equal(cached.get_tods(), loaded.get_tods())
     assert_array_equal(cached.get_timestamps(), loaded.get_timestamps())
+
+
+def test_lazy_preproc_joins_cached_groups_whatever_the_requested_fields(tmp_path) -> None:
+    """Joining cached groups needs no field in the request: the samples are always compared."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, join_groups=True, cache_dir=tmp_path / 'cache'
+    )
+    n_detectors = lazy.get_data().n_detectors
+    (tmp_path / 'preprocess_archive.h5').unlink()
+
+    assert lazy.get_data([]).n_detectors == n_detectors
+
+
+def test_lazy_preproc_cache_is_shared_by_groups(tmp_path) -> None:
+    """Runs that select or join groups differently load the group files they have in common."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    cache_dir = tmp_path / 'cache'
+    alone = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, detector_selection={'detset': GROUPS[0]}, cache_dir=cache_dir
+    )
+    joined = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, join_groups=True, cache_dir=cache_dir
+    )
+    other = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, detector_selection={'detset': GROUPS[1]}, cache_dir=cache_dir
+    )
+
+    # a group cached alone is part of the joined observation, which only loads the other group
+    n_alone = alone.get_data().n_detectors
+    (first,) = alone.cache_paths()
+    written = first.stat().st_mtime_ns
+    assert not joined.is_cached()
+    assert joined.get_data().n_detectors > n_alone
+    assert first.stat().st_mtime_ns == written
+    assert joined.is_cached()
+
+    # and a group cached by the joined run serves a run that selects it alone
+    (tmp_path / 'preprocess_archive.h5').unlink()
+    assert other.is_cached()
+    assert 0 < other.get_data().n_detectors < joined.get_data().n_detectors
+
+
+@pytest.mark.usefixtures('missing_group')
+def test_lazy_preproc_cache_does_not_skip_a_missing_group_alone(tmp_path) -> None:
+    """Without joining, a missing record is an error, and not recorded as a skipped group."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1],
+        config,
+        detector_selection={'detset': GROUPS[1]},
+        cache_dir=tmp_path / 'cache',
+    )
+
+    with pytest.raises(LoaderError):
+        lazy.get_data()
+
+    assert not lazy.is_cached()
+    assert not list((tmp_path / 'cache').glob('*/*.skip'))
+
+
+def test_lazy_preproc_joins_cached_and_loaded_groups(tmp_path) -> None:
+    """Groups from the cache and from preprocessing have the same fields, in either order."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    cache_dir = tmp_path / 'cache'
+    alone = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, detector_selection={'detset': GROUPS[1]}, cache_dir=cache_dir
+    )
+    joined = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, join_groups=True, cache_dir=cache_dir
+    )
+    alone.get_data()
+
+    # the first group is loaded, the second one read from the cache with the requested fields
+    assert joined.get_data([ReaderField.TIMESTAMPS]).n_detectors == OBS_NDET[1]
+
+
+def test_missing_record_is_recognised_in_the_error_of_sotodlib(tmp_path) -> None:
+    """The check reads sotodlib's message: it must match the error sotodlib raises."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]])
+
+    with pytest.raises(LoaderError) as error:
+        pu.load_and_preprocess('obs_missing', config.as_posix())
+    assert _is_missing_record(error.value)
+
+
+@pytest.mark.parametrize('cause', ['no_record', 'cut'])
+def test_lazy_preproc_cache_remembers_a_group_without_detectors(
+    tmp_path, monkeypatch, caplog, cause: str
+) -> None:
+    """A group with no detector, for lack of a record or after the cuts, is not loaded again."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    if cause == 'no_record':
+        drop_group_record(monkeypatch, GROUPS[1])
+    else:
+        cut_group(monkeypatch, GROUPS[1])
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, join_groups=True, cache_dir=tmp_path / 'cache'
+    )
+
+    assert not lazy.is_cached()
+    n_detectors = lazy.get_data().n_detectors
+    assert 0 < n_detectors < OBS_NDET[1]
+    assert _cached_names(tmp_path / 'cache') == [
+        f'{OBS_IDS[1]}__detset-{GROUPS[0]}.h5',
+        f'{OBS_IDS[1]}__detset-{GROUPS[1]}.skip',
+    ]
+    assert lazy.is_cached()
+
+    # any further preprocessing load would fail
+    monkeypatch.setattr(pu, 'load_and_preprocess', Mock(side_effect=AssertionError('loaded')))
+    caplog.clear()
+    assert lazy.get_data().n_detectors == n_detectors
+    assert 'No preprocessing record' not in caplog.text
+
+
+def test_lazy_preproc_cache_remembers_a_selection_cut_entirely(tmp_path, monkeypatch) -> None:
+    """Without joining, a selection cut entirely is an error each time, and is not loaded again."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    loaded = cut_group(monkeypatch, GROUPS[1])
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1],
+        config,
+        detector_selection={'detset': GROUPS[1]},
+        cache_dir=tmp_path / 'cache',
+    )
+
+    with pytest.raises(RuntimeError, match='no detectors left'):
+        lazy.get_data()
+    assert _cached_names(tmp_path / 'cache') == [f'{OBS_IDS[1]}__detset-{GROUPS[1]}.skip']
+    assert lazy.is_cached()
+
+    loaded.clear()
+    with pytest.raises(RuntimeError, match='no detectors left'):
+        lazy.get_data()
+    assert loaded == []
+
+
+def test_lazy_preproc_cache_skips_only_a_missing_record(tmp_path, monkeypatch) -> None:
+    """Another LoaderError may be transient: it is raised, and not remembered as a skipped group."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    monkeypatch.setattr(pu, 'load_and_preprocess', Mock(side_effect=LoaderError('unreachable')))
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, join_groups=True, cache_dir=tmp_path / 'cache'
+    )
+
+    with pytest.raises(LoaderError, match='unreachable'):
+        lazy.get_data()
+    assert not list((tmp_path / 'cache').glob('*/*.skip'))
+
+
+@pytest.mark.parametrize('join_groups', [False, True])
+def test_lazy_preproc_cache_does_not_skip_a_group_that_fails_to_load(
+    tmp_path, monkeypatch, join_groups: bool
+) -> None:
+    """A load error is raised as is, not recorded as a group without detectors."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
+    monkeypatch.setattr(pu, 'load_and_preprocess', Mock(side_effect=RuntimeError('unreadable')))
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, join_groups=join_groups, cache_dir=tmp_path / 'cache'
+    )
+
+    with pytest.raises(RuntimeError, match='unreadable'):
+        lazy.get_data()
+    assert not list((tmp_path / 'cache').glob('*/*.skip'))
 
 
 @pytest.mark.parametrize(
@@ -316,8 +516,8 @@ def test_lazy_preproc_cache(tmp_path, join_groups: bool) -> None:
     [
         ({'sotodlib_config': SotodlibConfig(demodulated=True, noise_source='mapmaking')}, True),
         ({'sotodlib_config': SotodlibConfig(downsample=2)}, False),
-        ({'join_groups': True}, False),
-        ({'detector_selection': {'detset': 'detset0_1'}}, False),
+        ({'join_groups': True}, True),
+        ({'detector_selection': {'detset': 'detset0_1'}}, True),
         ({'init_config': 'copy.yaml'}, True),
         ({'init_config': 'edited.yaml'}, False),
         ({'proc_config': 'copy.yaml'}, False),
@@ -358,12 +558,23 @@ def test_lazy_preproc_cache_key_covers_context(tmp_path) -> None:
     assert _digest(after._cache_inputs) != key
 
 
+def test_lazy_preproc_cache_key_ignores_the_tod_location(tmp_path) -> None:
+    """Where the raw TOD files are stored does not change the loaded data, nor the cache key."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
+    key = _digest(LazyPreprocSOTODLibObservation(OBS_IDS[0], config)._cache_inputs)
+    context = tmp_path / 'context.yaml'
+    context.write_text(context.read_text() + "obsfiledb.prefix: '/data/tod'\n")
+
+    assert _digest(LazyPreprocSOTODLibObservation(OBS_IDS[0], config)._cache_inputs) == key
+
+
 def test_lazy_preproc_cache_unreadable_file(tmp_path, caplog) -> None:
     """A cached file that cannot be read is loaded again and replaced."""
     config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
     lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config, cache_dir=tmp_path / 'cache')
     expected = lazy.get_data().get_tods()
-    lazy.cache_path.write_bytes(b'not hdf5')
+    (path,) = lazy.cache_paths()
+    path.write_bytes(b'not hdf5')
 
     assert_array_equal(lazy.get_data().get_tods(), expected)
     assert 'Cannot read' in caplog.text

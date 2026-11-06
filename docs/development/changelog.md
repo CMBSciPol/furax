@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax-so-map` shows the messages below WARNING of process 0 only on the console, and its log files also hold the messages logged before they were created (#432)
 - The multi-observation mapmaker's pass over the data runs on the ensemble engine: a `HostEnsemble` of each bucket's slots replaces the hand-rolled accumulation loop (#401)
 - The multi-observation mapmaker's left-hand side (`BucketNormalOperator`, `MemberOperator`) runs on the ensemble engine (#414)
+- `LazyPreprocSOTODLibObservation` now caches each preprocessing group in a file of its own, shared by runs that select or join the wafers differently (#450)
 
 ### Fixed
 

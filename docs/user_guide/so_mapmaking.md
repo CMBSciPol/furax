@@ -15,7 +15,7 @@ Each command lists its options with `--help`.
 
 ```bash
 furax-so-map --init-config init.yaml --proc-config proc.yaml \
-    --obsids-file obsids.txt --wafer ws0 --band f090 \
+    --obsids-file obsids.txt --wafer ws0 ws1 --band f090 \
     --mapmaking-config mapmaking.yaml --outdir maps/
 ```
 
@@ -23,9 +23,10 @@ furax-so-map --init-config init.yaml --proc-config proc.yaml \
   one optional. Each observation is loaded and preprocessed through them when the mapmaker reads it.
 - The observations are given with `--obsid` or `--obsids-file`, one id per line. Obsids are
   deduplicated.
-- `--wafer` and `--band` select the detectors. With `--wafer all`, the wafers of the band are
-  joined into one observation, so that the templates spanning the focal plane, such as the common
-  mode and the T2P field, are fitted over all of them at once.
+- `--wafer` and `--band` select the detectors. `--wafer` selects wafer slots (`--wafer ws0
+  ws1`), every wafer by default; a missing wafer is skipped. The selected wafers of an observation are
+  joined into one observation, so that focal plane models (T2P field for example) can be fitted on
+  all of them jointly instead of separately. Use `--no-join-wafers` to keep them independent.
 - `--mapmaking-config` is the YAML file of a `MapMakingConfig`. Its `sotodlib` section sets how
   the observations are loaded, e.g. `downsample` and `demodulated`.
 
@@ -56,7 +57,7 @@ Preprocessing takes minutes per observation, and is repeated by every run that m
 observations. With `--cache-dir DIR`, the first run saves each wafer of an observation once loaded,
 i.e. preprocessed and downsampled, to `DIR/<key>/<obsid>__<wafer>.h5`. Later runs load those files
 instead. The files do not depend on how a run selects or joins the wafers, so a run with
-`--wafer ws0` and one with `--wafer all` share the files of `ws0`.
+`--wafer ws0` and one with every wafer share the files of `ws0`.
 
 The key is a hash of every input that changes the loaded data:
 
@@ -87,7 +88,7 @@ arguments of the `furax-so-map` run to prepare:
 
 ```bash
 furax-so-cache fill --cache-dir $SCRATCH/cache --init-config init.yaml --proc-config proc.yaml \
-    --obsids-file obsids.txt --wafer all --band f090 --mapmaking-config mapmaking.yaml --nproc 16
+    --obsids-file obsids.txt --band f090 --mapmaking-config mapmaking.yaml --nproc 16
 ```
 
 Observations already cached are skipped, so `fill` can be run again after an interruption. With

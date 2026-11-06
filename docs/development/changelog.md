@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Ensemble.zip` takes `axes`, the member axis of each leaf of the zipped input (#453)
 - `map_reduce` takes `out_axes`, the placement of the member axis of each stacked output (#453)
 - `BlockRowOperator`, `BlockColumnOperator` and `BlockDiagonalOperator` take `axes`, the member axis of their stacked inputs and outputs over an ensemble (#454)
+- `furax-so-map` and `furax-so-cache` now accept several wafers with `--wafer ws0 ws1`; `furax-so-map` joins them into one observation by default unless `--no-join-wafers` is passed (#449)
 
 ### Changed
 
@@ -45,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The multi-observation mapmaker's pass over the data runs on the ensemble engine: a `HostEnsemble` of each bucket's slots replaces the hand-rolled accumulation loop (#401)
 - The multi-observation mapmaker's left-hand side (`BucketNormalOperator`, `MemberOperator`) runs on the ensemble engine (#414)
 - `LazyPreprocSOTODLibObservation` now caches each preprocessing group in a file of its own, shared by runs that select or join the wafers differently (#450)
+- `furax-so-map` and `furax-so-cache` select every wafer by default, instead of `ws0`; `--wafer` selects a subset, and the value `all` is removed (#449)
 
 ### Fixed
 

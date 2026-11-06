@@ -1,8 +1,16 @@
 import logging
+from pathlib import Path
 
 import pytest
 
-from so_mapmaking.util import EarlyRecords, obsdir_observations, resolve_obsids, setup_logger
+from so_mapmaking.util import (
+    EarlyRecords,
+    obsdir_observations,
+    preproc_observations,
+    resolve_obsids,
+    setup_logger,
+)
+from tests.interfaces.sotodlib._preproc_db import build_preproc_db
 
 SOTODLIB_LOGGERS = ('sotodlib', 'sotodlib.core.metadata.loader')
 
@@ -121,3 +129,40 @@ def test_obsdir_observations(tmp_path, obsids: list[str], expected: list[str]) -
 
     observations = obsdir_observations(tmp_path, obsids, None)
     assert [obs.name for obs in observations] == expected
+
+
+@pytest.fixture
+def preproc_config(tmp_path) -> Path:
+    folder = Path(__file__).parents[1] / 'data/sotodlib'
+    return build_preproc_db(tmp_path, [folder / 'test_obs.h5'])
+
+
+@pytest.mark.parametrize(
+    ('wafers', 'join_wafers', 'selections', 'join_groups'),
+    [
+        # the test detectors have no wafer slot, so the requested wafers cannot be checked
+        (('ws0', 'ws1'), False, [{'wafer_slot': 'ws0'}, {'wafer_slot': 'ws1'}], [False, False]),
+        (('ws0', 'ws1'), True, [{'wafer_slot': ['ws0', 'ws1']}], [True]),
+        (('ws0',), True, [{'wafer_slot': 'ws0'}], [True]),
+        (None, True, [{}], [True]),
+        ((), False, [{}], [False]),
+    ],
+)
+def test_preproc_observations_wafers(
+    preproc_config, wafers, join_wafers, selections, join_groups
+) -> None:
+    observations = preproc_observations(
+        ['obs_12345_sometel'], preproc_config, None, wafers, '', join_wafers, None, None
+    )
+
+    assert [obs.detector_selection for obs in observations] == selections
+    assert [obs.join_groups for obs in observations] == join_groups
+
+
+def test_preproc_observations_all_wafers_needs_wafer_slots(preproc_config) -> None:
+    assert (
+        preproc_observations(
+            ['obs_12345_sometel'], preproc_config, None, None, '', False, None, None
+        )
+        == []
+    )

@@ -58,13 +58,21 @@ class ObservationRecord:
 
     @classmethod
     def from_fields(
-        cls, observation: AbstractObservation[Any], fields: dict[str, Any], load_seconds: float
+        cls,
+        observation: AbstractObservation[Any],
+        fields: dict[str, Any],
+        load_seconds: float,
+        name: str,
     ) -> Self:
-        """The record of an observation read, from the fields read of it."""
+        """The record of an observation read, from the fields read of it.
+
+        The record is named `name`, as the observation was listed: the loaded data can be named
+        otherwise, e.g. without the wafer the observation is limited to.
+        """
         quaternions = fields.get(ReaderField.DETECTOR_QUATERNIONS)
         masks = fields.get(ReaderField.VALID_SAMPLE_MASKS)
         return cls(
-            name=observation.name,
+            name=name,
             detectors=list(observation.detectors),
             quaternions=None if quaternions is None else np.array(quaternions, dtype=np.float64),
             n_samples=observation.n_samples,
@@ -512,12 +520,16 @@ class ObservationReader[T](AbstractReader):
         # Items are read concurrently, each recording under its own key. The data was read, so a
         # failure to record it must not make the read fail.
         try:
-            record = ObservationRecord.from_fields(data, fields, time.perf_counter() - start)
+            record = ObservationRecord.from_fields(
+                data, fields, time.perf_counter() - start, observation.name
+            )
         except Exception as error:
             logger.exception('Read item %d: could not record what was read', item)
-            record = ObservationRecord(data.name, [], error=f'{type(error).__name__}: {error}')
+            record = ObservationRecord(
+                observation.name, [], error=f'{type(error).__name__}: {error}'
+            )
         self.records[item] = record
-        logger.info(f'Read {data.name} ({time.perf_counter() - start:.1f} s)')
+        logger.info(f'Read {observation.name} ({time.perf_counter() - start:.1f} s)')
         return fields
 
 

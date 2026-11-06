@@ -17,7 +17,14 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from cyclopts import App, Parameter
 
-from .util import enable_x64, preproc_observations, resolve_obsids, setup_logger
+from .util import (
+    Band,
+    Wafer,
+    enable_x64,
+    preproc_observations,
+    resolve_obsids,
+    setup_logger,
+)
 
 if TYPE_CHECKING:
     from furax.interfaces.sotodlib import LazyPreprocSOTODLibObservation
@@ -37,8 +44,10 @@ def fill(
     obsid: list[str] | None = None,
     obsids_file: Path | None = None,
     mapmaking_config: Path | None = None,
-    wafer: str = 'ws0',
-    band: str = 'f090',
+    wafer: Annotated[
+        tuple[Wafer, ...] | None, Parameter(consume_multiple=True, negative_iterable='')
+    ] = None,
+    band: Band = 'f090',
     nproc: int = 1,
     dry_run: bool = False,
     loglevel: Annotated[str, Parameter(env_var='LOGLEVEL')] = 'info',
@@ -46,9 +55,9 @@ def fill(
 ):
     """Preprocess observations into the cache, without mapmaking.
 
-    Pass the arguments of the `furax-so-map` run to prepare: that run then finds every
-    observation in the cache. Observations already cached are skipped. Each wafer of an
-    observation is cached in a file of its own, so that runs share the wafers they have in common.
+    Pass the arguments of the `furax-so-map` run to prepare: that run then finds every observation
+    in the cache. Observations already cached are skipped. Each wafer is cached in a file of its
+    own.
 
     Args:
         cache_dir: Cache directory.
@@ -57,8 +66,8 @@ def fill(
         obsid: Observation id(s) to cache.
         obsids_file: Text file with one obsid per line.
         mapmaking_config: Mapmaking config file, of which only the sotodlib section matters.
-        wafer: Wafer slot selection, or 'all' to join every wafer of an observation.
-        band: Wafer bandpass selection.
+        wafer: Wafer slots to cache, every wafer of an observation by default.
+        band: Wafer bandpass to cache.
         nproc: Number of worker processes (single node).
         dry_run: Only report the cache key and which observations are missing.
         loglevel: Logging level (debug, info, warning, error). Defaults to `$LOGLEVEL`, else info.
@@ -75,7 +84,14 @@ def fill(
         return
     config = MapMakingConfig.load_yaml(mapmaking_config) if mapmaking_config else MapMakingConfig()
     observations = preproc_observations(
-        obsids, init_config, proc_config, wafer, band, config.sotodlib, cache_dir
+        obsids,
+        init_config,
+        proc_config,
+        wafers=wafer,
+        band=band,
+        join_wafers=True,  # the files of the groups serve the runs that join the wafers or not
+        sotodlib_config=config.sotodlib,
+        cache_dir=cache_dir,
     )
     missing = [obs for obs in observations if not obs.is_cached()]
     logger.info(f'Cache key: {observations[0].cache_key_path}')

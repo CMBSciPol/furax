@@ -21,6 +21,8 @@ from ._outdir import (
     write_status,
 )
 from .util import (
+    Band,
+    Wafer,
     enable_x64,
     obsdir_observations,
     preproc_observations,
@@ -40,8 +42,11 @@ def run(
     obsids_file: Path | None = None,
     outdir: Path | None = None,
     mapmaking_config: Path | None = None,
-    wafer: str = 'ws0',
-    band: str = 'f090',
+    wafer: Annotated[
+        tuple[Wafer, ...] | None, Parameter(consume_multiple=True, negative_iterable='')
+    ] = None,
+    join_wafers: bool = True,
+    band: Band = 'f090',
     obsdir: Path | None = None,
     cache_dir: Path | None = None,
     overwrite: bool = False,
@@ -66,16 +71,19 @@ def run(
         obsids_file: Text file with one obsid per line.
         outdir: Output directory for maps.
         mapmaking_config: Mapmaking config file.
-        wafer: Wafer slot selection, or 'all' to map every wafer of an observation as one
-            observation, so that the whole focal plane is fitted at once (preproc-db mode).
-        band: Wafer bandpass selection.
+        wafer: Wafer slots to map, every wafer of an observation by default (preproc-db mode). A
+            wafer an observation does not have is skipped.
+        join_wafers: Join the selected wafers of an observation into one observation, so that the
+            focal plane is fitted at once. With `--no-join-wafers`, each wafer is an observation
+            of its own, with its own noise and template fit.
+        band: Wafer bandpass to map.
         obsdir: Legacy mode: directory of prepared .h5 files. Mutually exclusive with
             ``init_config``.
         cache_dir: Directory of preprocessed observations (preproc-db mode). The first run saves
             each observation there once loaded, and later runs with the same preprocessing load
-            it back instead of preprocessing again. With `--wafer all`, an observation is saved
-            with its wafers joined, and serves only runs with `--wafer all`. Delete the cache
-            after rerunning the preprocessing.
+            it back instead of preprocessing again. Each wafer of an observation is saved in a
+            file of its own, shared by the runs that select or join the wafers differently. Delete
+            the cache after rerunning the preprocessing.
         overwrite: Map into an `outdir` that holds the output of an earlier run, after deleting
             the files that run wrote. Other files, such as the output of a batch scheduler, are
             kept.
@@ -134,7 +142,14 @@ def run(
         obsids = resolve_obsids(obsid, obsids_file)
         if init_config is not None:
             observations = preproc_observations(
-                obsids, init_config, proc_config, wafer, band, config.sotodlib, cache_dir
+                obsids,
+                init_config,
+                proc_config,
+                wafers=wafer,
+                band=band,
+                join_wafers=join_wafers,
+                sotodlib_config=config.sotodlib,
+                cache_dir=cache_dir,
             )
         else:
             assert obsdir is not None

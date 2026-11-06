@@ -495,6 +495,28 @@ def test_lazy_preproc_cache_skips_only_a_missing_record(tmp_path, monkeypatch) -
     assert not list((tmp_path / 'cache').glob('*/*.skip'))
 
 
+@pytest.mark.parametrize(
+    ('join_groups', 'selection', 'name'),
+    [
+        (False, {'wafer_slot': 'ws0'}, f'{OBS_IDS[1]}__ws0'),
+        (False, {'wafer_slot': ['ws0', 'ws1']}, OBS_IDS[1]),
+        (False, {'wafer.bandpass': 'f090'}, OBS_IDS[1]),
+        (True, {'wafer_slot': 'ws0'}, OBS_IDS[1]),
+        (False, None, OBS_IDS[1]),
+    ],
+)
+def test_lazy_preproc_name_tells_the_wafers_of_an_observation_apart(
+    tmp_path, join_groups, selection, name
+) -> None:
+    """Each wafer that is an observation of its own has its own name."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]])
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1], config, detector_selection=selection, join_groups=join_groups
+    )
+
+    assert lazy.name == name
+
+
 @pytest.mark.parametrize('join_groups', [False, True])
 def test_lazy_preproc_cache_does_not_skip_a_group_that_fails_to_load(
     tmp_path, monkeypatch, join_groups: bool

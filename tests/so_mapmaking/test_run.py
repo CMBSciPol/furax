@@ -196,3 +196,19 @@ def _config_file(tmp_path: Path, config: dict[str, Any]) -> Path:
     path = tmp_path / 'mapmaking.yaml'
     path.write_text(yaml.safe_dump(config))
     return path
+
+
+@pytest.mark.parametrize(
+    'args, message',
+    [
+        (['--band', 'f009'], 'f009'),
+        (['--wafer', 'ws9'], 'ws9'),
+    ],
+    ids=['unknown-band', 'unknown-wafer'],
+)
+def test_run_rejects_an_invalid_wafer_or_band(tmp_path, args: list[str], message: str) -> None:
+    outdir = tmp_path / 'maps'
+    refused = _run(outdir, *args)
+    assert refused.returncode != 0
+    assert message in refused.stderr
+    assert not outdir.exists()

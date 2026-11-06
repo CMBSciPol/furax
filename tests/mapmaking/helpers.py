@@ -180,6 +180,10 @@ class FakeLazyObservation(AbstractLazyObservation[None]):
         self.file = Path('<synthetic>')
         self._kwargs = kwargs
 
+    @property
+    def name(self) -> str:
+        return 'fake_obs'
+
     def get_data(self, requested_fields=None) -> FakeObservation:
         return FakeObservation(**self._kwargs)
 

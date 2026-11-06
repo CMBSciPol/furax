@@ -5,13 +5,18 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from . import _preproc as pp
 
 if TYPE_CHECKING:
     from furax.interfaces.sotodlib import LazyPreprocSOTODLibObservation, LazySOTODLibObservation
+    from furax.interfaces.sotodlib.observation import DetectorSelection
     from furax.mapmaking.config import SotodlibConfig
+
+# The wafer slots and bandpasses of the Simons Observatory detectors, as sotodlib names them
+Wafer = Literal['ws0', 'ws1', 'ws2', 'ws3', 'ws4', 'ws5', 'ws6']
+Band = Literal['f030', 'f040', 'f090', 'f150', 'f230', 'f290']
 
 # Under `furax` so that `setup_logger`'s handlers apply
 logger = logging.getLogger('furax.so_mapmaking')
@@ -111,10 +116,10 @@ def silence_sotodlib_logs(level: str) -> None:
     loader.setLevel(logging.DEBUG if debug else logging.CRITICAL)
 
 
-def detector_selection(wafer: str | None, band: str | None) -> dict[str, str] | None:
+def detector_selection(wafer: str | list[str] | None, band: str | None) -> DetectorSelection | None:
     if wafer is None and band is None:
         return None
-    det_select = {}
+    det_select: DetectorSelection = {}
     if wafer:
         det_select['wafer_slot'] = wafer
     if band:
@@ -141,8 +146,9 @@ def preproc_observations(
     obsids: list[str],
     init_config: Path,
     proc_config: Path | None,
-    wafer: str,
+    wafers: tuple[str, ...] | None,
     band: str,
+    join_wafers: bool,
     sotodlib_config: SotodlibConfig | None,
     cache_dir: Path | None,
 ) -> list[LazyPreprocSOTODLibObservation]:
@@ -152,8 +158,11 @@ def preproc_observations(
         obsids: Observation ids.
         init_config: Base-layer preprocessing config file.
         proc_config: Optional second-layer preprocessing config file.
-        wafer: Wafer slot selection, or 'all' to join every wafer of an observation.
+        wafers: Wafer slots to select. `None` selects every wafer the observation has, and empty
+            applies no wafer selection, so that one observation spans the whole focal plane.
         band: Wafer bandpass selection.
+        join_wafers: Join the selected wafers of an observation into one observation, instead of
+            making each wafer an observation of its own.
         sotodlib_config: The sotodlib section of the mapmaking config.
         cache_dir: Directory of cached observations, if any.
     """
@@ -167,20 +176,62 @@ def preproc_observations(
     atexit.register(shutil.rmtree, stage_dir, ignore_errors=True)
     init_config = pp.normalize_config(init_config, stage_dir)
     proc_config = pp.normalize_config(proc_config, stage_dir) if proc_config else None
-    join_groups = wafer == 'all'
-    det_select = detector_selection(None if join_groups else wafer, band)
+
+    if wafers is not None:
+        wafers = tuple(dict.fromkeys(wafers))
+    # joined, the wafers are one selection of the observation
+    joined = None if not wafers else (wafers[0] if len(wafers) == 1 else list(wafers))
     return [
         LazyPreprocSOTODLibObservation(
             obs_id,
             init_config,
             proc_config,
-            det_select,
+            detector_selection(wafer, band),
             sotodlib_config=sotodlib_config,
-            join_groups=join_groups,
+            join_groups=join_wafers,
             cache_dir=cache_dir,
         )
         for obs_id in obsids
+        for wafer in ([joined] if join_wafers else _wafers_of(obs_id, init_config, wafers, band))
     ]
+
+
+def _wafers_of(
+    obs_id: str, init_config: Path, wafers: tuple[str, ...] | None, band: str
+) -> list[str | None]:
+    """The wafers to map as observations of their own, of one observation.
+
+    A requested wafer that the observation does not have is left out, so that it is not reported
+    as a failed observation. With no wafer requested, the one observation has no wafer selection.
+    """
+    # Deferred: importing furax pulls in JAX, which the CLI parse path does not need
+    from sotodlib.core.metadata.loader import LoaderError
+
+    from furax.interfaces.sotodlib.observation import group_selections
+
+    if wafers is not None and not wafers:
+        return [None]
+    try:
+        groups = group_selections(obs_id, init_config, detector_selection(None, band))
+    except (RuntimeError, LoaderError) as error:
+        # Without the groups, a requested wafer is left to fail when the observation is read
+        if wafers is None:
+            logger.error(f'Cannot list the wafers of {obs_id}, skipping it: {error}')
+            return []
+        logger.warning(f'Cannot list the wafers of {obs_id}: {error}')
+        return list(wafers)
+    present = list(dict.fromkeys(g['wafer_slot'] for g in groups if 'wafer_slot' in g))
+    if not present:  # the preprocessing groups do not distinguish wafers
+        if wafers is None:
+            logger.error(f'The preprocessing groups of {obs_id} have no wafer slot, skipping it')
+            return []
+        return list(wafers)
+    if wafers is None:
+        return present
+    for wafer in wafers:
+        if wafer not in present:
+            logger.info(f'{obs_id} has no wafer {wafer} in band {band}, skipping it')
+    return [wafer for wafer in wafers if wafer in present]
 
 
 def obsdir_observations(

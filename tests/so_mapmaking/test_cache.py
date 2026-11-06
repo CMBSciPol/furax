@@ -31,11 +31,13 @@ def config(tmp_path) -> Path:
 def test_fill_caches_what_the_map_run_reads(tmp_path, config, capsys) -> None:
     cache_dir = tmp_path / 'cache'
     # no wafer or band: the test detectors have neither
-    assert fill(cache_dir, config, obsid=OBS_IDS, wafer='', band='') is None
+    assert fill(cache_dir, config, obsid=OBS_IDS, wafer=(), band='') is None
 
-    observations = preproc_observations(OBS_IDS, config, None, '', '', SotodlibConfig(), cache_dir)
+    observations = preproc_observations(
+        OBS_IDS, config, None, (), '', True, SotodlibConfig(), cache_dir
+    )
     assert all(obs.is_cached() for obs in observations)
-    fill(cache_dir, config, obsid=OBS_IDS, wafer='', band='', dry_run=True)
+    fill(cache_dir, config, obsid=OBS_IDS, wafer=(), band='', dry_run=True)
     assert 'Cached 2 of 2 observations' in capsys.readouterr().err
 
 
@@ -47,7 +49,7 @@ def test_staged_configs_share_the_cache(tmp_path, config) -> None:
         dest.mkdir()
         staged.append(stage_config(Stager(dest), config))
     observations = [
-        preproc_observations([OBS_IDS[0]], path, None, '', '', None, cache_dir)[0]
+        preproc_observations([OBS_IDS[0]], path, None, (), '', False, None, cache_dir)[0]
         for path in (config, *staged)
     ]
 
@@ -61,12 +63,12 @@ def test_staged_config_follows_its_source(tmp_path, config) -> None:
     dest = tmp_path / 'stage'
     dest.mkdir()
     staged = stage_config(Stager(dest), config)
-    before = preproc_observations([OBS_IDS[0]], staged, None, '', '', None, tmp_path)[
+    before = preproc_observations([OBS_IDS[0]], staged, None, (), '', False, None, tmp_path)[
         0
     ].cache_key_path
     config.write_text(config.read_text() + 'extra: 1\n')
     after, source = (
-        preproc_observations([OBS_IDS[0]], path, None, '', '', None, tmp_path)[0]
+        preproc_observations([OBS_IDS[0]], path, None, (), '', False, None, tmp_path)[0]
         for path in (staged, config)
     )
 
@@ -75,7 +77,7 @@ def test_staged_config_follows_its_source(tmp_path, config) -> None:
 
 def test_fill_reports_observations_it_cannot_cache(tmp_path, config, capsys) -> None:
     cache_dir = tmp_path / 'cache'
-    status = fill(cache_dir, config, obsid=[OBS_IDS[0], 'obs_missing'], wafer='', band='')
+    status = fill(cache_dir, config, obsid=[OBS_IDS[0], 'obs_missing'], wafer=(), band='')
 
     assert status == 1
     assert 'Failed to cache 1 observations: obs_missing' in capsys.readouterr().err
@@ -85,7 +87,7 @@ def test_fill_reports_observations_it_cannot_cache(tmp_path, config, capsys) -> 
 
 def test_list_keys(tmp_path, config, capsys) -> None:
     cache_dir = tmp_path / 'cache'
-    fill(cache_dir, config, obsid=OBS_IDS, wafer='', band='')
+    fill(cache_dir, config, obsid=OBS_IDS, wafer=(), band='')
     (cache_dir / KEY).mkdir()
     partial = cache_dir / KEY.replace('0', 'f')
     partial.mkdir()
@@ -108,11 +110,11 @@ def test_fill_and_list_treat_a_skipped_group_as_cached(tmp_path, monkeypatch, ca
     drop_group_record(monkeypatch, 'detset0_1')
     cache_dir = tmp_path / 'cache'
 
-    assert fill(cache_dir, config, obsid=[OBS_IDS[1]], wafer='all', band='') is None
+    assert fill(cache_dir, config, obsid=[OBS_IDS[1]], wafer=None, band='') is None
     assert len(list(cache_dir.glob('*/*.skip'))) == 1
     capsys.readouterr()
 
-    fill(cache_dir, config, obsid=[OBS_IDS[1]], wafer='all', band='', dry_run=True)
+    fill(cache_dir, config, obsid=[OBS_IDS[1]], wafer=None, band='', dry_run=True)
     assert 'Cached 1 of 1 observations' in capsys.readouterr().err
     list_keys(cache_dir)
     assert ': 1 files' in capsys.readouterr().out

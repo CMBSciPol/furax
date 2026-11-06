@@ -60,6 +60,9 @@ class NoDetectorsLeftError(RuntimeError):
     """Preprocessing cut every detector of the requested observation or group."""
 
 
+# A detector selection for sotodlib, e.g. {'wafer_slot': ['ws0', 'ws1'], 'wafer.bandpass': 'f090'}
+DetectorSelection = dict[str, str | list[str]]
+
 # Version of the on-disk observation cache of LazyPreprocSOTODLibObservation, part of its key.
 # Bump it when furax changes the data it loads, e.g. which timestreams downsample_obs resamples or
 # how preprocessing groups are joined, so that existing caches are not reused.
@@ -204,7 +207,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         cls,
         preprocess_config: str | Path | dict[str, Any],
         observation_id: str,
-        detector_selection: dict[str, str] | None = None,
+        detector_selection: DetectorSelection | None = None,
         sotodlib_config: SotodlibConfig | None = None,
     ) -> Self:
         """Loads and preprocesses an observation.
@@ -236,7 +239,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         observation_id: str,
         init_config: str | Path,
         proc_config: str | Path | None = None,
-        detector_selection: dict[str, str] | None = None,
+        detector_selection: DetectorSelection | None = None,
         sotodlib_config: SotodlibConfig | None = None,
     ) -> Self:
         """Loads a (already preprocessed) observation directly from the preprocessing db.
@@ -283,7 +286,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         observation_id: str,
         init_config: str | Path,
         proc_config: str | Path | None = None,
-        detector_selection: dict[str, str] | None = None,
+        detector_selection: DetectorSelection | None = None,
         sotodlib_config: SotodlibConfig | None = None,
     ) -> Self:
         """Loads every preprocessing group of an observation as a single observation.
@@ -660,7 +663,7 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         observation_id: str,
         init_config: str | Path,
         proc_config: str | Path | None = None,
-        detector_selection: dict[str, str] | None = None,
+        detector_selection: DetectorSelection | None = None,
         sotodlib_config: SotodlibConfig | None = None,
         join_groups: bool = False,
         cache_dir: str | Path | None = None,
@@ -675,7 +678,11 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
 
     @property
     def name(self) -> str:
-        return self.observation_id
+        """The observation id, followed by the wafer when each wafer is an observation of its own."""
+        wafer = (self.detector_selection or {}).get('wafer_slot')
+        if self.join_groups or not isinstance(wafer, str):
+            return self.observation_id
+        return f'{self.observation_id}__{wafer}'
 
     @functools.cached_property
     def cache_key_path(self) -> Path | None:

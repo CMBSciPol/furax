@@ -75,6 +75,19 @@ def test_records_every_item_of_a_repeated_observation():
     assert reader.records == {}
 
 
+def test_record_is_named_as_the_observation_was_listed():
+    class Listed(FakeLazyObservation):
+        @property
+        def name(self) -> str:
+            return 'obs__ws0'
+
+    reader = ObservationReader.from_observations(
+        [Listed(n_dets=2, n_samples=500)], requested_fields=['sample_data']
+    )
+    reader.read_host(0)
+    assert reader.records[0].name == 'obs__ws0'
+
+
 def test_failure_to_record_does_not_fail_the_read(monkeypatch):
     def fail(*_args, **_kwargs):
         raise ValueError('cannot record')

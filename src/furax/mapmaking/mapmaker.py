@@ -54,6 +54,7 @@ from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesIQU, StokesType, ValidStokesLiteral
 from furax.profiling import format_bytes
 
+from ._beam import load_beam
 from ._geometry import minimum_enclosing_arc
 from ._logger import logger as furax_logger
 from ._model import ObservationModel, ObservationTemplates
@@ -136,6 +137,7 @@ class MultiObservationMapMaker[T]:
         self.config = config or MapMakingConfig()  # use defaults if not provided
         self.logger = logger or furax_logger
         self._check_config()
+        self.beam = load_beam(self.config.pointing)
         self.landscape = (
             _static_landscape(self.config.landscape, self.config.dtype)
             or self._scan_wcs_footprint()
@@ -563,6 +565,7 @@ class MultiObservationMapMaker[T]:
         """One bucket's pass over the data: its hit map and RHS partials, and its stacked model."""
         config = self.fit_config
         landscape = self.landscape
+        beam = self.beam
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         fill_gaps = config.gaps.treatment == GapTreatment.FILL and not config.binned
         build_templates = config.use_templates
@@ -587,12 +590,13 @@ class MultiObservationMapMaker[T]:
                     lambda: reader.read(i),
                     lambda: reader.read_filler(),
                 )
-                obs = ObservationModel.create(data, padding, config, landscape)
+                obs = ObservationModel.create(data, padding, config, landscape, beam)
 
                 # Padding/failed observations contribute nothing
                 obs.M = obs.M.restrict(real & valid)
 
-                # Hit map = nearest-neighbour coverage of the sample mask
+                # Hit map = nearest-neighbour coverage of the sample mask, without the beam:
+                # hits count the samples that fall in each pixel
                 hit_pointing = PointingOperator.create(
                     landscape,
                     Quaternion.from_array(data[ReaderField.BORESIGHT_QUATERNIONS]),

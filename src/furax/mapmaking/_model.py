@@ -10,6 +10,7 @@ from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.obs.landscapes import StokesLandscape
+from furax.obs.sampling import DiscretizedBeam
 from furax.obs.stokes import Stokes
 
 from ._observation import ReaderField
@@ -70,7 +71,12 @@ class ObservationModel:
 
     @classmethod
     def create(
-        cls, data: Any, padding: Any, config: MapMakingConfig, landscape: StokesLandscape
+        cls,
+        data: Any,
+        padding: Any,
+        config: MapMakingConfig,
+        landscape: StokesLandscape,
+        beam: DiscretizedBeam | None = None,
     ) -> Self:
         H = build_acquisition_operator(
             landscape,
@@ -81,6 +87,7 @@ class ObservationModel:
             pointing_on_the_fly=config.pointing.on_the_fly,
             pointing_batch_samples=config.pointing.batch_samples,
             pointing_interpolate=config.pointing.interpolation == 'bilinear',
+            pointing_beam=beam,
             dtype=config.dtype,
         )
         tod_struct = H.out_structure

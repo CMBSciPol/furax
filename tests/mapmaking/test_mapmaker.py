@@ -1,10 +1,12 @@
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from furax.core._base import structure_equal
@@ -36,6 +38,7 @@ from furax.mapmaking.mapmaker import (
     PommeMapMaker,
 )
 from furax.mapmaking.noise import WhiteNoiseModel
+from furax.math.coords import XiEtaAngles
 from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import ValidStokesLiteral
 from tests.mapmaking.helpers import (
@@ -185,6 +188,27 @@ class TestFakeObsMapMaker:
         expected = MultiObservationMapMaker(good_only, config=config).run()
         assert eqx.tree_equal(results.hit_map, expected.hit_map)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])
+def test_the_beam_enters_the_model_but_not_the_hit_map(tmp_path, demodulated):
+    # nodes a few pixels apart at nside 16 (pixel size 0.064 rad)
+    nodes = XiEtaAngles(jnp.array([0.0, 0.1]), jnp.array([0.0, 0.05]), jnp.zeros(2))
+    path = tmp_path / 'beam.npz'
+    np.savez(path, nodes=nodes.to_quaternion().wxyz, weights=np.array([0.5, 0.5]))
+    config = _config('healpix', 'IQU', demodulated=demodulated)
+    beam_config = replace(config, pointing=replace(config.pointing, beam=str(path)))
+
+    accumulated = []
+    for cfg in (config, beam_config):
+        maker = MultiObservationMapMaker([FakeLazyObservation()], config=cfg)
+        with jax.set_mesh(maker.mesh):
+            accumulated.append(maker.build_model_and_accumulate())
+        assert (maker.beam is None) == (cfg is config)
+    plain, beamed = accumulated
+
+    assert eqx.tree_equal(beamed.hit_map, plain.hit_map)
+    assert not jnp.allclose(beamed.map_rhs.data, plain.map_rhs.data)
 
 
 class TestBuckets:

@@ -35,7 +35,7 @@ from . import _preproc as pp
 app = App(help='Stage a preproc run sqlite indices to node-local storage and emit patched configs.')
 
 # Entry of a patched config naming its source config, read under the same name by the cache key
-# of LazyPreprocSOTODLibObservation (furax.interfaces.sotodlib.observation._canonical_config)
+# of LazyPreprocSOTODLibObservation (furax.interfaces.sotodlib._cache._canonical_config)
 _STAGED_FROM = 'furax_staged_from'
 
 

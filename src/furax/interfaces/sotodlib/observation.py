@@ -1,14 +1,9 @@
 from __future__ import annotations
 
 import functools
-import hashlib
-import json
 import logging
-import os
-import re
 import threading
-import uuid
-from collections.abc import Callable, Collection
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any, Literal, Self, overload
 
@@ -16,7 +11,6 @@ import jax.numpy as jnp
 import numpy as np
 import pixell.utils
 import so3g.proj
-import sotodlib
 import sotodlib.preprocess.preprocess_util as pu
 import yaml
 from astropy.wcs import WCS
@@ -53,6 +47,8 @@ from furax.obs.stokes import (
     ValidStokesLiteral,
 )
 
+from ._cache import PreprocCache, cache_inputs
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,16 +59,8 @@ class NoDetectorsLeftError(RuntimeError):
 # A detector selection for sotodlib, e.g. {'wafer_slot': ['ws0', 'ws1'], 'wafer.bandpass': 'f090'}
 DetectorSelection = dict[str, str | list[str]]
 
-# Version of the on-disk observation cache of LazyPreprocSOTODLibObservation, part of its key.
-# Bump it when furax changes the data it loads, e.g. which timestreams downsample_obs resamples or
-# how preprocessing groups are joined, so that existing caches are not reused.
-_CACHE_VERSION = 2
-
 # Part of the message of the LoaderError for an observation without a preprocessing record
 _NO_RECORD = 'no metadata records found'
-
-# Context entries that locate the raw TOD files, excluded from the cache key (see _read_context)
-_KEY_EXCLUDED_CONTEXT_KEYS = ('obsfiledb.prefix',)
 
 # Per-process cache of (configs, context) from sotodlib's get_preprocess_context, keyed by
 # (config-file path, thread id). See _enable_preproc_context_cache.
@@ -687,9 +675,7 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
     @functools.cached_property
     def cache_key_path(self) -> Path | None:
         """The directory of the cache key, `None` without `cache_dir`. It need not exist yet."""
-        if self.cache_dir is None:
-            return None
-        return self.cache_dir / _digest(self._cache_inputs)
+        return self._cache.directory if self._cache else None
 
     def cache_paths(self) -> list[Path]:
         """The files the groups of the observation are cached in, none without `cache_dir`.
@@ -699,17 +685,18 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         Raises:
             RuntimeError: If the groups cannot be listed.
         """
-        return [path for selection in self._selections if (path := self._group_path(selection))]
+        if self._cache is None:
+            return []
+        return [self._cache.group_path(self.observation_id, s) for s in self._selections]
 
     def is_cached(self) -> bool:
         """Whether every group of the observation is cached, or recorded as skipped."""
-        if self.cache_dir is None:
+        if self._cache is None:
             return False
         try:
-            paths = self.cache_paths()
+            return self._cache.is_complete(self.cache_paths())
         except (RuntimeError, LoaderError):
             return False
-        return bool(paths) and all(path.exists() or _skip_path(path).exists() for path in paths)
 
     def get_data(self, requested_fields: Collection[str] | None = None) -> SOTODLibObservation:
         if requested_fields is not None and len(self._selections) > 1:
@@ -774,31 +761,44 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             return group_selections(self.observation_id, self.init_config, self.detector_selection)
         return [dict(self.detector_selection or {})]
 
-    def _group_path(self, selection: dict[str, Any]) -> Path | None:
-        key_path = self.cache_key_path
-        if key_path is None:
+    @functools.cached_property
+    def _cache(self) -> PreprocCache | None:
+        if self.cache_dir is None:
             return None
-        group = '_'.join(f'{k}-{_join_values(v)}' for k, v in sorted(selection.items())) or 'all'
-        name = re.sub(r'[^\w.+-]', '-', f'{self.observation_id}__{group}')
-        return key_path / f'{name}.h5'
+        inputs = cache_inputs(self.init_config, self.proc_config, self._sotodlib_config.downsample)
+        return PreprocCache(self.cache_dir, inputs)
 
     def _load_group(
         self, selection: dict[str, Any], requested_fields: Collection[str] | None
     ) -> SOTODLibObservation | None:
         """The group of a detector selection, from the cache if it is there; `None` if skipped."""
-        path = self._group_path(selection)
-        if path is not None:
-            if path.exists():
-                try:
-                    return self._read_cached(path, requested_fields)
-                except Exception:
-                    logger.warning('Cannot read %s, loading it again', path, exc_info=True)
-            elif _skip_path(path).exists():
-                return None
+        cache = self._cache
+        if cache is None:
+            return self._preprocess_group(selection)
+        path = cache.group_path(self.observation_id, selection)
+        if path.exists():
+            try:
+                return self._read_cached(path, requested_fields)
+            except Exception:
+                logger.warning('Cannot read %s, loading it again', path, exc_info=True)
+        elif cache.is_skipped(path):
+            return None
+        obs = self._preprocess_group(selection)
+        if obs is None:
+            cache.skip(path)
+            return None
+        # Return what a later read of the file returns: the groups of a joined observation come
+        # from the cache or from preprocessing, and must have the same fields to be joined.
+        if cache.write(path, lambda tmp: obs.data.save(tmp.as_posix())):
+            return self._read_cached(path, requested_fields)
+        return obs
+
+    def _preprocess_group(self, selection: dict[str, Any]) -> SOTODLibObservation | None:
+        """The group of a detector selection, preprocessed; `None` if there is nothing to load."""
         # A preproc load cannot be field-subset: the full group is always returned, which
         # satisfies any requested fields. The cheap shape path lives in probe_shape.
         try:
-            obs = SOTODLibObservation.from_preproc_group(
+            return SOTODLibObservation.from_preproc_group(
                 self.observation_id,
                 self.init_config,
                 self.proc_config,
@@ -811,18 +811,9 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             if not (self.join_groups and _is_missing_record(error)):
                 raise
             logger.warning('No preprocessing record for %s in %s', selection, self.observation_id)
-            self._write_skip(path)
             return None
         except NoDetectorsLeftError:
-            self._write_skip(path)
             return None
-        if path is None:
-            return obs
-        self._write_key(path)
-        _write_atomically(path, lambda tmp: obs.data.save(tmp.as_posix()))
-        # Return what a later read of the file returns: the groups of a joined observation come
-        # from the cache or from preprocessing, and must have the same fields to be joined.
-        return self._read_cached(path, requested_fields) if path.exists() else obs
 
     def _read_cached(
         self, path: Path, requested_fields: Collection[str] | None
@@ -830,77 +821,6 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         return SOTODLibObservation.from_file(
             path, requested_fields, self._sotodlib_config, processed=True
         )
-
-    def _write_skip(self, path: Path | None) -> None:
-        if path is not None:
-            self._write_key(path)
-            _write_atomically(_skip_path(path), lambda tmp: tmp.touch())
-
-    def _write_key(self, path: Path) -> None:
-        """Records the inputs of the cache key next to the file of a group, once."""
-        key = path.parent / 'key.json'
-        if not key.exists():
-            _write_atomically(key, lambda tmp: tmp.write_text(_dumps(self._cache_inputs)))
-
-    @functools.cached_property
-    def _cache_inputs(self) -> dict[str, Any]:
-        """The inputs that determine the loaded data, from which the cache key is derived."""
-        paths = [self.init_config] + ([self.proc_config] if self.proc_config else [])
-        configs = [_canonical_config(path) for path in paths]
-        return {
-            'preprocess_configs': configs,
-            'contexts': [_read_context(config) for config in configs],
-            'downsample': self._sotodlib_config.downsample,
-            'sotodlib': sotodlib.__version__,
-            'cache_version': _CACHE_VERSION,
-        }
-
-
-def _canonical_config(path: Path) -> dict[str, Any]:
-    """A preprocessing config, with the paths sotodlib resolves against the cwd made absolute.
-
-    Two configs with the same text but relative paths read different archives from different
-    working directories, so they must not share a cache key. A config written by
-    `furax-so-stage` reads node-local copies of the databases of the config it names as its
-    source, and is that config here.
-    """
-    doc = yaml.safe_load(path.read_text())
-    # the entry so_mapmaking.stage writes in the configs it stages
-    source = doc.get('furax_staged_from')
-    if isinstance(source, str):
-        return _canonical_config(Path(source))
-    if isinstance(doc.get('context_file'), str):
-        doc['context_file'] = Path(doc['context_file']).resolve().as_posix()
-    archive = doc.get('archive')
-    if isinstance(archive, dict) and isinstance(archive.get('index'), str):
-        archive['index'] = Path(archive['index']).resolve().as_posix()
-    return doc
-
-
-def _read_context(config: dict[str, Any]) -> Any:
-    """The context of a canonical preprocessing config, `None` if it names none.
-
-    The entries that only say where the raw TOD files are stored are left out: the TOD content is
-    not part of the cache key, so they cannot tell data apart, and moving the files must not
-    invalidate a cache.
-    """
-    path = config.get('context_file')
-    if not isinstance(path, str):
-        return None
-    context = yaml.safe_load(Path(path).read_text())
-    if isinstance(context, dict):
-        for key in _KEY_EXCLUDED_CONTEXT_KEYS:
-            context.pop(key, None)
-    return context
-
-
-def _digest(inputs: dict[str, Any]) -> str:
-    return hashlib.sha256(_dumps(inputs).encode()).hexdigest()[:16]
-
-
-def _dumps(inputs: dict[str, Any]) -> str:
-    # sorted keys: the key must not depend on the order of the entries in the configs
-    return json.dumps(inputs, sort_keys=True, indent=2, default=str)
 
 
 def _join_groups(observation_id: str, parts: list[SOTODLibObservation]) -> AxisManager:
@@ -919,40 +839,6 @@ def _join_groups(observation_id: str, parts: list[SOTODLibObservation]) -> AxisM
 def _is_missing_record(error: LoaderError) -> bool:
     """Whether the error is the lack of a preprocessing record, not a failed read."""
     return _NO_RECORD in str(error)
-
-
-def _skip_path(path: Path) -> Path:
-    """The file that records a group skipped, next to the file of the group."""
-    return path.with_suffix('.skip')
-
-
-def _join_values(value: Any) -> str:
-    return '+'.join(str(v) for v in np.atleast_1d(value))
-
-
-def _write_atomically(path: Path, write: Callable[[Path], object]) -> None:
-    """Writes `path` through a temporary file in its directory, renamed into place when complete.
-
-    The rename is atomic, so a concurrent reader sees either no file or all of it, and of two
-    concurrent writers of the same content the last one wins. A failed write is logged and
-    leaves no file: the observation is then not cached.
-    """
-    tmp = path.with_name(f'{path.name}.tmp.{uuid.uuid4().hex}')
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        write(tmp)
-        # flush the data to storage before the name appears, or a crash could leave the final
-        # name on a partial file
-        with tmp.open('rb') as file:
-            os.fsync(file.fileno())
-        os.replace(tmp, path)
-    except Exception:
-        # not only I/O errors: AxisManager.save also fails on fields it cannot encode, and the
-        # observation is loaded either way
-        logger.warning('Could not write %s', path, exc_info=True)
-    finally:
-        if tmp.exists():
-            tmp.unlink()
 
 
 def group_selections(
